@@ -1,8 +1,22 @@
 import { vi,it,expect } from 'vitest';
 const calls=vi.hoisted(()=>[] as string[][]);
 vi.mock('node:child_process',()=>({execFile:Object.assign((_bin:string,args:string[],_opts:unknown,cb:any)=>{calls.push(args);cb(null,{stdout:args[0]==='network'?'[{"Containers":{"other":{"IPv4Address":"172.18.0.7/16"}},"IPAM":{"Config":[{"Gateway":"172.18.0.1"}]}}]':'',stderr:''});},{})}));
-import { AgentNotHealthyError, NoOwnedContainerError, ownedDocker } from '../lib/docker.js';
+import { AgentNotHealthyError, NoOwnedContainerError, outsideRouteStageAcknowledged, ownedDocker } from '../lib/docker.js';
 const image='example/image@sha256:'+'a'.repeat(64);
+it('accepts only the strict bounded-Squid route acknowledgement grammar',()=>{
+ const stage='11111111-1111-4111-8111-111111111111';
+ const response=(...lines:string[])=>Buffer.from(lines.join('\r\n')+'\r\n\r\n','latin1');
+ expect(outsideRouteStageAcknowledged(response('HTTP/1.1 403 Forbidden',`X-Lares-Route-Stage:\t${stage} `),stage)).toBe(true);
+ for(const raw of [
+   response('HTTP/1.1 403 Forbidden','Other: value'),
+   response('HTTP/1.1 403 Forbidden',`X-Lares-Route-Stage: ${stage}`,`x-lares-route-stage: ${stage}`),
+   response('HTTP/1.1 403 Forbidden',`X-Lares-Route-Stage: ${stage}`,'Other: value',' X-Lares-Route-Stage: stale'),
+   response('HTTP/1.1 403 Forbidden',`X-Lares-Route-Stage: \u000b${stage}`),
+   response('HTTP/1.1 4030 Forbidden',`X-Lares-Route-Stage: ${stage}`),
+   response('HTTP/1.1 403 Forbidden',`X-Lares-Route-Stage : ${stage}`),
+   Buffer.from(`HTTP/1.1 403 Forbidden\r\nX-Lares-Route-Stage: ${stage}\r\n\r\nCI_PROXY_DESTINATION_OK`),
+ ]) expect(outsideRouteStageAcknowledged(raw,stage)).toBe(false);
+});
 it('uses fixed execFile arrays, only owned compose file, digest helpers, host nft namespace and no broad cleanup',async()=>{
  let healthAttempts=0;
  const health=vi.fn(async(_input:string|URL|Request,_init?:RequestInit)=>{healthAttempts++;if(healthAttempts===1)throw new Error('starting');if(healthAttempts===2)return new Response('{}',{status:503});return Response.json({ok:true,status:'ready'});});

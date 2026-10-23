@@ -492,6 +492,46 @@ def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None =
                 os.close(fd)
 
 
+def prepare_outside_custody_key(prefix: str | Path, *, expected_uid: int | None = None) -> str:
+    """Create one fresh Keeper-only root key. Existing or partial state is never adopted."""
+    requested = Path(prefix)
+    uid = 0 if expected_uid is None else expected_uid
+    if (not requested.is_absolute() or ".." in requested.parts or str(requested) != str(prefix) or
+            expected_uid is None and os.geteuid() != 0 or
+            expected_uid is not None and (uid != os.geteuid() or uid == 0 or os.environ.get("LARES_MAINTENANCE_TESTING") != "1")):
+        raise PermissionError("outside custody key preparation requires a normalized root-owned installation prefix")
+    prefix_fd, _ = _open_safe_chain(requested, uid)
+    lares_fd = outside_fd = key_fd = -1
+    key = bytearray(secrets.token_bytes(32))
+    try:
+        var_fd = _open_child_dir(prefix_fd, "var", 0o755, uid, create=True)
+        try:
+            lib_fd = _open_child_dir(var_fd, "lib", 0o755, uid, create=True)
+        finally:
+            os.close(var_fd)
+        try:
+            lares_fd = _open_child_dir(lib_fd, "lares", 0o755, uid, create=True)
+        finally:
+            os.close(lib_fd)
+        outside_fd = _create_child_dir_exclusive(lares_fd, "outside-custody", 0o700, uid)
+        key_fd = os.open("key", os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                         0o400, dir_fd=outside_fd)
+        os.fchown(key_fd, uid, 0 if uid == 0 else os.getegid())
+        os.fchmod(key_fd, 0o400)
+        with os.fdopen(key_fd, "wb", closefd=True) as stream:
+            key_fd = -1
+            stream.write(key)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.fsync(outside_fd)
+        return hashlib.sha256(key).hexdigest()
+    finally:
+        key[:] = b"\0" * len(key)
+        for fd in (key_fd, outside_fd, lares_fd, prefix_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
 def validate(prefix: str | Path, subnet: str | None = None) -> dict[str, object]:
     requested = Path(prefix)
     if not requested.is_absolute() or ".." in requested.parts:
@@ -580,6 +620,8 @@ def main(argv: list[str]) -> int:
                 prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid())
             else:
                 prepare_fresh(argv[2], argv[3])
+        elif len(argv) == 4 and argv[1] == "prepare-outside-custody-key" and argv[3] == "--confirm-fresh":
+            print(json.dumps({"keyFingerprint": prepare_outside_custody_key(argv[2])}, separators=(",", ":")))
         elif (len(argv) == 6 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh" and
               argv[5] == "--test-owner" and os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
             prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid())
@@ -604,7 +646,7 @@ def main(argv: list[str]) -> int:
             print(json.dumps({"installationId": receipt["installationId"], "epoch": receipt["epoch"]},
                              separators=(",", ":")))
         else:
-            raise ValueError("usage: maintenance-custody.py prepare-fresh <prefix> <subnet> --confirm-fresh | validate <prefix> <subnet> | validate-identity <prefix> <subnet>")
+            raise ValueError("usage: maintenance-custody.py prepare-fresh <prefix> <subnet> --confirm-fresh | prepare-outside-custody-key <prefix> --confirm-fresh | validate <prefix> <subnet> | validate-identity <prefix> <subnet>")
         return 0
     except (OSError, ValueError) as error:
         print(f"maintenance custody: {error}", file=sys.stderr)

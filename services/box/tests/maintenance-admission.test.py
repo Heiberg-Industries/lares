@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import ast
+import hashlib
 import json
 import os
 import shutil
@@ -192,6 +193,23 @@ class MaintenanceAdmissionTests(unittest.TestCase):
                     custody.prepare_fresh(fresh, "172.30.0.0/24", expected_uid=self.owner)
                 self.assertTrue(marker.exists())
                 self.assertFalse((fresh / "var/lib/lares-maintenance/custody/preparation.json").exists())
+
+    def test_outside_key_preparation_is_fresh_only_root_scoped_and_returns_only_fingerprint(self) -> None:
+        prefix = self.root / "outside-key-prefix"
+        prefix.mkdir()
+        with patch.dict(os.environ, {"LARES_MAINTENANCE_TESTING": "1"}):
+            fingerprint = custody.prepare_outside_custody_key(prefix, expected_uid=self.owner)
+            key_dir = prefix / "var/lib/lares/outside-custody"
+            key_file = key_dir / "key"
+            raw = key_file.read_bytes()
+            self.assertEqual(len(raw), 32)
+            self.assertEqual(fingerprint, hashlib.sha256(raw).hexdigest())
+            self.assertEqual(stat.S_IMODE(key_dir.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(key_file.stat().st_mode), 0o400)
+            self.assertEqual(key_file.stat().st_nlink, 1)
+            with self.assertRaises(FileExistsError):
+                custody.prepare_outside_custody_key(prefix, expected_uid=self.owner)
+            self.assertEqual(key_file.read_bytes(), raw)
 
     def test_receipt_publication_fsync_error_leaves_closed_marker(self) -> None:
         fresh = self.root / "fsync-prefix"

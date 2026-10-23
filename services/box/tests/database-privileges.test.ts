@@ -61,7 +61,11 @@ const outsideCustodyUpdateColumns: Readonly<Record<string, readonly string[]>> =
   resource_grants: ["created_at"],
   agent_resources: ["updated_at"],
   console_session_bindings: ["created_at", "revoked_at"],
+  member_sessions: ["created_at"],
   outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at"],
+};
+const outsideCustodySelectColumns: Readonly<Record<string, readonly string[]>> = {
+  member_sessions: ["member_id", "token_hash", "expires_at", "revoked_at"],
 };
 const financialCustodySelectColumns: Readonly<Record<string, readonly string[]>> = {
   outside_custody_accounts: ["owner_member_id", "resource_id"],
@@ -81,6 +85,9 @@ async function removeTestOwnedOutsideCustodyGrants(): Promise<void> {
   }
   for (const [table, columns] of Object.entries(outsideCustodyUpdateColumns)) {
     await admin.query(`REVOKE UPDATE (${columns.map((column) => `"${column}"`).join(", ")}) ON TABLE public."${table}" FROM lares_outside_custody`);
+  }
+  for (const [table, columns] of Object.entries(outsideCustodySelectColumns)) {
+    await admin.query(`REVOKE SELECT (${columns.map((column) => `"${column}"`).join(", ")}) ON TABLE public."${table}" FROM lares_outside_custody`);
   }
   for (const [table, columns] of Object.entries(financialCustodySelectColumns)) {
     await admin.query(`REVOKE SELECT (${columns.map((column) => `"${column}"`).join(", ")}) ON TABLE public."${table}" FROM lares_financial`);
@@ -181,6 +188,18 @@ describe("engine database privilege foundation", () => {
     }
     for(const [table,column] of [["org_member_policy","outside_custody_lock"],["outside_custody_accounts","generation"],["outside_custody_accounts","state"]]){
       expect((await outsideCustody.query("SELECT has_column_privilege(current_user,$1,$2,'UPDATE') AS allowed",[`public.${table}`,column])).rows[0].allowed).toBe(true);
+    }
+    for(const column of outsideCustodySelectColumns.member_sessions){
+      expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions',$1,'SELECT') AS allowed",[column])).rows[0].allowed).toBe(true);
+    }
+    for(const column of ["id","created_at","member_id","token_hash","expires_at","revoked_at","ip_address"]){
+      if(outsideCustodySelectColumns.member_sessions.includes(column)) continue;
+      expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions',$1,'SELECT') AS allowed",[column])).rows[0].allowed).toBe(false);
+    }
+    expect((await outsideCustody.query("SELECT has_table_privilege(current_user,'public.member_sessions','SELECT') AS allowed")).rows[0].allowed).toBe(false);
+    expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions','created_at','UPDATE') AS allowed")).rows[0].allowed).toBe(true);
+    for(const column of ["member_id","token_hash","expires_at","revoked_at"]){
+      expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions',$1,'UPDATE') AS allowed",[column])).rows[0].allowed).toBe(false);
     }
     for(const [table,column] of [["org_member_policy","allowed_capabilities"],["outside_custody_accounts","owner_member_id"],["outside_custody_revisions","ciphertext"],["outside_custody_operations","outcome"]]){
       expect((await outsideCustody.query("SELECT has_column_privilege(current_user,$1,$2,'UPDATE') AS allowed",[`public.${table}`,column])).rows[0].allowed).toBe(false);

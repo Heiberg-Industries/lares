@@ -53,28 +53,15 @@ function prepareKeyLoader(options:{parent?:ReturnType<typeof directoryStat>;ance
   mocks.keyClose.mockImplementation(()=>{if(options.closeError)throw options.closeError;});
 }
 
-function encryptedFixture(plaintext:Buffer){
-  const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce);
-  cipher.setAAD(Buffer.from(JSON.stringify(['lares-outside-custody-v1','member-1',accountId,'worker',1,1,7,originalOperationId])));
+function encryptedFixture(plaintext:Buffer,coordinates:{generation?:number;credentialRevision?:number;operationId?:string;connectionName?:string;policyHash?:string}={}){
+  const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce),
+    common=JSON.stringify(['lares-outside-custody-v1','member-1',accountId,'worker',coordinates.generation??1,coordinates.credentialRevision??1,7,coordinates.operationId??originalOperationId]);
+  cipher.setAAD(Buffer.from(JSON.stringify(['lares-outside-custody-bound-v1',common,coordinates.connectionName??'connection','executable',coordinates.policyHash??'a'.repeat(64)])));
   return {nonce,ciphertext:Buffer.concat([cipher.update(plaintext),cipher.final(),cipher.getAuthTag()])};
 }
-function activeCredentialReads(encrypted:ReturnType<typeof encryptedFixture>,deferred?:{waitFor:'head'|'identity';entered:()=>void;wait:Promise<void>}):void{
-  mocks.query.mockImplementation(async(sql:string)=>{
-    if(sql.includes('FROM outside_custody_accounts')){
-      if(deferred?.waitFor==='head'){deferred.entered();await deferred.wait;}
-      return {rows:[{account_id:accountId,owner_member_id:'member-1',resource_id:'worker',generation:'1',active_revision:'1',candidate_revision:null,consent_generation:'7',state:'active'}]};
-    }
-    if(sql.includes('FROM outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2'))return {rows:[{credential_revision:'1',generation:'1',consent_generation:'7',operation_id:originalOperationId,...encrypted}]};
-    if(sql.includes('SELECT pg_backend_pid()')){
-      if(deferred?.waitFor==='identity'){deferred.entered();await deferred.wait;}
-      return {rows:[{pid:44,user:'lares_outside_custody',sessionUser:'lares_outside_custody'}]};
-    }
-    throw new Error(`Unexpected SQL in expiry test: ${sql}`);
-  });
-}
 function candidateStore(){
-  type CandidateHead={account_id:string;owner_member_id:string;resource_id:string;generation:number;active_revision:number|null;candidate_revision:number|null;consent_generation:number;state:'active'|'revoked'};
-  type CandidateRevision={credential_revision:string;generation:string;consent_generation:string;operation_id:string;nonce:Buffer;ciphertext:Buffer};
+  type CandidateHead={account_id:string;owner_member_id:string;resource_id:string;connection_name:string;generation:number;active_revision:number|null;candidate_revision:number|null;consent_generation:number;state:'active'|'revoked'};
+  type CandidateRevision={credential_revision:string;generation:string;consent_generation:string;operation_id:string;revision_purpose:'discovery'|'executable';policy_json:unknown;policy_hash:Buffer;nonce:Buffer;ciphertext:Buffer};
   type CandidateOperation={account_id:string;owner_member_id:string;operation_kind:'stage'|'apply'|'rollback'|'revoke';request_hash:Buffer;expected_generation:string;result_generation:string;credential_revision:string|null;outcome:'staged'|'applied'|'rolled-back'|'revoked'};
   let head:CandidateHead|undefined;
   let maxRevision=0;
@@ -90,20 +77,23 @@ function candidateStore(){
     if(sql.includes('count(*)::text AS count FROM outside_custody_revisions'))return {rows:[{count:String(revisions.size)}],rowCount:1};
     if(sql.includes('FROM outside_custody_accounts WHERE account_id=$1'))return {rows:row()?[row() as Record<string,unknown>]:[],rowCount:head?1:0};
     if(sql.includes('INSERT INTO outside_custody_accounts')){
-      head={account_id:String(params[0]),owner_member_id:String(params[1]),resource_id:String(params[2]),generation:1,active_revision:null,candidate_revision:null,consent_generation:Number(params[3]),state:'active'};
+      head={account_id:String(params[0]),owner_member_id:String(params[1]),resource_id:String(params[2]),connection_name:String(params[3]),generation:1,active_revision:null,candidate_revision:null,consent_generation:Number(params[4]),state:'active'};
       return {rows:[row() as Record<string,unknown>],rowCount:1};
     }
     if(sql.includes('SELECT COALESCE(max(credential_revision),0)+1 AS revision'))return {rows:[{revision:String(maxRevision+1)}],rowCount:1};
-    if(sql.includes('INSERT INTO outside_custody_revisions')){
-      const revision=Number(params[2]);maxRevision=Math.max(maxRevision,revision);
-      revisions.set(revision,{credential_revision:String(revision),generation:String(params[3]),consent_generation:String(params[4]),operation_id:String(params[5]),nonce:params[6] as Buffer,ciphertext:params[7] as Buffer});
+    if(sql.includes('INSERT INTO outside_custody_revisions')) {
+      const [id,owner,revision,generation,consent,purposeJson,policyHash,operation,nonce,ciphertext]=params as [string,string,number,number,number,unknown,Buffer,string,Buffer,Buffer];
+      if(!head||owner!==head.owner_member_id||params[4]!==7)throw new Error('Unexpected revision insert in test fixture.');
+      revisions.set(Number(revision),{credential_revision:String(revision),generation:String(generation),consent_generation:String(consent),operation_id:operation,
+        revision_purpose:'executable',policy_json:purposeJson,policy_hash:policyHash,nonce,ciphertext});
+      maxRevision=Number(revision);
       return {rows:[],rowCount:1};
     }
     if(sql.includes('UPDATE outside_custody_accounts SET candidate_revision=$2')){
       if(!head||head.account_id!==params[0]||head.owner_member_id!==params[3]||head.generation!==Number(params[4])||head.candidate_revision!==params[5]||head.state!=='active')return {rows:[],rowCount:0};
       head.candidate_revision=Number(params[1]);head.consent_generation=Number(params[2]);return {rows:[],rowCount:1};
     }
-    if(sql.includes('SELECT credential_revision::text,generation::text,consent_generation::text,operation_id,nonce,ciphertext')){
+    if(sql.includes('SELECT credential_revision::text,generation::text,consent_generation::text,revision_purpose,policy_json,policy_hash,operation_id,nonce,ciphertext')){
       const revision=revisions.get(Number(params[1]));return {rows:revision?[revision as unknown as Record<string,unknown>]:[],rowCount:revision?1:0};
     }
     if(sql.includes("SET generation=$2,active_revision=NULL,candidate_revision=NULL,state='revoked'")){
@@ -124,7 +114,15 @@ function candidateStore(){
     }
     throw new Error(`Unexpected candidate CAS SQL: ${sql}`);
   });
-  return {store:new OutsideCustodyStore({} as never,key),state:()=>({head,revisions,operations,statements}),removeHead:()=>{head=undefined;}};
+  const seedExecutableFixture=(revision=1,operation=stageOperationA,plaintext=Buffer.from('fixture-owned executable credential'))=>{
+    const policyHash='a'.repeat(64),encrypted=encryptedFixture(plaintext,{generation:2,credentialRevision:revision,operationId:operation,policyHash});
+    head={account_id:accountId,owner_member_id:'member-1',resource_id:'worker',connection_name:'connection',generation:1,active_revision:null,candidate_revision:revision,consent_generation:7,state:'active'};
+    revisions.set(revision,{credential_revision:String(revision),generation:'2',consent_generation:'7',operation_id:operation,revision_purpose:'executable',policy_json:{purpose:'test-owned persisted executable fixture'},policy_hash:Buffer.from(policyHash,'hex'),...encrypted});
+    maxRevision=revision;
+    operations.set(operation,{account_id:accountId,owner_member_id:'member-1',operation_kind:'stage',request_hash:Buffer.alloc(32,1),expected_generation:'0',result_generation:'1',credential_revision:String(revision),outcome:'staged'});
+    return {operationId:operation,accountId,kind:'stage' as const,outcome:'staged' as const,generation:1,credentialRevision:revision};
+  };
+  return {store:new OutsideCustodyStore({} as never,key),state:()=>({head,revisions,operations,statements}),removeHead:()=>{head=undefined;},seedExecutableFixture};
 }
 
 beforeEach(()=>{
@@ -215,148 +213,98 @@ it('preserves safe ancestor checks, wipes a wrong-length read, and suppresses sy
   expect(mocks.keyRead).not.toHaveBeenCalled();
 });
 
-it('refuses a stale stage after a competing stage changes the pending candidate',async()=>{
-  const {store,state}=candidateStore();
-  const staged=await store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')});
-  expect(staged).toMatchObject({outcome:'staged',generation:1,credentialRevision:1});
-  await expect(store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:null,credential:Buffer.from('stale candidate')})).rejects.toThrow();
-  const snapshot=state();
-  expect(snapshot.head?.candidate_revision).toBe(1);
-  expect(snapshot.revisions.size).toBe(1);
-  expect(snapshot.operations.size).toBe(1);
-  const candidateUpdate=snapshot.statements.find(statement=>statement.sql.includes('SET candidate_revision=$2'))!;
-  expect(candidateUpdate.sql).toContain('candidate_revision IS NOT DISTINCT FROM $6');
-  expect(candidateUpdate.params[5]).toBeNull();
+it('refuses numeric-consent-only executable stage before touching custody state and wipes the credential',async()=>{
+  const {store,state}=candidateStore(),candidate=Buffer.from('must not be stored or sent');
+  await expect(store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:candidate})).rejects.toThrow();
+  expect(candidate).toEqual(Buffer.alloc(candidate.length));
+  expect(mocks.transaction).not.toHaveBeenCalled();
+  expect(state().statements).toHaveLength(0);
+  expect(state().revisions.size).toBe(0);
+  expect(state().operations.size).toBe(0);
 });
 
-it('allows explicit candidate replacement, refuses apply of the reviewed old candidate, and applies the exact new candidate',async()=>{
+it('does not let the numeric stage interface create or replace any executable revision',async()=>{
   const {store,state}=candidateStore();
-  await store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')});
-  const replacement=await store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:1,credential:Buffer.from('candidate B')});
-  expect(replacement).toMatchObject({outcome:'staged',generation:1,credentialRevision:2});
-  expect(state().head?.candidate_revision).toBe(2);
-
-  await expect(store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7})).rejects.toThrow();
-  expect(state().head).toMatchObject({generation:1,active_revision:null,candidate_revision:2});
-  expect(state().operations.size).toBe(2);
-  expect(state().statements.some(statement=>statement.sql.includes('SET generation=$2,active_revision=$3,candidate_revision=NULL'))).toBe(false);
-
-  const applied=await store.apply(binding,{accountId,operationId:applyOperationB,expectedGeneration:1,candidateRevision:2,consentGeneration:7});
-  expect(applied).toMatchObject({outcome:'applied',generation:2,credentialRevision:2});
-  expect(state().head).toMatchObject({generation:2,active_revision:2,candidate_revision:null});
-  await expect(store.apply(binding,{accountId,operationId:applyOperationB,expectedGeneration:1,candidateRevision:1,consentGeneration:7})).rejects.toThrow();
-  expect(state().head).toMatchObject({generation:2,active_revision:2,candidate_revision:null});
+  const first=Buffer.from('candidate A'),replacement=Buffer.from('candidate B');
+  await expect(store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:first})).rejects.toThrow();
+  await expect(store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:1,credential:replacement})).rejects.toThrow();
+  expect(first).toEqual(Buffer.alloc(first.length));expect(replacement).toEqual(Buffer.alloc(replacement.length));
+  expect(state().statements).toHaveLength(0);expect(state().revisions.size).toBe(0);expect(state().operations.size).toBe(0);
 });
 
-it('conflicts when a reused replacement operation id names a different expected candidate',async()=>{
+it('does not create a replay receipt when a stage operation id is reused',async()=>{
   const {store,state}=candidateStore();
-  await store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')});
-  await store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:1,credential:Buffer.from('candidate B')});
-  await expect(store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:2,credential:Buffer.from('candidate B')})).rejects.toThrow();
-  expect(state().head?.candidate_revision).toBe(2);
-  expect(state().revisions.size).toBe(2);
-  expect(state().operations.size).toBe(2);
-  expect(state().statements.filter(statement=>statement.sql.includes('INSERT INTO outside_custody_revisions'))).toHaveLength(2);
+  const credential=()=>Buffer.from('candidate B');
+  await expect(store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:1,credential:credential()})).rejects.toThrow();
+  await expect(store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:2,credential:credential()})).rejects.toThrow();
+  expect(state().statements).toHaveLength(0);expect(state().revisions.size).toBe(0);expect(state().operations.size).toBe(0);
 });
 
-it('returns an exact initial-stage receipt only for the same owner, resource, caller inputs, and credential without writes',async()=>{
+it('rejects stage attempts for foreign owners, resources, accounts and changed input without database access',async()=>{
   const {store,state}=candidateStore();
-  const first=await store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')});
-  const before=state(),writeCount=before.statements.filter(({sql})=>/^(INSERT|UPDATE)/.test(sql.trim())).length;
-  await expect(store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')})).resolves.toEqual(first);
-  expect(state().statements.filter(({sql})=>/^(INSERT|UPDATE)/.test(sql.trim()))).toHaveLength(writeCount);
-  expect(state().revisions.size).toBe(1);
-  expect(state().operations.size).toBe(1);
-
-  await expect(store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('different credential')})).rejects.toThrow();
-  await expect(store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:1,credential:Buffer.from('candidate A')})).rejects.toThrow();
-  await expect(store.stage({...binding,memberId:'member-2'},{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')})).rejects.toThrow();
-  await expect(store.stage({...binding,agent:'other-agent'},{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')})).rejects.toThrow();
-  await expect(store.stage(binding,{accountId:'00000000-0000-4000-8000-000000000105',operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')})).rejects.toThrow();
-  expect(state().revisions.size).toBe(1);
-  expect(state().operations.size).toBe(1);
+  for(const b of [binding,{...binding,memberId:'member-2'},{...binding,agent:'other-agent'}])
+    await expect(store.stage(b,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')})).rejects.toThrow();
+  await expect(store.stage(binding,{accountId:'00000000-0000-4000-8000-000000000105',operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:1,credential:Buffer.from('different credential')})).rejects.toThrow();
+  expect(state().statements).toHaveLength(0);expect(state().revisions.size).toBe(0);expect(state().operations.size).toBe(0);
 });
 
-it('checks existing operation owner explicitly and refuses a receipt whose account head is missing before creating it',async()=>{
-  const {store,state,removeHead}=candidateStore();
-  await store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')});
+it('checks existing operation owner explicitly and refuses a receipt whose account head is missing',async()=>{
+  const {store,state,removeHead,seedExecutableFixture}=candidateStore();
+  seedExecutableFixture();
   const operation=state().operations.get(stageOperationA)!;
   operation.owner_member_id='member-2';
-  await expect(store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')})).rejects.toThrow();
+  await expect(store.inspect(binding,stageOperationA)).rejects.toThrow();
   operation.owner_member_id='member-1';
   removeHead();
-  const before=state().statements.filter(({sql})=>sql.includes('INSERT INTO outside_custody_accounts')).length;
-  await expect(store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')})).rejects.toThrow();
-  expect(state().statements.filter(({sql})=>sql.includes('INSERT INTO outside_custody_accounts'))).toHaveLength(before);
+  await expect(store.inspect(binding,stageOperationA)).rejects.toThrow();
 });
 
-it('returns an exact apply receipt after advancement without revision reads or writes, but refuses changed consent and wrong scope',async()=>{
-  const {store,state}=candidateStore();
-  await store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')});
-  const applied=await store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7});
-  const before=state(),statementCount=before.statements.length;
-  const writeCount=before.statements.filter(({sql})=>/^(INSERT|UPDATE)/.test(sql.trim())).length;
-  await expect(store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7})).resolves.toEqual(applied);
-  expect(state().statements.slice(statementCount).some(({sql})=>sql.includes('outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2'))).toBe(false);
-  expect(state().statements.filter(({sql})=>/^(INSERT|UPDATE)/.test(sql.trim()))).toHaveLength(writeCount);
-  await expect(store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:8})).rejects.toThrow();
-  await expect(store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:2,consentGeneration:7})).rejects.toThrow();
-  await expect(store.apply({...binding,memberId:'member-2'},{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7})).rejects.toThrow();
-  await expect(store.apply({...binding,agent:'other-agent'},{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7})).rejects.toThrow();
-  mocks.captureUseWithExpiry.mockResolvedValue({accessRevision:8,validUntil:null});
+it('keeps executable apply closed until persisted current-policy verification exists',async()=>{
+  const {store,state,seedExecutableFixture}=candidateStore();
+  seedExecutableFixture();
   await expect(store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7})).rejects.toThrow();
-  mocks.captureUseWithExpiry.mockResolvedValue({accessRevision:7,validUntil:null});
-  expect(state().head).toMatchObject({generation:2,active_revision:1,candidate_revision:null});
+  expect(state().statements).toHaveLength(0);
+  expect(state().head).toMatchObject({generation:1,active_revision:null,candidate_revision:1,state:'active'});
 });
 
-it('returns an exact rollback receipt after advancement without decrypting again and refuses changed caller consent',async()=>{
-  const {store,state}=candidateStore();
-  await store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')});
-  await store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7});
+it('keeps executable rollback closed without reading or decrypting its stored revision',async()=>{
+  const {store,state,seedExecutableFixture}=candidateStore();
+  seedExecutableFixture();
   const rollbackId='00000000-0000-4000-8000-000000000114';
-  const rolled=await store.rollback(binding,{accountId,operationId:rollbackId,expectedGeneration:2,sourceRevision:1,consentGeneration:7});
-  expect(state().head).toMatchObject({generation:3,active_revision:2,state:'active'});
-  const before=state(),statementCount=before.statements.length;
-  const writeCount=before.statements.filter(({sql})=>/^(INSERT|UPDATE)/.test(sql.trim())).length;
-  await expect(store.rollback(binding,{accountId,operationId:rollbackId,expectedGeneration:2,sourceRevision:1,consentGeneration:7})).resolves.toEqual(rolled);
-  expect(state().statements.slice(statementCount).some(({sql})=>sql.includes('outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2'))).toBe(false);
-  expect(state().statements.filter(({sql})=>/^(INSERT|UPDATE)/.test(sql.trim()))).toHaveLength(writeCount);
-  await expect(store.rollback(binding,{accountId,operationId:rollbackId,expectedGeneration:2,sourceRevision:1,consentGeneration:8})).rejects.toThrow();
-  await expect(store.rollback(binding,{accountId,operationId:rollbackId,expectedGeneration:2,sourceRevision:2,consentGeneration:7})).rejects.toThrow();
+  await expect(store.rollback(binding,{accountId,operationId:rollbackId,expectedGeneration:1,sourceRevision:1,consentGeneration:7})).rejects.toThrow();
+  expect(state().statements).toHaveLength(0);
+  expect(state().revisions.get(1)?.ciphertext).toBeDefined();
 });
 
 it('returns an exact revoke receipt after revocation without writes',async()=>{
-  const {store,state}=candidateStore();
-  await store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')});
-  await store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7});
+  const {store,state,seedExecutableFixture}=candidateStore();
+  seedExecutableFixture();
   const revokeId='00000000-0000-4000-8000-000000000115';
-  const revoked=await store.revoke(binding,{accountId,operationId:revokeId,expectedGeneration:2});
-  expect(state().head).toMatchObject({generation:3,state:'revoked',active_revision:null});
+  const revoked=await store.revoke(binding,{accountId,operationId:revokeId,expectedGeneration:1});
+  expect(state().head).toMatchObject({generation:2,state:'revoked',active_revision:null,candidate_revision:null});
   const before=state(),statementCount=before.statements.length;
-  await expect(store.revoke(binding,{accountId,operationId:revokeId,expectedGeneration:2})).resolves.toEqual(revoked);
+  await expect(store.revoke(binding,{accountId,operationId:revokeId,expectedGeneration:1})).resolves.toEqual(revoked);
   expect(state().statements.slice(statementCount).some(({sql})=>/^(INSERT|UPDATE)/.test(sql.trim()))).toBe(false);
   await expect(store.revoke({...binding,memberId:'member-2'},{accountId,operationId:revokeId,expectedGeneration:2})).rejects.toThrow();
   await expect(store.revoke({...binding,agent:'other-agent'},{accountId,operationId:revokeId,expectedGeneration:2})).rejects.toThrow();
 });
 
 it('scopes historical inspection to the linked account owner and resource while allowing advanced heads',async()=>{
-  const {store,state,removeHead}=candidateStore();
+  const {store,state,removeHead,seedExecutableFixture}=candidateStore();
   await expect(store.inspect(binding,operationId)).resolves.toBeUndefined();
-  const staged=await store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')});
-  await store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7});
+  const staged=seedExecutableFixture();
   await expect(store.inspect(binding,stageOperationA)).resolves.toEqual(staged);
   await expect(store.inspect({...binding,memberId:'member-2'},stageOperationA)).rejects.toThrow();
   await expect(store.inspect({...binding,agent:'other-agent'},stageOperationA)).rejects.toThrow();
   removeHead();
   await expect(store.inspect(binding,stageOperationA)).rejects.toThrow();
   const revokedHead=candidateStore();
-  await revokedHead.store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')});
-  await revokedHead.store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7});
+  const revokedStage=revokedHead.seedExecutableFixture();
   const revokeId='00000000-0000-4000-8000-000000000115';
-  await revokedHead.store.revoke(binding,{accountId,operationId:revokeId,expectedGeneration:2});
-  await expect(revokedHead.store.inspect(binding,stageOperationA)).resolves.toEqual(staged);
+  await revokedHead.store.revoke(binding,{accountId,operationId:revokeId,expectedGeneration:1});
+  await expect(revokedHead.store.inspect(binding,stageOperationA)).resolves.toEqual(revokedStage);
   const foreignHead=candidateStore();
-  await foreignHead.store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate B')});
+  foreignHead.seedExecutableFixture(1,stageOperationB);
   foreignHead.state().head!.owner_member_id='member-2';
   await expect(foreignHead.store.inspect(binding,stageOperationB)).rejects.toThrow();
 });
@@ -402,137 +350,31 @@ it('refuses a successful runAndRecover result when close begins while run is pen
   expect(storeKey(store)).toEqual(Buffer.alloc(32));
 });
 
-it('refuses a stage that was waiting on its account lock when close begins, before sealing or writes',async()=>{
-  let entered!:()=>void,release!:()=>void;
-  const atLock=new Promise<void>(resolve=>{entered=resolve;}),locked=new Promise<void>(resolve=>{release=resolve;});
-  mocks.query.mockImplementation(async(sql:string)=>{
-    if(sql.includes('FROM outside_custody_operations'))return {rows:[]};
-    if(sql.includes('FROM outside_custody_accounts')){entered();await locked;return {rows:[]};}
-    throw new Error(`Unexpected SQL in disposal test: ${sql}`);
-  });
+it('refuses a numeric-consent-only stage before waiting on custody state, sealing or writing',async()=>{
   const store=new OutsideCustodyStore({} as never,key),staged=Buffer.from('credential to wipe');
-  const pending=store.stage(binding,{accountId,operationId,expectedGeneration:0,expectedCandidateRevision:null,credential:staged});
-  await atLock;
+  await expect(store.stage(binding,{accountId,operationId,expectedGeneration:0,expectedCandidateRevision:null,credential:staged})).rejects.toThrow();
   store.close();
-  expect(storeKey(store)).toEqual(key);
-  release();
-  await expect(pending).rejects.toThrow();
   expect(storeKey(store)).toEqual(Buffer.alloc(32));
   expect(staged).toEqual(Buffer.alloc(staged.length));
-  expect(mocks.query).toHaveBeenCalledTimes(1);
-  expect(mocks.query.mock.calls.some(([sql])=>String(sql).includes('max(credential_revision)'))).toBe(false);
-  expect(mocks.query.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO outside_custody_revisions'))).toBe(false);
+  expect(mocks.query).not.toHaveBeenCalled();
+  expect(mocks.transaction).not.toHaveBeenCalled();
 });
 
-it('does not call the credential callback when close begins during the identity query',async()=>{
-  const encrypted=encryptedFixture(Buffer.from('short-lived outside credential'));
-  let entered!:()=>void,release!:()=>void;
-  const atIdentity=new Promise<void>(resolve=>{entered=resolve;}),identityResult=new Promise<void>(resolve=>{release=resolve;});
-  mocks.query.mockImplementation(async(sql:string)=>{
-    if(sql.includes('FROM outside_custody_accounts'))return {rows:[{account_id:accountId,owner_member_id:'member-1',resource_id:'worker',generation:'1',active_revision:'1',candidate_revision:null,consent_generation:'7',state:'active'}]};
-    if(sql.includes('FROM outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2'))return {rows:[{credential_revision:'1',generation:'1',consent_generation:'7',operation_id:originalOperationId,...encrypted}]};
-    if(sql.includes('SELECT pg_backend_pid()')){entered();await identityResult;return {rows:[{pid:44,user:'lares_outside_custody',sessionUser:'lares_outside_custody'}]};}
-    throw new Error(`Unexpected SQL in identity disposal test: ${sql}`);
-  });
-  const store=new OutsideCustodyStore({} as never,key),use=vi.fn(async()=>undefined);
-  const pending=store.withCredential(binding,{accountId},use);
-  await atIdentity;
-  store.close();
-  expect(storeKey(store)).toEqual(key);
-  release();
-  await expect(pending).rejects.toThrow();
-  expect(use).not.toHaveBeenCalled();
-  expect(storeKey(store)).toEqual(Buffer.alloc(32));
-});
-
-it('keeps the key until an already-running credential callback drains, then wipes its credential and refuses its result',async()=>{
-  const encrypted=encryptedFixture(Buffer.from('short-lived outside credential'));
-  mocks.query.mockImplementation(async(sql:string)=>{
-    if(sql.includes('FROM outside_custody_accounts'))return {rows:[{account_id:accountId,owner_member_id:'member-1',resource_id:'worker',generation:'1',active_revision:'1',candidate_revision:null,consent_generation:'7',state:'active'}]};
-    if(sql.includes('FROM outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2'))return {rows:[{credential_revision:'1',generation:'1',consent_generation:'7',operation_id:originalOperationId,...encrypted}]};
-    if(sql.includes('SELECT pg_backend_pid()'))return {rows:[{pid:44,user:'lares_outside_custody',sessionUser:'lares_outside_custody'}]};
-    throw new Error(`Unexpected SQL in callback disposal test: ${sql}`);
-  });
-  let entered!:()=>void,release!:()=>void;
-  const inCallback=new Promise<void>(resolve=>{entered=resolve;}),callbackResult=new Promise<void>(resolve=>{release=resolve;});
-  let delivered:Buffer|undefined;
-  const store=new OutsideCustodyStore({} as never,key);
-  const pending=store.withCredential(binding,{accountId},async credential=>{delivered=credential;entered();await callbackResult;return 'callback result';});
-  await inCallback;
-  store.close();
-  expect(storeKey(store)).toEqual(key);
-  await expect(store.inspect(binding,operationId)).rejects.toThrow();
-  release();
-  await expect(pending).rejects.toThrow();
-  expect(delivered).toBeDefined();
-  expect(delivered).toEqual(Buffer.alloc(Buffer.byteLength('short-lived outside credential')));
-  expect(storeKey(store)).toEqual(Buffer.alloc(32));
-});
-
-it.each(['identity','head'] as const)('retains the exact finite grant deadline on the transaction client and refuses use after it expires while waiting on %s',async(waitFor)=>{
-  const validUntil='2026-10-23 12:34:56.123456+00';
-  let entered!:()=>void,release!:()=>void,expired=false;
-  const waiting=new Promise<void>(resolve=>{entered=resolve;}),released=new Promise<void>(resolve=>{release=resolve;});
-  const encrypted=encryptedFixture(Buffer.from('short-lived outside credential'));
-  activeCredentialReads(encrypted,{waitFor,entered,wait:released});
-  mocks.captureUseWithExpiry.mockResolvedValue({accessRevision:7,validUntil});
-  mocks.deadlines.mockImplementation(async(db:unknown)=>{expect(db).toBe(sourceClient);if(expired)throw new Error('grant deadline expired');});
-  const store=new OutsideCustodyStore({} as never,key),use=vi.fn(async()=> 'must not escape');
-  const pending=store.withCredential(binding,{accountId},use);
-  await waiting;
-  expect(mocks.captureUseWithExpiry).toHaveBeenCalledWith('member-1','worker',{db:sourceClient});
-  expect(mocks.retainDeadline).toHaveBeenCalledWith(sourceClient,binding,validUntil);
-  expired=true;release();
-  await expect(pending).rejects.toThrow();
-  expect(use).not.toHaveBeenCalled();
-});
-
-it('refuses callback output when the original finite grant expires during the callback',async()=>{
-  const validUntil='2026-10-23 12:34:56.123456+00',encrypted=encryptedFixture(Buffer.from('short-lived outside credential'));
-  activeCredentialReads(encrypted);
-  mocks.captureUseWithExpiry.mockResolvedValue({accessRevision:7,validUntil});
-  let checks=0;
-  mocks.deadlines.mockImplementation(async(db:unknown)=>{expect(db).toBe(sourceClient);if(++checks===2)throw new Error('original grant deadline expired');});
-  const store=new OutsideCustodyStore({} as never,key),use=vi.fn(async()=> 'must not escape');
+it('keeps credential delivery closed before database reads until current policy verification exists',async()=>{
+  const {store,state,seedExecutableFixture}=candidateStore();
+  seedExecutableFixture();
+  const use=vi.fn(async()=> 'must not escape');
   await expect(store.withCredential(binding,{accountId},use)).rejects.toThrow();
-  expect(mocks.retainDeadline).toHaveBeenCalledWith(sourceClient,binding,validUntil);
-  expect(use).toHaveBeenCalledTimes(1);
-  expect(checks).toBe(2);
+  expect(use).not.toHaveBeenCalled();
+  expect(state().statements).toHaveLength(0);
+  expect(mocks.transaction).not.toHaveBeenCalled();
+  expect(state().revisions.get(1)?.ciphertext).toBeDefined();
 });
 
-it('allows a non-expiring grant while retaining the same-client no-deadline observation',async()=>{
-  const encrypted=encryptedFixture(Buffer.from('short-lived outside credential'));
-  activeCredentialReads(encrypted);
-  mocks.captureUseWithExpiry.mockResolvedValue({accessRevision:7,validUntil:null});
-  const store=new OutsideCustodyStore({} as never,key),use=vi.fn(async()=> 'used');
-  await expect(store.withCredential(binding,{accountId},use)).resolves.toBe('used');
-  expect(mocks.retainDeadline).toHaveBeenCalledWith(sourceClient,binding,null);
-  expect(mocks.deadlines).toHaveBeenCalledTimes(2);
-  expect(use).toHaveBeenCalledTimes(1);
-});
-
-it('wipes rollback plaintext when the asynchronous next-revision query fails',async()=>{
-  const secret=Buffer.from('rollback plaintext'),encrypted=encryptedFixture(secret);
-  let opened:Buffer|undefined;
-  const concat=Buffer.concat.bind(Buffer);
-  vi.spyOn(Buffer,'concat').mockImplementation((parts,totalLength)=>{
-    const result=concat(parts,totalLength);
-    if(result.equals(secret))opened=result;
-    return result;
-  });
-  mocks.query.mockImplementation(async(sql:string)=>{
-    if(sql.includes('count(*)::text AS count FROM outside_custody_operations'))return {rows:[{count:'0'}]};
-    if(sql.includes('count(*)::text AS count FROM outside_custody_revisions'))return {rows:[{count:'1'}]};
-    if(sql.includes('FROM outside_custody_operations'))return {rows:[]};
-    if(sql.includes('FROM outside_custody_accounts'))return {rows:[{account_id:accountId,owner_member_id:'member-1',resource_id:'worker',generation:'1',active_revision:'1',candidate_revision:null,consent_generation:'7',state:'active'}]};
-    if(sql.includes('FROM outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2'))return {rows:[{credential_revision:'1',generation:'1',consent_generation:'7',operation_id:originalOperationId,...encrypted}]};
-    if(sql.includes('max(credential_revision)'))throw new Error('simulated asynchronous revision query failure');
-    throw new Error(`Unexpected SQL in rollback cleanup test: ${sql}`);
-  });
-  const store=new OutsideCustodyStore({} as never,key);
-  await expect(store.rollback(binding,{accountId,operationId,expectedGeneration:1,sourceRevision:1,consentGeneration:7})).rejects.toThrow();
-  expect(opened).toBeDefined();
-  expect(opened).toEqual(Buffer.alloc(secret.length));
-  expect(mocks.query.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO outside_custody_revisions'))).toBe(false);
-  store.close();
+it('refuses rollback before reading or decrypting a test-owned executable revision',async()=>{
+  const {store,state,seedExecutableFixture}=candidateStore();
+  seedExecutableFixture();
+  await expect(store.rollback(binding,{accountId,operationId:applyOperationB,expectedGeneration:1,sourceRevision:1,consentGeneration:7})).rejects.toThrow();
+  expect(state().statements).toHaveLength(0);
+  expect(state().revisions.get(1)?.ciphertext).toBeDefined();
 });

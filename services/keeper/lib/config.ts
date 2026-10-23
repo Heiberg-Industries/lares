@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { Pool,type PoolConfig } from "pg";
 import { z } from "zod";
 import { lifecycleSchema } from "./lifecycle-config.js";
@@ -8,7 +8,13 @@ const absolute = z.string().refine(isAbsolute, "must be an absolute path");
 const databaseConnectionSchema = z.object({ host: z.string().min(1), port: z.number().int().min(1).max(65535), database: z.string().min(1), user: z.string().min(1), passwordFile: absolute }).strict();
 export type KeeperDatabaseConfig = z.infer<typeof databaseConnectionSchema>;
 export const financialCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-financial'),db:databaseConnectionSchema.extend({user:z.literal('lares_financial')})}).strict();
-export const outsideCustodyConfigSchema=z.object({db:databaseConnectionSchema.extend({user:z.literal('lares_outside_custody')}),keyFile:absolute}).strict();
+export const OUTSIDE_CUSTODY_KEY_FILE='/var/lib/lares/outside-custody/key' as const;
+export const outsideCustodyConfigSchema=z.object({
+  db:databaseConnectionSchema.extend({user:z.literal('lares_outside_custody')}),
+  keyFile:z.literal(OUTSIDE_CUSTODY_KEY_FILE),
+  keyFingerprint:z.string().regex(/^[a-f0-9]{64}$/),
+  routeConsumerName:z.string().regex(/^[a-z][a-z0-9-]{0,62}$/),
+}).strict();
 export const nativeCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-native'),reviewedPolicyFile:absolute.optional()}).strict();
 export const gatewayBudgetConfigSchema=z.object({serviceKeyFile:absolute}).strict();
 const configSchema = z.object({
@@ -39,7 +45,37 @@ const configSchema = z.object({
   if(value.budgetNative&&!value.budgetFinancial)context.addIssue({code:'custom',path:['budgetNative'],message:'requires prepared financial custody'});
   if(value.budgetFinancial&&(value.budgetFinancial.db.host!==value.db.host||value.budgetFinancial.db.port!==value.db.port||value.budgetFinancial.db.database!==value.db.database))context.addIssue({code:'custom',path:['budgetFinancial','db'],message:'must connect to the same engine database as db'});
   if(value.outsideCustody&&(value.outsideCustody.db.host!==value.db.host||value.outsideCustody.db.port!==value.db.port||value.outsideCustody.db.database!==value.db.database))context.addIssue({code:'custom',path:['outsideCustody','db'],message:'must connect to the same engine database as db'});
-  if(value.outsideCustody&&(value.outsideCustody.db.passwordFile===value.db.passwordFile||value.outsideCustody.keyFile===value.db.passwordFile||value.outsideCustody.keyFile===value.outsideCustody.db.passwordFile||value.outsideCustody.keyFile===value.budgetFinancial?.db.passwordFile))context.addIssue({code:'custom',path:['outsideCustody'],message:'requires distinct protected credential and key files'});
+  if(value.outsideCustody){
+    if(!value.lifecycle)context.addIssue({code:'custom',path:['outsideCustody'],message:'requires the root lifecycle and route policy'});
+    const consumers=value.lifecycle?.egress.legacyConsumers.filter(consumer=>consumer.name===value.outsideCustody!.routeConsumerName)??[];
+    if(consumers.length!==1)context.addIssue({code:'custom',path:['outsideCustody','routeConsumerName'],message:'must match exactly one root-selected egress consumer'});
+    const lifecycle=value.lifecycle;
+    const protectedFiles=[value.db.passwordFile,value.budgetFinancial?.db.passwordFile,value.budgetNative?.reviewedPolicyFile,
+      value.gatewayBudget?.serviceKeyFile,value.vaultConsoleSigningKeyFile,value.modelPurposeConsoleSigningKeyFile,
+      lifecycle?.adminDb.passwordFile,lifecycle?.runtime.passwordFile,lifecycle?.runtime.workflowPasswordFile,
+      lifecycle?.runtime.gatewayMasterKeyFile,...Object.values(lifecycle?.runtime.gatewayKeys??{}),lifecycle?.runtime.google?.tokenKeyFile,
+      ...Object.values(lifecycle?.runtime.google?.clients??{}).flatMap(client=>[client.clientIdFile,client.clientSecretFile]),
+      ...Object.values(lifecycle?.runtime.microsoft??{}),
+      ...Object.values(lifecycle?.bindings??{}).flatMap(binding=>Object.values(binding.secrets)),
+      ...Object.values(lifecycle?.defaultBindings??{}).flatMap(binding=>binding?Object.values(binding.secrets):[])].filter((file):file is string=>typeof file==='string');
+    const outsideFiles=[value.outsideCustody.keyFile,value.outsideCustody.db.passwordFile];
+    const physicalIdentity=(file:string):string|undefined=>{
+      try{const stat=statSync(file);return stat.isFile()?`${stat.dev}:${stat.ino}`:undefined;}
+      catch{return undefined;}
+    };
+    let aliases=false;
+    for(let index=0;index<outsideFiles.length;index++){
+      const outside=outsideFiles[index]!;
+      const comparisons=[...outsideFiles.slice(index+1),...protectedFiles];
+      for(const other of comparisons){
+        if(resolve(outside)===resolve(other)){aliases=true;break;}
+        const outsideIdentity=physicalIdentity(outside),otherIdentity=physicalIdentity(other);
+        if(outsideIdentity!==undefined&&outsideIdentity===otherIdentity){aliases=true;break;}
+      }
+      if(aliases)break;
+    }
+    if(aliases)context.addIssue({code:'custom',path:['outsideCustody'],message:'outside custody files must not alias each other or another protected credential file'});
+  }
   if(Boolean(value.modelPurposeConsoleSigningKeyFile)!==Boolean(value.modelPurposeRuntimeDir))context.addIssue({code:'custom',path:['modelPurposeRuntimeDir'],message:'requires the configured Console model-purpose signer'});
 });
 export type KeeperConfig = z.infer<typeof configSchema>;

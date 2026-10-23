@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createConnection, type Socket } from 'node:net';
 import { promisify } from "node:util";
 import { isIP } from "node:net";
 import type { KeeperConfig } from "./config.js";
@@ -27,6 +28,7 @@ export interface DockerBoundary {
     remove(name: string): Promise<void>;
     validateSquid(stage: string): Promise<void>;
     reloadSquid(): Promise<void>;
+    acknowledgeOutsideStage?(stage: string, sourceAddress: string, proxyUrl: string, deadlineAtMs: number): Promise<void>;
     firewall(stage: string, check: boolean): Promise<void>;
 }
 export interface OwnedDockerConfig {
@@ -48,6 +50,70 @@ export class NoOwnedContainerError extends Error {
     constructor() { super('Owned runtime inventory unavailable'); }
 }
 const wait = (milliseconds: number) => new Promise<void>(resolve => setTimeout(resolve, milliseconds));
+const ROUTE_STAGE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Keep the production predicate byte-for-byte aligned in behavior with the pinned-Squid raw
+ * response fixture: only SP/HTAB are optional whitespace, folded/control-bearing headers fail. */
+export function outsideRouteStageAcknowledged(data: Buffer, expectedStage: string): boolean {
+    if (!ROUTE_STAGE.test(expectedStage)) return false;
+    const headerEnd = data.indexOf(Buffer.from('\r\n\r\n'));
+    if (headerEnd < 0) return false;
+    const headerLines = data.subarray(0, headerEnd).toString('latin1').split('\r\n');
+    const statusMatch = (headerLines[0] ?? '').match(/^HTTP\/\d+\.\d+ ([0-9]{3})(?:[ \t]|$)/);
+    const values: string[] = [];
+    let malformed = false;
+    const trimOws = (value: string) => value.replace(/^[ \t]+|[ \t]+$/g, '');
+    const control = /[\x00-\x08\x0a-\x1f\x7f]/;
+    for (const line of headerLines.slice(1)) {
+        if (control.test(line)) malformed = true;
+        if (/^[ \t]/.test(line)) { malformed = true; continue; }
+        const colon = line.indexOf(':');
+        if (colon < 0) {
+            if (/^x-lares-route-stage(?:[: \t]|$)/i.test(trimOws(line))) malformed = true;
+            continue;
+        }
+        const rawName = line.slice(0, colon), name = trimOws(rawName);
+        if (/^x-lares-route-stage$/i.test(name)) {
+            if (rawName !== name) malformed = true;
+            const value = line.slice(colon + 1);
+            if (control.test(value)) malformed = true;
+            values.push(trimOws(value));
+        } else if (/^x-lares-route-stage(?:[ \t]|$)/i.test(name)) malformed = true;
+    }
+    return statusMatch?.[1] === '403' && !data.includes(Buffer.from('CI_PROXY_DESTINATION_OK')) && !malformed &&
+        values.length === 1 && values[0] === expectedStage;
+}
+/** A bounded, deliberately denied CONNECT proves the configured proxy has loaded one stage.
+ * The TCP socket is pinned to the root-selected local source before it can send a request. */
+export async function acknowledgeOutsideSquidStage(stage: string, sourceAddress: string, proxyUrl: string,
+  deadlineAtMs: number, connect = createConnection): Promise<void> {
+    if (!ROUTE_STAGE.test(stage) || isIP(sourceAddress) !== 4 ||
+        !Number.isFinite(deadlineAtMs) || deadlineAtMs <= Date.now()) throw new Error('keeper: outside route acknowledgement unavailable');
+    const proxy = new URL(proxyUrl);
+    if (proxy.protocol !== 'http:' || proxy.hostname !== 'lares-egress-proxy' || proxy.port !== '8888' || proxy.username || proxy.password || proxy.pathname !== '/' || proxy.search || proxy.hash)
+        throw new Error('keeper: outside route acknowledgement unavailable');
+    const host = `lares-route-${stage}.invalid`;
+    const socket = connect({ host: proxy.hostname, port: Number(proxy.port), localAddress: sourceAddress, family: 4 });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await new Promise<void>((resolve, reject) => {
+            let buffer = Buffer.alloc(0), settled = false;
+            const finish = (error?: Error) => { if (settled) return; settled = true; error ? reject(error) : resolve(); };
+            timeout = setTimeout(() => { socket.destroy(); finish(new Error('timeout')); }, Math.max(1, deadlineAtMs - Date.now()));
+            socket.once('error', () => finish(new Error('unavailable')));
+            socket.once('connect', () => {
+                if (socket.localAddress !== sourceAddress) { socket.destroy(); finish(new Error('source')); return; }
+                socket.write(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\nProxy-Connection: close\r\n\r\n`);
+            });
+            socket.on('data', (chunk: Buffer) => {
+                buffer = Buffer.concat([buffer, chunk]);
+                if (buffer.length > 8192) { finish(new Error('oversized')); return; }
+                if (buffer.indexOf('\r\n\r\n') < 0) return;
+            });
+            socket.once('end', () => finish(outsideRouteStageAcknowledged(buffer, stage) ? undefined : new Error('mismatch')));
+        });
+    } catch { throw new Error('keeper: outside route acknowledgement unavailable'); }
+    finally { if (timeout) clearTimeout(timeout); if (!socket.destroyed) socket.destroy(); }
+}
 function privateIpv4(address: string): boolean {
     if (isIP(address) !== 4) return false;
     const octets = address.split('.').map(Number);
@@ -132,6 +198,9 @@ export function ownedDocker(c: OwnedDockerConfig, request: typeof fetch = global
         },
         validateSquid: async (stage) => { await run(['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'SETUID', '--cap-add', 'SETGID', '--security-opt', 'no-new-privileges:true', '--mount', `type=bind,src=${c.egressDir},dst=/config,readonly`, '--entrypoint', 'squid', c.squidImage, '-k', 'parse', '-f', `/config/${stageFile(stage)}.squid`]); },
         reloadSquid: async () => { await run(['exec', c.proxyContainer, 'squid', '-k', 'reconfigure', '-f', '/config/squid.conf']); },
+        acknowledgeOutsideStage: async (stage, sourceAddress, proxyUrl, deadlineAtMs) => {
+            await acknowledgeOutsideSquidStage(stage, sourceAddress, proxyUrl, deadlineAtMs);
+        },
         // Host network is essential: an ordinary keeper network namespace does not own Docker's forward chain.
         firewall: async (stage, check) => { await run(['run', '--rm', '--network', 'host', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--security-opt', 'no-new-privileges:true', '--mount', `type=bind,src=${c.egressDir},dst=/config,readonly`, '--entrypoint', 'nft', c.firewallImage, ...(check ? ['--check'] : []), '-f', `/config/${stageFile(stage)}.nft`]); },
     };

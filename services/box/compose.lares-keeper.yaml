@@ -25,9 +25,9 @@ services:
     entrypoint: [/usr/local/lib/lares/maintenance-admission-v1, /run/lares-maintenance/admission, "${LARES_MAINTENANCE_INSTALLATION_ID:?validated installation id required}", "${LARES_MAINTENANCE_EPOCH:?validated maintenance epoch required}", --]
     command: [/app/services/keeper/node_modules/.bin/tsx, /app/services/keeper/bin/keeper.ts, serve]
     volumes:
-      # Dedicated host-only state namespace: never under ordinary /etc or /srv backups.
-      # The custody child is created ONLY by the explicit fresh-install ceremony.
-      - /var/lib/lares:/var/lib/lares
+      # Keep the existing private-state mount and writable scope. The installer derives its
+      # source from the normalized prefix while Keeper retains the fixed in-container path.
+      - ${LARES_PRIVATE_STATE_HOST_DIR:-/var/lib/lares}:/var/lib/lares
       - /var/run/docker.sock:/var/run/docker.sock
       - ${LARES_ROOT:?absolute keeper-owned root}:${LARES_ROOT:?absolute keeper-owned root}
       - ${LARES_KEEPER_CONFIG:?absolute config file}:/etc/lares/keeper.json:ro
@@ -43,6 +43,12 @@ services:
       # separate host directory and is never included here or passed through keeper.json.
       - ${LARES_DATABASE_PASSWORD_FILE:?app database password file required}:${LARES_DATABASE_PASSWORD_FILE:?app database password file required}:ro
       - ${LARES_FINANCIAL_DATABASE_PASSWORD_FILE:?financial database password file required}:${LARES_FINANCIAL_DATABASE_PASSWORD_FILE:?financial database password file required}:ro
+      - type: bind
+        source: ${LARES_OUTSIDE_CUSTODY_PASSWORD_FILE:?outside custody database password file required}
+        target: ${LARES_OUTSIDE_CUSTODY_PASSWORD_FILE:?outside custody database password file required}
+        read_only: true
+        bind:
+          create_host_path: false
       - ${LARES_WORKFLOW_PROVISIONER_PASSWORD_FILE:?workflow provisioner password file required}:${LARES_WORKFLOW_PROVISIONER_PASSWORD_FILE:?workflow provisioner password file required}:ro
       - ${LARES_WORKFLOW_RUNTIME_PASSWORD_FILE:?workflow runtime password file required}:${LARES_WORKFLOW_RUNTIME_PASSWORD_FILE:?workflow runtime password file required}:ro
       - ${LARES_GATEWAY_MASTER_KEY_FILE:?gateway master key file required}:${LARES_GATEWAY_MASTER_KEY_FILE:?gateway master key file required}:ro
@@ -59,6 +65,14 @@ services:
       - type: bind
         source: ${LARES_NATIVE_POLICY_FILE:-/dev/null}
         target: ${LARES_NATIVE_POLICY_TARGET:-/etc/lares/native-policy-unused.json}
+        read_only: true
+        bind:
+          create_host_path: false
+      # The dedicated outside credential key is visible only as the exact read-only file;
+      # create_host_path:false prevents compose from manufacturing an absent source.
+      - type: bind
+        source: ${LARES_OUTSIDE_CUSTODY_KEY_FILE:-/dev/null}
+        target: ${LARES_OUTSIDE_CUSTODY_KEY_TARGET:-/run/lares-unused-outside-key}
         read_only: true
         bind:
           create_host_path: false

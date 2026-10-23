@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -9,6 +9,18 @@ const fixture = () => {
   dirs.push(dir);
   return { dir, file: join(dir, "keeper.json"), config: { mode: "overlay", project: "lares", dir, files: ["compose.yaml"], agentsDir: dir, retiredDir: dir, secretsDir: dir, rolesDir: dir, templatesDir: dir, backupDir: dir, db: { host: "db", port: 5432, database: "lares_state", user: "lares_app", passwordFile: join(dir, "password") } } };
 };
+function outsideLifecycle(f:ReturnType<typeof fixture>,gatewayKeyFile:string){
+  const image='example/runtime@sha256:'+'a'.repeat(64);
+  return {network:'fixture_default',subnet:'172.18.0.0/24',reservedAddresses:[],
+    composeFile:join(f.dir,'compose.yaml'),egressDir:f.dir,imageByRole:{'chief-of-staff':image,creative:image},
+    proxyContainer:'lares-proxy',squidImage:image,firewallImage:image,
+    adminDb:{...f.config.db,database:'postgres',user:'lares_workflow_provisioner',passwordFile:join(f.dir,'admin-password')},
+    workflowTemplate:'template',workflowOwner:'lares_workflow_owner',installationPrepared:true,
+    maintenanceAdmission:{hostDirectory:join(f.dir,'maintenance-admission'),installationId:'11111111-1111-4111-8111-111111111111',epoch:7},
+    runtime:{databaseUrl:'postgres://lares_app@db/lares_state',workflowServer:'postgres://lares_workflow@db/',gatewayUrl:'https://gateway.example',
+      proxyUrl:'http://proxy:8888',passwordFile:f.config.db.passwordFile,workflowPasswordFile:join(f.dir,'workflow-password'),gatewayKeys:{worker:gatewayKeyFile}},
+    egress:{endpoints:{},legacyConsumers:[{name:'outside-bridge',address:'172.18.0.23',hosts:['api.example.com']}],internalNetworks:['172.18.0.0/24'],directDestinations:[],infrastructureHosts:[]}};
+}
 afterEach(() => {
   for (const dir of dirs.splice(0))
     rmSync(dir, { recursive: true, force: true });
@@ -162,24 +174,34 @@ it('never creates a financial connection from the ordinary app login',async()=>{
   await financial?.end();
 });
 it('keeps outside custody disabled unless its exact role, same database, and distinct protected files are configured',async()=>{
-  const f=fixture(),outsideCustody={db:{...f.config.db,user:'lares_outside_custody' as const,passwordFile:join(f.dir,'outside-password')},keyFile:join(f.dir,'outside-key')};
+  const f=fixture(),outsideCustody={db:{...f.config.db,user:'lares_outside_custody' as const,passwordFile:join(f.dir,'outside-password')},
+    keyFile:'/var/lib/lares/outside-custody/key' as const,keyFingerprint:'a'.repeat(64),routeConsumerName:'outside-bridge'};
   expect(keeperOutsideCustodyPool({})).toBeUndefined();
   writeFileSync(f.file,JSON.stringify({...f.config,outsideCustody}));
-  expect(loadKeeperConfig(f.file).outsideCustody).toEqual(outsideCustody);
+  expect(()=>loadKeeperConfig(f.file)).toThrow('outsideCustody: requires the root lifecycle and route policy');
   writeFileSync(outsideCustody.db.passwordFile,'outside-secret');
   const pool=keeperOutsideCustodyPool({outsideCustody});
   expect(pool?.options.user).toBe('lares_outside_custody');
   expect(pool?.options.database).toBe(f.config.db.database);
   await pool?.end();
   for(const invalid of [
-    {db:{...outsideCustody.db,database:'another'},keyFile:outsideCustody.keyFile},
-    {db:{...outsideCustody.db,passwordFile:f.config.db.passwordFile},keyFile:outsideCustody.keyFile},
-    {db:outsideCustody.db,keyFile:outsideCustody.db.passwordFile},
-    {db:{...outsideCustody.db,user:'lares_app'},keyFile:outsideCustody.keyFile},
+    {...outsideCustody,db:{...outsideCustody.db,database:'another'}},
+    {...outsideCustody,db:{...outsideCustody.db,passwordFile:f.config.db.passwordFile}},
+    {...outsideCustody,keyFile:outsideCustody.db.passwordFile},
+    {...outsideCustody,db:{...outsideCustody.db,user:'lares_app'}},
   ]){
     writeFileSync(f.file,JSON.stringify({...f.config,outsideCustody:invalid}));
     expect(()=>loadKeeperConfig(f.file)).toThrow('outsideCustody');
   }
+});
+it('rejects physical aliases between outside custody files and existing Keeper credentials',()=>{
+  const f=fixture(),gatewayKeyFile=join(f.dir,'gateway-key'),outsidePassword=join(f.dir,'outside-password');
+  writeFileSync(gatewayKeyFile,'test-only gateway key');
+  symlinkSync(gatewayKeyFile,outsidePassword);
+  const outsideCustody={db:{...f.config.db,user:'lares_outside_custody',passwordFile:outsidePassword},
+    keyFile:'/var/lib/lares/outside-custody/key',keyFingerprint:'a'.repeat(64),routeConsumerName:'outside-bridge'};
+  writeFileSync(f.file,JSON.stringify({...f.config,outsideCustody,lifecycle:outsideLifecycle(f,gatewayKeyFile)}));
+  expect(()=>loadKeeperConfig(f.file)).toThrow('outside custody files must not alias');
 });
 it('requires prepared financial custody for the fixed native custody path',()=>{
   const f=fixture(),budgetNative={directory:'/var/lib/lares/budget-native'};

@@ -171,7 +171,11 @@ const OUTSIDE_CUSTODY_UPDATE_COLUMNS: Readonly<Record<string, readonly string[]>
   resource_grants: ["created_at"],
   agent_resources: ["updated_at"],
   console_session_bindings: ["created_at", "revoked_at"],
+  member_sessions: ["created_at"],
   outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at"],
+};
+const OUTSIDE_CUSTODY_SELECT_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  member_sessions: ["member_id", "token_hash", "expires_at", "revoked_at"],
 };
 const OUTSIDE_CUSTODY_AUTHORITY_TABLES = [
   "orgs", "users", "org_member_policy", "agent_definitions", "agent_access", "resource_grants",
@@ -495,12 +499,13 @@ async function requireManagedAcls(client: PoolClient, database: string, custody 
     for (const column of columnNames) {
       const allowed = (APP_FINANCIAL_COLUMNS[table] ?? []).includes(column.name);
       const financialCustodySelect = custody && (FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS[table] ?? []).includes(column.name);
+      const custodySelect = custody && (OUTSIDE_CUSTODY_SELECT_COLUMNS[table] ?? []).includes(column.name);
       const custodyUpdate = custody && (OUTSIDE_CUSTODY_UPDATE_COLUMNS[table] ?? []).includes(column.name);
       const columnAcl = `SELECT COALESCE(r.rolname,'PUBLIC') AS grantee, x.privilege_type AS privilege, x.is_grantable AS grantable
         FROM pg_attribute a CROSS JOIN LATERAL aclexplode(NULLIF(a.attacl,'{}'::aclitem[])) x
         LEFT JOIN pg_roles r ON r.oid=x.grantee JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname=$1 AND c.relname=$2 AND a.attname=$3`;
-      await requireAcl(client,columnAcl,[SCHEMA,table,column.name],[...(allowed?[expectedAclKey(FINANCIAL,"UPDATE")]:[]),...(financialCustodySelect?[expectedAclKey(FINANCIAL,"SELECT")]:[]),...(custodyUpdate?[expectedAclKey(OUTSIDE_CUSTODY,"UPDATE")]:[])]);
+      await requireAcl(client,columnAcl,[SCHEMA,table,column.name],[...(allowed?[expectedAclKey(FINANCIAL,"UPDATE")]:[]),...(financialCustodySelect?[expectedAclKey(FINANCIAL,"SELECT")]:[]),...(custodySelect?[expectedAclKey(OUTSIDE_CUSTODY,"SELECT")]:[]),...(custodyUpdate?[expectedAclKey(OUTSIDE_CUSTODY,"UPDATE")]:[])]);
     }
   }
 
@@ -573,6 +578,9 @@ async function applyGrants(client: PoolClient): Promise<void> {
   }
   for (const table of OUTSIDE_CUSTODY_AUTHORITY_TABLES) {
     await client.query(`GRANT SELECT ON TABLE ${qname(table)} TO ${qid(OUTSIDE_CUSTODY)}`);
+  }
+  for (const [table, columns] of Object.entries(OUTSIDE_CUSTODY_SELECT_COLUMNS)) {
+    await client.query(`GRANT SELECT (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(OUTSIDE_CUSTODY)}`);
   }
   for (const [table, columns] of Object.entries(OUTSIDE_CUSTODY_UPDATE_COLUMNS)) {
     await client.query(`GRANT UPDATE (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(OUTSIDE_CUSTODY)}`);

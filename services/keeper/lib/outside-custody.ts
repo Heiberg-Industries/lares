@@ -2,16 +2,18 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { closeSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { constants } from "node:fs";
+import { isIP } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import type { PoolClient } from "pg";
 import type { SourceBinding, SourcePool } from "@lares/agent-kit/console-source-transaction";
-import { checkConsoleSourceDeadlines, consoleSourceTransaction, retainConsoleSourceDeadline, SourceAuthorityUnavailable } from "@lares/agent-kit/console-source-transaction";
+import { checkConsoleSourceDeadlines, consoleSourceTransaction, gateConsoleOrganisation, requireSourceTransactionOwner, retainConsoleSourceDeadline, retainSourceTransactionDeadline, SourceAuthorityUnavailable, type SourceDatabase } from "@lares/agent-kit/console-source-transaction";
 import { requireConsoleSessionBinding } from "@lares/agent-kit/console-turn-authority";
 import { PgGrantStore, type GrantDatabase } from "@lares/agent-kit/grant-store";
 import { z } from "zod";
 
 const uuid = z.string().uuid();
 const MAX_CREDENTIAL_BYTES = 4096;
+const MAX_PRIVATE_RESULT_BYTES = 64 * 1024;
 const REFUSED = "Outside credential is not available";
 const REQUEST_REFUSED = "Outside credential change could not be confirmed";
 const coordinateSchema = z.strictObject({
@@ -24,38 +26,81 @@ const coordinateSchema = z.strictObject({
   operationId: uuid,
 });
 type Coordinates = z.infer<typeof coordinateSchema>;
+const boundCoordinateSchema = coordinateSchema.extend({
+  connectionName: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
+  revisionPurpose: z.enum(['discovery','executable']),
+  policyHash: z.string().regex(/^[a-f0-9]{64}$/),
+});
+type BoundCoordinates = z.infer<typeof boundCoordinateSchema>;
 type Head = {
   account_id: string;
   owner_member_id: string;
   resource_id: string;
+  connection_name: string;
   generation: string;
   active_revision: string | null;
   candidate_revision: string | null;
   consent_generation: string;
   state: "active" | "revoked";
 };
-type Revision = {
-  credential_revision: string;
-  generation: string;
-  consent_generation: string;
-  operation_id: string;
-  nonce: Buffer;
-  ciphertext: Buffer;
-};
-export type OutsideOperationKind = "stage" | "apply" | "rollback" | "revoke";
+export type OutsideOperationKind = "stage" | "apply" | "rollback" | "revoke" | "discover";
 export type OutsideOperationResult = {
   operationId: string;
   accountId: string;
   kind: OutsideOperationKind;
-  outcome: "staged" | "applied" | "rolled-back" | "revoked";
+  outcome: "staged" | "applied" | "rolled-back" | "revoked" | "claimed" | "completed" | "unknown";
   generation: number;
   credentialRevision: number | null;
+};
+type OutsideDiscoveryClaim = {
+  requestId: string; operationId: string; accountId: string; agentName: string; connectionName: string;
+  destination: string; policyHash: string; definitionHash: string; accessRevision: number;
 };
 export class OutsideCustodyRecoveryRequired extends Error {
   constructor(readonly operationId: string) { super(REQUEST_REFUSED); this.name = "OutsideCustodyRecoveryRequired"; }
 }
 const denied = (): never => { throw new Error(REFUSED); };
 const requestDenied = (): never => { throw new Error(REQUEST_REFUSED); };
+
+/** Authenticate a human cookie only inside the outside role's owned transaction. The first
+ * lookup discovers the organization gate; the locked lookup below is the authority check. */
+export async function lockOutsideHumanSession(db: SourceDatabase, sessionToken: string): Promise<{ memberId: string }> {
+  requireSourceTransactionOwner(db);
+  if (typeof sessionToken !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(sessionToken)) return denied();
+  const tokenHash = createHash('sha256').update(sessionToken).digest('hex');
+  const discovered = await db.query(`SELECT member_id FROM member_sessions
+    WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, [tokenHash]);
+  const memberId = discovered.rows[0]?.member_id as unknown;
+  if (discovered.rows.length !== 1 || typeof memberId !== 'string' || !memberId) return denied();
+  await gateConsoleOrganisation(db, memberId, undefined, { lock: 'update' });
+  const current = await db.query(`SELECT s.member_id,
+      isfinite(s.expires_at) AS finite,
+      CASE WHEN isfinite(s.expires_at) THEN to_char(s.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END AS deadline
+    FROM member_sessions s JOIN users u ON u.id=s.member_id
+    WHERE s.token_hash=$1 AND s.member_id=$2 AND s.revoked_at IS NULL
+      AND s.expires_at>clock_timestamp() AND u.status='active' AND u.org_id IS NOT NULL
+    FOR UPDATE OF s`, [tokenHash, memberId]);
+  const row = current.rows[0] as {member_id?:unknown;finite?:unknown;deadline?:unknown}|undefined;
+  if (current.rows.length !== 1 || row?.member_id !== memberId || row.finite !== true ||
+      typeof row.deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(row.deadline)) return denied();
+  retainSourceTransactionDeadline(db, row.deadline);
+  await checkConsoleSourceDeadlines(db);
+  return { memberId };
+}
+
+/** Capture current evaluator output only after the caller has locked the human session,
+ * and retain the winning grant's exact SQL expiry on that same owned transaction. */
+export async function captureOutsideHumanUse(db: SourceDatabase, memberId: string, agent: string, connectionName: string,
+  expected?: { definitionHash: string; accessRevision: number }): Promise<import('@lares/agent-kit/grant-store').OutsideUseCapture> {
+  requireSourceTransactionOwner(db);
+  const capture = await new PgGrantStore().captureOutsideUse(memberId, agent, {
+    db: db as GrantDatabase, connectionName, ...(expected ? { expected } : {}),
+  });
+  if (!capture) return denied();
+  if (capture.grant.validUntil !== null) retainSourceTransactionDeadline(db, capture.grant.validUntil);
+  await checkConsoleSourceDeadlines(db);
+  return capture;
+}
 /** Load exactly one protected 256-bit key without following a symlink or echoing its path. */
 export function loadOutsideCustodyKey(path:string):Buffer{
   let descriptor:number|undefined;
@@ -81,6 +126,14 @@ export function loadOutsideCustodyKey(path:string):Buffer{
     return key;
   }catch{throw new Error(REFUSED);}finally{if(descriptor!==undefined)try{closeSync(descriptor);}catch{}}
 }
+/** Validate the prepared identity commitment before any custody database connection is opened. */
+export function loadBoundOutsideCustodyKey(path: string, expectedFingerprint: string): Buffer {
+  if (typeof expectedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(expectedFingerprint)) return denied();
+  const key = loadOutsideCustodyKey(path);
+  const actual = createHash('sha256').update(key).digest('hex');
+  if (actual !== expectedFingerprint) { key.fill(0); return denied(); }
+  return key;
+}
 const sameBuffer = (left: Buffer, right: Buffer) => left.length === right.length && left.equals(right);
 const number = (value: string | number): number => {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -94,24 +147,49 @@ function aad(input: Coordinates): Buffer {
     c.generation, c.credentialRevision, c.consentGeneration, c.operationId,
   ]));
 }
-function seal(key: Buffer, plaintext: Buffer, coordinates: Coordinates): { nonce: Buffer; ciphertext: Buffer } {
+function boundAad(input: BoundCoordinates): Buffer {
+  const c = boundCoordinateSchema.parse(input);
+  return Buffer.from(JSON.stringify(["lares-outside-custody-bound-v1", aad({
+    ownerMemberId:c.ownerMemberId,accountId:c.accountId,resourceId:c.resourceId,generation:c.generation,
+    credentialRevision:c.credentialRevision,consentGeneration:c.consentGeneration,operationId:c.operationId,
+  }).toString('utf8'),c.connectionName,c.revisionPurpose,c.policyHash]));
+}
+function sealWithAad(key: Buffer, plaintext: Buffer, associated: Buffer): { nonce: Buffer; ciphertext: Buffer } {
   if (!Buffer.isBuffer(key) || key.length !== 32 || !Buffer.isBuffer(plaintext) || plaintext.length < 1 || plaintext.length > MAX_CREDENTIAL_BYTES) return denied();
   const nonce = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, nonce);
-  cipher.setAAD(aad(coordinates));
+  cipher.setAAD(associated);
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
   return { nonce, ciphertext };
 }
-function open(key: Buffer, nonce: Buffer, ciphertext: Buffer, coordinates: Coordinates): Buffer {
-  try {
-    if (!Buffer.isBuffer(key) || key.length !== 32 || nonce.length !== 12 || ciphertext.length < 17 || ciphertext.length > MAX_CREDENTIAL_BYTES + 16) return denied();
-    const decipher = createDecipheriv("aes-256-gcm", key, nonce);
-    decipher.setAAD(aad(coordinates));
-    decipher.setAuthTag(ciphertext.subarray(-16));
-    const plaintext = Buffer.concat([decipher.update(ciphertext.subarray(0, -16)), decipher.final()]);
-    if (plaintext.length < 1 || plaintext.length > MAX_CREDENTIAL_BYTES) { plaintext.fill(0); return denied(); }
-    return plaintext;
-  } catch { return denied(); }
+function sealBound(key:Buffer,plaintext:Buffer,coordinates:BoundCoordinates){return sealWithAad(key,plaintext,boundAad(coordinates));}
+function sealPrivateResult(key:Buffer,plain:Buffer,requestId:string,accountId:string,ownerMemberId:string,policyHash:string):{nonce:Buffer;ciphertext:Buffer}{
+  if(plain.length<1||plain.length>MAX_PRIVATE_RESULT_BYTES)return denied();
+  const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce);
+  cipher.setAAD(Buffer.from(canonicalJson(['lares-outside-discovery-result-v1',requestId,accountId,ownerMemberId,policyHash])));
+  return {nonce,ciphertext:Buffer.concat([cipher.update(plain),cipher.final(),cipher.getAuthTag()])};
+}
+function openPrivateResult(key:Buffer,nonce:Buffer,ciphertext:Buffer,requestId:string,accountId:string,ownerMemberId:string,policyHash:string):Buffer{
+  try{if(nonce.length!==12||ciphertext.length<17||ciphertext.length>MAX_PRIVATE_RESULT_BYTES+16)return denied();
+    const decipher=createDecipheriv('aes-256-gcm',key,nonce);
+    decipher.setAAD(Buffer.from(canonicalJson(['lares-outside-discovery-result-v1',requestId,accountId,ownerMemberId,policyHash])));
+    decipher.setAuthTag(ciphertext.subarray(-16));return Buffer.concat([decipher.update(ciphertext.subarray(0,-16)),decipher.final()]);
+  }catch{return denied();}
+}
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (typeof value === 'object') {
+    const entries=Object.entries(value as Record<string,unknown>).sort(([a],[b])=>a.localeCompare(b));
+    return `{${entries.map(([key,child])=>`${JSON.stringify(key)}:${canonicalJson(child)}`).join(',')}}`;
+  }
+  return denied();
+}
+export function outsideDiscoveryPolicyHash(capture: import('@lares/agent-kit/grant-store').OutsideUseCapture,
+  route: {policyHash:string;sourceAddress:string;proxyUrl:string}, purpose: string): string {
+  if(typeof purpose!=='string'||purpose.trim().length<1||purpose.length>200||purpose.trim()!==purpose||
+      !/^[a-f0-9]{64}$/.test(route.policyHash)||isIP(route.sourceAddress)!==4||route.proxyUrl!=='http://lares-egress-proxy:8888/') return denied();
+  return createHash('sha256').update(canonicalJson({version:1,purpose,capture,route})).digest('hex');
 }
 function requestHash(kind: OutsideOperationKind, accountId: string, memberId:string, resourceId:string, expectedGeneration: number,
   revision: number | null, callerConsentGeneration:number|null, authorityRevision:number, secret?: Buffer): Buffer {
@@ -129,6 +207,8 @@ function validBinding(binding: SourceBinding): void {
 /** Keeper-only use seam. The supplied transaction is owned by this store, not by the callback. */
 export class OutsideCustodyStore {
   private readonly key:Buffer;
+  /** Object identity is minted only after the claim transaction returns with acknowledged COMMIT. */
+  private readonly acknowledgedDiscoveryClaims = new WeakSet<object>();
   private lifecycle:"open"|"closing"|"closed"="open";
   private activeOperations=0;
   constructor(private readonly pool: SourcePool, key: Buffer) {
@@ -142,6 +222,130 @@ export class OutsideCustodyStore {
   }
   private dispose():void{if(this.lifecycle==="closed")return;this.key.fill(0);this.lifecycle="closed";}
   close():void{if(this.lifecycle!=="open")return;this.lifecycle="closing";if(this.activeOperations===0)this.dispose();}
+
+  /** Keep the member cookie, current organization and retained SQL-clock expiry on the
+   * same outside-role client used by the caller's later authority checks and writes. */
+  async withHumanSession<T>(sessionToken: string, work: (db: PoolClient, memberId: string) => Promise<T>, options: { deadlineAtMs: number }): Promise<T> {
+    const release = this.beginOperation(requestDenied);
+    try {
+      return await consoleSourceTransaction(this.pool, async source => {
+        this.assertOpen(requestDenied);
+        const db = source as PoolClient;
+        const { memberId } = await lockOutsideHumanSession(db, sessionToken);
+        this.assertOpen(requestDenied);
+        const result = await work(db, memberId);
+        this.assertOpen(requestDenied);
+        await checkConsoleSourceDeadlines(db);
+        return result;
+      }, undefined, options);
+    } catch (error) {
+      if (error instanceof SourceAuthorityUnavailable || error instanceof OutsideCustodyRecoveryRequired) throw error;
+      return requestDenied();
+    } finally { release(); }
+  }
+
+  async previewDiscovery(sessionToken:string,input:{agentName:string;connectionName:string},options:{deadlineAtMs:number}):Promise<import('@lares/agent-kit/grant-store').OutsideUseCapture> {
+    return this.withHumanSession(sessionToken,async(db,memberId)=>{
+      return captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName);
+    },options);
+  }
+
+  /** Persist a spent discovery-only claim. It returns metadata, never a reusable bearer capability. */
+  private async claimDiscovery(sessionToken:string,input:{requestId:string;operationId:string;accountId:string;agentName:string;connectionName:string;
+    expectedDefinitionHash:string;expectedAccessRevision:number;expectedPolicyHash:string;purpose:string;route:{policyHash:string;sourceAddress:string;proxyUrl:string};credential:Buffer},
+    options:{deadlineAtMs:number}):Promise<OutsideDiscoveryClaim>{
+    const release=this.beginOperation(requestDenied);
+    try{
+      const requestId=uuid.parse(input.requestId),operationId=uuid.parse(input.operationId),accountId=uuid.parse(input.accountId);
+      if(!Buffer.isBuffer(input.credential)||input.credential.length<1||input.credential.length>MAX_CREDENTIAL_BYTES||
+          !/^[a-f0-9]{64}$/.test(input.expectedDefinitionHash)||!Number.isSafeInteger(input.expectedAccessRevision)||input.expectedAccessRevision<1||
+          !/^[a-f0-9]{64}$/.test(input.expectedPolicyHash))return requestDenied();
+      const result=await this.withHumanSession(sessionToken,async(db,memberId)=>{
+        this.assertOpen(requestDenied);
+        const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName,{definitionHash:input.expectedDefinitionHash,accessRevision:input.expectedAccessRevision});
+        if(capture.actor.memberId!==memberId||capture.agent.name!==input.agentName||capture.outside.connection.name!==input.connectionName)return requestDenied();
+        const destination=capture.outside.connection.url;
+        const policyHash=outsideDiscoveryPolicyHash(capture,input.route,input.purpose);
+        if(policyHash!==input.expectedPolicyHash)return requestDenied();
+        const policy={version:1,purpose:input.purpose,capture,endpoint:destination,route:input.route};
+        const policyJson=canonicalJson(policy);
+        if(Buffer.byteLength(policyJson)>8192)return requestDenied();
+        const policyHashBytes=Buffer.from(policyHash,'hex');
+        const existing=await db.query<{account_id:string}>(`SELECT account_id FROM outside_custody_accounts
+          WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 FOR UPDATE`,[memberId,input.agentName,input.connectionName]);
+        if(existing.rows.length!==0)return requestDenied();
+        const prior=await db.query<{operation_id:string}>(`SELECT operation_id FROM outside_custody_operations WHERE request_id=$1`,[requestId]);
+        if(prior.rows.length!==0)return requestDenied();
+        await this.capacity(db,accountId,'discover',true);
+        const created=await db.query(`INSERT INTO outside_custody_accounts
+          (account_id,owner_member_id,resource_id,connection_name,generation,consent_generation,state)
+          VALUES($1,$2,$3,$4,1,$5,'active')`,[accountId,memberId,input.agentName,input.connectionName,capture.agent.accessRevision]);
+        if(created.rowCount!==1)return requestDenied();
+        const coordinates:BoundCoordinates={ownerMemberId:memberId,accountId,resourceId:input.agentName,connectionName:input.connectionName,
+          generation:1,credentialRevision:1,consentGeneration:capture.agent.accessRevision,operationId,revisionPurpose:'discovery',policyHash};
+        const encrypted=sealBound(this.key,input.credential,coordinates);
+        await db.query(`INSERT INTO outside_custody_revisions
+          (account_id,owner_member_id,credential_revision,generation,consent_generation,revision_purpose,policy_json,policy_hash,operation_id,nonce,ciphertext)
+          VALUES($1,$2,1,1,$3,'discovery',$4::jsonb,$5,$6,$7,$8)`,[accountId,memberId,capture.agent.accessRevision,policyJson,policyHashBytes,operationId,encrypted.nonce,encrypted.ciphertext]);
+        await db.query(`INSERT INTO outside_custody_operations
+          (operation_id,account_id,owner_member_id,operation_kind,request_id,event_phase,request_hash,expected_generation,result_generation,credential_revision,outcome)
+          VALUES($1,$2,$3,'discover',$4,'claim',$5,0,1,1,'claimed')`,[operationId,accountId,memberId,requestId,
+          createHash('sha256').update(canonicalJson({requestId,operationId,accountId,memberId,agentName:input.agentName,connectionName:input.connectionName,policyHash,credentialHash:createHash('sha256').update(input.credential).digest('hex')})).digest()]);
+        await checkConsoleSourceDeadlines(db);
+        return {requestId,operationId,accountId,agentName:input.agentName,connectionName:input.connectionName,destination,policyHash,
+          definitionHash:capture.agent.definitionHash,accessRevision:capture.agent.accessRevision};
+      },options);
+      const receipt=Object.freeze(result);
+      this.acknowledgedDiscoveryClaims.add(receipt);
+      return receipt;
+    }catch(error){
+      if(error instanceof OutsideCustodyRecoveryRequired)throw error;
+      if(error instanceof SourceAuthorityUnavailable)throw new OutsideCustodyRecoveryRequired(input.operationId);
+      return requestDenied();
+    }finally{input.credential.fill(0);release();}
+  }
+
+  /** Re-read one private discovery result only for the same live member, grant, and connection. */
+  async inspectDiscovery(sessionToken:string,input:{requestId:string;agentName:string;connectionName:string;
+    expectedDefinitionHash:string;expectedAccessRevision:number;expectedPolicyHash:string;purpose:string;
+    route:{policyHash:string;sourceAddress:string;proxyUrl:string}},options:{deadlineAtMs:number}):Promise<{status:'pending'|'completed'|'unknown';result?:unknown}>{
+    const requestId=uuid.parse(input.requestId);
+    if(!/^[a-f0-9]{64}$/.test(input.expectedDefinitionHash)||!Number.isSafeInteger(input.expectedAccessRevision)||input.expectedAccessRevision<1||
+      !/^[a-f0-9]{64}$/.test(input.expectedPolicyHash))return requestDenied();
+    return this.withHumanSession(sessionToken,async(db,memberId)=>{
+      const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName,
+        {definitionHash:input.expectedDefinitionHash,accessRevision:input.expectedAccessRevision});
+      if(capture.actor.memberId!==memberId||capture.agent.name!==input.agentName||capture.outside.connection.name!==input.connectionName||
+        outsideDiscoveryPolicyHash(capture,input.route,input.purpose)!==input.expectedPolicyHash)return requestDenied();
+      const rows=await db.query<{account_id:string;owner_member_id:string;resource_id:string;connection_name:string;
+        claim_operation_id:string;claim_outcome:string;credential_revision:string;revision_purpose:string;policy_hash:Buffer;
+        result_operation_id:string|null;result_outcome:string|null;result_nonce:Buffer|null;result_ciphertext:Buffer|null}>(`SELECT a.account_id,a.owner_member_id,a.resource_id,a.connection_name,
+          c.operation_id AS claim_operation_id,c.outcome AS claim_outcome,c.credential_revision::text,
+          v.revision_purpose,v.policy_hash,r.operation_id AS result_operation_id,r.outcome AS result_outcome,
+          r.result_nonce,r.result_ciphertext
+        FROM outside_custody_operations c
+        JOIN outside_custody_accounts a ON a.account_id=c.account_id AND a.owner_member_id=c.owner_member_id
+        JOIN outside_custody_revisions v ON v.account_id=c.account_id AND v.credential_revision=c.credential_revision
+        LEFT JOIN outside_custody_operations r ON r.request_id=c.request_id AND r.event_phase='result'
+        WHERE c.request_id=$1 AND c.event_phase='claim' AND c.operation_kind='discover' AND c.owner_member_id=$2
+          AND c.credential_revision IS NOT NULL AND v.revision_purpose='discovery'`,[requestId,memberId]);
+      if(rows.rows.length!==1)return requestDenied();
+      const row=rows.rows[0]!;
+      if(row.resource_id!==input.agentName||row.connection_name!==input.connectionName||row.revision_purpose!=='discovery'||
+        !row.policy_hash.equals(Buffer.from(input.expectedPolicyHash,'hex'))||row.claim_outcome!=='claimed')return requestDenied();
+      await checkConsoleSourceDeadlines(db);
+      if(row.result_operation_id===null)return {status:'pending'};
+      if(row.result_outcome==='unknown')return {status:'unknown'};
+      if(row.result_outcome!=='completed'||!row.result_nonce||!row.result_ciphertext)return requestDenied();
+      const plaintext=openPrivateResult(this.key,row.result_nonce,row.result_ciphertext,requestId,row.account_id,memberId,input.expectedPolicyHash);
+      try{
+        let result:unknown;
+        try{result=JSON.parse(plaintext.toString('utf8'));}catch{return requestDenied();}
+        await checkConsoleSourceDeadlines(db);
+        return {status:'completed',result};
+      }finally{plaintext.fill(0);}
+    },options);
+  }
 
   private async capacity(db:PoolClient,accountId:string,kind:OutsideOperationKind,createsRevision:boolean):Promise<void>{
     const operations=await db.query<{count:string}>("SELECT count(*)::text AS count FROM outside_custody_operations WHERE account_id=$1",[accountId]);
@@ -167,7 +371,7 @@ export class OutsideCustodyStore {
   }
 
   private async head(db: PoolClient, accountId: string, lock: boolean): Promise<Head | undefined> {
-    const result = await db.query<Head>(`SELECT account_id,owner_member_id,resource_id,generation::text,
+    const result = await db.query<Head>(`SELECT account_id,owner_member_id,resource_id,connection_name,generation::text,
         active_revision::text,candidate_revision::text,consent_generation::text,state
       FROM outside_custody_accounts WHERE account_id=$1${lock ? " FOR UPDATE" : ""}`,[accountId]);
     this.assertOpen(requestDenied);
@@ -194,141 +398,51 @@ export class OutsideCustodyStore {
   }
 
   async stage(binding: SourceBinding, input: { accountId:string;operationId:string;expectedGeneration:number;expectedCandidateRevision:number|null;credential:Buffer }, options:{deadlineAtMs?:number}={}): Promise<OutsideOperationResult> {
-    if (!Buffer.isBuffer(input.credential)) return requestDenied();
-    let recoveryOperationId = input.operationId,release=()=>{};
-    try {
-      release=this.beginOperation(requestDenied);
-      validBinding(binding); const accountId=uuid.parse(input.accountId), operationId=uuid.parse(input.operationId);
-      recoveryOperationId = operationId;
-      if (!Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration < 0 || input.expectedGeneration > Number.MAX_SAFE_INTEGER ||
-          input.expectedCandidateRevision!==null&&(!Number.isSafeInteger(input.expectedCandidateRevision)||input.expectedCandidateRevision<1) ||
-          input.expectedGeneration===0&&input.expectedCandidateRevision!==null || input.credential.length < 1 || input.credential.length > MAX_CREDENTIAL_BYTES) return requestDenied();
-      const result=await consoleSourceTransaction(this.pool,async source=>{
-        this.assertOpen(requestDenied);
-        const db=source as PoolClient;
-        const consent=await this.current(db,binding);
-        const hash=requestHash("stage",accountId,binding.memberId,binding.agent,input.expectedGeneration,input.expectedCandidateRevision,null,consent,input.credential);
-        let head=await this.head(db,accountId,true);
-        if(head&&(head.owner_member_id!==binding.memberId||head.resource_id!==binding.agent))return requestDenied();
-        const prior=await this.priorOperation(db,operationId,hash,accountId,binding.memberId,"stage",input.expectedGeneration);
-        if(prior){if(!head)return requestDenied();return prior;}
-        let created=false;
-        if(!head){
-          if(input.expectedGeneration!==0||input.expectedCandidateRevision!==null)return requestDenied();
-          const inserted=await db.query<Head>(`INSERT INTO outside_custody_accounts
-            (account_id,owner_member_id,resource_id,generation,consent_generation,state)
-            VALUES($1,$2,$3,1,$4,'active') RETURNING account_id,owner_member_id,resource_id,generation::text,active_revision::text,candidate_revision::text,consent_generation::text,state`,
-          [accountId,binding.memberId,binding.agent,consent]);
-          this.assertOpen(requestDenied);
-          head=inserted.rows[0];created=true;
-        }
-        if(!head || head.owner_member_id!==binding.memberId || head.resource_id!==binding.agent || head.state!=="active" || number(head.generation)!==(created?1:input.expectedGeneration) || number(head.consent_generation)!==consent) return requestDenied();
-        if((head.candidate_revision===null?null:number(head.candidate_revision))!==input.expectedCandidateRevision)return requestDenied();
-        await this.capacity(db,accountId,"stage",true);
-        this.assertOpen(requestDenied);
-        const revisionResult=await db.query<{revision:string}>("SELECT COALESCE(max(credential_revision),0)+1 AS revision FROM outside_custody_revisions WHERE account_id=$1",[accountId]);
-        this.assertOpen(requestDenied);
-        const credentialRevision=number(revisionResult.rows[0]!.revision);
-        const generation=number(head.generation)+1;
-        const coordinates={ownerMemberId:binding.memberId,accountId,resourceId:binding.agent,generation,credentialRevision,consentGeneration:consent,operationId};
-        this.assertOpen(requestDenied);
-        const encrypted=seal(this.key,input.credential,coordinates);
-        await db.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,operation_id,nonce,ciphertext)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[accountId,binding.memberId,credentialRevision,generation,consent,operationId,encrypted.nonce,encrypted.ciphertext]);
-        this.assertOpen(requestDenied);
-        const updated=await db.query(`UPDATE outside_custody_accounts SET candidate_revision=$2,consent_generation=$3,updated_at=clock_timestamp()
-          WHERE account_id=$1 AND owner_member_id=$4 AND generation=$5 AND candidate_revision IS NOT DISTINCT FROM $6 AND state='active'`,[accountId,credentialRevision,consent,binding.memberId,input.expectedGeneration||1,input.expectedCandidateRevision]);
-        this.assertOpen(requestDenied);
-        if(updated.rowCount!==1)return requestDenied();
-        await checkConsoleSourceDeadlines(db);
-        this.assertOpen(requestDenied);
-        return this.record(db,{operationId,accountId,ownerMemberId:binding.memberId,kind:"stage",hash,expected:input.expectedGeneration,result:input.expectedGeneration||1,revision:credentialRevision,outcome:"staged"});
-      },undefined,options);
-      this.assertOpen(requestDenied);
-      return result;
-    } catch(error) { if(error instanceof OutsideCustodyRecoveryRequired)throw error;if(error instanceof SourceAuthorityUnavailable)throw new OutsideCustodyRecoveryRequired(recoveryOperationId);return requestDenied(); }
-    finally { input.credential.fill(0);release(); }
+    if (Buffer.isBuffer(input.credential)) input.credential.fill(0);
+    // Discovery claims are encrypted for inspection only. Numeric access consent does not
+    // authorize executable credentials, and this slice has no executable writer.
+    return requestDenied();
   }
 
   async apply(binding: SourceBinding, input:{accountId:string;operationId:string;expectedGeneration:number;candidateRevision:number;consentGeneration:number}, options:{deadlineAtMs?:number}={}):Promise<OutsideOperationResult>{
-    return this.transition(binding,input,"apply",null,options);
+    void binding;void input;void options;
+    // Persisted executable revisions have no current versioned-policy verifier in this slice.
+    return requestDenied();
   }
 
   async rollback(binding: SourceBinding, input:{accountId:string;operationId:string;expectedGeneration:number;sourceRevision:number;consentGeneration:number}, options:{deadlineAtMs?:number}={}):Promise<OutsideOperationResult>{
-    if(!Number.isSafeInteger(input.sourceRevision)||input.sourceRevision<1)return requestDenied();
-    return this.transition(binding,input,"rollback",input.sourceRevision,options);
+    void binding;void input;void options;
+    return requestDenied();
   }
 
   async revoke(binding: SourceBinding, input:{accountId:string;operationId:string;expectedGeneration:number}, options:{deadlineAtMs?:number}={}):Promise<OutsideOperationResult>{
-    return this.transition(binding,input,"revoke",null,options);
+    return this.transition(binding,input,options);
   }
 
-  private async transition(binding:SourceBinding,input:{accountId:string;operationId:string;expectedGeneration:number;candidateRevision?:number;consentGeneration?:number},kind:"apply"|"rollback"|"revoke",sourceRevision:number|null,options:{deadlineAtMs?:number}={}):Promise<OutsideOperationResult>{
+  private async transition(binding:SourceBinding,input:{accountId:string;operationId:string;expectedGeneration:number},options:{deadlineAtMs?:number}={}):Promise<OutsideOperationResult>{
     const release=this.beginOperation(requestDenied);
     try{
       validBinding(binding);const accountId=uuid.parse(input.accountId),operationId=uuid.parse(input.operationId);
-      if(!Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<1||input.expectedGeneration>Number.MAX_SAFE_INTEGER||
-          kind==="apply"&&(!Number.isSafeInteger(input.candidateRevision)||input.candidateRevision!<1)||
-          kind!=="revoke"&&(!Number.isSafeInteger(input.consentGeneration)||input.consentGeneration!<1))return requestDenied();
+      if(!Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<1||input.expectedGeneration>Number.MAX_SAFE_INTEGER)return requestDenied();
       try{
         const result=await consoleSourceTransaction(this.pool,async source=>{
         this.assertOpen(requestDenied);
         const db=source as PoolClient;
         const currentConsent=await this.current(db,binding);
-        const hash=requestHash(kind,accountId,binding.memberId,binding.agent,input.expectedGeneration,
-          kind==="apply"?input.candidateRevision!:sourceRevision,kind==="revoke"?null:input.consentGeneration!,currentConsent);
+        const hash=requestHash("revoke",accountId,binding.memberId,binding.agent,input.expectedGeneration,null,null,currentConsent);
         const head=await this.head(db,accountId,true);
         if(head&&(head.owner_member_id!==binding.memberId||head.resource_id!==binding.agent))return requestDenied();
-        const prior=await this.priorOperation(db,operationId,hash,accountId,binding.memberId,kind,input.expectedGeneration);if(prior){if(!head)return requestDenied();return prior;}
+        const prior=await this.priorOperation(db,operationId,hash,accountId,binding.memberId,"revoke",input.expectedGeneration);if(prior){if(!head)return requestDenied();return prior;}
         if(!head||head.state!=="active"||number(head.generation)!==input.expectedGeneration)return requestDenied();
-        await this.capacity(db,accountId,kind,kind==="rollback");
+        await this.capacity(db,accountId,"revoke",false);
         this.assertOpen(requestDenied);
-        if(kind==="revoke"){
-          const next=input.expectedGeneration+1;
-          const changed=await db.query("UPDATE outside_custody_accounts SET generation=$2,active_revision=NULL,candidate_revision=NULL,state='revoked',updated_at=clock_timestamp() WHERE account_id=$1 AND generation=$3 AND state='active'",[accountId,next,input.expectedGeneration]);
-          this.assertOpen(requestDenied);
-          if(changed.rowCount!==1)return requestDenied();
-          await checkConsoleSourceDeadlines(db);
-          this.assertOpen(requestDenied);
-          return this.record(db,{operationId,accountId,ownerMemberId:binding.memberId,kind,hash,expected:input.expectedGeneration,result:next,revision:null,outcome:"revoked"});
-        }
-        if(currentConsent!==input.consentGeneration)return requestDenied();
-        if(kind==="apply"){
-          if(!head.candidate_revision||number(head.candidate_revision)!==input.candidateRevision)return requestDenied();
-          const revision=await this.revision(db,accountId,input.candidateRevision!);
-          if(!revision||number(revision.generation)!==input.expectedGeneration+1||number(revision.consent_generation)!==currentConsent)return requestDenied();
-          const changed=await db.query(`UPDATE outside_custody_accounts SET generation=$2,active_revision=$3,candidate_revision=NULL,consent_generation=$4,updated_at=clock_timestamp()
-            WHERE account_id=$1 AND generation=$5 AND candidate_revision=$3 AND state='active'`,[accountId,input.expectedGeneration+1,input.candidateRevision,currentConsent,input.expectedGeneration]);
-          this.assertOpen(requestDenied);
-          if(changed.rowCount!==1)return requestDenied();
-          await checkConsoleSourceDeadlines(db);
-          this.assertOpen(requestDenied);
-          return this.record(db,{operationId,accountId,ownerMemberId:binding.memberId,kind,hash,expected:input.expectedGeneration,result:input.expectedGeneration+1,revision:input.candidateRevision!,outcome:"applied"});
-        }
-        if(sourceRevision===null||head.active_revision===null)return requestDenied();
-        const original=await this.revision(db,accountId,sourceRevision);
-        if(!original||number(original.consent_generation)!==currentConsent)return requestDenied();
-        const oldCoordinates:Coordinates={ownerMemberId:binding.memberId,accountId,resourceId:binding.agent,generation:number(original.generation),credentialRevision:sourceRevision,consentGeneration:number(original.consent_generation),operationId:original.operation_id};
+        const next=input.expectedGeneration+1;
+        const changed=await db.query("UPDATE outside_custody_accounts SET generation=$2,active_revision=NULL,candidate_revision=NULL,state='revoked',updated_at=clock_timestamp() WHERE account_id=$1 AND generation=$3 AND state='active'",[accountId,next,input.expectedGeneration]);
         this.assertOpen(requestDenied);
-        const plaintext=open(this.key,original.nonce,original.ciphertext,oldCoordinates);
-        try{
-          const next=input.expectedGeneration+1;
-          const latest=(await db.query<{revision:string}>("SELECT COALESCE(max(credential_revision),0)+1 AS revision FROM outside_custody_revisions WHERE account_id=$1",[accountId])).rows[0]!;
-          this.assertOpen(requestDenied);
-          const newRevision=number(latest.revision);
-          this.assertOpen(requestDenied);
-          const encrypted=seal(this.key,plaintext,{ownerMemberId:binding.memberId,accountId,resourceId:binding.agent,generation:next,credentialRevision:newRevision,consentGeneration:currentConsent,operationId});
-          await db.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,operation_id,nonce,ciphertext)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[accountId,binding.memberId,newRevision,next,currentConsent,operationId,encrypted.nonce,encrypted.ciphertext]);
-          this.assertOpen(requestDenied);
-          const changed=await db.query(`UPDATE outside_custody_accounts SET generation=$2,active_revision=$3,candidate_revision=NULL,consent_generation=$4,updated_at=clock_timestamp()
-            WHERE account_id=$1 AND generation=$5 AND state='active'`,[accountId,next,newRevision,currentConsent,input.expectedGeneration]);
-          this.assertOpen(requestDenied);
-          if(changed.rowCount!==1)return requestDenied();
-          await checkConsoleSourceDeadlines(db);
-          this.assertOpen(requestDenied);
-          return this.record(db,{operationId,accountId,ownerMemberId:binding.memberId,kind,hash,expected:input.expectedGeneration,result:next,revision:newRevision,outcome:"rolled-back"});
-        }finally{plaintext.fill(0);}
+        if(changed.rowCount!==1)return requestDenied();
+        await checkConsoleSourceDeadlines(db);
+        this.assertOpen(requestDenied);
+        return this.record(db,{operationId,accountId,ownerMemberId:binding.memberId,kind:"revoke",hash,expected:input.expectedGeneration,result:next,revision:null,outcome:"revoked"});
         },undefined,options);
         this.assertOpen(requestDenied);
         return result;
@@ -336,48 +450,11 @@ export class OutsideCustodyStore {
     }finally{release();}
   }
 
-  private async revision(db:PoolClient,accountId:string,revision:number):Promise<Revision|undefined>{
-    const result=await db.query<Revision>(`SELECT credential_revision::text,generation::text,consent_generation::text,operation_id,nonce,ciphertext
-      FROM outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2`,[accountId,revision]);
-    this.assertOpen(requestDenied);
-    return result.rows[0];
-  }
-
   async withCredential<T>(binding:SourceBinding,input:{accountId:string},use:(credential:Buffer,authority:{backendPid:number;accessRevision:number})=>Promise<T>,options:{deadlineAtMs?:number}={}):Promise<T>{
-    const release=this.beginOperation();
-    try{
-      validBinding(binding);const accountId=uuid.parse(input.accountId);
-      try{
-        const result=await consoleSourceTransaction(this.pool,async source=>{
-        this.assertOpen();
-        const db=source as PoolClient;
-        const currentConsent=await this.current(db,binding);
-        const head=await this.head(db,accountId,true);
-        if(!head||head.owner_member_id!==binding.memberId||head.resource_id!==binding.agent||head.state!=="active"||!head.active_revision||number(head.consent_generation)!==currentConsent)return denied();
-        const revisionId=number(head.active_revision),revision=await this.revision(db,accountId,revisionId);
-        if(!revision||number(revision.generation)!==number(head.generation)||number(revision.consent_generation)!==currentConsent)return denied();
-        this.assertOpen();
-        const credential=open(this.key,revision.nonce,revision.ciphertext,{ownerMemberId:binding.memberId,accountId,resourceId:binding.agent,
-          generation:number(revision.generation),credentialRevision:revisionId,consentGeneration:currentConsent,operationId:revision.operation_id});
-        try{
-          const identity=await db.query<{pid:number;user:string;sessionUser:string}>("SELECT pg_backend_pid() AS pid,current_user AS user,session_user AS \"sessionUser\"");
-          this.assertOpen();
-          if(identity.rows[0]?.user!=="lares_outside_custody"||identity.rows[0]?.sessionUser!=="lares_outside_custody")return denied();
-          await checkConsoleSourceDeadlines(db);
-          this.assertOpen();
-          const result=await use(credential,{backendPid:identity.rows[0].pid,accessRevision:currentConsent});
-          this.assertOpen();
-          if(await new PgGrantStore().captureUse(binding.memberId,binding.agent,{db:db as GrantDatabase})!==currentConsent)return denied();
-          this.assertOpen();
-          await checkConsoleSourceDeadlines(db);
-          this.assertOpen();
-          return result;
-        }finally{credential.fill(0);}
-        },undefined,options);
-        this.assertOpen();
-        return result;
-      }catch(error){if(error instanceof OutsideCustodyRecoveryRequired)throw error;if(error instanceof SourceAuthorityUnavailable)throw new OutsideCustodyRecoveryRequired(accountId);return denied();}
-    }finally{release();}
+    void binding;void input;void use;void options;
+    // Credential delivery waits for current, versioned policy verification and a private
+    // transaction/route authority boundary that this intermediate slice does not provide.
+    return denied();
   }
 
   async inspect(binding:SourceBinding,operationId:string):Promise<OutsideOperationResult|undefined>{

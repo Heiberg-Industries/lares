@@ -411,6 +411,13 @@ describe("the keeper the installer configures and starts", () => {
     expect(Object.keys(keeper.services)).toEqual(["lares-keeper", "lares-egress-proxy"]);
   });
 
+  it("mounts the outside-custody database password as an exact read-only bind without creating a host file",()=>{
+    const keeper=parse(readFileSync(COMMITTED_KEEPER_COMPOSE,"utf8")) as any;
+    const volume=keeper.services["lares-keeper"].volumes.find((value:any)=>typeof value!=="string"&&String(value.source).includes("LARES_OUTSIDE_CUSTODY_PASSWORD_FILE"));
+    expect(volume).toMatchObject({type:"bind",source:"${LARES_OUTSIDE_CUSTODY_PASSWORD_FILE:?outside custody database password file required}",
+      target:"${LARES_OUTSIDE_CUSTODY_PASSWORD_FILE:?outside custody database password file required}",read_only:true,bind:{create_host_path:false}});
+  });
+
   it("installs the keeper's own compose file at the path it brings up, unchanged", () => {
     expect(install().code).toBe(0);
     const installed = join(prefix, "opt", "lares", "compose.lares-keeper.yaml");
