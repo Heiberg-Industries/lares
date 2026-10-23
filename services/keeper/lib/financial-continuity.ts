@@ -73,7 +73,7 @@ export async function verifyFinancialContinuity(journal:HostFinancialJournal,db:
     const projection=journal.expectedProjection(proposed),database=await observeFinancialDatabase(db),observed=await observeFinancialProjection(db,projection);
     journal.verifyContinuity(database,observed.checkpoints,observed.atoms,proposed);
   }
-  catch{journal.freeze();throw new Error('Financial continuity requires recovery');}
+  catch{if(!journal.isFrozen)journal.freeze();throw new Error('Financial continuity requires recovery');}
 }
 /** Fresh, same-client read-only observation after the source mutation COMMIT. The caller
  * keeps this exact checked-out client owned until the observer COMMIT is acknowledged. */

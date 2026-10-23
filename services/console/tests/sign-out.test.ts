@@ -6,7 +6,7 @@ import { POST, GET } from "../app/api/auth/[...route]/route";
 const origin = "https://console.example.test";
 const ctx = (...route: string[]) => ({ params: Promise.resolve({ route }) });
 function req(path: string, method = "POST", from: string | null = origin) {
-  return new NextRequest(`http://container:3000${path}`, { method, headers: { cookie: "lares_session=opaque", ...(from ? { origin: from } : {}) } });
+  return new NextRequest(`http://container:3000${path}`, { method, headers: { cookie: "lares_session=opaque; lares_owner_discovery=receipt", ...(from ? { origin: from } : {}) } });
 }
 beforeEach(() => { vi.stubEnv("NODE_ENV", "production"); vi.stubEnv("CONSOLE_OAUTH_REDIRECT", `${origin}/api/auth/callback`); mocks.revokeSession.mockReset().mockResolvedValue(undefined); });
 afterEach(() => vi.unstubAllEnvs());
@@ -18,6 +18,7 @@ describe("revocable sign-out", () => {
     expect(res.headers.get("location")).toBe(`${origin}/sign-in?signed-out=1`);
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(res.headers.get("set-cookie")).toMatch(/lares_session=;[^]*Max-Age=0/);
+    expect(res.headers.get("set-cookie")).toMatch(/lares_owner_discovery=;[^]*Max-Age=0/);
     expect(res.headers.get("set-cookie")).toMatch(/HttpOnly/);
   });
   it.each([null, "https://attacker.test"])("refuses a direct cross-origin request %s", async from => {

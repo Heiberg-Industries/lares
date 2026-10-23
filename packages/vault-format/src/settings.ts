@@ -351,7 +351,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "Owner-scoped operations and existing shared console screens refuse a missing or blank stable owner id. No installation identity is guessed, and another owner does not inherit this console access.",
-    readAt: ["services/chief-of-staff/lib/principals.ts", "packages/agent-kit/src/note-tools.ts", "services/console/lib/auth.ts (isConsoleOwner)", "services/console/app/api/auth/[...route]/route.ts (explicit owner adoption)"],
+    readAt: ["services/chief-of-staff/lib/principals.ts", "packages/agent-kit/src/note-tools.ts", "services/console/lib/auth.ts (isConsoleOwner)", "services/console/app/api/auth/[...route]/route.ts (fresh first-owner binding)"],
   },
   {
     name: "LARES_SLACK_PRINCIPAL",
@@ -1025,8 +1025,8 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "An unknown provider identity cannot adopt the existing owner without this explicit exact issuer, subject and optional tenant mapping. Already linked members and valid invitations do not need it.",
-    readAt: ["services/console/app/api/auth/[...route]/route.ts (explicit owner adoption)"],
+    breaksWithout: "An unknown provider identity cannot be linked to the initial owner until the fresh-install-only host bootstrap stores its owner-and-organisation-bound envelope. The five-minute sign-in display is discovery only; a fresh provider callback is still required to bind the identity and issue a session. Already linked members and valid invitations do not need this setting. Existing installations require separately reviewed recovery.",
+    readAt: ["services/console/app/api/auth/[...route]/route.ts (fresh first-owner binding)"],
   },
   {
     name: "CONSOLE_OAUTH_REDIRECT",
