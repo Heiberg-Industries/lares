@@ -91,9 +91,51 @@ FINANCIAL_OBSERVER_SQL = {
       FROM budget_accounts i WHERE i.kind='installation'""",
     'bindings': """SELECT coalesce(json_agg(json_build_object('id',id,'state',state,
       'credentialGeneration',credential_generation) ORDER BY id),'[]'::json) AS bindings
-      FROM budget_gateway_bindings""",
+      FROM (SELECT id,state,credential_generation FROM budget_gateway_bindings ORDER BY id LIMIT 129) bounded""",
     'members': """SELECT coalesce(json_agg(json_build_object('memberId',live_member_id,'state',state)
-      ORDER BY live_member_id),'[]'::json) AS members FROM budget_accounts WHERE kind='member'""",
+      ORDER BY live_member_id),'[]'::json) AS members FROM
+      (SELECT live_member_id,state FROM budget_accounts WHERE kind='member' ORDER BY live_member_id LIMIT 129) bounded""",
+    # This fixed projection is retained in memory by the probe for exact before/after
+    # comparisons. It is never copied into the proof artifact or printed by the runner.
+    'authority': """SELECT
+      coalesce((SELECT json_agg(json_build_object('id',id::text,'installationId',installation_id,'kind',kind,
+        'installationAccountId',installation_account_id::text,'memberId',live_member_id,'organisationId',organisation_id,
+        'canonicalSuppressionHash',canonical_suppression_hash,'providerSuppressionHashes',provider_suppression_hashes,
+        'policyGeneration',policy_generation::text,'state',state,'reason',reason,'activeWindowId',active_window_id::text,
+        'installationCap',installation_cap::text,'selectedEndpoint',selected_endpoint,
+        'endpointGeneration',endpoint_generation::text,'recoveryEpoch',recovery_epoch) ORDER BY id)
+        FROM (SELECT * FROM budget_accounts ORDER BY id LIMIT 129) bounded),'[]'::json) AS accounts,
+      coalesce((SELECT json_agg(json_build_object('id',id::text,'accountId',account_id::text,'memberId',live_member_id,
+        'startsAt',to_char(starts_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'endsAt',to_char(ends_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'openingLiability',opening_liability::text,'openingCap',opening_cap::text,'policyRevision',policy_revision::text,
+        'createdAt',to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) ORDER BY id)
+        FROM (SELECT * FROM budget_windows ORDER BY id LIMIT 1025) bounded),'[]'::json) AS windows,
+      coalesce((SELECT json_agg(json_build_object('id',id::text,'installationAccountId',installation_account_id::text,
+        'memberAccountId',member_account_id::text,'memberId',live_member_id,'endpointHash',endpoint_hash,
+        'credentialGeneration',credential_generation::text,'keyFingerprint',key_fingerprint,'agent',agent,
+        'incarnation',incarnation::text,'nativeTeam',native_team,'nativeUser',native_user,'purposeAlias',purpose_alias,
+        'profileHash',profile_hash,'maximumLiability',maximum_liability::text,'pricingProfile',pricing_profile::text,
+        'state',state,'createdAt',to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) ORDER BY id)
+        FROM (SELECT * FROM budget_gateway_bindings ORDER BY id LIMIT 1025) bounded),'[]'::json) AS bindings,
+      coalesce((SELECT json_agg(json_build_object('id',id::text,'ticketHash',ticket_hash,'invocationHash',invocation_hash,
+        'installationAccountId',installation_account_id::text,'memberAccountId',member_account_id::text,
+        'bindingId',binding_id::text,'memberId',live_member_id,'installationWindowId',installation_window_id::text,
+        'memberWindowId',member_window_id::text,'endpointHash',endpoint_hash,
+        'credentialGeneration',credential_generation::text,'installationPolicyGeneration',installation_policy_generation::text,
+        'memberPolicyGeneration',member_policy_generation::text,'endpointGeneration',endpoint_generation::text,
+        'recoveryEpoch',recovery_epoch,'requestHash',request_hash,'authorityHash',authority_hash,
+        'authorityReference',authority_reference::text,'profileHash',profile_hash,'reservedAmount',reserved_amount::text,
+        'installationCapSnapshot',installation_cap_snapshot::text,'memberCapSnapshot',member_cap_snapshot::text,
+        'createdAt',to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'expiresAt',to_char(expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'admittedAt',CASE WHEN admitted_at IS NULL THEN NULL ELSE to_char(admitted_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END,
+        'state',state,'actualAmount',actual_amount::text,'settlementHash',settlement_hash,
+        'conflictReason',conflict_reason,'conflictHash',conflict_hash,
+        'highestObservedLiability',highest_observed_liability::text) ORDER BY id)
+        FROM (SELECT * FROM budget_attempts ORDER BY id LIMIT 1025) bounded),'[]'::json) AS attempts,
+      coalesce((SELECT json_agg(json_build_object('attemptId',attempt_id::text,'grantHash',grant_hash) ORDER BY attempt_id)
+        FROM (SELECT * FROM budget_gateway_grants ORDER BY attempt_id LIMIT 1025) bounded),'[]'::json) AS grants""",
 }
 
 def financial_observer(summary, financial_db):
@@ -191,6 +233,38 @@ def safe_startup_log_categories(log_text):
     })
     return {name:re.search(pattern,text) is not None for name,pattern in patterns.items()}
 
+COMPILED_CLIENT_PHASES={'imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'}
+COMPILED_CLIENT_PHASE_FILES={
+    'owner-first':'/tmp/first-use-phase-first',
+    'later-member':'/tmp/first-use-phase-later',
+    'owner-repeat':'/tmp/first-use-phase-repeat',
+}
+
+def safe_compiled_client_phase_summary(stdout, returncode):
+    invalid={'phase':'unknown','markerValid':False}
+    if returncode!=0 or not isinstance(stdout,str) or len(stdout)>128:return invalid
+    try:parsed=json.loads(stdout)
+    except (TypeError,ValueError):return invalid
+    if (not isinstance(parsed,dict) or set(parsed)!={'phase','valid'} or parsed.get('valid') is not True or
+        not isinstance(parsed.get('phase'),str) or parsed['phase'] not in COMPILED_CLIENT_PHASES):return invalid
+    return {'phase':parsed['phase'],'markerValid':True}
+
+def initialize_compiled_client_phase(chief_name, marker_id):
+    marker=COMPILED_CLIENT_PHASE_FILES.get(marker_id)
+    if marker is None:return False
+    script="require('node:fs').writeFileSync("+json.dumps(marker)+",'{\"phase\":\"imports\"}',{mode:0o600})"
+    try:result=run('docker','exec',chief_name,'node','-e',script,check=False,timeout=5)
+    except Exception:return False
+    return result.returncode==0
+
+def compiled_client_phase_summary(chief_name, marker_id):
+    marker=COMPILED_CLIENT_PHASE_FILES.get(marker_id)
+    if marker is None:return {'phase':'unknown','markerValid':False}
+    reader="""const fs=require('node:fs');const allowed=['imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'];let out={phase:'unknown',valid:false};try{const s=fs.statSync(MARKER);if(!s.isFile()||s.size>128)throw Error();const x=JSON.parse(fs.readFileSync(MARKER,'utf8'));if(x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).length===1&&Object.keys(x)[0]==='phase'&&allowed.includes(x.phase))out={phase:x.phase,valid:true};}catch{}process.stdout.write(JSON.stringify(out));""".replace('MARKER',json.dumps(marker))
+    try:result=run('docker','exec',chief_name,'node','-e',reader,check=False,timeout=5)
+    except Exception:return {'phase':'unknown','markerValid':False}
+    return safe_compiled_client_phase_summary(result.stdout,result.returncode)
+
 def bounded_compiled_runtime_logs(name):
     process=None
     try:
@@ -263,10 +337,117 @@ def initial_budget_client_args(*, network, run_dir, token_file, client_source,
       '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,
       '/app/services/keeper/initial-budget-client.mts']
 
-def selected_members_match_first_activation(selected, member_ids):
-    return (len(selected)==2 and
-      selected[0].get('memberId')==member_ids[0] and selected[0].get('state')=='open' and
-      selected[1].get('memberId')==member_ids[1] and selected[1].get('state')=='closed')
+def initial_budget_client_source(expected_status, target_member_ids):
+    expected=json.dumps(expected_status,separators=(',',':'))
+    targets=json.dumps(target_member_ids,separators=(',',':'))
+    return """import { readFileSync } from 'node:fs';
+import { keeper } from '/app/services/console/lib/keeper-client.ts';
+const sessionToken=readFileSync('/fixture/owner-session-token','utf8').trim();
+const expected=EXPECTED_STATUS;
+const targets=TARGET_MEMBER_IDS;
+const status=await keeper<Array<{memberId:string;eligible:boolean;setupComplete:boolean}>>('member.initial-budget-status',{sessionToken},'first-use-owner@example.invalid');
+if(!Array.isArray(status)||status.length!==expected.length)throw new Error();
+const actual=status.map(row=>row&&typeof row==='object'&&!Array.isArray(row)&&Object.keys(row).sort().join(',')==='eligible,memberId,setupComplete'&&typeof row.memberId==='string'&&typeof row.eligible==='boolean'&&typeof row.setupComplete==='boolean'?row:null);
+if(actual.some(row=>row===null)||JSON.stringify(actual.sort((a,b)=>a!.memberId.localeCompare(b!.memberId)))!==JSON.stringify(expected.sort((a,b)=>a.memberId.localeCompare(b.memberId))))throw new Error();
+for(const targetMemberId of targets){const saved=await keeper<{saved:true}>('member.set-initial-budget',{sessionToken,targetMemberId,monthlyLimit:'50'},'first-use-owner@example.invalid');if(!saved||Object.keys(saved).sort().join(',')!=='saved'||saved.saved!==true)throw new Error();}
+console.log(JSON.stringify({statusCount:status.length,capsSaved:targets.length}));
+""".replace('EXPECTED_STATUS',expected).replace('TARGET_MEMBER_IDS',targets)
+
+def selected_member_states_match(selected, expected):
+    if not isinstance(selected,list) or not isinstance(expected,dict):return False
+    actual={}
+    for row in selected:
+      if not isinstance(row,dict) or set(row)!={'memberId','state'} or not isinstance(row.get('memberId'),str) or row['memberId'] in actual:return False
+      actual[row['memberId']]=row.get('state')
+    return actual==expected
+
+def financial_authority_preserved(before, after):
+    if not isinstance(before,dict) or not isinstance(after,dict):return False
+    keys=('accounts','windows','bindings','attempts','grants')
+    if set(before)!=set(keys) or set(after)!=set(keys):return False
+    id_fields={'accounts':'id','windows':'id','bindings':'id','attempts':'id','grants':'attemptId'}
+    for key in keys:
+      prior=before[key];current=after[key]
+      if not isinstance(prior,list) or not isinstance(current,list) or len(prior)>1024 or len(current)>1024:return False
+      indexed={row.get(id_fields[key]):row for row in current if isinstance(row,dict)}
+      if len(indexed)!=len(current) or any(not isinstance(row,dict) or indexed.get(row.get(id_fields[key]))!=row for row in prior):return False
+    return True
+
+def owner_financial_authority_snapshot_complete(snapshot, owner):
+    if not isinstance(snapshot,dict) or not isinstance(owner,str):return False
+    if set(snapshot)!= {'accounts','windows','bindings','attempts','grants'}:return False
+    accounts=snapshot['accounts'];windows=snapshot['windows'];bindings=snapshot['bindings'];attempts=snapshot['attempts'];grants=snapshot['grants']
+    if not all(isinstance(rows,list) for rows in (accounts,windows,bindings,attempts,grants)):return False
+    if not all(isinstance(row,dict) for rows in (accounts,windows,bindings,attempts,grants) for row in rows):return False
+    if len(accounts)!=2 or len(windows)!=2 or len(bindings)!=1 or len(attempts)!=1 or len(grants)!=1:return False
+    installations=[row for row in accounts if row.get('kind')=='installation']
+    members=[row for row in accounts if row.get('kind')=='member']
+    if len(installations)!=1 or len(members)!=1:return False
+    installation=installations[0];member=members[0]
+    if member.get('memberId')!=owner or member.get('installationAccountId')!=installation.get('id'):return False
+    if installation.get('state')!='open' or installation.get('reason')!='approved' or member.get('state')!='open' or member.get('reason')!='approved':return False
+    if any(row.get('accountId') not in {installation.get('id'),member.get('id')} for row in windows):return False
+    window_by_account={row.get('accountId'):row for row in windows}
+    if (len(window_by_account)!=2 or installation.get('id') not in window_by_account or member.get('id') not in window_by_account or
+        installation.get('activeWindowId')!=window_by_account[installation['id']].get('id') or
+        member.get('activeWindowId')!=window_by_account[member['id']].get('id')):return False
+    binding=bindings[0]
+    if (binding.get('memberId')!=owner or binding.get('state')!='active' or
+        binding.get('installationAccountId')!=installation.get('id') or binding.get('memberAccountId')!=member.get('id')):return False
+    attempt=attempts[0]
+    if (attempt.get('memberId')!=owner or attempt.get('state')!='settled' or
+        attempt.get('installationAccountId')!=installation.get('id') or attempt.get('memberAccountId')!=member.get('id') or
+        attempt.get('bindingId')!=binding.get('id') or attempt.get('installationWindowId')!=window_by_account[installation['id']].get('id') or
+        attempt.get('memberWindowId')!=window_by_account[member['id']].get('id')):return False
+    amount=attempt.get('actualAmount')
+    if not isinstance(amount,str) or not re.fullmatch(r'(?:0|[1-9][0-9]*)(?:\.[0-9]+)?',amount) or not re.search(r'[1-9]',amount):return False
+    grant=grants[0]
+    return grant.get('attemptId')==attempt.get('id') and isinstance(grant.get('grantHash'),str) and bool(re.fullmatch(r'[a-f0-9]{64}',grant['grantHash']))
+
+def financial_settlement_delta_matches(before, after, member_id, binding_id):
+    if not isinstance(member_id,str) or not isinstance(binding_id,str):return False
+    if not financial_authority_preserved(before,after):return False
+    keys=('accounts','windows','bindings','attempts','grants')
+    if any(not isinstance(before.get(key),list) or not isinstance(after.get(key),list) for key in keys):return False
+    if any(len(after[key])!=len(before[key])+(1 if key in {'attempts','grants'} else 0) for key in keys):return False
+    if any(before[key]!=after[key] for key in ('accounts','windows','bindings')):return False
+    new_attempts=[row for row in after['attempts'] if row.get('id') not in {old.get('id') for old in before['attempts']}]
+    new_grants=[row for row in after['grants'] if row.get('attemptId') not in {old.get('attemptId') for old in before['grants']}]
+    if len(new_attempts)!=1 or len(new_grants)!=1:return False
+    attempt=new_attempts[0]
+    installation_accounts=[row for row in after['accounts'] if row.get('kind')=='installation']
+    member_accounts=[row for row in after['accounts'] if row.get('kind')=='member' and row.get('memberId')==member_id]
+    bindings=[row for row in after['bindings'] if row.get('id')==binding_id]
+    if len(installation_accounts)!=1 or len(member_accounts)!=1 or len(bindings)!=1:return False
+    installation=installation_accounts[0];member=member_accounts[0];binding=bindings[0]
+    windows={row.get('id'):row for row in after['windows']}
+    installation_window=windows.get(installation.get('activeWindowId'))
+    member_window=windows.get(member.get('activeWindowId'))
+    if not installation_window or not member_window:return False
+    if (installation.get('state')!='open' or installation.get('reason')!='approved' or
+        member.get('state')!='open' or member.get('reason')!='approved' or
+        member.get('installationAccountId')!=installation.get('id') or
+        binding.get('state')!='active' or binding.get('memberId')!=member_id or
+        binding.get('installationAccountId')!=installation.get('id') or
+        binding.get('memberAccountId')!=member.get('id') or
+        installation_window.get('accountId')!=installation.get('id') or
+        member_window.get('accountId')!=member.get('id')):return False
+    expected={
+      'memberId':member_id,'state':'settled','installationAccountId':installation.get('id'),
+      'memberAccountId':member.get('id'),'bindingId':binding_id,
+      'installationWindowId':installation_window.get('id'),'memberWindowId':member_window.get('id'),
+      'endpointHash':binding.get('endpointHash'),'credentialGeneration':binding.get('credentialGeneration'),
+      'endpointGeneration':installation.get('endpointGeneration'),'recoveryEpoch':installation.get('recoveryEpoch'),
+      'profileHash':binding.get('profileHash'),
+      'installationPolicyGeneration':installation.get('policyGeneration'),
+      'memberPolicyGeneration':member.get('policyGeneration'),
+    }
+    if any(attempt.get(key)!=value for key,value in expected.items()):return False
+    amount=attempt.get('actualAmount')
+    if not isinstance(amount,str) or not re.fullmatch(r'(?:0|[1-9][0-9]*)(?:\.[0-9]+)?',amount) or not re.search(r'[1-9]',amount):return False
+    grant=new_grants[0]
+    return (grant.get('attemptId')==attempt.get('id') and isinstance(grant.get('grantHash'),str)
+      and bool(re.fullmatch(r'[a-f0-9]{64}',grant['grantHash'])))
 
 def image_identity(image):
     value=docker('image','inspect','--format','{{.Id}}',image)
@@ -282,7 +463,7 @@ try:
     gateway_master='sk-'+secrets.token_urlsafe(32)
     console_signing=secrets.token_hex(32)
     incarnation=str(uuid.uuid4())
-    owner='first-use-owner';members=['first-use-member-a','first-use-member-b'];agent='proof-agent';alias='lares-brain'
+    owner='first-use-owner';later_member='first-use-member-later';agent='proof-agent';alias='lares-brain'
     owner_session_token=secrets.token_urlsafe(32)
     if len(owner_session_token)!=43:raise RuntimeError('Fixture owner session token was not canonical')
     owner_token_dir=root/'owner-session';owner_token_dir.mkdir(mode=0o700)
@@ -533,8 +714,8 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
     # write closed accounts and native keys.
     source_code="""import{Pool}from'pg';import{readFileSync}from'node:fs';import{definitionSchema,hashOf}from'/app/packages/agent-kit/src/definition.ts';import{randomUUID}from'node:crypto';
 const p=new Pool({host:'proof-db',database:'proof',user:'lares_app',password:readFileSync('/etc/lares/secrets/app-password','utf8').trim(),max:1});
-const owner='first-use-owner',members=['first-use-member-a','first-use-member-b'],org='first-use-org',agent='proof-agent',inc=process.env.FIXTURE_INCARNATION,alias='lares-brain';
-try{await p.query("INSERT INTO orgs(id,display_name) VALUES($1,'Neutral first-use organization')",[org]);await p.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Owner',$2,'owner','active'),($3,'Member A',$2,'member','active'),($4,'Member B',$2,'member','active')",[owner,org,members[0],members[1]]);for(const id of [owner,...members])await p.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'fixture-tenant')",[id,'subject-'+id]);await p.query("INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')",[randomUUID(),owner,process.env.FIXTURE_OWNER_SESSION_TOKEN_HASH]);
+const owner='first-use-owner',org='first-use-org',agent='proof-agent',inc=process.env.FIXTURE_INCARNATION,alias='lares-brain';
+try{await p.query("INSERT INTO orgs(id,display_name) VALUES($1,'Neutral first-use organization')",[org]);await p.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Owner',$2,'owner','active')",[owner,org]);await p.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'fixture-tenant')",[owner,'subject-'+owner]);await p.query("INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')",[randomUUID(),owner,process.env.FIXTURE_OWNER_SESSION_TOKEN_HASH]);
 const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition/agent.json','utf8')),name:agent,model:alias});const duties=readFileSync('/definition/duties.md','utf8'),voice=readFileSync('/definition/voice.md','utf8'),hash=hashOf({definition,dutiesMd:duties,voiceMd:voice});await p.query("INSERT INTO agent_definitions(name,definition,duties,voice,hash,status) VALUES($1,$2::jsonb,$3,$4,$5,'valid')",[agent,JSON.stringify(definition),duties,voice,hash]);await p.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending) VALUES($1,'172.20.0.10',$2,'owned',$3,$3,'ready',$4::jsonb,false)",[agent,process.env.FIXTURE_WORKFLOW_DB,inc,JSON.stringify(definition)]);const denied=await p.query('SELECT id FROM budget_accounts LIMIT 1').then(()=>false,error=>error.code==='42501');if(!denied)throw Error();console.log(JSON.stringify({definitionHash:hash,financialAccessDenied:true}));}finally{await p.end()}"""
     source_fixture=root/'source-fixture.mts';source_fixture.write_text(source_code)
     source_result=run('docker','run','--rm','--network',network,'--user','0:0','-e','FIXTURE_INCARNATION='+incarnation,'-e','FIXTURE_WORKFLOW_DB='+workflow_database,
@@ -552,8 +733,8 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
     cases['protectedCustodyAndSocketModesVerified']=True
 
     stage = 'production-keeper-startup'
-    # Pre-provision both members before either activation. The root CLI talks only to the real
-    # host-only socket; no direct provisioner/activator construction is used.
+    # Provision only the configured owner before the first activation. The root CLI talks
+    # only to the real host-only socket; no direct provisioner/activator is constructed.
     host_socket_dir=root/'host-socket';host_socket_dir.mkdir(mode=0o755)
     lares_dir=root/'run-sockets';lares_dir.mkdir(mode=0o755)
     keeper_name=network+'-keeper'
@@ -576,22 +757,13 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
 
     stage = 'initial-budget-actions-through-console-client'
     initial_budget_client=root/'initial-budget-client.mts'
-    initial_budget_client.write_text("""import { readFileSync } from 'node:fs';
-import { keeper } from '/app/services/console/lib/keeper-client.ts';
-const sessionToken=readFileSync('/fixture/owner-session-token','utf8').trim();
-const expected=['first-use-owner','first-use-member-a','first-use-member-b'].sort();
-const status=await keeper<Array<{memberId:string;eligible:boolean;setupComplete:boolean}>>('member.initial-budget-status',{sessionToken},'first-use-owner@example.invalid');
-if(!Array.isArray(status)||status.length!==expected.length)throw new Error();
-const actual=status.map(row=>row&&typeof row==='object'&&!Array.isArray(row)&&Object.keys(row).sort().join(',')==='eligible,memberId,setupComplete'&&typeof row.memberId==='string'&&typeof row.eligible==='boolean'&&typeof row.setupComplete==='boolean'?row:null);
-if(actual.some(row=>row===null)||actual.map(row=>row!.memberId).sort().join(',')!==expected.join(',')||actual.some(row=>row!.eligible!==true||row!.setupComplete!==false))throw new Error();
-for(const targetMemberId of expected){const saved=await keeper<{saved:true}>('member.set-initial-budget',{sessionToken,targetMemberId,monthlyLimit:'50'},'first-use-owner@example.invalid');if(!saved||Object.keys(saved).sort().join(',')!=='saved'||saved.saved!==true)throw new Error();}
-console.log(JSON.stringify({statusCount:status.length,capsSaved:expected.length}));
-""")
+    initial_budget_client.write_text(initial_budget_client_source(
+      [{'memberId':owner,'eligible':True,'setupComplete':False}],[owner]))
     budget_client_result=run(*initial_budget_client_args(network=network,run_dir=run_dir,token_file=owner_token_file,
       client_source=repo/'services/console/lib/keeper-client.ts',client_script=initial_budget_client,keeper_image=keeper_image),timeout=45)
     budget_client_identity=json.loads(budget_client_result.stdout.strip())
-    if budget_client_identity!={'statusCount':3,'capsSaved':3}:raise RuntimeError('Keeper initial budget actions did not return strict expected acknowledgements')
-    cases['initialMemberBudgetsSetThroughActualConsoleKeeperClient']=True
+    if budget_client_identity!={'statusCount':1,'capsSaved':1}:raise RuntimeError('Keeper initial budget actions did not return strict expected acknowledgements')
+    cases['ownerInitialBudgetSetThroughActualConsoleKeeperClient']=True
 
     stage = 'source-adoption-after-initial-budgets'
     source_adoption_code="""import{Pool}from'pg';import{readFileSync}from'node:fs';import{PgGrantStore}from'/app/packages/agent-kit/src/grant-store.ts';import{definitionSchema,hashOf}from'/app/packages/agent-kit/src/definition.ts';
@@ -617,15 +789,14 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
           '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/bin/budget-financial.ts',command_name,'--host']
         result=run(*args,input=json.dumps(payload) if payload is not None else None,timeout=45)
         return result.stdout.strip()
-    stage = 'host-only-provisioning'
-    accounts=json.loads(host_cli('provision-accounts',{'installationCap':'100','memberIds':members}))
-    if accounts.get('state')!='closed' or accounts.get('members')!=2:raise RuntimeError('Closed account provisioning was not acknowledged')
-    cases['closedAccountsProvisionedBeforeActivation']=True
-    binding_ids=[str(uuid.uuid4()),str(uuid.uuid4())]
-    for member,binding_id in zip(members,binding_ids):
-        result=json.loads(host_cli('provision-native',{'bindingId':binding_id,'credentialGeneration':'0','memberId':member,'agent':agent,'incarnation':incarnation,'purposeAlias':alias}))
-        if result!={'state':'bound-closed','bindingId':binding_id,'credentialGeneration':'0'}:raise RuntimeError('Closed native binding was not acknowledged')
-    cases['bothNativeMembersBoundClosedBeforeActivation']=True
+    stage = 'owner-only-host-provisioning'
+    accounts=json.loads(host_cli('provision-accounts',{'installationCap':'100','memberIds':[owner]}))
+    if accounts.get('state')!='closed' or accounts.get('members')!=1:raise RuntimeError('Owner-only closed account provisioning was not acknowledged')
+    cases['ownerOnlyClosedAccountProvisionedBeforeActivation']=True
+    owner_binding_id=str(uuid.uuid4())
+    owner_binding=json.loads(host_cli('provision-native',{'bindingId':owner_binding_id,'credentialGeneration':'0','memberId':owner,'agent':agent,'incarnation':incarnation,'purposeAlias':alias}))
+    if owner_binding!={'state':'bound-closed','bindingId':owner_binding_id,'credentialGeneration':'0'}:raise RuntimeError('Closed owner native binding was not acknowledged')
+    cases['ownerNativeBindingProvisionedClosed']=True
 
     def native_snapshot():
         return json.loads(financial_observer('native',base_config['budgetFinancial']['db']))
@@ -639,8 +810,8 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
     before_denial_bindings=json.loads(financial_observer('bindings',base_config['budgetFinancial']['db']))['bindings']
     denial_source="import{createConnection}from'node:net';const requests=JSON.parse(process.env.PROBE_REQUESTS);const expected='keeper: reachable only from the host command';let index=0;function next(){if(index>=requests.length){console.log('ordinary-denied');return}const item=requests[index++],s=createConnection('/run/lares/keeper.sock');let b='';s.once('connect',()=>s.end(JSON.stringify({...item,actor:'probe-ordinary-caller@example.invalid'})+'\\n'));s.on('data',x=>b+=x);s.on('end',()=>{let r;try{r=JSON.parse(b)}catch{process.exit(2);return}if(r.ok!==false||r.outcome!=='refused'||r.error!==expected){process.exit(3);return}next()});s.on('error',()=>process.exit(4))}next();"
     denial_requests=[
-      {'action':'budget.provision-native','input':{'bindingId':binding_ids[0],'credentialGeneration':'0','memberId':members[0],'agent':agent,'incarnation':incarnation,'purposeAlias':alias}},
-      {'action':'budget.activate-native','input':{'bindingId':binding_ids[0],'credentialGeneration':'0'}},
+      {'action':'budget.provision-native','input':{'bindingId':owner_binding_id,'credentialGeneration':'0','memberId':owner,'agent':agent,'incarnation':incarnation,'purposeAlias':alias}},
+      {'action':'budget.activate-native','input':{'bindingId':owner_binding_id,'credentialGeneration':'0'}},
     ]
     denial_env=json.dumps(denial_requests,separators=(',',':'))
     denied=output('docker','run','--rm','--network',network,'--user','10001:10001','-e','PROBE_REQUESTS='+denial_env,
@@ -658,9 +829,9 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
         before_activation['selected_endpoint'] is not None or before_activation['recovery_epoch'] is not None or
         str(before_activation['endpoint_generation'])!='0'):
         raise RuntimeError('Fresh account did not begin in the expected closed state')
-    first_activation=json.loads(host_cli('activate-native',{'bindingId':binding_ids[0],'credentialGeneration':'0'}))
+    first_activation=json.loads(host_cli('activate-native',{'bindingId':owner_binding_id,'credentialGeneration':'0'}))
     if first_activation.get('state')!='active':raise RuntimeError('First native activation was not acknowledged')
-    cases['firstNativeMemberActivated']=True
+    cases['configuredOwnerNativeActivation']=True
     first_state=native_snapshot()
     if (first_state['state']!='open' or first_state['reason']!='approved' or
         first_state['selected_endpoint']!=endpoint_hash or
@@ -671,9 +842,9 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
         first_state['liability']!=before_activation['liability']):
         raise RuntimeError('First activation did not establish the reviewed endpoint and fresh epoch without usage')
     selected=json.loads(financial_observer('members',base_config['budgetFinancial']['db']))['members']
-    if not selected_members_match_first_activation(selected,members):
-        raise RuntimeError('First activation did not open only the selected member account')
-    cases['firstActivationPreservesEndpointEpochAndOpensOnlySelectedMember']=True
+    if not selected_member_states_match(selected,{owner:'open'}):
+        raise RuntimeError('First activation did not open only the owner account')
+    cases['firstActivationOpensOnlyConfiguredOwnerAccount']=True
     if upstream_calls()!=0:raise RuntimeError('Upstream received traffic before the first model request')
 
     # Start the built Chief runtime with the real mounted definition and protected identity.
@@ -681,42 +852,103 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
     chief_name=network+'-chief'
     capsule_source=repo/'services/console/lib/model-purpose-capsule.ts'
     client_script=root/'first-use-client.mts'
-    client_script.write_text("""import { Client } from '/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js';
-import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { bindConsoleSession } from '/app/packages/agent-kit/src/console-turn-authority.ts';
-import { modelPurposeRawBodyHash, signPrivateModelPurposeRequest } from './model-purpose-capsule.ts';
-const agent='proof-agent',incarnation=process.env.LARES_AGENT_INCARNATION!,member='first-use-member-a';
+    client_script.write_text("""const fs=await import('node:fs');
+const phaseFile=process.env.FIRST_USE_PHASE_FILE;
+const phases=['imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'];
+let phase='imports';
+function mark(next){if(!phases.includes(next))return;phase=next;try{if(typeof phaseFile!=='string'||!/^\\/tmp\\/first-use-phase-(?:first|later|repeat)$/.test(phaseFile))return;const temp=phaseFile+'.tmp';fs.writeFileSync(temp,JSON.stringify({phase}),{mode:0o600});fs.renameSync(temp,phaseFile);}catch{}}
+mark('imports');
+void(async()=>{try{
+const { Client } = await import('/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js');
+const { randomBytes } = await import('node:crypto');
+const { readFileSync } = await import('node:fs');
+const { bindConsoleSession } = await import('/app/packages/agent-kit/src/console-turn-authority.ts');
+const { modelPurposeRawBodyHash, signPrivateModelPurposeRequest } = await import('./model-purpose-capsule.ts');
+const agent='proof-agent',incarnation=process.env.LARES_AGENT_INCARNATION!,member=process.env.FIRST_USE_MEMBER_ID!;
+mark('session-create');
 const nonce=randomBytes(32).toString('base64url'),password=readFileSync('/run/secrets/route-password','utf8').trim();
 process.env.PGPASSWORD=readFileSync('/run/secrets/app-password','utf8').trim();
 const headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),
   'x-lares-member-id':member,'x-lares-admission':nonce,'x-lares-purpose':'human'};
 const client=new Client({host:'http://127.0.0.1:3000',auth:{basic:{username:'eve',password}}});
 const {session}=await client.sessions.create({headers});
+mark('session-bind');
 const binding=await bindConsoleSession({agent,incarnation,sessionId:session.state.sessionId,memberId:member,admissionNonce:nonce});
 const message='Return exactly FIRST_USE_OK';
 const body=JSON.stringify({message}),path='/eve/v1/session/'+session.state.sessionId;
 const request={agent,incarnation,session:session.state.sessionId,member,admissionNonce:nonce,method:'POST',path,
   rawBodyHash:modelPurposeRawBodyHash(body),policyRevision:binding.policyRevision,
   definitionHash:process.env.FIRST_USE_DEFINITION_HASH!,purpose:'human',requestId:randomBytes(32).toString('base64url')};
+mark('capsule-sign');
 const capsule=await signPrivateModelPurposeRequest(request);
 const sendHeaders={...headers,'content-type':'application/json','x-lares-model-purpose-required':'1','x-lares-model-capsule':capsule};
-const result=await (await session.send(message,{headers:sendHeaders})).result();
-if(result.message!=='FIRST_USE_OK')throw new Error('runtime response mismatch');
-const replay=await client.fetch(path,{method:'POST',headers:sendHeaders,body});
-if(replay.ok)throw new Error('replayed capsule accepted');
-const staleBody=JSON.stringify({message:'changed request'});
-const staleRequest={...request,requestId:randomBytes(32).toString('base64url')};
-const staleCapsule=await signPrivateModelPurposeRequest(staleRequest);
-const stale=await client.fetch(path,{method:'POST',headers:{...sendHeaders,'x-lares-model-capsule':staleCapsule},body:staleBody});
-if(stale.ok)throw new Error('stale capsule accepted');
-const memberRequest={...request,requestId:randomBytes(32).toString('base64url')};
-const memberCapsule=await signPrivateModelPurposeRequest(memberRequest);
-const wrongMember=await client.fetch(path,{method:'POST',headers:{...sendHeaders,'x-lares-model-capsule':memberCapsule,'x-lares-member-id':'first-use-member-b'},body});
-if(wrongMember.ok)throw new Error('capsule accepted for another member');
-console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.message,
-  replayStatus:replay.status,staleStatus:stale.status,wrongMemberStatus:wrongMember.status}));
+mark('send');
+const pending=await session.send(message,{headers:sendHeaders});
+mark('turn-result');
+const result=await pending.result();
+if(result.message!=='FIRST_USE_OK')throw new Error();
+mark('refusalchecks');
+let replayStatus=null,staleStatus=null;
+if(process.env.CHECK_REFUSALS==='1'){
+  const replay=await client.fetch(path,{method:'POST',headers:sendHeaders,body});
+  if(replay.ok)throw new Error();
+  replayStatus=replay.status;
+  const staleBody=JSON.stringify({message:'changed request'});
+  const staleRequest={...request,requestId:randomBytes(32).toString('base64url')};
+  const staleCapsule=await signPrivateModelPurposeRequest(staleRequest);
+  const stale=await client.fetch(path,{method:'POST',headers:{...sendHeaders,'x-lares-model-capsule':staleCapsule},body:staleBody});
+  if(stale.ok)throw new Error();
+  staleStatus=stale.status;
+}
+let wrongMemberStatus=null;
+if(process.env.CHECK_REFUSALS==='1'){
+  const memberRequest={...request,requestId:randomBytes(32).toString('base64url')};
+  const memberCapsule=await signPrivateModelPurposeRequest(memberRequest);
+  const wrongMember=await client.fetch(path,{method:'POST',headers:{...sendHeaders,'x-lares-model-capsule':memberCapsule,'x-lares-member-id':'first-use-no-such-member'},body});
+  if(wrongMember.ok)throw new Error();
+  wrongMemberStatus=wrongMember.status;
+}
+mark('complete');
+console.log(JSON.stringify({response:result.message,replayStatus,staleStatus,wrongMemberStatus}));
+}catch{process.exitCode=1}})();
 """)
+
+    def fixed_client_failure_observations():
+        observations={'upstreamDispatchCount':None,'financialDurableCounts':None}
+        try:
+            count=upstream_calls()
+            if type(count) is int and 0<=count<=1000000:observations['upstreamDispatchCount']=count
+        except Exception:pass
+        try:
+            state=native_snapshot()
+            counts={key:state.get(source) for key,source in (
+              ('attempts','attempts'),('grants','grants'),('settled','settled'))}
+            if all(type(value) is int and 0<=value<=1000000 for value in counts.values()):
+                observations['financialDurableCounts']=counts
+        except Exception:pass
+        return observations
+
+    def invoke_compiled_client(member_id, marker_id, *, check_refusals=False):
+        args=['docker','exec','-e','FIRST_USE_MEMBER_ID='+member_id,
+          '-e','FIRST_USE_PHASE_FILE='+COMPILED_CLIENT_PHASE_FILES[marker_id]]
+        if check_refusals:args.extend(['-e','CHECK_REFUSALS=1'])
+        args.extend([chief_name,'/app/services/chief-of-staff/node_modules/.bin/tsx',
+          '/app/services/chief-of-staff/first-use-client.mts'])
+        try:initialize_compiled_client_phase(chief_name,marker_id)
+        except Exception:pass
+        timed_out=False
+        try:result=run(*args,check=False,timeout=90)
+        except RuntimeError:
+            timed_out=True;result=None
+        if timed_out or result.returncode!=0:
+            summary=compiled_client_phase_summary(chief_name,marker_id)
+            exit_code=None if result is None or not 0<=result.returncode<=255 else result.returncode
+            proof['firstUseClientDiagnostics']={'request':marker_id,**summary,
+              'timedOut':timed_out,'exitCode':exit_code,**fixed_client_failure_observations()}
+            if timed_out:raise RuntimeError('Compiled signed request exceeded its time bound')
+            raise RuntimeError('Compiled signed request failed')
+        return result.stdout.strip()
+
     before_request_state=native_snapshot()
     args=compiled_chief_start_args(chief_name=chief_name,network=network,agent_dir=agent_dir,run_dir=run_dir,
       capsule_source=capsule_source,client_script=client_script,chief_image=chief_image,secrets_dir=secrets_dir,agent=agent,
@@ -794,8 +1026,8 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
     cases['compiledChiefHasNoLegacyGatewayKeyAndOnlyNarrowSecretMounts']=True
     cases['compiledChiefRuntimeReady']=True
 
-    stage = 'console-signature-and-first-model-request'
-    client_result=output('docker','exec',chief_name,'/app/services/chief-of-staff/node_modules/.bin/tsx','/app/services/chief-of-staff/first-use-client.mts',timeout=90)
+    stage = 'owner-first-console-signature-and-model-request'
+    client_result=invoke_compiled_client(owner,'owner-first',check_refusals=True)
     request_result=json.loads(client_result)
     if request_result.get('response')!='FIRST_USE_OK' or request_result.get('replayStatus',200)<400 or request_result.get('staleStatus',200)<400 or request_result.get('wrongMemberStatus',200)<400:
         raise RuntimeError('Signed first-use or refusal checks did not match the expected result')
@@ -815,27 +1047,141 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
     after_refusals=native_snapshot()
     if after_refusals!=settled or upstream_calls()!=1:
         raise RuntimeError('Replay, stale-body or wrong-member refusal changed durable usage or dispatched again')
-    proof['settlement']={'upstreamDispatches':1,'attempts':settled['attempts'],'settled':settled['settled'],
-      'settledLiability':settled['liability'],'endpointGeneration':settled['endpoint_generation']}
+    owner_first_authority=json.loads(financial_observer('authority',base_config['budgetFinancial']['db']))
+    if not owner_financial_authority_snapshot_complete(owner_first_authority,owner):
+        raise RuntimeError('Exact owner financial authority snapshot did not contain the one settled owner path')
+    proof['firstOwnerSettlement']={'upstreamDispatches':1,'attempts':settled['attempts'],'settled':settled['settled'],
+      'endpointGeneration':settled['endpoint_generation'],'exactPriorFinancialRowsCaptured':True}
     proof['response']='FIRST_USE_OK'
-    cases['oneConsoleSignedModelRequestSettled']=True
+    cases['configuredOwnerFirstConsoleSignedModelRequestSettledBeforeLaterMemberExists']=True
     cases['replayStaleBodyAndWrongMemberRefusedWithoutDispatch']=True
 
-    stage = 'second-member-activation'
-    second_activation=json.loads(host_cli('activate-native',{'bindingId':binding_ids[1],'credentialGeneration':'0'}))
-    if second_activation.get('state')!='active':raise RuntimeError('Second native activation was not acknowledged')
-    after_state=native_snapshot()
-    if (after_state['selected_endpoint']!=settled['selected_endpoint'] or after_state['recovery_epoch']!=settled['recovery_epoch'] or
-        after_state['endpoint_generation']!=settled['endpoint_generation'] or after_state['attempts']!=settled['attempts'] or
-        after_state['grants']!=settled['grants'] or after_state['settled']!=settled['settled'] or after_state['liability']!=settled['liability']):
-        raise RuntimeError('Second activation changed the endpoint, epoch, existing usage or liability')
+    stage = 'later-member-source-identity-link'
+    later_source_code="""import{Pool}from'pg';import{readFileSync}from'node:fs';
+const p=new Pool({host:'proof-db',database:'proof',user:'lares_app',password:readFileSync('/etc/lares/secrets/app-password','utf8').trim(),max:1});const member='first-use-member-later',org='first-use-org';
+try{await p.query(\"INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Later member',$2,'member','active')\",[member,org]);await p.query(\"INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'fixture-tenant')\",[member,'subject-'+member]);console.log(JSON.stringify({linked:true}));}finally{await p.end()}"""
+    later_source=root/'later-member-source.mts';later_source.write_text(later_source_code)
+    later_source_result=run('docker','run','--rm','--network',network,'--user','0:0',
+      '--mount',f'type=bind,src={secrets_dir}/app-password,dst=/etc/lares/secrets/app-password,readonly',
+      '--mount',f'type=bind,src={later_source},dst=/app/services/keeper/later-member-source.mts,readonly',
+      '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/later-member-source.mts')
+    later_identity=json.loads(later_source_result.stdout.strip())
+    if later_identity!={'linked':True}:
+        raise RuntimeError('Later verified member source identity was not linked')
+
+    stage = 'later-member-initial-budget-actions-through-console-client'
+    initial_budget_client.write_text(initial_budget_client_source(
+      [{'memberId':owner,'eligible':False,'setupComplete':True},
+       {'memberId':later_member,'eligible':True,'setupComplete':False}],[later_member]))
+    later_budget_result=run(*initial_budget_client_args(network=network,run_dir=run_dir,token_file=owner_token_file,
+      client_source=repo/'services/console/lib/keeper-client.ts',client_script=initial_budget_client,keeper_image=keeper_image),timeout=45)
+    later_budget_identity=json.loads(later_budget_result.stdout.strip())
+    if later_budget_identity!={'statusCount':2,'capsSaved':1}:
+        raise RuntimeError('Later member initial budget action did not return the strict expected acknowledgement')
+    cases['laterMemberInitialBudgetSetThroughActualConsoleKeeperClient']=True
+
+    stage = 'later-member-ordinary-grant-check'
+    later_grant_code="""import{Pool}from'pg';import{readFileSync}from'node:fs';import{PgGrantStore}from'/app/packages/agent-kit/src/grant-store.ts';
+const p=new Pool({host:'proof-db',database:'proof',user:'lares_app',password:readFileSync('/etc/lares/secrets/app-password','utf8').trim(),max:1});const member='first-use-member-later',agent='proof-agent';
+try{const db=await p.connect();try{await db.query('BEGIN');try{const grant=await new PgGrantStore().captureUseWithExpiry(member,agent,{db});if(!grant||!Number.isSafeInteger(grant.accessRevision)||grant.accessRevision<1)throw Error();await db.query('COMMIT');console.log(JSON.stringify({shared:true,accessRevision:grant.accessRevision}));}catch(error){await db.query('ROLLBACK');throw error}}finally{db.release();}}finally{await p.end()}"""
+    later_grant=root/'later-member-grant.mts';later_grant.write_text(later_grant_code)
+    later_grant_result=run('docker','run','--rm','--network',network,'--user','0:0',
+      '--mount',f'type=bind,src={secrets_dir}/app-password,dst=/etc/lares/secrets/app-password,readonly',
+      '--mount',f'type=bind,src={later_grant},dst=/app/services/keeper/later-member-grant.mts,readonly',
+      '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/later-member-grant.mts')
+    later_grant_identity=json.loads(later_grant_result.stdout.strip())
+    if later_grant_identity!={'shared':True,'accessRevision':source_identity['accessRevision']}:
+        raise RuntimeError('Later verified member was not authorized by the current ordinary organisation grant')
+    authority_after_later_source=json.loads(financial_observer('authority',base_config['budgetFinancial']['db']))
+    if not financial_authority_preserved(owner_first_authority,authority_after_later_source):
+        raise RuntimeError('Later source and cap setup changed existing owner financial authority rows')
+    cases['laterVerifiedMemberLinkedAfterOwnerFirstSettlementAndCoveredByOrdinaryGrant']=True
+
+    stage = 'later-member-host-account-provisioning'
+    later_accounts=json.loads(host_cli('provision-accounts',{'installationCap':'100','memberIds':[later_member]}))
+    if later_accounts.get('state')!='closed' or later_accounts.get('members')!=1:
+        raise RuntimeError('Later member closed account provisioning was not acknowledged')
+    after_later_account=native_snapshot()
+    later_account_states=json.loads(financial_observer('members',base_config['budgetFinancial']['db']))['members']
+    if not selected_member_states_match(later_account_states,{owner:'open',later_member:'closed'}):
+        raise RuntimeError('Later account provisioning changed the owner or failed to keep the new member closed')
+    authority_after_account=json.loads(financial_observer('authority',base_config['budgetFinancial']['db']))
+    if not financial_authority_preserved(owner_first_authority,authority_after_account):
+        raise RuntimeError('Later account provisioning changed existing financial authority rows')
+    if any(after_later_account[key]!=settled[key] for key in ('selected_endpoint','recovery_epoch','endpoint_generation','attempts','grants','settled','liability')):
+        raise RuntimeError('Later account provisioning changed the selected endpoint, epoch or settled owner usage')
+    cases['laterAccountStartsClosedAndPreservesExactOwnerFinancialRows']=True
+
+    stage = 'later-member-native-provisioning'
+    later_binding_id=str(uuid.uuid4())
+    later_binding=json.loads(host_cli('provision-native',{'bindingId':later_binding_id,'credentialGeneration':'0','memberId':later_member,'agent':agent,'incarnation':incarnation,'purposeAlias':alias}))
+    if later_binding!={'state':'bound-closed','bindingId':later_binding_id,'credentialGeneration':'0'}:
+        raise RuntimeError('Later member closed native binding was not acknowledged')
+    before_later_activation=json.loads(financial_observer('authority',base_config['budgetFinancial']['db']))
+    if not financial_authority_preserved(owner_first_authority,before_later_activation):
+        raise RuntimeError('Later native provisioning changed existing financial authority rows')
+    all_bindings=json.loads(financial_observer('bindings',base_config['budgetFinancial']['db']))['bindings']
+    if len(all_bindings)!=2 or not any(row.get('id')==owner_binding_id and row.get('state')=='active' for row in all_bindings) or not any(row.get('id')==later_binding_id and row.get('state')=='active' for row in all_bindings):
+        raise RuntimeError('Later native provisioning did not retain the active owner binding and create the closed member binding')
+    cases['laterMemberNativeCredentialBoundClosedAfterOwnerFirstSettlement']=True
+
+    stage = 'later-member-activation'
+    later_activation=json.loads(host_cli('activate-native',{'bindingId':later_binding_id,'credentialGeneration':'0'}))
+    if later_activation.get('state')!='active':raise RuntimeError('Later native activation was not acknowledged')
+    after_later_activation=native_snapshot()
+    if any(after_later_activation[key]!=settled[key] for key in ('selected_endpoint','recovery_epoch','endpoint_generation','attempts','grants','settled','liability')):
+        raise RuntimeError('Later member activation changed the endpoint, epoch or existing settled usage')
     active_members=json.loads(financial_observer('members',base_config['budgetFinancial']['db']))['members']
-    if len(active_members)!=2 or any(row['state']!='open' for row in active_members):raise RuntimeError('Second activation did not open both preprovisioned members')
-    if upstream_calls()!=1:raise RuntimeError('Second activation caused an additional upstream dispatch')
-    proof['secondActivation']={'bothMembersOpen':True,'endpointGeneration':after_state['endpoint_generation'],
-      'attempts':after_state['attempts'],'settled':after_state['settled'],'settledLiability':after_state['liability']}
-    cases['secondActivationPreservesEndpointEpochAndLiability']=True
-    cases['bothMembersActiveAfterSecondActivation']=True
+    if not selected_member_states_match(active_members,{owner:'open',later_member:'open'}):
+        raise RuntimeError('Later activation did not preserve the owner and open the later member account')
+    authority_after_later_activation=json.loads(financial_observer('authority',base_config['budgetFinancial']['db']))
+    if not financial_authority_preserved(owner_first_authority,authority_after_later_activation):
+        raise RuntimeError('Later activation changed exact prior owner financial authority rows')
+    if upstream_calls()!=1:raise RuntimeError('Later member activation caused an upstream dispatch')
+    cases['laterActivationPreservesOwnerRosterEndpointEpochAndLiability']=True
+
+    stage = 'later-member-console-signed-model-request'
+    later_request_result=json.loads(invoke_compiled_client(later_member,'later-member'))
+    if later_request_result.get('response')!='FIRST_USE_OK' or later_request_result.get('replayStatus') is not None or later_request_result.get('staleStatus') is not None or later_request_result.get('wrongMemberStatus') is not None:
+        raise RuntimeError('Later member signed request did not return the expected response')
+    if upstream_calls()!=2:raise RuntimeError('Later member request did not dispatch exactly once')
+    settlement_deadline=time.monotonic()+30
+    later_settled=native_snapshot()
+    while (later_settled['attempts']!=settled['attempts']+1 or
+           later_settled['grants']!=settled['grants']+1 or
+           later_settled['settled']!=settled['settled']+1):
+        if time.monotonic()>=settlement_deadline:break
+        time.sleep(.25);later_settled=native_snapshot()
+    if any(later_settled[key]!=settled[key]+1 for key in ('attempts','grants','settled')):
+        raise RuntimeError('Later member request did not produce exactly one durable settlement')
+    later_authority=json.loads(financial_observer('authority',base_config['budgetFinancial']['db']))
+    if not financial_settlement_delta_matches(authority_after_later_activation,later_authority,later_member,later_binding_id):
+        raise RuntimeError('Later member settlement was not exactly linked to its activated member and native authority')
+    cases['laterMemberConsoleSignedRequestSettledOnce']=True
+
+    stage = 'owner-repeat-console-signed-model-request'
+    owner_repeat_result=json.loads(invoke_compiled_client(owner,'owner-repeat'))
+    if owner_repeat_result.get('response')!='FIRST_USE_OK' or owner_repeat_result.get('replayStatus') is not None or owner_repeat_result.get('staleStatus') is not None or owner_repeat_result.get('wrongMemberStatus') is not None:
+        raise RuntimeError('Owner repeat signed request did not return the expected response')
+    if upstream_calls()!=3:raise RuntimeError('Owner repeat request did not dispatch exactly once')
+    settlement_deadline=time.monotonic()+30
+    final_state=native_snapshot()
+    while (final_state['attempts']!=later_settled['attempts']+1 or
+           final_state['grants']!=later_settled['grants']+1 or
+           final_state['settled']!=later_settled['settled']+1):
+        if time.monotonic()>=settlement_deadline:break
+        time.sleep(.25);final_state=native_snapshot()
+    if any(final_state[key]!=later_settled[key]+1 for key in ('attempts','grants','settled')):
+        raise RuntimeError('Owner repeat request did not produce exactly one durable settlement')
+    final_authority=json.loads(financial_observer('authority',base_config['budgetFinancial']['db']))
+    if not financial_settlement_delta_matches(later_authority,final_authority,owner,owner_binding_id):
+        raise RuntimeError('Owner repeat settlement was not exactly linked to the owner and native authority')
+    if upstream_calls()!=3:raise RuntimeError('Replay or activation caused an extra upstream dispatch')
+    proof['combinedLaterMemberContinuity']={'firstOwnerSettlement':1,'laterMemberSettlement':1,
+      'ownerRepeatSettlement':1,'upstreamDispatches':3,'exactPriorFinancialRowsPreserved':True,
+      'ownerAndLaterMemberOpen':True}
+    cases['configuredOwnerSettlesAgainAfterLaterMember']=True
+    cases['laterMemberAndOwnerSettlementsEachExactlyOnce']=True
     proof['status']='passed'
     proof['failedStage']=None
 except Exception:
