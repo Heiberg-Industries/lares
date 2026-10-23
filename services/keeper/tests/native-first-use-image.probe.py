@@ -1,5 +1,5 @@
 """CI-only end-to-end first-use proof: compiled Eve, production Keeper and local fixtures."""
-import hashlib, json, os, pathlib, secrets, shutil, subprocess, sys, tempfile, time, uuid
+import hashlib, json, os, pathlib, re, secrets, select, shutil, subprocess, sys, tempfile, time, uuid
 
 if os.environ.get('CI') != 'true':
     raise SystemExit('Combined native first-use proof runs only in disposable CI')
@@ -144,6 +144,90 @@ def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, capsul
     for key,value in runtime_environment.items():args.extend(['-e',key+'='+value])
     args.append(chief_image)
     return args
+
+def safe_startup_container_state(*, found, status='', running=False, exit_code=None, oom_killed=False):
+    allowed_statuses={'created','restarting','running','removing','paused','exited','dead'}
+    try: parsed_exit_code=int(exit_code)
+    except (TypeError,ValueError): parsed_exit_code=None
+    if parsed_exit_code is not None and not 0<=parsed_exit_code<=255: parsed_exit_code=None
+    return {'found':found is True,'status':status if status in allowed_statuses else 'unknown',
+      'running':running is True,'exitCode':parsed_exit_code,'oomKilled':oom_killed is True}
+
+def safe_startup_log_categories(log_text):
+    # Inspect only a bounded tail and return fixed booleans. Never place log bytes in proof output.
+    text=str(log_text)[-32768:].lower()
+    patterns={
+      'missingSettings':r'required settings|startup settings check',
+      'invalidConfiguration':r'invalid config|configuration error|failed to load config',
+      'moduleResolution':r'err_module_not_found|cannot find (?:package|module)',
+      'permissionDenied':r'eacces|permission denied',
+      'readOnlyFilesystem':r'erofs|read-only file system',
+      'databaseUnavailable':r'econnrefused|database connection|password authentication failed',
+      'addressInUse':r'eaddrinuse|address already in use',
+      'memoryExhaustion':r'heap out of memory|out of memory|oomkilled',
+    }
+    return {name:re.search(pattern,text) is not None for name,pattern in patterns.items()}
+
+def bounded_compiled_runtime_logs(name):
+    process=None
+    try:
+        process=subprocess.Popen(['docker','logs','--tail','40',name],stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+        captured=bytearray()
+        deadline=time.monotonic()+5
+        if process.stdout is not None:
+            while True:
+                remaining=deadline-time.monotonic()
+                if remaining<=0:break
+                ready,_,_=select.select([process.stdout],[],[],remaining)
+                if not ready:break
+                chunk=os.read(process.stdout.fileno(),4096)
+                if not chunk:break
+                captured.extend(chunk)
+                if len(captured)>32768:del captured[:-32768]
+        return captured[-32768:].decode('utf-8','replace')
+    except Exception:
+        return ''
+    finally:
+        if process is not None:
+            try:
+                if process.poll() is None:process.kill()
+            except Exception:pass
+            try:process.wait(timeout=2)
+            except Exception:
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except Exception:pass
+
+def compiled_startup_diagnostics(name, *, failed_stage, launch_result=None, launch_timed_out=False):
+    state_result=run('docker','inspect','--format',
+      '{{.State.Status}}|{{.State.Running}}|{{.State.ExitCode}}|{{.State.OOMKilled}}',
+      name,check=False,timeout=10)
+    state_fields=state_result.stdout.strip().split('|') if state_result.returncode==0 else []
+    state=safe_startup_container_state(
+      found=state_result.returncode==0,
+      status=state_fields[0] if len(state_fields)==4 else '',
+      running=len(state_fields)==4 and state_fields[1]=='true',
+      exit_code=state_fields[2] if len(state_fields)==4 else None,
+      oom_killed=len(state_fields)==4 and state_fields[3]=='true')
+    bounded_logs=bounded_compiled_runtime_logs(name) if state['found'] else ''
+    if launch_result is not None:
+        bounded_logs=(bounded_logs+'\n'+launch_result.stdout[-32768:])[-32768:]
+    return {'stage':failed_stage,
+      'dockerRunExitCode':launch_result.returncode if launch_result is not None else None,
+      'dockerRunTimedOut':launch_timed_out is True,
+      'container':state,
+      'startupCategories':safe_startup_log_categories(bounded_logs)}
+
+def register_compiled_chief_container(name, container_names, *, created_by_success=False):
+    if name!=network+'-chief':return False
+    if created_by_success:
+        if name not in container_names:container_names.append(name)
+        return True
+    inspected=run('docker','inspect','--format','{{.State.Status}}',name,check=False,timeout=10)
+    if inspected.returncode!=0:return False
+    if name not in container_names:container_names.append(name)
+    return True
 
 def initial_budget_client_args(*, network, run_dir, token_file, client_source,
                                client_script, keeper_image):
@@ -571,7 +655,7 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
     if upstream_calls()!=0:raise RuntimeError('Upstream received traffic before the first model request')
 
     # Start the built Chief runtime with the real mounted definition and protected identity.
-    stage = 'compiled-runtime-startup'
+    stage = 'runtime-create'
     chief_name=network+'-chief'
     capsule_source=repo/'services/console/lib/model-purpose-capsule.ts'
     client_script=root/'first-use-client.mts'
@@ -615,13 +699,30 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
     args=compiled_chief_start_args(chief_name=chief_name,network=network,agent_dir=agent_dir,run_dir=run_dir,
       capsule_source=capsule_source,client_script=client_script,chief_image=chief_image,secrets_dir=secrets_dir,agent=agent,
       incarnation=incarnation,owner=owner,definition_hash=definition_hash,workflow_database=workflow_database)
-    docker(*args);container_names.append(chief_name)
+    try:launch_result=run('docker',*args,check=False,timeout=120)
+    except RuntimeError:
+        register_compiled_chief_container(chief_name,container_names)
+        proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(
+          chief_name,failed_stage=stage,launch_timed_out=True)
+        raise RuntimeError('Compiled Chief runtime container creation exceeded its time bound') from None
+    if launch_result.returncode!=0:
+        register_compiled_chief_container(chief_name,container_names)
+        proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(
+          chief_name,failed_stage=stage,launch_result=launch_result)
+        raise RuntimeError('Compiled Chief runtime container creation failed')
+    register_compiled_chief_container(chief_name,container_names,created_by_success=True)
+    stage = 'runtime-health'
     for _ in range(120):
         health=run('docker','exec',chief_name,'node','-e',"fetch('http://127.0.0.1:3000/eve/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",check=False)
         if health.returncode==0:break
-        if docker('inspect','--format','{{.State.Running}}',chief_name)!='true':raise RuntimeError('Compiled Chief runtime exited before health check')
+        if docker('inspect','--format','{{.State.Running}}',chief_name)!='true':
+            proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(chief_name,failed_stage=stage)
+            raise RuntimeError('Compiled Chief runtime exited before health check')
         time.sleep(.25)
-    else:raise RuntimeError('Compiled Chief runtime did not become healthy')
+    else:
+        proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(chief_name,failed_stage=stage)
+        raise RuntimeError('Compiled Chief runtime did not become healthy')
+    stage = 'runtime-config'
     runtime_environment=json.loads(docker('inspect','--format','{{json .Config.Env}}',chief_name))
     runtime_mounts=json.loads(docker('inspect','--format','{{json .Mounts}}',chief_name))
     env_values={entry.split('=',1)[0]:entry.split('=',1)[1] for entry in runtime_environment if '=' in entry}
@@ -633,7 +734,9 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
         env_values.get('LARES_MODEL_PURPOSE_RUNTIME_SOCKET')!='/run/lares/model-purpose/model-purpose.sock' or
         env_values.get('LARES_AGENT_INCARNATION')!=incarnation or
         env_values.get('LARES_RUNTIME_CONTROL_SECRET_FILE')!='/run/secrets/runtime-control'):
-        raise RuntimeError('Compiled Chief runtime exposed a legacy or provider key setting')
+        proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(chief_name,failed_stage=stage)
+        raise RuntimeError('Compiled Chief runtime environment did not match the managed-keyless contract')
+    stage = 'runtime-secret-mounts'
     actual_secret_mounts=[mount for mount in runtime_mounts if mount.get('Destination','').startswith('/run/secrets/')]
     expected_secret_sources={
       '/run/secrets/app-password':str(secrets_dir/'app-password'),
@@ -643,12 +746,15 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
       '/run/secrets/console-model-purpose-signing-key':str(secrets_dir/'console-model-purpose-signing-key')}
     actual_secret_sources={mount.get('Destination'):mount.get('Source') for mount in actual_secret_mounts}
     if actual_secret_sources!=expected_secret_sources or any(mount.get('RW') for mount in actual_secret_mounts):
+        proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(chief_name,failed_stage=stage)
         raise RuntimeError('Compiled Chief runtime secret mounts did not match the narrow fixture')
+    stage = 'runtime-protected-paths'
     protected_fixture_secrets={str(secrets_dir/name) for name in (
       'gateway-master','gateway-budget-service-key','native-policy.json','model-provider-key',
       'native-litellm-password','financial-database-password')}
     if (any(mount.get('Source')==str(secrets_dir) for mount in runtime_mounts) or
         any(mount.get('Source') in protected_fixture_secrets for mount in runtime_mounts)):
+        proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(chief_name,failed_stage=stage)
         raise RuntimeError('Compiled Chief runtime received protected fixture secret material')
     check_secret_paths=['/run/secrets/gateway-key','/run/secrets/gateway-master',
       '/run/secrets/gateway-budget-service-key','/run/secrets/native-policy.json',
@@ -656,9 +762,13 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
       '/run/secrets/financial-database-password']
     for secret_path in check_secret_paths:
         result=run('docker','exec',chief_name,'test','!','-r',secret_path,check=False)
-        if result.returncode:raise RuntimeError('Compiled Chief runtime could read a fixture-only protected secret')
+        if result.returncode:
+            proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(chief_name,failed_stage=stage)
+            raise RuntimeError('Compiled Chief runtime could read a fixture-only protected secret')
     absent_gateway_path=run('docker','exec',chief_name,'test','!','-e','/run/secrets/gateway-key',check=False)
-    if absent_gateway_path.returncode:raise RuntimeError('Legacy default gateway-key path exists in the compiled Chief runtime')
+    if absent_gateway_path.returncode:
+        proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(chief_name,failed_stage=stage)
+        raise RuntimeError('Legacy default gateway-key path exists in the compiled Chief runtime')
     cases['compiledChiefHasNoLegacyGatewayKeyAndOnlyNarrowSecretMounts']=True
     cases['compiledChiefRuntimeReady']=True
 
@@ -709,6 +819,9 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
 except Exception:
     proof['status']='failed'
     proof['failedStage']=stage
+    if stage in {'runtime-create','runtime-health','runtime-config','runtime-secret-mounts','runtime-protected-paths'} and 'compiledRuntimeDiagnostics' not in proof:
+        try:proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(chief_name,failed_stage=stage)
+        except Exception:proof['compiledRuntimeDiagnostics']={'stage':stage,'container':safe_startup_container_state(found=False),'startupCategories':safe_startup_log_categories('')}
     raise SystemExit('Combined first-use proof failed at '+stage)
 finally:
     cleanup_failed=False

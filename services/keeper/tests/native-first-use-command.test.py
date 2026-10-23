@@ -27,7 +27,18 @@ class GatewayDockerCommandTests(unittest.TestCase):
             and isinstance(node.value.args[0], ast.Starred)
             and isinstance(node.value.args[0].value, ast.Name)
         ), key=lambda node: node.lineno)
-        self.assertEqual([node.value.args[0].value.id for node in launches], ["gateway_args", "keeper_cmd", "args"])
+        self.assertEqual([node.value.args[0].value.id for node in launches], ["gateway_args", "keeper_cmd"])
+        runtime_launches = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "run"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Constant) and node.args[0].value == "docker"
+            and isinstance(node.args[1], ast.Starred)
+            and any(keyword.arg == "timeout" and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == 120 for keyword in node.keywords)
+        ]
+        self.assertEqual([node.args[1].value.id for node in runtime_launches], ["args"])
 
         calls = []
 
@@ -202,6 +213,150 @@ class CompiledChiefKeylessCommandTests(unittest.TestCase):
         self.assertFalse(any(name.endswith(("_API_KEY", "_KEY_FILE")) for name in env_values))
         self.assertFalse({"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
                           "LITELLM_MASTER_KEY", "GATEWAY_MASTER_KEY_FILE"} & env_values.keys())
+
+
+class CompiledChiefStartupDiagnosticTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        cls.functions = {
+            node.name: node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in {"safe_startup_container_state", "safe_startup_log_categories",
+                              "bounded_compiled_runtime_logs", "register_compiled_chief_container"}
+        }
+        cls.namespace = {"re": __import__("re")}
+        module = ast.fix_missing_locations(ast.Module(body=list(cls.functions.values()), type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), cls.namespace)
+        cls.tree = tree
+
+    def test_state_summary_keeps_only_fixed_typed_container_fields(self) -> None:
+        summary = self.namespace["safe_startup_container_state"](
+            found=True, status="exited", running=False, exit_code="137", oom_killed=True,
+        )
+        self.assertEqual(summary, {
+            "found": True, "status": "exited", "running": False, "exitCode": 137, "oomKilled": True,
+        })
+        invalid = self.namespace["safe_startup_container_state"](
+            found=False, status="secret-bearing-status", running="true", exit_code="99999", oom_killed=1,
+        )
+        self.assertEqual(invalid, {
+            "found": False, "status": "unknown", "running": False, "exitCode": None, "oomKilled": False,
+        })
+
+    def test_log_summary_is_bounded_allowlisted_and_never_returns_log_text(self) -> None:
+        secret_canary = "NEVER-EMIT-THIS-SESSION-TOKEN"
+        classify = self.namespace["safe_startup_log_categories"]
+        clipped = classify("read-only file system " + ("x" * 40000) + "EACCES: permission denied " + secret_canary)
+        self.assertFalse(clipped["readOnlyFilesystem"])
+        self.assertTrue(clipped["permissionDenied"])
+        self.assertEqual(set(clipped), {
+            "missingSettings", "invalidConfiguration", "moduleResolution", "permissionDenied",
+            "readOnlyFilesystem", "databaseUnavailable", "addressInUse", "memoryExhaustion",
+        })
+        self.assertNotIn(secret_canary, json.dumps(clipped))
+        self.assertTrue(classify("Error [ERR_MODULE_NOT_FOUND]: Cannot find package")["moduleResolution"])
+
+    def test_continuously_readable_log_pipe_stops_at_deadline_and_reaps_process(self) -> None:
+        class FakePipe:
+            def fileno(self):
+                return 42
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdout = FakePipe()
+                self.killed = False
+                self.waited = False
+
+            def poll(self):
+                return None if not self.killed else -9
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                self.waited = True
+                return -9
+
+        process = FakeProcess()
+        clock_values = iter([0.0, 0.0, 4.0, 5.0])
+        reads = []
+        selects = []
+        self.namespace.update({
+            "subprocess": SimpleNamespace(PIPE=object(), STDOUT=object(), Popen=lambda *_args, **_kwargs: process),
+            "time": SimpleNamespace(monotonic=lambda: next(clock_values)),
+            "select": SimpleNamespace(select=lambda *args: selects.append(args) or ([process.stdout], [], [])),
+            "os": SimpleNamespace(read=lambda *_args: reads.append(True) or b"EACCES: permission denied\n"),
+        })
+        captured = self.namespace["bounded_compiled_runtime_logs"]("fixture-network-chief")
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(len(selects), 2)
+        self.assertTrue(process.killed)
+        self.assertTrue(process.waited)
+        self.assertIn("permission denied", captured)
+
+    def test_nonzero_launch_discovery_registers_only_owned_container_for_cleanup(self) -> None:
+        inspections = []
+
+        def inspect_created(*args, **_kwargs):
+            inspections.append(args)
+            return SimpleNamespace(returncode=0, stdout="created\n")
+
+        self.namespace.update({"network": "fixture-network", "run": inspect_created})
+        container_names = []
+        register = self.namespace["register_compiled_chief_container"]
+        self.assertTrue(register("fixture-network-chief", container_names))
+        self.assertEqual(container_names, ["fixture-network-chief"])
+        inspection_count = len(inspections)
+        self.assertFalse(register("unowned-project-chief", container_names))
+        self.assertEqual(len(inspections), inspection_count)
+
+        launch_failure = next(
+            node for node in ast.walk(self.tree)
+            if isinstance(node, ast.If)
+            and ast.unparse(node.test) == "launch_result.returncode != 0"
+        )
+        ordered_calls = [
+            node.func.id for node in sorted(
+                (item for item in ast.walk(launch_failure) if isinstance(item, ast.Call)),
+                key=lambda call: call.lineno,
+            ) if isinstance(node.func, ast.Name)
+            and node.func.id in {"register_compiled_chief_container", "compiled_startup_diagnostics"}
+        ]
+        self.assertEqual(ordered_calls, ["register_compiled_chief_container", "compiled_startup_diagnostics"])
+        timeout_handler = next(
+            node for node in ast.walk(self.tree)
+            if isinstance(node, ast.ExceptHandler)
+            and isinstance(node.type, ast.Name) and node.type.id == "RuntimeError"
+            and any(isinstance(item, ast.Call) and isinstance(item.func, ast.Name)
+                    and item.func.id == "register_compiled_chief_container" for item in ast.walk(node))
+        )
+        timeout_calls = [
+            node.func.id for node in sorted(
+                (item for item in ast.walk(timeout_handler) if isinstance(item, ast.Call)),
+                key=lambda call: call.lineno,
+            ) if isinstance(node.func, ast.Name)
+            and node.func.id in {"register_compiled_chief_container", "compiled_startup_diagnostics"}
+        ]
+        self.assertEqual(timeout_calls, ["register_compiled_chief_container", "compiled_startup_diagnostics"])
+
+    def test_compiled_runtime_failure_stages_are_separated_and_ordered(self) -> None:
+        stage_assignments = sorted((
+            node for node in ast.walk(self.tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "stage" for target in node.targets)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and node.value.value.startswith("runtime-")
+        ), key=lambda node: node.lineno)
+        stages = [node.value.value for node in stage_assignments]
+        expected = ["runtime-create", "runtime-health", "runtime-config",
+                    "runtime-secret-mounts", "runtime-protected-paths"]
+        cursor = 0
+        for stage in stages:
+            if cursor < len(expected) and stage == expected[cursor]:
+                cursor += 1
+        self.assertEqual(cursor, len(expected), stages)
 
 
 class FinancialObserverTests(unittest.TestCase):
