@@ -142,6 +142,23 @@ async function seedR5Custody(input:{owner:string;resource:string;id:string;state
     VALUES($1,$2,$3,'stage',$4,0,1,1,'staged')`,[operationId,input.id,input.owner,Buffer.alloc(32,5)]);
 }
 
+async function fixtureCustodySnapshot():Promise<{
+  accounts:Record<string,unknown>[];
+  revisions:Record<string,unknown>[];
+  operations:Record<string,unknown>[];
+}>{
+  const owners=[FIXTURE_OWNER,FIXTURE_SECOND];
+  const [accounts,revisions,operations]=await Promise.all([
+    db.pool.query<Record<string,unknown>>(`SELECT * FROM outside_custody_accounts
+      WHERE owner_member_id=ANY($1::text[]) ORDER BY account_id`,[owners]),
+    db.pool.query<Record<string,unknown>>(`SELECT * FROM outside_custody_revisions
+      WHERE owner_member_id=ANY($1::text[]) ORDER BY account_id,credential_revision`,[owners]),
+    db.pool.query<Record<string,unknown>>(`SELECT * FROM outside_custody_operations
+      WHERE owner_member_id=ANY($1::text[]) ORDER BY operation_id`,[owners]),
+  ]);
+  return {accounts:accounts.rows,revisions:revisions.rows,operations:operations.rows};
+}
+
 async function addVaultNote(owner:string,name:string):Promise<string>{
   const path=join(vaultRoot,'people',name);
   writeFileSync(path,`---\nowner: ${owner}\n---\nA disposable R5 note.\n`);
@@ -457,6 +474,7 @@ describe("erase-person — outside custody owner cascades", () => {
     await seedR5Agent('r5-agent-a','r5-a','r5-org-a');
     await seedR5Custody({owner:'r5-a',resource:'r5-agent-a',id:'10000000-0000-4000-8000-000000000001'});
     await seedR5Custody({owner:'r5-b',resource:'r5-agent-a',id:'10000000-0000-4000-8000-000000000002'});
+    const fixtureBefore=await fixtureCustodySnapshot();
     const finance=await financialLogin();
 
     const report=await journaledErase('r5-b',false,finance);
@@ -466,8 +484,13 @@ describe("erase-person — outside custody owner cascades", () => {
       expect.objectContaining({table:'outside_custody_revisions',rows:1}),
       expect.objectContaining({table:'outside_custody_operations',rows:1}),
     ]);
-    expect((await db.pool.query("SELECT owner_member_id,resource_id FROM outside_custody_accounts ORDER BY owner_member_id")).rows)
-      .toEqual([{owner_member_id:'r5-a',resource_id:'r5-agent-a'}]);
+    expect((await db.pool.query("SELECT owner_member_id,resource_id FROM outside_custody_accounts ORDER BY owner_member_id,account_id")).rows)
+      .toEqual([
+        {owner_member_id:FIXTURE_OWNER,resource_id:'fixture-shared-0'},
+        {owner_member_id:FIXTURE_SECOND,resource_id:'fixture-shared-1'},
+        {owner_member_id:'r5-a',resource_id:'r5-agent-a'},
+      ]);
+    expect(await fixtureCustodySnapshot()).toEqual(fixtureBefore);
     expect((await db.pool.query("SELECT count(*)::int AS n FROM outside_custody_revisions WHERE owner_member_id='r5-a'")).rows[0]!.n).toBe(1);
     expect((await db.pool.query("SELECT count(*)::int AS n FROM outside_custody_operations WHERE owner_member_id='r5-a'")).rows[0]!.n).toBe(1);
     expect((await db.pool.query("SELECT count(*)::int AS n FROM users WHERE id IN ('r5-a','r5-c')")).rows[0]!.n).toBe(2);
@@ -480,14 +503,20 @@ describe("erase-person — outside custody owner cascades", () => {
     await seedR5Custody({owner:'r5-a',resource:'r5-agent-a',id:'20000000-0000-4000-8000-000000000001'});
     await seedR5Custody({owner:'r5-a',resource:'r5-agent-b',id:'20000000-0000-4000-8000-000000000002'});
     await seedR5Custody({owner:'r5-b',resource:'r5-agent-b',id:'20000000-0000-4000-8000-000000000003'});
+    const fixtureBefore=await fixtureCustodySnapshot();
     const finance=await financialLogin();
 
     const report=await journaledErase('r5-a',false,finance);
     expect(report.refusals).toEqual([]);
     expect(report.deleted.filter(row=>row.table.startsWith('outside_custody_')).map(row=>[row.table,row.rows]))
       .toEqual([['outside_custody_accounts',2],['outside_custody_revisions',2],['outside_custody_operations',2]]);
-    expect((await db.pool.query("SELECT owner_member_id,resource_id FROM outside_custody_accounts")).rows)
-      .toEqual([{owner_member_id:'r5-b',resource_id:'r5-agent-b'}]);
+    expect((await db.pool.query("SELECT owner_member_id,resource_id FROM outside_custody_accounts ORDER BY owner_member_id,account_id")).rows)
+      .toEqual([
+        {owner_member_id:FIXTURE_OWNER,resource_id:'fixture-shared-0'},
+        {owner_member_id:FIXTURE_SECOND,resource_id:'fixture-shared-1'},
+        {owner_member_id:'r5-b',resource_id:'r5-agent-b'},
+      ]);
+    expect(await fixtureCustodySnapshot()).toEqual(fixtureBefore);
     expect((await db.pool.query("SELECT count(*)::int AS n FROM outside_custody_revisions WHERE owner_member_id='r5-b'")).rows[0]!.n).toBe(1);
     expect((await db.pool.query("SELECT count(*)::int AS n FROM outside_custody_operations WHERE owner_member_id='r5-b'")).rows[0]!.n).toBe(1);
     expect((await db.pool.query("SELECT count(*)::int AS n FROM users WHERE id IN ('r5-b','r5-c')")).rows[0]!.n).toBe(2);
@@ -497,6 +526,7 @@ describe("erase-person — outside custody owner cascades", () => {
     await seedR5Members({orgB:'r5-org-b'});
     await seedR5Agent('r5-agent-a','r5-a','r5-org-a');
     await seedR5Custody({owner:'r5-b',resource:'r5-agent-a',id:'30000000-0000-4000-8000-000000000001',state:'revoked',withRevision:false});
+    const fixtureBefore=await fixtureCustodySnapshot();
     const note=await addVaultNote('r5-a','r5-a.md');
     const before=readFileSync(note,'utf8');
     const finance=await financialLogin();
@@ -505,8 +535,13 @@ describe("erase-person — outside custody owner cascades", () => {
     expect(result.dbReport.refusals.join('\n')).toMatch(/another member still holds outside credentials/i);
     expect(result.vaults).toEqual([]);
     expect(readFileSync(note,'utf8')).toBe(before);
-    expect((await db.pool.query("SELECT owner_member_id,resource_id,state FROM outside_custody_accounts")).rows)
-      .toEqual([{owner_member_id:'r5-b',resource_id:'r5-agent-a',state:'revoked'}]);
+    expect((await db.pool.query("SELECT owner_member_id,resource_id,state FROM outside_custody_accounts ORDER BY owner_member_id,account_id")).rows)
+      .toEqual([
+        {owner_member_id:FIXTURE_OWNER,resource_id:'fixture-shared-0',state:'active'},
+        {owner_member_id:FIXTURE_SECOND,resource_id:'fixture-shared-1',state:'active'},
+        {owner_member_id:'r5-b',resource_id:'r5-agent-a',state:'revoked'},
+      ]);
+    expect(await fixtureCustodySnapshot()).toEqual(fixtureBefore);
     expect((await db.pool.query("SELECT count(*)::int AS n FROM users WHERE id IN ('r5-a','r5-b','r5-c')")).rows[0]!.n).toBe(3);
   },240_000);
 

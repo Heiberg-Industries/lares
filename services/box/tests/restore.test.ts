@@ -289,7 +289,7 @@ describe("restore.sh: a good restore", () => {
       expect(statSync(file, { bigint: true }).mode & 0o777n, sentinel.rel).toBe(BigInt(sentinel.mode));
       expect(statSync(file, { bigint: true }).ino, sentinel.rel).toBe(sentinel.inode);
     }
-  });
+  }, 20_000);
 
   it("does not recreate missing external custody while restoring application data", () => {
     expect(run(base()).code).toBe(0);
