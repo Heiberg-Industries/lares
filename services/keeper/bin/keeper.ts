@@ -34,6 +34,7 @@ import { prepareVaultRuntimeDirectory, serveConsoleVaultBroker } from "../lib/va
 import { serveModelPurposeBroker } from "../lib/model-purpose-broker.js";
 import { DEFAULT_MODEL_PURPOSE_GATEWAY_SOCKET, serveModelPurposeTransport } from "../lib/model-purpose-transport.js";
 import { registerMemberRemovalAction } from "../lib/member-removal.js";
+import {registerInitialMemberBudgetActions} from '../lib/initial-member-budget.js';
 import {BudgetNativeCustodyStore} from '../lib/budget-native-custody.js';
 import {cleanupOneNativeCredential,openConfiguredNativeCustody} from '../lib/budget-native-cleanup.js';
 import {BudgetNativeProvisioner} from '../lib/budget-native-provisioning.js';
@@ -119,6 +120,7 @@ async function main(): Promise<void> {
             try{await verifyFinancialContinuity(financialJournal,db);}finally{db.release();}
             financialJournal.acquireWriterLease();
         }
+        registerInitialMemberBudgetActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
         registerAction({name:'budget.freeze',hostOnly:true,input:z.object({}).strict(),run:async()=>{
             if(!financialJournal)throw new Error('Financial custody is not configured');
             await nativeCustody?.drainForShutdown();

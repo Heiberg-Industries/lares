@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { registerAction, resetActions, runAction, RESERVED_ACTIONS, KeeperRefusedError, type AuditRecord } from "../lib/actions.js";
+import {registerInitialMemberBudgetActions} from '../lib/initial-member-budget.js';
 beforeEach(resetActions);
 const context = () => ({ actor: "owner@example.com", audit: vi.fn(async (_r: AuditRecord) => { }) });
 it("persists intent before execution and finalizes the same operation", async () => {
@@ -77,4 +78,18 @@ it("preserves trusted refusal findings but redacts marked secrets", async () => 
   expect((error as Error).message).not.toContain("token-secret");
   expect(c.audit.mock.calls.at(-1)![0].outcome).toBe("refused");
   expect(JSON.stringify(c.audit.mock.calls)).not.toContain("token-secret");
+});
+it('registers initial-budget actions as unavailable without financial custody and redacts session authority',async()=>{
+  const c=context();
+  registerInitialMemberBudgetActions({pool:undefined,designatedOwnerId:'configured-owner'});
+  await expect(runAction('member.initial-budget-status',{sessionToken:'a'.repeat(43)},c)).rejects.toMatchObject({
+    findings:[{check:'member.initial-budget',message:'unavailable'}],
+  });
+  expect(JSON.stringify(c.audit.mock.calls)).not.toContain('a'.repeat(43));
+  await expect(runAction('member.set-initial-budget',{sessionToken:'b'.repeat(43),targetMemberId:'member',monthlyLimit:'25'},c)).rejects.toMatchObject({
+    findings:[{check:'member.initial-budget',message:'unavailable'}],
+  });
+  expect(JSON.stringify(c.audit.mock.calls)).not.toContain('b'.repeat(43));
+  await expect(runAction('member.set-initial-budget',{sessionToken:'c'.repeat(43),targetMemberId:'member',monthlyLimit:'25',designatedOwnerId:'attacker'},c)).rejects.toThrow('invalid input');
+  expect(JSON.stringify(c.audit.mock.calls)).not.toContain('c'.repeat(43));
 });

@@ -25,11 +25,18 @@ describe("member management current-actor boundaries", () => {
     expect(result.url).toBe(`https://console.example.test/invite?token=${"a".repeat(43)}`);
     expect(mocks.invite).toHaveBeenCalledWith("owner", { displayName: "Example", email: "member@example.test", role: "member", expiresAt: expect.any(Date) });
   });
-  it("submits only the server cookie, configured owner and explicit member limit",async()=>{
-    vi.stubEnv("AGENT_OWNER_USER_ID","designated-owner");
+  it("submits only the server cookie, target and explicit member limit to the owner-only Keeper action",async()=>{
     const result=await setInitialMemberLimit({},form({memberId:"target",monthlyLimit:"25.5",actorId:"forged-owner",sessionToken:"forged-cookie"}));
     expect(result).toEqual({saved:true});
-    expect(mocks.setInitialLimit).toHaveBeenCalledWith({},expect.objectContaining({sessionToken:mocks.cookie,designatedOwnerId:"designated-owner",targetMemberId:"target",monthlyLimit:"25.5"}));
+    expect(mocks.setInitialLimit).toHaveBeenCalledWith({sessionToken:mocks.cookie,targetMemberId:"target",monthlyLimit:"25.5"},'owner');
+  });
+  it("shows honest unavailable and unknown-outcome messages without repeating a write",async()=>{
+    mocks.setInitialLimit.mockRejectedValueOnce(new KeeperUnavailableError("unknown",true));
+    await expect(setInitialMemberLimit({},form({memberId:"target",monthlyLimit:"25"}))).resolves.toEqual({error:"The initial limit outcome is unknown. Refresh membership before trying again."});
+    expect(mocks.setInitialLimit).toHaveBeenCalledTimes(1);
+    mocks.setInitialLimit.mockRejectedValueOnce(new KeeperUnavailableError("offline",false));
+    await expect(setInitialMemberLimit({},form({memberId:"target",monthlyLimit:"25"}))).resolves.toEqual({error:"Initial limit setup is unavailable. Refresh the page before trying again."});
+    expect(mocks.setInitialLimit).toHaveBeenCalledTimes(2);
   });
   it("rejects management calls from non-console members before any store mutation", async () => {
     mocks.owner.mockRejectedValue(new Error("refused"));
