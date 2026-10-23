@@ -293,6 +293,41 @@ describe("the keeper the installer configures and starts", () => {
     }]);
   });
 
+  it("starts egress through the fixed guard with only the receipt-bound admission child", () => {
+    expect(install().code).toBe(0);
+    const env = keeperEnv();
+    const receipt = JSON.parse(readFileSync(join(prefix, "var/lib/lares-maintenance/custody/preparation.json"), "utf8"));
+    const compose = parse(readFileSync(COMMITTED_KEEPER_COMPOSE, "utf8")) as any;
+    const proxy = compose.services["lares-egress-proxy"];
+    expect(proxy.container_name).toBe("lares-egress-proxy");
+    expect(proxy.entrypoint).toEqual([
+      "/usr/bin/python3", "-I", "/usr/local/lib/lares/maintenance-admission.py",
+    ]);
+    expect(proxy.command).toEqual(["squid", "-N", "-f", "/config/squid.conf"]);
+    expect(proxy.environment).toEqual({
+      LARES_MAINTENANCE_INSTALLATION_ID: "${LARES_MAINTENANCE_INSTALLATION_ID:?validated installation id required}",
+      LARES_MAINTENANCE_EPOCH: "${LARES_MAINTENANCE_EPOCH:?validated maintenance epoch required}",
+    });
+    expect(env.LARES_MAINTENANCE_INSTALLATION_ID).toBe(receipt.installationId);
+    expect(env.LARES_MAINTENANCE_EPOCH).toBe(String(receipt.epoch));
+    expect(proxy.init).toBe(true);
+    expect(proxy.restart).toBe("unless-stopped");
+    expect(proxy.networks).toEqual({
+      "lares-network": { ipv4_address: "${LARES_PROXY_ADDRESS:?reserved proxy address}" },
+    });
+    expect(proxy.volumes).toEqual([
+      "${LARES_EGRESS_DIR:?absolute egress directory}:/config:ro",
+      {
+        type: "bind",
+        source: "${LARES_MAINTENANCE_ADMISSION_DIR:?validated admission directory required}",
+        target: "/run/lares-maintenance/admission",
+        read_only: true,
+        bind: { create_host_path: false },
+      },
+    ]);
+    expect(JSON.stringify(proxy.volumes)).not.toMatch(/custody|preparation\.json|lares-maintenance:\/run/);
+  });
+
   // THE DEFECT THIS CATCHES, AND WHY NO OTHER TEST HERE COULD. `bin/keeper.ts` does
   // `loadKeeperConfig()` and then `keeperPool(config.db)` as its first two statements, and
   // `keeperPool` reads `db.passwordFile` EAGERLY — `readFileSync` inside the Pool constructor,
