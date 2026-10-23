@@ -245,7 +245,7 @@ def validated_model_purpose_diagnostic(raw):
 def bounded_marker_archive(name,filename):
     process=None;captured=bytearray();deadline=time.monotonic()+5
     try:
-        process=subprocess.Popen(['docker','cp',name+':/tmp/'+filename,'-'],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+        process=subprocess.Popen(['docker','exec','--user','0:0',name,'tar','-C','/tmp','-cf','-','--',filename],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
         while time.monotonic()<deadline:
             ready,_,_=select.select([process.stdout],[],[],max(0,deadline-time.monotonic()))
             if not ready:return {'state':'timeout'}

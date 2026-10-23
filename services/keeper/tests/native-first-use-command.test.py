@@ -99,6 +99,71 @@ class GatewayDockerCommandTests(unittest.TestCase):
             self.assertNotEqual(duplicated.count("docker"), 1, argument_name)
 
 
+class BoundedMarkerArchiveCommandTests(unittest.TestCase):
+    def test_marker_capture_execs_fixed_tmp_tar_command_with_bounded_reader(self) -> None:
+        import io
+        import os
+        import select
+        import tarfile
+        import time
+
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        collector = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "bounded_marker_archive")
+        namespace = {
+            "os": os,
+            "select": select,
+            "subprocess": SimpleNamespace(
+                Popen=None, PIPE=subprocess.PIPE, DEVNULL=subprocess.DEVNULL,
+                TimeoutExpired=subprocess.TimeoutExpired,
+            ),
+            "time": time,
+        }
+        with tempfile.TemporaryDirectory(prefix="lares-marker-tar-command-") as directory:
+            root = pathlib.Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            captured_args = root / "args.bin"
+            archive_path = root / "marker.tar"
+            marker_name = "lares-gateway-model-request.json"
+            marker_bytes = b'{"schema":1}\n'
+            archive_bytes = io.BytesIO()
+            with tarfile.open(fileobj=archive_bytes, mode="w") as archive:
+                member = tarfile.TarInfo(marker_name)
+                member.size = len(marker_bytes)
+                archive.addfile(member, io.BytesIO(marker_bytes))
+            archive_path.write_bytes(archive_bytes.getvalue())
+
+            docker_stub = bin_dir / "docker"
+            docker_stub.write_text(
+                "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$CAPTURE_ARGS\"\n"
+                "cat \"$CAPTURE_ARCHIVE\"\n",
+                encoding="utf-8",
+            )
+            docker_stub.chmod(0o755)
+
+            def fixture_popen(argv, **kwargs):
+                env = {
+                    **os.environ,
+                    "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+                    "CAPTURE_ARGS": str(captured_args),
+                    "CAPTURE_ARCHIVE": str(archive_path),
+                }
+                return subprocess.Popen(argv, env=env, **kwargs)
+
+            namespace["subprocess"].Popen = fixture_popen
+            module = ast.fix_missing_locations(ast.Module(body=[collector], type_ignores=[]))
+            exec(compile(module, str(PROBE), "exec"), namespace)
+            observed = namespace["bounded_marker_archive"]("first-use-gateway", marker_name)
+
+            self.assertEqual(observed, {"state": "captured", "archive": archive_bytes.getvalue()})
+            actual_args = captured_args.read_bytes().rstrip(b"\0").decode().split("\0")
+            self.assertEqual(actual_args, [
+                "exec", "--user", "0:0", "first-use-gateway", "tar",
+                "-C", "/tmp", "-cf", "-", "--", marker_name,
+            ])
+
+
 class NativeFirstUseConfigTests(unittest.TestCase):
     def test_actual_probe_config_loads_and_missing_egress_is_rejected(self) -> None:
         tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
