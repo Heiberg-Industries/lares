@@ -10,6 +10,7 @@ const git = (path: string, ...args: string[]) => execFileSync('git', ['--literal
 function stub(name: string, body: string) { writeFileSync(join(bin, name), '#!/usr/bin/env bash\nset -e\n' + body + '\n', { mode: 0o755 }); }
 beforeEach(() => {
     root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-recovery-scripts-')));
+    execFileSync('python3', [resolve('ops/maintenance-custody.py'), 'prepare-fresh', root, '172.30.0.0/24', '--confirm-fresh', '--test-owner'], { env: { ...process.env, LARES_MAINTENANCE_TESTING: '1' } });
     bin = join(root, 'bin');
     mkdirSync(bin);
     for (const dir of ['ops', 'etc/lares/secrets', 'etc/lares/operator', 'srv/lares/agents', 'srv/lares/retired', 'srv/lares/installation', 'srv/taste', 'opt/lares', 'var/backups', 'export', 'tmp'])
@@ -50,9 +51,9 @@ beforeEach(() => {
     const recipient = execFileSync('age-keygen', ['-y', key], { encoding: 'utf8' }).trim();
     const config = join(root, 'backup.env');
     writeFileSync(config, `LARES_CURRENT_LAYOUT=1\nRESTIC_REPOSITORY=fixture\nRESTIC_PASSWORD_FILE=/dev/null\nAGE_SECRETS_RECIPIENT=${recipient}\n`);
-    env = { ...process.env, LARES_PREFIX: root, LARES_ENGINE_IMAGE: image, AGENT_BOX_BACKUP_ENV: config, AGENT_BOX_EXPORT_ENV: config, DOCKER_CALLS: join(root, 'docker-calls.log'), PATH: bin + ':' + process.env.PATH, VERIFY_RUNNER: resolve('node_modules/.bin/tsx'), VERIFY_SCRIPT: verify, EXPORT_VAULT_PATHS: '', EXPORT_DATA_PATHS: join(root, 'srv/taste'), EXPORT_DIR: join(root, 'export'), EXPORT_WORKDIR_ROOT: join(root, 'tmp'), EXPORT_COMPOSE_FILE: join(root, 'opt/lares/compose.yaml') };
+    env = { ...process.env, LARES_PREFIX: root, LARES_ENGINE_IMAGE: image, AGENT_BOX_BACKUP_ENV: config, AGENT_BOX_EXPORT_ENV: config, DOCKER_CALLS: join(root, 'docker-calls.log'), PATH: bin + ':' + process.env.PATH, VERIFY_RUNNER: resolve('node_modules/.bin/tsx'), VERIFY_SCRIPT: verify, EXPORT_VAULT_PATHS: '', EXPORT_DATA_PATHS: join(root, 'srv/taste'), EXPORT_DIR: join(root, 'export'), EXPORT_WORKDIR_ROOT: join(root, 'tmp'), EXPORT_COMPOSE_FILE: join(root, 'opt/lares/compose.yaml'), LARES_MAINTENANCE_TESTING: '1', LARES_MAINTENANCE_TEST_PREFIX: root };
     writeFileSync(env.DOCKER_CALLS!, '');
-    for (const name of ['vault-storage.sh', 'engine-run.sh'])
+    for (const name of ['vault-storage.sh', 'engine-run.sh', 'maintenance-custody.py'])
         cpSync(resolve('ops', name), join(root, 'ops', name));
     let backup = readFileSync(resolve('ops/backup.sh'), 'utf8');
     for (const path of ['/etc/', '/opt/', '/srv/', '/var/backups/'])
