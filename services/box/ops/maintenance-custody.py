@@ -159,7 +159,8 @@ def _read_fd(admission_fd: int, admission_path: Path,
                         dir_fd=admission_fd)
     try:
         opened_info = os.fstat(intent_fd)
-        if not _same_file(intent_info, opened_info) or opened_info.st_size > _MAX_INTENT_BYTES:
+        if (not stat.S_ISREG(opened_info.st_mode) or not _same_file(intent_info, opened_info)
+                or opened_info.st_size > _MAX_INTENT_BYTES):
             raise ValueError("intent changed while opening")
         raw = os.read(intent_fd, _MAX_INTENT_BYTES + 1)
         if len(raw) > _MAX_INTENT_BYTES or len(raw) != opened_info.st_size:

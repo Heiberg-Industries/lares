@@ -344,6 +344,46 @@ PY
             intent_path.write_bytes(custody._record(self.installation_id, 1, "normal"))
             intent_path.chmod(0o444)
 
+    def test_intent_open_rejects_nonregular_descriptor_with_matching_identity(self) -> None:
+        admission_fd, directory_info = custody._open_directory(self.admission_dir, 0o755, self.owner)
+        original_open = os.open
+        original_fstat = os.fstat
+        intent_fd: int | None = None
+        intent_info = custody._file_at(admission_fd, "intent.json", 0o444, self.owner,
+                                       maximum_size=custody._MAX_INTENT_BYTES)
+
+        def track_open(name: str | bytes, flags: int, *args: object, **kwargs: object) -> int:
+            nonlocal intent_fd
+            fd = original_open(name, flags, *args, **kwargs)
+            if name == "intent.json" and kwargs.get("dir_fd") == admission_fd:
+                intent_fd = fd
+            return fd
+
+        def report_fifo_for_intent(fd: int) -> os.stat_result | SimpleNamespace:
+            info = original_fstat(fd)
+            if fd != intent_fd:
+                return info
+            simulated_fifo = SimpleNamespace(
+                st_dev=info.st_dev,
+                st_ino=info.st_ino,
+                st_nlink=info.st_nlink,
+                st_uid=info.st_uid,
+                st_mode=stat.S_IFIFO | stat.S_IMODE(info.st_mode),
+                st_size=info.st_size,
+            )
+            self.assertTrue(custody._same_file(intent_info, simulated_fifo))
+            self.assertFalse(stat.S_ISREG(simulated_fifo.st_mode))
+            return simulated_fifo
+
+        try:
+            with patch.object(custody.os, "open", side_effect=track_open), \
+                    patch.object(custody.os, "fstat", side_effect=report_fifo_for_intent):
+                with self.assertRaisesRegex(ValueError, "intent changed while opening"):
+                    custody._read_fd(admission_fd, self.admission_dir, directory_info, self.owner)
+            self.assertIsNotNone(intent_fd)
+        finally:
+            os.close(admission_fd)
+
     def test_command_lock_contention_has_a_monotonic_deadline(self) -> None:
         path = self.custody_dir / "command.lock"
         first = os.open(path, os.O_RDWR)
