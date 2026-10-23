@@ -3,10 +3,10 @@
 BEGIN;
 
 ALTER TABLE org_member_policy
-  ADD COLUMN outside_custody_lock boolean NOT NULL DEFAULT true
+  ADD COLUMN IF NOT EXISTS outside_custody_lock boolean NOT NULL DEFAULT true
   CHECK (outside_custody_lock IS TRUE);
 
-CREATE TABLE outside_custody_accounts (
+CREATE TABLE IF NOT EXISTS outside_custody_accounts (
   account_id uuid PRIMARY KEY,
   owner_member_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   resource_id text NOT NULL REFERENCES agent_access(agent_name) ON DELETE CASCADE,
@@ -22,9 +22,9 @@ CREATE TABLE outside_custody_accounts (
   CHECK (state <> 'revoked' OR (active_revision IS NULL AND candidate_revision IS NULL)),
   UNIQUE (account_id,owner_member_id)
 );
-CREATE INDEX outside_custody_accounts_owner_idx ON outside_custody_accounts(owner_member_id,account_id);
+CREATE INDEX IF NOT EXISTS outside_custody_accounts_owner_idx ON outside_custody_accounts(owner_member_id,account_id);
 
-CREATE TABLE outside_custody_revisions (
+CREATE TABLE IF NOT EXISTS outside_custody_revisions (
   account_id uuid NOT NULL,
   owner_member_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   credential_revision bigint NOT NULL CHECK (credential_revision > 0 AND credential_revision <= 9007199254740991),
@@ -39,7 +39,7 @@ CREATE TABLE outside_custody_revisions (
   FOREIGN KEY (account_id,owner_member_id) REFERENCES outside_custody_accounts(account_id,owner_member_id) ON DELETE CASCADE
 );
 
-CREATE TABLE outside_custody_operations (
+CREATE TABLE IF NOT EXISTS outside_custody_operations (
   operation_id uuid PRIMARY KEY,
   account_id uuid NOT NULL,
   owner_member_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -53,6 +53,6 @@ CREATE TABLE outside_custody_operations (
   CHECK (credential_revision IS NULL OR credential_revision > 0),
   FOREIGN KEY (account_id,owner_member_id) REFERENCES outside_custody_accounts(account_id,owner_member_id) ON DELETE CASCADE
 );
-CREATE INDEX outside_custody_operations_account_idx ON outside_custody_operations(account_id,created_at);
+CREATE INDEX IF NOT EXISTS outside_custody_operations_account_idx ON outside_custody_operations(account_id,created_at);
 
 COMMIT;

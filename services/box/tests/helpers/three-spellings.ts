@@ -21,6 +21,7 @@
 // every assertion in the test file that uses this module is about the fixture members only.
 
 import { readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -421,6 +422,28 @@ const SEED_ROWS: SeedRow[] = [
        SELECT $1,'agent',agent_name,$2,'use',$2,revision FROM agent_access WHERE agent_name=$3`,
       [`22222222-2222-4222-8222-${String(index+1).padStart(12,'0')}`,member,`fixture-shared-${index}`]),
   ]),
+
+  // Outside custody is private person data, so both members have independent encrypted
+  // accounts, immutable revisions, and stage-operation evidence in the identity fixture.
+  ...[FIXTURE_OWNER, FIXTURE_SECOND].flatMap((member, index) => {
+    const accountId = `33333333-3333-4333-8333-${String(index + 1).padStart(12, "0")}`;
+    const operationId = `44444444-4444-4444-8444-${String(index + 1).padStart(12, "0")}`;
+    const encrypted = Buffer.from(encryptSecret(`fixture outside credential ${index}`, "3".repeat(64)), "base64");
+    const nonce = encrypted.subarray(0, 12);
+    const ciphertext = encrypted.subarray(12);
+    const requestHash = createHash("sha256").update(`fixture outside custody stage ${index}`).digest();
+    return [
+      row("outside_custody_accounts", "owner_member_id", member,
+        `INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,generation,active_revision,consent_generation,state)
+         VALUES($1,$2,$3,1,1,1,'active')`, [accountId, member, `fixture-shared-${index}`]),
+      row("outside_custody_revisions", "owner_member_id", member,
+        `INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,operation_id,nonce,ciphertext)
+         VALUES($1,$2,1,1,1,$3,$4,$5)`, [accountId, member, operationId, nonce, ciphertext]),
+      row("outside_custody_operations", "owner_member_id", member,
+        `INSERT INTO outside_custody_operations(operation_id,account_id,owner_member_id,operation_kind,request_hash,expected_generation,result_generation,credential_revision,outcome)
+         VALUES($1,$2,$3,'stage',$4,0,1,1,'staged')`, [operationId, accountId, member, requestHash]),
+    ];
+  }),
 
   ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("console_session_bindings", "member_id", member,
     `INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision,policy_revision) VALUES('fixture-agent','11111111-1111-1111-1111-111111111111',$1,$2,$3,$4,1,$5,2)`,
