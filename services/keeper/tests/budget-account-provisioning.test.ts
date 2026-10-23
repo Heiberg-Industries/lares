@@ -20,10 +20,11 @@ import {consoleSourceTransaction,noteBudgetFinancialChange} from '@lares/agent-k
 let container:StartedPostgreSqlContainer;
 let pool:Pool,admin:Pool;
 const pools:Pool[]=[],journals:HostFinancialJournal[]=[],roots:string[]=[];
+const restrictedContainers:StartedPostgreSqlContainer[]=[];
 const uid=testJournalUid;
 const lock=platformTestJournalLock;
-let syncCount=0,failSyncAt=0;
-const sync=(fd:number)=>{fsyncSync(fd);syncCount++;if(failSyncAt===syncCount){failSyncAt=0;throw new Error('synthetic journal fsync failure');}};
+let syncCount=0,failSyncAt=0,delaySyncAt=0,delaySyncMs=0;
+const sync=(fd:number)=>{syncCount++;if(delaySyncAt===syncCount){delaySyncAt=0;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,delaySyncMs);delaySyncMs=0;}fsyncSync(fd);if(failSyncAt===syncCount){failSyncAt=0;throw new Error('synthetic journal fsync failure');}};
 const id=()=>randomUUID();
 const journalOptions={ownershipUid:uid,lock,sync};
 const plan={installationCap:'100',memberIds:['budget-member-a','budget-member-b']};
@@ -40,12 +41,29 @@ async function boundedClose(action:()=>Promise<unknown>,label:string,ms=5000):Pr
 }
 
 function dbPool(database:string,max=1):Pool{
-  const uri=new URL(container.getConnectionUri());uri.pathname='/'+database;
+  return containerPool(container,database,max);
+}
+function containerPool(source:StartedPostgreSqlContainer,database:string,max=1):Pool{
+  const uri=new URL(source.getConnectionUri());uri.pathname='/'+database;
   const selected=quiet(new Pool({connectionString:uri.toString(),max,connectionTimeoutMillis:3000}));pools.push(selected);return selected;
 }
 function rolePool(database:string,role:string,password:Buffer):Pool{
-  const uri=new URL(container.getConnectionUri());uri.pathname='/'+database;uri.username=role;uri.password=password.toString('ascii');
+  return containerRolePool(container,database,role,password);
+}
+function containerRolePool(source:StartedPostgreSqlContainer,database:string,role:string,password:Buffer):Pool{
+  const uri=new URL(source.getConnectionUri());uri.pathname='/'+database;uri.username=role;uri.password=password.toString('ascii');
   const selected=quiet(new Pool({connectionString:uri.toString(),max:3,connectionTimeoutMillis:3000}));pools.push(selected);return selected;
+}
+async function restrictedCase(database:string):Promise<{selected:Pool;financial:Pool}> {
+  const source=await new PostgreSqlContainer('pgvector/pgvector:pg16').withDatabase(database).start();restrictedContainers.push(source);
+  const selected=containerPool(source,database,4);
+  await migrate(selected);
+  const operator=await selected.connect();
+  try{await provisionEngineDatabasePrivileges(operator,{expectedDatabase:database,passwords:{application:appPassword,financial:financialPassword}});}
+  finally{operator.release();}
+  const financial=containerRolePool(source,database,'lares_financial',financialPassword);
+  expect((await financial.query('SELECT current_user,session_user')).rows[0]).toEqual({current_user:'lares_financial',session_user:'lares_financial'});
+  return {selected,financial};
 }
 async function custody(selected:Pool):Promise<{journal:HostFinancialJournal;directory:string}>{
   const existing=poolCustody.get(selected);if(existing)return existing;
@@ -55,15 +73,21 @@ async function custody(selected:Pool):Promise<{journal:HostFinancialJournal;dire
   const journal=HostFinancialJournal.openExisting(directory,{...journalOptions,requirePrepared:true});journals.push(journal);
   const value={journal,directory};poolCustody.set(selected,value);return value;
 }
-async function seed(selected:Pool,suffix=''){
+async function seed(selected:Pool,suffix='',includeB=true,includeA=true){
   const org=`budget-org${suffix}`,owner=`budget-owner${suffix}`,a=`budget-member-a${suffix}`,b=`budget-member-b${suffix}`;
   await selected.query('INSERT INTO orgs(id,display_name) VALUES($1,$2)',[org,'Budget test']);
-  await selected.query(`INSERT INTO users(id,display_name,org_id,org_role,status) VALUES
-    ($1,'Owner',$2,'owner','active'),($3,'Member A',$2,'member','active'),($4,'Member B',$2,'member','active')`,[owner,org,a,b]);
-  await selected.query(`INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES
-    ($1,'https://identity.example.invalid',$2,'tenant'),($3,'https://identity.example.invalid',$4,'tenant'),
-    ($5,'https://identity.example.invalid',$6,'tenant')`,[a,`subject-a${suffix}`,b,`subject-b${suffix}`,owner,`subject-owner${suffix}`]);
-  await selected.query('INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES($1,25),($2,40)',[a,b]);
+  await selected.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Owner',$2,'owner','active')",[owner,org]);
+  await selected.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'tenant')",[owner,`subject-owner${suffix}`]);
+  if(includeA){
+    await selected.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Member A',$2,'member','active')",[a,org]);
+    await selected.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'tenant')",[a,`subject-a${suffix}`]);
+    await selected.query('INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES($1,25)',[a]);
+  }
+  if(includeB){
+    await selected.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Member B',$2,'member','active')",[b,org]);
+    await selected.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'tenant')",[b,`subject-b${suffix}`]);
+    await selected.query('INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES($1,40)',[b]);
+  }
   return {org,owner,a,b};
 }
 async function migrate(selected:Pool):Promise<void>{
@@ -102,11 +126,57 @@ async function budgetFinancialRows(selected:Pool):Promise<Record<string,unknown[
   for(const table of tables)result[table]=(await selected.query(`SELECT to_jsonb(row_data) AS row FROM ${table} row_data ORDER BY 1`)).rows.map(row=>row.row);
   return result;
 }
+async function setMemberCapThroughRegisteredActions(selected:Pool,financial:Pool,ownerId:string,targetMemberId:string,monthlyLimit:string):Promise<void>{
+  const sessionToken=Buffer.from(randomUUID()+randomUUID()).toString('base64url').slice(0,43);
+  await selected.query("INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval '1 hour')",
+    [id(),ownerId,createHash('sha256').update(sessionToken).digest('hex')]);
+  resetActions();registerInitialMemberBudgetActions({pool:financial,designatedOwnerId:ownerId});
+  const context={actor:'test actor',audit:async()=>{}};
+  const status=await runAction('member.initial-budget-status',{sessionToken},context) as Awaited<ReturnType<typeof listInitialMemberBudgetStatus>>;
+  expect(status).toContainEqual({memberId:targetMemberId,eligible:true,setupComplete:false});
+  await expect(runAction('member.set-initial-budget',{sessionToken,targetMemberId,monthlyLimit},context)).resolves.toEqual({saved:true});
+  expect((await financial.query('SELECT spend_cap_usd_month::text AS cap FROM org_member_policy WHERE user_id=$1',[targetMemberId])).rows[0]?.cap).toBe(monthlyLimit);
+}
+async function activateOwner(selected:Pool,financial:Pool,journal:HostFinancialJournal,users:{org:string;owner:string},initialMonth?:{startsAt:string;endsAt:string}):Promise<{installationId:string;ownerAccountId:string}>{
+  await setMemberCapThroughRegisteredActions(selected,financial,users.owner,users.owner,'25');
+  const provision=initialMonth
+    ?provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.owner]},async()=>initialMonth)
+    :provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.owner]});
+  await expect(provision).resolves.toMatchObject({members:1,accountsCreated:2,windowsCreated:2});
+  const ids=(await financial.query("SELECT i.id AS installation_id,m.id AS member_id FROM budget_accounts i JOIN budget_accounts m ON m.installation_account_id=i.id AND m.live_member_id=$1 WHERE i.kind='installation'",[users.owner])).rows[0];
+  if(!ids)throw new Error('Active owner fixture is incomplete');
+  await new JournalBudgetFinancialWriter(journal).run('provision',boundary=>consoleSourceTransaction(financial,async db=>{
+    await db.query("UPDATE budget_accounts SET state='open',reason='approved',selected_endpoint=$2,endpoint_generation=1,recovery_epoch=$3 WHERE id=$1",[ids.installation_id,'a'.repeat(64),'active-member-fixture-epoch']);
+    noteBudgetFinancialChange(db,'budget_accounts',ids.installation_id);
+    await db.query("UPDATE budget_accounts SET state='open',reason='approved' WHERE id=$1",[ids.member_id]);
+    noteBudgetFinancialChange(db,'budget_accounts',ids.member_id);
+  },boundary));
+  return {installationId:ids.installation_id,ownerAccountId:ids.member_id};
+}
+async function addLaterMemberThroughRegisteredActions(selected:Pool,financial:Pool,users:{org:string;owner:string;b:string},suffix:string):Promise<string>{
+  await selected.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Later member',$2,'member','active')",[users.b,users.org]);
+  await selected.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'tenant')",[users.b,`subject-later-${suffix}`]);
+  await setMemberCapThroughRegisteredActions(selected,financial,users.owner,users.b,'40');
+  return 'cap-set-through-registered-action';
+}
+async function shortMonth(selected:Pool,remainingMs:number):Promise<{startsAt:string;endsAt:string}>{
+  const row=(await selected.query(`WITH month AS (SELECT date_trunc('month',clock_timestamp() AT TIME ZONE 'UTC') AS starts_utc)
+    SELECT to_char(starts_utc,'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS starts_at,
+      to_char((clock_timestamp()+($1::int*interval '1 millisecond')) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ends_at FROM month`,[remainingMs])).rows[0];
+  return {startsAt:row.starts_at,endsAt:row.ends_at};
+}
+async function microsecondShiftedMonth(selected:Pool):Promise<{startsAt:string;endsAt:string}>{
+  const row=(await selected.query(`WITH month AS (SELECT date_trunc('month',clock_timestamp() AT TIME ZONE 'UTC') AS starts_utc)
+    SELECT to_char(starts_utc+interval '1 microsecond','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS starts_at,
+      to_char(starts_utc+interval '1 month','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ends_at FROM month`)).rows[0];
+  return {startsAt:row.starts_at,endsAt:row.ends_at};
+}
 
 beforeAll(async()=>{
   container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
   pool=dbPool(container.getDatabase(),1);admin=dbPool('postgres',4);
-  await migrate(pool);const migrationPool=pool;await pool.end();pools.splice(pools.indexOf(migrationPool),1);
+  await migrate(pool);
+  const migrationPool=pool;await pool.end();pools.splice(pools.indexOf(migrationPool),1);
   const base=container.getDatabase();
   for(const database of ['budget_proposal_failure','budget_control_failure','budget_commit_unknown','budget_identity','budget_concurrent','budget_initial_limit'])
     await admin.query(`CREATE DATABASE ${database} TEMPLATE ${base}`);
@@ -116,9 +186,132 @@ beforeAll(async()=>{
 afterAll(async()=>{
   for(const journal of journals.splice(0)){try{journal.close();}catch{}}
   for(const selected of pools.splice(0))await boundedClose(()=>selected.end(),'PostgreSQL pool');
+  for(const restricted of restrictedContainers.splice(0))await boundedClose(()=>restricted.stop(),'Restricted PostgreSQL container',10_000);
   if(container)await boundedClose(()=>container.stop(),'Test PostgreSQL container',10_000);
   for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});
 });
+
+it('adds only a new capped member to an active installation and preserves the owner authority',async()=>{
+  const {selected,financial}=await restrictedCase('budget_later_member'),users=await seed(selected,'-later-member',false,false),{journal}=await custody(selected);
+  const {installationId,ownerAccountId}=await activateOwner(selected,financial,journal,users);
+  await addLaterMemberThroughRegisteredActions(selected,financial,users,'later-member');
+
+  const identity=(await financial.query("SELECT id,active_window_id FROM budget_accounts WHERE kind='installation'")).rows[0]!;
+  const ownerIdentity=(await financial.query('SELECT id,active_window_id FROM budget_accounts WHERE id=$1',[ownerAccountId])).rows[0]!;
+  expect(identity.id).toBe(installationId);
+  const protectedBefore=await budgetFinancialRows(financial);
+  const protectedIds=new Set([identity.id,ownerIdentity.id]);
+  const oldAccounts=protectedBefore.budget_accounts.filter((row:any)=>protectedIds.has(row.id));
+  const oldWindows=protectedBefore.budget_windows.filter((row:any)=>protectedIds.has(row.account_id));
+  const oldBindings=protectedBefore.budget_gateway_bindings.filter((row:any)=>row.installation_account_id===identity.id||row.member_account_id===ownerIdentity.id);
+  const oldAttempts=protectedBefore.budget_attempts.filter((row:any)=>row.installation_account_id===identity.id||row.member_account_id===ownerIdentity.id);
+  const oldGrants=protectedBefore.budget_gateway_grants;
+
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.b]}))
+    .resolves.toEqual({state:'closed',reason:'unreconciled',members:1,accountsCreated:1,windowsCreated:1});
+  const created=(await financial.query(`SELECT a.id,a.state,a.reason,a.selected_endpoint,a.recovery_epoch,a.active_window_id,
+      w.opening_cap::text AS opening_cap,w.opening_liability::text AS opening_liability,w.policy_revision::text AS policy_revision,
+      to_char(w.starts_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS starts_at,
+      to_char(w.ends_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ends_at
+    FROM budget_accounts a JOIN budget_windows w ON w.id=a.active_window_id WHERE a.live_member_id=$1`,[users.b])).rows[0];
+  expect(created).toMatchObject({state:'closed',reason:'unreconciled',selected_endpoint:null,recovery_epoch:null,opening_cap:'40',opening_liability:'0',policy_revision:'1'});
+  expect(created.starts_at).toMatch(/^\d{4}-\d{2}-01T00:00:00\.000000Z$/);
+  expect(new Date(created.ends_at).getTime()).toBe(nextMonth(new Date(created.starts_at)).getTime());
+
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.b]}))
+    .resolves.toEqual({state:'closed',reason:'unreconciled',members:1,accountsCreated:0,windowsCreated:0});
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'120',memberIds:[users.b]})).rejects.toThrow();
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.owner]})).rejects.toThrow();
+
+  await selected.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('budget-later-no-cap','No cap',$1,'member','active'),('budget-later-zero-cap','Zero cap',$1,'member','active')",[users.org]);
+  await selected.query(`INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES
+    ('budget-later-no-cap','https://identity.example.invalid','later-no-cap','tenant'),
+    ('budget-later-zero-cap','https://identity.example.invalid','later-zero-cap','tenant')`);
+  await selected.query("INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES('budget-later-zero-cap',0)");
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:['budget-later-no-cap']})).rejects.toThrow();
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:['budget-later-zero-cap']})).rejects.toThrow();
+
+  await new JournalBudgetFinancialWriter(journal).run('provision',boundary=>consoleSourceTransaction(financial,async db=>{
+    const member=(await db.query('SELECT id FROM budget_accounts WHERE live_member_id=$1 FOR UPDATE',[users.b])).rows[0];
+    if(!member)throw new Error('Later member fixture is missing');
+    await db.query('UPDATE org_member_policy SET spend_cap_usd_month=41 WHERE user_id=$1',[users.b]);
+    noteBudgetFinancialChange(db,'budget_accounts',member.id);
+  },boundary));
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.b]})).rejects.toThrow();
+
+  const after=await budgetFinancialRows(financial);
+  expect(after.budget_accounts.filter((row:any)=>protectedIds.has(row.id))).toEqual(oldAccounts);
+  expect(after.budget_windows.filter((row:any)=>protectedIds.has(row.account_id))).toEqual(oldWindows);
+  expect(after.budget_gateway_bindings.filter((row:any)=>row.installation_account_id===identity.id||row.member_account_id===ownerIdentity.id)).toEqual(oldBindings);
+  expect(after.budget_attempts.filter((row:any)=>row.installation_account_id===identity.id||row.member_account_id===ownerIdentity.id)).toEqual(oldAttempts);
+  expect(after.budget_gateway_grants).toEqual(oldGrants);
+  await verifyFinancialContinuity(journal,financial as never);
+
+  await new JournalBudgetFinancialWriter(journal).run('provision',boundary=>consoleSourceTransaction(financial,async db=>{
+    await db.query('UPDATE budget_accounts SET active_window_id=NULL WHERE id=$1',[identity.id]);
+    noteBudgetFinancialChange(db,'budget_accounts',identity.id);
+  },boundary));
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.b]})).rejects.toThrow();
+},30_000);
+
+it('rejects an active installation window shifted by one microsecond',async()=>{
+  const {selected,financial}=await restrictedCase('budget_later_microsecond'),users=await seed(selected,'-later-microsecond',false,false),{journal}=await custody(selected);
+  const shiftedMonth=await microsecondShiftedMonth(selected);
+  const {ownerAccountId}=await activateOwner(selected,financial,journal,users,shiftedMonth);
+  await addLaterMemberThroughRegisteredActions(selected,financial,users,'later-microsecond');
+  const before=await budgetFinancialRows(financial);
+  if(!ownerAccountId)throw new Error('Microsecond active owner fixture is incomplete');
+  await verifyFinancialContinuity(journal,financial as never);
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.b]})).rejects.toThrow();
+  expect(await budgetFinancialRows(financial)).toEqual(before);
+  await verifyFinancialContinuity(journal,financial as never);
+},30_000);
+
+it('rolls back a later-member addition when the exact month expires during the financial lock wait',async()=>{
+  const {selected,financial}=await restrictedCase('budget_later_lockwait'),users=await seed(selected,'-later-lockwait',false,false),{journal}=await custody(selected);
+  const month=await shortMonth(selected,3000);
+  await activateOwner(selected,financial,journal,users,month);
+  await addLaterMemberThroughRegisteredActions(selected,financial,users,'later-lockwait');
+  await verifyFinancialContinuity(journal,financial as never);
+  const before=await budgetFinancialRows(financial),blocker=await financial.connect();let blocking=false,provisioning:Promise<unknown>|undefined;
+  try{
+    await blocker.query('BEGIN');blocking=true;
+    await blocker.query("SELECT pg_advisory_xact_lock(hashtextextended('lares-budget-account-provisioning',0))");
+    provisioning=provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.b]},async()=>month);
+    const waitDeadline=Date.now()+3000;let waiting=false;
+    while(Date.now()<waitDeadline){
+      const waits=await selected.query(`SELECT 1 FROM pg_stat_activity WHERE usename='lares_financial' AND datname=current_database()
+        AND wait_event_type='Lock' AND cardinality(pg_blocking_pids(pid))>0 AND query ILIKE '%lares-budget-account-provisioning%'`);
+      if(waits.rowCount){waiting=true;break;}await new Promise(resolve=>setTimeout(resolve,20));
+    }
+    expect(waiting).toBe(true);
+    while((await selected.query('SELECT clock_timestamp()<$1::timestamptz AS before_end',[month.endsAt])).rows[0]?.before_end)await new Promise(resolve=>setTimeout(resolve,25));
+    await blocker.query('ROLLBACK');blocking=false;
+    await expect(provisioning).rejects.toThrow();
+  }finally{
+    if(blocking)await blocker.query('ROLLBACK');blocker.release();
+    if(provisioning)await boundedClose(()=>Promise.allSettled([provisioning!]),'Expired later-member provisioning',5000);
+  }
+  expect(await budgetFinancialRows(financial)).toEqual(before);
+  await verifyFinancialContinuity(journal,financial as never);
+},30_000);
+
+it('withholds an expired closed result after the observation journal fsync',async()=>{
+  const {selected,financial}=await restrictedCase('budget_later_postcommit'),users=await seed(selected,'-later-postcommit',false,false),{journal,directory}=await custody(selected);
+  const month=await shortMonth(selected,2500);
+  await activateOwner(selected,financial,journal,users,month);
+  await addLaterMemberThroughRegisteredActions(selected,financial,users,'later-postcommit');
+  await verifyFinancialContinuity(journal,financial as never);
+  delaySyncAt=syncCount+5;delaySyncMs=2800;
+  try{
+    await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.b]},async()=>month))
+      .rejects.toThrow('Budget account provisioning outcome is unavailable');
+  }finally{delaySyncAt=0;delaySyncMs=0;}
+  const later=(await financial.query(`SELECT a.state,a.reason,w.opening_cap::text AS opening_cap FROM budget_accounts a JOIN budget_windows w ON w.id=a.active_window_id WHERE a.live_member_id=$1`,[users.b])).rows[0];
+  expect(later).toEqual({state:'closed',reason:'unreconciled',opening_cap:'40'});
+  expect(journalRecords(directory).some(record=>record.kind==='observation')).toBe(true);
+  await verifyFinancialContinuity(journal,financial as never);
+},30_000);
 
 it('validates plans and provisions only closed accounts with locked live identity and cap evidence',async()=>{
   const users=await seed(pool),{journal,directory}=await custody(pool);
