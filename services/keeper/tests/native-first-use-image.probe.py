@@ -145,6 +145,17 @@ def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, capsul
     args.append(chief_image)
     return args
 
+def initial_budget_client_args(*, network, run_dir, token_file, client_source,
+                               client_script, keeper_image):
+    return ['docker','run','--rm','--network',network,'--read-only','--user','0:0',
+      '--tmpfs','/tmp:rw,noexec,nosuid,nodev,mode=1777,size=16m',
+      '--mount',f'type=bind,src={run_dir},dst=/run/lares,readonly',
+      '--mount',f'type=bind,src={token_file},dst=/fixture/owner-session-token,readonly',
+      '--mount',f'type=bind,src={client_source},dst=/app/services/console/lib/keeper-client.ts,readonly',
+      '--mount',f'type=bind,src={client_script},dst=/app/services/keeper/initial-budget-client.mts,readonly',
+      '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,
+      '/app/services/keeper/initial-budget-client.mts']
+
 def selected_members_match_first_activation(selected, member_ids):
     return (len(selected)==2 and
       selected[0].get('memberId')==member_ids[0] and selected[0].get('state')=='open' and
@@ -165,6 +176,12 @@ try:
     console_signing=secrets.token_hex(32)
     incarnation=str(uuid.uuid4())
     owner='first-use-owner';members=['first-use-member-a','first-use-member-b'];agent='proof-agent';alias='lares-brain'
+    owner_session_token=secrets.token_urlsafe(32)
+    if len(owner_session_token)!=43:raise RuntimeError('Fixture owner session token was not canonical')
+    owner_token_dir=root/'owner-session';owner_token_dir.mkdir(mode=0o700)
+    owner_token_file=owner_token_dir/'token';owner_token_file.write_text(owner_session_token);owner_token_file.chmod(0o600)
+    owner_session_token_hash=hashlib.sha256(owner_session_token.encode()).hexdigest()
+    del owner_session_token
     write_raw_secret('app-password',application_password);write_raw_secret('financial-database-password',financial_password)
     write_secret('workflow-password',workflow_password);write_secret('route-password',route_password)
     (secrets_dir/'workflow-provisioner-password').write_text(workflow_provisioner_password+'\n')
@@ -356,6 +373,7 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
     route_file=secrets_dir/'route-password';
     (secrets_dir/'native-policy.json').write_text('{}\n')
     base_config={'mode':'overlay','project':network,'dir':'/fixture-install','files':['keeper.json'],'agentsDir':'/fixture-install/agents',
+      'designatedOwnerId':'first-use-owner',
       'retiredDir':'/fixture-install/retired','secretsDir':'/etc/lares/secrets','rolesDir':'/app/services','templatesDir':'/app/packages/agent-kit/templates',
       'backupDir':'/fixture-install/backup','db':{'host':'proof-db','port':5432,'database':'proof','user':'lares_app','passwordFile':'/etc/lares/secrets/app-password'},
       'lifecycle':{'network':network,'subnet':'172.16.0.0/12','reservedAddresses':[],'composeFile':'/fixture-install/compose.yaml','egressDir':'/fixture-install/egress',
@@ -407,17 +425,20 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
     stage = 'source-rows-and-readiness'
     # Seed source rows under the production application role, then let real Keeper actions
     # write closed accounts and native keys.
-    source_code="""import{Pool}from'pg';import{readFileSync}from'node:fs';import{PgGrantStore}from'/app/packages/agent-kit/src/grant-store.ts';import{definitionSchema,hashOf}from'/app/packages/agent-kit/src/definition.ts';import{randomUUID}from'node:crypto';
+    source_code="""import{Pool}from'pg';import{readFileSync}from'node:fs';import{definitionSchema,hashOf}from'/app/packages/agent-kit/src/definition.ts';import{randomUUID}from'node:crypto';
 const p=new Pool({host:'proof-db',database:'proof',user:'lares_app',password:readFileSync('/etc/lares/secrets/app-password','utf8').trim(),max:1});
 const owner='first-use-owner',members=['first-use-member-a','first-use-member-b'],org='first-use-org',agent='proof-agent',inc=process.env.FIXTURE_INCARNATION,alias='lares-brain';
-try{await p.query(\"INSERT INTO orgs(id,display_name) VALUES($1,'Neutral first-use organization')\",[org]);await p.query(\"INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Owner',$2,'owner','active'),($3,'Member A',$2,'member','active'),($4,'Member B',$2,'member','active')\",[owner,org,members[0],members[1]]);for(const id of [owner,...members]){await p.query(\"INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'fixture-tenant')\",[id,'subject-'+id]);await p.query('INSERT INTO org_member_policy(user_id,allowed_capabilities,spend_cap_usd_month) VALUES($1,NULL,50)',[id]);}
-const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition/agent.json','utf8')),name:agent,model:alias});const duties=readFileSync('/definition/duties.md','utf8'),voice=readFileSync('/definition/voice.md','utf8'),hash=hashOf({definition,dutiesMd:duties,voiceMd:voice});await p.query(\"INSERT INTO agent_definitions(name,definition,duties,voice,hash,status) VALUES($1,$2::jsonb,$3,$4,$5,'valid')\",[agent,JSON.stringify(definition),duties,voice,hash]);await p.query(\"INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending) VALUES($1,'172.20.0.10',$2,'owned',$3,$3,'ready',$4::jsonb,false)\",[agent,process.env.FIXTURE_WORKFLOW_DB,inc,JSON.stringify(definition)]);const grants=new PgGrantStore(p),adopted=await grants.adoptAgent(owner,{agentName:agent,expectedDefinitionHash:hash},{designatedOwnerMemberId:owner});await grants.updateAgentAccess(owner,{agentName:agent,expectedRevision:adopted.accessRevision,grants:[{principal:{kind:'organisation',id:org},permission:'use',expiresAt:null}]});console.log(JSON.stringify({definitionHash:hash,accessRevision:adopted.accessRevision}));}finally{await p.end()}"""
+try{await p.query("INSERT INTO orgs(id,display_name) VALUES($1,'Neutral first-use organization')",[org]);await p.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Owner',$2,'owner','active'),($3,'Member A',$2,'member','active'),($4,'Member B',$2,'member','active')",[owner,org,members[0],members[1]]);for(const id of [owner,...members])await p.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'fixture-tenant')",[id,'subject-'+id]);await p.query("INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')",[randomUUID(),owner,process.env.FIXTURE_OWNER_SESSION_TOKEN_HASH]);
+const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition/agent.json','utf8')),name:agent,model:alias});const duties=readFileSync('/definition/duties.md','utf8'),voice=readFileSync('/definition/voice.md','utf8'),hash=hashOf({definition,dutiesMd:duties,voiceMd:voice});await p.query("INSERT INTO agent_definitions(name,definition,duties,voice,hash,status) VALUES($1,$2::jsonb,$3,$4,$5,'valid')",[agent,JSON.stringify(definition),duties,voice,hash]);await p.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending) VALUES($1,'172.20.0.10',$2,'owned',$3,$3,'ready',$4::jsonb,false)",[agent,process.env.FIXTURE_WORKFLOW_DB,inc,JSON.stringify(definition)]);const denied=await p.query('SELECT id FROM budget_accounts LIMIT 1').then(()=>false,error=>error.code==='42501');if(!denied)throw Error();console.log(JSON.stringify({definitionHash:hash,financialAccessDenied:true}));}finally{await p.end()}"""
     source_fixture=root/'source-fixture.mts';source_fixture.write_text(source_code)
     source_result=run('docker','run','--rm','--network',network,'--user','0:0','-e','FIXTURE_INCARNATION='+incarnation,'-e','FIXTURE_WORKFLOW_DB='+workflow_database,
+      '-e','FIXTURE_OWNER_SESSION_TOKEN_HASH='+owner_session_token_hash,
       '--mount',f'type=bind,src={secrets_dir},dst=/etc/lares/secrets,readonly','--mount',f'type=bind,src={agent_dir},dst=/definition,readonly',
       '--mount',f'type=bind,src={source_fixture},dst=/app/services/keeper/source-fixture.mts,readonly','--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/source-fixture.mts')
     source_identity=json.loads(source_result.stdout.strip())
     definition_hash=source_identity['definitionHash']
+    if source_identity.get('financialAccessDenied') is not True:raise RuntimeError('Ordinary application role could read financial account rows')
+    cases['ordinaryApplicationFinancialAccessDenied']=True
     # Root-owned secret/custody modes match the production contract; do not expose either to CI artifacts.
     protect='chown -R 0:0 /var/lib/lares /secrets && chmod 700 /var/lib/lares/budget-financial /var/lib/lares/budget-native && chmod 600 /var/lib/lares/budget-financial/* /var/lib/lares/budget-native/* /secrets/gateway-master /secrets/gateway-budget-service-key /secrets/native-policy.json /secrets/model-provider-key /secrets/native-litellm-password && chown 0:10001 /secrets/console-model-purpose-signing-key /secrets/proof-agent-runtime-control /run/lares /run/lares/model-purpose && chmod 440 /secrets/console-model-purpose-signing-key /secrets/proof-agent-runtime-control && chmod 750 /run/lares /run/lares/model-purpose && chown 10001:10001 /secrets/route-password /secrets/app-password /secrets/workflow-password && test "$(stat -c %u:%g:%a /secrets/native-policy.json)" = 0:0:600 && test "$(stat -c %u:%g:%a /secrets/gateway-master)" = 0:0:600 && test "$(stat -c %u:%g:%a /secrets/gateway-budget-service-key)" = 0:0:600 && test "$(stat -c %u:%g:%a /secrets/console-model-purpose-signing-key)" = 0:10001:440 && test "$(stat -c %u:%g:%a /secrets/proof-agent-runtime-control)" = 0:10001:440 && test "$(stat -c %u:%g:%a /run/lares)" = 0:10001:750 && test "$(stat -c %u:%g:%a /run/lares/model-purpose)" = 0:10001:750 && test "$(stat -c %u:%g:%a /var/lib/lares/budget-native)" = 0:0:700'
     docker('run','--rm','--network','none','--mount',f'type=volume,src={volume},dst=/var/lib/lares','--mount',f'type=bind,src={secrets_dir},dst=/secrets',
@@ -446,6 +467,40 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
     wait_socket('/run/lares-host/keeper.sock');wait_socket('/run/lares/keeper.sock');wait_socket('/run/lares/model-purpose-console.sock');wait_socket('/run/lares/model-purpose/gateway.sock');wait_socket('/run/lares/gateway-budget.sock')
     cases['productionKeeperStartupAndSockets']=True
     cases['productionRelayCanWaitForActualKeeperAuthoritySocket']=True
+
+    stage = 'initial-budget-actions-through-console-client'
+    initial_budget_client=root/'initial-budget-client.mts'
+    initial_budget_client.write_text("""import { readFileSync } from 'node:fs';
+import { keeper } from '/app/services/console/lib/keeper-client.ts';
+const sessionToken=readFileSync('/fixture/owner-session-token','utf8').trim();
+const expected=['first-use-owner','first-use-member-a','first-use-member-b'].sort();
+const status=await keeper<Array<{memberId:string;eligible:boolean;setupComplete:boolean}>>('member.initial-budget-status',{sessionToken},'first-use-owner@example.invalid');
+if(!Array.isArray(status)||status.length!==expected.length)throw new Error();
+const actual=status.map(row=>row&&typeof row==='object'&&!Array.isArray(row)&&Object.keys(row).sort().join(',')==='eligible,memberId,setupComplete'&&typeof row.memberId==='string'&&typeof row.eligible==='boolean'&&typeof row.setupComplete==='boolean'?row:null);
+if(actual.some(row=>row===null)||actual.map(row=>row!.memberId).sort().join(',')!==expected.join(',')||actual.some(row=>row!.eligible!==true||row!.setupComplete!==false))throw new Error();
+for(const targetMemberId of expected){const saved=await keeper<{saved:true}>('member.set-initial-budget',{sessionToken,targetMemberId,monthlyLimit:'50'},'first-use-owner@example.invalid');if(!saved||Object.keys(saved).sort().join(',')!=='saved'||saved.saved!==true)throw new Error();}
+console.log(JSON.stringify({statusCount:status.length,capsSaved:expected.length}));
+""")
+    budget_client_result=run(*initial_budget_client_args(network=network,run_dir=run_dir,token_file=owner_token_file,
+      client_source=repo/'services/console/lib/keeper-client.ts',client_script=initial_budget_client,keeper_image=keeper_image),timeout=45)
+    budget_client_identity=json.loads(budget_client_result.stdout.strip())
+    if budget_client_identity!={'statusCount':3,'capsSaved':3}:raise RuntimeError('Keeper initial budget actions did not return strict expected acknowledgements')
+    cases['initialMemberBudgetsSetThroughActualConsoleKeeperClient']=True
+
+    stage = 'source-adoption-after-initial-budgets'
+    source_adoption_code="""import{Pool}from'pg';import{readFileSync}from'node:fs';import{PgGrantStore}from'/app/packages/agent-kit/src/grant-store.ts';import{definitionSchema,hashOf}from'/app/packages/agent-kit/src/definition.ts';
+const p=new Pool({host:'proof-db',database:'proof',user:'lares_app',password:readFileSync('/etc/lares/secrets/app-password','utf8').trim(),max:1});const owner='first-use-owner',org='first-use-org',agent='proof-agent',alias='lares-brain';
+try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition/agent.json','utf8')),name:agent,model:alias});const duties=readFileSync('/definition/duties.md','utf8'),voice=readFileSync('/definition/voice.md','utf8'),hash=hashOf({definition,dutiesMd:duties,voiceMd:voice});const grants=new PgGrantStore(p),adopted=await grants.adoptAgent(owner,{agentName:agent,expectedDefinitionHash:hash},{designatedOwnerMemberId:owner});const current=await grants.updateAgentAccess(owner,{agentName:agent,expectedRevision:adopted.accessRevision,grants:[{principal:{kind:'organisation',id:org},permission:'use',expiresAt:null}]});if(current.accessRevision<=adopted.accessRevision)throw Error();console.log(JSON.stringify({definitionHash:hash,accessRevision:current.accessRevision}));}finally{await p.end()}"""
+    source_adoption=root/'source-adoption.mts';source_adoption.write_text(source_adoption_code)
+    adoption_result=run('docker','run','--rm','--network',network,'--user','0:0',
+      '--mount',f'type=bind,src={secrets_dir}/app-password,dst=/etc/lares/secrets/app-password,readonly',
+      '--mount',f'type=bind,src={agent_dir},dst=/definition,readonly',
+      '--mount',f'type=bind,src={source_adoption},dst=/app/services/keeper/source-adoption.mts,readonly',
+      '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/source-adoption.mts')
+    source_identity=json.loads(adoption_result.stdout.strip())
+    if source_identity.get('definitionHash')!=definition_hash or not isinstance(source_identity.get('accessRevision'),int):
+        raise RuntimeError('Post-cap source adoption did not return current source identity')
+    cases['ordinarySourceAdoptionAndShareFollowInitialBudgetActions']=True
 
     def host_cli(command_name,payload=None):
         args=['docker','run','--rm','--network',network,'--user','0:0','--mount',f'type=volume,src={volume},dst=/var/lib/lares',

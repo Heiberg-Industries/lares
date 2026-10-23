@@ -111,6 +111,7 @@ class NativeFirstUseConfigTests(unittest.TestCase):
         exec(compile(module, str(PROBE), "exec"), namespace)
         fixture_config = namespace["base_config"]
         self.assertIsInstance(fixture_config, dict)
+        self.assertEqual(fixture_config.get("designatedOwnerId"), "first-use-owner")
         self.assertIn("egress", fixture_config.get("lifecycle", {}))
 
         loader = (KEEPER / "lib" / "config.ts").as_uri()
@@ -283,6 +284,132 @@ class FirstActivationMemberSummaryTests(unittest.TestCase):
         self.assertFalse(matches(wrong_state, member_ids))
         self.assertFalse(matches(expected[:1], member_ids))
         self.assertFalse(matches(expected + [dict(expected[0])], member_ids))
+
+
+class InitialBudgetFixtureOrderTests(unittest.TestCase):
+    def test_source_fixture_defers_policy_rows_and_grants_until_real_keeper_actions(self) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        source_assignment = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "source_code" for target in node.targets)
+        )
+        source_code = source_assignment.value.value
+        self.assertNotIn("org_member_policy", source_code)
+        self.assertIn("INSERT INTO member_sessions", source_code)
+        self.assertIn("FIXTURE_OWNER_SESSION_TOKEN_HASH", source_code)
+        self.assertIn("financialAccessDenied:true", source_code)
+        self.assertNotIn("PgGrantStore", source_code)
+
+        stages = {
+            node.value.value: node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and node.value.value in {
+                "source-rows-and-readiness", "production-keeper-startup",
+                "initial-budget-actions-through-console-client",
+                "source-adoption-after-initial-budgets", "host-only-provisioning",
+            }
+        }
+        self.assertEqual(set(stages), {
+            "source-rows-and-readiness", "production-keeper-startup",
+            "initial-budget-actions-through-console-client",
+            "source-adoption-after-initial-budgets", "host-only-provisioning",
+        })
+        self.assertLess(stages["source-rows-and-readiness"], stages["production-keeper-startup"])
+        self.assertLess(stages["production-keeper-startup"], stages["initial-budget-actions-through-console-client"])
+        self.assertLess(stages["initial-budget-actions-through-console-client"], stages["source-adoption-after-initial-budgets"])
+        self.assertLess(stages["source-adoption-after-initial-budgets"], stages["host-only-provisioning"])
+
+        client_script = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute) and node.func.attr == "write_text"
+            and node.args and isinstance(node.args[0], ast.Constant)
+            and "member.initial-budget-status" in node.args[0].value
+        ).args[0].value
+        for contract in (
+            "services/console/lib/keeper-client.ts", "member.initial-budget-status",
+            "member.set-initial-budget", "first-use-owner", "first-use-owner@example.invalid",
+            "statusCount:status.length", "capsSaved:expected.length",
+        ):
+            self.assertIn(contract, client_script)
+        self.assertNotIn("console.log(sessionToken", client_script)
+
+        adoption_assignment = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "source_adoption_code" for target in node.targets)
+        )
+        self.assertIn("PgGrantStore", adoption_assignment.value.value)
+        self.assertIn("adoptAgent", adoption_assignment.value.value)
+        self.assertIn("updateAgentAccess", adoption_assignment.value.value)
+        self.assertIn("current.accessRevision<=adopted.accessRevision", adoption_assignment.value.value)
+
+    def test_constructed_console_action_command_mounts_only_the_token_file(self) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        builder = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "initial_budget_client_args"
+        )
+        namespace = {}
+        module = ast.fix_missing_locations(ast.Module(body=[builder], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+        token_file = pathlib.Path("/protected/owner-session/token")
+        argv = namespace["initial_budget_client_args"](
+            network="first-use-network", run_dir=pathlib.Path("/socket"), token_file=token_file,
+            client_source=pathlib.Path("/console/keeper-client.ts"),
+            client_script=pathlib.Path("/fixture/client.mts"), keeper_image="keeper:fixture",
+        )
+        mounts = [item for item in argv if item.startswith("type=bind,")]
+        self.assertIn("--read-only", argv)
+        self.assertIn("--tmpfs", argv)
+        tmpfs_index = argv.index("--tmpfs")
+        self.assertEqual(argv[tmpfs_index + 1], "/tmp:rw,noexec,nosuid,nodev,mode=1777,size=16m")
+        token_mounts = [item for item in mounts if "dst=/fixture/owner-session-token" in item]
+        self.assertEqual(token_mounts, [f"type=bind,src={token_file},dst=/fixture/owner-session-token,readonly"])
+        self.assertTrue(all(item.endswith(",readonly") for item in mounts))
+        self.assertFalse(any("/etc/lares/secrets" in item or "gateway-master" in item for item in mounts))
+        self.assertNotIn("FIXTURE_OWNER_SESSION_TOKEN_HASH", argv)
+        self.assertTrue(any("dst=/app/services/console/lib/keeper-client.ts" in item for item in argv))
+        self.assertIn("/app/services/keeper/initial-budget-client.mts", argv)
+
+
+class ConsoleKeeperActorContractTests(unittest.TestCase):
+    def test_actual_socket_and_console_client_accept_neutral_email_actor(self) -> None:
+        socket_source = json.dumps(str(KEEPER / "lib" / "socket-server.ts"))
+        actions_source = json.dumps(str(KEEPER / "lib" / "actions.ts"))
+        client_source = json.dumps(str(REPO / "services" / "console" / "lib" / "keeper-client.ts"))
+        script = f'''import {{ mkdtempSync, rmSync }} from "node:fs";
+import {{ join }} from "node:path";
+import {{ z }} from "zod";
+import {{ serve }} from {socket_source};
+import {{ registerAction, resetActions }} from {actions_source};
+import {{ keeper, KeeperRefusedError }} from {client_source};
+const directory=mkdtempSync("/tmp/lares-keeper-actor-");
+const socket=join(directory,"keeper.sock");
+const uid=process.getuid?.()??0,gid=process.getgid?.()??0;
+let stop;
+try{{
+  registerAction({{name:"fixture.actor-probe",input:z.object({{}}),run:async()=>({{accepted:true}})}});
+  stop=await serve({{socket,host:false,context:{{actor:"fixture",audit:async()=>{{}}}},ownership:{{uid,gid}}}});
+  process.env.LARES_KEEPER_SOCKET=socket;
+  const accepted=await keeper("fixture.actor-probe",{{}},"first-use-owner@example.invalid");
+  if(!accepted?.accepted)throw new Error("neutral email actor was not accepted by actual socket");
+  const refused=await keeper("fixture.actor-probe",{{}},"first-use-owner-console").then(()=>false,error=>error instanceof KeeperRefusedError);
+  if(!refused)throw new Error("old non-email actor was not refused by actual socket");
+  console.log("actual Keeper socket and Console client actor contract passed");
+}}finally{{if(stop)await stop();resetActions();rmSync(directory,{{recursive:true,force:true}});}}
+'''
+        result = subprocess.run(
+            ["node", "--import", "tsx", "--input-type=module", "-e", script],
+            cwd=KEEPER, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=20, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("actual Keeper socket and Console client actor contract passed", result.stdout)
 
 
 if __name__ == "__main__":
