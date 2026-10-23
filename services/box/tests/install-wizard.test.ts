@@ -81,9 +81,7 @@ beforeEach(() => {
   secretsDir = join(prefix, "etc", "lares", "secrets");
   installEnv = join(prefix, "etc", "lares", "installation.env");
   log = join(dir, "stubs.log"); writeFileSync(log, "");
-  // `lares-doctor`: every completed wizard run proves the model key through it, so a
-  // run that is not about that proof stubs it silently green.
-  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl", "lares-doctor"]) stub(name);
+  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl"]) stub(name);
   stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
   // CREATE DATABASE is sent on stdin; consume it before exiting so pipefail
   // does not race the fake Docker process under CI load.

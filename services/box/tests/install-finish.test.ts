@@ -1,4 +1,4 @@
-// The installer ends honestly at the console's first-agent setup page.
+// The installer ends honestly at infrastructure readiness, before gateway activation or agent creation.
 //
 // Nothing here touches a real machine or network. Every host command is a logging stub, every
 // write lands below a temporary --prefix, and curl stands in only for the public console readiness
@@ -99,13 +99,13 @@ describe("how the install ends", () => {
     expect(result.code, result.stderr).toBe(0);
     const printed = result.stdout.trim().split("\n").filter((line) => line.includes("https://"));
     expect(printed).toHaveLength(1);
-    expect(printed[0]).toContain("https://lares.example.invalid/agents/new");
+    expect(printed[0]).toContain("https://lares.example.invalid/sign-in");
     expect(readFileSync(log, "utf8")).toMatch(/curl .*\/api\/auth\/login/);
   }, 20_000);
 
   it("says what to do when it never comes up, instead of printing an address that does not work", () => {
-    // The gateway's local readiness succeeds; only the public console stays down.
-    stub("curl", 'case "$*" in *"http://127.0.0.1:4000/health/liveliness"*) exit 0 ;; esac\nexit 7');
+    // Only the public console stays down.
+    stub("curl", "exit 7");
     mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
     writeFileSync(join(prefix, "etc", "lares", "console-oauth.env"),
       "GOOGLE_CLIENT_ID_CONSOLE=12345-fixture.apps.googleusercontent.com\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n");
@@ -113,11 +113,11 @@ describe("how the install ends", () => {
     expect(result.code, result.stderr).toBe(75);
     expect(result.stderr).toMatch(/did not come up/i);
     expect(result.stderr).toMatch(/docker compose logs/);
-    expect(result.stdout).not.toContain("https://lares.example.invalid/agents/new");
+    expect(result.stdout).not.toContain("https://lares.example.invalid/sign-in");
   }, 20_000);
 
   it("names the missing Google sign-in file instead of waiting on a console 500", () => {
-    stub("curl", 'case "$*" in *"http://127.0.0.1:4000/health/liveliness"*) exit 0 ;; esac\nexit 7');
+    stub("curl", "exit 7");
     const result = runWithStdin([], answers);
     expect(result.code).toBe(78);
     expect(result.stderr).toContain("console-oauth.env");
@@ -139,8 +139,9 @@ describe("how the install ends", () => {
   it("says honestly what remains, and does not ask about it now", () => {
     stub("curl", "exit 0");
     const result = runWithStdin([], answers);
-    expect(result.stdout).toMatch(/create.*first agent/i);
-    expect(result.stdout).toMatch(/no agent.*running|conversation.*not.*ready/i);
+    expect(result.stdout).toMatch(/infrastructure and Console are ready/i);
+    expect(result.stdout).toMatch(/confirm this host.*budget setup before creating an agent/i);
+    expect(result.stdout).toMatch(/no conversation has been tested/i);
     expect(result.stdout).toMatch(/backup/i);
     expect(result.stdout).toMatch(/Slack|Telegram/);
     expect(result.stdout).not.toMatch(/say hello/i);
