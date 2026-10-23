@@ -18,6 +18,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsS
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "update.sh");
@@ -59,6 +60,15 @@ function composeYaml() {
     `    image: ${ROLE_OLD}`,
     "  db:",
     "    image: postgres:16-alpine",
+    "    command: [postgres, -c, hba_file=/run/lares-auth/pg_hba.conf]",
+    "    volumes:",
+    "      - /var/lib/lares/postgres:/var/lib/postgresql/data",
+    "      - type: bind",
+    "        source: /var/lib/lares-maintenance/postgres-auth",
+    "        target: /run/lares-auth",
+    "        read_only: true",
+    "        bind:",
+    "          create_host_path: false",
     "networks:",
     "  lares:",
     "    external: true",
@@ -208,6 +218,19 @@ const MIGRATE = /pnpm .*migrate/;
 const BACKUP = /backup\.sh/;
 const BEGIN = /record begin/;
 const compose = () => readFileSync(composeFile, "utf8");
+function expectNormalAuthCompose() {
+  const db = (parse(compose()) as { services: Record<string, { command?: string | string[]; volumes?: Array<string | { type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> }> }).services.db!;
+  expect(Array.isArray(db.command) ? db.command.join(" ") : db.command).toContain("hba_file=/run/lares-auth/pg_hba.conf");
+  const mount = db.volumes?.find((volume) => typeof volume !== "string" && volume.target === "/run/lares-auth");
+  expect(mount).toMatchObject({ type: "bind", source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
+  if (process.env.CI === "true") {
+    const effective = JSON.parse(execFileSync("docker", ["compose", "-f", composeFile, "config", "--format", "json"], { encoding: "utf8" })) as {
+      services: { db?: { command?: string[]; volumes?: Array<{ source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
+    };
+    expect(effective.services.db?.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
+    expect(effective.services.db?.volumes).toContainEqual(expect.objectContaining({ source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } }));
+  }
+}
 
 describe("updating this installation", () => {
   it("takes a backup FIRST, and only then touches anything", () => {
@@ -255,6 +278,7 @@ describe("updating this installation", () => {
     expect(calls()).not.toMatch(BEGIN);
     expect(r.stderr).toMatch(/backup/i);
     expect(compose()).toBe(composeYaml());
+    expectNormalAuthCompose();
   });
 
   it("stops when the backup was never verified, unless told otherwise in so many words", () => {
@@ -396,6 +420,7 @@ describe("updating this installation", () => {
     expect(compose()).not.toContain(OLD);
     expect(compose()).toContain("postgres:16-alpine");
     expect(compose()).toContain("restart: unless-stopped");
+    expectNormalAuthCompose();
   });
 
   it("says what it would do and does nothing, on a dry run", () => {
@@ -406,6 +431,7 @@ describe("updating this installation", () => {
     expect(calls()).not.toMatch(BEGIN);
     expect(r.stdout).toContain(CONSOLE_NEW);
     expect(compose()).toBe(composeYaml());
+    expectNormalAuthCompose();
   });
 
   it("reads the release's breaking changes out loud before it starts", () => {

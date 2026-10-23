@@ -72,6 +72,7 @@ it('backs up Lares definitions and encrypts new keeper configuration/secrets wit
  const entries=execFileSync('tar',['-tf','-'],{input:archive,encoding:'utf8'});
  expect(entries).toContain('etc/lares/keeper.json');expect(entries).toContain('etc/lares/secrets/key');expect(entries).toContain('opt/agent-box/.env');
  expect(entries).not.toContain('var/lib/lares/budget-native/snapshot.json');
+ expect(entries.split('\n').some((entry:string)=>entry.includes('lares-maintenance'))).toBe(false);
  expect(execFileSync('tar',['-xOf','-','etc/lares/secrets/key'],{input:archive,encoding:'utf8'})).toBe('NEW_TEST_SECRET');
 });
 it('refuses an incomplete backup when a required workflow file volume is unavailable',()=>{
@@ -109,7 +110,7 @@ it('backs up only portable current-layout stores and an encrypted configuration 
  const args=JSON.parse(readFileSync(join(f.root,'restic-args.json'),'utf8'));
  for(const path of ['srv/lares/agents','srv/lares/retired','srv/taste'])
    expect(args).toContain(join(f.root,path));
- for(const path of ['srv/lares','srv/lares/secrets','etc/lares','opt/agent-box'])
+ for(const path of ['srv/lares','srv/lares/secrets','etc/lares','opt/agent-box','var/lib/lares-maintenance'])
    expect(args).not.toContain(join(f.root,path));
  expect(JSON.parse(readFileSync(join(f.root,'restic-credential-shapes.json'),'utf8'))).toEqual([true,true]);
  const encrypted=join(f.root,'captured-dumps/secrets/agent-box-secrets.tar.age');

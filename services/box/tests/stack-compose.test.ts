@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parse } from "yaml";
 import { denylistPatterns } from "./helpers/denylist.js";
-import { renderDatabaseBootstrapCompose, renderStackCompose } from "../lib/stack-compose.js";
+import { assertDatabaseAuthDirectory, renderDatabaseBootstrapCompose, renderStackCompose } from "../lib/stack-compose.js";
 import { optionalRegularFile } from "../bin/render-stack.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
 
@@ -23,6 +23,7 @@ const OPTS = {
   caddyfile: "/etc/lares/Caddyfile",
   caddyDataDir: "/var/lib/lares/caddy",
   dbDataDir: "/var/lib/lares/postgres",
+  databaseAuthDir: "/var/lib/lares-maintenance/postgres-auth",
   network: "lares-network",
   subnet: "172.30.0.0/24",
   domain: "example.invalid",
@@ -35,6 +36,17 @@ const OPTS = {
 };
 
 describe("the generated stack compose file", () => {
+  it("requires the exact validated external auth path", () => {
+    expect(() => assertDatabaseAuthDirectory(
+      "/srv/lares/jump/../var/lib/lares-maintenance/postgres-auth",
+      "/srv/lares", "172.30.0.0/24",
+    )).toThrow(/must name this installation's protected custody/);
+    expect(() => assertDatabaseAuthDirectory(
+      "/srv/lares/var/lib/lares-maintenance/postgres-auth/",
+      "/srv/lares", "172.30.0.0/24",
+    )).toThrow(/must name this installation's protected custody/);
+  });
+
   it("mounts only an existing regular Vault key file, never a symlink or directory", async () => {
     const { mkdtemp, mkdir, rm, symlink, writeFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
@@ -64,6 +76,8 @@ describe("the generated stack compose file", () => {
   it("names every service by digest, and nothing else", () => {
     const doc = parse(renderStackCompose(MANIFEST, OPTS)) as any;
     expect(doc.services.db.image).toBe(D("db"));
+    expect(doc.services.db.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
+    expect(doc.services.db.volumes).toContainEqual({ type: "bind", source: OPTS.databaseAuthDir, target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
     expect(doc.services.console.image).toBe(D("console"));
     expect(doc.services["lares-gateway"].image).toBe(D("gateway"));
     expect(doc.services.caddy.image).toBe(D("caddy"));
@@ -251,6 +265,7 @@ describe("the generated stack compose file", () => {
     const doc = parse(renderDatabaseBootstrapCompose(MANIFEST, {
       operatorPasswordFile: "/etc/lares/operator/database-password",
       dbDataDir: OPTS.dbDataDir,
+      databaseAuthDir: OPTS.databaseAuthDir,
       network: OPTS.network,
       subnet: OPTS.subnet,
     })) as any;
@@ -258,5 +273,7 @@ describe("the generated stack compose file", () => {
     expect(doc.services.db.environment.POSTGRES_USER).toBe("lares_operator");
     expect(doc.services.db.environment.POSTGRES_PASSWORD_FILE).toBe("/run/secrets/operator-password");
     expect(doc.secrets["operator-password"].file).toBe("/etc/lares/operator/database-password");
+    expect(doc.services.db.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
+    expect(doc.services.db.volumes).toContainEqual({ type: "bind", source: OPTS.databaseAuthDir, target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
   });
 });

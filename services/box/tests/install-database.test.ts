@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync,
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -75,7 +75,7 @@ function runWithStdin(args: string[], input: string, env: Record<string, string>
     const stdout = execFileSync("/bin/bash", [SCRIPT, "--yes", "--release", releaseFile, ...args], {
       input,
       encoding: "utf8",
-      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, ...env },
+      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, LARES_PREFIX: prefix, LARES_MAINTENANCE_TESTING: "1", HOME: dir, ...env },
     });
     return { code: 0, stdout, stderr: "" };
   } catch (e) {
@@ -86,10 +86,17 @@ function runWithStdin(args: string[], input: string, env: Record<string, string>
 
 const answers = ["lares.example.invalid", "owner@example.invalid", "A Name", "sk-disposable-fixture-only"].join("\n") + "\n";
 
+it("passes / at the custody boundary when the installer prefix is empty", () => {
+  const source = readFileSync(SCRIPT, "utf8");
+  expect(source.match(/maintenance-custody\.py" (?:prepare-fresh|validate) "\$\{PREFIX:-\/\}"/g)).toHaveLength(4);
+  const emptyPrefixArgument = execFileSync("/bin/bash", ["-c", 'PREFIX=""; printf "%s" "${PREFIX:-/}"'], { encoding: "utf8" });
+  expect(emptyPrefixArgument).toBe("/");
+});
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lares-install-database-"));
   binDir = join(dir, "bin"); mkdirSync(binDir);
-  prefix = join(dir, "root"); mkdirSync(prefix);
+  prefix = join(dir, "root"); mkdirSync(prefix); prefix = realpathSync(prefix);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   for (const name of ["systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "openssl"]) stub(name);
   stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
@@ -120,6 +127,22 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("the database the installer creates", () => {
+  it("refuses a completed bootstrap shortcut without host custody before writing or starting anything", () => {
+    mkdirSync(join(prefix, "srv", "lares"), { recursive: true });
+    mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
+    writeFileSync(join(prefix, "etc", "lares", "database-bootstrap-complete"), "");
+    mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
+    writeFileSync(composeFile, "services:\n  db: {}\n");
+    const result = runWithStdin([], answers);
+    expect(result.code).toBe(78);
+    expect(result.stderr).toMatch(/database authentication custody/i);
+    expect(readFileSync(log, "utf8")).not.toMatch(/docker .*compose .* up -d/);
+    expect(readFileSync(log, "utf8")).not.toMatch(/docker exec/);
+    expect(readFileSync(log, "utf8")).not.toMatch(/pnpm .*render-stack/);
+    expect(readFileSync(log, "utf8")).not.toMatch(/pnpm .*migrate/);
+    expect(() => readFileSync(join(prefix, "etc", "lares", "secrets"))).toThrow();
+  });
+
   it("prepares roles and workflow template offline before starting online services", () => {
     stub("pnpm", 'printf "%s %s\\n" "pnpm" "$*" >> "$STUB_LOG"; exit 0');
     okRun(runWithStdin([], answers));

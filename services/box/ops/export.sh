@@ -58,7 +58,7 @@ EXPORT_WORKDIR_ROOT="${EXPORT_WORKDIR_ROOT:-/var/tmp}"
 # Just what the box that produced this archive says it is.
 ENGINE_VERSION="${LARES_ENGINE_VERSION:-unknown}"
 
-SECRET_ROOTS="/etc/agent-box /etc/lares /run/secrets"
+SECRET_ROOTS="/etc/agent-box /etc/lares /run/secrets ${LARES_PREFIX:-}/var/lib/lares-maintenance"
 
 
 # A provisioned Vault is one inventory plus both fixed storage roots, never optional pieces.

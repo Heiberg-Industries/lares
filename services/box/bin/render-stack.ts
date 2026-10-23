@@ -20,7 +20,7 @@ import { readFileSync, writeFileSync, renameSync, rmSync, chmodSync, existsSync,
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
-import { renderStackCompose } from "../lib/stack-compose.js";
+import { assertDatabaseAuthDirectory, renderStackCompose } from "../lib/stack-compose.js";
 import { renderGatewayConfig, gatewayAdmissionProfile } from "../lib/gateway-config.js";
 
 /** The arguments, in order. Positional on purpose: install.sh passes paths it built itself, and
@@ -48,6 +48,8 @@ const ARGUMENTS = [
   "ownerHomeTz",
   "tasteDir",
   "installationDir",
+  "databaseAuthDir",
+  "prefix",
 ] as const;
 
 /** The gateway's start script, committed once at the repository root and installed verbatim —
@@ -111,6 +113,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   const at = (name: (typeof ARGUMENTS)[number]): string => argv[ARGUMENTS.indexOf(name)]!;
 
   const manifest = parseReleaseManifest(readFileSync(at("releaseFile"), "utf8"));
+  assertDatabaseAuthDirectory(at("databaseAuthDir"), at("prefix"), at("subnet"));
 
   // Read BEFORE the first write, so an engine tree that arrived without this file refuses by
   // name with nothing written, rather than bringing up a gateway whose entrypoint is a
@@ -139,6 +142,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     caddyfile: at("caddyfile"),
     caddyDataDir: at("caddyDataDir"),
     dbDataDir: at("dbDataDir"),
+    databaseAuthDir: at("databaseAuthDir"),
     network: at("network"),
     subnet: at("subnet"),
     domain: at("domain"),
