@@ -1,14 +1,17 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { MemberStoreError } from "@lares/agent-kit/member-store";
-import { providerIdentitySchema } from "@lares/agent-kit/authority-contract";
 import { members, isConsoleOwner, SESSION_MAX_AGE } from "../../../../lib/auth";
 import { consoleRedirect, startSignIn, openFlow, finishSignIn, type SignInProvider } from "../../../../lib/console-oidc";
 import { safeNext, sameOriginTarget } from "../../../../lib/safe-next";
+import {
+  OWNER_DISCOVERY_COOKIE, ownerDiscoveryDigest, parseOwnerBootstrapSelection,
+  sealOwnerDiscoveryReceipt,
+} from "../../../../lib/owner-bootstrap-receipt";
 
 export const runtime = "nodejs";
 const cookieOptions = () => ({ httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" as const, path: "/" });
 function clearFlow(res: NextResponse): NextResponse {
-  for (const name of ["oauth_flow", "oauth_state", "oauth_nonce", "oauth_next"]) res.cookies.set(name, "", { ...cookieOptions(), maxAge: 0 });
+  for (const name of ["oauth_flow", "oauth_state", "oauth_nonce", "oauth_next", OWNER_DISCOVERY_COOKIE]) res.cookies.set(name, "", { ...cookieOptions(), maxAge: 0 });
   res.headers.set("Cache-Control", "no-store");
   res.headers.set("Referrer-Policy", "no-referrer");
   return res;
@@ -40,16 +43,24 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ rout
     providerVerified = true;
     if (flow.invitation) await members.acceptInvitation(flow.invitation, proof);
     else if (!(await members.memberForIdentity(proof.identity))) {
-      // Explicit adoption of the existing stable owner id; email equality is irrelevant.
       const configured = process.env.CONSOLE_BOOTSTRAP_IDENTITY;
-      if (!configured) return failure();
-      let identity;
-      try { identity = providerIdentitySchema.parse(JSON.parse(configured)); } catch { return failure(); }
-      if (identity.issuer !== proof.identity.issuer || identity.subject !== proof.identity.subject || identity.tenantId !== proof.identity.tenantId) return failure();
       const ownerId = process.env.AGENT_OWNER_USER_ID?.trim();
-      const owner = ownerId ? await members.currentMember(ownerId) : undefined;
-      if (!owner || !isConsoleOwner(owner)) return failure();
-      await members.linkIdentity(owner.id, owner.id, proof);
+      if (!ownerId) return failure();
+      if (configured) {
+        let selection;
+        try { selection = parseOwnerBootstrapSelection(JSON.parse(configured)); } catch { return failure(); }
+        if (selection.ownerId !== ownerId || selection.installationOrigin !== new URL(consoleRedirect()).origin ||
+            JSON.stringify(selection.identity) !== JSON.stringify(proof.identity)) return failure();
+        await members.bootstrapFirstOwnerIdentity(selection.ownerId, selection.organisationId, proof);
+      } else {
+        const owner = await members.currentMember(ownerId);
+        if (!owner || !isConsoleOwner(owner) || !await members.firstOwnerBootstrapEligible(ownerId, owner.organisationId)) return failure();
+        const installationOrigin = new URL(consoleRedirect()).origin;
+        const receipt = { installationOrigin, identity: proof.identity, digest: ownerDiscoveryDigest(installationOrigin, proof.identity) };
+        const res = clearFlow(NextResponse.redirect(new URL("/sign-in?setup=owner", consoleRedirect())));
+        res.cookies.set(OWNER_DISCOVERY_COOKIE, await sealOwnerDiscoveryReceipt(receipt), { ...cookieOptions(), maxAge: 300 });
+        return res;
+      }
     }
     const session = await members.createSession(proof, new Date(Date.now() + SESSION_MAX_AGE * 1000));
     const destination = isConsoleOwner(session.member) ? safeNext(flow.next) : "/membership";
