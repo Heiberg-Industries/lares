@@ -418,12 +418,12 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         positions = [client_source.index("mark(" + repr(phase) + ")") for phase in phases]
         self.assertEqual(positions, sorted(positions))
         for contract in (
-            "member='first-use-member-a'", "headers:()=>headers", "await client.sessions.create()", "await bindConsoleSession(",
+            "member=process.env.FIRST_USE_MEMBER_ID!", "headers:()=>headers", "await client.sessions.create()", "await bindConsoleSession(",
             "await signPrivateModelPurposeRequest(request)", "await session.send(message)",
             "headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64')",
             "'x-lares-purpose':'read'", "mark('stream-auth')", "await pending.result()",
-            "'x-lares-model-capsule':capsule", "'x-lares-member-id':'first-use-member-b'",
-            "response:result.message", "sessionId:session.state.sessionId",
+            "'x-lares-model-capsule':capsule", "'x-lares-member-id':'first-use-no-such-member'",
+            "response:result.message",
             "fs.writeFileSync(temp,JSON.stringify({phase}),{mode:0o600})", "fs.renameSync(temp,phaseFile)",
             "catch(error){if(!resultObserved)recordThrownResult(error);process.exitCode=1}",
         ):
@@ -462,6 +462,8 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
     def test_container_reader_and_import_initializer_are_fixed_and_bounded(self) -> None:
         phases = next(node for node in self.tree.body if isinstance(node, ast.Assign)
             and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASES" for target in node.targets))
+        files = next(node for node in self.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASE_FILES" for target in node.targets))
         phase_file = next(node for node in self.tree.body if isinstance(node, ast.Assign)
             and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASE_FILE" for target in node.targets))
         result_file = next(node for node in self.tree.body if isinstance(node, ast.Assign)
@@ -473,7 +475,7 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         safe = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
             and node.name == "safe_compiled_client_phase_summary")
         namespace = {"json": json}
-        module = ast.fix_missing_locations(ast.Module(body=[phases, phase_file, result_file, initializer, reader, safe], type_ignores=[]))
+        module = ast.fix_missing_locations(ast.Module(body=[phases, files, phase_file, result_file, initializer, reader, safe], type_ignores=[]))
         exec(compile(module, str(PROBE), "exec"), namespace)
         observed = {}
         namespace["run"] = lambda *args, **kwargs: observed.update(args=args, kwargs=kwargs) or type(
@@ -499,8 +501,13 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         namespace = {
             "initialize_compiled_client_phase": lambda _name: True,
             "COMPILED_CLIENT_PHASE_FILE": "/tmp/first-use-phase-first",
+            "COMPILED_CLIENT_PHASE_FILES": {"owner-first": "/tmp/first-use-phase-first", "later-member": "/tmp/first-use-phase-later", "owner-repeat": "/tmp/first-use-phase-repeat"},
             "COMPILED_CLIENT_RESULT_FILE": "/tmp/first-use-result-diagnostic-first",
-            "compiled_client_phase_summary": lambda _name: {"phase": "capsule-sign", "markerValid": True},
+            "owner": "fixture-owner",
+            "admission_bridge_summary": lambda: {"markerValid": True, "routes": {"admit": {"requests": 1, "statuses": {"503": 1}}, "settle": {"requests": 0, "statuses": {"503": 0}}}},
+            "admission_bridge_delta": lambda _before, _after: {"markerValid": True, "routes": {"admit": {"requests": 0, "statuses": {"503": 0}}, "settle": {"requests": 0, "statuses": {"503": 0}}}},
+            "COMPILED_CLIENT_RESULT_FILE": "/tmp/first-use-result-diagnostic-first",
+            "compiled_client_phase_summary": lambda _name, _marker="owner-first": {"phase": "capsule-sign", "markerValid": True},
             "compiled_client_result_summary": lambda _name: {
                 "markerValid": False, "outcome": "unknown", "resultStatus": "unknown", "expectedMessage": None,
                 "failureEventCount": 0, "failureEvents": {"step": False, "turn": False, "session": False},
@@ -527,7 +534,7 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
             namespace["invoke_compiled_client"]()
         diagnostic = namespace["proof"]["firstUseClientDiagnostics"]
         self.assertEqual(diagnostic, {
-            "phase": "capsule-sign", "markerValid": True, "timedOut": False, "exitCode": 17,
+            "request": "owner-first", "phase": "capsule-sign", "markerValid": True, "timedOut": False, "exitCode": 17,
             "firstResult": namespace["compiled_client_result_summary"]("fixture-chief"),
             "admissionBridge": namespace["admission_bridge_delta"](None, None),
             "upstreamDispatchCount": 2,
@@ -960,12 +967,14 @@ class FinancialObserverTests(unittest.TestCase):
         namespace = {}
         exec(compile(ast.fix_missing_locations(ast.Module(body=[assignment], type_ignores=[])), str(PROBE), "exec"), namespace)
         queries = namespace["FINANCIAL_OBSERVER_SQL"]
-        self.assertEqual(set(queries), {"native", "bindings", "members"})
+        self.assertEqual(set(queries), {"native", "bindings", "members", "authority"})
+        self.assertGreaterEqual(queries["authority"].count("LIMIT 1025"), 4)
+        self.assertIn("LIMIT 129", queries["authority"])
+        self.assertIn("LIMIT 129", queries["bindings"])
+        self.assertIn("LIMIT 129", queries["members"])
         self.assertTrue(all(query.lstrip().upper().startswith("SELECT") for query in queries.values()))
         self.assertTrue(all(not any(word in query.upper() for word in ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "DROP"))
                             for query in queries.values()))
-        self.assertTrue(all(f"'{state}'" in queries["native"] for state in
-                            ("prepared", "retired", "admitted", "unknown", "conflict", "settled")))
         observer = next(
             node for node in tree.body
             if isinstance(node, ast.FunctionDef) and node.name == "financial_observer"
@@ -1003,9 +1012,46 @@ class FinancialObserverTests(unittest.TestCase):
             self.assertIn("BEGIN READ ONLY", script)
             self.assertIn("default_transaction_read_only=on", script)
             self.assertNotIn("fixture-password-value", script)
+            result = namespace["financial_observer"]("authority", {
+                "host": "proof-db", "port": 5432, "database": "proof", "user": "lares_financial",
+                "passwordFile": "/etc/lares/secrets/financial-database-password",
+            })
+            self.assertEqual(result, "{}")
+            self.assertEqual(len(calls), 2)
+            exact_script = (root / "financial-observer.mts").read_text(encoding="utf-8")
+            self.assertIn("YYYY-MM-DD\\\"T\\\"HH24:MI:SS.US\\\"Z\\\"", exact_script)
+            self.assertIn("openingCap", exact_script)
+            self.assertIn("actualAmount", exact_script)
+            self.assertIn("invocationHash", exact_script)
+            self.assertIn("grantHash", exact_script)
+            self.assertIn("BEGIN READ ONLY", exact_script)
+            self.assertNotIn("fixture-password-value", exact_script)
 
 
 class FirstActivationMemberSummaryTests(unittest.TestCase):
+    def test_actual_consumer_accepts_only_exact_member_state_roster(self) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        consumer = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "selected_member_states_match"
+        )
+        namespace = {}
+        module = ast.fix_missing_locations(ast.Module(body=[consumer], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+        matches = namespace["selected_member_states_match"]
+        owner, later = "first-use-owner", "first-use-member-later"
+        self.assertTrue(matches([{"memberId": owner, "state": "open"}], {owner: "open"}))
+        expected = [{"memberId": owner, "state": "open"}, {"memberId": later, "state": "closed"}]
+        self.assertTrue(matches(expected, {owner: "open", later: "closed"}))
+        self.assertTrue(matches([dict(row, state="open") for row in expected], {owner: "open", later: "open"}))
+        self.assertFalse(matches([dict(expected[0], memberId="unexpected")], {owner: "open"}))
+        self.assertFalse(matches([dict(expected[0], state="closed")], {owner: "open"}))
+        self.assertFalse(matches(expected[:1], {owner: "open", later: "closed"}))
+        self.assertFalse(matches(expected + [dict(expected[0])], {owner: "open", later: "closed"}))
+        self.assertFalse(matches([dict(expected[0]), dict(expected[0])], {owner: "open"}))
+        self.assertFalse(matches([dict(expected[0], extra="unexpected")], {owner: "open"}))
+
+
     def test_actual_consumer_accepts_only_selected_open_member_and_other_closed(self) -> None:
         tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
         consumer = next(
@@ -1047,6 +1093,10 @@ class InitialBudgetFixtureOrderTests(unittest.TestCase):
         self.assertIn("FIXTURE_OWNER_SESSION_TOKEN_HASH", source_code)
         self.assertIn("financialAccessDenied:true", source_code)
         self.assertNotIn("PgGrantStore", source_code)
+        self.assertIn("VALUES($1,'Owner',$2,'owner','active')", source_code)
+        self.assertNotIn("first-use-member-later", source_code)
+        self.assertNotIn("Member A", source_code)
+        self.assertNotIn("Member B", source_code)
 
         stages = {
             node.value.value: node.lineno
@@ -1057,33 +1107,81 @@ class InitialBudgetFixtureOrderTests(unittest.TestCase):
             and node.value.value in {
                 "source-rows-and-readiness", "production-keeper-startup",
                 "initial-budget-actions-through-console-client",
-                "source-adoption-after-initial-budgets", "host-only-provisioning",
+                "source-adoption-after-initial-budgets", "owner-only-host-provisioning",
+                "owner-first-console-signature-and-model-request",
+                "later-member-source-identity-link",
+                "later-member-initial-budget-actions-through-console-client",
+                "later-member-ordinary-grant-check",
+                "later-member-host-account-provisioning", "later-member-native-provisioning",
+                "later-member-activation", "later-member-console-signed-model-request",
+                "owner-repeat-console-signed-model-request",
             }
         }
         self.assertEqual(set(stages), {
             "source-rows-and-readiness", "production-keeper-startup",
             "initial-budget-actions-through-console-client",
-            "source-adoption-after-initial-budgets", "host-only-provisioning",
+            "source-adoption-after-initial-budgets", "owner-only-host-provisioning",
+            "owner-first-console-signature-and-model-request",
+            "later-member-source-identity-link",
+            "later-member-initial-budget-actions-through-console-client",
+            "later-member-ordinary-grant-check",
+            "later-member-host-account-provisioning", "later-member-native-provisioning",
+            "later-member-activation", "later-member-console-signed-model-request",
+            "owner-repeat-console-signed-model-request",
         })
         self.assertLess(stages["source-rows-and-readiness"], stages["production-keeper-startup"])
         self.assertLess(stages["production-keeper-startup"], stages["initial-budget-actions-through-console-client"])
         self.assertLess(stages["initial-budget-actions-through-console-client"], stages["source-adoption-after-initial-budgets"])
-        self.assertLess(stages["source-adoption-after-initial-budgets"], stages["host-only-provisioning"])
+        self.assertLess(stages["source-adoption-after-initial-budgets"], stages["owner-only-host-provisioning"])
+        self.assertLess(stages["owner-only-host-provisioning"], stages["owner-first-console-signature-and-model-request"])
+        self.assertLess(stages["owner-first-console-signature-and-model-request"], stages["later-member-source-identity-link"])
+        self.assertLess(stages["later-member-source-identity-link"], stages["later-member-initial-budget-actions-through-console-client"])
+        self.assertLess(stages["later-member-initial-budget-actions-through-console-client"], stages["later-member-ordinary-grant-check"])
+        self.assertLess(stages["later-member-ordinary-grant-check"], stages["later-member-host-account-provisioning"])
+        self.assertLess(stages["later-member-host-account-provisioning"], stages["later-member-native-provisioning"])
+        self.assertLess(stages["later-member-native-provisioning"], stages["later-member-activation"])
+        self.assertLess(stages["later-member-activation"], stages["later-member-console-signed-model-request"])
+        self.assertLess(stages["later-member-console-signed-model-request"], stages["owner-repeat-console-signed-model-request"])
 
-        client_script = next(
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute) and node.func.attr == "write_text"
-            and node.args and isinstance(node.args[0], ast.Constant)
-            and "member.initial-budget-status" in node.args[0].value
-        ).args[0].value
+        owner_request = next(node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "client_result" for target in node.targets))
+        owner_request_source = ast.unparse(owner_request.value)
+        self.assertIn("invoke_first_use_and_capture(invoke_compiled_client", owner_request_source)
+        request_runner = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                              and node.name == "invoke_compiled_client")
+        request_runner_source = ast.unparse(request_runner)
+        self.assertIn("'FIRST_USE_MEMBER_ID=' + member_id", request_runner_source)
+        self.assertIn("check_refusals = marker_id == 'owner-first'", request_runner_source)
+        self.assertIn("'CHECK_REFUSALS=1'", request_runner_source)
+        first_use_client = next(node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "write_text" and node.args and isinstance(node.args[0], ast.Constant)
+            and "wrongMemberStatus" in node.args[0].value)
+        self.assertIn("process.env.FIRST_USE_MEMBER_ID", first_use_client.args[0].value)
+        self.assertIn("first-use-no-such-member", first_use_client.args[0].value)
+        self.assertNotIn("first-use-member-later", first_use_client.args[0].value)
+
+        client_builder = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                              and node.name == "initial_budget_client_source")
+        namespace = {"json": json}
+        module = ast.fix_missing_locations(ast.Module(body=[client_builder], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+        client_script = namespace["initial_budget_client_source"](
+            [{"memberId":"first-use-owner","eligible":True,"setupComplete":False}], ["first-use-owner"])
         for contract in (
             "services/console/lib/keeper-client.ts", "member.initial-budget-status",
             "member.set-initial-budget", "first-use-owner", "first-use-owner@example.invalid",
-            "statusCount:status.length", "capsSaved:expected.length",
+            "statusCount:status.length", "capsSaved:targets.length", "const targets=[\"first-use-owner\"]",
         ):
             self.assertIn(contract, client_script)
         self.assertNotIn("console.log(sessionToken", client_script)
+        later_client_script = namespace["initial_budget_client_source"](
+            [{"memberId":"first-use-owner","eligible":False,"setupComplete":True},
+             {"memberId":"first-use-member-later","eligible":True,"setupComplete":False}],
+            ["first-use-member-later"])
+        self.assertIn('"memberId":"first-use-member-later"', later_client_script)
+        self.assertIn('const targets=["first-use-member-later"]', later_client_script)
 
         adoption_assignment = next(
             node for node in ast.walk(tree)
@@ -1094,6 +1192,25 @@ class InitialBudgetFixtureOrderTests(unittest.TestCase):
         self.assertIn("adoptAgent", adoption_assignment.value.value)
         self.assertIn("updateAgentAccess", adoption_assignment.value.value)
         self.assertIn("current.accessRevision<=adopted.accessRevision", adoption_assignment.value.value)
+
+        later_source_assignment = next(node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "later_source_code" for target in node.targets))
+        later_source = later_source_assignment.value.value
+        self.assertIn("INSERT INTO users", later_source)
+        self.assertIn("INSERT INTO member_provider_identities", later_source)
+        self.assertIn("linked:true", later_source)
+        self.assertNotIn("org_member_policy", later_source)
+        later_grant_assignment = next(node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "later_grant_code" for target in node.targets))
+        later_grant = later_grant_assignment.value.value
+        self.assertIn("captureUseWithExpiry(member,agent,{db})", later_grant)
+        self.assertIn("await db.query('BEGIN')", later_grant)
+        self.assertIn("await db.query('ROLLBACK')", later_grant)
+        self.assertIn("db.release()", later_grant)
+        self.assertIn("user:'lares_app'", later_grant)
+        self.assertNotIn("BEGIN READ ONLY", later_grant)
 
     def test_constructed_console_action_command_mounts_only_the_token_file(self) -> None:
         tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
@@ -1157,6 +1274,164 @@ try{{
         )
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("actual Keeper socket and Console client actor contract passed", result.stdout)
+
+
+
+class LaterMemberSettlementConsumerTests(unittest.TestCase):
+        def test_financial_authority_consumer_requires_exact_existing_rows_to_remain(self) -> None:
+            tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+            consumer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                            and node.name == "financial_authority_preserved")
+            namespace = {}
+            module = ast.fix_missing_locations(ast.Module(body=[consumer], type_ignores=[]))
+            exec(compile(module, str(PROBE), "exec"), namespace)
+            compare = namespace["financial_authority_preserved"]
+            before = {key: [{"id": key + "-old", "value": "canonical"}] for key in ("accounts", "windows", "bindings", "attempts")}
+            before["grants"] = [{"attemptId": "grant-old", "value": "canonical"}]
+            after = {key: [dict(row) for row in rows] for key, rows in before.items()}
+            for key, identity in (("accounts", "id"), ("windows", "id"), ("bindings", "id"), ("attempts", "id")):
+                after[key].append({"id": key + "-new", "value": "new"})
+            after["grants"].append({"attemptId": "grant-new", "value": "new"})
+            self.assertTrue(compare(before, after))
+            changed = {key: [dict(row) for row in rows] for key, rows in after.items()}
+            changed["attempts"][0]["value"] = "mutated"
+            self.assertFalse(compare(before, changed))
+            changed_grant = {key: [dict(row) for row in rows] for key, rows in after.items()}
+            changed_grant["grants"][0]["value"] = "mutated"
+            self.assertFalse(compare(before, changed_grant))
+
+        def test_first_owner_snapshot_must_link_the_exact_settled_path(self) -> None:
+            tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+            consumer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                            and node.name == "owner_financial_authority_snapshot_complete")
+            namespace = {"re": re}
+            preservation = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                                and node.name == "financial_authority_preserved")
+            module = ast.fix_missing_locations(ast.Module(body=[preservation, consumer], type_ignores=[]))
+            exec(compile(module, str(PROBE), "exec"), namespace)
+            complete = namespace["owner_financial_authority_snapshot_complete"]
+            owner, installation_id, member_account_id = "first-use-owner", "installation-id", "owner-account-id"
+            installation_window, member_window, binding_id, attempt_id = "install-window", "member-window", "owner-binding", "owner-attempt"
+            snapshot = {
+                "accounts": [
+                    {"id": installation_id, "kind": "installation", "state": "open", "reason": "approved",
+                     "activeWindowId": installation_window},
+                    {"id": member_account_id, "kind": "member", "memberId": owner,
+                     "installationAccountId": installation_id, "state": "open", "reason": "approved",
+                     "activeWindowId": member_window},
+                ],
+                "windows": [{"id": installation_window, "accountId": installation_id},
+                            {"id": member_window, "accountId": member_account_id}],
+                "bindings": [{"id": binding_id, "memberId": owner, "state": "active",
+                              "installationAccountId": installation_id, "memberAccountId": member_account_id}],
+                "attempts": [{"id": attempt_id, "memberId": owner, "state": "settled",
+                              "installationAccountId": installation_id, "memberAccountId": member_account_id,
+                              "bindingId": binding_id, "installationWindowId": installation_window,
+                              "memberWindowId": member_window, "actualAmount": "0.25"}],
+                "grants": [{"attemptId": attempt_id, "grantHash": "a" * 64}],
+            }
+            self.assertTrue(complete(snapshot, owner))
+            for key, index, field, wrong in (
+                ("accounts", 1, "memberId", "different-member"),
+                ("accounts", 1, "activeWindowId", "different-window"),
+                ("bindings", 0, "memberAccountId", "different-account"),
+                ("attempts", 0, "state", "prepared"),
+                ("attempts", 0, "actualAmount", "0"),
+                ("grants", 0, "attemptId", "different-attempt"),
+            ):
+                changed = json.loads(json.dumps(snapshot))
+                changed[key][index][field] = wrong
+                self.assertFalse(complete(changed, owner), (key, field))
+            self.assertFalse(complete({**snapshot, "attempts": snapshot["attempts"] + [snapshot["attempts"][0]]}, owner))
+
+        def test_each_later_settlement_is_exactly_linked_to_its_member_and_native_authority(self) -> None:
+            tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+            consumer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                            and node.name == "financial_settlement_delta_matches")
+            namespace = {"re": re}
+            preservation = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                                and node.name == "financial_authority_preserved")
+            module = ast.fix_missing_locations(ast.Module(body=[preservation, consumer], type_ignores=[]))
+            exec(compile(module, str(PROBE), "exec"), namespace)
+            matches = namespace["financial_settlement_delta_matches"]
+            owner, later = "first-use-owner", "first-use-member-later"
+            install, owner_account, later_account = "install-account", "owner-account", "later-account"
+            install_window, owner_window, later_window = "install-window", "owner-window", "later-window"
+            owner_binding, later_binding = "owner-binding", "later-binding"
+            baseline = {
+                "accounts": [
+                    {"id": install, "kind": "installation", "state": "open", "reason": "approved", "activeWindowId": install_window,
+                     "endpointGeneration": "7", "recoveryEpoch": "epoch-a", "policyGeneration": "11"},
+                    {"id": owner_account, "kind": "member", "memberId": owner, "installationAccountId": install,
+                     "state": "open", "reason": "approved", "activeWindowId": owner_window, "policyGeneration": "12"},
+                    {"id": later_account, "kind": "member", "memberId": later, "installationAccountId": install,
+                     "state": "open", "reason": "approved", "activeWindowId": later_window, "policyGeneration": "13"},
+                ],
+                "windows": [{"id": install_window, "accountId": install},
+                            {"id": owner_window, "accountId": owner_account},
+                            {"id": later_window, "accountId": later_account}],
+                "bindings": [
+                    {"id": owner_binding, "memberId": owner, "installationAccountId": install,
+                     "memberAccountId": owner_account, "endpointHash": "endpoint-owner", "credentialGeneration": "3",
+                     "profileHash": "profile-owner", "state": "active"},
+                    {"id": later_binding, "memberId": later, "installationAccountId": install,
+                     "memberAccountId": later_account, "endpointHash": "endpoint-later", "credentialGeneration": "4",
+                     "profileHash": "profile-later", "state": "active"},
+                ],
+                "attempts": [{"id": "prior-attempt", "memberId": owner, "state": "settled", "actualAmount": "0.25"}],
+                "grants": [{"attemptId": "prior-attempt", "grantHash": "a" * 64}],
+            }
+
+            def after_for(member_id: str, binding_id: str) -> dict:
+                account_id = owner_account if member_id == owner else later_account
+                member_window_id = owner_window if member_id == owner else later_window
+                binding = next(row for row in baseline["bindings"] if row["id"] == binding_id)
+                attempt = {"id": "new-attempt", "memberId": member_id, "state": "settled",
+                           "installationAccountId": install, "memberAccountId": account_id,
+                           "bindingId": binding_id, "installationWindowId": install_window,
+                           "memberWindowId": member_window_id, "endpointHash": binding["endpointHash"],
+                           "credentialGeneration": binding["credentialGeneration"], "endpointGeneration": "7",
+                           "recoveryEpoch": "epoch-a", "profileHash": binding["profileHash"],
+                           "installationPolicyGeneration": "11",
+                           "memberPolicyGeneration": "12" if member_id == owner else "13", "actualAmount": "0.5"}
+                return {key: [dict(row) for row in rows] for key, rows in baseline.items()} | {
+                    "attempts": [dict(row) for row in baseline["attempts"]] + [attempt],
+                    "grants": [dict(row) for row in baseline["grants"] +
+                               [{"attemptId": "new-attempt", "grantHash": "b" * 64}]],
+                }
+
+            for member_id, binding_id in ((later, later_binding), (owner, owner_binding)):
+                valid = after_for(member_id, binding_id)
+                self.assertTrue(matches(baseline, valid, member_id, binding_id))
+                for key, field, wrong in (
+                    ("attempts", "memberId", owner if member_id == later else later),
+                    ("attempts", "state", "prepared"),
+                    ("attempts", "memberAccountId", owner_account if member_id == later else later_account),
+                    ("attempts", "bindingId", owner_binding if binding_id == later_binding else later_binding),
+                    ("attempts", "memberWindowId", owner_window if member_id == later else later_window),
+                    ("attempts", "credentialGeneration", "wrong-generation"),
+                    ("attempts", "endpointHash", "wrong-endpoint"),
+                    ("attempts", "profileHash", "wrong-profile"),
+                    ("attempts", "recoveryEpoch", "wrong-epoch"),
+                    ("attempts", "actualAmount", "0"),
+                    ("grants", "attemptId", "unlinked-attempt"),
+                ):
+                    changed = json.loads(json.dumps(valid))
+                    changed[key][-1][field] = wrong
+                    self.assertFalse(matches(baseline, changed, member_id, binding_id), (member_id, key, field))
+                for key in ("attempts", "grants"):
+                    missing = json.loads(json.dumps(valid))
+                    missing[key].pop()
+                    self.assertFalse(matches(baseline, missing, member_id, binding_id), (member_id, "missing", key))
+                    extra = json.loads(json.dumps(valid))
+                    extra[key].append(dict(extra[key][-1]))
+                    self.assertFalse(matches(baseline, extra, member_id, binding_id), (member_id, "extra", key))
+                changed_old = json.loads(json.dumps(valid))
+                changed_old["attempts"][0]["actualAmount"] = "9"
+                self.assertFalse(matches(baseline, changed_old, member_id, binding_id))
+                changed_roster = json.loads(json.dumps(valid))
+                changed_roster["accounts"][0]["endpointGeneration"] = "8"
+                self.assertFalse(matches(baseline, changed_roster, member_id, binding_id))
 
 
 if __name__ == "__main__":
