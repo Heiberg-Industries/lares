@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync,
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync, realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
@@ -76,7 +76,7 @@ function run(args: string[], input = answers, env: Record<string, string> = {}, 
         // HOME is this machine's real one, unlike the other installer tests, because the real
         // pnpm the stub hands render-stack to finds its own tooling under it. install.sh writes
         // nothing outside $PREFIX, so nothing of this installation can land there.
-        STUB_LOG: log, LARES_PREFIX: prefix, HOME: process.env.HOME ?? dir, ...env,
+        STUB_LOG: log, LARES_PREFIX: prefix, LARES_MAINTENANCE_TESTING: "1", HOME: process.env.HOME ?? dir, ...env,
       },
     });
     return { code: 0, stdout, stderr: "" };
@@ -97,7 +97,7 @@ function at(re: RegExp): number {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lares-install-stack-"));
   binDir = join(dir, "bin"); mkdirSync(binDir);
-  prefix = join(dir, "root"); mkdirSync(prefix);
+  prefix = join(dir, "root"); mkdirSync(prefix); prefix = realpathSync(prefix);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, GOOD_RELEASE);
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "openssl"]) stub(name);
@@ -253,6 +253,18 @@ describe("the stack the installer brings up", () => {
     okRun(run(["--release", releaseFile]));
     const mode = statSync(join(prefix, "etc", "lares", "gateway-start.sh")).mode & 0o777;
     expect(mode, `the installed start script is mode ${mode.toString(8)}, not 0755`).toBe(0o755);
+  });
+
+  it("uses the same external authentication mount and fixed HBA file for bootstrap and normal DB", () => {
+    okRun(run(["--release", releaseFile]));
+    const normal = parse(readFileSync(join(prefix, "opt", "lares", "compose.yaml"), "utf8")) as any;
+    const expectedMount = { type: "bind", source: join(prefix, "var/lib/lares-maintenance/postgres-auth"), target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } };
+    expect(normal.services.db.volumes).toContainEqual(expectedMount);
+    expect(normal.services.db.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
+    expect(normal.services.db.secrets).toBeUndefined();
+    expect(normal.services.db.environment).toBeUndefined();
+    expect(readFileSync(join(prefix, "var/lib/lares-maintenance/postgres-auth/pg_hba.conf"), "utf8")).toContain("host all lares_app 172.30.0.0/24 scram-sha-256");
+    expect(calls()).toMatch(/render-database-bootstrap.*lares-maintenance\/postgres-auth/);
   });
 
   it("starts the online stack only after the database-only bootstrap", () => {

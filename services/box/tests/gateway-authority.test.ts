@@ -1,13 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { closeSync, fchmodSync, fsyncSync, mkdtempSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { gatewayServiceKeyMetadataIsSafe, parseConfirmedBootstrapSelection, parseInstallationSettings } from "../lib/gateway-authority.js";
 import { assertExistingRenderedAuthorityText, GATEWAY_AUTHORITY_STAGE_FILES, parseStageEnvironment, stageGatewayAuthority } from "../bin/render-gateway-authority-stage.js";
 import { gatewayAdmissionProfile } from "../lib/gateway-config.js";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
 import { renderKeeperComposeEnvironment } from "../bin/render-keeper-config.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 describe("staged gateway authority source parsing", () => {
   it("matches the root bootstrap writer digest and decodes only Compose dollar escapes", () => {
@@ -158,7 +161,7 @@ describe("staged gateway authority transaction", () => {
   it("resolves required Compose interpolation before splitting the committed Keeper template mounts", () => {
     const actualTemplate = {
       ...unboundOutputs(),
-      keeperCompose: readFileSync(join(process.cwd(), "services/box/compose.lares-keeper.yaml"), "utf8"),
+      keeperCompose: readFileSync(join(here, "..", "compose.lares-keeper.yaml"), "utf8"),
     };
     expect(() => assertExistingRenderedAuthorityText(actualTemplate, authority)).not.toThrow();
     const missingRequired = { ...actualTemplate, keeperEnv: actualTemplate.keeperEnv.replace(/^LARES_ROOT=.*\n/m, "") };

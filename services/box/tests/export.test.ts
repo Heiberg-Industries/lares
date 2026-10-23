@@ -238,6 +238,7 @@ describe("hard refusals — a configured path never leaves the box", () => {
   const cases: Array<[string, (d: string) => string]> = [
     ["under /etc/agent-box", (d) => "/etc/agent-box/oops"],
     ["under /etc/lares", (d) => "/etc/lares/oops"],
+    ["under maintenance custody", (d) => join(prefix, "var/lib/lares-maintenance/postgres-auth")],
     ["under /run/secrets", (d) => "/run/secrets/oops"],
     ["named .env", (d) => join(d, ".env")],
     ["ending in .age", (d) => join(d, "identity.age")],

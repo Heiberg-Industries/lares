@@ -5,7 +5,9 @@
  * both up together); this file never mentions the keeper.
  */
 import { stringify } from "yaml";
-import { dirname, isAbsolute, join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { imageFor, type ReleaseManifest } from "./release-manifest.js";
 
 export interface StackComposeOptions {
@@ -35,6 +37,8 @@ export interface StackComposeOptions {
   readonly caddyDataDir: string;
   /** Absolute path to a directory Postgres may write its data files into. */
   readonly dbDataDir: string;
+  /** Root-owned external PostgreSQL authentication custody directory. */
+  readonly databaseAuthDir: string;
   readonly network: string; // e.g. "lares-network" — created by this file, NOT external
   readonly subnet: string; // e.g. "172.30.0.0/24"
   /** The domain the installation answers on (LARES_DOMAIN). It reaches Caddy through the
@@ -67,8 +71,29 @@ export interface DatabaseBootstrapComposeOptions {
   /** Absolute root-only credential path, outside every container's ordinary mounts. */
   readonly operatorPasswordFile: string;
   readonly dbDataDir: string;
+  readonly databaseAuthDir: string;
   readonly network: string;
   readonly subnet: string;
+}
+
+
+/** The installer validates the strict host receipt; renderers additionally refuse a missing,
+ *  symlinked or non-regular external auth input before writing Compose output. */
+export function assertDatabaseAuthDirectory(path: string, prefix: string, subnet: string): void {
+  if (!isAbsolute(path) || /[\n\r\0]/.test(path))
+    throw new Error("Database authentication directory path must be absolute");
+  const normalizedPrefix = prefix || "/";
+  if (!isAbsolute(normalizedPrefix) || resolve(normalizedPrefix) !== normalizedPrefix)
+    throw new Error("Database authentication prefix must be absolute and normalized");
+  const expected = join(normalizedPrefix, "var/lib/lares-maintenance/postgres-auth");
+  if (path !== expected)
+    throw new Error("Database authentication directory must name this installation's protected custody");
+  if (process.getuid?.() !== 0 && process.env.LARES_MAINTENANCE_TESTING !== "1")
+    throw new Error("Database authentication custody validation requires root");
+  const checker = join(dirname(fileURLToPath(import.meta.url)), "..", "ops", "maintenance-custody.py");
+  const args = [checker, "validate", normalizedPrefix, subnet];
+  if (process.getuid?.() !== 0 && process.env.LARES_MAINTENANCE_TESTING === "1") args.push("--test-owner");
+  execFileSync("python3", args, { stdio: "pipe" });
 }
 
 /** Where the deadline calendar sits inside the console container (docs/install.md, section 7). */
@@ -78,6 +103,8 @@ export const DEADLINE_CALENDAR_IN_CONTAINER = "/srv/lares/installation/deadline-
  *  ReleaseManifestInvalid, re-thrown from imageFor) if the manifest names no image for one of
  *  them. Never mentions the keeper — F7 appends that service with a second file. */
 export function renderStackCompose(manifest: ReleaseManifest, opts: StackComposeOptions): string {
+  if (!isAbsolute(opts.databaseAuthDir) || /[\n\r\0]/.test(opts.databaseAuthDir))
+    throw new Error("Database authentication directory path must be absolute");
   const secret = (name: string) => ({ file: `${opts.secretsDir}/${name}` });
   const consoleVaultSigningKeyFile = opts.consoleVaultSigningKeyFile ?? null;
   const consoleModelPurposeSigningKeyFile = opts.consoleModelPurposeSigningKeyFile ?? null;
@@ -104,7 +131,8 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     db: {
       image: imageFor(manifest, "db"),
       restart: "unless-stopped",
-      volumes: [`${opts.dbDataDir}:/var/lib/postgresql/data`],
+      command: ["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"],
+      volumes: [`${opts.dbDataDir}:/var/lib/postgresql/data`, { type: "bind", source: opts.databaseAuthDir, target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } }],
       ports: ["127.0.0.1:5432:5432"],
       networks: [opts.network],
     },
@@ -287,17 +315,20 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
 export function renderDatabaseBootstrapCompose(manifest: ReleaseManifest, opts: DatabaseBootstrapComposeOptions): string {
   if (!isAbsolute(opts.operatorPasswordFile) || /[\n\r\0]/.test(opts.operatorPasswordFile))
     throw new Error("Database operator password path must be absolute");
+  if (!isAbsolute(opts.databaseAuthDir) || /[\n\r\0]/.test(opts.databaseAuthDir))
+    throw new Error("Database authentication directory path must be absolute");
   const services = {
     db: {
       image: imageFor(manifest, "db"),
       restart: "unless-stopped",
+      command: ["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"],
       environment: {
         POSTGRES_DB: "postgres",
         POSTGRES_USER: "lares_operator",
         POSTGRES_PASSWORD_FILE: "/run/secrets/operator-password",
       },
       secrets: ["operator-password"],
-      volumes: [`${opts.dbDataDir}:/var/lib/postgresql/data`],
+      volumes: [`${opts.dbDataDir}:/var/lib/postgresql/data`, { type: "bind", source: opts.databaseAuthDir, target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } }],
       ports: ["127.0.0.1:5432:5432"],
       networks: [opts.network],
     },

@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, normalize, parse, relative, sep } from "node
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
-import { renderStackCompose } from "../lib/stack-compose.js";
+import { assertDatabaseAuthDirectory, renderStackCompose } from "../lib/stack-compose.js";
 import { gatewayAdmissionProfile, renderGatewayConfig } from "../lib/gateway-config.js";
 import { renderKeeperConfig } from "../lib/keeper-config.js";
 import { renderKeeperComposeEnvironment } from "./render-keeper-config.js";
@@ -371,6 +371,10 @@ function assertExistingRenderedAuthority(prefix: string, authority: Parameters<t
 
 function stageOutput(request: GatewayAuthorityStageRequest): StageBuild {
   const prefix = request.prefix;
+  const databaseAuthDir = join(prefix, "var", "lib", "lares-maintenance", "postgres-auth");
+  // This boundary only validates already established external custody. Staging must never
+  // create, adopt, or rewrite normal authentication state.
+  assertDatabaseAuthDirectory(databaseAuthDir, prefix, request.subnet);
   const etc = join(prefix, "etc", "lares");
   const secretsDir = join(etc, "secrets");
   const keeperConfigFile = join(etc, "keeper.json");
@@ -460,6 +464,7 @@ function stageOutput(request: GatewayAuthorityStageRequest): StageBuild {
     caddyfile,
     caddyDataDir,
     dbDataDir,
+    databaseAuthDir,
     network: request.network,
     subnet: request.subnet,
     domain: authority.domain,

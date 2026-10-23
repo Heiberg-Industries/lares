@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parse } from "yaml";
 import { denylistPatterns } from "./helpers/denylist.js";
-import { renderDatabaseBootstrapCompose, renderStackCompose } from "../lib/stack-compose.js";
+import { assertDatabaseAuthDirectory, renderDatabaseBootstrapCompose, renderStackCompose } from "../lib/stack-compose.js";
 import { optionalRegularFile } from "../bin/render-stack.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
 
@@ -23,6 +23,7 @@ const OPTS = {
   caddyfile: "/etc/lares/Caddyfile",
   caddyDataDir: "/var/lib/lares/caddy",
   dbDataDir: "/var/lib/lares/postgres",
+  databaseAuthDir: "/var/lib/lares-maintenance/postgres-auth",
   network: "lares-network",
   subnet: "172.30.0.0/24",
   domain: "example.invalid",
@@ -35,6 +36,75 @@ const OPTS = {
 };
 
 describe("the generated stack compose file", () => {
+  it("requires the exact validated external auth path", () => {
+    expect(() => assertDatabaseAuthDirectory(
+      "/srv/lares/jump/../var/lib/lares-maintenance/postgres-auth",
+      "/srv/lares", "172.30.0.0/24",
+    )).toThrow(/must name this installation's protected custody/);
+    expect(() => assertDatabaseAuthDirectory(
+      "/srv/lares/var/lib/lares-maintenance/postgres-auth/",
+      "/srv/lares", "172.30.0.0/24",
+    )).toThrow(/must name this installation's protected custody/);
+  });
+
+  it("validates prepared external auth and refuses missing, partial, blocked, or redirected custody", async () => {
+    const { chmodSync, lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { dirname, join } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const { execFileSync } = await import("node:child_process");
+    const temporaryRoot = process.platform === "darwin" ? "/private/tmp" : tmpdir();
+    const prefix = mkdtempSync(join(temporaryRoot, "lares-database-auth-validation-"));
+    const authDir = join(prefix, "var", "lib", "lares-maintenance", "postgres-auth");
+    const ops = join(dirname(fileURLToPath(import.meta.url)), "..", "ops");
+    const envBefore = process.env.LARES_MAINTENANCE_TESTING;
+    process.env.LARES_MAINTENANCE_TESTING = "1";
+    try {
+      const prepareArgs = [join(ops, "maintenance-custody.py"), "prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh"];
+      if (process.getuid?.() !== 0) prepareArgs.push("--test-owner");
+      execFileSync("python3", prepareArgs, { stdio: "pipe" });
+      expect(() => assertDatabaseAuthDirectory(authDir, prefix, "172.30.0.0/24")).not.toThrow();
+
+      const refused = () => expect(() => assertDatabaseAuthDirectory(authDir, prefix, "172.30.0.0/24")).toThrow();
+      const moved = `${authDir}.moved`;
+      renameSync(authDir, moved);
+      refused();
+      renameSync(moved, authDir);
+
+      const custodyDir = join(prefix, "var", "lib", "lares-maintenance", "custody");
+      const pending = join(custodyDir, "preparation.pending");
+      writeFileSync(pending, "incomplete\n", { mode: 0o600 });
+      refused();
+      rmSync(pending);
+
+      const intent = join(prefix, "var", "lib", "lares-maintenance", "admission", "intent.json");
+      const intentBytes = readFileSync(intent);
+      const intentInode = statSync(intent).ino;
+      const record = { ...JSON.parse(intentBytes.toString("utf8")), state: "blocked" };
+      chmodSync(intent, 0o600);
+      writeFileSync(intent, `${JSON.stringify(record, Object.keys(record).sort())}\n`);
+      chmodSync(intent, 0o444);
+      refused();
+      chmodSync(intent, 0o600);
+      writeFileSync(intent, intentBytes);
+      chmodSync(intent, 0o444);
+      expect(statSync(intent).ino).toBe(intentInode);
+
+      const redirected = join(prefix, "redirected-auth-target");
+      renameSync(authDir, redirected);
+      symlinkSync(redirected, authDir);
+      expect(lstatSync(authDir).isSymbolicLink()).toBe(true);
+      refused();
+      unlinkSync(authDir);
+      renameSync(redirected, authDir);
+      expect(() => assertDatabaseAuthDirectory(authDir, prefix, "172.30.0.0/24")).not.toThrow();
+    } finally {
+      if (envBefore === undefined) delete process.env.LARES_MAINTENANCE_TESTING;
+      else process.env.LARES_MAINTENANCE_TESTING = envBefore;
+      rmSync(prefix, { recursive: true, force: true });
+    }
+  });
+
   it("mounts only an existing regular Vault key file, never a symlink or directory", async () => {
     const { mkdtemp, mkdir, rm, symlink, writeFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
@@ -64,6 +134,8 @@ describe("the generated stack compose file", () => {
   it("names every service by digest, and nothing else", () => {
     const doc = parse(renderStackCompose(MANIFEST, OPTS)) as any;
     expect(doc.services.db.image).toBe(D("db"));
+    expect(doc.services.db.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
+    expect(doc.services.db.volumes).toContainEqual({ type: "bind", source: OPTS.databaseAuthDir, target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
     expect(doc.services.console.image).toBe(D("console"));
     expect(doc.services["lares-gateway"].image).toBe(D("gateway"));
     expect(doc.services.caddy.image).toBe(D("caddy"));
@@ -270,6 +342,7 @@ describe("the generated stack compose file", () => {
     const doc = parse(renderDatabaseBootstrapCompose(MANIFEST, {
       operatorPasswordFile: "/etc/lares/operator/database-password",
       dbDataDir: OPTS.dbDataDir,
+      databaseAuthDir: OPTS.databaseAuthDir,
       network: OPTS.network,
       subnet: OPTS.subnet,
     })) as any;
@@ -277,5 +350,7 @@ describe("the generated stack compose file", () => {
     expect(doc.services.db.environment.POSTGRES_USER).toBe("lares_operator");
     expect(doc.services.db.environment.POSTGRES_PASSWORD_FILE).toBe("/run/secrets/operator-password");
     expect(doc.secrets["operator-password"].file).toBe("/etc/lares/operator/database-password");
+    expect(doc.services.db.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
+    expect(doc.services.db.volumes).toContainEqual({ type: "bind", source: OPTS.databaseAuthDir, target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
   });
 });

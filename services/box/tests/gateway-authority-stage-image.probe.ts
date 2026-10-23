@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gatewayCanonical, gatewayHash } from "@lares/agent-kit/gateway-admission-protocol";
@@ -39,6 +39,7 @@ const writeProtected = (path: string, data: string | Buffer, mode: number) => {
   mkdirSync(dirname(path), { recursive: true, mode: 0o755 });
   writeFileSync(path, data, { mode }); chmodSync(path, mode);
 };
+const databaseAuthDir = join(prefix, "var", "lib", "lares-maintenance", "postgres-auth");
 const replaceProtectedAtomically = (path: string, data: string | Buffer, mode: number) => {
   const temporary = `${path}.replacement-${process.pid}`;
   writeProtected(temporary, data, mode);
@@ -47,8 +48,41 @@ const replaceProtectedAtomically = (path: string, data: string | Buffer, mode: n
 const runCli = (destination = stage) => spawnSync(process.execPath, ["--import", "tsx", cli, destination], {
   cwd: repo, input: `${JSON.stringify(request)}\n`, encoding: "utf8", timeout: 30_000,
 });
+const runStackCli = (output: string, authDir = databaseAuthDir) => spawnSync(process.execPath, [
+  "--import", "tsx", join(repo, "services", "box", "bin", "render-stack.ts"),
+  releaseFile, output, secrets, join(root, "litellm-config.yaml"), join(root, "Caddyfile"),
+  join(prefix, "var", "lib", "lares", "caddy"), join(prefix, "var", "lib", "lares", "postgres"),
+  request.network, request.subnet, domain, request.pgDatabase, alias, providerModel,
+  join(root, "gateway-start.sh"), "owner@example.test", join(prefix, "run", "lares"), ownerId,
+  "Europe/Oslo", join(prefix, "srv", "taste"), join(prefix, "srv", "lares", "installation"),
+  authDir, prefix,
+], { cwd: repo, encoding: "utf8", timeout: 30_000 });
 const activeSnapshot = () => Object.values(activePaths).map(path => [path, readFileSync(path).toString("hex"), statSync(path).mode & 0o777]);
+const databaseCustodySnapshot = () => [
+  join(prefix, "var", "lib", "lares-maintenance"),
+  join(prefix, "var", "lib", "lares-maintenance", "custody"),
+  join(prefix, "var", "lib", "lares-maintenance", "custody", "preparation.json"),
+  join(prefix, "var", "lib", "lares-maintenance", "custody", "command.lock"),
+  join(prefix, "var", "lib", "lares-maintenance", "custody", "preparation.pending"),
+  join(prefix, "var", "lib", "lares-maintenance", "admission"),
+  join(prefix, "var", "lib", "lares-maintenance", "admission", "intent.json"),
+  join(prefix, "var", "lib", "lares-maintenance", "admission", "service-gate.lock"),
+  databaseAuthDir,
+  join(databaseAuthDir, "pg_hba.conf"),
+].map(path => {
+  try {
+    const info = lstatSync(path);
+    return [path, info.ino, info.mode & 0o777, info.isSymbolicLink() ? "symlink" : info.isDirectory() ? "directory" : "file",
+      info.isFile() ? readFileSync(path).toString("hex") : ""];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [path, "missing"];
+    throw error;
+  }
+});
 const run = () => {
+  mkdirSync(prefix, { mode: 0o755 });
+  execFileSync("python3", [join(repo, "services", "box", "ops", "maintenance-custody.py"),
+    "prepare-fresh", prefix, request.subnet, "--confirm-fresh"], { stdio: "pipe" });
   mkdirSync(secrets, { recursive: true, mode: 0o700 }); chmodSync(secrets, 0o700);
   const manifest = parseReleaseManifest(JSON.stringify({ release: "ci-neutral", images: Object.fromEntries(
     ["db", "console", "lares-gateway", "caddy", "lares-keeper", "lares-egress-proxy"].map(name => [name, `example.invalid/${name}@sha256:${"a".repeat(64)}`])),
@@ -92,6 +126,7 @@ const run = () => {
     secretsDir: secrets, socketDir: join(prefix, "run", "lares"), tasteDir: join(prefix, "srv", "taste"),
     gatewayConfigFile: join(etc, "litellm-config.yaml"), gatewayStartScript: join(etc, "gateway-start.sh"), caddyfile: join(etc, "Caddyfile"),
     caddyDataDir: join(prefix, "var", "lib", "lares", "caddy"), dbDataDir: join(prefix, "var", "lib", "lares", "postgres"),
+    databaseAuthDir,
     network: request.network, subnet: request.subnet, domain, consoleAllowedEmails: "owner@example.test", ownerId,
     ownerHomeTz: "Europe/Oslo", modelAlias: alias, pgDatabase: request.pgDatabase, deadlineCalendarFile: null,
   });
@@ -107,6 +142,52 @@ const run = () => {
   writeProtected(activePaths.keeperEnv, activeKeeperEnv, 0o640);
 
   const beforeActive = activeSnapshot();
+  const renderedStackPath = join(root, "rendered-stack.yaml");
+  const renderedStack = runStackCli(renderedStackPath);
+  assert.equal(renderedStack.status, 0, "actual render-stack CLI must accept the prepared normal custody");
+  const renderedStackText = readFileSync(renderedStackPath, "utf8");
+  assert(renderedStackText.includes(databaseAuthDir));
+  assert(renderedStackText.includes("/run/lares-auth"));
+  assert(renderedStackText.includes("hba_file=/run/lares-auth/pg_hba.conf"));
+  const invalidStage = (label: string) => {
+    const destination = join(root, `${label}-refused-stage`);
+    const cliOutput = join(root, `${label}-refused-stack.yaml`);
+    writeProtected(cliOutput, "active-render-sentinel\n", 0o600);
+    const beforeCustody = databaseCustodySnapshot();
+    assert.notEqual(runCli(destination).status, 0, `${label} custody must refuse stage CLI`);
+    assert(!readdirSync(root).includes(`${label}-refused-stage`), `${label} custody must refuse before stage creation`);
+    assert.notEqual(runStackCli(cliOutput).status, 0, `${label} custody must refuse render-stack CLI`);
+    assert.equal(readFileSync(cliOutput, "utf8"), "active-render-sentinel\n", `${label} custody must not rewrite CLI output`);
+    assert.deepEqual(activeSnapshot(), beforeActive, `${label} custody refusal must leave active rendered inputs unchanged`);
+    assert.deepEqual(databaseCustodySnapshot(), beforeCustody, `${label} custody refusal must not repair or adopt custody`);
+  };
+  const savedAuth = `${databaseAuthDir}.saved`;
+  renameSync(databaseAuthDir, savedAuth);
+  invalidStage("missing-auth");
+  renameSync(savedAuth, databaseAuthDir);
+  const pendingMarker = join(prefix, "var", "lib", "lares-maintenance", "custody", "preparation.pending");
+  writeProtected(pendingMarker, "incomplete\n", 0o600);
+  invalidStage("partial-auth");
+  rmSync(pendingMarker);
+  const intentPath = join(prefix, "var", "lib", "lares-maintenance", "admission", "intent.json");
+  const normalIntent = readFileSync(intentPath);
+  const intentInode = statSync(intentPath).ino;
+  const blockedIntent = { ...JSON.parse(normalIntent.toString("utf8")), state: "blocked" };
+  writeFileSync(intentPath, `${JSON.stringify(blockedIntent, Object.keys(blockedIntent).sort())}\n`);
+  invalidStage("blocked-auth");
+  writeFileSync(intentPath, normalIntent);
+  assert.equal(statSync(intentPath).ino, intentInode, "blocked-state test must preserve the stable intent inode");
+  const redirectedAuth = join(root, "redirected-postgres-auth");
+  renameSync(databaseAuthDir, redirectedAuth);
+  symlinkSync(redirectedAuth, databaseAuthDir);
+  invalidStage("redirected-auth");
+  unlinkSync(databaseAuthDir);
+  renameSync(redirectedAuth, databaseAuthDir);
+  const wrongAuthOutput = join(root, "wrong-auth-path-stack.yaml");
+  writeProtected(wrongAuthOutput, "wrong-path-sentinel\n", 0o600);
+  assert.notEqual(runStackCli(wrongAuthOutput, `${databaseAuthDir}/..`).status, 0, "actual CLI must refuse a noncanonical auth path");
+  assert.equal(readFileSync(wrongAuthOutput, "utf8"), "wrong-path-sentinel\n");
+
   const first = runCli();
   assert.equal(first.status, 0, "default staging CLI must complete from protected neutral fixtures");
   const stagedNames = readdirSync(stage).sort();
@@ -124,6 +205,9 @@ const run = () => {
   const mounts = (service: string) => resolved.services[service].volumes as any[];
   const covers = (mountPath: unknown, filePath: string) => typeof mountPath === "string" &&
     (mountPath === filePath || mountPath === "/" || filePath.startsWith(`${mountPath.replace(/\/$/, "")}/`));
+  const databaseAuthMounts = mounts("db").filter((entry: any) => covers(entry.source, databaseAuthDir) || entry.target === "/run/lares-auth");
+  assert.deepEqual(databaseAuthMounts.map((entry: any) => [entry.source, entry.target, entry.read_only]), [[databaseAuthDir, "/run/lares-auth", true]]);
+  assert.deepEqual(resolved.services.db.command, ["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
   const gatewayMounts = mounts("lares-gateway").filter((entry: any) => covers(entry.source, keyPath) || covers(entry.target, "/run/secrets/gateway-budget-service-key"));
   assert.deepEqual(gatewayMounts.map((entry: any) => [entry.source, entry.target, entry.read_only]), [[keyPath, "/run/secrets/gateway-budget-service-key", true]]);
   const keeperMounts = mounts("lares-keeper").filter((entry: any) => [keyPath, policyPath].some(path => covers(entry.source, path) || covers(entry.target, path)));
@@ -131,6 +215,9 @@ const run = () => {
   for (const service of Object.keys(resolved.services).filter(name => !["lares-gateway", "lares-keeper"].includes(name)))
     assert(!mounts(service).some((entry: any) => [keyPath, policyPath, "/run/secrets/gateway-budget-service-key", "/etc/lares/native-policy.json"]
       .some(path => covers(entry.source, path) || covers(entry.target, path))), `${service} must not receive key or reviewed-policy paths`);
+  for (const service of Object.keys(resolved.services).filter(name => name !== "db"))
+    assert(!mounts(service).some((entry: any) => covers(entry.source, databaseAuthDir) || entry.target === "/run/lares-auth"),
+      `${service} must not receive database authentication policy`);
   const stagedBytes = Buffer.concat(GATEWAY_AUTHORITY_STAGE_FILES.map(name => readFileSync(join(stage, name))));
   const policyBytes = readFileSync(policyPath);
   assert(!stagedBytes.includes(key));

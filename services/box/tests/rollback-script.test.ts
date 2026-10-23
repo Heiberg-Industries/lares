@@ -20,6 +20,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsS
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "rollback.sh");
@@ -52,6 +53,15 @@ function composeYaml(digest: string) {
     `    image: ${ROLE}@sha256:${digest}`,
     "  db:",
     "    image: postgres:16-alpine",
+    "    command: [postgres, -c, hba_file=/run/lares-auth/pg_hba.conf]",
+    "    volumes:",
+    "      - /var/lib/lares/postgres:/var/lib/postgresql/data",
+    "      - type: bind",
+    "        source: /var/lib/lares-maintenance/postgres-auth",
+    "        target: /run/lares-auth",
+    "        read_only: true",
+    "        bind:",
+    "          create_host_path: false",
     "networks:",
     "  lares:",
     "    external: true",
@@ -200,6 +210,19 @@ const UP = /docker compose .*up -d/;
 const READ = /record previous-images/;
 const FINISH = /record finish/;
 const compose = () => readFileSync(composeFile, "utf8");
+function expectNormalAuthCompose() {
+  const db = (parse(compose()) as { services: Record<string, { command?: string | string[]; volumes?: Array<string | { type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> }> }).services.db!;
+  expect(Array.isArray(db.command) ? db.command.join(" ") : db.command).toContain("hba_file=/run/lares-auth/pg_hba.conf");
+  const mount = db.volumes?.find((volume) => typeof volume !== "string" && volume.target === "/run/lares-auth");
+  expect(mount).toMatchObject({ type: "bind", source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
+  if (process.env.CI === "true") {
+    const effective = JSON.parse(execFileSync("docker", ["compose", "-f", composeFile, "config", "--format", "json"], { encoding: "utf8" })) as {
+      services: { db?: { command?: string[]; volumes?: Array<{ source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
+    };
+    expect(effective.services.db?.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
+    expect(effective.services.db?.volumes).toContainEqual(expect.objectContaining({ source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } }));
+  }
+}
 
 describe("putting the previous version back", () => {
   it("pins the host recorder to the application role and password file", () => {
@@ -235,6 +258,7 @@ describe("putting the previous version back", () => {
     // Everything that was not in the record is left exactly as it was.
     expect(compose()).toContain("postgres:16-alpine");
     expect(compose()).toContain("restart: unless-stopped");
+    expectNormalAuthCompose();
   });
 
   it("runs its steps in exactly one order, and records the rollback last", () => {
@@ -413,6 +437,7 @@ describe("putting the previous version back", () => {
     expect(r.code).toBe(70);
     expect(r.stderr).toMatch(/could not be started/);
     expect(compose()).toBe(composeYaml(PREV));
+    expectNormalAuthCompose();
     expect(calls()).not.toMatch(FINISH);
     expect(readFileSync(state, "utf8")).not.toContain("rolled-back");
   });
@@ -432,6 +457,7 @@ describe("putting the previous version back", () => {
     expect(calls()).not.toMatch(/docker compose/);
     expect(at(READ)).toBeGreaterThan(-1);
     expect(compose()).toBe(composeYaml(CUR));
+    expectNormalAuthCompose();
   });
 
   it("refuses an argument it does not know, rather than guessing what was meant", () => {
