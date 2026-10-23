@@ -1,5 +1,5 @@
-import {chmodSync,fsyncSync,mkdtempSync,readdirSync,readFileSync,realpathSync,rmSync} from 'node:fs';
-import {join} from 'node:path';
+import {chmodSync,fsyncSync,lstatSync,mkdtempSync,readdirSync,readFileSync,realpathSync,rmSync} from 'node:fs';
+import {basename,dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
@@ -19,7 +19,7 @@ import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definiti
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import {createNativeTestCustody,nativeTestPolicy,nativeTestTarget} from './helpers/native-cleanup.js';
 
-let container!:StartedPostgreSqlContainer;
+let container:StartedPostgreSqlContainer|undefined;
 let pool:Pool;
 const journals:HostFinancialJournal[]=[],roots:string[]=[];
 const policy=nativeTestPolicy();
@@ -56,6 +56,40 @@ async function migrate():Promise<void>{
   const sqlDir=new URL('../../box/sql/',import.meta.url);
   for(const name of readdirSync(sqlDir).filter(name=>/^\d{3}_.*\.sql$/.test(name)).sort())await pool.query(readFileSync(new URL(name,sqlDir),'utf8'));
 }
+function privateTestSocket():{socket:string;database:string;user:string|undefined;port:number}{
+  const socket=process.env.LARES_TEST_PG_SOCKET,database=process.env.LARES_TEST_PG_DATABASE;
+  if(!socket||database!=='lares_test_budget_native_provisioning'||resolve(socket)!==socket)throw new Error('Refusing to reset a non-private test database');
+  const socketDirectory=socket,privateRoot=dirname(socketDirectory),temporaryRoots=[realpathSync(tmpdir()),realpathSync('/tmp')];
+  if(basename(socketDirectory)!=='socket'||!temporaryRoots.includes(dirname(privateRoot))||!basename(privateRoot).startsWith('lares-test-private-'))throw new Error('Refusing to reset a non-private test database');
+  for(const path of [privateRoot,socketDirectory]){
+    const stat=lstatSync(path);
+    if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid!()||(stat.mode&0o077)!==0||realpathSync(path)!==path)throw new Error('Refusing to reset a non-private test database');
+  }
+  return {socket,database,user:process.env.LARES_TEST_PG_USER,port:Number(process.env.LARES_TEST_PG_PORT)};
+}
+async function verifyPrivateTestDatabase(connection:{query:(sql:string)=>Promise<{rows:readonly {database:string;major_version:number;unix_socket:boolean;listen_addresses:string}[]}>}):Promise<void>{
+  const row=(await connection.query("SELECT current_database() AS database,(current_setting('server_version_num')::int/10000) AS major_version,inet_server_addr() IS NULL AS unix_socket,current_setting('listen_addresses') AS listen_addresses")).rows[0];
+  if(row?.database!=='lares_test_budget_native_provisioning'||row.major_version!==15||row.unix_socket!==true||row.listen_addresses!=='')throw new Error('Refusing non-private PostgreSQL test server');
+}
+async function resetPrivateTestSchema(resetPool:Pool):Promise<void>{
+  try{
+    const client=await resetPool.connect();
+    try{await verifyPrivateTestDatabase(client);await client.query('DROP SCHEMA public CASCADE');await client.query('CREATE SCHEMA public');}finally{client.release();}
+  }finally{await resetPool.end();}
+}
+async function resetDatabase():Promise<void>{
+  const socket=process.env.LARES_TEST_PG_SOCKET,config=socket?privateTestSocket():undefined;
+  for(const journal of journals.splice(0)){try{journal.close();}catch{}}
+  await pool.end();
+  if(config){
+    const resetPool=new Pool({host:config.socket,port:config.port,user:config.user,database:config.database,options:'-c timezone=UTC'});
+    await resetPrivateTestSchema(resetPool);
+    pool=quiet(new Pool({host:config.socket,port:config.port,user:config.user,database:config.database,max:8,options:'-c timezone=UTC',application_name:'lares-native-runtime-authority-test'}));
+  }else{
+    await container!.stop();container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));
+  }
+  await migrate();
+}
 async function seed(memberId:string,agents:string[],incarnation:string,existingOrg?:string,roles:Record<string,string|null|undefined>={}):Promise<{org:string;member:string}> {
   const org=existingOrg??id(),member=memberId;
   if(!existingOrg)await pool.query('INSERT INTO orgs(id,display_name) VALUES($1,$2)',[org,'Provisioning test']);
@@ -76,14 +110,26 @@ async function seed(memberId:string,agents:string[],incarnation:string,existingO
 
 beforeAll(async()=>{
   const socket=process.env.LARES_TEST_PG_SOCKET;
-  if(socket){pool=quiet(new Pool({host:socket,port:Number(process.env.LARES_TEST_PG_PORT),user:process.env.LARES_TEST_PG_USER,database:process.env.LARES_TEST_PG_DATABASE,max:8,options:'-c timezone=UTC',application_name:'lares-native-runtime-authority-test'}));}
+  if(socket){const config=privateTestSocket();pool=quiet(new Pool({host:config.socket,port:config.port,user:config.user,database:config.database,max:8,options:'-c timezone=UTC',application_name:'lares-native-runtime-authority-test'}));}
   else{container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));}
+  if(socket)await verifyPrivateTestDatabase(pool);
   await migrate();
 },120_000);
 afterAll(async()=>{
   for(const journal of journals.splice(0)){try{journal.close();}catch{}}
   await pool?.end();if(container)await container.stop();
   for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});
+});
+
+it('refuses unsafe local database reset targets before schema deletion',async()=>{
+  const queries:string[]=[];
+  const unsafeClient={query:async(sql:string)=>{queries.push(sql);return {rows:[{database:'lares_test_budget_native_provisioning',major_version:14,unix_socket:true,listen_addresses:''}]};},release(){}};
+  const unsafePool={connect:async()=>unsafeClient,end:async()=>{}} as unknown as Pool;
+  vi.stubEnv('LARES_TEST_PG_SOCKET','/shared/lares-test-private-not-private/socket');
+  try{expect(()=>privateTestSocket()).toThrow('Refusing to reset a non-private test database');}finally{vi.unstubAllEnvs();}
+  await expect(resetPrivateTestSchema(unsafePool)).rejects.toThrow('Refusing non-private PostgreSQL test server');
+  expect(queries).toHaveLength(1);
+  expect(queries.some(sql=>/^(DROP|CREATE)\s+SCHEMA\b/i.test(sql))).toBe(false);
 });
 
 it('reuses verified team and membership, reconciles exact reads, and freezes ambiguous failures',async()=>{
@@ -263,8 +309,7 @@ it('reuses verified team and membership, reconciles exact reads, and freezes amb
 },20_000);
 
 it('activates only verified native keys and preserves the installation epoch for a preprovisioned second member',async()=>{
-  await pool.end();await container.stop();
-  container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));await migrate();
+  await resetDatabase();
   const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-activation-'));chmodSync(root,0o700);roots.push(root);
   const journalDirectory=join(root,'financial'),client=await pool.connect();
   try{await prepareFinancialCustody(journalDirectory,client,journalOptions);}finally{client.release();}
@@ -328,7 +373,7 @@ it('activates only verified native keys and preserves the installation epoch for
 },120_000);
 
 it('keeps an activation with an unknown SQL COMMIT non-dispatchable and never unblocks twice',async()=>{
-  await pool.end();await container.stop();container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));await migrate();
+  await resetDatabase();
   const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-activation-unknown-'));chmodSync(root,0o700);roots.push(root);
   const member=id(),incarnation=id(),agent='neutral-activation-unknown';await seed(member,[agent],incarnation);
   const directory=join(root,'financial'),client=await pool.connect();try{await prepareFinancialCustody(directory,client,journalOptions);}finally{client.release();}
@@ -355,7 +400,7 @@ it('keeps an activation with an unknown SQL COMMIT non-dispatchable and never un
 },120_000);
 
 it('keeps activation SQL committed but non-dispatchable when observed-publication fsync fails',async()=>{
-  await pool.end();await container.stop();container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));await migrate();
+  await resetDatabase();
   const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-activation-fsync-'));chmodSync(root,0o700);roots.push(root);
   const member=id(),incarnation=id(),agent='neutral-activation-fsync';await seed(member,[agent],incarnation);
   const directory=join(root,'financial'),client=await pool.connect();try{await prepareFinancialCustody(directory,client,journalOptions);}finally{client.release();}
@@ -383,7 +428,7 @@ it('keeps activation SQL committed but non-dispatchable when observed-publicatio
 },120_000);
 
 it.each(['grant','month','absolute'] as const)('keeps activation non-dispatchable when the %s deadline expires after the unblock claim',async expiry=>{
-  await pool.end();await container.stop();container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));await migrate();
+  await resetDatabase();
   const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-activation-deadline-'));chmodSync(root,0o700);roots.push(root);
   const member=id(),incarnation=id(),agent=`neutral-activation-${expiry}`;
   const selected=expiry==='grant'?await seed(member,[],incarnation):await seed(member,[agent],incarnation);
@@ -417,9 +462,7 @@ it.each(['grant','month','absolute'] as const)('keeps activation non-dispatchabl
 },120_000);
 
 it('keeps an unknown financial commit unpublished in fresh custody',async()=>{
-  await pool.end();await container.stop();
-  container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
-  pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));await migrate();
+  await resetDatabase();
   let isolatedJournal:HostFinancialJournal|undefined,unknownCommitStore:BudgetNativeCustodyStore|undefined;
   const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-unknown-commit-'));chmodSync(root,0o700);roots.push(root);
   try{
@@ -449,6 +492,7 @@ it('keeps an unknown financial commit unpublished in fresh custody',async()=>{
 },120_000);
 
 it('keeps native runtime eligibility read-only across source, custody, journal, and role denials',async()=>{
+  await resetDatabase();
   const owner=id(),secondOwner=id(),duplicateOwner=id(),creativeOwner=id(),missingOwner=id(),unknownOwner=id(),capOwner=id(),grantOwner=id(),grantee=id(),incarnation=id();
   const chief='neutral-runtime-chief',duplicateAgent='neutral-runtime-duplicate',creative='neutral-runtime-creative',missing='neutral-runtime-missing',unknown='neutral-runtime-unknown',capChief='neutral-runtime-cap',delegated='neutral-runtime-grant';
   const selected=await seed(owner,[chief],incarnation);
