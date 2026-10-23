@@ -75,13 +75,80 @@ def tsx_keeper(code, *, user='0:0', mounts=(), timeout=45):
     wrapped='void (async()=>{'+code+'})().catch(()=>{process.exitCode=2})'
     cmd += ['--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'-e',wrapped]
     return output(*cmd,timeout=timeout)
-def app_pool_code(code):
-    wrapper = "import{Pool}from'pg';import{readFileSync}from'node:fs';const p=new Pool({host:'proof-db',database:'proof',user:'lares_app',password:readFileSync('/etc/lares/secrets/app-password','utf8').trim(),max:1,connectionTimeoutMillis:3000});try{"+code+"}finally{await p.end();}"
-    script=root/'app-pool-query.mts';script.write_text(wrapper)
+
+FINANCIAL_OBSERVER_SQL = {
+    'native': """SELECT i.state,i.reason,i.selected_endpoint,i.recovery_epoch,i.endpoint_generation,
+      (SELECT count(*)::int FROM budget_attempts) AS attempts,
+      (SELECT count(*)::int FROM budget_gateway_grants) AS grants,
+      (SELECT count(*)::int FROM budget_attempts WHERE state='settled') AS settled,
+      (SELECT coalesce(sum(actual_amount),0)::text FROM budget_attempts WHERE state='settled') AS liability
+      FROM budget_accounts i WHERE i.kind='installation'""",
+    'bindings': """SELECT coalesce(json_agg(json_build_object('id',id,'state',state,
+      'credentialGeneration',credential_generation) ORDER BY id),'[]'::json) AS bindings
+      FROM budget_gateway_bindings""",
+    'members': """SELECT coalesce(json_agg(json_build_object('memberId',live_member_id,'state',state)
+      ORDER BY live_member_id),'[]'::json) AS members FROM budget_accounts WHERE kind='member'""",
+}
+
+def financial_observer(summary, financial_db):
+    query = FINANCIAL_OBSERVER_SQL.get(summary)
+    if query is None:
+        raise RuntimeError('Unknown fixed financial observer summary')
+    if (financial_db.get('user') != 'lares_financial' or
+        financial_db.get('passwordFile') != '/etc/lares/secrets/financial-database-password'):
+        raise RuntimeError('Financial observer requires the configured financial role')
+    connection = {key: financial_db[key] for key in ('host','port','database','user')}
+    wrapper = "import{Pool}from'pg';import{readFileSync}from'node:fs';" \
+      + 'const c=' + json.dumps(connection) + ";const p=new Pool({...c,password:readFileSync('/etc/lares/secrets/financial-database-password','utf8').trim(),max:1,connectionTimeoutMillis:3000,options:'-c default_transaction_read_only=on'});" \
+      + "try{const db=await p.connect();try{await db.query('BEGIN READ ONLY');const r=await db.query(" + json.dumps(query) + ");await db.query('COMMIT');console.log(JSON.stringify(r.rows[0]??null));}finally{db.release();}}finally{await p.end();}"
+    script=root/'financial-observer.mts';script.write_text(wrapper)
+    password_file=secrets_dir/'financial-database-password'
     return output('docker','run','--rm','--network',network,'--user','0:0','--read-only','--tmpfs','/tmp:rw,noexec,nosuid,nodev,mode=1777',
-      '--mount',f'type=bind,src={secrets_dir},dst=/etc/lares/secrets,readonly',
-      '--mount',f'type=bind,src={script},dst=/app/services/keeper/app-pool-query.mts,readonly',
-      '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/app-pool-query.mts')
+      '--mount',f'type=bind,src={password_file},dst=/etc/lares/secrets/financial-database-password,readonly',
+      '--mount',f'type=bind,src={script},dst=/app/services/keeper/financial-observer.mts,readonly',
+      '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/financial-observer.mts')
+
+def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, capsule_source,
+                              client_script, chief_image, secrets_dir, agent, incarnation, owner,
+                              definition_hash, workflow_database):
+    runtime_environment={
+      'DATABASE_URL':'postgres://lares_app@proof-db:5432/proof',
+      'WORKFLOW_POSTGRES_URL':f'postgres://lares_workflow@proof-db:5432/{workflow_database}',
+      'DATABASE_PASSWORD_FILE':'/run/secrets/app-password',
+      'WORKFLOW_POSTGRES_PASSWORD_FILE':'/run/secrets/workflow-password',
+      'GATEWAY_URL':'http://native-gateway:4000',
+      'EVE_ROUTE_PASSWORD_FILE':'/run/secrets/route-password',
+      'LARES_AGENT_NAME':agent,
+      'LARES_DEFINITION_DIR':'/definition',
+      'LARES_AGENT_INCARNATION':incarnation,
+      'LARES_RUNTIME_CONTROL_SECRET_FILE':'/run/secrets/runtime-control',
+      'LARES_MODEL_PURPOSE_RUNTIME_SOCKET':'/run/lares/model-purpose/model-purpose.sock',
+      'AGENT_OWNER_USER_ID':owner,
+      'EVE_SCHEDULES_LIVE':'0','EVE_DIGEST_LIVE':'0','EVE_DREAM_LIVE':'0',
+      'FIRST_USE_DEFINITION_HASH':definition_hash,
+    }
+    args=['run','-d','--name',chief_name,'--network',network,'--read-only','--user','10001:10001',
+      '--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp:uid=10001,gid=10001,mode=1770',
+      '--tmpfs','/app/services/chief-of-staff/.eve/sandbox-cache:uid=10001,gid=10001,mode=0700,size=256m',
+      '--tmpfs','/app/services/chief-of-staff/.eve/.workflow-data:uid=10001,gid=10001,mode=0700,size=64m',
+      '--tmpfs','/app/services/chief-of-staff/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m',
+      '--mount',f'type=bind,src={agent_dir},dst=/definition,readonly',
+      '--mount',f'type=bind,src={run_dir},dst=/run/lares,readonly',
+      '--mount',f'type=bind,src={secrets_dir}/app-password,dst=/run/secrets/app-password,readonly',
+      '--mount',f'type=bind,src={secrets_dir}/workflow-password,dst=/run/secrets/workflow-password,readonly',
+      '--mount',f'type=bind,src={secrets_dir}/route-password,dst=/run/secrets/route-password,readonly',
+      '--mount',f'type=bind,src={secrets_dir}/proof-agent-runtime-control,dst=/run/secrets/runtime-control,readonly',
+      '--mount',f'type=bind,src={secrets_dir}/console-model-purpose-signing-key,dst=/run/secrets/console-model-purpose-signing-key,readonly',
+      '--mount',f'type=bind,src={capsule_source},dst=/app/services/chief-of-staff/model-purpose-capsule.ts,readonly',
+      '--mount',f'type=bind,src={client_script},dst=/app/services/chief-of-staff/first-use-client.mts,readonly']
+    for key,value in runtime_environment.items():args.extend(['-e',key+'='+value])
+    args.append(chief_image)
+    return args
+
+def selected_members_match_first_activation(selected, member_ids):
+    return (len(selected)==2 and
+      selected[0].get('memberId')==member_ids[0] and selected[0].get('state')=='open' and
+      selected[1].get('memberId')==member_ids[1] and selected[1].get('state')=='closed')
 
 def image_identity(image):
     value=docker('image','inspect','--format','{{.Id}}',image)
@@ -287,7 +354,6 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
         shutil.copy2(agent_dir/filename,install_root/'agents'/agent/filename)
     incarnation_file=secrets_dir/(agent+'-runtime-control');incarnation_file.write_text(secrets.token_hex(32)+'\n');incarnation_file.chmod(0o440)
     route_file=secrets_dir/'route-password';
-    gateway_key=secrets_dir/'gateway-key';gateway_key.write_text('fixture-runtime-key-not-used-for-native-transport\n');gateway_key.chmod(0o440)
     (secrets_dir/'native-policy.json').write_text('{}\n')
     base_config={'mode':'overlay','project':network,'dir':'/fixture-install','files':['keeper.json'],'agentsDir':'/fixture-install/agents',
       'retiredDir':'/fixture-install/retired','secretsDir':'/etc/lares/secrets','rolesDir':'/app/services','templatesDir':'/app/packages/agent-kit/templates',
@@ -353,7 +419,7 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
     source_identity=json.loads(source_result.stdout.strip())
     definition_hash=source_identity['definitionHash']
     # Root-owned secret/custody modes match the production contract; do not expose either to CI artifacts.
-    protect='chown -R 0:0 /var/lib/lares /secrets && chmod 700 /var/lib/lares/budget-financial /var/lib/lares/budget-native && chmod 600 /var/lib/lares/budget-financial/* /var/lib/lares/budget-native/* /secrets/gateway-master /secrets/gateway-budget-service-key /secrets/native-policy.json /secrets/model-provider-key /secrets/native-litellm-password && chown 0:10001 /secrets/console-model-purpose-signing-key /secrets/proof-agent-runtime-control /run/lares /run/lares/model-purpose && chmod 440 /secrets/console-model-purpose-signing-key /secrets/proof-agent-runtime-control && chmod 750 /run/lares /run/lares/model-purpose && chown 10001:10001 /secrets/route-password /secrets/app-password /secrets/workflow-password /secrets/gateway-key && test "$(stat -c %u:%g:%a /secrets/native-policy.json)" = 0:0:600 && test "$(stat -c %u:%g:%a /secrets/gateway-master)" = 0:0:600 && test "$(stat -c %u:%g:%a /secrets/gateway-budget-service-key)" = 0:0:600 && test "$(stat -c %u:%g:%a /secrets/console-model-purpose-signing-key)" = 0:10001:440 && test "$(stat -c %u:%g:%a /secrets/proof-agent-runtime-control)" = 0:10001:440 && test "$(stat -c %u:%g:%a /run/lares)" = 0:10001:750 && test "$(stat -c %u:%g:%a /run/lares/model-purpose)" = 0:10001:750 && test "$(stat -c %u:%g:%a /var/lib/lares/budget-native)" = 0:0:700'
+    protect='chown -R 0:0 /var/lib/lares /secrets && chmod 700 /var/lib/lares/budget-financial /var/lib/lares/budget-native && chmod 600 /var/lib/lares/budget-financial/* /var/lib/lares/budget-native/* /secrets/gateway-master /secrets/gateway-budget-service-key /secrets/native-policy.json /secrets/model-provider-key /secrets/native-litellm-password && chown 0:10001 /secrets/console-model-purpose-signing-key /secrets/proof-agent-runtime-control /run/lares /run/lares/model-purpose && chmod 440 /secrets/console-model-purpose-signing-key /secrets/proof-agent-runtime-control && chmod 750 /run/lares /run/lares/model-purpose && chown 10001:10001 /secrets/route-password /secrets/app-password /secrets/workflow-password && test "$(stat -c %u:%g:%a /secrets/native-policy.json)" = 0:0:600 && test "$(stat -c %u:%g:%a /secrets/gateway-master)" = 0:0:600 && test "$(stat -c %u:%g:%a /secrets/gateway-budget-service-key)" = 0:0:600 && test "$(stat -c %u:%g:%a /secrets/console-model-purpose-signing-key)" = 0:10001:440 && test "$(stat -c %u:%g:%a /secrets/proof-agent-runtime-control)" = 0:10001:440 && test "$(stat -c %u:%g:%a /run/lares)" = 0:10001:750 && test "$(stat -c %u:%g:%a /run/lares/model-purpose)" = 0:10001:750 && test "$(stat -c %u:%g:%a /var/lib/lares/budget-native)" = 0:0:700'
     docker('run','--rm','--network','none','--mount',f'type=volume,src={volume},dst=/var/lib/lares','--mount',f'type=bind,src={secrets_dir},dst=/secrets',
       '--mount',f'type=bind,src={run_dir},dst=/run/lares','--entrypoint','sh',keeper_image,'-c',protect)
     cases['protectedCustodyAndSocketModesVerified']=True
@@ -401,13 +467,7 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
     cases['bothNativeMembersBoundClosedBeforeActivation']=True
 
     def native_snapshot():
-        query = """const r=await p.query('SELECT i.state,i.reason,i.selected_endpoint,i.recovery_epoch,i.endpoint_generation, '
-          +"(SELECT count(*)::int FROM budget_attempts) AS attempts, "
-          +"(SELECT count(*)::int FROM budget_gateway_grants) AS grants, "
-          +"(SELECT count(*)::int FROM budget_attempts WHERE state='settled') AS settled, "
-          +"(SELECT coalesce(sum(actual_amount),0)::text FROM budget_attempts WHERE state='settled') AS liability "
-          +"FROM budget_accounts i WHERE i.kind='installation'");console.log(JSON.stringify(r.rows[0]));"""
-        return json.loads(app_pool_code(query))
+        return json.loads(financial_observer('native',base_config['budgetFinancial']['db']))
 
     def upstream_calls():
         return json.loads(output('docker','exec',network+'-upstream','node','-e',
@@ -415,7 +475,7 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
 
     stage = 'ordinary-socket-host-only-refusal'
     before_denial_state=native_snapshot()
-    before_denial_bindings=json.loads(app_pool_code("const r=await p.query('SELECT id,state,credential_generation,key_fingerprint FROM budget_gateway_bindings ORDER BY id');console.log(JSON.stringify(r.rows));"))
+    before_denial_bindings=json.loads(financial_observer('bindings',base_config['budgetFinancial']['db']))['bindings']
     denial_source="import{createConnection}from'node:net';const requests=JSON.parse(process.env.PROBE_REQUESTS);const expected='keeper: reachable only from the host command';let index=0;function next(){if(index>=requests.length){console.log('ordinary-denied');return}const item=requests[index++],s=createConnection('/run/lares/keeper.sock');let b='';s.once('connect',()=>s.end(JSON.stringify({...item,actor:'probe-ordinary-caller@example.invalid'})+'\\n'));s.on('data',x=>b+=x);s.on('end',()=>{let r;try{r=JSON.parse(b)}catch{process.exit(2);return}if(r.ok!==false||r.outcome!=='refused'||r.error!==expected){process.exit(3);return}next()});s.on('error',()=>process.exit(4))}next();"
     denial_requests=[
       {'action':'budget.provision-native','input':{'bindingId':binding_ids[0],'credentialGeneration':'0','memberId':members[0],'agent':agent,'incarnation':incarnation,'purposeAlias':alias}},
@@ -426,7 +486,7 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
       '--mount',f'type=bind,src={run_dir},dst=/run/lares','--entrypoint','node',chief_image,'-e',denial_source)
     if denied!='ordinary-denied':raise RuntimeError('Ordinary Keeper socket did not return the host-only refusal for both native actions')
     after_denial_state=native_snapshot()
-    after_denial_bindings=json.loads(app_pool_code("const r=await p.query('SELECT id,state,credential_generation,key_fingerprint FROM budget_gateway_bindings ORDER BY id');console.log(JSON.stringify(r.rows));"))
+    after_denial_bindings=json.loads(financial_observer('bindings',base_config['budgetFinancial']['db']))['bindings']
     if before_denial_state!=after_denial_state or before_denial_bindings!=after_denial_bindings or upstream_calls()!=0:
         raise RuntimeError('Ordinary host-only refusals changed financial or native state')
     cases['ordinarySocketCannotProvisionOrActivate']=True
@@ -449,8 +509,8 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
         first_state['attempts']!=before_activation['attempts'] or
         first_state['liability']!=before_activation['liability']):
         raise RuntimeError('First activation did not establish the reviewed endpoint and fresh epoch without usage')
-    selected=json.loads(app_pool_code("const r=await p.query(\"SELECT live_member_id,state FROM budget_accounts WHERE kind='member' ORDER BY live_member_id\");console.log(JSON.stringify(r.rows));"))
-    if len(selected)!=2 or selected[0]['live_member_id']!=members[0] or selected[0]['state']!='open' or selected[1]['live_member_id']!=members[1] or selected[1]['state']!='closed':
+    selected=json.loads(financial_observer('members',base_config['budgetFinancial']['db']))['members']
+    if not selected_members_match_first_activation(selected,members):
         raise RuntimeError('First activation did not open only the selected member account')
     cases['firstActivationPreservesEndpointEpochAndOpensOnlySelectedMember']=True
     if upstream_calls()!=0:raise RuntimeError('Upstream received traffic before the first model request')
@@ -497,30 +557,9 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
   replayStatus:replay.status,staleStatus:stale.status,wrongMemberStatus:wrongMember.status}));
 """)
     before_request_state=native_snapshot()
-    runtime_secrets={
-      'DATABASE_URL':'postgres://lares_app@proof-db:5432/proof',
-      'WORKFLOW_POSTGRES_URL':f'postgres://lares_workflow@proof-db:5432/{workflow_database}',
-      'DATABASE_PASSWORD_FILE':'/run/secrets/app-password',
-      'WORKFLOW_POSTGRES_PASSWORD_FILE':'/run/secrets/workflow-password',
-      'GATEWAY_URL':'http://native-gateway:4000','GATEWAY_KEY_FILE':'/run/secrets/gateway-key',
-      'EVE_ROUTE_PASSWORD_FILE':'/run/secrets/route-password','LARES_AGENT_NAME':agent,
-      'LARES_DEFINITION_DIR':'/definition','LARES_AGENT_INCARNATION':incarnation,
-      'LARES_RUNTIME_CONTROL_SECRET_FILE':'/run/secrets/proof-agent-runtime-control',
-      'AGENT_OWNER_USER_ID':owner,'EVE_SCHEDULES_LIVE':'0','EVE_DIGEST_LIVE':'0','EVE_DREAM_LIVE':'0',
-      'FIRST_USE_DEFINITION_HASH':definition_hash,
-    }
-    args=['run','-d','--name',chief_name,'--network',network,'--read-only','--user','10001:10001',
-      '--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp:uid=10001,gid=10001,mode=1770',
-      '--tmpfs','/app/services/chief-of-staff/.eve/sandbox-cache:uid=10001,gid=10001,mode=0700,size=256m',
-      '--tmpfs','/app/services/chief-of-staff/.eve/.workflow-data:uid=10001,gid=10001,mode=0700,size=64m',
-      '--tmpfs','/app/services/chief-of-staff/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m',
-      '--mount',f'type=bind,src={agent_dir},dst=/definition,readonly',
-      '--mount',f'type=bind,src={secrets_dir},dst=/run/secrets,readonly',
-      '--mount',f'type=bind,src={run_dir},dst=/run/lares,readonly',
-      '--mount',f'type=bind,src={capsule_source},dst=/app/services/chief-of-staff/model-purpose-capsule.ts,readonly',
-      '--mount',f'type=bind,src={client_script},dst=/app/services/chief-of-staff/first-use-client.mts,readonly']
-    for key,value in runtime_secrets.items():args.extend(['-e',key+'='+value])
-    args.append(chief_image)
+    args=compiled_chief_start_args(chief_name=chief_name,network=network,agent_dir=agent_dir,run_dir=run_dir,
+      capsule_source=capsule_source,client_script=client_script,chief_image=chief_image,secrets_dir=secrets_dir,agent=agent,
+      incarnation=incarnation,owner=owner,definition_hash=definition_hash,workflow_database=workflow_database)
     docker(*args);container_names.append(chief_name)
     for _ in range(120):
         health=run('docker','exec',chief_name,'node','-e',"fetch('http://127.0.0.1:3000/eve/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",check=False)
@@ -528,6 +567,44 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
         if docker('inspect','--format','{{.State.Running}}',chief_name)!='true':raise RuntimeError('Compiled Chief runtime exited before health check')
         time.sleep(.25)
     else:raise RuntimeError('Compiled Chief runtime did not become healthy')
+    runtime_environment=json.loads(docker('inspect','--format','{{json .Config.Env}}',chief_name))
+    runtime_mounts=json.loads(docker('inspect','--format','{{json .Mounts}}',chief_name))
+    env_values={entry.split('=',1)[0]:entry.split('=',1)[1] for entry in runtime_environment if '=' in entry}
+    env_names=set(env_values)
+    forbidden_keys={'GATEWAY_KEY_FILE','GATEWAY_MASTER_KEY_FILE','LITELLM_MASTER_KEY',
+      'ANTHROPIC_API_KEY','OPENAI_API_KEY','GEMINI_API_KEY'}
+    if (env_names & forbidden_keys or any(name.endswith(('_API_KEY','_KEY_FILE')) for name in env_names) or
+        'GATEWAY_URL' not in env_names or
+        env_values.get('LARES_MODEL_PURPOSE_RUNTIME_SOCKET')!='/run/lares/model-purpose/model-purpose.sock' or
+        env_values.get('LARES_AGENT_INCARNATION')!=incarnation or
+        env_values.get('LARES_RUNTIME_CONTROL_SECRET_FILE')!='/run/secrets/runtime-control'):
+        raise RuntimeError('Compiled Chief runtime exposed a legacy or provider key setting')
+    actual_secret_mounts=[mount for mount in runtime_mounts if mount.get('Destination','').startswith('/run/secrets/')]
+    expected_secret_sources={
+      '/run/secrets/app-password':str(secrets_dir/'app-password'),
+      '/run/secrets/workflow-password':str(secrets_dir/'workflow-password'),
+      '/run/secrets/route-password':str(secrets_dir/'route-password'),
+      '/run/secrets/runtime-control':str(secrets_dir/'proof-agent-runtime-control'),
+      '/run/secrets/console-model-purpose-signing-key':str(secrets_dir/'console-model-purpose-signing-key')}
+    actual_secret_sources={mount.get('Destination'):mount.get('Source') for mount in actual_secret_mounts}
+    if actual_secret_sources!=expected_secret_sources or any(mount.get('RW') for mount in actual_secret_mounts):
+        raise RuntimeError('Compiled Chief runtime secret mounts did not match the narrow fixture')
+    protected_fixture_secrets={str(secrets_dir/name) for name in (
+      'gateway-master','gateway-budget-service-key','native-policy.json','model-provider-key',
+      'native-litellm-password','financial-database-password')}
+    if (any(mount.get('Source')==str(secrets_dir) for mount in runtime_mounts) or
+        any(mount.get('Source') in protected_fixture_secrets for mount in runtime_mounts)):
+        raise RuntimeError('Compiled Chief runtime received protected fixture secret material')
+    check_secret_paths=['/run/secrets/gateway-key','/run/secrets/gateway-master',
+      '/run/secrets/gateway-budget-service-key','/run/secrets/native-policy.json',
+      '/run/secrets/model-provider-key','/run/secrets/native-litellm-password',
+      '/run/secrets/financial-database-password']
+    for secret_path in check_secret_paths:
+        result=run('docker','exec',chief_name,'test','!','-r',secret_path,check=False)
+        if result.returncode:raise RuntimeError('Compiled Chief runtime could read a fixture-only protected secret')
+    absent_gateway_path=run('docker','exec',chief_name,'test','!','-e','/run/secrets/gateway-key',check=False)
+    if absent_gateway_path.returncode:raise RuntimeError('Legacy default gateway-key path exists in the compiled Chief runtime')
+    cases['compiledChiefHasNoLegacyGatewayKeyAndOnlyNarrowSecretMounts']=True
     cases['compiledChiefRuntimeReady']=True
 
     stage = 'console-signature-and-first-model-request'
@@ -565,7 +642,7 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
         after_state['endpoint_generation']!=settled['endpoint_generation'] or after_state['attempts']!=settled['attempts'] or
         after_state['grants']!=settled['grants'] or after_state['settled']!=settled['settled'] or after_state['liability']!=settled['liability']):
         raise RuntimeError('Second activation changed the endpoint, epoch, existing usage or liability')
-    active_members=json.loads(app_pool_code("const r=await p.query(\"SELECT live_member_id,state FROM budget_accounts WHERE kind='member' ORDER BY live_member_id\");console.log(JSON.stringify(r.rows));"))
+    active_members=json.loads(financial_observer('members',base_config['budgetFinancial']['db']))['members']
     if len(active_members)!=2 or any(row['state']!='open' for row in active_members):raise RuntimeError('Second activation did not open both preprovisioned members')
     if upstream_calls()!=1:raise RuntimeError('Second activation caused an additional upstream dispatch')
     proof['secondActivation']={'bothMembersOpen':True,'endpointGeneration':after_state['endpoint_generation'],

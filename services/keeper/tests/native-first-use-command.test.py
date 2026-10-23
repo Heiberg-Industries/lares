@@ -55,6 +55,12 @@ class GatewayDockerCommandTests(unittest.TestCase):
             "keeper_name": "lares-command-fixture-keeper",
             "keeper_image": "registry.invalid/fixture/keeper:synthetic",
             "chief_name": "lares-command-fixture-chief",
+            "chief_image": "registry.invalid/fixture/chief@sha256:" + "c" * 64,
+            "agent": "proof-agent",
+            "incarnation": "11111111-1111-4111-8111-111111111111",
+            "owner": "fixture-owner",
+            "definition_hash": "d" * 64,
+            "workflow_database": "workflow-proof",
         }
         for launch in launches:
             argument_name = launch.value.args[0].value.id
@@ -65,6 +71,8 @@ class GatewayDockerCommandTests(unittest.TestCase):
             ]
             assignment = max(candidates, key=lambda node: node.lineno)
             selected = [functions[name] for name in ("run", "output", "docker")]
+            if argument_name == "args":
+                selected.append(functions["compiled_chief_start_args"])
             selected.extend([assignment, launch])
             module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
             exec(compile(module, str(PROBE), "exec"), namespace)
@@ -131,6 +139,150 @@ class NativeFirstUseConfigTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stdout)
+
+
+class CompiledChiefKeylessCommandTests(unittest.TestCase):
+    def test_constructed_chief_args_use_managed_socket_and_only_named_secret_files(self) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        builder = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "compiled_chief_start_args"
+        )
+        namespace = {"secrets_dir": pathlib.Path("/synthetic/secrets")}
+        module = ast.fix_missing_locations(ast.Module(body=[builder], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+        argv = namespace["compiled_chief_start_args"](
+            chief_name="first-use-chief", network="first-use-network",
+            agent_dir=pathlib.Path("/synthetic/agent"), run_dir=pathlib.Path("/synthetic/run"),
+            capsule_source=pathlib.Path("/synthetic/capsule.ts"),
+            client_script=pathlib.Path("/synthetic/client.mts"),
+            chief_image="registry.invalid/chief@sha256:" + "a" * 64,
+            secrets_dir=pathlib.Path("/synthetic/secrets"),
+            agent="proof-agent", incarnation="11111111-1111-4111-8111-111111111111",
+            owner="fixture-owner", definition_hash="b" * 64, workflow_database="workflow-proof",
+        )
+        env_values = {}
+        for index, entry in enumerate(argv[:-1]):
+            if entry == "-e":
+                key, value = argv[index + 1].split("=", 1)
+                env_values[key] = value
+        mounts = [entry for entry in argv if entry.startswith("type=bind,")]
+        secret_mounts = [mount for mount in mounts if "dst=/run/secrets/" in mount]
+        destinations = {mount.split("dst=", 1)[1].split(",", 1)[0] for mount in secret_mounts}
+        expected = {
+            "/run/secrets/app-password", "/run/secrets/workflow-password",
+            "/run/secrets/route-password", "/run/secrets/runtime-control",
+            "/run/secrets/console-model-purpose-signing-key",
+        }
+        self.assertEqual(destinations, expected)
+        self.assertEqual(
+            {mount.split("dst=", 1)[1].split(",", 1)[0]: mount.split("src=", 1)[1].split(",", 1)[0]
+             for mount in secret_mounts},
+            {
+                "/run/secrets/app-password": "/synthetic/secrets/app-password",
+                "/run/secrets/workflow-password": "/synthetic/secrets/workflow-password",
+                "/run/secrets/route-password": "/synthetic/secrets/route-password",
+                "/run/secrets/runtime-control": "/synthetic/secrets/proof-agent-runtime-control",
+                "/run/secrets/console-model-purpose-signing-key": "/synthetic/secrets/console-model-purpose-signing-key",
+            },
+        )
+        self.assertTrue(all(mount.endswith(",readonly") for mount in secret_mounts))
+        self.assertFalse(any(mount.startswith("type=bind,src=/synthetic/secrets,") for mount in mounts))
+        self.assertFalse(any(any(secret in mount for secret in ("gateway-key", "gateway-master", "native-policy",
+                                                                    "model-provider-key", "native-litellm-password"))
+                             for mount in mounts))
+        self.assertNotIn("GATEWAY_KEY_FILE", env_values)
+        self.assertEqual(env_values["LARES_MODEL_PURPOSE_RUNTIME_SOCKET"],
+                         "/run/lares/model-purpose/model-purpose.sock")
+        self.assertEqual(env_values["LARES_AGENT_INCARNATION"],
+                         "11111111-1111-4111-8111-111111111111")
+        self.assertEqual(env_values["LARES_RUNTIME_CONTROL_SECRET_FILE"], "/run/secrets/runtime-control")
+        self.assertIn("GATEWAY_URL", env_values)
+        self.assertFalse(any(name.endswith(("_API_KEY", "_KEY_FILE")) for name in env_values))
+        self.assertFalse({"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+                          "LITELLM_MASTER_KEY", "GATEWAY_MASTER_KEY_FILE"} & env_values.keys())
+
+
+class FinancialObserverTests(unittest.TestCase):
+    def test_observer_is_fixed_summary_only_and_uses_read_only_financial_role(self) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        assignment = next(
+            node for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "FINANCIAL_OBSERVER_SQL" for target in node.targets)
+        )
+        namespace = {}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[assignment], type_ignores=[])), str(PROBE), "exec"), namespace)
+        queries = namespace["FINANCIAL_OBSERVER_SQL"]
+        self.assertEqual(set(queries), {"native", "bindings", "members"})
+        self.assertTrue(all(query.lstrip().upper().startswith("SELECT") for query in queries.values()))
+        self.assertTrue(all(not any(word in query.upper() for word in ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "DROP"))
+                            for query in queries.values()))
+        observer = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "financial_observer"
+        )
+        source = ast.unparse(observer)
+        self.assertIn("lares_financial", source)
+        self.assertIn("BEGIN READ ONLY", source)
+        self.assertIn("financial-database-password", source)
+
+        with tempfile.TemporaryDirectory(prefix="lares-financial-observer-") as directory:
+            root = pathlib.Path(directory)
+            secrets_dir = root / "secrets"
+            secrets_dir.mkdir()
+            calls = []
+            namespace = {
+                "FINANCIAL_OBSERVER_SQL": queries, "RuntimeError": RuntimeError, "json": json,
+                "root": root, "secrets_dir": secrets_dir, "network": "observer-network",
+                "keeper_image": "registry.invalid/keeper:fixture",
+                "output": lambda *args, **_kwargs: calls.append(args) or "{}",
+            }
+            module = ast.fix_missing_locations(ast.Module(body=[observer], type_ignores=[]))
+            exec(compile(module, str(PROBE), "exec"), namespace)
+            result = namespace["financial_observer"]("native", {
+                "host": "proof-db", "port": 5432, "database": "proof", "user": "lares_financial",
+                "passwordFile": "/etc/lares/secrets/financial-database-password",
+            })
+            self.assertEqual(result, "{}")
+            self.assertEqual(len(calls), 1)
+            args = calls[0]
+            self.assertIn("type=bind,src=" + str(secrets_dir / "financial-database-password") +
+                          ",dst=/etc/lares/secrets/financial-database-password,readonly", args)
+            self.assertNotIn("type=bind,src=" + str(secrets_dir) + ",dst=/etc/lares/secrets,readonly", args)
+            script = (root / "financial-observer.mts").read_text(encoding="utf-8")
+            self.assertIn("lares_financial", script)
+            self.assertIn("BEGIN READ ONLY", script)
+            self.assertIn("default_transaction_read_only=on", script)
+            self.assertNotIn("fixture-password-value", script)
+
+
+class FirstActivationMemberSummaryTests(unittest.TestCase):
+    def test_actual_consumer_accepts_only_selected_open_member_and_other_closed(self) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        consumer = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "selected_members_match_first_activation"
+        )
+        namespace = {}
+        module = ast.fix_missing_locations(ast.Module(body=[consumer], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+        matches = namespace["selected_members_match_first_activation"]
+        member_ids = ["first-use-member-a", "first-use-member-b"]
+        expected = [
+            {"memberId": member_ids[0], "state": "open"},
+            {"memberId": member_ids[1], "state": "closed"},
+        ]
+        self.assertTrue(matches(expected, member_ids))
+
+        wrong_member = [dict(row) for row in expected]
+        wrong_member[0]["memberId"] = member_ids[1]
+        self.assertFalse(matches(wrong_member, member_ids))
+        wrong_state = [dict(row) for row in expected]
+        wrong_state[1]["state"] = "open"
+        self.assertFalse(matches(wrong_state, member_ids))
+        self.assertFalse(matches(expected[:1], member_ids))
+        self.assertFalse(matches(expected + [dict(expected[0])], member_ids))
 
 
 if __name__ == "__main__":
