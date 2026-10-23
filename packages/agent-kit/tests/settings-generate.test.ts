@@ -9,5 +9,8 @@ describe("the generated startup guard", () => {
   it("is what the generator would write today", () => {
     const onDisk = readFileSync(join(REPO, "images/agent-runtime/required-settings.sh"), "utf8");
     expect(onDisk).toBe(requiredSettingsShell(["chief-of-staff", "creative"]));
+    const chiefOnDisk = readFileSync(join(REPO, "images/agent-runtime/required-settings-chief-of-staff.sh"), "utf8");
+    expect(chiefOnDisk).toBe(requiredSettingsShell(["chief-of-staff"], { managedChiefModelPurpose: true }));
+    expect(() => requiredSettingsShell(["chief-of-staff", "creative"], { managedChiefModelPurpose: true })).toThrow();
   });
 });

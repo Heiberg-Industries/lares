@@ -8,20 +8,23 @@
 //
 // A `*_FILE` setting names a PATH, never a value (`SettingDef.secret` is false for every `_FILE`
 // name — see settings.ts). The path itself is safe to show an owner; the file's CONTENTS never
-// are. So the only thing this module is ever told about a secret file is three booleans — whether
-// it exists, whether it can be read, and whether it is empty — from an injected `ProbeFile`. It
-// never receives, and therefore can never leak, the bytes inside.
+// are. So the only thing this module is ever told about a secret file is basic metadata — whether
+// it exists, can be read, is empty, and (when needed) whether it is a regular file or socket —
+// from an injected `ProbeFile`. It never receives, and therefore can never leak, the bytes inside.
 import type { SettingReader } from "./settings.js";
 import { requiredNamesFor, settingByName } from "./settings.js";
 
-/** What is true of a file, and nothing else. Never the file's contents. */
+/** What is true of a file or socket, and nothing else. Never the file's contents. */
 export interface FileProbe {
   readonly exists: boolean;
   readonly readable: boolean;
   readonly empty: boolean;
+  /** Present only when the caller can distinguish filesystem object type. */
+  readonly isSocket?: boolean;
+  readonly isFile?: boolean;
 }
 
-/** Given the path a `*_FILE` setting names, reports what is true of that file. Injected so a
+/** Given a path, reports basic file/socket metadata. Injected so a
  *  caller with no real files (a unit test) and a caller with real ones (startup, `lares doctor`)
  *  can share this module's logic. */
 export type ProbeFile = (path: string) => FileProbe;
@@ -36,6 +39,21 @@ export interface SettingProblem {
 
 const WHERE = "Set it in the installation's settings and start it again.";
 const WHERE_SECRET_FILE = "Put the secret in a file at that path, readable by the agent, and start it again.";
+const MANAGED_MODEL_PURPOSE_SOCKET = "/run/lares/model-purpose/model-purpose.sock";
+const MANAGED_MODEL_PURPOSE_GATEWAY_SOCKET = "/run/lares/model-purpose/gateway.sock";
+const MANAGED_RUNTIME_CONTROL_FILE = "/run/secrets/runtime-control";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SHELL_UUID_PATTERN = `${"[0123456789abcdef]".repeat(8)}-${"[0123456789abcdef]".repeat(4)}-[1-8]${"[0123456789abcdef]".repeat(3)}-[89ab]${"[0123456789abcdef]".repeat(3)}-${"[0123456789abcdef]".repeat(12)}`;
+
+function hasManagedChiefTransport(env: NodeJS.ProcessEnv, probeFile: ProbeFile): boolean {
+  if (env.GATEWAY_KEY_FILE !== undefined || env.LARES_MODEL_PURPOSE_RUNTIME_SOCKET !== MANAGED_MODEL_PURPOSE_SOCKET || !UUID.test(env.LARES_AGENT_INCARNATION ?? "") || env.LARES_RUNTIME_CONTROL_SECRET_FILE !== MANAGED_RUNTIME_CONTROL_FILE) return false;
+  const runtime = probeFile(MANAGED_MODEL_PURPOSE_SOCKET);
+  const gateway = probeFile(MANAGED_MODEL_PURPOSE_GATEWAY_SOCKET);
+  const control = probeFile(MANAGED_RUNTIME_CONTROL_FILE);
+  return runtime.exists && runtime.isSocket === true
+    && gateway.exists && gateway.isSocket === true
+    && control.exists && control.readable && !control.empty && control.isFile === true;
+}
 
 function isBlank(value: string | undefined): boolean {
   return value === undefined || value.trim().length === 0;
@@ -75,10 +93,12 @@ export function checkSettings(
   probeFile: ProbeFile,
 ): SettingProblem[] {
   const problems: SettingProblem[] = [];
+  const managedChiefTransport = reader === "chief-of-staff" && hasManagedChiefTransport(env, probeFile);
   for (const name of requiredNamesFor(reader)) {
     const def = settingByName(name);
     if (!def) continue; // settings.ts guarantees every required name is declared; defensive only
     const value = env[name];
+    if (name === "GATEWAY_KEY_FILE" && managedChiefTransport) continue;
     if (isBlank(value)) {
       const kind: SettingProblem["kind"] = value === undefined ? "missing" : "blank";
       problems.push({ name, reader, kind, say: sentenceFor(name, def.breaksWithout, kind) });
@@ -129,7 +149,14 @@ export function settingsReport(problems: readonly SettingProblem[]): string {
  *  there is no TypeScript loader in the runtime image before `eve start`: the image never runs
  *  `pnpm install` or a build, so a `.ts` file cannot run there. Both halves are generated from
  *  `SETTINGS`, so neither can quietly grow a name the other does not have. */
-export function requiredSettingsShell(readers: readonly SettingReader[]): string {
+export interface RequiredSettingsShellOptions {
+  /** Permits the exact fixed model-purpose transport for the chief image only. */
+  readonly managedChiefModelPurpose?: boolean;
+}
+
+export function requiredSettingsShell(readers: readonly SettingReader[], options: RequiredSettingsShellOptions = {}): string {
+  if (options.managedChiefModelPurpose && (readers.length !== 1 || readers[0] !== "chief-of-staff"))
+    throw new Error("Managed model-purpose startup guard is only valid for the chief-of-staff reader");
   const seen = new Set<string>();
   const lines: string[] = [];
   for (const reader of readers) {
@@ -152,7 +179,18 @@ export function requiredSettingsShell(readers: readonly SettingReader[]): string
     "missing=0",
     'lares_require() { eval "v=\\${$1-}"; [ -n "${v#"${v%%[![:space:]]*}"}" ] || { echo "lares: $1 is not set. $2" >&2; missing=1; }; }',
     'lares_require_file() { eval "p=\\${$1-}"; [ -n "${p#"${p%%[![:space:]]*}"}" ] || { echo "lares: $1 is not set. $2" >&2; missing=1; return; }; [ -r "$p" ] || { echo "lares: $1 points to a file that does not exist or cannot be read ($p). $2" >&2; missing=1; return; }; [ -s "$p" ] || { echo "lares: $1 points to a file that exists but is empty ($p). $2" >&2; missing=1; }; }',
-    ...lines,
+    ...lines.filter((line) => !(options.managedChiefModelPurpose && line.startsWith("lares_require_file GATEWAY_KEY_FILE "))),
+    ...(options.managedChiefModelPurpose ? [
+      'if [ "${GATEWAY_KEY_FILE+x}" = x ]; then',
+      ...lines.filter((line) => line.startsWith("lares_require_file GATEWAY_KEY_FILE ")).map((line) => `  ${line}`),
+      'else',
+      '  [ "${LARES_MODEL_PURPOSE_RUNTIME_SOCKET-}" = "/run/lares/model-purpose/model-purpose.sock" ] || { echo "lares: managed model-purpose socket is not configured" >&2; missing=1; }',
+      `  case "\${LARES_AGENT_INCARNATION-}" in ${SHELL_UUID_PATTERN}) ;; *) echo "lares: managed incarnation is invalid" >&2; missing=1 ;; esac`,
+      '  [ "${LARES_RUNTIME_CONTROL_SECRET_FILE-}" = "/run/secrets/runtime-control" ] && [ -f "/run/secrets/runtime-control" ] && [ -r "/run/secrets/runtime-control" ] && [ -s "/run/secrets/runtime-control" ] || { echo "lares: runtime-control file is missing, unreadable, or empty" >&2; missing=1; }',
+      '  [ -S "/run/lares/model-purpose/model-purpose.sock" ] || { echo "lares: model-purpose runtime socket is unavailable" >&2; missing=1; }',
+      '  [ -S "/run/lares/model-purpose/gateway.sock" ] || { echo "lares: model-purpose gateway socket is unavailable" >&2; missing=1; }',
+      'fi',
+    ] : []),
     '[ "$missing" -eq 0 ] || exit 1',
     "",
   ].join("\n");

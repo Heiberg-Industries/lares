@@ -26,6 +26,13 @@ Installer reruns preserve an explicit `budgetFinancial` binding; they do not
 infer preparation from directory presence. An invalid prior binding refuses the
 render before writing either output file.
 
+Reruns also preserve an existing `budgetNative` binding and
+`gatewayBudget.serviceKeyFile` exactly as configured. These paths are retained
+only from a valid prior keeper configuration; the installer does not create,
+copy or infer either protected file. Malformed bindings, or native custody
+without its financial binding, stop rendering before either output file is
+written. Preservation does not activate spending or prove the files are ready.
+
 ## Explicit fresh-install ceremony
 
 This administrator-only step is for a genuinely new installation. An empty
