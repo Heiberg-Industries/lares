@@ -121,6 +121,10 @@ jobs:
         if: matrix.name == 'box'
         run: python3 -B services/keeper/tests/gateway-admission-settlement.test.py
 
+      - name: Check native first-use fixture config offline
+        if: matrix.name == 'keeper'
+        run: python3 -B services/keeper/tests/native-first-use-command.test.py
+
   typecheck:
     name: workspace typecheck
     runs-on: ubuntu-latest

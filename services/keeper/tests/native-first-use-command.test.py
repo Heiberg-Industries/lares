@@ -1,12 +1,16 @@
 """Offline command-construction regression for the combined first-use probe."""
 
 import ast
+import json
 import pathlib
 import subprocess
+import tempfile
 import unittest
 from types import SimpleNamespace
 
 PROBE = pathlib.Path(__file__).with_name("native-first-use-image.probe.py")
+REPO = PROBE.parents[3]
+KEEPER = REPO / "services" / "keeper"
 
 
 class GatewayDockerCommandTests(unittest.TestCase):
@@ -73,6 +77,60 @@ class GatewayDockerCommandTests(unittest.TestCase):
             # The previous duplicate-prefix shape is rejected without executing Docker.
             duplicated = ("docker",) + argv
             self.assertNotEqual(duplicated.count("docker"), 1, argument_name)
+
+
+class NativeFirstUseConfigTests(unittest.TestCase):
+    def test_actual_probe_config_loads_and_missing_egress_is_rejected(self) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        assignments = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "base_config" for target in node.targets)
+        ]
+        self.assertEqual(len(assignments), 1, "probe must have one base_config assignment")
+        assignment = assignments[0]
+        proof_names = {
+            node.id for node in ast.walk(assignment.value)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+        self.assertLessEqual(proof_names, {"network", "proof"}, "fixture config may use only the network and image proof placeholders")
+
+        namespace = {
+            "network": "lares-config-fixture",
+            "proof": {"images": {"chief": "sha256:" + "a" * 64, "keeper": "sha256:" + "b" * 64}},
+        }
+        module = ast.fix_missing_locations(ast.Module(body=[assignment], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+        fixture_config = namespace["base_config"]
+        self.assertIsInstance(fixture_config, dict)
+        self.assertIn("egress", fixture_config.get("lifecycle", {}))
+
+        loader = (KEEPER / "lib" / "config.ts").as_uri()
+        with tempfile.TemporaryDirectory(prefix="lares-native-first-use-config-") as directory:
+            valid_path = pathlib.Path(directory) / "keeper.json"
+            valid_path.write_text(json.dumps(fixture_config), encoding="utf-8")
+            missing_egress_path = pathlib.Path(directory) / "keeper-missing-egress.json"
+            missing_egress = json.loads(valid_path.read_text(encoding="utf-8"))
+            del missing_egress["lifecycle"]["egress"]
+            missing_egress_path.write_text(json.dumps(missing_egress), encoding="utf-8")
+            script = (
+                f'import {{ loadKeeperConfig }} from {json.dumps(loader)};'
+                'import assert from "node:assert/strict";'
+                f'const valid = loadKeeperConfig({json.dumps(str(valid_path))});'
+                'assert.ok(valid.lifecycle?.egress);'
+                'assert.throws(() => loadKeeperConfig('
+                f'{json.dumps(str(missing_egress_path))}), /lifecycle\\.egress:/);'
+            )
+            result = subprocess.run(
+                ["node", "--import", "tsx", "--input-type=module", "-e", script],
+                cwd=KEEPER,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=20,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
 
 
 if __name__ == "__main__":

@@ -297,6 +297,7 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
         'proxyContainer':'lares-egress-proxy','squidImage':'fixture@'+proof['images']['keeper'],'firewallImage':'fixture@'+proof['images']['keeper'],
         'adminDb':{'host':'proof-db','port':5432,'database':'postgres','user':'lares_workflow_provisioner','passwordFile':'/etc/lares/secrets/workflow-provisioner-password'},
         'workflowTemplate':'empty_workflow','workflowOwner':'lares_workflow_owner','installationPrepared':True,
+        'egress':{'endpoints':{},'legacyConsumers':[],'internalNetworks':['172.16.0.0/12'],'directDestinations':[],'infrastructureHosts':[]},
         'runtime':{'databaseUrl':'postgres://lares_app@proof-db:5432/proof','workflowServer':'postgres://lares_workflow@proof-db:5432',
           'gatewayUrl':'http://native-gateway:4000','proxyUrl':'http://egress-proxy:8888','passwordFile':'/etc/lares/secrets/app-password',
           'workflowPasswordFile':'/etc/lares/secrets/workflow-password','gatewayKeys':{},'gatewayMasterKeyFile':'/etc/lares/secrets/gateway-master'}},
