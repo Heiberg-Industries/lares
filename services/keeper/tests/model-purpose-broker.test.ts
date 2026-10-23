@@ -3,6 +3,7 @@ import { ModelPurposeBrokerState, modelPurposeDigest, modelPurposeMac, signModel
 import type { BudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
 import { createHash } from 'node:crypto';
 import { preparedModelPurposeConsumer } from '../lib/budget-financial-writer.js';
+import { parseModelPurposeAdmissionResponse } from '@lares/agent-kit/model-purpose-protocol';
 
 const request=(overrides:Partial<ModelPurposeRequest>={}):ModelPurposeRequest=>({agent:'neutral-helper',incarnation:'123e4567-e89b-42d3-a456-426614174000',session:'wrun_model_test',member:'member-a',admissionNonce:'a'.repeat(43),method:'POST',path:'/eve/v1/session',rawBodyHash:'b'.repeat(64),policyRevision:3,definitionHash:'c'.repeat(64),purpose:'human',requestId:'d'.repeat(43),...overrides});
 const reference=(kind:'human'|'resume'='human',turnId=kind==='resume'?'':'eve-step-turn',turnSequence=kind==='resume'?0:7):BudgetAuthorityReference=>({kind,binding:{agent:'neutral-helper',incarnation:'123e4567-e89b-42d3-a456-426614174000',sessionId:'wrun_model_test',memberId:'member-a',admissionNonce:'a'.repeat(43),placeId:'place',audienceRevision:1,policyRevision:3,agentAccessRevision:2},turnId,turnSequence,...(kind==='resume'?{resume:{requestId:'resume-1',optionId:'approve' as const}}:{})});
@@ -38,9 +39,12 @@ describe('Keeper model-purpose broker state',()=>{
 
   it('consumes pending receipts once and rejects a mismatched runtime identity',()=>{
     const state=new ModelPurposeBrokerState(()=>100),value=request(),issued=state.pendingReceipt(value,modelPurposeDigest(value));
-    expect(()=>state.consumePending(issued.receipt,{agent:value.agent,incarnation:value.incarnation,session:value.session,member:'other',admissionNonce:value.admissionNonce})).toThrow();
-    expect(()=>state.consumePending(issued.receipt,{agent:value.agent,incarnation:value.incarnation,session:value.session,member:value.member,admissionNonce:value.admissionNonce})).toThrow();
-    const next=state.pendingReceipt(value,modelPurposeDigest(value));expect(state.consumePending(next.receipt,{agent:value.agent,incarnation:value.incarnation,session:value.session,member:value.member,admissionNonce:value.admissionNonce}).digest).toBe(modelPurposeDigest(value));
+    expect(Object.keys(issued).sort()).toEqual(['expiresAt','pendingReceipt']);
+    expect(parseModelPurposeAdmissionResponse(issued)).toEqual(issued);
+    expect(parseModelPurposeAdmissionResponse({receipt:issued.pendingReceipt,expiresAt:issued.expiresAt})).toBeUndefined();
+    expect(()=>state.consumePending(issued.pendingReceipt,{agent:value.agent,incarnation:value.incarnation,session:value.session,member:'other',admissionNonce:value.admissionNonce})).toThrow();
+    expect(()=>state.consumePending(issued.pendingReceipt,{agent:value.agent,incarnation:value.incarnation,session:value.session,member:value.member,admissionNonce:value.admissionNonce})).toThrow();
+    const next=state.pendingReceipt(value,modelPurposeDigest(value));expect(state.consumePending(next.pendingReceipt,{agent:value.agent,incarnation:value.incarnation,session:value.session,member:value.member,admissionNonce:value.admissionNonce}).digest).toBe(modelPurposeDigest(value));
   });
 
   it('allows only the authentic resume evidence to open the exact empty resume turn',()=>{
