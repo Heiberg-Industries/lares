@@ -847,6 +847,12 @@ console.log(JSON.stringify({profile,config,pricing,maximumLiability:gatewayMaxim
       '--mount',f'type=bind,src={repo}/services/console/lib/gateway-budget-relay.ts,dst=/app/services/keeper/lib/gateway-budget-relay.ts,readonly',
       '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/admission-bridge.mts');container_names.append(network+'-admission-bridge')
     sql('proof',"CREATE DATABASE native_litellm")
+    admission_prefix=root/'admission-installation'
+    admission_prefix.mkdir(mode=0o755)
+    admission_subnet=f"172.30.{int(uuid.uuid4().hex[:2],16)}.0/24"
+    custody.prepare_fresh(admission_prefix, admission_subnet)
+    admission_identity=custody.validate(admission_prefix, admission_subnet)
+    admission_dir=admission_prefix/'var/lib/lares-maintenance/admission'
     manifest=json.loads((repo/'releases/2026-10-21-rc.12.json').read_text())
     gateway=manifest['images']['lares-gateway']
     endpoint_origin='http://native-gateway:4000'
@@ -948,12 +954,6 @@ print(json.dumps({'passed':passed,'pythonVersion':python_version,'opensslVersion
           'workflowPasswordFile':'/etc/lares/secrets/workflow-password','gatewayKeys':{},'gatewayMasterKeyFile':'/etc/lares/secrets/gateway-master'}},
       'gatewayBudget':{'serviceKeyFile':'/etc/lares/secrets/gateway-budget-service-key'},
       'modelPurposeConsoleSigningKeyFile':'/etc/lares/secrets/console-model-purpose-signing-key','modelPurposeRuntimeDir':'/fixture-install/run/model-purpose'}
-    admission_prefix=root/'admission-installation'
-    admission_prefix.mkdir(mode=0o755)
-    admission_subnet=f"172.30.{int(uuid.uuid4().hex[:2],16)}.0/24"
-    custody.prepare_fresh(admission_prefix, admission_subnet)
-    admission_identity=custody.validate(admission_prefix, admission_subnet)
-    admission_dir=admission_prefix/'var/lib/lares-maintenance/admission'
     base_config['lifecycle']['maintenanceAdmission']={
       'hostDirectory':str(admission_dir),
       'installationId':admission_identity['installationId'],

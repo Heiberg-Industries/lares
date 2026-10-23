@@ -187,6 +187,49 @@ class BoundedMarkerArchiveCommandTests(unittest.TestCase):
 
 
 class NativeFirstUseConfigTests(unittest.TestCase):
+    def test_gateway_custody_is_prepared_before_gateway_arguments(self) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        proof = next(node for node in tree.body if isinstance(node, ast.Try))
+        gateway_assignments = [
+            (index, node) for index, node in enumerate(proof.body)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "gateway_args" for target in node.targets)
+        ]
+        self.assertEqual(len(gateway_assignments), 1)
+        gateway_index, gateway_assignment = gateway_assignments[0]
+        gateway_inputs = {
+            node.id for node in ast.walk(gateway_assignment.value)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+        self.assertTrue({"admission_dir", "admission_identity"} <= gateway_inputs)
+
+        custody_preparation = [
+            index for index, node in enumerate(proof.body)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and isinstance(node.value.func.value, ast.Name)
+            and node.value.func.value.id == "custody" and node.value.func.attr == "prepare_fresh"
+        ]
+        self.assertEqual(len(custody_preparation), 1)
+        self.assertLess(custody_preparation[0], gateway_index)
+        identity_validations = [
+            index for index, node in enumerate(proof.body[:gateway_index])
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "admission_identity" for target in node.targets)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and isinstance(node.value.func.value, ast.Name)
+            and node.value.func.value.id == "custody" and node.value.func.attr == "validate"
+        ]
+        self.assertEqual(len(identity_validations), 1)
+        for name in ("admission_dir", "admission_identity"):
+            definitions = [
+                index for index, node in enumerate(proof.body[:gateway_index])
+                if isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+            ]
+            self.assertTrue(definitions, f"{name} must be assigned before gateway_args uses it")
+
     def test_actual_probe_config_loads_and_missing_egress_is_rejected(self) -> None:
         tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
         assignments = [
