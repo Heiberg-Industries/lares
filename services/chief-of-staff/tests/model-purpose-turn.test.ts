@@ -93,7 +93,7 @@ describe('model-purpose Eve turn hooks', () => {
     vi.stubEnv('LARES_AGENT_NAME', 'helper');
     vi.stubEnv('LARES_AGENT_INCARNATION', incarnation);
     requestMock.mockImplementation(async (op: string) => {
-      if (op === 'request.admit') return { pendingReceipt: receipt };
+      if (op === 'request.admit') return { pendingReceipt: receipt, expiresAt: Date.now() + 30_000 };
       if (op === 'turn.open') return { capability: 'c'.repeat(43), expiresAt: Date.now() + 30_000 };
       if (op === 'step.claim') return { claim: 'k'.repeat(43), expiresAt: Date.now() + 30_000 };
       return { closed: true };

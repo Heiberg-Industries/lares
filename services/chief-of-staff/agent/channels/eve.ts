@@ -5,6 +5,7 @@ import type { UserContent } from "ai";
 import { consoleRouteAdmission, consoleAdmission } from "@lares/agent-kit/console-turn-authority";
 import { vaultBrokerRequest } from "@lares/agent-kit/vault-broker-client";
 import { modelPurposeRequest } from "@lares/agent-kit/model-purpose-client";
+import { parseModelPurposeAdmissionResponse } from "@lares/agent-kit/model-purpose-protocol";
 import { readFileSync } from "node:fs";
 import { eveChannel } from "eve/channels/eve";
 import {
@@ -116,14 +117,15 @@ function withConsoleMember(sessionAuth: DoorSessionAuth, supplied: string | null
 
 async function admitModelPurpose(receipt: ReturnType<typeof verifiedPrivateConsoleModelMessageReceipt> |
   ReturnType<typeof verifiedPrivateConsoleModelResponseReceipt>): Promise<string> {
-  const result = await modelPurposeRequest<{ pendingReceipt?: unknown }>('request.admit', {
+  const result = await modelPurposeRequest<Record<string, unknown>>('request.admit', {
     capsule: receipt.modelCapsule,
     receipt,
   });
-  if (typeof result.pendingReceipt !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(result.pendingReceipt)) {
+  const admitted = parseModelPurposeAdmissionResponse(result);
+  if (!admitted) {
     throw new Error('Model purpose authority is not available');
   }
-  return result.pendingReceipt;
+  return admitted.pendingReceipt;
 }
 
 /** HTTP Basic against the box secret. Returns null (skip, → 401) on a missing or wrong

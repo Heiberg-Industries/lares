@@ -32,6 +32,29 @@ export interface ModelPurposeRuntimeEnvelope {
   mac?: unknown;
 }
 
+/** Exact signed Keeper result for a successfully admitted model-purpose request. */
+export interface ModelPurposeAdmissionResponse extends Record<string, unknown> {
+  pendingReceipt: string;
+  expiresAt: number;
+}
+
+/** Build the one canonical pending-receipt response shared by Keeper and its runtime consumer. */
+export function modelPurposeAdmissionResponse(pendingReceipt: string, expiresAt: number): ModelPurposeAdmissionResponse {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(pendingReceipt) || !Number.isSafeInteger(expiresAt) || expiresAt <= 0)
+    throw new Error('Invalid model-purpose admission response');
+  return { pendingReceipt, expiresAt };
+}
+
+/** Parse only the canonical signed result. A legacy `receipt` field is deliberately not accepted. */
+export function parseModelPurposeAdmissionResponse(value: unknown): ModelPurposeAdmissionResponse | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const result = value as Record<string, unknown>;
+  if (Object.keys(result).sort().join(',') !== 'expiresAt,pendingReceipt' ||
+      typeof result.pendingReceipt !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(result.pendingReceipt) ||
+      typeof result.expiresAt !== 'number' || !Number.isSafeInteger(result.expiresAt) || result.expiresAt <= 0) return undefined;
+  return { pendingReceipt: result.pendingReceipt, expiresAt: result.expiresAt };
+}
+
 /** A separate MAC domain for the bounded model-dispatch hop. It deliberately signs the
  * gateway's canonical exact-request hash, rather than JSON-decoding and re-encoding a body. */
 export interface ModelPurposeDispatchFields {
