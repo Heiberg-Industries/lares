@@ -1,8 +1,9 @@
 import {parseDefinition,hashOf,type LoadedDefinition} from '../../../packages/agent-kit/src/definition.js';
 import {PgVaultStore} from '../../../packages/agent-kit/src/vault-area-store.js';
-import {beforeAll,beforeEach,afterAll,afterEach,describe,it,expect} from 'vitest';
+import {beforeAll,beforeEach,afterAll,afterEach,describe,it,expect,vi} from 'vitest';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
+import {performance} from 'node:perf_hooks';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
@@ -642,12 +643,24 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     expect((await db.query('SELECT actual_amount FROM budget_attempts')).rows[0].actual_amount).toBe('0.0096');
   });
   it('retains the reservation when the reply deadline expires after the grant commits',async()=>{
-    let commits=0;
-    const slow={query:(text:string,values?:unknown[])=>db.query(text,values),connect:async()=>{
-      const client=await db.connect();return {release:(broken?:boolean)=>client.release(broken),query:async(text:string,values?:unknown[])=>{const r=await client.query(text,values);if(text==='COMMIT'&&++commits===2)await new Promise(resolve=>setTimeout(resolve,150));return r;}};
-    }} as unknown as Pool;
     const p=await prepared(),request=admitDocument(p),raw=gatewayCanonical(request);
-    expect((await authority(slow).handle(GATEWAY_ADMIT_PATH,gatewaySignature(serviceKey,'request',GATEWAY_ADMIT_PATH,raw),raw,performance.now()+100)).status).toBe(503);
+    let commits=0,controlledNow=performance.now();
+    const deadline=controlledNow+100;
+    const slow={query:(text:string,values?:unknown[])=>db.query(text,values),connect:async()=>{
+      const client=await db.connect();return {release:(broken?:boolean)=>client.release(broken),query:async(text:string,values?:unknown[])=>{const r=await client.query(text,values);if(text==='COMMIT'&&++commits===2)controlledNow=deadline+1;return r;}};
+    }} as unknown as Pool;
+    const nowSpy=vi.spyOn(performance,'now').mockImplementation(()=>controlledNow);
+    let replyStatus:number|undefined;
+    try {
+      vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+      replyStatus=(await authority(slow).handle(GATEWAY_ADMIT_PATH,gatewaySignature(serviceKey,'request',GATEWAY_ADMIT_PATH,raw),raw,deadline)).status;
+    } finally {
+      vi.useRealTimers();
+      nowSpy.mockRestore();
+    }
+    expect(replyStatus).toBe(503);
+    expect(commits).toBe(2);
+    expect(controlledNow).toBeGreaterThan(deadline);
     expect((await db.query('SELECT count(*)::int n FROM budget_gateway_grants')).rows[0].n).toBe(1);
     expect((await store.readStatus(context())).liability).toBe('0.1');
     expect((await rpc(authority(),GATEWAY_ADMIT_PATH,request)).reply.status).toBe(503);

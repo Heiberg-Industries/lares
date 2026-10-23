@@ -76,7 +76,7 @@ RUN pnpm --filter @lares/console build
 # Same tag as `deps`/`build` (see `deps`' comment) — the standalone output can trace in
 # native addons built under that Node ABI.
 FROM node:24-bookworm-slim AS run
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends util-linux && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 # Installation hosts run prepared code, never a package installer. Keep workspace
 # dependencies intact; remove only the base image's unused build/package managers.
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
@@ -88,8 +88,11 @@ COPY --from=build /app/services/console/.next/standalone ./
 COPY --from=build /app/services/console/.next/static ./services/console/.next/static
 COPY images/console-runtime/start.sh /usr/local/bin/lares-console-start
 RUN chmod 0755 /usr/local/bin/lares-console-start
+COPY services/box/ops/maintenance-admission.sh /usr/local/lib/lares/maintenance-admission-v1
+RUN chmod 0755 /usr/local/lib/lares/maintenance-admission-v1
 
 RUN groupadd -g 10001 console && useradd -u 10001 -g 10001 -m -s /usr/sbin/nologin console
 USER 10001:10001
 EXPOSE 3000
+ENTRYPOINT ["/usr/local/lib/lares/maintenance-admission-v1"]
 CMD ["/usr/local/bin/lares-console-start"]
