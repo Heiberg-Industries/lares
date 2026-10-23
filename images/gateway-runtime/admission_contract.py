@@ -246,8 +246,14 @@ class Profile:
             "model_list": [{"model_name": alias, "litellm_params": {"model": p["provider"] + "/" + p["model"], "api_key": "os.environ/LARES_MODEL_PROVIDER_KEY", "api_base": p["providerBaseUrl"], "max_retries": 0, "num_retries": 0}} for alias in p["aliases"]],
             "litellm_settings": {"telemetry": False, "callbacks": ["lares_gateway.gateway_hook"], "disable_aiohttp_transport": True, "drop_params": False, "use_chat_completions_url_for_anthropic_messages": True},
             "router_settings": {"num_retries": 0, "fallbacks": [], "context_window_fallbacks": [], "content_policy_fallbacks": []},
-            "general_settings": {"master_key": "os.environ/LARES_GATEWAY_MASTER_KEY", "background_health_checks": False},
+            "general_settings": {"master_key": "os.environ/LARES_GATEWAY_MASTER_KEY", "background_health_checks": False, "disable_auto_add_proxy_admin_to_teams": True},
         }
+
+    def validate_config(self, config):
+        general = config.get("general_settings") if isinstance(config, dict) else None
+        if not isinstance(general, dict) or type(general.get("disable_auto_add_proxy_admin_to_teams")) is not bool or general["disable_auto_add_proxy_admin_to_teams"] is not True:
+            raise Refused()
+        if config != self.expected_config(): raise Refused()
 
 
 class RequestState:

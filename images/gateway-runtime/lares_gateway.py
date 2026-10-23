@@ -282,7 +282,7 @@ def load_files():
         if importlib.metadata.version("litellm") != "1.101.6": raise Refused()
         profile = Profile(parse_json(pathlib.Path(os.environ["LARES_GATEWAY_PROFILE_FILE"]).read_bytes()))
         config = yaml.safe_load(pathlib.Path(os.environ["CONFIG_FILE_PATH"]).read_bytes())
-        if config != profile.expected_config(): raise Refused()
+        profile.validate_config(config)
         endpoint = os.environ["LARES_GATEWAY_ENDPOINT_HASH"]
         if not HASH.fullmatch(endpoint): raise Refused()
         gate_url = https_url(os.environ["LARES_GATEWAY_ADMISSION_URL"])

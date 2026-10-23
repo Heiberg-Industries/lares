@@ -29,6 +29,8 @@ const CASES = [
   "fixture-guard",
   "member-create-without-key",
   "client-existing-team-before-membership",
+  "client-empty-team-roster",
+  "client-first-member-roster",
   "client-user-policy-readback",
   "user-current-identity-global-cap-and-role",
   "user-info-no-auto-key",
@@ -54,6 +56,7 @@ const CASES = [
   "delete-by-hash-and-reconcile-lost-response",
   "already-deleted-remains-absent",
   "client-team-duration-and-membership-policy",
+  "client-full-team-roster",
   "fixture-cleanup",
 ] as const;
 type CaseName = typeof CASES[number];
@@ -82,6 +85,84 @@ const object = (value: unknown): value is Record<string, unknown> =>
 const empty = (value: unknown) => value === undefined || value === null ||
   (Array.isArray(value) && value.length === 0) ||
   (object(value) && Object.keys(value).length === 0);
+
+type RosterObservation = Record<string, unknown>;
+let rosterCapture: { state: "empty" | "first" | "full"; teamId: string; expectedIds: readonly string[]; observation?: RosterObservation } | undefined;
+const rosterObservations: RosterObservation[] = [];
+const MAX_ROSTER_OBSERVATION_BYTES = 65_536;
+const rosterIdShape = (rows: unknown[], field: string) => {
+  const counts = {missing: 0, null: 0, empty: 0, invalid: 0};
+  for (const value of rows) {
+    const id = object(value) ? value[field] : undefined;
+    if (id === undefined) counts.missing++;
+    else if (id === null) counts.null++;
+    else if (typeof id !== "string") counts.invalid++;
+    else if (id.length === 0) counts.empty++;
+    else if (!/^[A-Za-z0-9-]{1,80}$/.test(id)) counts.invalid++;
+  }
+  return counts;
+};
+const cappedCount = (value: unknown): number => Array.isArray(value) ? Math.min(value.length, 129) : 0;
+async function inspectRosterResponse(response: Response, state: "empty" | "first" | "full", teamId: string,
+  expectedIds: readonly string[]): Promise<RosterObservation> {
+  const unavailable: RosterObservation = {state, capture: "unavailable"};
+  try {
+    if (!response.body) return unavailable;
+    const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
+    try {
+      while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        size += part.value.byteLength;
+        if (size > MAX_ROSTER_OBSERVATION_BYTES) { void reader.cancel().catch(() => {}); return unavailable; }
+        chunks.push(part.value);
+      }
+    } finally { reader.releaseLock(); }
+    const bytes = new Uint8Array(size); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    const rootValue: unknown = JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(bytes));
+    const root = object(rootValue) ? rootValue : {};
+    const team = object(root.team_info) ? root.team_info : undefined;
+    const roleRows = team && Array.isArray(team.members_with_roles) ? team.members_with_roles : undefined;
+    const membershipRows = Array.isArray(root.team_memberships) ? root.team_memberships : undefined;
+    const roles = roleRows ? roleRows.slice(0, 129) : [];
+    const memberships = membershipRows ? membershipRows.slice(0, 129) : [];
+    const ids = new Set(expectedIds);
+    const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9-]{1,80}$/.test(value);
+    const roleIds = roles.map(row => object(row) ? row.user_id : undefined);
+    const membershipIds = memberships.map(row => object(row) ? row.user_id : undefined);
+    const duplicate = (values: unknown[]) => {
+      const seen = new Set<string>();
+      for (const value of values) if (validId(value)) { if (seen.has(value)) return true; seen.add(value); }
+      return false;
+    };
+    const budgets = memberships.map(row => object(row) ? row.litellm_budget_table : undefined);
+    const budgetShape = {missing: 0, null: 0, nonObject: 0, numeric: 0, durationString: 0, modelsArray: 0};
+    for (const budget of budgets) {
+      if (budget === undefined) budgetShape.missing++;
+      else if (budget === null) budgetShape.null++;
+      else if (!object(budget)) budgetShape.nonObject++;
+      else {
+        if (typeof budget.max_budget === "number" && Number.isFinite(budget.max_budget)) budgetShape.numeric++;
+        if (typeof budget.budget_duration === "string") budgetShape.durationString++;
+        if (Array.isArray(budget.allowed_models)) budgetShape.modelsArray++;
+      }
+    }
+    return {
+      state, capture: "ok", teamObject: !!team, roleArray: !!roleRows, membershipArray: !!membershipRows,
+      roleCount: cappedCount(roleRows), membershipCount: cappedCount(membershipRows),
+      roleOverflow: !!roleRows && roleRows.length > 128, membershipOverflow: !!membershipRows && membershipRows.length > 128,
+      teamIdShape: rosterIdShape([team ?? {}], "team_id"), teamIdMatchesExpected: !!team && team.team_id === teamId,
+      roleUserIdShape: rosterIdShape(roles, "user_id"), roleDuplicateIds: duplicate(roleIds),
+      roleUnexpectedRows: roleIds.filter(id => validId(id) && !ids.has(id)).length,
+      membershipUserIdShape: rosterIdShape(memberships, "user_id"), membershipTeamIdShape: rosterIdShape(memberships, "team_id"),
+      membershipDuplicateUserIds: duplicate(membershipIds),
+      membershipWrongTeamRows: memberships.filter(row => object(row) && validId(row.team_id) && row.team_id !== teamId).length,
+      membershipUnexpectedRows: membershipIds.filter(id => validId(id) && !ids.has(id)).length,
+      budgetShape,
+    };
+  } catch { return unavailable; }
+}
 
 type Reply = { status: number; body: unknown; parsed: boolean; dropped?: boolean };
 type Lookup = { kind: "present"; row: Record<string, unknown> } | { kind: "absent" | "malformed" | "refused" | "unavailable" };
@@ -395,10 +476,35 @@ const run = async () => {
     return;
   }
   mark("fixture-guard", "PASS");
-  const nativeClient = new BudgetNativeCredentialClient(origin!, master!);
+  const observedRequest: typeof fetch = async (input, init) => {
+    const response = await fetch(input, init);
+    const active = rosterCapture;
+    if (active) {
+      try {
+        const requestUrl = input instanceof Request ? input.url : String(input);
+        if (new URL(requestUrl).pathname === "/team/info")
+          active.observation = await inspectRosterResponse(response.clone(), active.state, active.teamId, active.expectedIds);
+      } catch { active.observation = {state: active.state, capture: "unavailable"}; }
+    }
+    return response;
+  };
+  const nativeClient = new BudgetNativeCredentialClient(origin!, master!, observedRequest);
+  const readRoster = async (state: "empty" | "first" | "full", members: {userId: string; maxBudget: number; budgetDuration: string; models: readonly string[]; role: "user"}[]) => {
+    const capture: NonNullable<typeof rosterCapture> = {state, teamId, expectedIds: members.map(member => member.userId)};
+    rosterCapture = capture;
+    let result: Awaited<ReturnType<typeof nativeClient.readTeamRoster>>;
+    try {
+      result = await nativeClient.readTeamRoster({teamId,teamMaxBudget:4,teamBudgetDuration:"1d",teamModels:[model!],members});
+    } finally { rosterCapture = undefined; }
+    const observation = capture.observation ?? {state, capture: "unavailable"};
+    observation.clientResultKind = result.kind;
+    rosterObservations.push(observation);
+    return result;
+  };
   const suffix = randomUUID();
   const teamId = suffix;
   const userId = `probe-${randomUUID()}`;
+  const secondUserId = `probe-${randomUUID()}`;
   const alias = `probe-${randomUUID()}`;
   const normalKey = randomKey();
   const blockedKey = randomKey();
@@ -407,7 +513,7 @@ const run = async () => {
   const blockedHash = fingerprint(blockedKey);
   const lostHash = fingerprint(lostKey);
   const expected = { keyAlias: alias, teamId, userId, blocked: false, budget: 1 };
-  let teamAttempted = false, userAttempted = false;
+  let teamAttempted = false, userAttempted = false, secondUserAttempted = false;
   let lostUserDirectory: string | undefined, lostUserAttempted = false;
   let lostClientKeyDirectory: string | undefined;
   const createdHashes = new Set<string>();
@@ -430,7 +536,14 @@ const run = async () => {
     mark("client-user-policy-readback", createUser.kind === "acknowledged" && currentUserPolicy.kind === "match" && initialUserKeys.kind === "match" && initialUserKeys.value.length === 0 &&
       clientAbsentUser.kind === "absent" && clientRefusedUser.kind === "refused" ? "PASS" :
       [currentUserPolicy,initialUserKeys,clientAbsentUser,clientRefusedUser].some(result => result.kind === "mismatch" || result.kind === "malformed") ? "FAIL" : "UNKNOWN");
+    const emptyTeamRoster = await readRoster("empty", []);
+    mark("client-empty-team-roster", emptyTeamRoster.kind === "match" ? "PASS" : emptyTeamRoster.kind === "mismatch" ? "FAIL" : "UNKNOWN");
     const membership = await nativeClient.addMember({teamId,userId,maxBudget:2,budgetDuration:"1d",models:[model!],role:"user"});
+    const firstMemberRoster = await readRoster("first", [
+      {userId,maxBudget:2,budgetDuration:"1d",models:[model!],role:"user"},
+    ]);
+    mark("client-first-member-roster", membership.kind === "acknowledged" && firstMemberRoster.kind === "match" ? "PASS" :
+      firstMemberRoster.kind === "mismatch" ? "FAIL" : "UNKNOWN");
     const noAutoKey = await call("GET", `/key/list?user_id=${encodeURIComponent(userId)}`);
     const noAutoKeyBody = noAutoKey?.body;
     mark("member-create-without-key", createUser.kind === "acknowledged" && noAutoKey?.status === 200 &&
@@ -523,6 +636,16 @@ const run = async () => {
       memberBudget?.max_budget === 2 && memberBudget.budget_duration === "1d" &&
       Array.isArray(memberBudget.allowed_models) && memberBudget.allowed_models.length === 1 && memberBudget.allowed_models[0] === model &&
       roleRecords?.length === 1 && roleRecords[0].role === "user" ? "PASS" : "FAIL");
+
+    secondUserAttempted = true;
+    const secondUserCreate = await nativeClient.createUser({userId:secondUserId,maxBudget:3,userRole:"internal_user"});
+    const secondMembership = await nativeClient.addMember({teamId,userId:secondUserId,maxBudget:3,budgetDuration:"1d",models:[model!],role:"user"});
+    const fullTeamRoster = await readRoster("full", [
+      {userId,maxBudget:2,budgetDuration:"1d",models:[model!],role:"user"},
+      {userId:secondUserId,maxBudget:3,budgetDuration:"1d",models:[model!],role:"user"},
+    ]);
+    mark("client-full-team-roster", secondUserCreate.kind === "acknowledged" && secondMembership.kind === "acknowledged" && fullTeamRoster.kind === "match" ? "PASS" :
+      fullTeamRoster.kind === "mismatch" ? "FAIL" : "UNKNOWN");
 
     const absentHash = fingerprint(randomKey());
     mark("hash-lookup-absent-is-not-error", classifyLookup(await hashLookup(absentHash), absentHash).kind === "absent" ? "PASS" : "UNKNOWN");
@@ -683,6 +806,10 @@ const run = async () => {
       const reply = await call("POST", "/user/delete", { user_ids: [userId] });
       if (!reply || reply.status < 200 || reply.status >= 300) cleanupOk = false;
     }
+    if (secondUserAttempted) {
+      const reply = await call("POST", "/user/delete", { user_ids: [secondUserId] });
+      if (!reply || reply.status < 200 || reply.status >= 300) cleanupOk = false;
+    }
     if (lostClientKeyDirectory) {
       try { unlinkSync(join(lostClientKeyDirectory, "original-key")); rmdirSync(lostClientKeyDirectory); }
       catch { cleanupOk = false; }
@@ -702,6 +829,7 @@ async function main(): Promise<void> {
     for (const name of CASES) console.log(`${outcomes.get(name) ?? "UNKNOWN"} ${name}`);
     for (const [name, outcome] of diagnostics) console.log(`DIAGNOSTIC ${name} ${outcome}`);
     if (diagnosticCode) console.log(`DIAGNOSTIC ${diagnosticCode}`);
+    for (const observation of rosterObservations) console.log(`ROSTER-OBS ${JSON.stringify(observation)}`);
   }
   process.exitCode = failed ? 1 : 0;
 }

@@ -27,6 +27,52 @@ from admission_contract import ADMIT_PATH, RequestState, Refused, request_hash, 
 
 
 class ContractTests(unittest.TestCase):
+    def test_actual_typescript_gateway_configs_match_the_python_profile_exactly(self):
+        # Exercise the production renderer and profile builder without contacting either provider.
+        script = """
+import { createRequire } from 'node:module';
+import { renderGatewayConfig, gatewayAdmissionProfile } from './services/box/lib/gateway-config.ts';
+const { parse } = createRequire(new URL('./services/box/package.json', import.meta.url))('yaml');
+const targets = [
+  { alias: 'fixture-brain', providerModel: 'openai/gpt-4o-mini', providerBaseUrl: 'https://provider.example.invalid/v1' },
+  { alias: 'fixture-brain', providerModel: 'anthropic/claude-sonnet-4-5', providerBaseUrl: 'https://provider.example.invalid' },
+];
+console.log(JSON.stringify(targets.map((options) => ({
+  config: parse(renderGatewayConfig(options)),
+  profile: gatewayAdmissionProfile(options),
+}))));
+"""
+        rendered = subprocess.run(
+            ["node", "--import", "tsx", "--input-type=module", "-e", script],
+            cwd=ROOT, check=True, capture_output=True, text=True, timeout=30,
+        )
+        cases = json.loads(rendered.stdout)
+        self.assertEqual([case["profile"]["provider"] for case in cases], ["openai", "anthropic"])
+        for case in cases:
+            with self.subTest(provider=case["profile"]["provider"]):
+                expected = Profile(case["profile"]).expected_config()
+                profile = Profile(case["profile"])
+                config = case["config"]
+                self.assertEqual(config, expected)
+                self.assertIs(config["general_settings"]["disable_auto_add_proxy_admin_to_teams"], True)
+                profile.validate_config(config)
+
+                # Exercise the same validation method the gateway startup path calls.
+                invalid_configs = []
+                missing = json.loads(json.dumps(config))
+                del missing["general_settings"]["disable_auto_add_proxy_admin_to_teams"]
+                invalid_configs.append(missing)
+                for value in (False, "true", 1, 1.0):
+                    wrong = json.loads(json.dumps(config))
+                    wrong["general_settings"]["disable_auto_add_proxy_admin_to_teams"] = value
+                    invalid_configs.append(wrong)
+                unknown = json.loads(json.dumps(config))
+                unknown["general_settings"]["unexpected_setting"] = True
+                invalid_configs.append(unknown)
+                for invalid in invalid_configs:
+                    with self.subTest(invalid_general_settings=invalid.get("general_settings")):
+                        with self.assertRaises(Refused): profile.validate_config(invalid)
+
     def test_raw_bytes_and_route_are_bound(self):
         a = request_hash("POST", "/v1/messages", b'{"a":1}')
         self.assertNotEqual(a, request_hash("POST", "/v1/messages", b'{ "a":1}'))
@@ -124,7 +170,6 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(Refused): profile.check_body("/v1/chat/completions", json.dumps(body).encode())
         openai_profile = Profile({"version":1,"provider":"openai","model":"gpt-4o-mini","providerBaseUrl":"https://provider.example.invalid/v1","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":16384})
         with self.assertRaises(Refused): openai_profile.check_body("/v1/messages", json.dumps(body).encode())
-
     def test_native_model_route_group_is_confined_to_model_routes(self):
         for path in MODEL_ROUTES:
             with self.subTest(path=path): self.assertTrue(native_route_allowed(["llm_api_routes"], path))

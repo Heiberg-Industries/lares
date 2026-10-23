@@ -72,6 +72,7 @@ export function renderGatewayConfig(opts: GatewayConfigOptions): string {
     general_settings: {
       master_key: "os.environ/LARES_GATEWAY_MASTER_KEY",
       background_health_checks: false,
+      disable_auto_add_proxy_admin_to_teams: true,
     },
   };
   return stringify(config);

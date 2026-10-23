@@ -32,6 +32,64 @@ STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-f
 STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-native-types", "callback-proxy-hook-types", "callback-native-membership", "callback-native-coverage", "callback-native-cost", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
 CASE_CLASSIFICATIONS = frozenset(("retry", "recoverable", "terminal"))
 CASE_PREDICATES = frozenset(("sdkSuccessful", "sdkFailed", "sdkRequestCountOne", "admissionRefused", "notAdmissionRefused", "budgetExceeded", "notBudgetExceeded", "terminalClassification", "physicalExactlyOne", "noPhysicalRequest", "noTrap", "expectedRouteExactlyOne", "otherRoutesUnchanged", "gateExactlyOne", "noGateRequest", "settlementExactlyOne", "noSettlement", "receiptExactlyOne", "observationExactlyOne"))
+ROSTER_STATES = ("empty", "first", "full")
+MAX_NATIVE_PROBE_STDOUT_BYTES = 16_384
+MAX_NATIVE_PROBE_STDOUT_LINES = 96
+
+
+def _unique_json_object(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result:raise ValueError("duplicate JSON field")
+        result[key]=value
+    return result
+
+
+def parse_roster_observation(line):
+    """Accept only the fixed, value-free roster observation schema."""
+    match=re.fullmatch(r"ROSTER-OBS (\{.{0,8192}\})",line)
+    if not match:return None
+    try: value=json.loads(match.group(1),object_pairs_hook=_unique_json_object)
+    except (ValueError,TypeError):return None
+    if type(value) is not dict or value.get("state") not in ROSTER_STATES or value.get("capture") not in ("ok","unavailable"):
+        return None
+    if value.get("clientResultKind") not in ("match","mismatch","absent","refused","malformed","unavailable"):
+        return None
+    common={"state","capture","clientResultKind"}
+    if value["capture"]=="unavailable":return value if set(value)==common else None
+    shape_fields=("teamIdShape","roleUserIdShape","membershipUserIdShape","membershipTeamIdShape")
+    expected={"state","capture","clientResultKind","teamObject","roleArray","membershipArray","roleCount","membershipCount",
+        "roleOverflow","membershipOverflow","teamIdShape","teamIdMatchesExpected","roleUserIdShape","roleDuplicateIds",
+        "roleUnexpectedRows","membershipUserIdShape","membershipTeamIdShape","membershipDuplicateUserIds","membershipWrongTeamRows",
+        "membershipUnexpectedRows","budgetShape"}
+    if set(value)!=expected:return None
+    bool_fields=("teamObject","roleArray","membershipArray","roleOverflow","membershipOverflow","teamIdMatchesExpected",
+        "roleDuplicateIds","membershipDuplicateUserIds")
+    if not all(type(value[name]) is bool for name in bool_fields):return None
+    count_fields=("roleCount","membershipCount","roleUnexpectedRows","membershipWrongTeamRows","membershipUnexpectedRows")
+    if not all(type(value[name]) is int and 0<=value[name]<=129 for name in count_fields):return None
+    if value["roleOverflow"]!=(value["roleCount"]==129) or value["membershipOverflow"]!=(value["membershipCount"]==129):return None
+    shape_limits={"teamIdShape":1,"roleUserIdShape":value["roleCount"],"membershipUserIdShape":value["membershipCount"],
+        "membershipTeamIdShape":value["membershipCount"]}
+    for name in shape_fields:
+        shape=value[name]
+        if type(shape) is not dict or set(shape)!={"missing","null","empty","invalid"} or \
+            not all(type(count) is int and 0<=count<=shape_limits[name] for count in shape.values()):return None
+    budget=value["budgetShape"]
+    if type(budget) is not dict or set(budget)!={"missing","null","nonObject","numeric","durationString","modelsArray"} or \
+        not all(type(count) is int and 0<=count<=value["membershipCount"] for count in budget.values()):return None
+    if any(value[name]>value["roleCount"] for name in ("roleUnexpectedRows",)) or any(value[name]>value["membershipCount"] for name in ("membershipWrongTeamRows","membershipUnexpectedRows")):return None
+    return value
+
+
+def parse_roster_observations(lines):
+    records=[];seen=set();valid=True
+    for line in lines:
+        if not line.startswith("ROSTER-OBS "):continue
+        record=parse_roster_observation(line)
+        if record is None or record["state"] in seen:valid=False;continue
+        seen.add(record["state"]);records.append(record)
+    return records,valid and seen==set(ROSTER_STATES)
 
 FIXTURE = r'''
 import http.server,ssl,threading,json,time,pathlib,hashlib,uuid,sys,gzip
@@ -450,7 +508,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
         return dict(zip(names,(value=="true" for value in values),strict=True))
 
     def native_contract(self):
-        report={"scope":"committed native probe in the exact pinned image; disposable internal-only fixture; no provider calls", "cases":[], "databaseCases":[], "findings":[], "diagnostics":[], "runtimeDiagnostics":[]}
+        report={"scope":"committed native probe in the exact pinned image; disposable internal-only fixture; no provider calls", "cases":[], "databaseCases":[], "findings":[], "diagnostics":[], "runtimeDiagnostics":[], "rosterObservations":[]}
         diagnostic_names={"normal-key-policy-exact","normal-key-blocked-false",
             "member-match-unique","budget-cap-exact","budget-duration-exact","models-exact",
             "team-defaults-exact","team-blocked-false","team-metadata-empty","user-defaults-exact","user-role-exact","member-role-exact",
@@ -463,7 +521,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             if existing is None:report["diagnostics"].append({"name":name,"outcome":outcome})
             elif outcome=="false":existing["outcome"]="false"
         self.artifact["nativeCredentialContract"]=report
-        expected=("fixture-guard","member-create-without-key","client-existing-team-before-membership","client-user-policy-readback",
+        expected=("fixture-guard","member-create-without-key","client-existing-team-before-membership","client-empty-team-roster","client-first-member-roster","client-user-policy-readback",
             "user-current-identity-global-cap-and-role",
             "user-info-no-auto-key","user-info-absent-is-not-refusal","user-info-refused-is-not-absence",
             "lost-user-create-response-reconciles-original-id","team-membership-and-caps","client-empty-key-inventory",
@@ -472,7 +530,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             "blocked-key-readback-and-native-auth","client-blocked-key-policy-readback","client-unblock-and-exact-unblocked-readback","unblocked-key-readback-and-native-auth",
             "lost-create-response-reconciles-by-hash","lost-client-blocked-create-response-reconciles-original-key",
             "block-unblock-readback-only","delete-by-hash-and-reconcile-lost-response",
-            "already-deleted-remains-absent","client-team-duration-and-membership-policy","fixture-cleanup")
+            "already-deleted-remains-absent","client-team-duration-and-membership-policy","client-full-team-roster","fixture-cleanup")
         try:
             native_url=self.start_native_admin()
             self.native_barrier.write_text("idle")
@@ -481,48 +539,84 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 "-e","GATEWAY_PROBE_CI_BARRIER_FILE=/run/lares-native-probe-barrier","-e","GATEWAY_PROBE_CI_EXPECTED_FILE=/run/lares-native-probe-expected",self.name+"-client","node",
                 "--import","/app/services/chief-of-staff/node_modules/tsx/dist/loader.mjs",
                 "/app/services/keeper/tests/live/litellm-member-credential.live.mts"]
-            process=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            process=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
             deadline=time.monotonic()+180
             checked_members=False;checked_key=False
-            while process.poll() is None and time.monotonic()<deadline:
-                try:phase=self.native_barrier.read_text()
-                except OSError:phase=""
-                if phase=="members-ready":
-                    try:
-                        expected_values=self.native_expected.read_text().splitlines()
-                        checks=self.native_membership_db_check(*expected_values) if len(expected_values)==2 else None
-                    except Exception:checks=None
-                    outcome="unknown" if checks is None else "pass" if all(checks.values()) else "fail"
-                    report["databaseCases"].append({"name":"native-db-member-and-no-key-rows","outcome":outcome})
-                    if checks is None:add_diagnostic("native-db-query-readable","unknown")
-                    else:
-                        for name,value in checks.items():add_diagnostic(name,"false" if not value else "pass")
-                    self.native_barrier.write_text("members-checked");checked_members=True
-                elif phase=="key-ready":
-                    try:
-                        expected_values=self.native_expected.read_text().splitlines()
-                        checks=self.native_key_db_check(*expected_values) if len(expected_values)==3 else None
-                    except Exception:checks=None
-                    outcome="unknown" if checks is None else "pass" if all(checks.values()) else "fail"
-                    report["databaseCases"].append({"name":"native-db-key-hash-and-policy-row","outcome":outcome})
-                    if checks is None:add_diagnostic("native-db-query-readable","unknown")
-                    else:
-                        for name,value in checks.items():add_diagnostic(name,"false" if not value else "pass")
-                    self.native_barrier.write_text("key-checked");checked_key=True
-                time.sleep(.05)
-            if process.poll() is None:process.kill()
-            stdout,_stderr=process.communicate(timeout=5)
-            parsed=[]
-            for line in stdout.splitlines()[:64]:
+            output=bytearray();output_overflow=False;output_eof=False
+            with selectors.DefaultSelector() as ready:
+                ready.register(process.stdout,selectors.EVENT_READ)
+                while process.poll() is None and time.monotonic()<deadline:
+                    try:phase=self.native_barrier.read_text()
+                    except OSError:phase=""
+                    if phase=="members-ready":
+                        try:
+                            expected_values=self.native_expected.read_text().splitlines()
+                            checks=self.native_membership_db_check(*expected_values) if len(expected_values)==2 else None
+                        except Exception:checks=None
+                        outcome="unknown" if checks is None else "pass" if all(checks.values()) else "fail"
+                        report["databaseCases"].append({"name":"native-db-member-and-no-key-rows","outcome":outcome})
+                        if checks is None:add_diagnostic("native-db-query-readable","unknown")
+                        else:
+                            for name,value in checks.items():add_diagnostic(name,"false" if not value else "pass")
+                        self.native_barrier.write_text("members-checked");checked_members=True
+                    elif phase=="key-ready":
+                        try:
+                            expected_values=self.native_expected.read_text().splitlines()
+                            checks=self.native_key_db_check(*expected_values) if len(expected_values)==3 else None
+                        except Exception:checks=None
+                        outcome="unknown" if checks is None else "pass" if all(checks.values()) else "fail"
+                        report["databaseCases"].append({"name":"native-db-key-hash-and-policy-row","outcome":outcome})
+                        if checks is None:add_diagnostic("native-db-query-readable","unknown")
+                        else:
+                            for name,value in checks.items():add_diagnostic(name,"false" if not value else "pass")
+                        self.native_barrier.write_text("key-checked");checked_key=True
+                    for key,_ in ready.select(.05):
+                        chunk=os.read(key.fileobj.fileno(),min(4096,MAX_NATIVE_PROBE_STDOUT_BYTES+1-len(output)))
+                        if not chunk:
+                            output_eof=True;ready.unregister(key.fileobj);break
+                        output.extend(chunk)
+                        if len(output)>MAX_NATIVE_PROBE_STDOUT_BYTES:
+                            output_overflow=True;process.kill();break
+                    if output_overflow:break
+                if process.poll() is None:process.kill()
+                process.wait(timeout=5)
+                drain_deadline=time.monotonic()+5
+                while not output_eof and not output_overflow and time.monotonic()<drain_deadline:
+                    selected=ready.select(min(.05,max(0,drain_deadline-time.monotonic())))
+                    if not selected:continue
+                    for key,_ in selected:
+                        chunk=os.read(key.fileobj.fileno(),min(4096,MAX_NATIVE_PROBE_STDOUT_BYTES+1-len(output)))
+                        if not chunk:
+                            output_eof=True;ready.unregister(key.fileobj);break
+                        output.extend(chunk)
+                        if len(output)>MAX_NATIVE_PROBE_STDOUT_BYTES:output_overflow=True;break
+            process.stdout.close()
+            try:stdout=bytes(output).decode("utf8",errors="strict") if not output_overflow else ""
+            except UnicodeDecodeError:stdout="";output_overflow=True
+            parsed=[];roster_lines=[];protocol_valid=not output_overflow
+            lines=stdout.splitlines()
+            if len(lines)>MAX_NATIVE_PROBE_STDOUT_LINES:protocol_valid=False
+            for line in lines[:MAX_NATIVE_PROBE_STDOUT_LINES]:
                 match=re.fullmatch(r"(PASS|FAIL|UNKNOWN|UNSUPPORTED) ([a-z][a-z0-9-]+)",line)
-                if match and match.group(2) in expected:parsed.append({"name":match.group(2),"outcome":match.group(1).lower()})
+                if match and match.group(2) in expected:
+                    if any(item["name"]==match.group(2) for item in parsed):protocol_valid=False
+                    parsed.append({"name":match.group(2),"outcome":match.group(1).lower()});continue
                 diagnostic=re.fullmatch(r"DIAGNOSTIC ([a-z-]+) (false|unknown)",line)
-                if diagnostic:add_diagnostic(diagnostic.group(1),diagnostic.group(2))
+                if diagnostic:
+                    if diagnostic.group(1) not in diagnostic_names:protocol_valid=False
+                    add_diagnostic(diagnostic.group(1),diagnostic.group(2));continue
                 runtime=re.fullmatch(r"DIAGNOSTIC ([a-z-]+)",line)
-                if runtime and runtime.group(1) in runtime_names:report["runtimeDiagnostics"].append(runtime.group(1))
+                if runtime and runtime.group(1) in runtime_names:
+                    report["runtimeDiagnostics"].append(runtime.group(1));continue
+                if line.startswith("ROSTER-OBS "):
+                    roster_lines.append(line);continue
+                protocol_valid=False
+            roster_records,roster_valid=parse_roster_observations(roster_lines)
+            report["rosterObservations"]=roster_records
             by_name={item["name"]:item["outcome"] for item in parsed}
             report["cases"]=[{"name":name,"outcome":by_name.get(name,"unknown")} for name in expected]
-            report["runnerCompleted"]=process.returncode==0 and len(by_name)==len(expected)
+            report["rosterDiagnosticsValid"]=roster_valid and all(record["capture"]=="ok" for record in roster_records)
+            report["runnerCompleted"]=process.returncode==0 and len(by_name)==len(expected) and len(parsed)==len(expected) and roster_valid and protocol_valid
             if by_name.get("atomic-blocked-create")=="unsupported":report["findings"].append("atomic-blocked-create-unsupported")
             if not checked_members:report["databaseCases"].append({"name":"native-db-member-and-no-key-rows","outcome":"unknown"})
             if not checked_key:report["databaseCases"].append({"name":"native-db-key-hash-and-policy-row","outcome":"unknown"})

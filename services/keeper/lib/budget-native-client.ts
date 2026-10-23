@@ -2,6 +2,7 @@ export const MAX_BUDGET_NATIVE_REQUEST_BYTES=1024;
 const MAX_RESPONSE_BYTES=65_536;
 const MAX_LIST_KEYS=10;
 const MAX_MODELS=16;
+const MAX_TEAM_ROSTER_MEMBERS=128;
 const TIMEOUT_MS=5_000;
 const ID=/^[A-Za-z0-9-]{1,80}$/;
 const MODEL=/^[A-Za-z0-9_.:-]{1,160}$/;
@@ -44,6 +45,13 @@ export interface NativeTeamPolicyExpectation {
   teamMaxBudget:number;
   teamBudgetDuration:string;
   teamModels:readonly string[];
+}
+export interface NativeTeamRosterMemberExpectation extends NativeBudgetPolicy {
+  userId:string;
+  role:'user';
+}
+export interface NativeTeamRosterExpectation extends NativeTeamPolicyExpectation {
+  members:readonly NativeTeamRosterMemberExpectation[];
 }
 export interface NativeUserExpectation {userId:string;maxBudget:number;userRole:'internal_user'}
 export interface NativeKeyExpectation {
@@ -262,6 +270,49 @@ export class BudgetNativeCredentialClient {
     if(result.kind!=='body')return result;
     if(!isObject(result.value.team_info))return {kind:'malformed'};
     return exactTeamPolicy(result.value.team_info,expected)?{kind:'match',value:true}:{kind:'mismatch'};
+  }
+
+  /** Checks the complete bounded team roster, including each membership policy. */
+  async readTeamRoster(expected:NativeTeamRosterExpectation):Promise<NativeRead<true>>{
+    if(!isObject(expected)||!validId(expected.teamId)||!validBudget(expected.teamMaxBudget)||!validDuration(expected.teamBudgetDuration)||
+      !validModels(expected.teamModels)||!Array.isArray(expected.members)||expected.members.length>MAX_TEAM_ROSTER_MEMBERS)return {kind:'malformed'};
+    const expectedMembers=new Map<string,NativeTeamRosterMemberExpectation>();
+    for(const member of expected.members){
+      if(!isObject(member)||!validId(member.userId)||!validBudget(member.maxBudget)||!validDuration(member.budgetDuration)||
+        !validModels(member.models)||member.role!=='user'||expectedMembers.has(member.userId))return {kind:'malformed'};
+      expectedMembers.set(member.userId,member as unknown as NativeTeamRosterMemberExpectation);
+    }
+    const result=await this.read(`/team/info?team_id=${expected.teamId}`);
+    if(result.kind!=='body')return result;
+    const body=result.value;const team=body.team_info;const memberships=body.team_memberships;
+    if(!isObject(team)||!Array.isArray(team.members_with_roles)||!Array.isArray(memberships)||
+      team.members_with_roles.length>MAX_TEAM_ROSTER_MEMBERS||memberships.length>MAX_TEAM_ROSTER_MEMBERS)return {kind:'malformed'};
+    if(!exactTeamPolicy(team,expected))return {kind:'mismatch'};
+
+    const roleRows=new Map<string,string>();
+    for(const row of team.members_with_roles){
+      if(!isObject(row)||!validId(row.user_id)||typeof row.role!=='string'||row.role.length===0)return {kind:'malformed'};
+      if(roleRows.has(row.user_id))return {kind:'mismatch'};
+      roleRows.set(row.user_id,row.role);
+    }
+    const membershipRows=new Map<string,RecordValue>();
+    for(const row of memberships){
+      if(!isObject(row)||!validId(row.team_id)||!validId(row.user_id))return {kind:'malformed'};
+      if(row.team_id!==expected.teamId)return {kind:'mismatch'};
+      if(membershipRows.has(row.user_id))return {kind:'mismatch'};
+      if(!isObject(row.litellm_budget_table))return {kind:'malformed'};
+      membershipRows.set(row.user_id,row.litellm_budget_table);
+    }
+    if(roleRows.size!==expectedMembers.size||membershipRows.size!==expectedMembers.size)return {kind:'mismatch'};
+    for(const [userId,member] of expectedMembers){
+      if(roleRows.get(userId)!==member.role)return {kind:'mismatch'};
+      const budget=membershipRows.get(userId);
+      if(!budget)return {kind:'mismatch'};
+      if(!validBudget(budget.max_budget)||!validDuration(budget.budget_duration)||!validModels(budget.allowed_models))return {kind:'malformed'};
+      if(budget.max_budget!==member.maxBudget||budget.budget_duration!==member.budgetDuration||!sameModels(budget.allowed_models,member.models))
+        return {kind:'mismatch'};
+    }
+    return {kind:'match',value:true};
   }
 
   async readUser(expected:NativeUserExpectation):Promise<NativeRead<true>>{

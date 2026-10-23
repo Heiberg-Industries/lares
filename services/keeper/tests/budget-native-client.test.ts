@@ -1,5 +1,5 @@
 import {describe,expect,it,vi} from 'vitest';
-import {BudgetNativeCredentialClient,consumeNativeHashAbsenceReceipt,type NativeHashAbsenceReceipt,type NativeKeyExpectation,type NativeTeamExpectation} from '../lib/budget-native-client.js';
+import {BudgetNativeCredentialClient,consumeNativeHashAbsenceReceipt,type NativeHashAbsenceReceipt,type NativeKeyExpectation,type NativeTeamExpectation,type NativeTeamRosterExpectation} from '../lib/budget-native-client.js';
 
 const MASTER='sk-master-fixture-0123456789';
 const KEY='sk-caller-selected-fixture-0123456789';
@@ -80,6 +80,94 @@ describe('fixed native gateway client',()=>{
     expect(String(request.mock.calls[0]![0])).toBe(`https://gateway.example:4000/team/info?team_id=${TEAM}`);
     const changed=setup(async()=>json({team_info:{team_id:TEAM,max_budget:99,budget_duration:'1d',models:['lares-brain'],blocked:false,metadata:{}}}));
     await expect(changed.client.readTeamPolicy({teamId:TEAM,teamMaxBudget:100,teamBudgetDuration:'1d',teamModels:['lares-brain']})).resolves.toEqual({kind:'mismatch'});
+  });
+
+  it('verifies empty and complete rosters independent of response order',async()=>{
+    const emptyExpectation:NativeTeamRosterExpectation={teamId:TEAM,teamMaxBudget:100,teamBudgetDuration:'1d',teamModels:['lares-brain'],members:[]};
+    const emptyRoster=setup(async()=>json({team_info:{...teamBody.team_info,members_with_roles:[]},team_memberships:[]}));
+    await expect(emptyRoster.client.readTeamRoster(emptyExpectation)).resolves.toEqual({kind:'match',value:true});
+    const secondUser='member-fixture-456';
+    const expected:NativeTeamRosterExpectation={...emptyExpectation,members:[
+      {userId:USER,maxBudget:25,budgetDuration:'1d',models:['lares-brain'],role:'user'},
+      {userId:secondUser,maxBudget:50,budgetDuration:'1d',models:['lares-brain','lares-code'],role:'user'},
+    ]};
+    const reordered=setup(async()=>json({team_info:{...teamBody.team_info,members_with_roles:[
+      {user_id:secondUser,role:'user'},{user_id:USER,role:'user'},
+    ]},team_memberships:[
+      {team_id:TEAM,user_id:secondUser,litellm_budget_table:{max_budget:50,budget_duration:'1d',allowed_models:['lares-brain','lares-code']}},
+      teamBody.team_memberships[0],
+    ]}));
+    await expect(reordered.client.readTeamRoster(expected)).resolves.toEqual({kind:'match',value:true});
+    expect(String(reordered.request.mock.calls[0]![0])).toBe(`https://gateway.example:4000/team/info?team_id=${TEAM}`);
+  });
+
+  it('rejects duplicate, missing, extra and partially covered roster entries',async()=>{
+    const expected:NativeTeamRosterExpectation={teamId:TEAM,teamMaxBudget:100,teamBudgetDuration:'1d',teamModels:['lares-brain'],members:[
+      {userId:USER,maxBudget:25,budgetDuration:'1d',models:['lares-brain'],role:'user'},
+      {userId:'member-fixture-456',maxBudget:50,budgetDuration:'1d',models:['lares-brain'],role:'user'},
+    ]};
+    const roleRows=[{user_id:USER,role:'user'},{user_id:'member-fixture-456',role:'user'}];
+    const membershipRows=[teamBody.team_memberships[0],{team_id:TEAM,user_id:'member-fixture-456',litellm_budget_table:{max_budget:50,budget_duration:'1d',allowed_models:['lares-brain']}}];
+    const bodies=[
+      {team_info:{...teamBody.team_info,members_with_roles:[...roleRows,roleRows[0]]},team_memberships:membershipRows},
+      {team_info:{...teamBody.team_info,members_with_roles:roleRows},team_memberships:[...membershipRows,membershipRows[0]]},
+      {team_info:{...teamBody.team_info,members_with_roles:roleRows.slice(0,1)},team_memberships:membershipRows},
+      {team_info:{...teamBody.team_info,members_with_roles:roleRows},team_memberships:membershipRows.slice(0,1)},
+      {team_info:{...teamBody.team_info,members_with_roles:[...roleRows,{user_id:'member-fixture-789',role:'user'}]},team_memberships:membershipRows},
+      {team_info:{...teamBody.team_info,members_with_roles:roleRows},team_memberships:[...membershipRows,{team_id:TEAM,user_id:'member-fixture-789',litellm_budget_table:{max_budget:1,budget_duration:'1d',allowed_models:['lares-brain']}}]},
+      {team_info:{...teamBody.team_info,members_with_roles:roleRows},team_memberships:membershipRows.slice(0,1)},
+    ];
+    for(const body of bodies){
+      const result=setup(async()=>json(body));
+      await expect(result.client.readTeamRoster(expected)).resolves.toEqual({kind:'mismatch'});
+    }
+  });
+
+  it('rejects malformed rows, wrong-team rows and changed team or member policy',async()=>{
+    const expected:NativeTeamRosterExpectation={teamId:TEAM,teamMaxBudget:100,teamBudgetDuration:'1d',teamModels:['lares-brain'],members:[
+      {userId:USER,maxBudget:25,budgetDuration:'1d',models:['lares-brain'],role:'user'},
+    ]};
+    const cases:[unknown,'malformed'|'mismatch'][]=[
+      [{team_info:{...teamBody.team_info,members_with_roles:[{}]},team_memberships:teamBody.team_memberships},'malformed'],
+      [{team_info:teamBody.team_info,team_memberships:[{team_id:TEAM,user_id:USER,litellm_budget_table:{max_budget:'25',budget_duration:'1d',allowed_models:['lares-brain']}}]},'malformed'],
+      [{team_info:teamBody.team_info,team_memberships:[{team_id:'team-other-123',user_id:USER,litellm_budget_table:{max_budget:25,budget_duration:'1d',allowed_models:['lares-brain']}}]},'mismatch'],
+      [{team_info:{...teamBody.team_info,max_budget:99},team_memberships:teamBody.team_memberships},'mismatch'],
+      [{team_info:teamBody.team_info,team_memberships:[{...teamBody.team_memberships[0],litellm_budget_table:{...teamBody.team_memberships[0]!.litellm_budget_table,max_budget:24}}]},'mismatch'],
+      [{team_info:{...teamBody.team_info,members_with_roles:[{user_id:USER,role:'admin'}]},team_memberships:teamBody.team_memberships},'mismatch'],
+    ];
+    for(const [body,kind] of cases){
+      const result=setup(async()=>json(body));
+      await expect(result.client.readTeamRoster(expected)).resolves.toEqual({kind});
+    }
+    const oversizedRoles=setup(async()=>json({team_info:{...teamBody.team_info,members_with_roles:Array.from({length:129},(_,i)=>({user_id:`member-${i}`,role:'user'}))},team_memberships:[]}));
+    await expect(oversizedRoles.client.readTeamRoster({...expected,members:[]})).resolves.toEqual({kind:'malformed'});
+    const oversizedMemberships=setup(async()=>json({team_info:{...teamBody.team_info,members_with_roles:[]},team_memberships:Array.from({length:129},(_,i)=>({
+      team_id:TEAM,user_id:`member-${i}`,litellm_budget_table:{max_budget:1,budget_duration:'1d',allowed_models:['lares-brain']},
+    }))}));
+    await expect(oversizedMemberships.client.readTeamRoster({...expected,members:[]})).resolves.toEqual({kind:'malformed'});
+  });
+
+  it('validates every roster expectation and the 128-member bound before requesting',async()=>{
+    const {request,client}=setup(async()=>json(teamBody));
+    const valid:NativeTeamRosterExpectation={teamId:TEAM,teamMaxBudget:100,teamBudgetDuration:'1d',teamModels:['lares-brain'],members:[]};
+    const tooMany=Array.from({length:129},(_,index)=>({userId:`member-${index}`,maxBudget:1,budgetDuration:'1d',models:['lares-brain'],role:'user' as const}));
+    const invalid=[
+      {...valid,teamId:'bad/id'},
+      {...valid,teamMaxBudget:Infinity},
+      {...valid,teamBudgetDuration:''},
+      {...valid,teamModels:['lares-brain','lares-brain']},
+      {...valid,members:[{userId:USER,maxBudget:1,budgetDuration:'1d',models:['lares-brain'],role:'user' as const},{userId:USER,maxBudget:1,budgetDuration:'1d',models:['lares-brain'],role:'user' as const}]},
+      {...valid,members:[{userId:'bad/id',maxBudget:1,budgetDuration:'1d',models:['lares-brain'],role:'user' as const}]},
+      {...valid,members:[{userId:USER,maxBudget:0,budgetDuration:'1d',models:['lares-brain'],role:'user' as const}]},
+      {...valid,members:[{userId:USER,maxBudget:1,budgetDuration:'',models:['lares-brain'],role:'user' as const}]},
+      {...valid,members:[{userId:USER,maxBudget:1,budgetDuration:'1d',models:['lares-brain','lares-brain'],role:'user' as const}]},
+      {...valid,members:[{userId:USER,maxBudget:1,budgetDuration:'1d',models:['lares-brain'],role:'admin' as 'user'}]},
+      {...valid,members:tooMany},
+      null,
+    ];
+    for(const expectation of invalid)
+      await expect(client.readTeamRoster(expectation as NativeTeamRosterExpectation)).resolves.toEqual({kind:'malformed'});
+    expect(request).not.toHaveBeenCalled();
   });
 
   it('reads exact current user identity and policy, with route-specific exact absence',async()=>{
