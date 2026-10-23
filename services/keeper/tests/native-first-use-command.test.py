@@ -268,6 +268,54 @@ class CompiledChiefKeylessCommandTests(unittest.TestCase):
                           "LITELLM_MASTER_KEY", "GATEWAY_MASTER_KEY_FILE"} & env_values.keys())
 
 
+class NativeFirstUseSdkHeaderTests(unittest.TestCase):
+    def test_pinned_eve_client_resolves_stream_headers_after_signed_send(self) -> None:
+        sdk = REPO / "services" / "chief-of-staff" / "node_modules" / "eve" / "dist" / "src" / "client" / "index.js"
+        self.assertTrue(sdk.is_file(), "the pinned Eve dependency must be present for this offline regression")
+        script = f'''import assert from "node:assert/strict";
+import {{ createServer }} from "node:http";
+import {{ pathToFileURL }} from "node:url";
+const {{ Client }} = await import(pathToFileURL({json.dumps(str(sdk))}));
+let currentHeaders={{authorization:"Basic ZXZlOnJvdXRl", "x-lares-member-id":"first-use-member-a",
+  "x-lares-admission":"nonce-a", "x-lares-purpose":"human"}};
+let post, stream;
+const server=createServer(async(req,res)=>{{
+  const chunks=[];for await (const chunk of req) chunks.push(chunk);
+  const seen={{...req.headers}};
+  if(req.method==="POST"){{post={{headers:seen,body:JSON.parse(Buffer.concat(chunks).toString("utf8"))}};
+    res.writeHead(202,{{"content-type":"application/json"}}).end(JSON.stringify({{sessionId:"sdk-header-regression",deliveryId:"delivery-a"}}));return;}}
+  if(req.method==="GET"){{stream={{headers:seen}};res.writeHead(401,{{"content-type":"application/json"}}).end('{{"error":"read fixture reached"}}');return;}}
+  res.writeHead(404).end();
+}});
+await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+try{{
+  const client=new Client({{host:`http://127.0.0.1:${{server.address().port}}`,headers:()=>currentHeaders}});
+  const session=client.sessions.attach("sdk-header-regression");
+  const capsule="signed-post-capability";
+  currentHeaders={{...currentHeaders,"content-type":"application/json","x-lares-model-purpose-required":"1","x-lares-model-capsule":capsule}};
+  const pending=await session.send("Return exactly FIRST_USE_OK");
+  currentHeaders={{authorization:"Basic ZXZlOnJvdXRl", "x-lares-member-id":"first-use-member-a",
+    "x-lares-admission":"nonce-a", "x-lares-purpose":"read"}};
+  await assert.rejects(pending.result(),error=>error?.status===401);
+  assert.equal(post.headers["x-lares-purpose"],"human");
+  assert.equal(post.headers["x-lares-model-purpose-required"],"1");
+  assert.equal(post.headers["x-lares-model-capsule"],capsule);
+  assert.equal(post.body.message,"Return exactly FIRST_USE_OK");
+  assert.equal(stream.headers["x-lares-member-id"],"first-use-member-a");
+  assert.equal(stream.headers["x-lares-admission"],"nonce-a");
+  assert.equal(stream.headers["x-lares-purpose"],"read");
+  assert.equal(stream.headers["x-lares-model-purpose-required"],undefined);
+  assert.equal(stream.headers["x-lares-model-capsule"],undefined);
+}}finally{{await new Promise(resolve=>server.close(resolve));}}
+'''
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=KEEPER, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=20, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+
 class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -279,14 +327,16 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
             and node.func.attr == "write_text" and node.args and isinstance(node.args[0], ast.Constant)
             and "FIRST_USE_PHASE_FILE" in node.args[0].value)
         phases = ("imports", "session-create", "session-bind", "capsule-sign", "send",
-                  "turn-result", "refusalchecks", "complete")
+                  "stream-auth", "turn-result", "refusalchecks", "complete")
         positions = [client_source.index("mark(" + repr(phase) + ")") for phase in phases]
         self.assertEqual(positions, sorted(positions))
         for contract in (
-            "member='first-use-member-a'", "await client.sessions.create({headers})", "await bindConsoleSession(",
-            "await signPrivateModelPurposeRequest(request)", "await session.send(message,{headers:sendHeaders})",
-            "await pending.result()", "await client.fetch(path,{method:'POST',headers:sendHeaders,body})",
-            "'x-lares-member-id':'first-use-member-b'", "response:result.message", "sessionId:session.state.sessionId",
+            "member='first-use-member-a'", "headers:()=>headers", "await client.sessions.create()", "await bindConsoleSession(",
+            "await signPrivateModelPurposeRequest(request)", "await session.send(message)",
+            "headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64')",
+            "'x-lares-purpose':'read'", "mark('stream-auth')", "await pending.result()",
+            "'x-lares-model-capsule':capsule", "'x-lares-member-id':'first-use-member-b'",
+            "response:result.message", "sessionId:session.state.sessionId",
             "fs.writeFileSync(temp,JSON.stringify({phase}),{mode:0o600})", "fs.renameSync(temp,phaseFile)",
             "catch(error){if(!resultObserved)recordThrownResult(error);process.exitCode=1}",
         ):

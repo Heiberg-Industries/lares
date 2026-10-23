@@ -199,7 +199,7 @@ def safe_startup_log_categories(log_text):
     })
     return {name:re.search(pattern,text) is not None for name,pattern in patterns.items()}
 
-COMPILED_CLIENT_PHASES={'imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'}
+COMPILED_CLIENT_PHASES={'imports','session-create','session-bind','capsule-sign','send','stream-auth','turn-result','refusalchecks','complete'}
 COMPILED_CLIENT_PHASE_FILE='/tmp/first-use-phase-first'
 COMPILED_CLIENT_RESULT_FILE='/tmp/first-use-result-diagnostic-first'
 COMPILED_CLIENT_RESULT_EVENTS={'step.failed','turn.failed','session.failed'}
@@ -262,7 +262,7 @@ def initialize_compiled_client_phase(chief_name):
     return result.returncode==0
 
 def compiled_client_phase_summary(chief_name):
-    reader="""const fs=require('node:fs');const allowed=['imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'];let out={phase:'unknown',valid:false};try{const s=fs.statSync(MARKER);if(!s.isFile()||s.size>128)throw Error();const x=JSON.parse(fs.readFileSync(MARKER,'utf8'));if(x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).length===1&&Object.keys(x)[0]==='phase'&&allowed.includes(x.phase))out={phase:x.phase,valid:true};}catch{}process.stdout.write(JSON.stringify(out));""".replace('MARKER',json.dumps(COMPILED_CLIENT_PHASE_FILE))
+    reader="""const fs=require('node:fs');const allowed=['imports','session-create','session-bind','capsule-sign','send','stream-auth','turn-result','refusalchecks','complete'];let out={phase:'unknown',valid:false};try{const s=fs.statSync(MARKER);if(!s.isFile()||s.size>128)throw Error();const x=JSON.parse(fs.readFileSync(MARKER,'utf8'));if(x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).length===1&&Object.keys(x)[0]==='phase'&&allowed.includes(x.phase))out={phase:x.phase,valid:true};}catch{}process.stdout.write(JSON.stringify(out));""".replace('MARKER',json.dumps(COMPILED_CLIENT_PHASE_FILE))
     try:result=run('docker','exec',chief_name,'node','-e',reader,check=False,timeout=5)
     except Exception:return {'phase':'unknown','markerValid':False}
     return safe_compiled_client_phase_summary(result.stdout,result.returncode)
@@ -823,7 +823,7 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
     client_script.write_text("""const fs=await import('node:fs');
 const phaseFile=process.env.FIRST_USE_PHASE_FILE;
 const resultFile=process.env.FIRST_USE_RESULT_FILE;
-const phases=['imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'];
+const phases=['imports','session-create','session-bind','capsule-sign','send','stream-auth','turn-result','refusalchecks','complete'];
 const fixedCodes=['budget_admission_refused','budget_exceeded','model_purpose_dispatch_unavailable','invalid_request',
   'request_policy_rejected','body_too_large','unsupported_request_field','timeout','aborted','ECONNREFUSED',
   'ECONNRESET','EHOSTUNREACH','ENETUNREACH','UND_ERR_CONNECT_TIMEOUT','unknown'];
@@ -876,10 +876,10 @@ const agent='proof-agent',incarnation=process.env.LARES_AGENT_INCARNATION!,membe
 mark('session-create');
 const nonce=randomBytes(32).toString('base64url'),password=readFileSync('/run/secrets/route-password','utf8').trim();
 process.env.PGPASSWORD=readFileSync('/run/secrets/app-password','utf8').trim();
-const headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),
+let headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),
   'x-lares-member-id':member,'x-lares-admission':nonce,'x-lares-purpose':'human'};
-const client=new Client({host:'http://127.0.0.1:3000',auth:{basic:{username:'eve',password}}});
-const {session}=await client.sessions.create({headers});
+const client=new Client({host:'http://127.0.0.1:3000',headers:()=>headers});
+const {session}=await client.sessions.create();
 mark('session-bind');
 const binding=await bindConsoleSession({agent,incarnation,sessionId:session.state.sessionId,memberId:member,admissionNonce:nonce});
 const message='Return exactly FIRST_USE_OK';
@@ -889,24 +889,30 @@ const request={agent,incarnation,session:session.state.sessionId,member,admissio
   definitionHash:process.env.FIRST_USE_DEFINITION_HASH!,purpose:'human',requestId:randomBytes(32).toString('base64url')};
 mark('capsule-sign');
 const capsule=await signPrivateModelPurposeRequest(request);
-const sendHeaders={...headers,'content-type':'application/json','x-lares-model-purpose-required':'1','x-lares-model-capsule':capsule};
+headers={...headers,'content-type':'application/json','x-lares-model-purpose-required':'1','x-lares-model-capsule':capsule};
 mark('send');
-const pending=await session.send(message,{headers:sendHeaders});
+const pending=await session.send(message);
+headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),
+  'x-lares-member-id':member,'x-lares-admission':nonce,'x-lares-purpose':'read'};
+mark('stream-auth');
 mark('turn-result');
 const result=await pending.result();
 resultObserved=true;recordReturnedResult(result);
 if(result.message!=='FIRST_USE_OK')throw new Error();
 mark('refusalchecks');
-const replay=await client.fetch(path,{method:'POST',headers:sendHeaders,body});
+const replay=await client.fetch(path,{method:'POST',headers:{...headers,'x-lares-purpose':'human','content-type':'application/json',
+  'x-lares-model-purpose-required':'1','x-lares-model-capsule':capsule},body});
 if(replay.ok)throw new Error();
 const staleBody=JSON.stringify({message:'changed request'});
 const staleRequest={...request,requestId:randomBytes(32).toString('base64url')};
 const staleCapsule=await signPrivateModelPurposeRequest(staleRequest);
-const stale=await client.fetch(path,{method:'POST',headers:{...sendHeaders,'x-lares-model-capsule':staleCapsule},body:staleBody});
+const stale=await client.fetch(path,{method:'POST',headers:{...headers,'x-lares-purpose':'human','content-type':'application/json',
+  'x-lares-model-purpose-required':'1','x-lares-model-capsule':staleCapsule},body:staleBody});
 if(stale.ok)throw new Error();
 const memberRequest={...request,requestId:randomBytes(32).toString('base64url')};
 const memberCapsule=await signPrivateModelPurposeRequest(memberRequest);
-const wrongMember=await client.fetch(path,{method:'POST',headers:{...sendHeaders,'x-lares-model-capsule':memberCapsule,'x-lares-member-id':'first-use-member-b'},body});
+const wrongMember=await client.fetch(path,{method:'POST',headers:{...headers,'x-lares-purpose':'human','content-type':'application/json',
+  'x-lares-model-purpose-required':'1','x-lares-model-capsule':memberCapsule,'x-lares-member-id':'first-use-member-b'},body});
 if(wrongMember.ok)throw new Error();
 mark('complete');
 console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.message,
