@@ -636,7 +636,8 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         admission_hook = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "AdmissionHook")
         self.request_context = __import__("contextvars").ContextVar("refusal_test_request", default=None)
         self.profile = types.SimpleNamespace(document={"maxBodyBytes":4096}, check_body=lambda path, raw: {"model":"fixture"})
-        self.runtime = types.SimpleNamespace(profile=self.profile, endpoint="a" * 64, check_runtime=lambda **kwargs: None, master_key="fixture-master-key")
+        self.runtime = types.SimpleNamespace(profile=self.profile, endpoint="a" * 64, check_runtime=lambda **kwargs: None,
+            validation_stage="not-started", master_key="fixture-master-key")
         self.namespace = {"asyncio":asyncio,"time":time,"hmac":__import__("hmac"),"re":__import__("re"),"current_request":self.request_context,"runtime":self.runtime,
             "CONTROL_ROUTES":frozenset(),"NATIVE_LOOKUP_ROUTES":NATIVE_LOOKUP_ROUTES,"NATIVE_MASTER_ROUTES":NATIVE_MASTER_ROUTES,"MAX_NATIVE_LOOKUP_BODY":MAX_NATIVE_LOOKUP_BODY,
             "native_lookup_query":native_lookup_query,"native_lookup_key_hash":native_lookup_key_hash,"native_unblock_key_hash":native_unblock_key_hash,
@@ -645,8 +646,9 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
             "ADMISSION_REFUSED_TYPE":"budget_admission_refused","ADMISSION_REFUSED_TEXT":"I could not verify permission to spend. Please check the gateway setup.",
             "CustomLogger":object,"AdmissionHTTPRefusal":type("AdmissionHTTPRefusal",(Exception,),{}),
             "state":lambda: self.request_context.get(),"refusal":lambda: ValueError("authored refusal")}
-        diagnostic_names={"MODEL_REQUEST_DIAGNOSTIC_FILE","MODEL_REQUEST_STAGES","MODEL_REQUEST_COUNTER",
-            "_write_model_request_diagnostic","begin_model_request_diagnostic","update_model_request_diagnostic","model_request_shape_checks"}
+        diagnostic_names={"MODEL_REQUEST_DIAGNOSTIC_FILE","MODEL_REQUEST_STAGES","MODEL_REQUEST_PRE_CALL_STAGES","STARTUP_STAGES",
+            "MODEL_REQUEST_COUNTER","_write_model_request_diagnostic","begin_model_request_diagnostic",
+            "update_model_request_diagnostic","update_native_request_progress","model_request_shape_checks"}
         diagnostic_nodes=[node for node in source.body if isinstance(node,(ast.Assign,ast.FunctionDef)) and
             ((isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in diagnostic_names for target in node.targets)) or
              (isinstance(node,ast.FunctionDef) and node.name in diagnostic_names))]
@@ -933,11 +935,19 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture");request.pre_seen=True
         token=self.request_context.set(request)
         try:
-            self.assertIsNone(await hook.async_post_call_failure_hook({},ValueError(),None))
-            request._authored_refusal=True
-            self.assertIsInstance(await hook.async_post_call_failure_hook({},ValueError(),None),self.namespace["AdmissionHTTPRefusal"])
-            request.dispatched=True
-            self.assertIsNone(await hook.async_post_call_failure_hook({},ValueError(),None))
+            with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+                request.diagnostic=self.namespace["begin_model_request_diagnostic"]()
+                self.assertIsNone(await hook.async_post_call_failure_hook({},ValueError(),None))
+                record=json.loads(self.diagnostic_path.read_bytes())
+                self.assertTrue(record["checks"]["nativeFailureHookEntered"])
+                self.assertFalse(record["checks"]["nativePreCallEntered"])
+                self.assertFalse(record["checks"]["nativeAuthoredRefusal"])
+                request._authored_refusal=True
+                self.assertIsInstance(await hook.async_post_call_failure_hook({},ValueError(),None),self.namespace["AdmissionHTTPRefusal"])
+                record=json.loads(self.diagnostic_path.read_bytes())
+                self.assertTrue(record["checks"]["nativeAuthoredRefusal"])
+                request.dispatched=True
+                self.assertIsNone(await hook.async_post_call_failure_hook({},ValueError(),None))
         finally: self.request_context.reset(token)
 
 
@@ -946,13 +956,22 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture")
         token=self.request_context.set(request)
         try:
-            self.runtime.check_runtime=lambda **kwargs: (_ for _ in ()).throw(Refused())
-            with self.assertRaises(ValueError): await hook.async_pre_call_hook(None,None,{},"anthropic_messages")
-            self.assertTrue(request._authored_refusal)
-            request._authored_refusal=False;request.pre_seen=False
-            self.runtime.check_runtime=lambda **kwargs: (_ for _ in ()).throw(ValueError("fixture"))
-            with self.assertRaises(ValueError): await hook.async_pre_call_hook(None,None,{},"anthropic_messages")
-            self.assertFalse(request._authored_refusal)
+            with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+                request.diagnostic=self.namespace["begin_model_request_diagnostic"]()
+                self.runtime.validation_stage="runtime-flags"
+                self.runtime.check_runtime=lambda **kwargs: (_ for _ in ()).throw(Refused())
+                with self.assertRaises(ValueError): await hook.async_pre_call_hook(None,None,{},"anthropic_messages")
+                self.assertTrue(request._authored_refusal)
+                record=json.loads(self.diagnostic_path.read_bytes())
+                self.assertEqual(record["preCallStage"],"authored-refusal")
+                self.assertEqual(record["nativeRuntimeStage"],"runtime-flags")
+                self.assertTrue(record["checks"]["nativePreCallEntered"])
+                self.assertFalse(record["checks"]["nativeRuntimeCheckPassed"])
+                self.assertTrue(record["checks"]["nativeAuthoredRefusal"])
+                request._authored_refusal=False;request.pre_seen=False
+                self.runtime.check_runtime=lambda **kwargs: (_ for _ in ()).throw(ValueError("fixture"))
+                with self.assertRaises(ValueError): await hook.async_pre_call_hook(None,None,{},"anthropic_messages")
+                self.assertFalse(request._authored_refusal)
         finally: self.request_context.reset(token)
 
     async def test_deployment_hook_programming_errors_are_not_authored_refusals(self):
@@ -993,9 +1012,9 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
 class ModelRequestDiagnosticTests(unittest.TestCase):
     def setUp(self):
         source=ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
-        names={"MODEL_REQUEST_DIAGNOSTIC_FILE","MODEL_REQUEST_STAGES","MODEL_REQUEST_COUNTER",
-            "_write_model_request_diagnostic","reset_model_request_diagnostic","begin_model_request_diagnostic",
-            "update_model_request_diagnostic","model_request_shape_checks"}
+        names={"MODEL_REQUEST_DIAGNOSTIC_FILE","MODEL_REQUEST_STAGES","MODEL_REQUEST_PRE_CALL_STAGES","STARTUP_STAGES",
+            "MODEL_REQUEST_COUNTER","_write_model_request_diagnostic","reset_model_request_diagnostic","begin_model_request_diagnostic",
+            "update_model_request_diagnostic","update_native_request_progress","model_request_shape_checks"}
         nodes=[node for node in source.body if isinstance(node,(ast.Assign,ast.FunctionDef)) and
             ((isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in names for target in node.targets)) or
              (isinstance(node,ast.FunctionDef) and node.name in names))]
@@ -1029,6 +1048,27 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
         self.assertNotIn("secret-value",raw.decode())
         self.assertNotIn("do not retain",raw.decode())
 
+    def test_native_progress_records_only_fixed_stages_runtime_values_and_booleans(self):
+        with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+            marker=self.namespace["begin_model_request_diagnostic"]()
+            request=types.SimpleNamespace(diagnostic=marker)
+            self.namespace["update_native_request_progress"](request,"credential",runtime_stage="native-auth",
+                nativePreCallEntered=True,nativeCredentialMatched=True,privateError="never retain")
+        raw=self.path.read_bytes()
+        record=json.loads(raw)
+        self.assertEqual(record["stage"],"native-dispatch")
+        self.assertEqual(record["preCallStage"],"credential")
+        self.assertEqual(record["nativeRuntimeStage"],"native-auth")
+        self.assertTrue(record["checks"]["nativePreCallEntered"])
+        self.assertTrue(record["checks"]["nativeCredentialMatched"])
+        self.assertNotIn("privateError",raw.decode())
+        self.assertNotIn("never retain",raw.decode())
+        with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+            self.namespace["update_native_request_progress"](request,"raw-error-value",runtime_stage="private-error")
+        record=json.loads(self.path.read_bytes())
+        self.assertEqual(record["preCallStage"],"idle")
+        self.assertEqual(record["nativeRuntimeStage"],"not-started")
+
     def test_request_shape_records_only_boolean_checks_and_unknown_count(self):
         profile=Profile({"version":1,"provider":"openai","model":"gpt-4o-mini","providerBaseUrl":"https://provider.example.invalid/v1","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":123})
         checks,count=self.namespace["model_request_shape_checks"](
@@ -1056,7 +1096,8 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
 
     def test_first_use_reader_accepts_only_fixed_schema(self):
         source=ast.parse((ROOT / "services/keeper/tests/native-first-use-image.probe.py").read_text())
-        names={"MODEL_REQUEST_DIAGNOSTIC_STAGES","MODEL_REQUEST_DIAGNOSTIC_CHECKS","validated_model_request_diagnostic",
+        names={"MODEL_REQUEST_DIAGNOSTIC_STAGES","MODEL_REQUEST_PRE_CALL_STAGES","MODEL_REQUEST_RUNTIME_STAGES",
+            "MODEL_REQUEST_DIAGNOSTIC_CHECKS","validated_model_request_diagnostic",
             "MODEL_PURPOSE_DIAGNOSTIC_STAGES","MODEL_PURPOSE_DIAGNOSTIC_CHECKS","validated_model_purpose_diagnostic",
             "marker_from_archive","collect_marker","keeper_model_purpose_diagnostic","first_use_model_diagnostics"}
         nodes=[node for node in source.body if isinstance(node,(ast.Assign,ast.FunctionDef)) and
@@ -1064,13 +1105,15 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
              (isinstance(node,ast.FunctionDef) and node.name in names))]
         namespace={"json":json,"io":io,"tarfile":tarfile}
         exec(compile(ast.Module(body=nodes,type_ignores=[]),"first-use-diagnostic-reader","exec"),namespace)
-        record={"schema":1,"requestCount":1,"stage":"native-response","statusCode":400,
+        record={"schema":2,"requestCount":1,"stage":"native-response","preCallStage":"idle","nativeRuntimeStage":"not-started","statusCode":400,
             "checks":{name:False for name in namespace["MODEL_REQUEST_DIAGNOSTIC_CHECKS"]},
             "unknownHeaderCount":0,"duplicateHeaderCount":0,"unknownBodyFieldCount":0}
         valid=json.dumps(record,separators=(",",":")).encode()
         self.assertEqual(namespace["validated_model_request_diagnostic"](valid),record)
         contaminated={**record,"unknown_private_key":"do not retain"}
         self.assertEqual(namespace["validated_model_request_diagnostic"](json.dumps(contaminated).encode()),"unknown")
+        for changed in ({**record,"preCallStage":"arbitrary-error"},{**record,"nativeRuntimeStage":"private-value"},{**record,"schema":1}):
+            self.assertEqual(namespace["validated_model_request_diagnostic"](json.dumps(changed).encode()),"unknown")
         self.assertEqual(namespace["validated_model_request_diagnostic"]((b" "*2049)),"unknown")
 
         purpose={"schema":1,"requestCount":1,"stage":"headers","statusCode":400,

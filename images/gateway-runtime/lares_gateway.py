@@ -44,6 +44,9 @@ MODEL_REQUEST_DIAGNOSTIC_FILE = "/tmp/lares-gateway-model-request.json"
 STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-failed", "native-app-import", "native-app-import-failed", "asgi-server", "asgi-server-failed", "native-lifespan-starting", "native-lifespan-complete", "native-lifespan-failed", "native-lifespan-error", "runtime-validation-failed", "ready"))
 STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-native-types", "callback-proxy-hook-types", "callback-native-membership", "callback-native-coverage", "callback-native-cost", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
 MODEL_REQUEST_STAGES = frozenset(("runtime-check", "headers", "body", "profile", "native-dispatch", "native-response"))
+MODEL_REQUEST_PRE_CALL_STAGES = frozenset(("idle", "entered", "runtime-check", "call-type", "identity", "credential",
+    "profile-recheck", "observation", "bridge-rpc", "bridge-reply", "bridge-accepted", "deployment-hook",
+    "http-guard", "policy-lock", "authored-refusal", "failure-hook"))
 MODEL_REQUEST_COUNTER = 0
 
 
@@ -53,9 +56,11 @@ def _write_model_request_diagnostic(marker):
     if type(marker) is not dict or marker.get("stage") not in MODEL_REQUEST_STAGES: return
     try:
         normalized = {
-            "schema": 1,
+            "schema": 2,
             "requestCount": min(max(marker.get("requestCount", 0), 0), 1),
             "stage": marker["stage"],
+            "preCallStage": marker.get("preCallStage", "idle") if marker.get("preCallStage", "idle") in MODEL_REQUEST_PRE_CALL_STAGES else "idle",
+            "nativeRuntimeStage": marker.get("nativeRuntimeStage", "not-started") if marker.get("nativeRuntimeStage", "not-started") in STARTUP_STAGES else "not-started",
             "statusCode": marker.get("statusCode", 0) if type(marker.get("statusCode", 0)) is int and 0 <= marker.get("statusCode", 0) <= 599 else 0,
             "checks": {},
             "unknownHeaderCount": min(max(marker.get("unknownHeaderCount", 0), 0), 31),
@@ -64,7 +69,11 @@ def _write_model_request_diagnostic(marker):
         }
         checks = marker.get("checks", {})
         for name in ("anthropicBetaPresent", "authorizationPresent", "apiKeyPresent", "ticketPresent", "contentTypeJson",
-                     "modelAliasAllowed", "messagesIsList", "maxTokensAllowed", "physicalDispatchObserved", "anthropicSafetyMetadataValid"):
+                     "modelAliasAllowed", "messagesIsList", "maxTokensAllowed", "physicalDispatchObserved", "anthropicSafetyMetadataValid",
+                     "nativePreCallEntered", "nativeRuntimeCheckPassed", "nativeCallTypeMatched", "nativeIdentityPresent",
+                     "nativeCredentialMatched", "nativeProfileRecheckPassed", "nativeObservationCreated", "nativeBridgeRpcAttempted",
+                     "nativeBridgeReplyReceived", "nativeBridgeReplyAccepted", "nativeAuthoredRefusal", "nativeFailureHookEntered",
+                     "nativeDeploymentHookEntered", "nativeHttpGuardPassed", "nativePolicyLockAcquired"):
             normalized["checks"][name] = checks.get(name) is True if type(checks) is dict else False
         raw = canonical(normalized)
         if len(raw) > 2048: return
@@ -102,17 +111,31 @@ def begin_model_request_diagnostic():
 
 
 def update_model_request_diagnostic(marker, stage, *, status_code=None, checks=None, unknown_header_count=None,
-                                    duplicate_header_count=None, unknown_body_field_count=None):
+                                    duplicate_header_count=None, unknown_body_field_count=None, pre_call_stage=None, native_runtime_stage=None):
     if marker is None: return
     try:
         marker["stage"] = stage
         if status_code is not None: marker["statusCode"] = status_code
-        if checks is not None: marker["checks"] = checks
+        if checks is not None:
+            current = marker.get("checks") if type(marker.get("checks")) is dict else {}
+            current.update(checks)
+            marker["checks"] = current
+        if pre_call_stage is not None:
+            marker["preCallStage"] = pre_call_stage if pre_call_stage in MODEL_REQUEST_PRE_CALL_STAGES else "idle"
+        if native_runtime_stage is not None:
+            marker["nativeRuntimeStage"] = native_runtime_stage if native_runtime_stage in STARTUP_STAGES else "not-started"
         if unknown_header_count is not None: marker["unknownHeaderCount"] = unknown_header_count
         if duplicate_header_count is not None: marker["duplicateHeaderCount"] = duplicate_header_count
         if unknown_body_field_count is not None: marker["unknownBodyFieldCount"] = unknown_body_field_count
         _write_model_request_diagnostic(marker)
     except Exception: pass  # Diagnostics cannot change gateway enforcement or responses.
+
+
+def update_native_request_progress(request, stage, *, runtime_stage=None, **checks):
+    """Record only fixed first-use stages and booleans; diagnostics never authorize work."""
+    if request is None: return
+    update_model_request_diagnostic(getattr(request, "diagnostic", None), "native-dispatch",
+        checks=checks, pre_call_stage=stage, native_runtime_stage=runtime_stage)
 
 
 def model_request_shape_checks(raw, profile, headers, path):
@@ -578,26 +601,34 @@ class Runtime:
         deadline = None
         try:
             request = state()
+            update_native_request_progress(request, "http-guard")
             if outgoing.extensions.get("lares.gateway.request") is not request: raise Refused()
             self.check_destination(outgoing)
-            self.check_runtime()
+            try: self.check_runtime()
+            finally: update_native_request_progress(request, "http-guard", runtime_stage=runtime.validation_stage)
             request.fresh()
             # Recreated Anthropic clients inherit this event hook, even though their
             # transport is native. A first attempt already burned the shared right;
             # a reconnect/reformat/SDK retry fails here before that transport is used.
             if request.dispatched or request.phase != "armed" or request.policy is not None: raise Refused()
+            update_native_request_progress(request, "http-guard", nativeHttpGuardPassed=True)
             request.policy = NativePolicy()
+            update_native_request_progress(request, "policy-lock")
             deadline = asyncio.timeout_at(request.deadline)
             async with deadline:
                 await request.policy.acquire(request, request.alias)
+            update_native_request_progress(request, "policy-lock", nativePolicyLockAcquired=True)
         except Refused:
-            if request is not None and not request.dispatched: request._authored_refusal = True
+            if request is not None and not request.dispatched:
+                request._authored_refusal = True
+                update_native_request_progress(request, "authored-refusal", nativeAuthoredRefusal=True)
             raise
         except TimeoutError:
             # Only the explicit request deadline is an authored guard refusal. A
             # timeout raised by another component must retain its native meaning.
             if request is not None and not request.dispatched and deadline is not None and deadline.expired():
                 request._authored_refusal = True
+                update_native_request_progress(request, "authored-refusal", nativeAuthoredRefusal=True)
             raise
 
     async def client(self, request, provider):
@@ -640,6 +671,8 @@ def response_document(response):
 class AdmissionHook(CustomLogger):
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict, traceback_str=None):
         request = current_request.get()
+        update_native_request_progress(request, "failure-hook", nativeFailureHookEntered=True,
+            nativeAuthoredRefusal=request is not None and request._authored_refusal and not request.dispatched)
         # A native SDK can wrap our final policy refusal as a connection error.
         # Use the native supported failure-hook HTTPException transformation,
         # preserving the authored terminal type without rewriting paid failures.
@@ -647,30 +680,52 @@ class AdmissionHook(CustomLogger):
             return AdmissionHTTPRefusal()
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+        request = current_request.get()
         try:
             request = state()
+            update_native_request_progress(request, "entered", nativePreCallEntered=True)
             if request.pre_seen: raise Refused()
             request.pre_seen = True
-            runtime.check_runtime()
+            update_native_request_progress(request, "runtime-check")
+            try: runtime.check_runtime()
+            finally: update_native_request_progress(request, "runtime-check", runtime_stage=runtime.validation_stage)
+            update_native_request_progress(request, "runtime-check", nativeRuntimeCheckPassed=True)
+            update_native_request_progress(request, "call-type")
             expected = "anthropic_messages" if request.path == "/v1/messages" else "acompletion"
             if call_type != expected: raise Refused()
+            update_native_request_progress(request, "call-type", nativeCallTypeMatched=True)
+            update_native_request_progress(request, "identity")
             if not user_api_key_dict.user_id or not user_api_key_dict.team_id: raise Refused()
+            update_native_request_progress(request, "identity", nativeIdentityPresent=True)
+            update_native_request_progress(request, "credential")
             if user_api_key_dict.api_key != request.key_fingerprint and getattr(user_api_key_dict, "token", None) != request.key_fingerprint: raise Refused()
+            update_native_request_progress(request, "credential", nativeCredentialMatched=True)
             request.native_user, request.native_team = user_api_key_dict.user_id, user_api_key_dict.team_id
+            update_native_request_progress(request, "profile-recheck")
             request.alias = runtime.profile.check_body(request.path, request.raw)["model"]
+            update_native_request_progress(request, "profile-recheck", nativeProfileRecheckPassed=True)
+            update_native_request_progress(request, "observation")
             observation = request.observation(runtime.profile, request.ticket, request.alias)
+            update_native_request_progress(request, "observation", nativeObservationCreated=True)
             started = time.monotonic()
+            update_native_request_progress(request, "bridge-rpc", nativeBridgeRpcAttempted=True)
             reply = await runtime.rpc(ADMIT_PATH, observation)
+            update_native_request_progress(request, "bridge-reply", nativeBridgeReplyReceived=True)
             request.accept(observation, reply, started)
+            update_native_request_progress(request, "bridge-accepted", nativeBridgeReplyAccepted=True)
             return data
         except Refused:
             request = current_request.get()
-            if request is not None and not request.dispatched: request._authored_refusal = True
+            if request is not None and not request.dispatched:
+                request._authored_refusal = True
+                update_native_request_progress(request, "authored-refusal", nativeAuthoredRefusal=True)
             raise refusal() from None
 
     async def async_pre_call_deployment_hook(self, kwargs, call_type):
+        request = current_request.get()
         try:
             request = state()
+            update_native_request_progress(request, "deployment-hook", nativeDeploymentHookEntered=True)
             request.fresh()
             if not request.pre_seen or request.allow is None or request.dispatched: raise Refused()
             kind = getattr(call_type, "value", call_type)
@@ -690,7 +745,9 @@ class AdmissionHook(CustomLogger):
             return kwargs
         except Refused:
             request = current_request.get()
-            if request is not None and not request.dispatched: request._authored_refusal = True
+            if request is not None and not request.dispatched:
+                request._authored_refusal = True
+                update_native_request_progress(request, "authored-refusal", nativeAuthoredRefusal=True)
             raise refusal() from None
 
     async def async_post_call_success_hook(self, data, user_api_key_dict, response):
@@ -847,6 +904,7 @@ class GatewayApp:
                 unknown_body_field_count=unknown_body_field_count)
             request = RequestState(*route, bytes(raw), runtime.endpoint, credential, now=ingress_started)
             request.ticket = ticket
+            request.diagnostic = diagnostic
             token = current_request.set(request)
             consumed = False
             async def replay():
@@ -867,7 +925,8 @@ class GatewayApp:
                 nonlocal native_response_started, replaced_refusal
                 if message["type"] == "http.response.start":
                     update_model_request_diagnostic(diagnostic, "native-response", status_code=message.get("status", 0),
-                        checks={**diagnostic_checks, "physicalDispatchObserved": request.dispatched})
+                        checks={**diagnostic_checks, "physicalDispatchObserved": request.dispatched,
+                            "nativeAuthoredRefusal": request._authored_refusal})
                     if (request._authored_refusal and not request.dispatched and not native_response_started):
                         replaced_refusal = True
                         native_response_started = True

@@ -210,8 +210,19 @@ COMPILED_CLIENT_RESULT_CATEGORIES={'localDispatchUnavailable','nativeAdmissionRe
     'socketUnavailable','requestPolicyRejected','unknown'}
 COMPILED_CLIENT_RESULT_STATUSES={'completed','failed','waiting','unknown'}
 MODEL_REQUEST_DIAGNOSTIC_STAGES={'runtime-check','headers','body','profile','native-dispatch','native-response'}
+MODEL_REQUEST_PRE_CALL_STAGES={'idle','entered','runtime-check','call-type','identity','credential','profile-recheck',
+    'observation','bridge-rpc','bridge-reply','bridge-accepted','deployment-hook','http-guard','policy-lock',
+    'authored-refusal','failure-hook'}
+MODEL_REQUEST_RUNTIME_STAGES={'not-started','runtime-imports','runtime-flags','callback-registry','callback-types',
+    'callback-native-identity','callback-native-types','callback-proxy-hook-types','callback-native-membership',
+    'callback-native-coverage','callback-native-cost','callback-secondary','callback-identity','router-aliases',
+    'router-deployment-count','router-target','router-retries','native-auth','complete'}
 MODEL_REQUEST_DIAGNOSTIC_CHECKS={'anthropicBetaPresent','authorizationPresent','apiKeyPresent','ticketPresent','contentTypeJson',
-    'modelAliasAllowed','messagesIsList','maxTokensAllowed','physicalDispatchObserved','anthropicSafetyMetadataValid'}
+    'modelAliasAllowed','messagesIsList','maxTokensAllowed','physicalDispatchObserved','anthropicSafetyMetadataValid',
+    'nativePreCallEntered','nativeRuntimeCheckPassed','nativeCallTypeMatched','nativeIdentityPresent','nativeCredentialMatched',
+    'nativeProfileRecheckPassed','nativeObservationCreated','nativeBridgeRpcAttempted','nativeBridgeReplyReceived',
+    'nativeBridgeReplyAccepted','nativeAuthoredRefusal','nativeFailureHookEntered','nativeDeploymentHookEntered',
+    'nativeHttpGuardPassed','nativePolicyLockAcquired'}
 MODEL_PURPOSE_DIAGNOSTIC_STAGES={'idle','headers','fields','body-length','ticket','body-hash','profile','dispatch','upstream'}
 MODEL_PURPOSE_DIAGNOSTIC_CHECKS={'headersAccepted','fieldsAccepted','bodyLengthMatches','upstreamResponseSeen'}
 
@@ -219,10 +230,12 @@ def validated_model_request_diagnostic(raw):
     if len(raw)>2048:return 'unknown'
     try:parsed=json.loads(raw)
     except (TypeError,ValueError):return 'unknown'
-    expected={'schema','requestCount','stage','statusCode','checks','unknownHeaderCount','duplicateHeaderCount','unknownBodyFieldCount'}
-    if (type(parsed) is not dict or set(parsed)!=expected or type(parsed.get('schema')) is not int or parsed['schema']!=1 or
+    expected={'schema','requestCount','stage','preCallStage','nativeRuntimeStage','statusCode','checks','unknownHeaderCount','duplicateHeaderCount','unknownBodyFieldCount'}
+    if (type(parsed) is not dict or set(parsed)!=expected or type(parsed.get('schema')) is not int or parsed['schema']!=2 or
         type(parsed.get('requestCount')) is not int or parsed['requestCount'] not in (0,1) or
         parsed.get('stage') not in MODEL_REQUEST_DIAGNOSTIC_STAGES or
+        parsed.get('preCallStage') not in MODEL_REQUEST_PRE_CALL_STAGES or
+        parsed.get('nativeRuntimeStage') not in MODEL_REQUEST_RUNTIME_STAGES or
         type(parsed.get('statusCode')) is not int or not 0<=parsed['statusCode']<=599 or
         any(type(parsed.get(name)) is not int or not 0<=parsed[name]<=31 for name in ('unknownHeaderCount','duplicateHeaderCount','unknownBodyFieldCount')) or
         type(parsed.get('checks')) is not dict or set(parsed['checks'])!=MODEL_REQUEST_DIAGNOSTIC_CHECKS or
@@ -1172,7 +1185,14 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
     gateway_record=gateway_request.get('record',{})
     if (gateway_request.get('state')!='present' or gateway_record.get('unknownBodyFieldCount')!=0 or
         gateway_record.get('checks',{}).get('anthropicSafetyMetadataValid') is not True or
-        gateway_record.get('checks',{}).get('physicalDispatchObserved') is not True):
+        gateway_record.get('checks',{}).get('physicalDispatchObserved') is not True or
+        gateway_record.get('nativeRuntimeStage')!='complete' or
+        any(gateway_record.get('checks',{}).get(name) is not True for name in (
+            'nativePreCallEntered','nativeRuntimeCheckPassed','nativeCallTypeMatched','nativeIdentityPresent',
+            'nativeCredentialMatched','nativeProfileRecheckPassed','nativeObservationCreated','nativeBridgeRpcAttempted',
+            'nativeBridgeReplyReceived','nativeBridgeReplyAccepted','nativeDeploymentHookEntered',
+            'nativeHttpGuardPassed','nativePolicyLockAcquired')) or
+        gateway_record.get('checks',{}).get('nativeAuthoredRefusal') is not False):
         raise RuntimeError('The compiled Anthropic first-use request did not pass the strict metadata profile and dispatch')
     if request_result.get('response')!='FIRST_USE_OK' or request_result.get('replayStatus',200)<400 or request_result.get('staleStatus',200)<400 or request_result.get('wrongMemberStatus',200)<400:
         raise RuntimeError('Signed first-use or refusal checks did not match the expected result')
