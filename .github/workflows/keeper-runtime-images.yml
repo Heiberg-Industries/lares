@@ -233,6 +233,14 @@ jobs:
           (cd "$RUNNER_TEMP/engine-out/ci-check" && find . -type f | sed 's#^\./##' | LC_ALL=C sort) > "$RUNNER_TEMP/engine-actual.txt"
           diff "$RUNNER_TEMP/engine-expected.txt" "$RUNNER_TEMP/engine-actual.txt"
           test "$(cat "$RUNNER_TEMP/engine-out/ci-check/services/box/engine-image")" = "$digest"
+          installed_ops="$RUNNER_TEMP/engine-out/ci-check/services/box/ops"
+          test -f "$installed_ops/maintenance-custody.py"
+          python3 -c 'import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$installed_ops/maintenance-custody.py"
+          for script in backup.sh backup-verify.sh restore-drill.sh setup-backups.sh refresh-recovery.sh; do
+            grep -q 'maintenance-custody.py' "$installed_ops/$script"
+          done
+      - name: Prove unpacked maintenance admission in independent Linux systemd services
+        run: python3 -B services/box/tests/maintenance-admission-systemd.probe.py "$RUNNER_TEMP/engine-out/ci-check/services/box/ops"
 
       - uses: docker/build-push-action@v6
         with: {context: ., file: images/egress-proxy/Dockerfile, pull: true, load: true, tags: 'lares-squid:test'}

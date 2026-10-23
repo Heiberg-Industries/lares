@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "restore-drill.sh");
+const MAINTENANCE_CUSTODY = join(here, "..", "ops", "maintenance-custody.py");
 
 let dir: string;
 let binDir: string;
@@ -45,9 +46,15 @@ let resticArgsLog: string;
 let operatorPasswordFile: string;
 let composeConfigLog: string;
 let timeoutLog: string;
+let admissionPrefix: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "restore-drill-"));
+  admissionPrefix = join(dir, "root");
+  mkdirSync(admissionPrefix);
+  execFileSync("python3", [MAINTENANCE_CUSTODY, "prepare-fresh", admissionPrefix, "172.30.0.0/24", "--confirm-fresh", "--test-owner"], {
+    env: { ...process.env, LARES_MAINTENANCE_TESTING: "1" },
+  });
   binDir = join(dir, "bin");
   mkdirSync(binDir);
   envFile = join(dir, "backup.env");
@@ -297,6 +304,8 @@ function run(env: Record<string, string> = {}) {
         DOCKER_STDIN_LOG: dockerStdinLog,
         RESTIC_ARGS_LOG: resticArgsLog,
         LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
+        LARES_MAINTENANCE_TESTING: "1",
+        LARES_MAINTENANCE_TEST_PREFIX: admissionPrefix,
         COMPOSE_CONFIG_LOG: composeConfigLog,
         TIMEOUT_LOG: timeoutLog,
         ...env,

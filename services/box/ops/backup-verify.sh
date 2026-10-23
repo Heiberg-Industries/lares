@@ -54,6 +54,28 @@
 # lares-backup-verify.service/.timer. Reads only — safe to run by hand.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MAINTENANCE_CUSTODY="$SCRIPT_DIR/maintenance-custody.py"
+ADMISSION_PREFIX=/
+TEST_OWNER_FLAG=""
+if [ "${LARES_MAINTENANCE_TESTING:-}" = 1 ] && [ -n "${LARES_MAINTENANCE_TEST_PREFIX:-}" ]; then
+  ADMISSION_PREFIX="$LARES_MAINTENANCE_TEST_PREFIX"
+  TEST_OWNER_FLAG=1
+fi
+if [ "${LARES_MAINTENANCE_ADMITTED:-}" = 1 ]; then
+  if [ "$TEST_OWNER_FLAG" = 1 ]; then
+    python3 "$MAINTENANCE_CUSTODY" assert-normal-held "$ADMISSION_PREFIX" backup-verify --test-owner || exit 78
+  else
+    python3 "$MAINTENANCE_CUSTODY" assert-normal-held "$ADMISSION_PREFIX" backup-verify || exit 78
+  fi
+else
+  if [ "$TEST_OWNER_FLAG" = 1 ]; then
+    exec python3 "$MAINTENANCE_CUSTODY" run-normal "$ADMISSION_PREFIX" backup-verify --test-owner -- "$@"
+  else
+    exec python3 "$MAINTENANCE_CUSTODY" run-normal "$ADMISSION_PREFIX" backup-verify -- "$@"
+  fi
+fi
+
 # An installer-built server keeps its settings in /etc/lares/backup.env; an older layout in
 # /etc/agent-box/backup.env. AGENT_BOX_BACKUP_ENV (the systemd units set it) wins over both.
 DEFAULT_BACKUP_ENV=/etc/agent-box/backup.env

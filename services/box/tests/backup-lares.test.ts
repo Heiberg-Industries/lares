@@ -8,6 +8,7 @@ const roots:string[]=[];
 afterEach(()=>roots.splice(0).forEach(d=>rmSync(d,{recursive:true,force:true})));
 function fixture(encrypted:boolean){
  const root=mkdtempSync(join(tmpdir(),'lares-backup-'));roots.push(root);
+ execFileSync('python3',[resolve('ops/maintenance-custody.py'),'prepare-fresh',root,'172.30.0.0/24','--confirm-fresh','--test-owner'],{env:{...process.env,LARES_MAINTENANCE_TESTING:'1'},stdio:'pipe'});
  for(const p of ['bin','etc/agent-box','etc/lares/secrets','etc/lares/operator','opt/agent-box','opt/lares','srv/lares/agents/example','srv/lares/retired','srv/lares/backup','srv/lares/egress','srv/lares/secrets','srv/taste','var/backups','var/lib/lares/budget-native','var/lib/docker/volumes/fixture_workflow/_data'])mkdirSync(join(root,p),{recursive:true});
  writeFileSync(join(root,'etc/lares/operator/database-password'),'fixture-operator-password-value-0001',{mode:0o600});
  writeFileSync(join(root,'opt/agent-box/.env'),'OLD_TEST_SECRET=old-secret');
@@ -58,7 +59,8 @@ shutil.copytree(r/'var/backups/pg',r/'captured-dumps')
  for(const prefix of ['/etc/','/opt/','/srv/','/var/backups/','/var/lib/docker/'])script=script.replaceAll(prefix,root+prefix);
  script=script.replace('tar -C / -cf -',`tar -C '${root}' -cf -`);
  const file=join(root,'backup.sh');writeFileSync(file,script);
- return {root,key,file,env:{...process.env,PATH:join(root,'bin')+':'+process.env.PATH,AGENT_BOX_BACKUP_ENV:envFile,FIXTURE_ROOT:root,LARES_OPERATOR_PASSWORD_FILE:join(root,'etc/lares/operator/database-password')}};
+ execFileSync('cp',[resolve('ops/maintenance-custody.py'),join(root,'maintenance-custody.py')]);
+ return {root,key,file,env:{...process.env,PATH:join(root,'bin')+':'+process.env.PATH,AGENT_BOX_BACKUP_ENV:envFile,FIXTURE_ROOT:root,LARES_OPERATOR_PASSWORD_FILE:join(root,'etc/lares/operator/database-password'),LARES_MAINTENANCE_TESTING:'1',LARES_MAINTENANCE_TEST_PREFIX:root}};
 }
 it('backs up Lares definitions and encrypts new keeper configuration/secrets with the existing escrow key',()=>{
  const f=fixture(true);execFileSync('bash',[f.file],{env:f.env,stdio:'pipe'});

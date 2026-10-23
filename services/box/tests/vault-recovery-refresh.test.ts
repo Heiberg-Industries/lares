@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os';
 import { requireVaultRecoveryTooling, VAULT_RECOVERY_SCRIPTS, VAULT_RECOVERY_UNITS } from '../lib/vault-storage.js';
 let root: string, prefix: string, bin: string, log: string;
 const image = 'example.invalid/keeper@sha256:' + 'a'.repeat(64), script = resolve('ops/refresh-recovery.sh');
-const env = () => ({ ...process.env, LARES_ENGINE_IMAGE: image, PATH: bin + ':' + process.env.PATH, STUB_LOG: log });
+const env = () => ({ ...process.env, LARES_ENGINE_IMAGE: image, PATH: bin + ':' + process.env.PATH, STUB_LOG: log, LARES_MAINTENANCE_TESTING: '1', LARES_MAINTENANCE_TEST_PREFIX: prefix });
 const refresh = (...args: string[]) => spawnSync('bash', [script, '--prefix', prefix, ...args], { encoding: 'utf8', env: env() });
-beforeEach(() => { root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-recovery-refresh-'))); prefix = join(root, 'root'); bin = join(root, 'bin'); mkdirSync(bin); mkdirSync(join(prefix, 'opt/lares'), { recursive: true }); mkdirSync(join(prefix, 'etc/lares'), { recursive: true }); log = join(root, 'systemctl.log'); writeFileSync(log, ''); writeFileSync(join(bin, 'systemctl'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n', { mode: 0o755 }); });
+beforeEach(() => { root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-recovery-refresh-'))); prefix = join(root, 'root'); bin = join(root, 'bin'); mkdirSync(bin); mkdirSync(prefix); execFileSync('python3', [resolve('ops/maintenance-custody.py'), 'prepare-fresh', prefix, '172.30.0.0/24', '--confirm-fresh', '--test-owner'], { env: { ...process.env, LARES_MAINTENANCE_TESTING: '1' } }); mkdirSync(join(prefix, 'opt/lares'), { recursive: true }); mkdirSync(join(prefix, 'etc/lares'), { recursive: true }); log = join(root, 'systemctl.log'); writeFileSync(log, ''); writeFileSync(join(bin, 'systemctl'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n', { mode: 0o755 }); });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 it('refreshes an rc12-style installed service, preserves destination and timer state, and executes the installed program', () => {
     const backupEnv = join(prefix, 'etc/lares/backup.env');
