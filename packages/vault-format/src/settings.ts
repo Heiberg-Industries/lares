@@ -187,6 +187,17 @@ export const SETTINGS: readonly SettingDef[] = [
     readAt: ["services/box/lib/stack-compose.ts:91", "services/box/ops/maintenance-custody.py:578"],
   },
   {
+    // Diagnostics are enabled only with both CI=true and LARES_GATEWAY_PROBE_DIAGNOSTICS=1. Never set on an installation.
+    name: "LARES_GATEWAY_PROBE_DIAGNOSTICS",
+    readers: ["keeper", "gateway"],
+    source: "installer",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: NOT_AN_INSTALLATION_SETTING,
+    readAt: ["services/keeper/lib/model-purpose-transport.ts:154", "images/gateway-runtime/lares_gateway.py:52"],
+  },
+  {
     // `tests/settings-scan.test.ts` fails the moment engine code READS an undeclared name, so a
     // change that introduces a read must declare it in the same change — it cannot be deferred.
     name: "GATEWAY_LANE",

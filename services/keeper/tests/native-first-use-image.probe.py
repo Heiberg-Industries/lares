@@ -1,5 +1,5 @@
 """CI-only end-to-end first-use proof: compiled Eve, production Keeper and local fixtures."""
-import hashlib, importlib.util, json, os, pathlib, re, secrets, select, shutil, subprocess, sys, tempfile, time, uuid
+import hashlib, importlib.util, io, json, os, pathlib, re, secrets, select, shutil, subprocess, sys, tarfile, tempfile, time, uuid
 
 if os.environ.get('CI') != 'true':
     raise SystemExit('Combined native first-use proof runs only in disposable CI')
@@ -94,6 +94,14 @@ FINANCIAL_OBSERVER_SQL = {
       (SELECT count(*)::int FROM budget_attempts) AS attempts,
       (SELECT count(*)::int FROM budget_gateway_grants) AS grants,
       (SELECT count(*)::int FROM budget_attempts WHERE state='settled') AS settled,
+      (SELECT json_build_object(
+        'prepared',count(*) FILTER (WHERE state='prepared')::int,
+        'retired',count(*) FILTER (WHERE state='retired')::int,
+        'admitted',count(*) FILTER (WHERE state='admitted')::int,
+        'unknown',count(*) FILTER (WHERE state='unknown')::int,
+        'conflict',count(*) FILTER (WHERE state='conflict')::int,
+        'settled',count(*) FILTER (WHERE state='settled')::int)
+       FROM budget_attempts) AS attempt_states,
       (SELECT coalesce(sum(actual_amount),0)::text FROM budget_attempts WHERE state='settled') AS liability
       FROM budget_accounts i WHERE i.kind='installation'""",
     'bindings': """SELECT coalesce(json_agg(json_build_object('id',id,'state',state,
@@ -201,8 +209,183 @@ def safe_startup_log_categories(log_text):
     })
     return {name:re.search(pattern,text) is not None for name,pattern in patterns.items()}
 
-COMPILED_CLIENT_PHASES={'imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'}
+COMPILED_CLIENT_PHASES={'imports','session-create','session-bind','capsule-sign','send','stream-auth','turn-result','refusalchecks','complete'}
 COMPILED_CLIENT_PHASE_FILE='/tmp/first-use-phase-first'
+COMPILED_CLIENT_RESULT_FILE='/tmp/first-use-result-diagnostic-first'
+COMPILED_CLIENT_RESULT_EVENTS={'step.failed','turn.failed','session.failed'}
+COMPILED_CLIENT_RESULT_CODES={'budget_admission_refused','budget_exceeded','model_purpose_dispatch_unavailable',
+    'invalid_request','request_policy_rejected','body_too_large','unsupported_request_field','timeout','aborted',
+    'ECONNREFUSED','ECONNRESET','EHOSTUNREACH','ENETUNREACH','UND_ERR_CONNECT_TIMEOUT','unknown'}
+COMPILED_CLIENT_RESULT_CATEGORIES={'localDispatchUnavailable','nativeAdmissionRefused','timeoutAbort',
+    'socketUnavailable','requestPolicyRejected','unknown'}
+COMPILED_CLIENT_RESULT_STATUSES={'completed','failed','waiting','unknown'}
+MODEL_REQUEST_DIAGNOSTIC_STAGES={'runtime-check','headers','body','profile','native-dispatch','native-response'}
+MODEL_REQUEST_PRE_CALL_STAGES={'idle','entered','runtime-check','call-type','identity','credential','profile-recheck',
+    'observation','bridge-rpc','bridge-reply','bridge-accepted','deployment-hook','http-guard','policy-lock',
+    'authored-refusal','failure-hook'}
+MODEL_REQUEST_RPC_STAGES={'not-started','serialization','tls-context','client-setup','request-signature','http-send',
+    'http-status','response-body','response-signature','response-json','parsed'}
+MODEL_REQUEST_RPC_STATUS_CLASSES={'not-received','success','client-error','server-error','other'}
+MODEL_REQUEST_RUNTIME_STAGES={'not-started','runtime-imports','runtime-flags','callback-registry','callback-types',
+    'callback-native-identity','callback-native-types','callback-proxy-hook-types','callback-native-membership',
+    'callback-native-coverage','callback-native-cost','callback-secondary','callback-identity','router-aliases',
+    'router-deployment-count','router-target','router-retries','native-auth','complete'}
+MODEL_REQUEST_DIAGNOSTIC_CHECKS={'anthropicBetaPresent','authorizationPresent','apiKeyPresent','ticketPresent','contentTypeJson',
+    'modelAliasAllowed','messagesIsList','maxTokensAllowed','physicalDispatchObserved','anthropicSafetyMetadataValid',
+    'nativePreCallEntered','nativeRuntimeCheckPassed','nativeCallTypeMatched','nativeIdentityPresent','nativeCredentialMatched',
+    'nativeProfileRecheckPassed','nativeObservationCreated','nativeBridgeRpcAttempted','nativeBridgeReplyReceived',
+    'nativeBridgeReplyAccepted','nativeAuthoredRefusal','nativeFailureHookEntered','nativeDeploymentHookEntered',
+    'nativeHttpGuardPassed','nativePolicyLockAcquired','nativeRpcSerialized','nativeRpcTlsContextCreated',
+    'nativeRpcClientReady','nativeRpcSignatureCreated','nativeRpcSendStarted','nativeRpcResponseReceived',
+    'nativeRpcStatusAccepted','nativeRpcResponseBodyComplete','nativeRpcResponseSignatureValid','nativeRpcDocumentParsed'}
+MODEL_PURPOSE_DIAGNOSTIC_STAGES={'idle','headers','fields','body-length','ticket','body-hash','profile','dispatch','upstream'}
+MODEL_PURPOSE_DIAGNOSTIC_CHECKS={'headersAccepted','fieldsAccepted','bodyLengthMatches','upstreamResponseSeen'}
+
+def validated_model_request_diagnostic(raw):
+    if len(raw)>2048:return 'unknown'
+    try:parsed=json.loads(raw)
+    except (TypeError,ValueError):return 'unknown'
+    expected={'schema','requestCount','stage','preCallStage','nativeRuntimeStage','nativeRpcStage','nativeRpcStatusClass',
+        'statusCode','checks','unknownHeaderCount','duplicateHeaderCount','unknownBodyFieldCount'}
+    if (type(parsed) is not dict or set(parsed)!=expected or type(parsed.get('schema')) is not int or parsed['schema']!=3 or
+        type(parsed.get('requestCount')) is not int or parsed['requestCount'] not in (0,1) or
+        parsed.get('stage') not in MODEL_REQUEST_DIAGNOSTIC_STAGES or
+        parsed.get('preCallStage') not in MODEL_REQUEST_PRE_CALL_STAGES or
+        parsed.get('nativeRuntimeStage') not in MODEL_REQUEST_RUNTIME_STAGES or
+        parsed.get('nativeRpcStage') not in MODEL_REQUEST_RPC_STAGES or
+        parsed.get('nativeRpcStatusClass') not in MODEL_REQUEST_RPC_STATUS_CLASSES or
+        type(parsed.get('statusCode')) is not int or not 0<=parsed['statusCode']<=599 or
+        any(type(parsed.get(name)) is not int or not 0<=parsed[name]<=31 for name in ('unknownHeaderCount','duplicateHeaderCount','unknownBodyFieldCount')) or
+        type(parsed.get('checks')) is not dict or set(parsed['checks'])!=MODEL_REQUEST_DIAGNOSTIC_CHECKS or
+        any(type(value) is not bool for value in parsed['checks'].values())):return 'unknown'
+    return parsed
+
+def validated_model_purpose_diagnostic(raw):
+    if len(raw)>1024:return 'unknown'
+    try:parsed=json.loads(raw)
+    except (TypeError,ValueError):return 'unknown'
+    expected={'schema','requestCount','stage','statusCode','checks'}
+    if (type(parsed) is not dict or set(parsed)!=expected or type(parsed.get('schema')) is not int or parsed['schema']!=1 or
+        type(parsed.get('requestCount')) is not int or parsed['requestCount'] not in (0,1) or
+        parsed.get('stage') not in MODEL_PURPOSE_DIAGNOSTIC_STAGES or
+        type(parsed.get('statusCode')) is not int or not 0<=parsed['statusCode']<=599 or
+        type(parsed.get('checks')) is not dict or set(parsed['checks'])!=MODEL_PURPOSE_DIAGNOSTIC_CHECKS or
+        any(type(value) is not bool for value in parsed['checks'].values())):return 'unknown'
+    return parsed
+
+def bounded_marker_archive(name,filename):
+    process=None;captured=bytearray();deadline=time.monotonic()+5
+    try:
+        process=subprocess.Popen(['docker','exec','--user','0:0',name,'tar','-C','/tmp','-cf','-','--',filename],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+        while time.monotonic()<deadline:
+            ready,_,_=select.select([process.stdout],[],[],max(0,deadline-time.monotonic()))
+            if not ready:return {'state':'timeout'}
+            chunk=os.read(process.stdout.fileno(),min(4096,16385-len(captured)))
+            if not chunk:break
+            captured.extend(chunk)
+            if len(captured)>16384:return {'state':'oversize'}
+        if process.poll() is None:process.wait(timeout=max(.01,deadline-time.monotonic()))
+        if process.returncode!=0:return {'state':'capture-failed'}
+        return {'state':'captured','archive':bytes(captured)}
+    except Exception:return {'state':'capture-failed'}
+    finally:
+        if process is not None:
+            if process.poll() is None:process.kill()
+            try:process.wait(timeout=1)
+            except subprocess.TimeoutExpired:process.kill();process.wait(timeout=1)
+            if process.stdout is not None:process.stdout.close()
+
+def marker_from_archive(raw,filename,validator):
+    if len(raw)>16384:return {'state':'oversize'}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw),mode='r:') as archive:
+            members=archive.getmembers()
+            if len(members)!=1:return {'state':'invalid'}
+            member=members[0]
+            if member.name!=filename or not member.isreg():return {'state':'invalid'}
+            if member.size>2048:return {'state':'oversize'}
+            with archive.extractfile(member) as source:record=validator(source.read(2049))
+        return {'state':'present','record':record} if record!='unknown' else {'state':'invalid'}
+    except (tarfile.TarError,OSError,ValueError,TypeError):return {'state':'invalid'}
+
+def collect_marker(name,filename,validator):
+    captured=bounded_marker_archive(name,filename)
+    if captured['state']!='captured':return {'state':captured['state']}
+    return marker_from_archive(captured['archive'],filename,validator)
+
+def gateway_model_request_diagnostic(name):
+    return collect_marker(name,'lares-gateway-model-request.json',validated_model_request_diagnostic)
+
+def keeper_model_purpose_diagnostic(name,wait_for_request=False):
+    deadline=time.monotonic()+1 if wait_for_request else 0
+    while True:
+        marker=collect_marker(name,'lares-model-purpose-transport.json',validated_model_purpose_diagnostic)
+        if (not wait_for_request or marker.get('state')!='present' or
+            marker['record'].get('requestCount')!=0):return marker
+        if time.monotonic()>=deadline:return {'state':'pending'}
+        time.sleep(min(.05,max(0,deadline-time.monotonic())))
+
+def first_use_model_diagnostics(gateway_name,keeper_name):
+    return {'gateway':gateway_model_request_diagnostic(gateway_name),
+        'keeper':keeper_model_purpose_diagnostic(keeper_name,wait_for_request=True)}
+
+def invoke_first_use_and_capture(invoke, collect, proof):
+    """Collect bounded gateway metadata on both success and failure, before fixture cleanup."""
+    try:
+        result=invoke()
+    except Exception:
+        try:
+            records=collect()
+            proof['gatewayModelRequestDiagnostic']=records['gateway']
+            proof['keeperModelPurposeDiagnostic']=records['keeper']
+        except Exception:
+            proof['gatewayModelRequestDiagnostic']={'state':'capture-failed'}
+            proof['keeperModelPurposeDiagnostic']={'state':'capture-failed'}
+        raise
+    try:
+        records=collect()
+        proof['gatewayModelRequestDiagnostic']=records['gateway']
+        proof['keeperModelPurposeDiagnostic']=records['keeper']
+    except Exception:
+        proof['gatewayModelRequestDiagnostic']={'state':'capture-failed'}
+        proof['keeperModelPurposeDiagnostic']={'state':'capture-failed'}
+    return result
+
+def unknown_compiled_client_result_summary():
+    return {'markerValid':False,'outcome':'unknown','resultStatus':'unknown','expectedMessage':None,
+      'failureEventCount':0,'failureEvents':{'step':False,'turn':False,'session':False},'events':[],
+      'categories':{'localDispatchUnavailable':False,'nativeAdmissionRefused':False,'timeoutAbort':False,
+        'socketUnavailable':False,'requestPolicyRejected':False,'unknown':True},'clientStatus':None}
+
+def safe_compiled_client_result_summary(stdout, returncode):
+    invalid=unknown_compiled_client_result_summary()
+    if returncode!=0 or not isinstance(stdout,str) or len(stdout.encode('utf-8'))>2048:return invalid
+    try:parsed=json.loads(stdout)
+    except (TypeError,ValueError):return invalid
+    expected={'schema','outcome','resultStatus','expectedMessage','failureEventCount','failureEvents','events','categories','clientStatus'}
+    if (not isinstance(parsed,dict) or set(parsed)!=expected or type(parsed.get('schema')) is not int or parsed.get('schema')!=1 or
+        not isinstance(parsed.get('outcome'),str) or parsed['outcome'] not in {'returned','thrown'} or
+        not isinstance(parsed.get('resultStatus'),str) or parsed['resultStatus'] not in COMPILED_CLIENT_RESULT_STATUSES):return invalid
+    if (type(parsed.get('failureEventCount')) is not int or not 0<=parsed['failureEventCount']<=1000000 or
+        not isinstance(parsed.get('failureEvents'),dict) or set(parsed['failureEvents'])!={'step','turn','session'} or
+        any(type(value) is not bool for value in parsed['failureEvents'].values())):return invalid
+    if not isinstance(parsed.get('events'),list) or len(parsed['events'])>8:return invalid
+    event_keys={'event','code','statusCode','upstreamStatusCode'}
+    for item in parsed['events']:
+        if (not isinstance(item,dict) or set(item)!=event_keys or not isinstance(item.get('event'),str) or
+            item['event'] not in COMPILED_CLIENT_RESULT_EVENTS or not isinstance(item.get('code'),str) or
+            item['code'] not in COMPILED_CLIENT_RESULT_CODES):return invalid
+        for key in ('statusCode','upstreamStatusCode'):
+            value=item.get(key)
+            if value is not None and (type(value) is not int or not 100<=value<=599):return invalid
+    categories=parsed.get('categories')
+    if (not isinstance(categories,dict) or set(categories)!=COMPILED_CLIENT_RESULT_CATEGORIES or
+        any(type(value) is not bool for value in categories.values())):return invalid
+    if parsed.get('clientStatus') is not None and (type(parsed['clientStatus']) is not int or not 100<=parsed['clientStatus']<=599):return invalid
+    if parsed['outcome']=='returned':
+        if type(parsed.get('expectedMessage')) is not bool or parsed['clientStatus'] is not None:return invalid
+    elif parsed.get('expectedMessage') is not None or parsed['resultStatus']!='unknown' or parsed['events'] or parsed['failureEventCount'] or any(parsed['failureEvents'].values()):return invalid
+    return {'markerValid':True,**{key:parsed[key] for key in expected if key!='schema'}}
 
 def safe_compiled_client_phase_summary(stdout, returncode):
     invalid={'phase':'unknown','markerValid':False}
@@ -214,16 +397,72 @@ def safe_compiled_client_phase_summary(stdout, returncode):
     return {'phase':parsed['phase'],'markerValid':True}
 
 def initialize_compiled_client_phase(chief_name):
-    script="require('node:fs').writeFileSync("+json.dumps(COMPILED_CLIENT_PHASE_FILE)+",'{\"phase\":\"imports\"}',{mode:0o600})"
+    script="const fs=require('node:fs');fs.writeFileSync("+json.dumps(COMPILED_CLIENT_PHASE_FILE)+",'{\"phase\":\"imports\"}',{mode:0o600});try{fs.unlinkSync("+json.dumps(COMPILED_CLIENT_RESULT_FILE)+")}catch{}"
     try:result=run('docker','exec',chief_name,'node','-e',script,check=False,timeout=5)
     except Exception:return False
     return result.returncode==0
 
 def compiled_client_phase_summary(chief_name):
-    reader="""const fs=require('node:fs');const allowed=['imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'];let out={phase:'unknown',valid:false};try{const s=fs.statSync(MARKER);if(!s.isFile()||s.size>128)throw Error();const x=JSON.parse(fs.readFileSync(MARKER,'utf8'));if(x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).length===1&&Object.keys(x)[0]==='phase'&&allowed.includes(x.phase))out={phase:x.phase,valid:true};}catch{}process.stdout.write(JSON.stringify(out));""".replace('MARKER',json.dumps(COMPILED_CLIENT_PHASE_FILE))
+    reader="""const fs=require('node:fs');const allowed=['imports','session-create','session-bind','capsule-sign','send','stream-auth','turn-result','refusalchecks','complete'];let out={phase:'unknown',valid:false};try{const s=fs.statSync(MARKER);if(!s.isFile()||s.size>128)throw Error();const x=JSON.parse(fs.readFileSync(MARKER,'utf8'));if(x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).length===1&&Object.keys(x)[0]==='phase'&&allowed.includes(x.phase))out={phase:x.phase,valid:true};}catch{}process.stdout.write(JSON.stringify(out));""".replace('MARKER',json.dumps(COMPILED_CLIENT_PHASE_FILE))
     try:result=run('docker','exec',chief_name,'node','-e',reader,check=False,timeout=5)
     except Exception:return {'phase':'unknown','markerValid':False}
     return safe_compiled_client_phase_summary(result.stdout,result.returncode)
+
+def compiled_client_result_summary(chief_name):
+    reader="""const fs=require('node:fs');let out={unknown:true};try{const s=fs.statSync(MARKER);if(!s.isFile()||s.size>2048)throw Error();out=JSON.parse(fs.readFileSync(MARKER,'utf8'));}catch{}process.stdout.write(JSON.stringify(out));""".replace('MARKER',json.dumps(COMPILED_CLIENT_RESULT_FILE))
+    try:result=run('docker','exec',chief_name,'node','-e',reader,check=False,timeout=5)
+    except Exception:return unknown_compiled_client_result_summary()
+    return safe_compiled_client_result_summary(result.stdout,result.returncode)
+
+ADMISSION_BRIDGE_STATUS_BUCKETS={'200','400','401','403','408','409','413','429','500','502','503','504','other'}
+ADMISSION_BRIDGE_ROUTES={'admit','settle'}
+
+def unknown_admission_bridge_summary():
+    return {'markerValid':False,'routes':{route:None for route in sorted(ADMISSION_BRIDGE_ROUTES)}}
+
+def safe_admission_bridge_summary(stdout, returncode):
+    invalid=unknown_admission_bridge_summary()
+    if returncode!=0 or not isinstance(stdout,str) or len(stdout.encode('utf-8'))>2048:return invalid
+    try:parsed=json.loads(stdout)
+    except (TypeError,ValueError):return invalid
+    if not isinstance(parsed,dict) or set(parsed)!={'schema','routes'} or type(parsed.get('schema')) is not int or parsed['schema']!=1:return invalid
+    routes=parsed.get('routes')
+    if not isinstance(routes,dict) or set(routes)!=ADMISSION_BRIDGE_ROUTES:return invalid
+    safe={}
+    for route,entry in routes.items():
+        if not isinstance(entry,dict) or set(entry)!={'requests','statuses'}:return invalid
+        if type(entry.get('requests')) is not int or not 0<=entry['requests']<=1000000:return invalid
+        statuses=entry.get('statuses')
+        if (not isinstance(statuses,dict) or set(statuses)!=ADMISSION_BRIDGE_STATUS_BUCKETS or
+            any(type(value) is not int or not 0<=value<=1000000 for value in statuses.values()) or
+            sum(statuses.values())>entry['requests']):return invalid
+        safe[route]={'requests':entry['requests'],'statuses':statuses}
+    return {'markerValid':True,'routes':safe}
+
+def admission_bridge_summary():
+    reader="const https=require('node:https');const q=https.get({hostname:'127.0.0.1',port:8443,path:'/__diagnostics',rejectUnauthorized:false,timeout:1500},r=>{let s='';r.setEncoding('utf8');r.on('data',x=>{if(s.length<2049)s+=x});r.on('end',()=>{process.stdout.write(JSON.stringify({status:r.statusCode,body:s}));});});q.on('timeout',()=>q.destroy());q.on('error',()=>process.exitCode=1);"
+    try:result=run('docker','exec',network+'-admission-bridge','node','-e',reader,check=False,timeout=3)
+    except Exception:return unknown_admission_bridge_summary()
+    if result.returncode!=0:return unknown_admission_bridge_summary()
+    try:wrapper=json.loads(result.stdout)
+    except (TypeError,ValueError):return unknown_admission_bridge_summary()
+    if not isinstance(wrapper,dict) or set(wrapper)!={'status','body'} or wrapper.get('status')!=200 or not isinstance(wrapper.get('body'),str):
+        return unknown_admission_bridge_summary()
+    return safe_admission_bridge_summary(wrapper['body'],0)
+
+def admission_bridge_delta(before, after):
+    if not before.get('markerValid') or not after.get('markerValid'):return unknown_admission_bridge_summary()
+    routes={}
+    for route in sorted(ADMISSION_BRIDGE_ROUTES):
+        old=before['routes'].get(route);new=after['routes'].get(route)
+        if old is None or new is None or new['requests']<old['requests']:return unknown_admission_bridge_summary()
+        requests=new['requests']-old['requests'];statuses={}
+        for bucket in ADMISSION_BRIDGE_STATUS_BUCKETS:
+            if new['statuses'][bucket]<old['statuses'][bucket]:return unknown_admission_bridge_summary()
+            statuses[bucket]=new['statuses'][bucket]-old['statuses'][bucket]
+        if sum(statuses.values())>requests:return unknown_admission_bridge_summary()
+        routes[route]={'requests':requests,'statuses':statuses}
+    return {'markerValid':True,'routes':routes}
 
 def bounded_compiled_runtime_logs(name):
     process=None
@@ -384,10 +623,12 @@ try:
     # Its one model route is the actual Anthropic route used by the production adapter.
     tls_dir=root/'tls';tls_dir.mkdir(mode=0o700)
     ca_key=tls_dir/'ca-key.pem';ca=tls_dir/'ca.pem';server_key=tls_dir/'server-key.pem';csr=tls_dir/'server.csr';cert=tls_dir/'server.pem';ext=tls_dir/'server.ext'
-    ext.write_text('subjectAltName=DNS:synthetic-provider,DNS:admission-bridge\nextendedKeyUsage=serverAuth\n')
-    run('openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(ca_key),'-out',str(ca),'-days','1','-subj','/CN=Lares disposable first-use CA',timeout=30)
+    ext.write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nsubjectAltName=DNS:synthetic-provider,DNS:admission-bridge\nextendedKeyUsage=serverAuth\n')
+    run('openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(ca_key),'-out',str(ca),'-days','1','-subj','/CN=Lares disposable first-use CA',
+      '-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign','-addext','subjectKeyIdentifier=hash',timeout=30)
     run('openssl','req','-newkey','rsa:2048','-nodes','-keyout',str(server_key),'-out',str(csr),'-subj','/CN=synthetic-provider',timeout=30)
     run('openssl','x509','-req','-in',str(csr),'-CA',str(ca),'-CAkey',str(ca_key),'-CAcreateserial','-out',str(cert),'-days','1','-extfile',str(ext),timeout=30)
+    run('openssl','verify','-x509_strict','-CAfile',str(ca),'-verify_hostname','admission-bridge',str(cert),timeout=30)
     for path in (ca_key,server_key):path.chmod(0o440)
     for path in (ca,cert,csr,ext):path.chmod(0o444)
     tls_runtime=root/'tls-runtime';tls_runtime.mkdir(mode=0o755)
@@ -447,11 +688,18 @@ console.log(JSON.stringify({profile,config,pricing,maximumLiability:gatewayMaxim
     admission_bridge=root/'admission-bridge.mts';admission_bridge.write_text("""import https from'node:https';import{readFileSync}from'node:fs';
 import{relayGatewayBudget}from'/app/services/keeper/lib/gateway-budget-relay.ts';
 import{GATEWAY_RPC_BYTES,GATEWAY_RPC_MS,gatewayRpcPath}from'/app/packages/agent-kit/src/gateway-admission-protocol.ts';
+const statusBuckets=['200','400','401','403','408','409','413','429','500','502','503','504','other'];
+const counters={admit:{requests:0,statuses:Object.fromEntries(statusBuckets.map(value=>[value,0]))},settle:{requests:0,statuses:Object.fromEntries(statusBuckets.map(value=>[value,0]))}};
+const boundedIncrement=value=>Math.min(1000000,value+1),bucket=status=>statusBuckets.includes(String(status))?String(status):'other';
 const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem'),cert:readFileSync('/fixture/tls/server.pem'),maxHeaderSize:2048},(incoming,outgoing)=>{
- const started=Date.now(),fail=()=>{if(!outgoing.headersSent){outgoing.writeHead(503,{'content-type':'text/plain','cache-control':'no-store','content-length':'0','connection':'close'});outgoing.end()}else outgoing.destroy()};
- const path=incoming.url??'',length=incoming.headers['content-length'],signature=incoming.headers['x-lares-signature'];
+ if(incoming.method==='GET'&&incoming.url==='/__diagnostics'){const raw=Buffer.from(JSON.stringify({schema:1,routes:counters}));outgoing.writeHead(200,{'content-type':'application/json','cache-control':'no-store','content-length':String(raw.length),'connection':'close'});outgoing.end(raw);return}
+ const started=Date.now(),path=incoming.url??'',routePath=path.split('?')[0],route=routePath==='/v1/gateway-budget/admit'?'admit':routePath==='/v1/gateway-budget/settle'?'settle':null;
+ if(route)counters[route].requests=boundedIncrement(counters[route].requests);
+ let responseCounted=false;const recordStatus=status=>{if(route&&!responseCounted){const key=bucket(status);counters[route].statuses[key]=boundedIncrement(counters[route].statuses[key]);responseCounted=true}};
+ const fail=()=>{recordStatus(503);if(!outgoing.headersSent){outgoing.writeHead(503,{'content-type':'text/plain','cache-control':'no-store','content-length':'0','connection':'close'});outgoing.end()}else outgoing.destroy()};
+ const length=incoming.headers['content-length'],signature=incoming.headers['x-lares-signature'];
  if(incoming.method!=='POST'||!gatewayRpcPath(path.split('?')[0]??'')||incoming.headers['transfer-encoding']!==undefined||incoming.headers['content-encoding']!==undefined||incoming.headers.expect!==undefined||incoming.headers['content-type']!=='application/json'||typeof signature!=='string'||! /^[a-f0-9]{64}$/.test(signature)||length!==undefined&&(typeof length!=='string'||!/^[1-9][0-9]{0,3}$/.test(length)||Number(length)>GATEWAY_RPC_BYTES)){fail();return}
- let size=0;const chunks:Buffer[]=[];const bodyTimer=setTimeout(()=>{incoming.destroy();fail()},GATEWAY_RPC_MS);incoming.on('data',chunk=>{size+=chunk.length;if(size>GATEWAY_RPC_BYTES||length!==undefined&&size>Number(length)){clearTimeout(bodyTimer);incoming.destroy();fail();return}chunks.push(Buffer.from(chunk))});incoming.on('aborted',()=>{clearTimeout(bodyTimer);fail()});incoming.on('end',()=>{clearTimeout(bodyTimer);if(size<1||length!==undefined&&size!==Number(length)){fail();return}const remaining=GATEWAY_RPC_MS-(Date.now()-started);if(remaining<1){fail();return}const raw=Buffer.concat(chunks,size);void(async()=>{try{const request=new Request('https://admission-bridge:8443'+path,{method:'POST',headers:{'content-type':'application/json','content-length':String(raw.length),'x-lares-signature':signature},body:raw,duplex:'half'} as RequestInit);const response=await relayGatewayBudget(request,{socketPath:'/run/lares/gateway-budget.sock',timeoutMs:remaining});const bytes=Buffer.from(await response.arrayBuffer());if(bytes.length>GATEWAY_RPC_BYTES||outgoing.destroyed)return;const headers:Record<string,string>={'connection':'close','content-length':String(bytes.length)};for(const name of ['content-type','cache-control','x-lares-signature']){const value=response.headers.get(name);if(value)headers[name]=value}outgoing.writeHead(response.status,headers);outgoing.end(bytes)}catch{fail()}})()});
+ let size=0;const chunks:Buffer[]=[];const bodyTimer=setTimeout(()=>{incoming.destroy();fail()},GATEWAY_RPC_MS);incoming.on('data',chunk=>{size+=chunk.length;if(size>GATEWAY_RPC_BYTES||length!==undefined&&size>Number(length)){clearTimeout(bodyTimer);incoming.destroy();fail();return}chunks.push(Buffer.from(chunk))});incoming.on('aborted',()=>{clearTimeout(bodyTimer);fail()});incoming.on('end',()=>{clearTimeout(bodyTimer);if(size<1||length!==undefined&&size!==Number(length)){fail();return}const remaining=GATEWAY_RPC_MS-(Date.now()-started);if(remaining<1){fail();return}const raw=Buffer.concat(chunks,size);void(async()=>{try{const request=new Request('https://admission-bridge:8443'+path,{method:'POST',headers:{'content-type':'application/json','content-length':String(raw.length),'x-lares-signature':signature},body:raw,duplex:'half'} as RequestInit);const response=await relayGatewayBudget(request,{socketPath:'/run/lares/gateway-budget.sock',timeoutMs:remaining});const bytes=Buffer.from(await response.arrayBuffer());if(bytes.length>GATEWAY_RPC_BYTES||outgoing.destroyed)return;const headers:Record<string,string>={'connection':'close','content-length':String(bytes.length)};for(const name of ['content-type','cache-control','x-lares-signature']){const value=response.headers.get(name);if(value)headers[name]=value}recordStatus(response.status);outgoing.writeHead(response.status,headers);outgoing.end(bytes)}catch{fail()}})()});
 });server.maxConnections=16;server.headersTimeout=GATEWAY_RPC_MS;server.requestTimeout=GATEWAY_RPC_MS;server.keepAliveTimeout=1000;server.on('clientError',(_e,s)=>s.destroy());server.listen(8443,'0.0.0.0');
 """)
     docker('run','-d','--name',network+'-admission-bridge','--network',network,'--network-alias','admission-bridge','--user','10001:10001',
@@ -473,6 +721,7 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
       '-e','LARES_GATEWAY_ADMISSION_URL=https://admission-bridge:8443','-e','LARES_GATEWAY_SERVICE_KEY_FILE=/run/secrets/gateway-budget-service-key',
       '-e','LARES_GATEWAY_ENDPOINT_HASH='+endpoint_hash,'-e','LARES_GATEWAY_PROFILE_FILE=/etc/litellm/profile.json','-e','SSL_CERT_FILE=/fixture/tls/ca.pem',
       '-e','LITELLM_LOCAL_MODEL_COST_MAP=True','-e','LITELLM_TELEMETRY=False','-e','PYTHONDONTWRITEBYTECODE=1','-e','CI=true',
+      '-e','LARES_GATEWAY_PROBE_DIAGNOSTICS=1',
       '--entrypoint','/bin/sh',gateway,'/opt/lares-gateway/start.sh']
     stage = 'pinned-production-gateway-start'
     docker(*gateway_args);container_names.append(network+'-gateway')
@@ -492,6 +741,34 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
     stage = 'pinned-production-gateway-readiness'
     gateway_ready="const fs=await import('node:fs/promises');const key=(await fs.readFile('/etc/lares/secrets/gateway-master','utf8')).trim();let ok=false;for(let i=0;i<240;i++){try{const r=await fetch('http://native-gateway:4000/health/readiness',{headers:{authorization:'Bearer '+key},signal:AbortSignal.timeout(1000)});if(r.status===200){ok=true;break}}catch{}await new Promise(r=>setTimeout(r,250))}if(!ok)process.exit(2);"
     tsx_keeper(gateway_ready,timeout=90);cases['productionGuardedGatewayAndTrustedInternalProvider']=True
+    stage = 'pinned-gateway-python-bridge-tls'
+    gateway_tls_check="""import json,os,re,socket,ssl,sys
+passed=False
+connection=None
+try:
+ context=ssl.create_default_context(cafile=os.environ['SSL_CERT_FILE'])
+ connection=socket.create_connection(('admission-bridge',8443),timeout=3)
+ secured=context.wrap_socket(connection,server_hostname='admission-bridge')
+ connection=None
+ with secured:passed=True
+except Exception:pass
+finally:
+ if connection is not None:connection.close()
+python_version='.'.join(str(value) for value in sys.version_info[:3])
+openssl_parts=ssl.OPENSSL_VERSION.split()
+openssl_version=' '.join(openssl_parts[:2]) if len(openssl_parts)>=2 and re.fullmatch(r'(?:OpenSSL|LibreSSL) [0-9]+(?:\\.[0-9]+){1,3}',' '.join(openssl_parts[:2])) else 'unknown'
+print(json.dumps({'passed':passed,'pythonVersion':python_version,'opensslVersion':openssl_version},separators=(',',':')))
+"""
+    gateway_tls_summary=json.loads(output('docker','exec',network+'-gateway','python','-c',gateway_tls_check,timeout=10))
+    if (type(gateway_tls_summary) is not dict or set(gateway_tls_summary)!={'passed','pythonVersion','opensslVersion'} or
+        type(gateway_tls_summary.get('passed')) is not bool or
+        not isinstance(gateway_tls_summary.get('pythonVersion'),str) or not re.fullmatch(r'[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,3}',gateway_tls_summary['pythonVersion']) or
+        not isinstance(gateway_tls_summary.get('opensslVersion'),str) or
+        not re.fullmatch(r'(?:OpenSSL|LibreSSL) [0-9]+(?:\.[0-9]+){1,3}|unknown',gateway_tls_summary['opensslVersion'])):
+        raise RuntimeError('Pinned gateway TLS preflight returned an invalid fixed summary')
+    proof['gatewayPythonBridgeTls']=gateway_tls_summary
+    if not gateway_tls_summary['passed']:
+        raise RuntimeError('Pinned gateway Python could not verify the admission bridge TLS endpoint')
     stage = 'pinned-production-relay-refusal'
     relay_refusal="const https=await import('node:https');const fs=await import('node:fs/promises');const ca=await fs.readFile('/fixture/tls/ca.pem');let refused=false;for(let i=0;i<40;i++){try{const status=await new Promise((resolve,reject)=>{const q=https.request({hostname:'admission-bridge',port:8443,path:'/v1/gateway-budget/admit',method:'POST',ca,timeout:1000,headers:{'content-type':'application/json','content-length':'2','x-lares-signature':'0'.repeat(64)}},r=>{r.resume();r.on('end',()=>resolve(r.statusCode))});q.on('timeout',()=>q.destroy(new Error('timeout')));q.on('error',reject);q.end('{}')});if(status===503){refused=true;break}}catch{}await new Promise(r=>setTimeout(r,250))}if(!refused)process.exit(2);"
     tsx_keeper(relay_refusal,mounts=['--mount',f'type=bind,src={tls_runtime},dst=/fixture/tls,readonly'],timeout=20)
@@ -600,19 +877,17 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
 
     stage = 'production-keeper-startup'
     # Pre-provision both members before either activation. The root CLI talks only to the real
-    # host-only socket; no direct provisioner/activator construction is used. Prepare an
-    # independent normal admission receipt through the same root-owned custody helper used by
-    # installation. Keeper's baked image entrypoint receives only its validated identity and
-    # exact read-only directory mount; keep the image's actual configured CMD after its guard
-    # prefix so the production `serve` command and working directory remain under test.
+    # host-only socket; no direct provisioner/activator construction is used. Keeper receives
+    # the independently prepared normal admission receipt through its baked image entrypoint.
+    host_socket_dir=root/'host-socket';host_socket_dir.mkdir(mode=0o755)
+    lares_dir=root/'run-sockets';lares_dir.mkdir(mode=0o755)
+    keeper_name=network+'-keeper'
     keeper_image_cmd=json.loads(docker('image','inspect','--format','{{json .Config.Cmd}}',keeper_image))
     expected_keeper_cmd=['/app/services/keeper/node_modules/.bin/tsx','/app/services/keeper/bin/keeper.ts','serve']
     if keeper_image_cmd != expected_keeper_cmd:
         raise RuntimeError('Production Keeper image command changed; refusing to substitute a fixture command')
-    host_socket_dir=root/'host-socket';host_socket_dir.mkdir(mode=0o755)
-    lares_dir=root/'run-sockets';lares_dir.mkdir(mode=0o755)
-    keeper_name=network+'-keeper'
-    keeper_cmd=['run','-d','--name',keeper_name,'--network',network,'--mount',f'type=volume,src={volume},dst=/var/lib/lares',
+    keeper_cmd=['run','-d','--name',keeper_name,'--network',network,'-e','CI=true','-e','LARES_GATEWAY_PROBE_DIAGNOSTICS=1',
+      '--mount',f'type=volume,src={volume},dst=/var/lib/lares',
       '--mount',f'type=bind,src={secrets_dir},dst=/etc/lares/secrets,readonly','--mount',f'type=bind,src={config_dir_path},dst=/etc/lares/keeper.json,readonly',
       '--mount',f'type=bind,src={install_root},dst=/fixture-install',
       '--mount',f'type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly',
@@ -740,11 +1015,51 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
     client_script=root/'first-use-client.mts'
     client_script.write_text("""const fs=await import('node:fs');
 const phaseFile=process.env.FIRST_USE_PHASE_FILE;
-const phases=['imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'];
+const resultFile=process.env.FIRST_USE_RESULT_FILE;
+const phases=['imports','session-create','session-bind','capsule-sign','send','stream-auth','turn-result','refusalchecks','complete'];
+const fixedCodes=['budget_admission_refused','budget_exceeded','model_purpose_dispatch_unavailable','invalid_request',
+  'request_policy_rejected','body_too_large','unsupported_request_field','timeout','aborted','ECONNREFUSED',
+  'ECONNRESET','EHOSTUNREACH','ENETUNREACH','UND_ERR_CONNECT_TIMEOUT','unknown'];
+const failureTypes=['step.failed','turn.failed','session.failed'];
 let phase='imports';
 function mark(next){if(!phases.includes(next))return;phase=next;try{if(phaseFile!=='/tmp/first-use-phase-first')return;const temp=phaseFile+'.tmp';fs.writeFileSync(temp,JSON.stringify({phase}),{mode:0o600});fs.renameSync(temp,phaseFile);}catch{}}
+function validStatus(value){return Number.isInteger(value)&&value>=100&&value<=599?value:null;}
+function fixedCategoryFlags(rows,error){
+  const flags={localDispatchUnavailable:false,nativeAdmissionRefused:false,timeoutAbort:false,socketUnavailable:false,requestPolicyRejected:false,unknown:false};
+  const texts=[];let codes=[];
+  for(const row of rows){const data=row?.data;if(!data||typeof data!=='object')continue;codes.push(data.code);
+    if(typeof data.message==='string'&&data.message.length<=2048)texts.push(data.message);
+    const details=data.details;if(details&&typeof details==='object')for(const key of ['apiErrorMessage','responseBodySnippet'])
+      if(typeof details[key]==='string'&&details[key].length<=2048)texts.push(details[key]);}
+  if(error){codes.push(error.code);if(typeof error.name==='string')texts.push(error.name);
+    if(typeof error.message==='string'&&error.message.length<=2048)texts.push(error.message);}
+  const hasBodyValue=(text,value)=>{if(text===value)return true;try{const parsed=JSON.parse(text);return parsed?.error===value||parsed?.message===value;}catch{return false;}};
+  flags.localDispatchUnavailable=codes.includes('model_purpose_dispatch_unavailable')||texts.some(text=>hasBodyValue(text,'Model purpose dispatch is unavailable'));
+  flags.nativeAdmissionRefused=codes.includes('budget_admission_refused')||texts.some(text=>hasBodyValue(text,'I could not verify permission to spend. Please check the gateway setup.'));
+  flags.timeoutAbort=codes.some(code=>code==='timeout'||code==='aborted')||texts.some(text=>text==='TimeoutError'||text==='AbortError'||text==='Request timed out');
+  flags.socketUnavailable=codes.some(code=>['ECONNREFUSED','ECONNRESET','EHOSTUNREACH','ENETUNREACH','UND_ERR_CONNECT_TIMEOUT'].includes(code));
+  flags.requestPolicyRejected=codes.some(code=>['invalid_request','request_policy_rejected','body_too_large','unsupported_request_field'].includes(code));
+  flags.unknown=!Object.entries(flags).some(([key,value])=>key!=='unknown'&&value);
+  return flags;
+}
+function writeResultDiagnostic(value){try{if(resultFile!=='/tmp/first-use-result-diagnostic-first')return;const raw=JSON.stringify(value);if(Buffer.byteLength(raw,'utf8')>2048)return;const temp=resultFile+'.tmp';fs.writeFileSync(temp,raw,{mode:0o600});fs.renameSync(temp,resultFile);}catch{}}
+function recordReturnedResult(result){
+  const flags={step:false,turn:false,session:false},events=[],rows=Array.isArray(result?.events)?result.events:[];let count=0;
+  for(const event of rows){if(!event||!failureTypes.includes(event.type))continue;count=Math.min(1000000,count+1);
+    const name=event.type==='step.failed'?'step':event.type==='turn.failed'?'turn':'session';flags[name]=true;
+    if(events.length<8){const data=event.data&&typeof event.data==='object'?event.data:{},details=data.details&&typeof data.details==='object'?data.details:{};
+      events.push({event:event.type,code:fixedCodes.includes(data.code)?data.code:'unknown',statusCode:validStatus(details.statusCode),upstreamStatusCode:validStatus(details.upstreamStatusCode)});}}
+  const resultStatus=['completed','failed','waiting'].includes(result?.status)?result.status:'unknown';
+  writeResultDiagnostic({schema:1,outcome:'returned',resultStatus,expectedMessage:result?.message==='FIRST_USE_OK',
+    failureEventCount:count,failureEvents:flags,events,categories:fixedCategoryFlags(rows.filter(event=>event&&failureTypes.includes(event.type)).slice(0,8)),clientStatus:null});
+}
+function recordThrownResult(error){
+  writeResultDiagnostic({schema:1,outcome:'thrown',resultStatus:'unknown',expectedMessage:null,failureEventCount:0,
+    failureEvents:{step:false,turn:false,session:false},events:[],categories:fixedCategoryFlags([],error),
+    clientStatus:error?.name==='ClientError'?validStatus(error.status):null});
+}
 mark('imports');
-void(async()=>{try{
+void(async()=>{let resultObserved=false;try{
 const { Client } = await import('/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js');
 const { randomBytes } = await import('node:crypto');
 const { readFileSync } = await import('node:fs');
@@ -754,10 +1069,10 @@ const agent='proof-agent',incarnation=process.env.LARES_AGENT_INCARNATION!,membe
 mark('session-create');
 const nonce=randomBytes(32).toString('base64url'),password=readFileSync('/run/secrets/route-password','utf8').trim();
 process.env.PGPASSWORD=readFileSync('/run/secrets/app-password','utf8').trim();
-const headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),
+let headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),
   'x-lares-member-id':member,'x-lares-admission':nonce,'x-lares-purpose':'human'};
-const client=new Client({host:'http://127.0.0.1:3000',auth:{basic:{username:'eve',password}}});
-const {session}=await client.sessions.create({headers});
+const client=new Client({host:'http://127.0.0.1:3000',headers:()=>headers});
+const {session}=await client.sessions.create();
 mark('session-bind');
 const binding=await bindConsoleSession({agent,incarnation,sessionId:session.state.sessionId,memberId:member,admissionNonce:nonce});
 const message='Return exactly FIRST_USE_OK';
@@ -767,28 +1082,35 @@ const request={agent,incarnation,session:session.state.sessionId,member,admissio
   definitionHash:process.env.FIRST_USE_DEFINITION_HASH!,purpose:'human',requestId:randomBytes(32).toString('base64url')};
 mark('capsule-sign');
 const capsule=await signPrivateModelPurposeRequest(request);
-const sendHeaders={...headers,'content-type':'application/json','x-lares-model-purpose-required':'1','x-lares-model-capsule':capsule};
+headers={...headers,'content-type':'application/json','x-lares-model-purpose-required':'1','x-lares-model-capsule':capsule};
 mark('send');
-const pending=await session.send(message,{headers:sendHeaders});
+const pending=await session.send(message);
+headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),
+  'x-lares-member-id':member,'x-lares-admission':nonce,'x-lares-purpose':'read'};
+mark('stream-auth');
 mark('turn-result');
 const result=await pending.result();
+resultObserved=true;recordReturnedResult(result);
 if(result.message!=='FIRST_USE_OK')throw new Error();
 mark('refusalchecks');
-const replay=await client.fetch(path,{method:'POST',headers:sendHeaders,body});
+const replay=await client.fetch(path,{method:'POST',headers:{...headers,'x-lares-purpose':'human','content-type':'application/json',
+  'x-lares-model-purpose-required':'1','x-lares-model-capsule':capsule},body});
 if(replay.ok)throw new Error();
 const staleBody=JSON.stringify({message:'changed request'});
 const staleRequest={...request,requestId:randomBytes(32).toString('base64url')};
 const staleCapsule=await signPrivateModelPurposeRequest(staleRequest);
-const stale=await client.fetch(path,{method:'POST',headers:{...sendHeaders,'x-lares-model-capsule':staleCapsule},body:staleBody});
+const stale=await client.fetch(path,{method:'POST',headers:{...headers,'x-lares-purpose':'human','content-type':'application/json',
+  'x-lares-model-purpose-required':'1','x-lares-model-capsule':staleCapsule},body:staleBody});
 if(stale.ok)throw new Error();
 const memberRequest={...request,requestId:randomBytes(32).toString('base64url')};
 const memberCapsule=await signPrivateModelPurposeRequest(memberRequest);
-const wrongMember=await client.fetch(path,{method:'POST',headers:{...sendHeaders,'x-lares-model-capsule':memberCapsule,'x-lares-member-id':'first-use-member-b'},body});
+const wrongMember=await client.fetch(path,{method:'POST',headers:{...headers,'x-lares-purpose':'human','content-type':'application/json',
+  'x-lares-model-purpose-required':'1','x-lares-model-capsule':memberCapsule,'x-lares-member-id':'first-use-member-b'},body});
 if(wrongMember.ok)throw new Error();
 mark('complete');
 console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.message,
   replayStatus:replay.status,staleStatus:stale.status,wrongMemberStatus:wrongMember.status}));
-}catch{process.exitCode=1}})();
+}catch(error){if(!resultObserved)recordThrownResult(error);process.exitCode=1}})();
 """)
 
     def fixed_client_failure_observations():
@@ -801,7 +1123,12 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
             state=native_snapshot()
             counts={key:state.get(source) for key,source in (
               ('attempts','attempts'),('grants','grants'),('settled','settled'))}
+            attempt_states=state.get('attempt_states')
+            allowed_states={'prepared','retired','admitted','unknown','conflict','settled'}
             if all(type(value) is int and 0<=value<=1000000 for value in counts.values()):
+                if (isinstance(attempt_states,dict) and set(attempt_states)==allowed_states and
+                    all(type(value) is int and 0<=value<=1000000 for value in attempt_states.values())):
+                    counts['attemptStates']=attempt_states
                 observations['financialDurableCounts']=counts
         except Exception:pass
         return observations
@@ -809,8 +1136,10 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
     def invoke_compiled_client():
         try:initialize_compiled_client_phase(chief_name)
         except Exception:pass
+        bridge_before=admission_bridge_summary()
         timed_out=False
-        try:result=run('docker','exec','-e','FIRST_USE_PHASE_FILE='+COMPILED_CLIENT_PHASE_FILE,chief_name,
+        try:result=run('docker','exec','-e','FIRST_USE_PHASE_FILE='+COMPILED_CLIENT_PHASE_FILE,
+          '-e','FIRST_USE_RESULT_FILE='+COMPILED_CLIENT_RESULT_FILE,chief_name,
           '/app/services/chief-of-staff/node_modules/.bin/tsx','/app/services/chief-of-staff/first-use-client.mts',
           check=False,timeout=90)
         except RuntimeError:
@@ -819,11 +1148,22 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
             result=None
         if timed_out or result is None or result.returncode!=0:
             summary=compiled_client_phase_summary(chief_name)
+            result_summary=compiled_client_result_summary(chief_name)
+            bridge_after=admission_bridge_summary()
             exit_code=None if result is None or not 0<=result.returncode<=255 else result.returncode
             proof['firstUseClientDiagnostics']={'phase':summary['phase'],'markerValid':summary['markerValid'],
-              'timedOut':timed_out,'exitCode':exit_code,**fixed_client_failure_observations()}
+              'timedOut':timed_out,'exitCode':exit_code,'firstResult':result_summary,
+              'admissionBridge':admission_bridge_delta(bridge_before,bridge_after),
+              **fixed_client_failure_observations()}
             if timed_out:raise RuntimeError('Compiled signed request exceeded its time bound')
             raise RuntimeError('Compiled signed request failed')
+        summary=compiled_client_phase_summary(chief_name)
+        result_summary=compiled_client_result_summary(chief_name)
+        bridge_after=admission_bridge_summary()
+        proof['firstUseClientDiagnostics']={'phase':summary['phase'],'markerValid':summary['markerValid'],
+          'timedOut':False,'exitCode':0,'firstResult':result_summary,
+          'admissionBridge':admission_bridge_delta(bridge_before,bridge_after),
+          **fixed_client_failure_observations()}
         return result.stdout.strip()
 
     before_request_state=native_snapshot()
@@ -905,8 +1245,24 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
     cases['compiledChiefRuntimeReady']=True
 
     stage = 'console-signature-and-first-model-request'
-    client_result=invoke_compiled_client()
+    proof['gatewayModelRequestDiagnosticBeforeFirstUse']=gateway_model_request_diagnostic(network+'-gateway')
+    proof['keeperModelPurposeDiagnosticBeforeFirstUse']=keeper_model_purpose_diagnostic(keeper_name)
+    client_result=invoke_first_use_and_capture(invoke_compiled_client,
+      lambda:first_use_model_diagnostics(network+'-gateway',keeper_name),proof)
     request_result=json.loads(client_result)
+    gateway_request=proof.get('gatewayModelRequestDiagnostic',{})
+    gateway_record=gateway_request.get('record',{})
+    if (gateway_request.get('state')!='present' or gateway_record.get('unknownBodyFieldCount')!=0 or
+        gateway_record.get('checks',{}).get('anthropicSafetyMetadataValid') is not True or
+        gateway_record.get('checks',{}).get('physicalDispatchObserved') is not True or
+        gateway_record.get('nativeRuntimeStage')!='complete' or
+        any(gateway_record.get('checks',{}).get(name) is not True for name in (
+            'nativePreCallEntered','nativeRuntimeCheckPassed','nativeCallTypeMatched','nativeIdentityPresent',
+            'nativeCredentialMatched','nativeProfileRecheckPassed','nativeObservationCreated','nativeBridgeRpcAttempted',
+            'nativeBridgeReplyReceived','nativeBridgeReplyAccepted','nativeDeploymentHookEntered',
+            'nativeHttpGuardPassed','nativePolicyLockAcquired')) or
+        gateway_record.get('checks',{}).get('nativeAuthoredRefusal') is not False):
+        raise RuntimeError('The compiled Anthropic first-use request did not pass the strict metadata profile and dispatch')
     if request_result.get('response')!='FIRST_USE_OK' or request_result.get('replayStatus',200)<400 or request_result.get('staleStatus',200)<400 or request_result.get('wrongMemberStatus',200)<400:
         raise RuntimeError('Signed first-use or refusal checks did not match the expected result')
     if upstream_calls()!=1:raise RuntimeError('Native upstream dispatch count was not exactly one')
