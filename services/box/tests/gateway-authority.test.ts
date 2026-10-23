@@ -162,6 +162,9 @@ describe("staged gateway authority transaction", () => {
     const actualTemplate = {
       ...unboundOutputs(),
       keeperCompose: readFileSync(join(here, "..", "compose.lares-keeper.yaml"), "utf8"),
+      keeperEnv: `${keeperComposeEnvironment}LARES_MAINTENANCE_ADMISSION_DIR=/srv/lares/var/lib/lares-maintenance/admission\n` +
+        "LARES_MAINTENANCE_INSTALLATION_ID=11111111-1111-4111-8111-111111111111\n" +
+        "LARES_MAINTENANCE_EPOCH=1\n",
     };
     expect(() => assertExistingRenderedAuthorityText(actualTemplate, authority)).not.toThrow();
     const missingRequired = { ...actualTemplate, keeperEnv: actualTemplate.keeperEnv.replace(/^LARES_ROOT=.*\n/m, "") };

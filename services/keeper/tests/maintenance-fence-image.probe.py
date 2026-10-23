@@ -239,6 +239,14 @@ def generate_rendered_compose() -> None:
                   str(installation_dir), str(auth_dir), str(fixture_prefix)]
     docker(*common, "/app/services/box/bin/render-stack.ts", *stack_args, timeout=45)
     def assert_effective_auth(path: pathlib.Path) -> None:
+        raw = path.read_text(encoding="utf-8")
+        raw_auth_mount = re.search(
+            r"- type: bind\n\s+source: " + re.escape(str(auth_dir)) +
+            r"\n\s+target: /run/lares-auth\n\s+read_only: true\n\s+bind:\n\s+create_host_path: false(?:\n|$)",
+            raw,
+        )
+        if raw_auth_mount is None:
+            raise ProbeFailure("compose-source")
         effective = docker("compose", "-p", project, "-f", str(path), "config", "--format", "json", timeout=45)
         if effective.returncode != 0:
             raise ProbeFailure("compose-config")
@@ -248,10 +256,13 @@ def generate_rendered_compose() -> None:
             raise ProbeFailure("compose-config") from None
         auth_mount = [mount for mount in db.get("volumes", [])
             if isinstance(mount, dict) and mount.get("target") == "/run/lares-auth"]
+        bind_options = auth_mount[0].get("bind") if len(auth_mount) == 1 else None
+        create_host_path_safe = isinstance(bind_options, dict) and (
+            "create_host_path" not in bind_options or bind_options["create_host_path"] is False)
         if db.get("command") != ["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"] or \
            len(auth_mount) != 1 or auth_mount[0].get("source") != str(auth_dir) or \
-           auth_mount[0].get("read_only") is not True or \
-           auth_mount[0].get("bind", {}).get("create_host_path") is not False:
+           auth_mount[0].get("type") != "bind" or auth_mount[0].get("read_only") is not True or \
+           not create_host_path_safe:
             raise ProbeFailure("compose-config")
     assert_effective_auth(bootstrap_file)
     assert_effective_auth(normal_file)
@@ -1017,7 +1028,7 @@ def run_database_proof() -> None:
         raise ProbeFailure("database")
     proof["claims"]["externalHbaIsSelected"] = True
     stage = "operator-host-route"
-    source_address = operator_query(compose_files, "SELECT inet_client_addr()::text")
+    source_address = operator_query(compose_files, "SELECT host(inet_client_addr())")
     try:
         parsed_source = ipaddress.ip_address(source_address)
         approved_network = ipaddress.ip_network(subnet)

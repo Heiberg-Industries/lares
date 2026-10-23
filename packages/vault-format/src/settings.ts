@@ -175,6 +175,18 @@ export const SETTINGS: readonly SettingDef[] = [
     readAt: ["packages/agent-kit/src/persona/denylist.ts:33"],
   },
   {
+    // Allows disposable installer fixtures to exercise root-owned custody checks under their
+    // ordinary test uid. The production installer never sets this switch.
+    name: "LARES_MAINTENANCE_TESTING",
+    readers: ["box"],
+    source: "installer",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: NOT_AN_INSTALLATION_SETTING,
+    readAt: ["services/box/lib/stack-compose.ts:91", "services/box/ops/maintenance-custody.py:578"],
+  },
+  {
     // `tests/settings-scan.test.ts` fails the moment engine code READS an undeclared name, so a
     // change that introduces a read must declare it in the same change — it cannot be deferred.
     name: "GATEWAY_LANE",

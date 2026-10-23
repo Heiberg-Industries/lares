@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gatewayCanonical, gatewayHash } from "@lares/agent-kit/gateway-admission-protocol";
@@ -13,6 +13,7 @@ import { renderKeeperComposeEnvironment, validateMaintenanceAdmissionIdentity } 
 import { nativeTestPolicy } from "../../keeper/tests/helpers/native-cleanup.js";
 import { parseBudgetNativePolicyDocument } from "../../keeper/lib/budget-native-host.js";
 import { stageGatewayAuthority } from "../bin/render-gateway-authority-stage.js";
+import { parse as parseYaml } from "yaml";
 
 if (typeof process.getuid !== "function" || process.getuid() !== 0) throw new Error("probe must run as root in the disposable CI fixture");
 
@@ -85,7 +86,7 @@ const run = () => {
     "prepare-fresh", prefix, request.subnet, "--confirm-fresh"], { stdio: "pipe" });
   mkdirSync(secrets, { recursive: true, mode: 0o700 }); chmodSync(secrets, 0o700);
   const manifest = parseReleaseManifest(JSON.stringify({ release: "ci-neutral", images: Object.fromEntries(
-    ["db", "console", "lares-gateway", "caddy", "lares-keeper", "lares-egress-proxy"].map(name => [name, `example.invalid/${name}@sha256:${"a".repeat(64)}`])),
+    ["db", "console", "lares-gateway", "caddy", "lares-keeper", "lares-egress-proxy", "lares-firewall-helper", "chief-of-staff", "creative"].map(name => [name, `example.invalid/${name}@sha256:${"a".repeat(64)}`])),
   migrations: { box: "001_baseline.sql" }, breaking: [] }));
   const profile = gatewayAdmissionProfile({ alias, providerModel });
   const basePolicy = nativeTestPolicy();
@@ -208,6 +209,16 @@ const run = () => {
     (mountPath === filePath || mountPath === "/" || filePath.startsWith(`${mountPath.replace(/\/$/, "")}/`));
   const databaseAuthMounts = mounts("db").filter((entry: any) => covers(entry.source, databaseAuthDir) || entry.target === "/run/lares-auth");
   assert.deepEqual(databaseAuthMounts.map((entry: any) => [entry.source, entry.target, entry.read_only]), [[databaseAuthDir, "/run/lares-auth", true]]);
+  const rawStack = parseYaml(readFileSync(join(stage, "compose.yaml"), "utf8")) as any;
+  const rawAuthMount = rawStack.services.db.volumes.find((entry: any) => entry.target === "/run/lares-auth");
+  assert.equal(rawAuthMount?.type, "bind");
+  assert.equal(rawAuthMount?.bind?.create_host_path, false, "the committed renderer must explicitly disable host-path creation");
+  const effectiveAuthMount = databaseAuthMounts[0];
+  assert(effectiveAuthMount.type === "bind", "Compose's normalized auth mount must remain a bind mount");
+  assert(effectiveAuthMount.bind !== null && typeof effectiveAuthMount.bind === "object" && !Array.isArray(effectiveAuthMount.bind),
+    "Compose's normalized auth mount must retain bind options");
+  assert(!("create_host_path" in effectiveAuthMount.bind) || effectiveAuthMount.bind.create_host_path === false,
+    "Compose's normalized output must preserve a bind mount whose host path is not auto-created");
   assert.deepEqual(resolved.services.db.command, ["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
   const gatewayMounts = mounts("lares-gateway").filter((entry: any) => covers(entry.source, keyPath) || covers(entry.target, "/run/secrets/gateway-budget-service-key"));
   assert.deepEqual(gatewayMounts.map((entry: any) => [entry.source, entry.target, entry.read_only]), [[keyPath, "/run/secrets/gateway-budget-service-key", true]]);
@@ -219,6 +230,54 @@ const run = () => {
   for (const service of Object.keys(resolved.services).filter(name => name !== "db"))
     assert(!mounts(service).some((entry: any) => covers(entry.source, databaseAuthDir) || entry.target === "/run/lares-auth"),
       `${service} must not receive database authentication policy`);
+
+  // Prove the normalized setting reaches Docker Engine: with a missing bind source, Compose
+  // must refuse container creation and must not invent the protected directory. The local
+  // scratch image is built without a base image or network access; `create` never starts it.
+  const scratchContext = join(root, "scratch-image"); mkdirSync(scratchContext);
+  writeFileSync(join(scratchContext, "probe-file"), "disposable compose bind probe\n");
+  writeFileSync(join(scratchContext, "Dockerfile"), "FROM scratch\nCOPY probe-file /probe-file\nENTRYPOINT [\"/probe-file\"]\nCMD [\"fixture-command\"]\n");
+  const scratchImage = `lares-stage-bind-probe:${process.pid}`;
+  const missingAuthPath = join(root, "missing-postgres-auth");
+  const missingCompose = join(root, "missing-auth-compose.yaml");
+  const missingProject = `lares-stage-bind-${process.pid}`;
+  let missingCreate: { status: number | null; stderr: string } | undefined;
+  try {
+    const scratchBuild = spawnSync("docker", ["build", "--network=none", "--tag", scratchImage, scratchContext], { encoding: "utf8", timeout: 60_000 });
+    assert.equal(scratchBuild.status, 0, `offline scratch image construction failed: ${scratchBuild.stderr}`);
+    writeFileSync(missingCompose, [
+      "services:",
+      "  missing-auth:",
+      `    image: ${scratchImage}`,
+      "    command: [\"fixture-command\"]",
+      "    volumes:",
+      "      - type: bind",
+      `        source: ${missingAuthPath}`,
+      "        target: /run/lares-auth",
+      "        read_only: true",
+      "        bind:",
+      "          create_host_path: false",
+      "",
+    ].join("\n"));
+    const createResult = spawnSync("docker", ["compose", "--project-name", missingProject, "-f", missingCompose,
+      "create", "--no-build", "--pull", "never", "missing-auth"], { encoding: "utf8", timeout: 30_000 });
+    missingCreate = { status: createResult.status, stderr: createResult.stderr ?? "" };
+  } finally {
+    spawnSync("docker", ["compose", "--project-name", missingProject, "-f", missingCompose, "down", "--remove-orphans"], { encoding: "utf8", timeout: 30_000 });
+    spawnSync("docker", ["container", "rm", "--force", `${missingProject}-missing-auth-1`], { encoding: "utf8", timeout: 30_000 });
+    spawnSync("docker", ["network", "rm", `${missingProject}_default`], { encoding: "utf8", timeout: 30_000 });
+    spawnSync("docker", ["image", "rm", "--force", scratchImage], { encoding: "utf8", timeout: 30_000 });
+  }
+  assert(missingCreate, "Compose missing-path probe must execute");
+  assert.notEqual(missingCreate.status, 0, "Compose must refuse to create a container with a missing protected bind source");
+  assert(missingCreate.stderr.includes(missingAuthPath), "Docker Engine refusal must identify the missing bind source");
+  assert(!existsSync(missingAuthPath), "Compose must not create the protected bind source as a side effect");
+  assert.notEqual(spawnSync("docker", ["container", "inspect", `${missingProject}-missing-auth-1`], { encoding: "utf8", timeout: 30_000 }).status, 0,
+    "the missing-path probe must leave no container behind");
+  assert.notEqual(spawnSync("docker", ["network", "inspect", `${missingProject}_default`], { encoding: "utf8", timeout: 30_000 }).status, 0,
+    "the missing-path probe must leave no network behind");
+  assert.notEqual(spawnSync("docker", ["image", "inspect", scratchImage], { encoding: "utf8", timeout: 30_000 }).status, 0,
+    "the missing-path probe must remove its scratch image");
   const stagedBytes = Buffer.concat(GATEWAY_AUTHORITY_STAGE_FILES.map(name => readFileSync(join(stage, name))));
   const policyBytes = readFileSync(policyPath);
   assert(!stagedBytes.includes(key));

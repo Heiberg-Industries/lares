@@ -16,6 +16,7 @@ import { ENGINE_IMAGE, engineDockerPrelude } from "./helpers/engine-docker.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "install.sh");
+const MAINTENANCE_CUSTODY = join(here, "..", "ops", "maintenance-custody.py");
 
 let dir: string, binDir: string, prefix: string, log: string, releaseFile: string;
 
@@ -48,6 +49,7 @@ function runWithStdin(args: string[], input: string) {
           STUB_LOG: log,
           LARES_PREFIX: prefix,
           HOME: dir,
+          LARES_MAINTENANCE_TESTING: "1",
         },
       },
     );
@@ -156,6 +158,9 @@ describe("how the install ends", () => {
   }, 20_000);
 
   it("does not tell an existing installation to create its first agent or set up its first backup", () => {
+    execFileSync("python3", [MAINTENANCE_CUSTODY, "prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh"], {
+      env: { ...process.env, LARES_MAINTENANCE_TESTING: "1", LARES_SUBNET: "172.30.0.0/24" },
+    });
     mkdirSync(join(prefix, "srv", "lares"), { recursive: true });
     mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
     writeFileSync(join(prefix, "etc", "lares", "console-oauth.env"),

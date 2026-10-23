@@ -87,6 +87,7 @@ function run(args: string[], opts: { env?: Record<string, string>; input?: strin
       RESTORE_OPERATOR_MODE: mode("etc/lares/operator/database-password"),
       RESTORE_APP_MODE: mode("etc/lares/secrets/database-password"),
       RESTORE_FINANCIAL_MODE: mode("etc/lares/secrets/financial-database-password"),
+      LARES_MAINTENANCE_TESTING: "1",
       ...opts.env,
     },
   });
@@ -98,15 +99,20 @@ function expectEffectiveRestoreAuth() {
   const result = spawnSync("docker", ["compose", "-f", join(prefix, "opt/lares/compose.yaml"), "config", "--format", "json"], { encoding: "utf8" });
   expect(result.status, result.stderr).toBe(0);
   const effective = JSON.parse(result.stdout) as {
-    services: { db?: { command?: string[]; volumes?: Array<{ source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
+    services: { db?: { command?: string[]; volumes?: Array<{ type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
   };
   expect(effective.services.db?.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
-  expect(effective.services.db?.volumes).toContainEqual(expect.objectContaining({
+  const effectiveAuthMount = effective.services.db?.volumes?.find((volume) =>
+    volume.source === join(prefix, "var/lib/lares-maintenance/postgres-auth") && volume.target === "/run/lares-auth");
+  expect(effectiveAuthMount).toMatchObject({
+    type: "bind",
     source: join(prefix, "var/lib/lares-maintenance/postgres-auth"),
     target: "/run/lares-auth",
     read_only: true,
-    bind: { create_host_path: false },
-  }));
+  });
+  const bind = effectiveAuthMount?.bind;
+  expect(bind !== undefined && bind !== null && typeof bind === "object" && !Array.isArray(bind) &&
+    (!("create_host_path" in bind) || bind.create_host_path === false)).toBe(true);
 }
 const logLines = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
 const idx = (re: RegExp, from = 0) => logLines().findIndex((l, i) => i >= from && re.test(l));
