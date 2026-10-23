@@ -18,6 +18,7 @@ const ENGINE_IMAGE = `example.invalid/keeper@sha256:${"a".repeat(64)}`;
 const here = dirname(fileURLToPath(import.meta.url));
 const OPS = join(here, "..", "ops");
 const SCRIPT = join(OPS, "setup-backups.sh");
+const MAINTENANCE_CUSTODY = join(OPS, "maintenance-custody.py");
 
 const GOOD_KEY = "age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsz0abcde";
 const GOOD_HC = "https://hc.example.net/ping/0b3c1f5e-1111-2222-3333-444455556666";
@@ -38,6 +39,7 @@ function run(args: string[], opts: { env?: Record<string, string>; input?: strin
     env: {
       LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state,
       PREFIX_FOR_STAT: prefix, RESTIC_MODE: "absent10", ...opts.env,
+      LARES_MAINTENANCE_TESTING: "1", LARES_MAINTENANCE_TEST_PREFIX: prefix,
     },
   });
   return { code: r.status ?? -1, stdout: r.stdout, stderr: r.stderr, all: r.stdout + r.stderr };
@@ -72,6 +74,10 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lares-setup-backups-"));
   binDir = join(dir, "bin"); mkdirSync(binDir);
   prefix = join(dir, "root");
+  mkdirSync(prefix);
+  execFileSync("python3", [MAINTENANCE_CUSTODY, "prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh", "--test-owner"], {
+    env: { ...process.env, LARES_MAINTENANCE_TESTING: "1" },
+  });
   mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
   mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
   writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services: {}\n");
@@ -314,7 +320,7 @@ describe("a good run", () => {
     expect(inits()).toHaveLength(1);
     const mode = (p: string) => (statSync(p).mode & 0o777).toString(8);
     expect(mode(join(prefix, "etc/lares/backup.env"))).toBe("400");
-    for (const s of ["backup.sh", "backup-verify.sh", "restore-drill.sh"]) expect(mode(join(prefix, "opt/lares", s))).toBe("750");
+    for (const s of ["backup.sh", "backup-verify.sh", "restore-drill.sh", "maintenance-custody.py"]) expect(mode(join(prefix, "opt/lares", s))).toBe("750");
     expect(existsSync(join(prefix, "etc/systemd/system/lares-restore-drill.timer"))).toBe(true);
     const env = readFileSync(join(prefix, "etc/lares/backup.env"), "utf8");
     expect(env).toContain("LARES_CURRENT_LAYOUT='1'");
@@ -453,7 +459,7 @@ describe("units that point at the wrong place are corrected", () => {
     writeFileSync(unit, readFileSync(unit, "utf8").replace("/opt/lares/backup.sh", "/opt/agent-box/backup.sh").replace("/etc/lares/backup.env", "/etc/agent-box/backup.env"));
     const r = spawnSync("/bin/bash", [join(copy, "setup-backups.sh"), "--prefix", prefix, ...base(), "--skip-first-run"], {
       encoding: "utf8", timeout: 20_000,
-      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state, PREFIX_FOR_STAT: prefix, RESTIC_MODE: "open" },
+      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state, PREFIX_FOR_STAT: prefix, RESTIC_MODE: "open", LARES_MAINTENANCE_TESTING: "1", LARES_MAINTENANCE_TEST_PREFIX: prefix },
     });
     expect(r.status).toBe(0);
     const installed = readFileSync(join(prefix, "etc/systemd/system/lares-backup.service"), "utf8");
@@ -467,7 +473,7 @@ describe("install.sh --backups", () => {
   it("hands over to setup-backups.sh with the other arguments", () => {
     const r = spawnSync("/bin/bash", [join(OPS, "install.sh"), "--backups", "--prefix", prefix, ...base(), "--dry-run"], {
       encoding: "utf8", timeout: 20_000,
-      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state, PREFIX_FOR_STAT: prefix, RESTIC_MODE: "absent10" },
+      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state, PREFIX_FOR_STAT: prefix, RESTIC_MODE: "absent10", LARES_MAINTENANCE_TESTING: "1", LARES_MAINTENANCE_TEST_PREFIX: prefix },
     });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("dry run");
@@ -490,8 +496,10 @@ describe("the backup scripts find /etc/lares/backup.env on their own", () => {
   });
   it("an explicit AGENT_BOX_BACKUP_ENV still wins (old servers keep working)", () => {
     const envFile = join(dir, "old.env");
-    writeFileSync(envFile, "echo SOURCED-OLD-ENV >&2; exit 3\n");
+    writeFileSync(envFile, `echo SOURCED-OLD-ENV >&2; touch "${join(dir, "source-sentinel")}"; exit 3\n`);
     const r = spawnSync("/bin/bash", [join(OPS, "backup.sh")], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", AGENT_BOX_BACKUP_ENV: envFile } });
-    expect(r.stderr).toContain("SOURCED-OLD-ENV");
+    expect(r.stderr).toContain("maintenance admission: refused");
+    expect(r.stderr).not.toContain("SOURCED-OLD-ENV");
+    expect(existsSync(join(dir, "source-sentinel"))).toBe(false);
   });
 });

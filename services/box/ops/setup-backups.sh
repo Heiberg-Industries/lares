@@ -29,6 +29,7 @@ EX_NOTROOT=77
 EX_REFUSED=78
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ORIGINAL_ARGS=("$@")
 
 say() { printf 'backups: %s\n' "$1"; }
 die() { printf 'backups: %s\n' "$1" >&2; exit "$2"; }
@@ -115,6 +116,23 @@ DEFAULT_PW_LOGICAL=/etc/lares/restic-password
 ROOT_ID=$(id -u 2>/dev/null) || ROOT_ID=""
 if [ "$ROOT_ID" != "0" ]; then
   die "this needs to run as root (found user id '${ROOT_ID:-unknown}'). Try again with: sudo $0 $*" "$EX_NOTROOT"
+fi
+
+ADMISSION_PREFIX="${PREFIX:-/}"
+TEST_OWNER_FLAG=""
+[ "${LARES_MAINTENANCE_TESTING:-}" = 1 ] && TEST_OWNER_FLAG=1
+if [ "${LARES_MAINTENANCE_ADMITTED:-}" = 1 ]; then
+  if [ "$TEST_OWNER_FLAG" = 1 ]; then
+    python3 "$HERE/maintenance-custody.py" assert-normal-held "$ADMISSION_PREFIX" setup-backups --test-owner || exit 78
+  else
+    python3 "$HERE/maintenance-custody.py" assert-normal-held "$ADMISSION_PREFIX" setup-backups || exit 78
+  fi
+else
+  if [ "$TEST_OWNER_FLAG" = 1 ]; then
+    exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" setup-backups --test-owner -- "${ORIGINAL_ARGS[@]}"
+  else
+    exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" setup-backups -- "${ORIGINAL_ARGS[@]}"
+  fi
 fi
 
 WROTE=""
@@ -425,7 +443,7 @@ if [ "$ASSUME_YES" != 1 ] && [ "$DRY" != 1 ]; then
 fi
 
 # --- 8. the files ----------------------------------------------------------------------------
-SCRIPTS="backup.sh backup-verify.sh restore-drill.sh vault-storage.sh engine-run.sh"
+SCRIPTS="backup.sh backup-verify.sh restore-drill.sh maintenance-custody.py vault-storage.sh engine-run.sh"
 UNITS="lares-backup.service lares-backup.timer lares-backup-verify.service lares-backup-verify.timer lares-restore-drill.service lares-restore-drill.timer"
 
 for f in $SCRIPTS $UNITS; do
