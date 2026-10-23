@@ -107,7 +107,7 @@ FROM builder AS compiled-runtime
 RUN pnpm run assemble:check && pnpm exec eve build
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production HOME=/tmp
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends git ca-certificates util-linux && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 eve && useradd -u 10001 -g 10001 -m -s /usr/sbin/nologin eve
 # Installation hosts run prepared code, never a package installer. Keep workspace
 # dependencies intact; remove only the base image's unused build/package managers.
@@ -122,10 +122,12 @@ COPY images/agent-runtime/start.sh /usr/local/bin/lares-start
 # it cannot be missing at runtime; the image has no TypeScript loader before `eve start`, so the
 # check that runs here is shell, generated from the same list `checkSettings` walks.
 COPY images/agent-runtime/required-settings.sh /usr/local/lib/lares/required-settings.sh
+COPY --chmod=0555 services/box/ops/maintenance-admission.sh /usr/local/lib/lares/maintenance-admission-v1
 RUN chmod 0755 /usr/local/bin/lares-start /usr/local/lib/lares/required-settings.sh && mkdir -p /app/services/creative/.eve/.workflow-data \
     && chown -R 10001:10001 /app/services/creative/.eve
 USER 10001:10001
 WORKDIR /app/services/creative
+ENTRYPOINT ["/usr/local/lib/lares/maintenance-admission-v1"]
 CMD ["/usr/local/bin/lares-start"]
 
 FROM builder AS default-builder

@@ -339,9 +339,23 @@ describe("the keeper the installer configures and starts", () => {
     expect(paths.length).toBeGreaterThan(5);
 
     // The in-container side of a runtime binding is a path inside the AGENT's container, not the
-    // keeper's; only those exact values (mount targets and DEADLINE_CALENDAR_FILE) are exempt.
+    // keeper's. This set also records configuration paths passed to Docker as host-side bind
+    // sources, which the keeper itself does not open.
     const chief = readKeeperConfig().lifecycle.defaultBindings["chief-of-staff"];
     const keeperHostMountSources = new Set<string>();
+    const admissionHostDirectory = config.lifecycle.maintenanceAdmission.hostDirectory;
+    const admissionMounts = doc.services["lares-keeper"].volumes.filter((mount: any) =>
+      mount && typeof mount === "object" && mount.target === "/run/lares-maintenance/admission",
+    );
+    expect(admissionMounts).toEqual([{
+      type: "bind",
+      source: "${LARES_MAINTENANCE_ADMISSION_DIR:?validated admission directory required}",
+      target: "/run/lares-maintenance/admission",
+      read_only: true,
+      bind: { create_host_path: false },
+    }]);
+    expect(expand(admissionMounts[0].source)).toBe(admissionHostDirectory);
+    keeperHostMountSources.add(admissionHostDirectory);
     if (config.modelPurposeRuntimeDir) {
       // This is a host path passed to Docker when Keeper renders the chief's Compose file. It
       // need not exist inside Keeper at the same absolute path; the keeper compose mounts the
