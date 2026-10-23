@@ -3,6 +3,7 @@
 import ast
 import json
 import pathlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -27,7 +28,18 @@ class GatewayDockerCommandTests(unittest.TestCase):
             and isinstance(node.value.args[0], ast.Starred)
             and isinstance(node.value.args[0].value, ast.Name)
         ), key=lambda node: node.lineno)
-        self.assertEqual([node.value.args[0].value.id for node in launches], ["gateway_args", "keeper_cmd", "args"])
+        self.assertEqual([node.value.args[0].value.id for node in launches], ["gateway_args", "keeper_cmd"])
+        runtime_launches = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "run"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Constant) and node.args[0].value == "docker"
+            and isinstance(node.args[1], ast.Starred)
+            and any(keyword.arg == "timeout" and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == 120 for keyword in node.keywords)
+        ]
+        self.assertEqual([node.args[1].value.id for node in runtime_launches], ["args"])
 
         calls = []
 
@@ -202,6 +214,231 @@ class CompiledChiefKeylessCommandTests(unittest.TestCase):
         self.assertFalse(any(name.endswith(("_API_KEY", "_KEY_FILE")) for name in env_values))
         self.assertFalse({"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
                           "LITELLM_MASTER_KEY", "GATEWAY_MASTER_KEY_FILE"} & env_values.keys())
+
+
+class CompiledChiefStartupDiagnosticTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        cls.functions = {
+            node.name: node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in {"safe_startup_container_state", "safe_startup_log_categories",
+                              "bounded_compiled_runtime_logs", "register_compiled_chief_container"}
+        }
+        cls.namespace = {"re": __import__("re")}
+        module = ast.fix_missing_locations(ast.Module(body=list(cls.functions.values()), type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), cls.namespace)
+        cls.tree = tree
+
+    def test_state_summary_keeps_only_fixed_typed_container_fields(self) -> None:
+        summary = self.namespace["safe_startup_container_state"](
+            found=True, status="exited", running=False, exit_code="137", oom_killed=True,
+        )
+        self.assertEqual(summary, {
+            "found": True, "status": "exited", "running": False, "exitCode": 137, "oomKilled": True,
+        })
+        invalid = self.namespace["safe_startup_container_state"](
+            found=False, status="secret-bearing-status", running="true", exit_code="99999", oom_killed=1,
+        )
+        self.assertEqual(invalid, {
+            "found": False, "status": "unknown", "running": False, "exitCode": None, "oomKilled": False,
+        })
+
+    def test_log_summary_is_bounded_allowlisted_and_never_returns_log_text(self) -> None:
+        secret_canary = "NEVER-EMIT-THIS-SESSION-TOKEN"
+        classify = self.namespace["safe_startup_log_categories"]
+        clipped = classify("read-only file system " + ("x" * 40000) + "EACCES: permission denied " + secret_canary)
+        self.assertFalse(clipped["readOnlyFilesystem"])
+        self.assertTrue(clipped["permissionDenied"])
+        self.assertEqual(set(clipped), {
+            "missingSettings", "unset_DATABASE_URL", "unset_WORKFLOW_POSTGRES_URL",
+            "unset_DATABASE_PASSWORD_FILE", "unreadable_DATABASE_PASSWORD_FILE", "empty_DATABASE_PASSWORD_FILE",
+            "unset_WORKFLOW_POSTGRES_PASSWORD_FILE", "unreadable_WORKFLOW_POSTGRES_PASSWORD_FILE",
+            "empty_WORKFLOW_POSTGRES_PASSWORD_FILE", "unset_GATEWAY_URL", "unset_LARES_AGENT_NAME",
+            "unset_LARES_DEFINITION_DIR", "unset_GATEWAY_KEY_FILE", "unreadable_GATEWAY_KEY_FILE",
+            "empty_GATEWAY_KEY_FILE",
+            "managedIncarnationInvalid", "managedSocketNotConfigured",
+            "runtimeControlFileUnavailable", "modelPurposeSocketUnavailable",
+            "gatewayRuntimeSocketUnavailable", "workflowCredentialsUnavailable",
+            "invalidConfiguration", "moduleResolution", "permissionDenied",
+            "readOnlyFilesystem", "databaseUnavailable", "addressInUse", "memoryExhaustion",
+        })
+        self.assertNotIn(secret_canary, json.dumps(clipped))
+        self.assertTrue(classify("Error [ERR_MODULE_NOT_FOUND]: Cannot find package")["moduleResolution"])
+
+    def test_generated_required_settings_failures_have_fixed_safe_categories(self) -> None:
+        classify = self.namespace["safe_startup_log_categories"]
+        cases = {
+            "lares: DATABASE_URL is not set. configured prose": "unset_DATABASE_URL",
+            "lares: WORKFLOW_POSTGRES_URL is not set. configured prose": "unset_WORKFLOW_POSTGRES_URL",
+            "lares: DATABASE_PASSWORD_FILE is not set. configured prose": "unset_DATABASE_PASSWORD_FILE",
+            "lares: DATABASE_PASSWORD_FILE points to a file that does not exist or cannot be read (/secret/value)": "unreadable_DATABASE_PASSWORD_FILE",
+            "lares: DATABASE_PASSWORD_FILE points to a file that exists but is empty (/secret/value)": "empty_DATABASE_PASSWORD_FILE",
+            "lares: WORKFLOW_POSTGRES_PASSWORD_FILE is not set. configured prose": "unset_WORKFLOW_POSTGRES_PASSWORD_FILE",
+            "lares: WORKFLOW_POSTGRES_PASSWORD_FILE points to a file that does not exist or cannot be read (/secret/value)": "unreadable_WORKFLOW_POSTGRES_PASSWORD_FILE",
+            "lares: WORKFLOW_POSTGRES_PASSWORD_FILE points to a file that exists but is empty (/secret/value)": "empty_WORKFLOW_POSTGRES_PASSWORD_FILE",
+            "lares: GATEWAY_URL is not set. configured prose": "unset_GATEWAY_URL",
+            "lares: LARES_AGENT_NAME is not set. configured prose": "unset_LARES_AGENT_NAME",
+            "lares: LARES_DEFINITION_DIR is not set. configured prose": "unset_LARES_DEFINITION_DIR",
+            "lares: GATEWAY_KEY_FILE is not set. configured prose": "unset_GATEWAY_KEY_FILE",
+            "lares: GATEWAY_KEY_FILE points to a file that does not exist or cannot be read (/secret/value)": "unreadable_GATEWAY_KEY_FILE",
+            "lares: GATEWAY_KEY_FILE points to a file that exists but is empty (/secret/value)": "empty_GATEWAY_KEY_FILE",
+            "lares: managed incarnation is invalid": "managedIncarnationInvalid",
+            "lares: managed model-purpose socket is not configured": "managedSocketNotConfigured",
+            "lares: runtime-control file is missing, unreadable, or empty": "runtimeControlFileUnavailable",
+            "lares: model-purpose runtime socket is unavailable": "modelPurposeSocketUnavailable",
+            "lares: model-purpose gateway socket is unavailable": "gatewayRuntimeSocketUnavailable",
+            "lares: workflow database credentials are unavailable.": "workflowCredentialsUnavailable",
+        }
+        for source_message, expected in cases.items():
+            with self.subTest(category=expected):
+                summary = classify(source_message + "\nNEVER-EMIT-THIS-SESSION-TOKEN")
+                self.assertTrue(summary[expected])
+                self.assertNotIn("NEVER-EMIT-THIS-SESSION-TOKEN", json.dumps(summary))
+
+        # The optional gateway key's absence is the managed-keyless case, not a failure.
+        summary = classify("startup continues")
+        self.assertFalse(summary["unset_GATEWAY_KEY_FILE"])
+        guard = (REPO / "images/agent-runtime/required-settings-chief-of-staff.sh").read_text(encoding="utf-8")
+        actual_calls = {(kind, name) for kind, name in re.findall(
+            r"^[ \t]*lares_require(_file)? ([A-Z0-9_]+)", guard, re.MULTILINE)}
+        self.assertEqual(actual_calls, {
+            ("", "DATABASE_URL"), ("", "WORKFLOW_POSTGRES_URL"),
+            ("_file", "DATABASE_PASSWORD_FILE"), ("_file", "WORKFLOW_POSTGRES_PASSWORD_FILE"),
+            ("", "GATEWAY_URL"), ("", "LARES_AGENT_NAME"), ("", "LARES_DEFINITION_DIR"),
+            ("_file", "GATEWAY_KEY_FILE"),
+        })
+
+    def test_setting_categories_require_exact_lares_line_and_field_delimiter(self) -> None:
+        classify = self.namespace["safe_startup_log_categories"]
+        negatives = [
+            "lares: OTHER_DATABASE_URL is not set. prose",
+            "lares: DATABASE_URL_EXTRA is not set. prose",
+            'startup logged: "lares: DATABASE_URL is not set. prose"',
+            'lares: note says "DATABASE_URL is not set" but not a guard line',
+            "error: lares: managed incarnation is invalid",
+            "lares: workflow database credentials are unavailable: unrelated detail",
+            'startup logged: "lares: managed model-purpose socket is not configured"',
+            'startup logged: "lares: runtime-control file is missing, unreadable, or empty"',
+            'startup logged: "lares: model-purpose runtime socket is unavailable"',
+            'startup logged: "lares: model-purpose gateway socket is unavailable"',
+        ]
+        for text in negatives:
+            with self.subTest(text=text):
+                summary = classify(text)
+                self.assertFalse(summary["unset_DATABASE_URL"])
+                self.assertFalse(summary["missingSettings"])
+                self.assertFalse(summary["managedIncarnationInvalid"])
+                self.assertFalse(summary["managedSocketNotConfigured"])
+                self.assertFalse(summary["runtimeControlFileUnavailable"])
+                self.assertFalse(summary["modelPurposeSocketUnavailable"])
+                self.assertFalse(summary["gatewayRuntimeSocketUnavailable"])
+                self.assertFalse(summary["workflowCredentialsUnavailable"])
+        exact = classify("context line\nlares: DATABASE_URL is not set. fixed explanation")
+        self.assertTrue(exact["unset_DATABASE_URL"])
+        self.assertTrue(exact["missingSettings"])
+
+    def test_continuously_readable_log_pipe_stops_at_deadline_and_reaps_process(self) -> None:
+        class FakePipe:
+            def fileno(self):
+                return 42
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdout = FakePipe()
+                self.killed = False
+                self.waited = False
+
+            def poll(self):
+                return None if not self.killed else -9
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                self.waited = True
+                return -9
+
+        process = FakeProcess()
+        clock_values = iter([0.0, 0.0, 4.0, 5.0])
+        reads = []
+        selects = []
+        self.namespace.update({
+            "subprocess": SimpleNamespace(PIPE=object(), STDOUT=object(), Popen=lambda *_args, **_kwargs: process),
+            "time": SimpleNamespace(monotonic=lambda: next(clock_values)),
+            "select": SimpleNamespace(select=lambda *args: selects.append(args) or ([process.stdout], [], [])),
+            "os": SimpleNamespace(read=lambda *_args: reads.append(True) or b"EACCES: permission denied\n"),
+        })
+        captured = self.namespace["bounded_compiled_runtime_logs"]("fixture-network-chief")
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(len(selects), 2)
+        self.assertTrue(process.killed)
+        self.assertTrue(process.waited)
+        self.assertIn("permission denied", captured)
+
+    def test_nonzero_launch_discovery_registers_only_owned_container_for_cleanup(self) -> None:
+        inspections = []
+
+        def inspect_created(*args, **_kwargs):
+            inspections.append(args)
+            return SimpleNamespace(returncode=0, stdout="created\n")
+
+        self.namespace.update({"network": "fixture-network", "run": inspect_created})
+        container_names = []
+        register = self.namespace["register_compiled_chief_container"]
+        self.assertTrue(register("fixture-network-chief", container_names))
+        self.assertEqual(container_names, ["fixture-network-chief"])
+        inspection_count = len(inspections)
+        self.assertFalse(register("unowned-project-chief", container_names))
+        self.assertEqual(len(inspections), inspection_count)
+
+        launch_failure = next(
+            node for node in ast.walk(self.tree)
+            if isinstance(node, ast.If)
+            and ast.unparse(node.test) == "launch_result.returncode != 0"
+        )
+        ordered_calls = [
+            node.func.id for node in sorted(
+                (item for item in ast.walk(launch_failure) if isinstance(item, ast.Call)),
+                key=lambda call: call.lineno,
+            ) if isinstance(node.func, ast.Name)
+            and node.func.id in {"register_compiled_chief_container", "compiled_startup_diagnostics"}
+        ]
+        self.assertEqual(ordered_calls, ["register_compiled_chief_container", "compiled_startup_diagnostics"])
+        timeout_handler = next(
+            node for node in ast.walk(self.tree)
+            if isinstance(node, ast.ExceptHandler)
+            and isinstance(node.type, ast.Name) and node.type.id == "RuntimeError"
+            and any(isinstance(item, ast.Call) and isinstance(item.func, ast.Name)
+                    and item.func.id == "register_compiled_chief_container" for item in ast.walk(node))
+        )
+        timeout_calls = [
+            node.func.id for node in sorted(
+                (item for item in ast.walk(timeout_handler) if isinstance(item, ast.Call)),
+                key=lambda call: call.lineno,
+            ) if isinstance(node.func, ast.Name)
+            and node.func.id in {"register_compiled_chief_container", "compiled_startup_diagnostics"}
+        ]
+        self.assertEqual(timeout_calls, ["register_compiled_chief_container", "compiled_startup_diagnostics"])
+
+    def test_compiled_runtime_failure_stages_are_separated_and_ordered(self) -> None:
+        stage_assignments = sorted((
+            node for node in ast.walk(self.tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "stage" for target in node.targets)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and node.value.value.startswith("runtime-")
+        ), key=lambda node: node.lineno)
+        stages = [node.value.value for node in stage_assignments]
+        expected = ["runtime-create", "runtime-health", "runtime-config",
+                    "runtime-secret-mounts", "runtime-protected-paths"]
+        cursor = 0
+        for stage in stages:
+            if cursor < len(expected) and stage == expected[cursor]:
+                cursor += 1
+        self.assertEqual(cursor, len(expected), stages)
 
 
 class FinancialObserverTests(unittest.TestCase):
