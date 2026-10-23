@@ -57,7 +57,7 @@ const config: any = {
     google: { principal: process.env.REHEARSAL_KEEPER_PRINCIPAL ?? 'owner', tokenKeyFile: secret('token-key'), clients: { acme: { clientIdFile: secret('cid'), clientSecretFile: secret('csec') } } } },
   egress: { endpoints: {}, legacyConsumers: [], internalNetworks: ['172.30.0.0/24'], directDestinations: [], infrastructureHosts: ['gateway.example.test'] }, installationPrepared: true,
 };
-const lifecycle = new AgentLifecycle(pool, pool, config, { agentsDir: dirs.agents!, secretsDir: dirs.secrets! }, docker, () => {}, () => {});
+const lifecycle = new AgentLifecycle(pool, pool, config, { mode: 'overlay', agentsDir: dirs.agents!, secretsDir: dirs.secrets! }, docker, () => {}, () => {});
 // Show the real cause behind the keeper's generic "action failed" answer.
 for (const method of ['prepare', 'saved', 'reconcile'] as const) {
   const original = (lifecycle as any)[method].bind(lifecycle);
