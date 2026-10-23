@@ -129,7 +129,9 @@ describe("the generated stack compose file", () => {
     expect(doc.services.console.volumes).toContain(`${host}:/srv/lares/installation/deadline-calendar.json:ro`);
     expect(doc.services.console.environment.DEADLINE_CALENDAR_FILE).toBe("/srv/lares/installation/deadline-calendar.json");
     const none = parse(renderStackCompose(MANIFEST, OPTS)) as any;
-    expect(none.services.console.volumes.some((v: string) => v.includes("deadline-calendar"))).toBe(false);
+    expect(none.services.console.volumes.some((v: unknown) =>
+      (typeof v === "string" ? v : JSON.stringify(v) ?? "").includes("deadline-calendar"),
+    )).toBe(false);
   });
 
   it("names every service by digest, and nothing else", () => {

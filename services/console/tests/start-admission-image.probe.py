@@ -33,8 +33,6 @@ installation = prefix / "srv/lares/installation"
 socket_dir = prefix / "run/lares"
 taste_dir = prefix / "srv/taste"
 opt = prefix / "opt/lares"
-for path in (secrets, installation, socket_dir, taste_dir, opt):
-    path.mkdir(parents=True, mode=0o755)
 admission = prefix / "var/lib/lares-maintenance/admission"
 auth = prefix / "var/lib/lares-maintenance/postgres-auth"
 subnet = f"172.30.{(os.getpid() % 180) + 20}.0/24"
@@ -48,6 +46,8 @@ missing_override_path = root / "missing-bind.compose.yml"
 proof = {
     "format": 1, "sourceCommit": SOURCE_SHA, "image": IMAGE, "status": "running",
     "failedStage": None,
+    "primaryFailure": None,
+    "cleanupFailures": [],
     "candidateImageId": None,
     "containerImageId": None,
     "restartContainerImageId": None,
@@ -79,9 +79,9 @@ def run(*args: str, timeout: int = 60, check: bool = True) -> subprocess.Complet
         result = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
-        raise ProbeFailure("command-timeout") from None
+        raise ProbeFailure("command-timeout:" + pathlib.Path(args[0]).name) from None
     if check and result.returncode != 0:
-        raise ProbeFailure("command-failed")
+        raise ProbeFailure("command-failed:" + pathlib.Path(args[0]).name)
     return result
 
 
@@ -185,9 +185,15 @@ def process_sample(container: str, expected_fd: str) -> dict[str, object]:
 stage = "fixture-setup"
 try:
     custody = REPO / "services/box/ops/maintenance-custody.py"
+    if any((prefix / path).exists() for path in ("srv/lares", "etc/lares/secrets")):
+        raise ProbeFailure("fresh-custody-prefix-has-installation-evidence")
     run("python3", str(custody), "prepare-fresh", str(prefix), subnet, "--confirm-fresh")
     receipt = json.loads((prefix / "var/lib/lares-maintenance/custody/preparation.json").read_text())
     identity, epoch = receipt["installationId"], str(receipt["epoch"])
+    # Fresh-custody preparation rejects paths that indicate an existing installation. Create
+    # those disposable Console fixtures only after the normal receipt has been prepared.
+    for path in (secrets, installation, socket_dir, taste_dir, opt):
+        path.mkdir(parents=True, mode=0o755)
     for name in ("console-session-secret", "eve-route-password", "database-password", "token-enc-key",
                  "gateway-key", "gateway-master-key", "model-provider-key", "gateway-database-password"):
         write(secrets / name, "neutral-ci-fixture-value\n")
@@ -330,38 +336,67 @@ try:
 except ProbeFailure as error:
     proof["status"] = "failed"
     proof["failedStage"] = stage + ":" + str(error)
+    proof["primaryFailure"] = {"stage": stage, "category": str(error)}
     raise SystemExit(1)
 except Exception as error:
     proof["status"] = "failed"
     proof["failedStage"] = stage + ":unexpected-" + type(error).__name__
-    raise
+    proof["primaryFailure"] = {"stage": stage, "category": "unexpected-" + type(error).__name__}
+    raise SystemExit(1)
 finally:
-    cleanup_failed = False
-    try:
-        for cleanup_project, compose_file, override_file in (
-                (project, stack_path, override_path),
-                (project + "-missing", missing_stack_path, missing_override_path)):
+    cleanup_failures: list[str] = []
+    cleanup_status = {"composeDownAttempted": 0, "composeDownSkipped": 0,
+                      "labeledResourcesRemaining": False, "resourceInspectionComplete": True,
+                      "fixtureRemoved": False}
+    for cleanup_project, compose_file, override_file in (
+            (project, stack_path, override_path),
+            (project + "-missing", missing_stack_path, missing_override_path)):
+        if not compose_file.is_file() or not override_file.is_file():
+            cleanup_status["composeDownSkipped"] += 1
+            continue
+        cleanup_status["composeDownAttempted"] += 1
+        try:
             result = docker("compose", "-p", cleanup_project, "-f", str(compose_file), "-f", str(override_file),
                             "down", "--volumes", "--remove-orphans", check=False, timeout=30)
             if result.returncode != 0:
-                raise ProbeFailure("compose-down-failed")
-        for label in (project, project + "-missing"):
-            for resource_type in ("ps", "network", "volume"):
-                listing_args = (["ps", "-aq"] if resource_type == "ps"
-                                else [resource_type, "ls", "-q"])
+                cleanup_failures.append("compose-down-failed")
+        except Exception:
+            cleanup_failures.append("compose-down-error")
+    for label in (project, project + "-missing"):
+        for resource_type in ("ps", "network", "volume"):
+            listing_args = (["ps", "-aq"] if resource_type == "ps"
+                            else [resource_type, "ls", "-q"])
+            try:
                 resources = docker(*listing_args, "--filter", f"label=com.docker.compose.project={label}",
                                    check=False, timeout=15)
-                if resources.returncode != 0 or resources.stdout.splitlines():
-                    raise ProbeFailure("compose-resources-remain")
-        shutil.rmtree(root, ignore_errors=False)
-        if root.exists():
-            raise ProbeFailure("fixture-directory-remains")
-        proof["claims"]["cleanupOkay"] = True
-    except Exception:
-        cleanup_failed = True
-        proof["claims"]["cleanupOkay"] = False
+                if resources.returncode != 0:
+                    cleanup_failures.append("resource-inspection-failed")
+                    cleanup_status["resourceInspectionComplete"] = False
+                elif resources.stdout.splitlines():
+                    cleanup_failures.append("compose-resources-remain")
+                    cleanup_status["labeledResourcesRemaining"] = True
+            except Exception:
+                cleanup_failures.append("resource-inspection-error")
+                cleanup_status["resourceInspectionComplete"] = False
+    if (not cleanup_status["labeledResourcesRemaining"]
+            and cleanup_status["resourceInspectionComplete"]):
+        try:
+            shutil.rmtree(root, ignore_errors=False)
+            cleanup_status["fixtureRemoved"] = not root.exists()
+            if not cleanup_status["fixtureRemoved"]:
+                cleanup_failures.append("fixture-directory-remains")
+        except Exception:
+            cleanup_failures.append("fixture-removal-failed")
+    else:
+        cleanup_failures.append("fixture-retained-for-resources")
+    proof["cleanup"] = cleanup_status
+    proof["cleanupFailures"] = sorted(set(cleanup_failures))
+    cleanup_failed = bool(cleanup_failures)
+    proof["claims"]["cleanupOkay"] = not cleanup_failed
+    if cleanup_failed:
         proof["status"] = "failed"
-        proof["failedStage"] = "cleanup"
+        if proof["primaryFailure"] is None:
+            proof["failedStage"] = "cleanup:" + proof["cleanupFailures"][0]
     pathlib.Path(PROOF_PATH).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(PROOF_PATH).write_text(json.dumps(proof, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     if cleanup_failed:
