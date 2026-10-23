@@ -1500,6 +1500,57 @@ class GatewayRuntimeAdmissionTests(unittest.TestCase):
                 "/run/lares-maintenance/admission",installation_id,str(epoch),"--",
                 "/usr/local/bin/lares-gateway-start"])
 
+    def test_gateway_database_role_waits_for_tcp_after_socket_only_readiness(self):
+        path=ROOT/"services/keeper/tests/gateway-admission-image.probe.py"
+        spec=importlib.util.spec_from_file_location("gateway_database_readiness_probe",path)
+        probe=importlib.util.module_from_spec(spec);spec.loader.exec_module(probe)
+        with tempfile.TemporaryDirectory(prefix="gateway-db-readiness-") as temporary:
+            root=pathlib.Path(temporary)
+            events=root/"events"
+            state=root/"tcp-state"
+            docker=root/"docker"
+            docker.write_text("""#!/usr/bin/env python3
+import os,pathlib,sys
+args=sys.argv[1:]
+events=pathlib.Path(os.environ["GATEWAY_PROBE_EVENTS"])
+state=pathlib.Path(os.environ["GATEWAY_PROBE_TCP_STATE"])
+def record(value):
+    with events.open("a",encoding="ascii") as stream: stream.write(value+"\\n")
+if args[0:1]!=["exec"] or "gateway-readiness-db" not in args: raise SystemExit(90)
+if "pg_isready" in args:
+    if "-h" not in args:
+        record("unix-ready")
+        print("/var/run/postgresql:5432 - accepting connections")
+        raise SystemExit(0)
+    if args[args.index("-h")+1]!="127.0.0.1": raise SystemExit(91)
+    if not state.exists():
+        state.write_text("temporary",encoding="ascii")
+        record("tcp-temporary-rejected")
+        print("127.0.0.1:5432 - no response")
+        raise SystemExit(0)
+    record("tcp-final-ready")
+    print("127.0.0.1:5432 - accepting connections")
+    raise SystemExit(0)
+if "psql" in args:
+    record("provision-sql")
+    raise SystemExit(0)
+raise SystemExit(92)
+""")
+            docker.chmod(0o755)
+            proof=probe.Proof.__new__(probe.Proof)
+            proof.name="gateway-readiness"
+            environment={
+                "PATH":str(root)+os.pathsep+os.environ.get("PATH",""),
+                "GATEWAY_PROBE_EVENTS":str(events),
+                "GATEWAY_PROBE_TCP_STATE":str(state),
+            }
+            with mock.patch.dict(os.environ,environment), mock.patch.object(probe.time,"sleep",return_value=None):
+                socket_ready=probe.command("docker","exec",proof.name+"-db","pg_isready","-U","proof","-d","litellm")
+                self.assertTrue(socket_ready.endswith("accepting connections"))
+                proof.provision_gateway_role("fixture-safe-password")
+            self.assertEqual(events.read_text(encoding="ascii").splitlines(),[
+                "unix-ready","tcp-temporary-rejected","tcp-final-ready","provision-sql"])
+
     def test_inherited_verifier_rejects_lock_inode_replaced_during_flock(self):
         path=ROOT/"images/gateway-runtime/gateway_admission.py"
         spec=importlib.util.spec_from_file_location("gateway_runtime_admission",path)

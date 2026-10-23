@@ -343,6 +343,14 @@ class Proof:
     def sql(self, statement, database="litellm"):
         return command("docker", "exec", "-i", self.name+"-db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "proof", "-d", database, "-At", input=statement)
 
+    def provision_gateway_role(self, gateway_password):
+        require(re.fullmatch(r"[A-Za-z0-9_-]+",gateway_password) is not None,
+            "Disposable Gateway database password is not safe for the bounded SQL fixture")
+        self.wait(lambda:command("docker","exec",self.name+"-db","pg_isready","-h","127.0.0.1",
+            "-U","proof","-d","litellm").endswith("accepting connections"),
+            "Fixture database TCP listener failed",seconds=120)
+        self.sql("CREATE ROLE lares_gateway LOGIN PASSWORD '"+gateway_password+"'; ALTER DATABASE litellm OWNER TO lares_gateway; GRANT CONNECT, CREATE ON DATABASE litellm TO lares_gateway; GRANT ALL ON SCHEMA public TO lares_gateway; ALTER DEFAULT PRIVILEGES FOR ROLE proof IN SCHEMA public GRANT ALL ON TABLES TO lares_gateway; ALTER DEFAULT PRIVILEGES FOR ROLE proof IN SCHEMA public GRANT ALL ON SEQUENCES TO lares_gateway;")
+
     def client(self, document):
         # The source modules use .js imports that tsx resolves to their .ts sources.
         return json.loads(command("docker", "exec", "-i", self.name+"-client", "node", "--import", "/app/services/chief-of-staff/node_modules/tsx/dist/loader.mjs", "--input-type=module", "-e", CLIENT, input=json.dumps(document), timeout=40))
@@ -643,11 +651,8 @@ print('ok')
         mount=["--mount",f"type=bind,src={self.root},dst=/fixture,readonly"]
         assets=["--mount",f"type=bind,src={ASSETS},dst=/adapter,readonly"]
         self.run("db",self.manifest["images"]["db"],[*mount,"--network-alias","db","-e","POSTGRES_USER=proof","-e","POSTGRES_DB=litellm","-e","POSTGRES_PASSWORD_FILE=/fixture/password"],[])
-        self.wait(lambda:command("docker","exec",self.name+"-db","pg_isready","-U","proof","-d","litellm").endswith("accepting connections"),"Fixture database failed")
         gateway_password=(self.root/"password").read_text(encoding="ascii")
-        require(re.fullmatch(r"[A-Za-z0-9_-]+",gateway_password) is not None,
-            "Disposable Gateway database password is not safe for the bounded SQL fixture")
-        self.sql("CREATE ROLE lares_gateway LOGIN PASSWORD '"+gateway_password+"'; ALTER DATABASE litellm OWNER TO lares_gateway; GRANT CONNECT, CREATE ON DATABASE litellm TO lares_gateway; GRANT ALL ON SCHEMA public TO lares_gateway; ALTER DEFAULT PRIVILEGES FOR ROLE proof IN SCHEMA public GRANT ALL ON TABLES TO lares_gateway; ALTER DEFAULT PRIVILEGES FOR ROLE proof IN SCHEMA public GRANT ALL ON SEQUENCES TO lares_gateway;")
+        self.provision_gateway_role(gateway_password)
         self.run("fixture",self.manifest["images"]["lares-gateway"],[*mount,*assets,"--network-alias","fixture","--entrypoint","python","-e","PYTHONDONTWRITEBYTECODE=1"],["/fixture/fixture.py"])
         # The client receives only the probe source, protected master-key file, and fixed phase barrier.
         client_mounts=[
