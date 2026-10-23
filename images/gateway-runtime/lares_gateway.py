@@ -40,8 +40,98 @@ current_request = contextvars.ContextVar("lares_gateway_request", default=None)
 runtime = None
 STARTUP_STATE_FILE = "/tmp/lares-gateway-startup-state.json"
 STARTUP_FAILURE_FILE = "/tmp/lares-gateway-startup-first-failure.json"
+MODEL_REQUEST_DIAGNOSTIC_FILE = "/tmp/lares-gateway-model-request.json"
 STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-failed", "native-app-import", "native-app-import-failed", "asgi-server", "asgi-server-failed", "native-lifespan-starting", "native-lifespan-complete", "native-lifespan-failed", "native-lifespan-error", "runtime-validation-failed", "ready"))
 STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-native-types", "callback-proxy-hook-types", "callback-native-membership", "callback-native-coverage", "callback-native-cost", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
+MODEL_REQUEST_STAGES = frozenset(("runtime-check", "headers", "body", "profile", "native-dispatch", "native-response"))
+MODEL_REQUEST_COUNTER = 0
+
+
+def _write_model_request_diagnostic(marker):
+    """CI-only first-model-request shape metadata; never store request values or content."""
+    if os.environ.get("CI") != "true" or os.environ.get("LARES_GATEWAY_PROBE_DIAGNOSTICS") != "1": return
+    if type(marker) is not dict or marker.get("stage") not in MODEL_REQUEST_STAGES: return
+    try:
+        normalized = {
+            "schema": 1,
+            "requestCount": min(max(marker.get("requestCount", 0), 0), 1),
+            "stage": marker["stage"],
+            "statusCode": marker.get("statusCode", 0) if type(marker.get("statusCode", 0)) is int and 0 <= marker.get("statusCode", 0) <= 599 else 0,
+            "checks": {},
+            "unknownHeaderCount": min(max(marker.get("unknownHeaderCount", 0), 0), 31),
+            "duplicateHeaderCount": min(max(marker.get("duplicateHeaderCount", 0), 0), 31),
+            "unknownBodyFieldCount": min(max(marker.get("unknownBodyFieldCount", 0), 0), 31),
+        }
+        checks = marker.get("checks", {})
+        for name in ("anthropicBetaPresent", "authorizationPresent", "apiKeyPresent", "ticketPresent", "contentTypeJson",
+                     "modelAliasAllowed", "messagesIsList", "maxTokensAllowed", "physicalDispatchObserved"):
+            normalized["checks"][name] = checks.get(name) is True if type(checks) is dict else False
+        raw = canonical(normalized)
+        if len(raw) > 2048: return
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".lares-model-request-", dir="/tmp", delete=False) as destination:
+                temporary = destination.name
+                os.fchmod(destination.fileno(), 0o600)
+                destination.write(raw)
+            os.replace(temporary, MODEL_REQUEST_DIAGNOSTIC_FILE)
+            temporary = None
+        finally:
+            if temporary is not None:
+                try: os.unlink(temporary)
+                except OSError: pass
+    except Exception: pass  # Diagnostics cannot change gateway enforcement or responses.
+
+
+def reset_model_request_diagnostic():
+    global MODEL_REQUEST_COUNTER
+    if os.environ.get("CI") != "true" or os.environ.get("LARES_GATEWAY_PROBE_DIAGNOSTICS") != "1": return
+    MODEL_REQUEST_COUNTER = 0
+    try: os.unlink(MODEL_REQUEST_DIAGNOSTIC_FILE)
+    except OSError: pass
+    _write_model_request_diagnostic({"requestCount": 0, "stage": "runtime-check"})
+
+
+def begin_model_request_diagnostic():
+    global MODEL_REQUEST_COUNTER
+    if os.environ.get("CI") != "true" or os.environ.get("LARES_GATEWAY_PROBE_DIAGNOSTICS") != "1" or MODEL_REQUEST_COUNTER >= 1: return None
+    MODEL_REQUEST_COUNTER = 1
+    marker = {"requestCount": 1, "stage": "runtime-check"}
+    _write_model_request_diagnostic(marker)
+    return marker
+
+
+def update_model_request_diagnostic(marker, stage, *, status_code=None, checks=None, unknown_header_count=None,
+                                    duplicate_header_count=None, unknown_body_field_count=None):
+    if marker is None: return
+    try:
+        marker["stage"] = stage
+        if status_code is not None: marker["statusCode"] = status_code
+        if checks is not None: marker["checks"] = checks
+        if unknown_header_count is not None: marker["unknownHeaderCount"] = unknown_header_count
+        if duplicate_header_count is not None: marker["duplicateHeaderCount"] = duplicate_header_count
+        if unknown_body_field_count is not None: marker["unknownBodyFieldCount"] = unknown_body_field_count
+        _write_model_request_diagnostic(marker)
+    except Exception: pass  # Diagnostics cannot change gateway enforcement or responses.
+
+
+def model_request_shape_checks(raw, profile, headers):
+    """Return fixed request-shape metadata; malformed input never affects enforcement."""
+    try:
+        parsed = parse_json(raw)
+        allowed = {"model", "messages", "max_tokens", "max_completion_tokens", "stream", "stream_options", "temperature", "top_p", "stop", "stop_sequences", "system", "tools", "tool_choice", "parallel_tool_calls", "thinking"}
+        unknown_fields = min(31, sum(name not in allowed for name in parsed) if type(parsed) is dict else 0)
+        maximum = parsed.get("max_tokens", parsed.get("max_completion_tokens")) if type(parsed) is dict else None
+        checks = {"anthropicBetaPresent": b"anthropic-beta" in headers,
+            "authorizationPresent": b"authorization" in headers, "apiKeyPresent": b"x-api-key" in headers,
+            "ticketPresent": b"x-lares-budget-intent" in headers,
+            "contentTypeJson": headers.get(b"content-type", "").split(";")[0] == "application/json",
+            "modelAliasAllowed": type(parsed) is dict and parsed.get("model") in profile.document["aliases"],
+            "messagesIsList": type(parsed) is dict and type(parsed.get("messages")) is list,
+            "maxTokensAllowed": type(maximum) is int and 1 <= maximum <= profile.document["maxOutputTokens"]}
+        return checks, unknown_fields
+    except Exception:
+        return {}, 0
 
 
 def record_startup_diagnostic(phase, stage="not-started", checks=None):
@@ -51,9 +141,9 @@ def record_startup_diagnostic(phase, stage="not-started", checks=None):
     temporary = None
     try:
         if phase == "process-starting":
-            for name in (STARTUP_STATE_FILE, STARTUP_FAILURE_FILE):
+            for name in (STARTUP_STATE_FILE, STARTUP_FAILURE_FILE, MODEL_REQUEST_DIAGNOSTIC_FILE):
                 try: os.unlink(name)
-                except FileNotFoundError: pass
+                except OSError: pass
         marker = {"phase": phase, "stage": stage}
         if checks is not None: marker["checks"] = checks
         raw = canonical(marker)
@@ -644,7 +734,7 @@ class GatewayApp:
                 record_startup_diagnostic("native-lifespan-error", runtime.validation_stage)
                 raise
             return
-        request, token, native_invoked = None, None, False
+        request, token, native_invoked, diagnostic = None, None, False, None
         outward_response_started = False
         async def outward_send(message):
             nonlocal outward_response_started
@@ -707,13 +797,29 @@ class GatewayApp:
                 await self.native(scope, receive, outward_send)
                 return
             if route[0] != "POST" or route[1] not in MODEL_ROUTES: raise Refused()
+            diagnostic = begin_model_request_diagnostic()
             runtime.check_runtime()
+            update_model_request_diagnostic(diagnostic, "headers")
             headers = {}
             allowed_headers = {b"host", b"connection", b"content-type", b"content-length", b"authorization", b"x-api-key", b"x-lares-budget-intent", b"anthropic-version", b"accept", b"accept-encoding", b"accept-language", b"sec-fetch-mode", b"user-agent"}
+            unknown_header_count = duplicate_header_count = 0
             for name, value in scope["headers"]:
                 name = name.lower()
-                if name in headers or name not in allowed_headers: raise Refused()
+                if name in headers:
+                    duplicate_header_count = min(31, duplicate_header_count + 1)
+                    update_model_request_diagnostic(diagnostic, "headers", duplicate_header_count=duplicate_header_count)
+                    raise Refused()
+                if name not in allowed_headers:
+                    unknown_header_count = min(31, unknown_header_count + 1)
+                    update_model_request_diagnostic(diagnostic, "headers", unknown_header_count=unknown_header_count,
+                        checks={"anthropicBetaPresent": name == b"anthropic-beta"})
+                    raise Refused()
                 headers[name] = value.decode("ascii")
+            if diagnostic is not None:
+                update_model_request_diagnostic(diagnostic, "headers", checks={"anthropicBetaPresent": b"anthropic-beta" in headers,
+                    "authorizationPresent": b"authorization" in headers, "apiKeyPresent": b"x-api-key" in headers,
+                    "ticketPresent": b"x-lares-budget-intent" in headers,
+                    "contentTypeJson": headers.get(b"content-type", "").split(";")[0] == "application/json"})
             if headers.get(b"content-type", "").split(";")[0] != "application/json" or b"content-encoding" in headers: raise Refused()
             auth = headers.get(b"authorization", "")
             credential = auth[7:] if auth.startswith("Bearer ") else headers.get(b"x-api-key", "")
@@ -722,6 +828,7 @@ class GatewayApp:
             if not TICKET.fullmatch(ticket): raise Refused()
             raw = bytearray()
             ingress_started = time.monotonic()
+            update_model_request_diagnostic(diagnostic, "body")
             async with asyncio.timeout(2):
                 while True:
                     message = await receive()
@@ -729,7 +836,14 @@ class GatewayApp:
                     raw.extend(message.get("body", b""))
                     if len(raw) > runtime.profile.document["maxBodyBytes"]: raise Refused()
                     if not message.get("more_body", False): break
+            diagnostic_checks = {}
+            unknown_body_field_count = 0
+            if diagnostic is not None:
+                diagnostic_checks, unknown_body_field_count = model_request_shape_checks(bytes(raw), runtime.profile, headers)
+                update_model_request_diagnostic(diagnostic, "profile", checks=diagnostic_checks, unknown_body_field_count=unknown_body_field_count)
             runtime.profile.check_body(route[1], bytes(raw))
+            update_model_request_diagnostic(diagnostic, "native-dispatch", checks=diagnostic_checks,
+                unknown_body_field_count=unknown_body_field_count)
             request = RequestState(*route, bytes(raw), runtime.endpoint, credential, now=ingress_started)
             request.ticket = ticket
             token = current_request.set(request)
@@ -751,6 +865,8 @@ class GatewayApp:
             async def native_send(message):
                 nonlocal native_response_started, replaced_refusal
                 if message["type"] == "http.response.start":
+                    update_model_request_diagnostic(diagnostic, "native-response", status_code=message.get("status", 0),
+                        checks={**diagnostic_checks, "physicalDispatchObserved": request.dispatched})
                     if (request._authored_refusal and not request.dispatched and not native_response_started):
                         replaced_refusal = True
                         native_response_started = True
@@ -766,6 +882,8 @@ class GatewayApp:
             if outward_response_started: raise
             if request is None and native_invoked: raise
             if request is not None and (request.dispatched or not request._authored_refusal): raise
+            update_model_request_diagnostic(diagnostic, diagnostic.get("stage", "runtime-check") if diagnostic else "runtime-check",
+                status_code=400)
             await outward_send({"type": "http.response.start", "status": 400, "headers": [(b"content-type", b"application/json")]})
             await outward_send({"type": "http.response.body", "body": canonical({"error": {"type": ADMISSION_REFUSED_TYPE, "code": ADMISSION_REFUSED_TYPE, "message": ADMISSION_REFUSED_TEXT}})})
         finally:
@@ -782,6 +900,7 @@ class GatewayApp:
 def main():
     global runtime
     record_startup_diagnostic("process-starting")
+    reset_model_request_diagnostic()
     phase = "preflight-failed"
     try:
         runtime = Runtime()

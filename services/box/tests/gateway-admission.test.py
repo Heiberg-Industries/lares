@@ -23,7 +23,7 @@ import types
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
 sys.path.insert(0, str(ROOT / "images/gateway-runtime"))
-from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash, NATIVE_LOOKUP_ROUTES, NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, MODEL_ROUTES, native_route_allowed
+from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, canonical, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash, NATIVE_LOOKUP_ROUTES, NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, MODEL_ROUTES, native_route_allowed
 
 
 class ContractTests(unittest.TestCase):
@@ -563,6 +563,8 @@ class EmbeddedFixtureTests(unittest.TestCase):
             with tarfile.open(fileobj=archive_bytes,mode="w") as archive:
                 info=tarfile.TarInfo("failure.json");info.size=len(first);archive.addfile(info,io.BytesIO(first))
             self.assertEqual(probe.startup_marker_from_archive(archive_bytes.getvalue(),"failure.json"),probe.validated_startup_marker(first))
+
+
             self.assertEqual(probe.startup_marker_from_archive(b"not tar","failure.json"),"unknown")
             noisy="Gateway admission runtime validation failed: callback-registry\n"+"shutdown traceback\n"*10000
             self.assertEqual(probe.fixed_startup_log_markers(noisy),["runtime-validation-failed:callback-registry"])
@@ -626,14 +628,29 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
             "ADMISSION_REFUSED_TYPE":"budget_admission_refused","ADMISSION_REFUSED_TEXT":"I could not verify permission to spend. Please check the gateway setup.",
             "CustomLogger":object,"AdmissionHTTPRefusal":type("AdmissionHTTPRefusal",(Exception,),{}),
             "state":lambda: self.request_context.get(),"refusal":lambda: ValueError("authored refusal")}
+        diagnostic_names={"MODEL_REQUEST_DIAGNOSTIC_FILE","MODEL_REQUEST_STAGES","MODEL_REQUEST_COUNTER",
+            "_write_model_request_diagnostic","begin_model_request_diagnostic","update_model_request_diagnostic","model_request_shape_checks"}
+        diagnostic_nodes=[node for node in source.body if isinstance(node,(ast.Assign,ast.FunctionDef)) and
+            ((isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in diagnostic_names for target in node.targets)) or
+             (isinstance(node,ast.FunctionDef) and node.name in diagnostic_names))]
+        self.diag_dir=tempfile.TemporaryDirectory(prefix="lares-model-asgi-diagnostic-")
+        diagnostic_namespace={"os":os,"tempfile":tempfile,"canonical":self.namespace["canonical"],"parse_json":parse_json,
+            "MODEL_REQUEST_DIAGNOSTIC_FILE":str(pathlib.Path(self.diag_dir.name)/"record.json")}
+        exec(compile(ast.Module(body=diagnostic_nodes,type_ignores=[]),"gateway-asgi-diagnostic","exec"),diagnostic_namespace)
+        diagnostic_namespace["MODEL_REQUEST_DIAGNOSTIC_FILE"]=str(pathlib.Path(self.diag_dir.name)/"record.json")
+        self.namespace.update({name:diagnostic_namespace[name] for name in diagnostic_names if name in diagnostic_namespace})
+        self.diagnostic_path=pathlib.Path(diagnostic_namespace["MODEL_REQUEST_DIAGNOSTIC_FILE"])
         exec(compile(ast.Module(body=[gateway_app,admission_hook],type_ignores=[]),"gateway-refusal","exec"),self.namespace)
         self.app = self.namespace["GatewayApp"](self.native)
         self.mode = "marked"
         self.native_response = (400,b'{"type":"invalid_request_error","message":"remapped"}')
         self.last_sent = None
         self.native_calls = 0
+        self.model_native_calls = 0
         self.native_scope = None
         self.native_body = None
+
+    def tearDown(self): self.diag_dir.cleanup()
 
     async def native(self, scope, receive, send):
         if (scope.get("method"), scope.get("path")) in NATIVE_MASTER_ROUTES:
@@ -643,6 +660,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
             await send({"type":"http.response.start","status":200,"headers":[(b"content-type",b"application/json")]})
             await send({"type":"http.response.body","body":b'{"native":true}'})
             return
+        self.model_native_calls += 1
         await receive()
         request = self.request_context.get()
         if self.mode in ("marked","after-replacement-refused"): request._authored_refusal = True
@@ -657,10 +675,10 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         if self.mode in ("after-replacement-refused","after-headers-refused"): raise Refused()
         if self.mode == "after-headers-timeout-dispatched": request.dispatched=True; raise TimeoutError()
 
-    async def call_app(self):
+    async def call_app(self, extra_headers=()):
         raw=b'{}'
         scope={"type":"http","method":"POST","path":"/v1/messages","raw_path":b"/v1/messages","query_string":b"",
-            "headers":[(b"host",b"gateway.invalid"),(b"content-type",b"application/json"),(b"authorization",b"Bearer fixture"),(b"x-lares-budget-intent",b"a"*43)]}
+            "headers":[(b"host",b"gateway.invalid"),(b"content-type",b"application/json"),(b"authorization",b"Bearer fixture"),(b"x-lares-budget-intent",b"a"*43),*extra_headers]}
         incoming=[{"type":"http.request","body":raw,"more_body":False}]
         async def receive(): return incoming.pop(0)
         sent=[]
@@ -668,6 +686,28 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         self.last_sent=sent
         await self.app(scope,receive,send)
         return sent
+
+    async def test_real_diagnostic_helpers_preserve_valid_native_delegation(self):
+        self.assertEqual(self.diagnostic_path.parent,pathlib.Path(self.diag_dir.name))
+        self.mode="normal"
+        with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+            sent=await self.call_app()
+        self.assertEqual(sent[0]["status"],400)
+        self.assertEqual(sent[0]["headers"][-1],(b"x-native",b"retained"))
+        self.assertEqual(self.model_native_calls,1)
+        record=json.loads(self.diagnostic_path.read_bytes())
+        self.assertEqual((record["stage"],record["statusCode"]),("native-response",400))
+
+    async def test_real_diagnostic_helpers_preserve_ingress_refusal_and_hide_header_text(self):
+        with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+            sent=await self.call_app(extra_headers=[(b"x-private-header",b"private-value")])
+        self.assertEqual(sent[0]["status"],400)
+        self.assertEqual(self.model_native_calls,0)
+        raw=self.diagnostic_path.read_bytes()
+        record=json.loads(raw)
+        self.assertEqual((record["stage"],record["statusCode"],record["unknownHeaderCount"]),("headers",400,1))
+        self.assertNotIn(b"x-private-header",raw)
+        self.assertNotIn(b"private-value",raw)
 
     async def call_lookup(self, method, path, *, query=b"", body=b"", headers=None, receive=None, auth=b"Bearer fixture-master-key", raw_path=None):
         raw_path=path.encode("ascii") if raw_path is None else raw_path
@@ -855,6 +895,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await hook.async_post_call_failure_hook({},ValueError(),None))
         finally: self.request_context.reset(token)
 
+
     async def test_pre_call_guard_failure_marks_only_current_request(self):
         hook=self.namespace["AdmissionHook"]()
         request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture")
@@ -902,6 +943,115 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(Refused): await runtime.before_http(types.SimpleNamespace(extensions={}))
             self.assertFalse(request._authored_refusal)
         finally: self.request_context.reset(token)
+
+
+class ModelRequestDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        source=ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
+        names={"MODEL_REQUEST_DIAGNOSTIC_FILE","MODEL_REQUEST_STAGES","MODEL_REQUEST_COUNTER",
+            "_write_model_request_diagnostic","reset_model_request_diagnostic","begin_model_request_diagnostic",
+            "update_model_request_diagnostic","model_request_shape_checks"}
+        nodes=[node for node in source.body if isinstance(node,(ast.Assign,ast.FunctionDef)) and
+            ((isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in names for target in node.targets)) or
+             (isinstance(node,ast.FunctionDef) and node.name in names))]
+        self.namespace={"os":os,"tempfile":tempfile,"canonical":canonical,"parse_json":parse_json,
+            "MODEL_REQUEST_DIAGNOSTIC_FILE":"/private/tmp/lares-gateway-model-request-test.json"}
+        exec(compile(ast.Module(body=nodes,type_ignores=[]),"gateway-request-diagnostic","exec"),self.namespace)
+        self.directory=tempfile.TemporaryDirectory(prefix="lares-model-diagnostic-test-")
+        self.path=pathlib.Path(self.directory.name)/"record.json"
+        self.namespace["MODEL_REQUEST_DIAGNOSTIC_FILE"]=str(self.path)
+
+    def tearDown(self): self.directory.cleanup()
+
+    def test_gate_off_writes_nothing(self):
+        with mock.patch.dict(os.environ,{},clear=True):
+            marker=self.namespace["begin_model_request_diagnostic"]()
+            self.namespace["update_model_request_diagnostic"](marker,"profile",status_code=400)
+        self.assertFalse(self.path.exists())
+
+    def test_record_contains_only_fixed_bounded_metadata(self):
+        with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+            marker=self.namespace["begin_model_request_diagnostic"]()
+            self.namespace["update_model_request_diagnostic"](marker,"headers",checks={
+                "authorizationPresent":True,"secret-value":"do not retain"},unknown_header_count=999)
+        raw=self.path.read_bytes()
+        self.assertLessEqual(len(raw),2048)
+        record=json.loads(raw)
+        self.assertEqual(record["stage"],"headers")
+        self.assertEqual(record["unknownHeaderCount"],31)
+        self.assertTrue(record["checks"]["authorizationPresent"])
+        self.assertNotIn("secret-value",raw.decode())
+        self.assertNotIn("do not retain",raw.decode())
+
+    def test_request_shape_records_only_boolean_checks_and_unknown_count(self):
+        profile=Profile({"version":1,"provider":"openai","model":"gpt-4o-mini","providerBaseUrl":"https://provider.example.invalid/v1","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":123})
+        checks,count=self.namespace["model_request_shape_checks"](
+            b'{"model":"lares-brain","messages":[],"max_tokens":10,"private-secret":"never retain"}',profile,
+            {b"content-type":"application/json"})
+        self.assertTrue(checks["modelAliasAllowed"])
+        self.assertTrue(checks["messagesIsList"])
+        self.assertEqual(count,1)
+        self.assertEqual(set(checks),{"anthropicBetaPresent","authorizationPresent","apiKeyPresent","ticketPresent",
+            "contentTypeJson","modelAliasAllowed","messagesIsList","maxTokensAllowed"})
+        self.assertNotIn("private-secret",json.dumps(checks))
+
+    def test_diagnostic_io_failures_are_swallowed(self):
+        with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+            marker=self.namespace["begin_model_request_diagnostic"]()
+            with mock.patch.object(self.namespace["os"],"replace",side_effect=PermissionError("fixture")):
+                self.namespace["update_model_request_diagnostic"](marker,"profile",status_code=400)
+
+    def test_first_use_reader_accepts_only_fixed_schema(self):
+        source=ast.parse((ROOT / "services/keeper/tests/native-first-use-image.probe.py").read_text())
+        names={"MODEL_REQUEST_DIAGNOSTIC_STAGES","MODEL_REQUEST_DIAGNOSTIC_CHECKS","validated_model_request_diagnostic"}
+        nodes=[node for node in source.body if isinstance(node,(ast.Assign,ast.FunctionDef)) and
+            ((isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in names for target in node.targets)) or
+             (isinstance(node,ast.FunctionDef) and node.name in names))]
+        namespace={"json":json}
+        exec(compile(ast.Module(body=nodes,type_ignores=[]),"first-use-diagnostic-reader","exec"),namespace)
+        record={"schema":1,"requestCount":1,"stage":"native-response","statusCode":400,
+            "checks":{name:False for name in namespace["MODEL_REQUEST_DIAGNOSTIC_CHECKS"]},
+            "unknownHeaderCount":0,"duplicateHeaderCount":0,"unknownBodyFieldCount":0}
+        valid=json.dumps(record,separators=(",",":")).encode()
+        self.assertEqual(namespace["validated_model_request_diagnostic"](valid),record)
+        contaminated={**record,"unknown_private_key":"do not retain"}
+        self.assertEqual(namespace["validated_model_request_diagnostic"](json.dumps(contaminated).encode()),"unknown")
+        self.assertEqual(namespace["validated_model_request_diagnostic"]((b" "*2049)),"unknown")
+
+    def test_first_use_failure_collects_before_cleanup_and_preserves_error(self):
+        source=ast.parse((ROOT / "services/keeper/tests/native-first-use-image.probe.py").read_text())
+        helper=next(node for node in source.body if isinstance(node,ast.FunctionDef) and node.name=="invoke_first_use_and_capture")
+        namespace={}
+        exec(compile(ast.Module(body=[helper],type_ignores=[]),"first-use-failure-capture","exec"),namespace)
+        proof={};events=[];failure=RuntimeError("compiled client failed")
+        def invoke():
+            events.append("client")
+            raise failure
+        def collect():
+            self.assertNotIn("cleanup",events)
+            events.append("collect")
+            return {"stage":"native-response","statusCode":400}
+        try:
+            namespace["invoke_first_use_and_capture"](invoke,collect,proof)
+        except RuntimeError as error:
+            self.assertIs(error,failure)
+        else: self.fail("Original first-use client failure was not propagated")
+        finally: events.append("cleanup")
+        self.assertEqual(events,["client","collect","cleanup"])
+        self.assertEqual(proof["gatewayModelRequestDiagnostic"],{"stage":"native-response","statusCode":400})
+
+    def test_gateway_launch_passes_existing_diagnostic_opt_in(self):
+        source=ast.parse((ROOT / "services/keeper/tests/native-first-use-image.probe.py").read_text())
+        assignment=next(node for node in ast.walk(source) if isinstance(node,ast.Assign) and
+            any(isinstance(target,ast.Name) and target.id=="gateway_args" for target in node.targets))
+        elements=assignment.value.elts
+        pairs=[]
+        for index in range(len(elements)-1):
+            try: pair=(ast.literal_eval(elements[index]),ast.literal_eval(elements[index+1]))
+            except (ValueError,TypeError): continue
+            pairs.append(pair)
+        self.assertIn(("-e","CI=true"),pairs)
+        self.assertIn(("-e","LARES_GATEWAY_PROBE_DIAGNOSTICS=1"),pairs)
 
 
 if __name__ == "__main__": unittest.main()

@@ -209,6 +209,43 @@ COMPILED_CLIENT_RESULT_CODES={'budget_admission_refused','budget_exceeded','mode
 COMPILED_CLIENT_RESULT_CATEGORIES={'localDispatchUnavailable','nativeAdmissionRefused','timeoutAbort',
     'socketUnavailable','requestPolicyRejected','unknown'}
 COMPILED_CLIENT_RESULT_STATUSES={'completed','failed','waiting','unknown'}
+MODEL_REQUEST_DIAGNOSTIC_STAGES={'runtime-check','headers','body','profile','native-dispatch','native-response'}
+MODEL_REQUEST_DIAGNOSTIC_CHECKS={'anthropicBetaPresent','authorizationPresent','apiKeyPresent','ticketPresent','contentTypeJson',
+    'modelAliasAllowed','messagesIsList','maxTokensAllowed','physicalDispatchObserved'}
+
+def validated_model_request_diagnostic(raw):
+    if len(raw)>2048:return 'unknown'
+    try:parsed=json.loads(raw)
+    except (TypeError,ValueError):return 'unknown'
+    expected={'schema','requestCount','stage','statusCode','checks','unknownHeaderCount','duplicateHeaderCount','unknownBodyFieldCount'}
+    if (type(parsed) is not dict or set(parsed)!=expected or type(parsed.get('schema')) is not int or parsed['schema']!=1 or
+        type(parsed.get('requestCount')) is not int or parsed['requestCount'] not in (0,1) or
+        parsed.get('stage') not in MODEL_REQUEST_DIAGNOSTIC_STAGES or
+        type(parsed.get('statusCode')) is not int or not 0<=parsed['statusCode']<=599 or
+        any(type(parsed.get(name)) is not int or not 0<=parsed[name]<=31 for name in ('unknownHeaderCount','duplicateHeaderCount','unknownBodyFieldCount')) or
+        type(parsed.get('checks')) is not dict or set(parsed['checks'])!=MODEL_REQUEST_DIAGNOSTIC_CHECKS or
+        any(type(value) is not bool for value in parsed['checks'].values())):return 'unknown'
+    return parsed
+
+def gateway_model_request_diagnostic(name):
+    path=root/'gateway-model-request-diagnostic.json'
+    try:
+        copied=run('docker','cp',name+':/tmp/lares-gateway-model-request.json',str(path),check=False,timeout=5)
+        if copied.returncode!=0 or not path.is_file() or path.stat().st_size>2048:return 'unknown'
+        return validated_model_request_diagnostic(path.read_bytes())
+    except Exception:return 'unknown'
+
+def invoke_first_use_and_capture(invoke, collect, proof):
+    """Collect bounded gateway metadata on both success and failure, before fixture cleanup."""
+    try:
+        result=invoke()
+    except Exception:
+        try:proof['gatewayModelRequestDiagnostic']=collect()
+        except Exception:proof['gatewayModelRequestDiagnostic']='unknown'
+        raise
+    try:proof['gatewayModelRequestDiagnostic']=collect()
+    except Exception:proof['gatewayModelRequestDiagnostic']='unknown'
+    return result
 
 def unknown_compiled_client_result_summary():
     return {'markerValid':False,'outcome':'unknown','resultStatus':'unknown','expectedMessage':None,
@@ -578,6 +615,7 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
       '-e','LARES_GATEWAY_ADMISSION_URL=https://admission-bridge:8443','-e','LARES_GATEWAY_SERVICE_KEY_FILE=/run/secrets/gateway-budget-service-key',
       '-e','LARES_GATEWAY_ENDPOINT_HASH='+endpoint_hash,'-e','LARES_GATEWAY_PROFILE_FILE=/etc/litellm/profile.json','-e','SSL_CERT_FILE=/fixture/tls/ca.pem',
       '-e','LITELLM_LOCAL_MODEL_COST_MAP=True','-e','LITELLM_TELEMETRY=False','-e','PYTHONDONTWRITEBYTECODE=1','-e','CI=true',
+      '-e','LARES_GATEWAY_PROBE_DIAGNOSTICS=1',
       '--entrypoint','/bin/sh',gateway,'/opt/lares-gateway/start.sh']
     stage = 'pinned-production-gateway-start'
     docker(*gateway_args);container_names.append(network+'-gateway')
@@ -1051,7 +1089,8 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
     cases['compiledChiefRuntimeReady']=True
 
     stage = 'console-signature-and-first-model-request'
-    client_result=invoke_compiled_client()
+    client_result=invoke_first_use_and_capture(invoke_compiled_client,
+      lambda:gateway_model_request_diagnostic(network+'-gateway'),proof)
     request_result=json.loads(client_result)
     if request_result.get('response')!='FIRST_USE_OK' or request_result.get('replayStatus',200)<400 or request_result.get('staleStatus',200)<400 or request_result.get('wrongMemberStatus',200)<400:
         raise RuntimeError('Signed first-use or refusal checks did not match the expected result')
