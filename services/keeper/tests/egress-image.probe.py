@@ -4,6 +4,7 @@ All clients and destinations use an internal Docker network. No published ports,
 credentials, providers, installation state or host Docker socket mounts.
 """
 import base64
+import ast
 import copy
 import fcntl
 import hashlib
@@ -21,30 +22,40 @@ import sys
 import tempfile
 import time
 import uuid
+from unittest.mock import patch
 
-assert os.environ.get('GITHUB_ACTIONS') == 'true', 'Run proxy image proof only in CI'
-assert platform.system() == 'Linux' and platform.machine() == 'x86_64'
-image, client_image, output = sys.argv[1:]
-root = pathlib.Path(tempfile.mkdtemp(prefix='lares-proxy-proof-'))
-root.chmod(0o755)
+_self_test = sys.argv[1:] == ['--self-test']
+if not _self_test:
+    assert os.environ.get('GITHUB_ACTIONS') == 'true', 'Run proxy image proof only in CI'
+    assert platform.system() == 'Linux' and platform.machine() == 'x86_64'
+    image, client_image, output = sys.argv[1:]
+    root = pathlib.Path(tempfile.mkdtemp(prefix='lares-proxy-proof-'))
+    root.chmod(0o755)
+    _source_revision = os.environ['GITHUB_SHA']
+else:
+    image = client_image = output = ''
+    root = None
+    _source_revision = 'offline-self-test'
 name = 'lares-proxy-proof-' + uuid.uuid4().hex[:10]
 network = name
 target_name = name + '-target'
 proxy_name = 'lares-egress-proxy'
 owner_label = 'org.lares.egress-proof'
 owner_token = uuid.uuid4().hex
-custody_prefix = root / 'fixture-prefix'
+custody_prefix = (root / 'fixture-prefix') if root else pathlib.Path('/unused')
 admission = custody_prefix / 'var/lib/lares-maintenance/admission'
-config_root = root / 'egress'
-compose_file = root / 'proxy-compose.json'
+config_root = (root / 'egress') if root else pathlib.Path('/unused')
+compose_file = (root / 'proxy-compose.json') if root else pathlib.Path('/unused')
 proxy_id = target_id = sentinel_id = None
+proxy_full_id = None
 proxy_project = None
+_serving_process_identity = None
 network_id = None
 network_probe_id = None
 primary_error = None
 cleanup_errors = []
 action = 'initialize'
-report = {'source': os.environ['GITHUB_SHA'], 'checks': [], 'success': False}
+report = {'source': _source_revision, 'checks': [], 'success': False}
 sys.dont_write_bytecode = True
 custody_spec = importlib.util.spec_from_file_location(
     'maintenance_custody', pathlib.Path('services/box/ops/maintenance-custody.py').resolve())
@@ -343,7 +354,8 @@ try:
         for raw in status.read(4096).splitlines():
             key,sep,value=raw.partition(b':')
             if sep and key in (b'Name',b'State',b'PPid',b'Uid'):
-                fields[key]=value.strip().split()
+                fields[key]=([value[1:] if value.startswith(b'\t') else b''] if key==b'Name' else
+                             value.strip().split())
     uid=fields.get(b'Uid',[])
     parent=fields.get(b'PPid',[])
     result['pid_status']={'readable':True,
@@ -375,7 +387,7 @@ print(json.dumps(result,separators=(',',':')))
     process = None
     try:
         process = subprocess.Popen(
-            ['docker', 'exec', proxy_id, '/usr/bin/python3', '-I', '-c', script, pid,
+            ['docker', 'exec', proxy_full_id or proxy_id, '/usr/bin/python3', '-I', '-c', script, pid,
              str(expected.st_dev), str(expected.st_ino)],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
         capture = _read_bounded_process_output(process)
@@ -427,25 +439,577 @@ def host_gate_exclusive_evidence(gate_path):
             os.close(descriptor)
 
 
-def assert_proxy_lease(gate_path, pid, label):
-    evidence = process_gate_evidence(pid, gate_path)
-    host_evidence = host_gate_exclusive_evidence(gate_path)
+class ObserverRefusal(Exception):
+    def __init__(self, category, errno=None):
+        super().__init__(category)
+        self.category = category
+        self.errno = errno if isinstance(errno, int) and errno >= 0 else None
+
+
+def _bounded_bytes(path, limit):
+    try:
+        with open(path, 'rb', buffering=0) as stream:
+            data = stream.read(limit + 1)
+    except OSError as exc:
+        raise ObserverRefusal(_safe_error(exc)['category'], _safe_error(exc)['errno']) from None
+    if len(data) > limit:
+        raise ObserverRefusal('oversized')
+    return data
+
+
+def parse_proc_status(data):
+    fields = {}
+    process_name = None
+    for line in data.splitlines():
+        key, separator, value = line.partition(b':')
+        if separator and key in (b'Name', b'State', b'PPid', b'Uid', b'NSpid'):
+            if key == b'Name':
+                if process_name is not None:
+                    raise ObserverRefusal('malformed_status')
+                if not value.startswith(b'\t'):
+                    raise ObserverRefusal('malformed_status')
+                process_name = value[1:]
+            else:
+                fields[key] = value.strip().split()
+    try:
+        state = fields[b'State'][0].decode('ascii')
+        parent = int(fields[b'PPid'][0])
+        uids = [int(value) for value in fields[b'Uid']]
+        nspids = [int(value) for value in fields[b'NSpid']]
+    except (KeyError, IndexError, ValueError, UnicodeDecodeError):
+        raise ObserverRefusal('malformed_status') from None
+    if process_name is None or any(pid <= 0 for pid in nspids) or parent < 0 or len(uids) < 2:
+        raise ObserverRefusal('malformed_status')
+    return {'name_is_squid': process_name == b'squid', 'state': state,
+            'parent_pid': parent, 'effective_uid': uids[1], 'nspids': nspids}
+
+
+def parse_proc_stat(data):
+    # comm is parenthesized and may itself contain spaces or closing parentheses.
+    closing = data.rfind(b')')
+    opening = data.find(b'(')
+    if opening <= 0 or closing <= opening or closing + 2 >= len(data):
+        raise ObserverRefusal('malformed_stat')
+    try:
+        pid = int(data[:opening].strip())
+        tail = data[closing + 1:].split()
+        state = tail[0].decode('ascii')
+        parent = int(tail[1])
+        starttime = int(tail[19])
+    except (ValueError, IndexError, UnicodeDecodeError):
+        raise ObserverRefusal('malformed_stat') from None
+    if pid <= 0 or parent < 0 or starttime <= 0 or len(state) != 1:
+        raise ObserverRefusal('malformed_stat')
+    return {'pid': pid, 'state': state, 'parent_pid': parent, 'starttime': starttime}
+
+
+def parse_gate_fdinfo(data):
+    try:
+        text = data.decode('ascii')
+    except UnicodeDecodeError:
+        raise ObserverRefusal('malformed_fdinfo') from None
+    lines = text.splitlines()
+    inode_lines = [line for line in lines if line.startswith('ino:')]
+    if len(inode_lines) != 1:
+        raise ObserverRefusal('fdinfo_ino_count')
+    inode_match = re.fullmatch(r'ino:\s*([0-9]+)\s*', inode_lines[0])
+    if not inode_match:
+        raise ObserverRefusal('fdinfo_ino_shape')
+    lock_lines = [line for line in lines if line.startswith('lock:')]
+    if len(lock_lines) != 1:
+        raise ObserverRefusal('lock_count')
+    match = re.fullmatch(
+        r'lock:\s+\d+: FLOCK ADVISORY READ -?\d+ ([0-9a-fA-F]+):([0-9a-fA-F]+):(\d+) 0 EOF',
+        lock_lines[0])
+    if not match:
+        raise ObserverRefusal('lock_shape')
+    return {'fdinfo_inode': int(inode_match.group(1)),
+            'dev_major': int(match.group(1), 16), 'dev_minor': int(match.group(2), 16),
+            'inode': int(match.group(3)), 'single_flock': True,
+            'advisory_read': True, 'write_absent': True, 'lock_count': 1}
+
+
+def _observer_command(*args, timeout=5, limit=16384):
+    try:
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   bufsize=0)
+    except subprocess.TimeoutExpired:
+        raise ObserverRefusal('timeout') from None
+    except OSError as exc:
+        safe = _safe_error(exc)
+        raise ObserverRefusal(safe['category'], safe['errno']) from None
+    capture = _read_bounded_process_output(process, limit=limit, timeout=timeout)
+    if capture['timed_out']:
+        raise ObserverRefusal('timeout')
+    if capture['oversized']:
+        raise ObserverRefusal('oversized')
+    if not capture['cleanup_ok']:
+        raise ObserverRefusal('command_cleanup')
+    if capture['returncode'] != 0:
+        raise ObserverRefusal('command_failed')
+    try:
+        return capture['output'].decode('utf-8', 'strict').strip()
+    except UnicodeDecodeError:
+        raise ObserverRefusal('command_encoding') from None
+
+
+def _verify_local_docker_host():
+    if os.geteuid() != 0 or os.environ.get('GITHUB_ACTIONS') != 'true' or \
+            platform.system() != 'Linux' or os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT'):
+        raise ObserverRefusal('host_boundary')
+    expected_revision = os.environ.get('GITHUB_SHA', '')
+    if not re.fullmatch(r'[0-9a-f]{40}', expected_revision):
+        raise ObserverRefusal('source_revision')
+    checkout_revision = _observer_command(
+        'git', '-C', str(pathlib.Path(__file__).resolve().parents[3]), 'rev-parse', 'HEAD',
+        timeout=5, limit=128)
+    if checkout_revision != expected_revision:
+        raise ObserverRefusal('source_revision')
+    context = _observer_command('docker', 'context', 'inspect', '--format',
+                                '{{json .Endpoints.docker.Host}}', timeout=5, limit=4096)
+    try:
+        endpoint = json.loads(context)
+    except json.JSONDecodeError:
+        raise ObserverRefusal('context_metadata') from None
+    if endpoint != 'unix:///var/run/docker.sock':
+        raise ObserverRefusal('remote_daemon')
+    try:
+        if not __import__('stat').S_ISSOCK(os.stat('/var/run/docker.sock').st_mode):
+            raise ObserverRefusal('daemon_socket')
+    except OSError as exc:
+        safe = _safe_error(exc)
+        raise ObserverRefusal(safe['category'], safe['errno']) from None
+    security = _observer_command('docker', 'info', '--format', '{{json .SecurityOptions}}',
+                                 timeout=5, limit=4096)
+    try:
+        options = json.loads(security)
+    except json.JSONDecodeError:
+        raise ObserverRefusal('daemon_metadata') from None
+    if not isinstance(options, list) or any('rootless' in str(item).lower() for item in options):
+        raise ObserverRefusal('rootless_daemon')
+    return True
+
+
+def _current_proxy_facts():
+    global proxy_full_id
+    if not proxy_id or not proxy_project:
+        raise ObserverRefusal('container_not_pinned')
+    try:
+        rendered = _observer_command(
+            'docker', 'inspect', '--format',
+            '{{json .Id}}|{{json .Name}}|{{json (index .Config.Labels "com.docker.compose.project")}}|'
+            '{{json (index .Config.Labels "com.docker.compose.service")}}|{{json .State.Running}}|'
+            '{{json .State.Pid}}|{{json .HostConfig.Init}}', proxy_full_id or proxy_id,
+            timeout=5, limit=8192)
+        values = [json.loads(value) for value in rendered.split('|')]
+    except ObserverRefusal:
+        raise
+    except Exception:
+        raise ObserverRefusal('container_inspect') from None
+    if len(values) != 7:
+        raise ObserverRefusal('container_inspect')
+    full_id, container_name, project, service, running, init_pid, init = values
+    if not isinstance(full_id, str) or not re.fullmatch(r'[0-9a-f]{64}', full_id):
+        raise ObserverRefusal('container_identity')
+    if not proxy_full_id:
+        if not full_id.startswith(proxy_id):
+            raise ObserverRefusal('container_identity')
+        proxy_full_id = full_id
+    if full_id != proxy_full_id or container_name != '/' + proxy_name or \
+            project != proxy_project or service != 'lares-egress-proxy':
+        raise ObserverRefusal('container_ownership')
+    if running is not True or not isinstance(init_pid, int) or init_pid <= 1:
+        raise ObserverRefusal('container_not_running')
+    if init is not True:
+        raise ObserverRefusal('container_init')
+    return {'id': full_id, 'init_pid': init_pid, 'running': True}
+
+
+def _read_proxy_pidfile(container_id=None):
+    identifier = container_id or proxy_full_id or proxy_id
+    output = _observer_command('docker', 'exec', identifier, 'sh', '-c',
+                               'for p in /run/squid.pid /run/squid/squid.pid; do '
+                               'if [ -f "$p" ]; then cat "$p"; exit; fi; done; exit 1',
+                               timeout=5, limit=128)
+    if not re.fullmatch(r'[1-9][0-9]{0,8}', output):
+        raise ObserverRefusal('pidfile_value')
+    return int(output)
+
+
+def _proc_identity(pid, proc_root='/proc'):
+    if not isinstance(pid, int) or pid <= 0 or pid > 2**31 - 1:
+        raise ObserverRefusal('pid_range')
+    base = pathlib.Path(proc_root) / str(pid)
+    status = parse_proc_status(_bounded_bytes(base / 'status', 8192))
+    stat_data = parse_proc_stat(_bounded_bytes(base / 'stat', 8192))
+    if stat_data['pid'] != pid or status['parent_pid'] != stat_data['parent_pid'] or \
+            status['state'] != stat_data['state']:
+        raise ObserverRefusal('process_identity')
+    try:
+        namespace = os.stat(base / 'ns/pid')
+    except OSError as exc:
+        safe = _safe_error(exc)
+        raise ObserverRefusal(safe['category'], safe['errno']) from None
+    return {'host_pid': pid, 'name_is_squid': status['name_is_squid'],
+            'state': stat_data['state'], 'parent_pid': status['parent_pid'],
+            'effective_uid': status['effective_uid'], 'nspids': status['nspids'],
+            'starttime': stat_data['starttime'], 'namespace': (namespace.st_dev, namespace.st_ino)}
+
+
+def _direct_children(init_pid, proc_root='/proc'):
+    path = pathlib.Path(proc_root) / str(init_pid) / 'task' / str(init_pid) / 'children'
+    data = _bounded_bytes(path, 4096)
+    try:
+        values = data.decode('ascii').split()
+        if len(values) > 64 or any(not re.fullmatch(r'[1-9][0-9]{0,8}', value) for value in values):
+            raise ObserverRefusal('children_list')
+        result = [int(value) for value in values]
+    except UnicodeDecodeError:
+        raise ObserverRefusal('children_list') from None
+    if len(set(result)) != len(result):
+        raise ObserverRefusal('children_list')
+    return result
+
+
+def _snapshot_proxy_mapping(container_id, container_pid, proc_root='/proc'):
+    container = _current_proxy_facts()
+    if container['id'] != container_id:
+        raise ObserverRefusal('container_identity')
+    if _read_proxy_pidfile(container_id) != container_pid:
+        raise ObserverRefusal('pidfile_changed')
+    init_pid = container['init_pid']
+    init = _proc_identity(init_pid, proc_root)
+    if init['nspids'][0] != init_pid or init['nspids'][-1] != 1 or init['state'] in ('Z', 'X'):
+        raise ObserverRefusal('init_namespace')
+    children = _direct_children(init_pid, proc_root)
+    candidates = []
+    for child_pid in children:
+        child = _proc_identity(child_pid, proc_root)
+        if child['parent_pid'] == init_pid and child['nspids'][0] == child_pid and \
+                child['nspids'][-1] == container_pid and child['namespace'] == init['namespace']:
+            candidates.append(child)
+    if len(candidates) != 1:
+        raise ObserverRefusal('child_mapping')
+    child = candidates[0]
+    if not child['name_is_squid'] or child['state'] in ('Z', 'X', 'T', 't'):
+        raise ObserverRefusal('squid_identity')
+    identity = {'container_id': container['id'], 'init_pid': init_pid,
+                'init_starttime': init['starttime'], 'init_namespace': init['namespace'],
+                'child_pid': child['host_pid'], 'child_starttime': child['starttime'],
+                'child_namespace': child['namespace'], 'container_pid': container_pid,
+                'effective_uid': child['effective_uid']}
+    return identity
+
+
+def _fd9_stat(host_pid, proc_root='/proc'):
+    try:
+        return os.stat(pathlib.Path(proc_root) / str(host_pid) / 'fd/9')
+    except OSError as exc:
+        safe = _safe_error(exc)
+        raise ObserverRefusal(safe['category'], safe['errno']) from None
+
+
+def _read_fdinfo(host_pid, proc_root='/proc'):
+    return _bounded_bytes(pathlib.Path(proc_root) / str(host_pid) / 'fdinfo/9', 4096)
+
+
+def _fd_matches_gate(descriptor, gate_stat):
+    return (descriptor.st_dev, descriptor.st_ino) == (gate_stat.st_dev, gate_stat.st_ino)
+
+
+def _lock_matches_gate(lock, gate_stat):
+    return (lock['dev_major'], lock['dev_minor'], lock['inode']) == (
+        os.major(gate_stat.st_dev), os.minor(gate_stat.st_dev), gate_stat.st_ino)
+
+
+def _fdinfo_inode_matches_gate(lock, before, after, gate_stat):
+    inode = lock['fdinfo_inode']
+    return inode == before.st_ino == after.st_ino == gate_stat.st_ino
+
+
+def observe_proxy_lease(gate_path, container_pid, ops=None, expected_identity=None):
+    ops = ops or {}
+    local = ops.get('local_host', _verify_local_docker_host)
+    facts = ops.get('container_facts', _current_proxy_facts)
+    pidfile = ops.get('pidfile', _read_proxy_pidfile)
+    mapping = ops.get('mapping', _snapshot_proxy_mapping)
+    fd_stat = ops.get('fd_stat', _fd9_stat)
+    fdinfo = ops.get('fdinfo', _read_fdinfo)
+    exclusive = ops.get('host_exclusive', host_gate_exclusive_evidence)
+    result = {'observed': False, 'refusal_category': None, 'refusal_errno': None,
+              'fd9_same_gate_before': False, 'fd9_same_gate_after': False,
+              'fd9_stable': False, 'fdinfo_readable': False, 'fdinfo_inode_matches': False,
+              'fdinfo_metadata_inode_matches': False, 'fdinfo_lock_inode_matches': False,
+              'lock_count': 0, 'single_flock': False, 'advisory_read': False,
+              'write_absent': False, 'host_exclusive': None, 'identity_stable': False,
+              'same_as_previous': None, 'host_pid': None, 'child_starttime': None,
+              'effective_uid': None}
+    try:
+        local()
+        initial_facts = facts()
+        if initial_facts.get('id') != proxy_full_id or initial_facts.get('running') is not True:
+            raise ObserverRefusal('container_identity')
+        if pidfile(initial_facts['id']) != container_pid:
+            raise ObserverRefusal('pidfile_changed')
+        initial = mapping(initial_facts['id'], container_pid)
+        result.update({'host_pid': initial['child_pid'], 'child_starttime': initial['child_starttime'],
+                       'effective_uid': initial['effective_uid']})
+        gate_stat = os.stat(gate_path, follow_symlinks=False)
+        before = fd_stat(initial['child_pid'])
+        result['fd9_same_gate_before'] = _fd_matches_gate(before, gate_stat)
+        if not result['fd9_same_gate_before']:
+            raise ObserverRefusal('fd9_inode')
+        info = fdinfo(initial['child_pid'])
+        result['fdinfo_readable'] = True
+        lock = parse_gate_fdinfo(info)
+        result.update({'lock_count': lock['lock_count'], 'single_flock': lock['single_flock'],
+                       'advisory_read': lock['advisory_read'], 'write_absent': lock['write_absent'],
+                       'fdinfo_lock_inode_matches': _lock_matches_gate(lock, gate_stat)})
+        after = fd_stat(initial['child_pid'])
+        result['fd9_same_gate_after'] = _fd_matches_gate(after, gate_stat)
+        result['fd9_stable'] = (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+        result['fdinfo_metadata_inode_matches'] = _fdinfo_inode_matches_gate(
+            lock, before, after, gate_stat)
+        result['fdinfo_inode_matches'] = result['fdinfo_metadata_inode_matches'] and \
+            result['fdinfo_lock_inode_matches']
+        if not result['fd9_same_gate_after'] or not result['fd9_stable'] or \
+                not result['fdinfo_metadata_inode_matches'] or not result['fdinfo_lock_inode_matches']:
+            raise ObserverRefusal('fd9_changed')
+        host_result = exclusive(gate_path)
+        result['host_exclusive'] = host_result
+        if host_result.get('blocked') is not True or host_result.get('acquired') is not False:
+            raise ObserverRefusal('host_lock_not_blocked', host_result.get('errno'))
+        local()
+        final_facts = facts()
+        final = mapping(final_facts['id'], container_pid)
+        result['identity_stable'] = final_facts == initial_facts and final == initial
+        if not result['identity_stable']:
+            raise ObserverRefusal('identity_changed')
+        process_identity = (initial['child_pid'], initial['child_starttime'])
+        result['same_as_previous'] = expected_identity is None or process_identity == expected_identity
+        if result['same_as_previous'] is not True:
+            raise ObserverRefusal('process_changed_during_reload')
+        result['observed'] = result['single_flock'] and result['advisory_read'] and \
+            result['write_absent'] and result['lock_count'] == 1
+        if not result['observed']:
+            raise ObserverRefusal('lock_shape')
+    except ObserverRefusal as exc:
+        result['refusal_category'] = exc.category
+        result['refusal_errno'] = exc.errno
+    except OSError as exc:
+        safe = _safe_error(exc)
+        result['refusal_category'] = safe['category']
+        result['refusal_errno'] = safe['errno']
+    except Exception:
+        result['refusal_category'] = 'observer_error'
+    return result
+
+
+def assert_proxy_lease(gate_path, pid, label, preserve_process=False):
+    global _serving_process_identity
+    try:
+        diagnostic = process_gate_evidence(pid, gate_path)
+    except Exception as exc:
+        safe = _safe_error(exc) if isinstance(exc, OSError) else {'category': 'other', 'errno': None}
+        diagnostic = {'diagnostic_valid': False, 'observer_error_category': safe['category'],
+                      'observer_error_errno': safe['errno']}
+    expected_identity = _serving_process_identity if preserve_process else None
+    host_evidence = observe_proxy_lease(gate_path, int(pid), expected_identity=expected_identity)
     report.setdefault('lease_diagnostics', []).append({
         'phase': label,
         'pid': int(pid) if str(pid).isdigit() else None,
-        'process': evidence,
-        'host_exclusive': host_evidence,
+        'container_observer': diagnostic,
+        'host_observer': host_evidence,
     })
-    process_ok = evidence.get('diagnostic_valid') is True and \
-        evidence['pid_status']['readable'] and evidence['pid_status']['name_is_squid'] and \
-        evidence['fd9']['stat_ok'] and evidence['fd9']['same_inode'] and \
-        evidence['fdinfo']['readable'] and evidence['fdinfo']['lock_count'] == 1 and \
-        evidence['fdinfo']['single_flock'] and evidence['fdinfo']['advisory_read'] and \
-        evidence['fdinfo']['write_absent']
-    check(label + ': serving Squid owns fd9 for the exact host gate inode with a shared lock',
-          process_ok)
+    check(label + ': same-host observer pins Squid, fd9 inode, and its single shared read lock',
+          host_evidence['observed'] and host_evidence['identity_stable'] and
+          host_evidence['fd9_same_gate_before'] and host_evidence['fd9_same_gate_after'] and
+          host_evidence['fd9_stable'] and host_evidence['fdinfo_inode_matches'])
     check(label + ': host cannot acquire the exclusive gate while Squid serves',
-          host_evidence['blocked'])
+          isinstance(host_evidence.get('host_exclusive'), dict) and
+          host_evidence['host_exclusive'].get('blocked') is True and
+          host_evidence['host_exclusive'].get('acquired') is False)
+    if preserve_process:
+        check(label + ': reload preserves the same pinned Squid process',
+              _serving_process_identity is not None and host_evidence['same_as_previous'] is True and
+              isinstance(_serving_process_identity, tuple) and len(_serving_process_identity) == 2)
+    else:
+        _serving_process_identity = (host_evidence['host_pid'], host_evidence['child_starttime']) \
+            if host_evidence['observed'] else None
+
+
+def _expect_refusal(callback, category):
+    try:
+        callback()
+    except ObserverRefusal as exc:
+        assert exc.category == category, (exc.category, category)
+        return
+    raise AssertionError('observer accepted a refused fixture case: ' + category)
+
+
+def _fake_process(host_pid, parent_pid, nspids, namespace, *, name_is_squid=True,
+                  starttime=300, effective_uid=31, state='S'):
+    return {'host_pid': host_pid, 'parent_pid': parent_pid, 'nspids': list(nspids),
+            'namespace': namespace, 'name_is_squid': name_is_squid, 'starttime': starttime,
+            'effective_uid': effective_uid, 'state': state}
+
+
+def _mapping_fixture(children=None, mutate=None, process_name=b'squid'):
+    init_pid, container_pid = 100, 7
+    init = _fake_process(init_pid, 1, [init_pid, 1], (4, 50), name_is_squid=False,
+                         starttime=100)
+    proc_status = b'Name:\t' + process_name + \
+        b'\nState:\tS (sleeping)\nPPid:\t100\nUid:\t31\t31\t31\t31\nNSpid:\t101\t7\n'
+    first = _fake_process(101, init_pid, [101, container_pid], (4, 50),
+                          name_is_squid=parse_proc_status(proc_status)['name_is_squid'])
+    second = _fake_process(102, init_pid, [102, container_pid], (4, 50), starttime=301)
+    values = {init_pid: init, 101: first, 102: second}
+    if mutate:
+        values.update(mutate(values))
+    with patch(__name__ + '._current_proxy_facts', return_value={
+            'id': 'a' * 64, 'init_pid': init_pid, 'running': True}), \
+            patch(__name__ + '._read_proxy_pidfile', return_value=container_pid), \
+            patch(__name__ + '._direct_children', return_value=children if children is not None else [101]), \
+            patch(__name__ + '._proc_identity', side_effect=lambda pid, proc_root='/proc': values[pid]):
+        return _snapshot_proxy_mapping('a' * 64, container_pid)
+
+
+def run_observer_self_tests():
+    status = b'State:\tS (sleeping)\nPPid:\t100\nUid:\t31\t31\t31\t31\nNSpid:\t101\t7\n'
+    assert parse_proc_status(b'Name:\tsquid\n' + status) == {
+        'name_is_squid': True, 'state': 'S', 'parent_pid': 100, 'effective_uid': 31,
+        'nspids': [101, 7]}
+    for name in (b'squid worker', b'worker squid', b'squid-extra', b' squid', b'squid '):
+        _expect_refusal(lambda value=name: _mapping_fixture(process_name=value), 'squid_identity')
+    outer = ast.parse(pathlib.Path(__file__).read_text(encoding='utf-8'))
+    diagnostic = next(node for node in outer.body
+                      if isinstance(node, ast.FunctionDef) and node.name == 'process_gate_evidence')
+    script_assignment = next(node for node in ast.walk(diagnostic) if isinstance(node, ast.Assign) and
+                             any(isinstance(target, ast.Name) and target.id == 'script'
+                                 for target in node.targets))
+    ast.parse(ast.literal_eval(script_assignment.value))
+    stat_fields = [b'S'] + [b'0'] * 19
+    stat_fields[1] = b'12'
+    stat_fields[19] = b'900'
+    parsed_stat = parse_proc_stat(b'101 (squid (worker)) ' + b' '.join(stat_fields))
+    assert parsed_stat == {'pid': 101, 'state': 'S', 'parent_pid': 12, 'starttime': 900}
+    _expect_refusal(lambda: parse_proc_stat(b'101 (truncated) S 1'), 'malformed_stat')
+    assert parse_gate_fdinfo(b'pos:\t0\nino:\t1234\n'
+                             b'lock:\t1: FLOCK ADVISORY READ 101 08:01:1234 0 EOF\n')['fdinfo_inode'] == 1234
+    _expect_refusal(lambda: parse_gate_fdinfo(b'lock: 1: FLOCK ADVISORY READ 1 08:01:1234 0 EOF\n'),
+                    'fdinfo_ino_count')
+    _expect_refusal(lambda: parse_gate_fdinfo(b'ino: 1234\nino: 1234\n'
+                                              b'lock: 1: FLOCK ADVISORY READ 1 08:01:1234 0 EOF\n'),
+                    'fdinfo_ino_count')
+    _expect_refusal(lambda: parse_gate_fdinfo(b'ino: 12x\n'
+                                              b'lock: 1: FLOCK ADVISORY READ 1 08:01:1234 0 EOF\n'),
+                    'fdinfo_ino_shape')
+    for lock in (b'', b'lock: 1: FLOCK ADVISORY READ 1 08:01:1234 0 EOF\n'
+                 b'lock: 2: FLOCK ADVISORY READ 1 08:01:1234 0 EOF\n',
+                 b'lock: 1: FLOCK ADVISORY WRITE 1 08:01:1234 0 EOF\n',
+                 b'lock: 1: POSIX ADVISORY READ 1 08:01:1234 0 EOF\n'):
+        value = b'ino: 1234\n' + lock
+        _expect_refusal(lambda data=value: parse_gate_fdinfo(data), 'lock_' +
+                        ('count' if not lock or lock.count(b'lock:') != 1 else 'shape'))
+
+    assert _mapping_fixture()['child_pid'] == 101
+    _expect_refusal(lambda: _mapping_fixture(children=[101, 102]), 'child_mapping')
+    _expect_refusal(lambda: _mapping_fixture(mutate=lambda values: {101: dict(values[101], parent_pid=99)}),
+                    'child_mapping')
+    _expect_refusal(lambda: _mapping_fixture(mutate=lambda values: {101: dict(values[101], nspids=[101, 8])}),
+                    'child_mapping')
+    _expect_refusal(lambda: _mapping_fixture(mutate=lambda values: {101: dict(values[101], namespace=(4, 51))}),
+                    'child_mapping')
+    _expect_refusal(lambda: _mapping_fixture(mutate=lambda values: {101: dict(values[101], name_is_squid=False)}),
+                    'squid_identity')
+
+    with tempfile.TemporaryDirectory(prefix='lares-egress-observer-test-') as temp:
+        gate = pathlib.Path(temp) / 'service-gate.lock'
+        gate.write_bytes(b'gate')
+        gate_stat = os.stat(gate)
+        lock_line = (f'ino: {gate_stat.st_ino}\n'
+                     f'lock: 1: FLOCK ADVISORY READ 101 {os.major(gate_stat.st_dev):02x}:'
+                     f'{os.minor(gate_stat.st_dev):02x}:{gate_stat.st_ino} 0 EOF\n').encode()
+        pinned = {'id': 'a' * 64, 'init_pid': 100, 'running': True}
+        identity = {'container_id': 'a' * 64, 'init_pid': 100, 'init_starttime': 100,
+                    'init_namespace': (4, 50), 'child_pid': 101, 'child_starttime': 300,
+                    'child_namespace': (4, 50), 'container_pid': 7, 'effective_uid': 31}
+
+        def make_ops(*, facts_values=None, identities=None, fd_stats=None, fdinfo_value=lock_line,
+                     exclusive_value=None, fd_stat_error=None):
+            facts_values = list(facts_values or [pinned, pinned])
+            identities = list(identities or [identity, identity])
+            fd_stats = list(fd_stats or [gate_stat, gate_stat])
+            return {
+                'local_host': lambda: True,
+                'container_facts': lambda: facts_values.pop(0),
+                'pidfile': lambda _container: 7,
+                'mapping': lambda _container, _pid: identities.pop(0),
+                'fd_stat': lambda _pid: (_raise_observer(fd_stat_error) if fd_stat_error else fd_stats.pop(0)),
+                'fdinfo': lambda _pid: fdinfo_value,
+                'host_exclusive': lambda _path: exclusive_value or {
+                    'blocked': True, 'acquired': False, 'error_category': None, 'errno': None},
+            }
+
+        global proxy_full_id
+        previous_id = proxy_full_id
+        proxy_full_id = 'a' * 64
+        try:
+            positive = observe_proxy_lease(gate, 7, make_ops())
+            assert positive['observed'] and positive['identity_stable'] and positive['fd9_stable']
+            assert positive['fdinfo_inode_matches'] and positive['host_exclusive']['blocked']
+            _expect_observer_result(gate, make_ops(identities=[identity, dict(identity, child_starttime=301)]),
+                                    'identity_changed')
+            _expect_observer_result(gate, make_ops(facts_values=[pinned, dict(pinned, init_pid=101)]),
+                                    'identity_changed')
+            other_gate = pathlib.Path(temp) / 'replacement.lock'
+            other_gate.write_bytes(b'other')
+            _expect_observer_result(gate, make_ops(fd_stats=[gate_stat, os.stat(other_gate)]),
+                                    'fd9_changed')
+            _expect_observer_result(gate, make_ops(fd_stat_error=('permission', 13)), 'permission')
+            for lock, category in (
+                    (b'ino: 1234\nlock: 1: FLOCK ADVISORY WRITE 101 08:01:1234 0 EOF\n', 'lock_shape'),
+                    (b'ino: 1234\nlock: 1: FLOCK ADVISORY READ 101 08:01:1234 0 EOF\n'
+                     b'lock: 2: FLOCK ADVISORY READ 101 08:01:1234 0 EOF\n', 'lock_count')):
+                _expect_observer_result(gate, make_ops(fdinfo_value=lock), category)
+            wrong_inode = (f'ino: {gate_stat.st_ino}\n'
+                           f'lock: 1: FLOCK ADVISORY READ 101 08:01:{gate_stat.st_ino + 1} 0 EOF\n').encode()
+            _expect_observer_result(gate, make_ops(fdinfo_value=wrong_inode), 'fd9_changed')
+            missing_ino = (f'lock: 1: FLOCK ADVISORY READ 101 {os.major(gate_stat.st_dev):02x}:'
+                           f'{os.minor(gate_stat.st_dev):02x}:{gate_stat.st_ino} 0 EOF\n').encode()
+            _expect_observer_result(gate, make_ops(fdinfo_value=missing_ino), 'fdinfo_ino_count')
+            duplicate_ino = (f'ino: {gate_stat.st_ino}\nino: {gate_stat.st_ino}\n'
+                             f'lock: 1: FLOCK ADVISORY READ 101 {os.major(gate_stat.st_dev):02x}:'
+                             f'{os.minor(gate_stat.st_dev):02x}:{gate_stat.st_ino} 0 EOF\n').encode()
+            _expect_observer_result(gate, make_ops(fdinfo_value=duplicate_ino), 'fdinfo_ino_count')
+            malformed_ino = (f'ino: {gate_stat.st_ino}x\n'
+                             f'lock: 1: FLOCK ADVISORY READ 101 {os.major(gate_stat.st_dev):02x}:'
+                             f'{os.minor(gate_stat.st_dev):02x}:{gate_stat.st_ino} 0 EOF\n').encode()
+            _expect_observer_result(gate, make_ops(fdinfo_value=malformed_ino), 'fdinfo_ino_shape')
+            mismatched_metadata_ino = (f'ino: {gate_stat.st_ino + 1}\n'
+                                       f'lock: 1: FLOCK ADVISORY READ 101 {os.major(gate_stat.st_dev):02x}:'
+                                       f'{os.minor(gate_stat.st_dev):02x}:{gate_stat.st_ino} 0 EOF\n').encode()
+            _expect_observer_result(gate, make_ops(fdinfo_value=mismatched_metadata_ino), 'fd9_changed')
+            _expect_observer_result(gate, make_ops(exclusive_value={
+                'blocked': False, 'acquired': True, 'error_category': None, 'errno': None}),
+                'host_lock_not_blocked')
+            _expect_observer_result(gate, make_ops(exclusive_value={
+                'blocked': False, 'acquired': False, 'error_category': 'permission', 'errno': 13}),
+                'host_lock_not_blocked')
+            _expect_observer_result(gate, make_ops(), 'process_changed_during_reload',
+                                    expected_identity=(999, 1))
+        finally:
+            proxy_full_id = previous_id
+    print('egress host observer self-test passed')
+
+
+def _raise_observer(details):
+    raise ObserverRefusal(*details)
+
+
+def _expect_observer_result(gate, ops, category, expected_identity=None):
+    result = observe_proxy_lease(gate, 7, ops, expected_identity=expected_identity)
+    assert result['observed'] is False and result['refusal_category'] == category, result
 
 
 def wait_for_proxy():
@@ -980,7 +1544,7 @@ def run_proof():
             break
         time.sleep(.5)
     check('Atomic config replacement is applied by real reload', result['status'] == 200 and result['greeting'])
-    assert_proxy_lease(gate_path, proxy_pid(), 'After reload')
+    assert_proxy_lease(gate_path, proxy_pid(), 'After reload', preserve_process=True)
     before_reloaded_probe_target_count = target_connections()
     reloaded_route_response = request(connect(route_host))
     after_reloaded_probe_target_count = target_connections()
@@ -1009,7 +1573,7 @@ def run_proof():
             break
         time.sleep(.5)
     check('Reload can restore the original grant', result['status'] == 200 and result['greeting'])
-    assert_proxy_lease(gate_path, proxy_pid(), 'After restore reload')
+    assert_proxy_lease(gate_path, proxy_pid(), 'After restore reload', preserve_process=True)
     sockets = cmd('docker', 'exec', proxy_id, 'sh', '-c', 'cat /proc/net/udp /proc/net/udp6')
     check('ICP and HTCP have no UDP listener', not re.search(r':(?:0C3A|12DB)\s', sockets))
 
@@ -1044,6 +1608,11 @@ def run_proof():
     if remove_owned_container(proxy_id, service='lares-egress-proxy', project=name):
         proxy_id = None
     check('Stopped production-service container is removed by exact owned ID', container_name_is_free())
+
+
+if _self_test:
+    run_observer_self_tests()
+    raise SystemExit(0)
 
 
 try:
