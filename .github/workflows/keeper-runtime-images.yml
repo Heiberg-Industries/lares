@@ -38,7 +38,10 @@ jobs:
           node-version: "24"
           cache: "pnpm"
       - name: Install the exporter and role dependency closures
-        run: pnpm install --frozen-lockfile --filter lares --filter "lares-${{ matrix.role }}..."
+        run: pnpm install --frozen-lockfile --filter lares --filter "lares-${{ matrix.role }}..." --filter "@lares/keeper..."
+      - name: Check first-use config and Docker commands offline
+        if: matrix.role == 'chief-of-staff'
+        run: python3 -B services/keeper/tests/native-first-use-command.test.py
       - name: Export and stage the verified public docs corpus
         run: |
           set -euo pipefail
@@ -95,9 +98,6 @@ jobs:
       - name: Build the matching Keeper image for the combined first-use proof
         if: matrix.role == 'chief-of-staff'
         run: docker buildx build --pull --load --file services/keeper/Dockerfile --tag lares-keeper:combined .
-      - name: Check combined first-use Docker command construction
-        if: matrix.role == 'chief-of-staff'
-        run: python3 -B services/keeper/tests/native-first-use-command.test.py
       - name: Prove first native activation through compiled Eve and production Keeper
         if: matrix.role == 'chief-of-staff'
         run: python3 -B services/keeper/tests/native-first-use-image.probe.py lares-runtime:test lares-keeper:combined "$GITHUB_SHA" "$RUNNER_TEMP/native-first-use-proof.json"

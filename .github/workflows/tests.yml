@@ -106,6 +106,10 @@ jobs:
         # install still exits 0.
         run: pnpm install --frozen-lockfile
 
+      - name: Check native first-use fixture config offline
+        if: matrix.name == 'keeper'
+        run: python3 -B services/keeper/tests/native-first-use-command.test.py
+
       - name: Run tests
         run: pnpm -C ${{ matrix.dir }} test
 
@@ -120,10 +124,6 @@ jobs:
       - name: Check gateway admission streaming settlement offline
         if: matrix.name == 'box'
         run: python3 -B services/keeper/tests/gateway-admission-settlement.test.py
-
-      - name: Check native first-use fixture config offline
-        if: matrix.name == 'keeper'
-        run: python3 -B services/keeper/tests/native-first-use-command.test.py
 
   typecheck:
     name: workspace typecheck
