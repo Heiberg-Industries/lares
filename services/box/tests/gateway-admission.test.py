@@ -532,7 +532,7 @@ class EmbeddedFixtureTests(unittest.TestCase):
 
     def test_first_startup_failure_survives_shutdown_and_requires_both_ci_flags(self):
         source=ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
-        names={"STARTUP_STATE_FILE","STARTUP_FAILURE_FILE","STARTUP_PHASES","STARTUP_STAGES"}
+        names={"STARTUP_STATE_FILE","STARTUP_FAILURE_FILE","STARTUP_PHASES","STARTUP_STAGES","MODEL_REQUEST_DIAGNOSTIC_FILE"}
         selected=[node for node in source.body if (isinstance(node,ast.Assign) and isinstance(node.targets[0],ast.Name) and node.targets[0].id in names) or (isinstance(node,ast.FunctionDef) and node.name=="record_startup_diagnostic")]
         from admission_contract import canonical
         namespace={"os":os,"pathlib":pathlib,"tempfile":tempfile,"canonical":canonical}
@@ -544,13 +544,19 @@ class EmbeddedFixtureTests(unittest.TestCase):
         self.assertEqual(namespace["STARTUP_STAGES"],probe.STARTUP_STAGES)
         with tempfile.TemporaryDirectory() as folder:
             state_file=pathlib.Path(folder)/"state.json";failure_file=pathlib.Path(folder)/"failure.json"
-            namespace.update(STARTUP_STATE_FILE=str(state_file),STARTUP_FAILURE_FILE=str(failure_file))
+            model_request_file=pathlib.Path(folder)/"model-request.json"
+            namespace.update(STARTUP_STATE_FILE=str(state_file),STARTUP_FAILURE_FILE=str(failure_file),
+                MODEL_REQUEST_DIAGNOSTIC_FILE=str(model_request_file))
             record=namespace["record_startup_diagnostic"]
+            model_request_file.write_text("stale marker")
             for environment in ({"CI":"false","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"0"}):
                 with mock.patch.dict(os.environ,environment):record("process-starting")
                 self.assertFalse(state_file.exists())
+                self.assertTrue(model_request_file.exists())
             with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"}):
-                record("process-starting");record("preflight-passed");record("native-lifespan-complete")
+                record("process-starting")
+                self.assertFalse(model_request_file.exists())
+                record("preflight-passed");record("native-lifespan-complete")
                 record("runtime-validation-failed","callback-registry")
                 record("native-lifespan-error","complete")
                 first=failure_file.read_bytes()
