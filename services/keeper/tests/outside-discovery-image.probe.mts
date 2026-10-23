@@ -4,6 +4,8 @@ import {readFileSync,writeFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import https from 'node:https';
 import type {Socket} from 'node:net';
+import {fileURLToPath} from 'node:url';
+import {resolve} from 'node:path';
 import {Pool} from 'pg';
 import {definitionSchema,hashOf} from '../../../packages/agent-kit/src/definition.js';
 import {PgGrantStore} from '../../../packages/agent-kit/src/grant-store.js';
@@ -12,6 +14,7 @@ import {ownedDocker} from '../lib/docker.js';
 import {keeperOutsideCustodyPool,keeperPool,loadKeeperConfig} from '../lib/config.js';
 import {loadBoundOutsideCustodyKey,OutsideCustodyStore} from '../lib/outside-custody.js';
 import {withDefinitionNamespace} from '../lib/definition-namespace.js';
+import type {DockerBoundary} from '../lib/docker.js';
 
 const env=process.env;
 function need(name:string):string{const value=env[name];if(!value)throw new Error('fixture input missing');return value;}
@@ -25,6 +28,35 @@ function canonical(value:unknown):string{
   return JSON.stringify(value)??'null';
 }
 function assert(condition:unknown,message:string):asserts condition{if(!condition)throw new Error(message);}
+
+export type RouteBoundaryFailure = 'runtime-stop'|'squid-validation'|'firewall-check'|'firewall-apply'|
+  'proxy-reload'|'route-acknowledgement';
+export function trackRouteBoundaryFailures<T extends DockerBoundary>(boundary:T):{
+  docker:T; firstFailure():RouteBoundaryFailure|undefined;
+}{
+  let failure:RouteBoundaryFailure|undefined;
+  const labels:Partial<Record<keyof DockerBoundary,RouteBoundaryFailure>>={
+    stop:'runtime-stop',validateSquid:'squid-validation',reloadSquid:'proxy-reload',
+    acknowledgeOutsideStage:'route-acknowledgement',
+  };
+  const docker=new Proxy(boundary,{get(target,property){
+    const method=Reflect.get(target,property,target) as unknown;
+    const fixed=labels[property as keyof DockerBoundary];
+    if(typeof method!=='function'||(!fixed&&property!=='firewall'))return method;
+    return function(this:unknown,...args:unknown[]):unknown{
+      const stage:RouteBoundaryFailure|undefined=property==='firewall'?
+        (args[1]===true?'firewall-check':'firewall-apply'):fixed;
+      if(!stage)return Reflect.apply(method,target,args);
+      try{
+        const result=Reflect.apply(method,target,args);
+        if(result!==null&&typeof result==='object'&&typeof (result as {then?:unknown}).then==='function')
+          return (result as Promise<unknown>).catch(error=>{failure??=stage;throw error;});
+        return result;
+      }catch(error){failure??=stage;throw error;}
+    };
+  }}) as T;
+  return {docker,firstFailure:()=>failure};
+}
 
 type PeerState={ready:boolean;methods:string[];requestCount:number;bearerMatches:boolean;tlsServername:boolean;pathMatches:boolean;
   protocolVersionMatches:boolean;initializeMatches:boolean;paginationCursorMatches:boolean;sessionMatches:boolean};
@@ -119,6 +151,7 @@ async function runConfigured():Promise<void>{
     success:false,firewallApplied:false,directTargetBlocked:false,checks:[]};
   let main:Pool|undefined,outside:Pool|undefined,admin:Pool|undefined,proof:Pool|undefined,store:OutsideCustodyStore|undefined,
     key:Buffer|undefined,proofKey:Buffer|undefined,credential:Buffer|undefined;
+  let routeBoundaryFailure:(()=>RouteBoundaryFailure|undefined)|undefined;
   let phase='configuration';
   try{
     const root=need('FIXTURE_ROOT'),agent=need('FIXTURE_AGENT'),owner='outside-proof-owner',org='outside-proof-org';
@@ -130,8 +163,10 @@ async function runConfigured():Promise<void>{
     admin=keeperPool(config.lifecycle.adminDb,{max:1,connectionTimeoutMillis:3000,query_timeout:12000});
     assert(outside,'configured outside custody pool was not created');
     key=loadBoundOutsideCustodyKey(config.outsideCustody.keyFile,config.outsideCustody.keyFingerprint);
+    const routeDocker=trackRouteBoundaryFailures(ownedDocker({...config.lifecycle,project:config.project,dir:config.dir}));
+    routeBoundaryFailure=routeDocker.firstFailure;
     const lifecycle=new AgentLifecycle(main,admin,config.lifecycle,{mode:'rendered',agentsDir:config.agentsDir,
-      secretsDir:config.secretsDir,outsideCustody:config.outsideCustody},ownedDocker({...config.lifecycle,project:config.project,dir:config.dir}));
+      secretsDir:config.secretsDir,outsideCustody:config.outsideCustody},routeDocker.docker);
     store=new OutsideCustodyStore(outside,key,{mainPool:main,lifecycle});
     key.fill(0);key=undefined;
     proofKey=Buffer.from(need('FIXTURE_KEY_HEX'),'hex');
@@ -243,7 +278,13 @@ async function runConfigured():Promise<void>{
   }catch{
     const safePhases=new Set(['configuration','role identities','neutral authorization fixture','generated route admission',
       'direct-path firewall counter','database discovery','durable result verification']);
-    writeReport(output,{...partial,failure:{phase:safePhases.has(phase)?phase:'worker',reason:'configured outside discovery worker failed'}});
+    const failure:{phase:string;reason:string;routeBoundary?:RouteBoundaryFailure}={
+      phase:safePhases.has(phase)?phase:'worker',reason:'configured outside discovery worker failed'};
+    if(phase==='generated route admission'){
+      const boundary=routeBoundaryFailure?.();
+      if(boundary)failure.routeBoundary=boundary;
+    }
+    writeReport(output,{...partial,failure});
     throw new Error('configured outside discovery proof failed');
   }finally{
     key?.fill(0);
@@ -261,6 +302,8 @@ async function runConfigured():Promise<void>{
   }
 }
 
-if(process.argv[2]==='peer')await peer();
-else if(process.argv[2]==='run')await runConfigured();
-else throw new Error('fixture mode required');
+if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
+  if(process.argv[2]==='peer')await peer();
+  else if(process.argv[2]==='run')await runConfigured();
+  else throw new Error('fixture mode required');
+}

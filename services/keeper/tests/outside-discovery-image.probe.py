@@ -1158,6 +1158,8 @@ def import_worker_evidence(root_path):
     }
     phases = {"configuration", "role identities", "neutral authorization fixture",
               "generated route admission", "direct-path firewall counter", "worker"}
+    route_boundaries = {"runtime-stop", "squid-validation", "firewall-check", "firewall-apply",
+                        "proxy-reload", "route-acknowledgement"}
     checks = value.get("checks")
     failure = value.get("failure")
     if not isinstance(checks, list) or any(not isinstance(item, str) or item not in valid_checks for item in checks):
@@ -1170,10 +1172,17 @@ def import_worker_evidence(root_path):
     if isinstance(failure, dict):
         phase_value = failure.get("phase")
         reason_value = failure.get("reason")
+        route_boundary = failure.get("routeBoundary")
+        if "routeBoundary" in failure and (phase_value != "generated route admission" or
+                                             not isinstance(route_boundary, str) or
+                                             route_boundary not in route_boundaries):
+            return None
         evidence["failure"] = {
             "phase": phase_value if phase_value in phases else "worker",
             "reason": reason_value if reason_value == "configured outside discovery worker failed" else "worker failed",
         }
+        if "routeBoundary" in failure:
+            evidence["failure"]["routeBoundary"] = route_boundary
     return evidence
 
 
@@ -1282,6 +1291,24 @@ def offline_cleanup_self_test():
         if not evidence or evidence.get("failure") != {
                 "phase": "generated route admission", "reason": "worker failed"}:
             raise RuntimeError("worker failure artifact was not reduced to allowlisted fields")
+        worker_path.write_text(json.dumps({"success": False, "checks": [],
+            "failure": {"phase": "generated route admission", "reason": "worker failed",
+                        "routeBoundary": "firewall-check"}}), encoding="utf-8")
+        evidence = import_worker_evidence(pathlib.Path(directory))
+        if not evidence or evidence.get("failure", {}).get("routeBoundary") != "firewall-check":
+            raise RuntimeError("fixed route boundary label was not retained")
+        for untrusted in ("credential-secret-detail", "firewall-check /secret", "", ["firewall-check"],
+                          {"label": "firewall-check"}):
+            worker_path.write_text(json.dumps({"success": False, "checks": [],
+                "failure": {"phase": "generated route admission", "reason": "worker failed",
+                            "routeBoundary": untrusted}}), encoding="utf-8")
+            if import_worker_evidence(pathlib.Path(directory)) is not None:
+                raise RuntimeError("unrecognized route boundary detail was not rejected")
+        worker_path.write_text(json.dumps({"success": False, "checks": [],
+            "failure": {"phase": "worker", "reason": "worker failed",
+                        "routeBoundary": "firewall-check"}}), encoding="utf-8")
+        if import_worker_evidence(pathlib.Path(directory)) is not None:
+            raise RuntimeError("route boundary label was accepted outside its fixed phase")
 
 
 def postgres_ready(container, password):

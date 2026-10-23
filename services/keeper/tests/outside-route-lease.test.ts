@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -7,9 +7,33 @@ import type { Pool, PoolClient } from 'pg';
 import type { DockerBoundary } from '../lib/docker.js';
 import type { LifecycleConfig } from '../lib/lifecycle-config.js';
 import { AgentLifecycle } from '../lib/lifecycle.js';
+import { trackRouteBoundaryFailures } from './outside-discovery-image.probe.mjs';
 
 const dirs:string[]=[];
 afterEach(()=>{for(const dir of dirs.splice(0))rmSync(dir,{recursive:true,force:true});});
+
+it('tracks only fixed route-boundary failures while preserving the production delegate contract',async()=>{
+  const calls:string[]=[];
+  const boundary={marker:'original-boundary',inventory:async()=>[],config:async()=>{},start:async()=>{},
+    stop:async function(this:{marker:string}){calls.push(`stop:${this.marker}`);throw cleanupError;},
+    remove:async()=>{},validateSquid:async()=>{},reloadSquid:async()=>{},acknowledgeOutsideStage:async()=>{},
+    firewall:async function(this:{marker:string},stage:string,check:boolean){
+      calls.push(`firewall:${this.marker}:${stage}:${check}`);
+      if(check)throw firewallError;
+      return 'delegated-result';
+    }};
+  const firewallError=new Error('private firewall detail');
+  const cleanupError=new Error('private cleanup detail');
+  const tracked=trackRouteBoundaryFailures(boundary as unknown as DockerBoundary&typeof boundary);
+  expect(await tracked.docker.firewall('route',false)).toBe('delegated-result');
+  expect(calls[0]).toBe('firewall:original-boundary:route:false');
+  await expect(tracked.docker.firewall('route',true)).rejects.toBe(firewallError);
+  await expect(tracked.docker.stop('fixture')).rejects.toBe(cleanupError);
+  expect(tracked.firstFailure()).toBe('firewall-check');
+  expect(calls).toContain('stop:original-boundary');
+  expect(readFileSync(new URL('./outside-discovery-image.probe.mts',import.meta.url),'utf8'))
+    .toContain('trackRouteBoundaryFailures(ownedDocker(');
+});
 
 it('rejects a detached route check whose acknowledgement arrives after its namespace lease is revoked',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'outside-route-lease-'));dirs.push(dir);
