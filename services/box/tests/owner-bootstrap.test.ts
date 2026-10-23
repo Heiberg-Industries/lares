@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -96,6 +96,8 @@ describe("root owner bootstrap config writer", () => {
 
   it.skipIf(process.env.GITHUB_ACTIONS !== "true")("round-trips opaque identifiers through a real Compose container in CI", () => {
     const directory = mkdtempSync(join(tmpdir(), "lares-owner-bootstrap-compose-"));
+    const project = `lares-owner-bootstrap-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const composeFile = join(directory, "compose.yaml");
     try {
       const generated = helper<{ contents: string }>(
         "saved,_=module.env_with_identity(b'',request['selection'])\nprint(json.dumps({'contents':saved.decode()}))",
@@ -108,9 +110,18 @@ describe("root owner bootstrap config writer", () => {
         "    entrypoint: [\"/bin/sh\"]",
         "    command: [\"-ec\", \"printf '%s' \\\"$$CONSOLE_BOOTSTRAP_IDENTITY\\\"\"]", "",
       ].join("\n"));
-      const actual = execFileSync("docker", ["compose", "--project-directory", directory, "-f", join(directory, "compose.yaml"), "run", "--rm", "--no-deps", "console"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      const actual = execFileSync("docker", ["compose", "--project-name", project, "--project-directory", directory, "-f", composeFile, "run", "--rm", "--no-deps", "console"], {
+        encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 180_000,
+      });
       expect(actual === JSON.stringify(selection)).toBe(true);
       expect(readFileSync(join(directory, "console-oauth.env"), "utf8")).toContain("subject$");
-    } finally { rmSync(directory, { recursive: true, force: true }); }
-  });
+    } finally {
+      try {
+        execFileSync("docker", ["compose", "--project-name", project, "--project-directory", directory, "-f", composeFile, "down", "--volumes", "--remove-orphans"], {
+          encoding: "utf8", stdio: ["ignore", "ignore", "ignore"], timeout: 15_000,
+        });
+      } catch { /* Remove only this unique temporary Compose project. */ }
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 210_000);
 });
