@@ -47,6 +47,9 @@ MODEL_REQUEST_STAGES = frozenset(("runtime-check", "headers", "body", "profile",
 MODEL_REQUEST_PRE_CALL_STAGES = frozenset(("idle", "entered", "runtime-check", "call-type", "identity", "credential",
     "profile-recheck", "observation", "bridge-rpc", "bridge-reply", "bridge-accepted", "deployment-hook",
     "http-guard", "policy-lock", "authored-refusal", "failure-hook"))
+MODEL_REQUEST_RPC_STAGES = frozenset(("not-started", "serialization", "tls-context", "client-setup", "request-signature",
+    "http-send", "http-status", "response-body", "response-signature", "response-json", "parsed"))
+MODEL_REQUEST_RPC_STATUS_CLASSES = frozenset(("not-received", "success", "client-error", "server-error", "other"))
 MODEL_REQUEST_COUNTER = 0
 
 
@@ -56,11 +59,13 @@ def _write_model_request_diagnostic(marker):
     if type(marker) is not dict or marker.get("stage") not in MODEL_REQUEST_STAGES: return
     try:
         normalized = {
-            "schema": 2,
+            "schema": 3,
             "requestCount": min(max(marker.get("requestCount", 0), 0), 1),
             "stage": marker["stage"],
             "preCallStage": marker.get("preCallStage", "idle") if marker.get("preCallStage", "idle") in MODEL_REQUEST_PRE_CALL_STAGES else "idle",
             "nativeRuntimeStage": marker.get("nativeRuntimeStage", "not-started") if marker.get("nativeRuntimeStage", "not-started") in STARTUP_STAGES else "not-started",
+            "nativeRpcStage": marker.get("nativeRpcStage", "not-started") if marker.get("nativeRpcStage", "not-started") in MODEL_REQUEST_RPC_STAGES else "not-started",
+            "nativeRpcStatusClass": marker.get("nativeRpcStatusClass", "not-received") if marker.get("nativeRpcStatusClass", "not-received") in MODEL_REQUEST_RPC_STATUS_CLASSES else "not-received",
             "statusCode": marker.get("statusCode", 0) if type(marker.get("statusCode", 0)) is int and 0 <= marker.get("statusCode", 0) <= 599 else 0,
             "checks": {},
             "unknownHeaderCount": min(max(marker.get("unknownHeaderCount", 0), 0), 31),
@@ -73,7 +78,10 @@ def _write_model_request_diagnostic(marker):
                      "nativePreCallEntered", "nativeRuntimeCheckPassed", "nativeCallTypeMatched", "nativeIdentityPresent",
                      "nativeCredentialMatched", "nativeProfileRecheckPassed", "nativeObservationCreated", "nativeBridgeRpcAttempted",
                      "nativeBridgeReplyReceived", "nativeBridgeReplyAccepted", "nativeAuthoredRefusal", "nativeFailureHookEntered",
-                     "nativeDeploymentHookEntered", "nativeHttpGuardPassed", "nativePolicyLockAcquired"):
+                     "nativeDeploymentHookEntered", "nativeHttpGuardPassed", "nativePolicyLockAcquired",
+                     "nativeRpcSerialized", "nativeRpcTlsContextCreated", "nativeRpcClientReady", "nativeRpcSignatureCreated",
+                     "nativeRpcSendStarted", "nativeRpcResponseReceived", "nativeRpcStatusAccepted", "nativeRpcResponseBodyComplete",
+                     "nativeRpcResponseSignatureValid", "nativeRpcDocumentParsed"):
             normalized["checks"][name] = checks.get(name) is True if type(checks) is dict else False
         raw = canonical(normalized)
         if len(raw) > 2048: return
@@ -111,7 +119,8 @@ def begin_model_request_diagnostic():
 
 
 def update_model_request_diagnostic(marker, stage, *, status_code=None, checks=None, unknown_header_count=None,
-                                    duplicate_header_count=None, unknown_body_field_count=None, pre_call_stage=None, native_runtime_stage=None):
+                                    duplicate_header_count=None, unknown_body_field_count=None, pre_call_stage=None, native_runtime_stage=None,
+                                    native_rpc_stage=None, native_rpc_status_class=None):
     if marker is None: return
     try:
         marker["stage"] = stage
@@ -124,6 +133,10 @@ def update_model_request_diagnostic(marker, stage, *, status_code=None, checks=N
             marker["preCallStage"] = pre_call_stage if pre_call_stage in MODEL_REQUEST_PRE_CALL_STAGES else "idle"
         if native_runtime_stage is not None:
             marker["nativeRuntimeStage"] = native_runtime_stage if native_runtime_stage in STARTUP_STAGES else "not-started"
+        if native_rpc_stage is not None:
+            marker["nativeRpcStage"] = native_rpc_stage if native_rpc_stage in MODEL_REQUEST_RPC_STAGES else "not-started"
+        if native_rpc_status_class is not None:
+            marker["nativeRpcStatusClass"] = native_rpc_status_class if native_rpc_status_class in MODEL_REQUEST_RPC_STATUS_CLASSES else "not-received"
         if unknown_header_count is not None: marker["unknownHeaderCount"] = unknown_header_count
         if duplicate_header_count is not None: marker["duplicateHeaderCount"] = duplicate_header_count
         if unknown_body_field_count is not None: marker["unknownBodyFieldCount"] = unknown_body_field_count
@@ -136,6 +149,13 @@ def update_native_request_progress(request, stage, *, runtime_stage=None, **chec
     if request is None: return
     update_model_request_diagnostic(getattr(request, "diagnostic", None), "native-dispatch",
         checks=checks, pre_call_stage=stage, native_runtime_stage=runtime_stage)
+
+
+def update_native_rpc_progress(request, path, stage, *, status_class=None, **checks):
+    """Record fixed admission-RPC progress only; never records wire values."""
+    if request is None or path != ADMIT_PATH: return
+    update_model_request_diagnostic(getattr(request, "diagnostic", None), "native-dispatch",
+        checks=checks, native_rpc_stage=stage, native_rpc_status_class=status_class)
 
 
 def model_request_shape_checks(raw, profile, headers, path):
@@ -427,22 +447,41 @@ class Runtime:
         self.startup_checks = None
 
     async def rpc(self, path, document):
+        request = current_request.get() if path == ADMIT_PATH else None
+        update_native_rpc_progress(request, path, "serialization")
         raw = canonical(document)
         if len(raw) > MAX_RPC_BYTES: raise Refused()
+        update_native_rpc_progress(request, path, "tls-context", nativeRpcSerialized=True)
         # SSL_CERT_FILE is standard TLS trust configuration; HTTPS is mandatory even
         # in the image proof, which supplies a disposable CA. No insecure switch.
         context = ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE"))
+        update_native_rpc_progress(request, path, "client-setup", nativeRpcTlsContextCreated=True)
         try:
             async with asyncio.timeout(RPC_TIMEOUT), httpx.AsyncClient(verify=context, trust_env=False, follow_redirects=False,
                     timeout=RPC_TIMEOUT, transport=httpx.AsyncHTTPTransport(verify=context, retries=0)) as client:
-                async with client.stream("POST", self.gate_url + path, content=raw, headers={"content-type": "application/json", "x-lares-signature": sign(self.key, "request", "POST", path, raw)}) as response:
+                update_native_rpc_progress(request, path, "request-signature", nativeRpcClientReady=True)
+                signature = sign(self.key, "request", "POST", path, raw)
+                update_native_rpc_progress(request, path, "http-send", nativeRpcSignatureCreated=True, nativeRpcSendStarted=True)
+                async with client.stream("POST", self.gate_url + path, content=raw, headers={"content-type": "application/json", "x-lares-signature": signature}) as response:
+                    status_class = "success" if response.status_code == 200 else (
+                        "client-error" if type(response.status_code) is int and 400 <= response.status_code <= 499 else
+                        "server-error" if type(response.status_code) is int and 500 <= response.status_code <= 599 else "other")
+                    update_native_rpc_progress(request, path, "http-status", status_class=status_class,
+                        nativeRpcResponseReceived=True, nativeRpcStatusAccepted=response.status_code == 200)
                     result = bytearray()
+                    update_native_rpc_progress(request, path, "response-body")
                     async for chunk in response.aiter_bytes():
                         result.extend(chunk)
                         if len(result) > MAX_RPC_BYTES: raise Refused()
                     body = bytes(result)
-                    if response.status_code != 200 or not verify(self.key, response.headers.get("x-lares-signature"), "response", "POST", path, body): raise Refused()
-                    return parse_json(body)
+                    update_native_rpc_progress(request, path, "response-signature", nativeRpcResponseBodyComplete=True)
+                    if response.status_code != 200: raise Refused()
+                    signature_valid = verify(self.key, response.headers.get("x-lares-signature"), "response", "POST", path, body)
+                    update_native_rpc_progress(request, path, "response-json", nativeRpcResponseSignatureValid=signature_valid)
+                    if not signature_valid: raise Refused()
+                    document = parse_json(body)
+                    update_native_rpc_progress(request, path, "parsed", nativeRpcDocumentParsed=True)
+                    return document
         except Exception: raise Refused() from None
 
     def check_callbacks(self, proxy_server, startup=False):

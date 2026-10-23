@@ -213,6 +213,9 @@ MODEL_REQUEST_DIAGNOSTIC_STAGES={'runtime-check','headers','body','profile','nat
 MODEL_REQUEST_PRE_CALL_STAGES={'idle','entered','runtime-check','call-type','identity','credential','profile-recheck',
     'observation','bridge-rpc','bridge-reply','bridge-accepted','deployment-hook','http-guard','policy-lock',
     'authored-refusal','failure-hook'}
+MODEL_REQUEST_RPC_STAGES={'not-started','serialization','tls-context','client-setup','request-signature','http-send',
+    'http-status','response-body','response-signature','response-json','parsed'}
+MODEL_REQUEST_RPC_STATUS_CLASSES={'not-received','success','client-error','server-error','other'}
 MODEL_REQUEST_RUNTIME_STAGES={'not-started','runtime-imports','runtime-flags','callback-registry','callback-types',
     'callback-native-identity','callback-native-types','callback-proxy-hook-types','callback-native-membership',
     'callback-native-coverage','callback-native-cost','callback-secondary','callback-identity','router-aliases',
@@ -222,7 +225,9 @@ MODEL_REQUEST_DIAGNOSTIC_CHECKS={'anthropicBetaPresent','authorizationPresent','
     'nativePreCallEntered','nativeRuntimeCheckPassed','nativeCallTypeMatched','nativeIdentityPresent','nativeCredentialMatched',
     'nativeProfileRecheckPassed','nativeObservationCreated','nativeBridgeRpcAttempted','nativeBridgeReplyReceived',
     'nativeBridgeReplyAccepted','nativeAuthoredRefusal','nativeFailureHookEntered','nativeDeploymentHookEntered',
-    'nativeHttpGuardPassed','nativePolicyLockAcquired'}
+    'nativeHttpGuardPassed','nativePolicyLockAcquired','nativeRpcSerialized','nativeRpcTlsContextCreated',
+    'nativeRpcClientReady','nativeRpcSignatureCreated','nativeRpcSendStarted','nativeRpcResponseReceived',
+    'nativeRpcStatusAccepted','nativeRpcResponseBodyComplete','nativeRpcResponseSignatureValid','nativeRpcDocumentParsed'}
 MODEL_PURPOSE_DIAGNOSTIC_STAGES={'idle','headers','fields','body-length','ticket','body-hash','profile','dispatch','upstream'}
 MODEL_PURPOSE_DIAGNOSTIC_CHECKS={'headersAccepted','fieldsAccepted','bodyLengthMatches','upstreamResponseSeen'}
 
@@ -230,12 +235,15 @@ def validated_model_request_diagnostic(raw):
     if len(raw)>2048:return 'unknown'
     try:parsed=json.loads(raw)
     except (TypeError,ValueError):return 'unknown'
-    expected={'schema','requestCount','stage','preCallStage','nativeRuntimeStage','statusCode','checks','unknownHeaderCount','duplicateHeaderCount','unknownBodyFieldCount'}
-    if (type(parsed) is not dict or set(parsed)!=expected or type(parsed.get('schema')) is not int or parsed['schema']!=2 or
+    expected={'schema','requestCount','stage','preCallStage','nativeRuntimeStage','nativeRpcStage','nativeRpcStatusClass',
+        'statusCode','checks','unknownHeaderCount','duplicateHeaderCount','unknownBodyFieldCount'}
+    if (type(parsed) is not dict or set(parsed)!=expected or type(parsed.get('schema')) is not int or parsed['schema']!=3 or
         type(parsed.get('requestCount')) is not int or parsed['requestCount'] not in (0,1) or
         parsed.get('stage') not in MODEL_REQUEST_DIAGNOSTIC_STAGES or
         parsed.get('preCallStage') not in MODEL_REQUEST_PRE_CALL_STAGES or
         parsed.get('nativeRuntimeStage') not in MODEL_REQUEST_RUNTIME_STAGES or
+        parsed.get('nativeRpcStage') not in MODEL_REQUEST_RPC_STAGES or
+        parsed.get('nativeRpcStatusClass') not in MODEL_REQUEST_RPC_STATUS_CLASSES or
         type(parsed.get('statusCode')) is not int or not 0<=parsed['statusCode']<=599 or
         any(type(parsed.get(name)) is not int or not 0<=parsed[name]<=31 for name in ('unknownHeaderCount','duplicateHeaderCount','unknownBodyFieldCount')) or
         type(parsed.get('checks')) is not dict or set(parsed['checks'])!=MODEL_REQUEST_DIAGNOSTIC_CHECKS or

@@ -23,7 +23,7 @@ import types
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
 sys.path.insert(0, str(ROOT / "images/gateway-runtime"))
-from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, canonical, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash, NATIVE_LOOKUP_ROUTES, NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, MODEL_ROUTES, native_route_allowed, valid_anthropic_safety_metadata
+from admission_contract import ADMIT_PATH, RequestState, Refused, request_hash, sign, verify, parse_json, canonical, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash, NATIVE_LOOKUP_ROUTES, NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, MODEL_ROUTES, native_route_allowed, valid_anthropic_safety_metadata
 
 
 class ContractTests(unittest.TestCase):
@@ -647,6 +647,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
             "CustomLogger":object,"AdmissionHTTPRefusal":type("AdmissionHTTPRefusal",(Exception,),{}),
             "state":lambda: self.request_context.get(),"refusal":lambda: ValueError("authored refusal")}
         diagnostic_names={"MODEL_REQUEST_DIAGNOSTIC_FILE","MODEL_REQUEST_STAGES","MODEL_REQUEST_PRE_CALL_STAGES","STARTUP_STAGES",
+            "MODEL_REQUEST_RPC_STAGES","MODEL_REQUEST_RPC_STATUS_CLASSES",
             "MODEL_REQUEST_COUNTER","_write_model_request_diagnostic","begin_model_request_diagnostic",
             "update_model_request_diagnostic","update_native_request_progress","model_request_shape_checks"}
         diagnostic_nodes=[node for node in source.body if isinstance(node,(ast.Assign,ast.FunctionDef)) and
@@ -1013,6 +1014,7 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
     def setUp(self):
         source=ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
         names={"MODEL_REQUEST_DIAGNOSTIC_FILE","MODEL_REQUEST_STAGES","MODEL_REQUEST_PRE_CALL_STAGES","STARTUP_STAGES",
+            "MODEL_REQUEST_RPC_STAGES","MODEL_REQUEST_RPC_STATUS_CLASSES",
             "MODEL_REQUEST_COUNTER","_write_model_request_diagnostic","reset_model_request_diagnostic","begin_model_request_diagnostic",
             "update_model_request_diagnostic","update_native_request_progress","model_request_shape_checks"}
         nodes=[node for node in source.body if isinstance(node,(ast.Assign,ast.FunctionDef)) and
@@ -1097,6 +1099,7 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
     def test_first_use_reader_accepts_only_fixed_schema(self):
         source=ast.parse((ROOT / "services/keeper/tests/native-first-use-image.probe.py").read_text())
         names={"MODEL_REQUEST_DIAGNOSTIC_STAGES","MODEL_REQUEST_PRE_CALL_STAGES","MODEL_REQUEST_RUNTIME_STAGES",
+            "MODEL_REQUEST_RPC_STAGES","MODEL_REQUEST_RPC_STATUS_CLASSES",
             "MODEL_REQUEST_DIAGNOSTIC_CHECKS","validated_model_request_diagnostic",
             "MODEL_PURPOSE_DIAGNOSTIC_STAGES","MODEL_PURPOSE_DIAGNOSTIC_CHECKS","validated_model_purpose_diagnostic",
             "marker_from_archive","collect_marker","keeper_model_purpose_diagnostic","first_use_model_diagnostics"}
@@ -1105,14 +1108,16 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
              (isinstance(node,ast.FunctionDef) and node.name in names))]
         namespace={"json":json,"io":io,"tarfile":tarfile}
         exec(compile(ast.Module(body=nodes,type_ignores=[]),"first-use-diagnostic-reader","exec"),namespace)
-        record={"schema":2,"requestCount":1,"stage":"native-response","preCallStage":"idle","nativeRuntimeStage":"not-started","statusCode":400,
+        record={"schema":3,"requestCount":1,"stage":"native-response","preCallStage":"idle","nativeRuntimeStage":"not-started",
+            "nativeRpcStage":"not-started","nativeRpcStatusClass":"not-received","statusCode":400,
             "checks":{name:False for name in namespace["MODEL_REQUEST_DIAGNOSTIC_CHECKS"]},
             "unknownHeaderCount":0,"duplicateHeaderCount":0,"unknownBodyFieldCount":0}
         valid=json.dumps(record,separators=(",",":")).encode()
         self.assertEqual(namespace["validated_model_request_diagnostic"](valid),record)
         contaminated={**record,"unknown_private_key":"do not retain"}
         self.assertEqual(namespace["validated_model_request_diagnostic"](json.dumps(contaminated).encode()),"unknown")
-        for changed in ({**record,"preCallStage":"arbitrary-error"},{**record,"nativeRuntimeStage":"private-value"},{**record,"schema":1}):
+        for changed in ({**record,"preCallStage":"arbitrary-error"},{**record,"nativeRuntimeStage":"private-value"},
+                        {**record,"nativeRpcStage":"private-error"},{**record,"nativeRpcStatusClass":"raw-status"},{**record,"schema":2}):
             self.assertEqual(namespace["validated_model_request_diagnostic"](json.dumps(changed).encode()),"unknown")
         self.assertEqual(namespace["validated_model_request_diagnostic"]((b" "*2049)),"unknown")
 
@@ -1155,6 +1160,156 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
         self.assertEqual(namespace["first_use_model_diagnostics"]("gateway-container","keeper-container"),
             {"gateway":{"container":"gateway-container"},"keeper":{"container":"keeper-container","wait":True}})
 
+
+class NativeRpcProgressTests(unittest.IsolatedAsyncioTestCase):
+    """Exercise the actual Runtime.rpc method with local deterministic transport stubs."""
+    def setUp(self):
+        source=ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
+        runtime_class=next(node for node in source.body if isinstance(node,ast.ClassDef) and node.name=="Runtime")
+        rpc=next(node for node in runtime_class.body if isinstance(node,ast.AsyncFunctionDef) and node.name=="rpc")
+        names={"MODEL_REQUEST_DIAGNOSTIC_FILE","MODEL_REQUEST_STAGES","MODEL_REQUEST_PRE_CALL_STAGES","STARTUP_STAGES",
+            "MODEL_REQUEST_RPC_STAGES","MODEL_REQUEST_RPC_STATUS_CLASSES","MODEL_REQUEST_COUNTER",
+            "_write_model_request_diagnostic","reset_model_request_diagnostic","begin_model_request_diagnostic","update_model_request_diagnostic",
+            "update_native_rpc_progress"}
+        diagnostics=[node for node in source.body if isinstance(node,(ast.Assign,ast.FunctionDef)) and
+            ((isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in names for target in node.targets)) or
+             (isinstance(node,ast.FunctionDef) and node.name in names))]
+        self.directory=tempfile.TemporaryDirectory(prefix="lares-native-rpc-progress-")
+        self.marker_path=pathlib.Path(self.directory.name)/"record.json"
+        self.request_context=__import__("contextvars").ContextVar("rpc_test_request",default=None)
+        self.scenario="success"
+        self.raw_sent=None
+        self.signature_sent=None
+        response_body=b'{"accepted":true}'
+        self.response_body=response_body
+        self.response_status=200
+        self.response_signature=sign(b"fixture-key","response","POST",ADMIT_PATH,response_body)
+
+        class FakeResponse:
+            def __init__(inner):
+                inner.status_code=self.response_status
+                body=self.response_body
+                response_signature=sign(b"fixture-key","response","POST",ADMIT_PATH,body)
+                if self.scenario=="response-signature": response_signature="invalid-signature"
+                inner.headers={"x-lares-signature":response_signature}
+            async def aiter_bytes(inner):
+                if self.scenario=="response-body":
+                    yield b"x"*65537
+                else:
+                    yield self.response_body
+
+        class StreamContext:
+            async def __aenter__(inner): return FakeResponse()
+            async def __aexit__(inner,*args): return False
+
+        class FakeClient:
+            def __init__(inner,**kwargs):
+                if self.scenario=="client-setup": raise RuntimeError("private client error")
+            async def __aenter__(inner): return inner
+            async def __aexit__(inner,*args): return False
+            def stream(inner,method,url,*,content,headers):
+                self.raw_sent=content
+                self.signature_sent=headers.get("x-lares-signature")
+                if self.scenario=="http-send": raise RuntimeError("private send error")
+                return StreamContext()
+
+        class FakeSSL:
+            @staticmethod
+            def create_default_context(*,cafile):
+                if self.scenario=="tls-context": raise RuntimeError("private TLS error")
+                return object()
+
+        class FakeHTTPX:
+            AsyncClient=FakeClient
+            @staticmethod
+            def AsyncHTTPTransport(**kwargs): return object()
+
+        namespace={"asyncio":asyncio,"os":os,"tempfile":tempfile,"ssl":FakeSSL,"httpx":FakeHTTPX,
+            "current_request":self.request_context,"ADMIT_PATH":ADMIT_PATH,"MAX_RPC_BYTES":65536,"RPC_TIMEOUT":5,
+            "canonical":canonical,"sign":sign,"verify":verify,"parse_json":parse_json,"Refused":Refused,
+            "MODEL_REQUEST_DIAGNOSTIC_FILE":str(self.marker_path)}
+        exec(compile(ast.Module(body=diagnostics,type_ignores=[]),"native-rpc-diagnostic","exec"),namespace)
+        namespace["MODEL_REQUEST_DIAGNOSTIC_FILE"]=str(self.marker_path)
+        self.namespace=namespace
+        exec(compile(ast.Module(body=[rpc],type_ignores=[]),"native-rpc-method","exec"),namespace)
+        self.runtime=types.SimpleNamespace(gate_url="https://keeper.example.invalid",key=b"fixture-key")
+        self.runtime.rpc=types.MethodType(namespace["rpc"],self.runtime)
+
+    def tearDown(self): self.directory.cleanup()
+
+    async def run_rpc(self,scenario):
+        self.scenario=scenario
+        self.raw_sent=None;self.signature_sent=None
+        self.response_status=503 if scenario=="http-status" else 200
+        self.response_body=b"not-json" if scenario=="response-json" else b'{"accepted":true}'
+        original_canonical=self.namespace["canonical"]
+        original_sign=self.namespace["sign"]
+        if scenario=="serialization":
+            self.namespace["canonical"]=lambda value: (_ for _ in ()).throw(RuntimeError("private serialization error")) if value=={"fixed":"document"} else original_canonical(value)
+        if scenario=="request-signature":
+            self.namespace["sign"]=lambda *args: (_ for _ in ()).throw(RuntimeError("private signing error"))
+        token=None
+        try:
+            with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+                self.namespace["reset_model_request_diagnostic"]()
+                marker=self.namespace["begin_model_request_diagnostic"]()
+                marker["preCallStage"]="failure-hook"
+                marker["nativeRpcStage"]="not-started"
+                request=types.SimpleNamespace(diagnostic=marker)
+                token=self.request_context.set(request)
+                result=await self.runtime.rpc(ADMIT_PATH,{"fixed":"document"})
+            return result,json.loads(self.marker_path.read_bytes())
+        finally:
+            self.namespace["canonical"]=original_canonical
+            self.namespace["sign"]=original_sign
+            if token is not None: self.request_context.reset(token)
+
+    async def test_success_records_rpc_completion_and_preserves_signed_body(self):
+        result,record=await self.run_rpc("success")
+        self.assertEqual(result,{"accepted":True})
+        self.assertEqual(self.raw_sent,canonical({"fixed":"document"}))
+        self.assertTrue(verify(b"fixture-key",self.signature_sent,"request","POST",ADMIT_PATH,self.raw_sent))
+        self.assertEqual(record["nativeRpcStage"],"parsed")
+        self.assertEqual(record["nativeRpcStatusClass"],"success")
+        self.assertTrue(all(record["checks"][name] for name in (
+            "nativeRpcSerialized","nativeRpcTlsContextCreated","nativeRpcClientReady","nativeRpcSignatureCreated",
+            "nativeRpcSendStarted","nativeRpcResponseReceived","nativeRpcStatusAccepted","nativeRpcResponseBodyComplete",
+            "nativeRpcResponseSignatureValid","nativeRpcDocumentParsed")))
+        self.assertEqual(record["preCallStage"],"failure-hook")
+        self.assertLessEqual(len(self.marker_path.read_bytes()),2048)
+
+    async def test_rpc_failures_leave_fixed_stage_and_status_evidence(self):
+        expectations={"serialization":("serialization","not-received",RuntimeError),
+            "tls-context":("tls-context","not-received",RuntimeError),
+            "client-setup":("client-setup","not-received",Refused),
+            "request-signature":("request-signature","not-received",Refused),
+            "http-send":("http-send","not-received",Refused)}
+        for scenario,(stage,status,error) in expectations.items():
+            with self.subTest(stage=scenario),self.assertRaises(error):
+                _,record=await self.run_rpc(scenario)
+            record=json.loads(self.marker_path.read_bytes())
+            self.assertEqual(record["nativeRpcStage"],stage)
+            self.assertEqual(record["nativeRpcStatusClass"],status)
+
+        for scenario,stage in (("response-body","response-body"),("response-signature","response-json"),
+                               ("response-json","response-json")):
+            with self.subTest(stage=stage),self.assertRaises(Refused): await self.run_rpc(scenario)
+            record=json.loads(self.marker_path.read_bytes())
+            self.assertEqual(record["nativeRpcStage"],stage)
+        self.assertTrue(record["checks"]["nativeRpcResponseSignatureValid"])
+        self.assertFalse(record["checks"]["nativeRpcDocumentParsed"])
+
+    async def test_rpc_response_rejection_is_classified_without_response_values(self):
+        with self.assertRaises(Refused): await self.run_rpc("http-status")
+        record=json.loads(self.marker_path.read_bytes())
+        self.assertEqual(record["nativeRpcStatusClass"],"server-error")
+        self.assertTrue(record["checks"]["nativeRpcResponseReceived"])
+        self.assertFalse(record["checks"]["nativeRpcStatusAccepted"])
+        raw=self.marker_path.read_bytes()
+        self.assertNotIn(b"keeper.example.invalid",raw)
+        self.assertNotIn(b"private",raw)
+
+class FirstUseProbeTests(unittest.TestCase):
     def test_first_use_failure_collects_before_cleanup_and_preserves_error(self):
         source=ast.parse((ROOT / "services/keeper/tests/native-first-use-image.probe.py").read_text())
         helper=next(node for node in source.body if isinstance(node,ast.FunctionDef) and node.name=="invoke_first_use_and_capture")
