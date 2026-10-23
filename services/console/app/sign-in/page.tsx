@@ -1,7 +1,10 @@
-import { signedInMember, isConsoleOwner } from "../../lib/auth";
+import { signedInMember, isConsoleOwner, members } from "../../lib/auth";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Mark } from "@lares/ui/patterns";
 import { safeNext } from "../../lib/safe-next";
+import { consoleRedirect } from "../../lib/console-oidc";
+import { OWNER_DISCOVERY_COOKIE, openOwnerDiscoveryReceipt } from "../../lib/owner-bootstrap-receipt";
 import styles from "./sign-in.module.css";
 
 export const metadata = { title: "Sign in to Lares" };
@@ -15,6 +18,12 @@ export default async function SignIn({ searchParams }: { searchParams: Promise<R
   const q = await searchParams;
   const member = await signedInMember();
   if (member) redirect(isConsoleOwner(member) ? safeNext(q.next) : "/membership");
+  const receipt = await openOwnerDiscoveryReceipt((await cookies()).get(OWNER_DISCOVERY_COOKIE)?.value);
+  const ownerId = process.env.AGENT_OWNER_USER_ID?.trim();
+  const originMatches = !!receipt && receipt.installationOrigin === new URL(consoleRedirect()).origin;
+  const owner = originMatches && ownerId ? await members.currentMember(ownerId) : undefined;
+  const showOwnerSetup = !!receipt && originMatches && !!owner && isConsoleOwner(owner) &&
+    await members.firstOwnerBootstrapEligible(ownerId!, owner.organisationId);
   const next = safeNext(q.next);
   const error = typeof q.error === "string" ? (ERRORS[q.error] ?? ERRORS.failed) : null;
   const signedOut = !error && q["signed-out"] !== undefined;
@@ -42,6 +51,12 @@ export default async function SignIn({ searchParams }: { searchParams: Promise<R
           <h1 className={styles.title}>Sign in to Lares</h1>
           {error && <p className={`${styles.notice} ${styles.error}`} role="alert">{error}</p>}
           {signedOut && <p className={styles.notice} role="status">You&apos;re signed out.</p>}
+          {showOwnerSetup && receipt && <section aria-labelledby="owner-setup-title">
+            <h2 id="owner-setup-title">Confirm this first-owner sign-in</h2>
+            <p>This verified provider account can be linked to the first owner on this fresh installation. Confirm that the installation origin below is yours. On the installing server, run <code>sudo lares owner-bootstrap</code> and paste the JSON below at its protected prompt. Then recreate only Console and sign in again with this same account. This display expires in five minutes.</p>
+            <pre aria-label="Owner setup JSON">{JSON.stringify(receipt)}</pre>
+            <p>The setup details do not sign you in. A new provider check is required after the server confirms them.</p>
+          </section>}
           <a className={`${styles.button} ${styles.primary}`} href={loginHref}>
             <svg className={styles.googleG} width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
               <path fill="#4285F4" d="M22.5 12.27c0-.79-.07-1.54-.2-2.27H12v4.51h5.9a5.04 5.04 0 0 1-2.19 3.31v2.75h3.55c2.08-1.91 3.24-4.74 3.24-8.3z" />

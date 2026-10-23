@@ -128,9 +128,7 @@ beforeEach(() => {
   // Everything that would touch a host. `chown` and `chmod` are stubs so the permissions the
   // installer ASKS for are assertable without this test needing to be root; `openssl` is a stub
   // that is expected never to be called at all (the entropy comes from /dev/urandom).
-  // `lares-doctor`: every completed wizard run proves the model key through it, so a
-  // run that is not about that proof stubs it silently green.
-  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl", "getent", "lares-doctor"]) stub(name);
+  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl", "getent"]) stub(name);
   stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
   // The only `getent` the installer may run is the DNS lookup for the domain; both
   // seams agree on one address so that check passes. It must never look up a GROUP.

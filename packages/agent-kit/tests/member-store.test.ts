@@ -1,13 +1,14 @@
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
 import { readFileSync } from 'node:fs';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgMemberStore, currentMember, type VerifiedProviderProof } from '../src/member-store.js';
 import { quiet } from './helpers/quiet-pool.js';
 const migration = readFileSync(new URL('../../../services/box/sql/007_member_identity_sessions.sql',import.meta.url),'utf8');
 const tomorrow = () => new Date(Date.now()+86_400_000);
 const proof = (subject: string, tenantId?: string): VerifiedProviderProof => ({ identity: { issuer:'https://identity.example.invalid', subject, ...(tenantId ? {tenantId} : {}) }, verifiedAt: new Date() });
 const schema = `CREATE TABLE orgs(id text PRIMARY KEY,display_name text NOT NULL);
+ CREATE TABLE org_member_policy(user_id text PRIMARY KEY,allowed_capabilities text[],may_create_agents boolean NOT NULL DEFAULT true,spend_cap_usd_month numeric);
  CREATE TABLE users(id text PRIMARY KEY,display_name text NOT NULL,primary_email text,org_id text REFERENCES orgs(id),org_role text NOT NULL DEFAULT 'member',created_at timestamptz NOT NULL DEFAULT now());`;
 let db: Pool, store: PgMemberStore, stop: () => Promise<void>;
 beforeAll(async () => {
@@ -26,6 +27,65 @@ async function invite(email='invite@example.invalid', role: 'owner'|'member'|'re
   return store.inviteMember('owner',{displayName:'Invited member',email,role,expiresAt:tomorrow()});
 }
 describe('member storage on disposable PostgreSQL',()=> {
+  it('opens one locked first-owner window, rechecks proof age after the lock and closes it atomically',async()=> {
+    await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;'); await db.query(schema);
+    await db.query("INSERT INTO orgs VALUES('org','Example'); INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES('owner','Owner','owner@example.invalid','org','owner'); INSERT INTO org_member_policy(user_id) VALUES('owner');");
+    await db.query(migration);
+    expect(await store.firstOwnerBootstrapEligible('owner','org')).toBe(true);
+    const blocker=await db.connect(); await blocker.query('BEGIN'); await blocker.query("SELECT id FROM orgs WHERE id='org' FOR UPDATE");
+    const now=Date.now(); const staleAfterWait=store.bootstrapFirstOwnerIdentity('owner','org',{...proof('late'),verifiedAt:new Date(now)});
+    await new Promise(resolve=>setTimeout(resolve,50));
+    const clock=vi.spyOn(Date,'now').mockReturnValue(now+300_001);
+    await blocker.query('COMMIT'); blocker.release();
+    try { await expect(staleAfterWait).rejects.toMatchObject({code:'invalid'}); }
+    finally { clock.mockRestore(); }
+    await expect(store.bootstrapFirstOwnerIdentity('owner','org',proof('first'))).resolves.toBeUndefined();
+    expect(await store.firstOwnerBootstrapEligible('owner','org')).toBe(false);
+    await expect(store.bootstrapFirstOwnerIdentity('owner','org',proof('second'))).rejects.toMatchObject({code:'denied'});
+    expect((await db.query("SELECT member_id,subject FROM member_provider_identities")).rows).toEqual([{member_id:'owner',subject:'first'}]);
+  });
+  it('admits exactly one competing first-owner proof and only its identity can sign in',async()=> {
+    await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;'); await db.query(schema);
+    await db.query("INSERT INTO orgs VALUES('org','Example'); INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES('owner','Owner','owner@example.invalid','org','owner'); INSERT INTO org_member_policy(user_id) VALUES('owner');");
+    await db.query(migration);
+    expect(await store.firstOwnerBootstrapEligible('owner','org')).toBe(true);
+
+    const proofs=[proof('competing-owner-a'),proof('competing-owner-b')];
+    const results=await Promise.allSettled(proofs.map(candidate=>store.bootstrapFirstOwnerIdentity('owner','org',candidate)));
+    const winners=results.flatMap((result,index)=>result.status==='fulfilled'?[index]:[]);
+    const denied=results.filter((result)=>result.status==='rejected');
+    expect(winners).toHaveLength(1);
+    expect(denied).toHaveLength(1);
+    if (denied[0]?.status==='rejected') expect(denied[0].reason).toMatchObject({code:'denied'});
+
+    const winnerProof=proofs[winners[0]!];
+    const loserProof=proofs[winners[0]===0?1:0]!;
+    expect((await db.query('SELECT member_id,issuer,subject,tenant_id FROM member_provider_identities')).rows).toEqual([{
+      member_id:'owner',issuer:'https://identity.example.invalid',subject:winnerProof!.identity.subject,tenant_id:''
+    }]);
+    await expect(store.createSession(loserProof,tomorrow())).rejects.toMatchObject({code:'denied'});
+
+    const nextSignIn=await store.createSession(winnerProof!,tomorrow());
+    expect(nextSignIn.member).toMatchObject({id:'owner',organisationId:'org',role:'owner',status:'active'});
+    expect(await store.sessionMember(nextSignIn.token)).toMatchObject({id:'owner',organisationId:'org',role:'owner',status:'active'});
+  });
+  it('refuses first-owner bootstrap if any extra member, organisation, invitation, identity or session exists',async()=> {
+    const fresh=async()=> {
+      await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;'); await db.query(schema);
+      await db.query("INSERT INTO orgs VALUES('org','Example'); INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES('owner','Owner','owner@example.invalid','org','owner'); INSERT INTO org_member_policy(user_id) VALUES('owner');");
+      await db.query(migration);
+    };
+    await fresh(); await db.query("INSERT INTO users(id,display_name,org_id,org_role) VALUES('second','Second','org','member')");
+    expect(await store.firstOwnerBootstrapEligible('owner','org')).toBe(false);
+    await fresh(); await db.query("INSERT INTO orgs VALUES('other','Other')");
+    expect(await store.firstOwnerBootstrapEligible('owner','org')).toBe(false);
+    await fresh(); await db.query("INSERT INTO member_invitations(id,member_id,token_hash,expires_at) VALUES('invite','owner',repeat('a',64),now()+interval '1 hour')");
+    expect(await store.firstOwnerBootstrapEligible('owner','org')).toBe(false);
+    await fresh(); await db.query("INSERT INTO member_provider_identities(member_id,issuer,subject) VALUES('owner','https://identity.example.invalid','existing')");
+    expect(await store.firstOwnerBootstrapEligible('owner','org')).toBe(false);
+    await fresh(); await db.query("INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES('session','owner',repeat('b',64),now()+interval '1 hour')");
+    expect(await store.firstOwnerBootstrapEligible('owner','org')).toBe(false);
+  });
   it('lists same-organisation directory and pending invitations only for current owners, without credentials',async()=> {
     const invitation=await invite();
     const directory=await store.listMembers('owner');
