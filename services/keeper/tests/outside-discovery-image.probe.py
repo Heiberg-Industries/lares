@@ -1,11 +1,13 @@
 """Configured outside discovery proof; Linux disposable CI only."""
 import hashlib
 import ipaddress
+import copy
 import json
 import os
 import pathlib
 import platform
 import re
+import selectors
 import secrets
 import shutil
 import subprocess
@@ -13,12 +15,14 @@ import sys
 import tempfile
 import time
 import uuid
+import stat
 from unittest.mock import patch
 
 DB_IMAGE = "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b"
 repo = pathlib.Path(__file__).resolve().parents[3]
 self_test_mode = sys.argv[1:] == ["--self-test"]
-if self_test_mode:
+image_store_mode = sys.argv[1:] == ["--prepare-image-store"]
+if self_test_mode or image_store_mode:
     keeper_ref = squid_ref = firewall_ref = expected_sha = output = ""
 else:
     keeper_ref, squid_ref, firewall_ref, expected_sha, output = sys.argv[1:]
@@ -71,18 +75,418 @@ def write_secret(path, value, mode=0o600):
     path.chmod(mode)
 
 
-def inspect_local_digest(reference, expected_tag):
+def inspect_local_digest(reference, expected_tag, role):
+    if role not in {"keeper", "squid", "firewall"}:
+        raise ImageResolutionRefusal("keeper", "reference", "invalid_role")
     if not re.fullmatch(r"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}", reference):
-        raise RuntimeError("fixture image reference is not digest-pinned")
+        raise ImageResolutionRefusal(role, "reference", "invalid_digest_reference")
     if not reference.startswith(expected_tag + "@sha256:"):
-        raise RuntimeError("fixture image digest does not match the loaded build tag")
-    result = run("docker", "image", "inspect", reference, "--format", "{{json .Id}}", check=False)
-    if result.returncode != 0:
-        raise RuntimeError("build-result digest does not resolve to the locally loaded image")
-    inspected = json.loads(result.stdout.strip())
-    if not isinstance(inspected, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", inspected):
-        raise RuntimeError("digest-pinned fixture image did not resolve locally")
-    return {"reference": reference, "imageId": inspected}
+        raise ImageResolutionRefusal(role, "reference", "unexpected_tag")
+    try:
+        digest_output = _image_store_command(
+            "digest", "docker", "image", "inspect", reference, "--format", "{{json .Id}}",
+            timeout=15, limit=512)
+    except ImageStoreRefusal as refusal:
+        category = "digest_not_loaded" if refusal.category == "command_failed" else refusal.category
+        raise ImageResolutionRefusal(role, "digest", category) from None
+    try:
+        digest_id = _parse_immutable_image_id(digest_output)
+    except RuntimeError:
+        raise ImageResolutionRefusal(role, "digest", "invalid_image_id") from None
+    try:
+        tag_output = _image_store_command(
+            "tag", "docker", "image", "inspect", expected_tag, "--format", "{{json .Id}}",
+            timeout=15, limit=512)
+    except ImageStoreRefusal as refusal:
+        category = "tag_not_loaded" if refusal.category == "command_failed" else refusal.category
+        raise ImageResolutionRefusal(role, "tag", category) from None
+    try:
+        tag_id = _parse_immutable_image_id(tag_output)
+    except RuntimeError:
+        raise ImageResolutionRefusal(role, "tag", "invalid_image_id") from None
+    if digest_id != tag_id:
+        raise ImageResolutionRefusal(role, "identity", "image_id_mismatch")
+    return {"reference": reference, "imageId": digest_id}
+
+
+class ImageStoreRefusal(Exception):
+    def __init__(self, stage, category):
+        super().__init__(category)
+        self.stage = stage
+        self.category = category
+
+
+class ImageResolutionRefusal(Exception):
+    def __init__(self, role, stage, category):
+        super().__init__(category)
+        self.role = role
+        self.stage = stage
+        self.category = category
+
+
+def _parse_immutable_image_id(output):
+    try:
+        value = json.loads(output.strip())
+    except (json.JSONDecodeError, AttributeError):
+        raise RuntimeError("local image identity is invalid") from None
+    if not isinstance(value, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", value):
+        raise RuntimeError("local image identity is invalid")
+    return value
+
+
+def _merge_snapshotter_feature(document):
+    if not isinstance(document, dict):
+        raise ImageStoreRefusal("config", "non_object")
+    result = copy.deepcopy(document)
+    features = result.get("features", {})
+    if not isinstance(features, dict):
+        raise ImageStoreRefusal("config", "features_non_object")
+    features["containerd-snapshotter"] = True
+    result["features"] = features
+    return result
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(_value):
+    raise ValueError("nonstandard JSON constant")
+
+
+def _parse_daemon_config(data):
+    try:
+        value = json.loads(data.decode("utf-8", "strict"), object_pairs_hook=_unique_json_object,
+                           parse_constant=_reject_json_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise ImageStoreRefusal("config", "invalid_json") from None
+    if not isinstance(value, dict):
+        raise ImageStoreRefusal("config", "non_object")
+    if "features" in value and not isinstance(value["features"], dict):
+        raise ImageStoreRefusal("config", "features_non_object")
+    return value
+
+
+def _safe_config_directory(directory, expected_uid):
+    path = pathlib.Path(directory)
+    try:
+        info = os.lstat(path)
+    except OSError:
+        raise ImageStoreRefusal("config", "directory_unavailable") from None
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != expected_uid or info.st_mode & 0o022:
+        raise ImageStoreRefusal("config", "unsafe_directory")
+    return path
+
+
+def _safe_docker_config_ancestry():
+    for directory in ("/etc", "/etc/docker"):
+        _safe_config_directory(directory, 0)
+
+
+def _read_safe_daemon_config(path, expected_uid):
+    path = pathlib.Path(path)
+    directory = _safe_config_directory(path.parent, expected_uid)
+    directory_fd = None
+    descriptor = None
+    try:
+        directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+                               getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+        directory_info = os.fstat(directory_fd)
+        if not stat.S_ISDIR(directory_info.st_mode) or directory_info.st_uid != expected_uid or \
+                directory_info.st_mode & 0o022:
+            raise ImageStoreRefusal("config", "unsafe_directory")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | \
+            getattr(os, "O_NONBLOCK", 0)
+        try:
+            descriptor = os.open(path.name, flags, dir_fd=directory_fd)
+        except FileNotFoundError:
+            return {}, None, 0o644, os.getegid()
+        except OSError:
+            raise ImageStoreRefusal("config", "unsafe_file") from None
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid or info.st_nlink != 1 or \
+                info.st_mode & 0o022 or info.st_size > 65536:
+            raise ImageStoreRefusal("config", "unsafe_file")
+        chunks = []
+        remaining = 65537
+        while remaining:
+            chunk = os.read(descriptor, min(8192, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > 65536:
+            raise ImageStoreRefusal("config", "oversized")
+        return (_parse_daemon_config(data),
+                (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns),
+                stat.S_IMODE(info.st_mode), info.st_gid)
+    finally:
+        try:
+            if descriptor is not None:
+                os.close(descriptor)
+        finally:
+            if directory_fd is not None:
+                os.close(directory_fd)
+
+
+def _atomic_write_daemon_config(path, document, expected_uid, expected_identity, mode, group_id):
+    path = pathlib.Path(path)
+    directory = _safe_config_directory(path.parent, expected_uid)
+    directory_fd = None
+    temporary_name = ".daemon.json.lares-" + uuid.uuid4().hex
+    descriptor = None
+    try:
+        directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+                               getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+        directory_info = os.fstat(directory_fd)
+        if not stat.S_ISDIR(directory_info.st_mode) or directory_info.st_uid != expected_uid or directory_info.st_mode & 0o022:
+            raise ImageStoreRefusal("config", "unsafe_directory")
+        try:
+            current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            current_identity = (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
+        except FileNotFoundError:
+            current_identity = None
+        except OSError:
+            raise ImageStoreRefusal("config", "unsafe_file") from None
+        if current_identity != expected_identity:
+            raise ImageStoreRefusal("config", "changed_during_update")
+        descriptor = os.open(temporary_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                             getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                             0o600, dir_fd=directory_fd)
+        os.fchown(descriptor, expected_uid, group_id)
+        os.fchmod(descriptor, mode)
+        payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise ImageStoreRefusal("config", "write_failed")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(temporary_name, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    except ImageStoreRefusal:
+        raise
+    except OSError:
+        raise ImageStoreRefusal("config", "write_failed") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory_fd is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+            os.close(directory_fd)
+
+
+def _image_store_host_guard(env, uid, system, machine):
+    if env.get("CI") != "true" or env.get("GITHUB_ACTIONS") != "true" or \
+            env.get("RUNNER_ENVIRONMENT") != "github-hosted":
+        raise ImageStoreRefusal("guards", "not_github_hosted_ci")
+    if uid != 0 or system != "Linux" or machine != "x86_64":
+        raise ImageStoreRefusal("guards", "runner_identity")
+    if env.get("LARES_DOCKER_OVERRIDE_PRESENT") != "false" or env.get("DOCKER_HOST") or env.get("DOCKER_CONTEXT"):
+        raise ImageStoreRefusal("guards", "docker_override")
+
+
+def _image_store_command(stage, *args, timeout=10, limit=8192):
+    if not isinstance(timeout, (int, float)) or timeout <= 0 or not isinstance(limit, int) or limit <= 0:
+        raise ImageStoreRefusal(stage, "invalid_bounds")
+    try:
+        process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, bufsize=0, close_fds=True)
+    except OSError:
+        raise ImageStoreRefusal(stage, "command_unavailable") from None
+    deadline = time.monotonic() + timeout
+    selector = None
+    output = bytearray()
+    refusal = None
+    result = None
+    cleanup_ok = True
+    try:
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ImageStoreRefusal(stage, "command_timeout")
+            events = selector.select(remaining)
+            if not events:
+                raise ImageStoreRefusal(stage, "command_timeout")
+            for key, _ in events:
+                try:
+                    chunk = os.read(key.fd, min(4096, limit + 1 - len(output)))
+                except OSError:
+                    raise ImageStoreRefusal(stage, "command_read_error") from None
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                output.extend(chunk)
+                if len(output) > limit:
+                    raise ImageStoreRefusal(stage, "command_output_limit")
+        remaining = deadline - time.monotonic()
+        if process.poll() is None and remaining <= 0:
+            raise ImageStoreRefusal(stage, "command_timeout")
+        try:
+            returncode = process.wait(timeout=max(0.001, remaining))
+        except subprocess.TimeoutExpired:
+            raise ImageStoreRefusal(stage, "command_timeout") from None
+        if returncode != 0:
+            raise ImageStoreRefusal(stage, "command_failed")
+        try:
+            result = bytes(output).decode("utf-8", "strict").strip()
+        except UnicodeDecodeError:
+            raise ImageStoreRefusal(stage, "command_encoding") from None
+    except ImageStoreRefusal as error:
+        refusal = error
+    except (OSError, ValueError):
+        refusal = ImageStoreRefusal(stage, "command_read_error")
+    finally:
+        if selector is not None:
+            try:
+                selector.close()
+            except (OSError, ValueError):
+                cleanup_ok = False
+        try:
+            running = process.poll() is None
+        except (OSError, ValueError):
+            running = True
+            cleanup_ok = False
+        if running:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except (OSError, ValueError):
+                cleanup_ok = False
+        try:
+            process.wait(timeout=2)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            cleanup_ok = False
+        try:
+            process.stdout.close()
+        except (OSError, ValueError):
+            cleanup_ok = False
+    if not cleanup_ok:
+        raise ImageStoreRefusal(stage, "command_cleanup")
+    if refusal is not None:
+        raise refusal
+    return result
+
+
+def _docker_socket_guard():
+    try:
+        mode = os.lstat("/var/run/docker.sock").st_mode
+    except OSError:
+        raise ImageStoreRefusal("daemon", "socket_unavailable") from None
+    if not stat.S_ISSOCK(mode):
+        raise ImageStoreRefusal("daemon", "socket_not_local")
+
+
+def _docker_context_identity(deadline=None):
+    def call(stage, *args, limit=8192):
+        timeout = 10
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ImageStoreRefusal("readiness", "readiness_timeout")
+            timeout = min(timeout, remaining)
+        return _image_store_command(stage, *args, timeout=timeout, limit=limit)
+
+    context = call("daemon", "docker", "context", "show", limit=256)
+    if context != "default":
+        raise ImageStoreRefusal("daemon", "non_default_context")
+    endpoint = call("daemon", "docker", "context", "inspect", "default", "--format",
+                    "{{json .Endpoints.docker.Host}}", limit=512)
+    try:
+        if json.loads(endpoint) != "unix:///var/run/docker.sock":
+            raise ImageStoreRefusal("daemon", "non_local_endpoint")
+    except json.JSONDecodeError:
+        raise ImageStoreRefusal("daemon", "context_metadata") from None
+    _docker_socket_guard()
+    daemon_id = call("daemon", "docker", "info", "--format", "{{json .ID}}", limit=512)
+    try:
+        value = json.loads(daemon_id)
+    except json.JSONDecodeError:
+        raise ImageStoreRefusal("daemon", "daemon_metadata") from None
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise ImageStoreRefusal("daemon", "daemon_metadata")
+    security = call("daemon", "docker", "info", "--format", "{{json .SecurityOptions}}", limit=4096)
+    try:
+        options = json.loads(security)
+    except json.JSONDecodeError:
+        raise ImageStoreRefusal("daemon", "daemon_metadata") from None
+    if not isinstance(options, list) or any("rootless" in str(item).lower() for item in options):
+        raise ImageStoreRefusal("daemon", "rootless_daemon")
+    return value
+
+
+def _require_no_containers():
+    inventory = _image_store_command("container_guard", "docker", "ps", "--all", "--quiet", "--no-trunc",
+                                     timeout=15, limit=16384)
+    if inventory:
+        raise ImageStoreRefusal("container_guard", "containers_present")
+
+
+def _snapshotter_driver_ready():
+    rendered = _image_store_command("driver", "docker", "info", "--format", "{{json .DriverStatus}}",
+                                    timeout=10, limit=8192)
+    try:
+        status = json.loads(rendered)
+    except json.JSONDecodeError:
+        raise ImageStoreRefusal("driver", "driver_metadata") from None
+    if not isinstance(status, list):
+        return False
+    matches = [pair for pair in status if isinstance(pair, list) and len(pair) == 2 and
+               pair[0] == "driver-type" and pair[1] == "io.containerd.snapshotter.v1"]
+    return len(matches) == 1
+
+
+def prepare_image_store():
+    _image_store_host_guard(os.environ, os.geteuid(), platform.system(), platform.machine())
+    if not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")):
+        raise ImageStoreRefusal("guards", "source_revision")
+    actual_sha = _image_store_command("source", "git", "-C", str(repo), "rev-parse", "HEAD",
+                                      timeout=5, limit=128)
+    if actual_sha != os.environ["GITHUB_SHA"]:
+        raise ImageStoreRefusal("source", "source_revision")
+    daemon_id_before = _docker_context_identity()
+    _require_no_containers()
+    path = pathlib.Path("/etc/docker/daemon.json")
+    _safe_docker_config_ancestry()
+    original, identity, mode, group_id = _read_safe_daemon_config(path, 0)
+    updated = _merge_snapshotter_feature(original)
+    changed = updated != original
+    if changed:
+        _atomic_write_daemon_config(path, updated, 0, identity, mode, group_id)
+        _image_store_command("restart", "systemctl", "restart", "docker", timeout=90, limit=2048)
+    deadline = time.monotonic() + (90 if changed else 10)
+    daemon_id_after = None
+    last_category = None
+    while time.monotonic() < deadline:
+        try:
+            daemon_id_after = _docker_context_identity(deadline)
+            break
+        except ImageStoreRefusal as refusal:
+            last_category = refusal.category
+            time.sleep(0.5)
+    if daemon_id_after is None:
+        raise ImageStoreRefusal("readiness", last_category or "daemon_unavailable")
+    if daemon_id_after != daemon_id_before:
+        raise ImageStoreRefusal("readiness", "daemon_identity_changed")
+    _require_no_containers()
+    if not _snapshotter_driver_ready():
+        raise ImageStoreRefusal("driver", "snapshotter_unavailable")
+    return {"changed": changed, "driver": "io.containerd.snapshotter.v1"}
 
 
 def nft_host(*args, check=True):
@@ -502,9 +906,282 @@ def choose_unused_subnet():
     raise RuntimeError("no unused private Docker subnet was found")
 
 
+def offline_image_store_self_test():
+    original = {"debug": False, "features": {"other-feature": True}, "registry-mirrors": ["https://mirror.invalid"]}
+    merged = _merge_snapshotter_feature(original)
+    if merged.get("debug") is not False or merged.get("registry-mirrors") != original["registry-mirrors"] or \
+            merged["features"] != {"other-feature": True, "containerd-snapshotter": True} or \
+            original["features"] != {"other-feature": True}:
+        raise RuntimeError("daemon config merge regression")
+    if _merge_snapshotter_feature({"features": {"containerd-snapshotter": True}})["features"]["containerd-snapshotter"] is not True:
+        raise RuntimeError("enabled snapshotter was not preserved")
+    if _merge_snapshotter_feature({"features": {"containerd-snapshotter": False}})["features"]["containerd-snapshotter"] is not True:
+        raise RuntimeError("disabled snapshotter was not enabled")
+    for content, category in ((b"[]", "non_object"), (b'{"features":[]}', "features_non_object"),
+                              (b'{"x":1,"x":2}', "invalid_json"), (b"{", "invalid_json"),
+                              (b'{"count":NaN}', "invalid_json")):
+        try:
+            _parse_daemon_config(content)
+        except ImageStoreRefusal as refusal:
+            if refusal.category != category:
+                raise RuntimeError("daemon config refusal category changed") from None
+        else:
+            raise RuntimeError("unsafe daemon config was accepted")
+
+    uid = os.geteuid()
+    with tempfile.TemporaryDirectory(prefix="lares-image-store-selftest-") as directory:
+        parent = pathlib.Path(directory)
+        config = parent / "daemon.json"
+        payload = json.dumps(original).encode("utf-8")
+        config.write_bytes(payload)
+        config.chmod(0o640)
+        loaded, identity, mode, group_id = _read_safe_daemon_config(config, uid)
+        if loaded != original or identity is None or mode != 0o640 or group_id != os.stat(config).st_gid:
+            raise RuntimeError("safe daemon config read regression")
+        _atomic_write_daemon_config(config, merged, uid, identity, mode, group_id)
+        if _read_safe_daemon_config(config, uid)[0] != merged or stat.S_IMODE(os.stat(config).st_mode) != mode:
+            raise RuntimeError("atomic daemon config merge regression")
+        link = parent / "daemon-link.json"
+        link.symlink_to(config)
+        try:
+            _read_safe_daemon_config(link, uid)
+        except ImageStoreRefusal as refusal:
+            if refusal.category != "unsafe_file":
+                raise RuntimeError("daemon config symlink refusal category changed") from None
+        else:
+            raise RuntimeError("daemon config symlink was accepted")
+        fifo = parent / "daemon-fifo.json"
+        os.mkfifo(fifo, 0o600)
+        opened_descriptors = []
+        real_open = os.open
+
+        def track_open(*args, **kwargs):
+            descriptor = real_open(*args, **kwargs)
+            opened_descriptors.append(descriptor)
+            return descriptor
+
+        start = time.monotonic()
+        with patch(__name__ + ".os.open", side_effect=track_open):
+            try:
+                _read_safe_daemon_config(fifo, uid)
+            except ImageStoreRefusal as refusal:
+                if refusal.category != "unsafe_file":
+                    raise RuntimeError("FIFO config refusal category changed") from None
+            else:
+                raise RuntimeError("FIFO daemon config was accepted")
+        if time.monotonic() - start >= 1 or len(opened_descriptors) != 2:
+            raise RuntimeError("FIFO daemon config refusal was not bounded")
+        for descriptor in opened_descriptors:
+            try:
+                os.fstat(descriptor)
+            except OSError:
+                continue
+            raise RuntimeError("daemon config refusal leaked a file descriptor")
+        absent = parent / "absent-daemon.json"
+        empty, empty_identity, empty_mode, empty_group = _read_safe_daemon_config(absent, uid)
+        if empty != {} or empty_identity is not None or empty_mode != 0o644 or empty_group != os.getegid():
+            raise RuntimeError("absent daemon config handling regression")
+        _atomic_write_daemon_config(absent, _merge_snapshotter_feature(empty), uid,
+                                    empty_identity, empty_mode, empty_group)
+        if _read_safe_daemon_config(absent, uid)[0] != {"features": {"containerd-snapshotter": True}}:
+            raise RuntimeError("new daemon config creation regression")
+
+    env = {"CI": "true", "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
+           "LARES_DOCKER_OVERRIDE_PRESENT": "false"}
+    _image_store_host_guard(env, 0, "Linux", "x86_64")
+    for changed, expected in (({**env, "RUNNER_ENVIRONMENT": "self-hosted"}, "not_github_hosted_ci"),
+                             ({**env, "LARES_DOCKER_OVERRIDE_PRESENT": "true"}, "docker_override"),
+                             ({**env, "DOCKER_HOST": "tcp://example.invalid"}, "docker_override"),
+                             ({**env, "DOCKER_CONTEXT": "remote"}, "docker_override")):
+        try:
+            _image_store_host_guard(changed, 0, "Linux", "x86_64")
+        except ImageStoreRefusal as refusal:
+            if refusal.category != expected:
+                raise RuntimeError("image store host guard category changed") from None
+        else:
+            raise RuntimeError("image store host guard accepted a forbidden environment")
+    try:
+        _image_store_host_guard(env, 501, "Linux", "x86_64")
+    except ImageStoreRefusal as refusal:
+        if refusal.category != "runner_identity":
+            raise RuntimeError("image store root guard category changed") from None
+    else:
+        raise RuntimeError("image store host guard accepted a non-root runner")
+
+    tag = "lares-keeper:test"
+    reference = tag + "@sha256:" + "a" * 64
+    same_id = '"sha256:' + "b" * 64 + '"\n'
+    with patch(__name__ + "._image_store_command", side_effect=[same_id.strip(), same_id.strip()]) as mocked:
+        resolved = inspect_local_digest(reference, tag, "keeper")
+    if resolved != {"reference": reference, "imageId": "sha256:" + "b" * 64} or mocked.call_count != 2 or \
+            mocked.call_args_list[0].args[4] != reference or mocked.call_args_list[1].args[4] != tag:
+        raise RuntimeError("exact local tag and digest resolution regression")
+    cases = [
+        ([same_id.strip(), '"sha256:' + "c" * 64 + '"'], "identity", "image_id_mismatch"),
+        ([ImageStoreRefusal("digest", "command_failed")], "digest", "digest_not_loaded"),
+        ([ImageStoreRefusal("digest", "command_output_limit")], "digest", "command_output_limit"),
+        ([ImageStoreRefusal("digest", "command_timeout")], "digest", "command_timeout"),
+        ([ImageStoreRefusal("digest", "command_read_error")], "digest", "command_read_error"),
+        ([ImageStoreRefusal("digest", "command_cleanup")], "digest", "command_cleanup"),
+        (["not-json"], "digest", "invalid_image_id"),
+        ([same_id.strip(), ImageStoreRefusal("tag", "command_failed")], "tag", "tag_not_loaded"),
+        ([same_id.strip(), ImageStoreRefusal("tag", "command_timeout")], "tag", "command_timeout"),
+        ([same_id.strip(), "not-json"], "tag", "invalid_image_id"),
+    ]
+    for results, expected_stage, expected_category in cases:
+        with patch(__name__ + "._image_store_command", side_effect=results):
+            try:
+                inspect_local_digest(reference, tag, "keeper")
+            except ImageResolutionRefusal as refusal:
+                if (refusal.role, refusal.stage, refusal.category) != (
+                        "keeper", expected_stage, expected_category):
+                    raise RuntimeError("safe image resolution category regression") from None
+            else:
+                raise RuntimeError("unverified local image identity was accepted")
+
+    class FakeBoundedProcess:
+        def __init__(self, stdout, *, cleanup_timeout=False):
+            self.stdout = stdout
+            self.returncode = None
+            self.killed = False
+            self.waited = False
+            self.cleanup_timeout = cleanup_timeout
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            self.waited = True
+            if self.cleanup_timeout:
+                raise subprocess.TimeoutExpired("fixed-command", timeout)
+            if self.returncode is None:
+                self.returncode = 0
+            return self.returncode
+
+    def pipe_process(payload=b"", *, keep_open=False, cleanup_timeout=False):
+        read_fd, write_fd = os.pipe()
+        if payload:
+            os.write(write_fd, payload)
+        if not keep_open:
+            os.close(write_fd)
+            write_fd = None
+        return FakeBoundedProcess(os.fdopen(read_fd, "rb", buffering=0),
+                                  cleanup_timeout=cleanup_timeout), write_fd
+
+    process, writer = pipe_process(b"12345")
+    try:
+        with patch(__name__ + ".subprocess.Popen", return_value=process) as popen:
+            try:
+                _image_store_command("oversize", "fixed-command", timeout=1, limit=4)
+            except ImageStoreRefusal as refusal:
+                if refusal.category != "command_output_limit":
+                    raise RuntimeError("bounded output refusal category changed") from None
+            else:
+                raise RuntimeError("oversized command output was accepted")
+        if not process.killed or not process.waited or not process.stdout.closed or \
+                popen.call_args.kwargs.get("stderr") != subprocess.DEVNULL:
+            raise RuntimeError("oversized command was not killed, reaped and closed")
+    finally:
+        if writer is not None:
+            os.close(writer)
+
+    process, writer = pipe_process(b"x", keep_open=True)
+    try:
+        with patch(__name__ + ".subprocess.Popen", return_value=process):
+            try:
+                _image_store_command("timeout", "fixed-command", timeout=0.02, limit=4)
+            except ImageStoreRefusal as refusal:
+                if refusal.category != "command_timeout":
+                    raise RuntimeError("bounded timeout refusal category changed") from None
+            else:
+                raise RuntimeError("stalled command output was accepted")
+        if not process.killed or not process.waited or not process.stdout.closed:
+            raise RuntimeError("timed-out command was not killed, reaped and closed")
+    finally:
+        os.close(writer)
+
+    process, writer = pipe_process(b"x")
+    try:
+        with patch(__name__ + ".subprocess.Popen", return_value=process), \
+                patch(__name__ + ".os.read", side_effect=OSError("private read failure")):
+            try:
+                _image_store_command("read", "fixed-command", timeout=1, limit=4)
+            except ImageStoreRefusal as refusal:
+                if refusal.category != "command_read_error":
+                    raise RuntimeError("bounded read-error refusal category changed") from None
+            else:
+                raise RuntimeError("command read failure was accepted")
+        if not process.killed or not process.waited or not process.stdout.closed:
+            raise RuntimeError("read-error command was not killed, reaped and closed")
+    finally:
+        if writer is not None:
+            os.close(writer)
+
+    process, writer = pipe_process(b"12345", cleanup_timeout=True)
+    try:
+        with patch(__name__ + ".subprocess.Popen", return_value=process):
+            try:
+                _image_store_command("cleanup", "fixed-command", timeout=1, limit=4)
+            except ImageStoreRefusal as refusal:
+                if refusal.category != "command_cleanup":
+                    raise RuntimeError("bounded cleanup refusal category changed") from None
+            else:
+                raise RuntimeError("unreaped command was accepted")
+        if not process.killed or not process.waited or not process.stdout.closed:
+            raise RuntimeError("cleanup-timeout command closure regression")
+    finally:
+        if writer is not None:
+            os.close(writer)
+
+    with patch(__name__ + "._image_store_command",
+               side_effect=AssertionError("invalid reference reached Docker")):
+        for invalid_reference, expected_stage, expected_category in (
+                (tag + ":latest@sha256:" + "a" * 64, "reference", "unexpected_tag"),
+                (tag + "@sha256:" + "A" * 64, "reference", "invalid_digest_reference")):
+            try:
+                inspect_local_digest(invalid_reference, tag, "squid")
+            except ImageResolutionRefusal as refusal:
+                if (refusal.role, refusal.stage, refusal.category) != (
+                        "squid", expected_stage, expected_category):
+                    raise RuntimeError("safe image reference category regression") from None
+            else:
+                raise RuntimeError("invalid build digest reference was accepted")
+
+    workflow = pathlib.Path(".github/workflows/keeper-runtime-images.yml").read_text(encoding="utf-8")
+    keeper_job = workflow[workflow.index("\n  keeper:\n"):]
+    ordered = ["uses: actions/checkout@v4", "name: Prepare disposable hosted Docker image store",
+              "uses: docker/setup-buildx-action@v3", "uses: docker/login-action@v3",
+              "id: keeper-image", "id: squid-image", "id: firewall-image"]
+    positions = [keeper_job.index(item) for item in ordered]
+    setup_step = keeper_job[positions[1]:positions[2]]
+    if positions != sorted(positions) or "--prepare-image-store" not in setup_step or \
+            '"DOCKER_CONFIG=$docker_config"' not in setup_step:
+        raise RuntimeError("image-store preparation workflow order regression")
+
+
 if self_test_mode:
+    offline_image_store_self_test()
     offline_cleanup_self_test()
     print("outside proof cleanup self-test passed")
+    raise SystemExit(0)
+
+
+if image_store_mode:
+    try:
+        result = prepare_image_store()
+        print(json.dumps({"status": "ready", **result}, sort_keys=True))
+    except ImageStoreRefusal as refusal:
+        print(json.dumps({"status": "refused", "stage": refusal.stage,
+                          "category": refusal.category}, sort_keys=True), file=sys.stderr)
+        raise SystemExit(1) from None
+    except Exception:
+        print(json.dumps({"status": "refused", "stage": "setup",
+                          "category": "internal_failure"}, sort_keys=True), file=sys.stderr)
+        raise SystemExit(1) from None
     raise SystemExit(0)
 
 
@@ -519,9 +1196,9 @@ try:
     record("checked out proof source matches the workflow revision", actual_sha == expected_sha)
 
     phase = "loaded-images"
-    report["images"] = {"keeper": inspect_local_digest(keeper_ref, "lares-keeper:test"),
-                        "squid": inspect_local_digest(squid_ref, "lares-squid:test"),
-                        "firewall": inspect_local_digest(firewall_ref, "lares-nft:test")}
+    report["images"] = {"keeper": inspect_local_digest(keeper_ref, "lares-keeper:test", "keeper"),
+                        "squid": inspect_local_digest(squid_ref, "lares-squid:test", "squid"),
+                        "firewall": inspect_local_digest(firewall_ref, "lares-nft:test", "firewall")}
     report["postgresImage"] = DB_IMAGE
 
     phase = "network"
@@ -849,8 +1526,13 @@ except Exception as error:
     safe_phases = {"guards", "loaded-images", "network", "fixture-files", "database", "engine-roles",
                    "proxy-config", "compose-held-runtime", "https-peer", "configured-discovery",
                    "first-hop-evidence", "postconditions"}
-    report["failure"] = {"phase": phase if phase in safe_phases else "fixture",
-                         "reason": "fixture operation failed"}
+    if isinstance(error, ImageResolutionRefusal):
+        report["failure"] = {"phase": "loaded-images", "reason": "local image resolution failed",
+                             "role": error.role, "resolutionStage": error.stage,
+                             "category": error.category}
+    else:
+        report["failure"] = {"phase": phase if phase in safe_phases else "fixture",
+                             "reason": "fixture operation failed"}
     if root is not None:
         worker_evidence = import_worker_evidence(root)
         if worker_evidence is not None and worker_evidence.get("success") is not True:
