@@ -253,19 +253,21 @@ anything:
 lares doctor
 ```
 
-Before asking the person to sign in, complete
-[the first-owner identity prerequisite](install.md#6-first-start-and-checking-it-worked) and
-[provider-identity adoption](member-authority.md#provider-setup-and-existing-owner-adoption).
-The installer does not collect or verify a provider subject. Preserve the existing stable active
-owner id, obtain the person's exact verified issuer/subject (plus tenant for Microsoft), and
-place that identity's `CONSOLE_BOOTSTRAP_IDENTITY` JSON in the protected console environment
-file. Follow the install guide's console-only recreate step to load it. Fresh installation still
-requires the Google client; Microsoft-only fresh setup remains deferred.
+Before the first owner signs in on a fresh installation, follow
+[the first-owner setup](install.md#6-first-start-and-checking-it-worked). The installer does not
+collect or verify a provider identity. The person chooses an account on the Console sign-in
+page, confirms the public installation origin, and uses the protected `lares owner-bootstrap`
+command to pin the discovery tuple after a live database freshness check. Recreate only Console,
+then require a new provider sign-in; only that fresh callback can bind the account or issue a
+session. The page's five-minute display is discovery only; copied JSON is not authentication and
+does not authorize an existing installation. Do not hand-edit `CONSOLE_BOOTSTRAP_IDENTITY` or
+use the manual probe output as its value. Existing installations need separately reviewed
+recovery. Fresh installation still requires the Google client; Microsoft-only fresh setup remains
+deferred.
 
 Then ask the person to open `https://example.com/`, press **Continue with Google**, and choose
-that verified provider identity. After the first successful sign-in, remove the bootstrap
-setting and recreate the console again as the install guide describes. If Google says access
-is blocked, check its test-user setting (step 3, item 3) and exact redirect address (item 5).
+that verified provider identity. If Google says access is blocked, check its test-user setting
+(step 3, item 3) and exact redirect address (item 5).
 A successful installer run or email match alone does not prove sign-in worked.
 
 ## 7. Hand over to the person

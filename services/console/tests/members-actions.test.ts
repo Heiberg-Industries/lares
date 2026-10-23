@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ owner: vi.fn(), member: vi.fn(), verify: vi.fn(), invite: vi.fn(), revoke: vi.fn(), remove: vi.fn(), signOut: vi.fn(), keeper: vi.fn(), clear: vi.fn(), cookie: 'opaque-session-cookie' }));
+const mocks = vi.hoisted(() => ({ owner: vi.fn(), member: vi.fn(), verify: vi.fn(), invite: vi.fn(), revoke: vi.fn(), remove: vi.fn(), signOut: vi.fn(), keeper: vi.fn(), clear: vi.fn(), setInitialLimit: vi.fn(), cookie: 'opaque-session-cookie' }));
 vi.mock("../lib/auth", () => ({ requireConsoleMember: mocks.owner, requireMember: mocks.member, verify: mocks.verify, members: { inviteMember: mocks.invite, revokeInvitation: mocks.revoke, signOutAll: mocks.signOut } }));
 vi.mock("../lib/keeper-client", () => ({ keeper: mocks.keeper, KeeperRefusedError: class KeeperRefusedError extends Error {}, KeeperUnavailableError: class KeeperUnavailableError extends Error { constructor(message:string,readonly outcomeMayBeUnknown=false){super(message);} } }));
 vi.mock("../lib/console-oidc", () => ({ consoleRedirect: () => "https://console.example.test/api/auth/callback" }));
+vi.mock("../lib/initial-member-budget", () => ({ InitialMemberBudgetRefused: class InitialMemberBudgetRefused extends Error { constructor(readonly reason:string){super("refused");} }, setInitialMemberBudgetLimit:mocks.setInitialLimit }));
+vi.mock("../lib/db", () => ({ pool: {} }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ delete: mocks.clear, get: (name:string) => name==='lares_session'?{value:mocks.cookie}:undefined }) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`redirect:${path}`); } }));
-import { createInvitation, revokeInvitation, removeMember, signOutEverywhere, signOutMember } from "../app/actions/members";
+import { createInvitation, revokeInvitation, removeMember, signOutEverywhere, signOutMember, setInitialMemberLimit } from "../app/actions/members";
 import {KeeperUnavailableError} from "../lib/keeper-client";
 const form = (values: Record<string, string>) => { const result = new FormData(); for (const [key, value] of Object.entries(values)) result.set(key, value); return result; };
 beforeEach(() => {
@@ -14,6 +16,7 @@ beforeEach(() => {
   mocks.verify.mockReset().mockResolvedValue('owner@example.test');
   mocks.invite.mockReset().mockResolvedValue({ token: "a".repeat(43) });
   mocks.keeper.mockReset().mockResolvedValue({removed:true});
+  mocks.setInitialLimit.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => vi.unstubAllEnvs());
 describe("member management current-actor boundaries", () => {
@@ -21,6 +24,12 @@ describe("member management current-actor boundaries", () => {
     const result = await createInvitation({}, form({ displayName: "Example", email: "member@example.test", role: "member", actorId: "attacker" }));
     expect(result.url).toBe(`https://console.example.test/invite?token=${"a".repeat(43)}`);
     expect(mocks.invite).toHaveBeenCalledWith("owner", { displayName: "Example", email: "member@example.test", role: "member", expiresAt: expect.any(Date) });
+  });
+  it("submits only the server cookie, configured owner and explicit member limit",async()=>{
+    vi.stubEnv("AGENT_OWNER_USER_ID","designated-owner");
+    const result=await setInitialMemberLimit({},form({memberId:"target",monthlyLimit:"25.5",actorId:"forged-owner",sessionToken:"forged-cookie"}));
+    expect(result).toEqual({saved:true});
+    expect(mocks.setInitialLimit).toHaveBeenCalledWith({},expect.objectContaining({sessionToken:mocks.cookie,designatedOwnerId:"designated-owner",targetMemberId:"target",monthlyLimit:"25.5"}));
   });
   it("rejects management calls from non-console members before any store mutation", async () => {
     mocks.owner.mockRejectedValue(new Error("refused"));

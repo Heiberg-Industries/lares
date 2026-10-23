@@ -528,8 +528,9 @@ const writer=new JournalBudgetFinancialWriter(j);
 await writer.run('prepare',boundary=>consoleSourceTransaction(pool,async()=>42,boundary));
 await j.drainForShutdown();j.close();console.log('clean');"""
     assert run(clean) == 'clean'
-    # A new keeper process with the same actual running PostgreSQL resumes safely.
-    assert run("const j=HostFinancialJournal.openExisting('/proof/restart',{requirePrepared:true});const db=await pool.connect();try{await verifyFinancialContinuity(j,db);}finally{db.release();}j.close();console.log('resumed');") == 'resumed'
+    # A new keeper process holds the journal lock for continuity, then publishes its
+    # writer lease only after the same running PostgreSQL is verified.
+    assert run("const j=HostFinancialJournal.openExistingForStartupVerification('/proof/restart',{requirePrepared:true});const db=await pool.connect();try{await verifyFinancialContinuity(j,db);}finally{db.release();}j.acquireWriterLease();j.close();console.log('resumed');") == 'resumed'
     # Supported restore path freezes while PG stays running; database drop/recreate never
     # clears that custody. Root host/fallback both call this same lock-owning method.
     before = sql('SELECT pg_postmaster_start_time()::text;', 'restoreproof')
@@ -544,7 +545,7 @@ await j.drainForShutdown();j.close();console.log('clean');"""
     # insufficient because the full-precision postmaster start changed.
     command('docker', 'restart', name + '-db')
     ready()
-    assert run("const j=HostFinancialJournal.openExisting('/proof/restart',{requirePrepared:true});const db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();j.close();}if(!denied)throw Error('PostgreSQL restart resumed');console.log('closed');") == 'closed'
+    assert run("const path='/proof/restart',records=()=>readFileSync(path+'/journal.jsonl','utf8').trimEnd().split('\\n').map(line=>JSON.parse(line).record),before=records().length,j=HostFinancialJournal.openExistingForStartupVerification(path,{requirePrepared:true}),db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();}let leaseDenied=false;try{j.acquireWriterLease();}catch{leaseDenied=true;}j.close();const tail=records().slice(before);if(!denied||!leaseDenied||tail.at(-1)?.kind!=='freeze'||tail.at(-1)?.reason!=='continuity'||tail.some(r=>r.kind==='writer-open'||r.kind==='writer-close'))throw Error('restart refusal wrote writer lease');console.log('closed');") == 'closed'
     # Fresh cluster under the same hostname/database name also refuses old custody.
     command('docker', 'rm', '--force', name + '-db')
     command('docker', 'run', '-d', '--name', name + '-db', '--network', name,

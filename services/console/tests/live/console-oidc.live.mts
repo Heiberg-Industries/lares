@@ -28,7 +28,8 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }).end('Sign-in verified. You may close this window.');
     console.log(`PASS: ${provider} verified issuer, audience, signature, state, nonce, expiry and provider identity. No account or session was written.`);
     // Identity metadata is intentionally opt-in so an ordinary probe is safe to capture.
-    // Use it privately to prepare the exact existing-owner bootstrap mapping; never publish it.
+    // This diagnostic output is not a lares owner-bootstrap receipt and cannot authorize an
+    // existing owner. Fresh installs use the Console discovery display and host-side command.
     if (process.env.OIDC_PROBE_SHOW_IDENTITY === '1') console.log(JSON.stringify(proof.identity));
   } catch {
     process.exitCode = 1;

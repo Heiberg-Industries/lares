@@ -14,6 +14,7 @@ function location(){const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-cu
 function establish(directory:string,selected:Parameters<typeof HostFinancialJournal.prepareFresh>[2]=options){const preparation=HostFinancialJournal.prepareFresh(directory,database,selected);try{preparation.complete();}finally{preparation.close();}}
 function prepared(){const directory=location();establish(directory);return directory;}
 function open(directory:string,extra:Parameters<typeof HostFinancialJournal.openExisting>[1]={}){const j=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true,...extra});journals.push(j);return j;}
+function startupOpen(directory:string){const j=HostFinancialJournal.openExistingForStartupVerification(directory,{...options,requirePrepared:true});journals.push(j);return j;}
 function records(directory:string){return readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record);}
 function verifyJournal(journal:HostFinancialJournal,databaseValue:FinancialDatabase=database,proposed=false){const projection=journal.expectedProjection(proposed);journal.verifyContinuity(databaseValue,projection.checkpoints,projection.atoms,proposed);}
 const zeroHash='0'.repeat(64),uuid=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
@@ -63,10 +64,36 @@ it('allows a clean keeper-only restart with the identical running PostgreSQL ide
   const directory=prepared(),j=open(directory);verifyJournal(j);
   await j.drainForShutdown();j.close();const next=open(directory);expect(()=>verifyJournal(next)).not.toThrow();
 });
-it.each(['postmasterStartedAt','systemIdentifier','databaseOid'])('durably freezes changed database identity %s, even with matching retained state',field=>{
-  const directory=prepared(),j=open(directory),changed={...database,[field]:field==='postmasterStartedAt'?'2026-10-22T00:00:00.123457Z':'16385'};
-  expect(()=>verifyJournal(j,changed)).toThrow('recovery');j.close();
+it('holds startup ownership without publishing a writer until continuity succeeds',async()=>{
+  const directory=prepared(),j=startupOpen(directory),before=records(directory);
+  expect(()=>j.acquireWriterLease()).toThrow('lease');expect(records(directory)).toEqual(before);
+  let workStarted=false;await expect(j.operation('admit',async()=>{workStarted=true;})).rejects.toThrow('closed');
+  await expect(j.freezeForRestore()).rejects.toThrow('lease');expect(workStarted).toBe(false);expect(records(directory)).toEqual(before);
+  verifyJournal(j);expect(records(directory)).toEqual(before);
+  j.acquireWriterLease();expect(records(directory).at(-1)?.kind).toBe('writer-open');j.close();
+  expect(records(directory).slice(before.length).map(record=>record.kind)).toEqual(['writer-open','writer-close']);
+});
+it.each(['before','after'] as const)('does not publish a writer lease when startup ownership drains %s continuity verification',async order=>{
+  const directory=prepared(),j=startupOpen(directory),before=records(directory);
+  if(order==='before')await j.drainForShutdown();
+  verifyJournal(j);
+  if(order==='after')await j.drainForShutdown();
+  expect(()=>j.acquireWriterLease()).toThrow('lease');j.close();
+  expect(records(directory)).toEqual(before);
+});
+it.each(['postmasterStartedAt','systemIdentifier','databaseOid'])('durably freezes changed database identity %s before publishing a writer lease',field=>{
+  const directory=prepared(),j=startupOpen(directory),before=records(directory),changed={...database,[field]:field==='postmasterStartedAt'?'2026-10-22T00:00:00.123457Z':'16385'};
+  expect(()=>verifyJournal(j,changed)).toThrow('recovery');expect(()=>j.acquireWriterLease()).toThrow('lease');j.close();
+  const appended=records(directory).slice(before.length);
+  expect(appended.map(record=>record.kind)).toEqual(['freeze']);expect(appended[0]).toMatchObject({reason:'continuity'});
   const next=open(directory);expect(()=>verifyJournal(next)).toThrow('recovery');expect(records(directory).some(r=>r.kind==='freeze')).toBe(true);
+});
+it('classifies an unavailable startup observation as uncertain and never opens a writer',async()=>{
+  const directory=prepared(),j=startupOpen(directory),before=records(directory);
+  await expect(verifyFinancialContinuity(j,{query:async()=>{throw new Error('source unavailable');}})).rejects.toThrow('recovery');
+  expect(()=>j.acquireWriterLease()).toThrow('lease');j.close();
+  const appended=records(directory).slice(before.length);
+  expect(appended.map(record=>record.kind)).toEqual(['freeze']);expect(appended[0]).toMatchObject({reason:'uncertain'});
 });
 function child(code:string):{process:ChildProcessWithoutNullStreams;ready:Promise<void>;done:Promise<number|null>}{
   const process=spawn(globalThis.process.execPath,['--import','tsx','--input-type=module','-e',code],{stdio:'pipe'});

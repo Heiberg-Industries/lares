@@ -7,6 +7,8 @@ import { MemberStoreError } from "@lares/agent-kit/member-store";
 import { ConsoleAdmissionUnavailableError } from "../../lib/admission-error";
 import { consoleRedirect } from "../../lib/console-oidc";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
+import { InitialMemberBudgetRefused, setInitialMemberBudgetLimit } from "../../lib/initial-member-budget";
+import { pool } from "../../lib/db";
 
 async function memberOperation<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); }
@@ -16,6 +18,27 @@ async function memberOperation<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 export type InviteResult = { url?: string; error?: string };
+export type InitialLimitResult = { saved?: boolean; error?: string };
+export async function setInitialMemberLimit(_previous: InitialLimitResult, form: FormData): Promise<InitialLimitResult> {
+  await requireConsoleMember();
+  const sessionToken = (await cookies()).get("lares_session")?.value;
+  const designatedOwnerId = process.env.AGENT_OWNER_USER_ID?.trim();
+  const targetMemberId = form.get("memberId"), monthlyLimit = form.get("monthlyLimit");
+  if (!sessionToken || !designatedOwnerId) return { error: "Console sign-in expired. Refresh membership and try again." };
+  if (typeof targetMemberId !== "string" || typeof monthlyLimit !== "string") return { error: "Enter a monthly limit." };
+  try {
+    await setInitialMemberBudgetLimit(pool, { sessionToken, designatedOwnerId, targetMemberId, monthlyLimit });
+    revalidatePath("/members");
+    return { saved: true };
+  } catch (error) {
+    if (error instanceof InitialMemberBudgetRefused) {
+      if (error.reason === "invalid") return { error: "Enter a positive USD amount using up to 18 decimal places. Remove extra zeros at the end, for example use 25.5." };
+      if (error.reason === "setup-complete") return { error: "This member’s budget setup already exists. Refresh the page to see its status." };
+      return { error: "The member’s initial limit could not be set. Refresh membership and try again." };
+    }
+    throw new ConsoleAdmissionUnavailableError();
+  }
+}
 export async function createInvitation(_previous: InviteResult, form: FormData): Promise<InviteResult> {
   const actor = await requireConsoleMember();
   const role = form.get("role");
