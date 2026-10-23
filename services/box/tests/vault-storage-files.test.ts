@@ -24,6 +24,12 @@ function files(logicalOrigins = false) {
         mkdirSync(root, { recursive: true });
         execFileSync('git', ['init', '--quiet', '--initial-branch=main', root]);
         execFileSync('git', ['init', '--quiet', '--bare', '--initial-branch=main', bare]);
+        // Keep optional Git housekeeping out of this fixture so the verifier sees a
+        // quiescent repository tree while checking retained files.
+        git(root, 'config', '--local', 'gc.auto', '0');
+        git(root, 'config', '--local', 'maintenance.auto', 'false');
+        git(bare, 'config', '--local', 'gc.auto', '0');
+        git(bare, 'config', '--local', 'maintenance.auto', 'false');
         git(root, 'config', '--local', 'user.name', 'Lares Vault');
         git(root, 'config', '--local', 'user.email', 'vault@localhost');
         git(root, 'remote', 'add', 'origin', bare);
@@ -102,6 +108,8 @@ it('preserves a durable local commit awaiting push and refuses diverged bare his
     files();
     const a = inventory.areas[0], root = join(prefix, 'srv', a.relativePath), bare = join(prefix, a.origin), peer = join(prefix, 'peer');
     execFileSync('git', ['clone', '--quiet', '--no-hardlinks', bare, peer]);
+    git(peer, 'config', '--local', 'gc.auto', '0');
+    git(peer, 'config', '--local', 'maintenance.auto', 'false');
     git(peer, 'config', 'user.name', 'Lares Vault');
     git(peer, 'config', 'user.email', 'vault@localhost');
     writeFileSync(join(root, 'local.md'), 'durable local canary');
