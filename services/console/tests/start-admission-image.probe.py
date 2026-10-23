@@ -47,6 +47,7 @@ proof = {
     "format": 1, "sourceCommit": SOURCE_SHA, "image": IMAGE, "status": "running",
     "failedStage": None,
     "primaryFailure": None,
+    "readinessDiagnostics": None,
     "cleanupFailures": [],
     "candidateImageId": None,
     "containerImageId": None,
@@ -102,31 +103,122 @@ def write(path: pathlib.Path, data: str, mode: int = 0o600) -> None:
 
 def wait_ready(container: str) -> str:
     deadline = time.monotonic() + 25
+    latest: dict[str, object] = {
+        "containerState": "not-observed",
+        "restarting": False,
+        "exitCode": None,
+        "requestCategory": "not-attempted",
+        "httpStatus": None,
+        "redirectMatches": False,
+    }
     while time.monotonic() < deadline:
-        state = docker("inspect", "-f", "{{.State.Running}}", container, check=False, timeout=8)
-        if state.returncode != 0 or state.stdout.strip() != "true":
+        try:
+            state = docker("inspect", "-f", "{{.State.Status}}|{{.State.Restarting}}|{{.State.ExitCode}}",
+                           container, check=False, timeout=5)
+        except ProbeFailure as error:
+            if not str(error).startswith("command-timeout:"):
+                raise
+            latest.update(containerState="inspect-timeout", restarting=False, exitCode=None,
+                          requestCategory="container-inspect-timeout", httpStatus=None, redirectMatches=False)
+            proof["readinessDiagnostics"] = dict(latest)
+            raise ProbeFailure("container-inspect-timeout") from None
+        if state.returncode != 0:
+            latest.update(containerState="inspect-error", restarting=False, exitCode=None,
+                          requestCategory="container-inspect-failed", httpStatus=None, redirectMatches=False)
             time.sleep(0.25)
             continue
-        request = docker("exec", container, "node", "-e",
-                         "fetch('http://127.0.0.1:3000/api/auth/login?provider=other',{redirect:'manual'})"
-                         ".then(r=>console.log(r.status+'|'+r.headers.get('location'))).catch(()=>process.exit(2))",
-                         check=False, timeout=8)
-        if request.returncode == 0 and request.stdout.strip() == "307|https://example.invalid/sign-in?error=failed":
-            return request.stdout.strip()
+        state_fields = state.stdout.strip().split("|")
+        if len(state_fields) != 3 or state_fields[1] not in ("true", "false") or not state_fields[2].isdigit():
+            latest.update(containerState="inspect-malformed", restarting=False, exitCode=None,
+                          requestCategory="container-inspect-malformed", httpStatus=None, redirectMatches=False)
+            time.sleep(0.25)
+            continue
+        status, restarting_text, exit_code_text = state_fields
+        latest.update(containerState=status if status in ("created", "running", "paused", "restarting", "removing", "exited", "dead") else "other",
+                      restarting=(restarting_text == "true"), exitCode=int(exit_code_text),
+                      requestCategory="not-attempted", httpStatus=None, redirectMatches=False)
+        if status != "running" or restarting_text != "false":
+            time.sleep(0.25)
+            continue
+        request_script = (
+            "const bind=process.env.HOSTNAME||'0.0.0.0';"
+            "const host=bind==='0.0.0.0'?'127.0.0.1':bind;"
+            "const port=process.env.PORT||'3000';"
+            "const expected='https://example.invalid/sign-in?error=failed';"
+        "(async()=>{const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),2000);"
+        "try{const r=await fetch(`http://${host}:${port}/api/auth/login?provider=other`,"
+        "{redirect:'manual',signal:controller.signal});console.log(JSON.stringify({kind:'http',status:r.status,"
+        "redirectMatches:r.headers.get('location')===expected}));}"
+        "catch(e){const code=e&&e.cause&&e.cause.code;"
+        "const allowed=['ECONNREFUSED','ENOTFOUND','EAI_AGAIN','ETIMEDOUT','ECONNRESET'];"
+        "const category=e&&e.name==='AbortError'?'request-timeout':(allowed.includes(code)?code:'request-error');"
+        "console.log(JSON.stringify({kind:'error',category}));}finally{clearTimeout(timer);}})();"
+        )
+        try:
+            request = docker("exec", container, "node", "-e", request_script,
+                             check=False, timeout=min(5, max(3, int(deadline - time.monotonic()))))
+        except ProbeFailure as error:
+            category = "request-timeout" if str(error).startswith("command-timeout:") else "request-exec-failed"
+            latest.update(requestCategory=category, httpStatus=None, redirectMatches=False)
+            time.sleep(0.25)
+            continue
+        if request.returncode != 0:
+            latest.update(requestCategory="request-exec-failed", httpStatus=None, redirectMatches=False)
+            time.sleep(0.25)
+            continue
+        try:
+            result = json.loads(request.stdout)
+        except (json.JSONDecodeError, TypeError):
+            latest.update(requestCategory="request-result-malformed", httpStatus=None, redirectMatches=False)
+            time.sleep(0.25)
+            continue
+        if (not isinstance(result, dict) or result.get("kind") not in ("http", "error")
+                or set(result) != ({"kind", "status", "redirectMatches"} if result.get("kind") == "http"
+                                   else {"kind", "category"})):
+            latest.update(requestCategory="request-result-malformed", httpStatus=None, redirectMatches=False)
+            time.sleep(0.25)
+            continue
+        if result["kind"] == "http":
+            http_status = result["status"]
+            matches = result["redirectMatches"]
+            if type(http_status) is int and type(matches) is bool:
+                latest.update(requestCategory="http-response", httpStatus=http_status, redirectMatches=matches)
+                if http_status == 307 and matches:
+                    proof["readinessDiagnostics"] = dict(latest)
+                    return "expected-redirect"
+            else:
+                latest.update(requestCategory="request-result-malformed", httpStatus=None, redirectMatches=False)
+        else:
+            category = result["category"]
+            if category not in ("request-timeout", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ECONNRESET", "request-error"):
+                category = "request-result-malformed"
+            latest.update(requestCategory=category, httpStatus=None, redirectMatches=False)
         time.sleep(0.25)
+    proof["readinessDiagnostics"] = dict(latest)
     raise ProbeFailure("console-readiness-timeout")
 
 
-def admission_fd_identity(container: str) -> tuple[str, str, str]:
-    result = docker("exec", container, "sh", "-c",
-                    "printf '%s\\n%s\\n%s\\n' "
-                    "\"$(awk '/^Uid:/{print $2}' /proc/1/status)\" "
-                    "\"$(tr '\\000' ' ' </proc/1/cmdline)\" "
-                    "\"$(stat -Lc '%d:%i' /proc/1/fd/9)\"", timeout=8)
-    lines = result.stdout.splitlines()
-    if len(lines) != 3 or any(not line for line in lines):
+def admission_fd_identity(container: str) -> tuple[str, str, str, str, str]:
+    inspect = (
+        "const fs=require('node:fs'),path=require('node:path');"
+        "const {createRequire}=require('node:module');"
+        "const uid=fs.readFileSync('/proc/1/status','utf8').match(/^Uid:\\s+(\\d+)/m)?.[1];"
+        "const title=fs.readFileSync('/proc/1/cmdline').toString().split('\\0').filter(Boolean).join(' ');"
+        "const executable=path.basename(fs.readlinkSync('/proc/1/exe'));"
+        "const version=createRequire('/app/services/console/server.js')('next/package.json').version;"
+        "const lock=fs.statSync('/proc/1/fd/9');"
+        "console.log(JSON.stringify({uid,title,executable,version,lock:lock.dev+':'+lock.ino}));"
+    )
+    result = docker("exec", container, "node", "-e", inspect, timeout=8)
+    try:
+        value = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        raise ProbeFailure("pid1-inspection-format") from None
+    if (not isinstance(value, dict) or set(value) != {"uid", "title", "executable", "version", "lock"}
+            or any(not isinstance(value.get(key), str) or not value[key]
+                   for key in ("uid", "title", "executable", "version", "lock"))):
         raise ProbeFailure("pid1-inspection-format")
-    return lines[0], lines[1], lines[2]
+    return value["uid"], value["title"], value["executable"], value["version"], value["lock"]
 
 
 def assert_admission_mount_contract(raw_text: str, service: dict[str, object], source: pathlib.Path) -> None:
@@ -161,7 +253,7 @@ def assert_admission_mount_contract(raw_text: str, service: dict[str, object], s
         raise ProbeFailure("canonical-admission-mount-contract")
 
 
-def process_sample(container: str, expected_fd: str) -> dict[str, object]:
+def process_sample(container: str, expected_fd: str, expected_title: str) -> dict[str, object]:
     source = (
         "const fs=require('node:fs'), path=require('node:path'); const rows=[]; "
         "for(const pid of fs.readdirSync('/proc').filter(x=>/^\\d+$/.test(x)).slice(0,64)){try{"
@@ -170,7 +262,7 @@ def process_sample(container: str, expected_fd: str) -> dict[str, object]:
         "const argv=fs.readFileSync('/proc/'+pid+'/cmdline').toString().replaceAll('\\0',' ');"
         "const exe=path.basename(fs.readlinkSync('/proc/'+pid+'/exe'));"
         "let fd9=null; try{const s=fs.statSync('/proc/'+pid+'/fd/9');fd9=s.dev+':'+s.ino;}catch{}"
-        "rows.push({pid:Number(pid),ppid,executable:exe,consoleServer:argv.includes('services/console/server.js'),"
+        "rows.push({pid:Number(pid),ppid,executable:exe,consoleServer:exe==='node'&&argv.trim()===" + json.dumps(expected_title) + ","
         "holdsAdmissionFd9:fd9===" + json.dumps(expected_fd) + "});}catch{}}"
         "console.log(JSON.stringify({processes:rows,truncated:rows.length>=64}));"
     )
@@ -263,10 +355,17 @@ try:
     stage = "pid1-admission"
     lock_file = admission / "service-gate.lock"
     host_identity = f"{lock_file.stat().st_dev}:{lock_file.stat().st_ino}"
-    uid, cmdline, container_identity = admission_fd_identity(known_container)
-    if uid != "10001" or "server.js" not in cmdline or container_identity != host_identity:
+    uid, process_title, executable, next_version, container_identity = admission_fd_identity(known_container)
+    expected_title = f"next-server (v{next_version})"
+    if (not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", next_version)
+            or uid != "10001" or executable != "node" or process_title != expected_title
+            or container_identity != host_identity):
         raise ProbeFailure("pid1-admission-identity")
-    proof["processSample"] = process_sample(known_container, host_identity)
+    proof["runtimeProcessIdentity"] = {
+        "uid": uid, "executable": executable, "nextVersion": next_version,
+        "titleMatchesInstalledNext": process_title == expected_title,
+    }
+    proof["processSample"] = process_sample(known_container, host_identity, expected_title)
     if not any(item.get("pid") == 1 and item.get("holdsAdmissionFd9") is True
                for item in proof["processSample"]["processes"]):
         raise ProbeFailure("pid1-missing-from-process-sample")
@@ -332,8 +431,11 @@ try:
         raise ProbeFailure("restart-image-id-mismatch")
     proof["restartContainerImageId"] = restart_image_id
     ready = wait_ready(known_container)
-    uid, cmdline, container_identity = admission_fd_identity(known_container)
-    if uid != "10001" or "server.js" not in cmdline or container_identity != host_identity:
+    uid, process_title, executable, next_version, container_identity = admission_fd_identity(known_container)
+    expected_title = f"next-server (v{next_version})"
+    if (not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", next_version)
+            or uid != "10001" or executable != "node" or process_title != expected_title
+            or container_identity != host_identity):
         raise ProbeFailure("restart-lost-admission")
     proof["claims"]["restartRetainedAdmission"] = True
     stage = "console-stop-and-release"
