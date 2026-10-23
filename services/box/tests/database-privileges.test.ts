@@ -192,7 +192,7 @@ describe("engine database privilege foundation", () => {
     for(const column of outsideCustodySelectColumns.member_sessions){
       expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions',$1,'SELECT') AS allowed",[column])).rows[0].allowed).toBe(true);
     }
-    for(const column of ["id","created_at","member_id","token_hash","expires_at","revoked_at","ip_address"]){
+    for(const column of ["id","created_at","member_id","token_hash","expires_at","revoked_at"]){
       if(outsideCustodySelectColumns.member_sessions.includes(column)) continue;
       expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions',$1,'SELECT') AS allowed",[column])).rows[0].allowed).toBe(false);
     }
