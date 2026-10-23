@@ -41,38 +41,80 @@ def check(label, condition):
     print('PASS:', label, flush=True)
 
 
-def generate(host):
-    # Exercise the real generator; atomic replacement must remain visible through
-    # the directory bind mount used by the installation's existing compose file.
+def generate(host, stage):
+    # Exercise the real generator; only this disposable fixture appends the
+    # candidate generation marker. Publish policy and marker atomically together.
     script = """import('/app/services/keeper/lib/egress.ts').then(({generateEgress})=>{
       const fs=require('node:fs');
       const config=generateEgress([{name:'client',address:ADDRESS,grants:[],infrastructureHosts:[HOST]}]);
-      fs.writeFileSync('/output/squid.next',config.squid);
+      const fixture=config.squid+'\\nreply_header_add X-Lares-Route-Stage '+STAGE+' all\\n';
+      fs.writeFileSync('/output/squid.next',fixture);
       fs.renameSync('/output/squid.next','/output/squid.conf');
-    })""".replace('ADDRESS', json.dumps(allowed_ip)).replace('HOST', json.dumps(host))
+    })""".replace('ADDRESS', json.dumps(allowed_ip)).replace('HOST', json.dumps(host)).replace(
+        'STAGE', json.dumps(stage))
     cmd('docker', 'run', '--rm', '--network', 'none', '--cap-drop', 'ALL',
         '--security-opt', 'no-new-privileges:true', '--user', f'{os.getuid()}:{os.getgid()}',
         '--mount', f'type=bind,src={root},dst=/output', '--entrypoint',
         '/app/services/keeper/node_modules/.bin/tsx', client_image, '-e', script)
 
 
+RESPONSE_PARSER = r"""function parseResponse(data,error){
+  const headerEnd=data.indexOf(Buffer.from('\r\n\r\n'));
+  const headerLines=headerEnd<0?[]:data.subarray(0,headerEnd).toString('latin1').split('\r\n');
+  const statusMatch=(headerLines[0]||'').match(/^HTTP\/\d+\.\d+ ([0-9]{3})(?:[ \t]|$)/);
+  const routeStageValues=[];let routeStageMalformed=false;
+  const trimOws=value=>value.replace(/^[ \t]+|[ \t]+$/g,'');
+  const control=/[\x00-\x08\x0a-\x1f\x7f]/;
+  for(const line of headerLines.slice(1)){
+    if(control.test(line))routeStageMalformed=true;
+    if(/^[ \t]/.test(line)){routeStageMalformed=true;continue;}
+    const colon=line.indexOf(':');
+    if(colon<0){
+      if(/^x-lares-route-stage(?:[: \t]|$)/i.test(trimOws(line)))routeStageMalformed=true;
+      continue;
+    }
+    const rawName=line.slice(0,colon);
+    const name=trimOws(rawName);
+    const isStage=/^x-lares-route-stage$/i.test(name);
+    if(isStage){
+      if(rawName!==name)routeStageMalformed=true;
+      const value=line.slice(colon+1);
+      if(control.test(value))routeStageMalformed=true;
+      routeStageValues.push(trimOws(value));
+    }else if(/^x-lares-route-stage(?:[ \t]|$)/i.test(name)){
+      routeStageMalformed=true;
+    }
+  }
+  return {status:statusMatch?Number(statusMatch[1]):null,
+    greeting:data.includes(Buffer.from('CI_PROXY_DESTINATION_OK')),
+    route_stage_values:routeStageValues,route_stage_malformed:routeStageMalformed,
+    error:error||null};
+}"""
+
+
 def request(payload, source=None):
-    # Wait for a complete header and the dummy destination's greeting for 200.
-    # A non-200 response is enough to prove refusal; errors/timeouts fail callers.
+    # The same strict parser handles raw fixture cases and real proxy responses.
     script = r"""const net=require('node:net');
-      const s=net.createConnection({host:__PROXY_ADDRESS__,port:8888});let data=Buffer.alloc(0),done=false;
-      function finish(error){if(done)return;done=true;
-        const match=data.toString().match(/^HTTP\/\d\.\d (\d+)/);
-        console.log(JSON.stringify({status:match?Number(match[1]):null,
-          greeting:data.includes(Buffer.from('CI_PROXY_DESTINATION_OK')),error:error||null}));s.destroy();}
+      __RESPONSE_PARSER__
+      const s=net.createConnection({host:__PROXY_ADDRESS__,port:8888});
+      let data=Buffer.alloc(0),done=false,absoluteTimer;
+      function finish(error){
+        if(done)return;
+        done=true;
+        clearTimeout(absoluteTimer);
+        try{console.log(JSON.stringify(parseResponse(data,error)));}
+        finally{s.destroy();}
+      }
+      absoluteTimer=setTimeout(()=>finish('absolute-timeout'),5000);
       s.on('connect',()=>s.write(Buffer.from(__PAYLOAD_BASE64__,'base64')));
       s.on('data',chunk=>{data=Buffer.concat([data,chunk]);
         if(data.length>65536)return finish('oversized');
         if(data.includes(Buffer.from('\r\n\r\n'))){
           if(!/^HTTP\/\d\.\d 200/.test(data.toString())||data.includes(Buffer.from('CI_PROXY_DESTINATION_OK')))finish();}});
       s.on('error',e=>finish(e.code));s.on('end',()=>finish());
-      s.setTimeout(5000,()=>finish('timeout'));
-    """.replace('__PROXY_ADDRESS__', json.dumps(proxy_ip)).replace('__PAYLOAD_BASE64__', json.dumps(
+      s.setTimeout(5000,()=>finish('inactivity-timeout'));
+    """.replace('__RESPONSE_PARSER__', RESPONSE_PARSER).replace(
+        '__PROXY_ADDRESS__', json.dumps(proxy_ip)).replace('__PAYLOAD_BASE64__', json.dumps(
         base64.b64encode(payload.encode()).decode()))
     result = json.loads(cmd('docker', 'run', '--rm', '--network', name, '--ip', source or allowed_ip,
                          '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
@@ -87,6 +129,52 @@ def connect(host='allowed.example', port=443):
 
 def target_connections():
     return cmd('docker', 'logs', target).count('DESTINATION_ACCEPTED')
+
+
+def route_stage_acknowledged(response, expected_stage):
+    valid_stage = re.fullmatch(
+        r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+        expected_stage or '')
+    return bool(valid_stage) and response.get('status') == 403 and not response.get('greeting') and (
+        response.get('error') is None and not response.get('route_stage_malformed', True)
+        and response.get('route_stage_values') == [expected_stage])
+
+
+def check_raw_response_parser(client_image):
+    stage = '11111111-1111-4111-8111-111111111111'
+    crlf = chr(13) + chr(10)
+    cases = [
+        ('valid raw marker', crlf.join(['HTTP/1.1 403 Forbidden',
+          f'X-Lares-Route-Stage: {stage}', '', '']), True),
+        ('missing raw marker', crlf.join(['HTTP/1.1 403 Forbidden', 'Other: value', '', '']), False),
+        ('duplicate raw markers', crlf.join(['HTTP/1.1 403 Forbidden',
+          f'X-Lares-Route-Stage: {stage}', f'X-Lares-Route-Stage: {stage}', '', '']), False),
+        ('folded hidden duplicate after another header', crlf.join(['HTTP/1.1 403 Forbidden',
+          f'X-Lares-Route-Stage: {stage}', 'Other: value', ' X-Lares-Route-Stage: stale', '', '']), False),
+        ('vertical-tab-prefixed marker value', crlf.join(['HTTP/1.1 403 Forbidden',
+          'X-Lares-Route-Stage: ' + chr(11) + stage, '', '']), False),
+        ('malformed four-digit status', crlf.join(['HTTP/1.1 4030 Forbidden',
+          f'X-Lares-Route-Stage: {stage}', '', '']), False),
+    ]
+    raw = [{'name': name, 'raw': response} for name, response, _expected in cases]
+    script = RESPONSE_PARSER + '\nconst cases=' + json.dumps(raw) + ';\n' + (
+        "console.log(JSON.stringify(cases.map(item=>parseResponse(Buffer.from(item.raw,'latin1'),null))));")
+    responses = json.loads(cmd('docker', 'run', '--rm', '--network', 'none', '--cap-drop', 'ALL',
+                               '--security-opt', 'no-new-privileges:true', '--entrypoint', 'node',
+                               client_image, '-e', script))
+    if len(responses) != len(cases):
+        raise RuntimeError('raw response parser returned an unexpected case count')
+    report['raw_parser_cases'] = {}
+    for (name, _raw_response, expected), response in zip(cases, responses):
+        accepted = route_stage_acknowledged(response, stage)
+        check('Raw response parser ' + name, accepted is expected)
+        report['raw_parser_cases'][name] = {
+            'accepted': accepted,
+            'expected': expected,
+            'status': response['status'],
+            'route_stage_values': response['route_stage_values'],
+            'route_stage_malformed': response['route_stage_malformed'],
+        }
 
 
 def proxy_pid():
@@ -111,6 +199,7 @@ try:
                                 '--entrypoint', 'squid', image, '-v')
     version = re.search(r'Version (\d+)\.(\d+)', report['squid_version'])
     check('Squid includes the 7.6 HTTP framing fix', version and tuple(map(int, version.groups())) >= (7, 6))
+    check_raw_response_parser(client_image)
     cmd('docker', 'network', 'create', '--internal', name)
     config = json.loads(cmd('docker', 'network', 'inspect', name, '--format', '{{json .IPAM.Config}}'))
     subnet = ipaddress.ip_network(config[0]['Subnet'])
@@ -119,6 +208,10 @@ try:
     cmd('docker', 'network', 'rm', name)
     cmd('docker', 'network', 'create', '--internal', '--subnet', str(subnet), name)
     allowed_ip, denied_ip, target_ip, proxy_ip = [str(subnet.network_address + n) for n in (10, 11, 12, 13)]
+    initial_stage, desired_stage, restored_stage = (str(uuid.uuid4()) for _ in range(3))
+    report['fixture_route_stages'] = {
+        'initial': initial_stage, 'desired_before_reload': desired_stage, 'restored': restored_stage,
+    }
     endpoint = """const net=require('node:net');
       for(const port of [443,444])net.createServer(s=>{
         console.log('DESTINATION_ACCEPTED',port);s.end('CI_PROXY_DESTINATION_OK\\n');
@@ -126,7 +219,7 @@ try:
     cmd('docker', 'run', '-d', '--name', target, '--network', name, '--ip', target_ip,
         '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
         '--entrypoint', 'node', client_image, '-e', endpoint)
-    generate('allowed.example')
+    generate('allowed.example', initial_stage)
     conf = (root / 'squid.conf').read_text()
     check('Generated config disables caching and enables no ICP or collapsed forwarding',
           'cache deny all' in conf and not re.search(r'^(icp_port|collapsed_forwarding|include)\b', conf, re.M))
@@ -161,7 +254,27 @@ try:
         result = request(payload, source)
         check('Proxy refuses ' + label, result['status'] in statuses and not result['greeting'])
     check('Refused and malformed requests never reach the dummy destination', target_connections() == before)
-    generate('blocked.example')
+    generate('blocked.example', desired_stage)
+    route_host = 'route-proof-' + uuid.uuid4().hex + '.invalid'
+    before_stale_probe_target_count = target_connections()
+    stale_route_response = request(connect(route_host))
+    after_stale_probe_target_count = target_connections()
+    check('Denied CONNECT reports the actual pre-reload Squid generation',
+          route_stage_acknowledged(stale_route_response, initial_stage))
+    check('Unreloaded desired generation is rejected as stale',
+          not route_stage_acknowledged(stale_route_response, desired_stage))
+    check('Pre-reload denied generation probe adds zero target connections',
+          after_stale_probe_target_count == before_stale_probe_target_count)
+    check('Acknowledgement validation rejects a missing stage marker',
+          not route_stage_acknowledged(dict(stale_route_response, route_stage_values=[]), initial_stage))
+    check('Acknowledgement validation rejects duplicate stage markers',
+          not route_stage_acknowledged(dict(stale_route_response,
+                                            route_stage_values=[initial_stage, initial_stage]), initial_stage))
+    check('Acknowledgement validation rejects a malformed stage value',
+          not route_stage_acknowledged(dict(stale_route_response,
+                                            route_stage_values=['not-a-generation']), initial_stage))
+    check('Acknowledgement validation rejects a malformed stage header',
+          not route_stage_acknowledged(dict(stale_route_response, route_stage_malformed=True), initial_stage))
     cmd('docker', 'exec', proxy, 'squid', '-k', 'reconfigure', '-f', '/config/squid.conf')
     for attempt in range(30):
         result = request(connect('blocked.example'))
@@ -169,10 +282,30 @@ try:
             break
         time.sleep(.5)
     check('Atomic config replacement is applied by real reload', result['status'] == 200 and result['greeting'])
+    before_reloaded_probe_target_count = target_connections()
+    reloaded_route_response = request(connect(route_host))
+    after_reloaded_probe_target_count = target_connections()
+    check('Denied CONNECT reports the exact reloaded Squid generation',
+          route_stage_acknowledged(reloaded_route_response, desired_stage))
+    check('Reloaded denied generation probe adds zero target connections',
+          after_reloaded_probe_target_count == before_reloaded_probe_target_count)
+    report['route_generation_proof'] = {
+        'host': route_host,
+        'before_reload': stale_route_response,
+        'expected_before_reload': initial_stage,
+        'desired_before_reload': desired_stage,
+        'after_reload': reloaded_route_response,
+        'expected_after_reload': desired_stage,
+        'target_connections_before_reload_probe': before_stale_probe_target_count,
+        'target_connections_after_reload_probe': before_reloaded_probe_target_count,
+        'target_connection_delta_before_reload': after_stale_probe_target_count - before_stale_probe_target_count,
+        'target_connection_delta_after_reload': after_reloaded_probe_target_count - before_reloaded_probe_target_count,
+        'marker_is_fixture_augmentation': True,
+    }
     result = request(connect())
     check('Reload revokes the previous destination', result['status'] == 403 and not result['greeting'])
     check('Reload preserves the running Squid process', proxy_pid() == pid)
-    generate('allowed.example')
+    generate('allowed.example', restored_stage)
     cmd('docker', 'exec', proxy, 'squid', '-k', 'reconfigure', '-f', '/config/squid.conf')
     for attempt in range(30):
         result = request(connect())
