@@ -27,6 +27,18 @@ from admission_contract import RequestState, Refused, request_hash, sign, verify
 
 
 class ContractTests(unittest.TestCase):
+    def test_financial_continuity_native_admin_fixture_matches_production_setting(self):
+        probe_path = ROOT / "services/keeper/tests/financial-continuity-image.probe.py"
+        probe_tree = ast.parse(probe_path.read_text())
+        builder = next(
+            node for node in probe_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "build_native_admin_config"
+        )
+        namespace = {}
+        exec(compile(ast.Module(body=[builder], type_ignores=[]), str(probe_path), "exec"), namespace)
+        config = namespace["build_native_admin_config"]()
+        self.assertIs(config["general_settings"]["disable_auto_add_proxy_admin_to_teams"], True)
+
     def test_actual_typescript_gateway_configs_match_the_python_profile_exactly(self):
         # Exercise the production renderer and profile builder without contacting either provider.
         script = """
