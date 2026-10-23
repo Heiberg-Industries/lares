@@ -99,6 +99,71 @@ class GatewayDockerCommandTests(unittest.TestCase):
             self.assertNotEqual(duplicated.count("docker"), 1, argument_name)
 
 
+class BoundedMarkerArchiveCommandTests(unittest.TestCase):
+    def test_marker_capture_execs_fixed_tmp_tar_command_with_bounded_reader(self) -> None:
+        import io
+        import os
+        import select
+        import tarfile
+        import time
+
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        collector = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "bounded_marker_archive")
+        namespace = {
+            "os": os,
+            "select": select,
+            "subprocess": SimpleNamespace(
+                Popen=None, PIPE=subprocess.PIPE, DEVNULL=subprocess.DEVNULL,
+                TimeoutExpired=subprocess.TimeoutExpired,
+            ),
+            "time": time,
+        }
+        with tempfile.TemporaryDirectory(prefix="lares-marker-tar-command-") as directory:
+            root = pathlib.Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            captured_args = root / "args.bin"
+            archive_path = root / "marker.tar"
+            marker_name = "lares-gateway-model-request.json"
+            marker_bytes = b'{"schema":1}\n'
+            archive_bytes = io.BytesIO()
+            with tarfile.open(fileobj=archive_bytes, mode="w") as archive:
+                member = tarfile.TarInfo(marker_name)
+                member.size = len(marker_bytes)
+                archive.addfile(member, io.BytesIO(marker_bytes))
+            archive_path.write_bytes(archive_bytes.getvalue())
+
+            docker_stub = bin_dir / "docker"
+            docker_stub.write_text(
+                "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$CAPTURE_ARGS\"\n"
+                "cat \"$CAPTURE_ARCHIVE\"\n",
+                encoding="utf-8",
+            )
+            docker_stub.chmod(0o755)
+
+            def fixture_popen(argv, **kwargs):
+                env = {
+                    **os.environ,
+                    "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+                    "CAPTURE_ARGS": str(captured_args),
+                    "CAPTURE_ARCHIVE": str(archive_path),
+                }
+                return subprocess.Popen(argv, env=env, **kwargs)
+
+            namespace["subprocess"].Popen = fixture_popen
+            module = ast.fix_missing_locations(ast.Module(body=[collector], type_ignores=[]))
+            exec(compile(module, str(PROBE), "exec"), namespace)
+            observed = namespace["bounded_marker_archive"]("first-use-gateway", marker_name)
+
+            self.assertEqual(observed, {"state": "captured", "archive": archive_bytes.getvalue()})
+            actual_args = captured_args.read_bytes().rstrip(b"\0").decode().split("\0")
+            self.assertEqual(actual_args, [
+                "exec", "--user", "0:0", "first-use-gateway", "tar",
+                "-C", "/tmp", "-cf", "-", "--", marker_name,
+            ])
+
+
 class NativeFirstUseConfigTests(unittest.TestCase):
     def test_actual_probe_config_loads_and_missing_egress_is_rejected(self) -> None:
         tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
@@ -268,31 +333,85 @@ class CompiledChiefKeylessCommandTests(unittest.TestCase):
                           "LITELLM_MASTER_KEY", "GATEWAY_MASTER_KEY_FILE"} & env_values.keys())
 
 
+class NativeFirstUseSdkHeaderTests(unittest.TestCase):
+    def test_pinned_eve_client_resolves_stream_headers_after_signed_send(self) -> None:
+        sdk = REPO / "services" / "chief-of-staff" / "node_modules" / "eve" / "dist" / "src" / "client" / "index.js"
+        self.assertTrue(sdk.is_file(), "the pinned Eve dependency must be present for this offline regression")
+        script = f'''import assert from "node:assert/strict";
+import {{ createServer }} from "node:http";
+import {{ pathToFileURL }} from "node:url";
+const {{ Client }} = await import(pathToFileURL({json.dumps(str(sdk))}));
+let currentHeaders={{authorization:"Basic ZXZlOnJvdXRl", "x-lares-member-id":"first-use-member-a",
+  "x-lares-admission":"nonce-a", "x-lares-purpose":"human"}};
+let post, stream;
+const server=createServer(async(req,res)=>{{
+  const chunks=[];for await (const chunk of req) chunks.push(chunk);
+  const seen={{...req.headers}};
+  if(req.method==="POST"){{post={{headers:seen,body:JSON.parse(Buffer.concat(chunks).toString("utf8"))}};
+    res.writeHead(202,{{"content-type":"application/json"}}).end(JSON.stringify({{sessionId:"sdk-header-regression",deliveryId:"delivery-a"}}));return;}}
+  if(req.method==="GET"){{stream={{headers:seen}};res.writeHead(401,{{"content-type":"application/json"}}).end('{{"error":"read fixture reached"}}');return;}}
+  res.writeHead(404).end();
+}});
+await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+try{{
+  const client=new Client({{host:`http://127.0.0.1:${{server.address().port}}`,headers:()=>currentHeaders}});
+  const session=client.sessions.attach("sdk-header-regression");
+  const capsule="signed-post-capability";
+  currentHeaders={{...currentHeaders,"content-type":"application/json","x-lares-model-purpose-required":"1","x-lares-model-capsule":capsule}};
+  const pending=await session.send("Return exactly FIRST_USE_OK");
+  currentHeaders={{authorization:"Basic ZXZlOnJvdXRl", "x-lares-member-id":"first-use-member-a",
+    "x-lares-admission":"nonce-a", "x-lares-purpose":"read"}};
+  await assert.rejects(pending.result(),error=>error?.status===401);
+  assert.equal(post.headers["x-lares-purpose"],"human");
+  assert.equal(post.headers["x-lares-model-purpose-required"],"1");
+  assert.equal(post.headers["x-lares-model-capsule"],capsule);
+  assert.equal(post.body.message,"Return exactly FIRST_USE_OK");
+  assert.equal(stream.headers["x-lares-member-id"],"first-use-member-a");
+  assert.equal(stream.headers["x-lares-admission"],"nonce-a");
+  assert.equal(stream.headers["x-lares-purpose"],"read");
+  assert.equal(stream.headers["x-lares-model-purpose-required"],undefined);
+  assert.equal(stream.headers["x-lares-model-capsule"],undefined);
+}}finally{{await new Promise(resolve=>server.close(resolve));}}
+'''
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=KEEPER, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=20, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+
 class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
 
-    def test_generated_client_marks_fixed_phases_around_the_real_signed_request(self) -> None:
+    def test_two_member_client_marks_phases_without_changing_signed_request_or_refusals(self) -> None:
         client_source = next(node.args[0].value for node in ast.walk(self.tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             and node.func.attr == "write_text" and node.args and isinstance(node.args[0], ast.Constant)
             and "FIRST_USE_PHASE_FILE" in node.args[0].value)
         phases = ("imports", "session-create", "session-bind", "capsule-sign", "send",
-                  "turn-result", "refusalchecks", "complete")
+                  "stream-auth", "turn-result", "refusalchecks", "complete")
         positions = [client_source.index("mark(" + repr(phase) + ")") for phase in phases]
         self.assertEqual(positions, sorted(positions))
         for contract in (
-            "await import('/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js')",
-            "await client.sessions.create({headers})", "await bindConsoleSession(",
-            "await signPrivateModelPurposeRequest(request)", "await session.send(message,{headers:sendHeaders})",
-            "await pending.result()", "process.env.CHECK_REFUSALS==='1'", "response:result.message",
+            "member=process.env.FIRST_USE_MEMBER_ID!", "headers:()=>headers", "await client.sessions.create()", "await bindConsoleSession(",
+            "await signPrivateModelPurposeRequest(request)", "await session.send(message)",
+            "headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64')",
+            "'x-lares-purpose':'read'", "mark('stream-auth')", "await pending.result()",
+            "'x-lares-model-capsule':capsule", "'x-lares-member-id':'first-use-no-such-member'",
+            "response:result.message",
             "fs.writeFileSync(temp,JSON.stringify({phase}),{mode:0o600})", "fs.renameSync(temp,phaseFile)",
-            "catch{process.exitCode=1}",
+            "catch(error){if(!resultObserved)recordThrownResult(error);process.exitCode=1}",
         ):
             self.assertIn(contract, client_source)
         self.assertNotIn("console.error", client_source)
-        self.assertNotIn("console.log(session", client_source)
+        runner_call = next(node for node in ast.walk(self.tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "client_result" for target in node.targets))
+        self.assertEqual(ast.unparse(runner_call.value),
+            "invoke_first_use_and_capture(invoke_compiled_client, lambda: first_use_model_diagnostics(network + '-gateway', keeper_name), proof)")
 
     def test_phase_reader_is_strict_bounded_and_redacts_invalid_content(self) -> None:
         phase_constant = next(node for node in self.tree.body if isinstance(node, ast.Assign)
@@ -318,92 +437,97 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
             self.assertEqual(result, {"phase": "unknown", "markerValid": False})
             self.assertNotIn(secret, json.dumps(result))
 
-    def test_container_marker_reader_checks_fixed_file_and_fixed_shape_before_returning_phase(self) -> None:
-        phase_constant = next(node for node in self.tree.body if isinstance(node, ast.Assign)
+    def test_container_reader_and_import_initializer_are_fixed_and_bounded(self) -> None:
+        phases = next(node for node in self.tree.body if isinstance(node, ast.Assign)
             and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASES" for target in node.targets))
-        files_constant = next(node for node in self.tree.body if isinstance(node, ast.Assign)
+        files = next(node for node in self.tree.body if isinstance(node, ast.Assign)
             and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASE_FILES" for target in node.targets))
-        safe_summary = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
-            and node.name == "safe_compiled_client_phase_summary")
+        phase_file = next(node for node in self.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASE_FILE" for target in node.targets))
+        result_file = next(node for node in self.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_RESULT_FILE" for target in node.targets))
+        initializer = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
+            and node.name == "initialize_compiled_client_phase")
         reader = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
             and node.name == "compiled_client_phase_summary")
-        namespace = {"json": json, "RuntimeError": RuntimeError}
-        module = ast.fix_missing_locations(ast.Module(body=[phase_constant, files_constant, safe_summary, reader], type_ignores=[]))
+        safe = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
+            and node.name == "safe_compiled_client_phase_summary")
+        namespace = {"json": json}
+        module = ast.fix_missing_locations(ast.Module(body=[phases, files, phase_file, result_file, initializer, reader, safe], type_ignores=[]))
         exec(compile(module, str(PROBE), "exec"), namespace)
         observed = {}
         namespace["run"] = lambda *args, **kwargs: observed.update(args=args, kwargs=kwargs) or type(
             "Result", (), {"returncode": 0, "stdout": '{"phase":"send","valid":true}'}
         )()
-        self.assertEqual(namespace["compiled_client_phase_summary"]("fixture-chief", "owner-first"),
+        self.assertTrue(namespace["initialize_compiled_client_phase"]("fixture-chief"))
+        self.assertIn('{"phase":"imports"}', observed["args"][observed["args"].index("-e") + 1])
+        self.assertEqual(namespace["compiled_client_phase_summary"]("fixture-chief"),
                          {"phase": "send", "markerValid": True})
-        reader_script = observed["args"][observed["args"].index("-e") + 1]
-        for contract in ("/tmp/first-use-phase-first", "s.size>128", "Object.keys(x).length===1", "allowed.includes(x.phase)",
-                         "JSON.stringify(out)", "phase:'unknown'"):
-            self.assertIn(contract, reader_script)
+        script = observed["args"][observed["args"].index("-e") + 1]
+        for contract in ("/tmp/first-use-phase-first", "s.size>128", "Object.keys(x).length===1",
+                         "allowed.includes(x.phase)", "JSON.stringify(out)", "phase:'unknown'"):
+            self.assertIn(contract, script)
         secret = "PRIVATE-SESSION-OR-ERROR-CANARY"
-        namespace["run"] = lambda *args, **kwargs: type(
-            "Result", (), {"returncode": 1, "stdout": secret}
-        )()
-        failed = namespace["compiled_client_phase_summary"]("fixture-chief", "owner-first")
+        namespace["run"] = lambda *args, **kwargs: type("Result", (), {"returncode": 1, "stdout": secret})()
+        failed = namespace["compiled_client_phase_summary"]("fixture-chief")
         self.assertEqual(failed, {"phase": "unknown", "markerValid": False})
         self.assertNotIn(secret, json.dumps(failed))
-        self.assertEqual(namespace["compiled_client_phase_summary"]("fixture-chief", "unrecognized"),
-                         {"phase": "unknown", "markerValid": False})
 
-    def test_phase_initialization_defaults_to_imports_without_exposing_values(self) -> None:
-        files_constant = next(node for node in self.tree.body if isinstance(node, ast.Assign)
-            and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASE_FILES" for target in node.targets))
-        initialize = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
-            and node.name == "initialize_compiled_client_phase")
-        namespace = {"json": json}
-        module = ast.fix_missing_locations(ast.Module(body=[files_constant, initialize], type_ignores=[]))
-        exec(compile(module, str(PROBE), "exec"), namespace)
-        seen = {}
-        namespace["run"] = lambda *args, **kwargs: seen.update(args=args, kwargs=kwargs) or type(
-            "Result", (), {"returncode": 0}
-        )()
-        self.assertTrue(namespace["initialize_compiled_client_phase"]("fixture-chief", "owner-first"))
-        self.assertEqual(seen["args"][:4], ("docker", "exec", "fixture-chief", "node"))
-        script = seen["args"][seen["args"].index("-e") + 1]
-        self.assertIn("/tmp/first-use-phase-first", script)
-        self.assertIn('{"phase":"imports"}', script)
-        self.assertNotIn("token", script.lower())
-        self.assertFalse(namespace["initialize_compiled_client_phase"]("fixture-chief", "unknown"))
-
-    def test_request_runner_records_only_fixed_phase_and_bounded_exit_state(self) -> None:
-        invoke = next(node for node in ast.walk(self.tree) if isinstance(node, ast.FunctionDef)
+    def test_nonzero_and_timeout_keep_only_safe_phase_and_counts(self) -> None:
+        runner = next(node for node in ast.walk(self.tree) if isinstance(node, ast.FunctionDef)
                       and node.name == "invoke_compiled_client")
         namespace = {
-            "COMPILED_CLIENT_PHASE_FILES": {"owner-first": "/tmp/first-use-phase-first"},
-            "chief_name": "fixture-chief", "proof": {},
-            "compiled_client_phase_summary": lambda _name, _marker: {"phase": "capsule-sign", "markerValid": True},
+            "initialize_compiled_client_phase": lambda _name: True,
+            "COMPILED_CLIENT_PHASE_FILE": "/tmp/first-use-phase-first",
+            "COMPILED_CLIENT_PHASE_FILES": {"owner-first": "/tmp/first-use-phase-first", "later-member": "/tmp/first-use-phase-later", "owner-repeat": "/tmp/first-use-phase-repeat"},
+            "COMPILED_CLIENT_RESULT_FILE": "/tmp/first-use-result-diagnostic-first",
+            "owner": "fixture-owner",
+            "admission_bridge_summary": lambda: {"markerValid": True, "routes": {"admit": {"requests": 1, "statuses": {"503": 1}}, "settle": {"requests": 0, "statuses": {"503": 0}}}},
+            "admission_bridge_delta": lambda _before, _after: {"markerValid": True, "routes": {"admit": {"requests": 0, "statuses": {"503": 0}}, "settle": {"requests": 0, "statuses": {"503": 0}}}},
+            "COMPILED_CLIENT_RESULT_FILE": "/tmp/first-use-result-diagnostic-first",
+            "compiled_client_phase_summary": lambda _name, _marker="owner-first": {"phase": "capsule-sign", "markerValid": True},
+            "compiled_client_result_summary": lambda _name: {
+                "markerValid": False, "outcome": "unknown", "resultStatus": "unknown", "expectedMessage": None,
+                "failureEventCount": 0, "failureEvents": {"step": False, "turn": False, "session": False},
+                "events": [], "categories": {"localDispatchUnavailable": False, "nativeAdmissionRefused": False,
+                    "timeoutAbort": False, "socketUnavailable": False, "requestPolicyRejected": False, "unknown": True},
+                "clientStatus": None},
+            "admission_bridge_summary": lambda: {"markerValid": True, "routes": {
+                "admit": {"requests": 1, "statuses": {"503": 1}},
+                "settle": {"requests": 0, "statuses": {"503": 0}}}},
+            "admission_bridge_delta": lambda _before, _after: {"markerValid": True, "routes": {
+                "admit": {"requests": 0, "statuses": {"503": 0}},
+                "settle": {"requests": 0, "statuses": {"503": 0}}}},
             "fixed_client_failure_observations": lambda: {
                 "upstreamDispatchCount": 2,
                 "financialDurableCounts": {"attempts": 3, "grants": 3, "settled": 3},
             },
-            "RuntimeError": RuntimeError,
+            "chief_name": "fixture-chief", "proof": {}, "RuntimeError": RuntimeError,
         }
-        module = ast.fix_missing_locations(ast.Module(body=[invoke], type_ignores=[]))
+        module = ast.fix_missing_locations(ast.Module(body=[runner], type_ignores=[]))
         exec(compile(module, str(PROBE), "exec"), namespace)
         secret = "PRIVATE-SESSION-OR-ERROR-CANARY"
         namespace["run"] = lambda *args, **kwargs: type("Result", (), {"returncode": 17, "stdout": secret})()
         with self.assertRaisesRegex(RuntimeError, "Compiled signed request failed"):
-            namespace["invoke_compiled_client"]("fixture-member", "owner-first", check_refusals=True)
-        self.assertEqual(namespace["proof"]["firstUseClientDiagnostics"], {
-            "request": "owner-first", "phase": "capsule-sign", "markerValid": True,
-            "timedOut": False, "exitCode": 17, "upstreamDispatchCount": 2,
+            namespace["invoke_compiled_client"]()
+        diagnostic = namespace["proof"]["firstUseClientDiagnostics"]
+        self.assertEqual(diagnostic, {
+            "request": "owner-first", "phase": "capsule-sign", "markerValid": True, "timedOut": False, "exitCode": 17,
+            "firstResult": namespace["compiled_client_result_summary"]("fixture-chief"),
+            "admissionBridge": namespace["admission_bridge_delta"](None, None),
+            "upstreamDispatchCount": 2,
             "financialDurableCounts": {"attempts": 3, "grants": 3, "settled": 3},
         })
         self.assertNotIn(secret, json.dumps(namespace["proof"]))
         namespace["proof"].clear()
         namespace["run"] = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bounded timeout"))
         with self.assertRaisesRegex(RuntimeError, "Compiled signed request exceeded its time bound"):
-            namespace["invoke_compiled_client"]("fixture-member", "owner-first")
-        self.assertEqual(namespace["proof"]["firstUseClientDiagnostics"], {
-            "request": "owner-first", "phase": "capsule-sign", "markerValid": True,
-            "timedOut": True, "exitCode": None, "upstreamDispatchCount": 2,
-            "financialDurableCounts": {"attempts": 3, "grants": 3, "settled": 3},
-        })
+            namespace["invoke_compiled_client"]()
+        self.assertEqual(namespace["proof"]["firstUseClientDiagnostics"]["timedOut"], True)
+        namespace["run"] = lambda *args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "safe result"})()
+        self.assertEqual(namespace["invoke_compiled_client"](), "safe result")
+        self.assertEqual(namespace["proof"]["firstUseClientDiagnostics"]["exitCode"], 0)
+        self.assertIn("firstResult", namespace["proof"]["firstUseClientDiagnostics"])
 
     def test_failure_observation_exports_only_bounded_counts(self) -> None:
         observe = next(node for node in ast.walk(self.tree) if isinstance(node, ast.FunctionDef)
@@ -411,6 +535,8 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         namespace = {
             "upstream_calls": lambda: 3,
             "native_snapshot": lambda: {"attempts": 7, "grants": 6, "settled": 4,
+                                         "attempt_states": {"prepared": 1, "retired": 1, "admitted": 1,
+                                             "unknown": 1, "conflict": 1, "settled": 2},
                                          "liability": "9000.01", "recovery_epoch": "PRIVATE", "endpoint_generation": 77},
         }
         module = ast.fix_missing_locations(ast.Module(body=[observe], type_ignores=[]))
@@ -418,10 +544,169 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         result = namespace["fixed_client_failure_observations"]()
         self.assertEqual(result, {
             "upstreamDispatchCount": 3,
-            "financialDurableCounts": {"attempts": 7, "grants": 6, "settled": 4},
+            "financialDurableCounts": {"attempts": 7, "grants": 6, "settled": 4,
+                "attemptStates": {"prepared": 1, "retired": 1, "admitted": 1,
+                    "unknown": 1, "conflict": 1, "settled": 2}},
         })
         self.assertNotIn("PRIVATE", json.dumps(result))
         self.assertNotIn("9000.01", json.dumps(result))
+
+
+class CompiledFirstResultDiagnosticTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        cls.client_source = next(node.args[0].value for node in ast.walk(cls.tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "write_text" and node.args and isinstance(node.args[0], ast.Constant)
+            and "FIRST_USE_RESULT_FILE" in node.args[0].value)
+        names = {"COMPILED_CLIENT_RESULT_EVENTS", "COMPILED_CLIENT_RESULT_CODES", "COMPILED_CLIENT_RESULT_CATEGORIES",
+                 "COMPILED_CLIENT_RESULT_STATUSES"}
+        constants = [node for node in cls.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id in names for target in node.targets)]
+        functions = [node for node in cls.tree.body if isinstance(node, ast.FunctionDef)
+            and node.name in {"unknown_compiled_client_result_summary", "safe_compiled_client_result_summary"}]
+        module = ast.fix_missing_locations(ast.Module(body=[*constants, *functions], type_ignores=[]))
+        cls.reader = {"json": json}
+        exec(compile(module, str(PROBE), "exec"), cls.reader)
+
+    def generated_diagnostic(self, result_expression: str, call: str = "recordReturnedResult") -> str:
+        start = self.client_source.index("function validStatus")
+        end = self.client_source.index("mark('imports');")
+        helper_source = self.client_source[start:end]
+        with tempfile.TemporaryDirectory(prefix="lares-first-result-marker-") as directory:
+            marker = pathlib.Path(directory) / "result.json"
+            helper_source = helper_source.replace("/tmp/first-use-result-diagnostic-first", str(marker))
+            script = "const fs=require('node:fs');const Buffer=global.Buffer;const resultFile=" + json.dumps(str(marker)) + ";" \
+                + "const fixedCodes=" + json.dumps(sorted(self.reader["COMPILED_CLIENT_RESULT_CODES"])) + ";" \
+                + "const failureTypes=" + json.dumps(sorted(self.reader["COMPILED_CLIENT_RESULT_EVENTS"])) + ";\n" + helper_source
+            script += "\n" + call + "(" + result_expression + ");process.stdout.write(fs.readFileSync(resultFile,'utf8'));"
+            completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True, timeout=10)
+            return completed.stdout
+
+    def test_generated_client_preserves_returned_status_and_fixed_admission_category(self) -> None:
+        canary = "PRIVATE-CANARY-DO-NOT-EMIT"
+        event = {"type": "step.failed", "data": {"code": "budget_admission_refused", "message": canary,
+            "details": {"statusCode": 400, "upstreamStatusCode": 400, "apiErrorMessage": canary,
+                "responseBodySnippet": canary, "stack": canary, "headers": {"authorization": canary},
+                "ticket": canary, "requestId": canary}}}
+        raw = self.generated_diagnostic(json.dumps({"status": "failed", "message": "not FIRST_USE_OK", "events": [event]}))
+        summary = self.reader["safe_compiled_client_result_summary"](raw, 0)
+        self.assertEqual(summary["outcome"], "returned")
+        self.assertEqual(summary["resultStatus"], "failed")
+        self.assertFalse(summary["expectedMessage"])
+        self.assertEqual(summary["failureEventCount"], 1)
+        self.assertEqual(summary["events"], [{"event": "step.failed", "code": "budget_admission_refused",
+            "statusCode": 400, "upstreamStatusCode": 400}])
+        self.assertTrue(summary["categories"]["nativeAdmissionRefused"])
+        self.assertNotIn(canary, raw)
+        self.assertNotIn(canary, json.dumps(summary))
+
+    def test_generated_client_records_success_timeout_and_thrown_client_error_separately(self) -> None:
+        success = self.reader["safe_compiled_client_result_summary"](
+            self.generated_diagnostic('{status:"completed",message:"FIRST_USE_OK",events:[]}'), 0)
+        self.assertEqual((success["outcome"], success["resultStatus"], success["expectedMessage"]),
+                         ("returned", "completed", True))
+        thrown = self.reader["safe_compiled_client_result_summary"](
+            self.generated_diagnostic('{name:"ClientError",status:503,code:"ECONNREFUSED",message:"PRIVATE-THROWN-CANARY"}',
+                                      call="recordThrownResult"), 0)
+        self.assertEqual((thrown["outcome"], thrown["clientStatus"]), ("thrown", 503))
+        self.assertTrue(thrown["categories"]["socketUnavailable"])
+        self.assertNotIn("PRIVATE-THROWN-CANARY", json.dumps(thrown))
+        timeout = self.reader["safe_compiled_client_result_summary"](
+            self.generated_diagnostic('{name:"TimeoutError",message:"Request timed out"}', call="recordThrownResult"), 0)
+        self.assertTrue(timeout["categories"]["timeoutAbort"])
+
+    def test_result_marker_reader_rejects_malformed_extra_oversized_and_invalid_values(self) -> None:
+        parse = self.reader["safe_compiled_client_result_summary"]
+        valid = json.loads(self.generated_diagnostic('{status:"failed",message:"no",events:[]}'))
+        self.assertTrue(parse(json.dumps(valid), 0)["markerValid"])
+        secret = "PRIVATE-RESULT-MARKER-CANARY"
+        bad_cases = [
+            ("not-json", 0),
+            (json.dumps({**valid, "unexpected": secret}), 0),
+            (json.dumps({**valid, "failureEventCount": -1}), 0),
+            (json.dumps({**valid, "resultStatus": "private"}), 0),
+            (json.dumps({**valid, "clientStatus": 999}), 0),
+            (" " * 2049, 0),
+            (json.dumps(valid), 1),
+        ]
+        for raw, returncode in bad_cases:
+            with self.subTest(raw=raw[:30], returncode=returncode):
+                summary = parse(raw, returncode)
+                self.assertFalse(summary["markerValid"])
+                self.assertEqual(summary["outcome"], "unknown")
+                self.assertNotIn(secret, json.dumps(summary))
+
+    def test_generated_admission_bridge_counts_routes_without_changing_forwarded_bytes(self) -> None:
+        bridge_source = next(node.args[0].value for node in ast.walk(self.tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "write_text" and node.args and isinstance(node.args[0], ast.Constant)
+            and "const server=https.createServer" in node.args[0].value)
+        canary = "RPC-BODY-CANARY-MUST-NOT-REACH-SUMMARY"
+        with tempfile.TemporaryDirectory(prefix="lares-admission-bridge-test-") as directory:
+            root = pathlib.Path(directory)
+            bridge_source = bridge_source.replace(
+                "import https from'node:https';import{readFileSync}from'node:fs';",
+                "import{EventEmitter}from'node:events';const readFileSync=()=>Buffer.from('fixture');"
+                "const https={createServer:(_options,handler)=>({handler,on(){return this}})};")
+            bridge_source = bridge_source.replace(
+                "import{relayGatewayBudget}from'/app/services/keeper/lib/gateway-budget-relay.ts';",
+                "const captures=[];const relayGatewayBudget=async request=>{const body=Buffer.from(await request.arrayBuffer());"
+                "captures.push({path:new URL(request.url).pathname,signature:request.headers.get('x-lares-signature'),body:body.toString('base64')});"
+                "const failed=new URL(request.url).pathname.endsWith('/settle');return new Response(failed?'safe-failure':body,{status:failed?503:200,"
+                "headers:{'content-type':'application/json','x-lares-signature':request.headers.get('x-lares-signature')}})};")
+            bridge_source = bridge_source.replace(
+                "import{GATEWAY_RPC_BYTES,GATEWAY_RPC_MS,gatewayRpcPath}from'/app/packages/agent-kit/src/gateway-admission-protocol.ts';",
+                "const GATEWAY_RPC_BYTES=8192,GATEWAY_RPC_MS=3000;const gatewayRpcPath=path=>path==='/v1/gateway-budget/admit'||path==='/v1/gateway-budget/settle';")
+            listener = "server.listen(8443,'0.0.0.0');"
+            self.assertIn(listener, bridge_source)
+            exercise = """const send=async(method,url,headers={},body='')=>{const incoming=new EventEmitter();Object.assign(incoming,{method,url,headers,destroy(){this.destroyed=true}});const outgoing={headersSent:false,destroyed:false,status:null,responseHeaders:{},body:Buffer.alloc(0),done:null,finish:null,writeHead(status,value){this.status=status;this.responseHeaders=value;this.headersSent=true},end(value){this.body=Buffer.from(value??'');this.finish?.()},destroy(){this.destroyed=true;this.finish?.()}};outgoing.done=new Promise(resolve=>outgoing.finish=resolve);server.handler(incoming,outgoing);if(body){incoming.emit('data',Buffer.from(body));incoming.emit('end')}await outgoing.done;return{status:outgoing.status,signature:outgoing.responseHeaders['x-lares-signature']??null,body:outgoing.body.toString()}};
+const raw=JSON.stringify({probe:'RPC-BODY-CANARY-MUST-NOT-REACH-SUMMARY'}),signature='a'.repeat(64);
+const admit=await send('POST','/v1/gateway-budget/admit',{'content-type':'application/json','content-length':String(Buffer.byteLength(raw)),'x-lares-signature':signature},raw);
+const settle=await send('POST','/v1/gateway-budget/settle',{'content-type':'application/json','content-length':String(Buffer.byteLength(raw)),'x-lares-signature':signature},raw);
+const invalid=await send('POST','/v1/gateway-budget/admit',{'content-type':'application/json','content-length':String(Buffer.byteLength(raw)),'x-lares-signature':'bad'},raw);
+const diagnostic=await send('GET','/__diagnostics');console.log(JSON.stringify({admit,settle,invalid,diagnostic:JSON.parse(diagnostic.body),captures}));"""
+            bridge_source = bridge_source.replace(listener, exercise)
+            bridge_source = bridge_source.replace("const chunks:Buffer[]=[]", "const chunks=[]")
+            bridge_source = bridge_source.replace(" as RequestInit", "")
+            bridge_source = bridge_source.replace("const headers:Record<string,string>=", "const headers=")
+            source_path = root / "bridge-test.mjs"
+            source_path.write_text(bridge_source, encoding="utf-8")
+            completed = subprocess.run(["node", str(source_path)],
+                capture_output=True, text=True, check=False, timeout=20)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            observed = json.loads(completed.stdout)
+        self.assertEqual(observed["admit"]["status"], 200)
+        self.assertEqual(observed["admit"]["signature"], "a" * 64)
+        self.assertEqual(observed["settle"]["status"], 503)
+        self.assertEqual(observed["invalid"]["status"], 503)
+        self.assertEqual(len(observed["captures"]), 2)
+        self.assertEqual([item["path"] for item in observed["captures"]],
+            ["/v1/gateway-budget/admit", "/v1/gateway-budget/settle"])
+        self.assertTrue(all(item["signature"] == "a" * 64 for item in observed["captures"]))
+        self.assertTrue(all(__import__("base64").b64decode(item["body"]).decode() ==
+            json.dumps({"probe": canary}, separators=(",", ":")) for item in observed["captures"]))
+        routes = observed["diagnostic"]["routes"]
+        self.assertEqual((routes["admit"]["requests"], routes["admit"]["statuses"]["200"], routes["admit"]["statuses"]["503"]),
+                         (2, 1, 1))
+        self.assertEqual((routes["settle"]["requests"], routes["settle"]["statuses"]["503"]), (1, 1))
+        self.assertNotIn(canary, json.dumps(observed["diagnostic"]))
+        bridge_names = {"ADMISSION_BRIDGE_STATUS_BUCKETS", "ADMISSION_BRIDGE_ROUTES"}
+        bridge_constants = [node for node in self.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id in bridge_names for target in node.targets)]
+        bridge_functions = [node for node in self.tree.body if isinstance(node, ast.FunctionDef)
+            and node.name in {"unknown_admission_bridge_summary", "safe_admission_bridge_summary", "admission_bridge_delta"}]
+        bridge_namespace = {"json": json}
+        bridge_module = ast.fix_missing_locations(ast.Module(body=[*bridge_constants, *bridge_functions], type_ignores=[]))
+        exec(compile(bridge_module, str(PROBE), "exec"), bridge_namespace)
+        safe = bridge_namespace["safe_admission_bridge_summary"](json.dumps(observed["diagnostic"]), 0)
+        self.assertTrue(safe["markerValid"])
+        self.assertEqual(safe["routes"], routes)
+        invalid = bridge_namespace["safe_admission_bridge_summary"](
+            json.dumps({**observed["diagnostic"], "extra": canary}), 0)
+        self.assertFalse(invalid["markerValid"])
+        self.assertNotIn(canary, json.dumps(invalid))
 
 
 class CompiledChiefStartupDiagnosticTests(unittest.TestCase):
@@ -744,160 +1029,32 @@ class FirstActivationMemberSummaryTests(unittest.TestCase):
         self.assertFalse(matches([dict(expected[0]), dict(expected[0])], {owner: "open"}))
         self.assertFalse(matches([dict(expected[0], extra="unexpected")], {owner: "open"}))
 
-    def test_financial_authority_consumer_requires_exact_existing_rows_to_remain(self) -> None:
+
+    def test_actual_consumer_accepts_only_selected_open_member_and_other_closed(self) -> None:
         tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
-        consumer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                        and node.name == "financial_authority_preserved")
+        consumer = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "selected_members_match_first_activation"
+        )
         namespace = {}
         module = ast.fix_missing_locations(ast.Module(body=[consumer], type_ignores=[]))
         exec(compile(module, str(PROBE), "exec"), namespace)
-        compare = namespace["financial_authority_preserved"]
-        before = {key: [{"id": key + "-old", "value": "canonical"}] for key in ("accounts", "windows", "bindings", "attempts")}
-        before["grants"] = [{"attemptId": "grant-old", "value": "canonical"}]
-        after = {key: [dict(row) for row in rows] for key, rows in before.items()}
-        for key, identity in (("accounts", "id"), ("windows", "id"), ("bindings", "id"), ("attempts", "id")):
-            after[key].append({"id": key + "-new", "value": "new"})
-        after["grants"].append({"attemptId": "grant-new", "value": "new"})
-        self.assertTrue(compare(before, after))
-        changed = {key: [dict(row) for row in rows] for key, rows in after.items()}
-        changed["attempts"][0]["value"] = "mutated"
-        self.assertFalse(compare(before, changed))
-        changed_grant = {key: [dict(row) for row in rows] for key, rows in after.items()}
-        changed_grant["grants"][0]["value"] = "mutated"
-        self.assertFalse(compare(before, changed_grant))
+        matches = namespace["selected_members_match_first_activation"]
+        member_ids = ["first-use-member-a", "first-use-member-b"]
+        expected = [
+            {"memberId": member_ids[0], "state": "open"},
+            {"memberId": member_ids[1], "state": "closed"},
+        ]
+        self.assertTrue(matches(expected, member_ids))
 
-    def test_first_owner_snapshot_must_link_the_exact_settled_path(self) -> None:
-        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
-        consumer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                        and node.name == "owner_financial_authority_snapshot_complete")
-        namespace = {"re": re}
-        preservation = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                            and node.name == "financial_authority_preserved")
-        module = ast.fix_missing_locations(ast.Module(body=[preservation, consumer], type_ignores=[]))
-        exec(compile(module, str(PROBE), "exec"), namespace)
-        complete = namespace["owner_financial_authority_snapshot_complete"]
-        owner, installation_id, member_account_id = "first-use-owner", "installation-id", "owner-account-id"
-        installation_window, member_window, binding_id, attempt_id = "install-window", "member-window", "owner-binding", "owner-attempt"
-        snapshot = {
-            "accounts": [
-                {"id": installation_id, "kind": "installation", "state": "open", "reason": "approved",
-                 "activeWindowId": installation_window},
-                {"id": member_account_id, "kind": "member", "memberId": owner,
-                 "installationAccountId": installation_id, "state": "open", "reason": "approved",
-                 "activeWindowId": member_window},
-            ],
-            "windows": [{"id": installation_window, "accountId": installation_id},
-                        {"id": member_window, "accountId": member_account_id}],
-            "bindings": [{"id": binding_id, "memberId": owner, "state": "active",
-                          "installationAccountId": installation_id, "memberAccountId": member_account_id}],
-            "attempts": [{"id": attempt_id, "memberId": owner, "state": "settled",
-                          "installationAccountId": installation_id, "memberAccountId": member_account_id,
-                          "bindingId": binding_id, "installationWindowId": installation_window,
-                          "memberWindowId": member_window, "actualAmount": "0.25"}],
-            "grants": [{"attemptId": attempt_id, "grantHash": "a" * 64}],
-        }
-        self.assertTrue(complete(snapshot, owner))
-        for key, index, field, wrong in (
-            ("accounts", 1, "memberId", "different-member"),
-            ("accounts", 1, "activeWindowId", "different-window"),
-            ("bindings", 0, "memberAccountId", "different-account"),
-            ("attempts", 0, "state", "prepared"),
-            ("attempts", 0, "actualAmount", "0"),
-            ("grants", 0, "attemptId", "different-attempt"),
-        ):
-            changed = json.loads(json.dumps(snapshot))
-            changed[key][index][field] = wrong
-            self.assertFalse(complete(changed, owner), (key, field))
-        self.assertFalse(complete({**snapshot, "attempts": snapshot["attempts"] + [snapshot["attempts"][0]]}, owner))
-
-    def test_each_later_settlement_is_exactly_linked_to_its_member_and_native_authority(self) -> None:
-        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
-        consumer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                        and node.name == "financial_settlement_delta_matches")
-        namespace = {"re": re}
-        preservation = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                            and node.name == "financial_authority_preserved")
-        module = ast.fix_missing_locations(ast.Module(body=[preservation, consumer], type_ignores=[]))
-        exec(compile(module, str(PROBE), "exec"), namespace)
-        matches = namespace["financial_settlement_delta_matches"]
-        owner, later = "first-use-owner", "first-use-member-later"
-        install, owner_account, later_account = "install-account", "owner-account", "later-account"
-        install_window, owner_window, later_window = "install-window", "owner-window", "later-window"
-        owner_binding, later_binding = "owner-binding", "later-binding"
-        baseline = {
-            "accounts": [
-                {"id": install, "kind": "installation", "state": "open", "reason": "approved", "activeWindowId": install_window,
-                 "endpointGeneration": "7", "recoveryEpoch": "epoch-a", "policyGeneration": "11"},
-                {"id": owner_account, "kind": "member", "memberId": owner, "installationAccountId": install,
-                 "state": "open", "reason": "approved", "activeWindowId": owner_window, "policyGeneration": "12"},
-                {"id": later_account, "kind": "member", "memberId": later, "installationAccountId": install,
-                 "state": "open", "reason": "approved", "activeWindowId": later_window, "policyGeneration": "13"},
-            ],
-            "windows": [{"id": install_window, "accountId": install},
-                        {"id": owner_window, "accountId": owner_account},
-                        {"id": later_window, "accountId": later_account}],
-            "bindings": [
-                {"id": owner_binding, "memberId": owner, "installationAccountId": install,
-                 "memberAccountId": owner_account, "endpointHash": "endpoint-owner", "credentialGeneration": "3",
-                 "profileHash": "profile-owner", "state": "active"},
-                {"id": later_binding, "memberId": later, "installationAccountId": install,
-                 "memberAccountId": later_account, "endpointHash": "endpoint-later", "credentialGeneration": "4",
-                 "profileHash": "profile-later", "state": "active"},
-            ],
-            "attempts": [{"id": "prior-attempt", "memberId": owner, "state": "settled", "actualAmount": "0.25"}],
-            "grants": [{"attemptId": "prior-attempt", "grantHash": "a" * 64}],
-        }
-
-        def after_for(member_id: str, binding_id: str) -> dict:
-            account_id = owner_account if member_id == owner else later_account
-            member_window_id = owner_window if member_id == owner else later_window
-            binding = next(row for row in baseline["bindings"] if row["id"] == binding_id)
-            attempt = {"id": "new-attempt", "memberId": member_id, "state": "settled",
-                       "installationAccountId": install, "memberAccountId": account_id,
-                       "bindingId": binding_id, "installationWindowId": install_window,
-                       "memberWindowId": member_window_id, "endpointHash": binding["endpointHash"],
-                       "credentialGeneration": binding["credentialGeneration"], "endpointGeneration": "7",
-                       "recoveryEpoch": "epoch-a", "profileHash": binding["profileHash"],
-                       "installationPolicyGeneration": "11",
-                       "memberPolicyGeneration": "12" if member_id == owner else "13", "actualAmount": "0.5"}
-            return {key: [dict(row) for row in rows] for key, rows in baseline.items()} | {
-                "attempts": [dict(row) for row in baseline["attempts"]] + [attempt],
-                "grants": [dict(row) for row in baseline["grants"] +
-                           [{"attemptId": "new-attempt", "grantHash": "b" * 64}]],
-            }
-
-        for member_id, binding_id in ((later, later_binding), (owner, owner_binding)):
-            valid = after_for(member_id, binding_id)
-            self.assertTrue(matches(baseline, valid, member_id, binding_id))
-            for key, field, wrong in (
-                ("attempts", "memberId", owner if member_id == later else later),
-                ("attempts", "state", "prepared"),
-                ("attempts", "memberAccountId", owner_account if member_id == later else later_account),
-                ("attempts", "bindingId", owner_binding if binding_id == later_binding else later_binding),
-                ("attempts", "memberWindowId", owner_window if member_id == later else later_window),
-                ("attempts", "credentialGeneration", "wrong-generation"),
-                ("attempts", "endpointHash", "wrong-endpoint"),
-                ("attempts", "profileHash", "wrong-profile"),
-                ("attempts", "recoveryEpoch", "wrong-epoch"),
-                ("attempts", "actualAmount", "0"),
-                ("grants", "attemptId", "unlinked-attempt"),
-            ):
-                changed = json.loads(json.dumps(valid))
-                changed[key][-1][field] = wrong
-                self.assertFalse(matches(baseline, changed, member_id, binding_id), (member_id, key, field))
-            for key in ("attempts", "grants"):
-                missing = json.loads(json.dumps(valid))
-                missing[key].pop()
-                self.assertFalse(matches(baseline, missing, member_id, binding_id), (member_id, "missing", key))
-                extra = json.loads(json.dumps(valid))
-                extra[key].append(dict(extra[key][-1]))
-                self.assertFalse(matches(baseline, extra, member_id, binding_id), (member_id, "extra", key))
-            changed_old = json.loads(json.dumps(valid))
-            changed_old["attempts"][0]["actualAmount"] = "9"
-            self.assertFalse(matches(baseline, changed_old, member_id, binding_id))
-            changed_roster = json.loads(json.dumps(valid))
-            changed_roster["accounts"][0]["endpointGeneration"] = "8"
-            self.assertFalse(matches(baseline, changed_roster, member_id, binding_id))
+        wrong_member = [dict(row) for row in expected]
+        wrong_member[0]["memberId"] = member_ids[1]
+        self.assertFalse(matches(wrong_member, member_ids))
+        wrong_state = [dict(row) for row in expected]
+        wrong_state[1]["state"] = "open"
+        self.assertFalse(matches(wrong_state, member_ids))
+        self.assertFalse(matches(expected[:1], member_ids))
+        self.assertFalse(matches(expected + [dict(expected[0])], member_ids))
 
 
 class InitialBudgetFixtureOrderTests(unittest.TestCase):
@@ -968,11 +1125,12 @@ class InitialBudgetFixtureOrderTests(unittest.TestCase):
             if isinstance(node, ast.Assign)
             and any(isinstance(target, ast.Name) and target.id == "client_result" for target in node.targets))
         owner_request_source = ast.unparse(owner_request.value)
-        self.assertIn("invoke_compiled_client(owner, 'owner-first', check_refusals=True)", owner_request_source)
+        self.assertIn("invoke_first_use_and_capture(invoke_compiled_client", owner_request_source)
         request_runner = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
                               and node.name == "invoke_compiled_client")
         request_runner_source = ast.unparse(request_runner)
         self.assertIn("'FIRST_USE_MEMBER_ID=' + member_id", request_runner_source)
+        self.assertIn("check_refusals = marker_id == 'owner-first'", request_runner_source)
         self.assertIn("'CHECK_REFUSALS=1'", request_runner_source)
         first_use_client = next(node for node in ast.walk(tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -1094,6 +1252,164 @@ try{{
         )
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("actual Keeper socket and Console client actor contract passed", result.stdout)
+
+
+
+class LaterMemberSettlementConsumerTests(unittest.TestCase):
+        def test_financial_authority_consumer_requires_exact_existing_rows_to_remain(self) -> None:
+            tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+            consumer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                            and node.name == "financial_authority_preserved")
+            namespace = {}
+            module = ast.fix_missing_locations(ast.Module(body=[consumer], type_ignores=[]))
+            exec(compile(module, str(PROBE), "exec"), namespace)
+            compare = namespace["financial_authority_preserved"]
+            before = {key: [{"id": key + "-old", "value": "canonical"}] for key in ("accounts", "windows", "bindings", "attempts")}
+            before["grants"] = [{"attemptId": "grant-old", "value": "canonical"}]
+            after = {key: [dict(row) for row in rows] for key, rows in before.items()}
+            for key, identity in (("accounts", "id"), ("windows", "id"), ("bindings", "id"), ("attempts", "id")):
+                after[key].append({"id": key + "-new", "value": "new"})
+            after["grants"].append({"attemptId": "grant-new", "value": "new"})
+            self.assertTrue(compare(before, after))
+            changed = {key: [dict(row) for row in rows] for key, rows in after.items()}
+            changed["attempts"][0]["value"] = "mutated"
+            self.assertFalse(compare(before, changed))
+            changed_grant = {key: [dict(row) for row in rows] for key, rows in after.items()}
+            changed_grant["grants"][0]["value"] = "mutated"
+            self.assertFalse(compare(before, changed_grant))
+
+        def test_first_owner_snapshot_must_link_the_exact_settled_path(self) -> None:
+            tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+            consumer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                            and node.name == "owner_financial_authority_snapshot_complete")
+            namespace = {"re": re}
+            preservation = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                                and node.name == "financial_authority_preserved")
+            module = ast.fix_missing_locations(ast.Module(body=[preservation, consumer], type_ignores=[]))
+            exec(compile(module, str(PROBE), "exec"), namespace)
+            complete = namespace["owner_financial_authority_snapshot_complete"]
+            owner, installation_id, member_account_id = "first-use-owner", "installation-id", "owner-account-id"
+            installation_window, member_window, binding_id, attempt_id = "install-window", "member-window", "owner-binding", "owner-attempt"
+            snapshot = {
+                "accounts": [
+                    {"id": installation_id, "kind": "installation", "state": "open", "reason": "approved",
+                     "activeWindowId": installation_window},
+                    {"id": member_account_id, "kind": "member", "memberId": owner,
+                     "installationAccountId": installation_id, "state": "open", "reason": "approved",
+                     "activeWindowId": member_window},
+                ],
+                "windows": [{"id": installation_window, "accountId": installation_id},
+                            {"id": member_window, "accountId": member_account_id}],
+                "bindings": [{"id": binding_id, "memberId": owner, "state": "active",
+                              "installationAccountId": installation_id, "memberAccountId": member_account_id}],
+                "attempts": [{"id": attempt_id, "memberId": owner, "state": "settled",
+                              "installationAccountId": installation_id, "memberAccountId": member_account_id,
+                              "bindingId": binding_id, "installationWindowId": installation_window,
+                              "memberWindowId": member_window, "actualAmount": "0.25"}],
+                "grants": [{"attemptId": attempt_id, "grantHash": "a" * 64}],
+            }
+            self.assertTrue(complete(snapshot, owner))
+            for key, index, field, wrong in (
+                ("accounts", 1, "memberId", "different-member"),
+                ("accounts", 1, "activeWindowId", "different-window"),
+                ("bindings", 0, "memberAccountId", "different-account"),
+                ("attempts", 0, "state", "prepared"),
+                ("attempts", 0, "actualAmount", "0"),
+                ("grants", 0, "attemptId", "different-attempt"),
+            ):
+                changed = json.loads(json.dumps(snapshot))
+                changed[key][index][field] = wrong
+                self.assertFalse(complete(changed, owner), (key, field))
+            self.assertFalse(complete({**snapshot, "attempts": snapshot["attempts"] + [snapshot["attempts"][0]]}, owner))
+
+        def test_each_later_settlement_is_exactly_linked_to_its_member_and_native_authority(self) -> None:
+            tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+            consumer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                            and node.name == "financial_settlement_delta_matches")
+            namespace = {"re": re}
+            preservation = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                                and node.name == "financial_authority_preserved")
+            module = ast.fix_missing_locations(ast.Module(body=[preservation, consumer], type_ignores=[]))
+            exec(compile(module, str(PROBE), "exec"), namespace)
+            matches = namespace["financial_settlement_delta_matches"]
+            owner, later = "first-use-owner", "first-use-member-later"
+            install, owner_account, later_account = "install-account", "owner-account", "later-account"
+            install_window, owner_window, later_window = "install-window", "owner-window", "later-window"
+            owner_binding, later_binding = "owner-binding", "later-binding"
+            baseline = {
+                "accounts": [
+                    {"id": install, "kind": "installation", "state": "open", "reason": "approved", "activeWindowId": install_window,
+                     "endpointGeneration": "7", "recoveryEpoch": "epoch-a", "policyGeneration": "11"},
+                    {"id": owner_account, "kind": "member", "memberId": owner, "installationAccountId": install,
+                     "state": "open", "reason": "approved", "activeWindowId": owner_window, "policyGeneration": "12"},
+                    {"id": later_account, "kind": "member", "memberId": later, "installationAccountId": install,
+                     "state": "open", "reason": "approved", "activeWindowId": later_window, "policyGeneration": "13"},
+                ],
+                "windows": [{"id": install_window, "accountId": install},
+                            {"id": owner_window, "accountId": owner_account},
+                            {"id": later_window, "accountId": later_account}],
+                "bindings": [
+                    {"id": owner_binding, "memberId": owner, "installationAccountId": install,
+                     "memberAccountId": owner_account, "endpointHash": "endpoint-owner", "credentialGeneration": "3",
+                     "profileHash": "profile-owner", "state": "active"},
+                    {"id": later_binding, "memberId": later, "installationAccountId": install,
+                     "memberAccountId": later_account, "endpointHash": "endpoint-later", "credentialGeneration": "4",
+                     "profileHash": "profile-later", "state": "active"},
+                ],
+                "attempts": [{"id": "prior-attempt", "memberId": owner, "state": "settled", "actualAmount": "0.25"}],
+                "grants": [{"attemptId": "prior-attempt", "grantHash": "a" * 64}],
+            }
+
+            def after_for(member_id: str, binding_id: str) -> dict:
+                account_id = owner_account if member_id == owner else later_account
+                member_window_id = owner_window if member_id == owner else later_window
+                binding = next(row for row in baseline["bindings"] if row["id"] == binding_id)
+                attempt = {"id": "new-attempt", "memberId": member_id, "state": "settled",
+                           "installationAccountId": install, "memberAccountId": account_id,
+                           "bindingId": binding_id, "installationWindowId": install_window,
+                           "memberWindowId": member_window_id, "endpointHash": binding["endpointHash"],
+                           "credentialGeneration": binding["credentialGeneration"], "endpointGeneration": "7",
+                           "recoveryEpoch": "epoch-a", "profileHash": binding["profileHash"],
+                           "installationPolicyGeneration": "11",
+                           "memberPolicyGeneration": "12" if member_id == owner else "13", "actualAmount": "0.5"}
+                return {key: [dict(row) for row in rows] for key, rows in baseline.items()} | {
+                    "attempts": [dict(row) for row in baseline["attempts"]] + [attempt],
+                    "grants": [dict(row) for row in baseline["grants"] +
+                               [{"attemptId": "new-attempt", "grantHash": "b" * 64}]],
+                }
+
+            for member_id, binding_id in ((later, later_binding), (owner, owner_binding)):
+                valid = after_for(member_id, binding_id)
+                self.assertTrue(matches(baseline, valid, member_id, binding_id))
+                for key, field, wrong in (
+                    ("attempts", "memberId", owner if member_id == later else later),
+                    ("attempts", "state", "prepared"),
+                    ("attempts", "memberAccountId", owner_account if member_id == later else later_account),
+                    ("attempts", "bindingId", owner_binding if binding_id == later_binding else later_binding),
+                    ("attempts", "memberWindowId", owner_window if member_id == later else later_window),
+                    ("attempts", "credentialGeneration", "wrong-generation"),
+                    ("attempts", "endpointHash", "wrong-endpoint"),
+                    ("attempts", "profileHash", "wrong-profile"),
+                    ("attempts", "recoveryEpoch", "wrong-epoch"),
+                    ("attempts", "actualAmount", "0"),
+                    ("grants", "attemptId", "unlinked-attempt"),
+                ):
+                    changed = json.loads(json.dumps(valid))
+                    changed[key][-1][field] = wrong
+                    self.assertFalse(matches(baseline, changed, member_id, binding_id), (member_id, key, field))
+                for key in ("attempts", "grants"):
+                    missing = json.loads(json.dumps(valid))
+                    missing[key].pop()
+                    self.assertFalse(matches(baseline, missing, member_id, binding_id), (member_id, "missing", key))
+                    extra = json.loads(json.dumps(valid))
+                    extra[key].append(dict(extra[key][-1]))
+                    self.assertFalse(matches(baseline, extra, member_id, binding_id), (member_id, "extra", key))
+                changed_old = json.loads(json.dumps(valid))
+                changed_old["attempts"][0]["actualAmount"] = "9"
+                self.assertFalse(matches(baseline, changed_old, member_id, binding_id))
+                changed_roster = json.loads(json.dumps(valid))
+                changed_roster["accounts"][0]["endpointGeneration"] = "8"
+                self.assertFalse(matches(baseline, changed_roster, member_id, binding_id))
 
 
 if __name__ == "__main__":

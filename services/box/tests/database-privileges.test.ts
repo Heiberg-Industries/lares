@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool, type PoolClient } from "pg";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { quietPool } from "./helpers/quiet-pool.js";
+import { PgBudgetAdmissionStore } from "@lares/agent-kit/budget-admission-store";
 import { ENGINE_TABLE_PRIVILEGES, provisionEngineDatabasePrivileges } from "../lib/database-privileges.js";
 import { MEMBER_SCOPE, tablesInBoxSql } from "../lib/member-scope.js";
 import { LEDGER_DDL } from "../lib/migration-ledger.js";
@@ -131,7 +133,12 @@ describe("engine database privilege foundation", () => {
   });
 
   it("gives financial operations only the fixed account, checkpoint, lock and observer access", async () => {
-    const ids = { installation: "00000000-0000-4000-8000-000000000001", member: "00000000-0000-4000-8000-000000000002", checkpoint: "00000000-0000-4000-8000-000000000003", journal: "00000000-0000-4000-8000-000000000004" };
+    const ids = {
+      installation: "00000000-0000-4000-8000-000000000001", member: "00000000-0000-4000-8000-000000000002",
+      checkpoint: "00000000-0000-4000-8000-000000000003", journal: "00000000-0000-4000-8000-000000000004",
+      installationWindow: "00000000-0000-4000-8000-000000000013", memberWindow: "00000000-0000-4000-8000-000000000014",
+      binding: "00000000-0000-4000-8000-000000000015", attempt: "00000000-0000-4000-8000-000000000016",
+    };
     await financial.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id) VALUES ($1,'probe-installation','installation',$1)", [ids.installation]);
     expect((await financial.query("SELECT current_user, session_user")).rows[0]).toEqual({ current_user: "lares_financial", session_user: "lares_financial" });
     await financial.query("UPDATE budget_accounts SET installation_cap=0.1 WHERE id=$1", [ids.installation]);
@@ -154,6 +161,33 @@ describe("engine database privilege foundation", () => {
     await expectDenied(() => financial.query("SET ROLE lares_schema_owner"));
     await expectDenied(() => financial.query("SET ROLE lares_app"));
     await expectDenied(() => financial.query("SET session_replication_role = replica"));
+
+    const ticket = "t".repeat(43), ticketHash = createHash("sha256").update(ticket).digest("hex");
+    const hash = "a".repeat(64), incarnation = "00000000-0000-4000-8000-000000000017";
+    await admin.query("INSERT INTO orgs(id,display_name) VALUES ('ticket-pool-org','Ticket pool proof')");
+    await admin.query("INSERT INTO users(id,display_name,org_id,org_role) VALUES ('ticket-pool-member','Ticket pool member','ticket-pool-org','member')");
+    await admin.query(`INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,organisation_id,canonical_suppression_hash,provider_suppression_hashes)
+      VALUES($1,'probe-installation','member',$2,'ticket-pool-member','ticket-pool-org',$3,ARRAY[$3])`, [ids.member, ids.installation, hash]);
+    await admin.query(`INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision)
+      VALUES($1,$2,NULL,clock_timestamp(),clock_timestamp()+interval '1 day',0,10,0),
+            ($3,$4,'ticket-pool-member',clock_timestamp(),clock_timestamp()+interval '1 day',0,10,0)`,
+      [ids.installationWindow, ids.installation, ids.memberWindow, ids.member]);
+    await admin.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,
+      key_fingerprint,agent,incarnation,native_team,native_user,purpose_alias,profile_hash,maximum_liability,pricing_profile,state)
+      VALUES($1,$2,$3,'ticket-pool-member',$4,0,$5,'helper',$6,'proof-team','proof-user','standard',$7,1,'{}'::jsonb,'active')`,
+      [ids.binding, ids.installation, ids.member, hash, hash, incarnation, hash]);
+    await admin.query(`INSERT INTO budget_attempts(id,invocation_hash,ticket_hash,installation_account_id,member_account_id,binding_id,live_member_id,
+      installation_window_id,member_window_id,endpoint_hash,credential_generation,installation_policy_generation,member_policy_generation,
+      endpoint_generation,recovery_epoch,request_hash,authority_hash,profile_hash,reserved_amount,installation_cap_snapshot,member_cap_snapshot,expires_at)
+      VALUES($1,$2,$3,$4,$5,$6,'ticket-pool-member',$7,$8,$9,0,0,0,0,'epoch',$10,$11,$12,1,10,10,clock_timestamp()+interval '20 seconds')`,
+      [ids.attempt, hash, ticketHash, ids.installation, ids.member, ids.binding, ids.installationWindow, ids.memberWindow, hash, hash, hash, hash]);
+
+    const appStore = new PgBudgetAdmissionStore(app);
+    const financialStore = new PgBudgetAdmissionStore(financial);
+    await expect(appStore.discoverGatewayTicket(ticket)).rejects.toMatchObject({ code: "42501" });
+    await expect(financialStore.discoverGatewayTicket(ticket)).resolves.toMatchObject({
+      bindingId: ids.binding, agent: "helper", incarnation, purposeAlias: "standard", requestHash: hash,
+    });
   });
 
   it("refuses PUBLIC and foreign column grants without repairing them", async () => {
