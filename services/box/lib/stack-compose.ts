@@ -5,7 +5,9 @@
  * both up together); this file never mentions the keeper.
  */
 import { stringify } from "yaml";
-import { dirname, isAbsolute, join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { imageFor, type ReleaseManifest } from "./release-manifest.js";
 
 export interface StackComposeOptions {
@@ -35,6 +37,8 @@ export interface StackComposeOptions {
   readonly caddyDataDir: string;
   /** Absolute path to a directory Postgres may write its data files into. */
   readonly dbDataDir: string;
+  /** Root-owned external PostgreSQL authentication custody directory. */
+  readonly databaseAuthDir: string;
   readonly network: string; // e.g. "lares-network" — created by this file, NOT external
   readonly subnet: string; // e.g. "172.30.0.0/24"
   /** The domain the installation answers on (LARES_DOMAIN). It reaches Caddy through the
@@ -55,14 +59,41 @@ export interface StackComposeOptions {
    *  `DEADLINE_CALENDAR_FILE` naming it; the setting alone would point at a file the container
    *  cannot see. Never a directory mount: Docker would invent a missing source. */
   readonly deadlineCalendarFile: string | null;
+  /** Supplied only by the explicit staged authority renderer after protected-source checks. */
+  readonly gatewayAuthority?: {
+    readonly origin: string;
+    readonly endpointHash: string;
+    readonly serviceKeyFile: string;
+  };
 }
 
 export interface DatabaseBootstrapComposeOptions {
   /** Absolute root-only credential path, outside every container's ordinary mounts. */
   readonly operatorPasswordFile: string;
   readonly dbDataDir: string;
+  readonly databaseAuthDir: string;
   readonly network: string;
   readonly subnet: string;
+}
+
+
+/** The installer validates the strict host receipt; renderers additionally refuse a missing,
+ *  symlinked or non-regular external auth input before writing Compose output. */
+export function assertDatabaseAuthDirectory(path: string, prefix: string, subnet: string): void {
+  if (!isAbsolute(path) || /[\n\r\0]/.test(path))
+    throw new Error("Database authentication directory path must be absolute");
+  const normalizedPrefix = prefix || "/";
+  if (!isAbsolute(normalizedPrefix) || resolve(normalizedPrefix) !== normalizedPrefix)
+    throw new Error("Database authentication prefix must be absolute and normalized");
+  const expected = join(normalizedPrefix, "var/lib/lares-maintenance/postgres-auth");
+  if (path !== expected)
+    throw new Error("Database authentication directory must name this installation's protected custody");
+  if (process.getuid?.() !== 0 && process.env.LARES_MAINTENANCE_TESTING !== "1")
+    throw new Error("Database authentication custody validation requires root");
+  const checker = join(dirname(fileURLToPath(import.meta.url)), "..", "ops", "maintenance-custody.py");
+  const args = [checker, "validate", normalizedPrefix, subnet];
+  if (process.getuid?.() !== 0 && process.env.LARES_MAINTENANCE_TESTING === "1") args.push("--test-owner");
+  execFileSync("python3", args, { stdio: "pipe" });
 }
 
 /** Where the deadline calendar sits inside the console container (docs/install.md, section 7). */
@@ -72,6 +103,8 @@ export const DEADLINE_CALENDAR_IN_CONTAINER = "/srv/lares/installation/deadline-
  *  ReleaseManifestInvalid, re-thrown from imageFor) if the manifest names no image for one of
  *  them. Never mentions the keeper — F7 appends that service with a second file. */
 export function renderStackCompose(manifest: ReleaseManifest, opts: StackComposeOptions): string {
+  if (!isAbsolute(opts.databaseAuthDir) || /[\n\r\0]/.test(opts.databaseAuthDir))
+    throw new Error("Database authentication directory path must be absolute");
   const secret = (name: string) => ({ file: `${opts.secretsDir}/${name}` });
   const consoleVaultSigningKeyFile = opts.consoleVaultSigningKeyFile ?? null;
   const consoleModelPurposeSigningKeyFile = opts.consoleModelPurposeSigningKeyFile ?? null;
@@ -83,6 +116,10 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     throw new Error("Console model-purpose signing-key path must be absolute");
   if (consoleModelPurposeSigningKeyFile !== null && consoleModelPurposeSigningKeyFile !== join(opts.secretsDir, "console-model-purpose-signing-key"))
     throw new Error("Console model-purpose signing-key path must name its custody file");
+  const authority = opts.gatewayAuthority;
+  if (authority && (!/^https:\/\/[^/]+$/.test(authority.origin) || new URL(authority.origin).origin !== authority.origin ||
+      !/^[a-f0-9]{64}$/.test(authority.endpointHash) || authority.serviceKeyFile !== join(opts.secretsDir, "gateway-budget-service-key")))
+    throw new Error("Gateway admission authority is invalid");
   // Where the gateway's start script is executed inside the container. Named ONCE and used
   // twice below (the mount target and the entrypoint) so the two can never drift — a mismatch
   // between them is a container whose entrypoint does not exist, which Docker reports long
@@ -94,7 +131,8 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     db: {
       image: imageFor(manifest, "db"),
       restart: "unless-stopped",
-      volumes: [`${opts.dbDataDir}:/var/lib/postgresql/data`],
+      command: ["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"],
+      volumes: [`${opts.dbDataDir}:/var/lib/postgresql/data`, { type: "bind", source: opts.databaseAuthDir, target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } }],
       ports: ["127.0.0.1:5432:5432"],
       networks: [opts.network],
     },
@@ -162,6 +200,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
         `${opts.gatewayStartScript}.admission_contract.py:/opt/lares-gateway/admission_contract.py:ro`,
         `${opts.gatewayStartScript}.lares_gateway.py:/opt/lares-gateway/lares_gateway.py:ro`,
         `${opts.gatewayConfigFile}.profile.json:/etc/litellm/profile.json:ro`,
+        ...(authority ? [{ type: "bind", source: authority.serviceKeyFile, target: "/run/secrets/gateway-budget-service-key", read_only: true, bind: { create_host_path: false } }] : []),
       ],
       // THE ENGINE SHIPS NO GATEWAY IMAGE, AND MAY NOT. The obvious way to give LiteLLM our
       // start script is a thin image FROM the official one — and that is ruled out: the
@@ -203,6 +242,11 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
         // bundled cost map instead of fetching one over the network at start.
         LITELLM_LOCAL_MODEL_COST_MAP: "True",
         LARES_GATEWAY_PROFILE_FILE: "/etc/litellm/profile.json",
+        ...(authority ? {
+          LARES_GATEWAY_ADMISSION_URL: authority.origin,
+          LARES_GATEWAY_ENDPOINT_HASH: authority.endpointHash,
+          LARES_GATEWAY_SERVICE_KEY_FILE: "/run/secrets/gateway-budget-service-key",
+        } : {}),
         // Admission URL/service key/endpoint identity are deliberately NOT provisioned.
         // Until an operator supplies the real authority, this runtime fails closed.
         // `images/gateway-runtime/start.sh` reads both files and exports their contents as the
@@ -271,17 +315,20 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
 export function renderDatabaseBootstrapCompose(manifest: ReleaseManifest, opts: DatabaseBootstrapComposeOptions): string {
   if (!isAbsolute(opts.operatorPasswordFile) || /[\n\r\0]/.test(opts.operatorPasswordFile))
     throw new Error("Database operator password path must be absolute");
+  if (!isAbsolute(opts.databaseAuthDir) || /[\n\r\0]/.test(opts.databaseAuthDir))
+    throw new Error("Database authentication directory path must be absolute");
   const services = {
     db: {
       image: imageFor(manifest, "db"),
       restart: "unless-stopped",
+      command: ["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"],
       environment: {
         POSTGRES_DB: "postgres",
         POSTGRES_USER: "lares_operator",
         POSTGRES_PASSWORD_FILE: "/run/secrets/operator-password",
       },
       secrets: ["operator-password"],
-      volumes: [`${opts.dbDataDir}:/var/lib/postgresql/data`],
+      volumes: [`${opts.dbDataDir}:/var/lib/postgresql/data`, { type: "bind", source: opts.databaseAuthDir, target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } }],
       ports: ["127.0.0.1:5432:5432"],
       networks: [opts.network],
     },

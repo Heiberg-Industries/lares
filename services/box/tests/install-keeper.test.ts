@@ -33,6 +33,7 @@ const SCRIPT = join(here, "..", "ops", "install.sh");
 const KEEPER_VAULT_ROOTS = join(here, "..", "ops", "keeper-vault-roots.py");
 const COMMITTED_KEEPER_COMPOSE = join(here, "..", "compose.lares-keeper.yaml");
 const COMMITTED_KEEPER_VAULT_COMPOSE = join(here, "..", "compose.lares-keeper-vault.yaml");
+const MAINTENANCE_CUSTODY = join(here, "..", "ops", "maintenance-custody.py");
 
 const REAL_PNPM = execFileSync("/bin/sh", ["-c", "command -v pnpm"], { encoding: "utf8" }).trim();
 
@@ -59,6 +60,13 @@ const release = (images: Record<string, string> = IMAGES) =>
     breaking: [],
   });
 
+/** Prepare disposable, test-owned custody before a fixture creates existing-install evidence. */
+function prepareFreshCustody() {
+  execFileSync("python3", [MAINTENANCE_CUSTODY, "prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh"], {
+    env: { ...process.env, LARES_MAINTENANCE_TESTING: "1", LARES_SUBNET: "172.30.0.0/24" },
+  });
+}
+
 let dir: string, binDir: string, prefix: string, log: string, releaseFile: string;
 
 function stub(name: string, body = "exit 0") {
@@ -82,7 +90,7 @@ function run(args: string[] = ["--release", ""], input = answers, extraEnv: Reco
       encoding: "utf8",
       env: {
         LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-        STUB_LOG: log, LARES_PREFIX: prefix, HOME: process.env.HOME ?? dir,
+        STUB_LOG: log, LARES_PREFIX: prefix, HOME: process.env.HOME ?? dir, LARES_MAINTENANCE_TESTING: "1",
         ...extraEnv,
       },
     });
@@ -200,6 +208,7 @@ describe("the keeper the installer configures and starts", () => {
   }, 20_000);
 
   it("refuses a linked keeper-managed secret root", () => {
+    prepareFreshCustody();
     const root = join(prefix, "srv", "lares");
     const outside = join(dir, "outside");
     mkdirSync(root, { recursive: true });
@@ -286,8 +295,8 @@ describe("the keeper the installer configures and starts", () => {
     // targets rather than sources also keeps this file's "mount keeper-owned roots at the SAME
     // absolute path" rule honest — a mount that renamed a directory on the way in would move
     // the path out from under the keeper and this would say so.
-    const mounted = (doc.services["lares-keeper"].volumes as string[])
-      .map((v) => expand(v).split(":")[1]!);
+    const mounted = (doc.services["lares-keeper"].volumes as Array<string | { target: string }>)
+      .map((v) => typeof v === "string" ? expand(v).split(":")[1]! : expand(v.target));
 
     /** Every absolute path the rendered configuration names, wherever it sits in the tree. */
     const paths: string[] = [];
@@ -335,6 +344,28 @@ describe("the keeper the installer configures and starts", () => {
           "lares-keeper service at the same absolute path, and give run_keeper the variable.",
       ).toBe(true);
     }
+  });
+
+  it("mounts staged gateway-budget sources as exact read-only Keeper files only", () => {
+    const keeper = parse(readFileSync(COMMITTED_KEEPER_COMPOSE, "utf8")) as any;
+    const volumes = keeper.services["lares-keeper"].volumes as Array<string | Record<string, unknown>>;
+    const key = volumes.find(value => typeof value !== "string" && String(value.source).includes("GATEWAY_BUDGET_SERVICE_KEY_FILE")) as Record<string, any>;
+    const policy = volumes.find(value => typeof value !== "string" && String(value.source).includes("NATIVE_POLICY_FILE")) as Record<string, any>;
+    expect(key).toMatchObject({
+      type: "bind",
+      source: "${LARES_GATEWAY_BUDGET_SERVICE_KEY_FILE:-/dev/null}",
+      target: "${LARES_GATEWAY_BUDGET_SERVICE_KEY_TARGET:-/run/secrets/gateway-budget-unused-key}",
+      read_only: true,
+      bind: { create_host_path: false },
+    });
+    expect(policy).toMatchObject({
+      type: "bind",
+      source: "${LARES_NATIVE_POLICY_FILE:-/dev/null}",
+      target: "${LARES_NATIVE_POLICY_TARGET:-/etc/lares/native-policy-unused.json}",
+      read_only: true,
+      bind: { create_host_path: false },
+    });
+    expect(Object.keys(keeper.services)).toEqual(["lares-keeper", "lares-egress-proxy"]);
   });
 
   it("installs the keeper's own compose file at the path it brings up, unchanged", () => {
@@ -423,6 +454,7 @@ describe("the keeper the installer configures and starts", () => {
     };
 
     it("binds the calendar for the chief of staff only when the file is there", () => {
+      prepareFreshCustody();
       putCalendar();
       expect(install().code).toBe(0);
       const { defaultBindings } = readKeeperConfig().lifecycle;
@@ -439,6 +471,7 @@ describe("the keeper the installer configures and starts", () => {
     });
 
     it("warns and binds nothing when the calendar is a link", () => {
+      prepareFreshCustody();
       mkdirSync(dirname(calendar()), { recursive: true });
       writeFileSync(join(dir, "elsewhere.json"), "[]");
       symlinkSync(join(dir, "elsewhere.json"), calendar());

@@ -56,7 +56,7 @@ function run(args: string[], env: Record<string, string> = {}, input = answers) 
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-      STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, ...env,
+      STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, LARES_MAINTENANCE_TESTING: "1", ...env,
     },
   });
   return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };

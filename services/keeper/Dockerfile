@@ -17,7 +17,7 @@ RUN pnpm --filter @lares/agent-kit build
 FROM node:24-bookworm-slim AS runtime
 ENV EVE_TELEMETRY_DISABLED=1
 RUN apt-get update && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends git openssh-client ca-certificates util-linux \
+    && apt-get install -y --no-install-recommends git openssh-client ca-certificates util-linux python3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=dockercli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose

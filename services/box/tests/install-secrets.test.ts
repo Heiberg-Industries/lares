@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, readdirSync, rmSync,
-  statSync, existsSync,
+  statSync, existsSync, realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -23,6 +23,9 @@ const SCRIPT = join(here, "..", "ops", "install.sh");
 vi.setConfig({ testTimeout: 30_000 });
 
 function markDatabaseBootstrapComplete() {
+  const authScript = join(dirname(fileURLToPath(import.meta.url)), "..", "ops", "maintenance-custody.py");
+  execFileSync("python3", [authScript, "prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh"], { env: { ...process.env, LARES_MAINTENANCE_TESTING: "1", LARES_SUBNET: "172.30.0.0/24" } });
+  mkdirSync(join(prefix, "srv", "lares"), { recursive: true });
   const markerDir = join(prefix, "etc", "lares");
   mkdirSync(markerDir, { recursive: true });
   writeFileSync(join(markerDir, "database-bootstrap-complete"), "");
@@ -87,7 +90,7 @@ function run(args: string[], env: Record<string, string> = {}, opts: { giveModel
       "--name", "A Name", ...(opts.giveModelKey === false ? [] : ["--model-key-file", keyFile])];
     const stdout = execFileSync("/bin/bash", [SCRIPT, ...answered], {
       encoding: "utf8",
-      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, ...env },
+      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, LARES_PREFIX: prefix, LARES_MAINTENANCE_TESTING: "1", HOME: dir, ...env },
     });
     return { code: 0, stdout, stderr: "" };
   } catch (e) {
@@ -122,7 +125,7 @@ function generatedValues(): { name: string; value: string }[] {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lares-install-secrets-"));
   binDir = join(dir, "bin"); mkdirSync(binDir);
-  prefix = join(dir, "root"); mkdirSync(prefix);
+  prefix = join(dir, "root"); mkdirSync(prefix); prefix = realpathSync(prefix);
   secretsDir = join(prefix, "etc", "lares", "secrets");
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   // Everything that would touch a host. `chown` and `chmod` are stubs so the permissions the
@@ -187,9 +190,9 @@ describe("the secrets the installer generates", () => {
 
   it("never creates or references a named host group", () => {
     // See the fixture note on the test above — this needs a full run to succeed too.
+    markDatabaseBootstrapComplete();
     mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
     writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services:\n  db: {}\n");
-    markDatabaseBootstrapComplete();
     okRun(run(["--yes"]));
     const asked = readFileSync(log, "utf8").split("\n").filter((l) => l.length > 0);
     expect(asked.filter((l) => l.startsWith("groupadd "))).toEqual([]);
@@ -219,9 +222,9 @@ describe("the secrets the installer generates", () => {
 
   it("never regenerates a secret that already exists", () => {
     // See the fixture note above — this needs two full runs to succeed.
+    markDatabaseBootstrapComplete();
     mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
     writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services:\n  db: {}\n");
-    markDatabaseBootstrapComplete();
     okRun(run(["--yes"]));
     const before = generatedValues();
     const mtimes = before.map((s) => statSync(join(secretsDir, s.name), { bigint: true }).mtimeNs);
@@ -246,6 +249,11 @@ describe("the secrets the installer generates", () => {
   });
 
   it("does not leave a half-written secret behind to be reused", () => {
+    // Once the durable installation identity exists, interrupted secret publication can be
+    // retried safely. A secrets directory alone is evidence and must not be adopted as fresh.
+    markDatabaseBootstrapComplete();
+    mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
+    writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services:\n  db: {}\n");
     mkdirSync(secretsDir, { recursive: true });
     writeFileSync(join(secretsDir, "token-enc-key.partial"), "");
     okRun(run(["--yes"]));

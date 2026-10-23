@@ -63,7 +63,7 @@ function runWithStdin(args: string[], input: string, env: Record<string, string>
     const stdout = execFileSync("/bin/bash", [SCRIPT, "--release", releaseFile, ...args], {
       input,
       encoding: "utf8",
-      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, ...env },
+      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, LARES_MAINTENANCE_TESTING: "1", ...env },
     });
     return { code: 0, stdout, stderr: "" };
   } catch (e) {
