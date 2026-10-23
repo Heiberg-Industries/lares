@@ -59,6 +59,7 @@ const ARGUMENTS = [
 const COMMITTED_GATEWAY_START = join(
   dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "images", "gateway-runtime", "start.sh",
 );
+const COMMITTED_GATEWAY_ADMISSION = join(dirname(COMMITTED_GATEWAY_START), "gateway_admission.py");
 
 /** Vault custody is optional on installations updated by digest only. Inspect the named file
  *  without following symlinks or reading its value; invalid/missing custody omits only Vault. */
@@ -126,6 +127,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     gatewayStartText = readFileSync(COMMITTED_GATEWAY_START, "utf8");
     for (const name of ["admission_contract.py", "lares_gateway.py"])
       gatewayModules[name] = readFileSync(join(dirname(COMMITTED_GATEWAY_START), name), "utf8");
+    gatewayModules["gateway_admission.py"] = readFileSync(COMMITTED_GATEWAY_ADMISSION, "utf8");
   } catch {
     throw new Error(
       `The gateway's start script is missing from this engine (${COMMITTED_GATEWAY_START}). ` +
@@ -158,10 +160,6 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     // mount and an installation that added one keeps it on every re-run of the installer.
     deadlineCalendarFile: existsSync(calendarFile) ? calendarFile : null,
   });
-  // 0640: the compose file names every secret's PATH (never a value), and the fleet's own
-  // containers never read it — only root and the installation's group have any use for it.
-  writeFileSync(at("outFile"), text, { mode: 0o640 });
-
   // THE DEFECT THIS SLICE CLOSES: nothing used to write this file, so Docker created a
   // DIRECTORY at the compose file's mount source and the gateway could never read a config.
   // Same neighbouring-temp-then-move discipline install.sh's own writes use, so an interrupted
@@ -218,6 +216,10 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     renameSync(`${destination}.partial`, destination);
     chmodSync(destination, 0o644);
   }
+  // Publish Compose only after every Gateway bind source now referenced by it is installed.
+  // The helper is a startup authority gate: a visible new service definition without its
+  // read-only guard file could not start safely.
+  writeFileSync(at("outFile"), text, { mode: 0o640 });
   return 0;
 }
 

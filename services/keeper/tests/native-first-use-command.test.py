@@ -95,7 +95,19 @@ class GatewayDockerCommandTests(unittest.TestCase):
             argv = calls.pop()
             self.assertEqual(argv[0:2], ("docker", "run"), argument_name)
             self.assertEqual(argv.count("docker"), 1, argument_name)
-            if argument_name == "keeper_cmd":
+            if argument_name == "gateway_args":
+                self.assertEqual(argv[argv.index("--entrypoint") + 1], "python")
+                self.assertNotIn("/bin/sh", argv, "Gateway proof must use the receipt-bound guard")
+                joined = ",".join(argv)
+                self.assertIn("src=/synthetic/repo/images/gateway-runtime/start.sh,dst=/usr/local/bin/lares-gateway-start,readonly", joined)
+                self.assertIn("src=/synthetic/admission_dir,dst=/run/lares-maintenance/admission,readonly", joined)
+                self.assertIn("--restart,unless-stopped", joined)
+                image_index = argv.index("registry.invalid/fixture/gateway@sha256:" + "b" * 64)
+                self.assertEqual(argv[image_index + 1:], (
+                    "-I", "/opt/lares-gateway/gateway_admission.py", "guard", "/run/lares-maintenance/admission",
+                    "22222222-2222-4222-8222-222222222222", "7", "--", "/usr/local/bin/lares-gateway-start",
+                ), "Gateway guard must wrap the actual mounted start script and current receipt")
+            elif argument_name == "keeper_cmd":
                 self.assertNotIn("--entrypoint", argv, "the fixture must use the image's baked admission entrypoint")
                 image_index = argv.index("registry.invalid/fixture/keeper:synthetic")
                 self.assertIn("--mount,type=bind,src=/synthetic/admission_dir,dst=/run/lares-maintenance/admission,readonly", ",".join(argv))
@@ -175,6 +187,49 @@ class BoundedMarkerArchiveCommandTests(unittest.TestCase):
 
 
 class NativeFirstUseConfigTests(unittest.TestCase):
+    def test_gateway_custody_is_prepared_before_gateway_arguments(self) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        proof = next(node for node in tree.body if isinstance(node, ast.Try))
+        gateway_assignments = [
+            (index, node) for index, node in enumerate(proof.body)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "gateway_args" for target in node.targets)
+        ]
+        self.assertEqual(len(gateway_assignments), 1)
+        gateway_index, gateway_assignment = gateway_assignments[0]
+        gateway_inputs = {
+            node.id for node in ast.walk(gateway_assignment.value)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+        self.assertTrue({"admission_dir", "admission_identity"} <= gateway_inputs)
+
+        custody_preparation = [
+            index for index, node in enumerate(proof.body)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and isinstance(node.value.func.value, ast.Name)
+            and node.value.func.value.id == "custody" and node.value.func.attr == "prepare_fresh"
+        ]
+        self.assertEqual(len(custody_preparation), 1)
+        self.assertLess(custody_preparation[0], gateway_index)
+        identity_validations = [
+            index for index, node in enumerate(proof.body[:gateway_index])
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "admission_identity" for target in node.targets)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and isinstance(node.value.func.value, ast.Name)
+            and node.value.func.value.id == "custody" and node.value.func.attr == "validate"
+        ]
+        self.assertEqual(len(identity_validations), 1)
+        for name in ("admission_dir", "admission_identity"):
+            definitions = [
+                index for index, node in enumerate(proof.body[:gateway_index])
+                if isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+            ]
+            self.assertTrue(definitions, f"{name} must be assigned before gateway_args uses it")
+
     def test_actual_probe_config_loads_and_missing_egress_is_rejected(self) -> None:
         tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
         assignments = [

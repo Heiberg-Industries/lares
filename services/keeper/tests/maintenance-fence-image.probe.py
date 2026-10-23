@@ -210,7 +210,7 @@ def generate_rendered_compose() -> None:
     }
     for path in (root / "socket", root / "taste", root / "caddy-data"):
         path.mkdir(mode=0o755)
-    for path in (root / "gateway.yml", root / "gateway-start.sh", root / "gateway-start.sh.admission_contract.py",
+    for path in (root / "gateway.yml", root / "gateway-start.sh", root / "gateway-start.sh.gateway_admission.py", root / "gateway-start.sh.admission_contract.py",
                  root / "gateway-start.sh.lares_gateway.py", root / "gateway.yml.profile.json", root / "Caddyfile"):
         path.write_text("fixture-only\n", encoding="ascii")
     for name in ("database-password", "console-session-secret", "eve-route-password", "gateway-key",
@@ -302,11 +302,13 @@ def generate_rendered_compose() -> None:
     bad_stack_args[20] = redirected_auth
     rendered_gateway = (root / "gateway.yml").read_bytes()
     rendered_start = (root / "gateway-start.sh").read_bytes()
+    rendered_guard = (root / "gateway-start.sh.gateway_admission.py").read_bytes()
     rejected = docker(*common, "/app/services/box/bin/render-stack.ts", *bad_stack_args,
                       check=False, timeout=45)
     if rejected.returncode == 0 or rejected_stack.exists() or \
        (root / "gateway.yml").read_bytes() != rendered_gateway or \
-       (root / "gateway-start.sh").read_bytes() != rendered_start:
+       (root / "gateway-start.sh").read_bytes() != rendered_start or \
+       (root / "gateway-start.sh.gateway_admission.py").read_bytes() != rendered_guard:
         raise ProbeFailure("renderer-path")
     proof["claims"]["bothActualRenderersRejectRedirectedAuthWithoutOutputChanges"] = True
 
