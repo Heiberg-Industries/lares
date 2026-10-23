@@ -9,7 +9,7 @@ import { GATEWAY_AUTHORITY_STAGE_FILES } from "../bin/render-gateway-authority-s
 import { gatewayAdmissionProfile } from "../lib/gateway-config.js";
 import { renderStackCompose } from "../lib/stack-compose.js";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
-import { renderKeeperComposeEnvironment } from "../bin/render-keeper-config.js";
+import { renderKeeperComposeEnvironment, validateMaintenanceAdmissionIdentity } from "../bin/render-keeper-config.js";
 import { nativeTestPolicy } from "../../keeper/tests/helpers/native-cleanup.js";
 import { parseBudgetNativePolicyDocument } from "../../keeper/lib/budget-native-host.js";
 import { stageGatewayAuthority } from "../bin/render-gateway-authority-stage.js";
@@ -132,11 +132,18 @@ const run = () => {
     ownerHomeTz: "Europe/Oslo", modelAlias: alias, pgDatabase: request.pgDatabase, deadlineCalendarFile: null,
   });
   const profileText = `${JSON.stringify(profile)}\n`;
+  const maintenanceAdmission = validateMaintenanceAdmissionIdentity(prefix, request.subnet);
+  const environmentKeeper = { ...previousKeeper, lifecycle: { maintenanceAdmission: {
+    hostDirectory: maintenanceAdmission.directory,
+    installationId: maintenanceAdmission.installationId,
+    epoch: maintenanceAdmission.epoch,
+  } } };
   const activeKeeperEnv = renderKeeperComposeEnvironment(manifest, {
     root: join(prefix, "srv", "lares"), keeperConfig, socketDir: join(prefix, "run", "lares"),
     hostSocketDir: join(prefix, "run", "lares-host"), egressDir: join(prefix, "srv", "lares", "egress"),
     secretsDir: secrets, proxyAddress: request.proxyAddress, network: request.network,
-  }, previousKeeper as any);
+    maintenanceAdmission,
+  }, environmentKeeper as any);
   writeProtected(activePaths.profile, profileText, 0o600);
   writeProtected(activePaths.stack, stack, 0o640);
   writeProtected(activePaths.keeperCompose, readFileSync(join(repo, "services", "box", "compose.lares-keeper.yaml")), 0o640);

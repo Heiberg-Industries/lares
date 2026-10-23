@@ -21,7 +21,7 @@ const url = process.env.REHEARSAL_DATABASE_URL;
 if (!url) throw new Error('set REHEARSAL_DATABASE_URL (the local rehearsal database, never a real one)');
 const pool = new Pool({ connectionString: url });
 const root = mkdtempSync(join(tmpdir(), 'lar98-keeper-'));
-const dirs = Object.fromEntries(['agents', 'retired', 'secrets', 'egress'].map((d) => [d, join(root, d)]));
+const dirs = Object.fromEntries(['agents', 'retired', 'secrets', 'egress', 'admission'].map((d) => [d, join(root, d)]));
 for (const d of Object.values(dirs)) mkdirSync(d);
 const image = 'example/image@sha256:' + 'a'.repeat(64);
 const ROLE: Record<string, string> = { 'chief-of-staff': 'chief-of-staff', creative: 'creative' };
@@ -50,6 +50,7 @@ const docker: DockerBoundary = {
 const secret = (n: string) => { const p = join(dirs.secrets!, n); writeFileSync(p, 'made-up'); return p; };
 const config: any = {
   network: 'lar98-net', subnet: '172.30.0.0/24', reservedAddresses: [], composeFile: join(root, 'compose.agents.yaml'), egressDir: dirs.egress,
+  maintenanceAdmission: { hostDirectory: dirs.admission, installationId: '11111111-1111-4111-8111-111111111111', epoch: 1 },
   imageByRole: { 'chief-of-staff': image, creative: image }, proxyContainer: 'lares-egress-proxy', squidImage: image, firewallImage: image,
   adminDb: { host: 'db', port: 5432, user: 'lares_workflow_provisioner', database: 'postgres', passwordFile: '/secret' }, workflowTemplate: 'lares_workflow_template', workflowOwner: 'lares_workflow_owner',
   runtime: { schedulesLive: false, databaseUrl: 'postgres://lares_app@db/lares_state', workflowServer: 'postgres://lares_workflow@db/', gatewayUrl: 'https://gateway.example.test', proxyUrl: 'http://proxy:8888', passwordFile: secret('db'), workflowPasswordFile:secret('workflow-db'),

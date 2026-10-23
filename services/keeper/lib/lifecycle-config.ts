@@ -1,9 +1,10 @@
 import { z } from 'zod';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, normalize } from 'node:path';
 import { personalMicrosoftSchema } from './personal-microsoft.js';
 import { DIGEST } from './compose-agents.js';
 import { runtimeBindingsSchema, isRetiredRole } from './runtime-bindings.js';
 const path = z.string().refine(isAbsolute), image = z.string().regex(DIGEST);
+const admissionPath = z.string().refine(value => isAbsolute(value) && normalize(value) === value && !/[\r\n\0$]/.test(value), 'must be an absolute normalized host path');
 const SUPPORTED_ENDPOINTS = new Set(['READABILITY_URL', 'TWENTY_BASE_URL']);
 /** An older keeper.json may still name an endpoint this engine no longer supports. Dropping it
  * (with a log line) keeps that file loading; it never reaches the egress or compose output. */
@@ -57,6 +58,11 @@ const defaultBindings = z.partialRecord(role, runtimeBindingsSchema).superRefine
  * are explicit even when empty: no omitted options silently remove an existing seal. */
 export const lifecycleSchema = z.object({
     network: z.string().min(1), subnet: z.string().min(1), reservedAddresses: z.array(z.string()),
+    maintenanceAdmission: z.object({
+        hostDirectory: admissionPath,
+        installationId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+        epoch: z.number().int().min(1).max(2147483647),
+    }).strict(),
     composeFile: path, egressDir: path, imageByRole: z.preprocess(dropRetiredRoleEntries, z.object({ 'chief-of-staff': image, creative: image }).strict()),
     proxyContainer: z.string().regex(/^lares-[a-z0-9_-]+$/), squidImage: image, firewallImage: image,
     adminDb: db.extend({ database: z.string().refine(value=>value==='postgres','must be postgres'), user: z.string().refine(value=>value==='lares_workflow_provisioner','must be lares_workflow_provisioner') }), workflowTemplate: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/), workflowOwner: z.string().refine(value=>value==='lares_workflow_owner','must be lares_workflow_owner'),

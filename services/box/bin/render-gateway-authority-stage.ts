@@ -7,7 +7,7 @@ import { parseReleaseManifest } from "../lib/release-manifest.js";
 import { assertDatabaseAuthDirectory, renderStackCompose } from "../lib/stack-compose.js";
 import { gatewayAdmissionProfile, renderGatewayConfig } from "../lib/gateway-config.js";
 import { renderKeeperConfig } from "../lib/keeper-config.js";
-import { renderKeeperComposeEnvironment } from "./render-keeper-config.js";
+import { renderKeeperComposeEnvironment, validateMaintenanceAdmissionIdentity } from "./render-keeper-config.js";
 import { assertSafeAuthorityAncestors, readProtectedInstallationSettings, resolveGatewayAuthority, recheckGatewayAuthoritySources } from "../lib/gateway-authority.js";
 import { gatewayCanonical } from "@lares/agent-kit/gateway-admission-protocol";
 import { rejectDuplicateJsonKeys } from "../../keeper/lib/budget-native-client.js";
@@ -371,6 +371,9 @@ function assertExistingRenderedAuthority(prefix: string, authority: Parameters<t
 
 function stageOutput(request: GatewayAuthorityStageRequest): StageBuild {
   const prefix = request.prefix;
+  // Bind staged Keeper config to the same completed receipt used by ordinary Keeper rendering.
+  // This happens before reading installation settings, Keeper config or secret metadata.
+  const maintenanceAdmission = validateMaintenanceAdmissionIdentity(prefix, request.subnet);
   const databaseAuthDir = join(prefix, "var", "lib", "lares-maintenance", "postgres-auth");
   // This boundary only validates already established external custody. Staging must never
   // create, adopt, or rewrite normal authentication state.
@@ -428,6 +431,11 @@ function stageOutput(request: GatewayAuthorityStageRequest): StageBuild {
     project: request.project,
     network: request.network,
     subnet: request.subnet,
+    maintenanceAdmission: {
+      hostDirectory: maintenanceAdmission.directory,
+      installationId: maintenanceAdmission.installationId,
+      epoch: maintenanceAdmission.epoch,
+    },
     proxyAddress: request.proxyAddress,
     dir: root,
     agentsDir,
@@ -479,6 +487,7 @@ function stageOutput(request: GatewayAuthorityStageRequest): StageBuild {
   const keeperEnv = renderKeeperComposeEnvironment(manifest, {
     root, keeperConfig: keeperConfigFile, socketDir, hostSocketDir, egressDir, secretsDir,
     proxyAddress: request.proxyAddress, network: request.network,
+    maintenanceAdmission,
     gatewayAuthority: { serviceKeyFile: authority.serviceKeyFile, policyFile: authority.policyFile },
   }, keeper);
   assertExistingRenderedAuthority(prefix, {

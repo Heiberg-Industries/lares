@@ -1,8 +1,10 @@
 """CI-only end-to-end first-use proof: compiled Eve, production Keeper and local fixtures."""
-import hashlib, io, json, os, pathlib, re, secrets, select, shutil, subprocess, sys, tarfile, tempfile, time, uuid
+import hashlib, importlib.util, io, json, os, pathlib, re, secrets, select, shutil, subprocess, sys, tarfile, tempfile, time, uuid
 
 if os.environ.get('CI') != 'true':
     raise SystemExit('Combined native first-use proof runs only in disposable CI')
+if os.geteuid() != 0:
+    raise SystemExit('Combined native first-use proof needs root-owned disposable admission custody')
 if len(sys.argv) != 5:
     raise SystemExit('usage: native-first-use-image.probe.py <chief-image> <keeper-image> <source-sha> <proof.json>')
 
@@ -15,6 +17,11 @@ if not re_full_sha(source_sha):
     raise SystemExit('Combined proof needs the checked-out source identity')
 
 repo = pathlib.Path(__file__).resolve().parents[3]
+custody_spec = importlib.util.spec_from_file_location(
+    'maintenance_custody', repo / 'services/box/ops/maintenance-custody.py')
+custody = importlib.util.module_from_spec(custody_spec)
+assert custody_spec and custody_spec.loader
+custody_spec.loader.exec_module(custody)
 root = pathlib.Path(tempfile.mkdtemp(prefix='lares-native-first-use-')).resolve()
 root.chmod(0o755)
 secrets_dir = root / 'secrets'; secrets_dir.mkdir(mode=0o755)
@@ -122,7 +129,7 @@ def financial_observer(summary, financial_db):
       '--mount',f'type=bind,src={script},dst=/app/services/keeper/financial-observer.mts,readonly',
       '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/financial-observer.mts')
 
-def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, capsule_source,
+def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, admission_dir, admission_identity, capsule_source,
                               client_script, chief_image, secrets_dir, agent, incarnation, owner,
                               definition_hash, workflow_database):
     runtime_environment={
@@ -148,6 +155,7 @@ def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, capsul
       '--tmpfs','/app/services/chief-of-staff/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m',
       '--mount',f'type=bind,src={agent_dir},dst=/definition,readonly',
       '--mount',f'type=bind,src={run_dir},dst=/run/lares,readonly',
+      '--mount',f'type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly',
       '--mount',f'type=bind,src={secrets_dir}/app-password,dst=/run/secrets/app-password,readonly',
       '--mount',f'type=bind,src={secrets_dir}/workflow-password,dst=/run/secrets/workflow-password,readonly',
       '--mount',f'type=bind,src={secrets_dir}/route-password,dst=/run/secrets/route-password,readonly',
@@ -156,7 +164,9 @@ def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, capsul
       '--mount',f'type=bind,src={capsule_source},dst=/app/services/chief-of-staff/model-purpose-capsule.ts,readonly',
       '--mount',f'type=bind,src={client_script},dst=/app/services/chief-of-staff/first-use-client.mts,readonly']
     for key,value in runtime_environment.items():args.extend(['-e',key+'='+value])
-    args.append(chief_image)
+    args.extend([chief_image, '/run/lares-maintenance/admission',
+      admission_identity['installationId'],str(admission_identity['epoch']),'--',
+      '/usr/local/bin/lares-start'])
     return args
 
 def safe_startup_container_state(*, found, status='', running=False, exit_code=None, oom_killed=False):
@@ -788,12 +798,25 @@ print(json.dumps({'passed':passed,'pythonVersion':python_version,'opensslVersion
         'proxyContainer':'lares-egress-proxy','squidImage':'fixture@'+proof['images']['keeper'],'firewallImage':'fixture@'+proof['images']['keeper'],
         'adminDb':{'host':'proof-db','port':5432,'database':'postgres','user':'lares_workflow_provisioner','passwordFile':'/etc/lares/secrets/workflow-provisioner-password'},
         'workflowTemplate':'empty_workflow','workflowOwner':'lares_workflow_owner','installationPrepared':True,
+        'maintenanceAdmission':{'hostDirectory':'/fixture-install/var/lib/lares-maintenance/admission',
+          'installationId':'11111111-1111-4111-8111-111111111111','epoch':1},
         'egress':{'endpoints':{},'legacyConsumers':[],'internalNetworks':['172.16.0.0/12'],'directDestinations':[],'infrastructureHosts':[]},
         'runtime':{'databaseUrl':'postgres://lares_app@proof-db:5432/proof','workflowServer':'postgres://lares_workflow@proof-db:5432',
           'gatewayUrl':'http://native-gateway:4000','proxyUrl':'http://egress-proxy:8888','passwordFile':'/etc/lares/secrets/app-password',
           'workflowPasswordFile':'/etc/lares/secrets/workflow-password','gatewayKeys':{},'gatewayMasterKeyFile':'/etc/lares/secrets/gateway-master'}},
       'gatewayBudget':{'serviceKeyFile':'/etc/lares/secrets/gateway-budget-service-key'},
       'modelPurposeConsoleSigningKeyFile':'/etc/lares/secrets/console-model-purpose-signing-key','modelPurposeRuntimeDir':'/fixture-install/run/model-purpose'}
+    admission_prefix=root/'admission-installation'
+    admission_prefix.mkdir(mode=0o755)
+    admission_subnet=f"172.30.{int(uuid.uuid4().hex[:2],16)}.0/24"
+    custody.prepare_fresh(admission_prefix, admission_subnet)
+    admission_identity=custody.validate(admission_prefix, admission_subnet)
+    admission_dir=admission_prefix/'var/lib/lares-maintenance/admission'
+    base_config['lifecycle']['maintenanceAdmission']={
+      'hostDirectory':str(admission_dir),
+      'installationId':admission_identity['installationId'],
+      'epoch':admission_identity['epoch'],
+    }
     config_dir_path=config_dir/'keeper.json';config_dir_path.write_text(json.dumps(base_config));config_dir_path.chmod(0o600)
     stage = 'production-financial-and-native-preparation'
     # The production operator-file check requires root ownership. Keep this credential in
@@ -854,16 +877,23 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
 
     stage = 'production-keeper-startup'
     # Pre-provision both members before either activation. The root CLI talks only to the real
-    # host-only socket; no direct provisioner/activator construction is used.
+    # host-only socket; no direct provisioner/activator construction is used. Keeper receives
+    # the independently prepared normal admission receipt through its baked image entrypoint.
     host_socket_dir=root/'host-socket';host_socket_dir.mkdir(mode=0o755)
     lares_dir=root/'run-sockets';lares_dir.mkdir(mode=0o755)
     keeper_name=network+'-keeper'
+    keeper_image_cmd=json.loads(docker('image','inspect','--format','{{json .Config.Cmd}}',keeper_image))
+    expected_keeper_cmd=['/app/services/keeper/node_modules/.bin/tsx','/app/services/keeper/bin/keeper.ts','serve']
+    if keeper_image_cmd != expected_keeper_cmd:
+        raise RuntimeError('Production Keeper image command changed; refusing to substitute a fixture command')
     keeper_cmd=['run','-d','--name',keeper_name,'--network',network,'-e','CI=true','-e','LARES_GATEWAY_PROBE_DIAGNOSTICS=1',
       '--mount',f'type=volume,src={volume},dst=/var/lib/lares',
       '--mount',f'type=bind,src={secrets_dir},dst=/etc/lares/secrets,readonly','--mount',f'type=bind,src={config_dir_path},dst=/etc/lares/keeper.json,readonly',
       '--mount',f'type=bind,src={install_root},dst=/fixture-install',
+      '--mount',f'type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly',
       '--mount',f'type=bind,src={host_socket_dir},dst=/run/lares-host','--mount',f'type=bind,src={run_dir},dst=/run/lares',
-      '--tmpfs','/tmp:rw,noexec,nosuid,nodev,mode=1777',keeper_image]
+      '--tmpfs','/tmp:rw,noexec,nosuid,nodev,mode=1777',keeper_image,
+      '/run/lares-maintenance/admission',admission_identity['installationId'],str(admission_identity['epoch']),'--',*keeper_image_cmd]
     docker(*keeper_cmd);container_names.append(keeper_name)
     def wait_socket(path,container=keeper_name):
         for _ in range(120):
@@ -1138,6 +1168,7 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
 
     before_request_state=native_snapshot()
     args=compiled_chief_start_args(chief_name=chief_name,network=network,agent_dir=agent_dir,run_dir=run_dir,
+      admission_dir=admission_dir,admission_identity=admission_identity,
       capsule_source=capsule_source,client_script=client_script,chief_image=chief_image,secrets_dir=secrets_dir,agent=agent,
       incarnation=incarnation,owner=owner,definition_hash=definition_hash,workflow_database=workflow_database)
     try:launch_result=run('docker',*args,check=False,timeout=120)

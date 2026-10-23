@@ -1,7 +1,9 @@
 """Disposable CI-image runtime proof. No production data or provider credentials."""
-import subprocess,json,pathlib,tempfile,time,urllib.request,http.server,threading,os,shutil,sys,uuid,secrets
+import subprocess,json,pathlib,tempfile,time,urllib.request,http.server,threading,os,shutil,sys,uuid,secrets,importlib.util
 repo=pathlib.Path(__file__).resolve().parents[3]
 root=pathlib.Path(tempfile.mkdtemp(prefix='lares-image-proof-'));root.chmod(0o755)
+custody_spec=importlib.util.spec_from_file_location('maintenance_custody',repo/'services/box/ops/maintenance-custody.py')
+custody=importlib.util.module_from_spec(custody_spec);sys.modules[custody_spec.name]=custody;custody_spec.loader.exec_module(custody)
 runtime_secrets=pathlib.Path(tempfile.mkdtemp(prefix='lares-runtime-secrets-'));runtime_secrets.chmod(0o755)
 offline_secrets=pathlib.Path(tempfile.mkdtemp(prefix='lares-offline-secrets-'));offline_secrets.chmod(0o700)
 name='lares-image-proof-'+uuid.uuid4().hex[:10];image=sys.argv[1]
@@ -277,23 +279,28 @@ void main();"""
  sql("DO $$ BEGIN IF (SELECT status FROM users WHERE id='admission-invited')<>'invited' OR (SELECT status FROM users WHERE id='admission-removed')<>'removed' OR (SELECT count(*) FROM member_provider_identities WHERE member_id='admission-owner')<>1 OR (SELECT token_hash FROM member_sessions WHERE id='admission-session')<>repeat('a',64) THEN RAISE EXCEPTION 'Member migration changed existing data'; END IF; END $$")
  sql("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,state,runtime_control_token,pending) VALUES('canary','172.30.0.99','proof','owned','11111111-1111-4111-8111-111111111111','ready','11111111-1111-4111-8111-111111111111',false)")
  env={'DATABASE_URL':'postgres://lares_app@proof-db:5432/proof','WORKFLOW_POSTGRES_URL':'postgres://lares_workflow@proof-db:5432/workflowproof','DATABASE_PASSWORD_FILE':'/secrets/app-password','WORKFLOW_POSTGRES_PASSWORD_FILE':'/secrets/workflow-password','GATEWAY_URL':'http://host.docker.internal:'+str(server.server_port),'GATEWAY_KEY_FILE':'/secrets/gateway','EVE_ROUTE_PASSWORD_FILE':'/secrets/route','LARES_AGENT_NAME':'canary','LARES_DEFINITION_DIR':'/definition','LARES_AGENT_INCARNATION':'11111111-1111-4111-8111-111111111111','LARES_RUNTIME_CONTROL_SECRET_FILE':'/secrets/control','AGENT_OWNER_USER_ID':'fixture-owner','EVE_SCHEDULES_LIVE':'0','EVE_DIGEST_LIVE':'0','EVE_DREAM_LIVE':'0'}
+ admission_prefix=root/'admission-installation';admission_prefix.mkdir(mode=0o755)
+ admission_subnet=f"172.30.{int(uuid.uuid4().hex[:2],16)}.0/24"
+ custody.prepare_fresh(admission_prefix,admission_subnet)
+ admission_identity=custody.validate(admission_prefix,admission_subnet)
+ admission_dir=admission_prefix/'var/lib/lares-maintenance/admission'
  # The image refuses BEFORE it serves anything when a required setting is missing. One
- # throwaway container, no mounts, ~1 s: every name above except GATEWAY_URL, so the refusal has
- # to name exactly that one, exit 78 (EX_CONFIG) and print no secret.
- # The secrets are mounted exactly as below, so the *_FILE probe ([ -r ], [ -s ]) has to PASS on
- # them as user 10001 against a read-only bind mount — only GATEWAY_URL may be named.
+ # throwaway container with the validated admission receipt and secrets mounted, ~1 s: every name
+ # above except GATEWAY_URL, so the refusal has to name exactly that one, exit 78 (EX_CONFIG) and
+ # print no secret. The *_FILE probe ([ -r ], [ -s ]) must PASS on those secrets as user 10001
+ # against a read-only bind mount — only GATEWAY_URL may be named.
  short=[x for k,v in env.items() if k!='GATEWAY_URL' for x in ('-e',k+'='+v)]
- refusal=subprocess.run(['docker','run','--rm','--platform','linux/amd64','--read-only','--user','10001:10001','--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly']+short+[image],capture_output=True,text=True,timeout=120)
+ refusal=subprocess.run(['docker','run','--rm','--platform','linux/amd64','--read-only','--user','10001:10001','--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--mount',f'type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly']+short+[image,'/run/lares-maintenance/admission',admission_identity['installationId'],str(admission_identity['epoch']),'--','/usr/local/bin/lares-start'],capture_output=True,text=True,timeout=120)
  said=refusal.stdout+refusal.stderr
  assert refusal.returncode==78,f'A missing required setting exited {refusal.returncode}, not 78 (EX_CONFIG): {said}'
  assert 'GATEWAY_URL' in refusal.stderr,f'The refusal did not name the missing setting: {said}'
  assert 'DATABASE_PASSWORD_FILE' not in said,f'The guard failed a secret file that is mounted and readable: {said}'
  assert 'disposable-fixture-only' not in said,'The refusal printed a secret'
- args=['docker','run','-d','--platform','linux/amd64','--name',name+'-runtime','--network',name,'--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp:uid=10001,gid=10001,mode=1770','--tmpfs','/app/services/chief-of-staff/.eve/sandbox-cache:uid=10001,gid=10001,mode=0700,size=256m','--tmpfs','/app/services/chief-of-staff/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m','--tmpfs','/app/packages/agent-kit/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=64m','-p','127.0.0.1::3000','--mount',f'type=bind,src={root}/definition,dst=/definition,readonly','--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--mount',f'type=bind,src={root}/blobs,dst=/app/services/chief-of-staff/.eve/.workflow-data']
+ args=['docker','run','-d','--platform','linux/amd64','--name',name+'-runtime','--network',name,'--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp:uid=10001,gid=10001,mode=1770','--tmpfs','/app/services/chief-of-staff/.eve/sandbox-cache:uid=10001,gid=10001,mode=0700,size=256m','--tmpfs','/app/services/chief-of-staff/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m','--tmpfs','/app/packages/agent-kit/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=64m','-p','127.0.0.1::3000','--mount',f'type=bind,src={root}/definition,dst=/definition,readonly','--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--mount',f'type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly','--mount',f'type=bind,src={root}/blobs,dst=/app/services/chief-of-staff/.eve/.workflow-data']
  args+=['--mount',f'type=bind,src={root},dst=/probe,readonly']
  if sys.platform!='darwin':args+=['--add-host','host.docker.internal:host-gateway']
  for k,v in env.items():args+=['-e',k+'='+v]
- cmd(*args,image)
+ cmd(*args,image,'/run/lares-maintenance/admission',admission_identity['installationId'],str(admission_identity['epoch']),'--','/usr/local/bin/lares-start')
  wait_healthy()
  client=root/'client.mjs';client.write_text("import {Client,isCurrentTurnBoundaryEvent} from '/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js';\nconst c=new Client({host:'http://127.0.0.1:3000',auth:{basic:{username:'eve',password:'disposable-fixture-only'}}});let id=process.argv[2],watch=process.argv[4]==='watch',r,s;if(watch){s=c.sessions.attach(id,{streamIndex:Number(process.argv[3])});r={};for await(const e of s.stream()){if(e.type==='message.completed'&&e.data.finishReason!=='tool-calls')r.message=e.data.message??undefined;if(isCurrentTurnBoundaryEvent(e)){r.status=e.type==='session.waiting'?'waiting':e.type;break;}}}else if(id){s=c.sessions.attach(id,{streamIndex:Number(process.argv[3])});r=await(await s.send('Return another greeting.')).result();}else{const first=await c.sessions.create({message:'Return a short greeting.'});s=first.session;r=await first.response.result();}console.log(JSON.stringify({...s.state,message:r.message,status:r.status}));process.exit((watch?r.status==='waiting':r.message==='CI_IMAGE_TURN_OK')?0:1);\n")
  # watch=True sends NOTHING: it reads the conversation from session['streamIndex'] to the next turn boundary.

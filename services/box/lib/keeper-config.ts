@@ -15,7 +15,7 @@
  * guessed literal name. Role defaults carry the real owner id and the shared route-password
  * source; an exact per-name binding, when an existing installation has one, still wins.
  */
-import { join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import { imageFor, type ReleaseManifest } from "./release-manifest.js";
 import type { KeeperConfig } from "../../keeper/lib/config.js";
 import { ENGINE_DATABASE_ROLES } from "./database-privileges.js";
@@ -57,6 +57,8 @@ export interface KeeperConfigOptions {
    *  literal `docker network inspect` on this string. */
   readonly network: string;
   readonly subnet: string;
+  /** Completed, root-validated host receipt identity required by each generated role runtime. */
+  readonly maintenanceAdmission: { readonly hostDirectory: string; readonly installationId: string; readonly epoch: number };
   readonly proxyAddress: string;
   /** The keeper-owned root, mounted into the keeper container at the SAME absolute path
    *  (`compose.lares-keeper.yaml`'s `${LARES_ROOT}:${LARES_ROOT}`). It is also the compose
@@ -108,6 +110,11 @@ export function renderKeeperConfig(
   const workflowPasswordFile = join(opts.secretsDir, "workflow-password");
   const workflowProvisionerPasswordFile = join(opts.secretsDir, "workflow-provisioner-password");
   const financialPasswordFile = join(opts.secretsDir, "financial-database-password");
+  const admission = opts.maintenanceAdmission;
+  if (!admission || !isAbsolute(admission.hostDirectory) || normalize(admission.hostDirectory) !== admission.hostDirectory || /[\r\n\0$]/.test(admission.hostDirectory) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(admission.installationId) ||
+      !Number.isSafeInteger(admission.epoch) || admission.epoch < 1 || admission.epoch > 2147483647)
+    throw new Error("Invalid validated maintenance admission identity");
   const managedSecretsDir = join(opts.dir, "secrets");
   const db = {
     host: DB_HOST,
@@ -170,6 +177,7 @@ export function renderKeeperConfig(
     lifecycle: {
       network: opts.network,
       subnet: opts.subnet,
+      maintenanceAdmission: admission,
       reservedAddresses: [opts.proxyAddress],
       composeFile: join(opts.dir, AGENTS_COMPOSE_FILE),
       egressDir: opts.egressDir,

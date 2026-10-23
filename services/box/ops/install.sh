@@ -1700,7 +1700,10 @@ run_keeper() {
   # The renderer reads the release file, the keeper.json already on this box and the installation's
   # deadline calendar, and writes its two outputs next to keeper.json. All of that lives under two
   # directories; the secrets folder is not needed (the renderer is only told its path).
-  local -a keeper_mounts=(--rw "$(dirname "$keeper_config")" --ro "$RELEASE_FILE")
+  # The one-shot renderer validates the completed normal receipt before reading keeper.json.
+  # Give that renderer a read-only view of the maintenance root; the long-running Keeper gets
+  # only the exact admission child through its own Compose bind.
+  local -a keeper_mounts=(--rw "$(dirname "$keeper_config")" --ro "$RELEASE_FILE" --ro "$PREFIX/var/lib/lares-maintenance")
   [ ! -d "$root/installation" ] || keeper_mounts+=(--ro "$root/installation")
   if ! engine_run "${keeper_mounts[@]}" bin/render-keeper-config.ts \
       "$RELEASE_FILE" "$tmp" "$env_tmp" "$keeper_config" \
@@ -1708,7 +1711,7 @@ run_keeper() {
       "$SECRETS_DIR" "$socket_dir" "$host_socket_dir" \
       "$LARES_NETWORK" "$LARES_SUBNET" "$LARES_PROXY_ADDRESS" "$gateway_url" \
       "$db_name" "$OWNER_ID" "$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")" \
-      "$(read_setting LARES_DOMAIN "$INSTALL_ENV")" "$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")"; then
+      "$(read_setting LARES_DOMAIN "$INSTALL_ENV")" "$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")" "${PREFIX:-/}"; then
     rm -f "$tmp" "$env_tmp"
     die "the keeper's configuration could not be rendered from '$RELEASE_FILE' and the keeper.json already on this box (the reason is printed above; $keeper_config itself is untouched). The keeper has not been configured or started, and everything written before this — every secret, $INSTALL_ENV, the stack and its containers, the database, the owner — is left exactly as it is." "$EX_REFUSED"
   fi

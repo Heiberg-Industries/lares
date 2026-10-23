@@ -50,7 +50,7 @@ class GatewayDockerCommandTests(unittest.TestCase):
         synthetic_paths = {
             name: pathlib.Path("/synthetic") / name
             for name in ("repo", "native_dir", "secrets_dir", "tls_runtime", "config_dir_path", "install_root",
-                         "host_socket_dir", "run_dir", "agent_dir", "capsule_source", "client_script")
+                         "host_socket_dir", "run_dir", "agent_dir", "capsule_source", "client_script", "admission_dir")
         }
         namespace = {
             "pathlib": pathlib,
@@ -66,6 +66,7 @@ class GatewayDockerCommandTests(unittest.TestCase):
             "volume": "lares-command-fixture-state",
             "keeper_name": "lares-command-fixture-keeper",
             "keeper_image": "registry.invalid/fixture/keeper:synthetic",
+            "keeper_image_cmd": ["/app/services/keeper/node_modules/.bin/tsx", "/app/services/keeper/bin/keeper.ts", "serve"],
             "chief_name": "lares-command-fixture-chief",
             "chief_image": "registry.invalid/fixture/chief@sha256:" + "c" * 64,
             "agent": "proof-agent",
@@ -73,6 +74,7 @@ class GatewayDockerCommandTests(unittest.TestCase):
             "owner": "fixture-owner",
             "definition_hash": "d" * 64,
             "workflow_database": "workflow-proof",
+            "admission_identity": {"installationId":"22222222-2222-4222-8222-222222222222", "epoch":7},
         }
         for launch in launches:
             argument_name = launch.value.args[0].value.id
@@ -93,6 +95,14 @@ class GatewayDockerCommandTests(unittest.TestCase):
             argv = calls.pop()
             self.assertEqual(argv[0:2], ("docker", "run"), argument_name)
             self.assertEqual(argv.count("docker"), 1, argument_name)
+            if argument_name == "keeper_cmd":
+                self.assertNotIn("--entrypoint", argv, "the fixture must use the image's baked admission entrypoint")
+                image_index = argv.index("registry.invalid/fixture/keeper:synthetic")
+                self.assertIn("--mount,type=bind,src=/synthetic/admission_dir,dst=/run/lares-maintenance/admission,readonly", ",".join(argv))
+                self.assertEqual(argv[image_index + 1:image_index + 5], (
+                    "/run/lares-maintenance/admission", "22222222-2222-4222-8222-222222222222", "7", "--"))
+                self.assertEqual(argv[image_index + 5:], tuple(namespace["keeper_image_cmd"]),
+                                 "guard must wrap the actual configured Keeper CMD")
 
             # The previous duplicate-prefix shape is rejected without executing Docker.
             duplicated = ("docker",) + argv
@@ -284,6 +294,8 @@ class CompiledChiefKeylessCommandTests(unittest.TestCase):
         argv = namespace["compiled_chief_start_args"](
             chief_name="first-use-chief", network="first-use-network",
             agent_dir=pathlib.Path("/synthetic/agent"), run_dir=pathlib.Path("/synthetic/run"),
+            admission_dir=pathlib.Path("/synthetic/admission"),
+            admission_identity={"installationId":"22222222-2222-4222-8222-222222222222", "epoch":7},
             capsule_source=pathlib.Path("/synthetic/capsule.ts"),
             client_script=pathlib.Path("/synthetic/client.mts"),
             chief_image="registry.invalid/chief@sha256:" + "a" * 64,
@@ -297,6 +309,16 @@ class CompiledChiefKeylessCommandTests(unittest.TestCase):
                 key, value = argv[index + 1].split("=", 1)
                 env_values[key] = value
         mounts = [entry for entry in argv if entry.startswith("type=bind,")]
+        self.assertIn(
+            "type=bind,src=/synthetic/admission,dst=/run/lares-maintenance/admission,readonly",
+            mounts,
+        )
+        image_index = argv.index("registry.invalid/chief@sha256:" + "a" * 64)
+        self.assertEqual(argv[image_index + 1:image_index + 6], [
+            "/run/lares-maintenance/admission", "22222222-2222-4222-8222-222222222222", "7", "--",
+            "/usr/local/bin/lares-start",
+        ])
+        self.assertNotIn("/usr/local/lib/lares/maintenance-admission-v1", argv[image_index + 1:])
         secret_mounts = [mount for mount in mounts if "dst=/run/secrets/" in mount]
         destinations = {mount.split("dst=", 1)[1].split(",", 1)[0] for mount in secret_mounts}
         expected = {
