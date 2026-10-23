@@ -191,6 +191,30 @@ def safe_startup_log_categories(log_text):
     })
     return {name:re.search(pattern,text) is not None for name,pattern in patterns.items()}
 
+COMPILED_CLIENT_PHASES={'imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'}
+COMPILED_CLIENT_PHASE_FILE='/tmp/first-use-phase-first'
+
+def safe_compiled_client_phase_summary(stdout, returncode):
+    invalid={'phase':'unknown','markerValid':False}
+    if returncode!=0 or not isinstance(stdout,str) or len(stdout)>128:return invalid
+    try:parsed=json.loads(stdout)
+    except (TypeError,ValueError):return invalid
+    if (not isinstance(parsed,dict) or set(parsed)!={'phase','valid'} or parsed.get('valid') is not True or
+        not isinstance(parsed.get('phase'),str) or parsed['phase'] not in COMPILED_CLIENT_PHASES):return invalid
+    return {'phase':parsed['phase'],'markerValid':True}
+
+def initialize_compiled_client_phase(chief_name):
+    script="require('node:fs').writeFileSync("+json.dumps(COMPILED_CLIENT_PHASE_FILE)+",'{\"phase\":\"imports\"}',{mode:0o600})"
+    try:result=run('docker','exec',chief_name,'node','-e',script,check=False,timeout=5)
+    except Exception:return False
+    return result.returncode==0
+
+def compiled_client_phase_summary(chief_name):
+    reader="""const fs=require('node:fs');const allowed=['imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'];let out={phase:'unknown',valid:false};try{const s=fs.statSync(MARKER);if(!s.isFile()||s.size>128)throw Error();const x=JSON.parse(fs.readFileSync(MARKER,'utf8'));if(x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).length===1&&Object.keys(x)[0]==='phase'&&allowed.includes(x.phase))out={phase:x.phase,valid:true};}catch{}process.stdout.write(JSON.stringify(out));""".replace('MARKER',json.dumps(COMPILED_CLIENT_PHASE_FILE))
+    try:result=run('docker','exec',chief_name,'node','-e',reader,check=False,timeout=5)
+    except Exception:return {'phase':'unknown','markerValid':False}
+    return safe_compiled_client_phase_summary(result.stdout,result.returncode)
+
 def bounded_compiled_runtime_logs(name):
     process=None
     try:
@@ -681,42 +705,94 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
     chief_name=network+'-chief'
     capsule_source=repo/'services/console/lib/model-purpose-capsule.ts'
     client_script=root/'first-use-client.mts'
-    client_script.write_text("""import { Client } from '/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js';
-import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { bindConsoleSession } from '/app/packages/agent-kit/src/console-turn-authority.ts';
-import { modelPurposeRawBodyHash, signPrivateModelPurposeRequest } from './model-purpose-capsule.ts';
+    client_script.write_text("""const fs=await import('node:fs');
+const phaseFile=process.env.FIRST_USE_PHASE_FILE;
+const phases=['imports','session-create','session-bind','capsule-sign','send','turn-result','refusalchecks','complete'];
+let phase='imports';
+function mark(next){if(!phases.includes(next))return;phase=next;try{if(phaseFile!=='/tmp/first-use-phase-first')return;const temp=phaseFile+'.tmp';fs.writeFileSync(temp,JSON.stringify({phase}),{mode:0o600});fs.renameSync(temp,phaseFile);}catch{}}
+mark('imports');
+void(async()=>{try{
+const { Client } = await import('/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js');
+const { randomBytes } = await import('node:crypto');
+const { readFileSync } = await import('node:fs');
+const { bindConsoleSession } = await import('/app/packages/agent-kit/src/console-turn-authority.ts');
+const { modelPurposeRawBodyHash, signPrivateModelPurposeRequest } = await import('./model-purpose-capsule.ts');
 const agent='proof-agent',incarnation=process.env.LARES_AGENT_INCARNATION!,member='first-use-member-a';
+mark('session-create');
 const nonce=randomBytes(32).toString('base64url'),password=readFileSync('/run/secrets/route-password','utf8').trim();
 process.env.PGPASSWORD=readFileSync('/run/secrets/app-password','utf8').trim();
 const headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),
   'x-lares-member-id':member,'x-lares-admission':nonce,'x-lares-purpose':'human'};
 const client=new Client({host:'http://127.0.0.1:3000',auth:{basic:{username:'eve',password}}});
 const {session}=await client.sessions.create({headers});
+mark('session-bind');
 const binding=await bindConsoleSession({agent,incarnation,sessionId:session.state.sessionId,memberId:member,admissionNonce:nonce});
 const message='Return exactly FIRST_USE_OK';
 const body=JSON.stringify({message}),path='/eve/v1/session/'+session.state.sessionId;
 const request={agent,incarnation,session:session.state.sessionId,member,admissionNonce:nonce,method:'POST',path,
   rawBodyHash:modelPurposeRawBodyHash(body),policyRevision:binding.policyRevision,
   definitionHash:process.env.FIRST_USE_DEFINITION_HASH!,purpose:'human',requestId:randomBytes(32).toString('base64url')};
+mark('capsule-sign');
 const capsule=await signPrivateModelPurposeRequest(request);
 const sendHeaders={...headers,'content-type':'application/json','x-lares-model-purpose-required':'1','x-lares-model-capsule':capsule};
-const result=await (await session.send(message,{headers:sendHeaders})).result();
-if(result.message!=='FIRST_USE_OK')throw new Error('runtime response mismatch');
+mark('send');
+const pending=await session.send(message,{headers:sendHeaders});
+mark('turn-result');
+const result=await pending.result();
+if(result.message!=='FIRST_USE_OK')throw new Error();
+mark('refusalchecks');
 const replay=await client.fetch(path,{method:'POST',headers:sendHeaders,body});
-if(replay.ok)throw new Error('replayed capsule accepted');
+if(replay.ok)throw new Error();
 const staleBody=JSON.stringify({message:'changed request'});
 const staleRequest={...request,requestId:randomBytes(32).toString('base64url')};
 const staleCapsule=await signPrivateModelPurposeRequest(staleRequest);
 const stale=await client.fetch(path,{method:'POST',headers:{...sendHeaders,'x-lares-model-capsule':staleCapsule},body:staleBody});
-if(stale.ok)throw new Error('stale capsule accepted');
+if(stale.ok)throw new Error();
 const memberRequest={...request,requestId:randomBytes(32).toString('base64url')};
 const memberCapsule=await signPrivateModelPurposeRequest(memberRequest);
 const wrongMember=await client.fetch(path,{method:'POST',headers:{...sendHeaders,'x-lares-model-capsule':memberCapsule,'x-lares-member-id':'first-use-member-b'},body});
-if(wrongMember.ok)throw new Error('capsule accepted for another member');
+if(wrongMember.ok)throw new Error();
+mark('complete');
 console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.message,
   replayStatus:replay.status,staleStatus:stale.status,wrongMemberStatus:wrongMember.status}));
+}catch{process.exitCode=1}})();
 """)
+
+    def fixed_client_failure_observations():
+        observations={'upstreamDispatchCount':None,'financialDurableCounts':None}
+        try:
+            count=upstream_calls()
+            if type(count) is int and 0<=count<=1000000:observations['upstreamDispatchCount']=count
+        except Exception:pass
+        try:
+            state=native_snapshot()
+            counts={key:state.get(source) for key,source in (
+              ('attempts','attempts'),('grants','grants'),('settled','settled'))}
+            if all(type(value) is int and 0<=value<=1000000 for value in counts.values()):
+                observations['financialDurableCounts']=counts
+        except Exception:pass
+        return observations
+
+    def invoke_compiled_client():
+        try:initialize_compiled_client_phase(chief_name)
+        except Exception:pass
+        timed_out=False
+        try:result=run('docker','exec','-e','FIRST_USE_PHASE_FILE='+COMPILED_CLIENT_PHASE_FILE,chief_name,
+          '/app/services/chief-of-staff/node_modules/.bin/tsx','/app/services/chief-of-staff/first-use-client.mts',
+          check=False,timeout=90)
+        except RuntimeError:
+            timed_out=True;result=None
+        except Exception:
+            result=None
+        if timed_out or result is None or result.returncode!=0:
+            summary=compiled_client_phase_summary(chief_name)
+            exit_code=None if result is None or not 0<=result.returncode<=255 else result.returncode
+            proof['firstUseClientDiagnostics']={'phase':summary['phase'],'markerValid':summary['markerValid'],
+              'timedOut':timed_out,'exitCode':exit_code,**fixed_client_failure_observations()}
+            if timed_out:raise RuntimeError('Compiled signed request exceeded its time bound')
+            raise RuntimeError('Compiled signed request failed')
+        return result.stdout.strip()
+
     before_request_state=native_snapshot()
     args=compiled_chief_start_args(chief_name=chief_name,network=network,agent_dir=agent_dir,run_dir=run_dir,
       capsule_source=capsule_source,client_script=client_script,chief_image=chief_image,secrets_dir=secrets_dir,agent=agent,
@@ -795,7 +871,7 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
     cases['compiledChiefRuntimeReady']=True
 
     stage = 'console-signature-and-first-model-request'
-    client_result=output('docker','exec',chief_name,'/app/services/chief-of-staff/node_modules/.bin/tsx','/app/services/chief-of-staff/first-use-client.mts',timeout=90)
+    client_result=invoke_compiled_client()
     request_result=json.loads(client_result)
     if request_result.get('response')!='FIRST_USE_OK' or request_result.get('replayStatus',200)<400 or request_result.get('staleStatus',200)<400 or request_result.get('wrongMemberStatus',200)<400:
         raise RuntimeError('Signed first-use or refusal checks did not match the expected result')
