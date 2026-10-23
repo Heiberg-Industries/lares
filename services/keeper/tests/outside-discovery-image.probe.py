@@ -153,6 +153,85 @@ def outside_proxy_start_args(proxy_container, owner_token, network_name, proxy_i
     )
 
 
+PROXY_READINESS_PROBE = r"""const net=require('node:net');
+const source=process.env.FIXTURE_SOURCE_IP, deadline=Date.now()+10000;
+let done=false;
+const finish=ok=>{if(done)return;done=true;clearTimeout(globalTimer);process.exit(ok?0:1)};
+const globalTimer=setTimeout(()=>finish(false),10000);
+function probe(){
+ if(done||Date.now()>=deadline)return finish(false);
+ const socket=net.createConnection({host:'lares-egress-proxy',port:8888,localAddress:source,family:4});
+ let connected=false,closed=false,refused=false,buffer=Buffer.alloc(0);
+ const attemptTimer=setTimeout(()=>{socket.destroy();finish(false)},Math.min(1500,Math.max(1,deadline-Date.now())));
+ const retryAfterClose=()=>{if(!refused)return;clearTimeout(attemptTimer);setTimeout(probe,100)};
+ socket.once('error',error=>{
+  if(!connected&&buffer.length===0&&error.code==='ECONNREFUSED'){refused=true;socket.destroy();if(closed)retryAfterClose();return}
+  clearTimeout(attemptTimer);socket.destroy();finish(false);
+ });
+ socket.once('close',()=>{closed=true;if(refused)retryAfterClose()});
+ socket.once('connect',()=>{
+  connected=true;
+  if(socket.localAddress!==source){clearTimeout(attemptTimer);socket.destroy();finish(false);return}
+  const host='lares-route-readiness.invalid';
+  socket.write('CONNECT '+host+':443 HTTP/1.1\r\nHost: '+host+':443\r\nProxy-Connection: close\r\n\r\n');
+ });
+ socket.on('data',chunk=>{buffer=Buffer.concat([buffer,chunk]);if(buffer.length>8192){clearTimeout(attemptTimer);socket.destroy();finish(false)}});
+ socket.once('end',()=>{
+  clearTimeout(attemptTimer);
+  const end=buffer.indexOf(Buffer.from('\r\n\r\n'));
+  const headers=end<0?'':buffer.subarray(0,end).toString('latin1');
+  const lines=headers.split('\r\n');
+  const valid=end>=0&&/^HTTP\/1\.[01] 403(?:[ \t].*)?$/.test(lines[0]||'')&&
+   !lines.slice(1).some(line=>/^x-lares-route-stage(?:[: \t]|$)/i.test(line.trim()))&&
+   !buffer.includes(Buffer.from('CI_PROXY_DESTINATION_OK'));
+  socket.destroy();finish(valid);
+ });
+}
+probe();"""
+
+
+def proxy_readiness_start_args(container_name, owner_token, network_name, source_ip, keeper_image):
+    source = ipaddress.ip_address(source_ip)
+    if not re.fullmatch(r"lares-outside-proof-[a-f0-9]{10}-proxy-ready", container_name) or \
+            not re.fullmatch(r"[a-f0-9]{32}", owner_token) or \
+            not re.fullmatch(r"lares-outside-proof-[a-f0-9]{10}", network_name) or \
+            source.version != 4 or not source.is_private or source.is_loopback or \
+            source.is_unspecified or source.is_multicast:
+        raise RuntimeError("proxy readiness probe coordinates are invalid")
+    return (
+        "docker", "run", "--rm", "--name", container_name,
+        "--label", "lares.proof.owner=" + owner_token,
+        "--network", network_name, "--ip", source_ip,
+        "--env", "FIXTURE_SOURCE_IP=" + source_ip,
+        "--read-only", "--cap-drop", "ALL", "--entrypoint", "node",
+        keeper_image, "-e", PROXY_READINESS_PROBE,
+    )
+
+
+def verify_proxy_readiness_target(proxy_container, owner_token, network_name, proxy_ip,
+                                  squid_image_id, egress, lifecycle):
+    facts = container_facts(proxy_container)
+    expected_mounts = {
+        (str(egress), "/config", False),
+        (lifecycle["maintenanceAdmission"]["hostDirectory"], "/run/lares-maintenance/admission", False),
+    }
+    mounts = {(item.get("Source"), item.get("Destination"), item.get("RW")) for item in facts["mounts"]} if facts else set()
+    if not facts or facts["labels"].get("lares.proof.owner") != owner_token or \
+            facts["running"] is not True or facts["imageId"] != squid_image_id or mounts != expected_mounts:
+        raise RuntimeError("owned deny-only proxy identity could not be verified")
+    raw_networks = command("docker", "inspect", "--format", "{{json .NetworkSettings.Networks}}", proxy_container)
+    try:
+        networks = json.loads(raw_networks)
+    except json.JSONDecodeError:
+        raise RuntimeError("owned deny-only proxy network could not be verified") from None
+    endpoint = networks.get(network_name) if isinstance(networks, dict) else None
+    aliases = endpoint.get("Aliases") if isinstance(endpoint, dict) else None
+    if not isinstance(networks, dict) or len(networks) != 1 or not isinstance(endpoint, dict) or \
+            endpoint.get("IPAddress") != proxy_ip or not isinstance(aliases, list) or \
+            "lares-egress-proxy" not in aliases:
+        raise RuntimeError("owned deny-only proxy network could not be verified")
+
+
 def record(label, ok):
     if not ok:
         raise RuntimeError("proof assertion failed: " + label)
@@ -221,6 +300,36 @@ def offline_proxy_admission_self_test():
                 "LARES_MAINTENANCE_EPOCH=1" not in args or
                 any("custody" in mount for mount in actual_mounts)):
             raise RuntimeError("proxy launch did not preserve the exact guarded admission contract")
+
+
+def offline_proxy_readiness_self_test():
+    """Check the deny-only readiness client's pinned identity, source and response contract."""
+    args = proxy_readiness_start_args("lares-outside-proof-0123456789-proxy-ready", "a" * 32,
+                                      "lares-outside-proof-0123456789", "192.0.2.14",
+                                      "lares-keeper:test@sha256:" + "b" * 64)
+    if args[:12] != ("docker", "run", "--rm", "--name", "lares-outside-proof-0123456789-proxy-ready",
+                     "--label", "lares.proof.owner=" + "a" * 32, "--network",
+                     "lares-outside-proof-0123456789", "--ip", "192.0.2.14", "--env") or \
+            args[12] != "FIXTURE_SOURCE_IP=192.0.2.14" or args[-2] != "-e" or \
+            args[-1] != PROXY_READINESS_PROBE or args[-3] != "lares-keeper:test@sha256:" + "b" * 64:
+        raise RuntimeError("deny-only readiness probe did not use its exact pinned fixture boundary")
+    required = ("host:'lares-egress-proxy'", "port:8888", "localAddress:source", "family:4",
+                "Date.now()+10000", "error.code==='ECONNREFUSED'", "socket.once('close'",
+                "buffer.length>8192", "HTTP\\/1\\.[01] 403", "CI_PROXY_DESTINATION_OK",
+                "x-lares-route-stage")
+    if any(value not in PROXY_READINESS_PROBE for value in required) or \
+            "X-Lares-Route-Stage" in PROXY_READINESS_PROBE:
+        raise RuntimeError("deny-only readiness response contract changed")
+    for invalid in (
+            ("bad-name", "a" * 32, "lares-outside-proof-0123456789", "192.0.2.14"),
+            ("lares-outside-proof-0123456789-proxy-ready", "not-an-owner", "lares-outside-proof-0123456789", "192.0.2.14"),
+            ("lares-outside-proof-0123456789-proxy-ready", "a" * 32, "lares-outside-proof-0123456789", "127.0.0.1")):
+        try:
+            proxy_readiness_start_args(*invalid, "lares-keeper:test@sha256:" + "b" * 64)
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("invalid deny-only readiness probe identity was accepted")
 
 
 def set_network_stage(stage):
@@ -1663,6 +1772,7 @@ def offline_image_store_self_test():
 
 if self_test_mode:
     offline_proxy_admission_self_test()
+    offline_proxy_readiness_self_test()
     offline_image_store_self_test()
     offline_cleanup_self_test()
     offline_network_diagnostics_self_test()
@@ -1707,12 +1817,13 @@ try:
     project = "outsideproof" + suffix
     db_container = network + "-db"
     proxy_container = network + "-proxy"
+    proxy_readiness_container = network + "-proxy-ready"
     peer_container = network + "-peer"
     role_container = "lares-outside-role-" + suffix
     generator_container = "lares-outside-generator-" + suffix
     agent = "fixture-agent"
     agent_container = "lares-" + agent
-    resource_names = [db_container, proxy_container, peer_container, worker_container,
+    resource_names = [db_container, proxy_container, proxy_readiness_container, peer_container, worker_container,
                       role_container, generator_container]
     set_network_stage("container-name-preflight")
     if any(container_facts(name) is not None for name in resource_names):
@@ -1895,6 +2006,13 @@ void(async()=>{try{const c=await p.connect();try{const r=await provisionEngineDa
             squid_ref, "-k", "parse", "-f", "/config/squid.conf")
     command(*outside_proxy_start_args(proxy_container, owner, network, ips["proxy"],
                                       squid_ref, egress, lifecycle))
+    verify_proxy_readiness_target(proxy_container, owner, network, ips["proxy"],
+                                  report["images"]["squid"]["imageId"], egress, lifecycle)
+    command(*proxy_readiness_start_args(proxy_readiness_container, owner, network, ips["source"], keeper_ref),
+            timeout=20)
+    if container_facts(proxy_readiness_container) is not None:
+        raise RuntimeError("deny-only proxy readiness client did not remove itself")
+    record("uniquely owned proxy returns an exact source-bound deny before the worker starts", True)
 
     phase = "compose-held-runtime"
     compose = f"""services:

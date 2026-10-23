@@ -147,42 +147,101 @@ export async function acknowledgeOutsideSquidStage(stage: string, sourceAddress:
     if (proxy.protocol !== 'http:' || proxy.hostname !== 'lares-egress-proxy' || proxy.port !== '8888' || proxy.username || proxy.password || proxy.pathname !== '/' || proxy.search || proxy.hash)
         throw new OutsideRouteAcknowledgementError('invalid-input');
     const host = `lares-route-${stage}.invalid`;
-    let socket: Socket;
-    try { socket = connect({ host: proxy.hostname, port: Number(proxy.port), localAddress: sourceAddress, family: 4 }); }
-    catch { throw new OutsideRouteAcknowledgementError('connection-error'); }
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-        await new Promise<void>((resolve, reject) => {
-            let buffer = Buffer.alloc(0), settled = false;
-            let connected = false;
-            const finish = (error?: OutsideRouteAcknowledgementError) => { if (settled) return; settled = true; error ? reject(error) : resolve(); };
-            timeout = setTimeout(() => {
-                const reason: OutsideRouteAcknowledgementFailure = !connected ? 'deadline-before-connect' :
-                    buffer.length === 0 ? 'deadline-no-response' : 'response-not-ended';
-                socket.destroy(); finish(new OutsideRouteAcknowledgementError(reason));
-            }, Math.max(1, deadlineAtMs - Date.now()));
-            socket.once('error', (error: NodeJS.ErrnoException) =>
-                finish(new OutsideRouteAcknowledgementError(outsideRouteSocketFailure(error.code))));
-            socket.once('connect', () => {
-                connected = true;
-                if (socket.localAddress !== sourceAddress) {
-                    socket.destroy(); finish(new OutsideRouteAcknowledgementError('source-mismatch')); return;
-                }
-                socket.write(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\nProxy-Connection: close\r\n\r\n`);
+    const request = `CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\nProxy-Connection: close\r\n\r\n`;
+    for (let attempt = 0; attempt < 5; attempt++) {
+        if (Date.now() >= deadlineAtMs) throw new OutsideRouteAcknowledgementError('deadline-before-connect');
+        if (attempt > 0) {
+            const remaining = deadlineAtMs - Date.now();
+            if (remaining < 50) throw new OutsideRouteAcknowledgementError('deadline-before-connect');
+            await wait(50);
+            if (Date.now() >= deadlineAtMs) throw new OutsideRouteAcknowledgementError('deadline-before-connect');
+        }
+        let socket: Socket;
+        try { socket = connect({ host: proxy.hostname, port: Number(proxy.port), localAddress: sourceAddress, family: 4 }); }
+        catch { throw new OutsideRouteAcknowledgementError('connection-error'); }
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+            const outcome = await new Promise<{ error?: OutsideRouteAcknowledgementError; retryableRefusal: boolean }>(resolve => {
+                let buffer = Buffer.alloc(0), settled = false;
+                let connected = false, requestWriteStarted = false, refusalAwaitingClose = false, closed = false;
+                const finish = (error?: OutsideRouteAcknowledgementError, retryableRefusal = false) => {
+                    if (settled) return;
+                    if (!error && Date.now() >= deadlineAtMs)
+                        error = new OutsideRouteAcknowledgementError(buffer.length === 0 ? 'deadline-no-response' : 'response-not-ended');
+                    settled = true;
+                    resolve({ error, retryableRefusal });
+                };
+                timeout = setTimeout(() => {
+                    const reason: OutsideRouteAcknowledgementFailure = !connected ? 'deadline-before-connect' :
+                        buffer.length === 0 ? 'deadline-no-response' : 'response-not-ended';
+                    socket.destroy(); finish(new OutsideRouteAcknowledgementError(reason));
+                }, Math.max(1, deadlineAtMs - Date.now()));
+                socket.once('error', (error: NodeJS.ErrnoException) => {
+                    if (settled) return;
+                    if (Date.now() >= deadlineAtMs) {
+                        finish(new OutsideRouteAcknowledgementError(!connected ? 'deadline-before-connect' :
+                            buffer.length === 0 ? 'deadline-no-response' : 'response-not-ended'));
+                        return;
+                    }
+                    const retryable = error.code === 'ECONNREFUSED' && !connected && !requestWriteStarted && buffer.length === 0;
+                    if (!retryable) {
+                        finish(new OutsideRouteAcknowledgementError(outsideRouteSocketFailure(error.code)));
+                        return;
+                    }
+                    refusalAwaitingClose = true;
+                    socket.destroy();
+                    if (closed) finish(new OutsideRouteAcknowledgementError('connection-refused'), true);
+                });
+                socket.once('close', () => {
+                    closed = true;
+                    if (refusalAwaitingClose) finish(new OutsideRouteAcknowledgementError('connection-refused'), true);
+                });
+                socket.once('connect', () => {
+                    if (settled) return;
+                    if (refusalAwaitingClose) {
+                        refusalAwaitingClose = false;
+                        socket.destroy(); finish(new OutsideRouteAcknowledgementError('connection-error')); return;
+                    }
+                    if (Date.now() >= deadlineAtMs) {
+                        socket.destroy(); finish(new OutsideRouteAcknowledgementError('deadline-before-connect')); return;
+                    }
+                    connected = true;
+                    if (socket.localAddress !== sourceAddress) {
+                        socket.destroy(); finish(new OutsideRouteAcknowledgementError('source-mismatch')); return;
+                    }
+                    requestWriteStarted = true;
+                    try { socket.write(request); }
+                    catch { socket.destroy(); finish(new OutsideRouteAcknowledgementError('connection-error')); }
+                });
+                socket.on('data', (chunk: Buffer) => {
+                    if (settled) return;
+                    if (Date.now() >= deadlineAtMs) {
+                        socket.destroy(); finish(new OutsideRouteAcknowledgementError(buffer.length === 0 ? 'deadline-no-response' : 'response-not-ended')); return;
+                    }
+                    buffer = Buffer.concat([buffer, chunk]);
+                    if (buffer.length > 8192) { finish(new OutsideRouteAcknowledgementError('response-too-large')); return; }
+                    if (buffer.indexOf('\r\n\r\n') < 0) return;
+                });
+                socket.once('end', () => {
+                    if (settled) return;
+                    if (Date.now() >= deadlineAtMs) {
+                        finish(new OutsideRouteAcknowledgementError(buffer.length === 0 ? 'deadline-no-response' : 'response-not-ended')); return;
+                    }
+                    finish(outsideRouteStageAcknowledged(buffer, stage) ? undefined :
+                        new OutsideRouteAcknowledgementError(outsideRouteAcknowledgementFailure(buffer, stage)));
+                });
             });
-            socket.on('data', (chunk: Buffer) => {
-                buffer = Buffer.concat([buffer, chunk]);
-                if (buffer.length > 8192) { finish(new OutsideRouteAcknowledgementError('response-too-large')); return; }
-                if (buffer.indexOf('\r\n\r\n') < 0) return;
-            });
-            socket.once('end', () => finish(outsideRouteStageAcknowledged(buffer, stage) ? undefined :
-                new OutsideRouteAcknowledgementError(outsideRouteAcknowledgementFailure(buffer, stage))));
-        });
-    } catch (error) {
-        if (error instanceof OutsideRouteAcknowledgementError) throw error;
-        throw new OutsideRouteAcknowledgementError('connection-error');
+            if (!outcome.error) {
+                if (Date.now() >= deadlineAtMs)
+                    throw new OutsideRouteAcknowledgementError('response-not-ended');
+                return;
+            }
+            if (!outcome.retryableRefusal || attempt === 4) throw outcome.error;
+        } finally {
+            if (timeout) clearTimeout(timeout);
+            if (!socket.destroyed) socket.destroy();
+        }
     }
-    finally { if (timeout) clearTimeout(timeout); if (!socket.destroyed) socket.destroy(); }
 }
 function privateIpv4(address: string): boolean {
     if (isIP(address) !== 4) return false;
