@@ -400,7 +400,7 @@ export class AgentLifecycle {
         try { const fd = openSync(controlSecret, 'wx', 0o600); try { writeFileSync(fd, randomBytes(32).toString('hex')); fsyncSync(fd); } finally { closeSync(fd); } }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
         this.provisionSecret(controlSecret);
-        for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, a.runtime.workflowPasswordFile, ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a), ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)])
+        for (const path of [a.runtime.gatewayKeyFile!, a.runtime.passwordFile, a.runtime.workflowPasswordFile, ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a), ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)])
             this.provisionSecret(path);
         await this.publishCompose({ name, definition: d });
         await this.docker.stop(name); // Explicit action announces restart; no invented drain guarantee.
@@ -428,7 +428,7 @@ export class AgentLifecycle {
             this.refuseUnknownGrants(name, row.applied_definition);
             const a = await this.connections(this.container(row, row.applied_definition, null, await this.notionGranted()), false);
             verifyBindingSources(a.bindings);
-            for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, a.runtime.workflowPasswordFile, join(this.paths.secretsDir, `${name}-runtime-control`),
+            for (const path of [a.runtime.gatewayKeyFile!, a.runtime.passwordFile, a.runtime.workflowPasswordFile, join(this.paths.secretsDir, `${name}-runtime-control`),
                 ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a),
                 ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)]) {
                 const st = lstatSync(path);

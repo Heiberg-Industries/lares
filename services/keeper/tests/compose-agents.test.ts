@@ -30,6 +30,26 @@ it('mounts the Keeper model-purpose runtime socket directory read-only only for 
  const creative=parse(renderAgentsCompose([agent],{...opts,modelPurposeRuntimeDir:path})).services['lares-bookkeeper'];
  expect(creative.volumes).not.toContainEqual(expect.objectContaining({source:path}));
 });
+it('renders the guarded managed transport only for an owned chief and omits the legacy key entirely',()=>{
+ const chief={...agent,role:'chief-of-staff' as const,incarnation:'22222222-2222-4222-8222-222222222222',runtime:{...agent.runtime,gatewayKeyFile:undefined}};
+ const chiefOpts={...opts,imageByRole:{'chief-of-staff':image},modelPurposeRuntimeDir:'/srv/lares/run/model-purpose'};
+ const doc=parse(renderAgentsCompose([chief],chiefOpts)),service=doc.services['lares-bookkeeper'];
+ expect(service.environment).not.toHaveProperty('GATEWAY_KEY_FILE');
+ expect(service.environment.LARES_MODEL_PURPOSE_RUNTIME_SOCKET).toBe('/run/lares/model-purpose/model-purpose.sock');
+ expect(service.secrets).not.toContainEqual(expect.objectContaining({target:'gateway-key'}));
+ expect(service.volumes).toContainEqual({type:'bind',source:chiefOpts.modelPurposeRuntimeDir,target:'/run/lares/model-purpose',read_only:true,bind:{create_host_path:false}});
+ expect(service.secrets).toContainEqual({source:'bookkeeper-runtime-control',target:'runtime-control'});
+ expect(JSON.stringify(doc)).not.toContain('bookkeeper-gateway-key');
+ expect(JSON.stringify(doc)).not.toContain('managed-legacy-key-bytes-must-not-render');
+});
+it('refuses the managed transport without its chief role, valid incarnation, and Keeper socket mount',()=>{
+ const chief={...agent,role:'chief-of-staff' as const,incarnation:'22222222-2222-4222-8222-222222222222',runtime:{...agent.runtime,gatewayKeyFile:undefined}};
+ const chiefOpts={...opts,imageByRole:{'chief-of-staff':image},modelPurposeRuntimeDir:'/srv/lares/run/model-purpose'};
+ expect(()=>renderAgentsCompose([{...agent,runtime:{...agent.runtime,gatewayKeyFile:undefined}}],opts)).toThrow('Managed model-purpose transport');
+ expect(()=>renderAgentsCompose([{...chief,incarnation:undefined}],chiefOpts)).toThrow('Managed model-purpose transport');
+ expect(()=>renderAgentsCompose([{...chief,incarnation:'not-a-uuid'}],chiefOpts)).toThrow('Managed model-purpose transport');
+ expect(()=>renderAgentsCompose([chief],{...chiefOpts,modelPurposeRuntimeDir:undefined})).toThrow('Managed model-purpose transport');
+});
 it('hands every agent the installation model prefix and refuses a missing or invalid one',()=>{
  expect(parse(renderAgentsCompose([agent],{...opts,modelPrefix:'home'})).services['lares-bookkeeper'].environment.LARES_MODEL_PREFIX).toBe('home');
  for(const bad of ['','Home','a-b','installation',undefined as unknown as string])
