@@ -902,10 +902,7 @@ def prove_update_history_client_lease() -> None:
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
-                locks = operator_query(compose_files,
-                    "SELECT count(*)::text FROM pg_locks WHERE relation='" + table +
-                    "'::regclass AND mode='AccessExclusiveLock' AND granted AND pid<>pg_backend_pid()",
-                    check=False)
+                locks = observe_update_client_lock(compose_files, table)
                 if locks == "1":
                     break
                 if blocker_cli.poll() is not None:
@@ -1160,10 +1157,22 @@ def operator_call(compose_args: list[str], program: list[str], *, input_data: st
     return result
 
 
-def operator_query(compose_args: list[str], sql: str, *, check: bool = True) -> str:
+def operator_query(compose_args: list[str], sql: str, *, check: bool = True,
+                   database: str = "postgres") -> str:
     result = operator_call(compose_args, ["psql", "-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1",
-                                         "-U", "lares_operator", "-d", "postgres", "-c", sql], check=check)
+                                         "-U", "lares_operator", "-d", database, "-c", sql], check=check)
     return result.stdout.strip()
+
+
+def update_client_lock_query(table: str) -> str:
+    return ("SELECT count(*)::text FROM pg_locks WHERE database=(SELECT oid FROM pg_database "
+            "WHERE datname=current_database()) AND relation='" + table +
+            "'::regclass AND mode='AccessExclusiveLock' AND granted AND pid<>pg_backend_pid()")
+
+
+def observe_update_client_lock(compose_args: list[str], table: str) -> str:
+    return operator_query(compose_args, update_client_lock_query(table), check=False,
+                          database="lares_state")
 
 
 def operator_script(compose_args: list[str], script: str) -> subprocess.CompletedProcess:

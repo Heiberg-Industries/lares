@@ -46,6 +46,43 @@ class MaintenanceAdmissionTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_update_lock_observer_uses_engine_database_and_database_scoped_relation(self) -> None:
+        source = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"))
+        wanted = {"operator_query", "update_client_lock_query", "observe_update_client_lock"}
+        functions = [node for node in source.body
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted]
+        self.assertEqual({node.name for node in functions}, wanted)
+        calls: list[tuple[list[str], list[str], bool]] = []
+
+        def operator_call(compose_args: list[str], program: list[str], *, check: bool = True):
+            calls.append((compose_args, program, check))
+            return SimpleNamespace(stdout="1\n")
+
+        namespace = {"operator_call": operator_call}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), str(IMAGE_PROBE), "exec"), namespace)
+
+        compose_args = ["-f", "normal-compose.yaml"]
+        self.assertEqual(namespace["operator_query"](compose_args, "SELECT 1"), "1")
+        self.assertEqual(calls[-1][1][calls[-1][1].index("-d") + 1], "postgres")
+        self.assertTrue(calls[-1][2])
+
+        self.assertEqual(namespace["observe_update_client_lock"](compose_args, "update_history"), "1")
+        observed_args, observed_program, observed_check = calls[-1]
+        self.assertEqual(observed_args, compose_args)
+        self.assertFalse(observed_check)
+        self.assertEqual(observed_program[observed_program.index("-d") + 1], "lares_state")
+        sql = observed_program[observed_program.index("-c") + 1]
+        self.assertIn("database=(SELECT oid FROM pg_database WHERE datname=current_database())", sql)
+        self.assertIn("relation='update_history'::regclass", sql)
+        self.assertIn("mode='AccessExclusiveLock' AND granted AND pid<>pg_backend_pid()", sql)
+
+        proof = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "prove_update_history_client_lease")
+        nested_calls = [node for node in ast.walk(proof) if isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name)
+                        and node.func.id == "observe_update_client_lock"]
+        self.assertTrue(nested_calls, "the actual lock polling loop must use the tested observer")
+
     def _installed_bundle(self) -> tuple[Path, Path]:
         prefix = self.root / "installed-host"
         prefix.mkdir()
