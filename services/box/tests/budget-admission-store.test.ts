@@ -33,7 +33,7 @@ import {requireConsoleSessionBinding} from '../../../packages/agent-kit/src/cons
 import {JournalBudgetFinancialWriter} from '../../keeper/lib/budget-financial-writer.js';
 import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
 import {serveModelPurposeBroker,modelPurposeDigest,modelPurposeMac,signModelPurposeRequest,type ModelPurposeRequest} from '../../keeper/lib/model-purpose-broker.js';
-import {MODEL_PURPOSE_EMPTY_DIGEST,modelPurposeAckFields,modelPurposeEqualMac,modelPurposeRuntimeRequestFields} from '../../../packages/agent-kit/src/model-purpose-protocol.js';
+import {MODEL_PURPOSE_EMPTY_DIGEST,modelPurposeAckFields,modelPurposeEqualMac,modelPurposeRuntimeRequestFields,parseModelPurposeAdmissionResponse} from '../../../packages/agent-kit/src/model-purpose-protocol.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
 import {observeFinancialDatabase} from '../../keeper/lib/financial-continuity.js';
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
@@ -128,7 +128,12 @@ async function purposeRequestAdmission(files:ReturnType<typeof purposeBrokerFile
   const capsule=signModelPurposeRequest(files.consoleKey,request,String(challenge.challenge),String(challenge.challengeMac),Number(challenge.expiresAt));
   const receipt={method:request.method,path:request.path,rawBodyHash:request.rawBodyHash,requestId:request.requestId,purpose:request.purpose,...(request.resume?{resume:request.resume}:{})};
   const admitted=await purposeSocketRequest(files.runtimeSocket,purposeRuntimeEnvelope('request.admit',{capsule,receipt},files.runtimeKey),files.runtimeKey);
-  expect(admitted.ok).toBe(true);return String(admitted.receipt);
+  expect(admitted.ok).toBe(true);
+  expect(Object.keys(admitted).sort()).toEqual(['expiresAt','ok','pendingReceipt','responseMac','responseOutcomeDigest','responsePayloadDigest','responseRequestDigest']);
+  expect(admitted.receipt).toBeUndefined();
+  const {ok:_ok,responseMac:_mac,responseRequestDigest:_requestDigest,responseOutcomeDigest:_outcomeDigest,responsePayloadDigest:_payloadDigest,...result}=admitted;
+  expect(Object.keys(result).sort()).toEqual(['expiresAt','pendingReceipt']);
+  const parsed=parseModelPurposeAdmissionResponse(result);expect(parsed).toEqual(result);return parsed!.pendingReceipt;
 }
 function purposeRequest(overrides:Partial<ModelPurposeRequest>={}):ModelPurposeRequest{
   return {agent:'helper',incarnation,session:context().session.id,member:'member-a',admissionNonce:nonce('member-a'),method:'POST',path:'/eve/v1/session',

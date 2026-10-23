@@ -268,6 +268,142 @@ class CompiledChiefKeylessCommandTests(unittest.TestCase):
                           "LITELLM_MASTER_KEY", "GATEWAY_MASTER_KEY_FILE"} & env_values.keys())
 
 
+class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+
+    def test_two_member_client_marks_phases_without_changing_signed_request_or_refusals(self) -> None:
+        client_source = next(node.args[0].value for node in ast.walk(self.tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "write_text" and node.args and isinstance(node.args[0], ast.Constant)
+            and "FIRST_USE_PHASE_FILE" in node.args[0].value)
+        phases = ("imports", "session-create", "session-bind", "capsule-sign", "send",
+                  "turn-result", "refusalchecks", "complete")
+        positions = [client_source.index("mark(" + repr(phase) + ")") for phase in phases]
+        self.assertEqual(positions, sorted(positions))
+        for contract in (
+            "member='first-use-member-a'", "await client.sessions.create({headers})", "await bindConsoleSession(",
+            "await signPrivateModelPurposeRequest(request)", "await session.send(message,{headers:sendHeaders})",
+            "await pending.result()", "await client.fetch(path,{method:'POST',headers:sendHeaders,body})",
+            "'x-lares-member-id':'first-use-member-b'", "response:result.message", "sessionId:session.state.sessionId",
+            "fs.writeFileSync(temp,JSON.stringify({phase}),{mode:0o600})", "fs.renameSync(temp,phaseFile)",
+            "catch{process.exitCode=1}",
+        ):
+            self.assertIn(contract, client_source)
+        self.assertNotIn("console.error", client_source)
+        runner_call = next(node for node in ast.walk(self.tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "client_result" for target in node.targets))
+        self.assertEqual(ast.unparse(runner_call.value), "invoke_compiled_client()")
+
+    def test_phase_reader_is_strict_bounded_and_redacts_invalid_content(self) -> None:
+        phase_constant = next(node for node in self.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASES" for target in node.targets))
+        summary = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
+            and node.name == "safe_compiled_client_phase_summary")
+        namespace = {"json": json}
+        module = ast.fix_missing_locations(ast.Module(body=[phase_constant, summary], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+        parse = namespace["safe_compiled_client_phase_summary"]
+        self.assertEqual(parse('{"phase":"capsule-sign","valid":true}', 0),
+                         {"phase": "capsule-sign", "markerValid": True})
+        secret = "PRIVATE-SESSION-OR-ERROR-CANARY"
+        for raw, code in (
+            ('{"phase":"unknown-phase","valid":true}', 0),
+            ('{"phase":"send","valid":true,"token":"' + secret + '"}', 0),
+            ('{"phase":"send","valid":false}', 0),
+            ('{"phase":"send","valid":true}' + (" " * 129), 0),
+            ('{"phase":"send","valid":true}', 1),
+            (secret, 0),
+        ):
+            result = parse(raw, code)
+            self.assertEqual(result, {"phase": "unknown", "markerValid": False})
+            self.assertNotIn(secret, json.dumps(result))
+
+    def test_container_reader_and_import_initializer_are_fixed_and_bounded(self) -> None:
+        phases = next(node for node in self.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASES" for target in node.targets))
+        phase_file = next(node for node in self.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASE_FILE" for target in node.targets))
+        initializer = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
+            and node.name == "initialize_compiled_client_phase")
+        reader = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
+            and node.name == "compiled_client_phase_summary")
+        safe = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
+            and node.name == "safe_compiled_client_phase_summary")
+        namespace = {"json": json}
+        module = ast.fix_missing_locations(ast.Module(body=[phases, phase_file, initializer, reader, safe], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+        observed = {}
+        namespace["run"] = lambda *args, **kwargs: observed.update(args=args, kwargs=kwargs) or type(
+            "Result", (), {"returncode": 0, "stdout": '{"phase":"send","valid":true}'}
+        )()
+        self.assertTrue(namespace["initialize_compiled_client_phase"]("fixture-chief"))
+        self.assertIn('{"phase":"imports"}', observed["args"][observed["args"].index("-e") + 1])
+        self.assertEqual(namespace["compiled_client_phase_summary"]("fixture-chief"),
+                         {"phase": "send", "markerValid": True})
+        script = observed["args"][observed["args"].index("-e") + 1]
+        for contract in ("/tmp/first-use-phase-first", "s.size>128", "Object.keys(x).length===1",
+                         "allowed.includes(x.phase)", "JSON.stringify(out)", "phase:'unknown'"):
+            self.assertIn(contract, script)
+        secret = "PRIVATE-SESSION-OR-ERROR-CANARY"
+        namespace["run"] = lambda *args, **kwargs: type("Result", (), {"returncode": 1, "stdout": secret})()
+        failed = namespace["compiled_client_phase_summary"]("fixture-chief")
+        self.assertEqual(failed, {"phase": "unknown", "markerValid": False})
+        self.assertNotIn(secret, json.dumps(failed))
+
+    def test_nonzero_and_timeout_keep_only_safe_phase_and_counts(self) -> None:
+        runner = next(node for node in ast.walk(self.tree) if isinstance(node, ast.FunctionDef)
+                      and node.name == "invoke_compiled_client")
+        namespace = {
+            "initialize_compiled_client_phase": lambda _name: True,
+            "COMPILED_CLIENT_PHASE_FILE": "/tmp/first-use-phase-first",
+            "compiled_client_phase_summary": lambda _name: {"phase": "capsule-sign", "markerValid": True},
+            "fixed_client_failure_observations": lambda: {
+                "upstreamDispatchCount": 2,
+                "financialDurableCounts": {"attempts": 3, "grants": 3, "settled": 3},
+            },
+            "chief_name": "fixture-chief", "proof": {}, "RuntimeError": RuntimeError,
+        }
+        module = ast.fix_missing_locations(ast.Module(body=[runner], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+        secret = "PRIVATE-SESSION-OR-ERROR-CANARY"
+        namespace["run"] = lambda *args, **kwargs: type("Result", (), {"returncode": 17, "stdout": secret})()
+        with self.assertRaisesRegex(RuntimeError, "Compiled signed request failed"):
+            namespace["invoke_compiled_client"]()
+        diagnostic = namespace["proof"]["firstUseClientDiagnostics"]
+        self.assertEqual(diagnostic, {
+            "phase": "capsule-sign", "markerValid": True, "timedOut": False, "exitCode": 17,
+            "upstreamDispatchCount": 2,
+            "financialDurableCounts": {"attempts": 3, "grants": 3, "settled": 3},
+        })
+        self.assertNotIn(secret, json.dumps(namespace["proof"]))
+        namespace["proof"].clear()
+        namespace["run"] = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bounded timeout"))
+        with self.assertRaisesRegex(RuntimeError, "Compiled signed request exceeded its time bound"):
+            namespace["invoke_compiled_client"]()
+        self.assertEqual(namespace["proof"]["firstUseClientDiagnostics"]["timedOut"], True)
+
+    def test_failure_observation_exports_only_bounded_counts(self) -> None:
+        observe = next(node for node in ast.walk(self.tree) if isinstance(node, ast.FunctionDef)
+                       and node.name == "fixed_client_failure_observations")
+        namespace = {
+            "upstream_calls": lambda: 3,
+            "native_snapshot": lambda: {"attempts": 7, "grants": 6, "settled": 4,
+                                         "liability": "9000.01", "recovery_epoch": "PRIVATE", "endpoint_generation": 77},
+        }
+        module = ast.fix_missing_locations(ast.Module(body=[observe], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+        result = namespace["fixed_client_failure_observations"]()
+        self.assertEqual(result, {
+            "upstreamDispatchCount": 3,
+            "financialDurableCounts": {"attempts": 7, "grants": 6, "settled": 4},
+        })
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertNotIn("9000.01", json.dumps(result))
+
+
 class CompiledChiefStartupDiagnosticTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

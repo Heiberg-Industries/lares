@@ -130,7 +130,7 @@ describe("chief-of-staff route auth", () => {
 
   it("admits the exact raw human receipt in onMessage and the approval receipt in onRequest", async () => {
     const { basicFromSecretFile, onPrivateConsoleMessage } = await import("../agent/channels/eve.js");
-    purposeRequest.mockResolvedValue({ pendingReceipt: "p".repeat(43) });
+    purposeRequest.mockResolvedValue({ pendingReceipt: "p".repeat(43), expiresAt: Date.now() + 30_000 });
     const payload = (request: Record<string, unknown>) => `${Buffer.from(JSON.stringify({ version: 1, request })).toString("base64url")}.signature`;
     const authHeaders = (purpose: string) => ({ authorization: `Basic ${Buffer.from(`eve:s3cret-route-password`).toString("base64")}`,
       "x-lares-member-id": "member-1", "x-lares-admission": "n".repeat(43), "x-lares-purpose": purpose,
@@ -162,6 +162,19 @@ describe("chief-of-staff route auth", () => {
       receipt: expect.objectContaining({ method: "POST", path: "/eve/v1/session/session-1", requestId: "m".repeat(43), purpose: "resume",
         resume: { requestId: "approval-card", optionId: "approve" } }),
     }));
+  });
+
+  it("fails closed on the legacy receipt-only admission response", async () => {
+    const { basicFromSecretFile, onPrivateConsoleMessage } = await import("../agent/channels/eve.js");
+    purposeRequest.mockResolvedValue({ receipt: "p".repeat(43), expiresAt: Date.now() + 30_000 });
+    const body = '{"message":"exact raw human"}';
+    const capsule = `${Buffer.from(JSON.stringify({ version: 1, request: { purpose: "human", requestId: "h".repeat(43) } })).toString("base64url")}.signature`;
+    const request = new Request("https://chief-of-staff.test/eve/v1/session/session-1", { method: "POST", body,
+      headers: { authorization: `Basic ${Buffer.from(`eve:s3cret-route-password`).toString("base64")}`,
+        "x-lares-member-id": "member-1", "x-lares-admission": "n".repeat(43), "x-lares-purpose": "human",
+        "x-lares-model-purpose-required": "1", "x-lares-model-capsule": capsule } });
+    const auth = await basicFromSecretFile(request);
+    await expect(onPrivateConsoleMessage({ eve: { caller: auth as never, request } }, JSON.parse(body).message)).rejects.toThrow("Model purpose authority is not available");
   });
 
   it("refuses a marked model-purpose request if its capsule is missing", async () => {

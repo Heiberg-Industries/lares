@@ -200,7 +200,7 @@ async function main(): Promise<void> {
             if(nativeCustody&&consumer&&modelPurposeRuntimeDir){
                 try{
                     const transportStop=await serveModelPurposeTransport({socket:DEFAULT_MODEL_PURPOSE_GATEWAY_SOCKET,runtimeSecretsDir:config.secretsDir,
-                        custody:nativeCustody,ticketPool:modelPurposePool});
+                        custody:nativeCustody,ticketPool:consumer.pool});
                     modelPurposeTransportReady=true;
                     stops.push(async()=>{await transportStop();await brokerStop();});
                 }catch(error){await brokerStop();throw error;}
