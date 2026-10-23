@@ -1,10 +1,11 @@
 /** Unregistered storage for third-party bearer credentials. It has no network or model API. */
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { closeSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { constants } from "node:fs";
-import { isIP } from "node:net";
+import { isIP, type Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import type { Pool, PoolClient } from "pg";
+import { Client, ProxyAgent, request, type Dispatcher } from "undici";
 import { requireDefinitionNamespace, withDefinitionNamespace } from "./definition-namespace.js";
 import type { AgentLifecycle } from "./lifecycle.js";
 import type { SourceBinding, SourcePool } from "@lares/agent-kit/console-source-transaction";
@@ -68,9 +69,36 @@ type OutsideClaimIdentityState = {
   headConsentGeneration: number;
   consentGeneration: number;
   credentialRevision: number;
+  requestHash: string;
   routePolicyHash: string;
   deadlineAtMs: number;
 };
+type OutsideJson = null | boolean | number | string | OutsideJson[] | { [key: string]: OutsideJson };
+type OutsideListedTool = { name: string; description?: string; inputSchema: { [key: string]: OutsideJson } };
+type OutsideDiscoveryDocument = { protocolVersion: '2025-06-18'; serverInfo: { name: string; version: string }; tools: OutsideListedTool[] };
+const DISCOVERY_PROFILE = Object.freeze({
+  version: 2,
+  protocolVersion: '2025-06-18',
+  parser: 'strict-json-sse-v1',
+  operationTimeoutMs: 8000,
+  transportTimeoutMs: 5000,
+  connectTimeoutMs: 1000,
+  idleTimeoutMs: 2000,
+  cleanupReserveMs: 1000,
+  responseBytes: 65536,
+  totalResponseBytes: 262144,
+  headerBytes: 8192,
+  resultBytes: 65536,
+  maxPages: 10,
+  maxPosts: 12,
+  maxCursorBytes: 1024,
+  maxJsonDepth: 16,
+  maxTools: 256,
+  maxToolNameBytes: 128,
+  maxRequestBytes: 16384,
+  maxSessionIdBytes: 1024,
+  maxCredentialBytes: 4096,
+});
 export class OutsideCustodyRecoveryRequired extends Error {
   constructor(readonly operationId: string) { super(REQUEST_REFUSED); this.name = "OutsideCustodyRecoveryRequired"; }
 }
@@ -178,6 +206,26 @@ function sealWithAad(key: Buffer, plaintext: Buffer, associated: Buffer): { nonc
   return { nonce, ciphertext };
 }
 function sealBound(key:Buffer,plaintext:Buffer,coordinates:BoundCoordinates){return sealWithAad(key,plaintext,boundAad(coordinates));}
+function openBound(key:Buffer,nonce:Buffer,ciphertext:Buffer,coordinates:BoundCoordinates):Buffer{
+  if(!Buffer.isBuffer(key)||key.length!==32||!Buffer.isBuffer(nonce)||nonce.length!==12||
+      !Buffer.isBuffer(ciphertext)||ciphertext.length<17||ciphertext.length>DISCOVERY_PROFILE.maxCredentialBytes+16)return denied();
+  const decipher=createDecipheriv('aes-256-gcm',key,nonce);
+  decipher.setAAD(boundAad(coordinates));
+  decipher.setAuthTag(ciphertext.subarray(ciphertext.length-16));
+  return Buffer.concat([decipher.update(ciphertext.subarray(0,ciphertext.length-16)),decipher.final()]);
+}
+function sealDiscoveryResult(key:Buffer,plaintext:Buffer,coordinates:{ownerMemberId:string;accountId:string;agentName:string;
+  connectionName:string;requestId:string;claimOperationId:string;resultOperationId:string;generation:number;
+  credentialRevision:number;consentGeneration:number;policyHash:string}):{nonce:Buffer;ciphertext:Buffer}{
+  if(!Buffer.isBuffer(key)||key.length!==32||!Buffer.isBuffer(plaintext)||plaintext.length<1||plaintext.length>DISCOVERY_PROFILE.resultBytes)return denied();
+  if(!uuid.safeParse(coordinates.accountId).success||!uuid.safeParse(coordinates.requestId).success||
+      !uuid.safeParse(coordinates.claimOperationId).success||!uuid.safeParse(coordinates.resultOperationId).success||
+      !/^[a-f0-9]{64}$/.test(coordinates.policyHash))return denied();
+  const aadBytes=Buffer.from(canonicalJson(['lares-outside-discovery-result-v1',coordinates]));
+  const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce);
+  cipher.setAAD(aadBytes);
+  return {nonce,ciphertext:Buffer.concat([cipher.update(plaintext),cipher.final(),cipher.getAuthTag()])};
+}
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -187,16 +235,99 @@ function canonicalJson(value: unknown): string {
   }
   return denied();
 }
+function discoveryEndpoint(value:string):URL{
+  if(typeof value!=='string'||value.length<1||Buffer.byteLength(value)>8192)return denied();
+  let url:URL;
+  try{url=new URL(value);}catch{return denied();}
+  if(url.href!==value||url.protocol!=='https:'||url.username||url.password||url.port&&url.port!=='443'||url.hash||
+      !url.hostname||url.hostname.endsWith('.invalid'))return denied();
+  return url;
+}
+function assertBoundedJson(value:unknown,depth=0):asserts value is OutsideJson{
+  if(depth>DISCOVERY_PROFILE.maxJsonDepth)return denied();
+  if(value===null||typeof value==='string'||typeof value==='boolean')return;
+  if(typeof value==='number'&&Number.isFinite(value))return;
+  if(Array.isArray(value)){for(const item of value)assertBoundedJson(item,depth+1);return;}
+  if(value!==null&&typeof value==='object'){
+    for(const item of Object.values(value as Record<string,unknown>))assertBoundedJson(item,depth+1);
+    return;
+  }
+  return denied();
+}
+function outsideIdentityText(value:unknown,maxBytes:number):string{
+  if(typeof value!=='string'||value.length<1||Buffer.byteLength(value)>maxBytes||/[\x00-\x1f\x7f]/.test(value))return denied();
+  return value;
+}
+function projectOutsideServerInfo(value:OutsideJson):OutsideDiscoveryDocument['serverInfo']{
+  if(!value||Array.isArray(value)||typeof value!=='object')return denied();
+  return {name:outsideIdentityText(value.name,128),version:outsideIdentityText(value.version,128)};
+}
+function outsideHeadersSize(headers:Record<string,string|string[]|undefined>):number{
+  let size=0;
+  for(const [name,value] of Object.entries(headers)){
+    if(value===undefined)continue;
+    for(const item of Array.isArray(value)?value:[value])size+=Buffer.byteLength(name)+2+Buffer.byteLength(item)+2;
+    if(size>DISCOVERY_PROFILE.headerBytes)return denied();
+  }
+  return size;
+}
+function parseOutsideSse(payload:Buffer,expectedId:number):OutsideJson{
+  const text=new TextDecoder('utf-8',{fatal:true}).decode(payload);
+  const normalized=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+  const blocks=normalized.split('\n\n');
+  if(blocks.length!==2||blocks[1]!==''||!blocks[0])return denied();
+  let event='message';const data:string[]=[];let sawEvent=false;
+  for(const line of blocks[0]!.split('\n')){
+    if(!line)continue;
+    if(line.startsWith(':'))return denied();
+    const colon=line.indexOf(':');const field=colon<0?line:line.slice(0,colon);
+    const raw=colon<0?'':line.slice(colon+1);const fieldValue=raw.startsWith(' ')?raw.slice(1):raw;
+    if(field==='event'&&!sawEvent){event=fieldValue;sawEvent=true;}
+    else if(field==='data')data.push(fieldValue);
+    else return denied();
+  }
+  if(event!=='message'||data.length<1)return denied();
+  const parsed=JSON.parse(data.join('\n')) as unknown;
+  assertBoundedJson(parsed);
+  return requireOutsideRpc(parsed,expectedId);
+}
+function requireOutsideRpc(value:unknown,expectedId:number):OutsideJson{
+  assertBoundedJson(value);
+  if(!value||Array.isArray(value)||typeof value!=='object')return denied();
+  const response=value as Record<string,OutsideJson>;
+  if(response.jsonrpc!=='2.0'||response.id!==expectedId||!Object.hasOwn(response,'result')||Object.hasOwn(response,'error')||
+      Object.hasOwn(response,'method')||Object.hasOwn(response,'params')||Object.keys(response).some(key=>!['jsonrpc','id','result'].includes(key)))return denied();
+  return response.result!;
+}
+function parseOutsideJson(payload:Buffer,expectedId:number):OutsideJson{
+  const value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(payload)) as unknown;
+  return requireOutsideRpc(value,expectedId);
+}
+function outsideSessionId(value:string|undefined):string|undefined{
+  if(value===undefined)return undefined;
+  if(Buffer.byteLength(value)<1||Buffer.byteLength(value)>DISCOVERY_PROFILE.maxSessionIdBytes||
+      !/^[\x20-\x7e]+$/.test(value))return denied();
+  return value;
+}
+function outsideBearer(value:Buffer):string{
+  if(!Buffer.isBuffer(value)||value.length<1||value.length>DISCOVERY_PROFILE.maxCredentialBytes)return denied();
+  const token=value.toString('ascii');
+  if(!/^[A-Za-z0-9._~+/-]+=*$/.test(token)||!Buffer.from(token,'ascii').equals(value))return denied();
+  return token;
+}
 function outsideDiscoveryPolicyHash(capture: import('@lares/agent-kit/grant-store').OutsideUseCapture,
   input:{ownerMemberId:string;accountId:string;agentName:string;connectionName:string;destination:string;
     route:{policyHash:string;sourceAddress:string;proxyUrl:string};purpose:string}): string {
   const {ownerMemberId,accountId,agentName,connectionName,destination,route,purpose}=input;
+  const endpoint=discoveryEndpoint(destination);
   if(typeof purpose!=='string'||purpose.trim().length<1||purpose.length>200||purpose.trim()!==purpose||
       !/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(ownerMemberId)||!uuid.safeParse(accountId).success||
       !/^([a-z][a-z0-9-]{1,30})$/.test(agentName)||!/^([a-z][a-z0-9-]{1,30})$/.test(connectionName)||
       typeof destination!=='string'||destination.length<1||Buffer.byteLength(destination)>8192||
       !/^[a-f0-9]{64}$/.test(route.policyHash)||isIP(route.sourceAddress)!==4||route.proxyUrl!=='http://lares-egress-proxy:8888/') return denied();
-  return createHash('sha256').update(canonicalJson({version:1,purpose,ownerMemberId,accountId,agentName,connectionName,endpoint:destination,capture,route})).digest('hex');
+  if(endpoint.href!==destination)return denied();
+  return createHash('sha256').update(canonicalJson({version:DISCOVERY_PROFILE.version,profile:DISCOVERY_PROFILE,purpose,
+    ownerMemberId,accountId,agentName,connectionName,endpoint:destination,capture,route})).digest('hex');
 }
 function requestHash(kind: OutsideOperationKind, accountId: string, memberId:string, resourceId:string, expectedGeneration: number,
   revision: number | null, callerConsentGeneration:number|null, authorityRevision:number, secret?: Buffer): Buffer {
@@ -310,10 +441,16 @@ export class OutsideCustodyStore {
     expectedGeneration:number;expectedCandidateRevision:number|null;expectedDefinitionHash:string;expectedAccessRevision:number;
     expectedDestinationHash:string;expectedRoutePolicyHash:string;consentGeneration:number;credential:Buffer},
     options:{deadlineAtMs:number}):Promise<never>{
+    const admittedAtMs=Date.now();
     try{
       await this.#requireConcreteExchange();
-      const identity=await this.#claimDiscovery(sessionToken,input,options);
-      await this.#phase2Authority(identity,sessionToken);
+      const deadlineAtMs=Math.min(options.deadlineAtMs,admittedAtMs+DISCOVERY_PROFILE.operationTimeoutMs);
+      if(!Number.isFinite(deadlineAtMs)||deadlineAtMs<=Date.now())return requestDenied();
+      const boundedOptions={deadlineAtMs};
+      await this.#inMainNamespace(boundedOptions,async()=>{
+        const identity=await this.#claimDiscovery(sessionToken,input,boundedOptions);
+        return this.#phase2Authority(identity,sessionToken);
+      });
       return requestDenied();
     }finally{if(Buffer.isBuffer(input.credential))input.credential.fill(0);}
   }
@@ -352,8 +489,8 @@ export class OutsideCustodyStore {
           const purpose='streamable-http-discovery-v1';
           const policyHash=outsideDiscoveryPolicyHash(capture,{ownerMemberId:memberId,accountId,agentName:input.agentName,
             connectionName:input.connectionName,destination,route,purpose});
-          const policy={version:1,purpose,ownerMemberId:memberId,accountId,agentName:input.agentName,connectionName:input.connectionName,
-            endpoint:destination,capture,route};
+          const policy={version:DISCOVERY_PROFILE.version,profile:DISCOVERY_PROFILE,purpose,ownerMemberId:memberId,accountId,
+            agentName:input.agentName,connectionName:input.connectionName,endpoint:destination,capture,route};
           const policyJson=canonicalJson(policy);
           if(Buffer.byteLength(policyJson)>8192)return requestDenied();
           const policyHashBytes=Buffer.from(policyHash,'hex');
@@ -426,7 +563,7 @@ export class OutsideCustodyStore {
             expectedGeneration:input.expectedGeneration,
             activeRevision:head?.active_revision===null||head?.active_revision===undefined?null:number(head.active_revision),
             candidateRevision:head?.candidate_revision===null||head?.candidate_revision===undefined?null:number(head.candidate_revision),
-            headConsentGeneration,consentGeneration:input.consentGeneration,credentialRevision:revision,
+            headConsentGeneration,consentGeneration:input.consentGeneration,credentialRevision:revision,requestHash:requestDigest.toString('hex'),
             routePolicyHash:route.policyHash,deadlineAtMs:options.deadlineAtMs} satisfies OutsideClaimIdentityState;
         },options);
         return this.#mintClaimIdentity(result);
@@ -438,20 +575,326 @@ export class OutsideCustodyStore {
     });
   }
 
+  /** Concrete transport is private to the owned phase-two transaction and has no caller URL or route inputs. */
+  async #exchangeDiscovery(db:PoolClient,state:OutsideClaimIdentityState,lease:import('./lifecycle.js').OutsideRouteLease,
+    credential:Buffer,progress:{dispatched:boolean}):Promise<OutsideDiscoveryDocument>{
+    const endpoint=discoveryEndpoint(state.claim.destination);
+    const networkDeadlineAtMs=Math.min(Date.now()+DISCOVERY_PROFILE.transportTimeoutMs,
+      state.deadlineAtMs-DISCOVERY_PROFILE.cleanupReserveMs);
+    if(networkDeadlineAtMs<=Date.now())return requestDenied();
+    const namespaceClient=requireDefinitionNamespace();
+    this.#assertMainNamespace(namespaceClient,state.deadlineAtMs);
+    const route=await lease.assertCurrent();
+    await checkConsoleSourceDeadlines(db);
+    if(Date.now()>=networkDeadlineAtMs||Date.now()>=state.deadlineAtMs)return requestDenied();
+    this.#assertMainNamespace(namespaceClient,state.deadlineAtMs);
+    if(isIP(route.sourceAddress)!==4||route.policyHash!==state.routePolicyHash||route.proxyUrl!=='http://lares-egress-proxy:8888/')return requestDenied();
+    const proxyUrl=new URL(route.proxyUrl);
+    if(proxyUrl.href!==route.proxyUrl||proxyUrl.protocol!=='http:'||proxyUrl.username||proxyUrl.password||
+        proxyUrl.pathname!=='/'||proxyUrl.search||proxyUrl.hash)return requestDenied();
+
+    type ConnectOptions={hostname?:string;host?:string;protocol?:string;port?:number|string;servername?:string|null;
+      localAddress?:string|null;httpSocket?:Socket;allowH2?:boolean};
+    type ConnectCallback=(error:Error|null,socket?:Socket)=>void;
+    type Connector=(options:ConnectOptions,callback:ConnectCallback)=>unknown;
+    const controller=new AbortController();
+    let active=true;
+    let idleTimer:ReturnType<typeof setTimeout>|undefined;
+    let deadlineTimer:ReturnType<typeof setTimeout>|undefined;
+    let proxy:ProxyAgent|undefined;
+    const sockets=new Map<Socket,Promise<void>>();
+    const pendingConnects=new Set<Promise<void>>();
+    const pendingConnectorPromises=new Set<Promise<unknown>>();
+    const pendingValidators=new Set<Promise<void>>();
+    const cancelConnectors=new Set<()=>void>();
+    const pendingRequests=new Set<Promise<unknown>>();
+    const bodies=new Set<{destroy(error?:Error):unknown}>();
+    let totalResponseBytes=0;
+    let postCount=0;
+    let sessionId:string|undefined;
+    let sessionIdObserved=false;
+    let requestId=0;
+    const abort=()=>{if(!controller.signal.aborted)controller.abort();};
+    const touch=()=>{
+      if(idleTimer)clearTimeout(idleTimer);
+      idleTimer=setTimeout(abort,DISCOVERY_PROFILE.idleTimeoutMs);
+    };
+    const ownSocket=(socket:Socket):void=>{
+      if(sockets.has(socket))return;
+      let close!:()=>void;
+      const closed=new Promise<void>(resolveClosed=>{close=resolveClosed;});
+      sockets.set(socket,closed);
+      socket.once('close',()=>{sockets.delete(socket);close();});
+      if(socket.closed){sockets.delete(socket);close();}
+    };
+    const assertLocalCurrent=():void=>{
+      if(!active||controller.signal.aborted||Date.now()>=networkDeadlineAtMs||Date.now()>=state.deadlineAtMs)return requestDenied();
+      this.#assertMainNamespace(namespaceClient,state.deadlineAtMs);
+    };
+    const assertCurrent=async():Promise<void>=>{
+      assertLocalCurrent();
+      const current=await lease.assertCurrent();
+      await checkConsoleSourceDeadlines(db);
+      assertLocalCurrent();
+      if(current.policyHash!==state.routePolicyHash||current.sourceAddress!==route.sourceAddress||current.proxyUrl!==route.proxyUrl)return requestDenied();
+    };
+    const registerConnector=(base:Connector,validate:(options:ConnectOptions)=>boolean,forceSource:boolean):Connector=>{
+      return (options,callback)=>{
+        let finished=false;
+        let cancelling=false;
+        let callbackDelivered=false;
+        let returnedSocket:Socket|undefined;
+        let resolveTask!:()=>void;
+        const task=new Promise<void>(resolveTaskValue=>{resolveTask=resolveTaskValue;});
+        pendingConnects.add(task);
+        const onSocketClose=()=>cancel();
+        const finish=()=>{
+          if(finished)return;
+          finished=true;
+          if(returnedSocket)returnedSocket.removeListener('close',onSocketClose);
+          cancelConnectors.delete(cancel);
+          pendingConnects.delete(task);
+          resolveTask();
+        };
+        const deliver=(error:Error|null,socket?:Socket):boolean=>{
+          if(callbackDelivered){
+            if(socket){ownSocket(socket);socket.destroy(new Error(REQUEST_REFUSED));}
+            return false;
+          }
+          callbackDelivered=true;
+          try{callback(error,socket);}catch{if(socket)socket.destroy(new Error(REQUEST_REFUSED));}
+          return true;
+        };
+        const cancel=()=>{
+          if(finished||cancelling)return;
+          cancelling=true;
+          const error=new Error(REQUEST_REFUSED);
+          if(returnedSocket&&!returnedSocket.destroyed)returnedSocket.destroy(error);
+          deliver(error);
+          finish();
+        };
+        cancelConnectors.add(cancel);
+        const complete=(error:Error|null,socket?:Socket)=>{
+          if(finished||callbackDelivered){if(socket){ownSocket(socket);socket.destroy(new Error(REQUEST_REFUSED));}return;}
+          if(error||!socket){deliver(error??new Error(REQUEST_REFUSED));finish();return;}
+          returnedSocket=socket;
+          ownSocket(socket);
+          socket.once('close',onSocketClose);
+          let validator!:Promise<void>;
+          validator=(async()=>{
+            try{
+              await assertCurrent();
+              assertLocalCurrent();
+              if(socket.closed||socket.destroyed||socket.localAddress!==route.sourceAddress||socket.localFamily!=='IPv4'||!validate(options))
+                return requestDenied();
+              deliver(null,socket);
+            }catch{
+              socket.destroy(new Error(REQUEST_REFUSED));
+              deliver(new Error(REQUEST_REFUSED));
+            }finally{finish();}
+          })().finally(()=>pendingValidators.delete(validator));
+          pendingValidators.add(validator);
+        };
+        if(!active||controller.signal.aborted||!validate(options)){
+          complete(new Error(REQUEST_REFUSED));
+          return;
+        }
+        try{
+          const passed=forceSource?{...options,localAddress:route.sourceAddress}:options;
+          const returned=base(passed,complete);
+          if(returned&&typeof returned==='object'&&typeof (returned as {once?:unknown}).once==='function'&&
+              typeof (returned as {destroy?:unknown}).destroy==='function'){
+            returnedSocket=returned as Socket;
+            ownSocket(returnedSocket);
+            if(!finished){
+              if(returnedSocket.closed)cancel();
+              else returnedSocket.once('close',onSocketClose);
+            }
+          }
+          if(returned&&typeof returned==='object'&&'then' in returned){
+            const underlying=Promise.resolve(returned);
+            pendingConnectorPromises.add(underlying);
+            void underlying.then(
+              ()=>{pendingConnectorPromises.delete(underlying);},
+              ()=>{pendingConnectorPromises.delete(underlying);if(!callbackDelivered)cancel();},
+            );
+          }
+          return forceSource?returned as Socket|void:undefined;
+        }catch{
+          complete(new Error(REQUEST_REFUSED));
+          return;
+        }
+      };
+    };
+    const proxyClientFactory=(origin:URL,options:object):Dispatcher=>{
+      const supplied=(options as {connect?:unknown}).connect;
+      if(origin.href!==proxyUrl.href||typeof supplied!=='function')return requestDenied();
+      const base=supplied as Connector;
+      const connect=registerConnector(base,params=>params.protocol===proxyUrl.protocol&&params.hostname===proxyUrl.hostname&&
+        Number(params.port??80)===Number(proxyUrl.port||80)&&!params.httpSocket&&
+        (params.servername===undefined||params.servername===null||params.servername===proxyUrl.hostname),true);
+      return new Client(origin,{...options,connect:connect as never,allowH2:false,autoSelectFamily:false,connectTimeout:DISCOVERY_PROFILE.connectTimeoutMs,
+        headersTimeout:DISCOVERY_PROFILE.idleTimeoutMs,bodyTimeout:DISCOVERY_PROFILE.idleTimeoutMs,maxHeaderSize:DISCOVERY_PROFILE.headerBytes,
+        pipelining:1});
+    };
+    const targetFactory=(origin:string|URL,options:object):Dispatcher=>{
+      const supplied=(options as {connect?:unknown}).connect;
+      let targetOrigin:URL;
+      try{targetOrigin=new URL(origin instanceof URL?origin.href:origin);}catch{return requestDenied();}
+      if(targetOrigin.origin!==endpoint.origin||targetOrigin.username||targetOrigin.password||targetOrigin.pathname!=='/'||
+          targetOrigin.search||targetOrigin.hash||typeof supplied!=='function')return requestDenied();
+      const base=supplied as Connector;
+      const connect=registerConnector(base,params=>params.protocol==='https:'&&params.hostname===endpoint.hostname&&
+        params.host===endpoint.host&&Number(params.port??443)===443&&params.servername===endpoint.hostname&&!params.httpSocket,false);
+      return new Client(targetOrigin,{...options,connect:connect as never,allowH2:false,autoSelectFamily:false,connectTimeout:DISCOVERY_PROFILE.connectTimeoutMs,
+        headersTimeout:DISCOVERY_PROFILE.idleTimeoutMs,bodyTimeout:DISCOVERY_PROFILE.idleTimeoutMs,maxHeaderSize:DISCOVERY_PROFILE.headerBytes,
+        pipelining:1});
+    };
+    const boundedRead=async(response:Awaited<ReturnType<typeof request>>):Promise<Buffer>=>{
+      outsideHeadersSize(response.headers);
+      const encoding=response.headers['content-encoding'];
+      if(encoding!==undefined&&encoding!=='identity')return requestDenied();
+      const body=response.body as unknown as {destroy(error?:Error):unknown;[Symbol.asyncIterator]():AsyncIterator<Buffer|string>};
+      bodies.add(body);
+      const chunks:Buffer[]=[];let size=0;
+      try{
+        for await(const chunk of body){
+          touch();await assertCurrent();
+          const bytes=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);
+          size+=bytes.length;totalResponseBytes+=bytes.length;
+          if(size>DISCOVERY_PROFILE.responseBytes||totalResponseBytes>DISCOVERY_PROFILE.totalResponseBytes)return requestDenied();
+          chunks.push(bytes);
+        }
+        return Buffer.concat(chunks,size);
+      }finally{bodies.delete(body);}
+    };
+    const post=async(message:OutsideJson,replyId:number|undefined):Promise<{result?:OutsideJson;headers:Record<string,string|string[]|undefined>;status:number}>=>{
+      const body=Buffer.from(canonicalJson(message),'utf8');
+      if(body.length>DISCOVERY_PROFILE.maxRequestBytes||++postCount>DISCOVERY_PROFILE.maxPosts)return requestDenied();
+      await assertCurrent();
+      if(Date.now()+DISCOVERY_PROFILE.cleanupReserveMs>=state.deadlineAtMs)return requestDenied();
+      progress.dispatched=true;
+      touch();
+      const headers:Record<string,string>={'content-type':'application/json','accept':'application/json, text/event-stream',
+        'mcp-protocol-version':DISCOVERY_PROFILE.protocolVersion,'authorization':`Bearer ${outsideBearer(credential)}`};
+      if(sessionId)headers['mcp-session-id']=sessionId;
+      let task!:Promise<{result?:OutsideJson;headers:Record<string,string|string[]|undefined>;status:number}>;
+      task=(async()=>{
+        const response=await request(endpoint.href,{dispatcher:proxy!,method:'POST',headers,body,signal:controller.signal,
+        headersTimeout:DISCOVERY_PROFILE.idleTimeoutMs,bodyTimeout:DISCOVERY_PROFILE.idleTimeoutMs});
+        touch();await assertCurrent();
+        const responseHeaders=response.headers as Record<string,string|string[]|undefined>;
+        const sessionHeader=responseHeaders['mcp-session-id'];
+        const sessionValue=Array.isArray(sessionHeader)?(sessionHeader.length===1?sessionHeader[0]:undefined):sessionHeader;
+        if(Array.isArray(sessionHeader)&&sessionHeader.length!==1)return requestDenied();
+        const parsedSession=outsideSessionId(sessionValue);
+        if(!sessionIdObserved){sessionId=parsedSession;sessionIdObserved=true;}
+        else if(parsedSession!==undefined&&parsedSession!==sessionId)return requestDenied();
+        const payload=await boundedRead(response);
+        if(replyId===undefined){if(response.statusCode!==202||payload.length!==0)return requestDenied();return {headers:responseHeaders,status:response.statusCode};}
+        if(response.statusCode!==200)return requestDenied();
+        const content=responseHeaders['content-type'];
+        const contentType=Array.isArray(content)?(content.length===1?content[0]:''):content??'';
+        const media=contentType.split(';',1)[0]!.trim().toLowerCase();
+        const result=media==='application/json'?parseOutsideJson(payload,replyId):media==='text/event-stream'?parseOutsideSse(payload,replyId):denied();
+        await assertCurrent();
+        return {result,headers:responseHeaders,status:response.statusCode};
+      })();
+      pendingRequests.add(task);
+      try{return await task;}finally{pendingRequests.delete(task);}
+    };
+    const closeOwnedWork=async():Promise<void>=>{
+      active=false;
+      if(idleTimer)clearTimeout(idleTimer);
+      if(deadlineTimer)clearTimeout(deadlineTimer);
+      abort();
+      for(const cancel of [...cancelConnectors])cancel();
+      for(const body of bodies)body.destroy(new Error(REQUEST_REFUSED));
+      for(const socket of sockets.keys())socket.destroy();
+      const destroy=proxy?.destroy().catch(()=>{});
+      if(destroy)await destroy;
+      while(pendingConnects.size||pendingConnectorPromises.size||pendingValidators.size||pendingRequests.size){
+        await Promise.allSettled([...pendingConnects,...pendingConnectorPromises,...pendingValidators,...pendingRequests]);
+        for(const socket of sockets.keys())socket.destroy();
+      }
+      const closures=[...sockets.values()];
+      for(const socket of sockets.keys())socket.destroy();
+      await Promise.all(closures);
+      if(sockets.size!==0)return requestDenied();
+    };
+    try{
+      deadlineTimer=setTimeout(abort,Math.max(1,networkDeadlineAtMs-Date.now()));
+      touch();
+      await assertCurrent();
+      proxy=new ProxyAgent({uri:proxyUrl.href,proxyTunnel:true,proxyTls:{family:4,autoSelectFamily:false,allowH2:false,
+        timeout:DISCOVERY_PROFILE.connectTimeoutMs,servername:proxyUrl.hostname,rejectUnauthorized:true},
+        requestTls:{servername:endpoint.hostname,rejectUnauthorized:true,allowH2:false,timeout:DISCOVERY_PROFILE.connectTimeoutMs},
+        clientFactory:proxyClientFactory,factory:targetFactory,connections:1,pipelining:1,allowH2:false,
+        connectTimeout:DISCOVERY_PROFILE.connectTimeoutMs,headersTimeout:DISCOVERY_PROFILE.idleTimeoutMs,
+        bodyTimeout:DISCOVERY_PROFILE.idleTimeoutMs,maxHeaderSize:DISCOVERY_PROFILE.headerBytes});
+      const initId=++requestId;
+      const init=await post({jsonrpc:'2.0',id:initId,method:'initialize',params:{protocolVersion:DISCOVERY_PROFILE.protocolVersion,
+        capabilities:{},clientInfo:{name:'lares-outside-discovery',version:'1'}}},initId);
+      const initResult=init.result;
+      if(!initResult||Array.isArray(initResult)||typeof initResult!=='object'||initResult.protocolVersion!==DISCOVERY_PROFILE.protocolVersion||
+          !initResult.serverInfo||Array.isArray(initResult.serverInfo)||typeof initResult.serverInfo!=='object')return requestDenied();
+      assertBoundedJson(initResult.serverInfo);
+      const serverInfo=projectOutsideServerInfo(initResult.serverInfo);
+      const notification=await post({jsonrpc:'2.0',method:'notifications/initialized',params:{}},undefined);
+      if(notification.status!==202)return requestDenied();
+      const tools:OutsideListedTool[]=[];const names=new Set<string>();const cursors=new Set<string>();let cursor:string|undefined;
+      for(let page=0;page<DISCOVERY_PROFILE.maxPages;page++){
+        const id=++requestId;
+        const params:OutsideJson=cursor===undefined?{}:{cursor};
+        const listed=await post({jsonrpc:'2.0',id,method:'tools/list',params},id);
+        const result=listed.result;
+        if(!result||Array.isArray(result)||typeof result!=='object'||!Array.isArray(result.tools))return requestDenied();
+        for(const item of result.tools){
+          if(!item||Array.isArray(item)||typeof item!=='object'||typeof item.name!=='string'||
+              Buffer.byteLength(item.name)<1||Buffer.byteLength(item.name)>DISCOVERY_PROFILE.maxToolNameBytes||
+              /[\x00-\x1f\x7f]/.test(item.name)||names.has(item.name)||
+              item.description!==undefined&&(typeof item.description!=='string'||Buffer.byteLength(item.description)>2048||/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(item.description))||
+              !Object.hasOwn(item,'inputSchema')||!item.inputSchema||Array.isArray(item.inputSchema)||typeof item.inputSchema!=='object')return requestDenied();
+          names.add(item.name);
+          const projected:OutsideListedTool={name:item.name,inputSchema:item.inputSchema as {[key:string]:OutsideJson}};
+          if(item.description!==undefined)projected.description=item.description;
+          tools.push(projected);
+          if(tools.length>DISCOVERY_PROFILE.maxTools)return requestDenied();
+        }
+        const next=result.nextCursor;
+        if(next===undefined){cursor=undefined;break;}
+        if(typeof next!=='string'||Buffer.byteLength(next)<1||Buffer.byteLength(next)>DISCOVERY_PROFILE.maxCursorBytes||cursors.has(next))return requestDenied();
+        cursor=next;cursors.add(next);
+        if(page+1===DISCOVERY_PROFILE.maxPages)return requestDenied();
+      }
+      if(cursor!==undefined)return requestDenied();
+      const document:OutsideDiscoveryDocument={protocolVersion:DISCOVERY_PROFILE.protocolVersion,serverInfo,tools};
+      const canonical=Buffer.from(canonicalJson(document),'utf8');
+      if(canonical.length>DISCOVERY_PROFILE.resultBytes)return requestDenied();
+      await assertCurrent();
+      return document;
+    }catch(error){
+      if(progress.dispatched)throw new OutsideCustodyRecoveryRequired(state.claim.operationId);
+      if(error instanceof OutsideCustodyRecoveryRequired)throw error;
+      return requestDenied();
+    }finally{await closeOwnedWork();}
+  }
+
   /** Reauthorize an acknowledged claim on a fresh owned client. The concrete exchange and
    * result COMMIT intentionally do not exist at this checkpoint, so this private scope is
    * not invoked by the refusal path above or any registered action. */
-  async #phase2Authority(identity:OutsideClaimIdentity,sessionToken:string):Promise<void>{
+  async #phase2Authority(identity:OutsideClaimIdentity,sessionToken:string):Promise<OutsideDiscoveryDocument>{
     // Spend the opaque receipt synchronously, before namespace admission or any other await.
     const state=this.#consumeClaimIdentity(identity);
     const lifecycle=this.routeLifecycle;
     if(!lifecycle)return requestDenied();
-    await this.#inMainNamespace({deadlineAtMs:state.deadlineAtMs},async()=>{
+    const progress={dispatched:false};
+    try{return await this.#inMainNamespace({deadlineAtMs:state.deadlineAtMs},async()=>{
       return lifecycle.withAppliedOutsideRoute(state.claim.destination,state.routePolicyHash,state.deadlineAtMs,async lease=>{
         const namespaceClient=requireDefinitionNamespace();
         await lease.assertCurrent();
         this.#assertMainNamespace(namespaceClient,state.deadlineAtMs);
-        await this.#withHumanSession(sessionToken,async(db,memberId)=>{
+        const result=await this.#withHumanSession(sessionToken,async(db,memberId)=>{
           if(memberId!==state.ownerMemberId)return requestDenied();
           const capture=await captureOutsideHumanUse(db,memberId,state.claim.agentName,state.claim.connectionName,
             {definitionHash:state.claim.definitionHash,accessRevision:state.claim.accessRevision});
@@ -467,9 +910,10 @@ export class OutsideCustodyStore {
               (head.candidate_revision===null?null:number(head.candidate_revision))!==state.candidateRevision||
               number(head.consent_generation)!==state.headConsentGeneration)return requestDenied();
           const claim=await db.query<{operation_id:string;expected_generation:string;result_generation:string;credential_revision:string;
-            outcome:string;revision_generation:string;revision_consent_generation:string;revision_purpose:string;policy_hash:Buffer}>(`SELECT c.operation_id,c.expected_generation::text,c.result_generation::text,
+            outcome:string;revision_generation:string;revision_consent_generation:string;revision_purpose:string;policy_hash:Buffer;
+            policy_json:string;nonce:Buffer;ciphertext:Buffer}>(`SELECT c.operation_id,c.expected_generation::text,c.result_generation::text,
               c.credential_revision::text,c.outcome,v.generation::text AS revision_generation,v.consent_generation::text AS revision_consent_generation,
-              v.revision_purpose,v.policy_hash
+              v.revision_purpose,v.policy_hash,v.policy_json::text,v.nonce,v.ciphertext
             FROM outside_custody_operations c JOIN outside_custody_revisions v
               ON v.account_id=c.account_id AND v.credential_revision=c.credential_revision
             WHERE c.request_id=$1 AND c.operation_id=$2 AND c.account_id=$3 AND c.owner_member_id=$4
@@ -480,17 +924,67 @@ export class OutsideCustodyStore {
               Number(row.result_generation)!==state.generation||Number(row.credential_revision)!==state.credentialRevision||
               Number(row.revision_generation)!==state.generation||Number(row.revision_consent_generation)!==state.consentGeneration||
               row.revision_purpose!=='discovery'||!row.policy_hash.equals(Buffer.from(state.claim.policyHash,'hex')))return requestDenied();
+          const expectedPolicy={version:DISCOVERY_PROFILE.version,profile:DISCOVERY_PROFILE,purpose:'streamable-http-discovery-v1',
+            ownerMemberId:memberId,accountId:state.claim.accountId,agentName:state.claim.agentName,
+            connectionName:state.claim.connectionName,endpoint:state.claim.destination,capture,route};
+          let storedPolicy:unknown;
+          try{storedPolicy=JSON.parse(row.policy_json) as unknown;}catch{return requestDenied();}
+          if(canonicalJson(storedPolicy)!==canonicalJson(expectedPolicy))return requestDenied();
           const result=await db.query<{operation_id:string}>(`SELECT operation_id FROM outside_custody_operations
             WHERE request_id=$1 AND event_phase='result'`,[state.claim.requestId]);
           if(result.rows.length!==0)return requestDenied();
           await lease.assertCurrent();
           this.#assertMainNamespace(namespaceClient,state.deadlineAtMs);
           await checkConsoleSourceDeadlines(db);
+          const coordinates:BoundCoordinates={ownerMemberId:memberId,accountId:state.claim.accountId,resourceId:state.claim.agentName,
+            connectionName:state.claim.connectionName,generation:state.generation,credentialRevision:state.credentialRevision,
+            consentGeneration:state.consentGeneration,operationId:state.claim.operationId,revisionPurpose:'discovery',policyHash:state.claim.policyHash};
+          const credential=openBound(this.key,row.nonce,row.ciphertext,coordinates);
+          try{
+            const endpoint=discoveryEndpoint(state.claim.destination);
+            const destinationHash=createHash('sha256').update(canonicalJson(['lares-outside-endpoint-v1',endpoint.href])).digest('hex');
+            const requestDigest=createHash('sha256').update(canonicalJson({requestId:state.claim.requestId,operationId:state.claim.operationId,
+              accountId:state.claim.accountId,memberId,agentName:state.claim.agentName,connectionName:state.claim.connectionName,
+              expectedGeneration:state.expectedGeneration,expectedCandidateRevision:state.candidateRevision,
+              expectedAccessRevision:state.claim.accessRevision,expectedDestinationHash:destinationHash,
+              expectedRoutePolicyHash:state.routePolicyHash,consentGeneration:state.consentGeneration,policyHash:state.claim.policyHash,
+              credentialHash:createHash('sha256').update(credential).digest('hex')})).digest('hex');
+            if(requestDigest!==state.requestHash)return requestDenied();
+            const document=await this.#exchangeDiscovery(db,state,lease,credential,progress);
+            const plain=Buffer.from(canonicalJson(document),'utf8');
+            try{
+              if(plain.length>DISCOVERY_PROFILE.resultBytes)return requestDenied();
+              const resultOperationId=randomUUID();
+              const sealed=sealDiscoveryResult(this.key,plain,{ownerMemberId:memberId,accountId:state.claim.accountId,
+                agentName:state.claim.agentName,connectionName:state.claim.connectionName,requestId:state.claim.requestId,
+                claimOperationId:state.claim.operationId,resultOperationId,generation:state.generation,
+                credentialRevision:state.credentialRevision,consentGeneration:state.consentGeneration,policyHash:state.claim.policyHash});
+              await lease.assertCurrent();
+              this.#assertMainNamespace(namespaceClient,state.deadlineAtMs);
+              await checkConsoleSourceDeadlines(db);
+              const inserted=await db.query(`INSERT INTO outside_custody_operations
+                (operation_id,account_id,owner_member_id,operation_kind,request_id,event_phase,request_hash,
+                  expected_generation,result_generation,credential_revision,outcome,result_nonce,result_ciphertext)
+                VALUES($1,$2,$3,'discover',$4,'result',$5,$6,$7,$8,'completed',$9,$10)`,
+                [resultOperationId,state.claim.accountId,memberId,state.claim.requestId,Buffer.from(state.requestHash,'hex'),
+                  state.expectedGeneration,state.generation,state.credentialRevision,sealed.nonce,sealed.ciphertext]);
+              if(inserted.rowCount!==1)return requestDenied();
+              await checkConsoleSourceDeadlines(db);
+              await lease.assertCurrent();
+              this.#assertMainNamespace(namespaceClient,state.deadlineAtMs);
+              return document;
+            }finally{plain.fill(0);}
+          }finally{credential.fill(0);}
         },{deadlineAtMs:state.deadlineAtMs});
         await lease.assertCurrent();
         this.#assertMainNamespace(namespaceClient,state.deadlineAtMs);
+        return result;
       });
-    });
+    });}catch(error){
+      if(progress.dispatched||error instanceof SourceAuthorityUnavailable||error instanceof OutsideCustodyRecoveryRequired)
+        throw new OutsideCustodyRecoveryRequired(state.claim.operationId);
+      return requestDenied();
+    }
   }
 
   private async capacity(db:PoolClient,accountId:string,kind:OutsideOperationKind,createsRevision:boolean,reserveResult=false):Promise<void>{
