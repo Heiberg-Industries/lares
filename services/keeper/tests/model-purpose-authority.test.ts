@@ -15,6 +15,7 @@ import { assertPrivateConsoleRequest, PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER, veri
 import { PgPersonalActionStore } from '@lares/agent-kit/personal-action-store';
 import { serveModelPurposeBroker, modelPurposeDigest, modelPurposeMac, signModelPurposeRequest, type ModelPurposeRequest } from '../lib/model-purpose-broker.js';
 import { modelPurposeRawBodyHash, signPrivateModelPurposeRequest } from '../../console/lib/model-purpose-capsule.js';
+import { modelPurposeAckFields, parseModelPurposeAdmissionResponse } from '@lares/agent-kit/model-purpose-protocol';
 
 const incarnation = '11111111-1111-4111-8111-111111111111';
 const nonce = 'a'.repeat(43);
@@ -60,9 +61,22 @@ async function admittedRequest(consoleSocket:string,runtimeSocket:string,console
   expect(challengeReply.ok).toBe(true);
   const capsule=signModelPurposeRequest(consoleKey,request,String(challengeReply.challenge),String(challengeReply.challengeMac),Number(challengeReply.expiresAt));
   const receipt={method:request.method,path:request.path,rawBodyHash:request.rawBodyHash,requestId:request.requestId,purpose:request.purpose,...(request.resume?{resume:request.resume}:{})};
-  const reply=await socketRequest(runtimeSocket,runtimeEnvelope('request.admit',{capsule,receipt},runtimeKey));
+  const envelope=runtimeEnvelope('request.admit',{capsule,receipt},runtimeKey);
+  const reply=await socketRequest(runtimeSocket,envelope);
   expect(reply.ok).toBe(true);
-  return String(reply.receipt);
+  expect(Object.keys(reply).sort()).toEqual(['expiresAt','ok','pendingReceipt','responseMac','responseOutcomeDigest','responsePayloadDigest','responseRequestDigest']);
+  expect(reply.receipt).toBeUndefined();
+  const {ok: _ok, responseMac: _responseMac, responseOutcomeDigest: _outcomeDigest,
+    responsePayloadDigest: _payloadDigest, responseRequestDigest: _requestDigest, ...result} = reply;
+  expect(Object.keys(result).sort()).toEqual(['expiresAt','pendingReceipt']);
+  const parsed = parseModelPurposeAdmissionResponse(result);
+  expect(parsed).toEqual(result);
+  const ack=modelPurposeAckFields(envelope,result);
+  expect(reply.responseRequestDigest).toBe(ack.requestDigest);
+  expect(reply.responseOutcomeDigest).toBe(ack.outcomeDigest);
+  expect(reply.responsePayloadDigest).toBe(ack.payloadDigest);
+  expect(reply.responseMac).toBe(modelPurposeMac(runtimeKey,ack).toString('base64url'));
+  return parsed!.pendingReceipt;
 }
 function modelRequest(overrides:Partial<ModelPurposeRequest>={}):ModelPurposeRequest{
   return {agent:'helper',incarnation,session:sessionId,member:'Owner-ID',admissionNonce:nonce,method:'POST',path:'/eve/v1/session',rawBodyHash:'b'.repeat(64),policyRevision:2,definitionHash:'c'.repeat(64),purpose:'human',requestId:randomBytes(32).toString('base64url'),...overrides};

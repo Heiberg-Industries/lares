@@ -9,7 +9,7 @@ import {PgBudgetAdmissionStore,type BudgetFinancialWriter,type GatewayModelReque
 import {GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_OPENAI_MODEL_PATH} from '@lares/agent-kit/gateway-admission-protocol';
 import { checkConsoleSourceDeadlines, consoleSourceTransaction, retainSourceTransactionDeadline, type SourceDatabase, type SourcePool } from '@lares/agent-kit/console-source-transaction';
 import { consoleAdmission, requireConsoleSessionBinding, type ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
-import { MODEL_PURPOSE_EMPTY_DIGEST, modelPurposeAckFields, modelPurposeChallengeFields, modelPurposeConsoleRequestFields, modelPurposeDigest, modelPurposeEqualMac, modelPurposeMac, modelPurposeRuntimeRequestFields, type ModelPurposeMacFields } from '@lares/agent-kit/model-purpose-protocol';
+import { MODEL_PURPOSE_EMPTY_DIGEST, modelPurposeAckFields, modelPurposeAdmissionResponse, modelPurposeChallengeFields, modelPurposeConsoleRequestFields, modelPurposeDigest, modelPurposeEqualMac, modelPurposeMac, modelPurposeRuntimeRequestFields, type ModelPurposeMacFields } from '@lares/agent-kit/model-purpose-protocol';
 
 const DEFAULT_CONSOLE_SOCKET='/run/lares/model-purpose-console.sock';
 const DEFAULT_RUNTIME_SOCKET='/run/lares/model-purpose/model-purpose.sock';
@@ -110,10 +110,10 @@ export class ModelPurposeBrokerState {
 
   pendingReceipt(request:ModelPurposeRequest,digest:string){
     this.capacity(this.pending);
-    const receipt=randomBytes(32).toString('base64url'),expiresAt=this.clock()+PENDING_MS;
+    const pendingReceipt=randomBytes(32).toString('base64url'),expiresAt=this.clock()+PENDING_MS;
     const stored={...request,...(request.resume?{resume:{...request.resume}}:{})};
-    this.pending.set(receipt,{request:stored,digest,expiresAt});
-    return {receipt,expiresAt};
+    this.pending.set(pendingReceipt,{request:stored,digest,expiresAt});
+    return modelPurposeAdmissionResponse(pendingReceipt,expiresAt);
   }
 
   consumePending(receipt:string,identity:{agent:string;incarnation:string;session:string;member:string;admissionNonce:string}){
