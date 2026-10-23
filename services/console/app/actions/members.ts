@@ -8,7 +8,6 @@ import { ConsoleAdmissionUnavailableError } from "../../lib/admission-error";
 import { consoleRedirect } from "../../lib/console-oidc";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
 import { InitialMemberBudgetRefused, setInitialMemberBudgetLimit } from "../../lib/initial-member-budget";
-import { pool } from "../../lib/db";
 
 async function memberOperation<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); }
@@ -20,22 +19,24 @@ async function memberOperation<T>(operation: () => Promise<T>): Promise<T> {
 export type InviteResult = { url?: string; error?: string };
 export type InitialLimitResult = { saved?: boolean; error?: string };
 export async function setInitialMemberLimit(_previous: InitialLimitResult, form: FormData): Promise<InitialLimitResult> {
-  await requireConsoleMember();
+  const actor=await requireConsoleMember();
   const sessionToken = (await cookies()).get("lares_session")?.value;
-  const designatedOwnerId = process.env.AGENT_OWNER_USER_ID?.trim();
   const targetMemberId = form.get("memberId"), monthlyLimit = form.get("monthlyLimit");
-  if (!sessionToken || !designatedOwnerId) return { error: "Console sign-in expired. Refresh membership and try again." };
+  if (!sessionToken) return { error: "Console sign-in expired. Refresh membership and try again." };
   if (typeof targetMemberId !== "string" || typeof monthlyLimit !== "string") return { error: "Enter a monthly limit." };
   try {
-    await setInitialMemberBudgetLimit(pool, { sessionToken, designatedOwnerId, targetMemberId, monthlyLimit });
+    await setInitialMemberBudgetLimit({ sessionToken, targetMemberId, monthlyLimit },actor.id);
     revalidatePath("/members");
     return { saved: true };
   } catch (error) {
     if (error instanceof InitialMemberBudgetRefused) {
       if (error.reason === "invalid") return { error: "Enter a positive USD amount using up to 18 decimal places. Remove extra zeros at the end, for example use 25.5." };
       if (error.reason === "setup-complete") return { error: "This member’s budget setup already exists. Refresh the page to see its status." };
+      if (error.reason === "unavailable") return { error: "Initial limit setup is unavailable. Refresh the page before trying again." };
       return { error: "The member’s initial limit could not be set. Refresh membership and try again." };
     }
+    if(error instanceof KeeperUnavailableError&&error.outcomeMayBeUnknown)return{error:"The initial limit outcome is unknown. Refresh membership before trying again."};
+    if(error instanceof KeeperUnavailableError)return{error:"Initial limit setup is unavailable. Refresh the page before trying again."};
     throw new ConsoleAdmissionUnavailableError();
   }
 }
