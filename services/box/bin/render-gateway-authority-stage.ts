@@ -473,6 +473,7 @@ function stageOutput(request: GatewayAuthorityStageRequest): StageBuild {
     caddyDataDir,
     dbDataDir,
     databaseAuthDir,
+    maintenanceAdmission,
     network: request.network,
     subnet: request.subnet,
     domain: authority.domain,

@@ -24,6 +24,7 @@ const OPTS = {
   caddyDataDir: "/var/lib/lares/caddy",
   dbDataDir: "/var/lib/lares/postgres",
   databaseAuthDir: "/var/lib/lares-maintenance/postgres-auth",
+  maintenanceAdmission: { directory: "/var/lib/lares-maintenance/admission", installationId: "123e4567-e89b-42d3-a456-426614174000", epoch: 7 },
   network: "lares-network",
   subnet: "172.30.0.0/24",
   domain: "example.invalid",
@@ -139,6 +140,22 @@ describe("the generated stack compose file", () => {
     expect(doc.services.console.image).toBe(D("console"));
     expect(doc.services["lares-gateway"].image).toBe(D("gateway"));
     expect(doc.services.caddy.image).toBe(D("caddy"));
+  });
+
+  it("starts Console only through the receipt-bound guard and exact readonly admission bind", () => {
+    const console = (parse(renderStackCompose(MANIFEST, OPTS)) as any).services.console;
+    expect(console.entrypoint).toEqual([
+      "/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission",
+      OPTS.maintenanceAdmission.installationId, "7", "--",
+    ]);
+    expect(console.command).toEqual(["/usr/local/bin/lares-console-start"]);
+    expect(console.volumes).toContainEqual({
+      type: "bind", source: OPTS.maintenanceAdmission.directory,
+      target: "/run/lares-maintenance/admission", read_only: true, bind: { create_host_path: false },
+    });
+    expect(() => renderStackCompose(MANIFEST, { ...OPTS, maintenanceAdmission: { ...OPTS.maintenanceAdmission, directory: "/var/lib/lares/../admission" } })).toThrow(/admission identity/);
+    expect(() => renderStackCompose(MANIFEST, { ...OPTS, maintenanceAdmission: { ...OPTS.maintenanceAdmission, installationId: "not-a-uuid" } })).toThrow(/admission identity/);
+    expect(() => renderStackCompose(MANIFEST, { ...OPTS, maintenanceAdmission: { ...OPTS.maintenanceAdmission, epoch: 0 } })).toThrow(/admission identity/);
   });
 
   it("refuses when the manifest names no image for a service this file needs", () => {

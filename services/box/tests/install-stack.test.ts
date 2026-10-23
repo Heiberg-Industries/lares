@@ -234,7 +234,19 @@ describe("the stack the installer brings up", () => {
   it("installs the committed gateway start script where the compose entrypoint executes it", () => {
     okRun(run(["--release", releaseFile]));
     const doc = parse(readFileSync(join(prefix, "opt", "lares", "compose.yaml"), "utf8")) as any;
-    expect(doc.services.console.environment.AGENT_OWNER_USER_ID).toBe("owner");
+    const console = doc.services.console;
+    const receipt = JSON.parse(readFileSync(join(prefix, "var/lib/lares-maintenance/custody/preparation.json"), "utf8"));
+    const admissionDir = join(prefix, "var/lib/lares-maintenance/admission");
+    expect(console.environment.AGENT_OWNER_USER_ID).toBe("owner");
+    expect(console.entrypoint).toEqual([
+      "/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission",
+      receipt.installationId, String(receipt.epoch), "--",
+    ]);
+    expect(console.command).toEqual(["/usr/local/bin/lares-console-start"]);
+    expect(console.volumes).toContainEqual({
+      type: "bind", source: admissionDir, target: "/run/lares-maintenance/admission",
+      read_only: true, bind: { create_host_path: false },
+    });
     const gateway = doc.services["lares-gateway"];
     const mount = (gateway.volumes as string[]).find((v) => v.startsWith(`${join(prefix, "etc", "lares", "gateway-start.sh")}:`));
     expect(mount, "the compose file mounts no start script into the gateway").toBeTruthy();

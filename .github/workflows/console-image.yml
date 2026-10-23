@@ -63,6 +63,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Enable corepack and prepare pnpm 9.15.0 for the actual renderer probe
+        run: corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+      - name: Setup Node 24 for the actual renderer probe
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install the stack renderer dependency closure
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter @lares/agent-box... --filter @lares/keeper...
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -93,6 +105,8 @@ jobs:
           cache-from: type=gha
       - name: Verify final console runtime without credentials
         run: docker run --rm --network none --entrypoint sh lares-console:test -c 'test "$(id -u)" = 10001 && test -f services/console/server.js && ! command -v npm && ! command -v corepack'
+      - name: Prove generated Console startup admission in the actual image
+        run: sudo env CI=true HOME="$HOME" PATH="$PATH" python3 services/console/tests/start-admission-image.probe.py lares-console:test "$GITHUB_SHA" "$RUNNER_TEMP/image-scans/console/start-admission.json"
       - name: Scan final image
         run: scripts/scan-image.sh lares-console:test "$RUNNER_TEMP/image-scans/console"
       - uses: actions/upload-artifact@v4

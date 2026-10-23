@@ -39,6 +39,12 @@ export interface StackComposeOptions {
   readonly dbDataDir: string;
   /** Root-owned external PostgreSQL authentication custody directory. */
   readonly databaseAuthDir: string;
+  /** Identity read from this installation's completed maintenance custody receipt. */
+  readonly maintenanceAdmission: {
+    readonly directory: string;
+    readonly installationId: string;
+    readonly epoch: number;
+  };
   readonly network: string; // e.g. "lares-network" — created by this file, NOT external
   readonly subnet: string; // e.g. "172.30.0.0/24"
   /** The domain the installation answers on (LARES_DOMAIN). It reaches Caddy through the
@@ -105,6 +111,12 @@ export const DEADLINE_CALENDAR_IN_CONTAINER = "/srv/lares/installation/deadline-
 export function renderStackCompose(manifest: ReleaseManifest, opts: StackComposeOptions): string {
   if (!isAbsolute(opts.databaseAuthDir) || /[\n\r\0]/.test(opts.databaseAuthDir))
     throw new Error("Database authentication directory path must be absolute");
+  const admission = opts.maintenanceAdmission;
+  if (!admission || !isAbsolute(admission.directory) || resolve(admission.directory) !== admission.directory ||
+      /[\n\r\0]/.test(admission.directory) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(admission.installationId) ||
+      typeof admission.epoch !== "number" || !Number.isSafeInteger(admission.epoch) || admission.epoch < 1 || admission.epoch > 2147483647)
+    throw new Error("Console maintenance admission identity is invalid");
   const secret = (name: string) => ({ file: `${opts.secretsDir}/${name}` });
   const consoleVaultSigningKeyFile = opts.consoleVaultSigningKeyFile ?? null;
   const consoleModelPurposeSigningKeyFile = opts.consoleModelPurposeSigningKeyFile ?? null;
@@ -139,12 +151,15 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     console: {
       image: imageFor(manifest, "console"),
       restart: "unless-stopped",
+      entrypoint: ["/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission", admission.installationId, String(admission.epoch), "--"],
+      command: ["/usr/local/bin/lares-console-start"],
       // Google sign-in credentials are installation-owned. Compose reads this
       // root-only file when present; no credential value enters the stack file.
       env_file: [{ path: join(dirname(opts.secretsDir), "console-oauth.env"), required: false }],
       volumes: [
         `${opts.socketDir}:/run/lares`,
         `${opts.tasteDir}:/srv/taste`,
+        { type: "bind", source: admission.directory, target: "/run/lares-maintenance/admission", read_only: true, bind: { create_host_path: false } },
         ...(opts.deadlineCalendarFile ? [`${opts.deadlineCalendarFile}:${DEADLINE_CALENDAR_IN_CONTAINER}:ro`] : []),
       ],
       secrets: [
