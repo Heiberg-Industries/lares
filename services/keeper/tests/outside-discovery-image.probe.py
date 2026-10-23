@@ -64,6 +64,12 @@ ACKNOWLEDGEMENT_REASONS = frozenset({
 SAFE_FAILURE_PHASES = {"guards", "loaded-images", "network", "fixture-files", "database", "engine-roles",
                       "proxy-config", "compose-held-runtime", "https-peer", "configured-discovery",
                       "first-hop-evidence", "postconditions"}
+DIRECT_ERROR_CATEGORIES = {"none", "dns-failure", "connection-refused", "network-unreachable",
+                           "connection-reset", "socket-timeout", "deadline-triggered", "tls-error", "request-error",
+                           "socket-close-timeout"}
+COUNTER_FAILURE_CATEGORIES = {"none", "command-timeout", "command-not-found", "permission-denied",
+                              "command-failed", "counter-missing", "counter-invalid"}
+MAX_REPORTED_FIREWALL_PACKETS = 1_000_000_000_000
 
 
 def run(*args, input=None, timeout=90, check=True):
@@ -1285,6 +1291,69 @@ def import_worker_evidence(root_path):
     evidence = {"checks": checks, "firewallApplied": value.get("firewallApplied") is True,
                 "directTargetBlocked": value.get("directTargetBlocked") is True,
                 "success": value.get("success") is True}
+    direct_diagnostics = value.get("directPathDiagnostics")
+    if direct_diagnostics is not None:
+        if not isinstance(direct_diagnostics, dict):
+            return None
+
+        def counter_projection(item):
+            if (not isinstance(item, dict) or not isinstance(item.get("failure"), str) or
+                    item["failure"] not in COUNTER_FAILURE_CATEGORIES):
+                return None
+            failure_category = item["failure"]
+            packets = item.get("packets")
+            if failure_category == "none":
+                if type(packets) is not int or not 0 <= packets <= MAX_REPORTED_FIREWALL_PACKETS:
+                    return None
+                return {"packets": packets, "failure": failure_category}
+            if "packets" in item:
+                return None
+            return {"failure": failure_category}
+
+        before = counter_projection(direct_diagnostics.get("before"))
+        after = counter_projection(direct_diagnostics.get("after"))
+        direct = direct_diagnostics.get("direct")
+        counter_increased = direct_diagnostics.get("counterIncreased")
+        if before is None or not isinstance(direct, dict) or type(counter_increased) is not bool:
+            return None
+        if direct == {"status": "not-attempted"}:
+            projected_direct = {"status": "not-attempted"}
+        elif (type(direct.get("tlsCompleted")) is bool and type(direct.get("socketClosed")) is bool and
+              isinstance(direct.get("errorCategory"), str) and
+              direct["errorCategory"] in DIRECT_ERROR_CATEGORIES):
+            projected_direct = {"tlsCompleted": direct["tlsCompleted"],
+                                "socketClosed": direct["socketClosed"],
+                                "errorCategory": direct["errorCategory"]}
+        else:
+            return None
+        if isinstance(after, dict):
+            projected_after = after
+        elif after is None and isinstance(direct_diagnostics.get("after"), dict) and \
+                direct_diagnostics["after"] == {"status": "not-attempted"}:
+            projected_after = {"status": "not-attempted"}
+        else:
+            return None
+        direct_attempted = projected_direct.get("status") is None
+        after_completed = projected_after.get("status") is None
+        if ((not direct_attempted and (before["failure"] == "none" or after_completed or counter_increased)) or
+                (direct_attempted and before["failure"] != "none") or
+                (not after_completed and counter_increased) or
+                (after_completed and projected_after["failure"] != "none" and counter_increased)):
+            return None
+        evidence["directPathDiagnostics"] = {
+            "before": before,
+            "direct": projected_direct,
+            "after": projected_after,
+            "counterIncreased": counter_increased,
+        }
+        successful_block = (before["failure"] == "none" and after_completed and projected_after["failure"] == "none" and
+                            direct_attempted and projected_direct["tlsCompleted"] is False and
+                            projected_direct["socketClosed"] is True and
+                            counter_increased is True)
+        if evidence["directTargetBlocked"] is not successful_block:
+            return None
+    elif evidence["directTargetBlocked"]:
+        return None
     if isinstance(failure, dict):
         phase_value = failure.get("phase")
         reason_value = failure.get("reason")
@@ -1303,6 +1372,8 @@ def import_worker_evidence(root_path):
             "phase": phase_value if phase_value in phases else "worker",
             "reason": reason_value if reason_value == "configured outside discovery worker failed" else "worker failed",
         }
+        if evidence["failure"]["phase"] == "direct-path firewall counter" and "directPathDiagnostics" not in evidence:
+            return None
         if "routeBoundary" in failure:
             evidence["failure"]["routeBoundary"] = route_boundary
         if "acknowledgementReason" in failure:
@@ -1451,6 +1522,36 @@ def offline_cleanup_self_test():
                         "routeBoundary": "firewall-check"}}), encoding="utf-8")
         if import_worker_evidence(pathlib.Path(directory)) is not None:
             raise RuntimeError("route boundary label was accepted outside its fixed phase")
+        diagnostic = {"before": {"packets": 14, "failure": "none", "raw": secret_like},
+                      "direct": {"tlsCompleted": False, "socketClosed": True,
+                                 "errorCategory": "network-unreachable", "rawError": secret_like},
+                      "after": {"packets": 15, "failure": "none"}, "counterIncreased": True,
+                      "raw": secret_like}
+        worker_path.write_text(json.dumps({"success": False, "checks": [], "directTargetBlocked": True,
+            "directPathDiagnostics": diagnostic,
+            "failure": {"phase": "direct-path firewall counter", "reason": "worker failed"}}), encoding="utf-8")
+        evidence = import_worker_evidence(pathlib.Path(directory))
+        expected_diagnostic = {"before": {"packets": 14, "failure": "none"},
+                               "direct": {"tlsCompleted": False, "socketClosed": True,
+                                          "errorCategory": "network-unreachable"},
+                               "after": {"packets": 15, "failure": "none"}, "counterIncreased": True}
+        if not evidence or evidence.get("directPathDiagnostics") != expected_diagnostic or \
+                secret_like in json.dumps(evidence):
+            raise RuntimeError("direct-path evidence was not reduced to bounded allowlisted fields")
+        worker_path.write_text(json.dumps({"success": False, "checks": [], "directTargetBlocked": False,
+            "directPathDiagnostics": {"before": {"failure": "command-failed"},
+                                      "direct": {"status": "not-attempted"},
+                                      "after": {"status": "not-attempted"}, "counterIncreased": False},
+            "failure": {"phase": "direct-path firewall counter", "reason": "worker failed"}}), encoding="utf-8")
+        evidence = import_worker_evidence(pathlib.Path(directory))
+        if not evidence or evidence.get("directPathDiagnostics", {}).get("direct") != {"status": "not-attempted"}:
+            raise RuntimeError("failed before-counter read did not preserve not-attempted stages")
+        diagnostic["direct"]["errorCategory"] = secret_like
+        worker_path.write_text(json.dumps({"success": False, "checks": [], "directTargetBlocked": True,
+            "directPathDiagnostics": diagnostic,
+            "failure": {"phase": "direct-path firewall counter", "reason": "worker failed"}}), encoding="utf-8")
+        if import_worker_evidence(pathlib.Path(directory)) is not None:
+            raise RuntimeError("unrecognized direct-path error category was accepted")
 
 
 def postgres_ready(container, password):

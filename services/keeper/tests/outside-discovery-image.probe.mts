@@ -114,18 +114,40 @@ async function peer():Promise<void>{
   await new Promise<void>((resolve,reject)=>{server.once('close',resolve);server.once('error',reject);});
 }
 
-async function directTargetEvidence(host:string,path:string):Promise<{tlsCompleted:boolean;socketClosed:boolean}>{
+type DirectErrorCategory='none'|'dns-failure'|'connection-refused'|'network-unreachable'|'connection-reset'|
+  'socket-timeout'|'deadline-triggered'|'tls-error'|'request-error'|'socket-close-timeout';
+type CounterFailureCategory='none'|'command-timeout'|'command-not-found'|'permission-denied'|
+  'command-failed'|'counter-missing'|'counter-invalid';
+type CounterEvidence={packets?:number;failure:CounterFailureCategory;exactPackets?:bigint};
+type CounterReport={packets?:number;failure:CounterFailureCategory};
+function counterReport(value:CounterEvidence):CounterReport{
+  return value.failure==='none'?{packets:value.packets,failure:value.failure}:{failure:value.failure};
+}
+function directErrorCategory(error:unknown):DirectErrorCategory{
+  const code=error&&typeof error==='object'&&'code' in error?String((error as {code?:unknown}).code):'';
+  if(code==='ENOTFOUND'||code==='EAI_AGAIN')return 'dns-failure';
+  if(code==='ECONNREFUSED')return 'connection-refused';
+  if(code==='ENETUNREACH'||code==='EHOSTUNREACH')return 'network-unreachable';
+  if(code==='ECONNRESET')return 'connection-reset';
+  if(code==='ETIMEDOUT')return 'socket-timeout';
+  if(code.startsWith('ERR_TLS_')||code.startsWith('CERT_'))return 'tls-error';
+  return 'request-error';
+}
+
+async function directTargetEvidence(host:string,path:string):Promise<{tlsCompleted:boolean;socketClosed:boolean;errorCategory:DirectErrorCategory}>{
   return await new Promise(resolve=>{
-    let tlsCompleted=false,socketClosed=false,requestClosed=false,socket:Socket|undefined,settled=false;
+    let tlsCompleted=false,socketClosed=false,requestClosed=false,socket:Socket|undefined,settled=false,deadlineTriggered=false,
+      errorCategory:DirectErrorCategory='none';
     let closeTimeout:ReturnType<typeof setTimeout>|undefined,requestTimer:ReturnType<typeof setTimeout>|undefined;
     const finish=()=>{
       if(settled||!requestClosed)return;
       if(requestTimer)clearTimeout(requestTimer);
       if(socket&&!socketClosed){
-        if(!closeTimeout)closeTimeout=setTimeout(()=>{settled=true;resolve({tlsCompleted,socketClosed:false});},1500);
+        if(!closeTimeout)closeTimeout=setTimeout(()=>{settled=true;resolve({tlsCompleted,socketClosed:false,
+          errorCategory:errorCategory==='none'?'socket-close-timeout':errorCategory});},1500);
         return;
       }
-      settled=true;if(closeTimeout)clearTimeout(closeTimeout);resolve({tlsCompleted,socketClosed:true});
+      settled=true;if(closeTimeout)clearTimeout(closeTimeout);resolve({tlsCompleted,socketClosed:true,errorCategory});
     };
     const request=https.get({hostname:host,port:443,path,agent:false,rejectUnauthorized:true},response=>{
       tlsCompleted=true;response.destroy();request.destroy();
@@ -135,26 +157,39 @@ async function directTargetEvidence(host:string,path:string):Promise<{tlsComplet
       value.once('secureConnect',()=>{tlsCompleted=true;});
       value.once('close',()=>{socketClosed=true;finish();});
     });
-    request.once('error',()=>{});
+    request.once('error',(error:NodeJS.ErrnoException)=>{if(!deadlineTriggered)errorCategory=directErrorCategory(error);});
     request.once('close',()=>{requestClosed=true;finish();});
-    requestTimer=setTimeout(()=>request.destroy(),1200);
+    requestTimer=setTimeout(()=>{deadlineTriggered=true;errorCategory='deadline-triggered';request.destroy();},1200);
   });
 }
 
-async function firewallDropPackets():Promise<number>{
+async function firewallDropPackets():Promise<CounterEvidence>{
   const owner=need('FIXTURE_OWNER'),name='lares-outside-counter-'+owner.slice(0,10)+'-'+randomUUID().slice(0,6);
-  const output=execFileSync('docker',['run','--rm','--name',name,'--label','lares.proof.owner='+owner,
-    '--network','host','--read-only','--cap-drop','ALL',
-    '--cap-add','NET_ADMIN','--security-opt','no-new-privileges:true','--entrypoint','nft',need('FIXTURE_FIREWALL_IMAGE'),
-    'list','table','inet','lares_egress'],{encoding:'utf8',timeout:30000,stdio:['ignore','pipe','ignore']});
+  let output:string;
+  try{
+    output=execFileSync('docker',['run','--rm','--name',name,'--label','lares.proof.owner='+owner,
+      '--network','host','--read-only','--cap-drop','ALL',
+      '--cap-add','NET_ADMIN','--security-opt','no-new-privileges:true','--entrypoint','nft',need('FIXTURE_FIREWALL_IMAGE'),
+      'list','table','inet','lares_egress'],{encoding:'utf8',timeout:30000,stdio:['ignore','pipe','ignore']});
+  }catch(error){
+    const code=error&&typeof error==='object'&&'code' in error?(error as {code?:unknown}).code:undefined;
+    return {failure:code==='ETIMEDOUT'?'command-timeout':code==='ENOENT'?'command-not-found':
+      code==='EACCES'||code==='EPERM'?'permission-denied':'command-failed'};
+  }
   const match=output.match(/counter packets (\d+) bytes \d+ drop/);
-  assert(match,'generated firewall drop counter is unavailable');
-  return Number(match[1]);
+  if(!match)return {failure:'counter-missing'};
+  let exactPackets:bigint;
+  try{exactPackets=BigInt(match[1]);}catch{return {failure:'counter-invalid'};}
+  if(exactPackets<0n)return {failure:'counter-invalid'};
+  return {packets:Number(exactPackets>1_000_000_000_000n?1_000_000_000_000n:exactPackets),
+    exactPackets,failure:'none'};
 }
 
 async function runConfigured():Promise<void>{
   const output=need('FIXTURE_WORKER_REPORT');
-  const partial:{success:boolean;firewallApplied:boolean;directTargetBlocked:boolean;checks:string[]}={
+  const partial:{success:boolean;firewallApplied:boolean;directTargetBlocked:boolean;directPathDiagnostics?:{
+    before:CounterReport;direct:{status:'not-attempted'}|{tlsCompleted:boolean;socketClosed:boolean;errorCategory:DirectErrorCategory};
+    after:CounterReport|{status:'not-attempted'};counterIncreased:boolean};checks:string[]}={
     success:false,firewallApplied:false,directTargetBlocked:false,checks:[]};
   let main:Pool|undefined,outside:Pool|undefined,admin:Pool|undefined,proof:Pool|undefined,store:OutsideCustodyStore|undefined,
     key:Buffer|undefined,proofKey:Buffer|undefined,credential:Buffer|undefined;
@@ -224,9 +259,18 @@ async function runConfigured():Promise<void>{
 
     phase='direct-path firewall counter';
     const directBefore=await firewallDropPackets();
+    partial.directPathDiagnostics={before:counterReport(directBefore),direct:{status:'not-attempted'},
+      after:{status:'not-attempted'},counterIncreased:false};
+    assert(directBefore.failure==='none','generated firewall drop counter is unavailable');
     const direct=await directTargetEvidence('mcp.example.org','/mcp?fixture=outside-proof-v1');
+    partial.directPathDiagnostics.direct=direct;
     const directAfter=await firewallDropPackets();
-    partial.directTargetBlocked=!direct.tlsCompleted&&direct.socketClosed&&directAfter>directBefore;
+    partial.directPathDiagnostics.after=counterReport(directAfter);
+    const counterIncreased=directBefore.failure==='none'&&directAfter.failure==='none'&&
+      directAfter.exactPackets!>directBefore.exactPackets!;
+    partial.directPathDiagnostics.counterIncreased=counterIncreased;
+    partial.directTargetBlocked=directBefore.failure==='none'&&directAfter.failure==='none'&&
+      !direct.tlsCompleted&&direct.socketClosed&&counterIncreased;
     assert(partial.directTargetBlocked,'direct target attempt did not produce a closed socket and selected-source firewall drop');
     partial.checks.push('direct target traffic increments generated drop counter and closes TCP before TLS');
 
