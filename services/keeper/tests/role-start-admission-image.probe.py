@@ -174,10 +174,18 @@ def render_generated_compose() -> tuple[pathlib.Path, dict[str, object]]:
     }
     script = root / "render-role-compose.mts"
     compose_source = (REPO / "services/keeper/lib/compose-agents.ts").as_posix()
+    raw_contract_file = root / "raw-rendered-admission-contract.json"
     script.write_text(
         f'import {{ renderAgentsCompose }} from "{compose_source}";\n'
+        'import { createRequire } from "node:module";\n'
         'import { writeFileSync } from "node:fs";\n'
+        f'const require=createRequire({json.dumps(compose_source)});\n'
+        'const {parse}=require("yaml");\n'
         f'const rendered=renderAgentsCompose({json.dumps([fixture_agent])},{json.dumps(fixture_options)});\n'
+        f'const rawService=parse(rendered).services[{json.dumps(service_name)}];\n'
+        'const rawMounts=rawService.volumes.filter((item:any)=>item?.target==="/run/lares-maintenance/admission");\n'
+        'const rawExplicitFalse=rawMounts.length===1&&rawMounts[0]?.bind?.create_host_path===false;\n'
+        f'writeFileSync({json.dumps(str(raw_contract_file))},JSON.stringify({{admissionBindCreateHostPathExplicitFalse:rawExplicitFalse}}));\n'
         f'writeFileSync({json.dumps(str(root / "generated.compose.yml"))},rendered);\n',
         encoding="utf-8")
     tsx = REPO / "node_modules/.bin/tsx"
@@ -185,6 +193,11 @@ def render_generated_compose() -> tuple[pathlib.Path, dict[str, object]]:
         raise ProbeFailure("keeper-tsx-not-installed")
     run(str(tsx), str(script), timeout=60)
     proof["claims"]["actualRendererUsed"] = True
+    raw_contract = json.loads(raw_contract_file.read_text(encoding="utf-8"))
+    raw_explicit_false = raw_contract.get("admissionBindCreateHostPathExplicitFalse") is True
+    proof["stages"]["rawRenderedAdmissionBindCreateHostPathExplicitFalse"] = raw_explicit_false
+    if not raw_explicit_false:
+        raise ProbeFailure("raw-rendered-admission-contract")
 
     override = root / "image-override.compose.yml"
     override.write_text("services:\n  " + service_name + ":\n    image: " + IMAGE + "\n", encoding="utf-8")
@@ -203,6 +216,19 @@ def render_generated_compose() -> tuple[pathlib.Path, dict[str, object]]:
         raise ProbeFailure("effective-service-drift")
     proof["claims"]["effectiveGeneratedComposeMatchesExceptImage"] = True
     mounts = [item for item in actual_service.get("volumes", []) if item.get("target") == "/run/lares-maintenance/admission"]
+
+    def normalized_admission_bind_disables_create_host_path(mount: object) -> bool:
+        if not isinstance(mount, dict):
+            return False
+        bind = mount.get("bind")
+        if not isinstance(bind, dict):
+            return False
+        if "create_host_path" in bind:
+            return bind["create_host_path"] is False
+        # Compose 2.38.2 omits this false bool from canonical JSON. The raw YAML
+        # assertion proves the explicit setting; CI separately proves refusal.
+        return True
+
     contract = {
         "entrypointMatches": actual_service.get("entrypoint") == ["/usr/local/lib/lares/maintenance-admission-v1",
             "/run/lares-maintenance/admission", installation_id, str(epoch), "--"],
@@ -213,7 +239,7 @@ def render_generated_compose() -> tuple[pathlib.Path, dict[str, object]]:
         "admissionMountSourceMatches": len(mounts) == 1 and mounts[0].get("source") == str(admission_dir),
         "admissionMountTargetMatches": len(mounts) == 1 and mounts[0].get("target") == "/run/lares-maintenance/admission",
         "admissionMountReadOnly": len(mounts) == 1 and mounts[0].get("read_only") is True,
-        "admissionBindCreateHostPathFalse": len(mounts) == 1 and mounts[0].get("bind", {}).get("create_host_path") is False,
+        "normalizedAdmissionBindNoCreateHostPath": len(mounts) == 1 and normalized_admission_bind_disables_create_host_path(mounts[0]),
     }
     proof["stages"]["generatedServiceContract"] = contract
     if actual_service.get("entrypoint") != ["/usr/local/lib/lares/maintenance-admission-v1",
@@ -221,7 +247,7 @@ def render_generated_compose() -> tuple[pathlib.Path, dict[str, object]]:
        actual_service.get("command") != ["/usr/local/bin/lares-start"] or \
        actual_service.get("user") != "10001:10001" or actual_service.get("read_only") is not True or \
        len(mounts) != 1 or mounts[0].get("source") != str(admission_dir) or \
-       mounts[0].get("read_only") is not True or mounts[0].get("bind", {}).get("create_host_path") is not False:
+       mounts[0].get("read_only") is not True or not normalized_admission_bind_disables_create_host_path(mounts[0]):
         raise ProbeFailure("generated-service-contract")
     image_config = json.loads(docker("image", "inspect", "--format", "{{json .Config}}", IMAGE).stdout)
     if image_config.get("Entrypoint") != ["/usr/local/lib/lares/maintenance-admission-v1"] or \
