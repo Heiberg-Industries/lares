@@ -1617,6 +1617,17 @@ def verify_created_proxy(identifier, identity, epoch, proxy_address):
                                       '/usr/local/lib/lares/maintenance-admission.py'] and
           config.get('Cmd') == ['squid', '-N', '-f', '/config/squid.conf'] and
           host.get('Init') is True and host.get('RestartPolicy', {}).get('Name') == 'unless-stopped')
+    tmpfs = host.get('Tmpfs') or {}
+    run_options = tmpfs.get('/run') if isinstance(tmpfs, dict) else None
+    option_parts = run_options.split(',') if isinstance(run_options, str) else []
+    option_flags = {part for part in option_parts if '=' not in part}
+    option_values = dict(part.split('=', 1) for part in option_parts if '=' in part)
+    check('Created proxy has only a bounded private runtime tmpfs',
+          isinstance(tmpfs, dict) and set(tmpfs) == {'/run'} and
+          option_flags == {'rw', 'nosuid', 'nodev', 'noexec'} and
+          set(option_values) == {'size', 'mode'} and
+          option_values.get('size') in ('1m', '1048576') and
+          option_values.get('mode') in ('0755', '755', '493'))
     check('Created proxy carries validated receipt values and no other admission authority',
           env.get('LARES_MAINTENANCE_INSTALLATION_ID') == identity and
           env.get('LARES_MAINTENANCE_EPOCH') == str(epoch) and
@@ -1633,6 +1644,58 @@ def verify_created_proxy(identifier, identity, epoch, proxy_address):
     proxy_network = networks.get(network, {})
     check('Created proxy uses the owned internal network and reserved fixture IP',
           list(networks) == [network] and proxy_network.get('IPAddress') == proxy_address)
+
+
+def verify_proxy_runtime_mounts(identifier):
+    """Return fixed observations for this exact, already pinned proxy container."""
+    _current_proxy_facts()
+    script = r'''import json,os,stat
+mounts={}
+with open('/proc/self/mountinfo','r',encoding='ascii') as stream:
+    for line in stream:
+        fields=line.split()
+        if len(fields)<10 or '-' not in fields: continue
+        split=fields.index('-')
+        mountpoint=fields[4]
+        mounts[mountpoint]={'options':fields[5].split(','),
+                            'fstype':fields[split+1] if split+1<len(fields) else ''}
+run=mounts.get('/run',{})
+admission=mounts.get('/run/lares-maintenance/admission',{})
+try: run_mode=stat.S_IMODE(os.stat('/run',follow_symlinks=False).st_mode)
+except OSError: run_mode=-1
+try: admission_mode=stat.S_IMODE(os.stat('/run/lares-maintenance/admission',follow_symlinks=False).st_mode)
+except OSError: admission_mode=-1
+print(json.dumps({'run_tmpfs':run.get('fstype')=='tmpfs' and
+                  {'rw','nosuid','nodev','noexec'}.issubset(set(run.get('options',[]))) and
+                  run_mode==0o755,
+                  'admission_mount':bool(admission) and 'ro' in admission.get('options',[]) and
+                  admission_mode==0o755}))'''
+    rendered = _observer_command('docker', 'exec', identifier, '/usr/bin/python3', '-I', '-c', script,
+                                 timeout=3, limit=512)
+    try:
+        value = json.loads(rendered)
+    except (json.JSONDecodeError, TypeError):
+        value = {}
+    return {'run_tmpfs': value.get('run_tmpfs') is True,
+            'admission_mount': value.get('admission_mount') is True}
+
+
+def create_proxy_runtime_marker(identifier):
+    _current_proxy_facts()
+    _observer_command('docker', 'exec', identifier, '/usr/bin/python3', '-I', '-c',
+                      "import os; fd=os.open('/run/.lares-restart-runtime-check',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(fd,b'check'); os.close(fd)",
+                      timeout=3, limit=128)
+
+
+def proxy_runtime_marker_absent(identifier):
+    _current_proxy_facts()
+    rendered = _observer_command('docker', 'exec', identifier, '/usr/bin/python3', '-I', '-c',
+        "import json,os; print(json.dumps({'absent':not os.path.exists('/run/.lares-restart-runtime-check')}))",
+        timeout=3, limit=128)
+    try:
+        return json.loads(rendered).get('absent') is True
+    except (json.JSONDecodeError, TypeError):
+        return False
 
 
 def service_compose_config(env):
@@ -2005,6 +2068,9 @@ def run_proof():
                                      "import fcntl,json,os; print(json.dumps({'uid':os.geteuid(),'flock':hasattr(fcntl,'flock'),'python':os.path.realpath('/proc/self/exe') == os.path.realpath('/usr/bin/python3')}))"))
     check('Running guard image executes isolated stdlib Python as root',
           process_runtime == {'uid': 0, 'flock': True, 'python': True})
+    initial_mounts = verify_proxy_runtime_mounts(proxy_id)
+    check('Running proxy keeps its private runtime tmpfs and readonly admission child',
+          initial_mounts == {'run_tmpfs': True, 'admission_mount': True})
     before = target_connections()
     denied = [('ungranted destination', connect('blocked.example'), allowed_ip, (403,)),
               ('ungranted source', connect(), denied_ip, (403,)),
@@ -2083,6 +2149,7 @@ def run_proof():
 
     action = 'prove the same Squid gate descriptor survives Docker restart'
     container_before_restart = proxy_id
+    create_proxy_runtime_marker(proxy_id)
     restart_log_since = f'{time.time():.6f}'
     compose('restart', 'lares-egress-proxy')
     wait_for_proxy_after_restart(restart_log_since)
@@ -2091,7 +2158,29 @@ def run_proof():
     restarted_pid = proxy_pid()
     check('Restarted Squid remains behind init as a reloadable child',
           restarted_pid.isdigit() and int(restarted_pid) > 1)
+    restarted_mounts = verify_proxy_runtime_mounts(proxy_id)
+    check('Docker restart recreates the private runtime tmpfs and readonly admission child',
+          restarted_mounts == {'run_tmpfs': True, 'admission_mount': True})
+    check('Docker restart clears the previous run marker from Squid runtime state',
+          proxy_runtime_marker_absent(proxy_id))
     assert_proxy_lease(gate_path, restarted_pid, 'After Docker restart')
+
+    post_restart_stage = str(uuid.uuid4())
+    generate('allowed.example', post_restart_stage)
+    cmd('docker', 'exec', proxy_id, 'squid', '-k', 'reconfigure', '-f', '/config/squid.conf')
+    before_post_restart_reload_target_count = target_connections()
+    for attempt in range(30):
+        result = request(connect('blocked.example'))
+        if route_stage_acknowledged(result, post_restart_stage):
+            break
+        time.sleep(.5)
+    check('Post-restart production reload applies its new denied-route generation',
+          route_stage_acknowledged(result, post_restart_stage))
+    after_post_restart_reload_target_count = target_connections()
+    check('Post-restart denied-route proof adds zero target connections',
+          after_post_restart_reload_target_count == before_post_restart_reload_target_count)
+    check('Post-restart reload preserves the exact Squid child PID', proxy_pid() == restarted_pid)
+    assert_proxy_lease(gate_path, restarted_pid, 'After post-restart reload', preserve_process=True)
 
     action = 'prove non-normal intent refuses a restarted Squid before listener or destination effects'
     connections_before_refusal = target_connections()
