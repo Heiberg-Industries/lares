@@ -517,6 +517,17 @@ def offline_network_diagnostics_self_test():
         isinstance(statement, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "phase"
         for target in statement.targets) and isinstance(statement.value, ast.Constant) and
         statement.value.value == "network" for statement in node.body))
+    worker_keys = next(node.value for node in main_try.body if isinstance(node, ast.Assign) and
+        any(isinstance(target, ast.Name) and target.id == "worker_keys" for target in node.targets) and isinstance(node.value, ast.Tuple))
+    worker_key_names = {item.value for item in worker_keys.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)}
+    if not {"FIXTURE_PEER_IP", "FIXTURE_SOURCE_IP"}.issubset(worker_key_names) or \
+            {"FIXTURE_DB_IP", "FIXTURE_PROXY_IP"} & worker_key_names:
+        raise RuntimeError("isolated discovery worker control target/source allowlist changed unexpectedly")
+    env_values = next(node.value for node in main_try.body if isinstance(node, ast.Assign) and
+        any(isinstance(target, ast.Name) and target.id == "env_values" for target in node.targets) and isinstance(node.value, ast.Dict))
+    env_value_names = {key.value for key in env_values.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)}
+    if not {"FIXTURE_PEER_IP", "FIXTURE_SOURCE_IP"}.issubset(env_value_names):
+        raise RuntimeError("discovery worker control target/source are not configured")
 
     def phase_assignment(statement, value):
         return isinstance(statement, ast.Assign) and any(
@@ -2872,6 +2883,7 @@ try:
     worker_env = root / "worker.env"
     worker_keys = ("PROOF_ADMIN_PASSWORD", "FIXTURE_SESSION_TOKEN", "FIXTURE_BEARER", "FIXTURE_ROOT",
                    "FIXTURE_AGENT", "FIXTURE_INCARNATION", "FIXTURE_KEY_HEX", "FIXTURE_SOURCE_IP",
+                   "FIXTURE_PEER_IP",
                    "FIXTURE_ROUTED_GATEWAY", "FIXTURE_ROUTED_PORT", "FIXTURE_ROUTED_TARGET_IP",
                    "FIXTURE_AGENT_IP", "FIXTURE_PEER_REPORT", "FIXTURE_WORKER_REPORT", "FIXTURE_OWNER",
                    "NODE_EXTRA_CA_CERTS")
