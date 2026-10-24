@@ -192,6 +192,7 @@ fi
 RESTORE_WORK=""
 RESTORE_INTENT=""
 RESTORE_CLEANUP_FAILURES=()
+RESTORE_CLIENT_CONTEXT=0
 
 # The run directory is private and durable. Its intent records only fixed operation state,
 # never secrets or arbitrary commands. The maintenance root is prepared by install/restore
@@ -256,6 +257,7 @@ PYWORK
 ) || die 'could not create a private restore work record under the protected maintenance state' "$EX_REFUSED"
 RESTORE_INTENT="$RESTORE_WORK/intent.json"
 RESTORE_RUN_NAME="${RESTORE_WORK##*/}"
+RESTORE_CLIENT_CONTEXT=1
 
 write_restore_intent() {
   local phase="$1" cleanup_text="$2" clear_database="${3:-0}"
@@ -418,11 +420,24 @@ remove_scratch() {
 }
 
 cleanup() {
-  local rc=$? cleanup_text=''
+  local rc=$? cleanup_text='' restore_client_uncertain=0
   trap - EXIT INT TERM
-  vault_storage_unlock || RESTORE_CLEANUP_FAILURES+=(vault-unlock)
+  if ! engine_restore_client_cleanup; then
+    RESTORE_CLEANUP_FAILURES+=(restore-client-identity-or-cleanup-uncertain)
+    restore_client_uncertain=1
+  fi
+  if ! engine_restore_client_intents_clear; then
+    RESTORE_CLEANUP_FAILURES+=(restore-client-identity-or-cleanup-uncertain)
+    restore_client_uncertain=1
+  fi
+  if [ "$restore_client_uncertain" = 0 ]; then
+    vault_storage_unlock || RESTORE_CLEANUP_FAILURES+=(vault-unlock)
+  fi
   if [ -n "$VAULT_SNAPSHOT_DB" ]; then
-    if [ "$RESTORE_TEMP_DB_DROP_CONFIRMED" = 1 ] || [ "$RESTORE_TEMP_DB_DROP_UNCERTAIN" = 1 ]; then
+    if [ "$restore_client_uncertain" = 1 ]; then
+      RESTORE_TEMP_DB_DROP_UNCERTAIN=1
+      RESTORE_CLEANUP_FAILURES+=(temporary-database-identity-or-drop-uncertain)
+    elif [ "$RESTORE_TEMP_DB_DROP_CONFIRMED" = 1 ] || [ "$RESTORE_TEMP_DB_DROP_UNCERTAIN" = 1 ]; then
       RESTORE_CLEANUP_FAILURES+=(temporary-database-identity-or-drop-uncertain)
     elif [ "$VAULT_SNAPSHOT_DB_STATE" = owned ] && [ -n "$VAULT_SNAPSHOT_DB_OID" ]; then
       drop_snapshot_database_if_owned || RESTORE_CLEANUP_FAILURES+=(temporary-database-identity-or-drop-uncertain)
@@ -876,12 +891,12 @@ write_keeper_compose_selection() { # 0 base only; 1 verified Vault inventory and
 # is unavailable, the host command must acquire that SAME lock; contention stops restore.
 if [ "$FINANCIAL_PREPARED" = 1 ];then
   say 'draining native custody and permanently freezing prepared financial custody before stopping any service'
-  if ! keeper_dc exec -T lares-keeper \
-    /app/services/keeper/node_modules/.bin/tsx /app/services/keeper/bin/budget-financial.ts freeze --host </dev/null;then
-    if [ "$ENGINE_MODE" = image ];then
-      engine_run --ro "$KEEPER_JSON" --rw "$(P /var/lib/lares)" ../keeper/bin/budget-financial.ts freeze --host "$KEEPER_JSON" </dev/null \
-        || die 'financial freeze was not durably acknowledged; no service was stopped and no database was replaced' "$EX_REFUSED"
-    else
+  if [ "$ENGINE_MODE" = image ];then
+    engine_restore_keeper_client financial-freeze </dev/null \
+      || die 'financial freeze was not durably acknowledged; no service was stopped and no database was replaced' "$EX_REFUSED"
+  else
+    if ! keeper_dc exec -T lares-keeper \
+      /app/services/keeper/node_modules/.bin/tsx /app/services/keeper/bin/budget-financial.ts freeze --host </dev/null;then
       pnpm -C "$BOX_DIR/../keeper" exec tsx bin/budget-financial.ts freeze --host "$KEEPER_JSON" </dev/null \
         || die 'financial freeze was not durably acknowledged; no service was stopped and no database was replaced' "$EX_REFUSED"
     fi
@@ -943,10 +958,7 @@ done
 say "applying any newer database changes"
 code=0
 if [ "$ENGINE_MODE" = image ]; then
-  engine_run --ro "$OPERATOR_PASSWORD_FILE" --env "DATABASE_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE" \
-    --env "LARES_OPERATOR_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE" \
-    --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
-    --env "PGDATABASE=$DB_NAME" --env "PGUSER=$DB_USER" migrate.ts --schema-owner || code=$?
+  engine_restore_keeper_client migrate || code=$?
 else
   LARES_OPERATOR_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" DATABASE_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" \
     PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGDATABASE="$DB_NAME" PGUSER="$DB_USER" \
@@ -956,11 +968,7 @@ fi
 CHANGED="$CHANGED; migrations applied"
 
 if [ "$ENGINE_MODE" = image ]; then
-  engine_run --ro "$OPERATOR_PASSWORD_FILE" --ro "$ENGINE_APP_PASSWORD_FILE" --ro "$ENGINE_FINANCIAL_PASSWORD_FILE" \
-    --env "DATABASE_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE" --env "LARES_OPERATOR_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE" \
-    --env "PGHOST=127.0.0.1" --env "PGPORT=${PGPORT:-5432}" --env "PGDATABASE=lares_state" --env "PGUSER=lares_operator" \
-    bin/database-setup.ts --verify-restored-engine --operator-password-file "$OPERATOR_PASSWORD_FILE" \
-    --app-password-file "$ENGINE_APP_PASSWORD_FILE" --financial-password-file "$ENGINE_FINANCIAL_PASSWORD_FILE" \
+  engine_restore_keeper_client verify-restored-engine \
     || midway 'Restored engine ownership or database grants do not match the required role boundary.'
 else
   LARES_OPERATOR_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" DATABASE_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" \
@@ -1016,10 +1024,7 @@ if [ "${#WORKFLOW_DATABASES[@]}" -gt 0 ]; then
     || midway 'Workflow runtime credential is missing or unsafe; restored agents remain stopped.'
   for workflow_db in "${WORKFLOW_DATABASES[@]}"; do
     if [ "$ENGINE_MODE" = image ]; then
-      engine_run --ro "$WORKFLOW_PASSWORD_FILE" \
-        --env "PGHOST=127.0.0.1" --env "PGPORT=${PGPORT:-5432}" \
-        bin/workflow-template.ts verify-database --host 127.0.0.1 --port "${PGPORT:-5432}" \
-        --database "$workflow_db" --runtime-password-file "$WORKFLOW_PASSWORD_FILE" \
+      engine_restore_keeper_client workflow-database "$workflow_db" "${PGPORT:-5432}" \
         || midway "The restricted workflow login could not verify database $workflow_db."
     else
       pnpm -C "$BOX_DIR" exec tsx bin/workflow-template.ts verify-database --host 127.0.0.1 --port "${PGPORT:-5432}" \

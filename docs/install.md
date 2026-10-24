@@ -626,6 +626,10 @@ printed for an agent whose key file is missing. If a step fails after the restor
 server is no longer fresh: rebuild a clean server and start again (the backup repository is never
 written to by a restore).
 
+If restore reports that a temporary client or its cleanup could not be verified, leave the
+retained restore evidence and any identified container in place. Do not retry the restore or remove
+that evidence by hand; have an operator review the server before choosing a recovery action.
+
 This path has been tested with stand-ins only. Treat the first real restore as a rehearsal:
 do it on a spare server before you need it.
 

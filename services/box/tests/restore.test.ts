@@ -26,7 +26,7 @@ const RESTORE_FIXTURE_CADDY_IMAGE = (JSON.parse(readFileSync(
   join(here, "..", "..", "..", "releases", "2026-10-21-rc.12.json"), "utf8",
 )) as { images: { caddy: string } }).images.caddy;
 
-let dir: string, binDir: string, prefix: string, log: string, archive: string, scratchParent: string, ledgerFile: string, restoreDbState: string, restoreDbQueryCount: string;
+let dir: string, binDir: string, prefix: string, log: string, archive: string, scratchParent: string, ledgerFile: string, restoreDbState: string, restoreDbQueryCount: string, restoreClientState: string;
 const appDatabase = () => ({ host: '127.0.0.1', port: 5432, database: 'lares_state', user: 'lares_app', passwordFile: join(prefix, 'etc/lares/secrets/database-password') });
 const financialBinding = () => ({ directory: '/var/lib/lares/budget-financial', db: { ...appDatabase(), user: 'lares_financial', passwordFile: join(prefix, 'etc/lares/secrets/financial-database-password') } });
 const keeperConfig = (extra: Record<string, unknown> = {}) => JSON.stringify({
@@ -105,6 +105,7 @@ function run(args: string[], opts: { env?: Record<string, string>; input?: strin
       PATH: binDir, STUB_LOG: log, HOME: dir, ARCHIVE_ROOT: archive, LEDGER_FILE: ledgerFile,
       RESTORE_DB_STATE_FILE: restoreDbState,
       RESTORE_DB_QUERY_COUNT_FILE: restoreDbQueryCount,
+      RESTORE_CLIENT_STATE_DIR: restoreClientState,
       DRILL_SCRATCH_ROOT: scratchParent, DRILL_MIN_FREE_MB: "1",
       WORKFLOW_ROWS: `${workflowDatabase}\towned\t11111111-1111-4111-8111-111111111111\tlares_workflow_owner\tlares-owned:11111111-1111-4111-8111-111111111111`,
       RESTORE_OPERATOR_MODE: mode("etc/lares/operator/database-password"),
@@ -129,6 +130,7 @@ function vaultInventory() {
 }
 function addVaultSnapshot() {
   const { areaId, backingId, inventory } = vaultInventory();
+  write("opt/lares/vault-recovery-engine-image", `registry.example/lares-keeper@sha256:${"b".repeat(64)}\n`, 0o640);
   writeArchive("srv/lares/installation/vault-storage.json", `${JSON.stringify(inventory)}\n`);
   const work = `srv/vault/private/${areaId}`;
   writeArchive(`${work}/.lares-vault-area.json`, `${JSON.stringify({ version: 1, areaId, backingStoreId: backingId, relativePath: `vault/private/${areaId}`, kind: "private", owner: { kind: "member", id: "owner" } })}\n`);
@@ -138,6 +140,7 @@ function addVaultSnapshot() {
 }
 function addTargetVault() {
   const { areaId, backingId, inventory } = vaultInventory();
+  write("opt/lares/vault-recovery-engine-image", `registry.example/lares-keeper@sha256:${"b".repeat(64)}\n`, 0o640);
   write("srv/lares/installation/vault-storage.json", `${JSON.stringify(inventory)}\n`);
   const work = `srv/vault/private/${areaId}`;
   write(`${work}/.lares-vault-area.json`, `${JSON.stringify({ version: 1, areaId, backingStoreId: backingId, relativePath: `vault/private/${areaId}`, kind: "private", owner: { kind: "member", id: "owner" } })}\n`);
@@ -187,6 +190,7 @@ beforeEach(() => {
   ledgerFile = join(dir, "ledger.txt");
   restoreDbState = join(dir, "restore-db-state"); writeFileSync(restoreDbState, "");
   restoreDbQueryCount = join(dir, "restore-db-query-count"); writeFileSync(restoreDbQueryCount, "0");
+  restoreClientState = join(dir, "restore-client-state"); mkdirSync(restoreClientState);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   linkSystemTools();
   const helper = join(BOX, "ops", "maintenance-custody.py");
@@ -203,6 +207,7 @@ case "$file" in
   */etc/lares/operator/database-password) printf '%s:%s\\n' "\${RESTORE_OPERATOR_UID:-0}" "\${RESTORE_OPERATOR_MODE:-600}" ;;
   */etc/lares/secrets/database-password) printf '%s:%s:%s\\n' "\${RESTORE_APP_UID:-0}" "\${RESTORE_APP_GID:-10001}" "\${RESTORE_APP_MODE:-440}" ;;
   */etc/lares/secrets/financial-database-password) printf '%s:%s:%s\\n' "\${RESTORE_FINANCIAL_UID:-0}" "\${RESTORE_FINANCIAL_GID:-10001}" "\${RESTORE_FINANCIAL_MODE:-440}" ;;
+  */opt/lares/vault-recovery-engine-image) printf '%s:640\\n' "\${RESTORE_VAULT_PIN_UID:-0}" ;;
   *) exit 1 ;;
 esac
 `); chmodSync(stat, 0o755);
@@ -211,7 +216,8 @@ esac
   write("opt/lares/compose.yaml", `services:\n  caddy:\n    image: ${RESTORE_FIXTURE_CADDY_IMAGE}\n    environment:\n      LARES_DOMAIN: example.test\n  db:\n    image: postgres:16\n    command: [postgres, -c, hba_file=/run/lares-auth/pg_hba.conf]\n    volumes:\n      - ${prefix}/var/lib/lares/postgres:/var/lib/postgresql/data\n      - type: bind\n        source: ${prefix}/var/lib/lares-maintenance/postgres-auth\n        target: /run/lares-auth\n        read_only: true\n        bind:\n          create_host_path: false\n`);
   write("opt/lares/compose.lares-keeper.yaml", "services: {}\n");
   write("etc/lares/installation.env", "LARES_DOMAIN=example.test\n");
-  write("etc/lares/keeper.env", "LARES_ROOT=/srv/lares\n");
+  write("etc/lares/keeper.env", `LARES_ROOT=/srv/lares\nLARES_HOST_SOCKET_DIR=${join(prefix, "run/lares-host")}\n`, 0o640);
+  mkdirSync(join(prefix, "run/lares-host"), { recursive: true });
   write("etc/lares/keeper.json", `${keeperConfig()}\n`);
   write("etc/lares/backup.env", "RESTIC_REPOSITORY='/fake/repository'\nRESTIC_PASSWORD_FILE='/etc/lares/restic-password'\nLARES_CURRENT_LAYOUT='1'\n");
   write("etc/lares/restic-password", "not-a-real-password\n");
@@ -248,7 +254,99 @@ case " $* " in
     ;;
 esac
 exit 0`);
+  stub("timeout", `
+exec python3 -c 'import math,os,signal,subprocess,sys
+args=sys.argv[1:]
+kill_after=5.0
+if args and args[0].startswith("--kill-after="): kill_after=float(args.pop(0).split("=",1)[1])
+if len(args)<2: sys.exit(125)
+duration=float(args.pop(0)); scale=float(os.environ.get("RESTORE_TEST_TIMEOUT_SCALE","1"))
+if duration==1800: duration*=scale; kill_after*=scale
+if not math.isfinite(duration) or duration<=0 or not math.isfinite(kill_after) or kill_after<=0: sys.exit(125)
+process=subprocess.Popen(args,start_new_session=True)
+try: sys.exit(process.wait(timeout=duration))
+except subprocess.TimeoutExpired:
+ try: os.killpg(process.pid,signal.SIGTERM)
+ except ProcessLookupError: pass
+ try: process.wait(timeout=kill_after*scale)
+ except subprocess.TimeoutExpired:
+  try: os.killpg(process.pid,signal.SIGKILL)
+  except ProcessLookupError: pass
+  process.wait()
+ sys.exit(124)' "$@"
+`);
   stub("docker", `
+if [ "$1" = image ] && [ "$2" = inspect ]; then
+  case "$*" in *"--format"*) printf '["/usr/local/lib/lares/maintenance-admission-v1"]\\n' ;; esac
+  exit 0
+fi
+client_state() { printf '%s/%s' "$RESTORE_CLIENT_STATE_DIR" "$1"; }
+client_field() { sed -n "\${2}p" "$(client_state "$1")"; }
+client_save() { printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "$2" "$3" "$4" "$5" "$6" "$7" > "$(client_state "$1")"; }
+if [ "$1" = create ]; then
+  name=""; cidfile=""; owner=""; operation=""; previous=""
+  for arg in "$@"; do
+    case "$previous" in
+      name) name="$arg"; previous= ;;
+      cidfile) cidfile="$arg"; previous= ;;
+      label)
+        case "$arg" in com.lares.restore.owner=*) owner="\${arg#*=}" ;; com.lares.restore.operation=*) operation="\${arg#*=}" ;; esac
+        previous= ;;
+    esac
+    case "$arg" in --name) previous=name ;; --cidfile) previous=cidfile ;; --label) previous=label ;; esac
+  done
+  id=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+  client_save "$id" "$owner" "$operation" "$name" false 0 false
+  if [ -z "\${RESTORE_CLIENT_CIDFILE_MISSING:-}" ]; then
+    case "\${RESTORE_CLIENT_CIDFILE_FORMAT:-raw}" in
+      raw) printf '%s' "$id" > "$cidfile" ;;
+      newline) printf '%s\\n' "$id" > "$cidfile" ;;
+      nonhex) printf '%sg' "\${id%?}" > "$cidfile" ;;
+    esac
+  fi
+  printf '%s\\n' "$id"
+  exit 0
+fi
+if [ "$1" = inspect ] && [ "$2" = --format ]; then
+  format="$3"; id="$4"; [ -f "$(client_state "$id")" ] || exit 1
+  owner=$(client_field "$id" 1); operation=$(client_field "$id" 2); name=$(client_field "$id" 3)
+  running=$(client_field "$id" 4); status=$(client_field "$id" 5)
+  case "$format" in
+    *'.State.Running'*'.State.ExitCode'*) printf '%s|%s|%s|%s|%s\\n' "$id" "$running" "$status" "$owner" "$operation" ;;
+    *'.State.Running'*'.Config.Labels'*'.Name'*) printf '%s|%s|%s|%s|/%s\\n' "$id" "$running" "$owner" "$operation" "$name" ;;
+    *'.State.Running'*) printf '%s\\n' "$running" ;;
+    *) printf '%s|/%s|%s|%s\\n' "$id" "$name" "$owner" "$operation" ;;
+  esac
+  exit 0
+fi
+if [ "$1" = start ] && [ "$2" = --attach ]; then
+  id="$3"; operation=$(client_field "$id" 2); status=0
+  [ "\${RESTORE_CLIENT_FAIL_OPERATION:-}" != "\${operation#*:}" ] || status=3
+  if [ "$operation" = vault:verify-snapshot ]; then
+    case "\${RESTORE_INTENT_MUTATION:-}" in
+      missing) record=$(find "$LARES_PREFIX/var/lib/lares-maintenance/restore-runs" -name intent.json -type f); rm -f "$record" ;;
+      tampered) record=$(find "$LARES_PREFIX/var/lib/lares-maintenance/restore-runs" -name intent.json -type f); sed 's/"oid":17234/"oid":99999/' "$record" > "$record.tampered"; mv "$record.tampered" "$record" ;;
+    esac
+  fi
+  client_save "$id" "$(client_field "$id" 1)" "$operation" "$(client_field "$id" 3)" false "$status" false
+  [ -z "\${RESTORE_CLIENT_START_DELAY:-}" ] || sleep "$RESTORE_CLIENT_START_DELAY"
+  exit "$status"
+fi
+if [ "$1" = wait ]; then client_field "$2" 5; exit 0; fi
+if [ "$1" = stop ]; then
+  id="\${@: -1}"; client_save "$id" "$(client_field "$id" 1)" "$(client_field "$id" 2)" "$(client_field "$id" 3)" false 137 false; exit 0
+fi
+if [ "$1" = rm ]; then
+  id="\${@: -1}"; client_save "$id" "$(client_field "$id" 1)" "$(client_field "$id" 2)" "$(client_field "$id" 3)" false "$(client_field "$id" 5)" true; exit 0
+fi
+if [ "$1" = ps ]; then
+  filter=""; for arg in "$@"; do case "$arg" in id=*) filter="\${arg#id=}" ;; name=*) filter="name:\${arg#name=}" ;; esac; done
+  for state in "$RESTORE_CLIENT_STATE_DIR"/*; do [ -f "$state" ] || continue; id="\${state##*/}"; removed=$(client_field "$id" 6); [ "$removed" = true ] && continue
+    if [ "$filter" = "$id" ]; then printf '%s\\n' "$id"; continue; fi
+    case "$filter" in name:*) expected_name="\${filter#name:^/}"; expected_name="\${expected_name%\$}"; [ "$(client_field "$id" 3)" = "$expected_name" ] && printf '%s\\n' "$id" ;; esac
+  done
+  exit 0
+fi
 case "$*" in *"compose"*"config --format json"*) printf '{"services":{"db":{"image":"postgres:16"}}}\\n'; exit 0 ;; esac
 case "$*" in
   *"verify-snapshot"*)
@@ -277,7 +375,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 describe("restore.sh: a good restore", () => {
   it("takes normal maintenance admission before reading install settings or calling Docker", () => {
     rmSync(join(prefix, "var/lib/lares-maintenance/custody/preparation.json"));
-    const result = run(base());
+    const result = run(base(), { env: { LARES_ENGINE_IMAGE: `registry.example/keeper@sha256:${"a".repeat(64)}` } });
     expect(result.code).toBe(78);
     expect(result.all).toContain("maintenance admission: refused");
     expect(logLines()).toEqual(["id -u"]);
@@ -527,6 +625,7 @@ describe("restore.sh: a good restore", () => {
       backing: { id: backingId, kind: "git", root: "/srv" },
       areas: [{ areaId, kind: "private", owner: { kind: "member", id: "owner" }, relativePath: `vault/private/${areaId}`, origin: `/var/lib/lares-vault-git/${areaId}.git` }],
     };
+    write("opt/lares/vault-recovery-engine-image", `registry.example/lares-keeper@sha256:${"b".repeat(64)}\n`, 0o640);
     writeArchive("srv/lares/installation/vault-storage.json", `${JSON.stringify(inventory)}\n`);
     const work = `srv/vault/private/${areaId}`;
     writeArchive(`${work}/.lares-vault-area.json`, `${JSON.stringify({ version: 1, areaId, backingStoreId: backingId, relativePath: `vault/private/${areaId}`, kind: "private", owner: { kind: "member", id: "owner" } })}\n`);
@@ -542,7 +641,7 @@ describe("restore.sh: a good restore", () => {
     expect(env).toContain(`COMPOSE_FILE="${join(prefix, "opt/lares/compose.lares-keeper.yaml")}:${join(prefix, "opt/lares/compose.lares-keeper-vault.yaml")}"`);
     expect(readFileSync(join(prefix, "opt/lares/compose.lares-keeper-vault.yaml"), "utf8")).toBe(readFileSync(join(BOX, "compose.lares-keeper-vault.yaml"), "utf8"));
     expect(lastIdx(/compose --env-file .*keeper\.env up -d$/)).toBe(logLines().length - 1);
-  });
+  }, 15_000);
 
   it("restores every dump except postgres into a dropped-and-recreated database, and postgres.dump into postgres", () => {
     expect(run(base()).code).toBe(0);
@@ -852,18 +951,89 @@ describe("restore.sh: a box whose engine is an image", () => {
     const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
     expect(r.code, r.all).toBe(0);
     const operator = join(prefix, "etc", "lares", "operator", "database-password");
-    const migrate = idx(/^docker run .*migrate\.ts --schema-owner$/);
+    const migrate = idx(/^docker create .*node --import tsx\/esm \/app\/services\/box\/migrate\.ts --schema-owner$/);
     expect(migrate).toBeGreaterThan(lastIdx(/pg_restore .*--exit-on-error/));
     expect(migrate).toBeLessThan(idx(/compose -f \S+compose\.yaml up -d$/));
     const line = logLines()[migrate]!;
     expect(line).toContain(ENGINE);
-    expect(line).toContain("--network host --user 0:0 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges");
-    expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${operator}`);
-    expect(line).toContain(`-v ${operator}:${operator}:ro`);
+    expect(line).toContain("--network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges --user 0:0");
+    expect(line).toContain("--env DATABASE_PASSWORD_FILE=/etc/lares/operator/database-password");
+    expect(line).toContain(`--mount type=bind,src=${operator},dst=/etc/lares/operator/database-password,readonly`);
+    expect(line).toContain("/run/lares-maintenance/admission");
+    expect(line).not.toContain("--entrypoint");
+    expect(line).not.toContain("docker run");
     expect(line).not.toContain("PGPASSWORD");
     expect(line).not.toContain("docker.sock");
     expect(logLines().join("\n")).not.toContain("not-a-real-db-password");
     expect(idx(/pnpm/)).toBe(-1);
+    expect(readdirSync(join(prefix, "var/lib/lares-maintenance/restore-runs"))).toEqual([]);
+  });
+
+  it("uses the separate Vault recovery pin, UID 10001, and fixed read-only Vault inputs", () => {
+    addVaultSnapshot();
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
+    expect(r.code, r.all).toBe(0);
+    const vaultFiles = logLines().find((line) => line.startsWith("docker create ") && line.includes("vault-storage.ts verify-files"));
+    const vaultSnapshot = logLines().find((line) => line.startsWith("docker create ") && line.includes("vault-storage.ts verify-snapshot"));
+    expect(vaultFiles).toBeDefined();
+    expect(vaultSnapshot).toBeDefined();
+    for (const vault of [vaultFiles!, vaultSnapshot!]) {
+      expect(vault).toContain(`registry.example/lares-keeper@sha256:${"b".repeat(64)}`);
+      expect(vault).toContain("--user 10001:10001");
+      expect(vault).toContain("--read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges");
+      expect(vault).toMatch(/--mount type=bind,src=.*\/srv\/lares\/installation\/vault-storage\.json,dst=.*\/srv\/lares\/installation\/vault-storage\.json,readonly/);
+      expect(vault).toMatch(/--mount type=bind,src=.*\/var\/lib\/lares-vault-git\/.*\.git,dst=.*\/var\/lib\/lares-vault-git\/.*\.git,readonly/);
+      expect(vault).not.toContain("--entrypoint");
+    }
+    expect(readdirSync(join(prefix, "var/lib/lares-maintenance/restore-runs"))).toEqual([]);
+  }, 15_000);
+
+  it("routes image-mode financial freeze through the fixed Keeper client with exact custody mounts", () => {
+    write("etc/lares/keeper.json", keeperConfig({ budgetFinancial: financialBinding(), budgetNative: { directory: "/var/lib/lares/budget-native" } }));
+    mkdirSync(join(prefix, "var/lib/lares/budget-financial"), { recursive: true });
+    mkdirSync(join(prefix, "var/lib/lares/budget-native"), { recursive: true });
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
+    expect(r.code, r.all).toBe(0);
+    const freeze = logLines().find((line) => line.startsWith("docker create ") && line.includes("budget-financial.ts freeze --host /etc/lares/keeper.json"));
+    expect(freeze).toBeDefined();
+    expect(freeze).toContain(ENGINE);
+    expect(freeze).toContain("--user 0:0");
+    expect(freeze).toContain(`${join(prefix, "etc/lares/keeper.json")},dst=/etc/lares/keeper.json,readonly`);
+    expect(freeze).toContain(`${join(prefix, "run/lares-host")},dst=/run/lares-host,readonly`);
+    expect(freeze).toContain(`${join(prefix, "var/lib/lares/budget-financial")},dst=/var/lib/lares/budget-financial`);
+    expect(freeze).toContain(`${join(prefix, "var/lib/lares/budget-native")},dst=/var/lib/lares/budget-native`);
+    expect(freeze).not.toContain(`${join(prefix, "var/lib/lares")},dst=/var/lib/lares`);
+    expect(freeze).not.toContain("docker compose --env-file");
+    expect(freeze).not.toContain("tsx/esm /app/services/keeper/node_modules/.bin/tsx");
+  });
+
+  it("retains child intent and the active claim when a created client's immutable ID is unavailable", () => {
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_CLIENT_CIDFILE_MISSING: "1" } });
+    expect(r.code).toBe(75);
+    expect(r.all).toContain("immutable container id was not recorded");
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const runDirectory = join(runsRoot, runName);
+    const children = readdirSync(runDirectory).filter((name) => name.startsWith("restore-client-") && name.endsWith(".intent"));
+    expect(children).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(runDirectory, children[0]!), "utf8"))).toMatchObject({
+      operation: "keeper:migrate", containerId: null, state: "creating",
+    });
+    expect(existsSync(join(runsRoot, "restore-active.lock"))).toBe(true);
+    expect(logLines().some((line) => line.startsWith("docker rm "))).toBe(false);
+  });
+
+  it.each(["newline", "nonhex"] as const)("retains child intent when Docker's cidfile contains malformed %s data", (format) => {
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_CLIENT_CIDFILE_FORMAT: format } });
+    expect(r.code).toBe(75);
+    expect(r.all).toContain("immutable container id was not recorded");
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const runDirectory = join(runsRoot, runName);
+    const children = readdirSync(runDirectory).filter((name) => name.startsWith("restore-client-") && name.endsWith(".intent"));
+    expect(children).toHaveLength(1);
+    expect(existsSync(join(runsRoot, "restore-active.lock"))).toBe(true);
+    expect(logLines().some((line) => line.startsWith("docker rm "))).toBe(false);
   });
 
   it("refuses, changing nothing, when the named engine image is not a digest", () => {
@@ -885,21 +1055,35 @@ exit 0`);
     expect(changes()).toEqual([]);
   });
 
-  it("a failed migration in the image leaves the keeper stopped", () => {
-    stub("docker", `
-case "$*" in *"config --format json"*) printf '{"services":{"db":{"image":"postgres:16"}}}\\n'; exit 0 ;; esac
-case " $* " in
-  *" pg_isready "*) exit 0 ;;
-  *" psql "*) echo "0 0 0"; exit 0 ;;
-  *" pg_restore "*" -f - "*) cat >/dev/null; cat "$LEDGER_FILE"; exit 0 ;;
-  *" pg_restore "*) cat >/dev/null; exit 0 ;;
-  *"/migrate.ts"*) exit 3 ;;
-esac
-exit 0`);
+  it("refuses a Vault target without its separate recovery pin before restic or service changes", () => {
+    addTargetVault();
+    rmSync(join(prefix, "opt/lares/vault-recovery-engine-image"));
     const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
+    expect(r.code).toBe(78);
+    expect(r.all).toContain("separate Vault recovery image pin is missing or unsafe");
+    expect(logLines().some((line) => line.startsWith("restic "))).toBe(false);
+    expect(changes()).toEqual([]);
+  });
+
+  it("enforces the fixed client attempt bound and cleans an identified timed-out client", () => {
+    const r = run(base(), { env: {
+      LARES_ENGINE_IMAGE: ENGINE,
+      RESTORE_TEST_TIMEOUT_SCALE: "0.001",
+      RESTORE_CLIENT_START_DELAY: "3",
+    } });
+    expect(r.code).toBe(75);
+    expect(r.all).toContain("migration did not finish");
+    expect(logLines().some((line) => /timeout --kill-after=5 1800 docker start --attach/.test(line))).toBe(true);
+    expect(logLines().some((line) => line.startsWith("docker rm "))).toBe(true);
+    expect(readdirSync(join(prefix, "var/lib/lares-maintenance/restore-runs"))).toEqual([]);
+  });
+
+  it("a failed migration in the image leaves the keeper stopped", () => {
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_CLIENT_FAIL_OPERATION: "migrate" } });
     expect(r.code).toBe(75);
     expect(r.all).toContain("migration did not finish");
     expect(idx(/ up -d$/)).toBe(-1);
+    expect(logLines().some((line) => line.startsWith("docker rm "))).toBe(true);
   });
 });
 

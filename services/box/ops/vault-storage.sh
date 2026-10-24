@@ -138,6 +138,10 @@ vault_storage_verify() { # prefix, database, mode: verify|verify-files|verify-em
   [ ! -r "${LARES_PREFIX:-}/opt/lares/vault-recovery-engine-image" ] || LARES_ENGINE_IMAGE=$(cat "${LARES_PREFIX:-}/opt/lares/vault-recovery-engine-image")
   BOX_DIR="${LARES_ENGINE_BOX_DIR:-${LARES_PREFIX:-}/opt/lares/current/services/box}"
   engine_resolve_image "" || { echo 'vault storage: pinned recovery engine unavailable' >&2; return 1; }
+  if [ "${RESTORE_CLIENT_CONTEXT:-0}" = 1 ]; then
+    engine_restore_vault_client "$prefix" "$database" "$mode"
+    return $?
+  fi
   local -a mounts=(--runtime-user)
   [ "$VAULT_STORAGE_PRESENT" != 1 ] || mounts+=(--ro "$prefix/srv/lares/installation/vault-storage.json")
   for path in "${VAULT_STORAGE_REPOSITORIES[@]}"; do mounts+=(--ro "$path"); done
