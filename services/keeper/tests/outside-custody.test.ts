@@ -1,6 +1,7 @@
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {createCipheriv,createHash,randomBytes} from 'node:crypto';
 import {constants} from 'node:fs';
+import {SourceAuthorityUnavailable} from '@lares/agent-kit/console-source-transaction';
 import {loadOutsideCustodyKey,OutsideCustodyStore} from '../lib/outside-custody.js';
 
 const mocks=vi.hoisted(()=>({
@@ -12,6 +13,7 @@ const mocks=vi.hoisted(()=>({
   captureUse:vi.fn(),
   captureUseWithExpiry:vi.fn(),
   captureOutsideUse:vi.fn(),
+  captureOutsideDescriptorEdit:vi.fn(),
   gateOrganisation:vi.fn(),
   trackDecryptBuffers:false,
   decryptBuffers:[] as Buffer[],
@@ -36,7 +38,8 @@ vi.mock('@lares/agent-kit/console-source-transaction',async importOriginal=>{
 vi.mock('@lares/agent-kit/console-turn-authority',()=>({requireConsoleSessionBinding:mocks.requireBinding}));
 vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class{captureUse(...args:unknown[]){return mocks.captureUse(...args);}
   captureUseWithExpiry(...args:unknown[]){return mocks.captureUseWithExpiry(...args);}
-  captureOutsideUse(...args:unknown[]){return mocks.captureOutsideUse(...args);}}}));
+  captureOutsideUse(...args:unknown[]){return mocks.captureOutsideUse(...args);}
+  captureOutsideDescriptorEdit(...args:unknown[]){return mocks.captureOutsideDescriptorEdit(...args);}}}));
 vi.mock('../lib/definition-namespace.js',()=>({
   withDefinitionNamespace:async(_pool:unknown,work:(client:unknown)=>Promise<unknown>)=>mocks.namespace(_pool,work),
   requireDefinitionNamespace:()=>mocks.namespaceClient,
@@ -66,6 +69,8 @@ const stageOperationB='00000000-0000-4000-8000-000000000111';
 const applyOperationA='00000000-0000-4000-8000-000000000112';
 const applyOperationB='00000000-0000-4000-8000-000000000113';
 const binding={incarnation:'00000000-0000-4000-8000-000000000104',admissionNonce:'A'.repeat(43),sessionId:'session',agent:'worker',memberId:'member-1'};
+function legacyStage(store:OutsideCustodyStore,input:unknown){return store.stage('legacy-session',input as never,{deadlineAtMs:Date.now()+60_000});}
+function legacyApply(store:OutsideCustodyStore,input:unknown){return store.apply('legacy-session',input as never,{deadlineAtMs:Date.now()+60_000});}
 const key=Buffer.alloc(32,7),credential=Buffer.from('short-lived outside credential');
 const sourceClient={query:(...args:unknown[])=>mocks.query(...args)};
 const storeKey=(store:OutsideCustodyStore)=>(store as unknown as {key:Buffer}).key;
@@ -663,7 +668,7 @@ it('preserves safe ancestor checks, wipes a wrong-length read, and suppresses sy
 
 it('refuses numeric-consent-only executable stage before touching custody state and wipes the credential',async()=>{
   const {store,state}=candidateStore(),candidate=Buffer.from('must not be stored or sent');
-  await expect(store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:candidate})).rejects.toThrow();
+  await expect(legacyStage(store,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:candidate})).rejects.toThrow();
   expect(candidate).toEqual(Buffer.alloc(candidate.length));
   expect(mocks.transaction).not.toHaveBeenCalled();
   expect(state().statements).toHaveLength(0);
@@ -674,8 +679,8 @@ it('refuses numeric-consent-only executable stage before touching custody state 
 it('does not let the numeric stage interface create or replace any executable revision',async()=>{
   const {store,state}=candidateStore();
   const first=Buffer.from('candidate A'),replacement=Buffer.from('candidate B');
-  await expect(store.stage(binding,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:first})).rejects.toThrow();
-  await expect(store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:1,credential:replacement})).rejects.toThrow();
+  await expect(legacyStage(store,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:first})).rejects.toThrow();
+  await expect(legacyStage(store,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:1,credential:replacement})).rejects.toThrow();
   expect(first).toEqual(Buffer.alloc(first.length));expect(replacement).toEqual(Buffer.alloc(replacement.length));
   expect(state().statements).toHaveLength(0);expect(state().revisions.size).toBe(0);expect(state().operations.size).toBe(0);
 });
@@ -683,16 +688,16 @@ it('does not let the numeric stage interface create or replace any executable re
 it('does not create a replay receipt when a stage operation id is reused',async()=>{
   const {store,state}=candidateStore();
   const credential=()=>Buffer.from('candidate B');
-  await expect(store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:1,credential:credential()})).rejects.toThrow();
-  await expect(store.stage(binding,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:2,credential:credential()})).rejects.toThrow();
+  await expect(legacyStage(store,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:1,credential:credential()})).rejects.toThrow();
+  await expect(legacyStage(store,{accountId,operationId:stageOperationB,expectedGeneration:1,expectedCandidateRevision:2,credential:credential()})).rejects.toThrow();
   expect(state().statements).toHaveLength(0);expect(state().revisions.size).toBe(0);expect(state().operations.size).toBe(0);
 });
 
 it('rejects stage attempts for foreign owners, resources, accounts and changed input without database access',async()=>{
   const {store,state}=candidateStore();
   for(const b of [binding,{...binding,memberId:'member-2'},{...binding,agent:'other-agent'}])
-    await expect(store.stage(b,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')})).rejects.toThrow();
-  await expect(store.stage(binding,{accountId:'00000000-0000-4000-8000-000000000105',operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:1,credential:Buffer.from('different credential')})).rejects.toThrow();
+    await expect(legacyStage(store,{accountId,operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('candidate A')})).rejects.toThrow();
+  await expect(legacyStage(store,{accountId:'00000000-0000-4000-8000-000000000105',operationId:stageOperationA,expectedGeneration:0,expectedCandidateRevision:1,credential:Buffer.from('different credential')})).rejects.toThrow();
   expect(state().statements).toHaveLength(0);expect(state().revisions.size).toBe(0);expect(state().operations.size).toBe(0);
 });
 
@@ -710,7 +715,7 @@ it('checks existing operation owner explicitly and refuses a receipt whose accou
 it('keeps executable apply closed until persisted current-policy verification exists',async()=>{
   const {store,state,seedExecutableFixture}=candidateStore();
   seedExecutableFixture();
-  await expect(store.apply(binding,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7})).rejects.toThrow();
+  await expect(legacyApply(store,{accountId,operationId:applyOperationA,expectedGeneration:1,candidateRevision:1,consentGeneration:7})).rejects.toThrow();
   expect(state().statements).toHaveLength(0);
   expect(state().head).toMatchObject({generation:1,active_revision:null,candidate_revision:1,state:'active'});
 });
@@ -764,8 +769,8 @@ it('closes once, wipes an idle key, and rejects every public operation before da
   const inspect=vi.fn(async()=>undefined);
   store.close();store.close();
   expect(storeKey(store)).toEqual(Buffer.alloc(32));
-  await expect(store.stage(binding,{accountId,operationId,expectedGeneration:0,expectedCandidateRevision:null,credential:staged})).rejects.toThrow();
-  await expect(store.apply(binding,{accountId,operationId,expectedGeneration:1,candidateRevision:1,consentGeneration:7})).rejects.toThrow();
+  await expect(legacyStage(store,{accountId,operationId,expectedGeneration:0,expectedCandidateRevision:null,credential:staged})).rejects.toThrow();
+  await expect(legacyApply(store,{accountId,operationId,expectedGeneration:1,candidateRevision:1,consentGeneration:7})).rejects.toThrow();
   await expect(store.rollback(binding,{accountId,operationId,expectedGeneration:1,sourceRevision:1,consentGeneration:7})).rejects.toThrow();
   await expect(store.revoke(binding,{accountId,operationId,expectedGeneration:1})).rejects.toThrow();
   await expect(store.withCredential(binding,{accountId},use)).rejects.toThrow();
@@ -798,6 +803,15 @@ it('refuses a successful runAndRecover result when close begins while run is pen
   expect(storeKey(store)).toEqual(Buffer.alloc(32));
 });
 
+it('inspects the recorded operation after lost source authority and never retries its write',async()=>{
+  const result={operationId,accountId,kind:'stage' as const,outcome:'staged' as const,generation:1,credentialRevision:1};
+  const run=vi.fn(async()=>{throw new SourceAuthorityUnavailable();}),inspect=vi.fn(async()=>result);
+  const recovered=await new OutsideCustodyStore({} as never,key).runAndRecover(operationId,run,inspect);
+  expect(recovered).toEqual(result);
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(inspect).toHaveBeenCalledTimes(1);
+});
+
 it('awaits admitted work before wiping the key during shutdown drain',async()=>{
   let entered!:()=>void,release!:()=>void;
   const inRun=new Promise<void>(resolve=>{entered=resolve;}),runResult=new Promise<void>(resolve=>{release=resolve;});
@@ -818,7 +832,7 @@ it('awaits admitted work before wiping the key during shutdown drain',async()=>{
 
 it('refuses a numeric-consent-only stage before waiting on custody state, sealing or writing',async()=>{
   const store=new OutsideCustodyStore({} as never,key),staged=Buffer.from('credential to wipe');
-  await expect(store.stage(binding,{accountId,operationId,expectedGeneration:0,expectedCandidateRevision:null,credential:staged})).rejects.toThrow();
+  await expect(legacyStage(store,{accountId,operationId,expectedGeneration:0,expectedCandidateRevision:null,credential:staged})).rejects.toThrow();
   store.close();
   expect(storeKey(store)).toEqual(Buffer.alloc(32));
   expect(staged).toEqual(Buffer.alloc(staged.length));

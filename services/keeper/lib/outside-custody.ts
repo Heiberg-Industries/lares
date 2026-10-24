@@ -45,12 +45,12 @@ type Head = {
   consent_generation: string;
   state: "active" | "revoked";
 };
-export type OutsideOperationKind = "stage" | "apply" | "rollback" | "revoke" | "discover";
+export type OutsideOperationKind = "stage" | "apply" | "rollback" | "revoke" | "discover" | "publish" | "accept" | "activation-preview";
 export type OutsideOperationResult = {
   operationId: string;
   accountId: string;
   kind: OutsideOperationKind;
-  outcome: "staged" | "applied" | "rolled-back" | "revoked" | "claimed" | "completed" | "unknown";
+  outcome: "staged" | "applied" | "rolled-back" | "revoked" | "claimed" | "completed" | "unknown" | "published" | "accepted" | "previewed";
   generation: number;
   credentialRevision: number | null;
 };
@@ -81,6 +81,76 @@ export type HumanDiscoveryPreview={accountId:string;requestId:string;claimOperat
   endpoint:string;purpose:'streamable-http-discovery-v1';definitionHash:string;accessRevision:number;destinationHash:string;
   routePolicyHash:string;expectedGeneration:number;expectedCandidateRevision:number|null;consentGeneration:number};
 export type HumanDiscoveryInspection={state:'unresolved'}|{state:'complete';document:OutsideDiscoveryDocument};
+type DescriptorProjection={version:1;connectionName:string;scope:'read'|'write'|'write-with-confirm';allow:string[];read:string[];tools:OutsideListedTool[]};
+type StoredEvidence={operation_id:string;account_id:string;owner_member_id:string;actor_member_id:string|null;operation_kind:string;
+  request_hash:Buffer;result_nonce:Buffer;result_ciphertext:Buffer;evidence_kind:string|null;evidence_hash:Buffer|null;outcome:string;
+  expected_generation:string;result_generation:string;credential_revision:string|null};
+type ActivationReviewV1={version:1;accountId:string;ownerMemberId:string;resourceId:string;connectionName:string;
+  expectedGeneration:number;expectedCandidateRevision:number|null;sourceRevision:number;sourceRequestId:string;sourceClaimOperationId:string;
+  publicationId:string;publicationHash:string;acceptanceId:string;acceptanceHash:string;policyHash:string;capture:unknown;
+  route:{policyHash:string;sourceAddress:string;proxyUrl:string};consentGeneration:number};
+type ActivationSelectors={accountId:string;agentName:string;connectionName:string;requestId:string;claimOperationId:string;
+  publicationId:string;acceptanceId:string;expectedGeneration:number;expectedCandidateRevision:number|null;expectedConsentGeneration:number;
+  expectedDefinitionHash:string;expectedAccessRevision:number;expectedPublicationHash:string;expectedAcceptanceHash:string;expectedPolicyHash?:string};
+type DiscoveryRead={head:Head;capture:import('@lares/agent-kit/grant-store').OutsideUseCapture;document:OutsideDiscoveryDocument;
+  requestId:string;claimOperationId:string;revision:number;consentGeneration:number;policyHash:string;policy:Record<string,unknown>};
+const hashSchema=z.string().regex(/^[a-f0-9]{64}$/);
+const memberIdSchema=z.string().min(1).max(256).regex(/^[^\s,;\x00-\x1f\x7f]+$/);
+const descriptorProjectionSchema=z.strictObject({version:z.literal(1),connectionName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
+  scope:z.enum(['read','write','write-with-confirm']),allow:z.array(z.string().min(1).max(256)).max(256),read:z.array(z.string().min(1).max(256)).max(256),
+  tools:z.array(z.strictObject({name:z.string().min(1).max(256),description:z.string().max(8192).optional(),inputSchema:z.record(z.string(),z.unknown())})).max(256)});
+const descriptorEditCaptureSchema=z.strictObject({version:z.literal(1),
+  actor:z.strictObject({memberId:memberIdSchema,organisationId:z.string().min(1).max(256),role:z.enum(['owner','member','restricted'])}),
+  agent:z.strictObject({name:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),ownerMemberId:memberIdSchema,
+    accessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),definitionHash:z.string().min(1).max(256),connectionName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/)}),
+  grant:z.union([z.strictObject({kind:z.literal('owner'),validUntil:z.null()}),z.strictObject({kind:z.literal('grant'),id:z.string().min(1).max(256),
+    principal:z.strictObject({kind:z.literal('member'),id:memberIdSchema}),permission:z.literal('edit'),validUntil:z.string().datetime({offset:true}).nullable()})])});
+const activationReviewSchema=z.strictObject({version:z.literal(1),accountId:uuid,ownerMemberId:memberIdSchema,resourceId:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
+  connectionName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),expectedGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  expectedCandidateRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),sourceRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  sourceRequestId:uuid,sourceClaimOperationId:uuid,publicationId:uuid,publicationHash:hashSchema,acceptanceId:uuid,acceptanceHash:hashSchema,
+  policyHash:hashSchema,capture:descriptorEditCaptureSchema,route:z.strictObject({policyHash:hashSchema,sourceAddress:z.string().max(64),proxyUrl:z.string().max(256)}),
+  consentGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)});
+const outsideUseCaptureSchema=z.strictObject({version:z.literal(1),actor:z.strictObject({memberId:memberIdSchema,organisationId:z.string().min(1).max(256),
+    role:z.enum(['owner','member','restricted'])}),agent:z.strictObject({name:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),ownerMemberId:memberIdSchema,
+    accessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),definitionHash:z.string().min(1).max(256)}),
+  ownerPolicy:z.union([z.strictObject({kind:z.literal('unrestricted')}),z.strictObject({kind:z.literal('ceiling'),requiredCapabilities:z.array(z.string().min(1).max(256)).max(256)})]),
+  outside:z.strictObject({scope:z.enum(['read','write-with-confirm']),autonomy:z.enum(['gated','autonomous']),connection:z.strictObject({
+    name:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),url:z.string().max(2048),auth:z.literal('bearer'),allow:z.array(z.string().min(1).max(256)).max(256),
+    read:z.array(z.string().min(1).max(256)).max(256),trusted:z.boolean(),runsAt:z.string().max(256).optional()})}),
+  grant:z.union([z.strictObject({kind:z.literal('owner'),validUntil:z.null()}),z.strictObject({kind:z.literal('grant'),id:z.string().min(1).max(256),
+    principal:z.strictObject({kind:z.enum(['member','organisation']),id:memberIdSchema}),permission:z.literal('use'),validUntil:z.string().datetime({offset:true}).nullable()})])});
+const executablePolicySchema=z.strictObject({version:z.literal(1),purpose:z.literal('outside-executable-v1'),ownerMemberId:memberIdSchema,accountId:uuid,
+  resourceId:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),connectionName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),capture:outsideUseCaptureSchema,
+  route:z.strictObject({policyHash:hashSchema,sourceAddress:z.string().max(64),proxyUrl:z.string().max(256)}),
+  publication:z.strictObject({id:uuid,hash:hashSchema,descriptorDigest:hashSchema,acceptedScope:z.strictObject({scope:z.enum(['read','write','write-with-confirm']),
+    allow:z.array(z.string().min(1).max(256)).max(256),read:z.array(z.string().min(1).max(256)).max(256)})}),
+  acceptance:z.strictObject({id:uuid,hash:hashSchema,editorMemberId:memberIdSchema})});
+const publicationEvidenceSchema=z.strictObject({version:z.literal(1),organisationId:z.string().min(1).max(256),actorMemberId:memberIdSchema,
+  publicationHash:hashSchema,source:z.strictObject({requestId:uuid,claimOperationId:uuid,revision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    consentGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),policyHash:hashSchema}),
+  definition:z.strictObject({hash:z.string().min(1).max(256),accessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}),
+  capture:z.record(z.string(),z.unknown()),projection:descriptorProjectionSchema});
+const acceptanceEvidenceSchema=z.strictObject({version:z.literal(1),organisationId:z.string().min(1).max(256),editorMemberId:memberIdSchema,
+  publicationId:uuid,publicationHash:hashSchema,resourceId:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
+  connectionName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),definitionHash:z.string().min(1).max(256),
+  accessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),grant:descriptorEditCaptureSchema.shape.grant});
+const stagedEvidenceSchema=z.strictObject({version:z.literal(1),review:activationReviewSchema,reviewHash:hashSchema,
+  candidateRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),candidateGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  consentGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),policyJson:executablePolicySchema});
+function validateEvidenceBody(kind:string,body:unknown):Record<string,unknown>{
+  const schema=kind==='descriptor-publication-v1'?publicationEvidenceSchema:
+    kind==='descriptor-acceptance-v1'?acceptanceEvidenceSchema:activationReviewSchema;
+  const parsed=schema.safeParse(body);if(!parsed.success)return denied();
+  if(kind==='descriptor-publication-v1'){
+    const value=parsed.data as z.infer<typeof publicationEvidenceSchema>;
+    const projection=value.projection;
+    const document=validateStoredDiscoveryDocument({protocolVersion:DISCOVERY_PROFILE.protocolVersion,
+      serverInfo:{name:'outside-custody',version:'1'},tools:projection.tools});
+    if(document.tools.length!==projection.tools.length)return denied();
+  }
+  return parsed.data as Record<string,unknown>;
+}
 const DISCOVERY_PROFILE = Object.freeze({
   version: 2,
   protocolVersion: '2025-06-18',
@@ -109,6 +179,11 @@ export class OutsideCustodyRecoveryRequired extends Error {
 }
 const denied = (): never => { throw new Error(REFUSED); };
 const requestDenied = (): never => { throw new Error(REQUEST_REFUSED); };
+function wipeRejectedCredentialInput(value:unknown):void{
+  if(!value||typeof value!=='object'||Array.isArray(value))return;
+  const credential=(value as Record<string,unknown>).credential;
+  if(Buffer.isBuffer(credential))credential.fill(0);
+}
 
 /** Authenticate a human cookie only inside the outside role's owned transaction. The first
  * lookup discovers the organization gate; the locked lookup below is the authority check. */
@@ -217,7 +292,8 @@ function openBound(key:Buffer,nonce:Buffer,ciphertext:Buffer,coordinates:BoundCo
   const decipher=createDecipheriv('aes-256-gcm',key,nonce);
   decipher.setAAD(boundAad(coordinates));
   decipher.setAuthTag(ciphertext.subarray(ciphertext.length-16));
-  return Buffer.concat([decipher.update(ciphertext.subarray(0,ciphertext.length-16)),decipher.final()]);
+  const partial=decipher.update(ciphertext.subarray(0,ciphertext.length-16));
+  try{return Buffer.concat([partial,decipher.final()]);}finally{partial.fill(0);}
 }
 function sealDiscoveryResult(key:Buffer,plaintext:Buffer,coordinates:{ownerMemberId:string;accountId:string;agentName:string;
   connectionName:string;requestId:string;claimOperationId:string;resultOperationId:string;generation:number;
@@ -381,6 +457,41 @@ function outsideDiscoveryPolicyHash(capture: import('@lares/agent-kit/grant-stor
   return createHash('sha256').update(canonicalJson({version:DISCOVERY_PROFILE.version,profile:DISCOVERY_PROFILE,purpose,
     ownerMemberId,accountId,agentName,connectionName,endpoint:destination,capture,route})).digest('hex');
 }
+function projectDescriptorDocument(document:OutsideDiscoveryDocument,capture:import('@lares/agent-kit/grant-store').OutsideUseCapture):DescriptorProjection{
+  const allowed=[...capture.outside.connection.allow].sort(),read=[...capture.outside.connection.read].sort();
+  const byName=new Map(document.tools.map(tool=>[tool.name,tool]));
+  if(byName.size!==document.tools.length||allowed.some(name=>!byName.has(name)))return denied();
+  const tools=allowed.map(name=>{
+    const tool=byName.get(name)!;
+    return {name:tool.name,...(tool.description===undefined?{}:{description:tool.description}),inputSchema:tool.inputSchema};
+  });
+  const projection={version:1 as const,connectionName:capture.outside.connection.name,scope:capture.outside.scope,
+    allow:allowed,read,tools};
+  if(Buffer.byteLength(canonicalJson(projection))>DISCOVERY_PROFILE.resultBytes)return denied();
+  return projection;
+}
+function evidenceAad(input:{accountId:string;ownerMemberId:string;resourceId:string;connectionName:string;operationId:string;kind:string;hash:string}):Buffer{
+  if(!uuid.safeParse(input.accountId).success||!uuid.safeParse(input.operationId).success||
+      !/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(input.ownerMemberId)||!/^([a-z][a-z0-9-]{1,30})$/.test(input.resourceId)||
+      !/^([a-z][a-z0-9-]{1,30})$/.test(input.connectionName)||!['descriptor-publication-v1','descriptor-acceptance-v1','activation-review-v1'].includes(input.kind)||
+      !/^[a-f0-9]{64}$/.test(input.hash))return denied();
+  return Buffer.from(canonicalJson(['lares-outside-custody-evidence-v1',input]));
+}
+function sealEvidence(key:Buffer,body:unknown,input:Parameters<typeof evidenceAad>[0]):{nonce:Buffer;ciphertext:Buffer}{
+  const plaintext=Buffer.from(canonicalJson(body));
+  try{
+    if(plaintext.length<1||plaintext.length>DISCOVERY_PROFILE.resultBytes)return denied();
+    const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce);cipher.setAAD(evidenceAad(input));
+    return {nonce,ciphertext:Buffer.concat([cipher.update(plaintext),cipher.final(),cipher.getAuthTag()])};
+  }finally{plaintext.fill(0);}
+}
+function openEvidence(key:Buffer,nonce:Buffer,ciphertext:Buffer,input:Parameters<typeof evidenceAad>[0]):Buffer{
+  if(!Buffer.isBuffer(nonce)||nonce.length!==12||!Buffer.isBuffer(ciphertext)||ciphertext.length<17||ciphertext.length>DISCOVERY_PROFILE.resultBytes+16)return denied();
+  const decipher=createDecipheriv('aes-256-gcm',key,nonce);decipher.setAAD(evidenceAad(input));
+  decipher.setAuthTag(ciphertext.subarray(ciphertext.length-16));
+  const first=decipher.update(ciphertext.subarray(0,ciphertext.length-16));
+  try{return Buffer.concat([first,decipher.final()]);}catch(error){first.fill(0);throw error;}
+}
 function requestHash(kind: OutsideOperationKind, accountId: string, memberId:string, resourceId:string, expectedGeneration: number,
   revision: number | null, callerConsentGeneration:number|null, authorityRevision:number, secret?: Buffer): Buffer {
   const hash = createHash("sha256");
@@ -428,17 +539,18 @@ export class OutsideCustodyStore {
     await new Promise<void>(resolve=>this.drainWaiters.add(resolve));
   }
 
-  async #inMainNamespace<T>(options:{deadlineAtMs:number},work:()=>Promise<T>):Promise<T>{
+  async #inMainNamespace<T>(options:{deadlineAtMs:number;operationId?:string},work:()=>Promise<T>):Promise<T>{
     this.#assertOpen(requestDenied);
     if(!this.mainPool||!this.routeLifecycle||!Number.isFinite(options.deadlineAtMs)||options.deadlineAtMs<=Date.now())return requestDenied();
-    return withDefinitionNamespace(this.mainPool,async namespaceClient=>{
+    try{return await withDefinitionNamespace(this.mainPool,async namespaceClient=>{
       this.#assertOpen(requestDenied);
       if(options.deadlineAtMs<=Date.now()||requireDefinitionNamespace()!==namespaceClient)return requestDenied();
       const result=await work();
       this.#assertOpen(requestDenied);
       if(options.deadlineAtMs<=Date.now()||requireDefinitionNamespace()!==namespaceClient)return requestDenied();
       return result;
-    },{deadlineAtMs:options.deadlineAtMs});
+    },{deadlineAtMs:options.deadlineAtMs});}
+    catch(error){if(error instanceof SourceAuthorityUnavailable&&options.operationId)throw new OutsideCustodyRecoveryRequired(options.operationId);throw error;}
   }
 
   #mintClaimIdentity(state:OutsideClaimIdentityState):OutsideClaimIdentity{
@@ -459,7 +571,7 @@ export class OutsideCustodyStore {
 
   /** Start admission only after the shared main-pool namespace is held. The callback is
    * private to this class; callers cannot supply a success callback or transaction client. */
-  async #withHumanSession<T>(sessionToken: string, work: (db: PoolClient, memberId: string) => Promise<T>, options: { deadlineAtMs: number }): Promise<T> {
+  async #withHumanSession<T>(sessionToken: string, work: (db: PoolClient, memberId: string) => Promise<T>, options: { deadlineAtMs: number; operationId?:string }): Promise<T> {
     const release = this.#beginOperation(requestDenied);
     try {
       const namespaceClient=requireDefinitionNamespace();
@@ -478,9 +590,39 @@ export class OutsideCustodyStore {
       assertNamespace();
       return result;
     } catch (error) {
+      if(error instanceof SourceAuthorityUnavailable&&options.operationId)throw new OutsideCustodyRecoveryRequired(options.operationId);
       if (error instanceof SourceAuthorityUnavailable || error instanceof OutsideCustodyRecoveryRequired) throw error;
       return requestDenied();
     } finally { release(); }
+  }
+
+  async #humanOrganisation(db:PoolClient,memberId:string):Promise<{id:string;role:string}>{
+    const result=await db.query<{id:string;role:string}>("SELECT org_id AS id,org_role AS role FROM users WHERE id=$1 AND status='active' AND org_id IS NOT NULL",[memberId]);
+    const row=result.rows[0];
+    if(result.rows.length!==1||!row||typeof row.id!=='string'||typeof row.role!=='string')return denied();
+    return row;
+  }
+
+  async #lockSameOrganisationMember(db:PoolClient,memberId:string,organisationId:string,alreadyLocked:string):Promise<void>{
+    if(memberId===alreadyLocked)return;
+    if(!/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(memberId)||!organisationId)return denied();
+    const result=await db.query<{id:string;org_id:string;org_role:string;status:string}>(
+      "SELECT id,org_id,org_role,status FROM users WHERE id=$1 AND org_id=$2 AND status='active' FOR SHARE",[memberId,organisationId]);
+    const row=result.rows[0];
+    if(result.rows.length!==1||row?.id!==memberId||row.org_id!==organisationId||row.status!=='active'||
+        !['owner','member','restricted'].includes(row.org_role))return denied();
+  }
+
+  async #captureDescriptorEditor(db:PoolClient,editorMemberId:string,actingMemberId:string,organisationId:string,agentName:string,
+    connectionName:string,expected?:{definitionHash:string;accessRevision:number}):Promise<import('@lares/agent-kit/grant-store').OutsideDescriptorEditCapture>{
+    await this.#lockSameOrganisationMember(db,editorMemberId,organisationId,actingMemberId);
+    const capture=await new PgGrantStore().captureOutsideDescriptorEdit(editorMemberId,agentName,
+      {db:db as GrantDatabase,connectionName,...(expected?{expected}:{})});
+    if(!capture||capture.actor.memberId!==editorMemberId||capture.actor.organisationId!==organisationId||
+        capture.agent.name!==agentName||capture.agent.connectionName!==connectionName)return denied();
+    if(capture.grant.kind==='grant'&&capture.grant.validUntil!==null)retainSourceTransactionDeadline(db,capture.grant.validUntil);
+    await checkConsoleSourceDeadlines(db);
+    return capture;
   }
 
   async previewDiscovery(sessionToken:string,input:{agentName:string;connectionName:string},options:{deadlineAtMs:number}):Promise<import('@lares/agent-kit/grant-store').OutsideUseCapture> {
@@ -527,6 +669,63 @@ export class OutsideCustodyStore {
         endpoint,purpose:'streamable-http-discovery-v1',definitionHash:capture.agent.definitionHash,accessRevision:capture.agent.accessRevision,
         destinationHash,routePolicyHash:route.policyHash,expectedGeneration,expectedCandidateRevision,consentGeneration};
     },options));
+  }
+
+  async #readDiscoveryOnClient(db:PoolClient,memberId:string,input:{accountId:string;agentName:string;connectionName:string;requestId:string;claimOperationId:string},
+    organisationId:string,lock:'share'|'update'='share'):Promise<DiscoveryRead>{
+    const accountId=uuid.parse(input.accountId),requestId=uuid.parse(input.requestId),claimOperationId=uuid.parse(input.claimOperationId);
+    const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName);
+    const identity=await db.query<Head>(`SELECT account_id,owner_member_id,resource_id,connection_name,generation::text,
+        active_revision::text,candidate_revision::text,consent_generation::text,state
+      FROM outside_custody_accounts WHERE account_id=$1 AND owner_member_id=$2 AND resource_id=$3 AND connection_name=$4 FOR ${lock}`,
+      [accountId,memberId,input.agentName,input.connectionName]);
+    const head=identity.rows[0];
+    if(identity.rows.length!==1||!head||head.account_id!==accountId||head.owner_member_id!==memberId||head.resource_id!==input.agentName||
+        head.connection_name!==input.connectionName||head.state!=='active'||capture.actor.organisationId!==organisationId)return denied();
+    const claim=await db.query<StoredEvidence & {request_id:string;policy_json:string;policy_hash:Buffer;revision_purpose:string;revision_generation:string;
+      revision_consent_generation:string;claim_nonce:Buffer;claim_ciphertext:Buffer}>(`SELECT c.operation_id,c.account_id,c.owner_member_id,NULL::text AS actor_member_id,
+        c.operation_kind,c.request_hash,c.result_nonce,c.result_ciphertext,NULL::text AS evidence_kind,NULL::bytea AS evidence_hash,c.outcome,
+        c.expected_generation::text,c.result_generation::text,c.credential_revision::text,c.request_id,v.policy_json::text,v.policy_hash,
+        v.revision_purpose,v.generation::text AS revision_generation,v.consent_generation::text AS revision_consent_generation,
+        v.nonce AS claim_nonce,v.ciphertext AS claim_ciphertext
+      FROM outside_custody_operations c LEFT JOIN outside_custody_revisions v
+        ON v.account_id=c.account_id AND v.credential_revision=c.credential_revision AND v.operation_id=c.operation_id
+      WHERE c.request_id=$1 AND c.operation_id=$2 AND c.account_id=$3 AND c.owner_member_id=$4 AND c.event_phase='claim'`,
+      [requestId,claimOperationId,accountId,memberId]);
+    const row=claim.rows[0];
+    if(claim.rows.length!==1||!row||row.operation_id!==claimOperationId||row.operation_kind!=='discover'||row.request_id!==requestId||
+        row.credential_revision===null||row.revision_purpose!=='discovery'||!Buffer.isBuffer(row.policy_hash)||row.policy_hash.length!==32||
+        !Buffer.isBuffer(row.request_hash)||row.request_hash.length!==32||row.outcome!=='claimed')return denied();
+    let policy:unknown;try{policy=JSON.parse(row.policy_json) as unknown;}catch{return denied();}
+    if(!policy||Array.isArray(policy)||typeof policy!=='object')return denied();
+    const p=policy as Record<string,unknown>;
+    if(Object.keys(p).sort().join(',')!=='accountId,agentName,capture,connectionName,endpoint,ownerMemberId,profile,purpose,route,version'||
+        p.version!==DISCOVERY_PROFILE.version||p.purpose!=='streamable-http-discovery-v1'||p.ownerMemberId!==memberId||p.accountId!==accountId||
+        p.agentName!==input.agentName||p.connectionName!==input.connectionName||p.endpoint!==capture.outside.connection.url||
+        canonicalJson(p.profile)!==canonicalJson(DISCOVERY_PROFILE)||canonicalJson(p.capture)!==canonicalJson(capture))return denied();
+    const route=p.route as Record<string,unknown>|null;
+    if(!route||Array.isArray(route)||typeof route!=='object'||Object.keys(route).sort().join(',')!=='policyHash,proxyUrl,sourceAddress'||
+        typeof route.policyHash!=='string'||typeof route.sourceAddress!=='string'||typeof route.proxyUrl!=='string')return denied();
+    const routeReview={policyHash:route.policyHash,sourceAddress:route.sourceAddress,proxyUrl:route.proxyUrl};
+    const policyHash=outsideDiscoveryPolicyHash(capture,{ownerMemberId:memberId,accountId,agentName:input.agentName,connectionName:input.connectionName,
+      destination:capture.outside.connection.url,route:routeReview,purpose:'streamable-http-discovery-v1'});
+    if(policyHash!==row.policy_hash.toString('hex')||number(row.revision_generation)!==number(row.result_generation))return denied();
+    const result=await db.query<StoredEvidence & {request_id:string;event_phase:string}>(`SELECT operation_id,account_id,owner_member_id,NULL::text AS actor_member_id,
+        operation_kind,request_hash,result_nonce,result_ciphertext,NULL::text AS evidence_kind,NULL::bytea AS evidence_hash,outcome,
+        expected_generation::text,result_generation::text,credential_revision::text,request_id,event_phase
+      FROM outside_custody_operations WHERE request_id=$1 AND account_id=$2 AND owner_member_id=$3 AND event_phase='result'`,[requestId,accountId,memberId]);
+    const stored=result.rows[0];
+    if(result.rows.length!==1||!stored||stored.operation_kind!=='discover'||stored.outcome!=='completed'||stored.request_id!==requestId||
+        !stored.request_hash.equals(row.request_hash)||stored.credential_revision!==row.credential_revision||
+        !Buffer.isBuffer(stored.result_nonce)||!Buffer.isBuffer(stored.result_ciphertext))return denied();
+    const revision=number(row.credential_revision),consentGeneration=number(row.revision_consent_generation);
+    const plaintext=openDiscoveryResult(this.key,stored.result_nonce,stored.result_ciphertext,{ownerMemberId:memberId,accountId,agentName:input.agentName,
+      connectionName:input.connectionName,requestId,claimOperationId,resultOperationId:stored.operation_id,generation:number(row.result_generation),
+      credentialRevision:revision,consentGeneration,policyHash});
+    try{
+      let document:unknown;try{document=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(plaintext)) as unknown;}catch{return denied();}
+      return {head,capture,document:validateStoredDiscoveryDocument(document),requestId,claimOperationId,revision,consentGeneration,policyHash,policy:p};
+    }finally{plaintext.fill(0);}
   }
 
   async inspectHumanDiscovery(sessionToken:string,input:{accountId:string;agentName:string;connectionName:string;requestId:string;claimOperationId:string},
@@ -1212,6 +1411,105 @@ export class OutsideCustodyStore {
     return { operationId,accountId,kind,outcome:row.outcome,generation:number(row.result_generation),credentialRevision:row.credential_revision === null ? null : number(row.credential_revision) };
   }
 
+  async publishDiscoveredDescriptorReview(sessionToken:string,input:{accountId:string;agentName:string;connectionName:string;requestId:string;
+    claimOperationId:string;operationId:string;expectedGeneration:number;expectedDescriptorHash:string},options:{deadlineAtMs:number}):Promise<{
+      publicationId:string;publicationHash:string;descriptor:DescriptorProjection}>{
+    const accountId=uuid.parse(input.accountId),operationId=uuid.parse(input.operationId);
+    if(!Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<1||!/^[a-f0-9]{64}$/.test(input.expectedDescriptorHash))return requestDenied();
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const organisation=await this.#humanOrganisation(db,memberId);
+      const discovered=await this.#readDiscoveryOnClient(db,memberId,input,organisation.id,'update');
+      if(number(discovered.head.generation)!==input.expectedGeneration||discovered.head.owner_member_id!==memberId||
+          discovered.head.resource_id!==input.agentName||discovered.head.connection_name!==input.connectionName)return requestDenied();
+      const projection=projectDescriptorDocument(discovered.document,discovered.capture);
+      const publicationHash=createHash('sha256').update(canonicalJson(projection)).digest('hex');
+      if(publicationHash!==input.expectedDescriptorHash)return requestDenied();
+      const body={version:1,organisationId:organisation.id,actorMemberId:memberId,publicationHash,
+        source:{requestId:discovered.requestId,claimOperationId:discovered.claimOperationId,revision:discovered.revision,
+          consentGeneration:discovered.consentGeneration,policyHash:discovered.policyHash},
+        definition:{hash:discovered.capture.agent.definitionHash,accessRevision:discovered.capture.agent.accessRevision},
+        capture:discovered.capture,projection};
+      await this.#recordEvidence(db,{operationId,accountId,ownerMemberId:memberId,actorMemberId:memberId,kind:'publish',
+        evidenceKind:'descriptor-publication-v1',body,expectedGeneration:input.expectedGeneration,resultGeneration:input.expectedGeneration,
+        credentialRevision:discovered.revision,outcome:'published',requestIdentity:{requestId:input.requestId,claimOperationId:input.claimOperationId,
+          expectedDescriptorHash:input.expectedDescriptorHash}});
+      return {publicationId:operationId,publicationHash,descriptor:projection};
+    },options));
+  }
+
+  async readPublishedDescriptorReview(sessionToken:string,input:{accountId:string;publicationId:string;expectedPublicationHash:string},
+    options:{deadlineAtMs:number}):Promise<{publicationId:string;publicationHash:string;descriptor:DescriptorProjection;resourceId:string;connectionName:string}>{
+    const accountId=uuid.parse(input.accountId),publicationId=uuid.parse(input.publicationId);
+    if(!/^[a-f0-9]{64}$/.test(input.expectedPublicationHash))return denied();
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,editorMemberId)=>{
+      const organisation=await this.#humanOrganisation(db,editorMemberId);
+      const locator=await this.head(db,accountId,false);
+      if(!locator||locator.state!=='active')return denied();
+      await this.#lockSameOrganisationMember(db,locator.owner_member_id,organisation.id,editorMemberId);
+      const evidence=await this.#readEvidence(db,accountId,publicationId,'descriptor-publication-v1');
+      const {head,body,row}=evidence;
+      if(head.state!=='active'||head.owner_member_id!==body.actorMemberId||body.organisationId!==organisation.id||
+          body.publicationHash!==input.expectedPublicationHash||row.outcome!=='published'||row.actor_member_id!==head.owner_member_id)return denied();
+      const storedDefinition=body.definition as {hash:string;accessRevision:number};
+      const definition={definitionHash:storedDefinition.hash,accessRevision:storedDefinition.accessRevision};
+      const current=await captureOutsideHumanUse(db,head.owner_member_id,head.resource_id,head.connection_name,definition);
+      if(current.actor.organisationId!==organisation.id||canonicalJson(current)!==canonicalJson(body.capture))return denied();
+      const projection=body.projection as DescriptorProjection;
+      if(!projection||projection.version!==1||projection.connectionName!==head.connection_name||
+          createHash('sha256').update(canonicalJson(projection)).digest('hex')!==input.expectedPublicationHash)return denied();
+      await this.#captureDescriptorEditor(db,editorMemberId,editorMemberId,organisation.id,head.resource_id,head.connection_name,
+        {definitionHash:current.agent.definitionHash,accessRevision:current.agent.accessRevision});
+      return {publicationId,publicationHash:input.expectedPublicationHash,descriptor:projection,resourceId:head.resource_id,connectionName:head.connection_name};
+    },options));
+  }
+
+  async acceptPublishedDescriptorReview(sessionToken:string,input:{accountId:string;publicationId:string;operationId:string;
+    expectedPublicationHash:string},options:{deadlineAtMs:number}):Promise<{acceptanceId:string;publicationHash:string;acceptanceHash:string}>{
+    const accountId=uuid.parse(input.accountId),publicationId=uuid.parse(input.publicationId),operationId=uuid.parse(input.operationId);
+    if(!/^[a-f0-9]{64}$/.test(input.expectedPublicationHash))return requestDenied();
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,editorMemberId)=>{
+      const organisation=await this.#humanOrganisation(db,editorMemberId);
+      const locator=await this.head(db,accountId,false);
+      if(!locator||locator.state!=='active')return requestDenied();
+      await this.#lockSameOrganisationMember(db,locator.owner_member_id,organisation.id,editorMemberId);
+      const evidence=await this.#readEvidence(db,accountId,publicationId,'descriptor-publication-v1');
+      const {head,body,row}=evidence;
+      if(head.state!=='active'||body.organisationId!==organisation.id||body.publicationHash!==input.expectedPublicationHash||
+          row.outcome!=='published'||row.actor_member_id!==head.owner_member_id)return requestDenied();
+      const storedDefinition=body.definition as {hash:string;accessRevision:number};
+      const definition={definitionHash:storedDefinition.hash,accessRevision:storedDefinition.accessRevision};
+      const currentUse=await captureOutsideHumanUse(db,head.owner_member_id,head.resource_id,head.connection_name,definition);
+      if(currentUse.actor.organisationId!==organisation.id||canonicalJson(currentUse)!==canonicalJson(body.capture))return requestDenied();
+      const editor=await this.#captureDescriptorEditor(db,editorMemberId,editorMemberId,organisation.id,head.resource_id,head.connection_name,
+        {definitionHash:currentUse.agent.definitionHash,accessRevision:currentUse.agent.accessRevision});
+      const acceptance={version:1,organisationId:organisation.id,editorMemberId,publicationId,publicationHash:input.expectedPublicationHash,
+        resourceId:head.resource_id,connectionName:head.connection_name,definitionHash:editor.agent.definitionHash,
+        accessRevision:editor.agent.accessRevision,grant:editor.grant};
+      await this.#recordEvidence(db,{operationId,accountId,ownerMemberId:head.owner_member_id,actorMemberId:editorMemberId,kind:'accept',
+        evidenceKind:'descriptor-acceptance-v1',body:acceptance,expectedGeneration:number(head.generation),resultGeneration:number(head.generation),
+        credentialRevision:row.credential_revision===null?null:number(row.credential_revision),outcome:'accepted',
+        requestIdentity:{publicationId,expectedPublicationHash:input.expectedPublicationHash}});
+      return {acceptanceId:operationId,publicationHash:input.expectedPublicationHash,
+        acceptanceHash:createHash('sha256').update(canonicalJson(acceptance)).digest('hex')};
+    },options));
+  }
+
+  async previewExecutableActivation(sessionToken:string,input:ActivationSelectors & {operationId:string},options:{deadlineAtMs:number}):Promise<{
+    reviewId:string;reviewHash:string;policyHash:string;expectedGeneration:number;expectedCandidateRevision:number|null;sourceRevision:number;consentGeneration:number}>{
+    const accountId=uuid.parse(input.accountId),operationId=uuid.parse(input.operationId);
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const prepared=await this.#prepareActivationReview(db,memberId,input,options);
+      const result=await this.#recordEvidence(db,{operationId,accountId,ownerMemberId:memberId,actorMemberId:memberId,kind:'activation-preview',
+        evidenceKind:'activation-review-v1',body:prepared.review,expectedGeneration:input.expectedGeneration,
+        resultGeneration:input.expectedGeneration,credentialRevision:prepared.discovery.revision,outcome:'previewed',
+        requestIdentity:{reviewHash:prepared.reviewHash,policyHash:prepared.review.policyHash}});
+      if(result.outcome!=='previewed')return requestDenied();
+      return {reviewId:operationId,reviewHash:prepared.reviewHash,policyHash:prepared.review.policyHash,
+        expectedGeneration:prepared.review.expectedGeneration,expectedCandidateRevision:prepared.review.expectedCandidateRevision,
+        sourceRevision:prepared.review.sourceRevision,consentGeneration:prepared.review.consentGeneration};
+    },options));
+  }
+
   private async record(db: PoolClient, input: { operationId:string;accountId:string;ownerMemberId:string;kind:OutsideOperationKind;hash:Buffer;expected:number;result:number;revision:number|null;outcome:OutsideOperationResult["outcome"] }): Promise<OutsideOperationResult> {
     await db.query(`INSERT INTO outside_custody_operations
       (operation_id,account_id,owner_member_id,operation_kind,request_hash,expected_generation,result_generation,credential_revision,outcome)
@@ -1220,17 +1518,342 @@ export class OutsideCustodyStore {
     return { operationId:input.operationId,accountId:input.accountId,kind:input.kind,outcome:input.outcome,generation:input.result,credentialRevision:input.revision };
   }
 
-  async stage(binding: SourceBinding, input: { accountId:string;operationId:string;expectedGeneration:number;expectedCandidateRevision:number|null;credential:Buffer }, options:{deadlineAtMs?:number}={}): Promise<OutsideOperationResult> {
-    if (Buffer.isBuffer(input.credential)) input.credential.fill(0);
-    // Discovery claims are encrypted for inspection only. Numeric access consent does not
-    // authorize executable credentials, and this slice has no executable writer.
-    return requestDenied();
+  async #recordEvidence(db:PoolClient,input:{operationId:string;accountId:string;ownerMemberId:string;actorMemberId:string;kind:'publish'|'accept'|'activation-preview'|'stage';
+    evidenceKind:'descriptor-publication-v1'|'descriptor-acceptance-v1'|'activation-review-v1';body:unknown;expectedGeneration:number;
+    resultGeneration:number;credentialRevision:number|null;outcome:'published'|'accepted'|'previewed'|'staged';requestIdentity:unknown}):Promise<OutsideOperationResult>{
+    const bodyHash=createHash('sha256').update(canonicalJson(input.body)).digest('hex');
+    const requestHash=createHash('sha256').update(canonicalJson({kind:input.kind,operationId:input.operationId,accountId:input.accountId,
+      ownerMemberId:input.ownerMemberId,actorMemberId:input.actorMemberId,expectedGeneration:input.expectedGeneration,
+      resultGeneration:input.resultGeneration,credentialRevision:input.credentialRevision,requestIdentity:input.requestIdentity,bodyHash})).digest();
+    const account=await this.head(db,input.accountId,false);
+    if(!account||account.owner_member_id!==input.ownerMemberId)return requestDenied();
+    const existing=await db.query<{operation_kind:string;owner_member_id:string;actor_member_id:string|null;request_hash:Buffer;outcome:string;expected_generation:string;
+      result_generation:string;credential_revision:string|null;evidence_kind:string|null;evidence_hash:Buffer|null}>(`SELECT operation_kind,owner_member_id,actor_member_id,outcome,
+        request_hash,expected_generation::text,result_generation::text,credential_revision::text,evidence_kind,evidence_hash
+      FROM outside_custody_operations WHERE operation_id=$1 AND account_id=$2 AND event_phase='operation'`,[input.operationId,input.accountId]);
+    if(existing.rows.length){
+      const prior=existing.rows[0]!;
+      if(existing.rows.length!==1||prior.operation_kind!==input.kind||prior.owner_member_id!==input.ownerMemberId||prior.actor_member_id!==input.actorMemberId||
+          !sameBuffer(prior.request_hash,requestHash)||
+          prior.outcome!==input.outcome||prior.evidence_kind!==input.evidenceKind||prior.evidence_hash?.toString('hex')!==bodyHash||
+          Number(prior.expected_generation)!==input.expectedGeneration||Number(prior.result_generation)!==input.resultGeneration||
+          (prior.credential_revision===null?null:Number(prior.credential_revision))!==input.credentialRevision)return requestDenied();
+      const recovered=await this.#readEvidence(db,input.accountId,input.operationId,input.evidenceKind);
+      if(canonicalJson(recovered.body)!==canonicalJson(input.body))return requestDenied();
+      return {operationId:input.operationId,accountId:input.accountId,kind:input.kind,outcome:input.outcome,
+        generation:input.resultGeneration,credentialRevision:input.credentialRevision};
+    }
+    const encrypted=sealEvidence(this.key,input.body,{accountId:input.accountId,ownerMemberId:input.ownerMemberId,resourceId:account.resource_id,
+      connectionName:account.connection_name,operationId:input.operationId,kind:input.evidenceKind,hash:bodyHash});
+    const inserted=await db.query(`INSERT INTO outside_custody_operations
+      (operation_id,account_id,owner_member_id,actor_member_id,operation_kind,request_hash,expected_generation,result_generation,
+       credential_revision,outcome,result_nonce,result_ciphertext,evidence_kind,evidence_hash)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      [input.operationId,input.accountId,input.ownerMemberId,input.actorMemberId,input.kind,requestHash,input.expectedGeneration,
+        input.resultGeneration,input.credentialRevision,input.outcome,encrypted.nonce,encrypted.ciphertext,input.evidenceKind,Buffer.from(bodyHash,'hex')]);
+    if(inserted.rowCount!==1)return requestDenied();
+    await checkConsoleSourceDeadlines(db);
+    return {operationId:input.operationId,accountId:input.accountId,kind:input.kind,outcome:input.outcome,generation:input.resultGeneration,
+      credentialRevision:input.credentialRevision};
   }
 
-  async apply(binding: SourceBinding, input:{accountId:string;operationId:string;expectedGeneration:number;candidateRevision:number;consentGeneration:number}, options:{deadlineAtMs?:number}={}):Promise<OutsideOperationResult>{
-    void binding;void input;void options;
-    // Persisted executable revisions have no current versioned-policy verifier in this slice.
-    return requestDenied();
+  async #readEvidence(db:PoolClient,accountId:string,operationId:string,expectedKind:'descriptor-publication-v1'|'descriptor-acceptance-v1'|'activation-review-v1'):
+    Promise<{row:StoredEvidence;body:Record<string,unknown>;head:Head}>{
+    const result=await db.query<StoredEvidence>(`SELECT operation_id,account_id,owner_member_id,actor_member_id,operation_kind,request_hash,
+        result_nonce,result_ciphertext,evidence_kind,evidence_hash,outcome,expected_generation::text,result_generation::text,credential_revision::text
+      FROM outside_custody_operations WHERE account_id=$1 AND operation_id=$2 AND event_phase='operation'`,[accountId,operationId]);
+    const row=result.rows[0],head=await this.head(db,accountId,false);
+    if(result.rows.length!==1||!row||!head||row.account_id!==accountId||row.owner_member_id!==head.owner_member_id||
+        row.evidence_kind!==expectedKind||!Buffer.isBuffer(row.evidence_hash)||row.evidence_hash.length!==32||
+        !Buffer.isBuffer(row.result_nonce)||!Buffer.isBuffer(row.result_ciphertext))return denied();
+    const digest=row.evidence_hash.toString('hex');
+    const plaintext=openEvidence(this.key,row.result_nonce,row.result_ciphertext,{accountId,ownerMemberId:row.owner_member_id,
+      resourceId:head.resource_id,connectionName:head.connection_name,operationId,kind:expectedKind,hash:digest});
+    try{
+      const decoded=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(plaintext)) as unknown;
+      if(!decoded||Array.isArray(decoded)||typeof decoded!=='object'||createHash('sha256').update(canonicalJson(decoded)).digest('hex')!==digest)return denied();
+      const body=row.operation_kind==='stage'?stagedEvidenceSchema.parse(decoded):validateEvidenceBody(expectedKind,decoded);
+      return {row,body:body as Record<string,unknown>,head};
+    }catch{return denied();}finally{plaintext.fill(0);}
+  }
+
+  async #prepareActivationReview(db:PoolClient,actingMemberId:string,input:ActivationSelectors,options:{deadlineAtMs:number},
+    routePolicyHash?:string,consentMode:'next'|'current'='next',candidateMode:'original'|'staged'='original'):
+    Promise<{review:ActivationReviewV1;reviewHash:string;publication:Record<string,unknown>;acceptance:Record<string,unknown>;
+      discovery:DiscoveryRead}> {
+    const accountId=uuid.parse(input.accountId),publicationId=uuid.parse(input.publicationId),acceptanceId=uuid.parse(input.acceptanceId);
+    if(!Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<1||
+        input.expectedCandidateRevision!==null&&(!Number.isSafeInteger(input.expectedCandidateRevision)||input.expectedCandidateRevision<1)||
+        !Number.isSafeInteger(input.expectedConsentGeneration)||input.expectedConsentGeneration<1||
+        !/^[a-f0-9]{64}$/.test(input.expectedDefinitionHash)||!Number.isSafeInteger(input.expectedAccessRevision)||input.expectedAccessRevision<1||
+        !/^[a-f0-9]{64}$/.test(input.expectedPublicationHash)||!/^[a-f0-9]{64}$/.test(input.expectedAcceptanceHash)||
+        input.expectedPolicyHash!==undefined&&!/^[a-f0-9]{64}$/.test(input.expectedPolicyHash))return requestDenied();
+    const organisation=await this.#humanOrganisation(db,actingMemberId);
+    const useCapture=await captureOutsideHumanUse(db,actingMemberId,input.agentName,input.connectionName,
+      {definitionHash:input.expectedDefinitionHash,accessRevision:input.expectedAccessRevision});
+    if(useCapture.actor.memberId!==actingMemberId||useCapture.actor.organisationId!==organisation.id)return requestDenied();
+    const acceptanceLocator=await db.query<{actor_member_id:string|null;evidence_kind:string}>(`SELECT actor_member_id,evidence_kind
+      FROM outside_custody_operations WHERE account_id=$1 AND operation_id=$2 AND event_phase='operation'`,[accountId,acceptanceId]);
+    const editorId=acceptanceLocator.rows[0]?.actor_member_id;
+    if(acceptanceLocator.rows.length!==1||!editorId||acceptanceLocator.rows[0]?.evidence_kind!=='descriptor-acceptance-v1')return requestDenied();
+    const editorBeforeHead=await this.#captureDescriptorEditor(db,editorId,actingMemberId,organisation.id,input.agentName,input.connectionName,
+      {definitionHash:useCapture.agent.definitionHash,accessRevision:useCapture.agent.accessRevision});
+    const locator=await this.head(db,accountId,false);
+    if(!locator||locator.owner_member_id!==actingMemberId||locator.resource_id!==input.agentName||locator.connection_name!==input.connectionName||
+        locator.state!=='active'||number(locator.generation)!==input.expectedGeneration||
+        candidateMode==='original'&&(locator.candidate_revision===null?null:number(locator.candidate_revision))!==input.expectedCandidateRevision)return requestDenied();
+    const discovery=await this.#readDiscoveryOnClient(db,actingMemberId,{accountId,agentName:input.agentName,connectionName:input.connectionName,
+      requestId:input.requestId,claimOperationId:input.claimOperationId},organisation.id,'update');
+    if(number(discovery.head.generation)!==input.expectedGeneration||
+        candidateMode==='original'&&(discovery.head.candidate_revision===null?null:number(discovery.head.candidate_revision))!==input.expectedCandidateRevision||
+        discovery.capture.agent.definitionHash!==input.expectedDefinitionHash||discovery.capture.agent.accessRevision!==input.expectedAccessRevision)return requestDenied();
+    const publication=await this.#readEvidence(db,accountId,publicationId,'descriptor-publication-v1');
+    const acceptance=await this.#readEvidence(db,accountId,acceptanceId,'descriptor-acceptance-v1');
+    if(publication.row.outcome!=='published'||publication.row.actor_member_id!==actingMemberId||
+        publication.body.publicationHash!==input.expectedPublicationHash||acceptance.row.outcome!=='accepted'||
+        acceptance.row.actor_member_id!==editorId||acceptance.body.editorMemberId!==editorId||
+        acceptance.body.publicationId!==publicationId||acceptance.body.publicationHash!==input.expectedPublicationHash||!acceptance.row.evidence_hash||
+        acceptance.body.resourceId!==input.agentName||acceptance.body.connectionName!==input.connectionName||
+        publication.head.owner_member_id!==actingMemberId||acceptance.head.owner_member_id!==actingMemberId||
+        publication.body.organisationId!==organisation.id||acceptance.body.organisationId!==organisation.id||
+        acceptance.row.evidence_hash.toString('hex')!==input.expectedAcceptanceHash)return requestDenied();
+    const pubProjection=publication.body.projection as DescriptorProjection;
+    if(!pubProjection||pubProjection.version!==1||pubProjection.connectionName!==input.connectionName||
+        createHash('sha256').update(canonicalJson(pubProjection)).digest('hex')!==input.expectedPublicationHash||
+        !publication.body.source||canonicalJson(publication.body.source)!==canonicalJson({requestId:discovery.requestId,
+          claimOperationId:discovery.claimOperationId,revision:discovery.revision,consentGeneration:discovery.consentGeneration,policyHash:discovery.policyHash})||
+        canonicalJson(publication.body.capture)!==canonicalJson(discovery.capture))return requestDenied();
+    if(!this.routeLifecycle)return requestDenied();
+    const namespaceClient=requireDefinitionNamespace();
+    const route=await this.routeLifecycle.reviewOutsideRoute(discovery.capture.outside.connection.url,options.deadlineAtMs);
+    this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);
+    await checkConsoleSourceDeadlines(db);
+    if(routePolicyHash&&route.policyHash!==routePolicyHash)return requestDenied();
+    const editor=await this.#captureDescriptorEditor(db,editorId,actingMemberId,organisation.id,input.agentName,input.connectionName,
+      {definitionHash:discovery.capture.agent.definitionHash,accessRevision:discovery.capture.agent.accessRevision});
+    if(canonicalJson(editorBeforeHead)!==canonicalJson(editor))return requestDenied();
+    // Keep the long-lived policy compact. The full descriptor remains encrypted in
+    // publication evidence; executable policy binds its digest and accepted scope.
+    const acceptedScope={scope:pubProjection.scope,allow:[...pubProjection.allow].sort(),read:[...pubProjection.read].sort()};
+    const descriptorDigest=createHash('sha256').update(canonicalJson(pubProjection)).digest('hex');
+    const semantic={version:1,purpose:'outside-executable-v1',ownerMemberId:actingMemberId,accountId,
+      resourceId:input.agentName,connectionName:input.connectionName,capture:discovery.capture,route,
+      publication:{id:publicationId,hash:input.expectedPublicationHash,descriptorDigest,acceptedScope},
+      acceptance:{id:acceptanceId,hash:input.expectedAcceptanceHash,editorMemberId:editorId}};
+    const semanticJson=canonicalJson(semantic);
+    if(Buffer.byteLength(semanticJson)>8192)return requestDenied();
+    const policyHash=createHash('sha256').update(semanticJson).digest('hex');
+    if(input.expectedPolicyHash!==undefined&&policyHash!==input.expectedPolicyHash)return requestDenied();
+    const latest=await db.query<{consent:string}>(`SELECT COALESCE(max(consent_generation),0)::text AS consent
+      FROM outside_custody_revisions WHERE account_id=$1`,[accountId]);
+    const lastConsent=Math.max(number(discovery.head.consent_generation),Number(latest.rows[0]?.consent??'0'));
+    if(!Number.isSafeInteger(lastConsent)||lastConsent>=Number.MAX_SAFE_INTEGER||
+        consentMode==='next'&&lastConsent+1!==input.expectedConsentGeneration||consentMode==='current'&&lastConsent!==input.expectedConsentGeneration)return requestDenied();
+    const review:ActivationReviewV1={version:1,accountId,ownerMemberId:actingMemberId,resourceId:input.agentName,connectionName:input.connectionName,
+      expectedGeneration:input.expectedGeneration,expectedCandidateRevision:input.expectedCandidateRevision,sourceRevision:discovery.revision,
+      sourceRequestId:discovery.requestId,sourceClaimOperationId:discovery.claimOperationId,publicationId,publicationHash:input.expectedPublicationHash,
+      acceptanceId,acceptanceHash:input.expectedAcceptanceHash,policyHash,capture:editor,route,consentGeneration:input.expectedConsentGeneration};
+    const reviewHash=createHash('sha256').update(canonicalJson(review)).digest('hex');
+    return {review,reviewHash,publication:publication.body,acceptance:acceptance.body,discovery};
+  }
+
+  async stage(sessionToken:string,input:ActivationSelectors & {operationId:string;activationReviewId:string;expectedActivationReviewHash:string},
+    options:{deadlineAtMs:number}):Promise<OutsideOperationResult>{
+    const schema=z.strictObject({accountId:uuid,agentName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),connectionName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
+      requestId:uuid,claimOperationId:uuid,publicationId:uuid,acceptanceId:uuid,expectedGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+      expectedCandidateRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),expectedConsentGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+      expectedDefinitionHash:z.string().regex(/^[a-f0-9]{64}$/),expectedAccessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+      expectedPublicationHash:z.string().regex(/^[a-f0-9]{64}$/),expectedAcceptanceHash:z.string().regex(/^[a-f0-9]{64}$/),expectedPolicyHash:z.string().regex(/^[a-f0-9]{64}$/),
+      operationId:uuid,activationReviewId:uuid,expectedActivationReviewHash:z.string().regex(/^[a-f0-9]{64}$/)});
+    const parsed=schema.safeParse(input);if(!parsed.success){wipeRejectedCredentialInput(input);return requestDenied();}
+    if(!Number.isFinite(options?.deadlineAtMs)||options.deadlineAtMs<=Date.now())return requestDenied();
+    const value=parsed.data,operationId=value.operationId,accountId=value.accountId;
+    const selectors:ActivationSelectors=value;
+    return this.#inMainNamespace({...options,operationId},()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const priorLocator=await db.query<{operation_kind:string;event_phase:string}>(
+        "SELECT operation_kind,event_phase FROM outside_custody_operations WHERE operation_id=$1 AND account_id=$2",[operationId,accountId]);
+      if(priorLocator.rows.length){
+        if(priorLocator.rows.length!==1||priorLocator.rows[0]?.operation_kind!=='stage'||priorLocator.rows[0]?.event_phase!=='operation')return requestDenied();
+        const prior=await this.#readEvidence(db,accountId,operationId,'activation-review-v1');
+        const body=stagedEvidenceSchema.parse(prior.body),review=body.review;
+        const current=await this.#prepareActivationReview(db,memberId,selectors,options,undefined,'current','staged');
+        if(prior.row.outcome!=='staged'||prior.row.actor_member_id!==memberId||body.reviewHash!==value.expectedActivationReviewHash||
+            canonicalJson(review)!==canonicalJson(current.review)||current.reviewHash!==value.expectedActivationReviewHash||
+            current.discovery.head.candidate_revision!==String(body.candidateRevision)||
+            body.candidateGeneration!==value.expectedGeneration+1||body.consentGeneration!==value.expectedConsentGeneration)return requestDenied();
+        return this.#recordEvidence(db,{operationId,accountId,ownerMemberId:memberId,actorMemberId:memberId,kind:'stage',
+          evidenceKind:'activation-review-v1',body,expectedGeneration:value.expectedGeneration,resultGeneration:value.expectedGeneration,
+          credentialRevision:body.candidateRevision,outcome:'staged',
+          requestIdentity:{activationReviewId:value.activationReviewId,activationReviewHash:value.expectedActivationReviewHash}});
+      }
+      const prepared=await this.#prepareActivationReview(db,memberId,selectors,options);
+      const preview=await this.#readEvidence(db,accountId,value.activationReviewId,'activation-review-v1');
+      const storedReviewHash=createHash('sha256').update(canonicalJson(preview.body)).digest('hex');
+      if(preview.row.outcome!=='previewed'||preview.row.actor_member_id!==memberId||storedReviewHash!==value.expectedActivationReviewHash||
+          canonicalJson(preview.body)!==canonicalJson(prepared.review)||prepared.reviewHash!==value.expectedActivationReviewHash)return requestDenied();
+      const leaseLifecycle=this.routeLifecycle;if(!leaseLifecycle)return requestDenied();
+      const namespaceClient=requireDefinitionNamespace();
+      return leaseLifecycle.withAppliedOutsideRoute(prepared.discovery.capture.outside.connection.url,prepared.review.route.policyHash,
+        options.deadlineAtMs,async lease=>{
+          const route=await lease.assertCurrent();
+          this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);
+          await checkConsoleSourceDeadlines(db);
+          if(canonicalJson(route)!==canonicalJson(prepared.review.route))return requestDenied();
+          const current=await this.#prepareActivationReview(db,memberId,selectors,options,route.policyHash);
+          if(current.reviewHash!==value.expectedActivationReviewHash||canonicalJson(current.review)!==canonicalJson(preview.body))return requestDenied();
+          await lease.assertCurrent();this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);
+          await checkConsoleSourceDeadlines(db);
+          const head=current.discovery.head;
+          if(head.state!=='active'||number(head.generation)!==value.expectedGeneration||
+              (head.candidate_revision===null?null:number(head.candidate_revision))!==value.expectedCandidateRevision)return requestDenied();
+          await this.capacity(db,accountId,'stage',true);
+          const source=await db.query<{owner_member_id:string;generation:string;credential_revision:string;consent_generation:string;revision_purpose:string;
+            policy_json:string;policy_hash:Buffer;operation_id:string;nonce:Buffer;ciphertext:Buffer}>(`SELECT owner_member_id,generation::text,credential_revision::text,
+              consent_generation::text,revision_purpose,policy_json::text,policy_hash,operation_id,nonce,ciphertext
+            FROM outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2`,[accountId,current.discovery.revision]);
+          const sourceRow=source.rows[0];
+          if(source.rows.length!==1||!sourceRow||sourceRow.owner_member_id!==memberId||sourceRow.revision_purpose!=='discovery'||
+              sourceRow.operation_id!==current.discovery.claimOperationId||!sourceRow.policy_hash.equals(Buffer.from(current.discovery.policyHash,'hex'))||
+              number(sourceRow.credential_revision)!==current.discovery.revision||number(sourceRow.consent_generation)!==current.discovery.consentGeneration)return requestDenied();
+          let sourcePlain:Buffer|undefined;
+          try{
+            await lease.assertCurrent();this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);await checkConsoleSourceDeadlines(db);
+            const max=await db.query<{revision:string}>(`SELECT COALESCE(max(credential_revision),0)::text AS revision FROM outside_custody_revisions WHERE account_id=$1`,[accountId]);
+            const previous=Number(max.rows[0]?.revision??'0');if(!Number.isSafeInteger(previous)||previous<1||previous>=Number.MAX_SAFE_INTEGER)return requestDenied();
+            const candidateRevision=previous+1,candidateGeneration=value.expectedGeneration+1;
+            if(candidateGeneration>Number.MAX_SAFE_INTEGER)return requestDenied();
+            await lease.assertCurrent();this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);await checkConsoleSourceDeadlines(db);
+            sourcePlain=openBound(this.key,sourceRow.nonce,sourceRow.ciphertext,{ownerMemberId:memberId,accountId,resourceId:value.agentName,
+              connectionName:value.connectionName,generation:number(sourceRow.generation),credentialRevision:current.discovery.revision,
+              consentGeneration:current.discovery.consentGeneration,operationId:current.discovery.claimOperationId,revisionPurpose:'discovery',
+              policyHash:current.discovery.policyHash});
+            outsideBearer(sourcePlain);
+            const projection=current.publication.projection as DescriptorProjection;
+            const semantic={version:1,purpose:'outside-executable-v1',ownerMemberId:memberId,accountId,resourceId:value.agentName,
+              connectionName:value.connectionName,capture:current.discovery.capture,route:current.review.route,
+              publication:{id:value.publicationId,hash:value.expectedPublicationHash,
+                descriptorDigest:createHash('sha256').update(canonicalJson(projection)).digest('hex'),
+                acceptedScope:{scope:projection.scope,allow:[...projection.allow].sort(),read:[...projection.read].sort()}},
+              acceptance:{id:value.acceptanceId,hash:value.expectedAcceptanceHash,
+                editorMemberId:acceptanceEvidenceSchema.parse(current.acceptance).editorMemberId}};
+            const policyJson=canonicalJson(semantic),policyHash=createHash('sha256').update(policyJson).digest('hex');
+            if(policyHash!==value.expectedPolicyHash||Buffer.byteLength(policyJson)>8192)return requestDenied();
+            const coordinates:BoundCoordinates={ownerMemberId:memberId,accountId,resourceId:value.agentName,connectionName:value.connectionName,
+              generation:candidateGeneration,credentialRevision:candidateRevision,consentGeneration:value.expectedConsentGeneration,operationId,
+              revisionPurpose:'executable',policyHash};
+            const sealed=sealBound(this.key,sourcePlain,coordinates);
+            await db.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,
+              revision_purpose,policy_json,policy_hash,operation_id,nonce,ciphertext)
+              VALUES($1,$2,$3,$4,$5,'executable',$6::jsonb,$7,$8,$9,$10)`,
+              [accountId,memberId,candidateRevision,candidateGeneration,value.expectedConsentGeneration,policyJson,Buffer.from(policyHash,'hex'),
+                operationId,sealed.nonce,sealed.ciphertext]);
+            this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);
+            const changed=await db.query(`UPDATE outside_custody_accounts SET candidate_revision=$2,consent_generation=$3,updated_at=clock_timestamp()
+              WHERE account_id=$1 AND owner_member_id=$4 AND generation=$5 AND candidate_revision IS NOT DISTINCT FROM $6 AND state='active'`,
+              [accountId,candidateRevision,value.expectedConsentGeneration,memberId,value.expectedGeneration,value.expectedCandidateRevision]);
+            if(changed.rowCount!==1)return requestDenied();
+            const stageEvidence={version:1,review:current.review,reviewHash:current.reviewHash,candidateRevision,candidateGeneration,
+              consentGeneration:value.expectedConsentGeneration,policyJson:semantic};
+            const recorded=await this.#recordEvidence(db,{operationId,accountId,ownerMemberId:memberId,actorMemberId:memberId,kind:'stage',
+              evidenceKind:'activation-review-v1',body:stageEvidence,expectedGeneration:value.expectedGeneration,
+              resultGeneration:value.expectedGeneration,credentialRevision:candidateRevision,outcome:'staged',
+              requestIdentity:{activationReviewId:value.activationReviewId,activationReviewHash:value.expectedActivationReviewHash}});
+            await lease.assertCurrent();this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);
+            await checkConsoleSourceDeadlines(db);
+            return recorded;
+          }finally{sourcePlain?.fill(0);}
+        });
+    },{...options,operationId}));
+  }
+
+  async apply(sessionToken:string,input:ActivationSelectors & {operationId:string;activationReviewId:string;expectedActivationReviewHash:string;
+    stageOperationId:string;candidateRevision:number},options:{deadlineAtMs:number}):Promise<OutsideOperationResult>{
+    const schema=z.strictObject({accountId:uuid,agentName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),connectionName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
+      requestId:uuid,claimOperationId:uuid,publicationId:uuid,acceptanceId:uuid,expectedGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+      expectedCandidateRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),expectedConsentGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+      expectedDefinitionHash:z.string().regex(/^[a-f0-9]{64}$/),expectedAccessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+      expectedPublicationHash:z.string().regex(/^[a-f0-9]{64}$/),expectedAcceptanceHash:z.string().regex(/^[a-f0-9]{64}$/),expectedPolicyHash:z.string().regex(/^[a-f0-9]{64}$/),
+      operationId:uuid,activationReviewId:uuid,expectedActivationReviewHash:z.string().regex(/^[a-f0-9]{64}$/),stageOperationId:uuid,
+      candidateRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)});
+    const parsed=schema.safeParse(input);if(!parsed.success||!Number.isFinite(options?.deadlineAtMs)||options.deadlineAtMs<=Date.now())return requestDenied();
+    const value=parsed.data,accountId=value.accountId,operationId=value.operationId;
+    const selectors:ActivationSelectors=value;
+    return this.#inMainNamespace({...options,operationId},()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const stage=this.#readEvidence(db,accountId,value.stageOperationId,'activation-review-v1');
+      const preview=this.#readEvidence(db,accountId,value.activationReviewId,'activation-review-v1');
+      const [stageEvidence,previewEvidence]=await Promise.all([stage,preview]);
+      const stageBody=stageEvidence.body,review=stageBody.review as ActivationReviewV1;
+      if(stageEvidence.row.operation_kind!=='stage'||stageEvidence.row.outcome!=='staged'||stageEvidence.row.actor_member_id!==memberId||
+          !review||review.version!==1||stageBody.candidateRevision!==value.candidateRevision||
+          previewEvidence.row.operation_kind!=='activation-preview'||previewEvidence.row.outcome!=='previewed'||
+          previewEvidence.row.actor_member_id!==memberId||createHash('sha256').update(canonicalJson(previewEvidence.body)).digest('hex')!==value.expectedActivationReviewHash||
+          canonicalJson(previewEvidence.body)!==canonicalJson(review)||stageBody.reviewHash!==value.expectedActivationReviewHash)return requestDenied();
+      const headLocator=await this.head(db,accountId,false);
+      if(!headLocator||headLocator.owner_member_id!==memberId||headLocator.resource_id!==value.agentName||
+          headLocator.connection_name!==value.connectionName||headLocator.state!=='active')return requestDenied();
+      const pending=headLocator.candidate_revision===String(value.candidateRevision)&&number(headLocator.generation)===value.expectedGeneration&&
+        number(headLocator.consent_generation)===value.expectedConsentGeneration;
+      const applied=headLocator.active_revision===String(value.candidateRevision)&&headLocator.candidate_revision===null&&
+        number(headLocator.generation)===value.expectedGeneration+1&&number(headLocator.consent_generation)===value.expectedConsentGeneration;
+      if(!pending&&!applied)return requestDenied();
+      const lifecycle=this.routeLifecycle;if(!lifecycle)return requestDenied();
+      const namespaceClient=requireDefinitionNamespace();
+      const stagedPolicy=stageBody.policyJson as Record<string,unknown>;
+      const stagedCapture=stagedPolicy?.capture as import('@lares/agent-kit/grant-store').OutsideUseCapture|undefined;
+      const endpoint=stagedCapture?.outside?.connection?.url;
+      if(typeof endpoint!=='string')return requestDenied();
+      // The operation id is the receipt key, so its digest binds the complete
+      // validated request and authenticated actor, not a partial selector set.
+      const priorHash=createHash('sha256').update(canonicalJson({kind:'apply',accountId,memberId,request:value})).digest();
+      return lifecycle.withAppliedOutsideRoute(endpoint,
+        review.route.policyHash,options.deadlineAtMs,async lease=>{
+          const route=await lease.assertCurrent();this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);
+          const organisation=await this.#humanOrganisation(db,memberId);
+          const useCapture=await captureOutsideHumanUse(db,memberId,value.agentName,value.connectionName,
+            {definitionHash:value.expectedDefinitionHash,accessRevision:value.expectedAccessRevision});
+          const acceptance=await this.#readEvidence(db,accountId,value.acceptanceId,'descriptor-acceptance-v1');
+          const editorId=acceptance.row.actor_member_id;
+          if(useCapture.actor.memberId!==memberId||useCapture.actor.organisationId!==organisation.id||!editorId||
+              acceptance.body.editorMemberId!==editorId||acceptance.body.publicationId!==value.publicationId||
+              acceptance.body.publicationHash!==value.expectedPublicationHash)return requestDenied();
+          const editorCapture=await this.#captureDescriptorEditor(db,editorId,memberId,organisation.id,value.agentName,value.connectionName,
+            {definitionHash:useCapture.agent.definitionHash,accessRevision:useCapture.agent.accessRevision});
+          if(canonicalJson(editorCapture)!==canonicalJson(review.capture))return requestDenied();
+          const prior=await this.priorOperation(db,operationId,priorHash,accountId,memberId,'apply',value.expectedGeneration);
+          if(prior)return prior;
+          if(!pending)return requestDenied();
+          const current=await this.#prepareActivationReview(db,memberId,{...selectors,expectedCandidateRevision:review.expectedCandidateRevision},options,
+            route.policyHash,'current','staged');
+          if(current.reviewHash!==value.expectedActivationReviewHash||canonicalJson(current.review)!==canonicalJson(review)||
+              current.discovery.head.candidate_revision!==String(value.candidateRevision))return requestDenied();
+          await lease.assertCurrent();await checkConsoleSourceDeadlines(db);
+          const candidate=await db.query<{owner_member_id:string;generation:string;credential_revision:string;consent_generation:string;revision_purpose:string;
+            policy_json:string;policy_hash:Buffer;operation_id:string;nonce:Buffer;ciphertext:Buffer}>(`SELECT owner_member_id,generation::text,credential_revision::text,
+              consent_generation::text,revision_purpose,policy_json::text,policy_hash,operation_id,nonce,ciphertext
+            FROM outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2`,[accountId,value.candidateRevision]);
+          const row=candidate.rows[0];
+          if(candidate.rows.length!==1||!row||row.owner_member_id!==memberId||row.revision_purpose!=='executable'||row.operation_id!==value.stageOperationId||
+              number(row.generation)!==value.expectedGeneration+1||number(row.consent_generation)!==value.expectedConsentGeneration||
+              row.policy_hash.toString('hex')!==value.expectedPolicyHash||canonicalJson(JSON.parse(row.policy_json))!==canonicalJson(stageBody.policyJson))return requestDenied();
+          // Verify authenticated encryption and current policy before changing the active pointer.
+          await lease.assertCurrent();this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);await checkConsoleSourceDeadlines(db);
+          const plaintext=openBound(this.key,row.nonce,row.ciphertext,{ownerMemberId:memberId,accountId,resourceId:value.agentName,
+            connectionName:value.connectionName,generation:number(row.generation),credentialRevision:value.candidateRevision,
+            consentGeneration:value.expectedConsentGeneration,operationId:value.stageOperationId,revisionPurpose:'executable',policyHash:value.expectedPolicyHash});
+          try{outsideBearer(plaintext);}finally{plaintext.fill(0);}
+          await this.capacity(db,accountId,'apply',false);
+          const next=value.expectedGeneration+1;
+          if(next>Number.MAX_SAFE_INTEGER)return requestDenied();
+          const changed=await db.query(`UPDATE outside_custody_accounts SET generation=$2,active_revision=$3,candidate_revision=NULL,
+            consent_generation=$4,updated_at=clock_timestamp() WHERE account_id=$1 AND owner_member_id=$5 AND generation=$6
+            AND candidate_revision=$3 AND consent_generation=$4 AND state='active'`,
+            [accountId,next,value.candidateRevision,value.expectedConsentGeneration,memberId,value.expectedGeneration]);
+          if(changed.rowCount!==1)return requestDenied();
+          await lease.assertCurrent();this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);await checkConsoleSourceDeadlines(db);
+          return this.record(db,{operationId,accountId,ownerMemberId:memberId,kind:'apply',hash:priorHash,expected:value.expectedGeneration,
+            result:next,revision:value.candidateRevision,outcome:'applied'});
+        });
+    },{...options,operationId}));
   }
 
   async rollback(binding: SourceBinding, input:{accountId:string;operationId:string;expectedGeneration:number;sourceRevision:number;consentGeneration:number}, options:{deadlineAtMs?:number}={}):Promise<OutsideOperationResult>{
@@ -1312,7 +1935,7 @@ export class OutsideCustodyStore {
         this.#assertOpen(requestDenied);
         return result;
       }catch(error){
-        if(!(error instanceof OutsideCustodyRecoveryRequired))throw error;
+        if(!(error instanceof OutsideCustodyRecoveryRequired)&&!(error instanceof SourceAuthorityUnavailable))throw error;
         this.#assertOpen(requestDenied);
         const found=await inspect();this.#assertOpen(requestDenied);
         if(found&&found.operationId===operationId)return found;

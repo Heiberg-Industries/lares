@@ -48,19 +48,30 @@ CREATE TABLE IF NOT EXISTS outside_custody_operations (
   operation_id uuid PRIMARY KEY,
   account_id uuid NOT NULL,
   owner_member_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  operation_kind text NOT NULL CHECK (operation_kind IN ('stage','apply','rollback','revoke','discover')),
+  actor_member_id text REFERENCES users(id) ON DELETE CASCADE,
+  operation_kind text NOT NULL CHECK (operation_kind IN ('stage','apply','rollback','revoke','discover','publish','accept','activation-preview')),
   request_id uuid NOT NULL DEFAULT gen_random_uuid(),
   event_phase text NOT NULL DEFAULT 'operation' CHECK (event_phase IN ('operation','claim','result')),
   request_hash bytea NOT NULL CHECK (octet_length(request_hash) = 32),
   expected_generation bigint NOT NULL CHECK (expected_generation >= 0 AND expected_generation <= 9007199254740991),
   result_generation bigint NOT NULL CHECK (result_generation > 0 AND result_generation <= 9007199254740991),
   credential_revision bigint,
-  outcome text NOT NULL CHECK (outcome IN ('staged','applied','rolled-back','revoked','claimed','completed','unknown')),
+  outcome text NOT NULL CHECK (outcome IN ('staged','applied','rolled-back','revoked','claimed','completed','unknown','published','accepted','previewed')),
   result_nonce bytea CHECK (result_nonce IS NULL OR octet_length(result_nonce)=12),
   result_ciphertext bytea CHECK (result_ciphertext IS NULL OR octet_length(result_ciphertext) BETWEEN 17 AND 65552),
+  evidence_kind text CHECK (evidence_kind IS NULL OR evidence_kind IN ('descriptor-publication-v1','descriptor-acceptance-v1','activation-review-v1')),
+  evidence_hash bytea CHECK (evidence_hash IS NULL OR octet_length(evidence_hash)=32),
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   CHECK (credential_revision IS NULL OR credential_revision > 0),
   CHECK ((result_nonce IS NULL) = (result_ciphertext IS NULL)),
+  CHECK ((evidence_kind IS NULL) = (evidence_hash IS NULL)),
+  CHECK (evidence_kind IS NULL OR (result_nonce IS NOT NULL AND result_ciphertext IS NOT NULL)),
+  CHECK (evidence_kind IS NOT NULL OR result_nonce IS NULL OR (operation_kind='discover' AND event_phase='result')),
+  CHECK (evidence_kind IS NULL OR (actor_member_id IS NOT NULL AND event_phase='operation' AND
+    ((evidence_kind='descriptor-publication-v1' AND operation_kind='publish' AND outcome='published') OR
+     (evidence_kind='descriptor-acceptance-v1' AND operation_kind='accept' AND outcome='accepted') OR
+     (evidence_kind='activation-review-v1' AND operation_kind='activation-preview' AND outcome='previewed') OR
+     (evidence_kind='activation-review-v1' AND operation_kind='stage' AND outcome='staged')))),
   UNIQUE (request_id,event_phase),
   FOREIGN KEY (account_id,owner_member_id) REFERENCES outside_custody_accounts(account_id,owner_member_id) ON DELETE CASCADE
 );

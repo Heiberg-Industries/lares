@@ -1750,14 +1750,21 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
     valid_checks = {
         "actual configured lares_app and lares_outside_custody logins",
         "neutral definition, finite human session and real owner adoption/use grant",
+        "reciprocal authenticated actors wait at the shared organisation gate before member and session locks",
         "public saved lifecycle installed and acknowledged generated route without native authority",
         "same-bridge direct target closes before TLS and increments the bridge-family drop counter",
         "routed direct target closes before TLS and increments the inet-family drop counter after a verified positive control",
         "normal consentAndDiscover returned bounded two-page JSON and SSE projection",
+        "authenticated publication, current editor acceptance and exact custodian preview/stage/apply complete",
+        "stage and apply request deadlines expire while a PostgreSQL lock blocks the discovery revision read",
+        "exact stage and apply replays recover receipts while current custody and editor grants remain valid",
+        "changed apply replay selectors are denied without changing the receipt or active head",
+        "historical acceptance survives editor logout and current edit grant revocation blocks replay",
         "durable result decrypts under generated key/AAD and rejects changed request identity",
         "executable definition, ownership and applied state remain unchanged",
     }
-    phases = {"configuration", "role identities", "neutral authorization fixture",
+    phases = {"configuration", "role identities", "neutral authorization fixture", "outside custody organisation gate contention",
+              "outside custody human review and activation",
               "same-bridge direct-path control", "routed direct-path control",
               "generated route admission", "direct-path firewall counter",
               "routed direct-path firewall counter", "worker"}

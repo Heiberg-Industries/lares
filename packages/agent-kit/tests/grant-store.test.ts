@@ -44,6 +44,11 @@ async function captureOutside(memberId:string,connectionName='mail',expected?:{d
   try{return await store.captureOutsideUse(memberId,agent.id,{db:client,connectionName,...(expected===undefined?{}:{expected})});}
   finally{await client.query('ROLLBACK');client.release();}
 }
+async function captureOutsideEdit(memberId:string,connectionName='mail',expected?:{definitionHash:string;accessRevision:number}){
+  const client=await db.connect();await client.query('BEGIN');
+  try{return await store.captureOutsideDescriptorEdit(memberId,agent.id,{db:client,connectionName,...(expected===undefined?{}:{expected})});}
+  finally{await client.query('ROLLBACK');client.release();}
+}
 async function beginTaggedCapture(memberId:string,expected:{definitionHash:string;accessRevision:number}){
   const client=await db.connect();
   try{
@@ -381,6 +386,25 @@ describe('agent grants on disposable PostgreSQL',()=>{
       VALUES($1,'agent',$2,'second',NULL,'use','owner',$3)`,[id,agent.id,current]);
     const tied=await captureOutside('second','mail',{definitionHash:outsideDefinitionHash,accessRevision:current});
     expect(tied?.grant).toEqual({kind:'grant',id:lower,principal:{kind:'member',id:'second'},permission:'use',validUntil:null});
+  });
+  it('captures current outside descriptor edit authority by exact member grant and rejects use-only or organisation edit authority',async()=>{
+    await adoptOutside();
+    const current=(await store.agentAccess('owner',agent.id))!;
+    await set([named('second','edit','2099-06-03T00:00:00.123456Z')]);
+    const expected={definitionHash:current.definitionHash,accessRevision:current.accessRevision};
+    await set([named('second','edit','2099-06-03T00:00:00.123456Z')]);
+    const editor=await captureOutsideEdit('second','mail',{...expected,accessRevision:(await store.agentAccess('owner',agent.id))!.accessRevision});
+    expect(editor?.grant).toMatchObject({kind:'grant',permission:'edit',principal:{kind:'member',id:'second'},validUntil:'2099-06-03T00:00:00.123456Z'});
+    expect(editor?.agent.connectionName).toBe('mail');
+    await set([named('second','use')]);
+    expect(await captureOutsideEdit('second')).toBeUndefined();
+    await set([organisation]);
+    const revision=(await store.agentAccess('owner',agent.id))!.accessRevision;
+    // Simulate a malformed historical row that the current schema now rejects.
+    await db.query('ALTER TABLE resource_grants DROP CONSTRAINT resource_grants_check2');
+    await db.query(`INSERT INTO resource_grants(id,resource_kind,resource_id,principal_member_id,principal_organisation_id,permission,grantor_member_id,issued_access_revision)
+      VALUES('00000000-0000-4000-8000-000000000009','agent',$1,NULL,'org','edit','owner',$2)`,[agent.id,revision]);
+    expect(await captureOutsideEdit('second')).toBeUndefined();
   });
   it('distinguishes an actual null expiry from infinity and does not fall back from a selected nonfinite grant',async()=>{
     await adoptOutside();await set([named('second')]);

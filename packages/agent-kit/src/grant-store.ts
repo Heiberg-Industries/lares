@@ -29,6 +29,12 @@ export type OutsideUseCapture = {
   };
   grant: { kind: 'owner'; validUntil: null } | { kind: 'grant'; id: string; principal: { kind: 'member' | 'organisation'; id: string }; permission: 'use'; validUntil: string | null };
 };
+export type OutsideDescriptorEditCapture = {
+  version: 1;
+  actor: { memberId: string; organisationId: string; role: Member['role'] };
+  agent: { name: string; ownerMemberId: string; accessRevision: number; definitionHash: string; connectionName: string };
+  grant: { kind: 'owner'; validUntil: null } | { kind: 'grant'; id: string; principal: { kind: 'member'; id: string }; permission: 'edit'; validUntil: string | null };
+};
 export class GrantStoreError extends Error {
   constructor(public readonly code:'denied'|'invalid'|'stale') { super(`Agent access refused: ${code}`); this.name='GrantStoreError'; }
 }
@@ -45,7 +51,7 @@ type AccessRow={agent_name:string;owner_member_id:string;organisation_id:string;
 type GrantRow={principal_member_id:string|null;principal_organisation_id:string|null;permission:Permission;expires_at:Date|null};
 type OutsideOwnerPolicy = OutsideUseCapture['ownerPolicy'];
 type OutsideGrant = Extract<OutsideUseCapture['grant'],{kind:'grant'}>;
-type OutsideEvaluation = { ownerPolicy?:OutsideOwnerPolicy; grant?:OutsideUseCapture['grant']; definition?:AgentDefinition };
+type OutsideEvaluation = { ownerPolicy?:OutsideOwnerPolicy; grant?:OutsideUseCapture['grant'] | OutsideDescriptorEditCapture['grant']; definition?:AgentDefinition };
 const accessColumns='a.agent_name,a.owner_member_id,a.organisation_id,a.revision,d.hash,d.definition,d.status';
 const outsideHash=z.string().regex(/^[a-f0-9]{64}$/);
 const positiveIntegerText=z.string().regex(/^[1-9]\d*$/);
@@ -146,10 +152,10 @@ export class PgGrantStore {
         ORDER BY CASE WHEN principal_member_id=$3 THEN 0 ELSE 1 END,id LIMIT 1 FOR SHARE`,
       [row.agent_name,permission,member.id,member.role!=='restricted',member.organisationId]);
       const grant=rows[0];
-      if(!grant||grant.permission!=='use'||!z.string().uuid().safeParse(grant.id).success)return false;
+      if(!grant||grant.permission!==permission||!z.string().uuid().safeParse(grant.id).success)return false;
       let principal:OutsideGrant['principal'];
       if(grant.principal_member_id===member.id&&grant.principal_organisation_id===null)principal={kind:'member',id:member.id};
-      else if(grant.principal_member_id===null&&grant.principal_organisation_id===member.organisationId&&member.role!=='restricted')principal={kind:'organisation',id:member.organisationId};
+      else if(permission==='use'&&grant.principal_member_id===null&&grant.principal_organisation_id===member.organisationId&&member.role!=='restricted')principal={kind:'organisation',id:member.organisationId};
       else return false;
       if(grant.no_expiry===true){
         if(grant.finite_expiry!==null||grant.valid_until!==null)return false;
@@ -158,7 +164,9 @@ export class PgGrantStore {
         const stillValid=await db.query<{valid:boolean}>("SELECT $1::timestamptz>clock_timestamp() AS valid",[grant.valid_until]);
         if(stillValid.rows[0]?.valid!==true)return false;
       }else return false;
-      outside.grant={kind:'grant',id:grant.id,principal,permission:'use',validUntil:grant.valid_until};
+      outside.grant=permission==='use'
+        ? {kind:'grant',id:grant.id,principal,permission:'use',validUntil:grant.valid_until}
+        : {kind:'grant',id:grant.id,principal:{kind:'member',id:member.id},permission:'edit',validUntil:grant.valid_until};
       return true;
     }
     const {rows}=await db.query<{valid_until:string|null}>(`SELECT expires_at::text AS valid_until FROM resource_grants WHERE resource_kind='agent' AND resource_id=$1
@@ -215,6 +223,7 @@ export class PgGrantStore {
       if(!initial)return undefined;
       const proof:OutsideEvaluation={};
       if(!await this.evaluate(db,member,row,'use',undefined,proof)||!proof.ownerPolicy||!proof.grant||!proof.definition)return undefined;
+      if(proof.grant.kind==='grant'&&proof.grant.permission!=='use')return undefined;
       const locked=outsideDefinition(proof.definition,agentName,options.connectionName);
       if(!locked)return undefined;
       if(options.expected&&(options.expected.definitionHash!==row.hash||options.expected.accessRevision!==accessRevision))return undefined;
@@ -229,6 +238,30 @@ export class PgGrantStore {
         outside:{scope:locked.scope,autonomy:locked.autonomy,connection:{name:connection.name,url:connection.url,auth:'bearer',allow,read,trusted:connection.trusted,...(connection.runsAt===undefined?{}:{runsAt:connection.runsAt})}},
         grant:proof.grant,
       };
+    });
+  }
+  /** Current descriptor-review authority. The caller owns the same-org member lock and
+   * transaction; edit grants must be member-specific and their exact SQL deadline is retained. */
+  async captureOutsideDescriptorEdit(memberId:string,agentName:string,options:{db:Db;connectionName:string;expected?:{definitionHash:string;accessRevision:number}}):Promise<OutsideDescriptorEditCapture|undefined> {
+    const input=z.strictObject({memberId:id,agentName:id,connectionName:custodyConnectionName,
+      expected:z.strictObject({definitionHash:outsideHash,accessRevision:revision}).optional(),
+      db:z.custom<Db>(value=>value!==null&&typeof value==='object'&&typeof (value as Db).query==='function')});
+    const valid=input.safeParse({memberId,agentName,...(options as unknown as Record<string,unknown>)});
+    if(!valid.success)throw new GrantStoreError('invalid');
+    return this.transaction(options.db,async db=>{
+      let member:Member;try{member=await this.actor(db,memberId);}catch(error){if(error instanceof GrantStoreError)return undefined;throw error;}
+      const row=await this.access(db,agentName);
+      if(!row||row.agent_name!==agentName||row.status!=='valid'||!outsideHash.safeParse(row.hash).success||
+          !positiveIntegerText.safeParse(row.revision).success)return undefined;
+      const accessRevision=Number(row.revision);
+      if(!Number.isSafeInteger(accessRevision)||accessRevision<1||!id.safeParse(row.owner_member_id).success||
+          options.expected&&(options.expected.definitionHash!==row.hash||options.expected.accessRevision!==accessRevision))return undefined;
+      if(!outsideDefinition(row.definition,agentName,options.connectionName))return undefined;
+      const proof:OutsideEvaluation={};
+      if(!await this.evaluate(db,member,row,'edit',undefined,proof)||!proof.grant)return undefined;
+      if(proof.grant.kind==='grant'&&(proof.grant.permission!=='edit'||proof.grant.principal.kind!=='member'))return undefined;
+      return {version:1,actor:{memberId:member.id,organisationId:member.organisationId,role:member.role},
+        agent:{name:agentName,ownerMemberId:row.owner_member_id,accessRevision,definitionHash:row.hash,connectionName:options.connectionName},grant:proof.grant as OutsideDescriptorEditCapture['grant']};
     });
   }
   async listVisible(memberId:string,kind:string,options:{db?:Db;maxCandidates?:number;expectedCandidates?:ReadonlyMap<string,{revision:string;hash:string}>}={}):Promise<VisibleResource[]> {

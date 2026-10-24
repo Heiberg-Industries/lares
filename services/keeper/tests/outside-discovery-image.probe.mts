@@ -1,5 +1,5 @@
 /* CI-only worker and local TLS peer for outside-discovery-image.probe.py. */
-import {createHash,randomUUID,createDecipheriv} from 'node:crypto';
+import {createHash,randomUUID,createDecipheriv,randomBytes} from 'node:crypto';
 import {readFileSync,writeFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import https from 'node:https';
@@ -14,7 +14,9 @@ import {AgentLifecycle} from '../lib/lifecycle.js';
 import {OutsideRouteAcknowledgementError,ownedDocker} from '../lib/docker.js';
 import {keeperOutsideCustodyPool,keeperPool,loadKeeperConfig} from '../lib/config.js';
 import {loadBoundOutsideCustodyKey,OutsideCustodyStore} from '../lib/outside-custody.js';
+import {lockOutsideHumanSession} from '../lib/outside-custody.js';
 import {withDefinitionNamespace} from '../lib/definition-namespace.js';
+import {consoleSourceTransaction} from '../../../packages/agent-kit/src/console-source-transaction.js';
 import type {DockerBoundary,OutsideRouteAcknowledgementFailure} from '../lib/docker.js';
 
 const env=process.env;
@@ -28,7 +30,18 @@ function canonical(value:unknown):string{
   }
   return JSON.stringify(value)??'null';
 }
+const pause=(milliseconds:number)=>new Promise<void>(resolve=>setTimeout(resolve,milliseconds));
 function assert(condition:unknown,message:string):asserts condition{if(!condition)throw new Error(message);}
+async function withRevisionTableLock<T>(pool:Pool,work:()=>Promise<T>):Promise<T>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    await client.query('LOCK TABLE outside_custody_revisions IN ACCESS EXCLUSIVE MODE');
+    return await work();
+  }finally{
+    try{await client.query('ROLLBACK');}finally{client.release();}
+  }
+}
 
 export type RouteBoundaryFailure = 'runtime-stop'|'squid-validation'|'firewall-check'|'firewall-apply'|
   'proxy-reload'|'route-acknowledgement';
@@ -446,7 +459,7 @@ async function runConfigured():Promise<void>{
   let routeAcknowledgementReason:(()=>OutsideRouteAcknowledgementFailure|undefined)|undefined;
   let phase='configuration';
   try{
-    const root=need('FIXTURE_ROOT'),agent=need('FIXTURE_AGENT'),owner='outside-proof-owner',org='outside-proof-org';
+    const root=need('FIXTURE_ROOT'),agent=need('FIXTURE_AGENT'),owner='outside-proof-owner',editor='outside-proof-editor',org='outside-proof-org';
     const incarnation=need('FIXTURE_INCARNATION');
     const config=loadKeeperConfig(root+'/config/keeper.json');
     assert(config.mode==='rendered'&&config.lifecycle&&config.outsideCustody,'actual Keeper config did not load');
@@ -465,7 +478,7 @@ async function runConfigured():Promise<void>{
     proofKey=Buffer.from(need('FIXTURE_KEY_HEX'),'hex');
     delete env.FIXTURE_KEY_HEX;
     proof=new Pool({host:'proof-db',port:5432,database:'proof',user:'proof',password:need('PROOF_ADMIN_PASSWORD'),
-      max:1,connectionTimeoutMillis:3000,query_timeout:12000});
+      max:2,connectionTimeoutMillis:3000,query_timeout:12000});
 
     phase='role identities';
     const appIdentity=await main.query('SELECT current_user,session_user');
@@ -475,7 +488,7 @@ async function runConfigured():Promise<void>{
     partial.checks.push('actual configured lares_app and lares_outside_custody logins');
 
     phase='neutral authorization fixture';
-    const session=need('FIXTURE_SESSION_TOKEN');
+    const session=need('FIXTURE_SESSION_TOKEN'),editorSession=randomBytes(32).toString('base64url');
     const sessionHash=createHash('sha256').update(session).digest('hex');
     const template=JSON.parse(readFileSync(new URL('../../../packages/agent-kit/templates/chief-of-staff/definition.json',import.meta.url),'utf8')) as Record<string,unknown>;
     const definition=definitionSchema.parse({...template,name:agent,role:'chief-of-staff',channels:[],doors:[],
@@ -484,10 +497,40 @@ async function runConfigured():Promise<void>{
         tools:{allow:['lookup_alpha','lookup_beta'],read:['lookup_alpha','lookup_beta']}}]});
     const duties='',voice='',definitionHash=hashOf({definition,dutiesMd:duties,voiceMd:voice});
     await proof.query("INSERT INTO orgs(id,display_name) VALUES($1,'Outside proof organization')",[org]);
-    await proof.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Fixture owner',$2,'owner','active')",[owner,org]);
-    await proof.query("INSERT INTO org_member_policy(user_id,allowed_capabilities,may_create_agents) VALUES($1,ARRAY['outside'],true)",[owner]);
+    await proof.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Fixture owner',$3,'owner','active'),($2,'Fixture editor',$3,'member','active')",[owner,editor,org]);
+    await proof.query("INSERT INTO org_member_policy(user_id,allowed_capabilities,may_create_agents) VALUES($1,ARRAY['outside'],true),($2,ARRAY['outside'],false)",[owner,editor]);
     await proof.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval \'1 hour\')',
       [randomUUID(),owner,sessionHash]);
+    await proof.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval \'1 hour\')',
+      [randomUUID(),editor,createHash('sha256').update(editorSession).digest('hex')]);
+    phase='outside custody organisation gate contention';
+    for(const [firstToken,secondToken,direction] of [[session,editorSession,'owner-first'],[editorSession,session,'editor-first']] as const){
+      let enteredResolve!:()=>void,releaseResolve!:()=>void;
+      const entered=new Promise<void>(resolve=>{enteredResolve=resolve;}),hold=new Promise<void>(resolve=>{releaseResolve=resolve;});
+      let second:Promise<unknown>|undefined;
+      const first=consoleSourceTransaction(outside,async db=>{
+        await lockOutsideHumanSession(db,firstToken);enteredResolve();await hold;
+      },undefined,{deadlineAtMs:Date.now()+5000});
+      try{
+        await entered;
+        const applicationName=`outside_gate_${direction}_${randomUUID().replaceAll('-','')}`;
+        second=consoleSourceTransaction(outside,async db=>{
+          await db.query("SELECT set_config('application_name',$1,true)",[applicationName]);
+          await lockOutsideHumanSession(db,secondToken);
+        },undefined,{deadlineAtMs:Date.now()+5000});
+        let waitingAtGate=false;
+        for(let attempt=0;attempt<24;attempt++){
+          const activity=await proof.query<{wait_event_type:string|null;query:string}>(
+            'SELECT wait_event_type,query FROM pg_stat_activity WHERE application_name=$1',[applicationName]);
+          if(activity.rows[0]?.wait_event_type==='Lock'&&activity.rows[0].query.includes('pg_advisory_xact_lock')){waitingAtGate=true;break;}
+          await pause(15);
+        }
+        assert(waitingAtGate,`reciprocal ${direction} actor did not wait at the shared organisation gate`);
+      }finally{
+        releaseResolve();await Promise.allSettled([first,...(second?[second]:[])]);
+      }
+    }
+    partial.checks.push('reciprocal authenticated actors wait at the shared organisation gate before member and session locks');
     await proof.query("INSERT INTO agent_definitions(name,definition,duties,voice,hash,status) VALUES($1,$2::jsonb,$3,$4,$5,'valid')",
       [agent,JSON.stringify(definition),duties,voice,definitionHash]);
     await proof.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending) VALUES($1,$2::inet,$3,'owned',$4,$4,'ready',$5::jsonb,false)",
@@ -495,17 +538,26 @@ async function runConfigured():Promise<void>{
     const grants=new PgGrantStore(main);
     const adopted=await grants.adoptAgent(owner,{agentName:agent,expectedDefinitionHash:definitionHash},{designatedOwnerMemberId:owner});
     const access=await grants.updateAgentAccess(owner,{agentName:agent,expectedRevision:adopted.accessRevision,
-      grants:[{principal:{kind:'organisation',id:org},permission:'use',expiresAt:null}]});
+      grants:[{principal:{kind:'organisation',id:org},permission:'use',expiresAt:null},
+        {principal:{kind:'member',id:editor},permission:'edit',expiresAt:'2099-06-03T00:00:00.123456Z'}]});
     assert(access.accessRevision>adopted.accessRevision,'real grant store did not establish use access');
     partial.checks.push('neutral definition, finite human session and real owner adoption/use grant');
 
     phase='same-bridge direct-path control';
+    const controlCounters=await firewallCounters();
+    partial.directPathDiagnostics={control:{status:'not-attempted'},before:counterReports(controlCounters),direct:{status:'not-attempted'},
+      after:counterReports(controlCounters),inetCounterIncreased:false,bridgeCounterIncreased:false};
+    partial.routedPathDiagnostics={control:{status:'not-attempted'},before:counterReports(controlCounters),direct:{status:'not-attempted'},
+      after:counterReports(controlCounters),inetCounterIncreased:false,bridgeCounterIncreased:false};
     const bridgeControl=await tlsControlEvidence('mcp.example.org',need('FIXTURE_PEER_IP'),need('FIXTURE_SOURCE_IP'));
+    partial.directPathDiagnostics.control=bridgeControl;
     assert(bridgeControl.tlsCompleted&&bridgeControl.socketClosed&&bridgeControl.lookupAddress===need('FIXTURE_PEER_IP')&&
       bridgeControl.assignedSourceAddress===need('FIXTURE_SOURCE_IP')&&bridgeControl.connectedPeerAddress===need('FIXTURE_PEER_IP'),
       'same-bridge direct-path control did not verify the bound source and peer');
+    phase='routed direct-path control';
     const routedControl=await tlsControlEvidence('routed.mcp.example.org',need('FIXTURE_ROUTED_GATEWAY'),
       need('FIXTURE_SOURCE_IP'),Number(need('FIXTURE_ROUTED_PORT')));
+    partial.routedPathDiagnostics.control=routedControl;
     assert(routedControl.tlsCompleted&&routedControl.socketClosed&&routedControl.lookupAddress===need('FIXTURE_ROUTED_GATEWAY')&&
       routedControl.assignedSourceAddress===need('FIXTURE_SOURCE_IP')&&routedControl.connectedPeerAddress===need('FIXTURE_ROUTED_GATEWAY'),
       'routed direct-path control did not verify the bound source and published gateway peer');
@@ -519,10 +571,10 @@ async function runConfigured():Promise<void>{
 
     phase='direct-path firewall counter';
     const directBefore=await firewallCounters();
-    partial.directPathDiagnostics={control:bridgeControl,before:counterReports(directBefore),direct:{status:'not-attempted'},
-      after:{status:'not-attempted'},inetCounterIncreased:false,bridgeCounterIncreased:false};
-    partial.routedPathDiagnostics={control:routedControl,before:counterReports(directBefore),direct:{status:'not-attempted'},
-      after:{status:'not-attempted'},inetCounterIncreased:false,bridgeCounterIncreased:false};
+    partial.directPathDiagnostics.before=counterReports(directBefore);
+    partial.directPathDiagnostics.after=counterReports(directBefore);
+    partial.routedPathDiagnostics.before=counterReports(directBefore);
+    partial.routedPathDiagnostics.after=counterReports(directBefore);
     assert(directBefore.inet.failure==='none'&&directBefore.bridge.failure==='none','generated firewall drop counter is unavailable');
     const direct=await directTargetEvidence('mcp.example.org','/mcp?fixture=outside-proof-v1',need('FIXTURE_PEER_IP'),need('FIXTURE_SOURCE_IP'));
     partial.directPathDiagnostics.direct=direct;
@@ -577,15 +629,149 @@ async function runConfigured():Promise<void>{
       document.tools[0]?.name==='lookup_alpha'&&document.tools[1]?.name==='lookup_beta','configured discovery projection differs');
     partial.checks.push('normal consentAndDiscover returned bounded two-page JSON and SSE projection');
 
+    phase='outside custody human review and activation';
+    const allowed=[...capture.outside.connection.allow].sort(),read=[...capture.outside.connection.read].sort();
+    const byName=new Map(document.tools.map(tool=>[tool.name,tool]));
+    const projection={version:1 as const,connectionName:'fixture',scope:capture.outside.scope,allow:allowed,read,
+      tools:allowed.map(name=>{const tool=byName.get(name);assert(tool,`published tool missing: ${name}`);
+        return {name:tool.name,...(tool.description===undefined?{}:{description:tool.description}),inputSchema:tool.inputSchema};})};
+    const expectedDescriptorHash=createHash('sha256').update(canonical(projection)).digest('hex');
+    const publicationId=randomUUID();
+    const publication=await store.publishDiscoveredDescriptorReview(session,{accountId,agentName:agent,connectionName:'fixture',requestId,
+      claimOperationId,operationId:publicationId,expectedGeneration:1,expectedDescriptorHash},{deadlineAtMs:Date.now()+10000});
+    assert(publication.publicationId===publicationId&&publication.publicationHash===expectedDescriptorHash&&
+      canonical(publication.descriptor)===canonical(projection),'authenticated descriptor publication differs from discovered scope');
+    const reviewed=await store.readPublishedDescriptorReview(editorSession,{accountId,publicationId,expectedPublicationHash:expectedDescriptorHash},
+      {deadlineAtMs:Date.now()+10000});
+    assert(reviewed.resourceId===agent&&reviewed.connectionName==='fixture'&&canonical(reviewed.descriptor)===canonical(projection),
+      'current editor could not read the exact published descriptor');
+    const acceptanceId=randomUUID();
+    const acceptance=await store.acceptPublishedDescriptorReview(editorSession,{accountId,publicationId,operationId:acceptanceId,
+      expectedPublicationHash:expectedDescriptorHash},{deadlineAtMs:Date.now()+10000});
+    assert(acceptance.acceptanceId===acceptanceId&&acceptance.publicationHash===expectedDescriptorHash&&
+      /^[a-f0-9]{64}$/.test(acceptance.acceptanceHash),'editor acceptance did not return its immutable evidence hash');
+    const activation={accountId,agentName:agent,connectionName:'fixture',requestId,claimOperationId,publicationId,acceptanceId,
+      expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:capture.agent.definitionHash,
+      expectedAccessRevision:access.accessRevision,expectedPublicationHash:expectedDescriptorHash,
+      expectedAcceptanceHash:acceptance.acceptanceHash};
+    const activationReview=await store.previewExecutableActivation(session,{...activation,operationId:randomUUID()},{deadlineAtMs:Date.now()+10000});
+    assert(activationReview.policyHash.length===64&&activationReview.reviewHash.length===64&&activationReview.consentGeneration===2,
+      'custodian activation preview did not produce a bounded current review');
+    const stageOperationId=randomUUID();
+    const stageInput={...activation,operationId:stageOperationId,expectedPolicyHash:activationReview.policyHash,
+      activationReviewId:activationReview.reviewId,expectedActivationReviewHash:activationReview.reviewHash};
+    const custodyStore=store,proofPool=proof;
+    assert(custodyStore&&proofPool,'custody expiry fixture pools are unavailable');
+    const stageExpiry=await withRevisionTableLock(proofPool,async()=>{
+      const deadlineAtMs=Date.now()+2500,expiryInput={...stageInput,operationId:randomUUID()};
+      const pending=custodyStore.stage(session,expiryInput,{deadlineAtMs}).then(()=> 'completed' as const,()=> 'rejected' as const);
+      let blocked=false;
+      for(let attempt=0;attempt<180;attempt++){
+        const wait=await proofPool.query<{wait_event_type:string|null;query:string}>(
+          "SELECT wait_event_type,query FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%outside_custody_revisions%'");
+        if(wait.rows.some(row=>row.query.includes('FROM outside_custody_operations c LEFT JOIN outside_custody_revisions'))){blocked=true;break;}
+        await pause(10);
+      }
+      return {blocked,outcome:await pending,operationId:expiryInput.operationId};
+    });
+    assert(stageExpiry.blocked&&stageExpiry.outcome==='rejected','stage did not stop after its discovery revision read expired under a real PostgreSQL lock');
+    const expiredStageRows=await proofPool.query('SELECT count(*)::text AS count FROM outside_custody_operations WHERE operation_id=$1',[stageExpiry.operationId]);
+    assert(expiredStageRows.rows[0]?.count==='0','expired stage recorded a receipt after its blocked database read');
+    const staged=await store.stage(session,stageInput,{deadlineAtMs:Date.now()+10000});
+    assert(staged.outcome==='staged'&&staged.credentialRevision!==null,'final-consent stage did not append an executable candidate');
+    const candidateRevision=staged.credentialRevision;
+    const stagedReplay=await store.stage(session,stageInput,{deadlineAtMs:Date.now()+10000});
+    assert(stagedReplay.operationId===staged.operationId&&stagedReplay.credentialRevision===staged.credentialRevision,
+      'exact stage replay did not return its existing receipt');
+    const applyExpiry=await withRevisionTableLock(proofPool,async()=>{
+      const deadlineAtMs=Date.now()+2500,expiryInput={...activation,operationId:randomUUID(),expectedPolicyHash:activationReview.policyHash,
+        activationReviewId:activationReview.reviewId,expectedActivationReviewHash:activationReview.reviewHash,
+        stageOperationId,candidateRevision};
+      const pending=custodyStore.apply(session,expiryInput,{deadlineAtMs}).then(()=> 'completed' as const,()=> 'rejected' as const);
+      let blocked=false;
+      for(let attempt=0;attempt<180;attempt++){
+        const wait=await proofPool.query<{wait_event_type:string|null;query:string}>(
+          "SELECT wait_event_type,query FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%outside_custody_revisions%'");
+        if(wait.rows.some(row=>row.query.includes('FROM outside_custody_operations c LEFT JOIN outside_custody_revisions'))){blocked=true;break;}
+        await pause(10);
+      }
+      return {blocked,outcome:await pending,operationId:expiryInput.operationId};
+    });
+    assert(applyExpiry.blocked&&applyExpiry.outcome==='rejected','apply did not stop after its discovery revision read expired under a real PostgreSQL lock');
+    const expiredApplyRows=await proofPool.query('SELECT count(*)::text AS count FROM outside_custody_operations WHERE operation_id=$1',[applyExpiry.operationId]);
+    const pendingAfterExpiry=await proofPool.query('SELECT generation::text,active_revision::text,candidate_revision::text FROM outside_custody_accounts WHERE account_id=$1',[accountId]);
+    assert(expiredApplyRows.rows[0]?.count==='0'&&pendingAfterExpiry.rows[0]?.generation==='1'&&
+      pendingAfterExpiry.rows[0]?.candidate_revision===String(staged.credentialRevision)&&pendingAfterExpiry.rows[0]?.active_revision===null,
+      'expired apply recorded a receipt or changed the staged head');
+    partial.checks.push('stage and apply request deadlines expire while a PostgreSQL lock blocks the discovery revision read');
+    const applyInput={...activation,operationId:randomUUID(),expectedPolicyHash:activationReview.policyHash,
+      activationReviewId:activationReview.reviewId,expectedActivationReviewHash:activationReview.reviewHash,
+      stageOperationId,candidateRevision:staged.credentialRevision};
+    const applied=await store.apply(session,applyInput,{deadlineAtMs:Date.now()+10000});
+    assert(applied.outcome==='applied'&&applied.credentialRevision===staged.credentialRevision,
+      'custodian apply did not activate the exact staged candidate');
+    const appliedReplay=await store.apply(session,applyInput,{deadlineAtMs:Date.now()+10000});
+    assert(appliedReplay.operationId===applied.operationId&&appliedReplay.generation===applied.generation&&
+      appliedReplay.credentialRevision===applied.credentialRevision,'exact apply replay did not return its existing receipt');
+    const alteredApplyRequests=[
+      {...applyInput,requestId:randomUUID()},
+      {...applyInput,claimOperationId:randomUUID()},
+      {...applyInput,expectedAcceptanceHash:'f'.repeat(64)},
+    ];
+    for(const altered of alteredApplyRequests){
+      let denied=false;
+      try{await store.apply(session,altered,{deadlineAtMs:Date.now()+10000});}catch{denied=true;}
+      assert(denied,'apply replay accepted a changed validated request selector');
+    }
+    const afterAlteredReplay=await proof.query(`SELECT
+      (SELECT count(*)::text FROM outside_custody_operations WHERE operation_id=$1) AS receipts,
+      generation::text,active_revision::text,candidate_revision::text
+      FROM outside_custody_accounts WHERE account_id=$2`,[applyInput.operationId,accountId]);
+    assert(afterAlteredReplay.rows[0]?.receipts==='1'&&afterAlteredReplay.rows[0]?.generation===String(applied.generation)&&
+      afterAlteredReplay.rows[0]?.active_revision===String(applied.credentialRevision)&&afterAlteredReplay.rows[0]?.candidate_revision===null,
+      'changed apply replay selectors mutated the receipt or active custody head');
+    partial.checks.push('changed apply replay selectors are denied without changing the receipt or active head');
+    partial.checks.push('exact stage and apply replays recover receipts while current custody and editor grants remain valid');
+    await proof.query('UPDATE member_sessions SET revoked_at=clock_timestamp() WHERE token_hash=$1',
+      [createHash('sha256').update(editorSession).digest('hex')]);
+    let loggedOutReadDenied=false,loggedOutAcceptanceDenied=false;
+    try{await store.readPublishedDescriptorReview(editorSession,{accountId,publicationId,expectedPublicationHash:expectedDescriptorHash},
+      {deadlineAtMs:Date.now()+10000});}catch{loggedOutReadDenied=true;}
+    try{await store.acceptPublishedDescriptorReview(editorSession,{accountId,publicationId,operationId:randomUUID(),
+      expectedPublicationHash:expectedDescriptorHash},{deadlineAtMs:Date.now()+10000});}catch{loggedOutAcceptanceDenied=true;}
+    assert(loggedOutReadDenied&&loggedOutAcceptanceDenied,'revoked editor session retained read or acceptance authority');
+    const loggedOutEditorReplay=await store.apply(session,applyInput,{deadlineAtMs:Date.now()+10000});
+    assert(loggedOutEditorReplay.operationId===applied.operationId,'historical acceptance stopped working after the editor logged out');
+    const revokedEditorGrant=await proof.query("UPDATE resource_grants SET revoked_at=clock_timestamp() WHERE resource_kind='agent' AND resource_id=$1 AND principal_member_id=$2 AND permission='edit' AND revoked_at IS NULL RETURNING id",
+      [agent,editor]);
+    assert(revokedEditorGrant.rows.length===1,'fixture did not revoke exactly the current editor grant');
+    let revokedEditGrantReplayDenied=false;
+    try{await store.apply(session,applyInput,{deadlineAtMs:Date.now()+10000});}catch{revokedEditGrantReplayDenied=true;}
+    assert(revokedEditGrantReplayDenied,'apply replay accepted after the current editor grant was revoked');
+    partial.checks.push('historical acceptance survives editor logout and current edit grant revocation blocks replay');
+    partial.checks.push('authenticated publication, current editor acceptance and exact custodian preview/stage/apply complete');
+
     const head=await proof.query('SELECT generation::text,active_revision::text,candidate_revision::text,consent_generation::text,state FROM outside_custody_accounts WHERE account_id=$1',[accountId]);
-    assert(head.rows.length===1&&head.rows[0].generation==='1'&&head.rows[0].active_revision===null&&head.rows[0].candidate_revision===null&&head.rows[0].consent_generation==='1'&&head.rows[0].state==='active','discovery changed executable head/candidate state');
-    const operations=await proof.query("SELECT operation_id::text,request_id::text,event_phase,outcome,expected_generation::text,result_generation::text,credential_revision::text,result_nonce,result_ciphertext FROM outside_custody_operations WHERE account_id=$1 ORDER BY event_phase",[accountId]);
+    assert(head.rows.length===1&&head.rows[0].generation==='2'&&head.rows[0].active_revision===String(staged.credentialRevision)&&
+      head.rows[0].candidate_revision===null&&head.rows[0].consent_generation==='2'&&head.rows[0].state==='active','applied candidate head differs from the exact consented revision');
+    const operations=await proof.query("SELECT operation_id::text,request_id::text,event_phase,operation_kind,evidence_kind,actor_member_id,outcome,expected_generation::text,result_generation::text,credential_revision::text,result_nonce,result_ciphertext FROM outside_custody_operations WHERE account_id=$1 ORDER BY event_phase,operation_kind",[accountId]);
     const claim=operations.rows.find(row=>row.event_phase==='claim'),result=operations.rows.find(row=>row.event_phase==='result');
-    assert(operations.rows.length===2&&claim?.outcome==='claimed'&&result?.outcome==='completed'&&claim.request_id===requestId&&result.request_id===requestId&&
+    const lifecycleEvidence=operations.rows.filter(row=>row.event_phase==='operation');
+    assert(operations.rows.length===7&&lifecycleEvidence.length===5&&
+      lifecycleEvidence.some(row=>row.operation_kind==='publish'&&row.outcome==='published'&&row.evidence_kind==='descriptor-publication-v1')&&
+      lifecycleEvidence.some(row=>row.operation_kind==='accept'&&row.outcome==='accepted'&&row.actor_member_id===editor&&row.evidence_kind==='descriptor-acceptance-v1')&&
+      lifecycleEvidence.some(row=>row.operation_kind==='activation-preview'&&row.outcome==='previewed')&&
+      lifecycleEvidence.some(row=>row.operation_kind==='stage'&&row.outcome==='staged'&&row.evidence_kind==='activation-review-v1')&&
+      lifecycleEvidence.some(row=>row.operation_kind==='apply'&&row.outcome==='applied')&&
+      claim?.outcome==='claimed'&&result?.outcome==='completed'&&claim.request_id===requestId&&result.request_id===requestId&&
       claim.expected_generation==='0'&&claim.result_generation==='1'&&result.expected_generation==='0'&&result.result_generation==='1',
-      'durable claim/result pair was not recorded at the expected generation');
-    const revision=await proof.query('SELECT generation::text,credential_revision::text,consent_generation::text,encode(policy_hash,\'hex\') AS policy_hash FROM outside_custody_revisions WHERE account_id=$1',[accountId]);
+      'durable discovery and authenticated custody lifecycle evidence differ from the expected outcomes');
+    const revision=await proof.query("SELECT generation::text,credential_revision::text,consent_generation::text,encode(policy_hash,'hex') AS policy_hash FROM outside_custody_revisions WHERE account_id=$1 AND revision_purpose='discovery'",[accountId]);
     assert(revision.rows.length===1,'discovery credential revision missing');
+    const executableRevision=await proof.query("SELECT generation::text,credential_revision::text,consent_generation::text,revision_purpose FROM outside_custody_revisions WHERE account_id=$1 AND revision_purpose='executable'",[accountId]);
+    assert(executableRevision.rows.length===1&&executableRevision.rows[0]?.generation==='2'&&
+      executableRevision.rows[0]?.credential_revision===String(staged.credentialRevision)&&executableRevision.rows[0]?.consent_generation==='2',
+      'executable candidate revision does not match the applied consent');
     const coordinates={ownerMemberId:owner,accountId,agentName:agent,connectionName:'fixture',requestId,
       claimOperationId, resultOperationId:result.operation_id,generation:Number(revision.rows[0].generation),
       credentialRevision:Number(revision.rows[0].credential_revision),consentGeneration:Number(revision.rows[0].consent_generation),
@@ -618,7 +804,8 @@ async function runConfigured():Promise<void>{
     partial.success=true;
     writeReport(output,partial);
   }catch{
-    const safePhases=new Set(['configuration','role identities','neutral authorization fixture','same-bridge direct-path control',
+    const safePhases=new Set(['configuration','role identities','neutral authorization fixture','outside custody organisation gate contention',
+      'outside custody human review and activation','same-bridge direct-path control',
       'routed direct-path control','generated route admission','direct-path firewall counter',
       'routed direct-path firewall counter','database discovery','durable result verification']);
     const failure:{phase:string;reason:string;routeBoundary?:RouteBoundaryFailure;
