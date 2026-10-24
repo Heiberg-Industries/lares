@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import { generateEgress } from '../lib/egress.js';
+import { firewallProjection } from './outside-discovery-image.probe.mjs';
 
 // A baseline proxy configuration in the shape of a long-running installation's. It adds
 // .slack-files.com over the repo version. Comments must not become destinations.
@@ -75,11 +78,73 @@ it('intentionally tightens each current agent, with no fallback to legacy destin
 it('keeps every live sealed source, internal/direct exception and firewall ordering', () => {
   const result = generateEgress(agents, options).nft;
   const sourceSet = /ip saddr != \{ ([^}]+) \} accept/;
-  expect(result.match(sourceSet)?.[1]).toBe(nft.match(sourceSet)?.[1]);
+  const table = (text: string, family: 'inet' | 'bridge') => {
+    const start = text.indexOf(`table ${family} lares_egress {`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = text.indexOf('\n  }', start);
+    return text.slice(start, end + 4);
+  };
+  const inet = table(result, 'inet'), bridge = table(result, 'bridge');
+  expect(inet.match(sourceSet)?.[1]).toBe(nft.match(sourceSet)?.[1]);
+  expect(bridge.match(/ip saddr != \{ ([^}]+) \} accept/)?.[1]).toBe(inet.match(sourceSet)?.[1]);
+  expect(bridge).toContain('ether type != ip accept');
   const destinations = (s: string) => [...s.matchAll(/ip daddr (.+) accept/g)].flatMap(m => m[1].replace(/[{}]/g, '').split(/[,\s]+/).filter(Boolean)).sort();
-  expect(destinations(result)).toEqual(destinations(nft));
-  for (const rule of ['ct state established,related accept', 'udp dport 53 accept', 'tcp dport 53 accept']) expect(result).toContain(rule);
-  expect(result.indexOf('ip saddr')).toBeLessThan(result.indexOf('ct state'));
-  expect(result.indexOf('ct state')).toBeLessThan(result.indexOf('ip daddr'));
-  expect(result.indexOf('ip daddr')).toBeLessThan(result.indexOf('counter drop'));
+  expect(destinations(inet)).toEqual(destinations(nft));
+  expect(destinations(bridge)).toEqual(destinations(inet));
+  for (const policy of [inet, bridge]) {
+    for (const rule of ['ct state established,related accept', 'udp dport 53 accept', 'tcp dport 53 accept']) expect(policy).toContain(rule);
+    expect(policy.indexOf('ip saddr')).toBeLessThan(policy.indexOf('ct state'));
+    expect(policy.indexOf('ct state')).toBeLessThan(policy.indexOf('ip daddr'));
+    expect(policy.indexOf('ip daddr')).toBeLessThan(policy.indexOf('counter drop'));
+  }
+});
+
+it('matches normalized live nft text against the actual generated two-family policy', () => {
+  const generated = generateEgress([
+    { name: 'alpha', address: '10.0.0.2', grants: [] },
+    { name: 'beta', address: '10.0.0.3', grants: [] },
+  ], { directDestinations: ['192.0.2.20/32'] }).nft;
+  let live = generated.replace('priority -10;', 'priority filter - 10;')
+    .replace('ip saddr != { 10.0.0.2, 10.0.0.3 }', 'ip saddr != { 10.0.0.3, 10.0.0.2 }')
+    .replaceAll('ct state established,related accept', 'ct state related,established accept')
+    .replaceAll('ip daddr 192.0.2.20/32 accept', 'ip daddr 192.0.2.20 accept')
+    .replaceAll('counter drop', 'counter packets 4 bytes 256 drop');
+  expect(firewallProjection(generated, live, 'inet')).toBeDefined();
+  expect(firewallProjection(generated, live, 'bridge')).toBeDefined();
+  live = live.replaceAll('ct state related,established accept',
+    'ct state related,established accept\n    ip daddr 203.0.113.9 accept');
+  expect(firewallProjection(generated, live, 'inet')).toBeUndefined();
+  expect(firewallProjection(generated, live, 'bridge')).toBeUndefined();
+});
+
+it('keeps the Python image validator in parity with the TypeScript validator', () => {
+  const generated = generateEgress([
+    { name: 'alpha', address: '10.0.0.2', grants: [] },
+    { name: 'beta', address: '10.0.0.3', grants: [] },
+  ], { directDestinations: ['192.0.2.20/32'] }).nft;
+  const live = generated.replace('priority -10;', 'priority filter - 10;')
+    .replace('ip saddr != { 10.0.0.2, 10.0.0.3 }', 'ip saddr != { 10.0.0.3, 10.0.0.2 }')
+    .replaceAll('ct state established,related accept', 'ct state related,established accept')
+    .replaceAll('ip daddr 192.0.2.20/32 accept', 'ip daddr 192.0.2.20 accept')
+    .replaceAll('counter drop', 'counter packets 4 bytes 256 drop');
+  const cases = [
+    { generated, live },
+    { generated, live: live.replace('priority filter - 10;', 'priority 0;') },
+    { generated, live: live.replaceAll('10.0.0.3, 10.0.0.2', '10.0.0.3, 10.0.0.99') },
+    { generated, live: live.replaceAll('ct state related,established accept',
+      'ct state related,established accept\n    ip daddr 203.0.113.9 accept') },
+  ];
+  const script = fileURLToPath(new URL('./outside-discovery-image.probe.py', import.meta.url));
+  const response = JSON.parse(execFileSync('python3', [script, '--projection-check'], {
+    input: JSON.stringify({ cases }), encoding: 'utf8', timeout: 5000, maxBuffer: 32 * 1024,
+  })) as { results: Record<'inet' | 'bridge', { hash: string; packets: number } | null>[] };
+  expect(response.results).toHaveLength(cases.length);
+  for (const [index, testCase] of cases.entries()) {
+    for (const family of ['inet', 'bridge'] as const) {
+      const typescript = firewallProjection(testCase.generated, testCase.live, family);
+      const python = response.results[index]?.[family];
+      if (typescript === undefined) expect(python).toBeNull();
+      else expect(python).toEqual({ hash: typescript.hash, packets: Number(typescript.packets) });
+    }
+  }
 });

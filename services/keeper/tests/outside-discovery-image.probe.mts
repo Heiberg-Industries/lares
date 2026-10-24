@@ -3,7 +3,8 @@ import {createHash,randomUUID,createDecipheriv} from 'node:crypto';
 import {readFileSync,writeFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import https from 'node:https';
-import type {Socket} from 'node:net';
+import tls from 'node:tls';
+import {createConnection,isIP,type Socket} from 'node:net';
 import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
 import {Pool} from 'pg';
@@ -113,15 +114,35 @@ async function peer():Promise<void>{
   state.ready=true;persistPeer(path,state);
   await new Promise<void>((resolve,reject)=>{server.once('close',resolve);server.once('error',reject);});
 }
+async function controlPeer():Promise<void>{
+  const path=need('FIXTURE_PEER_REPORT'),address=need('FIXTURE_ROUTED_TARGET_IP');
+  const state={ready:false};
+  const server=https.createServer({key:readFileSync('/fixture/certs/server.key'),cert:readFileSync('/fixture/certs/server.pem')},(_request,response)=>{
+    response.writeHead(204,{'content-length':'0'});response.end();
+  });
+  await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(443,address,()=>resolve());});
+  state.ready=true;writeReport(path,state);
+  await new Promise<void>((resolve,reject)=>{server.once('close',resolve);server.once('error',reject);});
+}
 
 type DirectErrorCategory='none'|'dns-failure'|'connection-refused'|'network-unreachable'|'connection-reset'|
   'socket-timeout'|'deadline-triggered'|'tls-error'|'request-error'|'socket-close-timeout';
 type CounterFailureCategory='none'|'command-timeout'|'command-not-found'|'permission-denied'|
-  'command-failed'|'counter-missing'|'counter-invalid';
-type CounterEvidence={packets?:number;failure:CounterFailureCategory;exactPackets?:bigint};
-type CounterReport={packets?:number;failure:CounterFailureCategory};
+  'command-failed'|'counter-missing'|'counter-invalid'|'projection-mismatch'|'stage-unavailable';
+type ProjectionDiagnostic={family:'inet'|'bridge';reason:'generated-table-unrecognized'|'live-table-unrecognized'|
+  'hook-mismatch'|'rule-mismatch'|'rule-count-mismatch'|'counter-missing';generatedHash:string;liveHash:string;
+  mismatchIndex?:number;generatedLine?:string;liveLine?:string};
+type CounterEvidence={packets?:number;failure:CounterFailureCategory;exactPackets?:bigint;projectionHash?:string;
+  diagnostic?:ProjectionDiagnostic};
+type CounterReport={packets?:number;failure:CounterFailureCategory;projectionHash?:string;diagnostic?:ProjectionDiagnostic};
+type FirewallCounters={inet:CounterEvidence;bridge:CounterEvidence};
+type FirewallCounterReports={inet:CounterReport;bridge:CounterReport};
 function counterReport(value:CounterEvidence):CounterReport{
-  return value.failure==='none'?{packets:value.packets,failure:value.failure}:{failure:value.failure};
+  return value.failure==='none'?{packets:value.packets,failure:value.failure,projectionHash:value.projectionHash}:
+    {failure:value.failure,...(value.diagnostic?{diagnostic:value.diagnostic}:{})};
+}
+function counterReports(value:FirewallCounters):FirewallCounterReports{
+  return {inet:counterReport(value.inet),bridge:counterReport(value.bridge)};
 }
 function directErrorCategory(error:unknown):DirectErrorCategory{
   const code=error&&typeof error==='object'&&'code' in error?String((error as {code?:unknown}).code):'';
@@ -134,62 +155,290 @@ function directErrorCategory(error:unknown):DirectErrorCategory{
   return 'request-error';
 }
 
-async function directTargetEvidence(host:string,path:string):Promise<{tlsCompleted:boolean;socketClosed:boolean;errorCategory:DirectErrorCategory}>{
+type SocketObservation={tlsCompleted:boolean;socketClosed:boolean;errorCategory:DirectErrorCategory;
+  lookupAddress:string|null;assignedSourceAddress:string|null;connectedPeerAddress:string|null};
+function socketAddresses(socket:Socket|undefined):{assignedSourceAddress:string|null;connectedPeerAddress:string|null}{
+  return {assignedSourceAddress:typeof socket?.localAddress==='string'?socket.localAddress:null,
+    connectedPeerAddress:typeof socket?.remoteAddress==='string'?socket.remoteAddress:null};
+}
+async function directTargetEvidence(host:string,path:string,targetAddress:string,sourceAddress:string,port=443):Promise<SocketObservation>{
   return await new Promise(resolve=>{
     let tlsCompleted=false,socketClosed=false,requestClosed=false,socket:Socket|undefined,settled=false,deadlineTriggered=false,
-      errorCategory:DirectErrorCategory='none';
+      errorCategory:DirectErrorCategory='none',lookupAddress:string|null=null,assignedSourceAddress:string|null=null,
+      connectedPeerAddress:string|null=null;
+    const observe=()=>{const current=socketAddresses(socket);assignedSourceAddress??=current.assignedSourceAddress;
+      connectedPeerAddress??=current.connectedPeerAddress;};
     let closeTimeout:ReturnType<typeof setTimeout>|undefined,requestTimer:ReturnType<typeof setTimeout>|undefined;
     const finish=()=>{
       if(settled||!requestClosed)return;
       if(requestTimer)clearTimeout(requestTimer);
       if(socket&&!socketClosed){
         if(!closeTimeout)closeTimeout=setTimeout(()=>{settled=true;resolve({tlsCompleted,socketClosed:false,
-          errorCategory:errorCategory==='none'?'socket-close-timeout':errorCategory});},1500);
+          errorCategory:errorCategory==='none'?'socket-close-timeout':errorCategory,lookupAddress,assignedSourceAddress,connectedPeerAddress});},1500);
         return;
       }
-      settled=true;if(closeTimeout)clearTimeout(closeTimeout);resolve({tlsCompleted,socketClosed:true,errorCategory});
+      observe();settled=true;if(closeTimeout)clearTimeout(closeTimeout);resolve({tlsCompleted,socketClosed:true,errorCategory,lookupAddress,assignedSourceAddress,connectedPeerAddress});
     };
-    const request=https.get({hostname:host,port:443,path,agent:false,rejectUnauthorized:true},response=>{
+    const request=https.get({hostname:host,servername:'mcp.example.org',port,path,agent:false,rejectUnauthorized:true,
+      localAddress:sourceAddress,lookup:(_hostname,options,callback)=>{
+        lookupAddress=targetAddress;
+        if(typeof options==='object'&&options.all)callback(null,[{address:targetAddress,family:4}]);
+        else callback(null,targetAddress,4);
+      }},response=>{
       tlsCompleted=true;response.destroy();request.destroy();
     });
     request.once('socket',value=>{
       socket=value;
+      observe();
+      value.once('connect',observe);
       value.once('secureConnect',()=>{tlsCompleted=true;});
-      value.once('close',()=>{socketClosed=true;finish();});
+      value.once('close',()=>{observe();socketClosed=true;finish();});
     });
-    request.once('error',(error:NodeJS.ErrnoException)=>{if(!deadlineTriggered)errorCategory=directErrorCategory(error);});
+    request.once('error',(error:NodeJS.ErrnoException)=>{observe();if(!deadlineTriggered)errorCategory=directErrorCategory(error);});
     request.once('close',()=>{requestClosed=true;finish();});
     requestTimer=setTimeout(()=>{deadlineTriggered=true;errorCategory='deadline-triggered';request.destroy();},1200);
   });
 }
+async function tlsControlEvidence(host:string,targetAddress:string,sourceAddress:string,port=443):Promise<SocketObservation>{
+  return await new Promise(resolve=>{
+    let tlsCompleted=false,socketClosed=false,settled=false,deadlineTriggered=false,socket:tls.TLSSocket|undefined,
+      errorCategory:DirectErrorCategory='none',lookupAddress:string|null=null,assignedSourceAddress:string|null=null,
+      connectedPeerAddress:string|null=null;
+    const observe=()=>{const current=socketAddresses(socket);assignedSourceAddress??=current.assignedSourceAddress;
+      connectedPeerAddress??=current.connectedPeerAddress;};
+    let closeTimeout:ReturnType<typeof setTimeout>|undefined,requestTimer:ReturnType<typeof setTimeout>|undefined;
+    const finish=(socketClosedNow:boolean)=>{
+      socketClosed||=socketClosedNow;
+      if(settled)return;
+      if(requestTimer)clearTimeout(requestTimer);
+      if(socket&&!socketClosed){
+        if(!closeTimeout)closeTimeout=setTimeout(()=>{settled=true;resolve({tlsCompleted,socketClosed:false,
+          errorCategory:errorCategory==='none'?'socket-close-timeout':errorCategory,lookupAddress,assignedSourceAddress,connectedPeerAddress});},1500);
+        return;
+      }
+      observe();settled=true;if(closeTimeout)clearTimeout(closeTimeout);resolve({tlsCompleted,socketClosed:true,errorCategory,lookupAddress,assignedSourceAddress,connectedPeerAddress});
+    };
+    const transport=createConnection({host,port,localAddress:sourceAddress,
+      lookup:(_hostname,options,callback)=>{
+        lookupAddress=targetAddress;
+        if(typeof options==='object'&&options.all)callback(null,[{address:targetAddress,family:4}]);
+        else callback(null,targetAddress,4);
+      }});
+    transport.once('connect',observe);
+    socket=tls.connect({socket:transport,servername:'mcp.example.org',rejectUnauthorized:true});
+    observe();
+    socket.once('connect',observe);
+    socket.once('secureConnect',()=>{observe();tlsCompleted=true;socket!.destroy();});
+    socket.once('error',(error:NodeJS.ErrnoException)=>{observe();if(!deadlineTriggered)errorCategory=directErrorCategory(error);});
+    socket.once('close',()=>{observe();finish(true);});
+    requestTimer=setTimeout(()=>{deadlineTriggered=true;errorCategory='deadline-triggered';socket!.destroy();},1200);
+  });
+}
 
-async function firewallDropPackets():Promise<CounterEvidence>{
+function firewallTableProjection(text:string,family:'inet'|'bridge'):{hook:string;rules:string[];packets?:bigint}|undefined{
+  const lines=text.split(/\r?\n/),tableLine=`table ${family} lares_egress {`,starts=lines
+    .map((line,index)=>line.trim()===tableLine?index:-1).filter(index=>index>=0);
+  if(starts.length!==1)return undefined;
+  const tableStart=starts[0]!;let depth=1,chainStart=-1,chainEnd=-1,tableEnd=-1,chainCount=0;
+  for(let index=tableStart+1;index<lines.length;index++){
+    const line=lines[index]!.trim();
+    if(line==='chain forward {'&&depth===1){chainCount++;chainStart=index;}
+    depth+=(line.match(/{/g)?.length??0)-(line.match(/}/g)?.length??0);
+    if(chainStart>=0&&chainEnd<0&&depth===1)chainEnd=index;
+    if(depth===0){tableEnd=index;break;}
+    if(depth<0)return undefined;
+  }
+  if(tableEnd<0||chainCount!==1||chainStart<0||chainEnd<=chainStart||
+      lines.slice(tableStart+1,chainStart).some(line=>line.trim())||
+      lines.slice(chainEnd+1,tableEnd).some(line=>line.trim()))return undefined;
+  const body=lines.slice(chainStart+1,chainEnd).map(line=>line.trim()).filter(Boolean);
+  if(body.length<2)return undefined;
+  const hook=canonicalFirewallHook(body[0]!,family),rules:string[]=[];
+  if(!hook)return undefined;
+  let packets:bigint|undefined;
+  for(const raw of body.slice(1)){
+    const line=raw.replace(/\s+#\s*handle\s+\d+$/,'').replace(/\s+/g,' ');
+    const counter=line.match(/^counter packets (\d+) bytes \d+ drop$/);
+    if(counter){
+      if(packets!==undefined)return undefined;
+      try{packets=BigInt(counter[1]!);}catch{return undefined;}
+      rules.push('counter drop');
+    }else{
+      const normalized=canonicalFirewallRule(line);
+      if(!normalized)return undefined;
+      rules.push(normalized);
+    }
+  }
+  return {hook,rules,...(packets===undefined?{}:{packets})};
+}
+function canonicalFirewallHook(raw:string,family:'inet'|'bridge'):string|undefined{
+  const match=raw.trim().replace(/\s+/g,' ').match(/^type (filter) hook (forward) priority (.+); policy (accept);$/);
+  if(!match)return undefined;
+  const priorities=family==='inet'?new Set(['-10','filter - 10']):new Set(['0','filter']);
+  return priorities.has(match[3]!)?`type filter hook forward priority ${family==='inet'?-10:0}; policy accept;`:undefined;
+}
+function canonicalIPv4Prefix(value:string):string|undefined{
+  const [address,prefix,...extra]=value.split('/');
+  if(!address||extra.length||isIP(address)!==4)return undefined;
+  if(prefix===undefined)return address;
+  if(!/^\d{1,2}$/.test(prefix)||Number(prefix)>32)return undefined;
+  return Number(prefix)===32?address:`${address}/${Number(prefix)}`;
+}
+function canonicalFirewallRule(raw:string):string|undefined{
+  const line=raw.trim().replace(/\s+/g,' ');
+  const source=line.match(/^(ether type ip )?ip saddr != \{ (.+) \} accept$/);
+  if(source){
+    const members=source[2]!.split(', ').map(canonicalIPv4Prefix);
+    if(members.some(member=>!member)||new Set(members).size!==members.length)return undefined;
+    const sortedMembers=(members as string[]).sort();
+    return `${source[1]??''}ip saddr != { ${sortedMembers.join(', ')} } accept`;
+  }
+  const state=line.match(/^ct state (.+) accept$/);
+  if(state){
+    const members=state[1]!.split(',').sort();
+    return members.length===2&&members[0]==='established'&&members[1]==='related'?
+      'ct state established,related accept':undefined;
+  }
+  const destination=line.match(/^ip daddr (.+) accept$/);
+  if(destination){
+    const rawMembers=destination[1]!.startsWith('{ ')?destination[1]!.replace(/^\{ | \}$/g,'').split(', '):[destination[1]!];
+    const members=rawMembers.map(canonicalIPv4Prefix);
+    if(members.some(member=>!member)||new Set(members).size!==members.length)return undefined;
+    const sortedMembers=(members as string[]).sort();
+    return sortedMembers.length===1?`ip daddr ${sortedMembers[0]} accept`:
+      `ip daddr { ${sortedMembers.join(', ')} } accept`;
+  }
+  return line;
+}
+function validGeneratedFirewallProjection(family:'inet'|'bridge',rules:readonly string[]):boolean{
+  let index=0;
+  if(family==='bridge'){
+    if(rules[index++]!=='ether type != ip accept')return false;
+    if(!/^ether type ip ip saddr != \{ [0-9./, ]+ \} accept$/.test(rules[index++]??''))return false;
+  }else if(!/^ip saddr != \{ [0-9./, ]+ \} accept$/.test(rules[index++]??''))return false;
+  if(rules[index++]!=='ct state established,related accept')return false;
+  while(/^ip daddr .+ accept$/.test(rules[index]??''))index++;
+  return rules[index++]==='udp dport 53 accept'&&rules[index++]==='tcp dport 53 accept'&&
+    rules[index]==='counter drop'&&index===rules.length-1;
+}
+export function firewallProjection(stageText:string,liveText:string,family:'inet'|'bridge'):
+  {hash:string;packets:bigint}|undefined{
+  const generated=firewallTableProjection(stageText,family),live=firewallTableProjection(liveText,family);
+  const hook=family==='inet'?'type filter hook forward priority -10; policy accept;':
+    'type filter hook forward priority 0; policy accept;';
+  if(!generated||!live||generated.hook!==hook||live.hook!==hook||
+      !validGeneratedFirewallProjection(family,generated.rules)||
+      JSON.stringify(generated.rules)!==JSON.stringify(live.rules)||live.packets===undefined)return undefined;
+  const hash=createHash('sha256').update(JSON.stringify({family,hook,rules:generated.rules})).digest('hex');
+  return {hash,packets:live.packets};
+}
+function firewallProjectionDiagnostic(stageText:string,liveText:string,family:'inet'|'bridge'):ProjectionDiagnostic{
+  const generated=firewallTableProjection(stageText,family),live=firewallTableProjection(liveText,family);
+  const rawTable=(text:string):string|undefined=>{
+    if(Buffer.byteLength(text,'utf8')>128*1024)return undefined;
+    const lines=text.split(/\r?\n/),start=lines.findIndex(line=>line.trim()===`table ${family} lares_egress {`);
+    if(start<0)return undefined;
+    let depth=1,end=-1;
+    for(let index=start+1;index<lines.length;index++){
+      const line=lines[index]!.trim();depth+=(line.match(/{/g)?.length??0)-(line.match(/}/g)?.length??0);
+      if(depth===0){end=index;break;}if(depth<0)return undefined;
+    }
+    return end<0?undefined:lines.slice(start,end+1).join('\n');
+  };
+  const rawBody=(text:string):string[]=>{
+    if(Buffer.byteLength(text,'utf8')>128*1024)return [];
+    const lines=text.split(/\r?\n/),start=lines.findIndex(line=>line.trim()===`table ${family} lares_egress {`);
+    if(start<0)return [];
+    let depth=1,chain=-1,end=-1;
+    for(let index=start+1;index<lines.length;index++){
+      const line=lines[index]!.trim();
+      if(line==='chain forward {'&&depth===1)chain=index;
+      depth+=(line.match(/{/g)?.length??0)-(line.match(/}/g)?.length??0);
+      if(depth===1&&chain>=0){end=index;break;}
+      if(depth===0)break;
+    }
+    if(chain<0||end<=chain)return [];
+    return lines.slice(chain+1,end).map(line=>line.trim()).filter(Boolean).slice(0,64);
+  };
+  const safeLine=(line:string|undefined):string|undefined=>line!==undefined&&line.length<=512&&
+    /^[\x20-\x7e]*$/.test(line)&&[
+      /^type filter hook forward priority [-0-9A-Za-z ]+; policy accept;$/,
+      /^(?:ether type ip )?ip saddr != \{ [0-9./, ]+ \} accept$/,
+      /^ether type != ip accept$/,
+      /^ct state (?:established,related|related,established) accept$/,
+      /^ip daddr (?:\{ [0-9./, ]+ \}|[0-9./]+) accept$/,
+      /^(?:udp|tcp) dport 53 accept$/,
+      /^counter drop$/,
+      /^counter packets [0-9]+ bytes [0-9]+ drop$/,
+    ].some(pattern=>pattern.test(line))?line:undefined;
+  const generatedBody=rawBody(stageText),liveBody=rawBody(liveText);
+  const diagnostic:ProjectionDiagnostic={family,reason:'generated-table-unrecognized',
+    generatedHash:createHash('sha256').update(rawTable(stageText)??`missing:${family}`).digest('hex'),
+    liveHash:createHash('sha256').update(rawTable(liveText)??`missing:${family}`).digest('hex')};
+  if(generated&&live){
+    if(generated.hook!==live.hook){diagnostic.reason='hook-mismatch';diagnostic.mismatchIndex=0;
+      diagnostic.generatedLine=safeLine(generatedBody[0]);diagnostic.liveLine=safeLine(liveBody[0]);}
+    else{
+      const mismatch=generated.rules.findIndex((rule,index)=>rule!==live.rules[index]);
+      if(mismatch>=0){diagnostic.reason='rule-mismatch';diagnostic.mismatchIndex=mismatch;
+        diagnostic.generatedLine=safeLine(generatedBody[mismatch+1]);diagnostic.liveLine=safeLine(liveBody[mismatch+1]);}
+      else if(generated.rules.length!==live.rules.length){diagnostic.reason='rule-count-mismatch';
+        diagnostic.mismatchIndex=Math.min(generated.rules.length,live.rules.length);
+        diagnostic.generatedLine=safeLine(generatedBody[diagnostic.mismatchIndex+1]);
+        diagnostic.liveLine=safeLine(liveBody[diagnostic.mismatchIndex+1]);}
+      else{diagnostic.reason='counter-missing';}
+    }
+  }else if(generated){
+    diagnostic.reason='live-table-unrecognized';
+    diagnostic.mismatchIndex=0;diagnostic.generatedLine=safeLine(generatedBody[0]);diagnostic.liveLine=safeLine(liveBody[0]);
+  }else{
+    diagnostic.reason='generated-table-unrecognized';
+    diagnostic.mismatchIndex=0;diagnostic.generatedLine=safeLine(generatedBody[0]);diagnostic.liveLine=safeLine(liveBody[0]);
+  }
+  return diagnostic;
+}
+async function firewallDropPackets(family:'inet'|'bridge'):Promise<CounterEvidence>{
   const owner=need('FIXTURE_OWNER'),name='lares-outside-counter-'+owner.slice(0,10)+'-'+randomUUID().slice(0,6);
-  let output:string;
+  let output:string,stageText:string;
+  try{
+    const root=need('FIXTURE_ROOT'),stage=readFileSync(`${root}/egress/installed-stage`,'ascii').trim();
+    if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(stage))return {failure:'stage-unavailable'};
+    stageText=readFileSync(`${root}/egress/${stage}.nft`,'ascii');
+  }catch{return {failure:'stage-unavailable'};}
   try{
     output=execFileSync('docker',['run','--rm','--name',name,'--label','lares.proof.owner='+owner,
       '--network','host','--read-only','--cap-drop','ALL',
       '--cap-add','NET_ADMIN','--security-opt','no-new-privileges:true','--entrypoint','nft',need('FIXTURE_FIREWALL_IMAGE'),
-      'list','table','inet','lares_egress'],{encoding:'utf8',timeout:30000,stdio:['ignore','pipe','ignore']});
+      'list','table',family,'lares_egress'],{encoding:'utf8',timeout:30000,maxBuffer:128*1024,stdio:['ignore','pipe','ignore']});
   }catch(error){
     const code=error&&typeof error==='object'&&'code' in error?(error as {code?:unknown}).code:undefined;
     return {failure:code==='ETIMEDOUT'?'command-timeout':code==='ENOENT'?'command-not-found':
       code==='EACCES'||code==='EPERM'?'permission-denied':'command-failed'};
   }
-  const match=output.match(/counter packets (\d+) bytes \d+ drop/);
-  if(!match)return {failure:'counter-missing'};
-  let exactPackets:bigint;
-  try{exactPackets=BigInt(match[1]);}catch{return {failure:'counter-invalid'};}
+  const projection=firewallProjection(stageText,output,family);
+  if(!projection)return {failure:'projection-mismatch',diagnostic:firewallProjectionDiagnostic(stageText,output,family)};
+  const exactPackets=projection.packets;
   if(exactPackets<0n)return {failure:'counter-invalid'};
   return {packets:Number(exactPackets>1_000_000_000_000n?1_000_000_000_000n:exactPackets),
-    exactPackets,failure:'none'};
+    exactPackets,failure:'none',projectionHash:projection.hash};
+}
+
+async function firewallCounters():Promise<FirewallCounters>{
+  const [inet,bridge]=await Promise.all([firewallDropPackets('inet'),firewallDropPackets('bridge')]);
+  return {inet,bridge};
+}
+function familyCounterIncreased(before:CounterEvidence,after:CounterEvidence):boolean{
+  return before.failure==='none'&&after.failure==='none'&&after.exactPackets!>before.exactPackets!;
 }
 
 async function runConfigured():Promise<void>{
   const output=need('FIXTURE_WORKER_REPORT');
   const partial:{success:boolean;firewallApplied:boolean;directTargetBlocked:boolean;directPathDiagnostics?:{
-    before:CounterReport;direct:{status:'not-attempted'}|{tlsCompleted:boolean;socketClosed:boolean;errorCategory:DirectErrorCategory};
-    after:CounterReport|{status:'not-attempted'};counterIncreased:boolean};checks:string[]}={
+    control:SocketObservation|{status:'not-attempted'};before:FirewallCounterReports;direct:SocketObservation|{status:'not-attempted'};
+    after:FirewallCounterReports|{status:'not-attempted'};inetCounterIncreased:boolean;bridgeCounterIncreased:boolean};
+    routedPathDiagnostics?:{control:SocketObservation|{status:'not-attempted'};before:FirewallCounterReports;
+      direct:SocketObservation|{status:'not-attempted'};after:FirewallCounterReports|{status:'not-attempted'};
+      inetCounterIncreased:boolean;bridgeCounterIncreased:boolean};checks:string[]}={
     success:false,firewallApplied:false,directTargetBlocked:false,checks:[]};
   let main:Pool|undefined,outside:Pool|undefined,admin:Pool|undefined,proof:Pool|undefined,store:OutsideCustodyStore|undefined,
     key:Buffer|undefined,proofKey:Buffer|undefined,credential:Buffer|undefined;
@@ -250,6 +499,17 @@ async function runConfigured():Promise<void>{
     assert(access.accessRevision>adopted.accessRevision,'real grant store did not establish use access');
     partial.checks.push('neutral definition, finite human session and real owner adoption/use grant');
 
+    phase='same-bridge direct-path control';
+    const bridgeControl=await tlsControlEvidence('mcp.example.org',need('FIXTURE_PEER_IP'),need('FIXTURE_SOURCE_IP'));
+    assert(bridgeControl.tlsCompleted&&bridgeControl.socketClosed&&bridgeControl.lookupAddress===need('FIXTURE_PEER_IP')&&
+      bridgeControl.assignedSourceAddress===need('FIXTURE_SOURCE_IP')&&bridgeControl.connectedPeerAddress===need('FIXTURE_PEER_IP'),
+      'same-bridge direct-path control did not verify the bound source and peer');
+    const routedControl=await tlsControlEvidence('routed.mcp.example.org',need('FIXTURE_ROUTED_GATEWAY'),
+      need('FIXTURE_SOURCE_IP'),Number(need('FIXTURE_ROUTED_PORT')));
+    assert(routedControl.tlsCompleted&&routedControl.socketClosed&&routedControl.lookupAddress===need('FIXTURE_ROUTED_GATEWAY')&&
+      routedControl.assignedSourceAddress===need('FIXTURE_SOURCE_IP')&&routedControl.connectedPeerAddress===need('FIXTURE_ROUTED_GATEWAY'),
+      'routed direct-path control did not verify the bound source and published gateway peer');
+
     phase='generated route admission';
     await withDefinitionNamespace(main,()=>lifecycle.saved(agent,definition));
     partial.firewallApplied=true;
@@ -258,21 +518,50 @@ async function runConfigured():Promise<void>{
     partial.checks.push('public saved lifecycle installed and acknowledged generated route without native authority');
 
     phase='direct-path firewall counter';
-    const directBefore=await firewallDropPackets();
-    partial.directPathDiagnostics={before:counterReport(directBefore),direct:{status:'not-attempted'},
-      after:{status:'not-attempted'},counterIncreased:false};
-    assert(directBefore.failure==='none','generated firewall drop counter is unavailable');
-    const direct=await directTargetEvidence('mcp.example.org','/mcp?fixture=outside-proof-v1');
+    const directBefore=await firewallCounters();
+    partial.directPathDiagnostics={control:bridgeControl,before:counterReports(directBefore),direct:{status:'not-attempted'},
+      after:{status:'not-attempted'},inetCounterIncreased:false,bridgeCounterIncreased:false};
+    partial.routedPathDiagnostics={control:routedControl,before:counterReports(directBefore),direct:{status:'not-attempted'},
+      after:{status:'not-attempted'},inetCounterIncreased:false,bridgeCounterIncreased:false};
+    assert(directBefore.inet.failure==='none'&&directBefore.bridge.failure==='none','generated firewall drop counter is unavailable');
+    const direct=await directTargetEvidence('mcp.example.org','/mcp?fixture=outside-proof-v1',need('FIXTURE_PEER_IP'),need('FIXTURE_SOURCE_IP'));
     partial.directPathDiagnostics.direct=direct;
-    const directAfter=await firewallDropPackets();
-    partial.directPathDiagnostics.after=counterReport(directAfter);
-    const counterIncreased=directBefore.failure==='none'&&directAfter.failure==='none'&&
-      directAfter.exactPackets!>directBefore.exactPackets!;
-    partial.directPathDiagnostics.counterIncreased=counterIncreased;
-    partial.directTargetBlocked=directBefore.failure==='none'&&directAfter.failure==='none'&&
-      !direct.tlsCompleted&&direct.socketClosed&&counterIncreased;
-    assert(partial.directTargetBlocked,'direct target attempt did not produce a closed socket and selected-source firewall drop');
-    partial.checks.push('direct target traffic increments generated drop counter and closes TCP before TLS');
+    const directAfter=await firewallCounters();
+    partial.directPathDiagnostics.after=counterReports(directAfter);
+    const routedBefore=directAfter;
+    partial.routedPathDiagnostics.before=counterReports(routedBefore);
+    const inetCounterIncreased=familyCounterIncreased(directBefore.inet,directAfter.inet);
+    const bridgeCounterIncreased=familyCounterIncreased(directBefore.bridge,directAfter.bridge);
+    partial.directPathDiagnostics.inetCounterIncreased=inetCounterIncreased;
+    partial.directPathDiagnostics.bridgeCounterIncreased=bridgeCounterIncreased;
+    const bridgeTargetBlocked=directBefore.inet.failure==='none'&&directBefore.bridge.failure==='none'&&
+      directAfter.inet.failure==='none'&&directAfter.bridge.failure==='none'&&
+      !direct.tlsCompleted&&direct.socketClosed&&direct.lookupAddress===need('FIXTURE_PEER_IP')&&
+      (!direct.assignedSourceAddress||direct.assignedSourceAddress===need('FIXTURE_SOURCE_IP'))&&
+      (!direct.connectedPeerAddress||direct.connectedPeerAddress===need('FIXTURE_PEER_IP'))&&
+      bridgeCounterIncreased&&!inetCounterIncreased;
+    assert(bridgeTargetBlocked,'same-bridge direct target attempt did not produce a closed socket and bridge-family drop');
+
+    phase='routed direct-path firewall counter';
+    const routed=await directTargetEvidence('routed.mcp.example.org','/',need('FIXTURE_ROUTED_GATEWAY'),
+      need('FIXTURE_SOURCE_IP'),Number(need('FIXTURE_ROUTED_PORT')));
+    partial.routedPathDiagnostics.direct=routed;
+    const routedAfter=await firewallCounters();
+    partial.routedPathDiagnostics.after=counterReports(routedAfter);
+    const routedInetCounterIncreased=familyCounterIncreased(routedBefore.inet,routedAfter.inet);
+    const routedBridgeCounterIncreased=familyCounterIncreased(routedBefore.bridge,routedAfter.bridge);
+    partial.routedPathDiagnostics.inetCounterIncreased=routedInetCounterIncreased;
+    partial.routedPathDiagnostics.bridgeCounterIncreased=routedBridgeCounterIncreased;
+    const routedTargetBlocked=routedBefore.inet.failure==='none'&&routedBefore.bridge.failure==='none'&&
+      routedAfter.inet.failure==='none'&&routedAfter.bridge.failure==='none'&&
+      !routed.tlsCompleted&&routed.socketClosed&&routed.lookupAddress===need('FIXTURE_ROUTED_GATEWAY')&&
+      (!routed.assignedSourceAddress||routed.assignedSourceAddress===need('FIXTURE_SOURCE_IP'))&&
+      (!routed.connectedPeerAddress||routed.connectedPeerAddress===need('FIXTURE_ROUTED_GATEWAY'))&&
+      routedInetCounterIncreased&&!routedBridgeCounterIncreased;
+    partial.directTargetBlocked=bridgeTargetBlocked&&routedTargetBlocked;
+    assert(partial.directTargetBlocked,'direct paths did not both close before TLS with their required family counters');
+    partial.checks.push('same-bridge direct target closes before TLS and increments the bridge-family drop counter',
+      'routed direct target closes before TLS and increments the inet-family drop counter after a verified positive control');
 
     const deadlineAtMs=Date.now()+7000;
     const capture=await store.previewDiscovery(session,{agentName:agent,connectionName:'fixture'},{deadlineAtMs});
@@ -329,8 +618,9 @@ async function runConfigured():Promise<void>{
     partial.success=true;
     writeReport(output,partial);
   }catch{
-    const safePhases=new Set(['configuration','role identities','neutral authorization fixture','generated route admission',
-      'direct-path firewall counter','database discovery','durable result verification']);
+    const safePhases=new Set(['configuration','role identities','neutral authorization fixture','same-bridge direct-path control',
+      'routed direct-path control','generated route admission','direct-path firewall counter',
+      'routed direct-path firewall counter','database discovery','durable result verification']);
     const failure:{phase:string;reason:string;routeBoundary?:RouteBoundaryFailure;
       acknowledgementReason?:OutsideRouteAcknowledgementFailure}={
       phase:safePhases.has(phase)?phase:'worker',reason:'configured outside discovery worker failed'};
@@ -362,6 +652,7 @@ async function runConfigured():Promise<void>{
 
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   if(process.argv[2]==='peer')await peer();
+  else if(process.argv[2]==='control-peer')await controlPeer();
   else if(process.argv[2]==='run')await runConfigured();
   else throw new Error('fixture mode required');
 }

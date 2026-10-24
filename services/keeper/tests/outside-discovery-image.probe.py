@@ -24,7 +24,8 @@ DB_IMAGE = "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5
 repo = pathlib.Path(__file__).resolve().parents[3]
 self_test_mode = sys.argv[1:] == ["--self-test"]
 image_store_mode = sys.argv[1:] == ["--prepare-image-store"]
-if self_test_mode or image_store_mode:
+projection_check_mode = sys.argv[1:] == ["--projection-check"]
+if self_test_mode or image_store_mode or projection_check_mode:
     keeper_ref = squid_ref = firewall_ref = expected_sha = output = ""
 else:
     keeper_ref, squid_ref, firewall_ref, expected_sha, output = sys.argv[1:]
@@ -39,10 +40,12 @@ report = {"format": 1, "source": os.environ.get("GITHUB_SHA"), "status": "not-st
           ], "cleanupOkay": False}
 root = None
 network = None
+routed_network = None
 agent_container_id = None
 owner = uuid.uuid4().hex
 worker_container = "lares-outside-worker-" + owner[:10]
 worker_container_id = None
+peer_container_id = None
 resource_names = []
 worker_stopped = True
 cleanup_failures = []
@@ -63,12 +66,15 @@ ACKNOWLEDGEMENT_REASONS = frozenset({
 })
 SAFE_FAILURE_PHASES = {"guards", "loaded-images", "network", "fixture-files", "database", "engine-roles",
                       "proxy-config", "compose-held-runtime", "https-peer", "configured-discovery",
+                      "same-bridge direct-path control", "routed direct-path control",
+                      "routed direct-path firewall counter",
                       "first-hop-evidence", "postconditions"}
 DIRECT_ERROR_CATEGORIES = {"none", "dns-failure", "connection-refused", "network-unreachable",
                            "connection-reset", "socket-timeout", "deadline-triggered", "tls-error", "request-error",
                            "socket-close-timeout"}
 COUNTER_FAILURE_CATEGORIES = {"none", "command-timeout", "command-not-found", "permission-denied",
-                              "command-failed", "counter-missing", "counter-invalid"}
+                              "command-failed", "counter-missing", "counter-invalid",
+                              "projection-mismatch", "stage-unavailable"}
 MAX_REPORTED_FIREWALL_PACKETS = 1_000_000_000_000
 
 
@@ -354,6 +360,122 @@ def fixture_failure_record(failure_phase, failure_network_stage):
 
 def offline_network_diagnostics_self_test():
     """Execute production network AST with stub failures, without running network commands."""
+    pinned = "b" * 64
+    network_id = "a" * 64
+    image_id = "sha256:" + "c" * 64
+    endpoint_facts = {"id": pinned, "labels": {"lares.proof.owner": owner}, "imageId": image_id, "running": False}
+    inspected_endpoint = [{"Id": pinned, "NetworkSettings": {"Networks": {
+        "fixture-net": {"NetworkID": network_id, "IPAddress": "192.0.2.44", "IPPrefixLen": 24}}}}]
+    prior_images = report.get("images")
+    report["images"] = {"keeper": {"imageId": image_id}}
+    with patch(__name__ + ".container_facts", lambda identity: endpoint_facts if identity in {"worker", pinned} else None), \
+            patch(__name__ + ".command", lambda *args, **kwargs: json.dumps(inspected_endpoint)):
+        endpoint = inspect_owned_bridge_endpoint("worker", pinned, "fixture-net", network_id, False)
+    if endpoint != {"containerId": pinned, "imageId": image_id, "networkId": network_id, "ipv4": "192.0.2.44"}:
+        raise RuntimeError("exact inspected shared-bridge endpoint was not retained")
+    with patch(__name__ + ".container_facts", lambda identity: endpoint_facts if identity in {"worker", pinned} else None), \
+            patch(__name__ + ".command", lambda *args, **kwargs: json.dumps(inspected_endpoint)):
+        try:
+            inspect_owned_bridge_endpoint("worker", pinned, "fixture-net", network_id, True)
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("an endpoint inspected after its container stopped was treated as a live snapshot")
+    wrong_identity = json.loads(json.dumps(inspected_endpoint))
+    wrong_identity[0]["Id"] = "e" * 64
+    with patch(__name__ + ".container_facts", lambda identity: endpoint_facts if identity in {"worker", pinned} else None), \
+            patch(__name__ + ".command", lambda *args, **kwargs: json.dumps(wrong_identity)):
+        try:
+            inspect_owned_bridge_endpoint("worker", pinned, "fixture-net", network_id, False)
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("a Docker inspect response for a different pinned ID was accepted")
+    wrong_owner = {**endpoint_facts, "labels": {"lares.proof.owner": "f" * 32}}
+    with patch(__name__ + ".container_facts", lambda identity: wrong_owner if identity in {"worker", pinned} else None):
+        try:
+            verify_owned_container("worker", pinned, False)
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("a container with a different owner label was accepted")
+    inspected_endpoint[0]["NetworkSettings"]["Networks"]["foreign"] = {
+        "NetworkID": "d" * 64, "IPAddress": "192.0.2.45", "IPPrefixLen": 24}
+    with patch(__name__ + ".container_facts", lambda identity: endpoint_facts if identity in {"worker", pinned} else None), \
+            patch(__name__ + ".command", lambda *args, **kwargs: json.dumps(inspected_endpoint)):
+        try:
+            inspect_owned_bridge_endpoint("worker", pinned, "fixture-net", network_id, False)
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("unexpected second network was accepted for the shared-bridge endpoint")
+    inspected_endpoint[0]["NetworkSettings"]["Networks"] = {
+        "fixture-net": {"NetworkID": network_id, "IPAddress": "", "IPPrefixLen": 24}}
+    with patch(__name__ + ".container_facts", lambda identity: endpoint_facts if identity in {"worker", pinned} else None), \
+            patch(__name__ + ".command", lambda *args, **kwargs: json.dumps(inspected_endpoint)):
+        try:
+            inspect_owned_bridge_endpoint("worker", pinned, "fixture-net", network_id, False)
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("an empty Docker-assigned endpoint address was accepted")
+    inspected_endpoint[0]["NetworkSettings"]["Networks"] = {
+        "fixture-net": {"NetworkID": network_id, "IPAddress": "192.0.2.44", "IPPrefixLen": 24}}
+    if prior_images is None:
+        report.pop("images", None)
+    else:
+        report["images"] = prior_images
+
+    nft_calls = []
+    nft_cleanup = []
+    nft_events = []
+    def nft_run(*args, **kwargs):
+        nft_calls.append((args, kwargs))
+        nft_events.append("run")
+        return subprocess.CompletedProcess(args, 0, "", "")
+    def nft_remove(*args, **kwargs):
+        nft_cleanup.append(args)
+        nft_events.append("cleanup")
+        return True
+    with patch(__name__ + ".run", nft_run), patch(__name__ + ".remove_owned_container", nft_remove):
+        nft_host("-f", "-", input="delete table inet lares_egress\n")
+        nft_host("list", "tables")
+    if ("--interactive" not in nft_calls[0][0] or nft_calls[0][1].get("input") != "delete table inet lares_egress\n" or
+            "--interactive" in nft_calls[1][0] or nft_events != ["run", "cleanup", "run", "cleanup"] or
+            len(nft_cleanup) != 2 or any(call[1] != owner for call in nft_cleanup)):
+        raise RuntimeError("nft helper did not forward batch input through an interactive container")
+    for family, rules in (("inet", ["ip saddr != { 192.0.2.10, 192.0.2.11 } accept", "ct state established,related accept",
+                                     "ip daddr 192.0.2.20 accept", "udp dport 53 accept", "tcp dport 53 accept", "counter drop"]),
+                          ("bridge", ["ether type != ip accept", "ether type ip ip saddr != { 192.0.2.10, 192.0.2.11 } accept",
+                                       "ct state established,related accept", "ip daddr 192.0.2.20 accept",
+                                       "udp dport 53 accept", "tcp dport 53 accept", "counter drop"])):
+        hook = "type filter hook forward priority -10; policy accept;" if family == "inet" else \
+            "type filter hook forward priority 0; policy accept;"
+        generated = f"table {family} lares_egress {{\n chain forward {{\n  {hook}\n" + \
+            "".join(f"  {rule}\n" for rule in rules) + " }\n}\n"
+        live_rules = rules[:-1] + ["counter packets 4 bytes 256 drop # handle 19"]
+        live = f"table {family} lares_egress {{\n chain forward {{\n  {hook}\n" + \
+            "".join(f"  {rule}\n" for rule in live_rules) + " }\n}\n"
+        if firewall_projection_hash(generated, live, family) is None:
+            raise RuntimeError("generated firewall and normalized live projection did not match")
+        alternate_hook = "type filter hook forward priority filter - 10; policy accept;" if family == "inet" else \
+            "type filter hook forward priority filter; policy accept;"
+        equivalent = live.replace(hook, alternate_hook).replace(
+            "192.0.2.10, 192.0.2.11", "192.0.2.11, 192.0.2.10").replace(
+            "ct state established,related", "ct state related,established").replace(
+            "ip daddr 192.0.2.20 accept", "ip daddr 192.0.2.20/32 accept")
+        if firewall_projection_hash(generated, equivalent, family) is None:
+            raise RuntimeError("supported nft text forms did not preserve exact generated firewall semantics")
+        changed = live.replace("ct state established,related accept\n",
+                               "ct state established,related accept\n  ip daddr 192.0.2.99 accept\n")
+        if firewall_projection_hash(generated, changed, family) is not None:
+            raise RuntimeError("firewall projection accepted an extra rule")
+        changed = live.replace(hook, re.sub(r"priority [^;]+", "priority input", hook))
+        if firewall_projection_hash(generated, changed, family) is not None:
+            raise RuntimeError("firewall projection accepted a changed hook")
+        changed = live.replace("ct state established,related accept\n", "ct state established,related accept\n  counter drop\n")
+        if firewall_projection_hash(generated, changed, family) is not None:
+            raise RuntimeError("firewall projection accepted a non-terminal counter rule")
     secret_like = "sentinel-secret-config-route-value"
     if NETWORK_FAILURE_STAGES != frozenset({
             "container-name-preflight", "network-name-preflight", "docker-network-inventory",
@@ -425,7 +547,8 @@ def offline_network_diagnostics_self_test():
             raise RuntimeError("stubbed network operation did not fail")
         if failure != {"phase": "network", "reason": "fixture operation failed",
                        "networkStage": expected_stage}:
-            raise RuntimeError("production network operation selected the wrong diagnostic stage")
+            raise RuntimeError("production network operation selected the wrong diagnostic stage: " +
+                               json.dumps({"expected": expected_stage, "actual": failure}, sort_keys=True))
         if secret_like in json.dumps(failure, sort_keys=True):
             raise RuntimeError("network failure evidence exposed stub output")
         return failure
@@ -546,7 +669,7 @@ def offline_network_diagnostics_self_test():
     for fault in setup_faults:
         namespace = base_namespace()
         selected_subnet = ipaddress.ip_network(
-            "2001:db8::/128" if fault == "network-address-validation" else "192.0.2.0/24")
+            "2001:db8::/64" if fault == "network-address-validation" else "192.0.2.0/24")
         namespace["choose_unused_subnet"] = lambda selected=selected_subnet: selected
 
         def container_stub(name):
@@ -573,7 +696,8 @@ def offline_network_diagnostics_self_test():
                 metadata = {"Internal": internal,
                             "Labels": {"lares.proof": "outside-discovery",
                                        "lares.proof.owner": namespace["owner"]},
-                            "IPAM": {"Config": [{"Subnet": configured}]}}
+                            "IPAM": {"Config": [{"Subnet": configured,
+                                "Gateway": str(ipaddress.ip_network(configured).network_address + 1)}]}}
                 return json.dumps([metadata])
             raise RuntimeError("unexpected fixture setup command")
 
@@ -589,7 +713,8 @@ def offline_network_diagnostics_self_test():
         json.dumps([{"Internal": True,
                      "Labels": {"lares.proof": "outside-discovery",
                                 "lares.proof.owner": namespace["owner"]},
-                     "IPAM": {"Config": [{"Subnet": str(selected_subnet)}]}}])
+                     "IPAM": {"Config": [{"Subnet": str(selected_subnet),
+                         "Gateway": str(selected_subnet.network_address + 1)}]}}])
         if args[:3] == ("docker", "network", "inspect") else "")
     execute(setup_nodes, namespace)
     if namespace["report"].get("network", {}).get("subnet") != str(selected_subnet):
@@ -1028,13 +1153,183 @@ def prepare_image_store():
     return {"changed": changed, "driver": "io.containerd.snapshotter.v1"}
 
 
-def nft_host(*args, check=True):
+def nft_host(*args, check=True, input=None):
     name = "lares-outside-nft-" + owner[:10] + "-" + uuid.uuid4().hex[:6]
-    result = run("docker", "run", "--name", name, "--label", "lares.proof.owner=" + owner,
+    interactive = ("--interactive",) if input is not None else ()
+    result = run("docker", "run", *interactive, "--name", name, "--label", "lares.proof.owner=" + owner,
                  "--network", "host", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_ADMIN",
-                 "--entrypoint", "nft", firewall_ref, *args, check=check, timeout=30)
+                 "--entrypoint", "nft", firewall_ref, *args, input=input, check=check, timeout=30)
     remove_owned_container(name, owner, timeout=15)
     return result
+
+
+def firewall_table_projection(text, family):
+    lines = text.splitlines()
+    table_line = f"table {family} lares_egress {{"
+    starts = [index for index, line in enumerate(lines) if line.strip() == table_line]
+    if len(starts) != 1:
+        return None
+    table_start = starts[0]
+    depth, chain_start, chain_end, table_end, chain_count = 1, -1, -1, -1, 0
+    for index in range(table_start + 1, len(lines)):
+        line = lines[index].strip()
+        if line == "chain forward {" and depth == 1:
+            chain_count += 1
+            chain_start = index
+        depth += line.count("{") - line.count("}")
+        if chain_start >= 0 and chain_end < 0 and depth == 1:
+            chain_end = index
+        if depth == 0:
+            table_end = index
+            break
+        if depth < 0:
+            return None
+    if (table_end < 0 or chain_count != 1 or chain_start < 0 or chain_end <= chain_start or
+            any(line.strip() for line in lines[table_start + 1:chain_start]) or
+            any(line.strip() for line in lines[chain_end + 1:table_end])):
+        return None
+    body = [line.strip() for line in lines[chain_start + 1:chain_end] if line.strip()]
+    if len(body) < 2:
+        return None
+    hook = canonical_firewall_hook(body[0], family)
+    if hook is None:
+        return None
+    rules = []
+    packets = None
+    for raw in body[1:]:
+        line = re.sub(r"\s+", " ", re.sub(r"\s+#\s*handle\s+\d+$", "", raw))
+        counter = re.fullmatch(r"counter packets (\d+) bytes \d+ drop", line)
+        if counter:
+            if packets is not None:
+                return None
+            packets = int(counter.group(1))
+            rules.append("counter drop")
+        else:
+            normalized = canonical_firewall_rule(line)
+            if normalized is None:
+                return None
+            rules.append(normalized)
+    return {"hook": hook, "rules": rules, "packets": packets}
+
+
+def canonical_firewall_hook(raw, family):
+    match = re.fullmatch(r"type (filter) hook (forward) priority (.+); policy (accept);",
+                         re.sub(r"\s+", " ", raw.strip()))
+    if not match:
+        return None
+    priority = match.group(3)
+    accepted = {"-10", "filter - 10"} if family == "inet" else {"0", "filter"}
+    if priority not in accepted:
+        return None
+    return f"type filter hook forward priority {-10 if family == 'inet' else 0}; policy accept;"
+
+
+def canonical_ipv4_prefix(value):
+    parts = value.split("/")
+    if len(parts) > 2:
+        return None
+    try:
+        address = ipaddress.ip_address(parts[0])
+    except ValueError:
+        return None
+    if address.version != 4:
+        return None
+    if len(parts) == 1:
+        return str(address)
+    try:
+        prefix = int(parts[1])
+    except ValueError:
+        return None
+    if str(prefix) != parts[1] or not 0 <= prefix <= 32:
+        return None
+    return str(address) if prefix == 32 else f"{address}/{prefix}"
+
+
+def canonical_firewall_rule(raw):
+    line = re.sub(r"\s+", " ", raw.strip())
+    source = re.fullmatch(r"(ether type ip )?ip saddr != \{ (.+) \} accept", line)
+    if source:
+        members = [canonical_ipv4_prefix(value) for value in source.group(2).split(", ")]
+        if any(value is None for value in members) or len(set(members)) != len(members):
+            return None
+        return (source.group(1) or "") + "ip saddr != { " + ", ".join(sorted(members)) + " } accept"
+    state = re.fullmatch(r"ct state (.+) accept", line)
+    if state:
+        members = sorted(state.group(1).split(","))
+        return "ct state established,related accept" if members == ["established", "related"] else None
+    destination = re.fullmatch(r"ip daddr (.+) accept", line)
+    if destination:
+        raw_members = destination.group(1)
+        members = raw_members[2:-2].split(", ") if raw_members.startswith("{ ") else [raw_members]
+        members = [canonical_ipv4_prefix(value) for value in members]
+        if any(value is None for value in members) or len(set(members)) != len(members):
+            return None
+        values = sorted(members)
+        return f"ip daddr {values[0]} accept" if len(values) == 1 else \
+            "ip daddr { " + ", ".join(values) + " } accept"
+    return line
+
+
+def valid_generated_firewall_projection(family, rules):
+    if not rules:
+        return False
+    index = 0
+    if family == "bridge":
+        if rules[index] != "ether type != ip accept":
+            return False
+        index += 1
+        if not re.fullmatch(r"ether type ip ip saddr != \{ [0-9./, ]+ \} accept", rules[index]):
+            return False
+        index += 1
+    elif not re.fullmatch(r"ip saddr != \{ [0-9./, ]+ \} accept", rules[index]):
+        return False
+    else:
+        index += 1
+    if index >= len(rules) or rules[index] != "ct state established,related accept":
+        return False
+    index += 1
+    while index < len(rules) and re.fullmatch(r"ip daddr .+ accept", rules[index]):
+        index += 1
+    return (rules[index:index + 2] == ["udp dport 53 accept", "tcp dport 53 accept"] and
+            rules[index + 2:] == ["counter drop"])
+
+
+def firewall_projection_hash(generated, live, family):
+    expected = firewall_table_projection(generated, family)
+    actual = firewall_table_projection(live, family)
+    hook = f"type filter hook forward priority {-10 if family == 'inet' else 0}; policy accept;"
+    if (not expected or not actual or expected["hook"] != hook or actual["hook"] != hook or
+            not valid_generated_firewall_projection(family, expected["rules"]) or
+            expected["rules"] != actual["rules"] or actual["packets"] is None):
+        return None
+    canonical = json.dumps({"family": family, "hook": hook, "rules": expected["rules"]},
+                           separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def live_firewall_projection_hashes(root_path, expected_source):
+    try:
+        stage = (root_path / "egress" / "installed-stage").read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", stage):
+            return None
+        generated = (root_path / "egress" / (stage + ".nft")).read_text(encoding="ascii")
+    except OSError:
+        return None
+    if ("# Generated by keeper; apply the whole file atomically with nft -f." not in generated or
+            not re.search(r"ip saddr != \{[^}]*\b" + re.escape(expected_source) + r"\b[^}]*\}", generated)):
+        return None
+    projections = {}
+    for family in ("inet", "bridge"):
+        if f"table {family} lares_egress {{" not in generated:
+            return None
+        live = nft_host("list", "table", family, "lares_egress", check=False)
+        if live.returncode:
+            return None
+        projection_hash = firewall_projection_hash(generated, live.stdout, family)
+        if projection_hash is None:
+            return None
+        projections[family] = projection_hash
+    return projections
 
 
 def container_facts(name):
@@ -1062,6 +1357,48 @@ def container_facts(name):
         raise RuntimeError("fixture container identity is invalid")
     return {"id": facts[0], "labels": facts[1] or {}, "running": facts[2], "status": facts[3],
             "exitCode": facts[4], "imageId": facts[5], "mounts": facts[6] or []}
+
+
+def verify_owned_container(name, pinned_id, expected_running):
+    facts = container_facts(pinned_id)
+    if (facts is None or facts["id"] != pinned_id or facts["labels"].get("lares.proof.owner") != owner or
+            facts["imageId"] != report["images"]["keeper"]["imageId"] or facts["running"] is not expected_running):
+        raise RuntimeError("shared-bridge container identity or ownership changed")
+    named = container_facts(name)
+    if named is None or named["id"] != pinned_id:
+        raise RuntimeError("shared-bridge fixture name no longer identifies its pinned container")
+    return facts
+
+
+def inspect_owned_bridge_endpoint(name, pinned_id, network_name, network_id, expected_running):
+    facts = verify_owned_container(name, pinned_id, expected_running)
+    try:
+        inspected = json.loads(command("docker", "inspect", pinned_id))
+        if len(inspected) != 1 or inspected[0].get("Id") != pinned_id:
+            raise ValueError
+        endpoint_map = inspected[0].get("NetworkSettings", {}).get("Networks", {})
+        if set(endpoint_map) != {network_name}:
+            raise ValueError
+        endpoint = endpoint_map[network_name]
+        address = endpoint.get("IPAddress")
+        prefix = endpoint.get("IPPrefixLen")
+        parsed = ipaddress.ip_address(address)
+        if (endpoint.get("NetworkID") != network_id or parsed.version != 4 or str(parsed) != address or
+                type(prefix) is not int or not 1 <= prefix <= 32):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        raise RuntimeError("shared-bridge endpoint inventory could not be verified") from None
+    return {"containerId": pinned_id, "imageId": facts["imageId"], "networkId": network_id, "ipv4": address}
+
+
+def inspect_shared_bridge_endpoints(network_id, worker, peer):
+    verify_owned_container(worker_container, worker_container_id, False)
+    verify_owned_container(peer_container, peer_container_id, True)
+    if worker["ipv4"] == peer["ipv4"]:
+        raise RuntimeError("shared-bridge endpoint addresses are not distinct")
+    endpoints = {"networkId": network_id, "worker": worker, "peer": peer}
+    report["sharedBridgeEndpoints"] = endpoints
+    return endpoints
 
 
 def remove_owned_container(name, expected_owner, timeout=30):
@@ -1226,8 +1563,9 @@ def remove_generated_firewall(root_path, expected_source):
     table_lines = nft_host("list", "tables", check=False)
     if table_lines.returncode:
         raise RuntimeError("fixture firewall inventory could not be verified")
-    exists = any(line.strip() == "table inet lares_egress" for line in table_lines.stdout.splitlines())
-    if not exists:
+    tables = {line.strip() for line in table_lines.stdout.splitlines()}
+    owned_families = [family for family in ("inet", "bridge") if f"table {family} lares_egress" in tables]
+    if not owned_families:
         return
     installed = root_path / "egress" / "installed-stage"
     try:
@@ -1241,12 +1579,14 @@ def remove_generated_firewall(root_path, expected_source):
         contents = generated.read_text(encoding="ascii")
     except OSError:
         raise RuntimeError("fixture generated firewall source is missing") from None
-    if "# Generated by keeper; apply the whole file atomically with nft -f." not in contents or \
-            not re.search(r"ip saddr != \{[^}]*\b" + re.escape(expected_source) + r"\b[^}]*\}", contents):
+    if ("# Generated by keeper; apply the whole file atomically with nft -f." not in contents or
+            not re.search(r"ip saddr != \{[^}]*\b" + re.escape(expected_source) + r"\b[^}]*\}", contents) or
+            any(f"table {family} lares_egress {{" not in contents for family in ("inet", "bridge"))):
         raise RuntimeError("fixture firewall stage does not identify its selected source")
-    nft_host("delete", "table", "inet", "lares_egress")
+    nft_host("-f", "-", input="".join(f"delete table {family} lares_egress\n" for family in owned_families))
     after = nft_host("list", "tables", check=False)
-    if after.returncode or any(line.strip() == "table inet lares_egress" for line in after.stdout.splitlines()):
+    if after.returncode or any(f"table {family} lares_egress" in {line.strip() for line in after.stdout.splitlines()}
+                               for family in ("inet", "bridge")):
         raise RuntimeError("fixture firewall table remained after cleanup")
 
 
@@ -1260,7 +1600,7 @@ def safe_cleanup(label, action):
         return False
 
 
-def import_worker_evidence(root_path):
+def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=None):
     """Accept only fixed worker fields and enum values; never copy arbitrary worker output."""
     worker_path = root_path / "worker.json"
     try:
@@ -1273,13 +1613,16 @@ def import_worker_evidence(root_path):
         "actual configured lares_app and lares_outside_custody logins",
         "neutral definition, finite human session and real owner adoption/use grant",
         "public saved lifecycle installed and acknowledged generated route without native authority",
-        "direct target traffic increments generated drop counter and closes TCP before TLS",
+        "same-bridge direct target closes before TLS and increments the bridge-family drop counter",
+        "routed direct target closes before TLS and increments the inet-family drop counter after a verified positive control",
         "normal consentAndDiscover returned bounded two-page JSON and SSE projection",
         "durable result decrypts under generated key/AAD and rejects changed request identity",
         "executable definition, ownership and applied state remain unchanged",
     }
     phases = {"configuration", "role identities", "neutral authorization fixture",
-              "generated route admission", "direct-path firewall counter", "worker"}
+              "same-bridge direct-path control", "routed direct-path control",
+              "generated route admission", "direct-path firewall counter",
+              "routed direct-path firewall counter", "worker"}
     route_boundaries = {"runtime-stop", "squid-validation", "firewall-check", "firewall-apply",
                         "proxy-reload", "route-acknowledgement"}
     checks = value.get("checks")
@@ -1292,66 +1635,217 @@ def import_worker_evidence(root_path):
                 "directTargetBlocked": value.get("directTargetBlocked") is True,
                 "success": value.get("success") is True}
     direct_diagnostics = value.get("directPathDiagnostics")
-    if direct_diagnostics is not None:
-        if not isinstance(direct_diagnostics, dict):
+    routed_diagnostics = value.get("routedPathDiagnostics")
+    if direct_diagnostics is not None or routed_diagnostics is not None:
+        if not isinstance(direct_diagnostics, dict) or not isinstance(routed_diagnostics, dict):
             return None
 
-        def counter_projection(item):
+        def counter_projection(item, family):
             if (not isinstance(item, dict) or not isinstance(item.get("failure"), str) or
                     item["failure"] not in COUNTER_FAILURE_CATEGORIES):
                 return None
             failure_category = item["failure"]
             packets = item.get("packets")
             if failure_category == "none":
-                if type(packets) is not int or not 0 <= packets <= MAX_REPORTED_FIREWALL_PACKETS:
+                projection_hash = item.get("projectionHash")
+                if (type(packets) is not int or not 0 <= packets <= MAX_REPORTED_FIREWALL_PACKETS or
+                        not isinstance(projection_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", projection_hash)):
                     return None
-                return {"packets": packets, "failure": failure_category}
-            if "packets" in item:
+                return {"packets": packets, "failure": failure_category, "projectionHash": projection_hash}
+            if "packets" in item or "projectionHash" in item:
                 return None
-            return {"failure": failure_category}
+            projected = {"failure": failure_category}
+            diagnostic = item.get("diagnostic")
+            if diagnostic is not None:
+                reasons = {"generated-table-unrecognized", "live-table-unrecognized", "hook-mismatch",
+                           "rule-mismatch", "rule-count-mismatch", "counter-missing"}
+                if (failure_category != "projection-mismatch" or not isinstance(diagnostic, dict) or
+                        diagnostic.get("family") != family or diagnostic.get("reason") not in reasons or
+                        not re.fullmatch(r"[a-f0-9]{64}", str(diagnostic.get("generatedHash", ""))) or
+                        not re.fullmatch(r"[a-f0-9]{64}", str(diagnostic.get("liveHash", "")))):
+                    return None
+                safe_diagnostic = {"family": family, "reason": diagnostic["reason"],
+                                   "generatedHash": diagnostic["generatedHash"],
+                                   "liveHash": diagnostic["liveHash"]}
+                if "mismatchIndex" in diagnostic:
+                    if type(diagnostic["mismatchIndex"]) is not int or not 0 <= diagnostic["mismatchIndex"] <= 64:
+                        return None
+                    safe_diagnostic["mismatchIndex"] = diagnostic["mismatchIndex"]
+                for key in ("generatedLine", "liveLine"):
+                    if key in diagnostic:
+                        line = diagnostic[key]
+                        safe_nft_line = (isinstance(line, str) and len(line) <= 512 and line.isascii() and any(
+                            re.fullmatch(pattern, line) for pattern in (
+                                r"type filter hook forward priority [-0-9A-Za-z ]+; policy accept;",
+                                r"(?:ether type ip )?ip saddr != \{ [0-9./, ]+ \} accept",
+                                r"ether type != ip accept", r"ct state (?:established,related|related,established) accept",
+                                r"ip daddr (?:\{ [0-9./, ]+ \}|[0-9./]+) accept",
+                                r"(?:udp|tcp) dport 53 accept", r"counter drop",
+                                r"counter packets [0-9]+ bytes [0-9]+ drop")))
+                        if not safe_nft_line:
+                            return None
+                        safe_diagnostic[key] = line
+                projected["diagnostic"] = safe_diagnostic
+            elif failure_category == "projection-mismatch":
+                return None
+            return projected
 
-        before = counter_projection(direct_diagnostics.get("before"))
-        after = counter_projection(direct_diagnostics.get("after"))
-        direct = direct_diagnostics.get("direct")
-        counter_increased = direct_diagnostics.get("counterIncreased")
-        if before is None or not isinstance(direct, dict) or type(counter_increased) is not bool:
+        def family_counter_projection(item):
+            if not isinstance(item, dict) or set(item) != {"inet", "bridge"}:
+                return None
+            inet, bridge = counter_projection(item.get("inet"), "inet"), counter_projection(item.get("bridge"), "bridge")
+            return {"inet": inet, "bridge": bridge} if inet is not None and bridge is not None else None
+
+        def socket_projection(item):
+            if item == {"status": "not-attempted"}:
+                return {"status": "not-attempted"}
+            keys = {"tlsCompleted", "socketClosed", "errorCategory", "lookupAddress",
+                    "assignedSourceAddress", "connectedPeerAddress"}
+            if (not isinstance(item, dict) or not keys.issubset(item) or type(item.get("tlsCompleted")) is not bool or
+                    type(item.get("socketClosed")) is not bool or not isinstance(item.get("errorCategory"), str) or
+                    item["errorCategory"] not in DIRECT_ERROR_CATEGORIES):
+                return None
+            addresses = {}
+            for key in ("lookupAddress", "assignedSourceAddress", "connectedPeerAddress"):
+                address = item.get(key)
+                if address is not None:
+                    if not isinstance(address, str):
+                        return None
+                    try:
+                        parsed = ipaddress.ip_address(address)
+                    except ValueError:
+                        return None
+                    if parsed.version != 4 or str(parsed) != address:
+                        return None
+                addresses[key] = address
+            return {"tlsCompleted": item["tlsCompleted"], "socketClosed": item["socketClosed"],
+                    "errorCategory": item["errorCategory"], **addresses}
+
+        context_verified = (isinstance(shared_endpoints, dict) and
+                            set(shared_endpoints) == {"networkId", "worker", "peer"} and
+                            re.fullmatch(r"[a-f0-9]{64}", str(shared_endpoints.get("networkId", ""))) is not None and
+                            isinstance(firewall_hashes, dict) and set(firewall_hashes) == {"inet", "bridge"} and
+                            all(isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value)
+                                for value in firewall_hashes.values()))
+        if context_verified:
+            for endpoint_name in ("worker", "peer"):
+                endpoint = shared_endpoints[endpoint_name]
+                if (not isinstance(endpoint, dict) or
+                        set(endpoint) != {"containerId", "imageId", "networkId", "ipv4"} or
+                        not re.fullmatch(r"[a-f0-9]{64}", str(endpoint.get("containerId", ""))) or
+                        not re.fullmatch(r"sha256:[a-f0-9]{64}", str(endpoint.get("imageId", ""))) or
+                        endpoint.get("networkId") != shared_endpoints["networkId"]):
+                    context_verified = False
+                    break
+        expected = ({"FIXTURE_SOURCE_IP": shared_endpoints["worker"]["ipv4"],
+                     "FIXTURE_PEER_IP": shared_endpoints["peer"]["ipv4"]}
+                    if context_verified else None)
+        if context_verified:
+            try:
+                for endpoint_key in ("FIXTURE_SOURCE_IP", "FIXTURE_PEER_IP"):
+                    value_ip = expected[endpoint_key]
+                    parsed_ip = ipaddress.ip_address(value_ip)
+                    if parsed_ip.version != 4 or str(parsed_ip) != value_ip:
+                        context_verified = False
+                        break
+            except (KeyError, TypeError, ValueError):
+                context_verified = False
+        if not context_verified:
+            expected = None
+        if context_verified:
+            try:
+                key = "FIXTURE_ROUTED_GATEWAY"
+                gateway = None
+                for line in (root_path / "fixture.env").read_text(encoding="ascii").splitlines():
+                    name, separator, raw = line.partition("=")
+                    if separator and name == key:
+                        if gateway is not None:
+                            context_verified = False
+                            break
+                        parsed = ipaddress.ip_address(raw)
+                        if parsed.version != 4 or str(parsed) != raw:
+                            context_verified = False
+                            break
+                        gateway = raw
+                if gateway is None:
+                    context_verified = False
+                else:
+                    expected[key] = gateway
+            except (OSError, ValueError, TypeError):
+                context_verified = False
+            if not context_verified:
+                expected = None
+
+        def project_path(diagnostic, expected_peer_key, required_family):
+            before = family_counter_projection(diagnostic.get("before"))
+            after_value = diagnostic.get("after")
+            after = family_counter_projection(after_value)
+            if after is None and after_value == {"status": "not-attempted"}:
+                after = {"status": "not-attempted"}
+            control = socket_projection(diagnostic.get("control"))
+            direct = socket_projection(diagnostic.get("direct"))
+            inet_increased = diagnostic.get("inetCounterIncreased")
+            bridge_increased = diagnostic.get("bridgeCounterIncreased")
+            if (before is None or after is None or control is None or direct is None or
+                    type(inet_increased) is not bool or type(bridge_increased) is not bool):
+                return None
+            if not context_verified or expected is None:
+                evidence["pathEvidenceCertified"] = False
+                return ({"control": control, "before": before, "direct": direct, "after": after,
+                         "inetCounterIncreased": inet_increased, "bridgeCounterIncreased": bridge_increased}, False)
+            peer = expected[expected_peer_key]
+            successful_control = (control.get("status") is None and control["tlsCompleted"] is True and
+                                  control["socketClosed"] is True and control["errorCategory"] == "none" and
+                                  control["lookupAddress"] == peer and
+                                  control["assignedSourceAddress"] == expected["FIXTURE_SOURCE_IP"] and
+                                  control["connectedPeerAddress"] == peer)
+            direct_attempted = direct.get("status") is None
+            before_ok = all(before[family]["failure"] == "none" for family in ("inet", "bridge"))
+            after_ok = after.get("status") is None and all(
+                after[family]["failure"] == "none" for family in ("inet", "bridge"))
+            hashes_match = before_ok and after_ok and not any(
+                    before[family]["projectionHash"] != firewall_hashes[family] or
+                    after[family]["projectionHash"] != firewall_hashes[family]
+                    for family in ("inet", "bridge"))
+            increased = {}
+            if before_ok and after_ok:
+                for family in ("inet", "bridge"):
+                    previous, current = before[family]["packets"], after[family]["packets"]
+                    if previous == MAX_REPORTED_FIREWALL_PACKETS or current == MAX_REPORTED_FIREWALL_PACKETS:
+                        increased[family] = None
+                    else:
+                        increased[family] = current > previous
+                if (increased["inet"] is not None and inet_increased != increased["inet"] or
+                        increased["bridge"] is not None and bridge_increased != increased["bridge"]):
+                    return None
+            if ((not direct_attempted and (before_ok or after.get("status") is None or inet_increased or bridge_increased)) or
+                    (direct_attempted and not before_ok) or
+                    (after.get("status") is not None and not after_ok and (inet_increased or bridge_increased))):
+                return None
+            direct_address_evidence = (direct.get("lookupAddress") == peer and
+                                       direct.get("assignedSourceAddress") in (None, expected["FIXTURE_SOURCE_IP"]) and
+                                       direct.get("connectedPeerAddress") in (None, peer))
+            counts_known = before_ok and after_ok and all(value is not None for value in increased.values())
+            selected_increased = (bridge_increased if required_family == "bridge" else inet_increased)
+            other_increased = (inet_increased if required_family == "bridge" else bridge_increased)
+            successful_block = (hashes_match and successful_control and direct_attempted and direct_address_evidence and counts_known and
+                                direct["tlsCompleted"] is False and direct["socketClosed"] is True and
+                                selected_increased is True and other_increased is False)
+            return ({"control": control, "before": before, "direct": direct, "after": after,
+                     "inetCounterIncreased": inet_increased, "bridgeCounterIncreased": bridge_increased},
+                    successful_block)
+
+        direct_projection = project_path(direct_diagnostics, "FIXTURE_PEER_IP", "bridge")
+        routed_projection = project_path(routed_diagnostics, "FIXTURE_ROUTED_GATEWAY", "inet")
+        if direct_projection is None or routed_projection is None:
             return None
-        if direct == {"status": "not-attempted"}:
-            projected_direct = {"status": "not-attempted"}
-        elif (type(direct.get("tlsCompleted")) is bool and type(direct.get("socketClosed")) is bool and
-              isinstance(direct.get("errorCategory"), str) and
-              direct["errorCategory"] in DIRECT_ERROR_CATEGORIES):
-            projected_direct = {"tlsCompleted": direct["tlsCompleted"],
-                                "socketClosed": direct["socketClosed"],
-                                "errorCategory": direct["errorCategory"]}
-        else:
+        evidence["directPathDiagnostics"], direct_success = direct_projection
+        evidence["routedPathDiagnostics"], routed_success = routed_projection
+        successful_block = context_verified and direct_success and routed_success
+        evidence["pathEvidenceCertified"] = successful_block
+        if value.get("success") is True and not successful_block:
             return None
-        if isinstance(after, dict):
-            projected_after = after
-        elif after is None and isinstance(direct_diagnostics.get("after"), dict) and \
-                direct_diagnostics["after"] == {"status": "not-attempted"}:
-            projected_after = {"status": "not-attempted"}
-        else:
-            return None
-        direct_attempted = projected_direct.get("status") is None
-        after_completed = projected_after.get("status") is None
-        if ((not direct_attempted and (before["failure"] == "none" or after_completed or counter_increased)) or
-                (direct_attempted and before["failure"] != "none") or
-                (not after_completed and counter_increased) or
-                (after_completed and projected_after["failure"] != "none" and counter_increased)):
-            return None
-        evidence["directPathDiagnostics"] = {
-            "before": before,
-            "direct": projected_direct,
-            "after": projected_after,
-            "counterIncreased": counter_increased,
-        }
-        successful_block = (before["failure"] == "none" and after_completed and projected_after["failure"] == "none" and
-                            direct_attempted and projected_direct["tlsCompleted"] is False and
-                            projected_direct["socketClosed"] is True and
-                            counter_increased is True)
-        if evidence["directTargetBlocked"] is not successful_block:
-            return None
+        evidence["directTargetBlocked"] = successful_block
     elif evidence["directTargetBlocked"]:
         return None
     if isinstance(failure, dict):
@@ -1522,36 +2016,164 @@ def offline_cleanup_self_test():
                         "routeBoundary": "firewall-check"}}), encoding="utf-8")
         if import_worker_evidence(pathlib.Path(directory)) is not None:
             raise RuntimeError("route boundary label was accepted outside its fixed phase")
-        diagnostic = {"before": {"packets": 14, "failure": "none", "raw": secret_like},
-                      "direct": {"tlsCompleted": False, "socketClosed": True,
-                                 "errorCategory": "network-unreachable", "rawError": secret_like},
-                      "after": {"packets": 15, "failure": "none"}, "counterIncreased": True,
-                      "raw": secret_like}
-        worker_path.write_text(json.dumps({"success": False, "checks": [], "directTargetBlocked": True,
-            "directPathDiagnostics": diagnostic,
-            "failure": {"phase": "direct-path firewall counter", "reason": "worker failed"}}), encoding="utf-8")
-        evidence = import_worker_evidence(pathlib.Path(directory))
-        expected_diagnostic = {"before": {"packets": 14, "failure": "none"},
-                               "direct": {"tlsCompleted": False, "socketClosed": True,
-                                          "errorCategory": "network-unreachable"},
-                               "after": {"packets": 15, "failure": "none"}, "counterIncreased": True}
-        if not evidence or evidence.get("directPathDiagnostics") != expected_diagnostic or \
-                secret_like in json.dumps(evidence):
-            raise RuntimeError("direct-path evidence was not reduced to bounded allowlisted fields")
-        worker_path.write_text(json.dumps({"success": False, "checks": [], "directTargetBlocked": False,
-            "directPathDiagnostics": {"before": {"failure": "command-failed"},
-                                      "direct": {"status": "not-attempted"},
-                                      "after": {"status": "not-attempted"}, "counterIncreased": False},
-            "failure": {"phase": "direct-path firewall counter", "reason": "worker failed"}}), encoding="utf-8")
-        evidence = import_worker_evidence(pathlib.Path(directory))
-        if not evidence or evidence.get("directPathDiagnostics", {}).get("direct") != {"status": "not-attempted"}:
-            raise RuntimeError("failed before-counter read did not preserve not-attempted stages")
-        diagnostic["direct"]["errorCategory"] = secret_like
-        worker_path.write_text(json.dumps({"success": False, "checks": [], "directTargetBlocked": True,
-            "directPathDiagnostics": diagnostic,
-            "failure": {"phase": "direct-path firewall counter", "reason": "worker failed"}}), encoding="utf-8")
+        source_ip, peer_ip, gateway_ip = "172.18.0.23", "172.18.0.31", "172.18.0.1"
+        shared_endpoints = {"networkId": "a" * 64,
+            "worker": {"containerId": "b" * 64, "imageId": "sha256:" + "c" * 64,
+                       "networkId": "a" * 64, "ipv4": source_ip},
+            "peer": {"containerId": "d" * 64, "imageId": "sha256:" + "c" * 64,
+                     "networkId": "a" * 64, "ipv4": peer_ip}}
+        (pathlib.Path(directory) / "fixture.env").write_text(
+            f"FIXTURE_SOURCE_IP={source_ip}\nFIXTURE_PEER_IP={peer_ip}\nFIXTURE_ROUTED_GATEWAY={gateway_ip}\n",
+            encoding="ascii")
+        def socket(tls, closed, error, lookup, source, peer, **extra):
+            return {"tlsCompleted": tls, "socketClosed": closed, "errorCategory": error,
+                    "lookupAddress": lookup, "assignedSourceAddress": source,
+                    "connectedPeerAddress": peer, **extra}
+        test_rules = {"inet": ["ip saddr != { 192.0.2.10 } accept", "ct state established,related accept",
+                               "ip daddr 192.0.2.20/32 accept", "udp dport 53 accept", "tcp dport 53 accept", "counter drop"],
+                      "bridge": ["ether type != ip accept", "ether type ip ip saddr != { 192.0.2.10 } accept",
+                                 "ct state established,related accept", "ip daddr 192.0.2.20 accept",
+                                 "udp dport 53 accept", "tcp dport 53 accept", "counter drop"]}
+        projection_hashes = {}
+        for family, rules in test_rules.items():
+            hook = "type filter hook forward priority -10; policy accept;" if family == "inet" else \
+                "type filter hook forward priority 0; policy accept;"
+            generated = f"table {family} lares_egress {{\n chain forward {{\n  {hook}\n" + \
+                "".join(f"  {rule}\n" for rule in rules) + " }\n}\n"
+            live = generated.replace("counter drop", "counter packets 0 bytes 0 drop")
+            projection_hashes[family] = firewall_projection_hash(generated, live, family)
+        def counters(inet, bridge):
+            return {"inet": {"packets": inet, "failure": "none", "projectionHash": projection_hashes["inet"]},
+                    "bridge": {"packets": bridge, "failure": "none", "projectionHash": projection_hashes["bridge"]}}
+        diagnostic = {
+            "control": socket(True, True, "none", peer_ip, source_ip, peer_ip),
+            "before": counters(14, 21),
+            "direct": socket(False, True, "network-unreachable", peer_ip, None, None,
+                             rawError=secret_like),
+            "after": counters(14, 22), "inetCounterIncreased": False,
+            "bridgeCounterIncreased": True, "raw": secret_like}
+        routed_diagnostic = {
+            "control": socket(True, True, "none", gateway_ip, source_ip, gateway_ip),
+            "before": counters(14, 22),
+            "direct": socket(False, True, "network-unreachable", gateway_ip, None, None),
+            "after": counters(15, 22), "inetCounterIncreased": True,
+            "bridgeCounterIncreased": False}
+        def worker_value(*, blocked=True, direct_path=None, routed_path=None):
+            value = {"success": False, "checks": [], "directTargetBlocked": blocked}
+            if direct_path is not None:
+                value["directPathDiagnostics"] = direct_path
+            if routed_path is not None:
+                value["routedPathDiagnostics"] = routed_path
+            value["failure"] = {"phase": "direct-path firewall counter", "reason": "worker failed"}
+            return value
+        worker_path.write_text(json.dumps(worker_value(direct_path=diagnostic, routed_path=routed_diagnostic)),
+                               encoding="utf-8")
+        evidence = import_worker_evidence(pathlib.Path(directory), shared_endpoints, projection_hashes)
+        expected_direct = {"control": socket(True, True, "none", peer_ip, source_ip, peer_ip),
+                           "before": counters(14, 21),
+                           "direct": socket(False, True, "network-unreachable", peer_ip, None, None),
+                           "after": counters(14, 22), "inetCounterIncreased": False,
+                           "bridgeCounterIncreased": True}
+        expected_routed = {"control": socket(True, True, "none", gateway_ip, source_ip, gateway_ip),
+                           "before": counters(14, 22),
+                           "direct": socket(False, True, "network-unreachable", gateway_ip, None, None),
+                           "after": counters(15, 22), "inetCounterIncreased": True,
+                           "bridgeCounterIncreased": False}
+        if not evidence or evidence.get("directPathDiagnostics") != expected_direct or \
+                evidence.get("routedPathDiagnostics") != expected_routed or secret_like in json.dumps(evidence):
+            raise RuntimeError("observed direct/routed path evidence was not safely projected")
+        if evidence.get("pathEvidenceCertified") is not True:
+            raise RuntimeError("complete inventory and live projections did not certify the direct-path evidence")
+        worker_path.write_text(json.dumps(worker_value(blocked=True,
+            direct_path=diagnostic, routed_path=routed_diagnostic)), encoding="utf-8")
+        uncertified = import_worker_evidence(pathlib.Path(directory), shared_endpoints, None)
+        if (not uncertified or uncertified.get("success") is not False or
+                uncertified.get("directTargetBlocked") is not False or
+                uncertified.get("pathEvidenceCertified") is not False or
+                uncertified.get("directPathDiagnostics", {}).get("direct") != expected_direct["direct"] or
+                uncertified.get("routedPathDiagnostics", {}).get("direct") != expected_routed["direct"]):
+            raise RuntimeError("failure diagnostics were discarded or certified without live firewall projections")
+        uncertified = import_worker_evidence(pathlib.Path(directory), None, projection_hashes)
+        if (not uncertified or uncertified.get("directTargetBlocked") is not False or
+                uncertified.get("pathEvidenceCertified") is not False or
+                uncertified.get("directPathDiagnostics", {}).get("direct") != expected_direct["direct"]):
+            raise RuntimeError("failure diagnostics were discarded or certified without inspected endpoints")
+        mismatch = {"failure": "projection-mismatch", "diagnostic": {
+            "family": "bridge", "reason": "hook-mismatch", "generatedHash": "1" * 64,
+            "liveHash": "2" * 64, "mismatchIndex": 0,
+            "generatedLine": "type filter hook forward priority filter; policy accept;",
+            "liveLine": "type filter hook forward priority 0; policy accept;"}}
+        worker_path.write_text(json.dumps(worker_value(blocked=True,
+            direct_path={"control": diagnostic["control"],
+                         "before": {"inet": counters(1, 1)["inet"], "bridge": mismatch},
+                         "direct": {"status": "not-attempted"}, "after": {"status": "not-attempted"},
+                         "inetCounterIncreased": False, "bridgeCounterIncreased": False},
+            routed_path={"control": routed_diagnostic["control"],
+                         "before": {"inet": counters(1, 1)["inet"], "bridge": counters(1, 1)["bridge"]},
+                         "direct": {"status": "not-attempted"}, "after": {"status": "not-attempted"},
+                         "inetCounterIncreased": False, "bridgeCounterIncreased": False})), encoding="utf-8")
+        mismatch_evidence = import_worker_evidence(pathlib.Path(directory))
+        preserved_mismatch = (mismatch_evidence or {}).get("directPathDiagnostics", {}).get("before", {}).get("bridge", {})
+        if (not mismatch_evidence or mismatch_evidence.get("directTargetBlocked") is not False or
+                preserved_mismatch.get("diagnostic", {}).get("liveLine") != mismatch["diagnostic"]["liveLine"]):
+            raise RuntimeError("bounded exact firewall mismatch lines were not preserved as uncertified diagnostics: " +
+                               json.dumps(mismatch_evidence, sort_keys=True))
+        mismatch["diagnostic"]["liveLine"] = secret_like
+        worker_path.write_text(json.dumps(worker_value(blocked=False,
+            direct_path={"control": diagnostic["control"], "before": {"inet": counters(1, 1)["inet"], "bridge": mismatch},
+                         "direct": {"status": "not-attempted"}, "after": {"status": "not-attempted"},
+                         "inetCounterIncreased": False, "bridgeCounterIncreased": False},
+            routed_path={"control": routed_diagnostic["control"], "before": {"inet": counters(1, 1)["inet"],
+                         "bridge": counters(1, 1)["bridge"]}, "direct": {"status": "not-attempted"},
+                         "after": {"status": "not-attempted"}, "inetCounterIncreased": False,
+                         "bridgeCounterIncreased": False})), encoding="utf-8")
         if import_worker_evidence(pathlib.Path(directory)) is not None:
-            raise RuntimeError("unrecognized direct-path error category was accepted")
+            raise RuntimeError("arbitrary firewall mismatch text escaped the fixed-line sanitizer")
+        for mutation in (
+                lambda d, r: d.pop("control"),
+                lambda d, r: d["control"].update(connectedPeerAddress=source_ip),
+                lambda d, r: r["control"].update(assignedSourceAddress=None),
+                lambda d, r: d["direct"].update(connectedPeerAddress=source_ip),
+                lambda d, r: d.update(inetCounterIncreased=True, bridgeCounterIncreased=False),
+                lambda d, r: d["before"]["bridge"].update(projectionHash="0" * 64)):
+            bad_direct, bad_routed = json.loads(json.dumps(diagnostic)), json.loads(json.dumps(routed_diagnostic))
+            mutation(bad_direct, bad_routed)
+            worker_path.write_text(json.dumps(worker_value(direct_path=bad_direct, routed_path=bad_routed)),
+                                   encoding="utf-8")
+            mutated = import_worker_evidence(pathlib.Path(directory), shared_endpoints, projection_hashes)
+            if mutated is not None and (mutated.get("directTargetBlocked") is not False or
+                                        mutated.get("pathEvidenceCertified") is not False):
+                raise RuntimeError("forged or mismatched failure evidence was certified as a direct-path block")
+        wrong_inventory = json.loads(json.dumps(shared_endpoints))
+        wrong_inventory["peer"]["ipv4"] = "172.18.0.32"
+        wrong_inventory_evidence = import_worker_evidence(pathlib.Path(directory), wrong_inventory, projection_hashes)
+        if wrong_inventory_evidence is not None and (
+                wrong_inventory_evidence.get("directTargetBlocked") is not False or
+                wrong_inventory_evidence.get("pathEvidenceCertified") is not False):
+            raise RuntimeError("socket observations were certified against a different inspected peer endpoint")
+        worker_path.write_text(json.dumps(worker_value(direct_path=diagnostic, routed_path=routed_diagnostic)),
+                               encoding="utf-8")
+        (pathlib.Path(directory) / "fixture.env").write_text(
+            f"FIXTURE_SOURCE_IP=172.18.0.99\nFIXTURE_PEER_IP=172.18.0.98\nFIXTURE_ROUTED_GATEWAY={gateway_ip}\n",
+            encoding="ascii")
+        if import_worker_evidence(pathlib.Path(directory), shared_endpoints, projection_hashes) is None:
+            raise RuntimeError("configured source and peer inputs overrode the inspected endpoint inventory")
+        (pathlib.Path(directory) / "fixture.env").write_text(
+            f"FIXTURE_SOURCE_IP={source_ip}\nFIXTURE_PEER_IP={peer_ip}\nFIXTURE_ROUTED_GATEWAY={gateway_ip}\n",
+            encoding="ascii")
+        worker_path.write_text(json.dumps(worker_value(blocked=False,
+            direct_path={"control": diagnostic["control"],
+                         "before": {"inet": {"failure": "command-failed"}, "bridge": {"failure": "command-failed"}},
+                         "direct": {"status": "not-attempted"}, "after": {"status": "not-attempted"},
+                         "inetCounterIncreased": False, "bridgeCounterIncreased": False},
+            routed_path={"control": routed_diagnostic["control"],
+                         "before": {"inet": {"failure": "command-failed"}, "bridge": {"failure": "command-failed"}},
+                         "direct": {"status": "not-attempted"}, "after": {"status": "not-attempted"},
+                         "inetCounterIncreased": False, "bridgeCounterIncreased": False})), encoding="utf-8")
+        evidence = import_worker_evidence(pathlib.Path(directory), shared_endpoints, projection_hashes)
+        if (not evidence or evidence.get("directPathDiagnostics", {}).get("direct") != {"status": "not-attempted"} or
+                evidence.get("routedPathDiagnostics", {}).get("direct") != {"status": "not-attempted"}):
+            raise RuntimeError("before-counter refusal did not preserve not-attempted path stages")
 
 
 def postgres_ready(container, password):
@@ -1896,6 +2518,35 @@ if image_store_mode:
     raise SystemExit(0)
 
 
+if projection_check_mode:
+    try:
+        payload = sys.stdin.buffer.read(256 * 1024 + 1)
+        if len(payload) > 256 * 1024:
+            raise ValueError
+        request = json.loads(payload.decode("utf-8", "strict"))
+        cases = request.get("cases") if isinstance(request, dict) and set(request) == {"cases"} else None
+        if not isinstance(cases, list) or not 1 <= len(cases) <= 8:
+            raise ValueError
+        results = []
+        for case in cases:
+            if (not isinstance(case, dict) or set(case) != {"generated", "live"} or
+                    not isinstance(case["generated"], str) or not isinstance(case["live"], str) or
+                    len(case["generated"]) > 64 * 1024 or len(case["live"]) > 64 * 1024):
+                raise ValueError
+            families = {}
+            for family in ("inet", "bridge"):
+                projection_hash = firewall_projection_hash(case["generated"], case["live"], family)
+                projection = firewall_table_projection(case["live"], family)
+                families[family] = ({"hash": projection_hash, "packets": projection["packets"]}
+                                    if projection_hash is not None and projection is not None else None)
+            results.append(families)
+        print(json.dumps({"results": results}, sort_keys=True))
+    except Exception:
+        print(json.dumps({"failure": "invalid projection request"}, sort_keys=True), file=sys.stderr)
+        raise SystemExit(2) from None
+    raise SystemExit(0)
+
+
 try:
     if os.environ.get("CI") != "true" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("proof is restricted to disposable GitHub CI")
@@ -1915,16 +2566,18 @@ try:
     phase = "network"
     suffix = owner[:10]
     network = "lares-outside-proof-" + suffix
+    routed_network = network + "-target"
     project = "outsideproof" + suffix
     db_container = network + "-db"
     proxy_container = network + "-proxy"
     proxy_readiness_container = network + "-proxy-ready"
     peer_container = network + "-peer"
+    routed_peer_container = network + "-target-peer"
     role_container = "lares-outside-role-" + suffix
     generator_container = "lares-outside-generator-" + suffix
     agent = "fixture-agent"
     agent_container = "lares-" + agent
-    resource_names = [db_container, proxy_container, proxy_readiness_container, peer_container, worker_container,
+    resource_names = [db_container, proxy_container, proxy_readiness_container, peer_container, routed_peer_container, worker_container,
                       role_container, generator_container]
     set_network_stage("container-name-preflight")
     if any(container_facts(name) is not None for name in resource_names):
@@ -1933,6 +2586,9 @@ try:
     if command("docker", "network", "ls", "--quiet", "--no-trunc", "--filter",
                "name=^" + network + "$").strip():
         raise RuntimeError("unique fixture network name is already in use")
+    if command("docker", "network", "ls", "--quiet", "--no-trunc", "--filter",
+               "name=^" + routed_network + "$").strip():
+        raise RuntimeError("unique routed fixture network name is already in use")
     subnet = choose_unused_subnet()
     set_network_stage("network-create")
     command("docker", "network", "create", "--internal", "--subnet", str(subnet),
@@ -1946,6 +2602,11 @@ try:
     configured_subnets = {entry.get("Subnet") for entry in network_metadata.get("IPAM", {}).get("Config", [])}
     if str(subnet) not in configured_subnets:
         raise RuntimeError("proof network static-address subnet did not match the selected range")
+    gateways = [entry.get("Gateway") for entry in network_metadata.get("IPAM", {}).get("Config", [])
+                if entry.get("Subnet") == str(subnet)]
+    if len(gateways) != 1 or not isinstance(gateways[0], str) or ipaddress.ip_address(gateways[0]) not in subnet:
+        raise RuntimeError("proof network bridge gateway could not be verified")
+    first_gateway = gateways[0]
     set_network_stage("network-address-validation")
     if subnet.version != 4 or subnet.num_addresses < 32:
         raise RuntimeError("Docker selected an unsuitable isolated IPv4 subnet")
@@ -1958,7 +2619,7 @@ try:
     # disposable runner, so refuse any pre-existing table and verify removal.
     set_network_stage("firewall-preflight")
     existing_tables = nft_host("list", "tables").stdout.splitlines()
-    if any(line.strip() == "table inet lares_egress" for line in existing_tables):
+    if any(line.strip() in {"table inet lares_egress", "table bridge lares_egress"} for line in existing_tables):
         raise RuntimeError("disposable runner already has the Lares egress firewall table")
 
     phase = "fixture-files"
@@ -1985,6 +2646,59 @@ try:
             "-CA", str(root / "certs/ca.pem"), "-CAkey", str(root / "certs/ca.key"),
             "-CAcreateserial", "-extfile", str(root / "certs/server.ext"), "-out", str(root / "certs/server.pem"))
 
+    phase = "https-peer"
+    routed_subnet = choose_unused_subnet()
+    if routed_subnet.version != 4 or routed_subnet.num_addresses < 16 or routed_subnet.overlaps(subnet):
+        raise RuntimeError("routed target bridge address range is unsuitable")
+    routed_target_ip = str(routed_subnet.network_address + 12)
+    command("docker", "network", "create", "--subnet", str(routed_subnet),
+            "--label", "lares.proof=outside-discovery-routed-target", "--label", "lares.proof.owner=" + owner,
+            routed_network)
+    routed_metadata = json.loads(command("docker", "network", "inspect", routed_network))[0]
+    if (routed_metadata.get("Name") != routed_network or routed_metadata.get("Labels", {}).get("lares.proof.owner") != owner or
+            routed_metadata.get("Internal") is not False or routed_metadata.get("Id") is None or
+            str(routed_subnet) not in {entry.get("Subnet") for entry in routed_metadata.get("IPAM", {}).get("Config", [])}):
+        raise RuntimeError("routed target bridge ownership or address range could not be verified")
+    routed_peer_report_path = root / "routed-peer.json"
+    routed_peer_report_path.write_text(json.dumps({"ready": False}), encoding="ascii")
+    routed_peer_report_path.chmod(0o600)
+    command("docker", "run", "-d", "--name", routed_peer_container, "--label", "lares.proof.owner=" + owner,
+            "--network", routed_network, "--ip", routed_target_ip,
+            "--publish", f"{first_gateway}::443/tcp",
+            "--env", "FIXTURE_PEER_REPORT=/fixture/peer.json",
+            "--env", "FIXTURE_ROUTED_TARGET_IP=" + routed_target_ip,
+            "--mount", f"type=bind,src={root / 'certs'},dst=/fixture/certs,readonly",
+            "--mount", f"type=bind,src={routed_peer_report_path},dst=/fixture/peer.json",
+            "--mount", f"type=bind,src={repo / 'services/keeper/tests/outside-discovery-image.probe.mts'},dst=/app/services/keeper/tests/outside-discovery-image.probe.mts,readonly",
+            "--entrypoint", "/app/services/keeper/node_modules/.bin/tsx", keeper_ref,
+            "/app/services/keeper/tests/outside-discovery-image.probe.mts", "control-peer")
+    routed_facts = container_facts(routed_peer_container)
+    routed_inspect = json.loads(command("docker", "inspect", routed_peer_container))[0]
+    routed_endpoint = routed_inspect.get("NetworkSettings", {}).get("Networks", {}).get(routed_network, {})
+    routed_bindings = routed_inspect.get("NetworkSettings", {}).get("Ports", {}).get("443/tcp", [])
+    if (routed_facts is None or routed_facts["labels"].get("lares.proof.owner") != owner or
+            routed_facts["imageId"] != report["images"]["keeper"]["imageId"] or
+            routed_endpoint.get("NetworkID") != routed_metadata["Id"] or routed_endpoint.get("IPAddress") != routed_target_ip or
+            len(routed_bindings) != 1 or routed_bindings[0].get("HostIp") != first_gateway or
+            not str(routed_bindings[0].get("HostPort", "")).isdigit() or
+            not 1024 <= int(routed_bindings[0]["HostPort"]) <= 65535):
+        raise RuntimeError("routed target identity, network endpoint or bound ephemeral port failed validation")
+    routed_port = int(routed_bindings[0]["HostPort"])
+    for _ in range(100):
+        try:
+            routed_ready = json.loads(routed_peer_report_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            routed_ready = {}
+        if routed_ready.get("ready") is True:
+            break
+        time.sleep(.1)
+    else:
+        raise RuntimeError("routed target TLS peer did not become ready")
+    report["routedTarget"] = {"owned": True, "firstBridgeGateway": first_gateway,
+                              "firstBridgeNetworkId": network_metadata["Id"],
+                              "targetBridgeNetworkId": routed_metadata["Id"],
+                              "targetAddress": routed_target_ip, "publishedPort": routed_port,
+                              "boundOnlyToFirstGateway": True}
     password = secrets.token_urlsafe(32)
     app_password = secrets.token_urlsafe(32)
     outside_password = secrets.token_urlsafe(32)
@@ -2001,6 +2715,8 @@ try:
         "FIXTURE_BEARER": bearer, "FIXTURE_NETWORK": network, "FIXTURE_ROOT": str(root),
         "FIXTURE_DB_IP": ips["db"], "FIXTURE_PROXY_IP": ips["proxy"], "FIXTURE_PEER_IP": ips["peer"],
         "FIXTURE_AGENT_IP": ips["agent"], "FIXTURE_SOURCE_IP": ips["source"],
+        "FIXTURE_ROUTED_GATEWAY": first_gateway, "FIXTURE_ROUTED_PORT": str(routed_port),
+        "FIXTURE_ROUTED_TARGET_IP": routed_target_ip,
         "FIXTURE_PROJECT": project, "FIXTURE_AGENT": agent, "FIXTURE_KEY_FINGERPRINT": key_fingerprint,
         "FIXTURE_KEY_HEX": key.hex(), "FIXTURE_INCARNATION": incarnation,
         "NODE_EXTRA_CA_CERTS": str(root / "certs/ca.pem"), "FIXTURE_PEER_REPORT": str(root / "peer.json"),
@@ -2017,6 +2733,7 @@ try:
     worker_env = root / "worker.env"
     worker_keys = ("PROOF_ADMIN_PASSWORD", "FIXTURE_SESSION_TOKEN", "FIXTURE_BEARER", "FIXTURE_ROOT",
                    "FIXTURE_AGENT", "FIXTURE_INCARNATION", "FIXTURE_KEY_HEX", "FIXTURE_SOURCE_IP",
+                   "FIXTURE_ROUTED_GATEWAY", "FIXTURE_ROUTED_PORT", "FIXTURE_ROUTED_TARGET_IP",
                    "FIXTURE_AGENT_IP", "FIXTURE_PEER_REPORT", "FIXTURE_WORKER_REPORT", "FIXTURE_OWNER",
                    "NODE_EXTRA_CA_CERTS")
     env_values["FIXTURE_OWNER"] = owner
@@ -2161,8 +2878,14 @@ networks:
             f"type=bind,src={repo / 'services/keeper/tests/outside-discovery-image.probe.mts'},dst=/app/services/keeper/tests/outside-discovery-image.probe.mts,readonly", "--entrypoint",
             "/app/services/keeper/node_modules/.bin/tsx", keeper_ref,
             "/app/services/keeper/tests/outside-discovery-image.probe.mts", "peer")
+    peer_facts = container_facts(peer_container)
+    if (peer_facts is None or peer_facts["labels"].get("lares.proof.owner") != owner or
+            peer_facts["imageId"] != report["images"]["keeper"]["imageId"]):
+        raise RuntimeError("local MCP peer identity and ownership could not be verified")
+    peer_container_id = peer_facts["id"]
     for _ in range(100):
-        if command("docker", "inspect", "--format", "{{.State.Running}}", peer_container) != "true":
+        ready_facts = container_facts(peer_container_id)
+        if ready_facts is None or ready_facts["id"] != peer_container_id or ready_facts["running"] is not True:
             raise RuntimeError("local MCP peer did not stay ready")
         try:
             peer_ready = json.loads((root / "peer.json").read_text(encoding="utf-8"))
@@ -2174,6 +2897,8 @@ networks:
     else:
         raise RuntimeError("local MCP peer did not become ready")
     peer_ready = json.loads((root / "peer.json").read_text(encoding="utf-8"))
+    peer_endpoint = inspect_owned_bridge_endpoint(peer_container, peer_container_id, network,
+                                                  network_metadata["Id"], True)
     record("local MCP peer is listening with generated hostname certificate", peer_ready.get("ready") is True)
 
     phase = "configured-discovery"
@@ -2194,6 +2919,10 @@ networks:
     worker_container_id = facts["id"]
     if worker_result.returncode != 0 and facts["status"] not in {"created", "exited", "dead"}:
         raise RuntimeError("configured worker start did not settle to a known state")
+    if facts["running"] is not True:
+        raise RuntimeError("configured worker stopped before its assigned bridge endpoint was inspected")
+    worker_endpoint = inspect_owned_bridge_endpoint(worker_container, worker_container_id, network,
+                                                    network_metadata["Id"], True)
     worker_stopped = facts["running"] is False
     deadline = time.monotonic() + 120
     while not worker_stopped and time.monotonic() < deadline:
@@ -2209,12 +2938,14 @@ networks:
             facts["labels"].get("lares.proof.owner") == owner and facts["running"] is False
         raise RuntimeError("configured worker exceeded its bounded lifetime")
     facts = container_facts(worker_container_id)
+    shared_endpoints = inspect_shared_bridge_endpoints(network_metadata["Id"], worker_endpoint, peer_endpoint)
+    live_projection_hashes = live_firewall_projection_hashes(root, shared_endpoints["worker"]["ipv4"])
     if facts is None or facts["id"] != worker_container_id or facts["status"] != "exited" or facts["exitCode"] != 0:
-        worker_evidence = import_worker_evidence(root)
+        worker_evidence = import_worker_evidence(root, shared_endpoints, live_projection_hashes)
         if worker_evidence:
             report["workerFailure"] = worker_evidence
         raise RuntimeError("configured production discovery worker did not complete")
-    worker_evidence = import_worker_evidence(root)
+    worker_evidence = import_worker_evidence(root, shared_endpoints, live_projection_hashes)
     if not worker_evidence or worker_evidence.get("success") is not True:
         raise RuntimeError("configured production discovery worker did not complete")
     report["configuredDiscovery"] = worker_evidence
@@ -2304,6 +3035,10 @@ finally:
     network_removed = resources_removed
     if network is not None and worker_stopped and helpers_stopped:
         network_removed = safe_cleanup("owned-network-remove", lambda: cleanup_exact_network(network, owner))
+    if routed_network is not None and worker_stopped and helpers_stopped:
+        routed_network_removed = safe_cleanup("owned-routed-network-remove",
+                                              lambda: cleanup_exact_network(routed_network, owner))
+        network_removed = network_removed and routed_network_removed
 
     # Only the absent-at-preflight table with a generated, installed stage that names this
     # source is owned by the proof. A fixed table name alone is never cleanup authority.
@@ -2320,8 +3055,10 @@ finally:
                                       "label=lares.proof.owner=" + owner)
             remaining_network = command("docker", "network", "ls", "--quiet", "--no-trunc",
                                         "--filter", "name=^" + network + "$") if network else ""
+            remaining_routed_network = command("docker", "network", "ls", "--quiet", "--no-trunc",
+                                               "--filter", "name=^" + routed_network + "$") if routed_network else ""
             remaining_helpers = discover_owned_docker_helpers(root) if root is not None else []
-            if remaining_owner.strip() or remaining_network.strip() or remaining_helpers:
+            if remaining_owner.strip() or remaining_network.strip() or remaining_routed_network.strip() or remaining_helpers:
                 consumers_absent = False
                 cleanup_failures.append("consumer-absence-verification")
         except Exception:

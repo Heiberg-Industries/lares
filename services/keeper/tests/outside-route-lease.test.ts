@@ -61,6 +61,44 @@ it('captures only the fixed reason from the first real acknowledgement error and
   expect(plain.firstAcknowledgementReason()).toBeUndefined();
 });
 
+it('replays a legacy inet firewall at startup without restoring outside route readiness',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'outside-legacy-replay-'));dirs.push(dir);
+  const stage='11111111-1111-4111-8111-111111111111';
+  writeFileSync(join(dir,'installed-stage'),`${stage}\n`);
+  writeFileSync(join(dir,`${stage}.nft`),'table inet lares_egress {\n chain forward {\n counter drop\n }\n}\n');
+  const calls:string[]=[];
+  const client={query:vi.fn(async(query:string|{text:string})=>{
+    const sql=typeof query==='string'?query:query.text;
+    if(sql.includes('pg_advisory_lock(')&&!sql.includes('pg_try_advisory_lock'))return {rows:[{pg_advisory_lock:null}]};
+    if(sql.includes('pg_try_advisory_lock'))return {rows:[{acquired:true}]};
+    if(sql.includes('pg_advisory_unlock'))return {rows:[{unlocked:true}]};
+    throw new Error(`Unexpected namespace query: ${sql}`);
+  }),release:vi.fn()} as unknown as PoolClient;
+  const pool={connect:vi.fn(async()=>client)} as unknown as Pool;
+  const config={workflowTemplate:'template',workflowOwner:'lares_workflow_owner',egressDir:dir,
+    runtime:{workflowServer:'postgres://lares_workflow@db/',proxyUrl:'http://proxy:8888'},
+    egress:{legacyConsumers:[{name:'outside-bridge',address:'172.18.0.23',hosts:['api.example.com']}]}} as unknown as LifecycleConfig;
+  const firewall=vi.fn(async(value:string,check:boolean)=>{calls.push(`${value}:${check}`);});
+  const lifecycle=new AgentLifecycle(pool,pool,config,{mode:'overlay',agentsDir:dir,secretsDir:dir,
+    outsideCustody:{routeConsumerName:'outside-bridge'} as never},{firewall} as unknown as DockerBoundary);
+  const internals=lifecycle as unknown as {outsideControllerEpoch:string;outsideRouteReady:{epoch:string;stage:string;
+    sourceAddress:string;squidHash:string;nftHash:string;basePolicyHash:string}|undefined};
+  internals.outsideRouteReady={epoch:internals.outsideControllerEpoch,stage,sourceAddress:'172.18.0.23',
+    squidHash:'old-squid-hash',nftHash:'old-inet-only-hash',basePolicyHash:'old-policy'};
+  const log=vi.spyOn(console,'log').mockImplementation(()=>{});
+  try{
+    await lifecycle.resealAtStart();
+    expect(calls).toEqual([`${stage}:true`,`${stage}:false`]);
+    expect(internals.outsideRouteReady).toBeUndefined();
+    await expect(lifecycle.reviewOutsideRoute('https://api.example.com/',Date.now()+5000))
+      .rejects.toThrow('Outside route is unavailable');
+    const callback=vi.fn(async()=> 'must not run');
+    await expect(lifecycle.withAppliedOutsideRoute('https://api.example.com/','not-a-policy-hash',Date.now()+5000,callback))
+      .rejects.toThrow('Outside route is unavailable');
+    expect(callback).not.toHaveBeenCalled();
+  }finally{log.mockRestore();}
+});
+
 it('rejects a detached route check whose acknowledgement arrives after its namespace lease is revoked',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'outside-route-lease-'));dirs.push(dir);
   const stage='stage-for-test',squid='fixture squid policy',nft='fixture firewall policy';
