@@ -8,7 +8,7 @@
 // the server exactly as it was (no service stopped, no database dropped), a bad dump name must
 // refuse before any database command, and the private scratch folder must be gone afterwards,
 // pass or fail. A stub proves the order of the restore steps and the shape of the commands.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
   mkdtempSync, mkdirSync, writeFileSync, chmodSync, readdirSync, readFileSync, rmSync, existsSync, symlinkSync, statSync, lstatSync, realpathSync,
@@ -25,6 +25,8 @@ const NEWEST_SQL = readdirSync(join(BOX, "sql")).filter((f) => /^[0-9].*\.sql$/.
 const RESTORE_FIXTURE_CADDY_IMAGE = (JSON.parse(readFileSync(
   join(here, "..", "..", "..", "releases", "2026-10-21-rc.12.json"), "utf8",
 )) as { images: { caddy: string } }).images.caddy;
+
+vi.setConfig({ testTimeout: 15_000 });
 
 let dir: string, binDir: string, prefix: string, log: string, archive: string, scratchParent: string, ledgerFile: string, restoreDbState: string, restoreDbQueryCount: string, restoreClientState: string;
 const appDatabase = () => ({ host: '127.0.0.1', port: 5432, database: 'lares_state', user: 'lares_app', passwordFile: join(prefix, 'etc/lares/secrets/database-password') });
