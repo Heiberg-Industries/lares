@@ -47,6 +47,46 @@ class MaintenanceAdmissionTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_update_lock_observer_uses_engine_database_and_database_scoped_relation(self) -> None:
+        source = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"))
+        wanted = {"operator_query", "update_client_lock_query", "observe_update_client_lock"}
+        functions = [node for node in source.body
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted]
+        self.assertEqual({node.name for node in functions}, wanted)
+        calls: list[tuple[list[str], list[str], bool, dict[str, int]]] = []
+
+        def operator_call(compose_args: list[str], program: list[str], *, check: bool = True,
+                          timeout: int = 60, operator_timeout: int = 30):
+            calls.append((compose_args, program, check,
+                          {"timeout": timeout, "operator_timeout": operator_timeout}))
+            return SimpleNamespace(stdout="1\n")
+
+        namespace = {"operator_call": operator_call}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), str(IMAGE_PROBE), "exec"), namespace)
+
+        compose_args = ["-f", "normal-compose.yaml"]
+        self.assertEqual(namespace["operator_query"](compose_args, "SELECT 1"), "1")
+        self.assertEqual(calls[-1][1][calls[-1][1].index("-d") + 1], "postgres")
+        self.assertTrue(calls[-1][2])
+
+        self.assertEqual(namespace["observe_update_client_lock"](compose_args, "update_history"), "1")
+        observed_args, observed_program, observed_check, observed_timeouts = calls[-1]
+        self.assertEqual(observed_args, compose_args)
+        self.assertFalse(observed_check)
+        self.assertEqual(observed_program[observed_program.index("-d") + 1], "lares_state")
+        sql = observed_program[observed_program.index("-c") + 1]
+        self.assertIn("database=(SELECT oid FROM pg_database WHERE datname=current_database())", sql)
+        self.assertIn("relation='update_history'::regclass", sql)
+        self.assertIn("mode='AccessExclusiveLock' AND granted AND pid<>pg_backend_pid()", sql)
+        self.assertEqual(observed_timeouts, {"timeout": 60, "operator_timeout": 30})
+
+        proof = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "prove_update_history_client_lease")
+        nested_calls = [node for node in ast.walk(proof) if isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name)
+                        and node.func.id == "observe_update_client_lock"]
+        self.assertTrue(nested_calls, "the actual lock polling loop must use the tested observer")
+
     def _installed_bundle(self) -> tuple[Path, Path]:
         prefix = self.root / "installed-host"
         prefix.mkdir()
@@ -56,15 +96,90 @@ class MaintenanceAdmissionTests(unittest.TestCase):
         for source in OPS.iterdir():
             if source.is_file():
                 shutil.copy2(source, installed / source.name)
+        (installed / "compose.yaml").write_text("services: {}\n", encoding="ascii")
+        secrets = prefix / "etc/lares/secrets"
+        operator = prefix / "etc/lares/operator"
+        secrets.mkdir(parents=True)
+        operator.mkdir(parents=True)
+        app_password = secrets / "database-password"
+        app_password.write_text("fixture-only\n", encoding="ascii")
+        os.chown(app_password, -1, os.getegid())
+        app_password.chmod(0o440)
+        operator_password = operator / "database-password"
+        operator_password.write_text("fixture-only\n", encoding="ascii")
+        os.chown(operator_password, -1, os.getegid())
+        operator_password.chmod(0o600)
         return prefix, installed
 
     def _test_env(self, prefix: Path, **values: str) -> dict[str, str]:
         env = os.environ.copy()
         env.update({"LARES_MAINTENANCE_TESTING": "1",
+                    "LARES_PREFIX": str(prefix),
+                    "DB_COMPOSE_DIR": str(prefix / "opt/lares"),
+                    "UPDATE_COMPOSE_FILES": "compose.yaml",
                     "LARES_MAINTENANCE_TEST_PREFIX": str(prefix),
                     "PATH": "/usr/bin:/bin"})
         env.update(values)
         return env
+
+    def test_update_target_requires_installer_credential_modes_and_single_links(self) -> None:
+        prefix, installed = self._installed_bundle()
+        app = prefix / "etc/lares/secrets/database-password"
+        operator = prefix / "etc/lares/operator/database-password"
+        args = (str(prefix), str(installed), "compose.yaml", str(app), str(operator),
+                "127.0.0.1", "5432", "lares_state")
+        custody.validate_update_target(*args, test_owner=True)
+
+        for path, mode in ((app, 0o600), (app, 0o400), (operator, 0o440)):
+            original_mode = stat.S_IMODE(path.stat().st_mode)
+            path.chmod(mode)
+            with self.assertRaisesRegex(ValueError, "credential"):
+                custody.validate_update_target(*args, test_owner=True)
+            path.chmod(original_mode)
+
+        linked = self.root / "app-password-link"
+        linked.hardlink_to(app)
+        with self.assertRaisesRegex(ValueError, "credential"):
+            custody.validate_update_target(*args, test_owner=True)
+        linked.unlink()
+
+        with patch.object(custody.os, "getegid", return_value=os.getegid() + 1):
+            with self.assertRaisesRegex(ValueError, "credential"):
+                custody.validate_update_target(*args, test_owner=True)
+        with patch.object(custody.os, "geteuid", return_value=os.geteuid() + 1):
+            with self.assertRaisesRegex(ValueError, "credential"):
+                custody.validate_update_target(*args, test_owner=True)
+
+        with self.assertRaisesRegex(ValueError, "credential"):
+            custody.validate_update_target(*args, test_owner=False)
+
+    def test_update_target_cli_has_exact_root_and_test_owner_arities(self) -> None:
+        args = ["maintenance-custody.py", "validate-update-target", *("fixture" for _ in range(8))]
+        with patch.object(custody.os, "geteuid", return_value=0), \
+             patch.dict(os.environ, {"LARES_MAINTENANCE_TESTING": "1"}), \
+             patch.object(custody, "validate_update_target") as validate:
+            self.assertEqual(custody.main(args), 0)
+            validate.assert_called_once_with(*args[2:], test_owner=False)
+
+        for suffix in ("--test-owner", "unexpected"):
+            with self.subTest(root_suffix=suffix), \
+                 patch.object(custody.os, "geteuid", return_value=0), \
+                 patch.dict(os.environ, {"LARES_MAINTENANCE_TESTING": "1"}), \
+                 patch.object(custody, "validate_update_target") as validate:
+                self.assertEqual(custody.main([*args, suffix]), 78)
+                validate.assert_not_called()
+
+        with patch.object(custody.os, "geteuid", return_value=1000), \
+             patch.dict(os.environ, {}, clear=True), \
+             patch.object(custody, "validate_update_target") as validate:
+            self.assertEqual(custody.main([*args, "--test-owner"]), 78)
+            validate.assert_not_called()
+
+        with patch.object(custody.os, "geteuid", return_value=1000), \
+             patch.dict(os.environ, {"LARES_MAINTENANCE_TESTING": "1"}), \
+             patch.object(custody, "validate_update_target") as validate:
+            self.assertEqual(custody.main([*args, "--test-owner"]), 0)
+            validate.assert_called_once_with(*args[2:], test_owner=True)
 
     def _run_installed(self, prefix: Path, installed: Path, script: str,
                        *args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -102,7 +217,10 @@ class MaintenanceAdmissionTests(unittest.TestCase):
             ("restore-drill.sh", ()),
             ("setup-backups.sh", ("--prefix", str(prefix), "--dry-run")),
             ("refresh-recovery.sh", ("--prefix", str(prefix))),
+            ("update.sh", ("--release", str(self.root / "release.json"), "--dry-run")),
+            ("rollback.sh", ("--dry-run",)),
         ]
+        (self.root / "release.json").write_text("{}\n", encoding="ascii")
         for script, args in cases:
             with self.subTest(script=script):
                 result = self._run_installed(prefix, installed, script, *args,
@@ -883,10 +1001,362 @@ while [ ! -e '{release}' ]; do sleep 0.01; done
 
 
 class MaintenanceImageProbePublicationTests(unittest.TestCase):
-    def run_extracted_publication(self, *, fail_private_cleanup: bool) -> tuple[int, dict[str, object], bool, tuple[bool, bool]]:
+    def test_keeper_candidate_tag_is_resolved_to_local_config_id_for_the_fixture_only(self) -> None:
+        tree = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"), filename=str(IMAGE_PROBE))
+        helper = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "candidate_image_config_id")
+        class ProbeFailure(Exception):
+            pass
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+        def docker(*args: str, **kwargs: object) -> SimpleNamespace:
+            calls.append((args, kwargs))
+            return SimpleNamespace(stdout="sha256:" + "a" * 64 + "\n", returncode=0)
+        namespace: dict[str, object] = {"docker": docker, "re": __import__("re"),
+                                        "ProbeFailure": ProbeFailure}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(IMAGE_PROBE), "exec"), namespace)
+        self.assertEqual(namespace["candidate_image_config_id"]("lares-keeper:test"),
+                         "sha256:" + "a" * 64)
+        self.assertEqual(calls[0][0], ("image", "inspect", "--format", "{{.Id}}", "lares-keeper:test"))
+        self.assertEqual(calls[0][1], {"check": False, "timeout": 20})
+        proof_function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                              and node.name == "prove_update_history_client_lease")
+        proof_source = ast.get_source_segment(IMAGE_PROBE.read_text(encoding="utf-8"), proof_function)
+        self.assertIn('"ENGINE_IMAGE=" + shlex.quote(candidate_id)', proof_source)
+        self.assertIn('info.get("Image") != candidate_id', proof_source)
+        self.assertNotIn("engine_resolve_image", proof_source)
+
+    def test_actual_embedded_fd9_inspector_accepts_linux_lock_format_and_rejects_bad_records(self) -> None:
+        tree = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"), filename=str(IMAGE_PROBE))
+        value = next(node.value for node in tree.body if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == "UPDATE_CLIENT_FD9_INSPECT"
+                             for target in node.targets))
+        inspector = ast.literal_eval(value)
+        with tempfile.TemporaryDirectory(prefix="lares-fd9-inspector-") as temporary:
+            root = Path(temporary)
+            proc = root / "proc"
+            process = proc / "1"
+            (process / "fd").mkdir(parents=True)
+            (process / "fdinfo").mkdir()
+            target = root / "gate"
+            target.write_text("gate", encoding="ascii")
+            (process / "fd/9").symlink_to(target)
+            (process / "exe").symlink_to(Path(sys.executable).with_name("node"))
+            script = "/app/services/box/bin/update-record.ts"
+            (process / "cmdline").write_bytes(b"node\0--import\0tsx/esm\0" + script.encode() + b"\0")
+            info = target.stat()
+            dev = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}"
+            inode = info.st_ino
+            def run(record: str) -> subprocess.CompletedProcess[str]:
+                (process / "fdinfo/9").write_text(record, encoding="ascii")
+                return subprocess.run([sys.executable, "-c", inspector, str(info.st_dev), str(inode),
+                                       script, str(proc)], capture_output=True, text=True, timeout=3)
+            records = [
+                f"pos:\t0\nflags:\t0100000\nino:\t{inode}\nlock:   1:  FLOCK  ADVISORY  READ  1234 {dev}:{inode} 0 EOF\n",
+                f"pos: 0\nflags: 0100000\nino: {inode}\nlock: 1: FLOCK ADVISORY READ 1234 {dev}:{inode} 0 EOF\n",
+                f"pos: 0\nflags: 0100000\nino: {inode}\nlock: 1:\tFLOCK\tADVISORY\tREAD\t1234\t{dev}:{inode}\t0\tEOF\n",
+            ]
+            for record in records:
+                with self.subTest(record=record):
+                    self.assertEqual(run(record).returncode, 0)
+            bad_base = records[1]
+            bad_records = [
+                bad_base.replace("READ 1234", "WRITE 1234"),
+                bad_base.replace("FLOCK ADVISORY", "POSIX ADVISORY"),
+                bad_base.replace("READ 1234", "READ not-a-pid"),
+                bad_base.replace(" 0 EOF", " 1 EOF"),
+                bad_base.replace(f"{dev}:{inode}", f"{dev}:{inode + 1}"),
+                bad_base.replace(f"ino: {inode}", f"ino: {inode + 1}"),
+                bad_base + f"ino: {inode}\n",
+                bad_base.replace("READ 1234", "READ\v1234"),
+                bad_base.replace("flags: 0100000", "flags: 0100001"),
+                bad_base + "lock:" + bad_base.split("lock:", 1)[1],
+            ]
+            for record in bad_records:
+                with self.subTest(record=record):
+                    self.assertNotEqual(run(record).returncode, 0)
+
+    def test_update_client_lease_poll_waits_for_created_and_requires_all_live_signals(self) -> None:
+        source = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"))
+        helper = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "poll_update_client_lease")
+        proof = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "prove_update_history_client_lease")
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "poll_update_client_lease" for node in ast.walk(proof)),
+                        "the image proof must use the tested lease polling helper")
+        nested = {node.name: node for node in ast.walk(proof)
+                  if isinstance(node, ast.FunctionDef)
+                  and node.name in {"inspect_fd9", "observe_database_wait", "deny_host_exclusive"}}
+        self.assertEqual(set(nested), {"inspect_fd9", "observe_database_wait", "deny_host_exclusive"})
+        for callback in nested.values():
+            self.assertEqual([arg.arg for arg in callback.args.args], ["timeout"])
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "docker"
+                            and any(keyword.arg == "timeout" for keyword in node.keywords)
+                            for node in ast.walk(nested["inspect_fd9"])))
+        query_call = next(node for node in ast.walk(nested["observe_database_wait"])
+                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                          and node.func.id == "operator_query")
+        self.assertEqual({keyword.arg: ast.dump(keyword.value) for keyword in query_call.keywords
+                          if keyword.arg in {"timeout", "operator_timeout"}},
+                         {"timeout": "Name(id='timeout', ctx=Load())",
+                          "operator_timeout": "Name(id='timeout', ctx=Load())"})
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "run"
+                            and any(keyword.arg == "timeout" and isinstance(keyword.value, ast.Name)
+                                    and keyword.value.id == "timeout" for keyword in node.keywords)
+                            for node in ast.walk(nested["deny_host_exclusive"])))
+        poll_call = next(node for node in ast.walk(proof)
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                         and node.func.id == "poll_update_client_lease")
+        inspect_binding = next(keyword.value for keyword in poll_call.keywords
+                               if keyword.arg == "inspect_owned")
+        self.assertIsInstance(inspect_binding, ast.Lambda)
+        self.assertEqual([arg.arg for arg in inspect_binding.args.args], ["timeout"])
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "owned_info"
+                            and node.args and isinstance(node.args[-1], ast.Name)
+                            and node.args[-1].id == "timeout" for node in ast.walk(inspect_binding)))
+        namespace: dict[str, object] = {}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(IMAGE_PROBE), "exec"), namespace)
+        poll = namespace["poll_update_client_lease"]
+
+        def run_case(states: list[dict[str, object]], *, fd9: bool = True,
+                     database_wait: bool = True, exclusive_denied: bool = True,
+                     alive: list[bool] | None = None,
+                     callback_advance: dict[str, float] | None = None,
+                     dies_during: str | None = None, deadline: float = 5.0
+                     ) -> tuple[bool, dict[str, object], list[str], list[float]]:
+            now = [0.0]
+            observed: list[str] = []
+            sleeps: list[float] = []
+            state_index = [0]
+            advances = callback_advance or {}
+
+            def inspect_owned(timeout: int) -> dict[str, object]:
+                self.assertGreaterEqual(timeout, 1)
+                now[0] += advances.get("inspect", 0.0)
+                index = min(state_index[0], len(states) - 1)
+                state_index[0] += 1
+                if dies_during == "inspect" and alive is not None:
+                    alive[0] = False
+                return states[index]
+
+            alive_index = [0]
+            def launcher_alive() -> bool:
+                if alive is None:
+                    return True
+                index = min(alive_index[0], len(alive) - 1)
+                alive_index[0] += 1
+                return alive[index]
+
+            def mark(name: str, result: bool, timeout: int) -> bool:
+                self.assertGreaterEqual(timeout, 1)
+                observed.append(name)
+                now[0] += advances.get(name, 0.0)
+                if dies_during == name and alive is not None:
+                    alive[0] = False
+                return result
+
+            def sleep(seconds: float) -> None:
+                sleeps.append(seconds)
+                now[0] += seconds
+
+            result, diagnostics = poll(
+                deadline, inspect_owned=inspect_owned, launcher_alive=launcher_alive,
+                fd9_check=lambda timeout: mark("fd9", fd9, timeout),
+                database_wait=lambda timeout: mark("database", database_wait, timeout),
+                exclusive_denied=lambda timeout: mark("exclusive", exclusive_denied, timeout),
+                monotonic=lambda: now[0], sleep=sleep)
+            return result, diagnostics, observed, sleeps
+
+        created = {"State": {"Status": "created", "Running": False}}
+        running = {"State": {"Status": "running", "Running": True}}
+        result, diagnostics, observed, sleeps = run_case([created, running])
+        self.assertTrue(result)
+        self.assertEqual(diagnostics["failureClass"], "none")
+        self.assertEqual(diagnostics["pollCount"], 2)
+        self.assertTrue(diagnostics["createdSeen"])
+        self.assertTrue(diagnostics["runningSeen"])
+        self.assertEqual(observed, ["fd9", "database", "exclusive"])
+        self.assertEqual(sleeps, [0.25])
+
+        for status in ("exited", "dead", "paused", "restarting", "unexpected-status"):
+            with self.subTest(status=status):
+                result, diagnostics, observed, _ = run_case(
+                    [{"State": {"Status": status, "Running": False}}])
+                self.assertFalse(result)
+                self.assertEqual(diagnostics["failureClass"],
+                                 "client-state-terminal" if status in {"exited", "dead", "paused", "restarting"}
+                                 else "client-state-unexpected")
+                self.assertEqual(observed, [])
+
+        result, diagnostics, observed, _ = run_case([created], alive=[False])
+        self.assertFalse(result)
+        self.assertEqual(diagnostics["failureClass"], "client-launcher-exited")
+        self.assertEqual(observed, [])
+
+        observed_identity_failure: list[str] = []
+        identity_result, identity_diagnostics = poll(
+            1.0, inspect_owned=lambda _timeout: (_ for _ in ()).throw(ValueError("untrusted details")),
+            launcher_alive=lambda: True,
+            fd9_check=lambda _timeout: observed_identity_failure.append("fd9") is None,
+            database_wait=lambda _timeout: observed_identity_failure.append("database") is None,
+            exclusive_denied=lambda _timeout: observed_identity_failure.append("exclusive") is None,
+            monotonic=lambda: 0.0, sleep=lambda _seconds: None)
+        self.assertFalse(identity_result)
+        self.assertEqual(identity_diagnostics["failureClass"], "client-identity-unverified")
+        self.assertEqual(observed_identity_failure, [])
+
+        result, diagnostics, _, sleeps = run_case([created])
+        self.assertFalse(result)
+        self.assertEqual(diagnostics["failureClass"], "client-created-timeout")
+        self.assertEqual(diagnostics["pollCount"], 18)
+        self.assertEqual(sleeps, [0.25] * 17)
+        self.assertLessEqual(sum(sleeps), 5.0)
+
+        for failed_signal, values, expected_missing in (
+            ("fd9", (False, True, True), ["fd9", "host-exclusive-denial"]),
+            ("database", (True, False, True), ["database-wait", "host-exclusive-denial"]),
+        ):
+            with self.subTest(failed_signal=failed_signal):
+                result, diagnostics, _, _ = run_case([running], fd9=values[0],
+                    database_wait=values[1], exclusive_denied=values[2])
+                self.assertFalse(result)
+                self.assertEqual(diagnostics["failureClass"], "lease-observation-deadline")
+                self.assertEqual(diagnostics["missingPredicates"], expected_missing)
+
+        result, diagnostics, observed, _ = run_case([running], exclusive_denied=False)
+        self.assertFalse(result)
+        self.assertEqual(diagnostics["failureClass"], "host-exclusive-not-denied")
+        self.assertEqual(observed, ["fd9", "database", "exclusive"])
+
+        for delayed_callback in ("inspect", "fd9", "database", "exclusive"):
+            with self.subTest(delayed_callback=delayed_callback):
+                result, diagnostics, observed, _ = run_case(
+                    [running], callback_advance={delayed_callback: 1.0}, deadline=1.0)
+                self.assertFalse(result)
+                self.assertEqual(diagnostics["failureClass"], "lease-observation-deadline"
+                                 if delayed_callback != "inspect" else "client-start-timeout")
+                expected = {
+                    "inspect": [],
+                    "fd9": ["fd9"],
+                    "database": ["fd9", "database"],
+                    "exclusive": ["fd9", "database", "exclusive"],
+                }[delayed_callback]
+                self.assertEqual(observed, expected)
+                self.assertEqual(diagnostics["fd9Observed"], delayed_callback in {"database", "exclusive"})
+                self.assertEqual(diagnostics["databaseWaitObserved"], delayed_callback == "exclusive")
+
+        result, diagnostics, observed, _ = run_case([running], alive=[False])
+        self.assertFalse(result)
+        self.assertEqual(diagnostics["failureClass"], "client-launcher-exited")
+        self.assertEqual(observed, [])
+
+        for dying_callback in ("inspect", "fd9", "database", "exclusive"):
+            with self.subTest(dying_callback=dying_callback):
+                result, diagnostics, observed, _ = run_case(
+                    [running], alive=[True], dies_during=dying_callback)
+                self.assertFalse(result)
+                self.assertEqual(diagnostics["failureClass"], "client-launcher-exited")
+                expected = {
+                    "inspect": [],
+                    "fd9": ["fd9"],
+                    "database": ["fd9", "database"],
+                    "exclusive": ["fd9", "database", "exclusive"],
+                }[dying_callback]
+                self.assertEqual(observed, expected)
+
+    def test_update_client_probe_recovers_only_exact_intent_and_isolates_cleanup(self) -> None:
+        tree = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"), filename=str(IMAGE_PROBE))
+        helpers = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+                   and node.name in {"parse_update_client_intent", "update_client_info_matches",
+                                     "run_cleanup_actions", "stop_and_reap_process",
+                                     "finish_update_client_cleanup"}}
+        self.assertEqual(set(helpers), {"parse_update_client_intent", "update_client_info_matches",
+                                        "run_cleanup_actions", "stop_and_reap_process",
+                                        "finish_update_client_cleanup"})
+        signal_import = next((node for node in tree.body if isinstance(node, ast.Import)
+                              and any(alias.name == "signal" for alias in node.names)), None)
+        self.assertIsNotNone(signal_import, "probe must import signal in module scope")
+        namespace: dict[str, object] = {"re": __import__("re"), "os": os,
+                                        "subprocess": subprocess}
+        exec(compile(ast.Module(body=[signal_import], type_ignores=[]), str(IMAGE_PROBE), "exec"), namespace)
+        self.assertIs(namespace["signal"], __import__("signal"))
+        exec(compile(ast.Module(body=list(helpers.values()), type_ignores=[]), str(IMAGE_PROBE), "exec"), namespace)
+        parse_intent = namespace["parse_update_client_intent"]
+        matches = namespace["update_client_info_matches"]
+        run_actions = namespace["run_cleanup_actions"]
+        token = "a" * 32
+        name = "lares-update-client-" + token
+        self.assertEqual(parse_intent(f"{name}\n{token}\nupdate\n"), (name, token))
+        self.assertIsNone(parse_intent(f"{name}\n{token}\nrollback\n"))
+        self.assertIsNone(parse_intent(f"lares-update-client-{'b' * 32}\n{token}\nupdate\n"))
+        self.assertIsNone(parse_intent("x" * 129))
+
+        container_id = "c" * 64
+        info = {"Id": container_id, "Name": "/" + name,
+                "Config": {"Labels": {"com.lares.maintenance.owner": token,
+                                        "com.lares.maintenance.operation": "update"}}}
+        self.assertTrue(matches(info, container_id, name, token, "update"))
+        self.assertFalse(matches(info, "c" * 12, name, token, "update"))
+        self.assertFalse(matches({**info, "Name": "/replacement"}, container_id, name, token, "update"))
+        self.assertFalse(matches(info, container_id, name, "d" * 32, "update"))
+
+        calls: list[str] = []
+        def fail() -> bool:
+            calls.append("first")
+            raise RuntimeError("injected cleanup failure")
+        def continue_cleanup() -> bool:
+            calls.append("second")
+            return True
+        self.assertFalse(run_actions([fail, continue_cleanup]))
+        self.assertEqual(calls, ["first", "second"])
+
+        class FakeProcess:
+            pid = 4242
+            def poll(self) -> None:
+                return None
+            def wait(self, *, timeout: int) -> None:
+                self.assert_timeout = timeout
+        import signal
+        observed: list[tuple[int, int]] = []
+        fake_process = FakeProcess()
+        with patch.object(os, "killpg", side_effect=lambda pid, sig: observed.append((pid, sig))):
+            stopped = namespace["stop_and_reap_process"](fake_process)
+        self.assertTrue(stopped)
+        self.assertEqual(observed, [(4242, signal.SIGKILL)])
+        self.assertEqual(fake_process.assert_timeout, 5)
+
+        class FailingProcess(FakeProcess):
+            def wait(self, *, timeout: int) -> None:
+                self.assert_timeout = timeout
+                raise TimeoutError("injected wait failure")
+        actions_called: list[str] = []
+        proof = {"stages": {}}
+        with patch.object(os, "killpg", side_effect=PermissionError("injected kill failure")):
+            finished = namespace["finish_update_client_cleanup"](
+                [lambda: actions_called.append("owned-cleanup") is None], FailingProcess(), proof)
+        self.assertFalse(finished)
+        self.assertEqual(actions_called, ["owned-cleanup"])
+        self.assertEqual(proof["stages"]["updateClientCleanupVerified"], False)
+
+        proof_function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                              and node.name == "prove_update_history_client_lease")
+        calls_in_proof = [node.func.id for node in ast.walk(proof_function)
+                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
+        self.assertIn("parse_update_client_intent", calls_in_proof)
+        self.assertIn("update_client_info_matches", calls_in_proof)
+        self.assertIn("finish_update_client_cleanup", calls_in_proof)
+        self.assertIn("post_exit_evidence", {node.id for node in ast.walk(proof_function)
+                                             if isinstance(node, ast.Name)})
+
+    def run_extracted_publication(self, *, fail_private_cleanup: bool,
+                                  client_cleanup_failed: bool = False) -> tuple[int, dict[str, object], bool, tuple[bool, bool]]:
         with tempfile.TemporaryDirectory(prefix="lares-probe-publication-") as temporary:
             base = Path(temporary)
             fixture_root = base / "fixture-root"
+            fixture_root.mkdir()
             private_root = base / "fixture-private"
             (private_root / "role-login-fixtures").mkdir(parents=True)
             output = base / "proof.json"
@@ -908,15 +1378,43 @@ class MaintenanceImageProbePublicationTests(unittest.TestCase):
                 "shutil": SimpleNamespace(rmtree=rmtree),
                 "pathlib": __import__("pathlib"),
                 "json": json,
+                "os": os,
+                "subprocess": subprocess,
                 "PROOF_PATH": str(output),
-                "proof": {"status": "passed", "failedStage": None, "failureKind": None, "cleanupOkay": False},
+                "proof": {"status": "passed", "failedStage": None, "failureKind": None,
+                          "cleanupOkay": False, "stages": {}},
             }
             tree = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"), filename=str(IMAGE_PROBE))
             needed = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
-                      and node.name in {"cleanup", "publish_result"}}
-            self.assertEqual(set(needed), {"cleanup", "publish_result"})
-            module = ast.Module(body=[needed["cleanup"], needed["publish_result"]], type_ignores=[])
+                      and node.name in {"run_cleanup_actions", "stop_and_reap_process",
+                                        "finish_update_client_cleanup", "cleanup", "publish_result"}}
+            self.assertEqual(set(needed), {"run_cleanup_actions", "stop_and_reap_process",
+                                           "finish_update_client_cleanup", "cleanup", "publish_result"})
+            signal_import = next(node for node in tree.body if isinstance(node, ast.Import)
+                                 and any(alias.name == "signal" for alias in node.names))
+            module = ast.Module(body=[signal_import, needed["run_cleanup_actions"],
+                                      needed["stop_and_reap_process"],
+                                      needed["finish_update_client_cleanup"],
+                                      needed["cleanup"], needed["publish_result"]], type_ignores=[])
             exec(compile(module, str(IMAGE_PROBE), "exec"), namespace)
+            if client_cleanup_failed:
+                class ExitedProcess:
+                    pid = 4242
+                    def poll(self) -> None:
+                        return None
+                    def wait(self, *, timeout: int) -> None:
+                        self.assert_timeout = timeout
+                observed: list[tuple[int, int]] = []
+                final_actions: list[str] = []
+                blocker = ExitedProcess()
+                with patch.object(os, "killpg", side_effect=lambda pid, sig: observed.append((pid, sig))):
+                    aggregate = namespace["finish_update_client_cleanup"](
+                        [lambda: final_actions.append("last-action") is None], blocker,
+                        namespace["proof"], False)
+                self.assertFalse(aggregate)
+                self.assertEqual(final_actions, ["last-action"])
+                self.assertEqual(observed, [(4242, __import__("signal").SIGKILL)])
+                self.assertEqual(blocker.assert_timeout, 5)
             code = namespace["publish_result"](0)
             result = json.loads(output.read_text(encoding="utf-8"))
             roots_exist = fixture_root.exists(), private_root.exists()
@@ -943,6 +1441,15 @@ class MaintenanceImageProbePublicationTests(unittest.TestCase):
         self.assertEqual(result["failureKind"], "cleanup")
         self.assertTrue(output_published)
         self.assertEqual(roots_exist, (False, True))
+
+    def test_late_client_cleanup_failure_retains_probe_roots_and_publishes_failure(self) -> None:
+        code, result, output_published, roots_exist = self.run_extracted_publication(
+            fail_private_cleanup=False, client_cleanup_failed=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(result["failureKind"], "cleanup")
+        self.assertFalse(result["cleanupOkay"])
+        self.assertTrue(output_published)
+        self.assertEqual(roots_exist, (True, True))
 
 
 if __name__ == "__main__":

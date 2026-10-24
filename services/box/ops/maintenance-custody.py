@@ -29,6 +29,8 @@ _NORMAL_OPERATIONS = {
     "restore-drill": "restore-drill.sh",
     "setup-backups": "setup-backups.sh",
     "refresh-recovery": "refresh-recovery.sh",
+    "update": "update.sh",
+    "rollback": "rollback.sh",
 }
 
 
@@ -860,6 +862,59 @@ def validate(prefix: str | Path, subnet: str | None = None) -> dict[str, object]
                 os.close(fd)
 
 
+def validate_update_target(prefix: str, compose_dir: str, compose_files: str,
+                           database_secret: str, operator_secret: str,
+                           pg_host: str, pg_port: str, pg_database: str,
+                           *, test_owner: bool = False) -> None:
+    """Bind update/rollback inputs to one canonical installation and its fixed local DB."""
+    root = Path(prefix)
+    if (not root.is_absolute() or ".." in root.parts or prefix != str(root)
+            or not root.is_dir() or root.is_symlink() or root.resolve(strict=True) != root):
+        raise ValueError("installation prefix is not a canonical directory")
+    expected_compose = root / "opt/lares"
+    requested_compose = Path(compose_dir)
+    if (compose_dir != str(expected_compose) or requested_compose != expected_compose or not requested_compose.is_dir()
+            or requested_compose.is_symlink() or requested_compose.resolve(strict=True) != expected_compose):
+        raise ValueError("Compose directory does not match this installation prefix")
+    names = compose_files.split()
+    if not names:
+        raise ValueError("Compose file list is empty")
+    for name in names:
+        requested = Path(name)
+        if ".." in requested.parts or name != os.path.normpath(name):
+            raise ValueError("Compose file path is not canonical")
+        candidate = requested if requested.is_absolute() else expected_compose / requested
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(expected_compose)
+            info = candidate.lstat()
+        except (OSError, ValueError) as error:
+            raise ValueError("Compose file is missing or outside this installation") from error
+        if (candidate != resolved or not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+            raise ValueError("Compose file is not a canonical regular file")
+
+    expected_database_secret = root / "etc/lares/secrets/database-password"
+    expected_operator_secret = root / "etc/lares/operator/database-password"
+    credentials = (
+        (database_secret, expected_database_secret, 0o440, 10001),
+        (operator_secret, expected_operator_secret, 0o600, 0),
+    )
+    expected_uid = os.geteuid() if test_owner else 0
+    for supplied, expected, expected_mode, expected_gid in credentials:
+        path = Path(supplied)
+        try:
+            info = path.lstat()
+        except OSError as error:
+            raise ValueError("installation database credential is missing or unsafe") from error
+        if (supplied != str(expected) or path != expected or path.resolve(strict=True) != expected or stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid
+                or info.st_gid != (os.getegid() if test_owner else expected_gid)
+                or stat.S_IMODE(info.st_mode) != expected_mode or info.st_nlink != 1 or info.st_size < 1):
+            raise ValueError("installation database credential is missing or unsafe")
+    if (pg_host, pg_port, pg_database) != ("127.0.0.1", "5432", "lares_state"):
+        raise ValueError("update and rollback require the installed local Lares database")
+
+
 def main(argv: list[str]) -> int:
     try:
         if len(argv) == 5 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh":
@@ -892,6 +947,12 @@ def main(argv: list[str]) -> int:
             receipt = validate(argv[2], argv[3])
             print(json.dumps({"installationId": receipt["installationId"], "epoch": receipt["epoch"]},
                              separators=(",", ":")))
+        elif len(argv) == 10 and argv[1] == "validate-update-target" and os.geteuid() == 0:
+            validate_update_target(*argv[2:10], test_owner=False)
+        elif (len(argv) == 11 and argv[1] == "validate-update-target" and
+              argv[10] == "--test-owner" and os.geteuid() != 0 and
+              os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
+            validate_update_target(*argv[2:10], test_owner=True)
         elif len(argv) >= 5 and argv[1] == "run-normal":
             test_owner = len(argv) > 4 and argv[4] == "--test-owner"
             separator = 5 if test_owner else 4
@@ -907,7 +968,7 @@ def main(argv: list[str]) -> int:
             raise ValueError("unsupported maintenance custody command")
         return 0
     except (OSError, ValueError) as error:
-        if len(argv) > 1 and argv[1] in ("run-normal", "assert-normal-held"):
+        if len(argv) > 1 and argv[1] in ("run-normal", "assert-normal-held", "validate-update-target"):
             print("maintenance admission: refused", file=sys.stderr)
             return 78
         print(f"maintenance custody: {error}", file=sys.stderr)

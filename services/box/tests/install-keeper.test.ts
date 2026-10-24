@@ -312,6 +312,7 @@ describe("the keeper the installer configures and starts", () => {
     expect(env.LARES_MAINTENANCE_EPOCH).toBe(String(receipt.epoch));
     expect(proxy.init).toBe(true);
     expect(proxy.restart).toBe("unless-stopped");
+    expect(proxy.tmpfs).toEqual(["/run:rw,nosuid,nodev,noexec,size=1m,mode=0755"]);
     expect(proxy.networks).toEqual({
       "lares-network": { ipv4_address: "${LARES_PROXY_ADDRESS:?reserved proxy address}" },
     });

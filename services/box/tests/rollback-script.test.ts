@@ -16,7 +16,7 @@
 // No real docker, Postgres, restic or network is ever touched, and no server exists.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, chownSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,7 @@ const KEEPER_PREV = `${KEEPER}@sha256:${"d".repeat(64)}`;
 const KEEPER_CUR = `${KEEPER}@sha256:${"e".repeat(64)}`;
 
 let dir: string;
+let prefix: string;
 let binDir: string;
 let opsDir: string;
 let composeDir: string;
@@ -46,7 +47,7 @@ let log: string;
 let operatorPasswordFile: string;
 
 /** What the installation is running: two digest-pinned services and one that is not. */
-function composeYaml(digest: string) {
+function composeYaml(digest: string, targetPrefix = prefix) {
   return [
     "services:",
     "  lares-console:",
@@ -58,9 +59,9 @@ function composeYaml(digest: string) {
     "    image: postgres:16-alpine",
     "    command: [postgres, -c, hba_file=/run/lares-auth/pg_hba.conf]",
     "    volumes:",
-    "      - /var/lib/lares/postgres:/var/lib/postgresql/data",
+    `      - ${targetPrefix}/var/lib/lares/postgres:/var/lib/postgresql/data`,
     "      - type: bind",
-    "        source: /var/lib/lares-maintenance/postgres-auth",
+    `        source: ${targetPrefix}/var/lib/lares-maintenance/postgres-auth`,
     "        target: /run/lares-auth",
     "        read_only: true",
     "        bind:",
@@ -107,19 +108,33 @@ function stub(name: string, body: string, where = binDir) {
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "rollback-script-"));
+  prefix = join(dir, "prefix");
+  mkdirSync(prefix, { mode: 0o755 });
   binDir = join(dir, "bin");
   opsDir = join(dir, "ops");
-  composeDir = join(dir, "compose");
+  composeDir = join(prefix, "opt", "lares");
   mkdirSync(binDir);
   mkdirSync(opsDir);
-  mkdirSync(composeDir);
+  mkdirSync(composeDir, { recursive: true });
+  execFileSync("python3", [join(here, "..", "ops", "maintenance-custody.py"), "prepare-fresh", prefix,
+    "172.30.0.0/24", "--confirm-fresh", "--test-owner"], {
+    env: { ...process.env, LARES_MAINTENANCE_TESTING: "1" },
+  });
+  mkdirSync(join(prefix, "etc", "lares", "secrets"), { recursive: true });
+  mkdirSync(join(prefix, "etc", "lares", "operator"), { recursive: true });
+  const appPasswordFile = join(prefix, "etc", "lares", "secrets", "database-password");
+  writeFileSync(appPasswordFile, "fixture-only-db-password\n", { mode: 0o440 });
+  chownSync(appPasswordFile, process.getuid!(), process.getgid!());
+  chmodSync(appPasswordFile, 0o440);
   composeFile = join(composeDir, "compose.yaml");
-  writeFileSync(composeFile, composeYaml(CUR));
+  writeFileSync(composeFile, composeYaml(CUR, prefix));
   state = join(dir, "update-history.tsv");
   writeFileSync(state, updateRow("ok"));
   log = join(dir, "calls.log");
-  operatorPasswordFile = join(dir, "operator-password");
+  operatorPasswordFile = join(prefix, "etc", "lares", "operator", "database-password");
   writeFileSync(operatorPasswordFile, "fixture-only-operator-password\n", { mode: 0o600 });
+  chownSync(operatorPasswordFile, process.getuid!(), process.getgid!());
+  chmodSync(operatorPasswordFile, 0o600);
 
   const logLine = 'printf "%s %s\\n" "$(basename "$0")" "$*" >> "$STUB_LOG"';
 
@@ -190,28 +205,35 @@ beforeEach(() => {
     ].join("\n"),
   );
   stub("node", 'case "$1:$2" in */bin/update-record.ts:release) exec "$TEST_REAL_NODE" "$@" ;; */bin/update-record.ts:*) shift; exec "$TEST_RECORD" "$@" ;; *) exec "$TEST_REAL_NODE" "$@" ;; esac');
+  // The macOS test host may not ship coreutils timeout; production installs run on Linux.
+  // This pass-through keeps isolated Docker stubs fast without changing production behavior.
+  stub("timeout", 'if [[ "$1" == --kill-after=* ]]; then shift; elif [ "$1" = --kill-after ]; then shift 2; fi; shift; exec "$@"');
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 function runScript(script: string, args: string[], env: Record<string, string> = {}) {
   try {
+    const childEnv: Record<string, string> = {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH}`,
+      STUB_LOG: log,
+      STUB_STATE: state,
+      LARES_OPS_DIR: opsDir,
+      LARES_PREFIX: prefix,
+      DB_COMPOSE_DIR: composeDir,
+      UPDATE_COMPOSE_FILES: "compose.yaml",
+      LARES_UPDATE_RECORDER: join(binDir, "record"),
+      LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
+      TEST_RECORD: join(binDir, "record"),
+      TEST_REAL_NODE: process.execPath,
+      LARES_MAINTENANCE_TESTING: "1",
+      ...env,
+    };
+    if (env.UNSET_DB_COMPOSE_DIR === "1") delete childEnv.DB_COMPOSE_DIR;
+    delete childEnv.UNSET_DB_COMPOSE_DIR;
     const stdout = execFileSync("/bin/bash", [script, ...args], {
-      env: {
-        ...process.env,
-        PATH: `${binDir}:${process.env.PATH}`,
-        STUB_LOG: log,
-        STUB_STATE: state,
-        LARES_OPS_DIR: opsDir,
-        DB_COMPOSE_DIR: composeDir,
-        UPDATE_COMPOSE_FILES: "compose.yaml",
-        LARES_UPDATE_RECORDER: join(binDir, "record"),
-        LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
-        TEST_RECORD: join(binDir, "record"),
-        TEST_REAL_NODE: process.execPath,
-        LARES_MAINTENANCE_TESTING: "1",
-        ...env,
-      },
+      env: childEnv,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -238,14 +260,14 @@ function expectNormalAuthCompose() {
   const db = (parse(compose()) as { services: Record<string, { command?: string | string[]; volumes?: Array<string | { type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> }> }).services.db!;
   expect(Array.isArray(db.command) ? db.command.join(" ") : db.command).toContain("hba_file=/run/lares-auth/pg_hba.conf");
   const mount = db.volumes?.find((volume) => typeof volume !== "string" && volume.target === "/run/lares-auth");
-  expect(mount).toMatchObject({ type: "bind", source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
+  expect(mount).toMatchObject({ type: "bind", source: `${prefix}/var/lib/lares-maintenance/postgres-auth`, target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
   if (process.env.CI === "true") {
     const effective = JSON.parse(execFileSync("docker", ["compose", "-f", composeFile, "config", "--format", "json"], { encoding: "utf8" })) as {
       services: { db?: { command?: string[]; volumes?: Array<{ type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
     };
     expect(effective.services.db?.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
-    const effectiveAuthMount = effective.services.db?.volumes?.find((volume) => volume.source === "/var/lib/lares-maintenance/postgres-auth" && volume.target === "/run/lares-auth");
-    expect(effectiveAuthMount).toMatchObject({ type: "bind", source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true });
+    const effectiveAuthMount = effective.services.db?.volumes?.find((volume) => volume.source === `${prefix}/var/lib/lares-maintenance/postgres-auth` && volume.target === "/run/lares-auth");
+    expect(effectiveAuthMount).toMatchObject({ type: "bind", source: `${prefix}/var/lib/lares-maintenance/postgres-auth`, target: "/run/lares-auth", read_only: true });
     const bind = effectiveAuthMount?.bind;
     expect(bind !== undefined && bind !== null && typeof bind === "object" && !Array.isArray(bind) &&
       (!("create_host_path" in bind) || bind.create_host_path === false)).toBe(true);
@@ -253,6 +275,12 @@ function expectNormalAuthCompose() {
 }
 
 describe("putting the previous version back", () => {
+  it("refuses a Compose path outside the same installation before rollback work", () => {
+    const refused = run(["--dry-run"], { UPDATE_COMPOSE_FILES: "../other/compose.yaml" });
+    expect(refused.code).toBe(78);
+    expect(calls()).toBe("");
+  });
+
   it("keeps the committed Keeper guard fields through a failed update and the real rollback script", () => {
     const keeperCompose = join(composeDir, "keeper.yaml");
     const keeperEnv = join(composeDir, "keeper.env");
@@ -289,7 +317,7 @@ describe("putting the previous version back", () => {
       DATABASE_PASSWORD_FILE: "/legacy/password",
     });
     expect(r.code, r.stderr).toBe(0);
-    expect(calls()).toContain("record env PGUSER=lares_app DATABASE_PASSWORD_FILE=/etc/lares/secrets/database-password");
+    expect(calls()).toContain(`record env PGUSER=lares_app DATABASE_PASSWORD_FILE=${prefix}/etc/lares/secrets/database-password`);
     expect(calls()).not.toContain("record env PGUSER=legacy_role DATABASE_PASSWORD_FILE=/legacy/password");
   });
 
@@ -473,7 +501,7 @@ describe("putting the previous version back", () => {
     rmSync(composeFile);
     const r = run(["--yes"]);
     expect(r.code).toBe(78);
-    expect(r.stderr).toMatch(/UPDATE_COMPOSE_FILES/);
+    expect(r.stderr).toMatch(/requested Compose.*do not match/);
     expect(calls()).not.toMatch(/docker compose/);
   });
 
@@ -522,6 +550,17 @@ describe("putting the previous version back", () => {
     expect(calls()).toBe("");
   });
 
+  it("requires an explicit Compose directory for an explicit non-root prefix before effects", () => {
+    const r = run(["--dry-run"], { UNSET_DB_COMPOSE_DIR: "1" });
+    expect(r.code).toBe(78);
+    expect(calls()).toBe("");
+  });
+
+  it("decides whether the prefix needs an explicit Compose directory from its path", () => {
+    expect(readFileSync(SCRIPT, "utf8")).toContain('elif [ "$ADMISSION_PREFIX" != / ]; then COMPOSE_DIR=""');
+    expect(readFileSync(UPDATE_SCRIPT, "utf8")).toContain('elif [ "$ADMISSION_PREFIX" != / ]; then COMPOSE_DIR=""');
+  });
+
   it("says the keeper will put its own image back, rather than pretending otherwise", () => {
     expect(run(["--dry-run"]).stdout).toMatch(/keeper/);
   });
@@ -546,8 +585,7 @@ describe("rolling back a box whose engine is an image", () => {
   let prefix: string;
 
   beforeEach(() => {
-    prefix = join(dir, "root");
-    mkdirSync(prefix);
+    prefix = dirname(dirname(composeDir));
     mkdirSync(join(binDir, "real"));
     const base = join(binDir, "real", "docker");
     writeFileSync(base, readFileSync(join(binDir, "docker"), "utf8"));
@@ -559,6 +597,38 @@ describe("rolling back a box whose engine is an image", () => {
     stub(
       "docker",
       [
+        'if [ "$1" = create ]; then',
+        '  printf "docker %s\n" "$*" >> "$STUB_LOG"',
+        '  args=("$@"); cidfile=""; owner=""; operation=""; name=""; script_at=-1',
+        '  for ((i = 0; i < ${#args[@]}; i++)); do',
+        '    case "${args[i]}" in',
+        '      --cidfile) cidfile="${args[i+1]}" ;;',
+        '      --name) name="${args[i+1]}" ;;',
+        '      --label) case "${args[i+1]}" in com.lares.maintenance.owner=*) owner="${args[i+1]#*=}" ;; com.lares.maintenance.operation=*) operation="${args[i+1]#*=}" ;; esac ;;',
+        '      /app/services/box/*.ts) script_at=$i ;;',
+        '    esac',
+        '  done',
+        '  id=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef; cid_id="$id"; [ "${STUB_SHORT_CLIENT_ID:-}" != 1 ] || cid_id=deadbeef',
+        '  [ "${STUB_CREATE_PARTIAL:-}" = 1 ] || printf "%s\n" "$cid_id" > "$cidfile"; : > "$STUB_LOG.output"',
+        '  if [ "$script_at" -ge 0 ] && [ "${args[script_at+1]:-}" = previous-images ]; then',
+        '    printf "record\t41\tok\t2026-10-01\t9f8e7d6c\nimage\tlares-console\tregistry.example/lares-console@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nimage\tlares-chief-of-staff\tregistry.example/lares-chief-of-staff@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n" > "$STUB_LOG.output"',
+        '  fi',
+        '  printf "%s\n%s\n%s\n%s\n" "$id" "$owner" "$operation" "$name" > "$STUB_LOG.identity"; echo 0 > "$STUB_LOG.status"; [ "${STUB_CREATE_PARTIAL:-}" != 1 ] || exit 124; exit 0',
+        'fi',
+        'if [ "$1" = start ] && [ "$2" = --attach ]; then printf "docker %s\n" "$*" >> "$STUB_LOG"; cat "$STUB_LOG.output"; exit 0; fi',
+        'if [ "$1" = wait ]; then printf "docker %s\n" "$*" >> "$STUB_LOG"; cat "$STUB_LOG.status"; exit 0; fi',
+        'if [ "$1" = inspect ] && [ "$2" != image ]; then',
+        '  printf "docker %s\n" "$*" >> "$STUB_LOG"',
+        '  if [[ "$*" == *Config.Entrypoint* ]]; then echo \'["/usr/local/lib/lares/maintenance-admission-v1"]\'; exit 0; fi',
+        '  [ -f "$STUB_LOG.identity" ] || exit 1',
+        '  read -r id < <(sed -n "1p" "$STUB_LOG.identity"); read -r owner < <(sed -n "2p" "$STUB_LOG.identity"); read -r operation < <(sed -n "3p" "$STUB_LOG.identity"); read -r name < <(sed -n "4p" "$STUB_LOG.identity"); read -r status < "$STUB_LOG.status"',
+        '  if [ "${STUB_REPLACE_CLIENT_NAME:-}" = 1 ] && [ "${@: -1}" = "$name" ]; then printf "deadbeefdeadbeefdeadbeefdeadbeef|false|attacker|rollback\n"; exit 0; fi',
+        '  case "$*" in *State.ExitCode*) printf "%s|false|%s|%s|%s\n" "$id" "$status" "$owner" "$operation" ;; *State.Running*) printf "%s|false|%s|%s|/%s\n" "$id" "$owner" "$operation" "$name" ;; *) printf "%s|/%s|%s|%s\n" "$id" "$name" "$owner" "$operation" ;; esac',
+        '  exit 0',
+        'fi',
+        'if [ "$1" = stop ]; then printf "docker %s\n" "$*" >> "$STUB_LOG"; exit 0; fi',
+        'if [ "$1" = rm ]; then printf "docker %s\n" "$*" >> "$STUB_LOG"; rm -f "$STUB_LOG.identity"; exit 0; fi',
+        'if [ "$1" = ps ]; then printf "docker %s\n" "$*" >> "$STUB_LOG"; case "$*" in *"name="*) [ "${STUB_REPLACE_CLIENT_NAME:-}" != 1 ] || echo replacement-id ;; esac; exit 0; fi',
         'if [ "$1" = run ]; then',
         '  printf "docker %s\\n" "$*" >> "$STUB_LOG"',
         '  args=("$@"); at=-1',
@@ -570,6 +640,7 @@ describe("rolling back a box whose engine is an image", () => {
         "  exit 0",
         "fi",
         'if [ "$1 $2" = "image inspect" ]; then',
+        '  if [ "${3:-}" = --format ]; then echo \'["/usr/local/lib/lares/maintenance-admission-v1"]\'; exit 0; fi',
         '  printf "docker %s\\n" "$*" >> "$STUB_LOG"',
         '  [ -z "${STUB_NO_ENGINE_IMAGE:-}" ]; exit $?',
         "fi",
@@ -585,7 +656,7 @@ describe("rolling back a box whose engine is an image", () => {
 
   const imageRun = (args: string[], env: Record<string, string> = {}) =>
     run(args, { LARES_ENGINE_IMAGE: ENGINE, LARES_PREFIX: prefix, LARES_UPDATE_RECORDER: "", ...env });
-  const engineRuns = () => calls().split("\n").filter((l) => l.startsWith("docker run "));
+  const engineRuns = () => calls().split("\n").filter((l) => l.startsWith("docker create "));
 
   it("reads and closes the record in the box's engine image, and puts the previous digests back", () => {
     const r = imageRun(["--yes"]);
@@ -597,9 +668,18 @@ describe("rolling back a box whose engine is an image", () => {
     expect(runs[1]).toMatch(/update-record\.ts finish 41 rolled-back /);
     for (const line of runs) {
       expect(line).toContain(ENGINE);
-      expect(line).toContain("--network host --user 0:0 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges");
+      expect(line).toContain("--network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges");
+      expect(line).toContain("--label com.lares.maintenance.operation=rollback");
+      expect(line).toContain("node --import tsx/esm");
+      expect(line).not.toContain("--entrypoint");
       expect(line).not.toContain("docker.sock");
+      expect(line).toContain(`src=${prefix}/var/lib/lares-maintenance/admission,dst=/run/lares-maintenance/admission,readonly`);
+      expect(line).toContain(` ${ENGINE} /run/lares-maintenance/admission `);
     }
+    const clientId = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    expect(calls()).toContain(`docker start --attach ${clientId}`);
+    expect(calls()).toContain(`docker wait ${clientId}`);
+    expect(calls()).toContain(`docker rm ${clientId}`);
     expect(compose()).toMatch(new RegExp(`@sha256:b{64}`));
     expect(compose()).not.toContain(CUR);
   });
@@ -608,18 +688,38 @@ describe("rolling back a box whose engine is an image", () => {
     imageRun(["--yes"]);
     const secrets = join(prefix, "etc", "lares", "secrets");
     for (const line of engineRuns()) {
-      expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/database-password`);
-      expect(line).toContain(`-v ${secrets}/database-password:${secrets}/database-password:ro`);
-      expect(line).toContain("-e PGUSER=lares_app");
-      expect(line).not.toContain(`-v ${secrets}:${secrets}:ro`);
+      expect(line).toContain(`--env DATABASE_PASSWORD_FILE=${secrets}/database-password`);
+      expect(line).toContain(`src=${secrets}/database-password,dst=${secrets}/database-password,readonly`);
+      expect(line).toContain("--env PGUSER=lares_app");
+      expect(line).not.toContain(`src=${secrets},dst=${secrets}`);
       expect(line).not.toContain("PGPASSWORD");
     }
+  });
+
+  it("requires an explicit Compose directory for an explicit non-root prefix before effects", () => {
+    const r = imageRun(["--dry-run"], { UNSET_DB_COMPOSE_DIR: "1" });
+    expect(r.code).toBe(78);
+    expect(calls()).toBe("");
   });
 
   it("applies no migration and calls no pnpm, in either direction", () => {
     imageRun(["--yes"]);
     expect(calls()).not.toMatch(/migrate/);
     expect(calls()).not.toMatch(/^pnpm/m);
+  });
+
+  it("cleans the pinned original by ID while leaving a replacement name untouched", () => {
+    const r = imageRun(["--dry-run"], { STUB_REPLACE_CLIENT_NAME: "1" });
+    expect(r.code).toBe(78);
+    expect(calls()).toMatch(/docker rm 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/);
+    expect(calls()).not.toMatch(/docker (?:stop|rm) replacement-id/);
+  });
+
+  it("rejects a short client ID and cleans only the verified full-ID owner", () => {
+    const r = imageRun(["--dry-run"], { STUB_SHORT_CLIENT_ID: "1" });
+    expect(r.code).toBe(78);
+    expect(calls()).not.toMatch(/docker start --attach/);
+    expect(calls()).toMatch(/docker rm 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/);
   });
 
   it("refuses, changing nothing, when no engine image is known or it cannot be fetched", () => {

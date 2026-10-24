@@ -93,6 +93,8 @@ services:
     # Squid refuses reload when its PID file names PID 1; keep it behind Docker init.
     init: true
     restart: unless-stopped
+    # Squid's PID files describe one container run; keep only this runtime directory ephemeral.
+    tmpfs: ['/run:rw,nosuid,nodev,noexec,size=1m,mode=0755']
     # Directory mount is mandatory: atomic config replacement must change the inode seen by Squid.
     volumes:
       - ${LARES_EGRESS_DIR:?absolute egress directory}:/config:ro
