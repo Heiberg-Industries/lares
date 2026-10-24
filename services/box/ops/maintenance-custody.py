@@ -31,6 +31,7 @@ _NORMAL_OPERATIONS = {
     "refresh-recovery": "refresh-recovery.sh",
     "update": "update.sh",
     "rollback": "rollback.sh",
+    "restore": "restore.sh",
 }
 
 
