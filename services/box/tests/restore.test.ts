@@ -26,7 +26,7 @@ const RESTORE_FIXTURE_CADDY_IMAGE = (JSON.parse(readFileSync(
   join(here, "..", "..", "..", "releases", "2026-10-21-rc.12.json"), "utf8",
 )) as { images: { caddy: string } }).images.caddy;
 
-let dir: string, binDir: string, prefix: string, log: string, archive: string, scratchParent: string, ledgerFile: string;
+let dir: string, binDir: string, prefix: string, log: string, archive: string, scratchParent: string, ledgerFile: string, restoreDbState: string, restoreDbQueryCount: string;
 const appDatabase = () => ({ host: '127.0.0.1', port: 5432, database: 'lares_state', user: 'lares_app', passwordFile: join(prefix, 'etc/lares/secrets/database-password') });
 const financialBinding = () => ({ directory: '/var/lib/lares/budget-financial', db: { ...appDatabase(), user: 'lares_financial', passwordFile: join(prefix, 'etc/lares/secrets/financial-database-password') } });
 const keeperConfig = (extra: Record<string, unknown> = {}) => JSON.stringify({
@@ -63,12 +63,33 @@ function ledger(...names: string[]) {
 
 /** System tools the script needs, linked into the stub directory so PATH holds nothing else. */
 const SYSTEM_TOOLS = ["bash", "sh", "env", "cat", "sed", "grep", "awk", "tr", "head", "tail", "sort", "ls", "basename", "dirname",
-  "mkdir", "cp", "mv", "rm", "mktemp", "chmod", "find", "wc", "cut", "date", "sleep", "python3", "cmp"];
+  "mkdir", "cp", "mv", "rm", "rmdir", "mktemp", "chmod", "find", "wc", "cut", "date", "sleep", "python3", "cmp"];
 function linkSystemTools() {
   for (const t of SYSTEM_TOOLS) {
     const found = spawnSync("/bin/sh", ["-c", `command -v ${t}`], { encoding: "utf8" }).stdout.trim();
     if (found) symlinkSync(found, join(binDir, t));
   }
+}
+function installPythonFaultWrapper() {
+  const executable = join(binDir, "python3");
+  const realPython = realpathSync(executable);
+  rmSync(executable);
+  writeFileSync(executable, `#!/usr/bin/env bash
+real_python='${realPython}'
+if [ "$1" != "-" ]; then exec "$real_python" "$@"; fi
+shift
+tmp=$(mktemp)
+cat > "$tmp"
+unlock_script=0
+grep -Fq 'for entry in sys.argv[1].splitlines()' "$tmp" && unlock_script=1
+if [ "$unlock_script" = 1 ] && [ -n "\${RESTORE_FAIL_VAULT_UNLOCK:-}" ]; then rm -f "$tmp"; exit 1; fi
+if [ -n "\${RESTORE_FAIL_INTENT_CLEAR_ONCE_FILE:-}" ] && [ "$2" = active ] && [ "$8" = 1 ] && [ ! -e "$RESTORE_FAIL_INTENT_CLEAR_ONCE_FILE" ]; then : > "$RESTORE_FAIL_INTENT_CLEAR_ONCE_FILE"; rm -f "$tmp"; exit 1; fi
+if [ -n "\${RESTORE_FAIL_CLEANUP_READY_ONCE_FILE:-}" ] && [ "$2" = cleanup-ready ] && [ ! -e "$RESTORE_FAIL_CLEANUP_READY_ONCE_FILE" ]; then : > "$RESTORE_FAIL_CLEANUP_READY_ONCE_FILE"; rm -f "$tmp"; exit 1; fi
+exec 3< "$tmp"
+rm -f "$tmp"
+exec "$real_python" - "$@" <&3
+`);
+  chmodSync(executable, 0o755);
 }
 
 function run(args: string[], opts: { env?: Record<string, string>; input?: string } = {}) {
@@ -82,18 +103,51 @@ function run(args: string[], opts: { env?: Record<string, string>; input?: strin
     input: opts.input ?? "",
     env: {
       PATH: binDir, STUB_LOG: log, HOME: dir, ARCHIVE_ROOT: archive, LEDGER_FILE: ledgerFile,
+      RESTORE_DB_STATE_FILE: restoreDbState,
+      RESTORE_DB_QUERY_COUNT_FILE: restoreDbQueryCount,
       DRILL_SCRATCH_ROOT: scratchParent, DRILL_MIN_FREE_MB: "1",
       WORKFLOW_ROWS: `${workflowDatabase}\towned\t11111111-1111-4111-8111-111111111111\tlares_workflow_owner\tlares-owned:11111111-1111-4111-8111-111111111111`,
       RESTORE_OPERATOR_MODE: mode("etc/lares/operator/database-password"),
       RESTORE_APP_MODE: mode("etc/lares/secrets/database-password"),
       RESTORE_FINANCIAL_MODE: mode("etc/lares/secrets/financial-database-password"),
       LARES_MAINTENANCE_TESTING: "1",
+      LARES_MAINTENANCE_TEST_PREFIX: prefix,
       ...opts.env,
     },
   });
   return { code: r.status ?? -1, stdout: r.stdout, stderr: r.stderr, all: r.stdout + r.stderr };
 }
 const base = () => ["--snapshot", "abc123", "--yes", "--old-server-stopped"];
+function vaultInventory() {
+  const areaId = randomUUID(), backingId = randomUUID(), planId = randomUUID();
+  const inventory = {
+    version: 1, planId, organisationId: "org.example.invalid", provisionerMemberId: "owner",
+    backing: { id: backingId, kind: "git", root: "/srv" },
+    areas: [{ areaId, kind: "private", owner: { kind: "member", id: "owner" }, relativePath: `vault/private/${areaId}`, origin: `/var/lib/lares-vault-git/${areaId}.git` }],
+  };
+  return { areaId, backingId, inventory };
+}
+function addVaultSnapshot() {
+  const { areaId, backingId, inventory } = vaultInventory();
+  writeArchive("srv/lares/installation/vault-storage.json", `${JSON.stringify(inventory)}\n`);
+  const work = `srv/vault/private/${areaId}`;
+  writeArchive(`${work}/.lares-vault-area.json`, `${JSON.stringify({ version: 1, areaId, backingStoreId: backingId, relativePath: `vault/private/${areaId}`, kind: "private", owner: { kind: "member", id: "owner" } })}\n`);
+  mkdirSync(join(archive, work, ".git"), { recursive: true });
+  mkdirSync(join(archive, "srv/vault/shared"), { recursive: true });
+  mkdirSync(join(archive, `var/lib/lares-vault-git/${areaId}.git`), { recursive: true });
+}
+function addTargetVault() {
+  const { areaId, backingId, inventory } = vaultInventory();
+  write("srv/lares/installation/vault-storage.json", `${JSON.stringify(inventory)}\n`);
+  const work = `srv/vault/private/${areaId}`;
+  write(`${work}/.lares-vault-area.json`, `${JSON.stringify({ version: 1, areaId, backingStoreId: backingId, relativePath: `vault/private/${areaId}`, kind: "private", owner: { kind: "member", id: "owner" } })}\n`);
+  mkdirSync(join(prefix, work, ".git"), { recursive: true });
+  mkdirSync(join(prefix, "srv/vault/shared"), { recursive: true });
+  mkdirSync(join(prefix, "var/lib/lares-vault-git", `${areaId}.git`), { recursive: true });
+  // restore only locks the inventoried working repository. Bare repositories are read-only
+  // verification inputs and do not have a separately owned lock in this helper.
+  return [join(prefix, work, ".git/lares-vault.lock")];
+}
 function expectEffectiveRestoreAuth() {
   if (process.env.CI !== "true") return;
   const result = spawnSync("docker", ["compose", "-f", join(prefix, "opt/lares/compose.yaml"), "config", "--format", "json"], { encoding: "utf8" });
@@ -120,6 +174,9 @@ const lastIdx = (re: RegExp) => logLines().map((l, i) => (re.test(l) ? i : -1)).
 const CHANGING = /(compose[^\n]* stop( |$)|dropdb|createdb|pg_restore[^\n]* -d |pnpm|--exit-on-error| up -d)/;
 const changes = () => logLines().filter((l) => CHANGING.test(l));
 const scratchLeft = () => readdirSync(scratchParent);
+const restoreRunNames = (runsRoot: string) => readdirSync(runsRoot, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && entry.name.startsWith("restore-"))
+  .map((entry) => entry.name);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lares-restore-"));
@@ -128,8 +185,18 @@ beforeEach(() => {
   archive = join(dir, "archive"); mkdirSync(archive);
   scratchParent = join(dir, "scratch"); mkdirSync(scratchParent); scratchParent = realpathSync(scratchParent);
   ledgerFile = join(dir, "ledger.txt");
+  restoreDbState = join(dir, "restore-db-state"); writeFileSync(restoreDbState, "");
+  restoreDbQueryCount = join(dir, "restore-db-query-count"); writeFileSync(restoreDbQueryCount, "0");
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   linkSystemTools();
+  const helper = join(BOX, "ops", "maintenance-custody.py");
+  const prepareArgs = [helper, "prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh"];
+  if (process.getuid?.() !== 0) prepareArgs.push("--test-owner");
+  const prepared = spawnSync("python3", prepareArgs, {
+    encoding: "utf8",
+    env: { ...process.env, LARES_MAINTENANCE_TESTING: "1" },
+  });
+  if (prepared.status !== 0) throw new Error(`could not prepare restore test admission: ${prepared.stderr}`);
   const stat = join(binDir, 'stat'); writeFileSync(stat, `#!/usr/bin/env bash
 format="$2"; file="$3"
 case "$file" in
@@ -183,11 +250,23 @@ esac
 exit 0`);
   stub("docker", `
 case "$*" in *"compose"*"config --format json"*) printf '{"services":{"db":{"image":"postgres:16"}}}\\n'; exit 0 ;; esac
+case "$*" in
+  *"verify-snapshot"*)
+    case "\${RESTORE_INTENT_MUTATION:-}" in
+      missing) record=$(find "$LARES_PREFIX/var/lib/lares-maintenance/restore-runs" -name intent.json -type f); rm -f "$record" ;;
+      tampered) record=$(find "$LARES_PREFIX/var/lib/lares-maintenance/restore-runs" -name intent.json -type f); sed 's/"oid":17234/"oid":99999/' "$record" > "$record.tampered"; mv "$record.tampered" "$record" ;;
+    esac
+    exit 0 ;;
+esac
 case " $* " in
   *" pg_isready "*) cat >/dev/null 2>&1 </dev/null; exit "\${PG_ISREADY_RC:-0}" ;;
   *ownership_token*) printf '%s\\n' "\${WORKFLOW_ROWS:-}"; exit 0 ;;
+  *"SELECT oid FROM pg_database"*) database=$(printf '%s' "$*" | sed -n "s/.*datname = '\\([^']*\\)'.*/\\1/p"); query_count=$(cat "$RESTORE_DB_QUERY_COUNT_FILE"); query_count=$((query_count + 1)); printf '%s' "$query_count" > "$RESTORE_DB_QUERY_COUNT_FILE"; if [ "$(cat "$RESTORE_DB_STATE_FILE")" = "$database" ]; then if [ -n "\${RESTORE_DB_OID_CHANGED:-}" ] && [ "$query_count" -ge 3 ]; then echo "\${RESTORE_CHANGED_DB_OID:-99999}"; else echo "\${RESTORE_DB_OID:-17234}"; fi; fi; exit 0 ;;
+  *" createdb "*) database="\${@: -1}"; if [ -n "\${RESTORE_CREATEDB_PARTIAL_FAIL:-}" ]; then printf '%s' "$database" > "$RESTORE_DB_STATE_FILE"; exit 1; fi; printf '%s' "$database" > "$RESTORE_DB_STATE_FILE"; exit 0 ;;
+  *" dropdb "*) if [ -n "\${RESTORE_DROPDB_FAIL:-}" ]; then exit 1; fi; if [ -n "\${RESTORE_DROPDB_FAIL_FIRST_FILE:-}" ] && [ ! -e "$RESTORE_DROPDB_FAIL_FIRST_FILE" ]; then : > "$RESTORE_DROPDB_FAIL_FIRST_FILE"; exit 1; fi; : > "$RESTORE_DB_STATE_FILE"; exit 0 ;;
   *" psql "*) echo "\${FRESH_COUNTS:-0 0 0}"; exit 0 ;;
   *" pg_restore "*" -f - "*) cat >/dev/null; cat "$LEDGER_FILE"; exit 0 ;;
+  *" pg_restore "*" drill_vault_restore_"*) cat >/dev/null; exit "\${RESTORE_TMP_PG_RESTORE_FAIL:-0}" ;;
   *" pg_restore "*) input=$(cat); [ "$input" != "dump of \${PG_RESTORE_FAIL_DB:-@none@}" ] || exit 1; exit 0 ;;
   *" ps -q"*) echo "\${AGENTS_RUNNING:-}"; exit 0 ;;
 esac
@@ -196,6 +275,226 @@ exit 0`);
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("restore.sh: a good restore", () => {
+  it("takes normal maintenance admission before reading install settings or calling Docker", () => {
+    rmSync(join(prefix, "var/lib/lares-maintenance/custody/preparation.json"));
+    const result = run(base());
+    expect(result.code).toBe(78);
+    expect(result.all).toContain("maintenance admission: refused");
+    expect(logLines()).toEqual(["id -u"]);
+    expect(existsSync(join(prefix, "var/lib/lares-maintenance/restore-runs"))).toBe(false);
+  });
+
+  it("keeps the original refusal when cleanup runs before database helpers are defined", () => {
+    rmSync(join(prefix, "opt/lares/compose.yaml"));
+    const result = run(base());
+    expect(result.code).toBe(78);
+    expect(result.all).toContain("this is not a finished Lares installation");
+    expect(result.all).not.toContain("command not found");
+    expect(readdirSync(join(prefix, "var/lib/lares-maintenance/restore-runs"))).toEqual([]);
+  });
+
+  it("refuses a second restore while a prior active claim remains", () => {
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    mkdirSync(runsRoot, { mode: 0o700 });
+    writeFileSync(join(runsRoot, "restore-active.lock"), "restore-existing\n", { mode: 0o600 });
+    const result = run(base());
+    expect(result.code).toBe(78);
+    expect(result.all).toContain("could not create a private restore work record");
+    expect(logLines().filter((line) => /^(docker|restic) /.test(line))).toEqual([]);
+    expect(readFileSync(join(runsRoot, "restore-active.lock"), "utf8")).toBe("restore-existing\n");
+  });
+
+  it("retains Vault lock identity and restore evidence when owned-lock removal fails", () => {
+    const lockFiles = addTargetVault();
+    installPythonFaultWrapper();
+    const result = run(base(), { env: {
+      LARES_ENGINE_IMAGE: `registry.example/keeper@sha256:${"a".repeat(64)}`,
+      RESTIC_FAIL: "1",
+      RESTORE_FAIL_VAULT_UNLOCK: "1",
+    } });
+    expect(result.code).toBe(78);
+    expect(result.all).toContain("stub restic: boom");
+    expect(result.all).toContain("vault-unlock");
+    expect(scratchLeft()).toHaveLength(1);
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const record = JSON.parse(readFileSync(join(runsRoot, runName, "intent.json"), "utf8")) as {
+      phase: string; scratch: string; cleanup: string;
+    };
+    expect(record.phase).toBe("cleanup-required");
+    expect(record.cleanup).toContain("vault-unlock");
+    expect(existsSync(record.scratch)).toBe(true);
+    expect(existsSync(join(runsRoot, "restore-active.lock"))).toBe(true);
+    for (const lock of lockFiles) {
+      expect(readFileSync(lock, "utf8")).toMatch(/^[a-f0-9]{32}$/);
+    }
+  });
+
+  it("does not retry an uncertain normal-path temporary database drop", () => {
+    addVaultSnapshot();
+    const failOnce = join(dir, "dropdb-failed-once");
+    const result = run(base(), { env: {
+      LARES_ENGINE_IMAGE: `registry.example/keeper@sha256:${"a".repeat(64)}`,
+      RESTORE_DROPDB_FAIL_FIRST_FILE: failOnce,
+    } });
+    expect(result.code).toBe(78);
+    expect(result.all).toContain("snapshot verification database cleanup is uncertain");
+    expect(existsSync(failOnce)).toBe(true);
+    expect(logLines().filter((line) => / dropdb /.test(line))).toHaveLength(1);
+    expect(readFileSync(restoreDbState, "utf8")).toMatch(/^drill_vault_restore_[a-f0-9]{32}$/);
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const record = JSON.parse(readFileSync(join(runsRoot, runName, "intent.json"), "utf8")) as {
+      phase: string; scratch: string; temporaryDatabase: { name: string; state: string; oid: number }; cleanup: string;
+    };
+    expect(record.phase).toBe("cleanup-required");
+    expect(record.cleanup).toContain("temporary-database-identity-or-drop-uncertain");
+    expect(record.temporaryDatabase).toMatchObject({ name: readFileSync(restoreDbState, "utf8"), state: "owned", oid: 17234 });
+    expect(existsSync(record.scratch)).toBe(true);
+    expect(existsSync(join(runsRoot, "restore-active.lock"))).toBe(true);
+  });
+
+  it("retains the exact dropped database receipt when clearing its durable intent fails once", () => {
+    addVaultSnapshot();
+    installPythonFaultWrapper();
+    const failOnce = join(dir, "intent-clear-failed-once");
+    const result = run(base(), { env: {
+      LARES_ENGINE_IMAGE: `registry.example/keeper@sha256:${"a".repeat(64)}`,
+      RESTORE_FAIL_INTENT_CLEAR_ONCE_FILE: failOnce,
+    } });
+    expect(result.code).toBe(78);
+    expect(result.all).toContain("snapshot verification database cleanup is uncertain");
+    expect(existsSync(failOnce)).toBe(true);
+    expect(readFileSync(restoreDbState, "utf8")).toBe("");
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const record = JSON.parse(readFileSync(join(runsRoot, runName, "intent.json"), "utf8")) as {
+      phase: string; scratch: string; temporaryDatabase: { name: string; state: string; oid: number }; cleanup: string;
+    };
+    expect(record.phase).toBe("cleanup-required");
+    expect(record.cleanup).toContain("temporary-database-intent-clear-uncertain");
+    expect(record.temporaryDatabase).toMatchObject({ name: expect.stringMatching(/^drill_vault_restore_[a-f0-9]{32}$/), state: "drop-confirmed", oid: 17234 });
+    expect(existsSync(record.scratch)).toBe(true);
+    expect(existsSync(join(runsRoot, "restore-active.lock"))).toBe(true);
+  });
+
+  it("retains scratch and the active claim when cleanup eligibility cannot be recorded", () => {
+    installPythonFaultWrapper();
+    const failOnce = join(dir, "cleanup-ready-failed-once");
+    const result = run(base(), { env: { RESTORE_FAIL_CLEANUP_READY_ONCE_FILE: failOnce } });
+    expect(result.code).toBe(75);
+    expect(result.all).toContain("completion-eligibility-not-durable");
+    expect(existsSync(failOnce)).toBe(true);
+    expect(scratchLeft()).toHaveLength(1);
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const record = JSON.parse(readFileSync(join(runsRoot, runName, "intent.json"), "utf8")) as {
+      phase: string; scratch: string; cleanup: string;
+    };
+    expect(record.phase).toBe("cleanup-required");
+    expect(record.cleanup).toContain("completion-eligibility-not-durable");
+    expect(existsSync(record.scratch)).toBe(true);
+    expect(existsSync(join(runsRoot, "restore-active.lock"))).toBe(true);
+  });
+
+  it("normalizes the default slash prefix without touching the host maintenance directory", () => {
+    const source = readFileSync(SCRIPT, "utf8");
+    const assignment = source.match(/if \[ "\$ADMISSION_PREFIX" = \/ \]; then[\s\S]*?\nfi/);
+    expect(assignment).not.toBeNull();
+    for (const [inputPrefix, expected] of [["/", "/var/lib/lares-maintenance/restore-runs"], ["/tmp/test-root/", "/tmp/test-root/var/lib/lares-maintenance/restore-runs"]]) {
+      const result = spawnSync("/bin/bash", ["-c", `${assignment![0]}; printf '%s' "$RESTORE_WORK_ROOT"`], {
+        encoding: "utf8", env: { ...process.env, ADMISSION_PREFIX: inputPrefix },
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe(expected);
+    }
+  });
+
+  it("preserves the first restore error and durable scratch/database evidence when temp DB cleanup is uncertain", () => {
+    addVaultSnapshot();
+    const result = run(base(), { env: {
+      LARES_ENGINE_IMAGE: `registry.example/keeper@sha256:${"a".repeat(64)}`,
+      RESTORE_TMP_PG_RESTORE_FAIL: "1",
+      RESTORE_DROPDB_FAIL: "1",
+    } });
+    expect(result.code).toBe(78);
+    expect(result.all).toContain("snapshot database could not be verified before restoration");
+    expect(result.all).toContain("cleanup is uncertain");
+    expect(scratchLeft()).toHaveLength(1);
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const runDirectory = join(runsRoot, runName);
+    const record = JSON.parse(readFileSync(join(runDirectory, "intent.json"), "utf8")) as {
+      phase: string; scratch: string; temporaryDatabase: { state: string; oid: number }; cleanup: string;
+    };
+    expect(record.phase).toBe("cleanup-required");
+    expect(record.cleanup).toContain("temporary-database-identity-or-drop-uncertain");
+    expect(record.temporaryDatabase).toMatchObject({ state: "owned", oid: 17234 });
+    expect(existsSync(record.scratch)).toBe(true);
+  });
+
+  it("does not drop a possibly created database when createdb fails before ownership can be recorded", () => {
+    addVaultSnapshot();
+    const result = run(base(), { env: {
+      LARES_ENGINE_IMAGE: `registry.example/keeper@sha256:${"a".repeat(64)}`,
+      RESTORE_CREATEDB_PARTIAL_FAIL: "1",
+    } });
+    expect(result.code).toBe(78);
+    expect(result.all).toContain("cannot create the private snapshot verification database");
+    expect(result.all).toContain("temporary-database-creation-uncertain");
+    expect(logLines().filter((line) => / dropdb /.test(line))).toEqual([]);
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const record = JSON.parse(readFileSync(join(runsRoot, runName, "intent.json"), "utf8")) as {
+      phase: string; temporaryDatabase: { state: string; oid: number | null };
+    };
+    expect(record.phase).toBe("cleanup-required");
+    expect(record.temporaryDatabase).toMatchObject({ state: "creating", oid: null });
+    expect(scratchLeft()).toHaveLength(1);
+  });
+
+  it("retains the recorded database receipt when its catalog identity changes before cleanup", () => {
+    addVaultSnapshot();
+    const result = run(base(), { env: {
+      LARES_ENGINE_IMAGE: `registry.example/keeper@sha256:${"a".repeat(64)}`,
+      RESTORE_TMP_PG_RESTORE_FAIL: "1",
+      RESTORE_DB_OID_CHANGED: "1",
+    } });
+    expect(result.code).toBe(78);
+    expect(result.all).toContain("snapshot database could not be verified before restoration");
+    expect(result.all).toContain("cleanup is uncertain");
+    expect(logLines().filter((line) => / dropdb /.test(line))).toEqual([]);
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const record = JSON.parse(readFileSync(join(runsRoot, runName, "intent.json"), "utf8")) as {
+      phase: string; temporaryDatabase: { state: string; oid: number }; scratch: string;
+    };
+    expect(record.phase).toBe("cleanup-required");
+    expect(record.temporaryDatabase).toMatchObject({ state: "owned", oid: 17234 });
+    expect(existsSync(record.scratch)).toBe(true);
+  });
+
+  it.each(["missing", "tampered"] as const)("refuses temp database deletion when its durable receipt is %s", (mutation) => {
+    addVaultSnapshot();
+    const result = run(base(), { env: {
+      LARES_ENGINE_IMAGE: `registry.example/keeper@sha256:${"a".repeat(64)}`,
+      RESTORE_INTENT_MUTATION: mutation,
+    } });
+    expect(result.code).toBe(78);
+    expect(result.all).toContain("snapshot verification database cleanup is uncertain");
+    expect(result.all).toContain("temporary-database-identity-or-drop-uncertain");
+    expect(logLines().filter((line) => / dropdb /.test(line))).toEqual([]);
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const record = JSON.parse(readFileSync(join(runsRoot, runName, "intent.json"), "utf8")) as {
+      phase: string; temporaryDatabase: { state: string; oid: number }; scratch: string;
+    };
+    expect(record.phase).toBe("cleanup-required");
+    expect(record.temporaryDatabase).toMatchObject({ state: "owned", oid: 17234 });
+    expect(existsSync(record.scratch)).toBe(true);
+    expect(existsSync(join(runsRoot, "restore-active.lock"))).toBe(true);
+  });
+
   it("does the steps in order: stop, drop and restore, migrate, copy folders, start the keeper last", () => {
     const r = run(base(), { env: { COMPOSE_FILE: "/untrusted/override.yaml" } });
     expect(r.code, r.all).toBe(0);
@@ -262,35 +561,40 @@ describe("restore.sh: a good restore", () => {
     expect(logLines().join("\n")).not.toContain("not-a-real-db-password");
   });
 
-  it("preserves complete external armed custody sentinels byte-for-byte through restore", () => {
-    const sentinels = [
-      ["var/lib/lares-maintenance/custody/preparation.json", '{"complete":false,"sentinel":"armed-receipt"}\n', 0o600],
-      ["var/lib/lares-maintenance/admission/intent.json", '{"state":"armed","sentinel":"armed-intent"}\n', 0o444],
-      ["var/lib/lares-maintenance/postgres-auth/pg_hba.conf", "sentinel hba: armed custody\n", 0o644],
-      ["var/lib/lares-maintenance/custody/command.lock", "sentinel command lock\n", 0o600],
-      ["var/lib/lares-maintenance/admission/service-gate.lock", "sentinel service gate lock\n", 0o444],
-    ] as const;
-    const before = sentinels.map(([rel, contents, mode]) => {
-      write(rel, contents, mode);
+  it("preserves external maintenance custody files byte-for-byte through restore", () => {
+    const protectedFiles = [
+      "var/lib/lares-maintenance/custody/preparation.json",
+      "var/lib/lares-maintenance/admission/intent.json",
+      "var/lib/lares-maintenance/postgres-auth/pg_hba.conf",
+      "var/lib/lares-maintenance/custody/command.lock",
+      "var/lib/lares-maintenance/admission/service-gate.lock",
+    ];
+    const before = protectedFiles.map((rel) => {
       const file = join(prefix, rel);
-      return { rel, contents, mode, inode: statSync(file, { bigint: true }).ino };
+      return {
+        rel,
+        contents: readFileSync(file, "utf8"),
+        mode: statSync(file, { bigint: true }).mode & 0o777n,
+        inode: statSync(file, { bigint: true }).ino,
+      };
     });
     // A snapshot must never replace host-owned external custody, even if it contains a
     // same-named path. The restore command only restores application data under srv/.
-    for (const [rel] of sentinels) writeArchive(rel, "untrusted archived custody\n");
+    for (const rel of protectedFiles) writeArchive(rel, "untrusted archived custody\n");
     expect(run(base()).code).toBe(0);
     expectEffectiveRestoreAuth();
     for (const sentinel of before) {
       const file = join(prefix, sentinel.rel);
       expect(readFileSync(file, "utf8"), sentinel.rel).toBe(sentinel.contents);
-      expect(statSync(file, { bigint: true }).mode & 0o777n, sentinel.rel).toBe(BigInt(sentinel.mode));
+      expect(statSync(file, { bigint: true }).mode & 0o777n, sentinel.rel).toBe(sentinel.mode);
       expect(statSync(file, { bigint: true }).ino, sentinel.rel).toBe(sentinel.inode);
     }
   });
 
-  it("does not recreate missing external custody while restoring application data", () => {
+  it("removes the run record while retaining the prepared maintenance custody", () => {
     expect(run(base()).code).toBe(0);
-    expect(existsSync(join(prefix, "var/lib/lares-maintenance"))).toBe(false);
+    expect(existsSync(join(prefix, "var/lib/lares-maintenance"))).toBe(true);
+    expect(readdirSync(join(prefix, "var/lib/lares-maintenance/restore-runs"))).toEqual([]);
   });
 
   it("copies the folders from the snapshot with their modes, and leaves nothing in the scratch root", () => {

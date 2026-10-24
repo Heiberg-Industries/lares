@@ -119,6 +119,8 @@ for entry in sys.argv[1].splitlines():
   if open(path).read()==token:os.unlink(path)
  except FileNotFoundError:pass
 PY
+  local rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
   VAULT_STORAGE_LOCKS=""
 }
 

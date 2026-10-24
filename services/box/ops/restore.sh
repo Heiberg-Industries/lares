@@ -42,6 +42,7 @@ EX_NOTROOT=77
 EX_REFUSED=78
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ORIGINAL_ARGS=("$@")
 BOX_DIR="$(cd "$HERE/.." && pwd)"
 
 # The migration runner runs in the engine image when this box's engine came from one (an
@@ -141,6 +142,32 @@ if [ "$ROOT_ID" != "0" ]; then
   die "this needs to run as root (found user id '${ROOT_ID:-unknown}'). Try again with: sudo $0 $*" "$EX_NOTROOT"
 fi
 
+# Restoration holds the shared maintenance lease from before it reads installation or backup
+# settings through ordinary cleanup. This also covers --dry-run because that path creates and
+# drops a disposable verification database.
+ADMISSION_PREFIX="${PREFIX%/}"
+[ -n "$ADMISSION_PREFIX" ] || ADMISSION_PREFIX=/
+TEST_OWNER_FLAG=""
+if [ "${LARES_MAINTENANCE_TESTING:-}" = 1 ] && [ -n "${LARES_MAINTENANCE_TEST_PREFIX:-}" ]; then
+  ADMISSION_PREFIX="$LARES_MAINTENANCE_TEST_PREFIX"
+  TEST_OWNER_FLAG=1
+fi
+if [ "${LARES_MAINTENANCE_ADMITTED:-}" = 1 ]; then
+  if [ "$TEST_OWNER_FLAG" = 1 ]; then
+    python3 "$HERE/maintenance-custody.py" assert-normal-held "$ADMISSION_PREFIX" restore --test-owner \
+      || die 'normal maintenance admission is no longer valid; restore stopped before reading settings' "$EX_REFUSED"
+  else
+    python3 "$HERE/maintenance-custody.py" assert-normal-held "$ADMISSION_PREFIX" restore \
+      || die 'normal maintenance admission is no longer valid; restore stopped before reading settings' "$EX_REFUSED"
+  fi
+else
+  if [ "$TEST_OWNER_FLAG" = 1 ]; then
+    exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" restore --test-owner -- "${ORIGINAL_ARGS[@]}"
+  else
+    exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" restore -- "${ORIGINAL_ARGS[@]}"
+  fi
+fi
+
 if [ "$DRY" != 1 ] && [ "$ASSUME_YES" = 1 ] && [ "$OLD_STOPPED" != 1 ]; then
   die "with --yes I cannot ask whether the OLD server is switched off, and two live servers would both answer chat and both write to the backup repository. Switch the old server off, then run again with --old-server-stopped. Nothing was changed." "$EX_REFUSED"
 fi
@@ -149,23 +176,298 @@ fi
 SCRATCH=""
 SCRATCH_ROOT=""
 VAULT_SNAPSHOT_DB=""
+VAULT_SNAPSHOT_DB_STATE="none"
+VAULT_SNAPSHOT_DB_OID=""
+RESTORE_DB_INTENT_CLEAR_UNCERTAIN=0
+RESTORE_TEMP_DB_DROP_CONFIRMED=0
+RESTORE_TEMP_DB_DROP_UNCERTAIN=0
 PRESERVE_SCRATCH=0
 VAULT_TARGET_PRESENT=0
 vault_storage_unlock() { :; }
+if [ "$ADMISSION_PREFIX" = / ]; then
+  RESTORE_WORK_ROOT="/var/lib/lares-maintenance/restore-runs"
+else
+  RESTORE_WORK_ROOT="${ADMISSION_PREFIX%/}/var/lib/lares-maintenance/restore-runs"
+fi
+RESTORE_WORK=""
+RESTORE_INTENT=""
+RESTORE_CLEANUP_FAILURES=()
+
+# The run directory is private and durable. Its intent records only fixed operation state,
+# never secrets or arbitrary commands. The maintenance root is prepared by install/restore
+# admission; refuse unsafe ancestry instead of creating state through a symlink.
+RESTORE_WORK=$(python3 - "$RESTORE_WORK_ROOT" <<'PYWORK'
+import os, pathlib, secrets, stat, sys
+root = pathlib.Path(sys.argv[1])
+parent = root.parent
+try:
+    info = parent.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or
+            info.st_uid != os.geteuid() or info.st_mode & 0o022 or
+            parent.resolve(strict=True) != parent):
+        raise ValueError()
+    parent_fd = os.open(parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        parent_opened = os.fstat(parent_fd)
+        if (parent_opened.st_dev, parent_opened.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError()
+        try:
+            os.mkdir(root.name, 0o700, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except FileExistsError:
+            pass
+    finally:
+        os.close(parent_fd)
+    info = root.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or
+            info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError()
+    fd = os.open(root, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError()
+        if os.listdir(fd):
+            raise ValueError()
+        name = 'restore-' + secrets.token_hex(16)
+        # A fixed exclusive claim closes the empty-directory check race. A leftover claim
+        # blocks later restores after abrupt loss or uncertain cleanup; recovery is manual.
+        claim = os.open('restore-active.lock', os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                        getattr(os, 'O_NOFOLLOW', 0), 0o600, dir_fd=fd)
+        try:
+            os.write(claim, (name + '\n').encode('ascii'))
+            os.fsync(claim)
+        finally:
+            os.close(claim)
+        os.fsync(fd)
+        os.mkdir(name, 0o700, dir_fd=fd)
+        run_fd = os.open(name, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0), dir_fd=fd)
+        try:
+            os.fsync(run_fd)
+        finally:
+            os.close(run_fd)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    print(root / name)
+except Exception:
+    raise SystemExit(1)
+PYWORK
+) || die 'could not create a private restore work record under the protected maintenance state' "$EX_REFUSED"
+RESTORE_INTENT="$RESTORE_WORK/intent.json"
+RESTORE_RUN_NAME="${RESTORE_WORK##*/}"
+
+write_restore_intent() {
+  local phase="$1" cleanup_text="$2" clear_database="${3:-0}"
+  python3 - "$RESTORE_WORK" "$phase" "$SCRATCH" "$VAULT_SNAPSHOT_DB" "$VAULT_SNAPSHOT_DB_STATE" "$VAULT_SNAPSHOT_DB_OID" "$cleanup_text" "$clear_database" <<'PYINTENT'
+import json, os, pathlib, secrets, stat, sys
+directory = pathlib.Path(sys.argv[1])
+database_name = '' if sys.argv[8] == '1' else sys.argv[4]
+database_state = 'none' if sys.argv[8] == '1' else sys.argv[5]
+database_oid = '' if sys.argv[8] == '1' else sys.argv[6]
+record = {
+    "version": 1,
+    "phase": sys.argv[2],
+    "scratch": sys.argv[3] or None,
+    "temporaryDatabase": ({"name": database_name, "state": database_state, "oid": int(database_oid) if database_oid.isdigit() else None}
+                          if database_name else None),
+    "cleanup": sys.argv[7] or None,
+}
+raw = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+if len(raw) > 4096:
+    raise SystemExit(1)
+fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+try:
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise SystemExit(1)
+    name = ".intent-" + secrets.token_hex(12)
+    out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=fd)
+    try:
+        with os.fdopen(out, "wb", closefd=False) as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(out)
+    os.replace(name, "intent.json", src_dir_fd=fd, dst_dir_fd=fd)
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PYINTENT
+}
+
+restore_database_intent_is_owned() {
+  python3 - "$RESTORE_INTENT" "$VAULT_SNAPSHOT_DB" "$VAULT_SNAPSHOT_DB_OID" <<'PYREAD'
+import json, os, pathlib, stat, sys
+path = pathlib.Path(sys.argv[1])
+try:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size > 4096):
+            raise ValueError()
+        raw = os.read(fd, 4097)
+    finally:
+        os.close(fd)
+    record = json.loads(raw)
+    if (not isinstance(record, dict) or record.get("version") != 1 or record.get("phase") != "active" or
+            raw != (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")):
+        raise ValueError()
+    database = record.get("temporaryDatabase")
+    if (not isinstance(database, dict) or database.get("name") != sys.argv[2] or
+            database.get("state") != "owned" or type(database.get("oid")) is not int or
+            str(database["oid"]) != sys.argv[3]):
+        raise ValueError()
+except Exception:
+    raise SystemExit(1)
+PYREAD
+}
+
+release_restore_claim() {
+  python3 - "$RESTORE_WORK_ROOT" "$RESTORE_RUN_NAME" <<'PYCLAIM'
+import os, pathlib, stat, sys
+root = pathlib.Path(sys.argv[1])
+try:
+    fd = os.open(root, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        root_info = os.fstat(fd)
+        if not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid != os.geteuid() or stat.S_IMODE(root_info.st_mode) != 0o700:
+            raise ValueError()
+        claim = os.open('restore-active.lock', os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | os.O_NONBLOCK, dir_fd=fd)
+        try:
+            info = os.fstat(claim)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                    stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or
+                    os.read(claim, 129) != (sys.argv[2] + '\n').encode('ascii')):
+                raise ValueError()
+        finally:
+            os.close(claim)
+        os.unlink('restore-active.lock', dir_fd=fd)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+except Exception:
+    raise SystemExit(1)
+PYCLAIM
+}
+
+remove_restore_work_record() {
+  python3 - "$RESTORE_WORK_ROOT" "$RESTORE_RUN_NAME" <<'PYREMOVE'
+import json, os, pathlib, re, stat, sys
+root = pathlib.Path(sys.argv[1])
+name = sys.argv[2]
+try:
+    if not re.fullmatch(r'restore-[a-f0-9]{32}', name):
+        raise ValueError()
+    root_fd = os.open(root, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        root_info = os.fstat(root_fd)
+        if (not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid != os.geteuid() or
+                stat.S_IMODE(root_info.st_mode) != 0o700):
+            raise ValueError()
+        run_fd = os.open(name, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0), dir_fd=root_fd)
+        try:
+            run_info = os.fstat(run_fd)
+            if (not stat.S_ISDIR(run_info.st_mode) or run_info.st_uid != os.geteuid() or
+                    stat.S_IMODE(run_info.st_mode) != 0o700 or os.listdir(run_fd) != ['intent.json']):
+                raise ValueError()
+            record_fd = os.open('intent.json', os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | os.O_NONBLOCK, dir_fd=run_fd)
+            try:
+                info = os.fstat(record_fd)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                        stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size > 4096):
+                    raise ValueError()
+                raw = os.read(record_fd, 4097)
+            finally:
+                os.close(record_fd)
+            record = json.loads(raw)
+            if (not isinstance(record, dict) or record.get('version') != 1 or
+                    record.get('phase') != 'cleanup-ready' or record.get('temporaryDatabase') is not None or
+                    record.get('cleanup') is not None or
+                    raw != (json.dumps(record, sort_keys=True, separators=(',', ':')) + '\n').encode('ascii')):
+                raise ValueError()
+            scratch = record.get('scratch')
+            if scratch is not None and (not isinstance(scratch, str) or os.path.lexists(scratch)):
+                raise ValueError()
+            os.unlink('intent.json', dir_fd=run_fd)
+            os.fsync(run_fd)
+        finally:
+            os.close(run_fd)
+        os.rmdir(name, dir_fd=root_fd)
+        os.fsync(root_fd)
+    finally:
+        os.close(root_fd)
+except Exception:
+    raise SystemExit(1)
+PYREMOVE
+}
+
 # Removes only the folder THIS run made, and only when it is under the configured scratch
 # root: a trap that runs on every exit path is exactly where a wrong variable turns into rm -rf.
 remove_scratch() {
   [ -n "$SCRATCH" ] && [ -n "$SCRATCH_ROOT" ] || return 0
   [ "$SCRATCH" != "/" ] || return 0
   [ -d "$SCRATCH" ] || return 0
-  if [ "$PRESERVE_SCRATCH" = 1 ]; then echo "restore: incomplete restore staging retained privately at $SCRATCH; services remain stopped" >&2;return 0;fi
+  if [ "$PRESERVE_SCRATCH" = 1 ]; then echo "restore: incomplete restore staging retained privately at $SCRATCH; services remain stopped" >&2;return 1;fi
   case "$SCRATCH" in
-    "$SCRATCH_ROOT"/restore-snapshot.*) rm -rf "$SCRATCH" ;;
-    *) echo "restore: not removing '$SCRATCH': it is not under $SCRATCH_ROOT" >&2 ;;
+    "$SCRATCH_ROOT"/restore-snapshot.*) rm -rf "$SCRATCH" || return 1 ;;
+    *) echo "restore: not removing '$SCRATCH': it is not under $SCRATCH_ROOT" >&2; return 1 ;;
   esac
 }
-cleanup() { local rc=$?; vault_storage_unlock; if [ -n "$VAULT_SNAPSHOT_DB" ];then db_run dropdb -U "$DB_USER" --if-exists "$VAULT_SNAPSHOT_DB" </dev/null >/dev/null 2>&1 || true;fi; remove_scratch; exit "$rc"; }
-trap cleanup EXIT INT TERM
+
+cleanup() {
+  local rc=$? cleanup_text=''
+  trap - EXIT INT TERM
+  vault_storage_unlock || RESTORE_CLEANUP_FAILURES+=(vault-unlock)
+  if [ -n "$VAULT_SNAPSHOT_DB" ]; then
+    if [ "$RESTORE_TEMP_DB_DROP_CONFIRMED" = 1 ] || [ "$RESTORE_TEMP_DB_DROP_UNCERTAIN" = 1 ]; then
+      RESTORE_CLEANUP_FAILURES+=(temporary-database-identity-or-drop-uncertain)
+    elif [ "$VAULT_SNAPSHOT_DB_STATE" = owned ] && [ -n "$VAULT_SNAPSHOT_DB_OID" ]; then
+      drop_snapshot_database_if_owned || RESTORE_CLEANUP_FAILURES+=(temporary-database-identity-or-drop-uncertain)
+    else
+      # A failed or interrupted create has no recorded server identity. Never infer ownership
+      # from a database name and never drop a database whose creation was not confirmed.
+      RESTORE_CLEANUP_FAILURES+=(temporary-database-creation-uncertain)
+    fi
+  fi
+  [ "$RESTORE_DB_INTENT_CLEAR_UNCERTAIN" = 0 ] || RESTORE_CLEANUP_FAILURES+=(temporary-database-intent-clear-uncertain)
+  [ "${#RESTORE_CLEANUP_FAILURES[@]}" -eq 0 ] || PRESERVE_SCRATCH=1
+  if [ "${#RESTORE_CLEANUP_FAILURES[@]}" -gt 0 ]; then
+    cleanup_text=$(IFS=,; printf '%s' "${RESTORE_CLEANUP_FAILURES[*]}")
+    write_restore_intent cleanup-required "$cleanup_text" || echo 'restore: cleanup state could not be durably updated; work evidence remains in place' >&2
+    echo "restore: cleanup is uncertain (${cleanup_text}); durable run evidence retained at $RESTORE_WORK" >&2
+    [ "$rc" -ne 0 ] || rc=$EX_TEMPFAIL
+  else
+    if ! write_restore_intent cleanup-ready ''; then
+      RESTORE_CLEANUP_FAILURES+=(completion-eligibility-not-durable)
+      PRESERVE_SCRATCH=1
+    fi
+    if [ "${#RESTORE_CLEANUP_FAILURES[@]}" -eq 0 ] && [ -n "$SCRATCH" ] && [ -d "$SCRATCH" ]; then
+      if remove_scratch; then SCRATCH=""; else RESTORE_CLEANUP_FAILURES+=(scratch-retained); fi
+    fi
+    if [ "${#RESTORE_CLEANUP_FAILURES[@]}" -gt 0 ]; then
+      cleanup_text=$(IFS=,; printf '%s' "${RESTORE_CLEANUP_FAILURES[*]}")
+      write_restore_intent cleanup-required "$cleanup_text" || echo 'restore: cleanup state could not be durably updated; remaining evidence is retained' >&2
+      echo "restore: cleanup is uncertain (${cleanup_text}); remaining durable evidence retained at $RESTORE_WORK" >&2
+      [ "$rc" -ne 0 ] || rc=$EX_TEMPFAIL
+    elif remove_restore_work_record; then
+      release_restore_claim || {
+        echo 'restore: completed run record was removed but its active claim remains; manual review is required' >&2
+        [ "$rc" -ne 0 ] || rc=$EX_TEMPFAIL
+      }
+    else
+      echo "restore: scratch cleanup finished, but its owned run record could not be removed; evidence retained at $RESTORE_WORK" >&2
+      [ "$rc" -ne 0 ] || rc=$EX_TEMPFAIL
+    fi
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+write_restore_intent active '' || die 'could not durably record the restore work state' "$EX_REFUSED"
 
 # --- 1. this must be a finished current-layout install ----------------------------------------
 { [ -f "$COMPOSE_FILE" ] && [ -d "$ETC_LARES" ]; } || die "this is not a finished Lares installation: /opt/lares/compose.yaml or /etc/lares is missing. Run install.sh first. Nothing was changed." "$EX_REFUSED"
@@ -224,6 +526,53 @@ MIN_FREE_MB="${DRILL_MIN_FREE_MB:-5120}"
 
 dc() { docker compose -f "$COMPOSE_FILE" "$@"; }
 db_run() { operator_db_run -f "$COMPOSE_FILE" -- "$@"; }
+snapshot_database_oid() { # emit one numeric PostgreSQL catalog OID, empty when absent
+  local database="$1" result
+  result=$(db_run psql -U "$DB_USER" -d postgres -Atc \
+    "SELECT oid FROM pg_database WHERE datname = '$database'" </dev/null 2>/dev/null) || return 1
+  result="${result%$'\r'}"
+  [ -z "$result" ] || [[ "$result" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s' "$result"
+}
+drop_snapshot_database_if_owned() {
+  local observed
+  [ -n "$VAULT_SNAPSHOT_DB" ] || return 0
+  if [ "$RESTORE_TEMP_DB_DROP_UNCERTAIN" = 1 ] || [ "$RESTORE_TEMP_DB_DROP_CONFIRMED" = 1 ] ||
+      [ "$VAULT_SNAPSHOT_DB_STATE" != owned ] || [ -z "$VAULT_SNAPSHOT_DB_OID" ]; then
+    RESTORE_TEMP_DB_DROP_UNCERTAIN=1
+    return 1
+  fi
+  if ! restore_database_intent_is_owned; then
+    RESTORE_TEMP_DB_DROP_UNCERTAIN=1
+    return 1
+  fi
+  observed=$(snapshot_database_oid "$VAULT_SNAPSHOT_DB") || { RESTORE_TEMP_DB_DROP_UNCERTAIN=1; return 1; }
+  if [ -z "$observed" ] || [ "$observed" != "$VAULT_SNAPSHOT_DB_OID" ]; then
+    RESTORE_TEMP_DB_DROP_UNCERTAIN=1
+    return 1
+  fi
+  if ! db_run dropdb -U "$DB_USER" --if-exists "$VAULT_SNAPSHOT_DB" </dev/null >/dev/null 2>&1; then
+    RESTORE_TEMP_DB_DROP_UNCERTAIN=1
+    return 1
+  fi
+  observed=$(snapshot_database_oid "$VAULT_SNAPSHOT_DB") || { RESTORE_TEMP_DB_DROP_UNCERTAIN=1; return 1; }
+  if [ -n "$observed" ]; then RESTORE_TEMP_DB_DROP_UNCERTAIN=1; return 1; fi
+  RESTORE_TEMP_DB_DROP_CONFIRMED=1
+  VAULT_SNAPSHOT_DB_STATE=drop-confirmed
+  if ! write_restore_intent active ''; then
+    RESTORE_DB_INTENT_CLEAR_UNCERTAIN=1
+    return 1
+  fi
+  if ! write_restore_intent active '' 1; then
+    RESTORE_DB_INTENT_CLEAR_UNCERTAIN=1
+    return 1
+  fi
+  VAULT_SNAPSHOT_DB=""
+  VAULT_SNAPSHOT_DB_STATE=none
+  VAULT_SNAPSHOT_DB_OID=""
+  RESTORE_TEMP_DB_DROP_CONFIRMED=0
+  return 0
+}
 
 [ -f "$OPERATOR_PASSWORD_FILE" ] && [ ! -L "$OPERATOR_PASSWORD_FILE" ] \
   && [ "$(stat -c '%u:%a' "$OPERATOR_PASSWORD_FILE" 2>/dev/null || true)" = 0:600 ] \
@@ -320,6 +669,7 @@ AVAIL_MB=$(( AVAIL_KB / 1024 ))
 # --- 6. read the snapshot into a private scratch folder ------------------------------------------
 SCRATCH=$(mktemp -d "$SCRATCH_ROOT/restore-snapshot.XXXXXX")
 chmod 0700 "$SCRATCH"
+write_restore_intent active '' || die 'could not durably record the private restore scratch path' "$EX_REFUSED"
 RESTORE_ARGS=("$SNAPSHOT")
 [ "$SNAPSHOT" != latest ] || RESTORE_ARGS+=(--tag nightly)
 say "reading snapshot $SNAPSHOT from the backup repository into a private scratch folder (removed when this ends). This can take a while."
@@ -384,12 +734,24 @@ if [ -r "$HERE/vault-storage.sh" ];then
   VAULT_INCOMING_PRESENT="$VAULT_STORAGE_PRESENT"
   vault_storage_verify "$SCRATCH" "$DB_NAME" verify-files >/dev/null || die 'snapshot Vault Git integrity or local origin pairing failed' "$EX_REFUSED"
   if [ "$VAULT_INCOMING_PRESENT" = 1 ] || [ -r "$OPT_LARES/vault-recovery-engine-image" ];then
-    VAULT_SNAPSHOT_DB="drill_vault_restore_$$"
+    db_token=$(python3 -c 'import secrets; print(secrets.token_hex(16))') || die 'cannot create a unique private snapshot verification identity' "$EX_REFUSED"
+    VAULT_SNAPSHOT_DB="drill_vault_restore_$db_token"
+    prior_oid=$(snapshot_database_oid "$VAULT_SNAPSHOT_DB") || die 'cannot verify that the private snapshot verification name is unused' "$EX_REFUSED"
+    [ -z "$prior_oid" ] || die 'the private snapshot verification name already exists; refusing to use it' "$EX_REFUSED"
+    VAULT_SNAPSHOT_DB_STATE=creating
+    write_restore_intent active '' || die 'could not durably record the pending snapshot verification database' "$EX_REFUSED"
     db_run createdb -U "$DB_USER" -O lares_operator "$VAULT_SNAPSHOT_DB" </dev/null || die 'cannot create the private snapshot verification database' "$EX_REFUSED"
+    VAULT_SNAPSHOT_DB_OID=$(snapshot_database_oid "$VAULT_SNAPSHOT_DB") || die 'snapshot verification database identity could not be read' "$EX_REFUSED"
+    [[ "$VAULT_SNAPSHOT_DB_OID" =~ ^[0-9]+$ ]] || die 'snapshot verification database identity could not be confirmed' "$EX_REFUSED"
+    VAULT_SNAPSHOT_DB_STATE=owned
+    if ! write_restore_intent active ''; then
+      VAULT_SNAPSHOT_DB_STATE=creating
+      VAULT_SNAPSHOT_DB_OID=""
+      die 'snapshot verification database ownership could not be durably recorded; it was retained for inspection' "$EX_REFUSED"
+    fi
     db_run pg_restore --exit-on-error -U "$DB_USER" -d "$VAULT_SNAPSHOT_DB" < "$DUMP_DIR/$DB_NAME.dump" || die 'snapshot database could not be verified before restoration' "$EX_REFUSED"
     vault_storage_verify "$SCRATCH" "$VAULT_SNAPSHOT_DB" verify-snapshot >/dev/null || die 'snapshot Vault metadata, ownership and stored markers disagree' "$EX_REFUSED"
-    db_run dropdb -U "$DB_USER" "$VAULT_SNAPSHOT_DB" </dev/null || die 'snapshot verification database could not be removed' "$EX_REFUSED"
-    VAULT_SNAPSHOT_DB=""
+    drop_snapshot_database_if_owned || die 'snapshot verification database cleanup is uncertain; evidence was retained' "$EX_REFUSED"
   fi
 fi
 
