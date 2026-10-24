@@ -14,8 +14,8 @@ import type { Backup } from './git-backup.js';
 import { totalmem } from 'node:os';
 import { ceilingFor, HEADROOM_BYTES, STACK_ESTIMATE_BYTES, PER_AGENT_ESTIMATE_BYTES, AGENT_LIMIT_MAX } from './ceiling.js';
 import { writeSetting } from './settings.js';
+import { withDefinitionNamespace } from './definition-namespace.js';
 const NAME_RE = /^[a-z][a-z0-9-]{1,30}$/;
-let namespaceTail: Promise<unknown> = Promise.resolve();
 const ROLES = ['chief-of-staff', 'creative'] as const;
 export type DefinitionRole = typeof ROLES[number];
 export interface DefinitionCompose {
@@ -87,27 +87,11 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
     // Cross-process lock, released by PostgreSQL on process death. Fixed installation-wide key
     // makes the capacity check and every namespace change one serialized operation.
     async function locked<T>(fn: () => Promise<T>): Promise<T> {
-        // Queue BEFORE borrowing a connection: otherwise waiting advisory locks can exhaust the
-        // pool and deadlock the active action's setting/backup callbacks.
-        const next = namespaceTail.then(async () => {
-            const client = await o.pool.connect();
-            try {
-                await client.query('SELECT pg_advisory_lock(1279349317,12)');
-                roots();
-                await o.namespaceGuard?.();
-                return await connection.run(client, fn);
-            }
-            finally {
-                try {
-                    await client.query('SELECT pg_advisory_unlock(1279349317,12)');
-                }
-                finally {
-                    client.release();
-                }
-            }
+        return withDefinitionNamespace(o.pool, async client => {
+            roots();
+            await o.namespaceGuard?.();
+            return connection.run(client, fn);
         });
-        namespaceTail = next.catch(() => { });
-        return next;
     }
     async function registry(name: string) { return (await db().query('SELECT status,retired_folder FROM agent_definitions WHERE name=$1', [name])).rows[0]; }
     async function folder(name: string): Promise<string> {

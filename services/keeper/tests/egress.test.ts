@@ -40,7 +40,15 @@ it('is deterministic and keeps retained consumers source-scoped', () => {
   expect(result.nft).toContain('ip daddr 192.0.2.8 accept');
   expect(result.nft).not.toContain('flush');
   expect(result.nft.split('\n').slice(1, 4)).toEqual(['add table inet lares_egress', 'delete table inet lares_egress', 'table inet lares_egress {']);
-  expect(result.nft.match(/delete table/g)).toHaveLength(1);
+  expect(result.nft.match(/delete table/g)).toHaveLength(2);
+  const bridge = result.nft.split('table bridge lares_egress {')[1]!;
+  expect(bridge).toContain('ether type != ip accept');
+  expect(bridge).toContain('ether type ip ip saddr != { 172.18.0.11, 172.18.0.40 } accept');
+  expect(bridge).toContain('ct state established,related accept');
+  expect(bridge).toContain('ip daddr 192.0.2.8 accept');
+  expect(bridge).toContain('udp dport 53 accept');
+  expect(bridge).toContain('tcp dport 53 accept');
+  expect(bridge).toContain('counter drop');
   expect(result).toEqual(generateEgress([agent], options));
 });
 

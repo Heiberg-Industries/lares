@@ -131,5 +131,14 @@ export function generateEgress(agents: readonly EgressAgent[], options: EgressOp
       '    udp dport 53 accept', '    tcp dport 53 accept', '    counter drop');
   }
   nft.push('  }', '}');
+  nft.push('add table bridge lares_egress', 'delete table bridge lares_egress',
+    'table bridge lares_egress {', '  chain forward {', '    type filter hook forward priority filter; policy accept;');
+  if (addresses.size) {
+    nft.push('    ether type != ip accept',
+      `    ether type ip ip saddr != { ${sorted([...addresses]).join(', ')} } accept`,
+      '    ct state established,related accept', ...exceptions.map(ip => `    ip daddr ${ip} accept`),
+      '    udp dport 53 accept', '    tcp dport 53 accept', '    counter drop');
+  }
+  nft.push('  }', '}');
   return { squid: squid.join('\n') + '\n', nft: nft.join('\n') + '\n', perAgent, skipped };
 }

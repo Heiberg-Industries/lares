@@ -37,6 +37,7 @@ const id=()=>randomUUID();
 let addressCounter=1;
 const financialPassword=Buffer.from('native-later-financial-role-test-password');
 const applicationPassword=Buffer.from('native-later-application-role-test-password');
+const outsideCustodyPassword=Buffer.from('native-later-outside-custody-role-test-password');
 
 function nativeFake(options:{extraListFingerprint?:boolean;afterCreateTeam?:()=>Promise<void>;afterCreateUser?:()=>Promise<void>;afterAddMember?:()=>Promise<void>|void;
   afterUnblock?:()=>Promise<void>|void;loseUnblockAck?:boolean;rejectUnblockedReadback?:boolean}={}){
@@ -145,7 +146,7 @@ async function useFinancialRole():Promise<Pool>{
   const operator=pool,socket=process.env.LARES_TEST_PG_SOCKET,config=socket?privateTestSocket():undefined;
   const database=config?.database??container?.getDatabase();if(!database)throw new Error('Private Keeper role fixture has no database');
   const client=await operator.connect();
-  try{await provisionEngineDatabasePrivileges(client,{expectedDatabase:database,passwords:{application:applicationPassword,financial:financialPassword}});}
+  try{await provisionEngineDatabasePrivileges(client,{expectedDatabase:database,passwords:{application:applicationPassword,financial:financialPassword,outsideCustody:outsideCustodyPassword}});}
   finally{client.release();}
   const financial=quiet(config?new Pool({host:config.socket,port:config.port,user:'lares_financial',password:financialPassword.toString('ascii'),database:config.database,max:8,options:'-c timezone=UTC'}):(()=>{
     const uri=new URL(container!.getConnectionUri());uri.pathname=`/${database}`;uri.username='lares_financial';uri.password=financialPassword.toString('ascii');

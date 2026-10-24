@@ -283,7 +283,7 @@ def read_intent(admission_dir: str | Path, *, expected_uid: int = 0) -> dict[str
         os.close(admission_fd)
 
 
-_NORMAL_POLICY_VERSION = 1
+_NORMAL_POLICY_VERSION = 2
 
 
 def _normal_hba(subnet: str) -> bytes:
@@ -291,17 +291,18 @@ def _normal_hba(subnet: str) -> bytes:
     if network.version != 4:
         raise ValueError("installation database subnet must be IPv4")
     roles = ("lares_app", "lares_financial", "lares_workflow_provisioner",
-             "lares_workflow", "lares_gateway")
+             "lares_workflow", "lares_gateway", "lares_outside_custody")
     lines = [
-        "# Lares normal authentication policy v1; generated during explicit fresh preparation.",
+        "# Lares normal authentication policy v2; generated during explicit fresh preparation.",
         "local all lares_operator scram-sha-256",
         "host all lares_operator 127.0.0.1/32 scram-sha-256",
         "host all lares_operator ::1/128 scram-sha-256",
         f"host all lares_operator {network.with_prefixlen} scram-sha-256",
-        # These two named roles run the installer's workflow bootstrap from a host-network
-        # container, so their checked production route is loopback as well as the bridge.
+        # These named roles have checked production loopback routes: workflow setup uses the
+        # host-network container, and database-setup verifies the outside-custody login there.
         "host all lares_workflow_provisioner 127.0.0.1/32 scram-sha-256",
         "host all lares_workflow 127.0.0.1/32 scram-sha-256",
+        "host all lares_outside_custody 127.0.0.1/32 scram-sha-256",
     ]
     lines.extend(f"host all {role} {network.with_prefixlen} scram-sha-256" for role in roles)
     lines.extend((
@@ -496,6 +497,46 @@ def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None =
         validate(prefix, subnet)
     finally:
         for fd in (auth_fd, admission_fd, custody_fd, root_fd, lib_fd, prefix_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def prepare_outside_custody_key(prefix: str | Path, *, expected_uid: int | None = None) -> str:
+    """Create one fresh Keeper-only root key. Existing or partial state is never adopted."""
+    requested = Path(prefix)
+    uid = 0 if expected_uid is None else expected_uid
+    if (not requested.is_absolute() or ".." in requested.parts or str(requested) != str(prefix) or
+            expected_uid is None and os.geteuid() != 0 or
+            expected_uid is not None and (uid != os.geteuid() or uid == 0 or os.environ.get("LARES_MAINTENANCE_TESTING") != "1")):
+        raise PermissionError("outside custody key preparation requires a normalized root-owned installation prefix")
+    prefix_fd, _ = _open_safe_chain(requested, uid)
+    lares_fd = outside_fd = key_fd = -1
+    key = bytearray(secrets.token_bytes(32))
+    try:
+        var_fd = _open_child_dir(prefix_fd, "var", 0o755, uid, create=True)
+        try:
+            lib_fd = _open_child_dir(var_fd, "lib", 0o755, uid, create=True)
+        finally:
+            os.close(var_fd)
+        try:
+            lares_fd = _open_child_dir(lib_fd, "lares", 0o755, uid, create=True)
+        finally:
+            os.close(lib_fd)
+        outside_fd = _create_child_dir_exclusive(lares_fd, "outside-custody", 0o700, uid)
+        key_fd = os.open("key", os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                         0o400, dir_fd=outside_fd)
+        os.fchown(key_fd, uid, 0 if uid == 0 else os.getegid())
+        os.fchmod(key_fd, 0o400)
+        with os.fdopen(key_fd, "wb", closefd=True) as stream:
+            key_fd = -1
+            stream.write(key)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.fsync(outside_fd)
+        return hashlib.sha256(key).hexdigest()
+    finally:
+        key[:] = b"\0" * len(key)
+        for fd in (key_fd, outside_fd, lares_fd, prefix_fd):
             if fd >= 0:
                 os.close(fd)
 
@@ -881,6 +922,8 @@ def main(argv: list[str]) -> int:
                 prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid())
             else:
                 prepare_fresh(argv[2], argv[3])
+        elif len(argv) == 4 and argv[1] == "prepare-outside-custody-key" and argv[3] == "--confirm-fresh":
+            print(json.dumps({"keyFingerprint": prepare_outside_custody_key(argv[2])}, separators=(",", ":")))
         elif (len(argv) == 6 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh" and
               argv[5] == "--test-owner" and os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
             prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid())

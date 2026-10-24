@@ -8,6 +8,7 @@ proof_container=name+'-keeper'
 image=sys.argv[1]
 app_password=secrets.token_urlsafe(32)
 financial_password=secrets.token_urlsafe(32)
+outside_custody_password=secrets.token_urlsafe(32)
 phase='setup'
 failed=False
 
@@ -45,21 +46,25 @@ try:
  sql("INSERT INTO orgs(id,display_name) VALUES('database-role-proof-org','Database role proof'); INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('database-role-proof-member','Fixture member','database-role-proof-org','owner','active'),('database-role-delete-proof','Delete fixture','database-role-proof-org','member','active'),('database-role-policy-proof','Policy fixture','database-role-proof-org','member','active')")
 
  phase='actual-roles'
- role_probe=r"""import{Pool}from'pg';
+ role_probe=r"""import{Pool}from'pg';import{randomUUID,createHash}from'node:crypto';
 import{provisionEngineDatabasePrivileges}from'/app/services/box/lib/database-privileges.ts';
+import{OutsideCustodyStore}from'/app/services/keeper/lib/outside-custody.ts';
+import{PgGrantStore}from'/app/packages/agent-kit/src/grant-store.ts';
+import{bindConsoleSession}from'/app/packages/agent-kit/src/console-turn-authority.ts';
 import{consoleSourceTransaction,gateConsoleOrganisation}from'/app/packages/agent-kit/src/console-source-transaction.ts';
 import{observeFinancialDatabase,observeFinancialCheckpoint}from'/app/services/keeper/lib/financial-continuity.ts';
 const admin=new Pool({connectionString:process.env.PROOF_ADMIN_URL,max:1,connectionTimeoutMillis:3000,statement_timeout:7000,query_timeout:10000});
 const app=new Pool({connectionString:process.env.PROOF_APP_URL,max:1,connectionTimeoutMillis:3000,statement_timeout:5000,query_timeout:8000});
 const financial=new Pool({connectionString:process.env.PROOF_FINANCIAL_URL,max:1,connectionTimeoutMillis:3000,statement_timeout:5000,query_timeout:8000});
+const outside=new Pool({connectionString:process.env.PROOF_OUTSIDE_CUSTODY_URL,max:1,connectionTimeoutMillis:3000,statement_timeout:5000,query_timeout:8000});
 const financeTables=['budget_accounts','budget_windows','budget_gateway_bindings','budget_attempts','budget_gateway_grants','budget_financial_checkpoints'];
 async function denied42501(pool,sql,values){let code;try{await pool.query(sql,values);}catch(error){code=error?.code;}if(code!=='42501')throw Error();}
 async function main(){try{
-const passwords={application:Buffer.from(process.env.PROOF_APP_PASSWORD),financial:Buffer.from(process.env.PROOF_FINANCIAL_PASSWORD)};
+const passwords={application:Buffer.from(process.env.PROOF_APP_PASSWORD),financial:Buffer.from(process.env.PROOF_FINANCIAL_PASSWORD),outsideCustody:Buffer.from(process.env.PROOF_OUTSIDE_CUSTODY_PASSWORD)};
 const operator=await admin.connect();let first,second;try{first=await provisionEngineDatabasePrivileges(operator,{expectedDatabase:'proof',passwords});second=await provisionEngineDatabasePrivileges(operator,{expectedDatabase:'proof',passwords});}finally{operator.release();}
 if(first?.status!=='applied'||second?.status!=='verified')throw Error();
-const fixedRoles=await admin.query("SELECT rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolinherit,rolreplication,rolbypassrls,(SELECT count(*) FROM pg_auth_members m WHERE m.member=r.oid OR m.roleid=r.oid)::int AS memberships FROM pg_roles r WHERE rolname=ANY($1::text[])",[['lares_schema_owner','lares_app','lares_financial']]);
-if(fixedRoles.rows.length!==3||fixedRoles.rows.some(role=>role.rolsuper||role.rolcreatedb||role.rolcreaterole||role.rolinherit||role.rolreplication||role.rolbypassrls||role.memberships!==0)||fixedRoles.rows.find(role=>role.rolname==='lares_schema_owner')?.rolcanlogin||!fixedRoles.rows.find(role=>role.rolname==='lares_app')?.rolcanlogin||!fixedRoles.rows.find(role=>role.rolname==='lares_financial')?.rolcanlogin)throw Error();
+const fixedRoles=await admin.query("SELECT rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolinherit,rolreplication,rolbypassrls,(SELECT count(*) FROM pg_auth_members m WHERE m.member=r.oid OR m.roleid=r.oid)::int AS memberships FROM pg_roles r WHERE rolname=ANY($1::text[])",[['lares_schema_owner','lares_app','lares_financial','lares_outside_custody']]);
+if(fixedRoles.rows.length!==4||fixedRoles.rows.some(role=>role.rolsuper||role.rolcreatedb||role.rolcreaterole||role.rolinherit||role.rolreplication||role.rolbypassrls||role.memberships!==0)||fixedRoles.rows.find(role=>role.rolname==='lares_schema_owner')?.rolcanlogin||!fixedRoles.rows.find(role=>role.rolname==='lares_app')?.rolcanlogin||!fixedRoles.rows.find(role=>role.rolname==='lares_financial')?.rolcanlogin||!fixedRoles.rows.find(role=>role.rolname==='lares_outside_custody')?.rolcanlogin)throw Error();
 for(const [pool,expected]of[[app,'lares_app'],[financial,'lares_financial']]){
 const result=await pool.query(`SELECT current_user,session_user,r.rolcanlogin,r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolinherit,r.rolreplication,r.rolbypassrls,
  (SELECT count(*) FROM pg_auth_members m WHERE m.member=r.oid)::int AS memberships,
@@ -80,6 +85,10 @@ const privileges=await pool.query("SELECT has_table_privilege(current_user,$1,'S
 const p=privileges.rows[0];if(expected==='lares_app'?(p.can_read||p.can_insert||p.can_update||p.can_delete||p.can_truncate):(!p.can_read||!p.can_insert||p.can_update||p.can_delete||p.can_truncate))throw Error();
 if(expected==='lares_app'&&(p.any_read_column||p.any_insert_column||p.any_update_column))throw Error();
 }
+const custodyIdentity=await outside.query("SELECT current_user,session_user,has_table_privilege(current_user,'outside_custody_accounts','SELECT') AS custody_read,has_table_privilege(current_user,'outside_custody_accounts','INSERT') AS custody_insert,has_table_privilege(current_user,'oauth_tokens','SELECT') AS oauth_read,has_table_privilege(current_user,'budget_accounts','SELECT') AS financial_read,has_column_privilege(current_user,'org_member_policy','outside_custody_lock','UPDATE') AS lock_update,has_column_privilege(current_user,'org_member_policy','allowed_capabilities','UPDATE') AS authority_update");
+if(custodyIdentity.rows[0]?.current_user!=='lares_outside_custody'||custodyIdentity.rows[0]?.session_user!=='lares_outside_custody'||!custodyIdentity.rows[0]?.custody_read||!custodyIdentity.rows[0]?.custody_insert||custodyIdentity.rows[0]?.oauth_read||custodyIdentity.rows[0]?.financial_read||!custodyIdentity.rows[0]?.lock_update||custodyIdentity.rows[0]?.authority_update)throw Error();
+for(const table of [...financeTables,'oauth_tokens','connected_accounts','connected_account_credentials','schema_migrations'])await denied42501(outside,'SELECT * FROM public.'+table);
+await denied42501(outside,'SET ROLE lares_app');
 if(expected==='lares_financial'){
 for(const [table,column]of[['budget_accounts','state'],['budget_windows','live_member_id'],['budget_gateway_bindings','state'],['budget_attempts','state'],['budget_gateway_grants','attempt_id']])if(!(await pool.query('SELECT has_column_privilege(current_user,$1,$2,$3) AS allowed',['public.'+table,column,'UPDATE'])).rows[0].allowed)throw Error();
 for(const [table,column]of[['budget_accounts','installation_id'],['budget_windows','id'],['budget_gateway_bindings','id'],['budget_attempts','id'],['budget_gateway_grants','grant_hash'],['budget_financial_checkpoints','operation_id']])if((await pool.query('SELECT has_column_privilege(current_user,$1,$2,$3) AS allowed',['public.'+table,column,'UPDATE'])).rows[0].allowed)throw Error();
@@ -127,15 +136,37 @@ await financial.query('INSERT INTO budget_financial_checkpoints(operation_id,jou
 const checkpoint=await observeFinancialCheckpoint(financial);if(!checkpoint||checkpoint.operationId!==operation||checkpoint.journalId!==journal||checkpoint.sequence!==1||checkpoint.digest!==digest)throw Error();
 await denied42501(financial,'UPDATE public.budget_financial_checkpoints SET proposal_sequence=2 WHERE operation_id=$1',[operation]);
 let immutableCode;try{await admin.query('UPDATE public.budget_financial_checkpoints SET proposal_sequence=2 WHERE operation_id=$1',[operation]);}catch(error){immutableCode=error?.code;}if(immutableCode!=='P0001')throw Error();
+const outsideOrg='outside-custody-proof-org',outsideMember='outside-custody-proof-member',outsideOther='outside-custody-proof-other',outsideAgent='outside-custody-proof-agent',incarnation='11111111-1111-4111-8111-111111111111';
+await admin.query("INSERT INTO orgs(id,display_name) VALUES($1,'Fixture')",[outsideOrg]);
+await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Fixture owner',$3,'owner','active'),($2,'Fixture member',$3,'member','active')",[outsideMember,outsideOther,outsideOrg]);
+await admin.query('INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES($1,NULL),($2,NULL)',[outsideMember,outsideOther]);
+await admin.query("INSERT INTO agent_definitions(name,definition,hash) VALUES($1,'{\"grants\":[]}'::jsonb,'outside-proof-definition')",[outsideAgent]);
+await admin.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending) VALUES($1,'127.0.0.2',$1,'owned',$2,$2,'ready',false)",[outsideAgent,incarnation]);
+const grants=new PgGrantStore(),adopted=await grants.adoptAgent(outsideMember,{agentName:outsideAgent,expectedDefinitionHash:'outside-proof-definition'},{designatedOwnerMemberId:outsideMember,db:app});
+await grants.updateAgentAccess(outsideMember,{agentName:outsideAgent,expectedRevision:adopted.accessRevision,grants:[{principal:{kind:'organisation',id:outsideOrg},permission:'use',expiresAt:null}]},{db:app});
+const env={LARES_AGENT_NAME:outsideAgent,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:outsideMember};
+async function bindingFor(member,session){const nonce=createHash('sha256').update(member+':'+session).digest('base64url');return bindConsoleSession({agent:outsideAgent,incarnation,memberId:member,admissionNonce:nonce,sessionId:session},app,env);}
+const binding=await bindingFor(outsideMember,'outside-custody-session'),otherBinding=await bindingFor(outsideOther,'outside-custody-other-session');
+const custody=new OutsideCustodyStore(outside,Buffer.alloc(32,7)),accountId=randomUUID();
+try{
+const staged=await custody.stage(binding,{accountId,operationId:randomUUID(),expectedGeneration:0,expectedCandidateRevision:null,credential:Buffer.from('disposable-outside-credential')});if(staged.outcome!=='staged'||staged.credentialRevision===null)throw Error();
+const applied=await custody.apply(binding,{accountId,operationId:randomUUID(),expectedGeneration:1,candidateRevision:staged.credentialRevision,consentGeneration:binding.agentAccessRevision});if(applied.outcome!=='applied')throw Error();
+const used=await custody.withCredential(binding,{accountId},async(secret,authority)=>({secret:secret.toString('utf8'),pid:authority.backendPid,revision:authority.accessRevision}));if(used.secret!=='disposable-outside-credential'||used.pid<1||used.revision!==binding.agentAccessRevision)throw Error();
+await custody.withCredential(otherBinding,{accountId},async()=>{throw Error('non-owner callback must be denied');}).then(()=>{throw Error('another member received outside custody');},()=>{});
+await admin.query("UPDATE org_member_policy SET allowed_capabilities=ARRAY['outside-proof-revoked'] WHERE user_id=$1",[outsideMember]);
+await custody.withCredential(binding,{accountId},async()=>{throw Error('revoked binding callback must be denied');}).then(()=>{throw Error('revoked authority received outside custody');},()=>{});
+}finally{custody.close();}
 console.log('database-role-proof:complete');
-}catch{console.log('database-role-proof:failed');process.exitCode=1;}finally{await Promise.all([app.end(),financial.end(),admin.end()]);}}
+}catch{console.log('database-role-proof:failed');process.exitCode=1;}finally{await Promise.all([app.end(),financial.end(),outside.end(),admin.end()]);}}
 void main();"""
  app_url='postgresql://lares_app:'+app_password+'@proof-db:5432/proof'
  financial_url='postgresql://lares_financial:'+financial_password+'@proof-db:5432/proof'
+ outside_url='postgresql://lares_outside_custody:'+outside_custody_password+'@proof-db:5432/proof'
  admin_url='postgresql://proof:disposable-proof-only@proof-db:5432/proof'
  output=cmd('docker','run','--name',proof_container,'--network',name,'--workdir','/app/services/keeper',
      '-e','PROOF_ADMIN_URL='+admin_url,'-e','PROOF_APP_URL='+app_url,'-e','PROOF_FINANCIAL_URL='+financial_url,
      '-e','PROOF_APP_PASSWORD='+app_password,'-e','PROOF_FINANCIAL_PASSWORD='+financial_password,
+     '-e','PROOF_OUTSIDE_CUSTODY_PASSWORD='+outside_custody_password,'-e','PROOF_OUTSIDE_CUSTODY_URL='+outside_url,
      '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',image,'-e',role_probe,timeout=120)
  if output!='database-role-proof:complete':raise RuntimeError('actual database role proof failed')
 

@@ -6,6 +6,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { PgMemberStore } from "@lares/agent-kit/member-store";
 import type { Member } from "@lares/agent-kit/authority-contract";
+import { z } from "zod";
 import { pool } from "./db";
 import { ConsoleAdmissionUnavailableError } from "./admission-error";
 
@@ -50,4 +51,14 @@ export async function verify(raw: string | undefined): Promise<string | null> {
     const address = rows[0]?.primary_email;
     return address && /^[^\s,;]+@[^\s,;]+$/.test(address) && address.length <= 254 ? address : null;
   } catch { throw new ConsoleAdmissionUnavailableError(); }
+}
+/** Audit-only address for a member action after stable-ID session admission. It is never
+ * authority: Keeper independently rechecks the cookie session and resource grant. */
+export async function memberAuditAddress(memberId:string):Promise<string|null>{
+  try{
+    const {rows}=await pool.query<{primary_email:string|null}>(
+      "SELECT primary_email FROM users WHERE id=$1 AND status='active'",[memberId]);
+    const address=rows[0]?.primary_email;
+    return address&&z.string().email().max(254).safeParse(address).success?address:null;
+  }catch{throw new ConsoleAdmissionUnavailableError();}
 }

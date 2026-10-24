@@ -18,7 +18,9 @@
 //      `--env-file` carries the whole set and `docker compose` has nothing left to guess.
 //
 // NOTHING HERE TOUCHES A NETWORK, A REGISTRY OR A CONTAINER.
-import {financialCustodyConfigSchema,gatewayBudgetConfigSchema,nativeCustodyConfigSchema} from "../../keeper/lib/config.js";
+import {financialCustodyConfigSchema,gatewayBudgetConfigSchema,nativeCustodyConfigSchema,outsideCustodyConfigSchema} from "../../keeper/lib/config.js";
+import { lifecycleSchema } from "../../keeper/lib/lifecycle-config.js";
+import { loadBoundOutsideCustodyKey } from "../../keeper/lib/outside-custody.js";
 import { credentialConfigSchema } from "../../keeper/lib/credential-state.js";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, chmodSync, lstatSync, existsSync } from "node:fs";
@@ -39,6 +41,8 @@ export interface KeeperComposeEnvironmentInput {
   readonly hostSocketDir: string;
   readonly egressDir: string;
   readonly secretsDir: string;
+  readonly privateStateHostDir?: string;
+  readonly outsideCustodyHostDir?: string;
   readonly proxyAddress: string;
   readonly network: string;
   readonly maintenanceAdmission: ValidatedMaintenanceAdmission;
@@ -108,6 +112,10 @@ export function renderKeeperComposeEnvironment(manifest: ReleaseManifest, input:
     `LARES_GATEWAY_MASTER_KEY_FILE=${join(input.secretsDir, "gateway-master-key")}`,
     `LARES_EVE_ROUTE_PASSWORD_FILE=${join(input.secretsDir, "eve-route-password")}`,
     `LARES_VAULT_SIGNING_KEY_FILE=${join(input.secretsDir, "console-vault-signing-key")}`,
+    `LARES_OUTSIDE_CUSTODY_PASSWORD_FILE=${join(input.secretsDir, "outside-custody-database-password")}`,
+    `LARES_PRIVATE_STATE_HOST_DIR=${input.privateStateHostDir ?? "/var/lib/lares"}`,
+    `LARES_OUTSIDE_CUSTODY_KEY_FILE=${config.outsideCustody ? join(input.privateStateHostDir ?? "/var/lib/lares", "outside-custody/key") : "/dev/null"}`,
+    `LARES_OUTSIDE_CUSTODY_KEY_TARGET=${config.outsideCustody ? "/var/lib/lares/outside-custody/key" : "/run/lares-unused-outside-key"}`,
     ...(input.gatewayAuthority ? [
       `LARES_GATEWAY_BUDGET_SERVICE_KEY_FILE=${input.gatewayAuthority.serviceKeyFile}`,
       `LARES_NATIVE_POLICY_FILE=${input.gatewayAuthority.policyFile}`,
@@ -200,6 +208,10 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
   // exists but cannot be read as JSON is refused outright: carrying nothing over would silently
   // wipe those settings, and the previous file is left untouched for the owner to repair.
   const previous = readPrevious(at("keeperConfig"));
+  if (previous.outsideCustody) {
+    const key = loadBoundOutsideCustodyKey(join(at("maintenancePrefix"), "var/lib/lares/outside-custody/key"), previous.outsideCustody.keyFingerprint);
+    key.fill(0);
+  }
 
   // The deadline calendar, bound for the chief of staff only when it is a plain file. The keeper
   // refuses a symlink in verifyBindingSources, which would block every later change to every
@@ -219,6 +231,8 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
     ...(previous.budgetFinancial?{previousBudgetFinancial:previous.budgetFinancial}:{}),
     ...(previous.budgetNative?{previousBudgetNative:previous.budgetNative}:{}),
     ...(previous.gatewayBudget?{previousGatewayBudget:previous.gatewayBudget}:{}),
+    ...(previous.outsideCustody?{previousOutsideCustody:previous.outsideCustody}:{}),
+    ...(previous.outsideRouteConsumer?{previousOutsideRouteConsumer:previous.outsideRouteConsumer}:{}),
     modelPurposeConsoleSigningKeyFile: modelPurposeKeyFile,
     modelPurposeRuntimeDir: modelPurposeKeyFile ? join(at("socketDir"), "model-purpose") : null,
     project: at("project"),
@@ -255,6 +269,7 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
   const env = renderKeeperComposeEnvironment(manifest, {
     root: at("root"), keeperConfig: at("keeperConfig"), socketDir: at("socketDir"),
     hostSocketDir: at("hostSocketDir"), egressDir: at("egressDir"), secretsDir: at("secretsDir"),
+    privateStateHostDir: join(at("maintenancePrefix"), "var/lib/lares"),
     proxyAddress: at("proxyAddress"), network: at("network"), gatewayAuthority,
     maintenanceAdmission,
   }, config);
@@ -297,7 +312,7 @@ function optionalModelPurposeKey(path: string): string | null {
 
 /** What the keeper.json already on this host holds that the installer does not decide: the
  *  provider blocks (configured separately) and the schedules switch (the owner may have chosen). */
-function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean; budgetFinancial?:KeeperConfig["budgetFinancial"]; budgetNative?:KeeperConfig["budgetNative"]; gatewayBudget?:KeeperConfig["gatewayBudget"] } {
+function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean; budgetFinancial?:KeeperConfig["budgetFinancial"]; budgetNative?:KeeperConfig["budgetNative"]; gatewayBudget?:KeeperConfig["gatewayBudget"]; outsideCustody?:KeeperConfig['outsideCustody']; outsideRouteConsumer?:NonNullable<KeeperConfig['lifecycle']>['egress']['legacyConsumers'][number] } {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -319,6 +334,13 @@ function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: Keeper
   const budgetNative=native===undefined?undefined:nativeCustodyConfigSchema.parse(native);
   const gateway=(parsed as {gatewayBudget?:unknown}|null)?.gatewayBudget;
   const gatewayBudget=gateway===undefined?undefined:gatewayBudgetConfigSchema.parse(gateway);
+  const outsideRaw=(parsed as {outsideCustody?:unknown}|null)?.outsideCustody;
+  const outsideCustody=outsideRaw===undefined?undefined:outsideCustodyConfigSchema.parse(outsideRaw);
+  const lifecycleRaw=(parsed as {lifecycle?:unknown}|null)?.lifecycle;
+  const lifecycle=outsideCustody&&lifecycleRaw!==undefined?lifecycleSchema.parse(lifecycleRaw):undefined;
+  const outsideMatches=outsideCustody?lifecycle?.egress.legacyConsumers.filter(item=>item.name===outsideCustody.routeConsumerName)??[]:[];
+  if(outsideCustody&&outsideMatches.length!==1)
+    throw new Error(`${path} has outside custody without one exact root-selected route consumer. Nothing was written; restore the matching root selection or use operator recovery before running the installer again.`);
   if (budgetNative && !budgetFinancial)
     throw new Error(`${path} has native custody without a financial custody binding. Nothing was written; restore the matching binding or use operator recovery before running the installer again.`);
   const runtime = (parsed as { lifecycle?: { runtime?: { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: unknown } } } | null)
@@ -327,6 +349,7 @@ function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: Keeper
     ...(budgetFinancial?{budgetFinancial}:{}),
     ...(budgetNative?{budgetNative}:{}),
     ...(gatewayBudget?{gatewayBudget}:{}),
+    ...(outsideCustody?{outsideCustody,outsideRouteConsumer:outsideMatches[0]}:{}),
     ...(runtime?.microsoft ? { microsoft: runtime.microsoft } : {}),
     ...(runtime?.google ? { google: runtime.google } : {}),
     ...(typeof runtime?.schedulesLive === "boolean" ? { schedulesLive: runtime.schedulesLive } : {}),

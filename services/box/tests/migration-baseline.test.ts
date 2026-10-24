@@ -35,6 +35,7 @@ const CONSOLE_AUTHORITY_FILENAME = "013_console_turn_authority.sql";
 const DREAM_SCHEMA_FILENAME = "026_dream_schema.sql";
 const SHARED_SYNC_SCHEMA_FILENAME = "027_shared_sync_schema.sql";
 const STUDIO_OWNERSHIP_FILENAME = "028_studio_ownership.sql";
+const OUTSIDE_CUSTODY_FILENAME = "029_outside_custody.sql";
 
 /** Every table the numbered migrations create, plus the ledger. The list is written out so that a table the old
  *  history had and the baseline lost (outside_tool_pins once did) fails here, not on a fresh install. */
@@ -108,6 +109,9 @@ const EXPECTED_TABLES = [
   "orgs",
   "outreach_threads",
   "outside_tool_pins",
+  "outside_custody_accounts",
+  "outside_custody_revisions",
+  "outside_custody_operations",
   "owner_clock_signals",
   "proactivity_settings",
   "ratchet",
@@ -163,7 +167,7 @@ describe("the baseline on a fresh database", () => {
       const upgrade=await runMigrations(pool,SQL);
       expect(upgrade.refused).toEqual([]);
       expect(upgrade.applied).toContain(BUDGET_FILENAME);
-      expect(upgrade.applied).toContain("009_vault_areas.sql");expect(upgrade.applied).toContain("019_personal_actions.sql");expect(upgrade.applied).toContain("020_vault_resource_grants.sql");expect(upgrade.applied).toContain("021_personal_action_acceptance.sql");expect(upgrade.applied).toContain("022_console_vault_source_history.sql");expect(upgrade.applied).toContain("023_budget_invocation_suppression.sql");expect(upgrade.applied).toContain("024_gateway_budget_grants.sql");expect(upgrade.applied).toContain("025_budget_financial_checkpoints.sql");expect(upgrade.applied).toContain(DREAM_SCHEMA_FILENAME);expect(upgrade.applied).toContain(SHARED_SYNC_SCHEMA_FILENAME);expect(upgrade.applied).toContain(STUDIO_OWNERSHIP_FILENAME);
+      expect(upgrade.applied).toContain("009_vault_areas.sql");expect(upgrade.applied).toContain("019_personal_actions.sql");expect(upgrade.applied).toContain("020_vault_resource_grants.sql");expect(upgrade.applied).toContain("021_personal_action_acceptance.sql");expect(upgrade.applied).toContain("022_console_vault_source_history.sql");expect(upgrade.applied).toContain("023_budget_invocation_suppression.sql");expect(upgrade.applied).toContain("024_gateway_budget_grants.sql");expect(upgrade.applied).toContain("025_budget_financial_checkpoints.sql");expect(upgrade.applied).toContain(DREAM_SCHEMA_FILENAME);expect(upgrade.applied).toContain(SHARED_SYNC_SCHEMA_FILENAME);expect(upgrade.applied).toContain(STUDIO_OWNERSHIP_FILENAME);expect(upgrade.applied).toContain(OUTSIDE_CUSTODY_FILENAME);
       expect((await pool.query("SELECT display_name,status FROM users WHERE id='upgrade-owner'")).rows).toEqual([{display_name:'Upgrade owner',status:'active'}]);
       expect((await pool.query("SELECT 1 FROM reminders WHERE owner='upgrade-owner'")).rowCount).toBe(1);
       expect(await runMigrations(pool,SQL)).toMatchObject({applied:[],refused:[]});
@@ -182,11 +186,11 @@ describe("the baseline on a fresh database", () => {
     try {
       await ensureLedger(pool);
       const first = await runMigrations(pool, SQL);
-      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME]);
+      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME]);
       expect(first.refused).toEqual([]);
       const second = await runMigrations(pool, SQL);
       expect(second.applied).toEqual([]);
-      expect(second.skipped).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME]);
+      expect(second.skipped).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME]);
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public'");
       expect(rows[0].n).toBeGreaterThan(50);
       const tables = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name");
@@ -260,7 +264,7 @@ describe("adopting the baseline", () => {
     const rows = await listApplied(db.pool);
     expect(rows.map((r) => [r.filename, r.how])).toEqual([[BASELINE_FILENAME, "adopted"]]);
     // Later files still run after adoption: the baseline is skipped, later numbered files are applied.
-    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME], refused: [] });
+    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME], refused: [] });
     // Adoption is one-time: the ledger now holds the baseline, so a second adoption refuses.
     await expect(adoptMigrations(db.pool, SQL, { through: BASELINE_FILENAME })).rejects.toThrow(/one-time/);
   });
