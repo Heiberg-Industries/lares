@@ -57,6 +57,9 @@ NETWORK_FAILURE_STAGES = frozenset({
     "network-inspect", "network-isolation-check", "network-ipam-check",
     "network-address-validation", "firewall-preflight",
 })
+NETWORK_IPAM_DIAGNOSTICS = frozenset({
+    "ipam-config-shape", "subnet-mismatch", "gateway-missing", "gateway-invalid", "gateway-mismatch",
+})
 ACKNOWLEDGEMENT_REASONS = frozenset({
     "invalid-input", "deadline-before-connect", "connection-error", "dns-failure",
     "connection-refused", "local-source-unavailable", "network-unreachable", "connection-reset",
@@ -358,6 +361,31 @@ def fixture_failure_record(failure_phase, failure_network_stage):
     return failure
 
 
+def inspect_fixture_ipam(metadata, expected_subnet, requested_gateway):
+    """Return a fixed failure category and only the actually inspected gateway."""
+    ipam = metadata.get("IPAM") if isinstance(metadata, dict) else None
+    configs = ipam.get("Config") if isinstance(ipam, dict) else None
+    if not isinstance(configs, list) or len(configs) != 1 or not isinstance(configs[0], dict):
+        return "ipam-config-shape", None
+    config = configs[0]
+    if config.get("Subnet") != str(expected_subnet):
+        return "subnet-mismatch", None
+    observed = config.get("Gateway")
+    if observed is None or observed == "":
+        return "gateway-missing", None
+    if not isinstance(observed, str):
+        return "gateway-invalid", None
+    try:
+        parsed = ipaddress.ip_address(observed)
+    except ValueError:
+        return "gateway-invalid", None
+    if parsed.version != expected_subnet.version or str(parsed) != observed or parsed not in expected_subnet:
+        return "gateway-invalid", None
+    if observed != requested_gateway:
+        return "gateway-mismatch", observed
+    return None, observed
+
+
 def offline_network_diagnostics_self_test():
     """Execute production network AST with stub failures, without running network commands."""
     pinned = "b" * 64
@@ -528,9 +556,11 @@ def offline_network_diagnostics_self_test():
         namespace = {
             "__name__": "outside_network_diagnostic_selftest",
             "NETWORK_FAILURE_STAGES": NETWORK_FAILURE_STAGES,
+            "NETWORK_IPAM_DIAGNOSTICS": NETWORK_IPAM_DIAGNOSTICS,
             "SAFE_FAILURE_PHASES": SAFE_FAILURE_PHASES,
             "fixture_failure_record": fixture_failure_record,
-            "json": json, "ipaddress": ipaddress, "secrets": secrets,
+            "inspect_fixture_ipam": inspect_fixture_ipam,
+            "json": json, "ipaddress": ipaddress, "re": re, "secrets": secrets,
             "owner": "a" * 32, "worker_container": "lares-outside-worker-aaaaaaaaaa",
             "network_stage": "network", "report": {},
         }
@@ -661,10 +691,40 @@ def offline_network_diagnostics_self_test():
     if str(selected) != "10.33.0.0/24" or namespace["network_stage"] != "subnet-selection":
         raise RuntimeError("overlapping Docker subnet was not skipped before selecting the next range")
 
+    ipam_subnet = ipaddress.ip_network("192.0.2.0/24")
+    requested_gateway = "192.0.2.1"
+    ipam_cases = [
+        ("valid", {"IPAM": {"Config": [{"Subnet": str(ipam_subnet), "Gateway": requested_gateway}]}},
+         None, requested_gateway),
+        ("omitted gateway", {"IPAM": {"Config": [{"Subnet": str(ipam_subnet)}]}},
+         "gateway-missing", None),
+        ("null gateway", {"IPAM": {"Config": [{"Subnet": str(ipam_subnet), "Gateway": None}]}},
+         "gateway-missing", None),
+        ("malformed gateway", {"IPAM": {"Config": [{"Subnet": str(ipam_subnet), "Gateway": secret_like}]}},
+         "gateway-invalid", None),
+        ("wrong gateway", {"IPAM": {"Config": [{"Subnet": str(ipam_subnet), "Gateway": "192.0.2.2"}]}},
+         "gateway-mismatch", "192.0.2.2"),
+        ("duplicate gateway entries", {"IPAM": {"Config": [
+            {"Subnet": str(ipam_subnet), "Gateway": requested_gateway},
+            {"Subnet": str(ipam_subnet), "Gateway": requested_gateway}]}},
+         "ipam-config-shape", None),
+        ("wrong subnet", {"IPAM": {"Config": [{"Subnet": "192.0.3.0/24", "Gateway": "192.0.3.1"}]}},
+         "subnet-mismatch", None),
+        ("missing config", {"IPAM": {"Config": None}}, "ipam-config-shape", None),
+    ]
+    for label, metadata, expected_category, expected_gateway in ipam_cases:
+        category, observed = inspect_fixture_ipam(metadata, ipam_subnet, requested_gateway)
+        if (category, observed) != (expected_category, expected_gateway):
+            raise RuntimeError("IPAM metadata was not safely classified: " + label)
+        if category is not None and category not in NETWORK_IPAM_DIAGNOSTICS:
+            raise RuntimeError("IPAM classifier returned a non-enumerated diagnostic")
+        if label == "malformed gateway" and (secret_like in str(observed) or secret_like in str(category)):
+            raise RuntimeError("IPAM diagnostic exposed malformed metadata")
+
     setup_faults = {
         "container-name-preflight", "network-name-preflight", "network-create",
         "network-inspect", "network-isolation-check", "network-ipam-check",
-        "network-address-validation",
+        "network-address-validation", "network-owner-check",
     }
     for fault in setup_faults:
         namespace = base_namespace()
@@ -693,9 +753,12 @@ def offline_network_diagnostics_self_test():
                 configured = str(selected_subnet)
                 if fault == "network-ipam-check":
                     configured = "192.0.3.0/24"
+                inspected_owner = "f" * 32 if fault == "network-owner-check" else namespace["owner"]
                 metadata = {"Internal": internal,
+                            "Name": args[3] if len(args) > 3 else namespace["network"],
+                            "Id": "a" * 64,
                             "Labels": {"lares.proof": "outside-discovery",
-                                       "lares.proof.owner": namespace["owner"]},
+                                       "lares.proof.owner": inspected_owner},
                             "IPAM": {"Config": [{"Subnet": configured,
                                 "Gateway": str(ipaddress.ip_network(configured).network_address + 1)}]}}
                 return json.dumps([metadata])
@@ -703,22 +766,86 @@ def offline_network_diagnostics_self_test():
 
         namespace["container_facts"] = container_stub
         namespace["command"] = setup_command
-        failure_for(namespace, setup_nodes, fault)
+        failure_for(namespace, setup_nodes,
+                    "network-isolation-check" if fault == "network-owner-check" else fault)
+        if fault == "network-ipam-check":
+            if namespace["report"].get("networkSetupDiagnostic") != "subnet-mismatch":
+                raise RuntimeError("owned network IPAM failure lacked its fixed subnet diagnostic")
+        elif namespace["report"].get("networkSetupDiagnostic") is not None:
+            raise RuntimeError("network diagnostic was emitted before ownership and IPAM validation")
 
     namespace = base_namespace()
     selected_subnet = ipaddress.ip_network("192.0.2.0/24")
     namespace["choose_unused_subnet"] = lambda: selected_subnet
     namespace["container_facts"] = lambda name: None
-    namespace["command"] = lambda *args, **kwargs: (
-        json.dumps([{"Internal": True,
-                     "Labels": {"lares.proof": "outside-discovery",
-                                "lares.proof.owner": namespace["owner"]},
-                     "IPAM": {"Config": [{"Subnet": str(selected_subnet),
-                         "Gateway": str(selected_subnet.network_address + 1)}]}}])
-        if args[:3] == ("docker", "network", "inspect") else "")
+    setup_calls = []
+
+    def successful_setup_command(*args, **kwargs):
+        setup_calls.append(args)
+        if args[:3] == ("docker", "network", "inspect"):
+            return json.dumps([{"Name": args[3], "Id": "a" * 64, "Internal": True,
+                                "Labels": {"lares.proof": "outside-discovery",
+                                           "lares.proof.owner": namespace["owner"]},
+                                "IPAM": {"Config": [{"Subnet": str(selected_subnet),
+                                    "Gateway": str(selected_subnet.network_address + 1)}]}}])
+        return ""
+
+    namespace["command"] = successful_setup_command
     execute(setup_nodes, namespace)
     if namespace["report"].get("network", {}).get("subnet") != str(selected_subnet):
         raise RuntimeError("production network setup success path changed in offline context")
+    network_create = next(args for args in setup_calls if args[:3] == ("docker", "network", "create"))
+    if "--internal" not in network_create or "--gateway" not in network_create or \
+            network_create[network_create.index("--gateway") + 1] != "192.0.2.1" or \
+            namespace["report"].get("networkSetupDiagnostic") is not None:
+        raise RuntimeError("network setup did not request and accept its observed gateway exactly")
+
+    routed_start = next(index for index, node in enumerate(main_try.body)
+                        if isinstance(node, ast.Assign) and any(
+                            isinstance(target, ast.Name) and target.id == "routed_subnet"
+                            for target in node.targets))
+    routed_end = next(index for index in range(routed_start, len(main_try.body))
+                      if isinstance(main_try.body[index], ast.Assign) and any(
+                          isinstance(target, ast.Name) and target.id == "routed_gateway"
+                          for target in main_try.body[index].targets))
+    routed_nodes = main_try.body[routed_start:routed_end + 1]
+
+    def run_routed_setup(inspected_gateway):
+        namespace = base_namespace()
+        routed_subnet = ipaddress.ip_network("198.51.100.0/24")
+        namespace.update({"subnet": selected_subnet, "routed_network": "fixture-routed",
+                          "choose_unused_subnet": lambda: routed_subnet})
+        routed_calls = []
+
+        def routed_command(*args, **kwargs):
+            routed_calls.append(args)
+            if args[:3] == ("docker", "network", "inspect"):
+                return json.dumps([{"Name": "fixture-routed", "Id": "d" * 64,
+                                    "Internal": False,
+                                    "Labels": {"lares.proof": "outside-discovery-routed-target",
+                                               "lares.proof.owner": namespace["owner"]},
+                                    "IPAM": {"Config": [{"Subnet": str(routed_subnet),
+                                        "Gateway": inspected_gateway}]}}])
+            return ""
+
+        namespace["command"] = routed_command
+        try:
+            execute(routed_nodes, namespace)
+        except RuntimeError:
+            if namespace["report"].get("routedNetworkSetupDiagnostic") is None:
+                raise
+        create = next(args for args in routed_calls if args[:3] == ("docker", "network", "create"))
+        return namespace, create
+
+    routed_namespace, routed_create = run_routed_setup("198.51.100.1")
+    if "--gateway" not in routed_create or \
+            routed_create[routed_create.index("--gateway") + 1] != "198.51.100.1" or \
+            routed_namespace.get("routed_gateway") != "198.51.100.1":
+        raise RuntimeError("routed target network did not request and use its observed gateway exactly")
+    routed_mismatch, _ = run_routed_setup("198.51.100.2")
+    if routed_mismatch["report"].get("routedNetworkSetupDiagnostic") != "gateway-mismatch":
+        raise RuntimeError("routed target gateway mismatch lacked its fixed diagnostic")
+
     namespace["nft_host"] = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(secret_like))
     failure_for(namespace, firewall_nodes, "firewall-preflight")
 
@@ -2590,23 +2717,25 @@ try:
                "name=^" + routed_network + "$").strip():
         raise RuntimeError("unique routed fixture network name is already in use")
     subnet = choose_unused_subnet()
+    requested_gateway = str(subnet.network_address + 1)
     set_network_stage("network-create")
-    command("docker", "network", "create", "--internal", "--subnet", str(subnet),
+    command("docker", "network", "create", "--internal", "--subnet", str(subnet), "--gateway", requested_gateway,
             "--label", "lares.proof=outside-discovery", "--label", "lares.proof.owner=" + owner, network)
     set_network_stage("network-inspect")
     network_metadata = json.loads(command("docker", "network", "inspect", network))[0]
     set_network_stage("network-isolation-check")
-    if network_metadata.get("Internal") is not True or network_metadata.get("Labels", {}).get("lares.proof") != "outside-discovery" or network_metadata.get("Labels", {}).get("lares.proof.owner") != owner:
+    if (network_metadata.get("Name") != network or
+            not re.fullmatch(r"[a-f0-9]{64}", str(network_metadata.get("Id", ""))) or
+            network_metadata.get("Internal") is not True or
+            network_metadata.get("Labels", {}).get("lares.proof") != "outside-discovery" or
+            network_metadata.get("Labels", {}).get("lares.proof.owner") != owner):
         raise RuntimeError("proof network isolation or ownership labels were not established")
     set_network_stage("network-ipam-check")
-    configured_subnets = {entry.get("Subnet") for entry in network_metadata.get("IPAM", {}).get("Config", [])}
-    if str(subnet) not in configured_subnets:
-        raise RuntimeError("proof network static-address subnet did not match the selected range")
-    gateways = [entry.get("Gateway") for entry in network_metadata.get("IPAM", {}).get("Config", [])
-                if entry.get("Subnet") == str(subnet)]
-    if len(gateways) != 1 or not isinstance(gateways[0], str) or ipaddress.ip_address(gateways[0]) not in subnet:
-        raise RuntimeError("proof network bridge gateway could not be verified")
-    first_gateway = gateways[0]
+    ipam_category, inspected_gateway = inspect_fixture_ipam(network_metadata, subnet, requested_gateway)
+    if ipam_category is not None:
+        report["networkSetupDiagnostic"] = ipam_category
+        raise RuntimeError("proof network IPAM did not match its requested address contract")
+    first_gateway = inspected_gateway
     set_network_stage("network-address-validation")
     if subnet.version != 4 or subnet.num_addresses < 32:
         raise RuntimeError("Docker selected an unsuitable isolated IPv4 subnet")
@@ -2651,14 +2780,23 @@ try:
     if routed_subnet.version != 4 or routed_subnet.num_addresses < 16 or routed_subnet.overlaps(subnet):
         raise RuntimeError("routed target bridge address range is unsuitable")
     routed_target_ip = str(routed_subnet.network_address + 12)
-    command("docker", "network", "create", "--subnet", str(routed_subnet),
+    routed_requested_gateway = str(routed_subnet.network_address + 1)
+    command("docker", "network", "create", "--subnet", str(routed_subnet), "--gateway", routed_requested_gateway,
             "--label", "lares.proof=outside-discovery-routed-target", "--label", "lares.proof.owner=" + owner,
             routed_network)
     routed_metadata = json.loads(command("docker", "network", "inspect", routed_network))[0]
-    if (routed_metadata.get("Name") != routed_network or routed_metadata.get("Labels", {}).get("lares.proof.owner") != owner or
-            routed_metadata.get("Internal") is not False or routed_metadata.get("Id") is None or
-            str(routed_subnet) not in {entry.get("Subnet") for entry in routed_metadata.get("IPAM", {}).get("Config", [])}):
+    if (routed_metadata.get("Name") != routed_network or
+            not re.fullmatch(r"[a-f0-9]{64}", str(routed_metadata.get("Id", ""))) or
+            routed_metadata.get("Labels", {}).get("lares.proof") != "outside-discovery-routed-target" or
+            routed_metadata.get("Labels", {}).get("lares.proof.owner") != owner or
+            routed_metadata.get("Internal") is not False):
         raise RuntimeError("routed target bridge ownership or address range could not be verified")
+    routed_ipam_category, routed_inspected_gateway = inspect_fixture_ipam(
+        routed_metadata, routed_subnet, routed_requested_gateway)
+    if routed_ipam_category is not None:
+        report["routedNetworkSetupDiagnostic"] = routed_ipam_category
+        raise RuntimeError("routed target bridge IPAM did not match its requested address contract")
+    routed_gateway = routed_inspected_gateway
     routed_peer_report_path = root / "routed-peer.json"
     routed_peer_report_path.write_text(json.dumps({"ready": False}), encoding="ascii")
     routed_peer_report_path.chmod(0o600)
@@ -2695,6 +2833,7 @@ try:
     else:
         raise RuntimeError("routed target TLS peer did not become ready")
     report["routedTarget"] = {"owned": True, "firstBridgeGateway": first_gateway,
+                              "targetBridgeGateway": routed_gateway,
                               "firstBridgeNetworkId": network_metadata["Id"],
                               "targetBridgeNetworkId": routed_metadata["Id"],
                               "targetAddress": routed_target_ip, "publishedPort": routed_port,
