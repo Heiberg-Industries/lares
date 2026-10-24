@@ -97,6 +97,23 @@ describe('agent grants on disposable PostgreSQL',()=>{
     for(const permission of ['use','edit'])expect(await store.can('second',agent,permission)).toBe(list[0].permissions.includes(permission as 'edit'));
     expect(await store.agentAccess('second',agent.id)).toBeUndefined();expect(await store.listVisible('other','agent')).toEqual([]);
   });
+  it('bounds candidate rows before evaluation and keeps the complete 50-row result',async()=>{
+    await adopt();
+    await expect(store.listVisible('owner','agent',{maxCandidates:50,
+      expectedCandidates:new Map([[agent.id,{revision:'1',hash:'f'.repeat(64)}]])})).rejects.toThrow('stale');
+    const names=Array.from({length:49},(_,i)=>`agent-${String(i).padStart(2,'0')}`);
+    for(const name of names){
+      await db.query('INSERT INTO agent_definitions(name,hash,definition) VALUES($1,$2,$3::jsonb)',
+        [name,`${name}-hash`,JSON.stringify({name,grants:[{capability:'echo',scope:'read'}]})]);
+      await db.query('INSERT INTO agent_access(agent_name,owner_member_id,organisation_id) VALUES($1,\'owner\',\'org\')',[name]);
+    }
+    expect(await store.listVisible('owner','agent',{maxCandidates:50})).toHaveLength(50);
+    const extra='agent-overflow';
+    await db.query('INSERT INTO agent_definitions(name,hash,definition) VALUES($1,$2,$3::jsonb)',
+      [extra,`${extra}-hash`,JSON.stringify({name:extra,grants:[{capability:'echo',scope:'read'}]})]);
+    await db.query('INSERT INTO agent_access(agent_name,owner_member_id,organisation_id) VALUES($1,\'owner\',\'org\')',[extra]);
+    await expect(store.listVisible('owner','agent',{maxCandidates:50})).rejects.toThrow('denied');
+  });
   it('expires grants and rejects expired mutation input atomically',async()=>{
     await adopt();await set([named('second','use',new Date(Date.now()+250).toISOString())]);expect(await store.can('second',agent,'use')).toBe(true);
     await db.query('SELECT pg_sleep(0.3)');expect(await store.can('second',agent,'use')).toBe(false);expect(await store.listVisible('second','agent')).toEqual([]);
@@ -182,6 +199,114 @@ describe('agent grants on disposable PostgreSQL',()=>{
     expect(await captureOutside('restricted')).toBeUndefined();
     expect(await captureOutside('other','mail')).toBeUndefined();
   });
+  it('bounds private discovery metadata before parsing or evaluating declared connections',async()=>{
+    await adoptOutside();
+    const connection=(name:string,token:boolean)=>({name,url:`https://${name}.example.com/mcp`,description:'Fixture connection',token,
+      tools:{allow:['read'],read:['read']},trusted:false});
+    const declared=Array.from({length:126},(_,i)=>connection(`tool-${String(i).padStart(3,'0')}`,false));
+    const names=Array.from({length:49},(_,i)=>`agent-${String(i).padStart(2,'0')}`);
+    for(const name of names){
+      const definition={...(name==='agent-00'?outsideDefinition({name,outsideTools:declared}):{name,grants:[{capability:'echo',scope:'read'}]})};
+      await db.query('INSERT INTO agent_definitions(name,hash,definition) VALUES($1,$2,$3::jsonb)',[name,`${name}-hash`,JSON.stringify(definition)]);
+      await db.query('INSERT INTO agent_access(agent_name,owner_member_id,organisation_id) VALUES($1,\'owner\',\'org\')',[name]);
+    }
+    const selectorTotals=async()=> (await db.query<{candidates:number;declared:number}>(`
+      SELECT count(*)::int AS candidates,COALESCE(sum(CASE WHEN jsonb_typeof(d.definition->'outsideTools')='array'
+        THEN jsonb_array_length(d.definition->'outsideTools') ELSE 0 END),0)::int AS declared
+      FROM agent_access a JOIN agent_definitions d ON d.name=a.agent_name WHERE a.organisation_id='org'`)).rows[0]!;
+    expect(await selectorTotals()).toEqual({candidates:50,declared:128});
+    const client=await db.connect();await client.query('BEGIN');
+    try{
+      const targets=await store.listHumanOutsideDiscoveryTargets('owner',{db:client});
+      expect(targets).toEqual([{agentName:'assistant',connectionName:'mail'},{agentName:'assistant',connectionName:'calendar'}]);
+    }finally{await client.query('ROLLBACK');client.release();}
+
+    await db.query('UPDATE agent_definitions SET definition=$1::jsonb WHERE name=\'agent-00\'',
+      [JSON.stringify({name:'agent-00',grants:[{capability:'echo',scope:'read'}],outsideTools:[...declared,connection('tool-126',false)]})]);
+    expect(await selectorTotals()).toEqual({candidates:50,declared:129});
+    const tooMany=await db.connect();await tooMany.query('BEGIN');const declarationQueries:string[]=[];
+    const tracingDeclarations={query:async(text:string,values?:unknown[])=>{
+      declarationQueries.push(text);return tooMany.query(text,values as never);
+    }};
+    try{
+      await expect(store.listHumanOutsideDiscoveryTargets('owner',{db:tracingDeclarations as never})).rejects.toThrow('denied');
+      expect(declarationQueries.some(sql=>sql.includes('octet_length(d.definition::text) AS definition_bytes'))).toBe(true);
+      expect(declarationQueries.some(sql=>sql.includes('d.definition,d.status'))).toBe(false);
+      expect(declarationQueries.some(sql=>sql.includes('FROM org_member_policy'))).toBe(false);
+    }
+    finally{await tooMany.query('ROLLBACK');tooMany.release();}
+
+    const overflow='agent-overflow';
+    await db.query('UPDATE agent_definitions SET definition=$1::jsonb WHERE name=\'agent-00\'',
+      [JSON.stringify(outsideDefinition({name:'agent-00',outsideTools:declared}))]);
+    await db.query('INSERT INTO agent_definitions(name,hash,definition) VALUES($1,$2,$3::jsonb)',
+      [overflow,`${overflow}-hash`,JSON.stringify({name:overflow,grants:[{capability:'echo',scope:'read'}]})]);
+    await db.query('INSERT INTO agent_access(agent_name,owner_member_id,organisation_id) VALUES($1,\'owner\',\'org\')',[overflow]);
+    expect(await selectorTotals()).toEqual({candidates:51,declared:128});
+    const fiftyOne=await db.connect();await fiftyOne.query('BEGIN');const candidateQueries:string[]=[];
+    const tracingCandidates={query:async(text:string,values?:unknown[])=>{
+      candidateQueries.push(text);return fiftyOne.query(text,values as never);
+    }};
+    try{
+      await expect(store.listHumanOutsideDiscoveryTargets('owner',{db:tracingCandidates as never})).rejects.toThrow('denied');
+      expect(candidateQueries.some(sql=>sql.includes('octet_length(d.definition::text) AS definition_bytes'))).toBe(true);
+      expect(candidateQueries.some(sql=>sql.includes('d.definition,d.status'))).toBe(false);
+      expect(candidateQueries.some(sql=>sql.includes('FROM org_member_policy'))).toBe(false);
+    }
+    finally{await fiftyOne.query('ROLLBACK');fiftyOne.release();}
+  });
+  it('accepts the exact definition byte limit and refuses the next byte before full-row fetch or evaluation',async()=>{
+    await adoptOutside();
+    const base=outsideDefinition({description:''});
+    const baseBytes=(await db.query<{bytes:number}>('SELECT octet_length($1::jsonb::text)::int AS bytes',[JSON.stringify(base)])).rows[0]!.bytes;
+    for(const [limit,accepted] of [[262144,true],[262145,false]] as const){
+      const definition=outsideDefinition({description:'x'.repeat(limit-baseBytes)});
+      const bytes=(await db.query<{bytes:number}>('SELECT octet_length($1::jsonb::text)::int AS bytes',[JSON.stringify(definition)])).rows[0]!.bytes;
+      expect(bytes).toBe(limit);
+      await db.query('UPDATE agent_definitions SET definition=$1::jsonb WHERE name=$2',[JSON.stringify(definition),agent.id]);
+      const client=await db.connect();await client.query('BEGIN');
+      const statements:string[]=[];
+      const tracingDb={query:async(text:string,values?:unknown[])=>{
+        statements.push(text);return client.query(text,values as never);
+      }};
+      try{
+        if(accepted){
+          expect(await store.listHumanOutsideDiscoveryTargets('owner',{db:tracingDb as never})).toContainEqual({agentName:'assistant',connectionName:'mail'});
+        }else{
+          await expect(store.listHumanOutsideDiscoveryTargets('owner',{db:tracingDb as never})).rejects.toThrow('denied');
+          expect(statements.some(sql=>sql.includes('d.definition,d.status'))).toBe(false);
+          expect(statements.some(sql=>sql.includes('FROM org_member_policy'))).toBe(false);
+        }
+      }finally{await client.query('ROLLBACK');client.release();}
+    }
+    await db.query('UPDATE agent_definitions SET definition=$1::jsonb WHERE name=$2',[JSON.stringify(outsideDefinition({outsideTools:'not-an-array'})),agent.id]);
+    const client=await db.connect();await client.query('BEGIN');
+    try{await expect(store.listHumanOutsideDiscoveryTargets('owner',{db:client})).rejects.toThrow('denied');}
+    finally{await client.query('ROLLBACK');client.release();}
+  });
+  it('checks the exact preflight candidate snapshot before the full-row query and shared evaluator',async()=>{
+    await adoptOutside();
+    const client=await db.connect();await client.query('BEGIN');
+    const statements:string[]=[];let changed=false;
+    const tracingDb={query:async(text:string,values?:unknown[])=>{
+      statements.push(text);
+      const result=await client.query(text,values as never);
+      if(text.includes('octet_length(d.definition::text) AS definition_bytes')&&!changed){
+        changed=true;
+        await client.query('UPDATE agent_access SET revision=revision+1 WHERE agent_name=$1',[agent.id]);
+      }
+      return result;
+    }};
+    try{
+      await expect(store.listHumanOutsideDiscoveryTargets('owner',{db:tracingDb as never})).rejects.toThrow('stale');
+      const metadataIndex=statements.findIndex(sql=>sql.includes('octet_length(d.definition::text) AS definition_bytes'));
+      const candidateIndex=statements.findIndex(sql=>sql.includes('d.definition,d.status'));
+      const evaluatorIndex=statements.findIndex(sql=>sql.includes('FROM org_member_policy'));
+      expect(metadataIndex).toBeGreaterThan(-1);
+      expect(candidateIndex).toBeGreaterThan(metadataIndex);
+      expect(evaluatorIndex).toBe(-1);
+    }finally{await client.query('ROLLBACK');client.release();}
+  });
   it('uses deterministic member grant proof, checks the complete expected revision pair and rejects invalid declarations',async()=>{
     await adoptOutside();await set([named('second'),organisation]);
     await db.query("UPDATE org_member_policy SET allowed_capabilities=ARRAY['outside'] WHERE user_id='owner'");
@@ -216,6 +341,21 @@ describe('agent grants on disposable PostgreSQL',()=>{
     }
     await db.query('UPDATE agent_definitions SET definition=$1::jsonb WHERE name=$2',[JSON.stringify(outsideDefinition({grants:[{capability:'outside',scope:'write-with-confirm'}],outsideTools:[{name:'mail',url:'https://api.example.com/mcp',description:'mail',token:true,tools:{allow:['search','send'],read:['search']}}]})),agent.id]);
     expect(await captureOutside('owner')).toMatchObject({outside:{scope:'write-with-confirm'}});
+  });
+  it('preserves the custody connection-name boundary while generic definitions admit longer names',async()=>{
+    await adoptOutside();
+    const inside='a'.repeat(31),outside='a'.repeat(32);
+    const connection=(name:string)=>({name,url:'https://api.example.com/mcp',description:'Mail tools',token:true,
+      tools:{allow:['search'],read:['search']},trusted:false});
+    const definition=outsideDefinition({outsideTools:[connection(inside),connection(outside)]});
+    await db.query('UPDATE agent_definitions SET definition=$1::jsonb WHERE name=$2',[JSON.stringify(definition),agent.id]);
+    const client=await db.connect();await client.query('BEGIN');
+    try{
+      expect(await store.listHumanOutsideDiscoveryTargets('owner',{db:client})).toEqual([{agentName:'assistant',connectionName:inside}]);
+      const current=(await store.agentAccess('owner',agent.id))!;
+      await expect(store.captureOutsideUse('owner',agent.id,{db:client,connectionName:outside,
+        expected:{definitionHash:current.definitionHash,accessRevision:current.accessRevision}})).resolves.toBeUndefined();
+    }finally{await client.query('ROLLBACK');client.release();}
   });
   it('keeps ordinary capture APIs on their existing result shape when member and organisation grants coexist',async()=>{
     await adoptOutside();await set([named('second','use','2099-01-01T00:00:00.123Z'),{...organisation,expiresAt:'2099-01-02T00:00:00.456Z'}]);

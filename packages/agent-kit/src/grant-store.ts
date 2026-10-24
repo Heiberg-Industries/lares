@@ -15,6 +15,7 @@ export type GrantDatabase = Pick<PoolClient,'query'>;
 type Db = GrantDatabase;
 type Permission = 'use' | 'edit';
 export interface VisibleResource { resource: {kind:'agent'|'vault-area';id:string}; accessRevision:number; permissions:Permission[] }
+export interface HumanOutsideDiscoveryTarget { agentName:string; connectionName:string }
 export interface AgentAccessView { agentName:string; ownerMemberId:string; accessRevision:number; definitionHash:string; grants:{ principal:{kind:'member'|'organisation';id:string};permission:Permission;expiresAt:string|null }[] }
 export type OutsideUseCapture = {
   version: 1;
@@ -39,7 +40,8 @@ const selection=z.strictObject({principal:z.discriminatedUnion('kind',[
 export const agentAccessUpdateSchema=z.strictObject({agentName:id,expectedRevision:revision,grants:z.array(selection).max(200)})
   .refine(v=>v.grants.every(g=>g.principal.kind==='member'||g.permission==='use'),'Organisation editing is unavailable')
   .refine(v=>new Set(v.grants.map(g=>`${g.principal.kind}:${g.principal.id}:${g.permission}`)).size===v.grants.length,'Duplicate grants');
-type AccessRow={agent_name:string;owner_member_id:string;organisation_id:string;revision:string;hash:string;definition:unknown;status:string};
+type AccessRow={agent_name:string;owner_member_id:string;organisation_id:string;revision:string;hash:string;definition:unknown;status:string;
+  definition_bytes?:number;outside_type?:string|null;declared?:number};
 type GrantRow={principal_member_id:string|null;principal_organisation_id:string|null;permission:Permission;expires_at:Date|null};
 type OutsideOwnerPolicy = OutsideUseCapture['ownerPolicy'];
 type OutsideGrant = Extract<OutsideUseCapture['grant'],{kind:'grant'}>;
@@ -47,6 +49,7 @@ type OutsideEvaluation = { ownerPolicy?:OutsideOwnerPolicy; grant?:OutsideUseCap
 const accessColumns='a.agent_name,a.owner_member_id,a.organisation_id,a.revision,d.hash,d.definition,d.status';
 const outsideHash=z.string().regex(/^[a-f0-9]{64}$/);
 const positiveIntegerText=z.string().regex(/^[1-9]\d*$/);
+const custodyConnectionName=z.string().regex(/^[a-z][a-z0-9-]{1,30}$/);
 function capabilities(definition:unknown): string[]|undefined {
   const parsed=z.object({grants:z.array(z.object({capability:z.string(),scope:z.string()}))}).safeParse(definition);
   return parsed.success ? parsed.data.grants.filter(g=>g.scope!=='none').map(g=>g.capability) : undefined;
@@ -68,7 +71,7 @@ function outsideDefinition(value:unknown,agentName:string,connectionName:string)
   const autonomy=autonomyOf(parsed.data,'outside');
   if(autonomy==='never')return undefined;
   const selected=(parsed.data.outsideTools??[]).filter(entry=>entry.name===connectionName);
-  if(selected.length!==1)return undefined;
+  if(selected.length!==1||!custodyConnectionName.safeParse(connectionName).success)return undefined;
   const connection=selected[0]!;
   if(connection.token!==true||!checkOutsideUrl(connection.url).ok)return undefined;
   const names=[...connection.tools.allow,...connection.tools.read];
@@ -228,7 +231,7 @@ export class PgGrantStore {
       };
     });
   }
-  async listVisible(memberId:string,kind:string,options:{db?:Db}={}):Promise<VisibleResource[]> {
+  async listVisible(memberId:string,kind:string,options:{db?:Db;maxCandidates?:number;expectedCandidates?:ReadonlyMap<string,{revision:string;hash:string}>}={}):Promise<VisibleResource[]> {
     if(!['agent','vault-area'].includes(kind))return [];
     return this.transaction(options.db,async db=>{
       let member:Member;try{member=await this.actor(db,memberId);}catch(e){if(e instanceof GrantStoreError)return [];throw e;}
@@ -243,11 +246,77 @@ export class PgGrantStore {
         }
         return visible;
       }
-      const {rows}=await db.query<AccessRow>(`SELECT ${accessColumns} FROM agent_access a JOIN agent_definitions d ON d.name=a.agent_name WHERE a.organisation_id=$1 ORDER BY a.agent_name`,[member.organisationId]);
+      const maxCandidates=options.maxCandidates;
+      if(maxCandidates!==undefined&&(!Number.isSafeInteger(maxCandidates)||maxCandidates<1||maxCandidates>1000))throw new GrantStoreError('invalid');
+      const boundedMetadata=options.expectedCandidates?`,octet_length(d.definition::text) AS definition_bytes,
+          jsonb_typeof(d.definition->'outsideTools') AS outside_type,
+          CASE WHEN jsonb_typeof(d.definition->'outsideTools')='array'
+            THEN jsonb_array_length(d.definition->'outsideTools') ELSE 0 END AS declared`:'';
+      const {rows}=await db.query<AccessRow>(`SELECT ${accessColumns}${boundedMetadata} FROM agent_access a JOIN agent_definitions d ON d.name=a.agent_name WHERE a.organisation_id=$1 ORDER BY a.agent_name${maxCandidates===undefined?'':' LIMIT $2'}`,
+        maxCandidates===undefined?[member.organisationId]:[member.organisationId,maxCandidates+1]);
+      // Refuse before evaluating any row. Returning the first N would make a partial selector
+      // look complete and would change the shared evaluator's decision set.
+      if(maxCandidates!==undefined&&rows.length>maxCandidates)throw new GrantStoreError('denied');
+      if(options.expectedCandidates){
+        const expectedNames=[...options.expectedCandidates.keys()];
+        if(rows.length!==expectedNames.length||rows.some((row,index)=>{
+          const expected=options.expectedCandidates!.get(row.agent_name);
+          return row.agent_name!==expectedNames[index]||!expected||expected.revision!==row.revision||expected.hash!==row.hash||
+            !Number.isSafeInteger(row.definition_bytes)||row.definition_bytes!<1||row.definition_bytes!>262144||
+            row.outside_type!==null&&row.outside_type!=='array'||!Number.isSafeInteger(row.declared)||row.declared!<0;
+        }))throw new GrantStoreError('stale');
+        if(rows.reduce((total,row)=>total+(row.declared??0),0)>128)throw new GrantStoreError('denied');
+      }
       const visible:VisibleResource[]=[];
       for(const row of rows){const permissions:Permission[]=[];for(const p of ['use','edit'] as const)if(await this.evaluate(db,member,row,p))permissions.push(p);
         if(permissions.length)visible.push({resource:{kind:'agent',id:row.agent_name},accessRevision:Number(row.revision),permissions});}
       return visible;
+    });
+  }
+  /** Bounded private member selector. Metadata limits are checked before any full definition is
+   * fetched or passed to the shared visibility evaluator. The caller supplies its owned client. */
+  async listHumanOutsideDiscoveryTargets(memberId:string,options:{db:Db}):Promise<HumanOutsideDiscoveryTarget[]> {
+    return this.transaction(options.db,async db=>{
+      const member=await this.actor(db,memberId);
+      const metadata=await db.query<{agent_name:string;revision:string;hash:string;definition_bytes:number;outside_type:string|null;declared:number}>(`
+        SELECT a.agent_name,a.revision::text,d.hash,octet_length(d.definition::text) AS definition_bytes,
+          jsonb_typeof(d.definition->'outsideTools') AS outside_type,
+          CASE WHEN jsonb_typeof(d.definition->'outsideTools')='array'
+            THEN jsonb_array_length(d.definition->'outsideTools') ELSE 0 END AS declared
+        FROM agent_access a JOIN agent_definitions d ON d.name=a.agent_name
+        WHERE a.organisation_id=$1 ORDER BY a.agent_name LIMIT 51`,[member.organisationId]);
+      if(metadata.rows.length>50)throw new GrantStoreError('denied');
+      let declaredTotal=0;
+      for(const row of metadata.rows){
+        if(!Number.isSafeInteger(row.definition_bytes)||row.definition_bytes<1||row.definition_bytes>262144||
+            row.outside_type!==null&&row.outside_type!=='array'||!Number.isSafeInteger(row.declared)||row.declared<0)
+          throw new GrantStoreError('denied');
+        declaredTotal+=row.declared;
+        if(declaredTotal>128)throw new GrantStoreError('denied');
+      }
+      const expectedCandidates=new Map(metadata.rows.map(row=>[row.agent_name,{revision:row.revision,hash:row.hash}]));
+      const visible=await this.listVisible(memberId,'agent',{db,maxCandidates:50,expectedCandidates});
+      const permitted=new Map(visible.filter(row=>row.permissions.includes('use')).map(row=>[row.resource.id,row.accessRevision]));
+      if(permitted.size===0)return [];
+      const {rows}=await db.query<{agent_name:string;revision:string;hash:string;definition:unknown;status:string}>(
+        `SELECT a.agent_name,a.revision::text,d.hash,d.definition,d.status FROM agent_access a JOIN agent_definitions d ON d.name=a.agent_name
+         WHERE a.organisation_id=$1 AND a.agent_name=ANY($2::text[]) ORDER BY a.agent_name`,[member.organisationId,[...permitted.keys()]]);
+      const byName=new Map(metadata.rows.map(row=>[row.agent_name,row]));
+      const targets:HumanOutsideDiscoveryTarget[]=[];
+      for(const row of rows){
+        const snapshot=byName.get(row.agent_name);
+        if(!snapshot||snapshot.revision!==row.revision||snapshot.hash!==row.hash||permitted.get(row.agent_name)!==Number(row.revision)||row.status!=='valid')
+          throw new GrantStoreError('stale');
+        const definition=definitionSchema.safeParse(row.definition);
+        if(!definition.success||definition.data.name!==row.agent_name)continue;
+        for(const connection of definition.data.outsideTools??[]){
+          if(!custodyConnectionName.safeParse(connection.name).success||connection.token!==true)continue;
+          const capture=await this.captureOutsideUse(memberId,row.agent_name,{db,connectionName:connection.name,
+            expected:{definitionHash:row.hash,accessRevision:Number(row.revision)}});
+          if(capture)targets.push({agentName:row.agent_name,connectionName:connection.name});
+        }
+      }
+      return targets;
     });
   }
   /** Initial adoption is a trusted designated-owner operation, bound to the current definition.

@@ -6,6 +6,7 @@ import type { ConnectedAccountView } from "@lares/agent-kit/authority-contract";
 import Link from "next/link";
 import { requireMember, isConsoleOwner } from "../../lib/auth";
 import { signOutEverywhere } from "../actions/members";
+import { OutsideDiscoverySection } from "../../components/OutsideDiscoverySection";
 export const dynamic = "force-dynamic";
 export default async function MembershipPage({ searchParams }: { searchParams: Promise<{ added?: string; error?: string }> }) {
   const member = await requireMember();
@@ -41,6 +42,7 @@ export default async function MembershipPage({ searchParams }: { searchParams: P
         <p>Your own work mailbox and primary calendar only. The installation needs a separate Microsoft data client; tenant administrator consent may be required. Personal Outlook and shared mailboxes are unavailable.</p>
       </form></>}
     </section>
+    <OutsideDiscoverySection />
     <Link href="/chat">Open private chat →</Link>
     {isConsoleOwner(member) && <Link href="/">Open the owner console →</Link>}
     <form method="post" action="/api/auth/logout"><button type="submit">Sign out</button></form>

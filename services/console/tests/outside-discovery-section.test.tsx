@@ -1,0 +1,98 @@
+// @vitest-environment jsdom
+import { afterEach,beforeEach,expect,it,vi } from 'vitest';
+import { cleanup,fireEvent,render,screen,waitFor } from '@testing-library/react';
+
+const actions=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn()}));
+vi.mock('../app/actions/outside-discovery',()=>({listOutsideDiscoveryTargets:actions.targets,previewOutsideDiscovery:actions.preview,
+  discoverOutsideTools:actions.discover,inspectOutsideDiscovery:actions.inspect}));
+import { OutsideDiscoverySection } from '../components/OutsideDiscoverySection.js';
+
+const tuple={accountId:'00000000-0000-4000-8000-000000000001',requestId:'00000000-0000-4000-8000-000000000002',
+  claimOperationId:'00000000-0000-4000-8000-000000000003',agentName:'worker',connectionName:'connector'};
+const preview={...tuple,endpoint:'https://exact.example.test/mcp',purpose:'streamable-http-discovery-v1' as const,definitionHash:'a'.repeat(64),accessRevision:1,
+  destinationHash:'b'.repeat(64),routePolicyHash:'c'.repeat(64),expectedGeneration:0,expectedCandidateRevision:null,consentGeneration:1};
+const document={protocolVersion:'2025-06-18',serverInfo:{name:'sample',version:'1'},tools:[{name:'read',description:'Read a record',inputSchema:{type:'object'}}]};
+beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector'}]);
+  actions.preview.mockResolvedValue(preview);actions.discover.mockResolvedValue({state:'complete',document});actions.inspect.mockResolvedValue({state:'unresolved'});});
+afterEach(()=>{cleanup();vi.restoreAllMocks();});
+
+async function prepareConsent(){
+  render(<OutsideDiscoverySection/>);
+  await waitFor(()=>expect((screen.getByRole('button',{name:'Review connection'}) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole('button',{name:'Review connection'}));
+  await screen.findByText('https://exact.example.test/mcp');
+  fireEvent.change(screen.getByLabelText('Bearer credential'),{target:{value:'private-token'}});
+}
+
+it('saves only the recovery tuple before enabling one explicit consent and never stores the credential',async()=>{
+  await prepareConsent();
+  const submit=screen.getByRole('button',{name:'Send one discovery request'});
+  expect((submit as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('checkbox'));
+  expect((submit as HTMLButtonElement).disabled).toBe(false);
+  expect(JSON.parse(sessionStorage.getItem('lares.outside.discovery.recovery.v1')!)).toEqual(tuple);
+  expect(sessionStorage.getItem('lares.outside.discovery.recovery.v1')).not.toContain('private-token');
+  fireEvent.click(submit);
+  await screen.findByText('Discovery finished. Review the descriptions below.');
+  expect(actions.discover).toHaveBeenCalledTimes(1);
+  expect(actions.inspect).not.toHaveBeenCalled();
+  expect((screen.getByLabelText('Bearer credential') as HTMLInputElement).value).toBe('');
+  expect((screen.getByRole('button',{name:'Send one discovery request'}) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('refuses consent when same-tab recovery storage fails',async()=>{
+  await prepareConsent();
+  vi.spyOn(Storage.prototype,'setItem').mockImplementation(()=>{throw new Error('storage unavailable');});
+  fireEvent.click(screen.getByRole('checkbox'));
+  expect((screen.getByRole('button',{name:'Send one discovery request'}) as HTMLButtonElement).disabled).toBe(true);
+  expect(await screen.findByText('Recovery information could not be saved in this tab. Consent cannot be sent.')).toBeTruthy();
+  expect(actions.discover).not.toHaveBeenCalled();
+});
+
+it('inspects a saved request on reload and blocks consent while its outcome is unresolved',async()=>{
+  sessionStorage.setItem('lares.outside.discovery.recovery.v1',JSON.stringify(tuple));
+  render(<OutsideDiscoverySection/>);
+  await screen.findByText('This request has no confirmed result. Its status is unresolved; do not send the consent again.');
+  expect(actions.inspect).toHaveBeenCalledWith(tuple);
+  expect((screen.getByRole('button',{name:'Review connection'}) as HTMLButtonElement).disabled).toBe(true);
+  expect(actions.discover).not.toHaveBeenCalled();
+});
+
+it('treats corrupt recovery information as unresolved and never offers consent',async()=>{
+  sessionStorage.setItem('lares.outside.discovery.recovery.v1',JSON.stringify({accountId:'unknown'}));
+  render(<OutsideDiscoverySection/>);
+  await screen.findByText('Saved discovery recovery information is incomplete. Its status cannot be confirmed; do not send consent again.');
+  expect((screen.getByRole('button',{name:'Review connection'}) as HTMLButtonElement).disabled).toBe(true);
+  expect(actions.discover).not.toHaveBeenCalled();
+  expect(actions.inspect).not.toHaveBeenCalled();
+});
+
+it('inspects once after an ambiguous submission and never resends the bearer',async()=>{
+  actions.discover.mockRejectedValue(new Error('lost reply'));
+  await prepareConsent();
+  fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByRole('button',{name:'Send one discovery request'}));
+  await screen.findByText('No completed result is recorded. Its status is unresolved; do not send the consent again.');
+  expect(actions.discover).toHaveBeenCalledTimes(1);
+  expect(actions.inspect).toHaveBeenCalledWith(tuple);
+  expect((screen.getByRole('button',{name:'Review connection'}) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('also inspects a definite transport-unavailable response without making the saved request reusable',async()=>{
+  actions.discover.mockResolvedValue({state:'unavailable'});
+  await prepareConsent();
+  fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByRole('button',{name:'Send one discovery request'}));
+  await screen.findByText('No completed result is recorded. Its status is unresolved; do not send the consent again.');
+  expect(actions.discover).toHaveBeenCalledTimes(1);
+  expect(actions.inspect).toHaveBeenCalledWith(tuple);
+  expect((screen.getByRole('button',{name:'Review connection'}) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('inspects a malformed completion response and leaves consent disabled when no valid saved result exists',async()=>{
+  actions.discover.mockResolvedValue({state:'unknown'});
+  await prepareConsent();
+  fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByRole('button',{name:'Send one discovery request'}));
+  await screen.findByText('No completed result is recorded. Its status is unresolved; do not send the consent again.');
+  expect(actions.discover).toHaveBeenCalledTimes(1);
+  expect(actions.inspect).toHaveBeenCalledWith(tuple);
+  expect((screen.getByRole('button',{name:'Review connection'}) as HTMLButtonElement).disabled).toBe(true);
+});

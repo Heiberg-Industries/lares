@@ -24,6 +24,7 @@ import { ownedDocker } from "../lib/docker.js";
 import { AgentLifecycle } from "../lib/lifecycle.js";
 import { keeperFinancialPool, keeperOutsideCustodyPool, keeperPool, loadKeeperConfig } from "../lib/config.js";
 import { loadBoundOutsideCustodyKey, OutsideCustodyStore } from "../lib/outside-custody.js";
+import { registerHumanOutsideDiscoveryActions } from "../lib/outside-discovery-actions.js";
 import { auditor } from "../lib/audit.js";
 import { serve } from "../lib/socket-server.js";
 import {serveGatewayBudget} from '../lib/gateway-budget-server.js';
@@ -112,6 +113,7 @@ async function main(): Promise<void> {
             if(!outsidePool)throw new Error('keeper: outside custody unavailable');
             outsidePool.on('error',()=>{});
             outsideCustody=new OutsideCustodyStore(outsidePool,outsideKey,{mainPool:pool,lifecycle});
+            registerHumanOutsideDiscoveryActions(outsideCustody);
         }finally{outsideKey.fill(0);}
     }
     const credentialStore = new PgCredentialStore(pool);

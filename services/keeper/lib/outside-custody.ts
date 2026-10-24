@@ -76,6 +76,11 @@ type OutsideClaimIdentityState = {
 type OutsideJson = null | boolean | number | string | OutsideJson[] | { [key: string]: OutsideJson };
 type OutsideListedTool = { name: string; description?: string; inputSchema: { [key: string]: OutsideJson } };
 type OutsideDiscoveryDocument = { protocolVersion: '2025-06-18'; serverInfo: { name: string; version: string }; tools: OutsideListedTool[] };
+export type HumanDiscoveryTarget={agentName:string;connectionName:string};
+export type HumanDiscoveryPreview={accountId:string;requestId:string;claimOperationId:string;agentName:string;connectionName:string;
+  endpoint:string;purpose:'streamable-http-discovery-v1';definitionHash:string;accessRevision:number;destinationHash:string;
+  routePolicyHash:string;expectedGeneration:number;expectedCandidateRevision:number|null;consentGeneration:number};
+export type HumanDiscoveryInspection={state:'unresolved'}|{state:'complete';document:OutsideDiscoveryDocument};
 const DISCOVERY_PROFILE = Object.freeze({
   version: 2,
   protocolVersion: '2025-06-18',
@@ -226,6 +231,28 @@ function sealDiscoveryResult(key:Buffer,plaintext:Buffer,coordinates:{ownerMembe
   cipher.setAAD(aadBytes);
   return {nonce,ciphertext:Buffer.concat([cipher.update(plaintext),cipher.final(),cipher.getAuthTag()])};
 }
+function openDiscoveryResult(key:Buffer,nonce:Buffer,ciphertext:Buffer,coordinates:{ownerMemberId:string;accountId:string;agentName:string;
+  connectionName:string;requestId:string;claimOperationId:string;resultOperationId:string;generation:number;
+  credentialRevision:number;consentGeneration:number;policyHash:string}):Buffer{
+  if(!Buffer.isBuffer(key)||key.length!==32||!Buffer.isBuffer(nonce)||nonce.length!==12||!Buffer.isBuffer(ciphertext)||
+      ciphertext.length<17||ciphertext.length>DISCOVERY_PROFILE.resultBytes+16||!uuid.safeParse(coordinates.accountId).success||
+      !uuid.safeParse(coordinates.requestId).success||!uuid.safeParse(coordinates.claimOperationId).success||
+      !uuid.safeParse(coordinates.resultOperationId).success||!/^[a-f0-9]{64}$/.test(coordinates.policyHash))return denied();
+  const decipher=createDecipheriv('aes-256-gcm',key,nonce);
+  decipher.setAAD(Buffer.from(canonicalJson(['lares-outside-discovery-result-v1',coordinates])));
+  decipher.setAuthTag(ciphertext.subarray(ciphertext.length-16));
+  const update=decipher.update(ciphertext.subarray(0,ciphertext.length-16));
+  let final:Buffer|undefined;
+  try{
+    final=decipher.final();
+    const plaintext=Buffer.concat([update,final]);
+    if(plaintext.length<1||plaintext.length>DISCOVERY_PROFILE.resultBytes){plaintext.fill(0);return denied();}
+    return plaintext;
+  }finally{
+    update.fill(0);
+    final?.fill(0);
+  }
+}
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -253,6 +280,31 @@ function assertBoundedJson(value:unknown,depth=0):asserts value is OutsideJson{
     return;
   }
   return denied();
+}
+function validateStoredDiscoveryDocument(value:unknown):OutsideDiscoveryDocument{
+  assertBoundedJson(value);
+  if(!value||Array.isArray(value)||typeof value!=='object')return denied();
+  const document=value as Record<string,OutsideJson>;
+  if(Object.keys(document).sort().join(',')!=='protocolVersion,serverInfo,tools'||document.protocolVersion!==DISCOVERY_PROFILE.protocolVersion||
+      !document.serverInfo||Array.isArray(document.serverInfo)||typeof document.serverInfo!=='object'||!Array.isArray(document.tools)||
+      Object.keys(document.serverInfo).sort().join(',')!=='name,version')return denied();
+  const serverInfo=projectOutsideServerInfo(document.serverInfo);
+  if(document.tools.length>DISCOVERY_PROFILE.maxTools)return denied();
+  const names=new Set<string>();
+  const tools:OutsideListedTool[]=[];
+  for(const candidate of document.tools){
+    if(!candidate||Array.isArray(candidate)||typeof candidate!=='object')return denied();
+    const item=candidate as Record<string,OutsideJson>;
+    if(Object.keys(item).some(key=>!['name','description','inputSchema'].includes(key))||
+        typeof item.name!=='string'||Buffer.byteLength(item.name)<1||Buffer.byteLength(item.name)>DISCOVERY_PROFILE.maxToolNameBytes||
+        /[\x00-\x1f\x7f]/.test(item.name)||names.has(item.name)||item.description!==undefined&&
+        (typeof item.description!=='string'||Buffer.byteLength(item.description)>2048)||!item.inputSchema||Array.isArray(item.inputSchema)||typeof item.inputSchema!=='object')return denied();
+    names.add(item.name);
+    tools.push({name:item.name,...(item.description===undefined?{}:{description:item.description as string}),inputSchema:item.inputSchema as {[key:string]:OutsideJson}});
+  }
+  const result={protocolVersion:DISCOVERY_PROFILE.protocolVersion,serverInfo,tools} satisfies OutsideDiscoveryDocument;
+  if(Buffer.byteLength(canonicalJson(result))>DISCOVERY_PROFILE.resultBytes)return denied();
+  return result;
 }
 function outsideIdentityText(value:unknown,maxBytes:number):string{
   if(typeof value!=='string'||value.length<1||Buffer.byteLength(value)>maxBytes||/[\x00-\x1f\x7f]/.test(value))return denied();
@@ -434,6 +486,118 @@ export class OutsideCustodyStore {
   async previewDiscovery(sessionToken:string,input:{agentName:string;connectionName:string},options:{deadlineAtMs:number}):Promise<import('@lares/agent-kit/grant-store').OutsideUseCapture> {
     return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>
       captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName),options));
+  }
+
+  async listHumanDiscoveryTargets(sessionToken:string,options:{deadlineAtMs:number}):Promise<HumanDiscoveryTarget[]>{
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>
+      new PgGrantStore().listHumanOutsideDiscoveryTargets(memberId,{db:db as GrantDatabase}),options));
+  }
+
+  async previewHumanDiscovery(sessionToken:string,input:{agentName:string;connectionName:string},options:{deadlineAtMs:number}):Promise<HumanDiscoveryPreview>{
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName);
+      if(capture.actor.memberId!==memberId||capture.agent.name!==input.agentName||capture.outside.connection.name!==input.connectionName)return denied();
+      const namespaceClient=requireDefinitionNamespace();
+      const endpoint=capture.outside.connection.url;
+      const route=await this.routeLifecycle!.reviewOutsideRoute(endpoint,options.deadlineAtMs);
+      this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);
+      const destinationHash=createHash('sha256').update(canonicalJson(['lares-outside-endpoint-v1',endpoint])).digest('hex');
+      const identity=await db.query<Head>(`SELECT account_id,owner_member_id,resource_id,connection_name,generation::text,
+          active_revision::text,candidate_revision::text,consent_generation::text,state
+        FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 FOR SHARE`,
+        [memberId,input.agentName,input.connectionName]);
+      if(identity.rows.length>1)return denied();
+      const head=identity.rows[0];
+      if(head&&(head.account_id.length===0||head.owner_member_id!==memberId||head.resource_id!==input.agentName||
+          head.connection_name!==input.connectionName||head.state!=='active'))return denied();
+      const accountId=head?.account_id??randomUUID();
+      let expectedGeneration=0,expectedCandidateRevision:number|null=null,consentGeneration=1;
+      if(head){
+        expectedGeneration=number(head.generation);
+        expectedCandidateRevision=head.candidate_revision===null?null:number(head.candidate_revision);
+        const latest=await db.query<{consent:string}>(`SELECT COALESCE(max(consent_generation),0)::text AS consent
+          FROM outside_custody_revisions WHERE account_id=$1`,[accountId]);
+        const lastConsent=Math.max(number(head.consent_generation),Number(latest.rows[0]?.consent??'0'));
+        if(!Number.isSafeInteger(lastConsent)||lastConsent<1||lastConsent>=Number.MAX_SAFE_INTEGER)return denied();
+        consentGeneration=lastConsent+1;
+      }
+      if(!Number.isSafeInteger(expectedGeneration)||expectedGeneration<0||expectedGeneration>Number.MAX_SAFE_INTEGER||
+          expectedCandidateRevision!==null&&(!Number.isSafeInteger(expectedCandidateRevision)||expectedCandidateRevision<1))return denied();
+      return {accountId,requestId:randomUUID(),claimOperationId:randomUUID(),agentName:input.agentName,connectionName:input.connectionName,
+        endpoint,purpose:'streamable-http-discovery-v1',definitionHash:capture.agent.definitionHash,accessRevision:capture.agent.accessRevision,
+        destinationHash,routePolicyHash:route.policyHash,expectedGeneration,expectedCandidateRevision,consentGeneration};
+    },options));
+  }
+
+  async inspectHumanDiscovery(sessionToken:string,input:{accountId:string;agentName:string;connectionName:string;requestId:string;claimOperationId:string},
+    options:{deadlineAtMs:number}):Promise<HumanDiscoveryInspection>{
+    const accountId=uuid.parse(input.accountId),requestId=uuid.parse(input.requestId),claimOperationId=uuid.parse(input.claimOperationId);
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName);
+      const identity=await db.query<Head>(`SELECT account_id,owner_member_id,resource_id,connection_name,generation::text,
+          active_revision::text,candidate_revision::text,consent_generation::text,state
+        FROM outside_custody_accounts WHERE account_id=$1 AND owner_member_id=$2 AND resource_id=$3 AND connection_name=$4 FOR SHARE`,
+        [accountId,memberId,input.agentName,input.connectionName]);
+      if(identity.rows.length===0)return {state:'unresolved'};
+      if(identity.rows.length!==1||identity.rows[0]!.account_id!==accountId||identity.rows[0]!.owner_member_id!==memberId||
+          identity.rows[0]!.resource_id!==input.agentName||identity.rows[0]!.connection_name!==input.connectionName)return denied();
+      const claim=await db.query<{operation_id:string;account_id:string;owner_member_id:string;operation_kind:string;request_id:string;
+        expected_generation:string;result_generation:string;credential_revision:string|null;outcome:string;request_hash:Buffer;
+        revision_generation:string;revision_consent_generation:string;revision_purpose:string;policy_hash:Buffer;policy_json:string;
+        claim_nonce:Buffer;claim_ciphertext:Buffer}>(`SELECT c.operation_id,c.account_id,c.owner_member_id,c.operation_kind,c.request_id,
+          c.expected_generation::text,c.result_generation::text,c.credential_revision::text,c.outcome,c.request_hash,
+          v.generation::text AS revision_generation,v.consent_generation::text AS revision_consent_generation,
+          v.revision_purpose,v.policy_hash,v.policy_json::text,v.nonce AS claim_nonce,v.ciphertext AS claim_ciphertext
+        FROM outside_custody_operations c LEFT JOIN outside_custody_revisions v
+          ON v.account_id=c.account_id AND v.credential_revision=c.credential_revision AND v.operation_id=c.operation_id
+        WHERE c.request_id=$1 AND c.operation_id=$2 AND c.account_id=$3 AND c.owner_member_id=$4 AND c.event_phase='claim'`,
+        [requestId,claimOperationId,accountId,memberId]);
+      if(claim.rows.length===0)return {state:'unresolved'};
+      const row=claim.rows[0]!;
+      if(claim.rows.length!==1||row.operation_id!==claimOperationId||row.account_id!==accountId||row.owner_member_id!==memberId||
+          row.operation_kind!=='discover'||row.request_id!==requestId||row.credential_revision===null||row.revision_generation===undefined||
+          row.revision_consent_generation===undefined||row.revision_purpose!=='discovery'||!Buffer.isBuffer(row.policy_hash)||
+          row.policy_hash.length!==32||!row.request_hash||row.request_hash.length!==32)return denied();
+      if(row.outcome!=='claimed')return {state:'unresolved'};
+      let policy:unknown;
+      try{policy=JSON.parse(row.policy_json) as unknown;}catch{return denied();}
+      if(!policy||Array.isArray(policy)||typeof policy!=='object')return denied();
+      const p=policy as Record<string,unknown>;
+      if(Object.keys(p).sort().join(',')!=='accountId,agentName,capture,connectionName,endpoint,ownerMemberId,profile,purpose,route,version'||
+          p.version!==DISCOVERY_PROFILE.version||p.purpose!=='streamable-http-discovery-v1'||p.ownerMemberId!==memberId||p.accountId!==accountId||
+          p.agentName!==input.agentName||p.connectionName!==input.connectionName||p.endpoint!==capture.outside.connection.url||
+          canonicalJson(p.profile)!==canonicalJson(DISCOVERY_PROFILE)||canonicalJson(p.capture)!==canonicalJson(capture))return denied();
+      const route=p.route as Record<string,unknown>|null;
+      if(!route||Array.isArray(route)||typeof route!=='object'||Object.keys(route).sort().join(',')!=='policyHash,proxyUrl,sourceAddress'||
+          typeof route.policyHash!=='string'||typeof route.sourceAddress!=='string'||typeof route.proxyUrl!=='string')return denied();
+      const routeReview={policyHash:route.policyHash,sourceAddress:route.sourceAddress,proxyUrl:route.proxyUrl};
+      if(outsideDiscoveryPolicyHash(capture,{ownerMemberId:memberId,accountId,agentName:input.agentName,connectionName:input.connectionName,
+          destination:capture.outside.connection.url,route:routeReview,purpose:'streamable-http-discovery-v1'})!==row.policy_hash.toString('hex'))return denied();
+      if(Number(row.revision_generation)!==number(row.result_generation)||Number(row.revision_consent_generation)<1||
+          !Number.isSafeInteger(Number(row.revision_consent_generation)))return denied();
+      const result=await db.query<{operation_id:string;account_id:string;owner_member_id:string;operation_kind:string;request_id:string;
+        event_phase:string;request_hash:Buffer;expected_generation:string;result_generation:string;credential_revision:string|null;
+        outcome:string;result_nonce:Buffer|null;result_ciphertext:Buffer|null}>(`SELECT operation_id,account_id,owner_member_id,operation_kind,request_id,event_phase,request_hash,
+          expected_generation::text,result_generation::text,credential_revision::text,outcome,result_nonce,result_ciphertext
+        FROM outside_custody_operations WHERE request_id=$1 AND account_id=$2 AND owner_member_id=$3 AND event_phase='result'`,
+        [requestId,accountId,memberId]);
+      if(result.rows.length===0)return {state:'unresolved'};
+      const stored=result.rows[0]!;
+      if(result.rows.length!==1||stored.operation_kind!=='discover'||stored.request_id!==requestId||stored.account_id!==accountId||
+          stored.owner_member_id!==memberId||stored.event_phase!=='result'||stored.outcome!=='completed')return {state:'unresolved'};
+      if(!stored.operation_id||!uuid.safeParse(stored.operation_id).success||!stored.request_hash.equals(row.request_hash)||
+          Number(stored.expected_generation)!==Number(row.expected_generation)||Number(stored.result_generation)!==Number(row.result_generation)||
+          stored.credential_revision!==row.credential_revision||!Buffer.isBuffer(stored.result_nonce)||!Buffer.isBuffer(stored.result_ciphertext))return denied();
+      const generation=number(row.result_generation),credentialRevision=number(row.credential_revision),consentGeneration=number(row.revision_consent_generation);
+      const plaintext=openDiscoveryResult(this.key,stored.result_nonce,stored.result_ciphertext,{ownerMemberId:memberId,accountId,
+        agentName:input.agentName,connectionName:input.connectionName,requestId,claimOperationId,resultOperationId:stored.operation_id,
+        generation,credentialRevision,consentGeneration,policyHash:row.policy_hash.toString('hex')});
+      try{
+        let document:unknown;
+        try{document=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(plaintext)) as unknown;}catch{return denied();}
+        return {state:'complete',document:validateStoredDiscoveryDocument(document)};
+      }finally{plaintext.fill(0);}
+    },options));
   }
 
   /** Starts only when the configured Keeper runtime has the owned exchange prerequisites. */

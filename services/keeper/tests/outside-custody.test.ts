@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
-import {createCipheriv,randomBytes} from 'node:crypto';
+import {createCipheriv,createHash,randomBytes} from 'node:crypto';
 import {constants} from 'node:fs';
 import {loadOutsideCustodyKey,OutsideCustodyStore} from '../lib/outside-custody.js';
 
@@ -11,6 +11,10 @@ const mocks=vi.hoisted(()=>({
   requireBinding:vi.fn(),
   captureUse:vi.fn(),
   captureUseWithExpiry:vi.fn(),
+  captureOutsideUse:vi.fn(),
+  gateOrganisation:vi.fn(),
+  trackDecryptBuffers:false,
+  decryptBuffers:[] as Buffer[],
   retainDeadline:vi.fn(),
   deadlines:vi.fn(),
   keyLstat:vi.fn(),
@@ -25,14 +29,34 @@ vi.mock('node:fs',async importOriginal=>{
 });
 vi.mock('@lares/agent-kit/console-source-transaction',async importOriginal=>{
   const actual=await importOriginal<typeof import('@lares/agent-kit/console-source-transaction')>();
-  return {...actual,consoleSourceTransaction:mocks.transaction,checkConsoleSourceDeadlines:mocks.deadlines,retainConsoleSourceDeadline:mocks.retainDeadline};
+  return {...actual,consoleSourceTransaction:mocks.transaction,checkConsoleSourceDeadlines:mocks.deadlines,
+    retainConsoleSourceDeadline:mocks.retainDeadline,retainSourceTransactionDeadline:mocks.retainDeadline,
+    requireSourceTransactionOwner:vi.fn(),gateConsoleOrganisation:mocks.gateOrganisation};
 });
 vi.mock('@lares/agent-kit/console-turn-authority',()=>({requireConsoleSessionBinding:mocks.requireBinding}));
-vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class{captureUse(...args:unknown[]){return mocks.captureUse(...args);}captureUseWithExpiry(...args:unknown[]){return mocks.captureUseWithExpiry(...args);}}}));
+vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class{captureUse(...args:unknown[]){return mocks.captureUse(...args);}
+  captureUseWithExpiry(...args:unknown[]){return mocks.captureUseWithExpiry(...args);}
+  captureOutsideUse(...args:unknown[]){return mocks.captureOutsideUse(...args);}}}));
 vi.mock('../lib/definition-namespace.js',()=>({
   withDefinitionNamespace:async(_pool:unknown,work:(client:unknown)=>Promise<unknown>)=>mocks.namespace(_pool,work),
   requireDefinitionNamespace:()=>mocks.namespaceClient,
 }));
+vi.mock('node:crypto',async importOriginal=>{
+  const actual=await importOriginal<typeof import('node:crypto')>();
+  return {...actual,createDecipheriv:(...args:Parameters<typeof actual.createDecipheriv>)=>{
+    const decipher=actual.createDecipheriv(...args);
+    if(mocks.trackDecryptBuffers){
+      const update=decipher.update.bind(decipher),final=decipher.final.bind(decipher);
+      (decipher as unknown as {update:(...args:unknown[])=>Buffer}).update=(...updateArgs)=>{
+        const value=Reflect.apply(update,decipher,updateArgs) as Buffer;mocks.decryptBuffers.push(value);return value;
+      };
+      (decipher as unknown as {final:(...args:unknown[])=>Buffer}).final=(...finalArgs)=>{
+        const value=Reflect.apply(final,decipher,finalArgs) as Buffer;mocks.decryptBuffers.push(value);return value;
+      };
+    }
+    return decipher;
+  }};
+});
 
 const accountId='00000000-0000-4000-8000-000000000101';
 const operationId='00000000-0000-4000-8000-000000000102';
@@ -92,6 +116,80 @@ function encryptedFixture(plaintext:Buffer,coordinates:{generation?:number;crede
     common=JSON.stringify(['lares-outside-custody-v1','member-1',accountId,'worker',coordinates.generation??1,coordinates.credentialRevision??1,7,coordinates.operationId??originalOperationId]);
   cipher.setAAD(Buffer.from(JSON.stringify(['lares-outside-custody-bound-v1',common,coordinates.connectionName??'connection','executable',coordinates.policyHash??'a'.repeat(64)])));
   return {nonce,ciphertext:Buffer.concat([cipher.update(plaintext),cipher.final(),cipher.getAuthTag()])};
+}
+const humanSession='S'.repeat(43),humanRequest='00000000-0000-4000-8000-000000000201',humanClaim='00000000-0000-4000-8000-000000000202',
+  humanResult='00000000-0000-4000-8000-000000000203',humanEndpoint='https://example.test/mcp';
+const discoveryProfile={version:2,protocolVersion:'2025-06-18',parser:'strict-json-sse-v1',operationTimeoutMs:8000,transportTimeoutMs:5000,
+  connectTimeoutMs:1000,idleTimeoutMs:2000,cleanupReserveMs:1000,responseBytes:65536,totalResponseBytes:262144,headerBytes:8192,
+  resultBytes:65536,maxPages:10,maxPosts:12,maxCursorBytes:1024,maxJsonDepth:16,maxTools:256,maxToolNameBytes:128,
+  maxRequestBytes:16384,maxSessionIdBytes:1024,maxCredentialBytes:4096};
+function canonicalJson(value:unknown):string{
+  if(value===null||typeof value==='string'||typeof value==='boolean'||typeof value==='number')return JSON.stringify(value);
+  if(Array.isArray(value))return `[${value.map(canonicalJson).join(',')}]`;
+  return `{${Object.entries(value as Record<string,unknown>).sort(([a],[b])=>a.localeCompare(b)).map(([name,item])=>`${JSON.stringify(name)}:${canonicalJson(item)}`).join(',')}}`;
+}
+const humanCapture={version:1,actor:{memberId:'member-1',organisationId:'org-1',role:'member' as const},
+  agent:{name:'worker',ownerMemberId:'member-1',accessRevision:7,definitionHash:'a'.repeat(64)},ownerPolicy:{kind:'unrestricted' as const},
+  outside:{scope:'read' as const,autonomy:'gated' as const,connection:{name:'connector',url:humanEndpoint,auth:'bearer' as const,
+    allow:['read'],read:['read'],trusted:false}},grant:{kind:'owner' as const,validUntil:null}};
+const humanRoute={policyHash:'b'.repeat(64),sourceAddress:'198.51.100.10',proxyUrl:'http://lares-egress-proxy:8888/'};
+function humanPolicy():{policy:Record<string,unknown>;hash:string}{
+  const policy={version:2,profile:discoveryProfile,purpose:'streamable-http-discovery-v1',ownerMemberId:'member-1',accountId,
+    agentName:'worker',connectionName:'connector',endpoint:humanEndpoint,capture:humanCapture,route:humanRoute};
+  return {policy,hash:createHash('sha256').update(canonicalJson(policy)).digest('hex')};
+}
+type DiscoveryAad=Partial<{ownerMemberId:string;accountId:string;agentName:string;connectionName:string;requestId:string;claimOperationId:string;
+  resultOperationId:string;generation:number;credentialRevision:number;consentGeneration:number;policyHash:string}>;
+function encryptDiscovery(document:unknown,policyHash:string,overrides:DiscoveryAad={}):{nonce:Buffer;ciphertext:Buffer;plaintext:Buffer}{
+  return encryptDiscoveryBytes(Buffer.from(canonicalJson(document)),policyHash,overrides);
+}
+function encryptDiscoveryBytes(plaintext:Buffer,policyHash:string,overrides:DiscoveryAad={}):{nonce:Buffer;ciphertext:Buffer;plaintext:Buffer}{
+  const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce);
+  const coordinates={ownerMemberId:'member-1',accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,
+    claimOperationId:humanClaim,resultOperationId:humanResult,generation:1,credentialRevision:2,consentGeneration:3,policyHash,...overrides};
+  cipher.setAAD(Buffer.from(canonicalJson(['lares-outside-discovery-result-v1',coordinates])));
+  return {nonce,ciphertext:Buffer.concat([cipher.update(plaintext),cipher.final(),cipher.getAuthTag()]),plaintext};
+}
+function installHumanSessionSql(query:(sql:string,params:unknown[])=>Promise<{rows:Array<Record<string,unknown>>;rowCount:number}>,
+  session:{discovered?:boolean;current?:boolean}={}):void{
+  mocks.query.mockImplementation(async(sql:string,params:unknown[]=[]):Promise<{rows:Array<Record<string,unknown>>;rowCount:number}>=>{
+    if(sql.includes('SELECT member_id FROM member_sessions'))return session.discovered===false?{rows:[],rowCount:0}:{rows:[{member_id:'member-1'}],rowCount:1};
+    if(sql.includes('FROM member_sessions s JOIN users u'))return session.current===false?{rows:[],rowCount:0}:
+      {rows:[{member_id:'member-1',finite:true,deadline:'2099-01-01T00:00:00.000000Z'}],rowCount:1};
+    return query(sql,params);
+  });
+}
+function discoveryOperationRows(options:{claim?:Record<string,unknown>;result?:Record<string,unknown>;identity?:Record<string,unknown>;document?:unknown}={}){
+  const {policy,hash}=humanPolicy();
+  const document=options.document??{protocolVersion:'2025-06-18',serverInfo:{name:'Example',version:'1'},tools:[{name:'read',description:'Read safely',inputSchema:{type:'object'}}]};
+  const encrypted=encryptDiscovery(document,hash),requestHash=Buffer.alloc(32,4);
+  const identity={account_id:accountId,owner_member_id:'member-1',resource_id:'worker',connection_name:'connector',generation:'1',
+    active_revision:'2',candidate_revision:null,consent_generation:'3',state:'active',...options.identity};
+  const claim={operation_id:humanClaim,account_id:accountId,owner_member_id:'member-1',operation_kind:'discover',request_id:humanRequest,
+    expected_generation:'0',result_generation:'1',credential_revision:'2',outcome:'claimed',request_hash:requestHash,revision_generation:'1',
+    revision_consent_generation:'3',revision_purpose:'discovery',policy_hash:Buffer.from(hash,'hex'),policy_json:JSON.stringify(policy),
+    claim_nonce:Buffer.alloc(12),claim_ciphertext:Buffer.alloc(16),...options.claim};
+  const result={operation_id:humanResult,account_id:accountId,owner_member_id:'member-1',operation_kind:'discover',request_id:humanRequest,
+    event_phase:'result',request_hash:requestHash,expected_generation:'0',result_generation:'1',credential_revision:'2',
+    outcome:'completed',result_nonce:encrypted.nonce,result_ciphertext:encrypted.ciphertext,...options.result};
+  return {identity,claim,result,document,plaintext:encrypted.plaintext,policy,policyHash:hash};
+}
+function humanStore(lifecycle:{reviewOutsideRoute:(endpoint:string,deadline:number)=>Promise<typeof humanRoute>}={
+  reviewOutsideRoute:async()=>humanRoute,
+}){
+  return new OutsideCustodyStore({} as never,key,{mainPool:{} as never,lifecycle:lifecycle as never});
+}
+function installInspectSql(rows:ReturnType<typeof discoveryOperationRows>,options:{claim?:boolean;result?:boolean;identity?:boolean;
+  session?:{discovered?:boolean;current?:boolean}}={}){
+  installHumanSessionSql(async sql=>{
+    if(sql.includes('FROM outside_custody_accounts WHERE account_id=$1'))return options.identity===false?{rows:[],rowCount:0}:
+      {rows:[rows.identity],rowCount:1};
+    if(sql.includes('FROM outside_custody_operations c'))return options.claim===false?{rows:[],rowCount:0}:
+      {rows:[rows.claim],rowCount:1};
+    if(sql.includes("FROM outside_custody_operations WHERE request_id=$1 AND account_id=$2"))return options.result===false?{rows:[],rowCount:0}:
+      {rows:[rows.result],rowCount:1};
+    throw new Error(`Unexpected discovery inspection SQL: ${sql}`);
+  },options.session);
 }
 function candidateStore(){
   type CandidateHead={account_id:string;owner_member_id:string;resource_id:string;connection_name:string;generation:number;active_revision:number|null;candidate_revision:number|null;consent_generation:number;state:'active'|'revoked'};
@@ -161,16 +259,196 @@ function candidateStore(){
 
 beforeEach(()=>{
   vi.clearAllMocks();
+  mocks.trackDecryptBuffers=false;mocks.decryptBuffers.length=0;
   mocks.namespace.mockImplementation(async(_pool:unknown,work:(client:unknown)=>Promise<unknown>)=>work(mocks.namespaceClient));
   mocks.transaction.mockImplementation(async(_pool:unknown,work:(client:unknown)=>Promise<unknown>)=>work(sourceClient));
   mocks.query.mockResolvedValue({rows:[],rowCount:0});
   mocks.requireBinding.mockResolvedValue(binding);
   mocks.captureUse.mockResolvedValue(7);
   mocks.captureUseWithExpiry.mockResolvedValue({accessRevision:7,validUntil:null});
+  mocks.captureOutsideUse.mockResolvedValue(undefined);
+  mocks.gateOrganisation.mockResolvedValue(undefined);
   mocks.retainDeadline.mockReturnValue(undefined);
   mocks.deadlines.mockResolvedValue(undefined);
 });
 afterEach(()=>vi.restoreAllMocks());
+
+it('runs the actual human preview for a new and an existing account inside the locked session and main namespace',async()=>{
+  const route=vi.fn(async()=>humanRoute),store=humanStore({reviewOutsideRoute:route});
+  mocks.captureOutsideUse.mockResolvedValue(humanCapture);
+  installHumanSessionSql(async sql=>{
+    if(sql.includes('FROM outside_custody_accounts WHERE owner_member_id=$1'))return {rows:[],rowCount:0};
+    throw new Error(`Unexpected human preview SQL: ${sql}`);
+  });
+  const created=await store.previewHumanDiscovery(humanSession,{agentName:'worker',connectionName:'connector'},{deadlineAtMs:Date.now()+5000});
+  expect(created).toMatchObject({agentName:'worker',connectionName:'connector',endpoint:humanEndpoint,purpose:'streamable-http-discovery-v1',
+    expectedGeneration:0,expectedCandidateRevision:null,consentGeneration:1});
+  expect(created.accountId).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(created.requestId).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(created.claimOperationId).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(route).toHaveBeenCalledExactlyOnceWith(humanEndpoint,expect.any(Number));
+  expect(mocks.captureOutsideUse).toHaveBeenCalledWith('member-1','worker',expect.objectContaining({connectionName:'connector'}));
+
+  mocks.query.mockClear();route.mockClear();
+  installHumanSessionSql(async sql=>{
+    if(sql.includes('FROM outside_custody_accounts WHERE owner_member_id=$1'))return {rows:[{account_id:accountId,owner_member_id:'member-1',
+      resource_id:'worker',connection_name:'connector',generation:'5',active_revision:'2',candidate_revision:'4',consent_generation:'3',state:'active'}],rowCount:1};
+    if(sql.includes('COALESCE(max(consent_generation),0)'))return {rows:[{consent:'6'}],rowCount:1};
+    throw new Error(`Unexpected existing-account preview SQL: ${sql}`);
+  });
+  const existing=await store.previewHumanDiscovery(humanSession,{agentName:'worker',connectionName:'connector'},{deadlineAtMs:Date.now()+5000});
+  expect(existing).toMatchObject({accountId,expectedGeneration:5,expectedCandidateRevision:4,consentGeneration:7});
+  store.close();
+});
+
+it.each(['expired or revoked session','current use grant unavailable'] as const)('refuses actual human preview when the %s is absent before route review',async reason=>{
+  const route=vi.fn(async()=>humanRoute),store=humanStore({reviewOutsideRoute:route});
+  if(reason==='expired or revoked session')mocks.captureOutsideUse.mockResolvedValue(humanCapture);
+  else mocks.captureOutsideUse.mockResolvedValue(undefined);
+  installHumanSessionSql(async()=>({rows:[],rowCount:0}),reason==='expired or revoked session'?{current:false}:{});
+  await expect(store.previewHumanDiscovery(humanSession,{agentName:'worker',connectionName:'connector'},{deadlineAtMs:Date.now()+5000})).rejects.toThrow();
+  expect(route).not.toHaveBeenCalled();
+  if(reason==='expired or revoked session')expect(mocks.captureOutsideUse).not.toHaveBeenCalled();
+  else expect(mocks.captureOutsideUse).toHaveBeenCalledOnce();
+  store.close();
+});
+
+it.each(['expired deadline','wrong namespace client'] as const)('refuses actual human preview with %s before route review or source transaction',async reason=>{
+  const route=vi.fn(async()=>humanRoute),store=humanStore({reviewOutsideRoute:route});
+  if(reason==='wrong namespace client')mocks.namespace.mockImplementation(async(_pool:unknown,work:(client:unknown)=>Promise<unknown>)=>work({}));
+  const deadline=reason==='expired deadline'?Date.now()-1:Date.now()+5000;
+  await expect(store.previewHumanDiscovery(humanSession,{agentName:'worker',connectionName:'connector'},{deadlineAtMs:deadline})).rejects.toThrow();
+  expect(route).not.toHaveBeenCalled();expect(mocks.transaction).not.toHaveBeenCalled();
+  store.close();
+});
+
+it('uses the actual inspector to recover a matching encrypted normalized result and wipes its plaintext buffers',async()=>{
+  const rows=discoveryOperationRows(),route=vi.fn(async()=>humanRoute),store=humanStore({reviewOutsideRoute:route});
+  mocks.trackDecryptBuffers=true;
+  mocks.captureOutsideUse.mockResolvedValue(humanCapture);installInspectSql(rows);
+  const inspected=await store.inspectHumanDiscovery(humanSession,{accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,
+    claimOperationId:humanClaim},{deadlineAtMs:Date.now()+5000});
+  expect(inspected).toEqual({state:'complete',document:rows.document});
+  expect(mocks.decryptBuffers.length).toBeGreaterThanOrEqual(2);
+  expect(mocks.decryptBuffers.every(buffer=>buffer.equals(Buffer.alloc(buffer.length)))).toBe(true);
+  expect(route).not.toHaveBeenCalled();
+  expect(mocks.captureOutsideUse).toHaveBeenCalledWith('member-1','worker',expect.objectContaining({connectionName:'connector'}));
+  store.close();
+});
+
+it.each([
+  ['missing account', {identity:false}],
+  ['missing claim', {claim:false}],
+  ['claim without result', {result:false}],
+] as const)('keeps the actual inspector unresolved for a %s',async(_reason,options)=>{
+  const rows=discoveryOperationRows(),store=humanStore();mocks.captureOutsideUse.mockResolvedValue(humanCapture);
+  installInspectSql(rows,options);
+  await expect(store.inspectHumanDiscovery(humanSession,{accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,
+    claimOperationId:humanClaim},{deadlineAtMs:Date.now()+5000})).resolves.toEqual({state:'unresolved'});
+  store.close();
+});
+
+it.each([
+  {reason:'current session expired or revoked',session:{current:false},validGrant:true},
+  {reason:'current use grant expired or revoked',grant:false},
+])('refuses actual inspection when $reason is not current',async({session,grant,validGrant})=>{
+  const rows=discoveryOperationRows(),route=vi.fn(async()=>humanRoute),store=humanStore({reviewOutsideRoute:route});
+  if(validGrant===true)mocks.captureOutsideUse.mockResolvedValue(humanCapture);
+  else if(grant===false)mocks.captureOutsideUse.mockResolvedValue(undefined);
+  installInspectSql(rows,{session});
+  await expect(store.inspectHumanDiscovery(humanSession,{accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,
+    claimOperationId:humanClaim},{deadlineAtMs:Date.now()+5000})).rejects.toThrow();
+  if(validGrant===true)expect(mocks.captureOutsideUse).not.toHaveBeenCalled();
+  else expect(mocks.captureOutsideUse).toHaveBeenCalledOnce();
+  expect(route).not.toHaveBeenCalled();
+  store.close();
+});
+
+it.each([
+  ['foreign owner on the claim',{claim:{owner_member_id:'other-member'}}],
+  ['wrong claim identity',{claim:{operation_id:humanResult}}],
+  ['altered stored policy',{claim:{policy_json:JSON.stringify({version:2,purpose:'wrong'})}}],
+  ['wrong result request digest',{result:{request_hash:Buffer.alloc(32,9)}}],
+] as const)('refuses actual encrypted inspection for %s',async(_reason,changes)=>{
+  const rows=discoveryOperationRows(changes),store=humanStore();mocks.captureOutsideUse.mockResolvedValue(humanCapture);installInspectSql(rows);
+  await expect(store.inspectHumanDiscovery(humanSession,{accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,
+    claimOperationId:humanClaim},{deadlineAtMs:Date.now()+5000})).rejects.toThrow();
+  store.close();
+});
+it('does not expose an encrypted result recorded under another owner',async()=>{
+  const rows=discoveryOperationRows({result:{owner_member_id:'other-member'}}),store=humanStore();
+  mocks.captureOutsideUse.mockResolvedValue(humanCapture);installInspectSql(rows);
+  await expect(store.inspectHumanDiscovery(humanSession,{accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,
+    claimOperationId:humanClaim},{deadlineAtMs:Date.now()+5000})).resolves.toEqual({state:'unresolved'});
+  store.close();
+});
+
+it.each([
+  ['foreign account link',{identity:{account_id:'00000000-0000-4000-8000-000000000199'}}],
+  ['foreign agent link',{identity:{resource_id:'other-worker'}}],
+  ['foreign connection link',{identity:{connection_name:'other-connector'}}],
+] as const)('refuses actual inspection with a %s',async(_reason,changes)=>{
+  const rows=discoveryOperationRows(changes),store=humanStore();mocks.captureOutsideUse.mockResolvedValue(humanCapture);installInspectSql(rows);
+  await expect(store.inspectHumanDiscovery(humanSession,{accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,
+    claimOperationId:humanClaim},{deadlineAtMs:Date.now()+5000})).rejects.toThrow();
+  store.close();
+});
+
+const aadTamperingCases:{name:string;overrides:DiscoveryAad}[]=[
+  {name:'owner',overrides:{ownerMemberId:'other-member'}},
+  {name:'account',overrides:{accountId:'00000000-0000-4000-8000-000000000199'}},
+  {name:'agent',overrides:{agentName:'other-worker'}},
+  {name:'connection',overrides:{connectionName:'other-connector'}},
+  {name:'request',overrides:{requestId:'00000000-0000-4000-8000-000000000299'}},
+  {name:'claim operation',overrides:{claimOperationId:'00000000-0000-4000-8000-000000000298'}},
+  {name:'result operation',overrides:{resultOperationId:'00000000-0000-4000-8000-000000000297'}},
+  {name:'generation',overrides:{generation:2}},
+  {name:'credential revision',overrides:{credentialRevision:3}},
+  {name:'consent generation',overrides:{consentGeneration:4}},
+  {name:'policy hash',overrides:{policyHash:'c'.repeat(64)}},
+];
+it.each(aadTamperingCases)('rejects authenticated recovery when the $name AAD coordinate differs',async({overrides})=>{
+  const rows=discoveryOperationRows(),cipher=encryptDiscovery(rows.document,rows.policyHash,overrides);
+  rows.result.result_nonce=cipher.nonce;rows.result.result_ciphertext=cipher.ciphertext;
+  mocks.trackDecryptBuffers=true;mocks.captureOutsideUse.mockResolvedValue(humanCapture);installInspectSql(rows);
+  const route=vi.fn(async()=>humanRoute),store=humanStore({reviewOutsideRoute:route});
+  await expect(store.inspectHumanDiscovery(humanSession,{accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,
+    claimOperationId:humanClaim},{deadlineAtMs:Date.now()+5000})).rejects.toThrow();
+  expect(mocks.decryptBuffers.length).toBeGreaterThanOrEqual(1);
+  expect(mocks.decryptBuffers.every(buffer=>buffer.equals(Buffer.alloc(buffer.length)))).toBe(true);
+  expect(route).not.toHaveBeenCalled();
+  store.close();
+});
+
+it('wipes unauthenticated decrypt output and rejects an altered GCM tag',async()=>{
+  const rows=discoveryOperationRows(),ciphertext=Buffer.from(rows.result.result_ciphertext as Buffer);
+  ciphertext[ciphertext.length-1]^=1;rows.result.result_ciphertext=ciphertext;
+  mocks.trackDecryptBuffers=true;
+  const store=humanStore();mocks.captureOutsideUse.mockResolvedValue(humanCapture);installInspectSql(rows);
+  await expect(store.inspectHumanDiscovery(humanSession,{accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,
+    claimOperationId:humanClaim},{deadlineAtMs:Date.now()+5000})).rejects.toThrow();
+  expect(mocks.decryptBuffers).toHaveLength(1);
+  expect(mocks.decryptBuffers[0]).toEqual(Buffer.alloc(mocks.decryptBuffers[0]!.length));
+  store.close();
+});
+
+it.each([
+  ['invalid UTF-8',Buffer.from([0xff])],
+  ['invalid JSON',Buffer.from('{not-json}')],
+  ['invalid normalized document',Buffer.from('{"protocolVersion":"wrong","serverInfo":{"name":"x","version":"1"},"tools":[]}')],
+  ['tool-count limit',Buffer.from(JSON.stringify({protocolVersion:'2025-06-18',serverInfo:{name:'x',version:'1'},
+    tools:Array.from({length:257},(_,index)=>({name:`tool-${index}`,inputSchema:{type:'object'}}))}))],
+] as const)('wipes decrypted temporary buffers when inspection rejects %s',async(_reason,plaintext)=>{
+  const rows=discoveryOperationRows(),encrypted=encryptDiscoveryBytes(Buffer.from(plaintext),rows.policyHash);
+  rows.result.result_nonce=encrypted.nonce;rows.result.result_ciphertext=encrypted.ciphertext;
+  mocks.trackDecryptBuffers=true;
+  const store=humanStore();mocks.captureOutsideUse.mockResolvedValue(humanCapture);installInspectSql(rows);
+  await expect(store.inspectHumanDiscovery(humanSession,{accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,
+    claimOperationId:humanClaim},{deadlineAtMs:Date.now()+5000})).rejects.toThrow();
+  expect(mocks.decryptBuffers.length).toBeGreaterThanOrEqual(1);
+  expect(mocks.decryptBuffers.every(buffer=>buffer.equals(Buffer.alloc(buffer.length)))).toBe(true);
+  store.close();
+});
 
 it('enters the bound main-pool namespace before borrowing the outside-role transaction',async()=>{
   const events:string[]=[];
