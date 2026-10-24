@@ -1024,6 +1024,7 @@ def run_observer_self_tests():
         finally:
             proxy_full_id = previous_id
     print('egress host observer self-test passed')
+    run_proxy_wait_diagnostic_self_tests()
 
 
 def _raise_observer(details):
@@ -1035,13 +1036,493 @@ def _expect_observer_result(gate, ops, category, expected_identity=None):
     assert result['observed'] is False and result['refusal_category'] == category, result
 
 
-def wait_for_proxy():
+_PROXY_WAIT_STATES = {'created', 'running', 'restarting', 'paused', 'exited', 'dead'}
+_PROXY_WAIT_ERRORS = {
+    'EHOSTUNREACH': 'host_unreachable',
+    'ENETUNREACH': 'network_unreachable',
+    'ECONNREFUSED': 'connection_refused',
+    'ECONNRESET': 'connection_reset',
+    'ETIMEDOUT': 'timeout',
+    'absolute-timeout': 'timeout',
+    'inactivity-timeout': 'timeout',
+    'oversized': 'oversized_response',
+}
+
+
+def _bounded_int(value, maximum):
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= maximum else None
+
+
+def project_proxy_wait_diagnostic(response, expected_id, container_item, expected_network, expected_ip,
+                                  phase, attempt, inspect_outcome='observed'):
+    """Keep restart-wait evidence bounded to fixed fields and allowlisted values."""
+    response = response if isinstance(response, dict) else {}
+    status = _bounded_int(response.get('status'), 599)
+    if status is not None and status < 100:
+        status = None
+    raw_error = response.get('error')
+    if isinstance(raw_error, str) and raw_error in _PROXY_WAIT_ERRORS:
+        socket_category = _PROXY_WAIT_ERRORS[raw_error]
+    elif raw_error is None and status is not None:
+        socket_category = 'http_response'
+    elif raw_error is None and not response:
+        socket_category = 'request_failed'
+    else:
+        socket_category = 'other_socket_error'
+
+    item = container_item if isinstance(container_item, dict) else {}
+    observed_id = item.get('Id')
+    if not isinstance(observed_id, str) or not observed_id:
+        identity_category = 'missing'
+    elif not isinstance(expected_id, str) or not expected_id:
+        identity_category = 'expected_id_missing'
+    elif observed_id == expected_id:
+        identity_category = 'matched'
+    else:
+        identity_category = 'mismatched'
+
+    state = item.get('State')
+    if not isinstance(state, dict):
+        state = {}
+        state_category = 'missing' if 'State' not in item else 'malformed'
+    else:
+        raw_state = state.get('Status')
+        state_category = raw_state if isinstance(raw_state, str) and raw_state in _PROXY_WAIT_STATES else (
+            'missing' if raw_state is None else 'other')
+
+    settings = item.get('NetworkSettings')
+    networks = settings.get('Networks') if isinstance(settings, dict) else None
+    if not isinstance(networks, dict):
+        network_attached = False
+        ip_matches = False
+    else:
+        endpoint = networks.get(expected_network)
+        network_attached = isinstance(endpoint, dict)
+        ip_matches = network_attached and endpoint.get('IPAddress') == expected_ip
+
+    bounded_attempt = _bounded_int(attempt, 30)
+    return {
+        'phase': phase if phase == 'docker_restart' else 'other',
+        'attempt': bounded_attempt if bounded_attempt and bounded_attempt >= 1 else None,
+        'socket_category': socket_category,
+        'status': status,
+        'greeting': response.get('greeting') is True,
+        'container_id_match': identity_category == 'matched',
+        'container_identity': identity_category,
+        'inspect_outcome': inspect_outcome if inspect_outcome in (
+            'observed', 'failed', 'not_attempted') else 'other',
+        'state': state_category,
+        'running': state.get('Running') if type(state.get('Running')) is bool else None,
+        'exit_code': _bounded_int(state.get('ExitCode'), 255),
+        'pid': _bounded_int(state.get('Pid'), 2147483647),
+        'expected_network_attached': network_attached,
+        'expected_proxy_ip_matches': ip_matches,
+    }
+
+
+def _record_proxy_wait_diagnostic(response, phase, attempt, container_item=None,
+                                  inspect_outcome='observed'):
+    records = report.setdefault('proxy_wait_diagnostics', [])
+    if len(records) >= 30:
+        return
+    records.append(project_proxy_wait_diagnostic(
+        response, proxy_id, container_item, network, proxy_ip, phase, attempt, inspect_outcome))
+
+
+_STARTUP_DIAGNOSTIC_CATEGORIES = {
+    'guard_refusal', 'squid_already_running', 'pid_file_conflict', 'permission_denied',
+    'config_parse_fatal', 'address_in_use', 'other_fatal', 'unknown', 'unavailable',
+}
+_STARTUP_READ_OUTCOMES = {
+    'not_attempted', 'completed', 'spawn_failed', 'command_failed', 'timeout',
+    'oversized', 'read_failed', 'cleanup_failed',
+}
+_STARTUP_CLEANUP_FAILURES = {
+    'poll', 'kill', 'reap', 'stdout_close', 'inspect_command_cleanup',
+    'inspect_cleanup_unconfirmed',
+}
+_STARTUP_READ_ERRORS = {'permission', 'not_found', 'process_lookup', 'os_error',
+                        'invalid_descriptor', 'other', 'command_encoding'}
+_STARTUP_LOG_LIMIT = 16384
+_STARTUP_LOG_TIMEOUT_SECONDS = 3
+
+
+def _classify_proxy_startup_log(data):
+    """Return one fixed category; never return any source log text."""
+    text = data.decode('utf-8', 'replace').lower()
+    # Keep the most specific signature: later shutdown/fatal lines must not
+    # overwrite an earlier cause from the startup attempt.
+    priorities = {
+        'unknown': 0, 'other_fatal': 1, 'address_in_use': 2,
+        'permission_denied': 3, 'config_parse_fatal': 4,
+        'pid_file_conflict': 5, 'squid_already_running': 6,
+        'guard_refusal': 7,
+    }
+    category = 'unknown'
+    for line in text.splitlines():
+        detected = None
+        if 'lares: egress maintenance admission refused' in line:
+            detected = 'guard_refusal'
+        elif 'squid is already running' in line:
+            detected = 'squid_already_running'
+        elif 'pid file' in line and any(marker in line for marker in
+                                        ('conflict', 'already exists', 'already in use', 'exists')):
+            detected = 'pid_file_conflict'
+        elif 'permission denied' in line or 'eacces' in line:
+            detected = 'permission_denied'
+        elif 'fatal:' in line and any(marker in line for marker in
+                                      ('bungled', 'parse', 'configuration')):
+            detected = 'config_parse_fatal'
+        elif 'address already in use' in line or 'address in use' in line or 'eaddrinuse' in line:
+            detected = 'address_in_use'
+        elif 'fatal:' in line or line.startswith('fatal '):
+            detected = 'other_fatal'
+        if detected is not None and priorities[detected] > priorities[category]:
+            category = detected
+    return category if category in _STARTUP_DIAGNOSTIC_CATEGORIES else 'unknown'
+
+
+def _startup_diagnostic_base(container_verification):
+    return {
+        'container_verification': container_verification,
+        'startup_category': 'unavailable',
+        'read_outcome': 'not_attempted',
+        'timed_out': False,
+        'oversized': False,
+        'cleanup_ok': True,
+        'cleanup_failures': [],
+        'read_error_category': None,
+    }
+
+
+def _capture_proxy_startup_diagnostic(since_marker):
+    """Read one capped log tail only after checking the pinned proxy identity."""
+    if (not isinstance(proxy_full_id, str) or not re.fullmatch(r'[0-9a-f]{64}', proxy_full_id) or
+            not isinstance(proxy_id, str) or not re.fullmatch(r'[0-9a-f]{12,64}', proxy_id) or
+            not proxy_full_id.startswith(proxy_id) or
+            not isinstance(proxy_project, str) or not proxy_project):
+        return _startup_diagnostic_base('not_pinned')
+    try:
+        rendered = _observer_command(
+            'docker', 'inspect', '--format',
+            '{{json .Id}}|{{json .Name}}|{{json (index .Config.Labels "com.docker.compose.project")}}|'
+            '{{json (index .Config.Labels "com.docker.compose.service")}}',
+            proxy_full_id, timeout=2, limit=2048)
+        values = [json.loads(value) for value in rendered.split('|')]
+    except ObserverRefusal as exc:
+        outcome = _startup_diagnostic_base('inspect_failed')
+        outcome['read_error_category'] = exc.category if exc.category in _STARTUP_READ_ERRORS else 'other'
+        if exc.category == 'timeout':
+            outcome['timed_out'] = True
+            outcome['cleanup_ok'] = False
+            outcome['cleanup_failures'] = ['inspect_cleanup_unconfirmed']
+        elif exc.category == 'oversized':
+            outcome['oversized'] = True
+            outcome['cleanup_ok'] = False
+            outcome['cleanup_failures'] = ['inspect_cleanup_unconfirmed']
+        elif exc.category == 'command_cleanup':
+            outcome['cleanup_ok'] = False
+            outcome['cleanup_failures'] = ['inspect_command_cleanup']
+        return outcome
+    except Exception:
+        return _startup_diagnostic_base('inspect_failed')
+    if len(values) != 4 or values[0] != proxy_full_id:
+        return _startup_diagnostic_base('id_mismatch')
+    if values[1] != '/' + proxy_name:
+        return _startup_diagnostic_base('name_mismatch')
+    if values[2] != proxy_project or values[3] != 'lares-egress-proxy':
+        return _startup_diagnostic_base('owner_mismatch')
+
+    outcome = _startup_diagnostic_base('matched')
+    try:
+        process = subprocess.Popen(
+            ['docker', 'logs', '--since', since_marker, '--tail', '64',
+             '--timestamps=false', proxy_full_id],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+    except OSError as exc:
+        outcome['read_outcome'] = 'spawn_failed'
+        outcome['read_error_category'] = _safe_error(exc)['category']
+        if outcome['read_error_category'] not in _STARTUP_READ_ERRORS:
+            outcome['read_error_category'] = 'other'
+        return outcome
+
+    capture = _read_bounded_process_output(
+        process, limit=_STARTUP_LOG_LIMIT, timeout=_STARTUP_LOG_TIMEOUT_SECONDS)
+    outcome['timed_out'] = capture['timed_out'] is True
+    outcome['oversized'] = capture['oversized'] is True
+    outcome['cleanup_ok'] = capture['cleanup_ok'] is True
+    outcome['cleanup_failures'] = [item for item in capture['cleanup_failures']
+                                   if isinstance(item, str) and item in _STARTUP_CLEANUP_FAILURES]
+    read_error = capture['read_error_category']
+    outcome['read_error_category'] = read_error if read_error in _STARTUP_READ_ERRORS else None
+    if outcome['timed_out']:
+        outcome['read_outcome'] = 'timeout'
+    elif outcome['oversized']:
+        outcome['read_outcome'] = 'oversized'
+    elif read_error is not None:
+        outcome['read_outcome'] = 'read_failed'
+    elif not outcome['cleanup_ok']:
+        outcome['read_outcome'] = 'cleanup_failed'
+    elif capture['returncode'] != 0:
+        outcome['read_outcome'] = 'command_failed'
+    else:
+        outcome['read_outcome'] = 'completed'
+        outcome['startup_category'] = _classify_proxy_startup_log(capture['output'])
+    if outcome['read_outcome'] not in _STARTUP_READ_OUTCOMES:
+        outcome['read_outcome'] = 'read_failed'
+    if outcome['startup_category'] not in _STARTUP_DIAGNOSTIC_CATEGORIES:
+        outcome['startup_category'] = 'unavailable'
+    return outcome
+
+
+def wait_for_proxy_after_restart(since_marker):
+    try:
+        wait_for_proxy(diagnostic_phase='docker_restart')
+    except Exception:
+        try:
+            report['proxy_startup_diagnostic'] = _capture_proxy_startup_diagnostic(since_marker)
+        except Exception:
+            report['proxy_startup_diagnostic'] = _startup_diagnostic_base('inspect_failed')
+        raise
+
+
+def run_proxy_wait_diagnostic_self_tests():
+    global action, network, proxy_full_id, proxy_id, proxy_ip, proxy_project, report, result
+    keys = ('action', 'network', 'proxy_full_id', 'proxy_id', 'proxy_ip', 'proxy_project', 'report', 'result')
+    saved = {key: (key in globals(), globals().get(key)) for key in keys}
+    try:
+        action = 'offline proxy wait self-test'
+        network, proxy_id, proxy_ip = 'fixture-network', 'a' * 64, '10.0.0.13'
+        report = {'checks': [], 'success': False}
+        failed_response = {'status': None, 'greeting': False, 'error': 'EHOSTUNREACH'}
+        ready_response = {'status': 200, 'greeting': True, 'error': None}
+        ready_container = {
+            'Id': proxy_id,
+            'State': {'Status': 'running', 'Running': True, 'ExitCode': 0, 'Pid': 2},
+            'NetworkSettings': {'Networks': {network: {'IPAddress': proxy_ip}}},
+        }
+        with patch(__name__ + '.request', side_effect=[failed_response, ready_response]), \
+                patch(__name__ + '.inspect_container', return_value=ready_container), \
+                patch(__name__ + '.time.sleep') as sleep:
+            wait_for_proxy(diagnostic_phase='docker_restart')
+        if sleep.call_count != 1:
+            raise AssertionError('failed response did not preserve the existing one-poll sleep')
+        positive = report['proxy_wait_diagnostics']
+        if len(positive) != 1 or positive[0] != {
+                'phase': 'docker_restart', 'attempt': 1,
+                'socket_category': 'host_unreachable', 'status': None, 'greeting': False,
+                'container_id_match': True, 'container_identity': 'matched',
+                'inspect_outcome': 'observed', 'state': 'running', 'running': True,
+                'exit_code': 0, 'pid': 2, 'expected_network_attached': True,
+                'expected_proxy_ip_matches': True}:
+            raise AssertionError('positive failed-attempt diagnostic was not projected as expected')
+
+        report = {'checks': [], 'success': False}
+        missing_identity = {'State': {'Status': 'created', 'Running': False,
+                                      'ExitCode': 256, 'Pid': 'unbounded'},
+                            'NetworkSettings': {'Networks': {'other-secret-network': {}}}}
+        with patch(__name__ + '.request', return_value=failed_response), \
+                patch(__name__ + '.inspect_container', return_value=missing_identity), \
+                patch(__name__ + '.time.sleep') as sleep:
+            try:
+                wait_for_proxy(diagnostic_phase='docker_restart')
+            except RuntimeError as exc:
+                if str(exc) != action:
+                    raise AssertionError('non-running refusal changed') from exc
+            else:
+                raise AssertionError('non-running proxy was accepted')
+        missing = report['proxy_wait_diagnostics'][0]
+        if missing['container_identity'] != 'missing' or missing['container_id_match'] or \
+                missing['running'] is not False or missing['state'] != 'created' or \
+                missing['exit_code'] is not None or missing['pid'] is not None or \
+                missing['expected_network_attached'] or missing['expected_proxy_ip_matches'] or \
+                sleep.called:
+            raise AssertionError('missing/malformed identity evidence was not safely bounded')
+
+        malformed = project_proxy_wait_diagnostic(
+            {'status': '200', 'greeting': 'yes', 'error': 'private raw diagnostic'},
+            proxy_id, {'Id': 'secret-id', 'State': {'Status': 'secret-state', 'Running': 'yes',
+                                                     'ExitCode': 999999, 'Pid': -1},
+                       'NetworkSettings': {'Networks': {'fixture-network': 'secret'}}},
+            network, proxy_ip, 'docker_restart', 1)
+        encoded = json.dumps(malformed, sort_keys=True)
+        if malformed != {
+                'phase': 'docker_restart', 'attempt': 1,
+                'socket_category': 'other_socket_error', 'status': None, 'greeting': False,
+                'container_id_match': False, 'container_identity': 'mismatched',
+                'inspect_outcome': 'observed', 'state': 'other', 'running': None,
+                'exit_code': None, 'pid': None, 'expected_network_attached': False,
+                'expected_proxy_ip_matches': False} or any(
+                    value in encoded for value in ('private raw diagnostic', 'secret-id', 'secret-state')):
+            raise AssertionError('diagnostic projection retained malformed or private source values')
+
+        report = {'checks': [], 'success': False}
+        with patch(__name__ + '.request', return_value=failed_response), \
+                patch(__name__ + '.inspect_container', side_effect=RuntimeError('private inspect text')):
+            try:
+                wait_for_proxy(diagnostic_phase='docker_restart')
+            except RuntimeError as exc:
+                if str(exc) != 'private inspect text':
+                    raise
+            else:
+                raise AssertionError('inspect failure did not preserve the original refusal')
+        if report['proxy_wait_diagnostics'][0]['inspect_outcome'] != 'failed' or \
+                'private inspect text' in json.dumps(report['proxy_wait_diagnostics']):
+            raise AssertionError('inspect error was not recorded with fixed redacted evidence')
+
+        report = {'checks': [], 'success': False}
+        with patch(__name__ + '.request', side_effect=RuntimeError('private request text')):
+            try:
+                wait_for_proxy(diagnostic_phase='docker_restart')
+            except RuntimeError as exc:
+                if str(exc) != 'private request text':
+                    raise
+            else:
+                raise AssertionError('request failure did not preserve the original refusal')
+        if report['proxy_wait_diagnostics'][0]['socket_category'] != 'request_failed' or \
+                report['proxy_wait_diagnostics'][0]['inspect_outcome'] != 'not_attempted':
+            raise AssertionError('request exception was not recorded as a fixed category')
+
+        report = {'checks': [], 'success': False}
+        running_container = dict(ready_container, State={'Status': 'running', 'Running': True})
+        with patch(__name__ + '.request', return_value=failed_response), \
+                patch(__name__ + '.inspect_container', return_value=running_container), \
+                patch(__name__ + '.time.sleep'):
+            try:
+                wait_for_proxy(diagnostic_phase='docker_restart')
+            except RuntimeError as exc:
+                if str(exc) != action:
+                    raise AssertionError('wait timeout refusal changed') from exc
+            else:
+                raise AssertionError('bounded waiter accepted a proxy without a successful response')
+        if len(report['proxy_wait_diagnostics']) != 30 or [
+                record['attempt'] for record in report['proxy_wait_diagnostics']] != list(range(1, 31)) or any(
+                record['phase'] != 'docker_restart' or
+                record['socket_category'] != 'host_unreachable'
+                for record in report['proxy_wait_diagnostics']):
+            raise AssertionError('wait diagnostics did not stay within the existing 30-attempt bound')
+
+        proxy_full_id, proxy_id, proxy_project = 'b' * 64, 'b' * 12, 'fixture-project'
+        inspect_output = '|'.join(json.dumps(value) for value in (
+            proxy_full_id, '/' + proxy_name, proxy_project, 'lares-egress-proxy'))
+        process = object()
+        secret_log = b'FATAL: Bungled secret-path.conf line 7: sentinel-private-value\n'
+        since_marker = '1792860000.123456'
+        with patch(__name__ + '._observer_command', return_value=inspect_output) as inspect, \
+                patch(__name__ + '.subprocess.Popen', return_value=process) as popen, \
+                patch(__name__ + '._read_bounded_process_output', return_value={
+                    'returncode': 0, 'timed_out': False, 'oversized': False,
+                    'read_error_category': None, 'cleanup_ok': True,
+                    'cleanup_failures': [], 'output': secret_log}) as bounded_read:
+            diagnostic = _capture_proxy_startup_diagnostic(since_marker)
+        if diagnostic != {
+                'container_verification': 'matched', 'startup_category': 'config_parse_fatal',
+                'read_outcome': 'completed', 'timed_out': False, 'oversized': False,
+                'cleanup_ok': True, 'cleanup_failures': [], 'read_error_category': None} or \
+                secret_log.decode() in json.dumps(diagnostic):
+            raise AssertionError('startup log category was not safely projected')
+        if inspect.call_args.args[-1] != proxy_full_id or popen.call_args.args[0][-1] != proxy_full_id or \
+                popen.call_args.args[0][2:4] != ['--since', since_marker] or \
+                popen.call_args.kwargs.get('stderr') != subprocess.STDOUT or \
+                bounded_read.call_args.kwargs != {'limit': _STARTUP_LOG_LIMIT,
+                                                  'timeout': _STARTUP_LOG_TIMEOUT_SECONDS}:
+            raise AssertionError('startup log read did not use bounded exact-ID inputs')
+
+        with patch(__name__ + '._observer_command', return_value='"' + proxy_full_id +
+                   '"|"/lares-egress-proxy"|"other-project"|"lares-egress-proxy"'), \
+                patch(__name__ + '.subprocess.Popen') as popen:
+            diagnostic = _capture_proxy_startup_diagnostic(since_marker)
+        if diagnostic['container_verification'] != 'owner_mismatch' or \
+                diagnostic['read_outcome'] != 'not_attempted' or popen.called:
+            raise AssertionError('startup logs were read without matching owner labels')
+
+        for category, sample in (
+                ('guard_refusal', b'lares: egress maintenance admission refused'),
+                ('squid_already_running', b'Squid is already running'),
+                ('pid_file_conflict', b'PID file already exists'),
+                ('permission_denied', b'Permission denied'),
+                ('config_parse_fatal', b'FATAL: Bungled configuration line'),
+                ('address_in_use', b'Address already in use'),
+                ('other_fatal', b'FATAL: startup failure'),
+                ('unknown', b'sentinel-private-value')):
+            if _classify_proxy_startup_log(sample) != category:
+                raise AssertionError('startup log signature did not map to its fixed category')
+        if _classify_proxy_startup_log(
+                b'FATAL: Bungled configuration line\nFATAL: shutdown complete') != 'config_parse_fatal':
+            raise AssertionError('generic shutdown fatal overwrote the specific startup cause')
+
+        for flags, expected_outcome in (
+                ({'timed_out': True, 'oversized': False, 'cleanup_ok': True,
+                  'cleanup_failures': [], 'read_error_category': None}, 'timeout'),
+                ({'timed_out': False, 'oversized': True, 'cleanup_ok': False,
+                  'cleanup_failures': ['kill'], 'read_error_category': None}, 'oversized'),
+                ({'timed_out': False, 'oversized': False, 'cleanup_ok': False,
+                  'cleanup_failures': ['reap'], 'read_error_category': None}, 'cleanup_failed')):
+            capture = {'returncode': 0, 'output': b'FATAL: Bungled private path', **flags}
+            with patch(__name__ + '._observer_command', return_value=inspect_output), \
+                    patch(__name__ + '.subprocess.Popen', return_value=process), \
+                    patch(__name__ + '._read_bounded_process_output', return_value=capture):
+                diagnostic = _capture_proxy_startup_diagnostic(since_marker)
+            if diagnostic['read_outcome'] != expected_outcome or \
+                    diagnostic['startup_category'] != 'unavailable' or \
+                    diagnostic['timed_out'] != flags['timed_out'] or \
+                    diagnostic['oversized'] != flags['oversized'] or \
+                    diagnostic['cleanup_ok'] != flags['cleanup_ok']:
+                raise AssertionError('bounded startup log failure flags were not preserved')
+
+        for refusal_category, expected_flag in (('timeout', 'timed_out'), ('oversized', 'oversized')):
+            original_failure = RuntimeError('original restart wait failure')
+            report = {'checks': [], 'success': False}
+            with patch(__name__ + '.wait_for_proxy', side_effect=original_failure), \
+                    patch(__name__ + '._observer_command', side_effect=ObserverRefusal(refusal_category)), \
+                    patch(__name__ + '.subprocess.Popen') as popen:
+                try:
+                    wait_for_proxy_after_restart(since_marker)
+                except RuntimeError as exc:
+                    if exc is not original_failure:
+                        raise AssertionError('inspect refusal replaced the original wait failure') from exc
+                else:
+                    raise AssertionError('restart waiter failure was swallowed')
+            diagnostic = report.get('proxy_startup_diagnostic', {})
+            if diagnostic.get('read_outcome') != 'not_attempted' or \
+                    diagnostic.get(expected_flag) is not True or \
+                    diagnostic.get('cleanup_ok') is not False or \
+                    diagnostic.get('cleanup_failures') != ['inspect_cleanup_unconfirmed'] or \
+                    popen.called:
+                raise AssertionError(
+                    f'inspect refusal did not report unconfirmed cleanup without reading logs: {diagnostic!r}')
+    finally:
+        for key, (existed, value) in saved.items():
+            if existed:
+                globals()[key] = value
+            else:
+                globals().pop(key, None)
+    print('egress proxy restart-wait diagnostic self-test passed')
+
+
+def wait_for_proxy(diagnostic_phase=None):
     global result
+    if diagnostic_phase not in (None, 'docker_restart'):
+        raise ValueError('unsupported proxy wait diagnostic phase')
     for _attempt in range(30):
-        result = request(connect())
+        try:
+            result = request(connect())
+        except Exception:
+            if diagnostic_phase is not None:
+                _record_proxy_wait_diagnostic(None, diagnostic_phase, _attempt + 1,
+                                              inspect_outcome='not_attempted')
+            raise
         if result['status'] == 200 and result['greeting']:
             return
-        item = inspect_container(proxy_id)
+        try:
+            item = inspect_container(proxy_id)
+        except Exception:
+            if diagnostic_phase is not None:
+                _record_proxy_wait_diagnostic(result, diagnostic_phase, _attempt + 1,
+                                              inspect_outcome='failed')
+            raise
+        if diagnostic_phase is not None:
+            _record_proxy_wait_diagnostic(result, diagnostic_phase, _attempt + 1, item)
         if not item.get('State', {}).get('Running'):
             raise RuntimeError(action)
         time.sleep(.5)
@@ -1136,6 +1617,17 @@ def verify_created_proxy(identifier, identity, epoch, proxy_address):
                                       '/usr/local/lib/lares/maintenance-admission.py'] and
           config.get('Cmd') == ['squid', '-N', '-f', '/config/squid.conf'] and
           host.get('Init') is True and host.get('RestartPolicy', {}).get('Name') == 'unless-stopped')
+    tmpfs = host.get('Tmpfs') or {}
+    run_options = tmpfs.get('/run') if isinstance(tmpfs, dict) else None
+    option_parts = run_options.split(',') if isinstance(run_options, str) else []
+    option_flags = {part for part in option_parts if '=' not in part}
+    option_values = dict(part.split('=', 1) for part in option_parts if '=' in part)
+    check('Created proxy has only a bounded private runtime tmpfs',
+          isinstance(tmpfs, dict) and set(tmpfs) == {'/run'} and
+          option_flags == {'rw', 'nosuid', 'nodev', 'noexec'} and
+          set(option_values) == {'size', 'mode'} and
+          option_values.get('size') in ('1m', '1048576') and
+          option_values.get('mode') in ('0755', '755', '493'))
     check('Created proxy carries validated receipt values and no other admission authority',
           env.get('LARES_MAINTENANCE_INSTALLATION_ID') == identity and
           env.get('LARES_MAINTENANCE_EPOCH') == str(epoch) and
@@ -1152,6 +1644,58 @@ def verify_created_proxy(identifier, identity, epoch, proxy_address):
     proxy_network = networks.get(network, {})
     check('Created proxy uses the owned internal network and reserved fixture IP',
           list(networks) == [network] and proxy_network.get('IPAddress') == proxy_address)
+
+
+def verify_proxy_runtime_mounts(identifier):
+    """Return fixed observations for this exact, already pinned proxy container."""
+    _current_proxy_facts()
+    script = r'''import json,os,stat
+mounts={}
+with open('/proc/self/mountinfo','r',encoding='ascii') as stream:
+    for line in stream:
+        fields=line.split()
+        if len(fields)<10 or '-' not in fields: continue
+        split=fields.index('-')
+        mountpoint=fields[4]
+        mounts[mountpoint]={'options':fields[5].split(','),
+                            'fstype':fields[split+1] if split+1<len(fields) else ''}
+run=mounts.get('/run',{})
+admission=mounts.get('/run/lares-maintenance/admission',{})
+try: run_mode=stat.S_IMODE(os.stat('/run',follow_symlinks=False).st_mode)
+except OSError: run_mode=-1
+try: admission_mode=stat.S_IMODE(os.stat('/run/lares-maintenance/admission',follow_symlinks=False).st_mode)
+except OSError: admission_mode=-1
+print(json.dumps({'run_tmpfs':run.get('fstype')=='tmpfs' and
+                  {'rw','nosuid','nodev','noexec'}.issubset(set(run.get('options',[]))) and
+                  run_mode==0o755,
+                  'admission_mount':bool(admission) and 'ro' in admission.get('options',[]) and
+                  admission_mode==0o755}))'''
+    rendered = _observer_command('docker', 'exec', identifier, '/usr/bin/python3', '-I', '-c', script,
+                                 timeout=3, limit=512)
+    try:
+        value = json.loads(rendered)
+    except (json.JSONDecodeError, TypeError):
+        value = {}
+    return {'run_tmpfs': value.get('run_tmpfs') is True,
+            'admission_mount': value.get('admission_mount') is True}
+
+
+def create_proxy_runtime_marker(identifier):
+    _current_proxy_facts()
+    _observer_command('docker', 'exec', identifier, '/usr/bin/python3', '-I', '-c',
+                      "import os; fd=os.open('/run/.lares-restart-runtime-check',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(fd,b'check'); os.close(fd)",
+                      timeout=3, limit=128)
+
+
+def proxy_runtime_marker_absent(identifier):
+    _current_proxy_facts()
+    rendered = _observer_command('docker', 'exec', identifier, '/usr/bin/python3', '-I', '-c',
+        "import json,os; print(json.dumps({'absent':not os.path.exists('/run/.lares-restart-runtime-check')}))",
+        timeout=3, limit=128)
+    try:
+        return json.loads(rendered).get('absent') is True
+    except (json.JSONDecodeError, TypeError):
+        return False
 
 
 def service_compose_config(env):
@@ -1524,6 +2068,9 @@ def run_proof():
                                      "import fcntl,json,os; print(json.dumps({'uid':os.geteuid(),'flock':hasattr(fcntl,'flock'),'python':os.path.realpath('/proc/self/exe') == os.path.realpath('/usr/bin/python3')}))"))
     check('Running guard image executes isolated stdlib Python as root',
           process_runtime == {'uid': 0, 'flock': True, 'python': True})
+    initial_mounts = verify_proxy_runtime_mounts(proxy_id)
+    check('Running proxy keeps its private runtime tmpfs and readonly admission child',
+          initial_mounts == {'run_tmpfs': True, 'admission_mount': True})
     before = target_connections()
     denied = [('ungranted destination', connect('blocked.example'), allowed_ip, (403,)),
               ('ungranted source', connect(), denied_ip, (403,)),
@@ -1602,14 +2149,38 @@ def run_proof():
 
     action = 'prove the same Squid gate descriptor survives Docker restart'
     container_before_restart = proxy_id
+    create_proxy_runtime_marker(proxy_id)
+    restart_log_since = f'{time.time():.6f}'
     compose('restart', 'lares-egress-proxy')
-    wait_for_proxy()
+    wait_for_proxy_after_restart(restart_log_since)
     check('Docker restart preserves the exact owned Compose container',
           compose('ps', '-aq', 'lares-egress-proxy') == container_before_restart)
     restarted_pid = proxy_pid()
     check('Restarted Squid remains behind init as a reloadable child',
           restarted_pid.isdigit() and int(restarted_pid) > 1)
+    restarted_mounts = verify_proxy_runtime_mounts(proxy_id)
+    check('Docker restart recreates the private runtime tmpfs and readonly admission child',
+          restarted_mounts == {'run_tmpfs': True, 'admission_mount': True})
+    check('Docker restart clears the previous run marker from Squid runtime state',
+          proxy_runtime_marker_absent(proxy_id))
     assert_proxy_lease(gate_path, restarted_pid, 'After Docker restart')
+
+    post_restart_stage = str(uuid.uuid4())
+    generate('allowed.example', post_restart_stage)
+    cmd('docker', 'exec', proxy_id, 'squid', '-k', 'reconfigure', '-f', '/config/squid.conf')
+    before_post_restart_reload_target_count = target_connections()
+    for attempt in range(30):
+        result = request(connect('blocked.example'))
+        if route_stage_acknowledged(result, post_restart_stage):
+            break
+        time.sleep(.5)
+    check('Post-restart production reload applies its new denied-route generation',
+          route_stage_acknowledged(result, post_restart_stage))
+    after_post_restart_reload_target_count = target_connections()
+    check('Post-restart denied-route proof adds zero target connections',
+          after_post_restart_reload_target_count == before_post_restart_reload_target_count)
+    check('Post-restart reload preserves the exact Squid child PID', proxy_pid() == restarted_pid)
+    assert_proxy_lease(gate_path, restarted_pid, 'After post-restart reload', preserve_process=True)
 
     action = 'prove non-normal intent refuses a restarted Squid before listener or destination effects'
     connections_before_refusal = target_connections()
