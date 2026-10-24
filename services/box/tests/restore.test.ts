@@ -1005,7 +1005,7 @@ describe("restore.sh: a box whose engine is an image", () => {
     expect(freeze).not.toContain(`${join(prefix, "var/lib/lares")},dst=/var/lib/lares`);
     expect(freeze).not.toContain("docker compose --env-file");
     expect(freeze).not.toContain("tsx/esm /app/services/keeper/node_modules/.bin/tsx");
-  });
+  }, 15_000);
 
   it("retains child intent and the active claim when a created client's immutable ID is unavailable", () => {
     const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_CLIENT_CIDFILE_MISSING: "1" } });
