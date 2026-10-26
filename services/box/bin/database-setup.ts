@@ -21,6 +21,7 @@ const ENGINE_ROLE_MARKERS = new Map([
   ["lares_schema_owner", "lares-engine-database-role:v1:owner"],
   ["lares_app", "lares-engine-database-role:v1:application"],
   ["lares_financial", "lares-engine-database-role:v1:financial"],
+  ["lares_outside_custody", "lares-engine-database-role:v1:outside-custody"],
 ]);
 
 function argument(name: string): string {
@@ -43,6 +44,26 @@ function ident(value: string): string {
 
 async function query<T extends QueryResultRow>(client: PoolClient, sql: string, values: unknown[] = []): Promise<T[]> {
   return (await client.query<T>(sql, values)).rows;
+}
+
+async function verifyOutsideCustodyLogin(password: string): Promise<void> {
+  const pool = new Pool({
+    host: process.env.PGHOST ?? "127.0.0.1", port: Number(process.env.PGPORT ?? 5432),
+    database: ENGINE, user: "lares_outside_custody", password, max: 1, connectionTimeoutMillis: 5000,
+  });
+  let client: PoolClient | undefined;
+  try {
+    client = await pool.connect();
+    const identity = (await query<{ session_user: string; current_user: string; database: string }>(client,
+      "SELECT session_user,current_user,current_database() AS database"))[0];
+    if (identity?.session_user !== "lares_outside_custody" || identity.current_user !== "lares_outside_custody" || identity.database !== ENGINE)
+      throw new Error("database setup: outside-custody credential probe did not prove its fixed database identity");
+  } catch {
+    throw new Error("database setup: outside-custody login could not be verified; inspect the managed role before retrying");
+  } finally {
+    client?.release(true);
+    await pool.end();
+  }
 }
 
 async function finalizeWorkflowTemplate(): Promise<void> {
@@ -104,10 +125,11 @@ async function finalizeWorkflowTemplate(): Promise<void> {
   }
 }
 
-async function verifyRestoredEngine(): Promise<void> {
+async function verifyRestoredEngine(prepareOutsideCustodyRole: boolean): Promise<void> {
   const operatorPassword = secret(argument("--operator-password-file"));
   const appPassword = secret(argument("--app-password-file"));
   const financialPassword = secret(argument("--financial-password-file"));
+  const outsideCustodyPassword = secret(argument("--outside-custody-password-file"));
   const pool = new Pool({
     host: process.env.PGHOST ?? "127.0.0.1", port: Number(process.env.PGPORT ?? 5432),
     database: ENGINE, user: "lares_operator", password: operatorPassword, max: 1, connectionTimeoutMillis: 5000,
@@ -121,14 +143,19 @@ async function verifyRestoredEngine(): Promise<void> {
       throw new Error("database setup: restored engine verification requires the explicit operator identity on lares_state");
     const roles = await query<{ rolname: string; comment: string | null }>(client,
       "SELECT rolname,shobj_description(oid,'pg_authid') AS comment FROM pg_roles WHERE rolname=ANY($1::text[])", [[...ENGINE_ROLE_MARKERS.keys()]]);
-    if (roles.length !== ENGINE_ROLE_MARKERS.size || roles.some((row) => ENGINE_ROLE_MARKERS.get(row.rolname) !== row.comment))
+    const preparingThreeRoleState = prepareOutsideCustodyRole && roles.length === ENGINE_ROLE_MARKERS.size - 1 && !roles.some((row) => row.rolname === "lares_outside_custody");
+    if ((!preparingThreeRoleState && roles.length !== ENGINE_ROLE_MARKERS.size) || roles.some((row) => ENGINE_ROLE_MARKERS.get(row.rolname) !== row.comment))
       throw new Error("database setup: restored engine roles do not carry the exact managed ownership markers");
     const result = await provisionEngineDatabasePrivileges(client, {
       expectedDatabase: ENGINE,
-      passwords: { application: Buffer.from(appPassword), financial: Buffer.from(financialPassword) },
+      passwords: { application: Buffer.from(appPassword), financial: Buffer.from(financialPassword), outsideCustody: Buffer.from(outsideCustodyPassword) },
+      prepareOutsideCustodyRole,
     });
-    if (result.status !== "verified") throw new Error("database setup: restored engine privilege state was not already managed");
-    process.stdout.write("database setup: restored engine role ownership and grants verified\n");
+    await verifyOutsideCustodyLogin(outsideCustodyPassword);
+    if (!prepareOutsideCustodyRole && result.status !== "verified") throw new Error("database setup: restored engine privilege state was not already managed");
+    process.stdout.write(result.status === "applied"
+      ? "database setup: the explicitly prepared outside-custody role and grants were added\n"
+      : "database setup: restored engine role ownership and grants verified\n");
   } finally {
     client?.release(true);
     await pool.end();
@@ -140,23 +167,25 @@ async function run(): Promise<void> {
     await finalizeWorkflowTemplate();
     return;
   }
-  if (process.argv[2] === "--verify-restored-engine") {
-    await verifyRestoredEngine();
+  if (process.argv[2] === "--verify-restored-engine" || process.argv[2] === "--prepare-restored-engine") {
+    await verifyRestoredEngine(process.argv[2] === "--prepare-restored-engine");
     return;
   }
   const operatorPasswordFile = argument("--operator-password-file");
   const appPasswordFile = argument("--app-password-file");
   const financialPasswordFile = argument("--financial-password-file");
+  const outsideCustodyPasswordFile = argument("--outside-custody-password-file");
   const workflowProvisionerPasswordFile = argument("--workflow-provisioner-password-file");
   const workflowPasswordFile = argument("--workflow-password-file");
   const gatewayPasswordFile = argument("--gateway-password-file");
   const operatorPassword = secret(operatorPasswordFile);
   const appPassword = secret(appPasswordFile);
   const financialPassword = secret(financialPasswordFile);
+  const outsideCustodyPassword = secret(outsideCustodyPasswordFile);
   const workflowProvisionerPassword = secret(workflowProvisionerPasswordFile);
   const workflowPassword = secret(workflowPasswordFile);
   const gatewayPassword = secret(gatewayPasswordFile);
-  if (new Set([operatorPassword, appPassword, financialPassword, workflowProvisionerPassword, workflowPassword, gatewayPassword]).size !== 6)
+  if (new Set([operatorPassword, appPassword, financialPassword, outsideCustodyPassword, workflowProvisionerPassword, workflowPassword, gatewayPassword]).size !== 7)
     throw new Error("database setup: the generated database credentials are not distinct");
 
   const pool = new Pool({
@@ -223,11 +252,12 @@ async function run(): Promise<void> {
       try {
       await provisionEngineDatabasePrivileges(engine, {
         expectedDatabase: ENGINE,
-        passwords: { application: Buffer.from(appPassword), financial: Buffer.from(financialPassword) },
+        passwords: { application: Buffer.from(appPassword), financial: Buffer.from(financialPassword), outsideCustody: Buffer.from(outsideCustodyPassword) },
       });
       } finally {
         engine.release();
       }
+      await verifyOutsideCustodyLogin(outsideCustodyPassword);
     } finally {
       await enginePool.end();
     }

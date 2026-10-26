@@ -5,7 +5,7 @@ vi.mock("../lib/db", () => ({ pool: { query: mocks.query } }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: mocks.cookie }) }));
 vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`redirect:${path}`); } }));
 vi.mock("../lib/keeper-client", () => ({ keeper: mocks.keeper, KeeperRefusedError: class extends Error {}, KeeperUnavailableError: class extends Error {} }));
-import { verify, sessionMember, signedInMember, requireConsolePage, requireConsoleMember, requireMember } from "../lib/auth";
+import { verify,memberAuditAddress,sessionMember,signedInMember,requireConsolePage,requireConsoleMember,requireMember } from "../lib/auth";
 const owner = { id: "owner-1", organisationId: "org", role: "owner", status: "active", automationMode: "draft-and-ask" };
 beforeEach(() => {
   vi.stubEnv("AGENT_OWNER_USER_ID", "owner-1");
@@ -29,6 +29,18 @@ describe("current database member and session admission", () => {
     await expect(requireConsoleMember()).rejects.toThrow("owner admission required");
     await expect(requireConsolePage()).rejects.toThrow("redirect:/membership");
     expect(mocks.query).not.toHaveBeenCalled();
+  });
+  it("derives a non-owner audit address from an active member row without making it authority",async()=>{
+    mocks.lookup.mockResolvedValue({...owner,id:'11111111-1111-4111-8111-111111111111',role:'member'});
+    expect(await sessionMember('opaque')).toMatchObject({id:'11111111-1111-4111-8111-111111111111',role:'member'});
+    expect(await memberAuditAddress('11111111-1111-4111-8111-111111111111')).toBe('owner@example.test');
+    expect(mocks.query).toHaveBeenCalledWith("SELECT primary_email FROM users WHERE id=$1 AND status='active'",
+      ['11111111-1111-4111-8111-111111111111']);
+    expect(await verify('opaque')).toBeNull();
+  });
+  it.each([{rows:[]},{rows:[{primary_email:'not-an-email'}]}])('does not mint an audit address without a current active valid address: %s',async result=>{
+    mocks.query.mockResolvedValue(result);
+    expect(await memberAuditAddress('member-id')).toBeNull();
   });
   it.each([{ id: "second", role: "owner" }, { id: "owner-1", role: "member" }, { id: "owner-1", role: "owner", status: "removed" }])("refuses a different owner, demoted or inactive owner: %s", async changes => {
     mocks.lookup.mockResolvedValue({ ...owner, ...changes });

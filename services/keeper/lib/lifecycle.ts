@@ -1,6 +1,7 @@
 import { randomUUID, createHash, randomBytes } from 'node:crypto';
 import { lstatSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
+import { isIP } from 'node:net';
 import type { Pool } from 'pg';
 import { doorsOf, definitionSchema, hashOf, type AgentDefinition } from '@lares/agent-kit/definition';
 import { outsideHttpsHosts, outsideSecretName, outsideToolsInEffect } from '@lares/agent-kit/outside-tools';
@@ -9,6 +10,7 @@ import { generateEgress } from './egress.js';
 import { renderAgentsCompose, nextAddress, DOOR_FILES, ROLE_DOORS, type AgentContainer } from './compose-agents.js';
 import { AgentNotHealthyError, NoOwnedContainerError, type DockerBoundary } from './docker.js';
 import type { LifecycleConfig } from './lifecycle-config.js';
+import type { KeeperConfig } from './config.js';
 import { WorkflowStorage } from './workflow-storage.js';
 import type { WorkflowDatabaseConnections, WorkflowPrivilegeContract } from './workflow-storage.js';
 import { keeperPool } from './config.js';
@@ -21,6 +23,7 @@ import { bindingsFor, verifyBindingSources, INTEGRATION_SECRET_FILES, isRetiredR
 import { LiteLLMGatewayKeys, gatewayModels, type GatewayKeyProvisioner } from './gateway-keys.js';
 import { readSetting } from './settings.js';
 import { effectiveGrantedAgents, type CredentialRecord } from './credential-state.js';
+import { requireDefinitionNamespace, withDefinitionNamespace } from './definition-namespace.js';
 function atomic(path: string, body: string, mode = 0o600) { const temp = `${path}.${randomUUID()}`; const fd = openSync(temp, 'wx', mode); try {
     writeFileSync(fd, body);
     fsyncSync(fd);
@@ -31,6 +34,9 @@ finally {
 const RETIREMENT_PENDING = 'Retirement pending; retry definition.retire';
 /** In the egress folder: the stage whose nft file is the firewall last installed. Written only after nft applied it. */
 const INSTALLED_STAGE = 'installed-stage';
+const OUTSIDE_ROUTE_ATTEMPT = 'discovery-route-attempt';
+export type OutsideRouteReview = { readonly policyHash: string; readonly sourceAddress: string; readonly proxyUrl: string };
+export type OutsideRouteLease = { assertCurrent(): Promise<OutsideRouteReview> };
 export type NativeRuntimeIdentity = { agent: string; incarnation: string; definitionHash: string; purposeAlias: string };
 export type NativeRuntimeState = { state: 'active' } | { state: 'held'; reason: 'Native budget activation required' };
 export type NativeRuntimeAuthority = { current(identity: NativeRuntimeIdentity): Promise<NativeRuntimeState> };
@@ -73,6 +79,7 @@ export class AgentLifecycle {
         secretsDir: string;
         vaultRuntimeDir?: string;
         modelPurposeRuntimeDir?: string;
+        outsideCustody?: KeeperConfig['outsideCustody'];
         credentials?: { administrator?: string };
     }, private docker: DockerBoundary, private provisionSecret = runtimeSecret, private verifySecrets = verifySecretRoot,
     private gatewayKeyProvisioner: GatewayKeyProvisioner = new LiteLLMGatewayKeys(),
@@ -323,18 +330,133 @@ export class AgentLifecycle {
         await this.apply(await this.plan(override, omit));
     }
     private async apply(e: ReturnType<typeof generateEgress>) {
-        await this.resealing; // Never interleave with the startup re-apply: it must not overwrite a newer seal.
-        const c = this.config;
-        const stage = randomUUID();
-        writeFileSync(join(c.egressDir, `${stage}.squid`), e.squid, { flag: 'wx', mode: 0o644 });
-        writeFileSync(join(c.egressDir, `${stage}.nft`), e.nft, { flag: 'wx', mode: 0o644 });
-        await this.docker.validateSquid(stage);
-        await this.docker.firewall(stage, true);
-        // Firewall transaction first. No start occurs until native validation, seal and proxy reload succeed.
-        await this.docker.firewall(stage, false);
-        atomic(join(c.egressDir, INSTALLED_STAGE), `${stage}\n`, 0o644);
-        atomic(join(c.egressDir, 'squid.conf'), e.squid, 0o644);
-        await this.docker.reloadSquid();
+        await withDefinitionNamespace(this.pool, async () => {
+            const c = this.config;
+            const stage = randomUUID();
+            this.outsideRouteReady = undefined;
+            const selected = this.outsideConsumer();
+            if (selected && e.squid.split('http_access deny all').length !== 2)
+                throw new KeeperRefusedError('Outside route policy is unavailable');
+            const squid = selected ? e.squid.replace('http_access deny all', `reply_header_add X-Lares-Route-Stage ${stage} all\nhttp_access deny all`) : e.squid;
+            if (selected) atomic(join(c.egressDir, OUTSIDE_ROUTE_ATTEMPT), `${stage}\n`, 0o644);
+            writeFileSync(join(c.egressDir, `${stage}.squid`), squid, { flag: 'wx', mode: 0o644 });
+            writeFileSync(join(c.egressDir, `${stage}.nft`), e.nft, { flag: 'wx', mode: 0o644 });
+            await this.docker.validateSquid(stage);
+            await this.docker.firewall(stage, true);
+            // Firewall transaction first. No start occurs until native validation, seal and proxy reload succeed.
+            await this.docker.firewall(stage, false);
+            atomic(join(c.egressDir, INSTALLED_STAGE), `${stage}\n`, 0o644);
+            atomic(join(c.egressDir, 'squid.conf'), squid, 0o644);
+            await this.docker.reloadSquid();
+            if (selected) {
+                const deadlineAtMs = Date.now() + 1000;
+                if (!this.docker.acknowledgeOutsideStage) throw new KeeperRefusedError('Outside route acknowledgement is unavailable');
+                await this.docker.acknowledgeOutsideStage(stage, selected.address, c.runtime.proxyUrl, deadlineAtMs);
+                this.outsideRouteReady = { epoch: this.outsideControllerEpoch, stage, sourceAddress: selected.address,
+                    squidHash: createHash('sha256').update(squid).digest('hex'), nftHash: createHash('sha256').update(e.nft).digest('hex'),
+                    basePolicyHash: this.outsideBasePolicyHash(e, selected) };
+            }
+        });
+    }
+    private readonly outsideControllerEpoch = randomUUID();
+    private outsideRouteReady?: { epoch: string; stage: string; sourceAddress: string; squidHash: string; nftHash: string; basePolicyHash: string };
+    private readonly outsideRouteLeases = new WeakMap<object, { active: boolean; destination: string; policyHash: string; sourceAddress: string; proxyUrl: string; epoch: string; stage: string; deadlineAtMs: number; namespaceClient: ReturnType<typeof requireDefinitionNamespace> }>();
+    private outsideConsumer(): { name: string; address: string; hosts: readonly string[] } | undefined {
+        const selected = this.paths.outsideCustody;
+        if (!selected) return undefined;
+        const matches = this.config.egress.legacyConsumers.filter(consumer => consumer.name === selected.routeConsumerName);
+        if (matches.length !== 1 || isIP(matches[0]!.address) !== 4)
+            throw new KeeperRefusedError('Outside route source is unavailable');
+        return matches[0];
+    }
+    private outsideBasePolicyHash(e: ReturnType<typeof generateEgress>, consumer: { name: string; address: string; hosts: readonly string[] }): string {
+        return createHash('sha256').update(JSON.stringify(['lares-outside-route-v1', consumer.name, consumer.address,
+            [...new Set(consumer.hosts)].sort(), this.config.runtime.proxyUrl, e.squid, e.nft])).digest('hex');
+    }
+    private destinationPolicy(destination: string, basePolicyHash: string): { policyHash: string; host: string } {
+        let url: URL;
+        try { url = new URL(destination); } catch { throw new KeeperRefusedError('Outside destination is unavailable'); }
+        if (url.protocol !== 'https:' || url.username || url.password || url.port && url.port !== '443' || url.hash ||
+            url.hostname.endsWith('.invalid')) throw new KeeperRefusedError('Outside destination is unavailable');
+        const consumer = this.outsideConsumer();
+        if (!consumer || !consumer.hosts.some(host => host === url.hostname || host.startsWith('.') && url.hostname.endsWith(host)))
+            throw new KeeperRefusedError('Outside destination is unavailable');
+        return { policyHash: createHash('sha256').update(JSON.stringify(['lares-outside-destination-v1', basePolicyHash, url.href])).digest('hex'), host: url.hostname };
+    }
+    private async assertCurrentOutsideRoute(destination: string, expectedPolicyHash: string, deadlineAtMs: number): Promise<OutsideRouteReview> {
+        const namespaceClient = requireDefinitionNamespace();
+        if (deadlineAtMs <= Date.now()) throw new KeeperRefusedError('Outside route is unavailable');
+        const selected = this.outsideConsumer(), ready = this.outsideRouteReady;
+        if (!selected || !ready || ready.epoch !== this.outsideControllerEpoch || ready.sourceAddress !== selected.address)
+            throw new KeeperRefusedError('Outside route is unavailable');
+        const derived = this.destinationPolicy(destination, ready.basePolicyHash);
+        if (derived.policyHash !== expectedPolicyHash) throw new KeeperRefusedError('Outside route changed; review the destination again');
+        const read = (file: string) => readFileSync(join(this.config.egressDir, file), 'utf8');
+        let stage: string;
+        try {
+            stage = read(OUTSIDE_ROUTE_ATTEMPT).trim();
+            if (stage !== ready.stage || read(INSTALLED_STAGE).trim() !== ready.stage ||
+                createHash('sha256').update(read(`${ready.stage}.squid`)).digest('hex') !== ready.squidHash ||
+                createHash('sha256').update(read(`${ready.stage}.nft`)).digest('hex') !== ready.nftHash ||
+                createHash('sha256').update(read('squid.conf')).digest('hex') !== ready.squidHash)
+                throw new Error('stale');
+        } catch { this.outsideRouteReady = undefined; throw new KeeperRefusedError('Outside route is unavailable'); }
+        if (!this.docker.acknowledgeOutsideStage) throw new KeeperRefusedError('Outside route is unavailable');
+        const proxyUrl = this.config.runtime.proxyUrl;
+        await this.docker.acknowledgeOutsideStage(ready.stage, selected.address, proxyUrl, deadlineAtMs);
+        if (requireDefinitionNamespace() !== namespaceClient || deadlineAtMs <= Date.now() ||
+            this.outsideControllerEpoch !== ready.epoch || this.outsideRouteReady !== ready ||
+            this.outsideConsumer()?.address !== selected.address || this.config.runtime.proxyUrl !== proxyUrl)
+            throw new KeeperRefusedError('Outside route is unavailable');
+        return { policyHash: derived.policyHash, sourceAddress: selected.address, proxyUrl: this.config.runtime.proxyUrl };
+    }
+    /** Review is usable only while this process holds the shared definition namespace and
+     * the exact currently acknowledged route remains selected by root configuration. */
+    async reviewOutsideRoute(destination: string, deadlineAtMs: number): Promise<OutsideRouteReview> {
+        return withDefinitionNamespace(this.pool, async () => {
+            const ready = this.outsideRouteReady;
+            if (!ready) throw new KeeperRefusedError('Outside route is unavailable');
+            const hash = this.destinationPolicy(destination, ready.basePolicyHash).policyHash;
+            return this.assertCurrentOutsideRoute(destination, hash, deadlineAtMs);
+        }, { deadlineAtMs });
+    }
+    /** The callback is the trusted discovery implementation; its lease check is callable only
+     * while the namespace gate remains held and must run immediately before transport. */
+    async withAppliedOutsideRoute<T>(destination: string, expectedPolicyHash: string, deadlineAtMs: number,
+        work: (lease: OutsideRouteLease) => Promise<T>): Promise<T> {
+        return withDefinitionNamespace(this.pool, async () => {
+            const namespaceClient = requireDefinitionNamespace();
+            const ready = this.outsideRouteReady;
+            if (!ready) throw new KeeperRefusedError('Outside route is unavailable');
+            const derived = this.destinationPolicy(destination, ready.basePolicyHash);
+            if (derived.policyHash !== expectedPolicyHash) throw new KeeperRefusedError('Outside route changed; review the destination again');
+            const state = { active: true, destination, policyHash: expectedPolicyHash, sourceAddress: ready.sourceAddress,
+                proxyUrl: this.config.runtime.proxyUrl, epoch: ready.epoch, stage: ready.stage, deadlineAtMs, namespaceClient };
+            let lease!: OutsideRouteLease;
+            lease = Object.freeze({ assertCurrent: async () => {
+                const current = this.outsideRouteLeases.get(lease as object);
+                if (!current?.active || current !== state || Date.now() >= current.deadlineAtMs ||
+                    current.epoch !== this.outsideControllerEpoch || requireDefinitionNamespace() !== current.namespaceClient)
+                    throw new KeeperRefusedError('Outside route lease is unavailable');
+                const reviewed = await this.assertCurrentOutsideRoute(current.destination, current.policyHash, current.deadlineAtMs);
+                if (this.outsideRouteLeases.get(lease as object) !== current || !current.active || Date.now() >= current.deadlineAtMs ||
+                    requireDefinitionNamespace() !== current.namespaceClient || current.epoch !== this.outsideControllerEpoch ||
+                    reviewed.sourceAddress !== current.sourceAddress || reviewed.proxyUrl !== current.proxyUrl ||
+                    this.outsideRouteReady?.stage !== current.stage || this.outsideRouteReady?.epoch !== current.epoch)
+                    throw new KeeperRefusedError('Outside route lease is unavailable');
+                return reviewed;
+            } });
+            this.outsideRouteLeases.set(lease as object, state);
+            try {
+                await lease.assertCurrent();
+                const result = await work(lease);
+                await lease.assertCurrent();
+                return result;
+            } finally {
+                state.active = false;
+                this.outsideRouteLeases.delete(lease as object);
+            }
+        }, { deadlineAtMs });
     }
     private resealing: Promise<void> = Promise.resolve();
     /** Startup: a reboot empties the kernel's nft tables, so re-apply the last firewall this keeper
@@ -342,7 +464,8 @@ export class AgentLifecycle {
      * would block it. The proxy needs nothing; it reads squid.conf from disk when it starts. One
      * attempt; never throws. On failure it logs one line and the next agent change seals afresh. */
     resealAtStart(): Promise<void> {
-        this.resealing = (async () => {
+        this.outsideRouteReady = undefined;
+        this.resealing = withDefinitionNamespace(this.pool, async () => {
             const dir = this.config.egressDir;
             const read = (file: string, missing: string) => {
                 try { return readFileSync(join(dir, file), 'utf8'); }
@@ -368,7 +491,7 @@ export class AgentLifecycle {
             catch (error) {
                 console.error(`keeper: could not re-apply the outbound firewall at startup (${(error as Error).message}); agents run without it until the next agent change`);
             }
-        })();
+        });
         return this.resealing;
     }
     private async connections(a: AgentContainer, apply: boolean): Promise<AgentContainer> {

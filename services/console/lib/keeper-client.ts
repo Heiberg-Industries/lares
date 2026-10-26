@@ -2,8 +2,9 @@ import { createConnection } from "node:net";
 
 // The console's only write path to the box (ADR-0015 rule 2).
 // It has no Docker, /srv, or /etc access of its own: the mounted keeper socket is its
-// authority boundary. `actor` comes from the console's verified owner session and is
-// recorded by the keeper. A keeper outage is never the same thing as an empty result.
+// authority boundary. `actor` is a server-derived audit address recorded by Keeper; it does
+// not grant resource access. Keeper rechecks each action's session and resource authority.
+// A keeper outage is never the same thing as an empty result.
 
 const DEFAULT_SOCKET = "/run/lares/keeper.sock";
 const DEFAULT_TIMEOUT_MS = 10_000;

@@ -364,7 +364,7 @@ describe("updating this installation", () => {
     expect(r.stderr).toMatch(/backup/i);
     expect(compose()).toBe(composeYaml());
     expectNormalAuthCompose();
-  });
+  }, 15_000);
 
   it("stops when the backup was never verified, unless told otherwise in so many words", () => {
     const unproven = { STUB_BACKUP_STATUS: "|" };

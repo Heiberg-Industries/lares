@@ -93,6 +93,8 @@ export interface KeeperConfigOptions {
   readonly previousSchedulesLive?: boolean;
   readonly previousBudgetFinancial?: KeeperConfig["budgetFinancial"];
   readonly previousBudgetNative?: KeeperConfig["budgetNative"];
+  readonly previousOutsideCustody?: KeeperConfig["outsideCustody"];
+  readonly previousOutsideRouteConsumer?: NonNullable<KeeperConfig['lifecycle']>['egress']['legacyConsumers'][number];
   readonly previousGatewayBudget?: KeeperConfig["gatewayBudget"];
   /** Optional Console model-purpose signer. Omit only when the installation has no custody file. */
   readonly modelPurposeConsoleSigningKeyFile?: string | null;
@@ -124,6 +126,7 @@ export function renderKeeperConfig(
     passwordFile,
   };
   const financialDb = { ...db, user: FINANCIAL_DATABASE_ROLE, passwordFile: financialPasswordFile };
+  const outsideDb = { ...db, user: ENGINE_DATABASE_ROLES.outsideCustody, passwordFile: join(opts.secretsDir, "outside-custody-database-password") };
   if (opts.previousBudgetFinancial) {
     const previousDb = opts.previousBudgetFinancial.db;
     if (opts.previousBudgetFinancial.directory !== "/var/lib/lares/budget-financial" ||
@@ -134,6 +137,16 @@ export function renderKeeperConfig(
   }
   if (opts.previousBudgetNative && !opts.previousBudgetFinancial)
     throw new Error("Existing native custody has no prepared financial custody binding; operator recovery is required.");
+  if (opts.previousOutsideCustody) {
+    const previous = opts.previousOutsideCustody;
+    if (previous.keyFile !== '/var/lib/lares/outside-custody/key' || previous.db.host !== outsideDb.host ||
+        previous.db.port !== outsideDb.port || previous.db.database !== outsideDb.database || previous.db.user !== outsideDb.user ||
+        previous.db.passwordFile !== outsideDb.passwordFile || !/^[a-f0-9]{64}$/.test(previous.keyFingerprint) ||
+        !opts.previousOutsideRouteConsumer || opts.previousOutsideRouteConsumer.name !== previous.routeConsumerName)
+      throw new Error("Existing outside custody does not match its prepared Keeper key, database credential, and root-selected route; operator recovery is required.");
+  } else if (opts.previousOutsideRouteConsumer) {
+    throw new Error("An outside route selection has no prepared custody binding; operator recovery is required.");
+  }
 
   const tzEnvironment: Record<string, string> = opts.ownerHomeTz ? { OWNER_HOME_TZ: opts.ownerHomeTz } : {};
   return {
@@ -146,6 +159,7 @@ export function renderKeeperConfig(
       },
     } : {}),
     ...(opts.previousBudgetNative ? { budgetNative: opts.previousBudgetNative } : {}),
+    ...(opts.previousOutsideCustody ? { outsideCustody: { ...opts.previousOutsideCustody, db: outsideDb } } : {}),
     ...(opts.previousGatewayBudget ? { gatewayBudget: opts.previousGatewayBudget } : {}),
     // The installer owns this signer in its protected secrets directory. Keeper reads the
     // exact file through the existing read-only installer-secrets mount; it is never copied.
@@ -214,7 +228,7 @@ export function renderKeeperConfig(
       // silently remove a seal on a later render; an empty one says "none, on purpose".
       egress: {
         endpoints: {},
-        legacyConsumers: [],
+        legacyConsumers: opts.previousOutsideRouteConsumer ? [opts.previousOutsideRouteConsumer] : [],
         internalNetworks: [opts.subnet],
         directDestinations: [],
         infrastructureHosts: [],
