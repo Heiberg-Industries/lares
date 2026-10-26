@@ -37,7 +37,7 @@ function markDatabaseBootstrapComplete() {
 const EXPECTED = [
   "console-session-secret", "console-vault-signing-key", "console-model-purpose-signing-key", "database-password", "eve-route-password",
   "financial-database-password", "gateway-database-password", "gateway-key", "gateway-master-key",
-  "token-enc-key", "workflow-password", "workflow-provisioner-password",
+  "token-enc-key", "workflow-password", "workflow-provisioner-password", "outside-custody-database-password",
 ].sort();
 
 let dir: string, binDir: string, prefix: string, log: string, secretsDir: string;

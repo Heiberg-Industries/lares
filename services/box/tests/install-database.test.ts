@@ -187,7 +187,10 @@ describe("the database the installer creates", () => {
     stub("pnpm", "exit 0");
     okRun(runWithStdin([], answers));
     const password = readFileSync(join(prefix, "etc/lares/secrets/database-password"), "utf8").trim();
+    const outsideCustodyPassword = readFileSync(join(prefix, "etc/lares/secrets/outside-custody-database-password"), "utf8").trim();
     expect(readFileSync(log, "utf8")).not.toContain(password);
+    expect(readFileSync(log, "utf8")).not.toContain(outsideCustodyPassword);
+    expect(readFileSync(log, "utf8")).toContain("--outside-custody-password-file");
   });
 
   it("stops before owner and keeper setup when the first-agent settings are refused", () => {

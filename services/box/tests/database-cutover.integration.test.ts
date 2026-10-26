@@ -17,7 +17,7 @@ const tsx = join(repo, 'node_modules/.bin/tsx');
 const secretDir = mkdtempSync(join(tmpdir(), 'lares-db-cutover-'));
 chmodSync(secretDir, 0o700);
 const secretPaths = new Map<string, string>();
-for (const name of ['operator', 'app', 'financial', 'provisioner', 'workflow', 'gateway']) {
+for (const name of ['operator', 'app', 'financial', 'outside', 'provisioner', 'workflow', 'gateway']) {
   const path = join(secretDir, `${name}-password`);
   writeFileSync(path, randomBytes(36).toString('base64url'), { mode: 0o600 });
   secretPaths.set(name, path);
@@ -84,13 +84,14 @@ it('sets up, finalizes, migrates, and restores the exact managed database roles 
   // The restore verifier must likewise close its pool when the expected engine database is absent.
   const missingEngineDatabase = await failureMessage(exec(tsx, ['bin/database-setup.ts', '--verify-restored-engine',
     '--operator-password-file', secretPaths.get('operator')!, '--app-password-file', secretPaths.get('app')!,
-    '--financial-password-file', secretPaths.get('financial')!], { cwd: box, env, timeout: 10_000 }));
+    '--financial-password-file', secretPaths.get('financial')!, '--outside-custody-password-file', secretPaths.get('outside')!], { cwd: box, env, timeout: 10_000 }));
   expect(missingEngineDatabase).toMatch(/lares_state|database|connect/i);
 
   const setup = await exec(tsx, ['bin/database-setup.ts',
     '--operator-password-file', secretPaths.get('operator')!,
     '--app-password-file', secretPaths.get('app')!,
     '--financial-password-file', secretPaths.get('financial')!,
+    '--outside-custody-password-file', secretPaths.get('outside')!,
     '--workflow-provisioner-password-file', secretPaths.get('provisioner')!,
     '--workflow-password-file', secretPaths.get('workflow')!,
     '--gateway-password-file', secretPaths.get('gateway')!,
@@ -169,7 +170,7 @@ it('sets up, finalizes, migrates, and restores the exact managed database roles 
 
   await exec(tsx, ['bin/database-setup.ts', '--verify-restored-engine',
     '--operator-password-file', secretPaths.get('operator')!, '--app-password-file', secretPaths.get('app')!,
-    '--financial-password-file', secretPaths.get('financial')!], { cwd: box, env });
+    '--financial-password-file', secretPaths.get('financial')!, '--outside-custody-password-file', secretPaths.get('outside')!], { cwd: box, env });
   await exec(tsx, ['bin/workflow-template.ts', 'verify-database', '--host', env.PGHOST!, '--port', env.PGPORT!,
     '--database', workflowName, '--runtime-password-file', secretPaths.get('workflow')!], { cwd: box, env });
 

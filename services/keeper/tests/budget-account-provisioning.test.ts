@@ -34,6 +34,7 @@ const dbTime=(date:Date)=>date.toISOString().replace('.000Z','.000000Z');
 const nextMonth=(date:Date)=>new Date(Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1));
 const appPassword=Buffer.from('initial-budget-app-role-test-password-01');
 const financialPassword=Buffer.from('initial-budget-financial-role-test-password');
+const outsideCustodyPassword=Buffer.from('initial-budget-outside-custody-role-password');
 async function boundedClose(action:()=>Promise<unknown>,label:string,ms=5000):Promise<void>{
   let timer:ReturnType<typeof setTimeout>|undefined;
   try{await Promise.race([action(),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error(`${label} cleanup timed out`)),ms);})]);}
@@ -59,7 +60,7 @@ async function restrictedCase(database:string):Promise<{selected:Pool;financial:
   const selected=containerPool(source,database,4);
   await migrate(selected);
   const operator=await selected.connect();
-  try{await provisionEngineDatabasePrivileges(operator,{expectedDatabase:database,passwords:{application:appPassword,financial:financialPassword}});}
+  try{await provisionEngineDatabasePrivileges(operator,{expectedDatabase:database,passwords:{application:appPassword,financial:financialPassword,outsideCustody:outsideCustodyPassword}});}
   finally{operator.release();}
   const financial=containerRolePool(source,database,'lares_financial',financialPassword);
   expect((await financial.query('SELECT current_user,session_user')).rows[0]).toEqual({current_user:'lares_financial',session_user:'lares_financial'});
@@ -451,7 +452,7 @@ it('sets an explicit initial member limit, serializes with account provisioning,
   // The app login retains its intentional financial denial; Keeper's financial login
   // can change only source policy while an unrelated member account is already active.
   const operator=await selected.connect();
-  try{await provisionEngineDatabasePrivileges(operator,{expectedDatabase:'budget_initial_limit',passwords:{application:appPassword,financial:financialPassword}});}
+  try{await provisionEngineDatabasePrivileges(operator,{expectedDatabase:'budget_initial_limit',passwords:{application:appPassword,financial:financialPassword,outsideCustody:outsideCustodyPassword}});}
   finally{operator.release();}
   const app=rolePool('budget_initial_limit','lares_app',appPassword),financial=rolePool('budget_initial_limit','lares_financial',financialPassword);
   await expect(app.query('SELECT * FROM budget_accounts')).rejects.toMatchObject({code:'42501'});

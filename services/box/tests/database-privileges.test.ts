@@ -14,10 +14,12 @@ const sqlDir = new URL("../sql/", import.meta.url);
 const sqlPath = (name: string) => new URL(name, sqlDir);
 const appPassword = Buffer.from("app-role-test-password-0123456789abcd");
 const financialPassword = Buffer.from("financial-role-test-password-0123456789");
+const outsideCustodyPassword = Buffer.from("outside-custody-role-test-password-0123");
 let container: StartedPostgreSqlContainer;
 let admin: Pool;
 let app: Pool;
 let financial: Pool;
+let outsideCustody: Pool;
 
 async function expectDenied(query: () => Promise<unknown>): Promise<void> {
   try {
@@ -40,12 +42,57 @@ async function expectProvisionRefused(): Promise<void> {
   try {
     await expect(provisionEngineDatabasePrivileges(operator, {
       expectedDatabase: container.getDatabase(),
-      passwords: { application: appPassword, financial: financialPassword },
+      passwords: { application: appPassword, financial: financialPassword, outsideCustody: outsideCustodyPassword },
     })).rejects.toThrow("Database privilege setup could not be confirmed; inspect the database before retrying.");
   } finally { operator.release(); }
 }
 
 const financialTables = ["budget_accounts", "budget_windows", "budget_gateway_bindings", "budget_attempts", "budget_gateway_grants", "budget_financial_checkpoints"];
+const outsideCustodyAuthorityTables = [
+  "orgs", "users", "org_member_policy", "agent_definitions", "agent_access", "resource_grants",
+  "agent_resources", "console_session_bindings", "console_vault_source_captures",
+];
+const outsideCustodyUpdateColumns: Readonly<Record<string, readonly string[]>> = {
+  orgs: ["created_at"],
+  users: ["created_at"],
+  org_member_policy: ["outside_custody_lock"],
+  agent_definitions: ["checked_at"],
+  agent_access: ["agent_name"],
+  resource_grants: ["created_at"],
+  agent_resources: ["updated_at"],
+  console_session_bindings: ["created_at", "revoked_at"],
+  member_sessions: ["created_at"],
+  outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at"],
+};
+const outsideCustodySelectColumns: Readonly<Record<string, readonly string[]>> = {
+  member_sessions: ["member_id", "token_hash", "expires_at", "revoked_at"],
+};
+const financialCustodySelectColumns: Readonly<Record<string, readonly string[]>> = {
+  outside_custody_accounts: ["owner_member_id", "resource_id"],
+  outside_custody_revisions: ["owner_member_id"],
+  outside_custody_operations: ["owner_member_id"],
+};
+
+async function removeTestOwnedOutsideCustodyGrants(): Promise<void> {
+  const database = container.getDatabase().replaceAll('"', '""');
+  await admin.query(`REVOKE CONNECT ON DATABASE "${database}" FROM lares_outside_custody`);
+  await admin.query("REVOKE USAGE ON SCHEMA public FROM lares_outside_custody");
+  for (const table of ENGINE_TABLE_PRIVILEGES.outsideCustody) {
+    await admin.query(`REVOKE SELECT, INSERT ON TABLE public."${table}" FROM lares_outside_custody`);
+  }
+  for (const table of outsideCustodyAuthorityTables) {
+    await admin.query(`REVOKE SELECT ON TABLE public."${table}" FROM lares_outside_custody`);
+  }
+  for (const [table, columns] of Object.entries(outsideCustodyUpdateColumns)) {
+    await admin.query(`REVOKE UPDATE (${columns.map((column) => `"${column}"`).join(", ")}) ON TABLE public."${table}" FROM lares_outside_custody`);
+  }
+  for (const [table, columns] of Object.entries(outsideCustodySelectColumns)) {
+    await admin.query(`REVOKE SELECT (${columns.map((column) => `"${column}"`).join(", ")}) ON TABLE public."${table}" FROM lares_outside_custody`);
+  }
+  for (const [table, columns] of Object.entries(financialCustodySelectColumns)) {
+    await admin.query(`REVOKE SELECT (${columns.map((column) => `"${column}"`).join(", ")}) ON TABLE public."${table}" FROM lares_financial`);
+  }
+}
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
@@ -73,25 +120,42 @@ beforeAll(async () => {
   try {
     expect(await provisionEngineDatabasePrivileges(operator, {
       expectedDatabase: container.getDatabase(),
-      passwords: { application: appPassword, financial: financialPassword },
+      passwords: { application: appPassword, financial: financialPassword, outsideCustody: outsideCustodyPassword },
     })).toEqual({ status: "applied" });
     expect(await provisionEngineDatabasePrivileges(operator, {
       expectedDatabase: container.getDatabase(),
-      passwords: { application: Buffer.from("different-app-password-0123456789abcd"), financial: Buffer.from("different-fin-password-0123456789abcd") },
+      passwords: { application: Buffer.from("different-app-password-0123456789abcd"), financial: Buffer.from("different-fin-password-0123456789abcd"), outsideCustody: Buffer.from("different-outside-password-0123456789abcd") },
     })).toEqual({ status: "verified" });
+    await removeTestOwnedOutsideCustodyGrants();
+    await admin.query("DROP ROLE lares_outside_custody");
+    await expectProvisionRefused();
+    expect(await provisionEngineDatabasePrivileges(operator, {
+      expectedDatabase: container.getDatabase(),
+      passwords: { application: appPassword, financial: financialPassword, outsideCustody: outsideCustodyPassword },
+      prepareOutsideCustodyRole: true,
+    })).toEqual({ status: "applied" });
   } finally { operator.release(); }
   app = loginPool("lares_app", appPassword);
   financial = loginPool("lares_financial", financialPassword);
+  outsideCustody = loginPool("lares_outside_custody", outsideCustodyPassword);
 }, 180_000);
 
 afterAll(async () => {
-  await Promise.all([app?.end(), financial?.end(), admin?.end()]);
+  await Promise.all([app?.end(), financial?.end(), outsideCustody?.end(), admin?.end()]);
   await container?.stop();
 });
 
 describe("engine database privilege foundation", () => {
+  it("refuses a grantable parameter privilege for each managed role, including outside custody", async () => {
+    for (const role of ["lares_schema_owner", "lares_app", "lares_financial", "lares_outside_custody"]) {
+      await admin.query(`GRANT SET ON PARAMETER session_replication_role TO "${role}" WITH GRANT OPTION`);
+      await expectProvisionRefused();
+      await admin.query(`REVOKE SET ON PARAMETER session_replication_role FROM "${role}"`);
+    }
+  });
+
   it("matches the fixed table policy inventory to every shipped migration table and member scope", () => {
-    const online = [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial];
+    const online = [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.outsideCustody];
     const complete = [...online, ...ENGINE_TABLE_PRIVILEGES.ledger].sort();
     expect(ENGINE_TABLE_PRIVILEGES.ledger).toEqual(["schema_migrations"]);
     expect(new Set(complete).size).toBe(complete.length);
@@ -110,6 +174,63 @@ describe("engine database privilege foundation", () => {
     await expectDenied(() => app.query("UPDATE users SET status='removed' WHERE id='probe-member'"));
     expect((await admin.query("SELECT status FROM users WHERE id='probe-member'")).rows[0].status).not.toBe("removed");
     await expectDenied(() => app.query("SELECT budget_retire_member('probe-member',false)"));
+  });
+
+  it("keeps custody tables outside app/financial access and excludes OAuth and ledger data from the custody role", async()=>{
+    expect((await outsideCustody.query("SELECT current_user,session_user")).rows[0]).toEqual({current_user:"lares_outside_custody",session_user:"lares_outside_custody"});
+    for(const role of [app,financial])for(const table of ENGINE_TABLE_PRIVILEGES.outsideCustody){
+      expect((await role.query("SELECT has_table_privilege(current_user,$1,'SELECT') AS read,has_table_privilege(current_user,$1,'INSERT') AS insert,has_any_column_privilege(current_user,$1,'UPDATE') AS update",[`public.${table}`])).rows[0]).toEqual({read:false,insert:false,update:false});
+      await expectDenied(()=>role.query(`SELECT * FROM ${table}`));
+    }
+    for(const table of [...financialTables,"oauth_tokens","connected_accounts","connected_account_credentials","schema_migrations"]){
+      expect((await outsideCustody.query("SELECT has_table_privilege(current_user,$1,'SELECT') AS read,has_table_privilege(current_user,$1,'INSERT') AS insert,has_any_column_privilege(current_user,$1,'UPDATE') AS update",[`public.${table}`])).rows[0]).toEqual({read:false,insert:false,update:false});
+      await expectDenied(()=>outsideCustody.query(`SELECT * FROM ${table}`));
+    }
+    for(const [table,column] of [["org_member_policy","outside_custody_lock"],["outside_custody_accounts","generation"],["outside_custody_accounts","state"]]){
+      expect((await outsideCustody.query("SELECT has_column_privilege(current_user,$1,$2,'UPDATE') AS allowed",[`public.${table}`,column])).rows[0].allowed).toBe(true);
+    }
+    for(const column of outsideCustodySelectColumns.member_sessions){
+      expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions',$1,'SELECT') AS allowed",[column])).rows[0].allowed).toBe(true);
+    }
+    for(const column of ["id","created_at","member_id","token_hash","expires_at","revoked_at"]){
+      if(outsideCustodySelectColumns.member_sessions.includes(column)) continue;
+      expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions',$1,'SELECT') AS allowed",[column])).rows[0].allowed).toBe(false);
+    }
+    expect((await outsideCustody.query("SELECT has_table_privilege(current_user,'public.member_sessions','SELECT') AS allowed")).rows[0].allowed).toBe(false);
+    expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions','created_at','UPDATE') AS allowed")).rows[0].allowed).toBe(true);
+    for(const column of ["member_id","token_hash","expires_at","revoked_at"]){
+      expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions',$1,'UPDATE') AS allowed",[column])).rows[0].allowed).toBe(false);
+    }
+    for(const [table,column] of [["org_member_policy","allowed_capabilities"],["outside_custody_accounts","owner_member_id"],["outside_custody_revisions","ciphertext"],["outside_custody_operations","outcome"]]){
+      expect((await outsideCustody.query("SELECT has_column_privilege(current_user,$1,$2,'UPDATE') AS allowed",[`public.${table}`,column])).rows[0].allowed).toBe(false);
+    }
+    await expectDenied(()=>outsideCustody.query("SET ROLE lares_app"));
+    await expectDenied(()=>app.query("SET ROLE lares_outside_custody"));
+  });
+
+  it("allows financial erasure counts through exactly four custody metadata columns", async()=>{
+    for(const [table,columns] of Object.entries(financialCustodySelectColumns)){
+      expect((await financial.query("SELECT has_table_privilege(current_user,$1,'SELECT') AS table_read",[`public.${table}`])).rows[0].table_read).toBe(false);
+      for(const column of columns){
+        expect((await financial.query("SELECT has_column_privilege(current_user,$1,$2,'SELECT') AS allowed",[`public.${table}`,column])).rows[0].allowed).toBe(true);
+      }
+      await financial.query(`SELECT count(*)::int FROM ${table} WHERE owner_member_id=$1`,["metadata-only-empty-probe"]);
+      await expectDenied(()=>app.query(`SELECT count(*) FROM ${table} WHERE owner_member_id=$1`,["metadata-only-empty-probe"]));
+      await expectDenied(()=>financial.query(`SELECT * FROM ${table}`));
+      await expectDenied(()=>financial.query(`INSERT INTO ${table} DEFAULT VALUES`));
+      await expectDenied(()=>financial.query(`UPDATE ${table} SET owner_member_id='metadata-only-probe' WHERE false`));
+      await expectDenied(()=>financial.query(`DELETE FROM ${table} WHERE false`));
+      await expectDenied(()=>financial.query(`TRUNCATE ${table}`));
+    }
+    await financial.query("SELECT count(*)::int FROM outside_custody_accounts custody JOIN agent_access access ON access.agent_name=custody.resource_id WHERE access.owner_member_id=$1 AND custody.owner_member_id IS DISTINCT FROM $1",["metadata-only-empty-probe"]);
+    for(const [table,column] of [["outside_custody_accounts","account_id"],["outside_custody_accounts","generation"],["outside_custody_revisions","nonce"],["outside_custody_revisions","ciphertext"],["outside_custody_revisions","credential_revision"],["outside_custody_operations","operation_id"],["outside_custody_operations","request_hash"],["outside_custody_operations","outcome"]]){
+      await expectDenied(()=>financial.query(`SELECT ${column} FROM ${table}`));
+      expect((await financial.query("SELECT has_column_privilege(current_user,$1,$2,'SELECT') AS allowed",[`public.${table}`,column])).rows[0].allowed).toBe(false);
+    }
+    for(const [table,column] of Object.entries(financialCustodySelectColumns).flatMap(([table,columns])=>columns.map(column=>[table,column] as const))){
+      await expectDenied(()=>app.query(`SELECT ${column} FROM ${table}`));
+      expect((await app.query("SELECT has_column_privilege(current_user,$1,$2,'SELECT') AS allowed",[`public.${table}`,column])).rows[0].allowed).toBe(false);
+    }
   });
 
   it("allows ordinary writes and denies ledger and financial data to the application login", async () => {
@@ -208,6 +329,14 @@ describe("engine database privilege foundation", () => {
     } finally {
       await admin.query("REVOKE SELECT (display_name) ON public.orgs FROM privilege_probe_column");
       await admin.query("DROP ROLE privilege_probe_column");
+    }
+
+    await admin.query("GRANT SELECT (ciphertext) ON public.outside_custody_revisions TO lares_financial");
+    try {
+      await expectProvisionRefused();
+      expect((await admin.query("SELECT has_column_privilege('lares_financial','public.outside_custody_revisions','ciphertext','SELECT') AS remains")).rows[0].remains).toBe(true);
+    } finally {
+      await admin.query("REVOKE SELECT (ciphertext) ON public.outside_custody_revisions FROM lares_financial");
     }
   });
 
@@ -366,7 +495,7 @@ describe("engine database privilege foundation", () => {
       }
       await expect(provisionEngineDatabasePrivileges(operator, {
         expectedDatabase: "wrong-database",
-        passwords: { application: appPassword, financial: financialPassword },
+        passwords: { application: appPassword, financial: financialPassword, outsideCustody: outsideCustodyPassword },
       })).rejects.toThrow("Database privilege setup could not be confirmed; inspect the database before retrying.");
     } finally { operator.release(); }
   });

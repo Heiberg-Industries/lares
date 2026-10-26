@@ -14,7 +14,7 @@ function awaits(node: ts.Node | undefined, names: Set<string>): boolean {
   if (ts.isAwaitExpression(node) && ts.isCallExpression(node.expression) && ts.isIdentifier(node.expression.expression) && names.has(node.expression.expression.text)) return true;
   let found = false; node.forEachChild(child => { if (awaits(child, names)) found = true; }); return found;
 }
-const guards = new Set(["verify", "requireConsolePage", "requireConsoleMember", "requireMember", "credentialActor", "sessionMember"]);
+const guards = new Set(["verify", "requireConsolePage", "requireConsoleMember", "requireMember", "credentialActor", "sessionMember", "admitted"]);
 function localGuards(source: ts.SourceFile) {
   const result = new Set(guards);
   for (const fn of functions(source)) {

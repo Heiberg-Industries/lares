@@ -611,7 +611,8 @@ except Exception:
 PYAPP
 ) || die 'Keeper configuration has no explicit application database credential.' "$EX_REFUSED"
 ENGINE_FINANCIAL_PASSWORD_FILE="$(P /etc/lares/secrets/financial-database-password)"
-for credential_file in "$ENGINE_APP_PASSWORD_FILE" "$ENGINE_FINANCIAL_PASSWORD_FILE"; do
+ENGINE_OUTSIDE_CUSTODY_PASSWORD_FILE="$(P /etc/lares/secrets/outside-custody-database-password)"
+for credential_file in "$ENGINE_APP_PASSWORD_FILE" "$ENGINE_FINANCIAL_PASSWORD_FILE" "$ENGINE_OUTSIDE_CUSTODY_PASSWORD_FILE"; do
   [ -f "$credential_file" ] && [ ! -L "$credential_file" ] \
     && [ -s "$credential_file" ] \
     && [ "$(stat -c '%u:%g:%a' "$credential_file" 2>/dev/null || true)" = 0:10001:440 ] \
@@ -976,6 +977,7 @@ else
     pnpm -C "$BOX_DIR" exec tsx bin/database-setup.ts --verify-restored-engine \
     --operator-password-file "$OPERATOR_PASSWORD_FILE" --app-password-file "$ENGINE_APP_PASSWORD_FILE" \
     --financial-password-file "$ENGINE_FINANCIAL_PASSWORD_FILE" \
+    --outside-custody-password-file "$ENGINE_OUTSIDE_CUSTODY_PASSWORD_FILE" \
     || midway 'Restored engine ownership or database grants do not match the required role boundary.'
 fi
 

@@ -100,6 +100,7 @@ describe("staged gateway authority transaction", () => {
     "LARES_GATEWAY_MASTER_KEY_FILE=/srv/lares/etc/lares/secrets/gateway-master-key",
     "LARES_EVE_ROUTE_PASSWORD_FILE=/srv/lares/etc/lares/secrets/eve-route-password",
     "LARES_VAULT_SIGNING_KEY_FILE=/srv/lares/etc/lares/secrets/console-vault-signing-key",
+    "LARES_OUTSIDE_CUSTODY_PASSWORD_FILE=/srv/lares/etc/lares/secrets/outside-custody-database-password",
     "LARES_SOCKET_DIR=/srv/lares/run/lares", "LARES_HOST_SOCKET_DIR=/srv/lares/run/lares-host",
     "LARES_EGRESS_DIR=/srv/lares/srv/lares/egress", "LARES_PROXY_ADDRESS=172.29.0.2", "LARES_NETWORK=lares",
   ].join("\n") + "\n";

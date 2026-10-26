@@ -574,12 +574,13 @@ _engine_restore_client_run() { # kind, operation, image, user, repeated --mount 
         [ "${node_args[3]}" = /app/services/box/migrate.ts ] &&
         [ "${node_args[4]}" = --schema-owner ] || return 78 ;;
     keeper:verify-restored-engine)
-      [ "$user" = 0:0 ] && [ "${#node_args[@]}" -eq 11 ] &&
+      [ "$user" = 0:0 ] && [ "${#node_args[@]}" -eq 13 ] &&
         [ "${node_args[3]}" = /app/services/box/bin/database-setup.ts ] &&
         [ "${node_args[4]}" = --verify-restored-engine ] &&
         [ "${node_args[5]}" = --operator-password-file ] && [ "${node_args[6]}" = /etc/lares/operator/database-password ] &&
         [ "${node_args[7]}" = --app-password-file ] && [ "${node_args[8]}" = /etc/lares/secrets/database-password ] &&
-        [ "${node_args[9]}" = --financial-password-file ] && [ "${node_args[10]}" = /etc/lares/secrets/financial-database-password ] || return 78 ;;
+        [ "${node_args[9]}" = --financial-password-file ] && [ "${node_args[10]}" = /etc/lares/secrets/financial-database-password ] &&
+        [ "${node_args[11]}" = --outside-custody-password-file ] && [ "${node_args[12]}" = /etc/lares/secrets/outside-custody-database-password ] || return 78 ;;
     keeper:workflow-database)
       [ "$user" = 0:0 ] && [ "${#node_args[@]}" -eq 13 ] &&
         [ "${node_args[3]}" = /app/services/box/bin/workflow-template.ts ] &&
@@ -668,6 +669,7 @@ _engine_restore_client_run() { # kind, operation, image, user, repeated --mount 
 engine_restore_keeper_client() { # fixed operation only; caller supplies only the workflow database and port for that operation
   local operation="$1" host_operator='/etc/lares/operator/database-password' host_config='/etc/lares/keeper.json'
   local host_app='/etc/lares/secrets/database-password' host_financial='/etc/lares/secrets/financial-database-password'
+  local host_outside_custody='/etc/lares/secrets/outside-custody-database-password'
   local host_workflow='/etc/lares/secrets/workflow-database-password' workflow_host workflow_container host_socket="" database port
   local -a mounts=() environment=() argv=() client_args=()
   case "$operation" in
@@ -721,16 +723,19 @@ PYSOCKET
       ;;
     verify-restored-engine)
       [ "$#" -eq 1 ] && [ "${OPERATOR_PASSWORD_FILE:-}" = "$(P "$host_operator")" ] && \
-        [ "${ENGINE_APP_PASSWORD_FILE:-}" = "$(P "$host_app")" ] && [ "${ENGINE_FINANCIAL_PASSWORD_FILE:-}" = "$(P "$host_financial")" ] || return 78
+        [ "${ENGINE_APP_PASSWORD_FILE:-}" = "$(P "$host_app")" ] && [ "${ENGINE_FINANCIAL_PASSWORD_FILE:-}" = "$(P "$host_financial")" ] && \
+        [ "${ENGINE_OUTSIDE_CUSTODY_PASSWORD_FILE:-}" = "$(P "$host_outside_custody")" ] || return 78
       port="${PGPORT:-5432}"
       [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 78
       mounts+=(--mount "type=bind,src=$OPERATOR_PASSWORD_FILE,dst=$host_operator,readonly" \
         --mount "type=bind,src=$ENGINE_APP_PASSWORD_FILE,dst=$host_app,readonly" \
-        --mount "type=bind,src=$ENGINE_FINANCIAL_PASSWORD_FILE,dst=$host_financial,readonly")
+        --mount "type=bind,src=$ENGINE_FINANCIAL_PASSWORD_FILE,dst=$host_financial,readonly" \
+        --mount "type=bind,src=$ENGINE_OUTSIDE_CUSTODY_PASSWORD_FILE,dst=$host_outside_custody,readonly")
       environment+=(--env "DATABASE_PASSWORD_FILE=$host_operator" --env "LARES_OPERATOR_PASSWORD_FILE=$host_operator" \
         --env PGHOST=127.0.0.1 --env "PGPORT=$port" --env PGDATABASE=lares_state --env PGUSER=lares_operator)
       argv=(node --import tsx/esm /app/services/box/bin/database-setup.ts --verify-restored-engine \
-        --operator-password-file "$host_operator" --app-password-file "$host_app" --financial-password-file "$host_financial")
+        --operator-password-file "$host_operator" --app-password-file "$host_app" --financial-password-file "$host_financial" \
+        --outside-custody-password-file "$host_outside_custody")
       ;;
     workflow-database)
       [ "$#" -eq 3 ] || return 78

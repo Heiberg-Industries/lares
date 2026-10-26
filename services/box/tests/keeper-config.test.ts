@@ -268,6 +268,15 @@ describe("the generated keeper configuration", () => {
     expect(config.lifecycle!.runtime.workflowPasswordFile).toBe("/etc/lares/secrets/workflow-password");
   });
 
+  it("loads outside custody settings while preserving the installer's intentional app/runtime password path",()=>{
+    const outside={db:{host:'db',port:5432,database:'lares_state',user:'lares_outside_custody',passwordFile:'/etc/lares/secrets/outside-custody-database-password'},
+      keyFile:'/var/lib/lares/outside-custody/key',keyFingerprint:'a'.repeat(64),routeConsumerName:'outside-bridge'} as const;
+    const consumer={name:'outside-bridge',address:'172.30.0.10',hosts:['api.example.invalid']};
+    const config=renderKeeperConfig(MANIFEST,{...OPTS,previousOutsideCustody:outside,previousOutsideRouteConsumer:consumer});
+    expect(config.db.passwordFile).toBe(config.lifecycle!.runtime.passwordFile);
+    expect(loadAsKeeperWould(config).outsideCustody).toEqual(outside);
+  });
+
   it("writes the agents' compose file inside the one directory the keeper container mounts", () => {
     const config = renderKeeperConfig(MANIFEST, OPTS);
     // `compose.lares-keeper.yaml` mounts ${LARES_ROOT} at the SAME absolute path and nothing
