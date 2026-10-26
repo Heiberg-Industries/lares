@@ -23,8 +23,6 @@
  */
 import { z } from "zod";
 
-import { crmBrandIds } from "./crm-brands.js";
-
 /** Person.commState — the outreach state machine. */
 export const COMM_STATES = [
   "NEVER_CONTACTED",
@@ -33,17 +31,6 @@ export const COMM_STATES = [
   "REPLIED_NEGATIVE",
   "BOUNCED",
   "DO_NOT_CONTACT",
-] as const;
-
-/** Opportunity.stage — the pipeline. A trial that starts on its own can enter at QUALIFIED. */
-export const OPPORTUNITY_STAGES = [
-  "NEW",
-  "CONTACTED",
-  "MEETING",
-  "QUALIFIED",
-  "PROPOSAL",
-  "CUSTOMER",
-  "LOST",
 ] as const;
 
 /**
@@ -68,25 +55,10 @@ function twentyEnum<const T extends readonly [string, ...string[]]>(members: T) 
 }
 
 export const commStateSchema = twentyEnum(COMM_STATES);
-export const opportunityStageSchema = twentyEnum(OPPORTUNITY_STAGES);
+/** Opportunity steps are loaded from Twenty metadata at execution time. */
+export const opportunityStageSchema = z.string().min(1);
 /**
- * Opportunity.brand — the per-brand pipeline tag. The members are installation data
- * (`CRM_BRANDS`, lib/crm-brands.ts), so unlike the two enums above they cannot be baked into the
- * emitted JSON Schema: that is built when the image is, long before any installation exists.
- * The value is upper-cased on the way in and checked against the configured brands at parse
- * time, so a wrong brand is still a tool-call validation error the model can correct before a
- * card is drawn. With no brands configured the value is passed through for the CRM to judge.
+ * Opportunity.brand — Twenty's exact value for an existing track. Values are loaded from live
+ * metadata at execution time; the gated executor validates the exact value before making a write.
  */
-export const opportunityBrandSchema = z.preprocess(
-  (v) => (typeof v === "string" ? v.trim().toUpperCase() : v),
-  z
-    .string()
-    .min(1)
-    .describe("The brand this opportunity belongs to, as configured for this installation's CRM")
-    .superRefine((value, ctx) => {
-      const ids = crmBrandIds();
-      if (ids.length > 0 && !ids.includes(value)) {
-        ctx.addIssue({ code: "custom", message: `brand must be one of: ${ids.join(", ")}` });
-      }
-    }),
-);
+export const opportunityBrandSchema = z.string().min(1).describe("The exact value of an existing track in the connected Twenty CRM");

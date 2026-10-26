@@ -25,7 +25,7 @@
  */
 
 import type { RouteBrand, RouteStage, RouteDecision, RouteActivity, OpenOpportunity } from "./route-classify.js";
-import { VALID_STAGES } from "./route-classify.js";
+import type { Track } from "@lares/agent-kit/tracks";
 import { TwentyRateLimitedError } from "./twenty-client.js";
 
 // ─── Policy constants ─────────────────────────────────────────────────────────
@@ -57,6 +57,8 @@ export interface RouteProposal {
   opportunityId: string | null;
   brand: RouteBrand;
   stage: RouteStage;
+  /** Other workflow options captured from Twenty metadata for the owner-facing clarification prompt. */
+  availableTracks: readonly Pick<Track, "id" | "name">[];
   action: "move" | "create";
   confidence: number;
   reasoning: string;
@@ -72,6 +74,7 @@ export interface RouteProposal {
 // ─── Structural dep types (only the methods used — keeps the engine testable) ─
 
 interface TwentyDep {
+  listTracks(): Promise<Track[]>;
   listRecentMessageParticipants(sinceIso: string): Promise<Array<{
     personId: string | null;
     messageId: string;
@@ -93,7 +96,7 @@ interface TwentyDep {
 }
 
 interface ClassifierDep {
-  classify(input: { activity: RouteActivity[]; openOpportunities: OpenOpportunity[] }): Promise<RouteDecision>;
+  classify(input: { activity: RouteActivity[]; openOpportunities: OpenOpportunity[]; tracks: readonly Track[] }): Promise<RouteDecision>;
 }
 
 interface StoreDep {
@@ -175,6 +178,11 @@ export function makeRouteEngine(deps: {
         const d = new Date(clock().getTime() - 24 * 60 * 60 * 1000);
         return d.toISOString();
       })();
+
+      // Track definitions and step order come from Twenty metadata on every scan (briefly cached
+      // by the adapter). Missing/stale owner closure annotations fail closed in listTracks().
+      const tracks = await twenty.listTracks();
+      if (tracks.length === 0) return { proposals: [], deferredReason: null };
 
       // 2. Pull recent participants from both channels
       let rawMsg: Awaited<ReturnType<TwentyDep["listRecentMessageParticipants"]>>;
@@ -287,7 +295,7 @@ export function makeRouteEngine(deps: {
           const openOpportunities: OpenOpportunity[] = await twenty.listOpportunitiesForPerson(personId);
 
           // c. Classify
-          const decision: RouteDecision = await classifier.classify({ activity, openOpportunities });
+          const decision: RouteDecision = await classifier.classify({ activity, openOpportunities, tracks });
 
           // Skip if classifier says do nothing, or didn't resolve brand/stage
           if (decision.action === "none" || decision.brand === null || decision.stage === null) {
@@ -317,6 +325,8 @@ export function makeRouteEngine(deps: {
             continue;
           }
 
+          const selectedTrack = tracks.find((track) => track.id === decision.brand);
+          if (!selectedTrack || !selectedTrack.steps.includes(decision.stage)) continue;
           const matchingOpp = openOpportunities.find((o) => o.brand === decision.brand);
           const action: "move" | "create" = matchingOpp ? "move" : "create";
           const opportunityId: string | null = matchingOpp?.id ?? null;
@@ -325,9 +335,9 @@ export function makeRouteEngine(deps: {
           // from the activity ("a reply on the thread") and can name an EARLIER stage; applying
           // that would quietly lose the qualification (Ledgerly: QUALIFIED → CONTACTED).
           if (matchingOpp) {
-            const current = (VALID_STAGES as readonly string[]).indexOf(matchingOpp.stage);
-            const proposed = (VALID_STAGES as readonly string[]).indexOf(decision.stage);
-            if (current >= 0 && proposed <= current) continue;
+            const current = selectedTrack.steps.indexOf(matchingOpp.stage);
+            const proposed = selectedTrack.steps.indexOf(decision.stage);
+            if (current < 0 || proposed <= current || selectedTrack.closingSteps.includes(matchingOpp.stage)) continue;
           }
 
           // g. Apply mode policy
@@ -345,6 +355,7 @@ export function makeRouteEngine(deps: {
             opportunityId,
             brand: decision.brand,
             stage: decision.stage,
+            availableTracks: tracks.map(({ id, name }) => ({ id, name })),
             action,
             confidence: decision.confidence,
             reasoning: decision.reasoning,

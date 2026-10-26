@@ -2,7 +2,7 @@
  * CRM routing — 09/13/17 on the owner's clock by default; a per-installation setting
  * (`packages/agent-kit/src/schedule-settings.ts`'s `crm-routing` key). Scans
  * Twenty for contacts with new
- * meetings/emails since the last scan, classifies which brand pipeline + stage they belong
+ * meetings/emails since the last scan, classifies which workflow track + step they belong
  * in, and — per newly-proposed signal — sends a Slack session-start prompt instructing the
  * resumed session to call the already-gated `twenty_create_opportunity`/`twenty_set_stage`
  * tool. Those tools are `approval: always`, so calling one immediately renders
@@ -49,7 +49,6 @@ import { scheduleHours } from "../../lib/schedule-hours.js";
 import { configuredOwnerId, listAliases, listOrgDomains } from "../../lib/identity-client.js";
 import { ensureRouteTables, makeRouteStore, type RouteProposalInput } from "../../lib/route-store.js";
 import { makeRouteTwentyClient } from "../../lib/route-twenty.js";
-import { crmBrandIds } from "../../lib/crm-brands.js";
 import { makeRouteClassifier } from "../../lib/route-classify.js";
 import { makeRouteEngine, type RouteProposal, type ScanResult } from "../../lib/route-engine.js";
 import { gatewayComplete } from "../../lib/llm-complete.js";
@@ -81,17 +80,20 @@ export function dueRouteSlot(now: Date, tz: string, hours: number[]): string | n
  *  gated tool call renders the approval card. Pure — one proposal in, one prompt out. */
 export function buildRouteProposalPrompt(p: RouteProposal): string {
   const actionLabel = p.action === "create" ? "create a NEW opportunity" : "move the EXISTING opportunity";
+  const otherTracks = p.availableTracks
+    .filter((track) => track.id !== p.brand)
+    .map((track) => track.name === track.id ? track.id : `${track.id} (${track.name})`);
+  const otherTrackList = otherTracks.length > 0 ? otherTracks.join(", ") : "none";
   const toolLine = p.action === "create"
     ? `Then call twenty_create_opportunity with { name: "${p.brand} — ${p.personName}", stage: "${p.stage}", brand: "${p.brand}", pointOfContactId: "${p.personId}" }.`
     : `Then call twenty_set_stage with { opportunityId: "${p.opportunityId}", stage: "${p.stage}" }.`;
 
-  const brandList = crmBrandIds().join(", ");
   return [
     "[scheduled check — CRM routing. This is not a message from a person; it is your cue to",
     "propose a pipeline move based on recent activity.]",
     "",
     `New signal for ${p.personName} <${p.personHandle}> (CRM person ${p.personId}):`,
-    `- Brand: ${p.brand}`,
+    `- Track: ${p.brand}`,
     `- Proposed stage: ${p.stage}`,
     `- Action: ${actionLabel}`,
     `- Confidence: ${Math.round(p.confidence * 100)}%`,
@@ -109,9 +111,9 @@ export function buildRouteProposalPrompt(p: RouteProposal): string {
     "",
     "If the activity above does not actually support this move, do not call the tool, and keep it to",
     "one line — no analysis, no bullets, no offers to draft or look things up:",
-    `- If another configured brand plausibly fits (${brandList}), ask ONE short question naming the`,
-    '  candidate brands, e.g. "Is this about A or B, or something else — tell me which?".',
-    "  A project may deliberately not be a CRM brand, so always leave room for something else.",
+    `- If another live track plausibly fits (${otherTrackList}), ask ONE short question naming the candidate tracks,`,
+    `  e.g. "Is this about ${otherTracks.join(" or ") || "another track"}, or something else — tell me which?".`,
+    "  Leave room for a signal that does not fit any track.",
     "- Otherwise reply with at most ONE short sentence saying so and stop.",
     "The owner reads these every morning; a decline should cost one line.",
   ].join("\n");

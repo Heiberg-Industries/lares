@@ -64,6 +64,13 @@ let server: Server | undefined;
 let keyDir: string;
 let requests: Recorded[];
 
+const TRACK_METADATA = { data: { fields: [
+  { name: "brand", objectMetadata: { nameSingular: "opportunity" }, options: [{ id: "b1", value: "project-a", label: "Project A", position: 0 }] },
+  { name: "stage", objectMetadata: { nameSingular: "opportunity" }, options: [
+    { id: "s1", value: "NEW", label: "New", position: 0 }, { id: "s2", value: "WON", label: "Won", position: 1 },
+  ] },
+] } };
+
 /** A stub Twenty that records every request it receives and answers with `responses`,
  *  consumed in call order. A request past the end of the list gets a harmless 200/{} —
  *  tests that care about call count assert `requests.length` directly rather than relying
@@ -105,6 +112,7 @@ beforeEach(() => {
   process.env["TWENTY_KEY_FILE"] = join(keyDir, "twenty-key");
   process.env["SLACK_ALLOWED_USER_IDS"] = OWNER_SLACK_ID;
   process.env["TELEGRAM_PRINCIPAL_ID"] = TELEGRAM_OWNER;
+  process.env["CRM_BRANDS"] = JSON.stringify([{ id: "project-a", description: "test track", closingSteps: ["WON"] }]);
 });
 
 afterEach(async () => {
@@ -112,6 +120,7 @@ afterEach(async () => {
   delete process.env["TWENTY_KEY_FILE"];
   delete process.env["SLACK_ALLOWED_USER_IDS"];
   delete process.env["TELEGRAM_PRINCIPAL_ID"];
+  delete process.env["CRM_BRANDS"];
   rmSync(keyDir, { recursive: true, force: true });
   if (server) {
     await new Promise<void>((resolve) => server!.close(() => resolve()));
@@ -520,10 +529,18 @@ describe("twenty_set_stage", () => {
   });
 
   it("on a valid approver, PATCHes the opportunity's stage", async () => {
-    await listen([{ status: 200, body: { data: { opportunity: { id: "opp1", stage: "won" } } } }]);
-    const result = await twentySetStage.execute({ opportunityId: "opp1", stage: "won" }, ctx(slackAuth(OWNER_SLACK_ID)));
+    await listen([
+      { status: 200, body: { data: { opportunity: { id: "opp1", brand: "project-a", stage: "NEW" } } } },
+      { status: 200, body: TRACK_METADATA },
+      { status: 200, body: { data: { opportunity: { id: "opp1", stage: "WON" } } } },
+    ]);
+    const result = await twentySetStage.execute({ opportunityId: "opp1", stage: "WON" }, ctx(slackAuth(OWNER_SLACK_ID)));
     expect(result).toEqual({ ok: true });
-    expect(requests).toEqual([{ method: "PATCH", url: "/rest/opportunities/opp1", body: { stage: "won" } }]);
+    expect(requests).toEqual([
+      { method: "GET", url: "/rest/opportunities/opp1", body: undefined },
+      { method: "GET", url: "/rest/metadata/fields", body: undefined },
+      { method: "PATCH", url: "/rest/opportunities/opp1", body: { stage: "WON" } },
+    ]);
   });
 });
 
@@ -545,22 +562,31 @@ describe("twenty_create_opportunity", () => {
   });
 
   it("on a valid approver, POSTs the opportunity and returns its id", async () => {
-    await listen([{ status: 200, body: { data: { opportunity: { id: "opp2" } } } }]);
+    await listen([
+      { status: 200, body: TRACK_METADATA },
+      { status: 200, body: { data: { opportunity: { id: "opp2" } } } },
+    ]);
     const result = await twentyCreateOpportunity.execute(
-      { name: "Deal", stage: "new", brand: "project-a" },
+      { name: "Deal", stage: "NEW", brand: "project-a" },
       ctx(slackAuth(OWNER_SLACK_ID)),
     );
     expect(result).toEqual({ id: "opp2" });
-    expect(requests).toEqual([{ method: "POST", url: "/rest/opportunities", body: { name: "Deal", stage: "new", brand: "project-a" } }]);
+    expect(requests).toEqual([
+      { method: "GET", url: "/rest/metadata/fields", body: undefined },
+      { method: "POST", url: "/rest/opportunities", body: { name: "Deal", stage: "NEW", brand: "project-a" } },
+    ]);
   });
 
   it("includes pointOfContactId in the body only when given", async () => {
-    await listen([{ status: 200, body: { data: { opportunity: { id: "opp3" } } } }]);
+    await listen([
+      { status: 200, body: TRACK_METADATA },
+      { status: 200, body: { data: { opportunity: { id: "opp3" } } } },
+    ]);
     await twentyCreateOpportunity.execute(
-      { name: "Deal", stage: "new", brand: "project-a", pointOfContactId: "p1" },
+      { name: "Deal", stage: "NEW", brand: "project-a", pointOfContactId: "p1" },
       ctx(slackAuth(OWNER_SLACK_ID)),
     );
-    expect(requests[0]!.body).toEqual({ name: "Deal", stage: "new", brand: "project-a", pointOfContactId: "p1" });
+    expect(requests[1]!.body).toEqual({ name: "Deal", stage: "NEW", brand: "project-a", pointOfContactId: "p1" });
   });
 });
 

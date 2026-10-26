@@ -1,0 +1,5 @@
+# Honest entry: synthetic contract tests exist; the committed probe is owner-run and has not
+# been run in this change. Dynamic outbound hosts are supplied by TWENTY_BASE_URL and enforced
+# by Keeper's existing endpoint binding.
+tier: none
+rules: {}

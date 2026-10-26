@@ -32,6 +32,14 @@ describe("the settings list", () => {
     }
   });
 
+  it("documents Twenty track annotations as metadata-bound and fail closed", () => {
+    const setting = settingByName("CRM_BRANDS")!;
+    expect(setting.breaksWithout).toContain("EXACT_TRACK_OPTION_VALUE");
+    expect(setting.breaksWithout).toContain("EXACT_STAGE_OPTION_VALUE");
+    expect(setting.breaksWithout).toMatch(/never create tracks or steps/i);
+    expect(setting.breaksWithout).toMatch(/exactly match a current Twenty stage option/i);
+  });
+
   it("marks the value as secret, never the path", () => {
     expect(settingByName("GATEWAY_KEY_FILE")!.secret).toBe(false);
     expect(settingByName("CONSOLE_SESSION_SECRET")!.secret).toBe(true);

@@ -4,10 +4,10 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-import { twentyPatch } from "../lib/twenty-client.js";
 import { assertApproval } from "../lib/approvals.js";
 import { opportunityStageSchema } from "../lib/twenty-enums.js";
 import { approvalFor } from "../lib/board.js";
+import { TwentyTracksHome } from "../lib/twenty-tracks.js";
 
 export default defineTool({
   description: "Move an opportunity to a pipeline stage (tick-initiated; requires tapping Approve on the card)",
@@ -16,7 +16,7 @@ export default defineTool({
   async execute(input, ctx) {
     await assertApproval(ctx, "twenty_set_stage", input);
     const { opportunityId, stage } = input;
-    await twentyPatch(`/opportunities/${opportunityId}`, { stage });
+    await new TwentyTracksHome().setOpportunityStage(opportunityId, stage);
     return { ok: true } as const;
   },
 });
