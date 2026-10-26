@@ -12,8 +12,8 @@ they fit together (see Context).
 1. Lares had grown several separate ways of talking to Notion and Slack, and of signing a person into Google — each copy solving the same small problems (retries, rate
    limits, refreshing a token) slightly differently.
 2. This decision says: one official software library per vendor, written once, used everywhere.
-3. For the handful of things every installation needs — a mailbox, a calendar, bookkeeping, a
-   CRM — Lares writes its own small, typed connector rather than leaning on a general-purpose
+3. For the handful of things every installation needs — a mailbox, a calendar, bookkeeping,
+   and Tracks — Lares writes its own small, typed connector rather than leaning on a general-purpose
    tool-calling protocol (MCP) that the model has to interpret at run time.
 4. A new "manifest" file describes each integration once — what it touches, which countries it
    works in, which outside addresses it calls, which secrets it needs — and a checker writes the
@@ -71,7 +71,7 @@ capability** for the concepts the core needs to reason about precisely (a write 
 capability the ratchet can gate; a read-only MCP wrapper cannot express that). This ADR states
 explicitly what was implicit: provenance and quality tier are two separate axes. A private
 integration can be MCP and still meet the quality bar for its owner's own use; a *core* concept
-(mailbox, calendar, accounting, CRM) is always a typed adapter, whatever its provenance, because
+(mailbox, calendar, accounting, Tracks) is always a typed adapter, whatever its provenance, because
 the ratchet and the approval cards need to know exactly what a write does.
 
 ## Decision
@@ -86,7 +86,7 @@ the ratchet and the approval cards need to know exactly what a write does.
 4. **Owner-supplied OAuth client; no vendor in the sign-in path.** The owner pastes their own
    client id/secret into the console; Lares never operates a central account-linking service on
    the owner's behalf.
-5. **Typed adapters, never MCP, for the core concepts:** mailbox, calendar, accounting, CRM.
+5. **Typed adapters, never MCP, for the core concepts:** mailbox, calendar, accounting, Tracks.
    These are the concepts the ratchet and approval cards reason about; an adapter's write calls
    are named, typed and gated the way `accounting`'s contract already is
    (`accounting.inbox_submit`, `accounting.record_purchase`, etc. — deliberately no
@@ -126,7 +126,7 @@ the ratchet and the approval cards need to know exactly what a write does.
 | Field | Purpose |
 | --- | --- |
 | `name` | folder name = integration id |
-| `concept` | the neutral Lares contract it implements, if any (`mailbox`, `calendar`, `accounting`, `crm`) — absent for a vendor-specific integration with no shared contract |
+| `concept` | the neutral Lares contract it implements, if any (`mailbox`, `calendar`, `accounting`, `tracks`) — absent for a vendor-specific integration with no shared contract |
 | `capability` | the capability id(s) it backs, matching `packages/agent-kit/src/persona/capability-docs.ts` |
 | `region` | ISO 3166-1 alpha-3 countries + reason, or `"global"` — the existing `AdapterRegion` shape, unchanged |
 | `data_path` | `self_hosted \| eu_cloud \| non_eu_cloud \| owner_chosen` — where the vendor actually processes data |
@@ -171,10 +171,18 @@ All four become derived output; none is hand-edited once the manifest exists.
 ## Open questions
 
 - The exact schema and CLI for the manifest scaffold (`pnpm lares:integration new`, a borrowed shape) — a build decision, not this ADR.
-- Whether the six-point checklist's "contract tests" need a formal neutral contract for `crm`
-  the way `accounting` already has one — `crm` has no contract document.
+- The typed Tracks contract is defined by ADR-0024. Its implementation and contract tests
+  belong to the Tracks build slices, not this decision record.
 
 ## Cross-references
 
 - ADR-0015 (agents are definitions), ADR-0016 (eve)
+- ADR-0024 §§2–5 (Tracks contract, homes and routing)
 - Research on Home Assistant/n8n (the manifest-generates-registry pattern) and on the Microsoft/Google hosted MCP servers
+
+## Amendment 2026-10-26 — Tracks replaces CRM as the core workflow concept
+
+ADR-0024 amends rule 5 and resolves the open question about a neutral CRM contract. Tracks is
+the typed core concept for owner-defined workflows. A Vault home is available by default; a
+typed CRM adapter or owner-supplied MCP mapping is optional. This terminology does not change
+ADR-0023's authority, audience or approval requirements.

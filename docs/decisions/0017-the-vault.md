@@ -71,6 +71,9 @@ fact is an assertion nobody can check" ("Where the line should sit"). Other memo
      field). `standing_facts` and `dream_preferences` (`services/chief-of-staff/lib/dream/store.ts`) already carry
      most of this shape (`stated_at`/`retired_at`, `valid_from`/`valid_to`/`superseded_by`) and
      are extended to the full column set rather than replaced.
+   - **Track items are an exception.** A Vault track's dated workflow items are Markdown truth
+     in that track's home, with Git history recording changes (ADR-0024). They do not replace
+     the canonical profile of a person or organisation referenced by an item.
    - Large imported archives (a mailbox, an imported message history) → an append-only,
      searchable record, never memory and never bulk-extracted into notes.
    - Indexes, embeddings, summaries → rebuildable from the store they were built from, never
@@ -183,6 +186,7 @@ area-scoped grants make a separate mount unnecessary.
 | Kind of knowledge | Writable home | How the owner sees it | How it is exported |
 |---|---|---|---|
 | Prose, notes, decisions, thinking | Markdown in `private/`/`shared/`, git | Obsidian, console note view | git clone; nightly one-way markdown export |
+| Vault track workflow state | Markdown track and item files under `shared/tracks/`, git (ADR-0024) | Obsidian or an owner-facing view | Git history |
 | Taste (places, tracks, dishes, playlists) | Markdown in `taste/`, OKF-typed (`packages/taste/src/index.ts`) | Console Taste page, Obsidian | Same as above |
 | Dated facts, standing preferences | Postgres tables (`standing_facts`, `dream_preferences`) with `valid_from`/`valid_to`/`recorded_at`/`source`/`superseded_by`/`origin` | Console Facts page, "why did you say that?" lookup | Nightly one-way export to markdown/CSV |
 | People, relationships | Postgres tables (existing identity/network stores) | Console People page | Same |
@@ -194,6 +198,7 @@ area-scoped grants make a separate mount unnecessary.
 ## Cross-references
 
 - ADR-0010 — amended by this decision; its §2–§7 authority rules stand.
+- ADR-0024 — defines Tracks and the Vault track-item exception to rule 2 above.
 - ADR-0018 — the dreaming and per-session-core rules this ADR's rule 4 depends on.
 - The origin model — the `lares_origin` field this ADR's rule 3 introduces into frontmatter.
 - Research on database-first memory — the shelf model and reversal conditions this ADR
@@ -205,3 +210,11 @@ area-scoped grants make a separate mount unnecessary.
 An organisation has one shared agent, typically in Slack, with read and write access to the shared area. Which agent that is stays the installation's choice and is expressed only through the agents' `vault` grants; the default is the chief of staff. Each member has one or more personal agents with their own private area. Personal agents read the shared area and write there only where a grant says so. This changes no existing rule above; it states how the grants in rule 1 above are used for an organisation.
 
 Articles are OKF notes of type `article`. They sit in `shared/articles/` when they come from an organisation source (filed by the shared agent) and in the member's `private/<member>/articles/` when they come from that member's own source; a link pasted in chat goes where that agent files: the shared area for the shared agent, the member's private area for a personal agent. The engine's default article area is shared, and an installation whose shared area is not writable for the filing agent sets it to private. The reading state lives in a `reading:` key (`to-read | read | used | dropped | suggested`), because OKF v0.2 §5.4 reserves `status` for the document's lifecycle, which rule 3 above adopts. The full extracted text sits in a `<slug>.txt` companion beside the note. It is never searched and is outside the OKF type check, so it cannot crowd out recall or fail conformance. On a shared article the reading state is one value for the organisation; per-member reading state is an open question to settle before a second member uses articles. Setting the article area to shared is a standing approval for the digest to file articles into the shared area's `articles/` folder without a confirmation per write; the agent must still hold a vault grant that names the shared area.
+
+## Amendment 2026-10-26 — Vault tracks are dated workflow records
+
+ADR-0024 amends rule 2. A Vault track's items are dated working records whose Markdown files
+are the truth and whose changes are recorded in Git. This is an exception to the general
+table rule for dated records. The exception covers only track membership, step, date, note and
+source signal; it does not make the item's person or organisation profile a Vault track
+record.
