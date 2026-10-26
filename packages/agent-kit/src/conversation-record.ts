@@ -25,12 +25,19 @@ export interface ConversationEntry {
   door: string; // "slack" | "telegram" | … — whatever the door reports
   /** Who this entry belongs to, for export and erase. The canonical user id, never a channel address. */
   personKey: string;
+  /** Verified singleton recipient captured at write time. Null on legacy or wider-audience rows. */
+  audienceMemberId: string | null;
+  /** Stable, private destination key (never a raw conversation transcript or credential). */
+  audienceAddress: string | null;
+  /** Access revision captured when this private audience was admitted. */
+  audienceAccessRevision: number | null;
   /** The scheduled lane, or null when a human spoke. Kept as a column, not inferred from origin. */
   lane: string | null;
   origin: Origin;
   input: string;
   reply: string;
   proposals: string[];
+  approvalRequestId: string | null;
   at: Date;
   recordedAt: Date;
 }
@@ -41,15 +48,19 @@ export interface NewConversationEntry {
   turnId: string;
   door: string;
   personKey: string;
+  audienceMemberId?: string | null;
+  audienceAddress?: string | null;
+  audienceAccessRevision?: number | null;
   lane?: string | null;
   origin: Origin;
   input: string;
   reply: string;
   proposals: string[];
+  approvalRequestId?: string | null;
   at: Date;
 }
 
-const ROW_COLUMNS = "id, agent, session_id, turn_id, door, person_key, lane, origin, input, reply, proposals, at, recorded_at";
+const ROW_COLUMNS = "id, agent, session_id, turn_id, door, person_key, audience_member_id, audience_address, audience_access_revision, lane, origin, input, reply, proposals, approval_request_id, at, recorded_at";
 
 interface ConversationEntryRow {
   id: string;
@@ -58,11 +69,15 @@ interface ConversationEntryRow {
   turn_id: string;
   door: string;
   person_key: string;
+  audience_member_id: string | null;
+  audience_address: string | null;
+  audience_access_revision: string | number | null;
   lane: string | null;
   origin: string;
   input: string;
   reply: string;
   proposals: string[];
+  approval_request_id: string | null;
   at: Date;
   recorded_at: Date;
 }
@@ -80,11 +95,15 @@ function toEntry(row: ConversationEntryRow): ConversationEntry {
     turnId: row.turn_id,
     door: row.door,
     personKey: row.person_key,
+    audienceMemberId: row.audience_member_id,
+    audienceAddress: row.audience_address,
+    audienceAccessRevision: row.audience_access_revision === null ? null : Number(row.audience_access_revision),
     lane: row.lane,
     origin: row.origin,
     input: row.input,
     reply: row.reply,
     proposals: row.proposals,
+    approvalRequestId: row.approval_request_id,
     at: row.at,
     recordedAt: row.recorded_at,
   };
@@ -290,9 +309,10 @@ export async function pruneForOwner(
   return { outcome: "pruned", deleted, deletedReads, cutoff, batchLimited: deleted >= limit };
 }
 
-export function makeConversationRecord(db: Pool): {
+export function makeConversationRecord(db: Pick<Pool, "query">): {
   append(e: NewConversationEntry): Promise<ConversationEntry>;
   since(opts: { agent: string; since: Date; excludeLanes?: boolean; limit?: number }): Promise<ConversationEntry[]>;
+  forAudience(opts: { agent: string; memberId: string; address: string; door: string; accessRevision: number; since: Date; limit?: number }): Promise<ConversationEntry[]>;
   forPerson(personKey: string): Promise<ConversationEntry[]>;
   pruneBefore(before: Date): Promise<number>;
 } {
@@ -301,10 +321,10 @@ export function makeConversationRecord(db: Pool): {
      *  a correction is an entry, never an edit (ADR-0020 operational rules). */
     async append(e: NewConversationEntry): Promise<ConversationEntry> {
       const { rows } = await db.query<ConversationEntryRow>(
-        `INSERT INTO conversation_entries (agent, session_id, turn_id, door, person_key, lane, origin, input, reply, proposals, at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `INSERT INTO conversation_entries (agent, session_id, turn_id, door, person_key, audience_member_id, audience_address, audience_access_revision, lane, origin, input, reply, proposals, approval_request_id, at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          RETURNING ${ROW_COLUMNS}`,
-        [e.agent, e.sessionId, e.turnId, e.door, e.personKey, e.lane ?? null, e.origin, e.input, e.reply, e.proposals, e.at],
+        [e.agent, e.sessionId, e.turnId, e.door, e.personKey, e.audienceMemberId ?? null, e.audienceAddress ?? null, e.audienceAccessRevision ?? null, e.lane ?? null, e.origin, e.input, e.reply, e.proposals, e.approvalRequestId ?? null, e.at],
       );
       return toEntry(rows[0]!);
     },
@@ -318,6 +338,22 @@ export function makeConversationRecord(db: Pool): {
           ORDER BY at ASC
           LIMIT $3`,
         [opts.agent, opts.since, opts.limit ?? null],
+      );
+      return rows.map(toEntry);
+    },
+
+    /** Bounded private continuity. Rows without a write-time audience snapshot never qualify. */
+    async forAudience(opts: { agent: string; memberId: string; address: string; door: string; accessRevision: number; since: Date; limit?: number }): Promise<ConversationEntry[]> {
+      const { rows } = await db.query<ConversationEntryRow>(
+        `SELECT ${ROW_COLUMNS} FROM (
+           SELECT ${ROW_COLUMNS} FROM conversation_entries
+            WHERE agent=$1 AND audience_member_id=$2 AND audience_address=$3 AND door=$4 AND audience_access_revision=$5 AND at>$6
+              AND (origin IN ('owner','agent','system') OR (approval_request_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM approval_asks a WHERE a.request_id=conversation_entries.approval_request_id AND a.outcome IS NULL
+              )))
+            ORDER BY at DESC, id DESC LIMIT $7
+         ) recent ORDER BY at ASC, id ASC`,
+        [opts.agent, opts.memberId, opts.address, opts.door, opts.accessRevision, opts.since, Math.max(0, Math.min(6, opts.limit ?? 6))],
       );
       return rows.map(toEntry);
     },

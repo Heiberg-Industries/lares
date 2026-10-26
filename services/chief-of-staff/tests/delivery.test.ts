@@ -134,7 +134,7 @@ describe("sendTurn / sendText", () => {
     const { routed, db } = await routedVia("web");
     await sendTurn(routed, rt().rt, "ACT PROMPT", { lane: "x", title: "T", itemKey: "k1", webBody: "Read me", webContext: "ACT PROMPT" });
     expect(gatewayComplete).not.toHaveBeenCalled();
-    expect(db.calls[0]![1]).toEqual([OWNER, "chief-of-staff", "crm-routing", "T", "Read me", "ACT PROMPT", "k1"]);
+    expect(db.calls[0]![1]).toEqual([OWNER, "chief-of-staff", "crm-routing", "T", "Read me", "ACT PROMPT", "k1", null, null, null]);
   });
 
   it("web: an empty model answer is a failed send, not an empty message", async () => {
@@ -142,14 +142,14 @@ describe("sendTurn / sendText", () => {
     const { routed, db } = await routedVia("web");
     gatewayComplete.mockResolvedValueOnce("   ");
     await expect(sendTurn(routed, rt().rt, "P", { lane: "x", title: "T", itemKey: "k" })).rejects.toThrow(/no text/);
-    expect(db.calls).toEqual([]);
+    expect(db.calls.some(([sql]) => /INSERT INTO web_inbox/.test(sql))).toBe(false);
   });
 
   it("sendText on web files the text under the title", async () => {
     const { sendText } = await import("../lib/delivery-send.js");
     const { routed, db } = await routedVia("web");
     await sendText(routed, "Plain notice", { itemKey: "n1", title: "Notice" });
-    expect(db.calls[0]![1]).toEqual([OWNER, "chief-of-staff", "crm-routing", "Notice", "Plain notice", null, "n1"]);
+    expect(db.calls[0]![1]).toEqual([OWNER, "chief-of-staff", "crm-routing", "Notice", "Plain notice", null, "n1", null, null, null]);
   });
 
   it("plainFromTelegramHtml drops markup and keeps links readable", async () => {

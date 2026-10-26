@@ -23,6 +23,7 @@ import {
 import { isAllowedSlackUserId } from "../../lib/slack-allowlist.js";
 import { installSlackProxyDispatcher } from "@lares/agent-kit/slack-dispatcher";
 import { slackUnreadableNote } from "@lares/agent-kit/unreadable-content";
+import { continuityAuthAttributes, nativeConversationContinuity } from "../../lib/conversation-continuity.js";
 import {
   respondToSessionFailed,
   respondToTurnFailed,
@@ -181,6 +182,29 @@ export function admitSlackMessage(
   return note ? { auth: defaultSlackAuth(message, ctx), context: [note] } : { auth: defaultSlackAuth(message, ctx) };
 }
 
+/** Continuity is limited to a signed, allowlisted DM. App mentions can be visible to a room and
+ * therefore never receive a private-history context. A registry/grant outage only removes the
+ * optional context; it does not change the existing message admission decision. */
+export async function admitSlackDirectMessage(
+  ctx: Parameters<typeof defaultSlackAuth>[1],
+  message: SlackMessage,
+): Promise<{ auth: ReturnType<typeof defaultSlackAuth>; context?: string[] } | null> {
+  const admitted = admitSlackMessage(ctx, message);
+  if (!admitted?.auth) return admitted;
+  try {
+    const continuity = await nativeConversationContinuity("slack", admitted.auth);
+    return {
+      auth: continuity.identity
+        ? { ...admitted.auth, attributes: { ...admitted.auth.attributes, ...continuityAuthAttributes(continuity.identity) } }
+        : admitted.auth,
+      ...((admitted.context?.length || continuity.context.length) ? { context: [...continuity.context, ...(admitted.context ?? [])] } : {}),
+    };
+  } catch (error) {
+    console.warn("slack continuity unavailable; continuing without archived context", error instanceof Error ? error.message : "unknown error");
+    return admitted;
+  }
+}
+
 // Install the outbound proxy routing as this module loads. Safe on the build path: it
 // constructs a ProxyAgent (which connects to nothing until used) and reads no secret.
 installSlackProxyDispatcher();
@@ -190,7 +214,7 @@ export default slackChannel({
   // Both enabled inbound handlers are overridden. Overriding only one would leave eve's
   // permissive default in place for the other — the documented footgun.
   onAppMention: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.channelId, text)) ? null : admitSlackMessage(ctx, message),
-  onDirectMessage: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.channelId, text)) ? null : admitSlackMessage(ctx, message),
+  onDirectMessage: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.channelId, text)) ? null : admitSlackDirectMessage(ctx, message),
   events: {
     "turn.failed": onTurnFailed,
     "session.failed": onSessionFailed,

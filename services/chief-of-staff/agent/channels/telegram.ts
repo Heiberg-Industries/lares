@@ -30,6 +30,7 @@ import {
 import { isAllowedPrincipalId } from "../../lib/principals.js";
 import { withOwnerTapAuth } from "../../lib/telegram-tap-auth.js";
 import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
+import { continuityAuthAttributes, nativeConversationContinuity } from "../../lib/conversation-continuity.js";
 import { TELEGRAM_INNER_ROUTE } from "@lares/agent-kit/telegram-routes";
 import { mdToTelegramHtml, splitTelegramHtml } from "@lares/agent-kit/telegram-markdown";
 import { getPool } from "@lares/agent-kit/db";
@@ -244,9 +245,24 @@ export default withOwnerTapAuth(telegramChannel({
       console.error("telegram-rotation: onMessage log/consume failed (continuing without it)", err);
     }
 
-    const context = [...(buildRotationContext(pendingContext) ?? []), ...(unreadable ? [unreadable] : [])];
+    const auth = defaultTelegramAuth(message);
+    let continuityContext: string[] = [];
+    let admittedAuth = auth;
+    if (auth) {
+      try {
+        const continuity = await nativeConversationContinuity("telegram", auth);
+        continuityContext = continuity.context;
+        if (continuity.identity) admittedAuth = {
+          ...auth,
+          attributes: { ...auth.attributes, ...continuityAuthAttributes(continuity.identity) },
+        };
+      } catch (err) {
+        console.warn("telegram continuity unavailable; continuing without archived context", err instanceof Error ? err.message : "unknown error");
+      }
+    }
+    const context = [...continuityContext, ...(buildRotationContext(pendingContext) ?? []), ...(unreadable ? [unreadable] : [])];
     return {
-      auth: defaultTelegramAuth(message),
+      auth: admittedAuth,
       ...(context.length > 0 ? { context } : {}),
     };
   },

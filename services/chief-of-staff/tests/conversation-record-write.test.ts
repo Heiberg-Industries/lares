@@ -93,11 +93,21 @@ describe("captureTurn writes the conversation record — real Postgres, real bas
     join(import.meta.dirname, "../../box/sql/001_baseline.sql"),
     "utf8",
   );
+  const audienceMigrationSql = readFileSync(
+    join(import.meta.dirname, "../../box/sql/030_conversation_audience.sql"),
+    "utf8",
+  );
+  const webInboxMigrationSql = readFileSync(
+    join(import.meta.dirname, "../../box/sql/004_web_inbox.sql"),
+    "utf8",
+  );
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
     pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(migrationSql);
+    await pool.query(webInboxMigrationSql);
+    await pool.query(audienceMigrationSql);
   }, 120_000);
 
   afterAll(async () => {
