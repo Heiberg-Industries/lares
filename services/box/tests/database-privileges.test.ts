@@ -63,6 +63,7 @@ const outsideCustodyUpdateColumns: Readonly<Record<string, readonly string[]>> =
   console_session_bindings: ["created_at", "revoked_at"],
   member_sessions: ["created_at"],
   outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at"],
+  outside_execution_approvals: ["consumed_at"],
 };
 const outsideCustodySelectColumns: Readonly<Record<string, readonly string[]>> = {
   member_sessions: ["member_id", "token_hash", "expires_at", "revoked_at"],
@@ -188,6 +189,10 @@ describe("engine database privilege foundation", () => {
     }
     for(const [table,column] of [["org_member_policy","outside_custody_lock"],["outside_custody_accounts","generation"],["outside_custody_accounts","state"]]){
       expect((await outsideCustody.query("SELECT has_column_privilege(current_user,$1,$2,'UPDATE') AS allowed",[`public.${table}`,column])).rows[0].allowed).toBe(true);
+    }
+    expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.outside_execution_approvals','consumed_at','UPDATE') AS allowed")).rows[0].allowed).toBe(true);
+    for(const column of ["call_id","member_id","approver_member_id","payload_hash","expires_at"]){
+      expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.outside_execution_approvals',$1,'UPDATE') AS allowed",[column])).rows[0].allowed).toBe(false);
     }
     for(const column of outsideCustodySelectColumns.member_sessions){
       expect((await outsideCustody.query("SELECT has_column_privilege(current_user,'public.member_sessions',$1,'SELECT') AS allowed",[column])).rows[0].allowed).toBe(true);

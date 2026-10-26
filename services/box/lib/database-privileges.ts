@@ -50,7 +50,7 @@ export const ENGINE_TABLE_PRIVILEGES = {
     "vault_backing_stores", "voice_exemplar", "voice_profile", "web_inbox", "workflow_jobs",
   ],
   financial: FINANCIAL_TABLES,
-  outsideCustody: ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations"],
+  outsideCustody: ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations", "outside_execution_approvals"],
   ledger: LEDGER_TABLES,
 } as const;
 
@@ -173,6 +173,7 @@ const OUTSIDE_CUSTODY_UPDATE_COLUMNS: Readonly<Record<string, readonly string[]>
   console_session_bindings: ["created_at", "revoked_at"],
   member_sessions: ["created_at"],
   outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at"],
+  outside_execution_approvals: ["consumed_at"],
 };
 const OUTSIDE_CUSTODY_SELECT_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   member_sessions: ["member_id", "token_hash", "expires_at", "revoked_at"],

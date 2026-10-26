@@ -152,6 +152,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
   { table: "outside_custody_accounts", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/029_outside_custody.sql`, reason: "Encrypted third-party bearer credentials and their account authority are erased with the owning member." },
   { table: "outside_custody_revisions", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/029_outside_custody.sql`, reason: "Immutable encrypted credential revisions are private member data and are erased with their account." },
   { table: "outside_custody_operations", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/029_outside_custody.sql`, reason: "Credential lifecycle operation evidence is scoped to the owning member and erased with the account." },
+  { table: "outside_execution_approvals", scope: "operational", createdBy: `${BOX}/031_outside_execution_approvals.sql`, reason: "Exact-action receipts contain hashes and stable member references only; deleting an owner's outside-custody account cascades its receipts, while an erased approver reference remains on another owner's receipt." },
 
   { table: "member_invitations", scope: "member", column: "member_id", idKind: "registry", createdBy: `${BOX}/007_member_identity_sessions.sql` },
   { table: "member_provider_identities", scope: "member", column: "member_id", idKind: "registry", createdBy: `${BOX}/007_member_identity_sessions.sql` },
