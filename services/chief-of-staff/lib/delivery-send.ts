@@ -37,7 +37,7 @@ export interface TurnRuntime {
 }
 
 export interface TurnOptions {
-  /** Attribution for the conversation log (`morning-brief`, `crm-routing`, ...). */
+  /** Attribution for the conversation log (`morning-brief`, `track-routing`, ...). */
   lane: string;
   /** Defaults to the item the gate is sending. */
   itemKey?: string;

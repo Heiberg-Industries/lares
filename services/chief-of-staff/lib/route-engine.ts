@@ -4,7 +4,7 @@
  * `makeRouteEngine({ twenty, classifier, store, clock?, selfHandles? }).scan()` →
  * `Promise<RouteProposal[]>`
  *
- * This is the orchestration core for CRM routing. It:
+ * This is the orchestration core for track routing. It:
  *   1. Reads the last-seen cursor from the store (defaults to 24h ago on first run).
  *   2. Pulls recent message + calendar participants from Twenty.
  *   3. Filters out self-handles and null-personId participants; groups the rest by personId.
@@ -24,7 +24,7 @@
  * rewrite.
  */
 
-import type { RouteBrand, RouteStage, RouteDecision, RouteActivity, OpenOpportunity } from "./route-classify.js";
+import type { RouteStage, RouteDecision, RouteActivity, OpenOpportunity, RoutedTrack } from "./route-classify.js";
 import type { Track } from "@lares/agent-kit/tracks";
 import { TwentyRateLimitedError } from "./twenty-client.js";
 
@@ -55,11 +55,13 @@ export function decideProposalMode(confidence: number): "confirm" | "auto" | "sk
 export interface RouteProposal {
   personId: string;
   opportunityId: string | null;
-  brand: RouteBrand;
+  itemId: string | null;
+  home: string | null;
+  trackId: string | null;
   stage: RouteStage;
-  /** Other workflow options captured from Twenty metadata for the owner-facing clarification prompt. */
-  availableTracks: readonly Pick<Track, "id" | "name">[];
-  action: "move" | "create";
+  availableTracks: readonly Pick<RoutedTrack, "home" | "id" | "name">[];
+  action: "move" | "create" | "ask" | "console-only";
+  question: string | null;
   confidence: number;
   reasoning: string;
   signalRef: string;
@@ -96,7 +98,12 @@ interface TwentyDep {
 }
 
 interface ClassifierDep {
-  classify(input: { activity: RouteActivity[]; openOpportunities: OpenOpportunity[]; tracks: readonly Track[] }): Promise<RouteDecision>;
+  classify(input: { activity: RouteActivity[]; openOpportunities: OpenOpportunity[]; tracks: readonly RoutedTrack[] }): Promise<RouteDecision>;
+}
+
+interface VaultTracksDep {
+  listTracks(): Promise<RoutedTrack[]>;
+  listOpenItemsForPerson(personId: string): Promise<OpenOpportunity[]>;
 }
 
 interface StoreDep {
@@ -104,7 +111,7 @@ interface StoreDep {
   setCursor(iso: string): Promise<void>;
   alreadyProposed(args: { personId: string; signalRef: string }): Promise<boolean>;
   /** Any proposal for this person AND brand since `sinceIso` — the cool-down's memory. */
-  proposedSince(args: { personId: string; brand: string; sinceIso: string }): Promise<boolean>;
+  proposedSince(args: { personId: string; home: string; trackId: string; sinceIso: string }): Promise<boolean>;
 }
 
 // ─── Discriminated participant union ──────────────────────────────────────────
@@ -153,6 +160,7 @@ export interface ScanResult {
 
 export function makeRouteEngine(deps: {
   twenty: TwentyDep;
+  vault?: VaultTracksDep;
   classifier: ClassifierDep;
   store: StoreDep;
   clock?: () => Date;
@@ -181,7 +189,8 @@ export function makeRouteEngine(deps: {
 
       // Track definitions and step order come from Twenty metadata on every scan (briefly cached
       // by the adapter). Missing/stale owner closure annotations fail closed in listTracks().
-      const tracks = await twenty.listTracks();
+      const [twentyTracks, vaultTracks] = await Promise.all([twenty.listTracks(), deps.vault?.listTracks() ?? Promise.resolve([])]);
+      const tracks: RoutedTrack[] = [...twentyTracks.map((track) => ({ ...track, home: "twenty" })), ...vaultTracks];
       if (tracks.length === 0) return { proposals: [], deferredReason: null };
 
       // 2. Pull recent participants from both channels
@@ -239,7 +248,7 @@ export function makeRouteEngine(deps: {
 
       // 3. Group remaining participants by personId
       if (skippedInternal > 0) {
-        console.info(`crm-routing: skipped ${skippedInternal} participant(s) on the org's own domains`);
+        console.info(`track-routing: skipped ${skippedInternal} participant(s) on the org's own domains`);
       }
 
       const byPerson = new Map<string, Participant[]>();
@@ -262,6 +271,7 @@ export function makeRouteEngine(deps: {
         return ea < eb ? -1 : ea > eb ? 1 : a < b ? -1 : a > b ? 1 : 0;
       });
       const proposals: RouteProposal[] = [];
+      let askedForClarification = false;
 
       for (const personId of personIds) {
         const group = byPerson.get(personId)!;
@@ -292,13 +302,19 @@ export function makeRouteEngine(deps: {
           }
 
           // b. Fetch open opportunities
-          const openOpportunities: OpenOpportunity[] = await twenty.listOpportunitiesForPerson(personId);
+          const [twentyItems, vaultItems] = await Promise.all([
+            twenty.listOpportunitiesForPerson(personId),
+            deps.vault?.listOpenItemsForPerson(personId) ?? Promise.resolve([]),
+          ]);
+          const openOpportunities: OpenOpportunity[] = [
+            ...twentyItems.map((item) => ({ id: item.id, name: item.name, stage: item.stage, home: "twenty", trackId: item.brand })),
+            ...vaultItems,
+          ];
 
           // c. Classify
           const decision: RouteDecision = await classifier.classify({ activity, openOpportunities, tracks });
 
-          // Skip if classifier says do nothing, or didn't resolve brand/stage
-          if (decision.action === "none" || decision.brand === null || decision.stage === null) {
+          if (decision.action === "none") {
             continue;
           }
 
@@ -320,16 +336,24 @@ export function makeRouteEngine(deps: {
           // the code, not the LLM, decides create-vs-move. A matching open opp for the brand
           // always means "move" (duplicate guard: a hallucinated "create" would otherwise put
           // a second card in the pipeline); no matching opp always means "create".
-          const cooldownSince = new Date(clock().getTime() - PROPOSAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString();
-          if (await store.proposedSince({ personId, brand: decision.brand, sinceIso: cooldownSince })) {
+          if (decision.action === "ask") {
+            if (askedForClarification) continue;
+            askedForClarification = true;
+            proposals.push({personId, opportunityId:null,itemId:null,home:null,trackId:null,stage:"",availableTracks:tracks.map(({home,id,name})=>({home,id,name})),
+              action:"ask",question:decision.question,confidence:decision.confidence,reasoning:decision.reasoning,signalRef,mode:"confirm",personHandle:newestParticipant.handle,
+              personName:(await twenty.getPersonName(personId))??newestParticipant.handle});
             continue;
           }
+          if (!decision.home || !decision.trackId || !decision.stage) continue;
+          const cooldownSince = new Date(clock().getTime() - PROPOSAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString();
+          if (await store.proposedSince({ personId, home: decision.home, trackId: decision.trackId, sinceIso: cooldownSince })) continue;
 
-          const selectedTrack = tracks.find((track) => track.id === decision.brand);
+          const selectedTrack = tracks.find((track) => track.home === decision.home && track.id === decision.trackId);
           if (!selectedTrack || !selectedTrack.steps.includes(decision.stage)) continue;
-          const matchingOpp = openOpportunities.find((o) => o.brand === decision.brand);
-          const action: "move" | "create" = matchingOpp ? "move" : "create";
-          const opportunityId: string | null = matchingOpp?.id ?? null;
+          const matchingOpp = openOpportunities.find((o) => o.home === decision.home && o.trackId === decision.trackId);
+          const action: "move" | "create" | "console-only" = decision.home.startsWith("vault:") ? "console-only" : matchingOpp ? "move" : "create";
+          const opportunityId: string | null = matchingOpp?.home === "twenty" ? matchingOpp.id : null;
+          const itemId: string | null = matchingOpp?.id ?? null;
 
           // A move is only ever forward. The classifier sees the open opportunity but reasons
           // from the activity ("a reply on the thread") and can name an EARLIER stage; applying
@@ -353,10 +377,13 @@ export function makeRouteEngine(deps: {
           proposals.push({
             personId,
             opportunityId,
-            brand: decision.brand,
+            itemId,
+            home: decision.home,
+            trackId: decision.trackId,
             stage: decision.stage,
-            availableTracks: tracks.map(({ id, name }) => ({ id, name })),
+            availableTracks: tracks.map(({ home, id, name }) => ({ home, id, name })),
             action,
+            question: null,
             confidence: decision.confidence,
             reasoning: decision.reasoning,
             signalRef,
@@ -372,7 +399,7 @@ export function makeRouteEngine(deps: {
           // Earlier people are not lost: a recorded proposal is deduped, the rest are simply re-read.
           const resume = new Date(Date.parse(earliest(personId)) - 1).toISOString();
           await store.setCursor(resume > since ? resume : since);
-          console.warn(`crm-routing: CRM rate limit reached; deferring ${personIds.length - personIds.indexOf(personId)} of ${personIds.length} person(s) to the next pass`);
+          console.warn(`track-routing: CRM rate limit reached; deferring ${personIds.length - personIds.indexOf(personId)} of ${personIds.length} person(s) to the next pass`);
           return { proposals, deferredReason: err.message };
         }
       }

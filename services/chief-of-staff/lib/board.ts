@@ -29,3 +29,20 @@ export const approvalFor = (tool: string) =>
  * either action back to gated/never without changing the broader Gmail send policy. */
 export const draftApprovalFor = (tool: "gmail_draft" | "gmail_draft_recipients") =>
   boardApproval(manifest, tool, { action: tool, defaultLevel: "autonomous" });
+
+/** Track operations keep their neutral tool names, but Twenty-backed writes use the same
+ * capability/board action as the existing Twenty create or stage tool. */
+export function trackItemApproval(tool: "track_add_item" | "track_move_item") {
+  return async (ctx?: { toolInput?: unknown }) => {
+    const input = ctx?.toolInput;
+    const home = input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>).home : undefined;
+    const policyTool = home === "twenty"
+      ? (tool === "track_add_item" ? "twenty_create_opportunity" : "twenty_set_stage")
+      : tool;
+    if (home !== "twenty" && (typeof home !== "string" || !/^vault:[A-Za-z0-9_-]{1,128}$/.test(home))) {
+      return { type: "denied", reason: "Choose an exact connected track home." } as never;
+    }
+    return await approvalFor(policyTool)(ctx as never);
+  };
+}

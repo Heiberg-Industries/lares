@@ -95,7 +95,7 @@ describe("sendTurn / sendText", () => {
   const routedVia = async (door: "telegram" | "slack" | "web") => {
     const { routeDelivery } = await import("../lib/delivery.js");
     const db = fakeDb();
-    const routed = routeDelivery("crm-routing", loaded({ delivery: { "crm-routing": [door] } }), { targets: { telegram: "123", slack: "U1" }, db })!;
+    const routed = routeDelivery("track-routing", loaded({ delivery: { "track-routing": [door] } }), { targets: { telegram: "123", slack: "U1" }, db })!;
     return { routed, db };
   };
 
@@ -103,25 +103,25 @@ describe("sendTurn / sendText", () => {
     const { sendTurn } = await import("../lib/delivery-send.js");
     const { routed } = await routedVia("telegram");
     const { send, to, rt: runtime } = rt();
-    await sendTurn(routed, runtime, "PROMPT", { lane: "crm-routing", title: "T" });
+    await sendTurn(routed, runtime, "PROMPT", { lane: "track-routing", title: "T" });
     expect(to).toHaveBeenCalledWith("TG", { chatId: "123" });
-    expect(send).toHaveBeenCalledWith("PROMPT", { auth: { who: "app", attributes: expect.objectContaining({ lane: "crm-routing", approverPrincipalId: "123" }) } });
+    expect(send).toHaveBeenCalledWith("PROMPT", { auth: { who: "app", attributes: expect.objectContaining({ lane: "track-routing", approverPrincipalId: "123" }) } });
   });
 
   it("slack: starts the session in that channel", async () => {
     const { sendTurn } = await import("../lib/delivery-send.js");
     const { routed } = await routedVia("slack");
     const { send, to, rt: runtime } = rt();
-    await sendTurn(routed, runtime, "PROMPT", { lane: "crm-routing", title: "T" });
+    await sendTurn(routed, runtime, "PROMPT", { lane: "track-routing", title: "T" });
     expect(to).toHaveBeenCalledWith("SL", { channelId: "U1" });
-    expect(send).toHaveBeenCalledWith("PROMPT", { auth: { who: "app", attributes: { lane: "crm-routing" } } });
+    expect(send).toHaveBeenCalledWith("PROMPT", { auth: { who: "app", attributes: { lane: "track-routing" } } });
   });
 
   it("web: no session; the text is generated once, in the agent's voice, and filed in the inbox", async () => {
     const { sendTurn } = await import("../lib/delivery-send.js");
     const { routed, db } = await routedVia("web");
     const { send, rt: runtime } = rt();
-    await routed.gate({ cls: "event", itemKey: "crm-routing/s1" }, () => sendTurn(routed, runtime, "PROMPT", { lane: "crm-routing", title: "T" }));
+    await routed.gate({ cls: "event", itemKey: "track-routing/s1" }, () => sendTurn(routed, runtime, "PROMPT", { lane: "track-routing", title: "T" }));
     expect(send).not.toHaveBeenCalled();
     expect(String(gatewayComplete.mock.calls[0]![0])).toContain("Warm and brief.");
     expect(String(gatewayComplete.mock.calls[0]![0])).toContain("PROMPT");
@@ -134,7 +134,7 @@ describe("sendTurn / sendText", () => {
     const { routed, db } = await routedVia("web");
     await sendTurn(routed, rt().rt, "ACT PROMPT", { lane: "x", title: "T", itemKey: "k1", webBody: "Read me", webContext: "ACT PROMPT" });
     expect(gatewayComplete).not.toHaveBeenCalled();
-    expect(db.calls[0]![1]).toEqual([OWNER, "chief-of-staff", "crm-routing", "T", "Read me", "ACT PROMPT", "k1", null, null, null]);
+    expect(db.calls[0]![1]).toEqual([OWNER, "chief-of-staff", "track-routing", "T", "Read me", "ACT PROMPT", "k1", null, null, null]);
   });
 
   it("web: an empty model answer is a failed send, not an empty message", async () => {
@@ -149,7 +149,7 @@ describe("sendTurn / sendText", () => {
     const { sendText } = await import("../lib/delivery-send.js");
     const { routed, db } = await routedVia("web");
     await sendText(routed, "Plain notice", { itemKey: "n1", title: "Notice" });
-    expect(db.calls[0]![1]).toEqual([OWNER, "chief-of-staff", "crm-routing", "Notice", "Plain notice", null, "n1", null, null, null]);
+    expect(db.calls[0]![1]).toEqual([OWNER, "chief-of-staff", "track-routing", "Notice", "Plain notice", null, "n1", null, null, null]);
   });
 
   it("plainFromTelegramHtml drops markup and keeps links readable", async () => {

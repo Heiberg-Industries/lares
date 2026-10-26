@@ -28,7 +28,7 @@ export const ITEM_PREFIX: Readonly<Record<DeliveryKind, string>> = {
   "email-triage": "email-triage",
   "meeting-followup": "meeting-followup",
   "outreach-reply-watch": "outreach",
-  "crm-routing": "crm-routing",
+  "track-routing": "track-routing",
   digest: "digest",
   reminders: "reminder",
 };

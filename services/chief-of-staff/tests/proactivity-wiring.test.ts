@@ -1108,7 +1108,7 @@ describe("delivery routing: every sending schedule asks for its own kind", () =>
   // hard-coding its door, or names another kind's list, fails here.
   const KINDS = [
     "morning-brief", "evening-brief", "weekly-summary", "reping", "deadlines", "proposals-watch",
-    "email-triage", "meeting-followup", "outreach-reply-watch", "crm-routing", "digest",
+    "email-triage", "meeting-followup", "outreach-reply-watch", "track-routing", "digest",
   ];
   for (const kind of KINDS) {
     it(`${kind}.ts routes ${kind}`, async () => {

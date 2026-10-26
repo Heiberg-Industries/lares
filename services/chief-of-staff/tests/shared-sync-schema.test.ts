@@ -8,6 +8,7 @@ import { ensureRouteTables, makeRouteStore } from "../lib/route-store.js";
 import { quiet } from "./helpers/quiet-pool.js";
 
 const SHARED_SYNC_SCHEMA_SQL = readFileSync(new URL("../../box/sql/027_shared_sync_schema.sql", import.meta.url), "utf8");
+const TRACK_ROUTING_MIGRATION_SQL = readFileSync(new URL("../../box/sql/032_track_routing.sql", import.meta.url), "utf8");
 const EXISTING_CURSOR = "2026-08-21T09:00:00.000Z";
 
 describe("offline shared sync and CRM schema", () => {
@@ -20,6 +21,10 @@ describe("offline shared sync and CRM schema", () => {
     schemaOwner = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await schemaOwner.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
     await schemaOwner.query(SHARED_SYNC_SCHEMA_SQL);
+    await schemaOwner.query(`CREATE TABLE schedule_settings(owner text NOT NULL,schedule text NOT NULL,hours integer[] NOT NULL,updated_by text,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(owner,schedule));
+      CREATE TABLE heartbeat(agent text PRIMARY KEY,updated_at timestamptz NOT NULL DEFAULT now());
+      INSERT INTO schedule_settings(owner,schedule,hours) VALUES('owner-1','crm-routing',ARRAY[9,13,17]);
+      INSERT INTO heartbeat(agent) VALUES('chief-of-staff/crm-routing'),('chief-of-staff/crm-routing/tick');`);
     await schemaOwner.query("INSERT INTO karakeep_seen (id) VALUES ('existing-bookmark')");
     await schemaOwner.query("INSERT INTO route_cursor (id, cursor_at) VALUES (1, $1)", [EXISTING_CURSOR]);
     await schemaOwner.query(
@@ -29,6 +34,8 @@ describe("offline shared sync and CRM schema", () => {
 
     // Reapplying the offline migration must preserve existing dedup, cursor, and CRM rows.
     await schemaOwner.query(SHARED_SYNC_SCHEMA_SQL);
+    await schemaOwner.query(TRACK_ROUTING_MIGRATION_SQL);
+    await schemaOwner.query(TRACK_ROUTING_MIGRATION_SQL);
     await schemaOwner.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
     await schemaOwner.query("CREATE ROLE shared_sync_app LOGIN PASSWORD 'fixture-only-password'");
     await schemaOwner.query("GRANT USAGE ON SCHEMA public TO shared_sync_app");
@@ -87,11 +94,12 @@ describe("offline shared sync and CRM schema", () => {
     await route.setCursor("2026-08-22T10:30:00.000Z");
     expect(await route.getCursor()).toBe("2026-08-22T10:30:00.000Z");
     expect(await route.alreadyProposed({ personId: "external-contact-42", signalRef: "msg:existing" })).toBe(true);
-    expect(await route.proposedSince({ personId: "external-contact-42", brand: "ALPHA", sinceIso: "2026-08-20T00:00:00.000Z" })).toBe(true);
+    expect(await route.proposedSince({ personId: "external-contact-42", home: "twenty", trackId: "ALPHA", sinceIso: "2026-08-20T00:00:00.000Z" })).toBe(true);
 
     const proposal = await route.recordProposal({
       personId: "external-contact-43",
-      brand: "BETA",
+      home: "twenty",
+      trackId: "BETA",
       proposedStage: "MEETING",
       signalRef: "msg:new",
       confidence: 0.85,

@@ -1,6 +1,6 @@
 /**
  * One-shot text completion over the LiteLLM gateway — the `think`/`llm` dependency both the
- * commercial radar (`ICP`-fit scoring) and the CRM routing classifier need.
+ * commercial radar (`ICP`-fit scoring) and the track routing classifier need.
  *
  * The gateway could be called with a hand-rolled raw fetch against its `/v1/messages`
  * endpoint with an `x-api-key` header. chief-of-staff already has an established, single way
@@ -123,7 +123,7 @@ export async function gatewayComplete(prompt: string, opts: GatewayCompleteOptio
     maxOutputTokens,
     // Passed through only when the caller asked: omitting the key entirely leaves the AI SDK's
     // own default in place, so every existing call site (the commercial radar's ICP scoring, the
-    // CRM routing classifier, email triage) keeps the retry behaviour it was written against.
+    // track routing classifier, email triage) keeps the retry behaviour it was written against.
     ...(opts.maxRetries === undefined ? {} : { maxRetries: opts.maxRetries }),
   });
   if (opts.onUsage && usage) {

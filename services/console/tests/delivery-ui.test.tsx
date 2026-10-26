@@ -33,7 +33,7 @@ describe("DeliveryGrid", () => {
   });
 
   it("shows saved choices as they are saved", () => {
-    render(<DeliveryGrid {...props} delivery={Object.fromEntries(["morning-brief", "evening-brief", "weekly-summary", "reping", "deadlines", "proposals-watch", "email-triage", "meeting-followup", "outreach-reply-watch", "crm-routing", "digest", "reminders"].map((k) => [k, ["web", "telegram"]]))} />);
+    render(<DeliveryGrid {...props} delivery={Object.fromEntries(["morning-brief", "evening-brief", "weekly-summary", "reping", "deadlines", "proposals-watch", "email-triage", "meeting-followup", "outreach-reply-watch", "track-routing", "digest", "reminders"].map((k) => [k, ["web", "telegram"]]))} />);
     expect(select("Morning brief via web chat").value).toBe("1");
     expect(select("Morning brief via Telegram").value).toBe("2");
     expect(screen.queryByText(/· today/)).toBeNull();

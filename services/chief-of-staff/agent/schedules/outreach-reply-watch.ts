@@ -124,7 +124,7 @@ export function makeOutreachReplyWatchTick(
         return true;
       } catch (err) {
         // A failure listing the tracked threads themselves (not a per-thread check) — the
-        // caller's schedule must survive it, matching crm-routing.ts's own tick contract.
+        // caller's schedule must survive it, matching track-routing.ts's own tick contract.
         console.error("outreach-reply-watch: tick failed", err);
         return false;
       } finally {

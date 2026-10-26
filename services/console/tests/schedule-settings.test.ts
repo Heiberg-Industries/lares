@@ -20,28 +20,28 @@ describe("SCHEDULE_HOUR_DEFAULTS / SINGLE_SLOT (lib/schedule-hours.ts)", () => {
       "morning-brief": [8],
       "evening-brief": [20],
       digest: [9, 17],
-      "crm-routing": [9, 13, 17],
+      "track-routing": [9, 13, 17],
       "weekly-summary": [9],
       "voice-learn": [4],
       dream: [3],
     });
   });
 
-  it("SINGLE_SLOT is every schedule except digest and crm-routing", () => {
+  it("SINGLE_SLOT is every schedule except digest and track-routing", () => {
     expect(SINGLE_SLOT.has("morning-brief")).toBe(true);
     expect(SINGLE_SLOT.has("evening-brief")).toBe(true);
     expect(SINGLE_SLOT.has("weekly-summary")).toBe(true);
     expect(SINGLE_SLOT.has("voice-learn")).toBe(true);
     expect(SINGLE_SLOT.has("dream")).toBe(true);
     expect(SINGLE_SLOT.has("digest")).toBe(false);
-    expect(SINGLE_SLOT.has("crm-routing")).toBe(false);
+    expect(SINGLE_SLOT.has("track-routing")).toBe(false);
   });
 });
 
 describe("OWNER_FACING_SCHEDULES / isOwnerFacingSchedule", () => {
   it("offers exactly the five owner-facing schedules — dream and voice-learn are left out", () => {
     expect(OWNER_FACING_SCHEDULES.map((s) => s.schedule)).toEqual([
-      "morning-brief", "evening-brief", "digest", "crm-routing", "weekly-summary",
+      "morning-brief", "evening-brief", "digest", "track-routing", "weekly-summary",
     ]);
   });
 
@@ -61,7 +61,7 @@ describe("validateHours (lib/schedule-hours.ts) — mirrors the kit's own rules"
   });
 
   it("accepts a valid re-ordering of a multi-slot schedule's hours, ascending", () => {
-    expect(validateHours("crm-routing", [9, 13, 17])).toEqual({ ok: true });
+    expect(validateHours("track-routing", [9, 13, 17])).toEqual({ ok: true });
     expect(validateHours("digest", [6])).toEqual({ ok: true });
   });
 
@@ -123,7 +123,7 @@ describe("validateHours (lib/schedule-hours.ts) — mirrors the kit's own rules"
     expect(validateHours("digest", [17, 9])).toEqual({
       ok: false, message: "Hours must be sorted, lowest to highest.",
     });
-    expect(validateHours("crm-routing", [9, 17, 13])).toEqual({
+    expect(validateHours("track-routing", [9, 17, 13])).toEqual({
       ok: false, message: "Hours must be sorted, lowest to highest.",
     });
   });
@@ -159,7 +159,7 @@ describe("readScheduleHoursSettings (lib/schedule-settings.ts)", () => {
       { schedule: "morning-brief", label: "Morning brief", hours: [8], isDefault: true },
       { schedule: "evening-brief", label: "Evening brief", hours: [20], isDefault: true },
       { schedule: "digest", label: "Digest", hours: [9, 17], isDefault: true },
-      { schedule: "crm-routing", label: "CRM routing", hours: [9, 13, 17], isDefault: true },
+      { schedule: "track-routing", label: "track routing", hours: [9, 13, 17], isDefault: true },
       { schedule: "weekly-summary", label: "Weekly summary", hours: [9], isDefault: true },
     ]);
   });

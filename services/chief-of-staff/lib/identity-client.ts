@@ -182,7 +182,7 @@ export async function checkOwnerKeyAgreement(
  */
 /**
  * The org's own email domains (`orgs.domains`, sql/001_baseline.sql) for the org `userId` belongs to —
- * colleagues' mailboxes and the org's own product senders, which CRM routing must never read
+ * colleagues' mailboxes and the org's own product senders, which track routing must never read
  * as a prospect signal. Lower-cased. An empty array is honest ("this org lists none"); a
  * registry failure throws, as `listAliases` does — an outage must not read as "no exclusions".
  */

@@ -12,6 +12,7 @@ import { DOOR_FILES } from './compose-agents.js';
 import { publishDefinition, plainDirectory, syncDefinitionDirectory } from './definition-files.js';
 import type { Backup } from './git-backup.js';
 import { totalmem } from 'node:os';
+import { isDeepStrictEqual } from 'node:util';
 import { ceilingFor, HEADROOM_BYTES, STACK_ESTIMATE_BYTES, PER_AGENT_ESTIMATE_BYTES, AGENT_LIMIT_MAX } from './ceiling.js';
 import { writeSetting } from './settings.js';
 import { withDefinitionNamespace } from './definition-namespace.js';
@@ -65,6 +66,25 @@ export interface DefinitionOptions {
     };
 }
 function refused(message: string): never { throw new KeeperRefusedError(message); }
+function migrateTrackRoutingDefinition(raw: unknown): unknown {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+    const definition = raw as Record<string, unknown>;
+    const schedules = definition.schedules && typeof definition.schedules === 'object' && !Array.isArray(definition.schedules)
+        ? { ...(definition.schedules as Record<string, unknown>) } : undefined;
+    const delivery = definition.delivery && typeof definition.delivery === 'object' && !Array.isArray(definition.delivery)
+        ? { ...(definition.delivery as Record<string, unknown>) } : undefined;
+    let changed = false;
+    for (const [mapName, entries] of [['schedules', schedules], ['delivery', delivery]] as const) {
+        if (!entries || !Object.hasOwn(entries, 'crm-routing')) continue;
+        if (Object.hasOwn(entries, 'track-routing') && !isDeepStrictEqual(entries['crm-routing'], entries['track-routing']))
+            refused(`both ${mapName}.crm-routing and ${mapName}.track-routing are set differently; reconcile them before saving`);
+        if (!Object.hasOwn(entries, 'track-routing')) entries['track-routing'] = entries['crm-routing'];
+        delete entries['crm-routing'];
+        changed = true;
+    }
+    if (!changed) return raw;
+    return { ...definition, ...(schedules ? { schedules } : {}), ...(delivery ? { delivery } : {}) };
+}
 function nameOf(name: string): string { if (!NAME_RE.test(name))
     refused('name must be a lowercase slug of 2–31 characters'); return name; }
 function hasPath(path: string): boolean { try {
@@ -149,7 +169,8 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         return d;
     }
     async function save(input: z.infer<typeof writeInput>, ctx: ActionContext, create: boolean) {
-        const d = validate(input), path = active(input.name), previous = await registry(input.name);
+        const submitted = create ? input : { ...input, definition: migrateTrackRoutingDefinition(input.definition) };
+        const d = validate(submitted), path = active(input.name), previous = await registry(input.name);
         if (create) {
             if (!o.compose.create)
                 refused('agent creation is unavailable until lifecycle provisioning is configured');

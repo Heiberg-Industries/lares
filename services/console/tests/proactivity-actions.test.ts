@@ -144,8 +144,8 @@ describe("saveScheduleHours", () => {
     expect(w.params).toEqual(["owner-1", "morning-brief", [7], "owner@owner.example"]);
   });
   it("upserts a multi-slot schedule's hours", async () => {
-    expect(await saveScheduleHours({ schedule: "crm-routing", hours: [9, 13, 17] })).toEqual({ ok: true });
-    expect(scheduleWrites()[0]!.params).toEqual(["owner-1", "crm-routing", [9, 13, 17], "owner@owner.example"]);
+    expect(await saveScheduleHours({ schedule: "track-routing", hours: [9, 13, 17] })).toEqual({ ok: true });
+    expect(scheduleWrites()[0]!.params).toEqual(["owner-1", "track-routing", [9, 13, 17], "owner@owner.example"]);
   });
   it("refuses a schedule this page does not offer (dream, voice-learn) without writing", async () => {
     const r1 = await saveScheduleHours({ schedule: "dream", hours: [3] });

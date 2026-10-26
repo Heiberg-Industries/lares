@@ -18,7 +18,7 @@ export function markTrackOrigin(ctx: TrackContext, content: string): void {
 }
 
 /** The home is bound to this exact private-console turn. Keeper still rechecks every grant. */
-export function tracksHome(ctx: TrackContext): VaultTracksHome {
+export function tracksHome(ctx: TrackContext, expectedHome?: string): VaultTracksHome {
   const session = ctx.session, own = managedIdentity(process.env);
   const admission = consoleAdmission(session?.auth?.current) ?? consoleAdmission(session?.auth?.initiator);
   const turnId = session?.turn?.id, sequence = session?.turn?.sequence;
@@ -27,17 +27,20 @@ export function tracksHome(ctx: TrackContext): VaultTracksHome {
   const turn = vaultTurnCapability({ sessionId: session.id, turnId, sequence: sequence as number, incarnation: own.incarnation });
   if (!turn || turn.expiresAt <= Date.now() || turn.turnId !== turnId || turn.sequence !== sequence)
     throw new Error('Track access is unavailable for this turn');
+  if (expectedHome !== undefined && !/^vault:[A-Za-z0-9_-]{1,128}$/.test(expectedHome))
+    throw new Error('Track home is unavailable');
   const identity = { turnCapability: turn.capability, turnId, sequence, sessionId: session.id, memberId: admission.memberId, admissionNonce: admission.admissionNonce };
+  const readHome = expectedHome ? { home: expectedHome } : {};
   const files: TrackFileWriter = {
     async list() {
-      const result = await vaultBrokerRequest<{ notes: string[] }>('vault.read', { ...identity, operation: 'list', area: 'shared' });
+      const result = await vaultBrokerRequest<{ notes: string[] }>('vault.read', { ...identity, operation: 'list', area: 'shared', ...readHome });
       return result.notes.filter(path => path.startsWith('tracks/'));
     },
     async read(path) {
       if (!path.startsWith('tracks/')) throw new Error('Track access refused');
-      const paths = await vaultBrokerRequest<{ notes: string[] }>('vault.read', { ...identity, operation: 'list', area: 'shared' });
+      const paths = await vaultBrokerRequest<{ notes: string[] }>('vault.read', { ...identity, operation: 'list', area: 'shared', ...readHome });
       if (!paths.notes.includes(path)) return undefined;
-      const result = await vaultBrokerRequest<{ content: string; contentRevision: string }>('vault.read', { ...identity, operation: 'read', area: 'shared', path });
+      const result = await vaultBrokerRequest<{ content: string; contentRevision: string }>('vault.read', { ...identity, operation: 'read', area: 'shared', path, ...readHome });
       markTrackOrigin(ctx, result.content);
       return { path, content: result.content, contentRevision: result.contentRevision };
     },

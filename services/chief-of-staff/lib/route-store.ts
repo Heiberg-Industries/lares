@@ -1,5 +1,5 @@
 /**
- * lib/route-store.ts — cursor + proposal dedup store for CRM routing.
+ * lib/route-store.ts — cursor + proposal dedup store for track routing.
  *
  * Persists two tables:
  *   route_proposals — one row per (person, signal) pair proposed to the owner. Dedup: never
@@ -26,7 +26,8 @@ export interface RouteProposalRow {
   id: string;
   personId: string;
   opportunityId: string | null;
-  brand: string;
+  home: string;
+  trackId: string;
   proposedStage: string;
   signalRef: string;
   confidence: number;
@@ -37,7 +38,8 @@ export interface RouteProposalRow {
 export interface RouteProposalInput {
   personId: string;
   opportunityId?: string | null;
-  brand: string;
+  home: string;
+  trackId: string;
   proposedStage: string;
   signalRef: string;
   confidence: number;
@@ -53,7 +55,7 @@ interface CursorDbRow {
 /** Check that the offline migration created the complete schema this store needs. */
 export async function ensureRouteTables(db: Pool): Promise<void> {
   await db.query(
-    `SELECT id, person_id, opportunity_id, brand, proposed_stage, signal_ref,
+    `SELECT id, person_id, opportunity_id, home, track_id, proposed_stage, signal_ref,
             confidence, status, created_at
        FROM route_proposals LIMIT 0`,
   );
@@ -97,10 +99,10 @@ export function makeRouteStore(db: Pool) {
 
     /** The cool-down's memory (route-engine.ts PROPOSAL_COOLDOWN_DAYS): any proposal row for
      *  this person and brand since `sinceIso`, whatever became of it. */
-    async proposedSince(args: { personId: string; brand: string; sinceIso: string }): Promise<boolean> {
+    async proposedSince(args: { personId: string; home: string; trackId: string; sinceIso: string }): Promise<boolean> {
       const { rows } = await db.query(
-        `SELECT 1 FROM route_proposals WHERE person_id = $1 AND brand = $2 AND created_at >= $3 LIMIT 1`,
-        [args.personId, args.brand, args.sinceIso],
+        `SELECT 1 FROM route_proposals WHERE person_id = $1 AND home = $2 AND track_id = $3 AND created_at >= $4 LIMIT 1`,
+        [args.personId, args.home, args.trackId, args.sinceIso],
       );
       return rows.length > 0;
     },
@@ -109,10 +111,10 @@ export function makeRouteStore(db: Pool) {
     async recordProposal(p: RouteProposalInput): Promise<{ id: string }> {
       const { rows } = await db.query<{ id: string }>(
         `INSERT INTO route_proposals
-           (person_id, opportunity_id, brand, proposed_stage, signal_ref, confidence)
-         VALUES ($1, $2, $3, $4, $5, $6)
+           (person_id, opportunity_id, home, track_id, proposed_stage, signal_ref, confidence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
-        [p.personId, p.opportunityId ?? null, p.brand, p.proposedStage, p.signalRef, p.confidence],
+        [p.personId, p.opportunityId ?? null, p.home, p.trackId, p.proposedStage, p.signalRef, p.confidence],
       );
       return { id: rows[0]!.id };
     },

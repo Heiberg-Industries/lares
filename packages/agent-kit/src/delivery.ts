@@ -25,7 +25,7 @@ export const DELIVERY_KINDS = {
   "email-triage": "slack",
   "meeting-followup": "slack",
   "outreach-reply-watch": "slack",
-  "crm-routing": "slack",
+  "track-routing": "slack",
   digest: "slack",
   reminders: "telegram",
 } as const satisfies Record<string, DeliveryDoor>;
@@ -60,7 +60,7 @@ export const DELIVERY_KIND_LABEL: Readonly<Record<DeliveryKind, string>> = {
   "email-triage": "Email triage",
   "meeting-followup": "Meeting follow-up",
   "outreach-reply-watch": "Outreach replies",
-  "crm-routing": "CRM routing",
+  "track-routing": "track routing",
   digest: "Digest",
   reminders: "Reminders",
 };

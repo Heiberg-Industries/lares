@@ -49,7 +49,7 @@ export async function captureWebContinuityFence(db: Pick<Pool, "query" >, member
 export interface InboxMessage {
   owner: string;
   agent: string;
-  /** The schedule that wrote it (`morning-brief`, `crm-routing`, ...). */
+  /** The schedule that wrote it (`morning-brief`, `track-routing`, ...). */
   kind: string;
   title: string;
   /** What the owner reads. */

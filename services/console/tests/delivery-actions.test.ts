@@ -39,7 +39,7 @@ const stored = (extra: Record<string, unknown> = {}) => ({
 });
 const data = (over: Record<string, unknown> = {}) => ({
   facts: [{ agent: "chief", delivery: undefined, doors: DOORS.map((d) => ({ kind: d.kind, enabled: d.enabled })) }],
-  hours: { "morning-brief": [8], "evening-brief": [20], digest: [9, 17], "crm-routing": [9, 13, 17], "weekly-summary": [9] },
+  hours: { "morning-brief": [8], "evening-brief": [20], digest: [9, 17], "track-routing": [9, 13, 17], "weekly-summary": [9] },
   rows: [],
   knownDoors: ["telegram:123", "slack:U1", "web:inbox"],
   ...over,
@@ -141,7 +141,7 @@ describe("quiet hours that would swallow a brief (saveQuietHours)", () => {
 
   it("a window for another door is not checked against this door's briefs", async () => {
     // the morning brief (08:00) goes to Telegram; the Slack briefs are all in the afternoon
-    mocks.inputs.mockResolvedValue(data({ hours: { "morning-brief": [8], digest: [14], "crm-routing": [14], "weekly-summary": [14] } }));
+    mocks.inputs.mockResolvedValue(data({ hours: { "morning-brief": [8], digest: [14], "track-routing": [14], "weekly-summary": [14] } }));
     expect(await saveQuietHours({ door: "slack:U1", quietStart: "04:00", quietEnd: "12:00" })).toMatchObject({ ok: true });
   });
 

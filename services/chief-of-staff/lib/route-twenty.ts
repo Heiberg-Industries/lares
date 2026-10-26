@@ -1,5 +1,5 @@
 /**
- * Raw Twenty client for the CRM routing engine's scan/classify loop.
+ * Raw Twenty client for the track routing engine's scan/classify loop.
  *
  * The activity-read and opportunity endpoints (verified against a live Twenty instance).
  * This is deliberately
@@ -15,6 +15,9 @@
  */
 import { twentyGet, TwentyNotFoundError } from "./twenty-client.js";
 import { TwentyTracksHome } from "./twenty-tracks.js";
+import { vaultBrokerRequest } from "@lares/agent-kit/vault-broker-client";
+import type { RoutedTrack, OpenOpportunity } from "./route-classify.js";
+import type { Track, TrackItem } from "@lares/agent-kit/tracks";
 
 export interface RouteMessageParticipant {
   personId: string | null;
@@ -130,5 +133,29 @@ export function makeRouteTwentyClient() {
     getCalendarEvent,
     listOpportunitiesForPerson,
     getPersonName,
+  };
+}
+
+/** Keeper exposes only visible, shared Vault tracks under current use authority. Track Markdown
+ * remains untrusted background; this adapter does not turn it into a write grant. */
+export function makeRouteVaultClient(ownerMemberId: string) {
+  async function read(personId?: string): Promise<Array<{home:string;tracks:Array<{track:Track;items:TrackItem[]}>}>> {
+    const result = await vaultBrokerRequest<{homes?:Array<{home:string;tracks:Array<{track:Track;items:TrackItem[]}>}>}>(
+      "tracks.list-scheduled", { ownerMemberId, ...(personId ? { personId } : {}) },
+    );
+    if (!Array.isArray(result.homes)) throw new Error("Authorized Vault tracks are unavailable");
+    return result.homes;
+  }
+  return {
+    async listTracks(): Promise<RoutedTrack[]> {
+      const homes = await read();
+      return homes.flatMap((home) => home.tracks.map(({track}) => ({...track,home:home.home})));
+    },
+    async listOpenItemsForPerson(personId: string): Promise<OpenOpportunity[]> {
+      const homes = await read(personId);
+      return homes.flatMap((home) => home.tracks.flatMap(({track,items}) => items.map((item) => ({
+        id:item.id,name:item.note,stage:item.step,home:home.home,trackId:track.id,
+      }))));
+    },
   };
 }

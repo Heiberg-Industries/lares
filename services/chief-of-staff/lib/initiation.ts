@@ -87,7 +87,7 @@ export interface InitiationOutcome {
 /**
  * The gate as the schedules consume it.
  *
- * A dep-shaped type, so the pure tick factories (`makeProposalsWatchTick`, `makeCrmRoutingTick`,
+ * A dep-shaped type, so the pure tick factories (`makeProposalsWatchTick`, `makeTrackRoutingTick`,
  * `makeEmailTriageTick`, …) take the gate as an INJECTED dep and their existing unit tests keep
  * running with no ledger at all — see `SEND_UNGATED`.
  */
