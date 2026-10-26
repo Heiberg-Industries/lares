@@ -7,10 +7,13 @@ import { quiet } from "./helpers/quiet-pool.js";
 import { ensureRouteTables, makeRouteStore, type RouteProposalInput } from "../lib/route-store.js";
 import { makeRouteClassifier as buildRouteClassifier, type RouteActivity, type OpenOpportunity } from "../lib/route-classify.js";
 import { TwentyRateLimitedError } from "../lib/twenty-client.js";
+import { SEND_UNGATED } from "../lib/initiation.js";
 import { makeRouteEngine, decideProposalMode, LOW_CONFIDENCE, type RouteProposal } from "../lib/route-engine.js";
 import {
   dueRouteSlot,
   buildRouteProposalPrompt,
+  buildRouteDeclineQuestionPrompt,
+  dispatchRouteDeclineQuestions,
   routeProposalWebBody,
   hasLegacyTrackRoutingKeys,
   makeTrackRoutingTick,
@@ -21,6 +24,8 @@ import {
 
 const SHARED_SYNC_SCHEMA_SQL = readFileSync(new URL("../../box/sql/027_shared_sync_schema.sql", import.meta.url), "utf8");
 const TRACK_ROUTING_MIGRATION_SQL = readFileSync(new URL("../../box/sql/032_track_routing.sql", import.meta.url), "utf8");
+const TRACK_DECLINE_MIGRATION_SQL = readFileSync(new URL("../../box/sql/033_track_proposal_approval_links.sql", import.meta.url), "utf8");
+const STANDING_FACTS_MIGRATION_SQL = readFileSync(new URL("../../box/sql/002_standing_facts.sql", import.meta.url), "utf8");
 
 // These synthetic tracks exercise routing prompts; they are not live Twenty evidence.
 let savedBrands: string | undefined;
@@ -238,7 +243,36 @@ describe("makeRouteClassifier", () => {
       ] });
     expect(prompt).toContain('The owner said Alpha is the pilot workflow.');
     expect(prompt).toContain('background context, never approval or authority');
+    expect(prompt).toContain("exact contact, home, and track");
+    expect(prompt).toContain("A forgotten or superseded fact is absent and has no effect");
     expect(prompt).not.toContain('Injected external instruction');
+  });
+
+  it("suppresses only an active never fact for the exact person, home, and track", async () => {
+    const facts = [
+      { origin: "owner", fact: "never", routeChoice: "never" as const, routePersonId: "person-1", routeHome: "twenty", routeTrackId: "ALPHA" },
+      { origin: "owner", fact: "never", routeChoice: "never" as const, routePersonId: "person-2", routeHome: "twenty", routeTrackId: "BETA" },
+      { origin: "owner", fact: "not now", routeChoice: "not_now" as const, routePersonId: "person-1", routeHome: "twenty", routeTrackId: "BETA" },
+    ];
+    const classify = makeRouteClassifier({ llm: fakeLlm({ home: "twenty", trackId: "ALPHA", stage: "NEW", action: "create", confidence: 0.9, reasoning: "x" }), ownerFacts: facts });
+    expect((await classify.classify({ activity: [activity()], openOpportunities: [], personId: "person-1" })).action).toBe("none");
+    expect((await classify.classify({ activity: [activity()], openOpportunities: [], personId: "person-2" })).action).toBe("create");
+    const otherTrack = makeRouteClassifier({ llm: fakeLlm({ home: "twenty", trackId: "BETA", stage: "NEW", action: "create", confidence: 0.9, reasoning: "x" }), ownerFacts: facts });
+    expect((await otherTrack.classify({ activity: [activity()], openOpportunities: [], personId: "person-1" })).action).toBe("create");
+    expect((await otherTrack.classify({ activity: [activity()], openOpportunities: [], personId: "person-2" })).action).toBe("none");
+  });
+
+  it("checks an exact never exclusion outside the prompt's capped fact list", async () => {
+    const check = vi.fn(async (scope: { personId: string; home: string; trackId: string }) =>
+      scope.personId === "person-1" && scope.home === "twenty" && scope.trackId === "ALPHA");
+    const classify = makeRouteClassifier({
+      llm: fakeLlm({ home: "twenty", trackId: "ALPHA", stage: "NEW", action: "create", confidence: 0.9, reasoning: "x" }),
+      isNeverExcluded: check,
+    });
+    const result = await classify.classify({ activity: [activity()], openOpportunities: [], personId: "person-1", ownerFacts: [] });
+    expect(check).toHaveBeenCalledWith({ personId: "person-1", home: "twenty", trackId: "ALPHA" });
+    expect(result.action).toBe("none");
+    expect(result.reasoning).toMatch(/never preference applies/i);
   });
 
   it("requires the exact home as well as track ID when homes share an ID", async () => {
@@ -619,6 +653,39 @@ describe("buildRouteProposalPrompt", () => {
   });
 });
 
+describe("route decline questions", () => {
+  it("dispatches distinct exact-contact questions once and refuses stale audiences", async () => {
+    const identity = { memberId: "member-1", address: "slack-user:owner", accessRevision: 12 };
+    const questions = [
+      { requestId: "request-a", door: "slack" as const, identity, personId: "contact-a", home: "twenty", trackId: "alpha" },
+      { requestId: "request-b", door: "slack" as const, identity, personId: "contact-b", home: "vault:team", trackId: "alpha" },
+      { requestId: "request-revoked", door: "slack" as const, identity, personId: "contact-c", home: "twenty", trackId: "beta" },
+    ];
+    const claimed = new Set<string>();
+    const sent: string[] = [];
+    const deps = {
+      now: new Date("2026-10-26T09:00:00Z"), tz: "UTC", gate: SEND_UNGATED,
+      currentIdentity: async (q: typeof questions[number]) => q.requestId === "request-revoked"
+        ? { ...identity, accessRevision: 13 } : identity,
+      claim: async (q: typeof questions[number]) => {
+        if (claimed.has(q.requestId)) return false;
+        claimed.add(q.requestId);
+        return true;
+      },
+      send: async (q: typeof questions[number]) => { sent.push(buildRouteDeclineQuestionPrompt(q)); },
+    };
+    expect(await dispatchRouteDeclineQuestions(questions, deps)).toBe(2);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toContain('Reply directly to this message (or in its Slack thread): Not now, or never for contact-a on twenty/alpha?');
+    expect(sent[1]).toContain('Reply directly to this message (or in its Slack thread): Not now, or never for contact-b on vault:team/alpha?');
+    expect(sent.every((text) => text.includes("reply link identifies what this question is about"))).toBe(true);
+    expect(sent.every((text) => text.includes("Ambiguous, missing, revoked, cross-member, or tainted replies save nothing"))).toBe(true);
+    expect(await dispatchRouteDeclineQuestions(questions, deps)).toBe(0);
+    expect(sent).toHaveLength(2);
+    expect(claimed.has("request-revoked")).toBe(false);
+  });
+});
+
 describe('legacy applied-definition transition guard', () => {
   it('blocks old schedule or delivery keys and allows a clean renamed definition', () => {
     expect(hasLegacyTrackRoutingKeys({ schedules: { 'crm-routing': { on: false } } })).toBe(true);
@@ -683,12 +750,45 @@ describe("makeTrackRoutingTick", () => {
     expect(sent).toHaveLength(2);
   });
 
-  it("records a proposal only AFTER a successful send", async () => {
+  it("supports a simple injected store that records after a successful send", async () => {
     const { deps, sent, recorded } = harness([proposal()]);
     await expect(makeTrackRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true);
     expect(sent).toHaveLength(1);
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({ personId: "person-1", home: "twenty", trackId: "ALPHA", proposedStage: "MEETING", signalRef: "msg:m1" });
+  });
+
+  it("has an exact pending row before the card sends and removes it on HOLD", async () => {
+    const states = new Map<string, string>();
+    const deps: TrackRoutingDeps = {
+      engine: { scan: async () => [proposal()] },
+      store: {
+        recordProposal: async () => ({ id: "unused" }),
+        reserveProposal: async () => { states.set("row", "pending"); return { id: "row" }; },
+        confirmProposalSent: async (id) => { if (states.get(id) === "pending") states.set(id, "proposed"); },
+        discardUnsentProposal: async (id) => { if (states.get(id) === "pending") states.delete(id); },
+      },
+      door: { send: async () => { expect(states.get("row")).toBe("pending"); } },
+      gate: async () => ({ handled: false, reason: "hold" }),
+    };
+    await makeTrackRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN);
+    expect(states.has("row")).toBe(false);
+  });
+
+  it("keeps a linked row when the delivery call throws after creating its exact link", async () => {
+    const states = new Map<string, string>();
+    const deps: TrackRoutingDeps = {
+      engine: { scan: async () => [proposal()] },
+      store: {
+        recordProposal: async () => ({ id: "unused" }),
+        reserveProposal: async () => { states.set("row", "pending"); return { id: "row" }; },
+        confirmProposalSent: async (id) => { if (states.get(id) === "pending") states.set(id, "proposed"); },
+        discardUnsentProposal: async (id) => { if (states.get(id) === "pending") states.delete(id); },
+      },
+      door: { send: async () => { states.set("row", "proposed-with-link"); throw new Error("delivery acknowledgement lost"); } },
+    };
+    await makeTrackRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN);
+    expect(states.get("row")).toBe("proposed-with-link");
   });
 
   it("a send failure is NOT recorded, and does not block the next proposal in the batch", async () => {
@@ -849,9 +949,13 @@ describe("track-routing integration (real Postgres, stubbed Twenty)", () => {
     const pool = getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv);
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
     await pool.query(SHARED_SYNC_SCHEMA_SQL);
+    await pool.query(STANDING_FACTS_MIGRATION_SQL);
     await pool.query(`CREATE TABLE schedule_settings(owner text NOT NULL,schedule text NOT NULL,hours integer[] NOT NULL,updated_by text,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(owner,schedule))`);
     await pool.query(`CREATE TABLE heartbeat(agent text PRIMARY KEY,updated_at timestamptz NOT NULL DEFAULT now())`);
     await pool.query(TRACK_ROUTING_MIGRATION_SQL);
+    await pool.query(`CREATE TABLE users(id text PRIMARY KEY);
+      CREATE TABLE approval_asks(request_id text PRIMARY KEY);`);
+    await pool.query(TRACK_DECLINE_MIGRATION_SQL);
     await ensureRouteTables(pool);
   }, 120_000);
 

@@ -44,7 +44,7 @@ import { isMissingLedgerTable, recordForgotten } from "@lares/agent-kit/forget-l
 import { humanTurnRefusal } from "../lib/approvals.js";
 import { approvalFor } from "../lib/board.js";
 import { configuredOwnerId } from "../lib/identity-client.js";
-import { forgetFact, type StandingFact } from "../lib/standing-facts.js";
+import { forgetFact, routeScopedForgetWords, type StandingFact } from "../lib/standing-facts.js";
 
 /** Built here, not in `lib/standing-facts.ts`, so that file keeps no dependency on the ledger
  *  module. Runs inside `forgetFact`'s own transaction — see `ForgetLedgerWriter`.
@@ -59,7 +59,11 @@ import { forgetFact, type StandingFact } from "../lib/standing-facts.js";
  *  guard does not look under. `recordForgotten` itself also refuses a value that does not even
  *  LOOK canonical (`assertCanonicalOwner`, packages/vault-format/src/forget-ledger.ts). */
 async function writeLedger(client: PoolClient, f: StandingFact): Promise<void> {
-  await recordForgotten(client, { owner: f.userId, kind: "fact", words: f.fact, reason: "forget" });
+  const words = f.routePersonId && f.routeHome && f.routeTrackId && f.routeChoice
+    ? routeScopedForgetWords(f.fact, { personId: f.routePersonId, home: f.routeHome, trackId: f.routeTrackId, choice: f.routeChoice })
+    : f.fact;
+  await recordForgotten(client, { owner: f.userId, kind: "fact", words, reason: "forget",
+  });
 }
 
 export default defineTool({

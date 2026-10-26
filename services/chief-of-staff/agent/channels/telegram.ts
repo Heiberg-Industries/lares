@@ -30,6 +30,7 @@ import {
 import { isAllowedPrincipalId } from "../../lib/principals.js";
 import { withOwnerTapAuth } from "../../lib/telegram-tap-auth.js";
 import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
+import { markRouteDeclineQuestionSent } from "../../lib/route-decline.js";
 import { continuityAuthAttributes, nativeConversationContinuity } from "../../lib/conversation-continuity.js";
 import { TELEGRAM_INNER_ROUTE } from "@lares/agent-kit/telegram-routes";
 import { mdToTelegramHtml, splitTelegramHtml } from "@lares/agent-kit/telegram-markdown";
@@ -247,7 +248,13 @@ export default withOwnerTapAuth(telegramChannel({
 
     const auth = defaultTelegramAuth(message);
     let continuityContext: string[] = [];
-    let admittedAuth = auth;
+    let admittedAuth = auth ? {
+      ...auth,
+      attributes: {
+        ...auth.attributes,
+        ...(message.replyToMessage ? { lares_route_decline_reply_anchor: `telegram:${message.replyToMessage.messageId}` } : {}),
+      },
+    } : auth;
     if (auth) {
       try {
         const continuity = await nativeConversationContinuity("telegram", auth);
@@ -596,9 +603,9 @@ export async function onMessageCompleted(
   data: { finishReason: string; message?: string | null },
   channel: {
     state: { chatId: string | null; chatType: string | null };
-    telegram: { post(message: unknown): Promise<unknown> };
+    telegram: { post(message: unknown): Promise<{ id?: unknown }> };
   },
-  ctx: { session: { id: string } },
+  ctx: { session: { id: string; auth?: { current?: { attributes?: Record<string, unknown> } } } },
 ): Promise<void> {
       // DELIVER THE REPLY FIRST — and this line is the whole reason the handler exists at
       // all costs. Supplying "message.completed" here REPLACES eve's default handler
@@ -614,8 +621,15 @@ export async function onMessageCompleted(
         // body's extra fields to the FIRST chunk only, so every later chunk would lose
         // `parse_mode` and arrive as visible tag soup. Splitting on newlines is safe because
         // `mdToTelegramHtml` never opens a tag on one line and closes it on another.
-        for (const chunk of splitTelegramHtml(mdToTelegramHtml(data.message))) {
-          await channel.telegram.post({ text: chunk, parse_mode: "HTML" } as never);
+        const requestId = ctx.session.auth?.current?.attributes?.lares_route_decline_request_id;
+        const chunks = splitTelegramHtml(mdToTelegramHtml(data.message));
+        let firstMessageId: string | undefined;
+        for (const chunk of chunks) {
+          const posted = await channel.telegram.post({ text: chunk, parse_mode: "HTML" } as never);
+          if (!firstMessageId && typeof posted?.id === "string" && posted.id) firstMessageId = posted.id;
+        }
+        if (typeof requestId === "string" && firstMessageId) {
+          await markRouteDeclineQuestionSent(getPool(), requestId, `telegram:${firstMessageId}`);
         }
       }
 

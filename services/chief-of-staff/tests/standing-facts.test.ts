@@ -5,7 +5,7 @@
  * been bitten by). `services/box/sql/002_standing_facts.sql` is read from disk, so a migration that does not
  * apply cleanly fails here rather than on the box.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -14,11 +14,13 @@ import type { DynamicResolveContext } from "eve/instructions";
 import { denylistPatterns } from "./helpers/denylist";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { PgGrantStore } from "@lares/agent-kit/grant-store";
 import { quiet } from "./helpers/quiet-pool.js";
 import { taintTurn, resetTaintForTests } from "@lares/agent-kit/origin-taint";
-import { recordForgotten } from "@lares/agent-kit/forget-ledger";
+import { recordForgotten, wasForgotten } from "@lares/agent-kit/forget-ledger";
 import { withTimeout } from "../lib/timeout.js";
 import { configuredOwnerId } from "../lib/identity-client.js";
+import { agentName } from "../lib/agent-name.js";
 import {
   MAX_FACT_LENGTH,
   MAX_STANDING_FACTS,
@@ -28,10 +30,12 @@ import {
   STANDING_FACTS_TIMEOUT_MS,
   UnknownFactError,
   forgetFact,
+  hasActiveRouteNeverFact,
   listActiveFacts,
   listRetiredFacts,
   rejectFact,
   rememberFact,
+  routeScopedForgetWords,
   shelfOf,
   standingFactsMarkdown,
   supersedeFact,
@@ -39,6 +43,8 @@ import {
 import remember from "../catalogue/remember.js";
 import forget from "../catalogue/forget.js";
 import standingFactsInstructions from "../agent/instructions/standing-facts.js";
+
+const boxSqlDir = join(import.meta.dirname, "../../box/sql");
 
 /** `services/box/sql/001_baseline.sql`, verbatim in shape (id, owner, kind, match_hash,
  *  forgotten_at, reason; the same CHECK constraints and the same unique index) — mirrored inline
@@ -129,14 +135,26 @@ async function injected(): Promise<string> {
 describe("standing facts", () => {
   let container: StartedPostgreSqlContainer;
   let dbUrl: string;
+  let accessRevision: number;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:16-alpine").start();
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
     dbUrl = container.getConnectionUri();
     process.env["DATABASE_URL"] = dbUrl;
     process.env["SLACK_ALLOWED_USER_IDS"] = OWNER_SLACK;
     process.env["TELEGRAM_PRINCIPAL_ID"] = OWNER_TELEGRAM;
-    await quiet(getPool()).query(readFileSync(join(import.meta.dirname, "../../box/sql/002_standing_facts.sql"), "utf8"));
+    process.env["AGENT_OWNER_USER_ID"] = "fixture-owner";
+    quiet(getPool());
+    for (const file of readdirSync(boxSqlDir).filter((name) => name.endsWith(".sql")).sort()) {
+      await getPool().query(readFileSync(join(boxSqlDir, file), "utf8"));
+    }
+    await getPool().query(`INSERT INTO orgs(id,display_name) VALUES('fixture-org','Fixture');
+      INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('fixture-owner','Test Owner','fixture-org','owner','active');
+      INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('fixture-owner',NULL);
+      INSERT INTO user_aliases(system,alias,user_id) VALUES('telegram','42424242','fixture-owner');
+      INSERT INTO agent_definitions(name,definition,hash,status)
+        VALUES('chief-of-staff','{"grants":[]}','fixture-agent-hash','valid');`);
+    await getPool().query("DROP TABLE forget_ledger");
     await getPool().query(FORGET_LEDGER_SQL);
   }, 120_000);
 
@@ -147,7 +165,14 @@ describe("standing facts", () => {
 
   beforeEach(async () => {
     process.env["DATABASE_URL"] = dbUrl;
+    resetTaintForTests();
     await getPool().query("TRUNCATE standing_facts RESTART IDENTITY");
+    await getPool().query("TRUNCATE route_proposal_approval_links, approval_asks CASCADE");
+    await getPool().query("DELETE FROM agent_access WHERE agent_name=$1", [agentName()]);
+    const access = await new PgGrantStore(getPool()).adoptAgent("fixture-owner", {
+      agentName: agentName(), expectedDefinitionHash: "fixture-agent-hash",
+    }, { designatedOwnerMemberId: "fixture-owner" });
+    accessRevision = access.accessRevision;
     // A missing-table test drops this table; recreate it unconditionally so every test starts
     // with the ledger present, whether or not the previous one dropped it.
     await getPool().query("DROP TABLE IF EXISTS forget_ledger");
@@ -186,6 +211,23 @@ describe("standing facts", () => {
         });
       }
       expect((await listActiveFacts(getPool(), configuredOwnerId())).map((f) => f.fact)).toEqual(["newest", "middle", "oldest"]);
+    });
+
+    it("finds an older scoped never fact even when it falls outside the bounded prompt list", async () => {
+      await rememberFact(getPool(), { fact: "Never", category: "preference", sourceTurn: "old-route",
+        userId: configuredOwnerId(), statedAt: new Date("2020-01-01T00:00:00Z"),
+        routeScope: { personId: "person-old", home: "twenty", trackId: "ALPHA", choice: "never" } });
+      for (let i = 0; i < MAX_STANDING_FACTS + 1; i++) {
+        await rememberFact(getPool(), { fact: `unrelated ${i}`, category: "preference", sourceTurn: `new-${i}`,
+          userId: configuredOwnerId() });
+      }
+      expect((await listActiveFacts(getPool(), configuredOwnerId())).some((fact) => fact.routeTrackId === "ALPHA")).toBe(false);
+      expect(await hasActiveRouteNeverFact(getPool(), configuredOwnerId(), {
+        personId: "person-old", home: "twenty", trackId: "ALPHA",
+      })).toBe(true);
+      expect(await hasActiveRouteNeverFact(getPool(), configuredOwnerId(), {
+        personId: "person-old", home: "twenty", trackId: "BETA",
+      })).toBe(false);
     });
 
     it("a retired fact drops out of the active list but is NOT deleted", async () => {
@@ -410,6 +452,102 @@ describe("standing facts", () => {
   // ── the tools ────────────────────────────────────────────────────────────────
 
   describe("remember", () => {
+    async function seedRouteQuestion(requestId: string, scope = { personId: "person-1", home: "twenty", trackId: "ALPHA" }): Promise<void> {
+      await getPool().query(`INSERT INTO approval_asks(request_id,call_id,agent,tool,payload_hash)
+        VALUES($1,$2,'chief-of-staff','track_add_item',$3)`, [requestId, `call-${requestId}`, "a".repeat(64)]);
+      await getPool().query(`INSERT INTO route_proposal_approval_links
+        (request_id,session_id,request_turn_sequence,member_id,door,audience_address,audience_access_revision,tool_name,call_id,payload_hash,
+         person_id,contact_person_id,home,track_id,proposed_stage,signal_ref,declined_at,question_pending,question_claimed_at,question_sent_at,question_reply_anchor)
+        VALUES($1,'wrun_test',1,'fixture-owner','telegram','telegram-user:42424242',$8,'track_add_item',$2,$3,
+         $4,$4,$5,$6,'intro',$7,now(),false,now(),now(),$9)`,
+      [requestId, `call-${requestId}`, "a".repeat(64), scope.personId, scope.home, scope.trackId,
+        `signal-${requestId}`, accessRevision, `telegram:${requestId}-message`]);
+    }
+    function routeReplyContext(_requestId?: string, sequence = 42): ToolContext {
+      return {
+        session: { id: "wrun_test", turn: { id: `turn_${sequence}`, sequence }, auth: {
+          current: { ...telegramAuth(OWNER_TELEGRAM), attributes: { ...telegramAuth(OWNER_TELEGRAM).attributes,
+            ...(_requestId ? { lares_route_decline_reply_anchor: `telegram:${_requestId}-message` } : {}) } },
+          // Telegram private-chat continuation retains this stale schedule initiator; it is not the reply referent.
+          initiator: { authenticator: "app", attributes: { lane: "old-schedule" } },
+        } },
+      } as unknown as ToolContext;
+    }
+
+    it("stores a fresh authenticated 'never' verbatim under its exact question scope once", async () => {
+      const id = "route-never";
+      await seedRouteQuestion(id);
+        // A fresh but unrelated human fact in the same Telegram continuation is stored normally;
+        // the route question remains open until the exact answer is given.
+        const ordinary = await remember.execute({ fact: "I prefer quiet mornings", category: "preference" }, routeReplyContext());
+        expect(ordinary.remembered).toBe(true);
+        expect((await getPool().query("SELECT answered_at FROM route_proposal_approval_links WHERE request_id=$1", [id])).rows[0]?.answered_at).toBeNull();
+
+        const result = await remember.execute({ fact: "Never", category: "preference" }, routeReplyContext(id));
+        expect(result.remembered).toBe(true);
+        expect((await listActiveFacts(getPool(), configuredOwnerId()))[0]).toMatchObject({
+          fact: "Never", routePersonId: "person-1", routeHome: "twenty", routeTrackId: "ALPHA", routeChoice: "never",
+        });
+        const repeated = await remember.execute({ fact: "Never", category: "preference" }, routeReplyContext());
+        expect(repeated.remembered).toBe(false);
+        expect(await listActiveFacts(getPool(), configuredOwnerId())).toHaveLength(2);
+
+        const activeA = (await listActiveFacts(getPool(), configuredOwnerId())).find((f) => f.routeTrackId === "ALPHA")!;
+        expect((await forget.execute({ id: activeA.id }, ctx)).forgotten).toBe(true);
+        expect((await listActiveFacts(getPool(), configuredOwnerId())).some((f) => f.routeTrackId === "ALPHA")).toBe(false);
+        const scopeA = { personId: "person-1", home: "twenty", trackId: "ALPHA", choice: "never" as const };
+        const scopeB = { personId: "person-2", home: "twenty", trackId: "BETA", choice: "never" as const };
+        expect(await wasForgotten(getPool(), { owner: configuredOwnerId(), kind: "fact", words: routeScopedForgetWords("Never", scopeA) })).not.toBeNull();
+        expect(await wasForgotten(getPool(), { owner: configuredOwnerId(), kind: "fact", words: routeScopedForgetWords("Never", scopeB) })).toBeNull();
+
+        const retryB = "route-never-B-after-forget-A";
+        await seedRouteQuestion(retryB, { personId: "person-2", home: "twenty", trackId: "BETA" });
+        expect((await remember.execute({ fact: "Never", category: "preference" }, routeReplyContext(retryB))).remembered).toBe(true);
+        expect((await listActiveFacts(getPool(), configuredOwnerId())).map((f) => f.routeTrackId)).toContain("BETA");
+
+        const retryA = "route-never-A-again";
+        await seedRouteQuestion(retryA);
+        expect((await remember.execute({ fact: "Never", category: "preference" }, routeReplyContext(retryA))).remembered).toBe(true);
+        expect(await wasForgotten(getPool(), { owner: configuredOwnerId(), kind: "fact", words: routeScopedForgetWords("Never", scopeA) })).toBeNull();
+    });
+
+    it("stores 'not now' without turning it into a permanent never preference", async () => {
+      const id = "route-not-now";
+      await seedRouteQuestion(id);
+        const result = await remember.execute({ fact: "not now", category: "preference" }, routeReplyContext(id));
+        expect(result.remembered).toBe(true);
+        expect((await listActiveFacts(getPool(), configuredOwnerId()))[0]).toMatchObject({ fact: "not now", routeChoice: "not_now" });
+    });
+
+    it("saves nothing for an ambiguous/missing link or a changed current grant", async () => {
+      await seedRouteQuestion("route-valid");
+      expect((await remember.execute({ fact: "Never", category: "preference" }, routeReplyContext())).remembered).toBe(false);
+      expect((await remember.execute({ fact: "Never", category: "preference" }, routeReplyContext("missing-link"))).remembered).toBe(false);
+      await getPool().query("DELETE FROM agent_access WHERE agent_name=$1", [agentName()]);
+      expect((await remember.execute({ fact: "Never", category: "preference" }, routeReplyContext("route-valid"))).remembered).toBe(false);
+      expect(await listActiveFacts(getPool(), configuredOwnerId())).toHaveLength(0);
+    });
+
+    it("refuses an ambiguous or pre-question answer and leaves an unrelated fact unconsumed", async () => {
+      await seedRouteQuestion("route-stale", { personId: "person-stale", home: "twenty", trackId: "STALE" });
+      expect((await remember.execute({ fact: "Never", category: "preference" }, routeReplyContext(undefined, 1))).remembered).toBe(false);
+      expect((await remember.execute({ fact: "I like tea", category: "preference" }, routeReplyContext())).remembered).toBe(true);
+      expect((await getPool().query("SELECT answered_at FROM route_proposal_approval_links WHERE request_id='route-stale'")).rows[0]?.answered_at).toBeNull();
+
+      await seedRouteQuestion("route-ambiguous", { personId: "person-other", home: "twenty", trackId: "OTHER" });
+      expect((await remember.execute({ fact: "Never", category: "preference" }, routeReplyContext())).remembered).toBe(false);
+      expect(await listActiveFacts(getPool(), configuredOwnerId())).toHaveLength(1);
+    });
+
+    it("does not learn from a tainted reply or from silence", async () => {
+      await seedRouteQuestion("route-silent");
+      expect(await listActiveFacts(getPool(), configuredOwnerId())).toHaveLength(0);
+      taintTurn(CTX_TURN_KEY, "third_party");
+      const result = await remember.execute({ fact: "Never", category: "preference" }, routeReplyContext("route-silent"));
+      expect(result.remembered).toBe(false);
+      expect(await listActiveFacts(getPool(), configuredOwnerId())).toHaveLength(0);
+    });
+
     it("remember is ungated — a note-to-self is not an external action", () => {
       expect((remember as unknown as { approval?: unknown }).approval).toBeUndefined();
     });

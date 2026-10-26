@@ -98,7 +98,7 @@ interface TwentyDep {
 }
 
 interface ClassifierDep {
-  classify(input: { activity: RouteActivity[]; openOpportunities: OpenOpportunity[]; tracks: readonly RoutedTrack[] }): Promise<RouteDecision>;
+  classify(input: { activity: RouteActivity[]; openOpportunities: OpenOpportunity[]; tracks: readonly RoutedTrack[]; personId?: string }): Promise<RouteDecision>;
 }
 
 interface VaultTracksDep {
@@ -312,7 +312,7 @@ export function makeRouteEngine(deps: {
           ];
 
           // c. Classify
-          const decision: RouteDecision = await classifier.classify({ activity, openOpportunities, tracks });
+          const decision: RouteDecision = await classifier.classify({ activity, openOpportunities, tracks, personId });
 
           if (decision.action === "none") {
             continue;

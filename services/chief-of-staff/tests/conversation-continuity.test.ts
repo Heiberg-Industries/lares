@@ -28,7 +28,24 @@ describe("private conversation continuity", () => {
     expect(nativeContinuityIdentity("telegram", {
       authenticator: "slack-webhook", attributes: { user_id: "U123" },
     })).toBeUndefined();
+    expect(nativeContinuityIdentity("telegram", {
+      authenticator: "telegram-webhook", attributes: { user_id: 42424242 },
+    })).toEqual({ platform: "telegram", userId: "42424242", address: "telegram-user:42424242" });
     expect(nativeContinuityIdentity("slack", { authenticator: "app", attributes: { user_id: "U123" } })).toBeUndefined();
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    "refuses invalid numeric Telegram user ids (%s)", (user_id) => {
+      expect(nativeContinuityIdentity("telegram", {
+        authenticator: "telegram-webhook", attributes: { user_id },
+      })).toBeUndefined();
+    },
+  );
+
+  it("does not normalize numeric Slack identities", () => {
+    expect(nativeContinuityIdentity("slack", {
+      authenticator: "slack-webhook", attributes: { user_id: 123 },
+    })).toBeUndefined();
   });
 
   it("replays only bounded quoted agent posts, never the scheduled prompt", () => {

@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const { query } = vi.hoisted(() => ({ query: vi.fn(async () => ({ rows: [], rowCount: 1 })) }));
+vi.mock("@lares/agent-kit/db", () => ({ getPool: () => ({ query }) }));
+
 async function freshModule() {
   vi.resetModules();
   return await import("../agent/channels/slack.js");
@@ -130,5 +133,30 @@ describe("chief-of-staff Slack channel", () => {
       const { isAllowedSlackUser } = await freshModule();
       expect(isAllowedSlackUser(message())).toBe(false);
     });
+  });
+
+  it("anchors inbound answers to Slack's native thread root and saves the outbound question root", async () => {
+    const mod = await freshModule();
+    const inbound = await mod.admitSlackDirectMessage({ slack: { channelId: "D0OWNERDM", threadTs: "1700.01" } } as never,
+      message({ ts: "1700.02", threadTs: "1700.01", teamId: "T1" }));
+    expect(inbound?.auth.attributes.lares_route_decline_reply_anchor).toBe("slack:1700.01");
+
+    const state = { pendingToolCallMessage: null as string | null, triggeringUserId: "U_EXAMPLE_OWNER" };
+    const posted: string[] = [];
+    const channel = {
+      state,
+      thread: {
+        post: async () => ({ id: "ordinary" }),
+        postDirectMessage: async (userId: string, text: string) => { posted.push(`${userId}:${text}`); return { id: "1700.99" }; },
+        startTyping: async () => undefined,
+      },
+      slack: { threadTs: "", uploadFiles: async () => undefined },
+    };
+    await mod.onSlackMessageCompleted({ finishReason: "stop", message: "Question" }, channel, {
+      session: { auth: { current: { attributes: { lares_continuity_address: "slack-user:U_EXAMPLE_OWNER",
+        lares_route_decline_request_id: "request-1" } } } },
+    } as never);
+    expect(posted).toEqual(["U_EXAMPLE_OWNER:Question"]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("question_reply_anchor=$2"), ["request-1", "slack:1700.99"]);
   });
 });

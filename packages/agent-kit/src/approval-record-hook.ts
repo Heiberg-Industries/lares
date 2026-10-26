@@ -53,8 +53,8 @@ function warn(where: string, err: unknown): void {
 export interface ApprovalRecordDeps {
   personalRequested?: (request:{requestId:string;callId:string;input:unknown},ctx:unknown)=>Promise<void>;
   personalResolved?: (requestId:string,outcome:string,ctx:unknown)=>Promise<boolean>;
-  record?: (a: { requestId: string; callId: string; agent: string; tool: string; payloadHash: string }) => void;
-  answer?: (a: { requestId: string; outcome: AskOutcome }) => void;
+  record?: (a: { requestId: string; callId: string; agent: string; tool: string; payloadHash: string }) => void | Promise<void>;
+  answer?: (a: { requestId: string; outcome: AskOutcome }) => void | Promise<void>;
 }
 
 /**
@@ -65,13 +65,13 @@ export interface ApprovalRecordDeps {
 export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
   const record =
     deps.record ??
-    ((a) => {
-      void recordAsk(getPool(), a);
+    (async (a) => {
+      await recordAsk(getPool(), a);
     });
   const answer =
     deps.answer ??
-    ((a) => {
-      void recordAnswer(getPool(), a);
+    (async (a) => {
+      await recordAnswer(getPool(), a);
     });
 
   async function onInputRequested(event: unknown, ctx: unknown): Promise<void> {
@@ -102,7 +102,7 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
           await attachExactApproval({requestId,callId,tool:toolName,input:r.action?.input});
           continue;
         }
-        record({
+        await record({
           requestId,
           callId,
           agent,
@@ -134,7 +134,7 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
           await settleExactInput(requestId,outcome);
           continue;
         }
-        answer({ requestId, outcome });
+        await answer({ requestId, outcome });
       }
     } catch (err) {
       if (hasConsoleTurnAuthorityTag(ctx)) throw err;

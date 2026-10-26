@@ -116,6 +116,11 @@ const SEED_ROWS: SeedRow[] = [
   ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("approval_asks", "acting_member_id", member,
     `INSERT INTO approval_asks(request_id,call_id,agent,tool,payload_hash,acting_member_id) VALUES($1,$2,'fixture-agent','deadline_dismiss','fixture-hash',$3)`,
     [`fixture-approval-${index}`,`fixture-call-${index}`,member])),
+  ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("route_proposal_approval_links", "member_id", member,
+    `INSERT INTO route_proposal_approval_links(request_id,session_id,request_turn_sequence,member_id,door,audience_address,audience_access_revision,
+      tool_name,call_id,payload_hash,person_id,home,track_id,proposed_stage,signal_ref)
+     VALUES($1,'fixture-session',1,$2,'slack',$3,1,'track_add_item',$4,repeat('a',64),'fixture-contact','fixture-home','fixture-track','new','fixture-signal')`,
+    [`fixture-approval-${index}`,member,`slack-user:fixture-${index}`,`fixture-call-${index}`])),
 
   // Personal connected-account metadata; account rows precede their selected resources.
   row("connected_accounts", "owner_member_id", FIXTURE_OWNER,

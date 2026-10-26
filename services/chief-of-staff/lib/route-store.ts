@@ -91,7 +91,7 @@ export function makeRouteStore(db: Pool) {
      *  the same signal. */
     async alreadyProposed(args: { personId: string; signalRef: string }): Promise<boolean> {
       const { rows } = await db.query(
-        `SELECT 1 FROM route_proposals WHERE person_id = $1 AND signal_ref = $2 LIMIT 1`,
+        `SELECT 1 FROM route_proposals WHERE person_id = $1 AND signal_ref = $2 AND status <> 'pending' LIMIT 1`,
         [args.personId, args.signalRef],
       );
       return rows.length > 0;
@@ -101,7 +101,7 @@ export function makeRouteStore(db: Pool) {
      *  this person and brand since `sinceIso`, whatever became of it. */
     async proposedSince(args: { personId: string; home: string; trackId: string; sinceIso: string }): Promise<boolean> {
       const { rows } = await db.query(
-        `SELECT 1 FROM route_proposals WHERE person_id = $1 AND home = $2 AND track_id = $3 AND created_at >= $4 LIMIT 1`,
+        `SELECT 1 FROM route_proposals WHERE person_id = $1 AND home = $2 AND track_id = $3 AND created_at >= $4 AND status <> 'pending' LIMIT 1`,
         [args.personId, args.home, args.trackId, args.sinceIso],
       );
       return rows.length > 0;
@@ -117,6 +117,33 @@ export function makeRouteStore(db: Pool) {
         [p.personId, p.opportunityId ?? null, p.home, p.trackId, p.proposedStage, p.signalRef, p.confidence],
       );
       return { id: rows[0]!.id };
+    },
+
+    /** Reserve the exact ledger row before sending an approval card. Approval-link creation
+     * locks this row and promotes it; an unsent reservation can be safely discarded. */
+    async reserveProposal(p: RouteProposalInput): Promise<{ id: string }> {
+      const { rows } = await db.query<{ id: string }>(
+        `INSERT INTO route_proposals
+           (person_id, opportunity_id, home, track_id, proposed_stage, signal_ref, confidence, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+         ON CONFLICT (person_id,signal_ref) WHERE status='pending' DO NOTHING RETURNING id`,
+        [p.personId, p.opportunityId ?? null, p.home, p.trackId, p.proposedStage, p.signalRef, p.confidence],
+      );
+      if (rows[0]) return { id: rows[0].id };
+      const existing = await db.query<{ id: string }>(`SELECT id FROM route_proposals WHERE person_id=$1 AND signal_ref=$2
+        AND opportunity_id IS NOT DISTINCT FROM $3 AND home=$4 AND track_id=$5 AND proposed_stage=$6 AND status='pending'`,
+      [p.personId,p.signalRef,p.opportunityId ?? null,p.home,p.trackId,p.proposedStage]);
+      if (existing.rows.length === 1) return { id: existing.rows[0]!.id };
+      throw new Error("a different pending route proposal already owns this signal");
+    },
+
+    async confirmProposalSent(id: string): Promise<void> {
+      await db.query(`UPDATE route_proposals SET status='proposed' WHERE id=$1 AND status='pending'`, [id]);
+    },
+
+    async discardUnsentProposal(id: string): Promise<void> {
+      // A concurrent approval link locks/promotes the row first, so this delete cannot erase it.
+      await db.query(`DELETE FROM route_proposals WHERE id=$1 AND status='pending'`, [id]);
     },
 
     /** Update the status of a proposal — e.g. 'applied', 'skipped', 'vetoed'. */
