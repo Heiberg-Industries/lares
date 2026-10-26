@@ -5,6 +5,7 @@ import {
   loadIntegrationManifests,
   DATA_PATHS,
   PROVENANCES,
+  CONCEPTS,
 } from "../src/integration-manifest.js";
 
 // `integrations/` is a top-level directory, not a package-relative one; `vitest run` here
@@ -35,6 +36,8 @@ const good = {
 describe("the integration manifest", () => {
   it("accepts a complete manifest and keeps every field", () => {
     expect(parseIntegrationManifest(good)).toEqual(good);
+    expect(CONCEPTS).toEqual(["mailbox", "calendar", "accounting", "tracks"]);
+    expect(() => parseIntegrationManifest({ ...good, concept: ["crm"] })).toThrow(/concept/);
   });
 
   it("is strict: a misspelled key is a refusal, not a silent default", () => {

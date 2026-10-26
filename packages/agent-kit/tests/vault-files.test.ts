@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { GuardedVaultFiles, VAULT_AREA_MARKER, VaultFilesDeniedError, VaultFilesUnavailableError, type VaultFilesBackings, type VaultFilesContext } from '../src/vault-files.js';
 import { vaultContentRevision, VaultContentChangedError, VaultPushFailedError } from '../src/vault-git.js';
 import { readOriginFrontmatter } from '../src/origin.js';
+import { VaultTracksHome } from '../src/tracks.js';
 import { withVaultRepositoryLock } from '../src/note-lock.js';
 import { NotePathEscapesStoreError, resolveInStore } from '../src/notes-store.js';
 import type { VaultAreaBinding, VaultWriteBinding } from '../src/authority-contract.js';
@@ -155,6 +156,28 @@ describe('authorized initialized area reads',()=>{
 });
 
 describe('exact content mutations and local durability',()=>{
+  it('creates, lists, adds, closes and moves shared Tracks files through GuardedVaultFiles',async()=>{
+    const shared:VaultAreaBinding={...binding,kind:'shared',owner:{kind:'organisation',id:'org-a'}};
+    writeFileSync(join(root,VAULT_AREA_MARKER),JSON.stringify({version:1,areaId:shared.areaId,backingStoreId:shared.backingStoreId,relativePath:shared.relativePath,kind:shared.kind,owner:shared.owner}));
+    current.mockImplementation(async(memberId,input,options)=>{
+      expect(options?.db).toBe(ctx.db);expect(options?.requiredBackingKind).toBe('git');
+      return enabled&&memberId==='member-a'&&input.areaId===shared.areaId&&input.expectedRevision===1?shared:undefined;
+    });
+    const sharedApi=new GuardedVaultFiles({vaultAreaBinding:current},backings),writer={
+      async list(){return (await sharedApi.list(ctx)).paths;},
+      async read(path:string){try{const file=await sharedApi.read(ctx,path);return {path,content:file.content,contentRevision:file.contentRevision};}catch(error){if((error as Error).name==='NoteNotFoundError')return undefined;throw error;}},
+      async write(input:{path:string;expectedContentRevision:string|null;frontmatter:Record<string,unknown>;body:string}){
+        await sharedApi.write(ctx,{binding:writeBinding(input.path,input.expectedContentRevision),frontmatter:input.frontmatter,body:input.body});
+      },
+    };
+    const home=new VaultTracksHome(writer,()=> '2026-10-26',()=> 'application-1');
+    await home.createTrack({id:'funding',name:'Funding',purpose:'Grant applications',steps:['draft','submitted','won'],closingSteps:['won']});
+    const item=await home.addItem('funding',{organisationId:'org-a'},'draft','Prepare the grant','owner-said');
+    expect(await home.listTracks()).toHaveLength(1);expect(await home.listItems('funding')).toEqual([item]);
+    await home.moveItem(item.id,'won','Awarded','owner-said');expect(await home.listItems('funding')).toEqual([]);
+    expect(readFileSync(join(root,'tracks/funding/track.md'),'utf8')).toContain('lares_origin: synced');
+    expect(readFileSync(join(root,'tracks/funding/items/application-1.md'),'utf8')).toContain('type: track-item');
+  });
   it.each(['*.md',':(glob)*.md',':(top)other.md','[a-z]?.md'])('treats %s literally through create, move and remove without committing an unrelated edit',async(path)=>{
     seed('other.md','original canary');writeFileSync(join(root,'other.md'),'unrelated unstaged modification');
     await api.write(ctx,{binding:writeBinding(path),frontmatter:{},body:'literal path'});

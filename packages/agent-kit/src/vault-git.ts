@@ -52,7 +52,7 @@ export function serializeFrontmatter(fm: Record<string, unknown>): string {
     if (value === null || value === undefined) {
       lines.push(`${key}:`);
     } else if (Array.isArray(value)) {
-      lines.push(`${key}: [${value.join(", ")}]`);
+      lines.push(`${key}: ${JSON.stringify(value)}`);
     } else {
       lines.push(`${key}: ${value}`);
     }

@@ -13,28 +13,40 @@ import { autonomyOf, grantFor, scopeAtLeast } from './manifest.js';
 
 export const EXACT_APPROVAL_REFUSED = 'Exact approval authority is unavailable or has changed';
 const refuse = (): never => { throw new Error(EXACT_APPROVAL_REFUSED); };
-const targetSchema = z.strictObject({ kind: z.enum(['deadline','deadline-candidate']), id: z.string().min(1),
-  ownerMemberId: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/) });
+const targetSchema = z.strictObject({ kind: z.enum(['deadline','deadline-candidate','track','track-item','track-create']), id: z.string().min(1),
+  ownerMemberId: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  approvedOrigin: z.enum(['agent','synced','third_party']).optional() });
 export type ExactApprovalTarget = z.infer<typeof targetSchema>;
 const reservationSchema = z.strictObject({ version: z.literal(1), original: turnAuthoritySchema,
   incarnation: z.string().uuid(), admissionHash: z.string(), target: targetSchema,
   policyHash: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.iso.datetime() });
 type Reservation = z.infer<typeof reservationSchema>;
 export interface ExactApprovalAdapter {
+  /** Tool names this purpose-built adapter can authorize. */
+  toolNames: readonly string[];
   /** Read current content and stable ownership; lock the row when using a transaction client. */
-  readTarget(db: AuthorityDatabase, input: unknown, memberId: string): Promise<ExactApprovalTarget>;
+  readTarget(db: AuthorityDatabase, input: unknown, memberId: string, tool?: string, ctx?: ConsoleAuthorityContext,
+    reservedTarget?: ExactApprovalTarget): Promise<ExactApprovalTarget>;
+  /** Hash the current, narrowly scoped policy under the same transaction/locks as target reads. */
+  readPolicyHash(db: AuthorityDatabase, agent: string, incarnation: string): Promise<string>;
 }
 export interface ExactApprovalOptions {
   adapter?: ExactApprovalAdapter; db?: AuthorityDatabase; env?: NodeJS.ProcessEnv; now?: Date;
 }
 interface Row { request_id: string | null; call_id: string; agent: string; tool: string; payload_hash: string;
   original_authority: unknown; acting_member_id: string | null; resolved_by_member_id: string | null; outcome: string | null }
-interface Execution { authority: Extract<TurnAuthority,{origin:'approval-resume'}>; target: ExactApprovalTarget }
+export interface ApprovedExecution {
+  authority: Extract<TurnAuthority,{origin:'approval-resume'}>;
+  target: ExactApprovalTarget;
+  callId: string;
+  toolName: string;
+  payloadHash: string;
+}
 const database = (o: ExactApprovalOptions) => o.db ?? getPool();
 const same = (a: unknown, b: unknown) => payloadFingerprint('authority',a) === payloadFingerprint('authority',b);
 const supported = (tool: string, o: ExactApprovalOptions): ExactApprovalAdapter => {
   // Refuse before any authored policy can perform a provider-dependent lookup.
-  if (tool !== 'deadline_dismiss' || !o.adapter) throw new Error('Exact approval is unavailable for this action target');
+  if (!o.adapter || !o.adapter.toolNames.includes(tool)) throw new Error('Exact approval is unavailable for this action target');
   return o.adapter!;
 };
 export function isExactApprovalContext(ctx: unknown): boolean { return hasConsoleTurnAuthorityTag(ctx); }
@@ -70,7 +82,7 @@ function exact(row: Row, tool: string, input: unknown, o: ExactApprovalOptions):
       row.payload_hash !== payloadFingerprint(tool,input) || Date.parse(r.expiresAt) <= (o.now ?? new Date()).getTime()) refuse();
   return r;
 }
-async function current(r: Reservation, memberId: string, admissionNonce: string, sessionId: string, tool: string, input: unknown, o: ExactApprovalOptions) {
+async function current(r: Reservation, memberId: string, admissionNonce: string, sessionId: string, tool: string, input: unknown, o: ExactApprovalOptions, ctx?: ConsoleAuthorityContext) {
   const db = database(o), own = managedIdentity(o.env);
   if (!own || own.name !== r.original.agentId || own.incarnation !== r.incarnation || sessionId !== r.original.sessionId ||
       memberId !== r.original.actingMemberId || payloadFingerprint('admission',admissionNonce) !== r.admissionHash) refuse();
@@ -82,8 +94,8 @@ async function current(r: Reservation, memberId: string, admissionNonce: string,
   if (locked.rows.length !== 1) refuse();
   if (b.placeId !== r.original.placeId || b.audienceRevision !== r.original.audience.revision ||
       b.policyRevision !== r.original.policyRevision) refuse();
-  if (await freshExactApprovalPolicy(db,own!.name,own!.incarnation) !== r.policyHash) refuse();
-  const target = await supported(tool,o).readTarget(db,input,memberId);
+  if (await supported(tool,o).readPolicyHash(db,own!.name,own!.incarnation) !== r.policyHash) refuse();
+  const target = await supported(tool,o).readTarget(db,input,memberId,tool,ctx,r.target);
   if (target.ownerMemberId !== memberId || !same(target,r.target)) refuse();
   // A grant can expire while policy/target locks are busy even when the approval still lives.
   // Recheck the same immutable binding and captured revision; never mint replacement authority.
@@ -98,9 +110,9 @@ export async function reserveExactApproval(ctx: ConsoleAuthorityContext & {callI
   const original = await requireConsoleTurnAuthority(ctx,db,o.env), own = managedIdentity(o.env);
   const admission = consoleAdmission(ctx.session?.auth?.current), callId = callIdFrom(ctx);
   if (!own || !admission || !callId || !original.actingMemberId) refuse();
-  const target = targetSchema.parse(await adapter.readTarget(db,ctx.toolInput,original.actingMemberId!));
+  const target = targetSchema.parse(await adapter.readTarget(db,ctx.toolInput,original.actingMemberId!,tool,ctx));
   if (target.ownerMemberId !== original.actingMemberId) refuse();
-  const policyHash = await freshExactApprovalPolicy(db,own!.name,own!.incarnation);
+  const policyHash = await adapter.readPolicyHash(db,own!.name,own!.incarnation);
   const r: Reservation = {version:1,original,incarnation:own!.incarnation,
     admissionHash:payloadFingerprint('admission',admission!.admissionNonce),target,policyHash,
     expiresAt:new Date((o.now ?? new Date()).getTime()+APPROVAL_TTL_MS).toISOString()};
@@ -133,7 +145,8 @@ export async function approveExactResponse(ctx: ExactResponseContext, o: ExactAp
   if (!row.request_id || row.request_id !== ctx.request.requestId || !responder || responder.purpose !== 'resolver' ||
       !initial || initial.purpose !== 'human' || initial.memberId !== responder.memberId || initial.admissionNonce !== responder.admissionNonce ||
       (row.outcome !== null && row.outcome !== 'approved')) refuse();
-  await current(r,responder!.memberId,responder!.admissionNonce,ctx.session.id,ctx.request.toolName,ctx.request.toolInput,o);
+  await current(r,responder!.memberId,responder!.admissionNonce,ctx.session.id,ctx.request.toolName,ctx.request.toolInput,o,
+    {toolName:ctx.request.toolName,session:{id:ctx.session.id,turn:ctx.session.turn as never,auth:{current:ctx.responder,initiator:ctx.session.initiator}}} as ConsoleAuthorityContext);
   const result = await db.query(`UPDATE approval_asks SET outcome='approved',answered_at=COALESCE(answered_at,now()),
     answered_via='console',resolved_by_member_id=$3 WHERE call_id=$1 AND request_id=$2 AND original_authority IS NOT NULL
     AND (outcome IS NULL OR (outcome='approved' AND resolved_by_member_id=$3)) RETURNING call_id`,[row.call_id,row.request_id,responder!.memberId]);
@@ -141,16 +154,17 @@ export async function approveExactResponse(ctx: ExactResponseContext, o: ExactAp
   return {status:'allowed'};
 }
 /** Exact call only. Returns provenance without mutating session.auth or conferring fresh-human authority. */
-export async function requireApprovedExecution(ctx: ConsoleAuthorityContext, tool: string, input: unknown, o: ExactApprovalOptions = {}): Promise<Execution> {
+export async function requireApprovedExecution(ctx: ConsoleAuthorityContext, tool: string, input: unknown, o: ExactApprovalOptions = {}): Promise<ApprovedExecution> {
   supported(tool,o);
   const row = await rowForCall(database(o),callIdFrom(ctx) ?? ''), r = exact(row,tool,input,o);
   const responder = consoleAdmission(ctx.session?.auth?.current), initial = consoleAdmission(ctx.session?.auth?.initiator);
   if (!row.request_id || row.outcome !== 'approved' || !responder || responder.purpose !== 'resolver' ||
       row.resolved_by_member_id !== responder.memberId || !initial || initial.purpose !== 'human' ||
       initial.memberId !== responder.memberId || initial.admissionNonce !== responder.admissionNonce) refuse();
-  await current(r,responder!.memberId,responder!.admissionNonce,ctx.session?.id ?? '',tool,input,o);
+  await current(r,responder!.memberId,responder!.admissionNonce,ctx.session?.id ?? '',tool,input,o,ctx);
   return {authority:{...r.original,origin:'approval-resume',actingMemberId:r.original.actingMemberId!,
-    resolvedByMemberId:responder!.memberId,requestId:row.request_id!},target:r.target};
+    resolvedByMemberId:responder!.memberId,requestId:row.request_id!},target:r.target,
+    callId:row.call_id,toolName:row.tool,payloadHash:row.payload_hash};
 }
 /** Terminal cancellation remains a refusal; legacy recorder cannot approve strict reservations. */
 export async function settleExactInput(requestId: string, outcome: string, db: AuthorityDatabase = getPool()): Promise<void> {

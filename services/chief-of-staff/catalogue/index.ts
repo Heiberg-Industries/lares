@@ -37,6 +37,12 @@ import agent_kit__vault_backlinks from "./agent-kit__vault_backlinks.js";
 import agent_kit__vault_list from "./agent-kit__vault_list.js";
 import agent_kit__vault_read from "./agent-kit__vault_read.js";
 import agent_kit__vault_search from "./agent-kit__vault_search.js";
+import tracks_list from "./tracks_list.js";
+import track_items from "./track_items.js";
+import track_add_item from "./track_add_item.js";
+import track_move_item from "./track_move_item.js";
+import track_create from "./track_create.js";
+import track_set_steps from "./track_set_steps.js";
 import atlas_proposals from "./atlas_proposals.js";
 import atlas_resolve_proposal from "./atlas_resolve_proposal.js";
 import calendar_conflicts from "./calendar_conflicts.js";
@@ -183,5 +189,11 @@ export const CATALOGUE: Catalogue = {
   twenty_lookup: { capability: "twenty", tool: twenty_lookup },
   twenty_note: { capability: "twenty", tool: twenty_note },
   twenty_set_stage: { capability: "twenty", tool: twenty_set_stage },
+  tracks_list: { capability: "vault", tool: tracks_list },
+  track_items: { capability: "vault", tool: track_items },
+  track_add_item: { capability: "vault", tool: track_add_item },
+  track_move_item: { capability: "vault", tool: track_move_item },
+  track_create: { capability: "vault", tool: track_create },
+  track_set_steps: { capability: "vault", tool: track_set_steps },
   voice_guide: { capability: "voice", tool: voice_guide },
 };

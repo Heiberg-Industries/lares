@@ -3,6 +3,7 @@ import { assertPrivateConsoleTool } from "@lares/agent-kit/private-console-surfa
 import { isExactApprovalContext, isExactApprovalResponse, reserveExactApproval, approveExactResponse,
   requireApprovedExecution, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
 import { deadlineApprovalAdapter } from "./deadlines-store.js";
+import { tracksApprovalAdapter } from "./tracks-approval.js";
 import { consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
 /**
  * The approver re-check every gated write calls, on both channels.
@@ -13,6 +14,8 @@ import { consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type Co
 import { approvalLedger, assertApprovedCall, callIdFrom } from "@lares/agent-kit/approval-ledger";
 
 import { declaredApprover, isAllowedPrincipal, principalFromAuth } from "./principals.js";
+
+const adapterFor = (tool: string) => tracksApprovalAdapter.toolNames.includes(tool) ? tracksApprovalAdapter : deadlineApprovalAdapter;
 
 /**
  * Refused because the person who approved is not the person allowed to, on THIS channel.
@@ -186,14 +189,14 @@ export async function assertApproval(
   ctx: { session?: { auth?: SessionAuthLike | null } },
   toolName: string,
   input: unknown,
-): Promise<void> {
+): Promise<Awaited<ReturnType<typeof requireApprovedExecution>> | undefined> {
   if (isExactApprovalContext(ctx)) {
-    await requireApprovedExecution(ctx,toolName,input,{adapter:deadlineApprovalAdapter});
-    return;
+    return await requireApprovedExecution(ctx,toolName,input,{adapter:adapterFor(toolName)});
   }
   await guardConsoleToolContext(ctx);
   assertApprover(approverFrom(ctx?.session?.auth));
   await assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName, input });
+  return undefined;
 }
 
 /** Preserve the authored native policy; bound console calls additionally require exact authority. */
@@ -206,10 +209,10 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
   }
   const c = ctx as ConsoleAuthorityContext & {callId?:string;toolInput?:unknown};
   if (consoleAdmission(c.session?.auth?.current)?.purpose === 'resolver') {
-    await requireApprovedExecution(c,name,c.toolInput,{adapter:deadlineApprovalAdapter});
+    await requireApprovedExecution(c,name,c.toolInput,{adapter:adapterFor(name)});
     return 'user-approval';
   }
-  await reserveExactApproval(c,name,{adapter:deadlineApprovalAdapter});
+  await reserveExactApproval(c,name,{adapter:adapterFor(name)});
   const decision = await (authored as (ctx:unknown)=>unknown)(ctx);
   if (decision === 'denied' || (typeof decision === 'object' && decision !== null && 'type' in decision && decision.type === 'denied')) return decision;
   return 'user-approval';
@@ -218,13 +221,13 @@ export async function catalogueApprovalResponse(name: string, ctx: unknown): Pro
   assertPrivateConsoleTool(ctx,"chief-of-staff",name);
   if(name==='personal_mailbox_send')return personalSendApprovalResponse(ctx as never);
   if (!isExactApprovalResponse(ctx)) return {status:'allowed'};
-  return approveExactResponse(ctx as ExactResponseContext,{adapter:deadlineApprovalAdapter});
+  return approveExactResponse(ctx as ExactResponseContext,{adapter:adapterFor(name)});
 }
 export async function guardCatalogueExecution(ctx: unknown, name: string, input: unknown): Promise<void> {
   assertPrivateConsoleTool(ctx,"chief-of-staff",name);
   if(name==='personal_mailbox_send'){await requirePersonalSendCall(ctx as never,input);return;}
   if (isExactApprovalContext(ctx) && consoleAdmission((ctx as ConsoleAuthorityContext).session?.auth?.current)?.purpose === 'resolver') {
-    await requireApprovedExecution(ctx as ConsoleAuthorityContext,name,input,{adapter:deadlineApprovalAdapter});
+    await requireApprovedExecution(ctx as ConsoleAuthorityContext,name,input,{adapter:adapterFor(name)});
     return;
   }
   await guardConsoleToolContext(ctx);

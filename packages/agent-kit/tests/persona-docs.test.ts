@@ -61,9 +61,10 @@ describe("the Vault's one capability doc", () => {
       "agent-kit__vault_list", "agent-kit__vault_write", "agent-kit__vault_file", "agent-kit__vault_drop",
       "vault_search", "vault_read", "vault_list", "atlas_proposals", "atlas_resolve_proposal", "vault_write",
       "remember", "forget", "facts_list", "memory_proposals", "memory_resolve_proposal", "save_note", "memory_used",
+      "tracks_list", "track_items", "track_create", "track_add_item", "track_move_item", "track_set_steps",
     ];
     expect([...docFor("vault").tools].sort()).toEqual([...before].sort());
-    expect(docFor("vault").tools.length).toBe(20);
+    expect(docFor("vault").tools.length).toBe(26);
   });
 
   it("gives vault a connections entry, closing the gap memory never had", () => {

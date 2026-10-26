@@ -31,7 +31,7 @@ export type Provenance = (typeof PROVENANCES)[number];
 
 /** The neutral Lares contracts a vendor integration can implement. An ARRAY, because one
  *  sign-in commonly backs two contracts (Google: mailbox + calendar; Graph would be the same). */
-export const CONCEPTS = ["mailbox", "calendar", "accounting", "crm"] as const;
+export const CONCEPTS = ["mailbox", "calendar", "accounting", "tracks"] as const;
 export type Concept = (typeof CONCEPTS)[number];
 
 /** Every integration manifest folder lives under this path, relative to the package root. */

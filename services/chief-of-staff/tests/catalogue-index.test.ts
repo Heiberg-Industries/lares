@@ -68,7 +68,7 @@ describe("the catalogue index", () => {
 /** The areas this role's committed `agent.json` grants, and the vault tools it was
  *  offered before one `vault` grant replaced the separate area grants — literals, not recomputed. */
 const GRANTED_AREAS: readonly string[] = ["private", "shared", "facts"];
-const VAULT_TOOLS_BEFORE = ["agent-kit__vault_backlinks", "agent-kit__vault_drop", "agent-kit__vault_file", "agent-kit__vault_list", "agent-kit__vault_read", "agent-kit__vault_search", "agent-kit__vault_write", "atlas_proposals", "atlas_resolve_proposal", "facts_list", "forget", "memory_proposals", "memory_resolve_proposal", "memory_used", "remember", "save_note"];
+const VAULT_TOOLS_EXPECTED = ["agent-kit__vault_backlinks", "agent-kit__vault_drop", "agent-kit__vault_file", "agent-kit__vault_list", "agent-kit__vault_read", "agent-kit__vault_search", "agent-kit__vault_write", "atlas_proposals", "atlas_resolve_proposal", "facts_list", "forget", "memory_proposals", "memory_resolve_proposal", "memory_used", "remember", "save_note", "track_add_item", "track_create", "track_items", "track_move_item", "track_set_steps", "tracks_list"];
 
 // THE CLAIM, FOR THIS ROLE: one capability doc and one grant replaced
 // three, and NOBODY'S TOOL LIST CHANGED. Asserted against the committed declaration and the real
@@ -79,7 +79,7 @@ describe("the vault tools this role is offered", () => {
   const vaultTools = offered.filter((n) => CATALOGUE[n]!.capability === "vault");
 
   it("is exactly the set it was offered under brain/atlas/memory", () => {
-    expect(vaultTools).toEqual(VAULT_TOOLS_BEFORE);
+    expect(vaultTools).toEqual(VAULT_TOOLS_EXPECTED);
   });
 
   it("is offered nothing outside the areas its grant names", () => {

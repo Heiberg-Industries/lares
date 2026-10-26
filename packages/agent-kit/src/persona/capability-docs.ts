@@ -161,6 +161,12 @@ export const VAULT_SHARED_TOOLS = [
   "atlas_proposals",
   "atlas_resolve_proposal",
   "vault_write",
+  "tracks_list",
+  "track_items",
+  "track_add_item",
+  "track_move_item",
+  "track_create",
+  "track_set_steps",
 ] as const;
 
 export const VAULT_FACT_TOOLS = [
@@ -176,7 +182,7 @@ export const VAULT_FACT_TOOLS = [
 /** The note tools proper — every read and write over a note STORE, either area. The
  *  store-relative-paths rule below is keyed to these and not to the fact tools, which have no
  *  paths at all. */
-const VAULT_NOTE_TOOLS = [...VAULT_PRIVATE_TOOLS, ...VAULT_SHARED_TOOLS.filter((t) => !t.startsWith("atlas_"))];
+const VAULT_NOTE_TOOLS = [...VAULT_PRIVATE_TOOLS, ...VAULT_SHARED_TOOLS.filter((t) => !t.startsWith("atlas_") && !t.startsWith("track"))];
 
 export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
   autonomy: {
@@ -642,7 +648,8 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
           "strategy) and the portfolio's legal-entity structure. I search, read and list its " +
           "notes, and ground any answer about a brand, a product, the business itself, or how " +
           "the portfolio is legally structured here rather than from memory. If the store has " +
-          "nothing on a topic, or looks stale, I say so rather than filling the gap myself.",
+          "nothing on a topic, or looks stale, I say so rather than filling the gap myself. " +
+          "Shared tracks are owner-defined workflows stored in that area; I read their steps from the track and only change them after approval and a current edit grant.",
       },
       {
         tools: [...VAULT_FACT_TOOLS],
@@ -666,6 +673,10 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
       {
         tools: ["agent-kit__vault_write", "agent-kit__vault_file", "agent-kit__vault_drop"],
         text: "New notes go into the vault behind an approval card.",
+      },
+      {
+        tools: ["track_add_item", "track_move_item", "track_create", "track_set_steps"],
+        text: "Track changes name the exact workflow and require an approval card plus a current edit grant for the shared Vault area.",
       },
       {
         tools: ["vault_write"],
