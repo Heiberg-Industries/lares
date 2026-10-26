@@ -63,6 +63,7 @@ export const TOOL_CATEGORIES: Readonly<Record<string, readonly AlwaysAskCategory
   // the Vault (shared toolkit)
   "agent-kit__vault_write": [], "agent-kit__vault_file": [], "agent-kit__vault_drop": ["delete"],
   "agent-kit__vault_search": [], "agent-kit__vault_read": [], "agent-kit__vault_list": [], "agent-kit__vault_backlinks": [],
+  tracks_list: [], track_items: [], track_add_item: [], track_move_item: [], track_create: [], track_set_steps: [],
   // calendar — an event with attendees sends invitations
   calendar_list_events: [], calendar_free_busy: [], calendar_conflicts: [], calendar_list_calendars: [],
   calendar_create_event: ["contact"],

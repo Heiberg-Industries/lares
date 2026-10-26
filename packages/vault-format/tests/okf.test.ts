@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   OKF_CORE_TYPES,
   OKF_TASTE_TYPES,
+  OKF_TRACKS_TYPES,
   OKF_ARTICLE_TYPES,
   ARTICLE_READING_KEY,
   ARTICLE_READING_STATES,
@@ -74,6 +75,18 @@ describe("checkAreas", () => {
 
   it("returns an empty array when every area conforms", () => {
     expect(checkAreas([{ name: "brain", types: OKF_CORE_TYPES, files: [{ path: "n.md", raw: "---\ntype: note\n---\n\nb\n" }] }])).toEqual([]);
+  });
+
+  it("keeps Vault workflow types separate from taste's music-track type", () => {
+    const files = [
+      { path: "tracks/fundraising/track.md", raw: "---\ntype: track\n---\n\nFunding workflow.\n" },
+      { path: "tracks/fundraising/items/item-1.md", raw: "---\ntype: track-item\n---\n\nApplication.\n" },
+    ];
+    expect([...OKF_TRACKS_TYPES]).toEqual(["track", "track-item"]);
+    expect(checkConformance(files, { types: [...OKF_CORE_TYPES, ...OKF_TRACKS_TYPES] })).toEqual([]);
+    expect(checkConformance(files, { types: [...OKF_CORE_TYPES, ...OKF_TASTE_TYPES] })).toEqual([
+      { path: files[1]!.path, problem: "unknown-type", found: "track-item" },
+    ]);
   });
 });
 

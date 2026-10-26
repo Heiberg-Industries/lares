@@ -86,7 +86,7 @@ describe("commitNote", () => {
     expect(written).toContain("type: note");
     expect(written).toContain("source: coordinator");
     expect(written).toContain("owner: coordinator");
-    expect(written).toContain("tags: [a, b]");
+    expect(written).toContain('tags: ["a","b"]');
     expect(written).toContain("Some body text.");
 
     // The push actually landed on the BARE remote, not just the working clone.

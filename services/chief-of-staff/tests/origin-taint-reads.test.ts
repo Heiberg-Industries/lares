@@ -367,21 +367,31 @@ const NO_OUTSIDE_TEXT: Record<string, Record<string, string>> = {
   },
 };
 
+/** Tracks inspect stored origin at the call site and narrow the current turn from the actual Vault result. */
+const CALLSITE_CLASSIFIED: Record<string, Record<string, string>> = {
+  "chief-of-staff": Object.fromEntries(["tracks_list", "track_items", "track_add_item", "track_move_item", "track_create", "track_set_steps"]
+    .map(name => [name, "Vault origin is read from stored lares_origin or the persisted original-turn approval target"])),
+  creative: {},
+};
+
 describe("register completeness — every catalogue tool in every role service is classified", () => {
   for (const service of ["chief-of-staff", "creative"] as const) {
     it(`${service}: every catalogue file is either a tainting tool or explicitly allow-listed as returning no outside text`, () => {
       const names = catalogueToolNames(service);
       const taints = TAINTS[service]!;
       const safe = NO_OUTSIDE_TEXT[service]!;
-      const unclassified = names.filter((n) => !taints.has(n) && !(n in safe));
+      const callsite = CALLSITE_CLASSIFIED[service]!;
+      const unclassified = names.filter((n) => !taints.has(n) && !(n in safe) && !(n in callsite));
       expect(unclassified, `unclassified catalogue tool(s) in ${service} — classify each as tainting or add it to NO_OUTSIDE_TEXT with a reason`).toEqual([]);
     });
 
     it(`${service}: no tool is BOTH tainting and allow-listed`, () => {
       const taints = TAINTS[service]!;
       const safe = NO_OUTSIDE_TEXT[service]!;
+      const callsite = CALLSITE_CLASSIFIED[service]!;
       const overlap = [...taints].filter((n) => n in safe);
       expect(overlap).toEqual([]);
+      expect([...taints].filter(n => n in callsite)).toEqual([]);
     });
   }
 });

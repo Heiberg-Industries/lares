@@ -12,6 +12,7 @@
   },
   "exports": {
     "./vault-files": "./src/vault-files.ts",
+    "./tracks": "./src/tracks.ts",
     "./budget-admission-store": "./src/budget-admission-store.ts",
     "./budget-model-authority": "./src/budget-model-authority.ts",
     "./console-source-transaction": "./src/console-source-transaction.ts",

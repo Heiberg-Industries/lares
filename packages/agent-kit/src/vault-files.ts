@@ -158,11 +158,13 @@ export class GuardedVaultFiles {
     }};
     return {root:area.root,guard};
   }
-  async write(ctx:VaultFilesContext,input:{binding:VaultWriteBinding;frontmatter:Record<string,unknown>;body:string;message?:string}) {
+  async write(ctx:VaultFilesContext,input:{binding:VaultWriteBinding;frontmatter:Record<string,unknown>;body:string;message?:string;
+    expectedRelatedContentRevisions?:Readonly<Record<string,string|null>>}) {
     for(const [key,value] of Object.entries(input.frontmatter)){
       if(!/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(key)||![value].flat().every(v=>v===null||v===undefined||typeof v==='boolean'||typeof v==='number'||(typeof v==='string'&&!/[\r\n\x00-\x1f\x7f\x85\u2028\u2029]/.test(v))))throw new VaultFilesDeniedError();
     }
-    const {root,guard}=await this.writeArea(ctx,input.binding,{[input.binding.relativePath]:input.binding.expectedContentRevision},null);
+    const {root,guard}=await this.writeArea(ctx,input.binding,{[input.binding.relativePath]:input.binding.expectedContentRevision,
+      ...(input.expectedRelatedContentRevisions ?? {})},null);
     return commitNote({vaultRoot:root,path:input.binding.relativePath,frontmatter:{...input.frontmatter,lares_origin:input.binding.approvedOrigin},body:input.body,message:input.message,guard}).catch(safeFailure);
   }
   async move(ctx:VaultFilesContext,input:{binding:VaultWriteBinding;destination:string;expectedDestinationRevision:string|null;companion:VaultFileCompanion|null;expectedCompanionDestinationRevision:string|null}) {

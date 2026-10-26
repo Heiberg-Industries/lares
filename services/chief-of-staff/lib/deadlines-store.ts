@@ -23,7 +23,7 @@
  */
 import type { Pool } from "pg";
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
-import { requireApprovedExecution, type ExactApprovalAdapter } from '@lares/agent-kit/approval-execution';
+import { freshExactApprovalPolicy, requireApprovedExecution, type ExactApprovalAdapter } from '@lares/agent-kit/approval-execution';
 import {authorityTransaction,consoleAdmission,requireConsoleSessionBinding,type ConsoleAuthorityContext} from '@lares/agent-kit/console-turn-authority';
 import {managedIdentity} from '@lares/agent-kit/door-authority';
 
@@ -367,6 +367,8 @@ export async function resolveCandidate(
 /** The first exact local action. Stable owner and ALL stored content/version fields are bound;
  * no provider/account authority is inferred from a local mail-scanner candidate. */
 export const deadlineApprovalAdapter: ExactApprovalAdapter = {
+  toolNames: ['deadline_dismiss'],
+  readPolicyHash: (db,agent,incarnation) => freshExactApprovalPolicy(db as never,agent,incarnation),
   async readTarget(db,input,memberId) {
     const i = input as {id?:unknown;candidateThreadId?:unknown;reason?:unknown};
     if (!i || typeof i.reason !== 'string' || !i.reason.trim() || (i.id === undefined) === (i.candidateThreadId === undefined))

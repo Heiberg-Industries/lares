@@ -33,6 +33,9 @@ export const OKF_CORE_TYPES = ["venture", "index", "reference", "profile", "note
 /** The taste store's additions (packages/taste/src/index.ts:22). */
 export const OKF_TASTE_TYPES = ["place", "track", "playlist", "dish", "note"] as const;
 
+/** Workflow records in shared/tracks. The taste area's `track` means a music track. */
+export const OKF_TRACKS_TYPES = ["track", "track-item"] as const;
+
 // The article vocabulary lives in ./article.ts (no relative imports, so the agent extension build
 // can load it); it is re-exported here so this module's consumers see one OKF surface.
 export {

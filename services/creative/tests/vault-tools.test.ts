@@ -240,7 +240,7 @@ describe("vault_write, when the owner approves", () => {
 
     const written = git(atlasRoot, "show", "HEAD:_inbox/org-two-launch-angles.md");
     expect(written).toContain("title: Org Two launch angles");
-    expect(written).toContain("tags: [ideation]");
+    expect(written).toContain('tags: ["ideation"]');
     expect(written).toContain("Three angles worth trying.");
 
     // NORMALISED, not passed through — parity with the old agent-runtime atlas write tool.
