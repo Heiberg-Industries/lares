@@ -2,7 +2,6 @@ import {chmodSync,fsyncSync,lstatSync,mkdtempSync,readdirSync,readFileSync,realp
 import {basename,dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
-import {performance} from 'node:perf_hooks';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
 import {afterAll,beforeAll,expect,it,vi} from 'vitest';
@@ -536,25 +535,32 @@ it('does not dispatch another native mutation after delayed SQL deadline replies
   const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture,'neutral-native-delayed-deadline');
   const ownerCalls={...fixture.fake.calls};
   const grant=await grantLaterAgentUse(fixture,later,1_700);expect(grant.validUntil).toEqual(expect.any(String));
-  const delayed:{latencyMs:number;remainingMs:number}[]=[];
+  const delayed:{remainingMs:number;replyAfterExpiry:boolean}[]=[];
+  let userReplyAfterExpiry=false;
   const source={query:fixture.financial.query.bind(fixture.financial),connect:async()=>{
     const client=await fixture.financial.connect();
     return{...client,query:async(sql:string|{text:string},values?:unknown[])=>{
-      const text=typeof sql==='string'?sql:sql.text,started=performance.now();
+      const text=typeof sql==='string'?sql:sql.text;
       const result=await client.query(sql as never,values as never) as {rows:any[]};
       if(text.includes('AS remaining_ms')){
-        const remainingMs=Number(result.rows[0]?.remaining_ms);await new Promise(resolve=>setTimeout(resolve,600));
-        delayed.push({latencyMs:performance.now()-started,remainingMs});
+        const remainingMs=Number(result.rows[0]?.remaining_ms);
+        await client.query('SELECT pg_sleep(0.3)');
+        const afterDelay=await client.query('SELECT clock_timestamp()>=$1::timestamptz AS expired',[grant.validUntil]);
+        delayed.push({remainingMs,replyAfterExpiry:afterDelay.rows[0]?.expired===true});
       }
       return result;
     },release:client.release.bind(client)};
   }} as unknown as Pool;
-  fixture.fake.setAfterCreateUser(async()=>new Promise(resolve=>setTimeout(resolve,600)));
+  fixture.fake.setAfterCreateUser(async()=>{
+    await fixture.financial.query(`SELECT pg_sleep(GREATEST(0::double precision,
+      EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))::double precision+0.05))`,[grant.validUntil]);
+    userReplyAfterExpiry=(await fixture.financial.query('SELECT clock_timestamp()>=$1::timestamptz AS expired',[grant.validUntil])).rows[0]?.expired===true;
+  });
   try{
     const provisioner=new BudgetNativeProvisioner(source,fixture.journal,fixture.custody,fixture.fake.native,nativeTestTarget,policy);
     await expect(provisioner.provision({bindingId:id(),credentialGeneration:'0',memberId:later.member,agent:later.agent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'})).rejects.toThrow();
-    expect(delayed).toHaveLength(2);expect(delayed.every(row=>row.latencyMs>250&&row.remainingMs>250)).toBe(true);
-    expect(delayed.every(row=>row.latencyMs-250>0)).toBe(true);
+    expect(delayed).toHaveLength(2);expect(delayed.every(row=>row.remainingMs>250&&row.replyAfterExpiry===false)).toBe(true);
+    expect(userReplyAfterExpiry).toBe(true);
     expect(fixture.fake.calls).toMatchObject({team:ownerCalls.team,user:ownerCalls.user+1,membership:ownerCalls.membership,key:ownerCalls.key});
     expect((await fixture.financial.query('SELECT count(*)::int AS n FROM budget_gateway_bindings WHERE live_member_id=$1',[later.member])).rows[0]!.n).toBe(0);
     expect(JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state).toBe('uncertain');
