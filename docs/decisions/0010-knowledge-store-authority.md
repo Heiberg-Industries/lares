@@ -1,4 +1,4 @@
-# ADR 0010 — One owner per fact: Brain, Atlas, Notion, repos, CRM, and a separate taste layer
+# ADR 0010 — One owner per fact: Brain, Atlas, Notion, repos, Tracks, and a separate taste layer
 
 **Date:** 2026-08-11
 **Status:** Accepted
@@ -37,8 +37,11 @@ boundaries, so it cannot live inside Brain.
 5. **Repo docs own project/code truth** (status and handoff notes,
    written-up lessons). Atlas derives from them; never the reverse. A source is only
    canonical if it is currently true (Atlas design).
-6. **The CRM (Twenty) owns commercial contacts; Brain owns thinkers and the personal
-   network** — the contact-routing rule.
+6. **The home owns each track and its workflow state** (amended 2026-10-26; ADR-0024). A person or organisation
+   appearing in a track does not make that track the canonical home for their contact profile;
+   that profile remains with its fact class and visibility. The Vault may hold a track without
+   a CRM, while a connected CRM may be the home for a track the owner places there. Brain
+   continues to own personal knowledge and the personal network.
 7. **Taste/life-context is its own store** (planned, not yet built): markdown with
    OKF frontmatter, mounted read-only into designated agents — the chief of staff and any
    agent the owner designates. Connectors (Photos shared albums first, then Spotify / Apple Music /
@@ -93,3 +96,10 @@ boundaries, so it cannot live inside Brain.
 ## Amendment 2026-10-09 — Notion's Articles database is a capture place and a mirror, not the owner
 
 For articles (the Clips DB named in §4, now the Notion "Articles" database), the Vault note is the canonical store, as §1 requires. This amends §4, which named Notion the owner of that table. For articles, Notion does two jobs. It is a place to capture them, where a new row becomes a new note. It is also a mirror: each article is mirrored only to a Notion Articles database belonging to the same owner and visibility as the article (for a Notion clip, the database it came from), so a private article never reaches an organisation database. Switching the mirror on takes one standing write approval, limited to that Articles database. Three fields on a mirrored row are also an input channel. When a person edits Status, For or the highlights, Lares treats the edit as owner input: it applies the change to the Vault note and mirrors it back, exactly as if the owner had said the same thing in chat. The note's origin stamp is not changed by it (ADR-0017 §9). Edits made by Lares's own integration, by Notion Agents or by any other editor that is not a person are never captured as owner input. Every other Notion edit to a mirrored row is ignored and overwritten by the next mirror. Lares always captures before it writes, so a stale mirror never overwrites a person's edit. Pages Lares creates are recorded in its ledger when they are created, so they are never imported back as new captures.
+
+## Amendment 2026-10-26 — Tracks are workflow records, not contact profiles
+
+ADR-0024 amends §6. The home of a track owns its items and workflow state, whether that home
+is a Vault folder or a connected CRM. An item may refer to a person or organisation, but its
+presence does not move that person's canonical profile or grant access to it. The Vault may
+be the track home without any CRM being connected.
