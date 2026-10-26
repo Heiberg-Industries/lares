@@ -169,7 +169,9 @@ beforeEach(async () => {
       CHECK ((answered_at IS NULL)=(outcome IS NULL)),CHECK (outcome IS NULL OR outcome IN ('approved','cancelled','ignored','invalid','expired','payload-changed')));
     INSERT INTO orgs VALUES('${ids.organisation}','Example');
     INSERT INTO users(id,display_name,status,org_role,org_id) VALUES('${ids.member}','Owner','active','owner','${ids.organisation}');
+    INSERT INTO users(id,display_name,status,org_role,org_id) VALUES('member-backup','Backup owner','active','owner','${ids.organisation}');
     INSERT INTO org_member_policy VALUES('${ids.member}',NULL);
+    INSERT INTO org_member_policy VALUES('member-backup',NULL);
     INSERT INTO agent_definitions VALUES('${agent}','valid','${definitionHash}','${JSON.stringify(roleDefinition)}'::jsonb);
     INSERT INTO agent_resources VALUES('${agent}','${incarnation}','${incarnation}','ready',false,'${JSON.stringify(roleDefinition)}'::jsonb);`);
   for (const file of ['006_approval_session.sql','007_member_identity_sessions.sql','009_vault_areas.sql','013_console_turn_authority.sql','014_agent_access_grants.sql','015_exact_approval_execution.sql','016_console_agent_access_capture.sql','017_private_console_surface_capture.sql','018_private_account_history.sql','020_vault_resource_grants.sql','022_console_vault_source_history.sql'])
@@ -201,9 +203,37 @@ const trackAdapter = {
   },
   async readPolicyHash() { return payloadFingerprint('tracks-write-policy-v1', { definition: roleDefinition, hash: definitionHash }); },
 };
-function approvalContext(purpose: 'human'|'resolver', raw: unknown = trackInput) {
+
+it('scheduled routing can read only visible shared track files for the current owner and cannot write', async () => {
+  ids.trackFiles.set('tracks/follow-up/track.md', { content: '---\ntype: track\nname: Follow up\npurpose: Open work\nsteps: ["Open", "Done"]\nclosing_steps: ["Done"]\nscope: org\n---\nUntrusted description', contentRevision: 'track-v1' });
+  ids.trackFiles.set('tracks/follow-up/items/lead-one.md', { content: '---\ntype: track-item\nperson: person-1\nstep: Open\nsince: 2026-10-26\nnote: untrusted background\nsource_signal: message-1\nscope: org\n---\nUntrusted item', contentRevision: 'item-v1' });
+  ids.trackFiles.set('tracks/follow-up/notes.md', { content: 'out of scope', contentRevision: 'out-of-scope-v1' });
+  ids.trackFiles.set('contacts/private.md', { content: 'private', contentRevision: 'private-v1' });
+
+  const result = await runtime('tracks.list-scheduled', { ownerMemberId: ids.member, personId: 'person-1' });
+  expect(result.homes).toEqual([{ home: `vault:${ids.sharedArea}`, tracks: [{
+    track: { id: 'follow-up', name: 'Follow up', purpose: 'Open work', steps: ['Open', 'Done'], closingSteps: ['Done'] },
+    items: [{ id: 'lead-one', trackId: 'follow-up', who: { personId: 'person-1' }, step: 'Open', since: '2026-10-26', note: 'untrusted background', sourceSignal: 'message-1' }],
+  }] }]);
+  expect(ids.reads).toBe(3);
+  await expect(runtime('tracks.list-scheduled', { ownerMemberId: 'someone-else' })).rejects.toThrow('Vault reader unavailable');
+  await expect(runtime('tracks.write', { operation: 'track_add_item', input: { home: `vault:${ids.sharedArea}` } })).rejects.toThrow('Vault reader unavailable');
+  await pool.query("UPDATE users SET status='removed' WHERE id=$1", [ids.member]);
+  await expect(runtime('tracks.list-scheduled', { ownerMemberId: ids.member })).rejects.toThrow('Vault reader unavailable');
+  await pool.query("UPDATE users SET status='active' WHERE id=$1", [ids.member]);
+  await pool.query("UPDATE agent_resources SET ownership_token='55555555-5555-4555-8555-555555555555' WHERE name=$1", [agent]);
+  await expect(runtime('tracks.list-scheduled', { ownerMemberId: ids.member })).rejects.toThrow('Vault reader unavailable');
+  await pool.query('UPDATE agent_resources SET ownership_token=$2::uuid WHERE name=$1', [agent, incarnation]);
+  await pool.query("UPDATE vault_areas SET revision=nextval('vault_access_revision_seq') WHERE id=$1", [ids.sharedArea]);
+  await expect(runtime('tracks.list-scheduled', { ownerMemberId: ids.member })).resolves.toMatchObject({ homes: [] });
+  roleDefinition = definitionSchema.parse({ ...roleDefinition, grants: roleDefinition.grants.map(grant => grant.capability === 'vault' ? { ...grant, scope: 'read', areas: ['private', 'facts'] } : grant) });
+  await pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb WHERE name=$1', [agent, JSON.stringify(roleDefinition)]);
+  await expect(runtime('tracks.list-scheduled', { ownerMemberId: ids.member })).rejects.toThrow('Vault reader unavailable');
+});
+
+function approvalContext(purpose: 'human'|'resolver', raw: unknown = trackInput, toolName = 'track_create') {
   const current = memberAuth(purpose);
-  return { callId: 'track-call-1', toolName: 'track_create', toolInput: raw, abortSignal: new AbortController().signal,
+  return { callId: 'track-call-1', toolName, toolInput: raw, abortSignal: new AbortController().signal,
     approvedTools: new Set<string>(), session: { id: session, turn: { id: purpose === 'human' ? approvalTurnId : 'turn-track-resolver', sequence: purpose === 'human' ? approvalTurnSequence : approvalTurnSequence + 1 },
       auth: { current, initiator: memberAuth('human') } } } as any;
 }
@@ -236,14 +266,17 @@ it('accepts one exact approved Tracks write, rejects replay, and refuses after e
   expect((await pool.query("SELECT use_count,used_at FROM approval_asks WHERE call_id='track-call-1'")).rows[0]).toMatchObject({ use_count: 0, used_at: null });
   expect(ids.writes).toBe(1);
 });
-async function approvedTrackCreate(adapter: any = trackAdapter) {
-  const human = approvalContext('human');
-  await reserveExactApproval(human, 'track_create', { adapter, db: pool as never, env });
-  await attachExactApproval({ requestId: 'track-request-1', callId: 'track-call-1', tool: 'track_create', input: trackInput }, pool as never);
-  await approveExactResponse({ request: { requestId: 'track-request-1', callId: 'track-call-1', toolName: 'track_create', toolInput: trackInput },
+async function approvedExactTrack(operation: string, input: unknown, adapter: any) {
+  const human = approvalContext('human', input, operation);
+  await reserveExactApproval(human, operation, { adapter, db: pool as never, env });
+  await attachExactApproval({ requestId: 'track-request-1', callId: 'track-call-1', tool: operation, input }, pool as never);
+  await approveExactResponse({ request: { requestId: 'track-request-1', callId: 'track-call-1', toolName: operation, toolInput: input },
     responder: memberAuth('resolver'), session: { id: session, initiator: memberAuth('human'), turn: { id: 'turn-track-resolver', sequence: 31 } } },
     { adapter, db: pool as never, env });
-  return requireApprovedExecution(approvalContext('resolver'), 'track_create', trackInput, { adapter, db: pool as never, env });
+  return requireApprovedExecution(approvalContext('resolver', input, operation), operation, input, { adapter, db: pool as never, env });
+}
+async function approvedTrackCreate(adapter: any = trackAdapter) {
+  return approvedExactTrack('track_create', trackInput, adapter);
 }
 
 function initializeVaultArea(path: string, origin: string, marker: Record<string, unknown>) {
@@ -273,7 +306,7 @@ it('runs an approved create through Keeper and the real GuardedVaultFiles writer
   approvalTurnId = turn.turnId;
   setVaultTurnCapability({ sessionId: session, turnId: turn.turnId, sequence: approvalTurnSequence, incarnation },
     { turnId: turn.turnId, sequence: approvalTurnSequence, capability: turn.opened.turnCapability, expiresAt: turn.opened.expiresAt });
-  const approved = await approvedTrackCreate(tracksApprovalAdapter as any);
+  const approved = await approvedTrackCreate(trackAdapter);
   const proof = { requestId: approved.authority.requestId, callId: approved.callId, toolName: approved.toolName,
     payloadHash: approved.payloadHash, input: trackInput, target: approved.target, authority: approved.authority };
   const result = await runtime('tracks.write', { sessionId: session, memberId: ids.member, admissionNonce, approval: proof, operation: 'track_create', input: trackInput });
@@ -283,6 +316,70 @@ it('runs an approved create through Keeper and the real GuardedVaultFiles writer
   expect(content).toContain('steps: ["Open","Done"]');
 });
 
+it('binds neutral Vault writes to the supplied current home and exact move track', async () => {
+  const trackPath = 'tracks/follow-up/track.md';
+  const itemPath = 'tracks/follow-up/items/lead-one.md';
+  const content = '---\ntype: track\nname: Follow up\npurpose: Open work\nsteps: ["Open", "Done"]\nclosing_steps: ["Done"]\nscope: org\n---\n';
+  ids.trackFiles.set(trackPath, { content, contentRevision: 'track-v1' });
+  ids.trackFiles.set(itemPath, { content: '---\ntype: track-item\nperson: person-1\nstep: Open\nsince: 2026-10-26\nnote: old\nsource_signal: old\nscope: org\n---\n', contentRevision: 'item-v1' });
+  const add = { home: 'vault:another-area', trackId: 'follow-up', who: { personId: 'person-1' }, step: 'Open', note: 'new', sourceSignal: 'signal-1' };
+  const addAdapter = {
+    toolNames: ['track_add_item'],
+    async readPolicyHash() { return trackAdapter.readPolicyHash(); },
+    async readTarget(_db: unknown, _input: unknown, memberId: string) {
+      return { kind: 'track', id: trackPath, ownerMemberId: memberId,
+        fingerprint: payloadFingerprint('tracks-vault-target-v1', content), approvedOrigin: 'agent' };
+    },
+  };
+  const approvedAdd = await approvedExactTrack('track_add_item', add, addAdapter);
+  const addProof = { requestId: approvedAdd.authority.requestId, callId: approvedAdd.callId, toolName: approvedAdd.toolName,
+    payloadHash: approvedAdd.payloadHash, input: add, target: approvedAdd.target, authority: approvedAdd.authority };
+  await expect(runtime('tracks.write', { sessionId: session, memberId: ids.member, admissionNonce, approval: addProof,
+    operation: 'track_add_item', input: add })).rejects.toThrow('Vault reader unavailable');
+  expect((await pool.query("SELECT used_at FROM approval_asks WHERE call_id='track-call-1'")).rows[0].used_at).toBeNull();
+  expect(ids.writes).toBe(0);
+
+  await pool.query('DELETE FROM approval_asks; DELETE FROM console_session_bindings');
+  approvalTurnId = 'turn-track-original'; approvalTurnSequence = 30;
+  await bindConsoleSession({ agent, incarnation, sessionId: session, memberId: ids.member, admissionNonce }, pool as never, env);
+  const move = { home: `vault:${ids.sharedArea}`, trackId: 'other-track', itemId: 'lead-one', step: 'Done', note: 'moved', sourceSignal: 'signal-2' };
+  const moveAdapter = {
+    toolNames: ['track_move_item'],
+    async readPolicyHash() { return trackAdapter.readPolicyHash(); },
+    async readTarget(_db: unknown, _input: unknown, memberId: string) {
+      return { kind: 'track-item', id: itemPath, ownerMemberId: memberId,
+        fingerprint: payloadFingerprint('tracks-vault-target-v1', ids.trackFiles.get(itemPath)?.content ?? null), approvedOrigin: 'agent' };
+    },
+  };
+  const approvedMove = await approvedExactTrack('track_move_item', move, moveAdapter);
+  const moveProof = { requestId: approvedMove.authority.requestId, callId: approvedMove.callId, toolName: approvedMove.toolName,
+    payloadHash: approvedMove.payloadHash, input: move, target: approvedMove.target, authority: approvedMove.authority };
+  await expect(runtime('tracks.write', { sessionId: session, memberId: ids.member, admissionNonce, approval: moveProof,
+    operation: 'track_move_item', input: move })).rejects.toThrow('Vault reader unavailable');
+  expect((await pool.query("SELECT used_at FROM approval_asks WHERE call_id='track-call-1'")).rows[0].used_at).toBeNull();
+  expect(ids.writes).toBe(0);
+
+  await pool.query('DELETE FROM approval_asks; DELETE FROM console_session_bindings');
+  await bindConsoleSession({ agent, incarnation, sessionId: session, memberId: ids.member, admissionNonce }, pool as never, env);
+  const exactAdd = { ...add, home: `vault:${ids.sharedArea}` };
+  const exactAddAdapter = {
+    toolNames: ['track_add_item'],
+    async readPolicyHash() { return trackAdapter.readPolicyHash(); },
+    async readTarget(_db: unknown, _input: unknown, memberId: string) {
+      return { kind: 'track', id: trackPath, ownerMemberId: memberId,
+        fingerprint: payloadFingerprint('tracks-vault-target-v1', content), approvedOrigin: 'agent' };
+    },
+  };
+  const approvedExactAdd = await approvedExactTrack('track_add_item', exactAdd, exactAddAdapter);
+  const exactAddProof = { requestId: approvedExactAdd.authority.requestId, callId: approvedExactAdd.callId,
+    toolName: approvedExactAdd.toolName, payloadHash: approvedExactAdd.payloadHash, input: exactAdd,
+    target: approvedExactAdd.target, authority: approvedExactAdd.authority };
+  const exactResult = await runtime('tracks.write', { sessionId: session, memberId: ids.member, admissionNonce,
+    approval: exactAddProof, operation: 'track_add_item', input: exactAdd });
+  expect(exactResult.result).toMatchObject({ trackId: 'follow-up', who: { personId: 'person-1' }, step: 'Open' });
+  expect((await pool.query("SELECT use_count,used_at FROM approval_asks WHERE call_id='track-call-1'")).rows[0].use_count).toBe(1);
+});
+
 it('admits a signed human receipt, opens a non-synthetic turn id, reads through the keeper, and closes once', async () => {
   const { turnId, opened, pendingReceipt } = await openTurn(0);
   await expect(runtime('turn.open', { pendingReceipt, sessionId: session, memberId: ids.member, admissionNonce, turnId, sequence: 0,
@@ -290,6 +387,8 @@ it('admits a signed human receipt, opens a non-synthetic turn id, reads through 
   expect(opened.turnCapability).toMatch(/^[A-Za-z0-9_-]{43}$/);
   const note = await runtime('vault.read', { turnCapability: opened.turnCapability, sessionId: session, memberId: ids.member, admissionNonce, turnId, sequence: 0, operation: 'read', area: 'private', path: 'owner.md' });
   expect(note.content).toBe('private note content');
+  await expect(runtime('vault.read', { turnCapability: opened.turnCapability, sessionId: session, memberId: ids.member, admissionNonce,
+    turnId, sequence: 0, operation: 'list', area: 'shared', home: 'vault:wrong-area' })).rejects.toThrow('Vault reader unavailable');
   await runtime('turn.close', { turnCapability: opened.turnCapability, turnId, sequence: 0 });
   await expect(runtime('vault.read', { turnCapability: opened.turnCapability, sessionId: session, memberId: ids.member, admissionNonce, turnId, sequence: 0, operation: 'read', area: 'private', path: 'owner.md' })).rejects.toThrow('Vault reader unavailable');
 });

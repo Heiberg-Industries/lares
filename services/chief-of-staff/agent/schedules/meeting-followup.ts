@@ -66,7 +66,7 @@
  *
  * `meeting_followup_send` is gated, so every session this schedule opens must declare
  * its approver — `appAuth` is threaded onto every `to(...).send(...)` call below, exactly as
- * `crm-routing.ts`/`morning-brief.ts` already do; without it the gate breaks silently the first
+ * `track-routing.ts`/`morning-brief.ts` already do; without it the gate breaks silently the first
  * time this fires.
  *
  * The "what I did" Slack line is a RAW `callSlackApi` postMessage (the same
@@ -1116,7 +1116,7 @@ function makeLiveCompose(pool: Pool, fromMailbox: string): FollowupDeps["compose
  * The one turn this schedule ever opens for a follow-up. NOT a request for the model to write
  * anything — the draft is already final (`makeLiveCompose` above) — its only job is to call
  * `meeting_followup_send` with the arguments below, verbatim. Embedded as a JSON block rather
- * than interpolated inline like `crm-routing.ts`'s short string args: a multi-paragraph email
+ * than interpolated inline like `track-routing.ts`'s short string args: a multi-paragraph email
  * body with quotes, line breaks and Norwegian characters is exactly the content a model might
  * "helpfully" paraphrase on the way into a tool call if given the chance, and `JSON.stringify`
  * escapes everything a plain inline interpolation would not.
@@ -1333,7 +1333,7 @@ function makeLiveSend(
 // ─── Live wiring — schedule ─────────────────────────────────────────────────────────────────
 
 /** Prevents an overlapping tick if one run ever takes longer than the 5-minute cron period —
- *  matches `email-triage.ts`/`crm-routing.ts`'s own `state.running` guard. */
+ *  matches `email-triage.ts`/`track-routing.ts`'s own `state.running` guard. */
 let running = false;
 
 /** — the row input-freshness.sh reads; pinned to this filename by the conformance test. */

@@ -33,6 +33,8 @@ const ENV_KEYS = [
   "TELEGRAM_PRINCIPAL_ID",
   "SLACK_ALLOWED_USER_IDS",
   "OBLIGATION_REPING_ENABLED",
+  "LARES_AGENT_NAME",
+  "LARES_AGENT_INCARNATION",
 ];
 let saved: Record<string, string | undefined>;
 
@@ -50,6 +52,7 @@ afterEach(async () => {
     else process.env[k] = saved[k];
   }
   vi.useRealTimers();
+  vi.doUnmock("@lares/agent-kit/db");
   await closePool().catch(() => {});
 });
 
@@ -152,19 +155,26 @@ describe("schedule error paths reach the signal spine (Fix 3)", () => {
     );
   }, 20_000);
 
-  it("crm-routing: a failing ensureRouteTables query at a route-hour Berlin slot is caught and signaled", async () => {
+  it("track-routing: a failing ensureRouteTables query at a route-hour Berlin slot is caught and signaled", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(homeLocalToDate("2026-06-17 09:00"));
     process.env["EVE_SCHEDULES_LIVE"] = "1";
-    process.env["DATABASE_URL"] = UNREACHABLE_DB;
+    process.env["LARES_AGENT_NAME"] = "chief-of-staff";
+    process.env["LARES_AGENT_INCARNATION"] = "33333333-3333-4333-8333-333333333333";
     process.env["SLACK_ALLOWED_USER_IDS"] = "U123456";
+    const fakeDb = { query: async (sql: string) => {
+      if (sql.includes("SELECT applied_definition FROM agent_resources")) return { rows: [{ applied_definition: {} }] };
+      if (sql.includes("SELECT id, person_id, opportunity_id, home, track_id")) throw new Error("route_proposals is missing");
+      return { rows: [] };
+    } };
+    vi.doMock("@lares/agent-kit/db", () => ({ getPool: () => fakeDb }));
 
-    const { default: schedule } = await import("../agent/schedules/crm-routing.js");
+    const { default: schedule } = await import("../agent/schedules/track-routing.js");
     await expect(schedule.run!(CTX)).resolves.toBeUndefined();
 
     expect(emitSignalMock).toHaveBeenCalledWith(
       "schedule-tick-failed",
-      expect.stringContaining("crm-routing"),
+      expect.stringContaining("track-routing"),
       expect.any(String),
     );
   }, 20_000);

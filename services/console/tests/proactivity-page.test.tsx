@@ -255,7 +255,7 @@ describe("/proactivity — when the agents speak", () => {
     expect(section).toContain("Morning brief");
     expect(section).toContain("Evening brief");
     expect(section).toContain("Digest");
-    expect(section).toContain("CRM routing");
+    expect(section).toContain("track routing");
     expect(section).toContain("Weekly summary");
     // dream and voice-learn are internal night jobs — never offered here.
     expect(section).not.toMatch(/\bdream\b/i);
@@ -266,7 +266,7 @@ describe("/proactivity — when the agents speak", () => {
     expect(section).toContain('value="8"'); // morning-brief
     expect(section).toContain('value="20"'); // evening-brief
     expect(section).toContain('value="9, 17"'); // digest
-    expect(section).toContain('value="9, 13, 17"'); // crm-routing
+    expect(section).toContain('value="9, 13, 17"'); // track-routing
   });
 
   it("a stored hour overrides the default and drops the default marker for that row only", async () => {

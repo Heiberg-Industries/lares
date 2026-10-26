@@ -9,6 +9,7 @@ import { captureConsoleVaultSources, withConsoleVaultSourceRead } from '@lares/a
 import { definitionSchema, hashOf, parseDefinition } from '@lares/agent-kit/definition';
 import { canWriteVaultArea, grantedVaultAreas } from '@lares/agent-kit/manifest';
 import { currentMember } from '@lares/agent-kit/member-store';
+import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { PgVaultStore } from '@lares/agent-kit/vault-area-store';
 import { GuardedVaultFiles, type VaultFilesBackings } from '@lares/agent-kit/vault-files';
 import { NoteNotFoundError, visibleTo, type Reader, type StoreName } from '@lares/agent-kit/notes-store';
@@ -74,7 +75,10 @@ function trackTargetPath(tool:string,raw:unknown,reserved:unknown):string{
  const target=object(reserved),i=object(raw),path=target.id;
  if(typeof path!=='string'||!trackHomePath(path)||typeof target.ownerMemberId!=='string')throw new Error('approval');
  if((tool==='track_create'||tool==='track_set_steps'||tool==='track_add_item')&&path!==`tracks/${String(i.trackId)}/track.md`)throw new Error('approval');
- if(tool==='track_move_item'&&(!path.endsWith(`/items/${String(i.itemId)}.md`)))throw new Error('approval');
+ if(tool==='track_move_item'&&path!==`tracks/${String(i.trackId)}/items/${String(i.itemId)}.md`)throw new Error('approval');
+ if(tool==='track_add_item'||tool==='track_move_item'){
+  if(typeof i.home!=='string'||!/^vault:[A-Za-z0-9_-]{1,128}$/.test(i.home)||typeof i.trackId!=='string'||! /^[a-z0-9][a-z0-9-]{0,62}$/.test(i.trackId))throw new Error('approval');
+ }
  return path;
 }
 async function trackArea(db:AuthorityPool,agent:string,incarnation:string,proof:Record<string,unknown>,operation:string,rawInput:unknown,
@@ -83,6 +87,7 @@ async function trackArea(db:AuthorityPool,agent:string,incarnation:string,proof:
  if(typeof sessionId!=='string'||typeof memberId!=='string'||typeof nonce!=='string'||typeof requestId!=='string'||typeof callId!=='string'||typeof tool!=='string'||
    !TRACK_WRITE_TOOLS.has(tool)||tool!==operation||payloadFingerprint(tool,rawInput)!==approval.payloadHash||payloadFingerprint(tool,rawInput)!==payloadFingerprint(tool,approval.input))throw new Error('approval');
  const target=object(approval.target),path=trackTargetPath(tool,rawInput,target);
+ const raw=object(rawInput),requestedArea=tool==='track_add_item'||tool==='track_move_item'?String(raw.home).slice('vault:'.length):undefined;
  const execution=await authorityTransaction(db,async client=>{
   const rows=await client.query(`SELECT call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,used_at
     FROM approval_asks WHERE call_id=$1 ${lockApproval?'FOR UPDATE':''}`,[callId]);
@@ -114,7 +119,7 @@ async function trackArea(db:AuthorityPool,agent:string,incarnation:string,proof:
    const binding=await vault.vaultAreaBinding(memberId,{areaId:String(area.id),expectedRevision:Number(area.revision),permission:'edit'},{db:client as never,requiredBackingKind:'git'});
    if(binding)matches.push({areaId:String(area.id),revision:Number(area.revision)});
   }
-  if(matches.length!==1)throw new Error('area');
+  if(matches.length!==1||(requestedArea!==undefined&&matches[0]!.areaId!==requestedArea))throw new Error('area');
   if(lockApproval){const used=await client.query("UPDATE approval_asks SET used_at=clock_timestamp(),use_count=use_count+1 WHERE call_id=$1 AND request_id=$2 AND outcome='approved' AND used_at IS NULL RETURNING call_id",[callId,requestId]);if(used.rows.length!==1)throw new Error('replay');}
   const authority={...original,origin:'approval-resume',actingMemberId:memberId,resolvedByMemberId:memberId,requestId};
   const meta={sessionId,memberId,authority,targetPath:path,areaId:matches[0]!.areaId,revision:matches[0]!.revision,inventory};
@@ -147,6 +152,49 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
   prune(Date.now(),turnNow());if(given.length!==expected.length||!timingSafeEqual(given,expected)||runtimeRequests.has(requestId)||runtimeRequests.size>=MAX_LIVE)throw new Error('signature');
   runtimeRequests.set(requestId,Date.now()+60_000);
   const active=await authorityTransaction(pool,async db=>{await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");return db.query("SELECT 1 FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid'",[agent,incarnation])},transactionDeadline);assertNotAborted();if(active.rows.length!==1)throw new Error('runtime');
+  if(op==='tracks.list-scheduled'){
+   const expectedOwner=input.ownerMemberId,personId=input.personId;
+   if(typeof expectedOwner!=='string'||expectedOwner.length<1||expectedOwner.length>256||
+      (personId!==undefined&&(typeof personId!=='string'||personId.length<1||personId.length>256)))throw new Error('owner');
+   return await authorityTransaction(pool,async db=>{
+    await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");assertNotAborted();
+    const rows=await db.query(`SELECT a.owner_member_id,a.organisation_id,r.applied_definition,d.status
+      FROM agent_resources r JOIN agent_definitions d ON d.name=r.name JOIN agent_access a ON a.agent_name=r.name
+      WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token
+        AND r.state='ready' AND NOT r.pending AND d.status='valid' AND r.applied_definition IS NOT NULL
+      FOR SHARE OF r,d,a`,[agent,incarnation]);
+    if(rows.rows.length!==1||rows.rows[0]!.owner_member_id!==expectedOwner)throw new Error('owner');
+    const ownerId=String(rows.rows[0]!.owner_member_id),member=await currentMember(db as never,ownerId);
+    if(!member||member.organisationId!==rows.rows[0]!.organisation_id)throw new Error('member');
+    if(!await new PgGrantStore().captureUse(ownerId,agent as string,{db:db as never}))throw new Error('grant');
+    let definition;try{definition=parseDefinition(rows.rows[0]!.applied_definition);}catch{throw new Error('definition');}
+    if(!grantedVaultAreas(definition).includes('shared'))throw new Error('vault read grant');
+    const inventory=loadVaultStorageInventory();await verifyVaultStorageMetadata(db as never,inventory,true);assertNotAborted();
+    const areaRows=await db.query("SELECT id,revision FROM vault_areas WHERE organisation_id=$1 AND kind='shared' AND status='active' ORDER BY id LIMIT 513",[member.organisationId]);
+    if(areaRows.rows.length>512)throw new Error('areas');
+    const vault=new PgVaultStore(),backingPaths=socketOptions.vaultFilesForTests;
+    const backings:VaultFilesBackings=new Map([[inventory.backing.id,{kind:'git',root:backingPaths?.root??'/srv',areas:new Map(inventory.areas.map(a=>[a.areaId,{origin:backingPaths?join(backingPaths.originRoot,`${a.areaId}.git`):a.origin}]))}]]);
+    const files=new GuardedVaultFiles(vault,backings),reader:Reader={userId:ownerId,store:'atlas'},homes=[] as Array<{home:string;tracks:Array<{track:unknown;items:unknown[]}>}>;
+    for(const area of areaRows.rows){
+     assertNotAborted();const areaId=String(area.id),revision=Number(area.revision);
+     if(!inventory.areas.some(a=>a.areaId===areaId&&a.kind==='shared'))throw new Error('inventory');
+     const binding=await vault.vaultAreaBinding(ownerId,{areaId,expectedRevision:revision,permission:'use'},{db:db as never,requiredBackingKind:'git'});
+     assertNotAborted();if(!binding)continue;
+     const ctx={memberId:ownerId,areaId,expectedRevision:revision,db:db as never};
+     const writer:TrackFileWriter={
+      async list(){const listed=await files.list(ctx);return listed.paths.filter(path=>/^tracks\/[a-z0-9][a-z0-9-]{0,62}\/(?:track\.md|items\/[a-z0-9][a-z0-9-]{0,62}\.md)$/.test(path));},
+      async read(path){if(!/^tracks\/[a-z0-9][a-z0-9-]{0,62}\/(?:track\.md|items\/[a-z0-9][a-z0-9-]{0,62}\.md)$/.test(path))throw new Error('track path');
+       try{const note=await files.read(ctx,path);if(!visibleTo(note.content,reader))return undefined;return {path,content:note.content,contentRevision:note.contentRevision};}
+       catch(error){if(error instanceof NoteNotFoundError)return undefined;throw error;}},
+      async write(){throw new Error('scheduled Vault tracks are read-only');},
+     };
+     const home=new VaultTracksHome(writer),tracks=await home.listTracks(),withItems=[];
+     for(const track of tracks){assertNotAborted();withItems.push({track,items:personId?await home.listItems(track.id,{personId}):[]});}
+     homes.push({home:`vault:${areaId}`,tracks:withItems});
+    }
+    assertNotAborted();return {ownerMemberId:ownerId,homes};
+   },transactionDeadline);
+  }
   if(op==='request.admit'){
    const capsule=input.capsule,receipt=object(input.receipt);if(typeof capsule!=='string'||typeof receipt.method!=='string'||typeof receipt.path!=='string'||typeof receipt.rawBodyHash!=='string')throw new Error('receipt');
    const parts=capsule.split('.');if(parts.length!==2||!/^[-_A-Za-z0-9]+$/.test(parts[0]!)||!/^[-_A-Za-z0-9]+$/.test(parts[1]!))throw new Error('capsule');
@@ -182,8 +230,8 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    const cap=input.turnCapability,turnId=input.turnId,sequence=input.sequence;if(typeof cap!=='string')throw new Error('turn');const turn=turns.get(cap);if(!turn||turn.turnId!==turnId||turn.sequence!==sequence||turn.input.agent!==agent||turn.input.incarnation!==incarnation)throw new Error('turn');turns.delete(cap);return {closed:true};
   }
   if(op==='vault.read'){
-   const cap=input.turnCapability,turnId=input.turnId,sequence=input.sequence,sessionId=input.sessionId,memberId=input.memberId,admissionNonce=input.admissionNonce,operation=input.operation,area=input.area,path=input.path,offset=input.offset;
-   if(typeof cap!=='string'||typeof turnId!=='string'||!Number.isSafeInteger(sequence)||typeof sessionId!=='string'||typeof memberId!=='string'||typeof admissionNonce!=='string'||(operation!=='list'&&operation!=='read')||(area!=='private'&&area!=='shared')||(operation==='read'&&typeof path!=='string')||(offset!==undefined&&(!Number.isSafeInteger(offset)||Number(offset)<0)))throw new Error('read');
+   const cap=input.turnCapability,turnId=input.turnId,sequence=input.sequence,sessionId=input.sessionId,memberId=input.memberId,admissionNonce=input.admissionNonce,operation=input.operation,area=input.area,path=input.path,offset=input.offset,requestedHome=input.home;
+   if(typeof cap!=='string'||typeof turnId!=='string'||!Number.isSafeInteger(sequence)||typeof sessionId!=='string'||typeof memberId!=='string'||typeof admissionNonce!=='string'||(operation!=='list'&&operation!=='read')||(area!=='private'&&area!=='shared')||(operation==='read'&&typeof path!=='string')||(offset!==undefined&&(!Number.isSafeInteger(offset)||Number(offset)<0))||(requestedHome!==undefined&&(area!=='shared'||typeof requestedHome!=='string'||!/^vault:[A-Za-z0-9_-]{1,128}$/.test(requestedHome))))throw new Error('read');
    const turn=turns.get(cap);if(!turn||turn.expiry<=turnNow()||turn.turnId!==turnId||turn.sequence!==sequence||turn.input.agent!==agent||turn.input.incarnation!==incarnation||turn.input.session!==sessionId||turn.input.member!==memberId||turn.input.admissionNonce!==admissionNonce)throw new Error('turn');
    const assertLive=()=>{assertNotAborted();if(turns.get(cap)!==turn||turn.expiry<=turnNow())throw new Error('turn')};assertLive();
    const sourceReadOptions={deadlineAtMs:requestDeadline,beforeCommit:assertLive,afterCommit:assertLive};
@@ -193,7 +241,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
     const member=await currentMember(db as never,memberId);assertLive();if(!member)throw new Error('member');
     const kind=area==='private'?'private':'shared',candidates=inventory.areas.filter(a=>a.kind===kind),vault=new PgVaultStore(),matches=[] as {areaId:string;revision:number}[];
     for(const candidate of candidates){if(!turn.areaIds.includes(candidate.areaId))continue;const result=await db.query('SELECT revision FROM vault_areas WHERE id=$1 AND status=\'active\'',[candidate.areaId]);if(result.rows.length!==1)continue;const revision=Number(result.rows[0]!.revision);const binding=await vault.vaultAreaBinding(memberId,{areaId:candidate.areaId,expectedRevision:revision,permission:'use'},{db:db as never,requiredBackingKind:'git'});if(binding)matches.push({areaId:candidate.areaId,revision});}
-    if(matches.length!==1)throw new Error('area');const selected=matches[0]!,testPaths=socketOptions.vaultFilesForTests,backings=new Map([[inventory.backing.id,{kind:'git' as const,root:testPaths?.root??'/srv',areas:new Map(inventory.areas.map(a=>[a.areaId,{origin:testPaths?join(testPaths.originRoot,`${a.areaId}.git`):a.origin}]))}]]),files=new GuardedVaultFiles(vault,backings),ctx={memberId,areaId:selected.areaId,expectedRevision:selected.revision,db:db as never},reader:Reader={userId:memberId,store:kind==='private'?'brain':'atlas' as StoreName};
+    if(matches.length!==1||(requestedHome!==undefined&&matches[0]!.areaId!==requestedHome.slice('vault:'.length)))throw new Error('area');const selected=matches[0]!,testPaths=socketOptions.vaultFilesForTests,backings=new Map([[inventory.backing.id,{kind:'git' as const,root:testPaths?.root??'/srv',areas:new Map(inventory.areas.map(a=>[a.areaId,{origin:testPaths?join(testPaths.originRoot,`${a.areaId}.git`):a.origin}]))}]]),files=new GuardedVaultFiles(vault,backings),ctx={memberId,areaId:selected.areaId,expectedRevision:selected.revision,db:db as never},reader:Reader={userId:memberId,store:kind==='private'?'brain':'atlas' as StoreName};
     if(operation==='list'){
      const listed=await files.list(ctx);if(listed.paths.length>512)throw new Error('listing');const notes:string[]=[];
      for(const notePath of listed.paths){assertLive();const note=await files.read(ctx,notePath);assertLive();if(visibleTo(note.content,reader))notes.push(notePath);}

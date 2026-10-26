@@ -17,7 +17,7 @@ import { PROPOSALS_SCHEMA } from "./helpers/proposals-schema.js";
  *   2. a pass that fails stamps no pass (its tick row still moves for the slot-based ones);
  *   3. a quiet pass stamps — proven for the schedules whose quiet path needs no external service
  *      (reminders on an empty table, reping switched off, proposals-watch on empty lanes); the
- *      briefs, digest, dream, crm-routing, email-triage, outreach-reply-watch and voice-learn
+ *      briefs, digest, dream, track-routing, email-triage, outreach-reply-watch and voice-learn
  *      reach their quiet path only through Google/Slack/the vault, so for them facts 1 and 2 plus
  *      the conformance test's call-site pin are the coverage.
  *
@@ -43,6 +43,8 @@ import { PROPOSALS_SCHEMA } from "./helpers/proposals-schema.js";
  */
 const here = dirname(fileURLToPath(import.meta.url));
 const MIGRATION = readFileSync(join(here, "..", "..", "box", "sql", "001_baseline.sql"), "utf8");
+const SHARED_SYNC_MIGRATION = readFileSync(join(here, "..", "..", "box", "sql", "027_shared_sync_schema.sql"), "utf8");
+const TRACK_ROUTING_MIGRATION = readFileSync(join(here, "..", "..", "box", "sql", "032_track_routing.sql"), "utf8");
 
 vi.mock("../lib/signal-emit.js", () => ({ emitSignal: vi.fn(async () => {}) }));
 
@@ -101,7 +103,7 @@ vi.mock("../lib/slack-source.js", async (importOriginal) => ({
 const ENV_KEYS = [
   "EVE_SCHEDULES_LIVE", "EVE_DIGEST_LIVE", "EVE_DREAM_LIVE", "DATABASE_URL", "TELEGRAM_PRINCIPAL_ID",
   "SLACK_ALLOWED_USER_IDS", "OBLIGATION_REPING_ENABLED",
-  "DIGEST_SLACK_TARGET",
+  "DIGEST_SLACK_TARGET", "LARES_AGENT_NAME", "LARES_AGENT_INCARNATION",
 ];
 let saved: Record<string, string | undefined>;
 let container: StartedPostgreSqlContainer;
@@ -125,7 +127,7 @@ const CASES: Array<{ name: string; slot: string | null; env: Record<string, stri
   { name: "telegram-handover",    slot: "2026-06-17 00:00", env: {} },
   { name: "voice-learn",          slot: "2026-06-21 04:00", env: {} },                       // Sunday
   { name: "weekly-summary",       slot: "2026-06-21 09:00", env: { TELEGRAM_PRINCIPAL_ID: "123456" } },
-  { name: "crm-routing",          slot: "2026-06-17 09:00", env: { SLACK_ALLOWED_USER_IDS: "U123456" } },
+  { name: "track-routing",          slot: "2026-06-17 09:00", env: { SLACK_ALLOWED_USER_IDS: "U123456" } },
   { name: "email-triage",         slot: null, env: { SLACK_ALLOWED_USER_IDS: "U123456" } },
   { name: "meeting-followup",     slot: null, env: { SLACK_ALLOWED_USER_IDS: "U123456" } },
   { name: "outreach-reply-watch", slot: null, env: { SLACK_ALLOWED_USER_IDS: "U123456" } },
@@ -172,7 +174,7 @@ const IMPORTERS: Record<string, () => Promise<{ default: { run?: (ctx: unknown) 
   "telegram-handover": () => import("../agent/schedules/telegram-handover.js"),
   "voice-learn": () => import("../agent/schedules/voice-learn.js"),
   "weekly-summary": () => import("../agent/schedules/weekly-summary.js"),
-  "crm-routing": () => import("../agent/schedules/crm-routing.js"),
+  "track-routing": () => import("../agent/schedules/track-routing.js"),
   "email-triage": () => import("../agent/schedules/email-triage.js"),
   "meeting-followup": () => import("../agent/schedules/meeting-followup.js"),
   "outreach-reply-watch": () => import("../agent/schedules/outreach-reply-watch.js"),
@@ -193,7 +195,7 @@ async function age(key: string): Promise<number> {
 }
 /**
  * Several schedules' own live wiring does `CREATE TABLE IF NOT EXISTS ...` as part of a pass
- * (dream's `ensureDreamTables`, crm-routing's `ensureRouteTables`, the briefs'/reping's
+ * (dream's `ensureDreamTables`, track-routing's `ensureRouteTables`, the briefs'/reping's
  * `ensureObligationsTableOnce`) — idempotent in production, but a real side effect against this
  * file's ONE shared container. Left alone, an earlier case's ensure-table call would leave a
  * later case's "domain tables missing" premise false (an empty table reads as "nothing to do"
@@ -212,6 +214,17 @@ async function resetDomainTables(): Promise<void> {
 async function runSchedule(c: (typeof CASES)[number], live: boolean): Promise<void> {
   if (live) process.env["EVE_SCHEDULES_LIVE"] = "1";
   for (const [k, v] of Object.entries(c.env)) process.env[k] = v;
+  if (c.name === "track-routing") {
+    // The schedule now proves it is running the current, explicitly applied definition before
+    // stamping its tick. Give this case that real authority row; its next missing-table query
+    // remains ensureRouteTables, which is the deliberate failing-pass premise below.
+    const incarnation = "33333333-3333-4333-8333-333333333333";
+    process.env["LARES_AGENT_NAME"] = "chief-of-staff";
+    process.env["LARES_AGENT_INCARNATION"] = incarnation;
+    await pool.query(`CREATE TABLE agent_resources(name text, ownership_token uuid, runtime_control_token uuid,
+      state text, pending boolean, applied_definition jsonb)`);
+    await pool.query(`INSERT INTO agent_resources VALUES('chief-of-staff',$1::uuid,$1::uuid,'ready',false,'{}'::jsonb)`, [incarnation]);
+  }
   if (c.slot) { vi.useFakeTimers(); vi.setSystemTime(homeLocalToDate(c.slot)); }
   const importer = IMPORTERS[c.name];
   if (!importer) throw new Error(`no importer registered for schedule "${c.name}"`);
@@ -225,6 +238,8 @@ beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
   pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   await pool.query(MIGRATION);
+  await pool.query(SHARED_SYNC_MIGRATION);
+  await pool.query(TRACK_ROUTING_MIGRATION);
 }, 120_000);
 afterAll(async () => { await closePool().catch(() => {}); await pool.end(); await container.stop(); });
 

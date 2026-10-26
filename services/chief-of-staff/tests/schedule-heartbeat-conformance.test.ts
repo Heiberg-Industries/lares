@@ -19,7 +19,7 @@ const SCHEDULES_DIR = join(here, "..", "agent", "schedules");
 
 export const SLOT_SCHEDULES = [
   "morning-brief", "evening-brief", "digest", "dream", "conversation-prune", "voice-learn",
-  "weekly-summary", "crm-routing", "telegram-handover",
+  "weekly-summary", "track-routing", "telegram-handover",
 ];
 
 /**
@@ -52,10 +52,10 @@ describe("schedule heartbeat keys are pinned to the schedule files", () => {
 
   it("there are exactly the 18 schedules the inventory names", () => {
     expect([...sources.keys()]).toEqual([
-      "clipping-requests", "conversation-prune", "crm-routing", "deadlines", "digest", "dream", "email-triage",
+      "clipping-requests", "conversation-prune", "deadlines", "digest", "dream", "email-triage",
       "evening-brief", "meeting-followup", "morning-brief",
       "outreach-reply-watch", "owner-clock", "proposals-watch", "reminders", "reping",
-      "telegram-handover", "voice-learn", "weekly-summary",
+      "telegram-handover", "track-routing", "voice-learn", "weekly-summary",
     ]);
   });
 
@@ -119,10 +119,17 @@ describe("schedule heartbeat keys are pinned to the schedule files", () => {
 const SEED_MIGRATIONS = ["001_baseline.sql"];
 
 function seededKeys(): string[] {
-  return SEED_MIGRATIONS.flatMap((name) => {
+  const keys = SEED_MIGRATIONS.flatMap((name) => {
     const src = readFileSync(join(here, "..", "..", "box", "sql", name), "utf8");
     return [...src.matchAll(/\('(chief-of-staff\/[a-z-]+(?:\/tick)?)'\)/g)].map((m) => m[1]!);
   });
+  const routing = readFileSync(join(here, "..", "..", "box", "sql", "032_track_routing.sql"), "utf8");
+  for (const match of routing.matchAll(/SELECT '(chief-of-staff\/[a-z-]+(?:\/tick)?)',updated_at FROM heartbeat WHERE agent='(chief-of-staff\/[a-z-]+(?:\/tick)?)'/g)) {
+    const oldKey = match[2]!, newKey = match[1]!;
+    const index = keys.indexOf(oldKey);
+    if (index >= 0) keys[index] = newKey;
+  }
+  return keys;
 }
 
 describe("the schema seeds match the schedule code", () => {

@@ -3,7 +3,7 @@ import { assertPrivateConsoleTool } from "@lares/agent-kit/private-console-surfa
 import { isExactApprovalContext, isExactApprovalResponse, reserveExactApproval, approveExactResponse,
   requireApprovedExecution, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
 import { deadlineApprovalAdapter } from "./deadlines-store.js";
-import { tracksApprovalAdapter } from "./tracks-approval.js";
+import { tracksApprovalAdapter, twentyTracksApprovalAdapter } from "./tracks-approval.js";
 import { consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
 /**
  * The approver re-check every gated write calls, on both channels.
@@ -12,10 +12,17 @@ import { consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type Co
  * from Slack-only to whichever channel `lib/principals.ts` knows about.
  */
 import { approvalLedger, assertApprovedCall, callIdFrom } from "@lares/agent-kit/approval-ledger";
+import { getPool } from "@lares/agent-kit/db";
+import type { ApprovedExecution } from "@lares/agent-kit/approval-execution";
 
 import { declaredApprover, isAllowedPrincipal, principalFromAuth } from "./principals.js";
 
-const adapterFor = (tool: string) => tracksApprovalAdapter.toolNames.includes(tool) ? tracksApprovalAdapter : deadlineApprovalAdapter;
+const adapterFor = (tool: string, input?: unknown) => {
+  const home = input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>).home : undefined;
+  return home === 'twenty' && twentyTracksApprovalAdapter.toolNames.includes(tool)
+    ? twentyTracksApprovalAdapter
+    : tracksApprovalAdapter.toolNames.includes(tool) ? tracksApprovalAdapter : deadlineApprovalAdapter;
+};
 
 /**
  * Refused because the person who approved is not the person allowed to, on THIS channel.
@@ -191,12 +198,32 @@ export async function assertApproval(
   input: unknown,
 ): Promise<Awaited<ReturnType<typeof requireApprovedExecution>> | undefined> {
   if (isExactApprovalContext(ctx)) {
-    return await requireApprovedExecution(ctx,toolName,input,{adapter:adapterFor(toolName)});
+    return await requireApprovedExecution(ctx,toolName,input,{adapter:adapterFor(toolName,input)});
   }
   await guardConsoleToolContext(ctx);
   assertApprover(approverFrom(ctx?.session?.auth));
   await assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName, input });
   return undefined;
+}
+
+/** A durable, atomic one-use claim for an exact Twenty Tracks approval, made before provider I/O.
+ *  Vault approvals are claimed by Keeper in its write transaction and must not pass through here. */
+export async function runApprovedTwentyTrackOnce<T>(approved: ApprovedExecution | undefined,
+  write: () => Promise<T>, db = getPool()): Promise<T> {
+  if (!approved) return write();
+  if (!['track_add_item', 'track_move_item'].includes(approved.toolName) ||
+      approved.authority.origin !== 'approval-resume' || !approved.authority.requestId ||
+      !approved.authority.actingMemberId || !approved.authority.agentId || !approved.authority.sessionId) {
+    throw new Error('Exact Twenty track approval is unavailable');
+  }
+  const claimed = await db.query(`UPDATE approval_asks
+    SET used_at=clock_timestamp(),use_count=use_count+1
+    WHERE request_id=$1 AND call_id=$2 AND tool=$3 AND payload_hash=$4 AND outcome='approved' AND used_at IS NULL
+      AND acting_member_id=$5 AND resolved_by_member_id=$5 AND session_id=$6 AND agent=$7
+    RETURNING request_id`, [approved.authority.requestId, approved.callId, approved.toolName, approved.payloadHash,
+      approved.authority.actingMemberId, approved.authority.sessionId, approved.authority.agentId]);
+  if (claimed.rows.length !== 1) throw new Error('Exact Twenty track approval was already used or is unavailable');
+  return write();
 }
 
 /** Preserve the authored native policy; bound console calls additionally require exact authority. */
@@ -209,10 +236,10 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
   }
   const c = ctx as ConsoleAuthorityContext & {callId?:string;toolInput?:unknown};
   if (consoleAdmission(c.session?.auth?.current)?.purpose === 'resolver') {
-    await requireApprovedExecution(c,name,c.toolInput,{adapter:adapterFor(name)});
+    await requireApprovedExecution(c,name,c.toolInput,{adapter:adapterFor(name,c.toolInput)});
     return 'user-approval';
   }
-  await reserveExactApproval(c,name,{adapter:adapterFor(name)});
+  await reserveExactApproval(c,name,{adapter:adapterFor(name,c.toolInput)});
   const decision = await (authored as (ctx:unknown)=>unknown)(ctx);
   if (decision === 'denied' || (typeof decision === 'object' && decision !== null && 'type' in decision && decision.type === 'denied')) return decision;
   return 'user-approval';
@@ -221,13 +248,13 @@ export async function catalogueApprovalResponse(name: string, ctx: unknown): Pro
   assertPrivateConsoleTool(ctx,"chief-of-staff",name);
   if(name==='personal_mailbox_send')return personalSendApprovalResponse(ctx as never);
   if (!isExactApprovalResponse(ctx)) return {status:'allowed'};
-  return approveExactResponse(ctx as ExactResponseContext,{adapter:adapterFor(name)});
+  return approveExactResponse(ctx as ExactResponseContext,{adapter:adapterFor(name,(ctx as ExactResponseContext).request.toolInput)});
 }
 export async function guardCatalogueExecution(ctx: unknown, name: string, input: unknown): Promise<void> {
   assertPrivateConsoleTool(ctx,"chief-of-staff",name);
   if(name==='personal_mailbox_send'){await requirePersonalSendCall(ctx as never,input);return;}
   if (isExactApprovalContext(ctx) && consoleAdmission((ctx as ConsoleAuthorityContext).session?.auth?.current)?.purpose === 'resolver') {
-    await requireApprovedExecution(ctx as ConsoleAuthorityContext,name,input,{adapter:adapterFor(name)});
+    await requireApprovedExecution(ctx as ConsoleAuthorityContext,name,input,{adapter:adapterFor(name,input)});
     return;
   }
   await guardConsoleToolContext(ctx);

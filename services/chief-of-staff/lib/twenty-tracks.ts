@@ -192,8 +192,9 @@ export class TwentyTracksHome implements TracksHome {
     return itemFromOpportunity(trackId, { ...created, pointOfContactId: who.personId, companyId: who.organisationId });
   }
 
-  async moveItem(itemId: string, step: string, note: string, _sourceSignal: string): Promise<TrackItem> {
+  async moveItem(itemId: string, step: string, note: string, _sourceSignal: string, expectedTrackId?: string): Promise<TrackItem> {
     const current = await this.getOpportunity(itemId);
+    if (expectedTrackId !== undefined && current.brand !== expectedTrackId) throw new Error('Twenty opportunity track changed');
     const track = (await this.listTracks()).find((candidate) => candidate.id === current.brand);
     if (!track || !track.steps.includes(step)) throw new Error('Twenty track or step is unavailable');
     await this.setOpportunityStage(itemId, step, current.brand);

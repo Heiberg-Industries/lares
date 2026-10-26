@@ -35,9 +35,9 @@ describe("SCHEDULE_HOUR_DEFAULTS (pure)", () => {
     }
   });
 
-  it("SINGLE_SLOT is every schedule except digest and crm-routing", () => {
+  it("SINGLE_SLOT is every schedule except digest and track-routing", () => {
     expect(SINGLE_SLOT.has("digest")).toBe(false);
-    expect(SINGLE_SLOT.has("crm-routing")).toBe(false);
+    expect(SINGLE_SLOT.has("track-routing")).toBe(false);
     expect(SINGLE_SLOT.has("morning-brief")).toBe(true);
     expect(SINGLE_SLOT.has("evening-brief")).toBe(true);
     expect(SINGLE_SLOT.has("weekly-summary")).toBe(true);
@@ -73,7 +73,7 @@ describe("validateHours (pure)", () => {
     expect(validateHours("morning-brief", [7])).toEqual({ ok: true });
   });
   it("accepts several sorted, unique, in-range hours for a multi-slot schedule", () => {
-    expect(validateHours("crm-routing", [9, 13, 17])).toEqual({ ok: true });
+    expect(validateHours("track-routing", [9, 13, 17])).toEqual({ ok: true });
   });
 });
 

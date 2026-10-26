@@ -985,8 +985,8 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "Nothing breaks — CRM routing falls back to the gateway's own default model for its classifier call.",
-    readAt: ["services/chief-of-staff/agent/schedules/crm-routing.ts:309"],
+    breaksWithout: "Nothing breaks — track routing falls back to the gateway's own default model for its classifier call.",
+    readAt: ["services/chief-of-staff/agent/schedules/track-routing.ts:309"],
   },
   {
     name: "EMBED_MODEL",

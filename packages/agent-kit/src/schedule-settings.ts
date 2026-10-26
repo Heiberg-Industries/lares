@@ -11,7 +11,7 @@
  *   - `morning-brief` : 8  — `agent/schedules/morning-brief.ts`'s `MORNING_HOUR`.
  *   - `evening-brief` : 20 — `agent/schedules/evening-brief.ts`'s `EVENING_HOUR`.
  *   - `digest`        : 9, 17 — `lib/digest/schedule.ts`'s `dueScheduledSlot` default parameter.
- *   - `crm-routing`   : 9, 13, 17 — `agent/schedules/crm-routing.ts`'s `DEFAULT_ROUTE_HOURS`.
+ *   - `track-routing`   : 9, 13, 17 — `agent/schedules/track-routing.ts`'s `DEFAULT_ROUTE_HOURS`.
  *   - `weekly-summary`: 9  — `agent/schedules/weekly-summary.ts`'s `weeklyHour()` default.
  *   - `voice-learn`   : 4  — `agent/schedules/voice-learn.ts`'s `LEARN_HOUR`.
  *   - `dream`         : 3  — `agent/schedules/dream.ts`'s `DEFAULT_HOUR` (env `DREAM_HOUR`).
@@ -35,7 +35,7 @@ export const SCHEDULE_HOUR_DEFAULTS: Readonly<Record<string, readonly number[]>>
   "morning-brief": [8],
   "evening-brief": [20],
   digest: [9, 17],
-  "crm-routing": [9, 13, 17],
+  "track-routing": [9, 13, 17],
   "weekly-summary": [9],
   "voice-learn": [4],
   dream: [3],
@@ -44,9 +44,9 @@ export const SCHEDULE_HOUR_DEFAULTS: Readonly<Record<string, readonly number[]>>
 export type ScheduleName = keyof typeof SCHEDULE_HOUR_DEFAULTS;
 
 /** Every schedule that fires at exactly one hour a day — everything except `digest` and
- *  `crm-routing`, which fire several passes a day. */
+ *  `track-routing`, which fire several passes a day. */
 export const SINGLE_SLOT: ReadonlySet<string> = new Set(
-  Object.keys(SCHEDULE_HOUR_DEFAULTS).filter((s) => s !== "digest" && s !== "crm-routing"),
+  Object.keys(SCHEDULE_HOUR_DEFAULTS).filter((s) => s !== "digest" && s !== "track-routing"),
 );
 
 export type HoursValidation = { ok: true } | { ok: false; message: string };

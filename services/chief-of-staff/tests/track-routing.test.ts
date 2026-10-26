@@ -11,13 +11,16 @@ import { makeRouteEngine, decideProposalMode, LOW_CONFIDENCE, type RouteProposal
 import {
   dueRouteSlot,
   buildRouteProposalPrompt,
-  makeCrmRoutingTick,
+  routeProposalWebBody,
+  hasLegacyTrackRoutingKeys,
+  makeTrackRoutingTick,
   freshState,
-  type CrmRoutingDeps,
+  type TrackRoutingDeps,
   RATE_LIMIT_RETRY_MS,
-} from "../agent/schedules/crm-routing.js";
+} from "../agent/schedules/track-routing.js";
 
 const SHARED_SYNC_SCHEMA_SQL = readFileSync(new URL("../../box/sql/027_shared_sync_schema.sql", import.meta.url), "utf8");
+const TRACK_ROUTING_MIGRATION_SQL = readFileSync(new URL("../../box/sql/032_track_routing.sql", import.meta.url), "utf8");
 
 // These synthetic tracks exercise routing prompts; they are not live Twenty evidence.
 let savedBrands: string | undefined;
@@ -41,19 +44,19 @@ const SYNTH_TRACKS = [
   { id: "GAMMA", name: "Gamma", purpose: "third made-up brand", steps: ["NEW", "MEETING", "QUALIFIED", "PROPOSAL", "CUSTOMER", "LOST"], closingSteps: ["CUSTOMER", "LOST"] },
 ];
 function makeRouteClassifier(deps: Parameters<typeof buildRouteClassifier>[0]) {
-  return buildRouteClassifier({ ...deps, tracks: SYNTH_TRACKS });
+  return buildRouteClassifier({ ...deps, tracks: SYNTH_TRACKS.map((track) => ({ ...track, home: "twenty" })) });
 }
 
 /**
- * The `crm-routing` schedule, delivering via eve's native Slack approval
+ * The `track-routing` schedule, delivering via eve's native Slack approval
  * card (the gated `twenty_create_opportunity`/`twenty_set_stage` tools).
  *
  * Layers, per the brief's Step 1:
  *   1. `lib/route-store.ts` against a REAL Postgres (testcontainer, pattern).
  *   2. `lib/route-classify.ts` — offline, fake LLM.
  *   3. `lib/route-engine.ts` — offline, fake Twenty/classifier/store.
- *   4. `agent/schedules/crm-routing.ts` — slot matching (once per slot-hour, not every tick),
- *      the prompt builder, `makeCrmRoutingTick`'s send-then-record ordering and per-proposal
+ *   4. `agent/schedules/track-routing.ts` — slot matching (once per slot-hour, not every tick),
+ *      the prompt builder, `makeTrackRoutingTick`'s send-then-record ordering and per-proposal
  *      failure isolation, all offline; then ONE real-Postgres integration test proving a
  *      routing tick with a stubbed Twenty client actually writes `route_proposals` rows; then
  *      the gate — off means zero store/Twenty/Slack calls.
@@ -69,6 +72,20 @@ describe("route-store", () => {
     const pool = quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
     await pool.query(SHARED_SYNC_SCHEMA_SQL);
+    await pool.query(`CREATE TABLE schedule_settings(owner text NOT NULL,schedule text NOT NULL,hours integer[] NOT NULL,updated_by text,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(owner,schedule))`);
+    await pool.query(`CREATE TABLE heartbeat(agent text PRIMARY KEY,updated_at timestamptz NOT NULL DEFAULT now())`);
+    await pool.query(`INSERT INTO schedule_settings(owner,schedule,hours) VALUES('owner-1','crm-routing',ARRAY[9,13,17])`);
+    await pool.query(`INSERT INTO heartbeat(agent) VALUES('chief-of-staff/crm-routing'),('chief-of-staff/crm-routing/tick')`);
+    await pool.query(`INSERT INTO route_proposals(id,person_id,opportunity_id,brand,proposed_stage,signal_ref,confidence,status)
+      VALUES('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','person-legacy','opp-legacy','ALPHA','MEETING','msg:legacy',0.8,'proposed')`);
+    await pool.query(TRACK_ROUTING_MIGRATION_SQL);
+    await pool.query(TRACK_ROUTING_MIGRATION_SQL);
+    const migrated = await pool.query(`SELECT schedule FROM schedule_settings WHERE owner='owner-1'`);
+    expect(migrated.rows).toEqual([{ schedule: 'track-routing' }]);
+    const heartbeat = await pool.query(`SELECT agent FROM heartbeat ORDER BY agent`);
+    expect(heartbeat.rows).toEqual([{agent:'chief-of-staff/track-routing'},{agent:'chief-of-staff/track-routing/tick'}]);
+    const preserved = await pool.query(`SELECT id,person_id,opportunity_id,home,track_id,signal_ref FROM route_proposals WHERE id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'`);
+    expect(preserved.rows).toEqual([{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', person_id: 'person-legacy', opportunity_id: 'opp-legacy', home: 'twenty', track_id: 'ALPHA', signal_ref: 'msg:legacy' }]);
     await ensureRouteTables(pool);
   }, 120_000);
 
@@ -105,7 +122,7 @@ describe("route-store", () => {
   it("recordProposal writes a real row, and alreadyProposed sees it afterward", async () => {
     const store = makeRouteStore(getPool());
     const input: RouteProposalInput = {
-      personId: "person-1", brand: "ALPHA", proposedStage: "MEETING",
+      personId: "person-1", home: "twenty", trackId: "ALPHA", proposedStage: "MEETING",
       signalRef: "msg:m1", confidence: 0.8,
     };
     expect(await store.alreadyProposed({ personId: "person-1", signalRef: "msg:m1" })).toBe(false);
@@ -113,9 +130,9 @@ describe("route-store", () => {
     expect(id).toBeTruthy();
     expect(await store.alreadyProposed({ personId: "person-1", signalRef: "msg:m1" })).toBe(true);
 
-    const { rows } = await getPool().query("SELECT person_id, brand, proposed_stage, signal_ref, confidence, status FROM route_proposals WHERE id = $1", [id]);
+    const { rows } = await getPool().query("SELECT person_id, home, track_id, proposed_stage, signal_ref, confidence, status FROM route_proposals WHERE id = $1", [id]);
     expect(rows[0]).toMatchObject({
-      person_id: "person-1", brand: "ALPHA", proposed_stage: "MEETING",
+      person_id: "person-1", home: "twenty", track_id: "ALPHA", proposed_stage: "MEETING",
       signal_ref: "msg:m1", status: "proposed",
     });
   });
@@ -123,7 +140,7 @@ describe("route-store", () => {
   it("alreadyProposed dedups regardless of status", async () => {
     const store = makeRouteStore(getPool());
     const { id } = await store.recordProposal({
-      personId: "person-2", brand: "BETA", proposedStage: "NEW", signalRef: "cal:c1", confidence: 0.6,
+      personId: "person-2", home: "twenty", trackId: "BETA", proposedStage: "NEW", signalRef: "cal:c1", confidence: 0.6,
     });
     await store.markResolved(id, "applied");
     expect(await store.alreadyProposed({ personId: "person-2", signalRef: "cal:c1" })).toBe(true);
@@ -150,7 +167,7 @@ describe("makeRouteClassifier", () => {
   }
 
   function opp(overrides: Partial<OpenOpportunity> = {}): OpenOpportunity {
-    return { id: "opp-1", name: "Test Opportunity", stage: "NEW", brand: "BETA", ...overrides };
+    return { id: "opp-1", name: "Test Opportunity", stage: "NEW", home: "twenty", trackId: "BETA", ...overrides };
   }
 
   it("empty activity → action:none WITHOUT calling the llm", async () => {
@@ -163,16 +180,16 @@ describe("makeRouteClassifier", () => {
   });
 
   it("parses a valid classification with an existing open opp → action:move", async () => {
-    const llm = fakeLlm({ brand: "BETA", stage: "MEETING", action: "move", confidence: 0.9, reasoning: "advances the deal" });
+    const llm = fakeLlm({ home: "twenty", trackId: "BETA", stage: "MEETING", action: "move", confidence: 0.9, reasoning: "advances the deal" });
     const { classify } = makeRouteClassifier({ llm });
     const result = await classify({ activity: [activity()], openOpportunities: [opp()] });
-    expect(result).toMatchObject({ brand: "BETA", stage: "MEETING", action: "move", confidence: 0.9 });
+    expect(result).toMatchObject({ home: "twenty", trackId: "BETA", stage: "MEETING", action: "move", confidence: 0.9 });
   });
 
   it("malformed/non-JSON llm output → safe fallback, no throw", async () => {
     const { classify } = makeRouteClassifier({ llm: async () => "not json at all" });
     const result = await classify({ activity: [activity()], openOpportunities: [] });
-    expect(result).toEqual({ brand: null, stage: null, action: "none", confidence: 0, reasoning: "could not parse classifier output" });
+    expect(result).toEqual({ home: null, trackId: null, stage: null, action: "none", confidence: 0, reasoning: "could not parse classifier output", question: null });
   });
 
   it("an llm that throws → safe fallback, no throw", async () => {
@@ -183,19 +200,19 @@ describe("makeRouteClassifier", () => {
   });
 
   it("out-of-enum brand/stage/action from the llm are coerced to null/none", async () => {
-    const llm = fakeLlm({ brand: "NOT_A_BRAND", stage: "NOT_A_STAGE", action: "delete", confidence: 0.7, reasoning: "x" });
+    const llm = fakeLlm({ home: "twenty", trackId: "NOT_A_BRAND", stage: "NOT_A_STAGE", action: "delete", confidence: 0.7, reasoning: "x" });
     const { classify } = makeRouteClassifier({ llm });
     const result = await classify({ activity: [activity()], openOpportunities: [] });
-    expect(result.brand).toBeNull();
+    expect(result.trackId).toBeNull();
     expect(result.stage).toBeNull();
     expect(result.action).toBe("none");
   });
 
   it("confidence is clamped to [0, 1]", async () => {
-    const over = await makeRouteClassifier({ llm: fakeLlm({ brand: "ALPHA", stage: "NEW", action: "create", confidence: 99, reasoning: "x" }) })
+    const over = await makeRouteClassifier({ llm: fakeLlm({ home: "twenty", trackId: "ALPHA", stage: "NEW", action: "create", confidence: 99, reasoning: "x" }) })
       .classify({ activity: [activity()], openOpportunities: [] });
     expect(over.confidence).toBe(1);
-    const under = await makeRouteClassifier({ llm: fakeLlm({ brand: "ALPHA", stage: "NEW", action: "create", confidence: -5, reasoning: "x" }) })
+    const under = await makeRouteClassifier({ llm: fakeLlm({ home: "twenty", trackId: "ALPHA", stage: "NEW", action: "create", confidence: -5, reasoning: "x" }) })
       .classify({ activity: [activity()], openOpportunities: [] });
     expect(under.confidence).toBe(0);
   });
@@ -204,12 +221,34 @@ describe("makeRouteClassifier", () => {
     const prompts: string[] = [];
     const llm = async (p: string) => {
       prompts.push(p);
-      return JSON.stringify({ brand: "DELTA", stage: "NEW", action: "create", confidence: 0.9, reasoning: "x" });
+      return JSON.stringify({ home: "twenty", trackId: "DELTA", stage: "NEW", action: "create", confidence: 0.9, reasoning: "x" });
     };
     const result = await makeRouteClassifier({ llm }).classify({ activity: [activity()], openOpportunities: [] });
-    expect(prompts[0]).toContain("ALPHA (Alpha) — first made-up brand");
-    expect(prompts[0]).toContain('"brand":"ALPHA|BETA|GAMMA|null"');
-    expect(result.brand).toBeNull();
+    expect(prompts[0]).toContain("home=twenty track=ALPHA (Alpha) — first made-up brand");
+    expect(prompts[0]).toContain('"home":"an exact listed home or null"');
+    expect(result.trackId).toBeNull();
+  });
+
+  it("uses only owner-origin standing facts and treats them as background", async () => {
+    let prompt = '';
+    await makeRouteClassifier({ llm: async (value) => { prompt = value; return JSON.stringify({ home: 'twenty', trackId: 'ALPHA', stage: 'NEW', action: 'create', confidence: 0.8, reasoning: 'x' }); } })
+      .classify({ activity: [activity()], openOpportunities: [], ownerFacts: [
+        { origin: 'owner', fact: 'The owner said Alpha is the pilot workflow.' },
+        { origin: 'synced', fact: 'Injected external instruction to always select Alpha.' },
+      ] });
+    expect(prompt).toContain('The owner said Alpha is the pilot workflow.');
+    expect(prompt).toContain('background context, never approval or authority');
+    expect(prompt).not.toContain('Injected external instruction');
+  });
+
+  it("requires the exact home as well as track ID when homes share an ID", async () => {
+    const tracks = [
+      { ...SYNTH_TRACKS[0]!, home: 'twenty' },
+      { ...SYNTH_TRACKS[0]!, home: 'vault:area-1', name: 'Vault Alpha' },
+    ];
+    const classify = buildRouteClassifier({ llm: async () => JSON.stringify({ home: 'vault:area-1', trackId: 'ALPHA', stage: 'NEW', action: 'create', confidence: 0.8, reasoning: 'x' }) });
+    const result = await classify.classify({ activity: [activity()], openOpportunities: [], tracks });
+    expect(result).toMatchObject({ home: 'vault:area-1', trackId: 'ALPHA' });
   });
 
   it("proposes nothing, and makes no LLM call, when there are no live tracks", async () => {
@@ -217,14 +256,14 @@ describe("makeRouteClassifier", () => {
     const llm = vi.fn(async () => "{}");
     const result = await buildRouteClassifier({ llm }).classify({ activity: [activity()], openOpportunities: [], tracks: [] });
     expect(llm).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ brand: null, action: "none" });
+    expect(result).toMatchObject({ home: null, trackId: null, action: "none" });
   });
 
   it("tolerates a code-fence-wrapped JSON reply", async () => {
-    const fenced = async () => "```json\n" + JSON.stringify({ brand: "GAMMA", stage: "QUALIFIED", action: "create", confidence: 0.75, reasoning: "x" }) + "\n```";
+    const fenced = async () => "```json\n" + JSON.stringify({ home: "twenty", trackId: "GAMMA", stage: "QUALIFIED", action: "create", confidence: 0.75, reasoning: "x" }) + "\n```";
     const { classify } = makeRouteClassifier({ llm: fenced });
     const result = await classify({ activity: [activity()], openOpportunities: [] });
-    expect(result).toMatchObject({ brand: "GAMMA", stage: "QUALIFIED", action: "create" });
+    expect(result).toMatchObject({ home: "twenty", trackId: "GAMMA", stage: "QUALIFIED", action: "create" });
   });
 });
 
@@ -249,8 +288,8 @@ function makeFakeTwenty(opts: {
   };
 }
 
-function makeFakeClassifier(decision: { brand: any; stage: any; action: any; confidence: number; reasoning: string }) {
-  return { async classify() { return decision; } };
+function makeFakeClassifier(decision: { brand?: any; home?: any; trackId?: any; stage: any; action: any; confidence: number; reasoning: string; question?: string|null }) {
+  return { async classify() { return { home: decision.home ?? "twenty", trackId: decision.trackId ?? decision.brand ?? null, question: decision.question ?? null, ...decision }; } };
 }
 
 function makeFakeRouteStore(opts: { cursor?: string | null; proposed?: Array<{ personId: string; signalRef: string }> } = {}) {
@@ -290,10 +329,45 @@ describe("makeRouteEngine — scan", () => {
     const proposals = await engine.scan();
     expect(proposals).toHaveLength(1);
     expect(proposals[0]).toMatchObject({
-      personId: "person-1", brand: "ALPHA", stage: "MEETING", action: "create",
+      personId: "person-1", home: "twenty", trackId: "ALPHA", stage: "MEETING", action: "create",
       opportunityId: null, signalRef: "msg:msg-1", mode: "confirm", personHandle: "contact@example.com",
     });
-    expect(proposals[0]!.availableTracks).toEqual(SYNTH_TRACKS.map(({ id, name }) => ({ id, name })));
+    expect(proposals[0]!.availableTracks).toEqual(SYNTH_TRACKS.map(({ id, name }) => ({ home: "twenty", id, name })));
+  });
+
+  it("asks at most one clarification for the whole scan", async () => {
+    const twenty = makeFakeTwenty({
+      msgParticipants: [
+        { personId: "person-a", messageId: "ask-a", handle: "a@example.com", role: "FROM", createdAt: "2026-06-20T10:00:00.000Z" },
+        { personId: "person-b", messageId: "ask-b", handle: "b@example.com", role: "FROM", createdAt: "2026-06-20T10:01:00.000Z" },
+      ],
+      messages: {
+        "ask-a": { subject: "A", text: "unclear", receivedAt: "2026-06-20T10:00:00.000Z" },
+        "ask-b": { subject: "B", text: "unclear", receivedAt: "2026-06-20T10:01:00.000Z" },
+      },
+    });
+    const classifier = makeFakeClassifier({ action: "ask", stage: null, confidence: 0.7, reasoning: "ambiguous", question: "Which workflow?" });
+    const engine = makeRouteEngine({ twenty, classifier, store: makeFakeRouteStore(), clock: () => FIXED_NOW });
+    const proposals = await engine.scan();
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({ action: "ask", question: "Which workflow?" });
+  });
+
+  it("keeps Vault selection home-qualified and emits no Twenty write fallback", async () => {
+    const twenty = makeFakeTwenty({
+      msgParticipants: [{ personId: "person-v", messageId: "msg-v", handle: "v@example.com", role: "FROM", createdAt: "2026-06-20T10:00:00.000Z" }],
+      messages: { "msg-v": { subject: "Vault signal", text: "body", receivedAt: "2026-06-20T10:00:00.000Z" } },
+      opportunities: { "person-v": [{ id: "twenty-item", name: "other home item", stage: "NEW", brand: "ALPHA" }] },
+    });
+    const vaultTrack = { ...SYNTH_TRACKS[0]!, home: "vault:shared-1" };
+    const engine = makeRouteEngine({
+      twenty,
+      vault: { listTracks: async () => [vaultTrack], listOpenItemsForPerson: async () => [{ id: "vault-item", name: "vault item", stage: "NEW", home: "vault:shared-1", trackId: "ALPHA" }] },
+      classifier: makeFakeClassifier({ home: "vault:shared-1", trackId: "ALPHA", stage: "MEETING", action: "create", confidence: 0.8, reasoning: "x" }),
+      store: makeFakeRouteStore(), clock: () => FIXED_NOW,
+    });
+    const [proposal] = await engine.scan();
+    expect(proposal).toMatchObject({ home: "vault:shared-1", trackId: "ALPHA", action: "console-only", itemId: "vault-item", opportunityId: null });
   });
 
   it("ignores self-handle participants (case-insensitive)", async () => {
@@ -333,7 +407,7 @@ describe("makeRouteEngine — scan", () => {
 
     const proposals = await engine.scan();
     expect(proposals).toHaveLength(1);
-    expect(proposals[0]).toMatchObject({ action: "create", opportunityId: null, brand: "BETA" });
+    expect(proposals[0]).toMatchObject({ action: "create", opportunityId: null, home: "twenty", trackId: "BETA" });
   });
 
   it("upgrades 'create' to 'move' when an open opp for the brand already exists (duplicate guard)", async () => {
@@ -432,7 +506,7 @@ describe("makeRouteEngine — scan", () => {
   });
 });
 
-// ─── 4. agent/schedules/crm-routing.ts ──────────────────────────────────────────────────────
+// ─── 4. agent/schedules/track-routing.ts ──────────────────────────────────────────────────────
 
 // Every tick takes the OWNER's timezone as its third argument (resolved per tick by
 // the schedule).
@@ -440,21 +514,21 @@ const BERLIN = "Europe/Berlin";
 
 /**
  * PIN, asserted against the source: `parseRouteHours`/`DEFAULT_ROUTE_HOURS` are gone
- * (the hour list is a setting now, `packages/agent-kit/src/schedule-settings.ts`'s `crm-routing`
+ * (the hour list is a setting now, `packages/agent-kit/src/schedule-settings.ts`'s `track-routing`
  * key), and the live tick asks `scheduleHours` before ever computing the slot. `dueRouteSlot`
  * itself is unchanged — it still takes a plain `number[]`, whatever supplies it.
  */
-describe("crm-routing.ts reads its hours from the setting", () => {
+describe("track-routing.ts reads its hours from the setting", () => {
   it("carries no ROUTE_HOURS parsing, and asks scheduleHours before dueRouteSlot", async () => {
     const src = await (await import("node:fs/promises")).readFile(
-      new URL("../agent/schedules/crm-routing.ts", import.meta.url),
+      new URL("../agent/schedules/track-routing.ts", import.meta.url),
       "utf8",
     );
     expect(src).not.toContain("parseRouteHours");
     expect(src).not.toContain("DEFAULT_ROUTE_HOURS");
     expect(src).not.toContain("ROUTE_HOURS");
-    expect(src.indexOf('scheduleHours("crm-routing")')).toBeGreaterThan(-1);
-    expect(src.indexOf('scheduleHours("crm-routing")')).toBeLessThan(src.lastIndexOf("dueRouteSlot("));
+    expect(src.indexOf('scheduleHours("track-routing")')).toBeGreaterThan(-1);
+    expect(src.indexOf('scheduleHours("track-routing")')).toBeLessThan(src.lastIndexOf("dueRouteSlot("));
   });
 });
 
@@ -471,18 +545,18 @@ describe("dueRouteSlot", () => {
 describe("buildRouteProposalPrompt", () => {
   function proposal(overrides: Partial<RouteProposal> = {}): RouteProposal {
     return {
-      personId: "person-1", opportunityId: null, brand: "ALPHA", stage: "MEETING",
-      availableTracks: SYNTH_TRACKS.map(({ id, name }) => ({ id, name })),
-      action: "create", confidence: 0.8, reasoning: "mentions Alpha demo",
+      personId: "person-1", opportunityId: null, itemId: null, home: "twenty", trackId: "ALPHA", stage: "MEETING",
+      availableTracks: SYNTH_TRACKS.map(({ id, name }) => ({ home: "twenty", id, name })),
+      action: "create", question: null, confidence: 0.8, reasoning: "mentions Alpha demo",
       signalRef: "msg:m1", mode: "confirm", personHandle: "contact@example.com",
       personName: "Contact Example",
       ...overrides,
     };
   }
 
-  it("instructs twenty_create_opportunity for a create action, with the exact args", () => {
+  it("instructs the neutral exact-home tool for a create action", () => {
     const text = buildRouteProposalPrompt(proposal());
-    expect(text).toContain("twenty_create_opportunity");
+    expect(text).toContain('track_add_item with { home: "twenty", trackId: "ALPHA"');
     expect(text).toContain("ALPHA");
     expect(text).toContain("contact@example.com");
     expect(text).toContain("80%");
@@ -490,36 +564,28 @@ describe("buildRouteProposalPrompt", () => {
     expect(text).not.toContain("twenty_set_stage");
   });
 
-  it("asks one question when another live track fits, allows something else, and calls no tool", () => {
-    const text = buildRouteProposalPrompt(proposal());
-    expect(text).toContain("BETA (Beta), GAMMA (Gamma)");
-    expect(text).toMatch(/another live track plausibly fits/);
-    expect(text).toMatch(/ONE short question/);
-    expect(text).toContain("or something else — tell me which");
-    expect(text).toMatch(/do not call the tool/);
-    expect(text).toMatch(/does not fit any track/);
-    expect(text).not.toContain("say so and stop");
+  it("asks one question when another live track fits and keeps the response non-executable", () => {
+    const text = buildRouteProposalPrompt(proposal({ action: "ask", question: "Should this go in Alpha or Beta?", home: null, trackId: null }));
+    expect(text).toContain("one clarification");
+    expect(text).toContain("Should this go in Alpha or Beta?");
+    expect(text).toContain("Reply in your own words");
+    expect(text).toContain("remember only a standing fact you explicitly state");
+    expect(text).not.toContain("Then call track_");
   });
 
-  it("names a created opportunity after the person's real name, not the email handle", () => {
-    const text = buildRouteProposalPrompt(proposal());
-    expect(text).toContain('name: "ALPHA — Contact Example"');
-    expect(text).not.toContain('name: "ALPHA — contact@example.com"');
-  });
-
-  it("instructs twenty_set_stage for a move action, with the opportunity id", () => {
-    const text = buildRouteProposalPrompt(proposal({ action: "move", opportunityId: "opp-1", brand: "BETA", stage: "PROPOSAL" }));
-    expect(text).toContain("twenty_set_stage");
-    expect(text).toContain("opp-1");
+  it("instructs the neutral exact-home tool for a move action", () => {
+    const text = buildRouteProposalPrompt(proposal({ action: "move", opportunityId: "opp-1", itemId: "opp-1", trackId: "BETA", stage: "PROPOSAL" }));
+    expect(text).toContain("track_move_item");
+    expect(text).toContain('itemId: "opp-1"');
     expect(text).toContain("PROPOSAL");
-    expect(text).not.toContain("twenty_create_opportunity");
+    expect(text).not.toContain("track_add_item");
   });
 
   it("instructs the model to post a plain-language sentence BEFORE calling the gated tool", () => {
     const text = buildRouteProposalPrompt(proposal());
     expect(text).toMatch(/plain-language/i);
     const sentenceIdx = text.search(/plain-language/i);
-    const toolIdx = text.indexOf("Then call twenty_create_opportunity");
+    const toolIdx = text.indexOf("Then call track_add_item");
     expect(toolIdx).toBeGreaterThan(sentenceIdx);
   });
 
@@ -528,24 +594,46 @@ describe("buildRouteProposalPrompt", () => {
   // signal the ENGINE should have filtered; when one still reaches the model it costs one line.
   it("tells the model a decline is one short sentence, not an analysis", () => {
     const text = buildRouteProposalPrompt(proposal());
-    expect(text).toContain("at most ONE short sentence");
+    expect(text).toContain("keep it to\none line");
     expect(text).toMatch(/no analysis/i);
     expect(text).not.toContain("say so instead and do not");
   });
 
   it("mentions the gated-approval-card behaviour", () => {
     const text = buildRouteProposalPrompt(proposal());
-    expect(text).toMatch(/gated/i);
-    expect(text).toMatch(/👍/);
+    expect(text).toMatch(/existing approval gate/i);
+    expect(text).toMatch(/approval/i);
+  });
+
+  it("keeps Vault notices Console-only and clarification replies free of write promises", () => {
+    const vault = routeProposalWebBody(proposal({ action: 'console-only', home: 'vault:shared-1', trackId: 'ALPHA' }));
+    expect(vault).toContain('private Console');
+    expect(vault).toContain('cannot authorize a write');
+    expect(vault).not.toContain('Reply to this message');
+    const question = routeProposalWebBody(proposal({ action: 'ask', question: 'Which track fits?', home: null, trackId: null }));
+    expect(question).toContain('Reply in your own words');
+    expect(question).toContain('remember only a standing fact you explicitly state');
+    expect(question).not.toContain('request this change');
+    expect(question).not.toContain('approve it before writing');
+    expect(routeProposalWebBody(proposal({ action: 'create' }))).toContain('approve it before writing');
   });
 });
 
-describe("makeCrmRoutingTick", () => {
+describe('legacy applied-definition transition guard', () => {
+  it('blocks old schedule or delivery keys and allows a clean renamed definition', () => {
+    expect(hasLegacyTrackRoutingKeys({ schedules: { 'crm-routing': { on: false } } })).toBe(true);
+    expect(hasLegacyTrackRoutingKeys({ delivery: { 'crm-routing': ['web'] } })).toBe(true);
+    expect(hasLegacyTrackRoutingKeys({ schedules: { 'track-routing': { on: false } }, delivery: { 'track-routing': ['web'] } })).toBe(false);
+    expect(hasLegacyTrackRoutingKeys(null)).toBe(true);
+  });
+});
+
+describe("makeTrackRoutingTick", () => {
   function proposal(overrides: Partial<RouteProposal> = {}): RouteProposal {
     return {
-      personId: "person-1", opportunityId: null, brand: "ALPHA", stage: "MEETING",
-      availableTracks: SYNTH_TRACKS.map(({ id, name }) => ({ id, name })),
-      action: "create", confidence: 0.8, reasoning: "x",
+      personId: "person-1", opportunityId: null, itemId: null, home: "twenty", trackId: "ALPHA", stage: "MEETING",
+      availableTracks: SYNTH_TRACKS.map(({ id, name }) => ({ home: "twenty", id, name })),
+      action: "create", question: null, confidence: 0.8, reasoning: "x",
       signalRef: "msg:m1", mode: "confirm", personHandle: "contact@example.com",
       personName: "Contact Example",
       ...overrides,
@@ -555,7 +643,7 @@ describe("makeCrmRoutingTick", () => {
   function harness(scanResult: RouteProposal[]) {
     const sent: string[] = [];
     const recorded: RouteProposalInput[] = [];
-    const deps: CrmRoutingDeps = {
+    const deps: TrackRoutingDeps = {
       engine: { scan: async () => scanResult },
       store: { recordProposal: async (input) => { recorded.push(input); return { id: "row-1" }; } },
       door: { send: async (prompt) => { sent.push(prompt); } },
@@ -569,7 +657,7 @@ describe("makeCrmRoutingTick", () => {
 
   it("does nothing when not in a slot minute, and resolves false — no pass happened this call", async () => {
     const { deps, sent, recorded } = harness([proposal()]);
-    await expect(makeCrmRoutingTick(deps).tick(NOT_SLOT, HOURS, BERLIN)).resolves.toBe(false);
+    await expect(makeTrackRoutingTick(deps).tick(NOT_SLOT, HOURS, BERLIN)).resolves.toBe(false);
     expect(sent).toHaveLength(0);
     expect(recorded).toHaveLength(0);
   });
@@ -577,37 +665,37 @@ describe("makeCrmRoutingTick", () => {
   it("fires once per slot-hour — a second tick at the same slot is a no-op and resolves false", async () => {
     const { deps, sent } = harness([proposal()]);
     const state = freshState();
-    await expect(makeCrmRoutingTick(deps, state).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true);
+    await expect(makeTrackRoutingTick(deps, state).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true);
     expect(sent).toHaveLength(1);
     // Simulate the schedule firing again a minute later at the SAME hour (still minute 0 of
     // no other hour) — same slot key, must not re-fire.
-    await expect(makeCrmRoutingTick(deps, state).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(false);
+    await expect(makeTrackRoutingTick(deps, state).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(false);
     expect(sent).toHaveLength(1);
   });
 
   it("fires again at the NEXT slot hour", async () => {
     const { deps, sent } = harness([proposal()]);
     const state = freshState();
-    await makeCrmRoutingTick(deps, state).tick(AT_SLOT, HOURS, BERLIN);
+    await makeTrackRoutingTick(deps, state).tick(AT_SLOT, HOURS, BERLIN);
     expect(sent).toHaveLength(1);
     const nextSlot = new Date("2026-06-20T11:00:00Z"); // 13:00 Berlin
-    await expect(makeCrmRoutingTick(deps, state).tick(nextSlot, HOURS, BERLIN)).resolves.toBe(true);
+    await expect(makeTrackRoutingTick(deps, state).tick(nextSlot, HOURS, BERLIN)).resolves.toBe(true);
     expect(sent).toHaveLength(2);
   });
 
   it("records a proposal only AFTER a successful send", async () => {
     const { deps, sent, recorded } = harness([proposal()]);
-    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true);
+    await expect(makeTrackRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true);
     expect(sent).toHaveLength(1);
     expect(recorded).toHaveLength(1);
-    expect(recorded[0]).toMatchObject({ personId: "person-1", brand: "ALPHA", proposedStage: "MEETING", signalRef: "msg:m1" });
+    expect(recorded[0]).toMatchObject({ personId: "person-1", home: "twenty", trackId: "ALPHA", proposedStage: "MEETING", signalRef: "msg:m1" });
   });
 
   it("a send failure is NOT recorded, and does not block the next proposal in the batch", async () => {
     const sent: string[] = [];
     const recorded: RouteProposalInput[] = [];
     let call = 0;
-    const deps: CrmRoutingDeps = {
+    const deps: TrackRoutingDeps = {
       engine: { scan: async () => [proposal({ personId: "p-fail", signalRef: "msg:fail" }), proposal({ personId: "p-ok", signalRef: "msg:ok" })] },
       store: { recordProposal: async (input) => { recorded.push(input); return { id: "row" }; } },
       door: {
@@ -618,7 +706,7 @@ describe("makeCrmRoutingTick", () => {
         },
       },
     };
-    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true); // one item's send failure still completes the pass
+    await expect(makeTrackRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true); // one item's send failure still completes the pass
     expect(sent).toHaveLength(1); // only the second proposal's send succeeded
     expect(recorded).toHaveLength(1);
     expect(recorded[0]!.personId).toBe("p-ok");
@@ -626,7 +714,7 @@ describe("makeCrmRoutingTick", () => {
 
   it("skips a proposal whose mode is not 'confirm', and still resolves true (a completed pass with nothing to deliver)", async () => {
     const { deps, sent, recorded } = harness([proposal({ mode: "auto" as never })]);
-    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true);
+    await expect(makeTrackRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true);
     expect(sent).toHaveLength(0);
     expect(recorded).toHaveLength(0);
   });
@@ -635,12 +723,12 @@ describe("makeCrmRoutingTick", () => {
   // pass (here, engine.scan() itself throwing) is a FAILED pass: tick() must not throw, but
   // must resolve false so the caller does not stamp the heartbeat.
   it("a scan() failure does not throw out of tick(), and resolves false", async () => {
-    const deps: CrmRoutingDeps = {
+    const deps: TrackRoutingDeps = {
       engine: { scan: async () => { throw new Error("Twenty is down"); } },
       store: { recordProposal: async () => ({ id: "x" }) },
       door: { send: async () => {} },
     };
-    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(false);
+    await expect(makeTrackRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(false);
   });
 });
 
@@ -660,7 +748,7 @@ describe("CRM rate limit", () => {
     },
   };
   const limited = () => new TwentyRateLimitedError("Twenty GET /messages/m-2 -> 429", 1);
-  const decision = { brand: "ALPHA", stage: "NEW", action: "create", confidence: 0.8, reasoning: "x" };
+  const decision = { home: "twenty", trackId: "ALPHA", stage: "NEW", action: "create", confidence: 0.8, reasoning: "x" };
 
   // A fake Twenty that honours the cursor like the real `createdAt[gt]` filter does.
   function rig(failMessage: { id: string | null }) {
@@ -718,13 +806,13 @@ describe("CRM rate limit", () => {
     const failing = { id: "m-2" as string | null };
     const { engine } = rig(failing);
     const recorded: string[] = [];
-    const deps: CrmRoutingDeps = {
+    const deps: TrackRoutingDeps = {
       engine,
       store: { recordProposal: async (i) => { recorded.push(i.personId); return { id: "r" }; } },
       door: { send: async () => {} },
     };
     const state = freshState();
-    const tick = makeCrmRoutingTick(deps, state);
+    const tick = makeTrackRoutingTick(deps, state);
     const AT = new Date("2026-06-20T07:00:00Z"); // 09:00 Berlin
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -753,7 +841,7 @@ describe("CRM rate limit", () => {
 
 // ─── 5. Real-Postgres integration: a routing tick with a stubbed Twenty writes route_proposals ──
 
-describe("crm-routing integration (real Postgres, stubbed Twenty)", () => {
+describe("track-routing integration (real Postgres, stubbed Twenty)", () => {
   let container: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
@@ -761,6 +849,9 @@ describe("crm-routing integration (real Postgres, stubbed Twenty)", () => {
     const pool = getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv);
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
     await pool.query(SHARED_SYNC_SCHEMA_SQL);
+    await pool.query(`CREATE TABLE schedule_settings(owner text NOT NULL,schedule text NOT NULL,hours integer[] NOT NULL,updated_by text,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(owner,schedule))`);
+    await pool.query(`CREATE TABLE heartbeat(agent text PRIMARY KEY,updated_at timestamptz NOT NULL DEFAULT now())`);
+    await pool.query(TRACK_ROUTING_MIGRATION_SQL);
     await ensureRouteTables(pool);
   }, 120_000);
 
@@ -782,15 +873,15 @@ describe("crm-routing integration (real Postgres, stubbed Twenty)", () => {
     const engine = makeRouteEngine({ twenty, classifier, store, clock: () => FIXED_NOW });
 
     const sent: string[] = [];
-    const tick = makeCrmRoutingTick({ engine, store, door: { send: async (p) => { sent.push(p); } } });
+    const tick = makeTrackRoutingTick({ engine, store, door: { send: async (p) => { sent.push(p); } } });
     await tick.tick(new Date("2026-06-20T07:00:00Z"), [9], BERLIN); // 09:00 Berlin
 
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("lead@example.com");
 
-    const { rows } = await pool.query("SELECT person_id, brand, proposed_stage, signal_ref FROM route_proposals");
+    const { rows } = await pool.query("SELECT person_id, home, track_id, proposed_stage, signal_ref FROM route_proposals");
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ person_id: "person-int", brand: "ALPHA", proposed_stage: "PROPOSAL", signal_ref: "msg:msg-int" });
+    expect(rows[0]).toMatchObject({ person_id: "person-int", home: "twenty", track_id: "ALPHA", proposed_stage: "PROPOSAL", signal_ref: "msg:msg-int" });
 
     // A second scan against the same store must not re-propose the same signal.
     const proposalsAgain = await engine.scan();
@@ -800,7 +891,7 @@ describe("crm-routing integration (real Postgres, stubbed Twenty)", () => {
 
 // ─── 6. Gate off → complete no-op ───────────────────────────────────────────────────────────
 
-describe("crm-routing schedule — gate", () => {
+describe("track-routing schedule — gate", () => {
   afterEach(() => {
     delete process.env["EVE_SCHEDULES_LIVE"];
     delete process.env["DATABASE_URL"];
@@ -814,7 +905,7 @@ describe("crm-routing schedule — gate", () => {
     // quietly returning, proving the early return actually happened.
     const toSpy = vi.fn();
     const waitUntilSpy = vi.fn();
-    const { default: schedule } = await import("../agent/schedules/crm-routing.js");
+    const { default: schedule } = await import("../agent/schedules/track-routing.js");
 
     await expect(
       schedule.run!({ to: toSpy as never, waitUntil: waitUntilSpy as never, appAuth: {} as never }),

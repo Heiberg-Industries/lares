@@ -65,6 +65,39 @@ it('creates, saves coherent files without changing the mounted root inode, and r
     expect(c.audit.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: 'ok', detail: JSON.stringify({ hash: loaded.hash }) });
     expect(backup.commit).toHaveBeenCalledTimes(2);
 });
+it('renames legacy routing settings through definition.save and leaves explicit apply pending', async () => {
+    await create();
+    const definition = { ...GOOD,
+        schedules: { ...GOOD.schedules, 'crm-routing': { on: false } },
+        delivery: { 'crm-routing': ['web', 'telegram'] },
+    };
+    const saved = vi.fn(async (_name: string, next: any) => {
+        expect(next.schedules['track-routing']).toEqual({ on: false });
+        expect(next.delivery['track-routing']).toEqual(['web', 'telegram']);
+        expect(next.schedules).not.toHaveProperty('crm-routing');
+        expect(next.delivery).not.toHaveProperty('crm-routing');
+        return { pending: true, reason: 'Apply connection changes (restarts agent)' };
+    });
+    Object.assign(compose, { saved });
+    register();
+    const result: any = await runAction('definition.save', save('bookkeeper', { definition }), ctx());
+    const loaded = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } });
+    expect(loaded.definition.schedules['track-routing']).toEqual({ on: false });
+    expect(loaded.definition.schedules).not.toHaveProperty('crm-routing');
+    expect(loaded.definition.delivery?.['track-routing']).toEqual(['web', 'telegram']);
+    expect(loaded.definition.delivery).not.toHaveProperty('crm-routing');
+    expect(result.runtime).toMatchObject({ pending: true });
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(backup.commit).toHaveBeenCalledTimes(2);
+});
+it('refuses conflicting old and new routing keys without publishing or backing up', async () => {
+    await create();
+    const before = readFileSync(join(agentsDir, 'bookkeeper', 'agent.json'), 'utf8');
+    const definition = { ...GOOD, schedules: { ...GOOD.schedules, 'crm-routing': { on: false }, 'track-routing': { on: true } } };
+    await expect(runAction('definition.save', save('bookkeeper', { definition }), ctx())).rejects.toThrow('both schedules.crm-routing and schedules.track-routing');
+    expect(readFileSync(join(agentsDir, 'bookkeeper', 'agent.json'), 'utf8')).toBe(before);
+    expect(backup.commit).toHaveBeenCalledTimes(1);
+});
 it('refuses all findings before writes, enforces matching slug, and save cannot bypass creation', async () => {
     await expect(runAction('definition.save', save(), ctx())).rejects.toThrow('create');
     await expect(create('bookkeeper', { definition: { ...GOOD, model: 'raw', doors: [{ kind: 'telegram', enabled: true }] } })).rejects.toThrow(/model-alias[\s\S]*door-secret/);

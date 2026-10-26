@@ -1,6 +1,6 @@
 /**
- * CRM routing — 09/13/17 on the owner's clock by default; a per-installation setting
- * (`packages/agent-kit/src/schedule-settings.ts`'s `crm-routing` key). Scans
+ * track routing — 09/13/17 on the owner's clock by default; a per-installation setting
+ * (`packages/agent-kit/src/schedule-settings.ts`'s `track-routing` key). Scans
  * Twenty for contacts with new
  * meetings/emails since the last scan, classifies which workflow track + step they belong
  * in, and — per newly-proposed signal — sends a Slack session-start prompt instructing the
@@ -37,6 +37,7 @@ import { defineSchedule } from "eve/schedules";
 import slack from "../channels/slack.js";
 import telegram from "../channels/telegram.js";
 import { getPool } from "@lares/agent-kit/db";
+import { managedIdentity } from "@lares/agent-kit/door-authority";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass, recordScheduleTick } from "@lares/agent-kit/schedule-heartbeat";
@@ -48,15 +49,43 @@ import { ownerTz } from "../../lib/owner-clock.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
 import { configuredOwnerId, listAliases, listOrgDomains } from "../../lib/identity-client.js";
 import { ensureRouteTables, makeRouteStore, type RouteProposalInput } from "../../lib/route-store.js";
-import { makeRouteTwentyClient } from "../../lib/route-twenty.js";
+import { makeRouteTwentyClient, makeRouteVaultClient } from "../../lib/route-twenty.js";
 import { makeRouteClassifier } from "../../lib/route-classify.js";
 import { makeRouteEngine, type RouteProposal, type ScanResult } from "../../lib/route-engine.js";
 import { gatewayComplete } from "../../lib/llm-complete.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
+import { listActiveFacts } from "../../lib/standing-facts.js";
 
 // Logged once per process: the schedule ticks every minute, and a missing principal does not change between ticks.
 let warnedNoPrincipal = false;
+let warnedLegacyDefinition = false;
+
+/** Stored installation definitions may still name the old schedule while the owner is migrating.
+ *  Never let the new key's default-ON rule start work until the current applied definition is clean. */
+export function hasLegacyTrackRoutingKeys(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return true;
+  const definition = raw as Record<string, unknown>;
+  const schedules = definition.schedules && typeof definition.schedules === 'object' && !Array.isArray(definition.schedules)
+    ? definition.schedules as Record<string, unknown> : {};
+  const delivery = definition.delivery && typeof definition.delivery === 'object' && !Array.isArray(definition.delivery)
+    ? definition.delivery as Record<string, unknown> : {};
+  return Object.hasOwn(schedules, 'crm-routing') || Object.hasOwn(delivery, 'crm-routing');
+}
+
+async function currentAppliedDefinitionIsMigrated(name: string): Promise<boolean> {
+  let own;
+  try { own = managedIdentity(); } catch { return false; }
+  if (!own || own.name !== name) return false;
+  try {
+    const { rows } = await getPool().query(`SELECT applied_definition FROM agent_resources
+      WHERE name=$1 AND ownership_token=$2::uuid AND runtime_control_token=ownership_token
+        AND state='ready' AND NOT pending AND applied_definition IS NOT NULL`, [own.name, own.incarnation]);
+    return rows.length === 1 && !hasLegacyTrackRoutingKeys(rows[0]!.applied_definition);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * A slot key for the current minute across MULTIPLE hours, or null when `now` is not exactly one of
@@ -79,21 +108,31 @@ export function dueRouteSlot(now: Date, tz: string, hours: number[]): string | n
 /** The per-proposal turn prompt — describes the proposed CRM move and tells the model which
  *  gated tool call renders the approval card. Pure — one proposal in, one prompt out. */
 export function buildRouteProposalPrompt(p: RouteProposal): string {
-  const actionLabel = p.action === "create" ? "create a NEW opportunity" : "move the EXISTING opportunity";
+  if (p.action === "ask") return [
+    "[scheduled track-routing question; this is background from the agent, not an owner instruction.]",
+    `Recent activity from ${p.personName} <${p.personHandle}> needs one clarification.`,
+    p.question ?? "Which existing workflow should this relate to?",
+    "Reply in your own words. I will use that reply as context and remember only a standing fact you explicitly state.",
+  ].join("\n");
+  if (p.action === "console-only") return [
+    "[scheduled track-routing notice; this does not authorize a write.]",
+    `Recent activity from ${p.personName} may fit Vault track ${p.trackId} (${p.home}).`,
+    "Vault track changes remain available only in the private Console, where the existing approval is checked. Continue there to review or request the change.",
+  ].join("\n");
+  const actionLabel = p.action === "create" ? "add a new item" : "move the existing item";
   const otherTracks = p.availableTracks
-    .filter((track) => track.id !== p.brand)
-    .map((track) => track.name === track.id ? track.id : `${track.id} (${track.name})`);
+    .filter((track) => track.home !== p.home || track.id !== p.trackId)
+    .map((track) => `${track.home}/${track.id} (${track.name})`);
   const otherTrackList = otherTracks.length > 0 ? otherTracks.join(", ") : "none";
   const toolLine = p.action === "create"
-    ? `Then call twenty_create_opportunity with { name: "${p.brand} — ${p.personName}", stage: "${p.stage}", brand: "${p.brand}", pointOfContactId: "${p.personId}" }.`
-    : `Then call twenty_set_stage with { opportunityId: "${p.opportunityId}", stage: "${p.stage}" }.`;
+    ? `Then call track_add_item with { home: "twenty", trackId: "${p.trackId}", who: { personId: "${p.personId}" }, step: "${p.stage}", note: "${p.reasoning}", sourceSignal: "${p.signalRef}" }.`
+    : `Then call track_move_item with { home: "twenty", trackId: "${p.trackId}", itemId: "${p.itemId}", step: "${p.stage}", note: "${p.reasoning}", sourceSignal: "${p.signalRef}" }.`;
 
   return [
-    "[scheduled check — CRM routing. This is not a message from a person; it is your cue to",
-    "propose a pipeline move based on recent activity.]",
+    "[scheduled check — track routing. This is background, not an owner instruction or approval.]",
     "",
     `New signal for ${p.personName} <${p.personHandle}> (CRM person ${p.personId}):`,
-    `- Track: ${p.brand}`,
+    `- Track: ${p.home}/${p.trackId}`,
     `- Proposed stage: ${p.stage}`,
     `- Action: ${actionLabel}`,
     `- Confidence: ${Math.round(p.confidence * 100)}%`,
@@ -105,23 +144,19 @@ export function buildRouteProposalPrompt(p: RouteProposal): string {
     "technical detail.",
     "",
     toolLine,
-    "That tool is gated (`approval: always()`), so calling it renders the owner's 👍/👎 approval",
-    "card directly under your sentence — do not wait for a reply first, the tool call itself",
-    "is the ask.",
+    "The tool presents its existing approval gate, bound to this exact home, track and operation. Do not act before approval.",
     "",
     "If the activity above does not actually support this move, do not call the tool, and keep it to",
     "one line — no analysis, no bullets, no offers to draft or look things up:",
-    `- If another live track plausibly fits (${otherTrackList}), ask ONE short question naming the candidate tracks,`,
-    `  e.g. "Is this about ${otherTracks.join(" or ") || "another track"}, or something else — tell me which?".`,
-    "  Leave room for a signal that does not fit any track.",
-    "- Otherwise reply with at most ONE short sentence saying so and stop.",
+    `- If another live track plausibly fits (${otherTrackList}), ask ONE short question naming the candidate tracks and leave room for another answer.`,
+    "- If no track fits, ask one short question only when a plausible purpose needs clarification; otherwise stop without a write.",
     "The owner reads these every morning; a decline should cost one line.",
   ].join("\n");
 }
 
 // ─── Testable tick ──────────────────────────────────────────────────────────────────────────
 
-export interface CrmRoutingEngine {
+export interface TrackRoutingEngine {
   scan(): Promise<RouteProposal[]>;
   /** Preferred when present: also reports a rate-limit stop. A plain `scan()` never defers. */
   scanDetailed?(): Promise<ScanResult>;
@@ -129,26 +164,38 @@ export interface CrmRoutingEngine {
 
 /** The store surface the tick needs — just the write half; dedup reads
  *  (`alreadyProposed`/cursor) stay inside the engine. */
-export interface CrmRoutingStore {
+export interface TrackRoutingStore {
   recordProposal(input: RouteProposalInput): Promise<{ id: string }>;
 }
 
 /** The door the tick speaks through — one resumed-session send per proposal. */
-export interface CrmRoutingDoor {
+export interface TrackRoutingDoor {
   /** Resolves once eve has accepted and dispatched the send; throws if it did not go out. */
-  send(prompt: string, summary?: string): Promise<void>;
+  send(prompt: string, summary?: string, proposal?: RouteProposal): Promise<void>;
 }
 
 /** What the owner reads in web chat for a proposal: the same facts the prompt hands the model. */
 export function routeProposalSummary(p: RouteProposal): string {
+  if (p.action === "ask") return `${p.personName} <${p.personHandle}> has activity that needs one clarification.`;
+  if (p.action === "console-only") return `${p.personName} <${p.personHandle}> may relate to Vault track ${p.home}/${p.trackId}; review it in private Console.`;
   const action = p.action === "create" ? "create a new opportunity" : "move the existing opportunity";
-  return `${p.personName} <${p.personHandle}> has new activity. I suggest we ${action} at ${p.brand} / ${p.stage} (${Math.round(p.confidence * 100)}% sure). Why: ${p.reasoning}`;
+  return `${p.personName} <${p.personHandle}> has new activity. I suggest we ${action} at ${p.home}/${p.trackId} / ${p.stage} (${Math.round(p.confidence * 100)}% sure). Why: ${p.reasoning}`;
 }
 
-export interface CrmRoutingDeps {
-  engine: CrmRoutingEngine;
-  store: CrmRoutingStore;
-  door: CrmRoutingDoor;
+/** The web inbox footer must describe only the next action this proposal can actually take. */
+export function routeProposalWebBody(p: RouteProposal): string {
+  const footer = p.action === 'ask'
+    ? 'Reply in your own words. I will use your reply as context and remember only a standing fact you explicitly state.'
+    : p.action === 'console-only'
+      ? `To request a Vault change, continue in the private Console for ${p.home}/${p.trackId}; this notice cannot authorize a write.`
+      : 'Reply if you want me to request this change. I will ask you to approve it before writing.';
+  return `${routeProposalSummary(p)}\n\n${footer}`;
+}
+
+export interface TrackRoutingDeps {
+  engine: TrackRoutingEngine;
+  store: TrackRoutingStore;
+  door: TrackRoutingDoor;
   /**
    * — the proactivity gate each proposal's send passes (`event` class: a proposal is a
    * thing that happened, not a slot). Injected so this factory stays pure and its unit tests keep
@@ -160,7 +207,7 @@ export interface CrmRoutingDeps {
 /** Single-flight + once-per-slot state, held OUTSIDE the tick closure — module-scope live
  *  wiring reuses one instance across every cron fire (matching `evening-brief.ts`'s
  *  `lastSlot`/`running`), while tests construct their own per case. */
-export interface CrmRoutingState {
+export interface TrackRoutingState {
   lastSlot: string | null;
   running: boolean;
   /** Set while the CRM's rate limit has stopped a pass part-way: the slot to finish, when to try
@@ -169,7 +216,7 @@ export interface CrmRoutingState {
   deferred: { slot: string; notBefore: number; triesLeft: number } | null;
 }
 
-export function freshState(): CrmRoutingState {
+export function freshState(): TrackRoutingState {
   return { lastSlot: null, running: false, deferred: null };
 }
 
@@ -179,11 +226,11 @@ export const RATE_LIMIT_RETRY_MS = 65_000;
 export const RATE_LIMIT_RESUMES = 5;
 
 /** True when a deferred pass is due to resume at `now` (the live pre-check must not skip it). */
-export function resumeDue(state: CrmRoutingState, now: Date): boolean {
+export function resumeDue(state: TrackRoutingState, now: Date): boolean {
   return state.deferred !== null && now.getTime() >= state.deferred.notBefore;
 }
 
-export interface CrmRoutingTick {
+export interface TrackRoutingTick {
   /** `now`/`hours`/`tz` are explicit arguments (not baked into deps) so a test can drive the
    *  once-per-slot-hour gate directly, across many simulated clock ticks, without a real
    *  timer or a live Postgres/Twenty/Slack.
@@ -200,10 +247,10 @@ export interface CrmRoutingTick {
  * Postgres, Twenty, or Slack: only the live wiring in `run` below (and the real-clock slot
  * gate, which is inherently real-clock) is impure.
  */
-export function makeCrmRoutingTick(
-  deps: CrmRoutingDeps,
-  state: CrmRoutingState = freshState(),
-): CrmRoutingTick {
+export function makeTrackRoutingTick(
+  deps: TrackRoutingDeps,
+  state: TrackRoutingState = freshState(),
+): TrackRoutingTick {
   const { engine, store, door, gate = SEND_UNGATED } = deps;
   return {
     async tick(now, hours, tz) {
@@ -225,7 +272,7 @@ export function makeCrmRoutingTick(
           // come back for the rest (the engine left its cursor at the first unprocessed signal).
           const triesLeft = resuming ? resuming.triesLeft - 1 : RATE_LIMIT_RESUMES;
           state.deferred = triesLeft > 0 ? { slot, notBefore: now.getTime() + RATE_LIMIT_RETRY_MS, triesLeft } : null;
-          console.warn(`crm-routing: deferred, CRM rate limited (slot ${slot}); ${triesLeft > 0 ? "will resume shortly" : "will resume next slot"}`);
+          console.warn(`track-routing: deferred, CRM rate limited (slot ${slot}); ${triesLeft > 0 ? "will resume shortly" : "will resume next slot"}`);
         } else {
           state.deferred = null;
         }
@@ -239,12 +286,12 @@ export function makeCrmRoutingTick(
             // the proposal row does not exist yet (it is written below, after the send), and the
             // signal ref is the durable id the engine's own dedupe already keys on.
             initiation = await gate(
-              { cls: "event", itemKey: `crm-routing/${p.signalRef}`, now, tz },
-              () => door.send(buildRouteProposalPrompt(p), routeProposalSummary(p)),
+              { cls: "event", itemKey: `track-routing/${p.signalRef}`, now, tz },
+              () => door.send(buildRouteProposalPrompt(p), routeProposalSummary(p), p),
             );
           } catch (err) {
             console.error(
-              `crm-routing: send FAILED for ${p.personHandle} (${p.brand} ▸ ${p.stage}, slot ${slot}) — ` +
+              `track-routing: send FAILED for ${p.personHandle} (${p.home ?? "unclear"}/${p.trackId ?? ""} ▸ ${p.stage}, slot ${slot}) — ` +
               "not recorded; the cursor has already advanced past this signal, so it will not be retried",
               err,
             );
@@ -256,11 +303,13 @@ export function makeCrmRoutingTick(
           // proposal reached the owner's DM, and the row below is the record of that, not a second telling.
           if (!initiation.handled) continue;
 
+          if (p.action === "ask") continue; // Questions are carried by private-DM continuity, not proposal rows.
           try {
             await store.recordProposal({
               personId: p.personId,
               opportunityId: p.opportunityId ?? undefined,
-              brand: p.brand,
+              home: p.home!,
+              trackId: p.trackId!,
               proposedStage: p.stage,
               signalRef: p.signalRef,
               confidence: p.confidence,
@@ -270,20 +319,20 @@ export function makeCrmRoutingTick(
             // Sent but not recorded: the owner hears about this one twice at worst (a future scan
             // may re-propose the same signal). Better a repeat than a silently unrecorded row.
             console.error(
-              `crm-routing: could not record proposal for ${p.personHandle} AFTER a successful send`,
+              `track-routing: could not record proposal for ${p.personHandle} AFTER a successful send`,
               err,
             );
           }
         }
 
         if (delivered > 0) {
-          console.log(`crm-routing: delivered ${delivered} proposal(s) (slot ${slot})`);
+          console.log(`track-routing: delivered ${delivered} proposal(s) (slot ${slot})`);
         }
         return true;
       } catch (err) {
         state.deferred = null;
-        console.error("crm-routing: tick failed", err);
-        await emitSignal("schedule-tick-failed", "crm-routing: tick failed", errorDetail(err));
+        console.error("track-routing: tick failed", err);
+        await emitSignal("schedule-tick-failed", "track-routing: tick failed", errorDetail(err));
         return false;
       } finally {
         state.running = false;
@@ -296,17 +345,24 @@ export function makeCrmRoutingTick(
 
 let tablesEnsured = false;
 
-/** Persists across cron fires within the same warm process — see CrmRoutingState. */
+/** Persists across cron fires within the same warm process — see TrackRoutingState. */
 const liveState = freshState();
 
 /** — the row input-freshness.sh reads; pinned to this filename by the conformance test. */
-export const HEARTBEAT_KEY = "chief-of-staff/crm-routing";
+export const HEARTBEAT_KEY = "chief-of-staff/track-routing";
 
 export default defineSchedule({
   cron: "* * * * *",
   async run({ to, waitUntil, appAuth }) {
     const { loaded } = await thisAgent(undefined);
-    if (!scheduleEnabled(loaded.definition, "crm-routing")) return;
+    if (!await currentAppliedDefinitionIsMigrated(loaded.definition.name)) {
+      if (!warnedLegacyDefinition) {
+        warnedLegacyDefinition = true;
+        console.warn("track-routing: waiting for the definition rename to be saved and explicitly applied");
+      }
+      return;
+    }
+    if (!scheduleEnabled(loaded.definition, "track-routing")) return;
     await recordScheduleTick(getPool(), HEARTBEAT_KEY);
 
     const now = new Date();
@@ -316,17 +372,17 @@ export default defineSchedule({
     const tz = await ownerTz();
     // The hour list is a setting, cached in-process for a few minutes
     // (lib/schedule-hours.ts) so this per-minute pre-check does not query Postgres either.
-    const hours = await scheduleHours("crm-routing");
+    const hours = await scheduleHours("track-routing");
     // Pre-check before touching the identity registry/Twenty/Slack at all — avoids that work on the
     // 59 out-of-slot minutes of every hour.
     if (dueRouteSlot(now, tz, hours) === null && !resumeDue(liveState, now)) return;
 
     // The owner's `delivery` choice; without one, the Slack DM it always went to.
-    const routed = routeDelivery("crm-routing", loaded);
+    const routed = routeDelivery("track-routing", loaded);
     if (!routed) {
       if (!warnedNoPrincipal) {
         warnedNoPrincipal = true;
-        console.warn("crm-routing: no door to deliver through (Slack is not connected); skipping");
+        console.warn("track-routing: no door to deliver through (Slack is not connected); skipping");
       }
       return;
     }
@@ -341,7 +397,8 @@ export default defineSchedule({
       // Self-handles (the owner's own email addresses) so the engine never treats the owner's own
       // sent mail/organised meetings as a contact signal — sourced from the identity registry
       // (matching evening-brief.ts's own `myAddresses`).
-      const selfHandles = await listAliases(pool, configuredOwnerId(), "email");
+      const ownerId = configuredOwnerId();
+      const [selfHandles, ownerFacts] = await Promise.all([listAliases(pool, ownerId, "email"), listActiveFacts(pool, ownerId)]);
       // The org's own domains (sql/001_baseline.sql orgs.domains): colleagues and the org's own product
       // senders are never prospects. Per-install data, read here so the engine stays literal-free.
       const internalDomains = await listOrgDomains(pool, configuredOwnerId());
@@ -350,34 +407,36 @@ export default defineSchedule({
       const routeClassifier = makeRouteClassifier({
         selfHandles,
         selfDomains: internalDomains,
+        ownerFacts,
         llm: (prompt) => gatewayComplete(prompt, { model: process.env["ROUTE_MODEL"], maxOutputTokens: 512 }),
       });
       const engine = makeRouteEngine({
         twenty: makeRouteTwentyClient(),
+        vault: makeRouteVaultClient(ownerId),
         classifier: routeClassifier,
         store: routeStore,
         selfHandles,
         internalDomains,
       });
 
-      const door: CrmRoutingDoor = {
+      const door: TrackRoutingDoor = {
         // The proposal ends in an approval card, which web chat cannot start: there the owner reads
         // the proposal in the inbox and the reply opens a chat that raises the card.
-        send: (prompt, summary) => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, prompt, {
-          lane: "crm-routing", title: "CRM routing proposal",
-          ...(summary ? { webBody: `${summary}\n\nReply to this message to have me make the change. You will be asked to approve it first.` } : {}),
+        send: (prompt, summary, proposal) => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, prompt, {
+          lane: "track-routing", title: "track routing proposal",
+          ...(summary && proposal && routed.door === "web" ? { webBody: routeProposalWebBody(proposal) } : {}),
           webContext: prompt,
         }),
       };
 
-      const completed = await makeCrmRoutingTick(
+      const completed = await makeTrackRoutingTick(
         { engine, store: routeStore, door, gate: routed.gate },
         liveState,
       ).tick(now, hours, tz);
       if (completed) await recordSchedulePass(pool, HEARTBEAT_KEY);
     } catch (err) {
-      console.error("crm-routing: live wiring failed", err);
-      await emitSignal("schedule-tick-failed", "crm-routing: live wiring failed", errorDetail(err));
+      console.error("track-routing: live wiring failed", err);
+      await emitSignal("schedule-tick-failed", "track-routing: live wiring failed", errorDetail(err));
     }
   },
 });

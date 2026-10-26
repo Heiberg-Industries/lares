@@ -27,10 +27,10 @@ function fakes(opts: {
   participants?: Participant[];
   decision?: RouteDecision;
   opps?: Opp[];
-  proposedSince?: (args: { personId: string; brand: string; sinceIso: string }) => boolean;
+  proposedSince?: (args: { personId: string; home: string; trackId: string; sinceIso: string }) => boolean;
 }) {
   const classifyCalls: unknown[] = [];
-  const proposedSinceCalls: Array<{ personId: string; brand: string; sinceIso: string }> = [];
+  const proposedSinceCalls: Array<{ personId: string; home: string; trackId: string; sinceIso: string }> = [];
   const twenty = {
     listTracks: async () => [{ id: "ACME", name: "Acme", purpose: "workflow", steps: ["NEW", "CONTACTED", "MEETING", "QUALIFIED", "PROPOSAL", "CUSTOMER", "LOST"], closingSteps: ["CUSTOMER", "LOST"] }, { id: "PROJECT_A", name: "Project A", purpose: "workflow", steps: ["NEW", "CONTACTED", "MEETING", "QUALIFIED", "PROPOSAL", "CUSTOMER", "LOST"], closingSteps: ["CUSTOMER", "LOST"] }],
     listRecentMessageParticipants: async () => opts.participants ?? [],
@@ -43,14 +43,14 @@ function fakes(opts: {
   const classifier = {
     classify: async (input: unknown): Promise<RouteDecision> => {
       classifyCalls.push(input);
-      return opts.decision ?? { brand: "ACME", stage: "NEW", action: "create", confidence: 0.9, reasoning: "keyword overlap" };
+      return opts.decision ?? { home: "twenty", trackId: "ACME", stage: "NEW", action: "create", confidence: 0.9, reasoning: "keyword overlap", question: null };
     },
   };
   const store = {
     getCursor: async () => null,
     setCursor: async () => {},
     alreadyProposed: async () => false,
-    proposedSince: async (args: { personId: string; brand: string; sinceIso: string }) => {
+    proposedSince: async (args: { personId: string; home: string; trackId: string; sinceIso: string }) => {
       proposedSinceCalls.push(args);
       return opts.proposedSince ? opts.proposedSince(args) : false;
     },
@@ -67,7 +67,7 @@ describe("route engine — the org's own domains are never prospects", () => {
     const engine = makeRouteEngine({ ...f, clock: () => NOW, internalDomains: ["project.example"] });
     const out = await engine.scan();
     expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ personId: "p-ext", action: "create", stage: "NEW", brand: "ACME" });
+    expect(out[0]).toMatchObject({ personId: "p-ext", action: "create", stage: "NEW", home: "twenty", trackId: "ACME" });
   });
 
   it("a participant on one of the org's domains is skipped before the classifier ever runs (case-insensitive)", async () => {
@@ -92,7 +92,8 @@ describe("route engine — one proposal per person and brand per cool-down", () 
     expect(f.proposedSinceCalls).toHaveLength(1);
     const call = f.proposedSinceCalls[0]!;
     expect(call.personId).toBe("p-ext");
-    expect(call.brand).toBe("ACME");
+    expect(call.home).toBe("twenty");
+    expect(call.trackId).toBe("ACME");
     const expectedSince = new Date(NOW.getTime() - PROPOSAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString();
     expect(call.sinceIso).toBe(expectedSince);
   });
@@ -100,8 +101,8 @@ describe("route engine — one proposal per person and brand per cool-down", () 
   it("the cool-down is per brand — the same person may still be proposed for a different brand", async () => {
     const f = fakes({
       participants: [external],
-      decision: { brand: "PROJECT_A", stage: "NEW", action: "create", confidence: 0.9, reasoning: "project-a demo" },
-      proposedSince: (a) => a.brand === "ACME",
+      decision: { home: "twenty", trackId: "PROJECT_A", stage: "NEW", action: "create", confidence: 0.9, reasoning: "project-a demo", question: null },
+      proposedSince: (a) => a.trackId === "ACME",
     });
     const engine = makeRouteEngine({ ...f, clock: () => NOW, internalDomains: [] });
     expect(await engine.scan()).toHaveLength(1);
@@ -120,7 +121,7 @@ describe("route engine — a move is only ever forward in the pipeline", () => {
       const f = fakes({
         participants: [external],
         opps: [qualified],
-        decision: { brand: "ACME", stage, action: "move", confidence: 0.9, reasoning: "reply on the thread" },
+        decision: { home: "twenty", trackId: "ACME", stage, action: "move", confidence: 0.9, reasoning: "reply on the thread", question: null },
       });
       const engine = makeRouteEngine({ ...f, clock: () => NOW, internalDomains: [] });
       expect(await engine.scan(), stage).toEqual([]);
@@ -131,7 +132,7 @@ describe("route engine — a move is only ever forward in the pipeline", () => {
     const f = fakes({
       participants: [external],
       opps: [qualified],
-      decision: { brand: "ACME", stage: "PROPOSAL", action: "move", confidence: 0.9, reasoning: "they asked for terms" },
+      decision: { home: "twenty", trackId: "ACME", stage: "PROPOSAL", action: "move", confidence: 0.9, reasoning: "they asked for terms", question: null },
     });
     const engine = makeRouteEngine({ ...f, clock: () => NOW, internalDomains: [] });
     const out = await engine.scan();

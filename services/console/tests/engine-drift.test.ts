@@ -292,13 +292,13 @@ describe("the console's schedule-hours mirror has not drifted from the kit's sch
       expect(SCHEDULE_HOUR_DEFAULTS[key], `${key} is missing from the console's mirror`).toEqual(kitDefaults[key]);
     }
     expect(kitDefaults).toEqual({
-      "morning-brief": [8], "evening-brief": [20], digest: [9, 17], "crm-routing": [9, 13, 17],
+      "morning-brief": [8], "evening-brief": [20], digest: [9, 17], "track-routing": [9, 13, 17],
       "weekly-summary": [9], "voice-learn": [4], dream: [3],
     });
   });
 
   it("mirrors SINGLE_SLOT — every schedule except the kit's own multi-slot two", () => {
-    expect(kitMultiSlot.sort()).toEqual(["crm-routing", "digest"]);
+    expect(kitMultiSlot.sort()).toEqual(["digest", "track-routing"]);
     const expected = new Set(Object.keys(kitDefaults).filter((s) => !kitMultiSlot.includes(s)));
     expect(SINGLE_SLOT).toEqual(expected);
   });
@@ -307,7 +307,7 @@ describe("the console's schedule-hours mirror has not drifted from the kit's sch
     // dream and voice-learn are internal night jobs (plan, decision 3) — known to the
     // mirror above but never offered a control here.
     expect(OWNER_FACING_SCHEDULES.map((s) => s.schedule).sort()).toEqual(
-      ["crm-routing", "digest", "evening-brief", "morning-brief", "weekly-summary"],
+      ["digest", "evening-brief", "morning-brief", "track-routing", "weekly-summary"],
     );
     for (const { schedule } of OWNER_FACING_SCHEDULES) {
       expect(kitDefaults, `${schedule} is offered but unknown to the kit`).toHaveProperty(schedule);

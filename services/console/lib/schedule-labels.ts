@@ -17,7 +17,7 @@ export const SCHEDULE_EXPLANATIONS: Readonly<Record<string, string>> = Object.fr
   "evening-brief": "Every evening (20:00 by default), a heads-up about tomorrow's meetings with other people and what you owe them. Nothing is sent when there is nothing to prepare.",
   digest: "Twice a day (9:00 and 17:00 by default), files your newly saved links into your notes and sends you one short summary.",
   "weekly-summary": "Every Sunday (9:00 by default), a short summary of what the agent has learned about how you like things done. Skipped when it has learned nothing yet.",
-  "crm-routing": "Three times a day (9:00, 13:00 and 17:00 by default), looks for contacts with new meetings or emails and suggests which sales pipeline and stage they belong in. You approve each change.",
+  "track-routing": "Three times a day (9:00, 13:00 and 17:00 by default), looks for contacts with new meetings or emails and suggests which sales pipeline and stage they belong in. You approve each change.",
   deadlines: "Raises the deadlines you have recorded: a nudge at 15:00 the day before, another at 09:00 on the day (official deadlines only), and a last note the day after, then it stops.",
   "email-triage": "About every minute, checks your connected inboxes for new mail from the last two days, sorts it and prepares draft replies where useful.",
   "meeting-followup": "Every five minutes, looks for meetings that now have a summary and attendees, and prepares a recap email with the action items. Nothing is sent until you approve it.",

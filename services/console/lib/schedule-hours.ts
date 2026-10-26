@@ -24,7 +24,7 @@ export const SCHEDULE_HOUR_DEFAULTS: Readonly<Record<string, readonly number[]>>
   "morning-brief": [8],
   "evening-brief": [20],
   digest: [9, 17],
-  "crm-routing": [9, 13, 17],
+  "track-routing": [9, 13, 17],
   "weekly-summary": [9],
   "voice-learn": [4],
   dream: [3],
@@ -33,9 +33,9 @@ export const SCHEDULE_HOUR_DEFAULTS: Readonly<Record<string, readonly number[]>>
 export type ScheduleName = keyof typeof SCHEDULE_HOUR_DEFAULTS;
 
 /** Every schedule that fires at exactly one hour a day — everything except `digest` and
- *  `crm-routing`, which fire several passes a day. Mirrors the kit's own derivation. */
+ *  `track-routing`, which fire several passes a day. Mirrors the kit's own derivation. */
 export const SINGLE_SLOT: ReadonlySet<string> = new Set(
-  Object.keys(SCHEDULE_HOUR_DEFAULTS).filter((s) => s !== "digest" && s !== "crm-routing"),
+  Object.keys(SCHEDULE_HOUR_DEFAULTS).filter((s) => s !== "digest" && s !== "track-routing"),
 );
 
 /** The five schedules this page offers a control for. `dream` and `voice-learn` are refused by
@@ -46,7 +46,7 @@ export const OWNER_FACING_SCHEDULES = [
   { schedule: "morning-brief", label: "Morning brief" },
   { schedule: "evening-brief", label: "Evening brief" },
   { schedule: "digest", label: "Digest" },
-  { schedule: "crm-routing", label: "CRM routing" },
+  { schedule: "track-routing", label: "track routing" },
   { schedule: "weekly-summary", label: "Weekly summary" },
 ] as const;
 

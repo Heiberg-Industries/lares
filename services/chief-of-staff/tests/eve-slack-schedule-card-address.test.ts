@@ -22,7 +22,7 @@ import { slackChannel } from "eve-internals/slack-channel";
  *
  * Approve and Cancel both route through the same `.respond(...)`, so a schedule could
  * render a gate but never act on it — for ALL six Slack-pushing schedules
- * (meeting-followup, crm-routing, outreach-reply-watch, email-triage, digest, dream).
+ * (meeting-followup, track-routing, outreach-reply-watch, email-triage, digest, dream).
  * A schedule-posted Slack card had never been actionable.
  *
  * THE FIX. Slack already returns the channel it actually delivered to in every

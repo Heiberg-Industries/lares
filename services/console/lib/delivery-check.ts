@@ -24,7 +24,7 @@ export const HOURLY_KINDS: Readonly<Record<string, DeliveryKind>> = {
   "evening-brief": "evening-brief",
   "weekly-summary": "weekly-summary",
   digest: "digest",
-  "crm-routing": "crm-routing",
+  "track-routing": "track-routing",
 };
 
 export const WEB_DOOR_ID = "web:inbox";
