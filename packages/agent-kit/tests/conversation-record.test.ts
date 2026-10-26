@@ -16,6 +16,8 @@ import {
 
 const sqlDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "services", "box", "sql");
 const migration = readFileSync(join(sqlDir, "001_baseline.sql"), "utf8");
+const audienceMigration = readFileSync(join(sqlDir, "030_conversation_audience.sql"), "utf8");
+const webInboxMigration = readFileSync(join(sqlDir, "004_web_inbox.sql"), "utf8");
 
 let container: StartedPostgreSqlContainer;
 let pool: Pool;
@@ -24,6 +26,8 @@ beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
   pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   await pool.query(migration);
+  await pool.query(webInboxMigration);
+  await pool.query(audienceMigration);
 }, 120_000);
 afterAll(async () => { await pool?.end(); await container?.stop(); });
 beforeEach(async () => { await pool.query("TRUNCATE conversation_entries"); });
@@ -37,13 +41,23 @@ const base = {
 
 describe("conversation_entries", () => {
 
+  it("the audience migration is safe to apply again", async () => {
+    await expect(pool.query(audienceMigration)).resolves.toBeDefined();
+    await makeConversationRecord(pool).append({
+      ...base, audienceMemberId: "fixture-owner", audienceAddress: "slack-user:fixture", audienceAccessRevision: 7,
+    });
+  });
+
   it("appends and reads back every field", async () => {
     const r = makeConversationRecord(pool);
-    const row = await r.append(base);
+    const row = await r.append({ ...base, audienceMemberId: "fixture-owner", audienceAddress: "slack-user:fixture", audienceAccessRevision: 7 });
     expect(row.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(row.origin).toBe("owner");
     expect(row.proposals).toEqual(["calendar.create_event"]);
     expect(row.lane).toBeNull();
+    expect(row.audienceMemberId).toBe("fixture-owner");
+    expect(row.audienceAddress).toBe("slack-user:fixture");
+    expect(row.audienceAccessRevision).toBe(7);
     expect(row.at.toISOString()).toBe("2026-09-18T10:00:00.000Z");
   });
 
@@ -84,6 +98,36 @@ describe("conversation_entries", () => {
     await r.append(base);
     await r.append({ ...base, turnId: "t2", personKey: "someone-else" });
     expect((await r.forPerson("fixture-owner")).map((e) => e.turnId)).toEqual(["t1"]);
+  });
+
+  it("continuity is restricted to a captured private member, address, door and trusted origins", async () => {
+    const r = makeConversationRecord(pool);
+    const privateRow = { ...base, audienceMemberId: "fixture-owner", audienceAddress: "slack-user:fixture", audienceAccessRevision: 7 };
+    await r.append(privateRow);
+    await r.append({ ...privateRow, turnId: "other-member", audienceMemberId: "someone-else" });
+    await r.append({ ...privateRow, turnId: "other-door", door: "telegram" });
+    await r.append({ ...privateRow, turnId: "legacy", audienceMemberId: null, audienceAddress: null, audienceAccessRevision: null });
+    await r.append({ ...privateRow, turnId: "untrusted", origin: "third_party" });
+    await r.append({ ...privateRow, turnId: "proactive-1", origin: "system", lane: "brief", at: new Date("2026-09-18T10:01:00Z") });
+    await r.append({ ...privateRow, turnId: "proactive-2", origin: "system", lane: "brief", at: new Date("2026-09-18T10:02:00Z") });
+    await r.append({ ...privateRow, turnId: "proactive-3", origin: "system", lane: "brief", at: new Date("2026-09-18T10:03:00Z") });
+    const found = await r.forAudience({ agent: "canary", memberId: "fixture-owner", address: "slack-user:fixture", door: "slack", accessRevision: 7, since: new Date("2026-09-18T09:00:00Z") });
+    expect(found.map(entry => entry.turnId)).toEqual(["t1", "proactive-1", "proactive-2", "proactive-3"]);
+    expect(await r.forAudience({ agent: "canary", memberId: "fixture-owner", address: "slack-user:fixture", door: "slack", accessRevision: 8, since: new Date("2026-09-18T09:00:00Z") })).toEqual([]);
+  });
+
+  it("keeps a captured approval card only while its exact request remains pending", async () => {
+    await pool.query(`INSERT INTO approval_asks (request_id, call_id, agent, tool, payload_hash)
+      VALUES ('approval-pending','call-pending','canary','calendar.create_event','hash-pending'),
+             ('approval-settled','call-settled','canary','gmail_send','hash-settled')`);
+    const r = makeConversationRecord(pool);
+    const audience = { audienceMemberId: "fixture-owner", audienceAddress: "slack-user:fixture", audienceAccessRevision: 7 };
+    await r.append({ ...base, ...audience, origin: "third_party", turnId: "pending-card", input: "", reply: "Create the event?\nChoices: Approve / Cancel", proposals: ["calendar.create_event"], approvalRequestId: "approval-pending" });
+    await r.append({ ...base, ...audience, origin: "third_party", turnId: "settled-card", input: "", reply: "Send the reply?", proposals: ["gmail_send"], approvalRequestId: "approval-settled" });
+    await pool.query("UPDATE approval_asks SET answered_at=now(), outcome='cancelled' WHERE request_id='approval-settled'");
+    const found = await r.forAudience({ agent: "canary", memberId: "fixture-owner", address: "slack-user:fixture", door: "slack", accessRevision: 7, since: new Date("2026-09-18T09:00:00Z") });
+    expect(found.map(row => row.approvalRequestId)).toEqual(["approval-pending"]);
+    expect(found[0]?.origin).toBe("third_party");
   });
 
   it("pruneBefore removes only what is older and reports how many", async () => {

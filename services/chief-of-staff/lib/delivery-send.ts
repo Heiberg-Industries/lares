@@ -24,6 +24,7 @@ import { telegramCredentials } from "../agent/channels/telegram.js";
 import type { Routed } from "./delivery.js";
 import { gatewayComplete } from "./llm-complete.js";
 import { telegramPushAttributes } from "./principals.js";
+import { continuityAuthAttributes, proactiveContinuityIdentity } from "./conversation-continuity.js";
 
 /** What a schedule's `run({ to, waitUntil, appAuth })` gives it, plus the two channel objects. */
 export interface TurnRuntime {
@@ -70,19 +71,31 @@ export async function webTextFor(routed: Pick<Routed, "voiceMd">, prompt: string
  *  the gate treats as "not sent" (the item stays eligible). */
 export async function sendTurn(routed: Routed, rt: TurnRuntime, prompt: string, o: TurnOptions): Promise<void> {
   if (routed.door === "web") {
+    // Only model-generated copy gets a continuity fence, captured before generation and
+    // checked again by the inbox writer. Prebuilt schedule text has no proven source boundary.
+    const continuityFence = o.webBody === undefined ? await routed.captureContinuityFence() : undefined;
     const body = o.webBody ?? (await webTextFor(routed, prompt));
     await routed.inbox({
       ...(o.itemKey ? { itemKey: o.itemKey } : {}), title: o.title, body,
       ...(o.webContext ? { context: o.webContext } : {}),
+      ...(continuityFence ? { continuityFence } : {}),
     });
     return;
   }
+  let continuityAttributes: Record<string, string> = {};
+  try {
+    const identity = await proactiveContinuityIdentity(routed.door, routed.target);
+    if (identity) continuityAttributes = continuityAuthAttributes(identity);
+  } catch (error) {
+    // A scheduled post remains deliverable if optional conversation attribution is unavailable.
+    console.warn("delivery: private conversation audience unavailable; sending without continuity metadata", error instanceof Error ? error.message : "unknown error");
+  }
   const task = routed.door === "telegram"
     ? rt.to(rt.telegram, { chatId: routed.target }).send(prompt, {
-        auth: { ...rt.appAuth, attributes: telegramPushAttributes(o.lane, routed.target) },
+        auth: { ...rt.appAuth, attributes: { ...telegramPushAttributes(o.lane, routed.target), ...continuityAttributes } },
       })
     : rt.to(rt.slack, { channelId: routed.target }).send(prompt, {
-        auth: { ...rt.appAuth, attributes: { lane: o.lane } },
+        auth: { ...rt.appAuth, attributes: { lane: o.lane, ...continuityAttributes } },
       });
   rt.waitUntil(task);
   await task;

@@ -2,7 +2,8 @@ import { assertPrivateConsoleRequest, assertVerifiedPrivateConsoleMessage, verif
   verifiedPrivateConsoleModelMessageReceipt, verifiedPrivateConsoleModelResponseReceipt,
   PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER } from "@lares/agent-kit/private-console-envelope";
 import type { UserContent } from "ai";
-import { consoleRouteAdmission, consoleAdmission } from "@lares/agent-kit/console-turn-authority";
+import { authorityTransaction, consoleRouteAdmission, consoleAdmission, requireConsoleSessionBinding } from "@lares/agent-kit/console-turn-authority";
+import { managedIdentity } from "@lares/agent-kit/door-authority";
 import { vaultBrokerRequest } from "@lares/agent-kit/vault-broker-client";
 import { modelPurposeRequest } from "@lares/agent-kit/model-purpose-client";
 import { parseModelPurposeAdmissionResponse } from "@lares/agent-kit/model-purpose-protocol";
@@ -16,6 +17,8 @@ import {
 } from "eve/channels/auth";
 
 import { CONSOLE_AUTHENTICATOR, consoleMember } from "../../lib/principals.js";
+import { agentName } from "../../lib/agent-name.js";
+import { privateWebInboxContinuity } from "../../lib/conversation-continuity.js";
 
 // Route auth (INBOUND): who may reach this agent's HTTP session routes.
 // GET /eve/v1/health is always public and never walks this policy.
@@ -193,7 +196,25 @@ export async function onPrivateConsoleMessage(ctx: { eve: { caller?: DoorSession
       let vaultPending:string|undefined;
       try{const receipt=verifiedPrivateConsoleMessageReceipt(ctx.eve.request,message);const result=await vaultBrokerRequest<{pendingReceipt?:unknown}>('request.admit',{capsule:receipt.vaultCapsule,receipt});if(typeof result.pendingReceipt==='string'&&/^[A-Za-z0-9_-]{43}$/.test(result.pendingReceipt))vaultPending=result.pendingReceipt;}catch{/* Broker absence disables only Vault reads. */}
       const attributes={...caller?.attributes,...(modelPending?{lares_model_pending_receipt:modelPending}:{}),...(vaultPending?{lares_vault_pending:vaultPending}:{})};
-      return {auth:modelPending||vaultPending?{...caller,attributes}:caller};
+      let continuity: string[] = [];
+      const admission = consoleAdmission(caller);
+      const own = managedIdentity();
+      const sessionId = /\/eve\/v1\/session\/([A-Za-z0-9_-]{1,64})(?:\/|$)/.exec(new URL(ctx.eve.request.url).pathname)?.[1];
+      if (admission?.purpose === "human" && own && sessionId) {
+        // Revalidate the existing binding and hold its member/grant locks through the mailbox
+        // read. The general conversation table continues to exclude private console exchanges.
+        try {
+          continuity = await authorityTransaction(undefined, async (db) => {
+            await requireConsoleSessionBinding({ agent: own.name, incarnation: own.incarnation, sessionId, ...admission }, db);
+            return privateWebInboxContinuity(admission.memberId, agentName(), new Date(), db);
+          });
+        }
+        catch (error) { console.warn("web continuity unavailable; continuing without archived posts", error instanceof Error ? error.message : "unknown error"); }
+      }
+      return {
+        auth: modelPending || vaultPending ? { ...caller, attributes } : caller,
+        ...(continuity.length ? { context: continuity } : {}),
+      };
     }
     return { auth: caller ?? null };
 }

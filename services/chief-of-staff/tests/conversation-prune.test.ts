@@ -40,6 +40,8 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const sqlDir = join(here, "..", "..", "box", "sql");
 const baseline = readFileSync(join(sqlDir, "001_baseline.sql"), "utf8");
+const audienceMigration = readFileSync(join(sqlDir, "030_conversation_audience.sql"), "utf8");
+const webInboxMigration = readFileSync(join(sqlDir, "004_web_inbox.sql"), "utf8");
 
 let container: StartedPostgreSqlContainer;
 let pool: Pool;
@@ -48,6 +50,8 @@ beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
   pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   await pool.query(baseline);
+  await pool.query(webInboxMigration);
+  await pool.query(audienceMigration);
 }, 120_000);
 afterAll(async () => { await pool?.end(); await container?.stop(); });
 beforeEach(async () => {

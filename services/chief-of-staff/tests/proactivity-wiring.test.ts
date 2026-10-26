@@ -967,7 +967,7 @@ describe("delivery routing", () => {
     const [[, params]] = inboxInserts();
     expect(params).toEqual([
       "owner-1", "chief-of-staff", "evening-brief", "Evening brief",
-      "Good evening. Here is tomorrow.", null, "evening-brief/2026-06-17T20",
+      "Good evening. Here is tomorrow.", null, "evening-brief/2026-06-17T20", null, null, null,
     ]);
     expect(fallbackNotes()).toEqual(["Evening brief went to web chat: Telegram is not connected"]);
   });
@@ -1085,7 +1085,7 @@ describe("delivery routing", () => {
     const { default: schedule } = await import("../agent/schedules/reminders.js");
     await schedule.run!(recordingCtx().ctx);
     expect(inboxInserts()[0]![1]).toEqual([
-      "owner-1", "chief-of-staff", "reminders", "Reminder", "Ring leverandøren", null, "reminder/r1",
+      "owner-1", "chief-of-staff", "reminders", "Reminder", "Ring leverandøren", null, "reminder/r1", null, null, null,
     ]);
     expect(fallbackNotes()).toEqual(["Reminder went to web chat: Telegram could not be reached"]);
     expect(markDelivered).toHaveBeenCalledWith(expect.anything(), "r1");

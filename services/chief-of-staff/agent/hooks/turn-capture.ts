@@ -180,6 +180,23 @@ interface PendingExchange {
   input: string;
   reply: string;
   proposals: string[];
+  audienceMemberId?: string;
+  audienceAddress?: string;
+  audienceAccessRevision?: number;
+}
+
+/** These attributes are stamped only by the authored private-channel admission or trusted
+ * schedule sender. Provider text cannot supply session auth attributes. */
+function audienceOf(ctx: HookContext): Pick<PendingExchange, "audienceMemberId" | "audienceAddress" | "audienceAccessRevision"> {
+  const attrs = ctx?.session?.auth?.current?.attributes;
+  const memberId = attrs?.lares_continuity_member_id;
+  const address = attrs?.lares_continuity_address;
+  const revisionText = attrs?.lares_continuity_revision;
+  if (typeof memberId !== "string" || !memberId.trim() || typeof address !== "string" || !address.trim() ||
+      typeof revisionText !== "string" || !/^[1-9]\d*$/.test(revisionText)) return {};
+  const revision = Number(revisionText);
+  if (!Number.isSafeInteger(revision)) return {};
+  return { audienceMemberId: memberId, audienceAddress: address, audienceAccessRevision: revision };
 }
 
 export interface TurnCaptureDeps {
@@ -211,6 +228,42 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
    * and let a future test silently observe no warning.
    */
   const warnedKinds = new Set<string>();
+
+  /** Persist the visible card at the park point. The card's rendered text is archive data; its
+   *  request id only lets the reader drop it as soon as the normal approval ledger settles it. */
+  async function onInputRequested(event: unknown, ctx: HookContext): Promise<void> {
+    if (isPrivateConsoleContext(ctx)) return;
+    try {
+      const data = (event as { data?: { requests?: unknown; turnId?: unknown } } | undefined)?.data;
+      const requests = data?.requests;
+      const key = keyOf(ctx);
+      const turnId = data?.turnId;
+      const door = doorOf(ctx);
+      const audience = audienceOf(ctx);
+      if (!Array.isArray(requests) || !key || typeof turnId !== "string" || !door || !audience.audienceMemberId) return;
+      for (const raw of requests) {
+        if (!raw || typeof raw !== "object") continue;
+        const req = raw as { kind?: unknown; requestId?: unknown; prompt?: unknown; options?: unknown; action?: { kind?: unknown; toolName?: unknown } };
+        if (req.kind !== "tool-approval" || req.action?.kind !== "tool-call" || typeof req.requestId !== "string" || typeof req.action.toolName !== "string" || typeof req.prompt !== "string") continue;
+        const detail = (globalThis as typeof globalThis & { __eveApprovalDetails?: (tool: unknown, input: unknown) => string | undefined })
+          .__eveApprovalDetails?.(req.action.toolName, (raw as { action?: { input?: unknown } }).action?.input);
+        const options = Array.isArray(req.options) ? req.options.flatMap((option) => {
+          if (!option || typeof option !== "object") return [];
+          const label = (option as { label?: unknown }).label;
+          return typeof label === "string" ? [label] : [];
+        }) : [];
+        const text = [req.prompt, detail?.trim(), `Action: ${req.action.toolName}`, options.length ? `Choices: ${options.join(" / ")}` : undefined]
+          .filter((part): part is string => typeof part === "string" && part.length > 0).join("\n");
+        await deps.capture({
+          at: new Date(now()).toISOString(), door, principal: configuredOwnerId(), ...audience,
+          sessionId: key, turnId, origin: "third_party", input: "", reply: text,
+          proposals: [req.action.toolName], approvalRequestId: req.requestId,
+        });
+      }
+    } catch (err) {
+      warn("input.requested", err);
+    }
+  }
 
   /**
    * Which door this turn came in on, or `undefined` when it is not a door turn at all.
@@ -306,6 +359,11 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
       // (`lib/turn-capture.ts` copies `principal` straight across) — the same identity
       // resolution the door already uses for the principal, never a display name.
       principal: configuredOwnerId(),
+      ...(x.audienceMemberId ? {
+        audienceMemberId: x.audienceMemberId,
+        audienceAddress: x.audienceAddress,
+        audienceAccessRevision: x.audienceAccessRevision,
+      } : {}),
       // ADR-0020: the session and the opening turn this exchange is keyed on, and the origin
       // class it carries — computed once, here, at write time.
       sessionId: key,
@@ -349,7 +407,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
     const door = doorOf(ctx);
     if (!door) return;
     const lane = laneOf(ctx);
-    pending.set(key, { startedAt: now(), turnId, door, ...(lane ? { lane } : {}), input, reply: "", proposals: [] });
+    pending.set(key, { startedAt: now(), turnId, door, ...(lane ? { lane } : {}), ...audienceOf(ctx), input, reply: "", proposals: [] });
   }
 
   /**
@@ -547,6 +605,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
     onTurnStarted,
     onMessageReceived,
     onActionsRequested,
+    onInputRequested,
     onMessageCompleted,
     onTurnCompleted,
     onTurnDiscarded,
@@ -560,6 +619,7 @@ export default defineHook({
     "turn.started": live.onTurnStarted,
     "message.received": live.onMessageReceived,
     "actions.requested": live.onActionsRequested,
+    "input.requested": live.onInputRequested,
     "message.completed": live.onMessageCompleted,
     "turn.completed": live.onTurnCompleted,
     "turn.failed": live.onTurnDiscarded,

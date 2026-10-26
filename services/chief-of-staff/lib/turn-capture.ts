@@ -40,6 +40,10 @@ export interface TurnLogEntry {
   input: string; // the turn's input — a person's message on a door turn, a machine nudge on a scheduled one
   reply: string; // the agent's reply text
   proposals: string[]; // proposed action names, e.g. "brain.write"
+  /** Verified singleton private recipient, stamped by an inbound door or trusted schedule. */
+  audienceMemberId?: string;
+  audienceAddress?: string;
+  audienceAccessRevision?: number;
   /** Set only for a scheduled lane ("morning-brief", "weekly-summary"). Absent ⇒ a person
    *  spoke. It decides ATTRIBUTION: a machine nudge recorded as if a person said it would let
    *  a later turn quote them saying something they never said. */
@@ -56,6 +60,8 @@ export interface TurnLogEntry {
    *  same legacy-markdown reason as `turnId`; `captureTurn` fails closed to `third_party` if it
    *  ever sees this unset. */
   origin?: Origin;
+  /** A rendered, still-pending approval card; content is quoted data and grants no authority. */
+  approvalRequestId?: string;
 }
 
 /** The conversation-record write's budget. It runs inline in the hook the owner's reply waits
@@ -151,7 +157,10 @@ export async function captureTurn(e: TurnLogEntry, record?: ConversationRecordSi
       sessionId: e.sessionId,
       turnId: e.turnId,
       door: e.door,
-      personKey: e.principal,
+      personKey: e.audienceMemberId ?? e.principal,
+      ...(e.audienceMemberId && e.audienceAddress && Number.isSafeInteger(e.audienceAccessRevision) && e.audienceAccessRevision! > 0
+        ? { audienceMemberId: e.audienceMemberId, audienceAddress: e.audienceAddress, audienceAccessRevision: e.audienceAccessRevision }
+        : {}),
       lane: e.lane ?? null,
       // Fails closed the same way stampFor itself does: an entry with no computed origin is
       // never given the benefit of the doubt.
@@ -159,6 +168,7 @@ export async function captureTurn(e: TurnLogEntry, record?: ConversationRecordSi
       input: e.input,
       reply: e.reply,
       proposals: e.proposals,
+      ...(e.approvalRequestId ? { approvalRequestId: e.approvalRequestId } : {}),
       at: new Date(e.at),
     };
     await withTimeout(sink.append(entry), CONVERSATION_RECORD_TIMEOUT_MS, "turn-capture: conversation record write");

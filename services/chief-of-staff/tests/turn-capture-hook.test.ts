@@ -19,6 +19,7 @@ import { makeTurnCapture } from "../agent/hooks/turn-capture.js";
 import type { TurnLogEntry } from "../lib/turn-capture.js";
 import { configuredOwnerId } from "../lib/identity-client.js";
 import { taintTurn, resetTaintForTests } from "@lares/agent-kit/origin-taint";
+import { formatConversationContinuity } from "../lib/conversation-continuity.js";
 
 const humanTelegramAuth = {
   attributes: {},
@@ -223,6 +224,54 @@ describe("turn-capture hook — attribution", () => {
 });
 
 describe("turn-capture hook — correlation", () => {
+  it("durably captures delivered pending approval cards across a restart as quoted context only", async () => {
+    const audienceAuth = { ...scheduleAppAuth, attributes: {
+      lane: "proactive-brief", lares_continuity_member_id: "member-a",
+      lares_continuity_address: "telegram-user:123", lares_continuity_revision: "9",
+    } };
+    const c = ctx({ kind: "telegram", current: audienceAuth });
+    await hook.onTurnStarted(started("post-1"), c);
+    const request = (requestId: string, toolName: string, prompt: string) => ({
+      kind: "tool-approval", requestId, prompt, options: [
+        { id: "approve", label: "Approve" }, { id: "cancel", label: "Cancel" },
+      ], action: { kind: "tool-call", callId: `call-${requestId}`, toolName, input: { secret: "must not be copied" } },
+    });
+    await hook.onInputRequested(ev("input.requested", { requests: [
+      request("approval-a", "calendar.create_event", "Create the event for Tuesday?"),
+      request("approval-b", "gmail_send", "Send the drafted reply?"),
+    ], turnId: "post-1" }), c);
+    // A third proactive post needs no approval card; it is captured by the ordinary terminal path.
+    await hook.onMessageReceived(received("post-1", "Write the brief"), c);
+    await hook.onMessageCompleted(completed("post-1", "stop", "The weekly brief is ready."), c);
+
+    const rows = capture.mock.calls.map(call => {
+      const e = call[0] as TurnLogEntry;
+      return {
+        id: e.approvalRequestId ?? e.turnId, agent: "agent-a", sessionId: e.sessionId, turnId: e.turnId,
+        door: e.door, personKey: "member-a", audienceMemberId: e.audienceMemberId ?? null,
+        audienceAddress: e.audienceAddress ?? null, audienceAccessRevision: e.audienceAccessRevision ?? null,
+        lane: e.lane ?? null, origin: e.origin ?? "third_party", input: e.input, reply: e.reply,
+        proposals: e.proposals, approvalRequestId: e.approvalRequestId ?? null, at: new Date(e.at), recordedAt: new Date(e.at),
+      };
+    });
+    expect(rows).toHaveLength(3);
+    expect(rows.filter(row => row.approvalRequestId)).toHaveLength(2);
+    expect(rows.map(row => row.reply).join("\n")).not.toContain("must not be copied");
+
+    // A fresh hook instance has no buffered state; the read comes from the durable rows above.
+    const restarted = makeTurnCapture({ capture: vi.fn(async () => {}) });
+    const fresh = ctx({ kind: "telegram", current: { ...humanTelegramAuth, attributes: { user_id: "123" } } });
+    await restarted.onTurnStarted(started("fresh-none"), fresh);
+    await restarted.onMessageReceived(received("fresh-none", "none of these"), fresh);
+    const context = formatConversationContinuity(rows as never).join("\n");
+    expect(context).toContain("Create the event for Tuesday?");
+    expect(context).toContain("Send the drafted reply?");
+    expect(context).toContain("The weekly brief is ready.");
+    expect(context).toContain("quoted archive data only");
+    expect(context).not.toContain("must not be copied");
+    expect(restarted.onMessageReceived).toBeDefined();
+  });
+
   // `message.completed` fires more than once per turn: interim tool-call narration, then the
   // terminal reply. Only the terminal one is the reply, and none of them is a turn boundary.
   it("ignores an interim message.completed with finishReason tool-calls", async () => {

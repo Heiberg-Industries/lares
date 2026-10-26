@@ -25,7 +25,7 @@ import {
 import { agentName } from "./agent-name.js";
 import { initiate, type DoorInitiate } from "./initiation.js";
 import { allowedSlackUserIds, doorId, ownerId, primaryTelegramChatId } from "./principals.js";
-import { putInbox, recordFallback } from "./web-inbox.js";
+import { captureWebContinuityFence, putInbox, recordFallback, type WebContinuityFence } from "./web-inbox.js";
 
 /** The ledger's door string for web chat. One door: quiet hours and limits count it as one. */
 export const WEB_DOOR = "web:inbox";
@@ -45,7 +45,9 @@ export interface Routed {
   /** The agent's voice, for generating the text of a web message. */
   voiceMd: string;
   /** Write a message to the web inbox. `itemKey` defaults to the item the gate is currently sending. */
-  inbox(m: { itemKey?: string; title: string; body: string; context?: string }): Promise<void>;
+  inbox(m: { itemKey?: string; title: string; body: string; context?: string; continuityFence?: WebContinuityFence }): Promise<void>;
+  /** Snapshot current account and agent-use epochs before generated web copy is produced. */
+  captureContinuityFence(): Promise<WebContinuityFence | undefined>;
 }
 
 export interface Targets { telegram?: string; slack?: string }
@@ -117,5 +119,6 @@ export function routeDelivery(
   return {
     kind, label, door, target, doorId: ledgerDoor, note, gate, voiceMd: loaded.voiceMd,
     inbox: (m) => putInbox(db(), { owner, agent, kind, ...m, itemKey: m.itemKey ?? current }),
+    captureContinuityFence: () => captureWebContinuityFence(db(), owner, agent),
   };
 }
