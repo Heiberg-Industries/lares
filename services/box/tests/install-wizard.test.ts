@@ -121,6 +121,7 @@ describe("what the installer asks", () => {
     expect(env).toContain("LARES_OWNER_ID=owner");
     expect(env).toContain("CONSOLE_OAUTH_REDIRECT=https://lares.example.invalid/api/auth/callback");
     expect(env).toContain("OWNER_HOME_TZ=");
+    expect(env).toContain("GATEWAY_URL=http://lares-gateway:4000");
     expect(env).not.toContain("sk-disposable-fixture-only");
   });
 
@@ -146,9 +147,14 @@ describe("what the installer asks", () => {
 
   it("does not ask again on a re-run", () => {
     okRun(runWithStdin(["--yes"], answers));
+    const savedEndpoint = "https://external.example.invalid";
+    writeFileSync(installEnv, readFileSync(installEnv, "utf8").replace(
+      "GATEWAY_URL=http://lares-gateway:4000", `GATEWAY_URL=${savedEndpoint}`,
+    ));
     const second = runWithStdin(["--yes"], "");
     expect(second.code, second.stderr).toBe(0);
     expect(second.stdout.split("\n").filter((l) => l.trim().endsWith("?")).length).toBe(0);
+    expect(readFileSync(installEnv, "utf8")).toContain(`GATEWAY_URL=${savedEndpoint}`);
   });
 
   it("refuses a domain or an address it cannot use, and asks again rather than saving it", () => {
