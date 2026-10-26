@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { makeRouteClassifier, type RouteActivity } from "../lib/route-classify.js";
 
-const brands = [{ id: "acme", description: "first made-up brand" }, { id: "beta" }];
+const tracks = [
+  { id: "acme", name: "Acme", purpose: "first made-up workflow", steps: ["new", "meeting", "done"], closingSteps: ["done"] },
+  { id: "beta", name: "Beta", purpose: "second workflow", steps: ["start", "complete"], closingSteps: ["complete"] },
+];
 
 function capture() {
   const prompts: string[] = [];
@@ -26,7 +29,7 @@ describe("route classifier prompt", () => {
       "Best regards, QUOTED-SIGNATURE-ACME",
       "> QUOTED-LINE-ACME",
     ].join("\n");
-    await makeRouteClassifier({ llm, brands }).classify({ activity: [email(body)], openOpportunities: [] });
+    await makeRouteClassifier({ llm }).classify({ activity: [email(body)], openOpportunities: [], tracks });
     expect(prompts[0]).toContain("Can we talk next week?");
     expect(prompts[0]).not.toContain("QUOTED-SIGNATURE-ACME");
     expect(prompts[0]).not.toContain("QUOTED-LINE-ACME");
@@ -35,12 +38,12 @@ describe("route classifier prompt", () => {
   it("states the self-signature rule and lists the owner's handles and domains", async () => {
     const { prompts, llm } = capture();
     await makeRouteClassifier({
-      llm, brands,
+      llm,
       selfHandles: ["owner@example.com", "Owner@Work.example"],
       selfDomains: ["example.org"],
-    }).classify({ activity: [email("Hi")], openOpportunities: [] });
+    }).classify({ activity: [email("Hi")], openOpportunities: [], tracks });
     const p = prompts[0]!;
-    expect(p).toContain("The owner's own name, signature, addresses and domains are never evidence for a brand.");
+    expect(p).toContain("The owner's own name, signature, addresses and domains are never evidence for a track.");
     expect(p).toContain("owner@example.com");
     expect(p).toContain("owner@work.example");
     expect(p).toContain("example.com");
@@ -50,7 +53,7 @@ describe("route classifier prompt", () => {
 
   it("still states the rule when no owner handles are known", async () => {
     const { prompts, llm } = capture();
-    await makeRouteClassifier({ llm, brands }).classify({ activity: [email("Hi")], openOpportunities: [] });
-    expect(prompts[0]).toContain("never evidence for a brand");
+    await makeRouteClassifier({ llm }).classify({ activity: [email("Hi")], openOpportunities: [], tracks });
+    expect(prompts[0]).toContain("never evidence for a track");
   });
 });

@@ -1,0 +1,17 @@
+{
+  "id": "twenty",
+  "name": "Twenty",
+  "provenance": "core",
+  "concept": ["tracks"],
+  "capability": ["twenty"],
+  "region": "global",
+  "data_path": "owner_chosen",
+  "outbound_hosts": [],
+  "secrets": ["twenty-key"],
+  "credential_type": "api_key",
+  "owner_supplies_client": false,
+  "sdk": null,
+  "live_probe": "services/chief-of-staff/tests/live/twenty-tracks.live.mts",
+  "quality": "integrations/twenty/quality.yaml",
+  "codeowner": "lares-core"
+}

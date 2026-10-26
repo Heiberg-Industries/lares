@@ -14,6 +14,7 @@
  * this service throws.
  */
 import { twentyGet, TwentyNotFoundError } from "./twenty-client.js";
+import { TwentyTracksHome } from "./twenty-tracks.js";
 
 export interface RouteMessageParticipant {
   personId: string | null;
@@ -122,6 +123,7 @@ export async function getPersonName(personId: string): Promise<string | null> {
  *  expects — a thin object, not a class, so tests can substitute individual functions. */
 export function makeRouteTwentyClient() {
   return {
+    listTracks: () => new TwentyTracksHome().listTracks(),
     listRecentMessageParticipants,
     listRecentCalendarParticipants,
     getMessage,

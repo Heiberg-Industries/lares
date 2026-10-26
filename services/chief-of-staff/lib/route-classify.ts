@@ -4,8 +4,8 @@
  * `makeRouteClassifier({ llm }).classify({ activity, openOpportunities })` → `RouteDecision`
  *
  * Given a person's recent activity (emails/meetings) and their current open opportunities in
- * Twenty, asks the gateway LLM to decide: which brand the signal belongs to, which pipeline
- * stage, whether to move an existing opp / create a new one / do nothing, and a confidence +
+ * Twenty, asks the gateway LLM to decide: which live track the signal belongs to, which step,
+ * whether to move an existing opportunity / create a new one / do nothing, and a confidence +
  * one-line reason.
  *
  * Short-circuits to a safe "none" decision when activity is empty — no LLM call. Gracefully
@@ -15,26 +15,16 @@
  * `gatewayComplete` is a drop-in and tests can inject a fake.
  */
 
-import { crmBrands, type CrmBrand } from "./crm-brands.js";
+import type { Track } from "@lares/agent-kit/tracks";
 import { stripQuoted } from "./voice-learn.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-/** A brand id as the installation configured it (`CRM_BRANDS`, lib/crm-brands.ts). */
+/** Exact track value from Twenty's live opportunity metadata. */
 export type RouteBrand = string;
 
-/** Pipeline order, earliest first — the routing engine refuses to propose a stage at or
- *  before an opportunity's current one (Ledgerly: QUALIFIED → CONTACTED was offered). */
-export const VALID_STAGES = [
-  "NEW",
-  "CONTACTED",
-  "MEETING",
-  "QUALIFIED",
-  "PROPOSAL",
-  "CUSTOMER",
-  "LOST",
-] as const;
-export type RouteStage = (typeof VALID_STAGES)[number];
+/** Exact step value from Twenty's live metadata, scoped to a selected track. */
+export type RouteStage = string;
 
 const VALID_ACTIONS = ["move", "create", "none"] as const;
 export type RouteAction = (typeof VALID_ACTIONS)[number];
@@ -76,7 +66,7 @@ function safeNone(reasoning: string): RouteDecision {
 function buildPrompt(
   activity: RouteActivity[],
   openOpportunities: OpenOpportunity[],
-  brands: readonly CrmBrand[],
+  tracks: readonly Track[],
   self: { handles: readonly string[]; domains: readonly string[] },
 ): string {
   // Quoted reply tails carry the owner's own earlier text and signature, which says nothing
@@ -96,35 +86,34 @@ function buildPrompt(
       : "  (none)";
 
   return [
-    "You are a CRM routing classifier.",
+    "You are a workflow routing classifier.",
     "",
-    "BRANDS (pick exactly one, or null if none applies):",
-    ...brands.map((b) => (b.description ? `  ${b.id} — ${b.description}` : `  ${b.id}`)),
+    "OWNER'S EXISTING TRACKS (pick exactly one, or null if none applies):",
+    ...tracks.map((track) => `  ${track.id} (${track.name}) — ${track.purpose || "No purpose description"}; steps in order: ${track.steps.join(" | ")}`),
     "",
-    "PIPELINE STAGES (ordered NEW → CUSTOMER; LOST is separate):",
-    "  NEW | CONTACTED | MEETING | QUALIFIED | PROPOSAL | CUSTOMER | LOST",
+    "STEPS are listed in each track above. Choose only a step listed for the selected track.",
     "",
     "TASK:",
-    "Given recent activity from a contact and their open opportunities,",
-    "decide the best CRM routing action.",
+    "Given recent activity from a contact and their open track items,",
+    "decide whether an existing workflow item should move or a new one should start.",
     "",
     "RULES:",
-    '- Pick a configured brand only when the content clearly identifies that brand.',
-    "- The owner's own name, signature, addresses and domains are never evidence for a brand.",
-    '- Choose action:"move" when an open opportunity for that brand already exists (advance it).',
-    '- Choose action:"create" when no open opportunity exists for that brand (start a new one).',
-    '- Choose action:"none" when content is off-topic, ambiguous, or there is no clear brand signal.',
+    '- Pick an existing track only when the content clearly fits its purpose.',
+    "- The owner's own name, signature, addresses and domains are never evidence for a track.",
+    '- Choose action:"move" when an open item for that track exists (advance it).',
+    '- Choose action:"create" when no open item exists for that track (start a new one).',
+    '- Choose action:"none" when content is off-topic, ambiguous, or no track fits.',
     "",
-    `THE OWNER (never evidence for a brand): addresses ${self.handles.length > 0 ? self.handles.join(", ") : "(none known)"}; domains ${self.domains.length > 0 ? self.domains.join(", ") : "(none known)"}`,
+    `THE OWNER (never evidence for a track): addresses ${self.handles.length > 0 ? self.handles.join(", ") : "(none known)"}; domains ${self.domains.length > 0 ? self.domains.join(", ") : "(none known)"}`,
     "",
-    "OPEN OPPORTUNITIES for this contact:",
+    "OPEN TRACK ITEMS for this contact:",
     oppLines,
     "",
     "RECENT ACTIVITY:",
     activityLines,
     "",
     "Respond with ONLY a JSON object, no prose or code fences:",
-    `{"brand":"${[...brands.map((b) => b.id), "null"].join("|")}","stage":"NEW|CONTACTED|MEETING|QUALIFIED|PROPOSAL|CUSTOMER|LOST|null","action":"move|create|none","confidence":0.0,"reasoning":"one line"}`,
+    `{"brand":"${[...tracks.map((track) => track.id), "null"].join("|")}","stage":"a listed step for the selected track, or null","action":"move|create|none","confidence":0.0,"reasoning":"one line"}`,
   ].join("\n");
 }
 
@@ -143,12 +132,12 @@ function parseObject(raw: string): Record<string, unknown> | null {
 
 // ─── Validators ───────────────────────────────────────────────────────────────
 
-function toValidBrand(v: unknown, brands: readonly CrmBrand[]): RouteBrand | null {
-  return typeof v === "string" && brands.some((b) => b.id === v) ? v : null;
+function toValidBrand(v: unknown, tracks: readonly Track[]): RouteBrand | null {
+  return typeof v === "string" && tracks.some((track) => track.id === v) ? v : null;
 }
 
-function toValidStage(v: unknown): RouteStage | null {
-  return VALID_STAGES.includes(v as RouteStage) ? (v as RouteStage) : null;
+function toValidStage(v: unknown, track: Track | undefined): RouteStage | null {
+  return typeof v === "string" && track?.steps.includes(v) ? v : null;
 }
 
 function toValidAction(v: unknown): RouteAction {
@@ -164,9 +153,9 @@ function toClampedConfidence(v: unknown): number {
 
 export function makeRouteClassifier(deps: {
   llm: (prompt: string) => Promise<string>;
-  /** The installation's brands; read from `CRM_BRANDS` when omitted. */
-  brands?: readonly CrmBrand[];
-  /** The owner's own email addresses; with their domains, never evidence for a brand. */
+  /** Synthetic adapter data may be bound in tests; production supplies tracks per scan. */
+  tracks?: readonly Track[];
+  /** The owner's own email addresses; with their domains, never evidence for a track. */
   selfHandles?: readonly string[];
   /** Extra owner domains (the org's own); domains of `selfHandles` are added automatically. */
   selfDomains?: readonly string[];
@@ -185,18 +174,19 @@ export function makeRouteClassifier(deps: {
     async classify(input: {
       activity: RouteActivity[];
       openOpportunities: OpenOpportunity[];
+      tracks?: readonly Track[];
     }): Promise<RouteDecision> {
       // Short-circuit: no activity → nothing to classify
       if (input.activity.length === 0) {
         return safeNone("no activity to classify");
       }
 
-      const brands = deps.brands ?? crmBrands();
-      if (brands.length === 0) {
-        return safeNone("no CRM brands are configured");
+      const tracks = input.tracks ?? deps.tracks ?? [];
+      if (tracks.length === 0) {
+        return safeNone("no Twenty tracks are configured in live metadata");
       }
 
-      const prompt = buildPrompt(input.activity, input.openOpportunities, brands, { handles: selfHandles, domains: selfDomains });
+      const prompt = buildPrompt(input.activity, input.openOpportunities, tracks, { handles: selfHandles, domains: selfDomains });
 
       let raw: string;
       try {
@@ -211,8 +201,8 @@ export function makeRouteClassifier(deps: {
       }
 
       return {
-        brand: toValidBrand(j.brand, brands),
-        stage: toValidStage(j.stage),
+        brand: toValidBrand(j.brand, tracks),
+        stage: toValidStage(j.stage, tracks.find((track) => track.id === j.brand)),
         action: toValidAction(j.action),
         confidence: toClampedConfidence(j.confidence),
         reasoning: typeof j.reasoning === "string" ? j.reasoning.trim() : "",

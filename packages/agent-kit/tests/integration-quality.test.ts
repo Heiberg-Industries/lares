@@ -135,10 +135,11 @@ describe("checkQuality — a claimed tier must be backed", () => {
 
   it("refuses an integration that is on the debt list AND has a quality file", () => {
     expect(INTEGRATIONS_WITHOUT_SCALE).not.toContain("notion");
+    expect(INTEGRATIONS_WITHOUT_SCALE).toContain("transit");
     const found = checkQuality(
       fixtureDir({
-        "twenty/integration.json": TWENTY,
-        "twenty/quality.yaml": "tier: bronze\nrules: {}\n",
+        "transit/integration.json": JSON.stringify({ ...JSON.parse(TWENTY), id: "transit", quality: "integrations/transit/quality.yaml" }),
+        "transit/quality.yaml": "tier: bronze\nrules: {}\n",
       }),
     );
     expect(found.map((f) => f.message).join(" ")).toMatch(/remove .* from the list/i);

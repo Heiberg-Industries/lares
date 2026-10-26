@@ -913,7 +913,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout:
-      "CRM routing proposes nothing (it has no brand to choose from), and a hand-made opportunity's brand is passed to the CRM unchecked. Set it to a JSON array of { \"id\": \"BRAND_ID\", \"description\": \"one line\" }, the ids spelled as the CRM's brand field spells them.",
+      "Twenty supplies workflow records, track values, labels and step order; it does not declare owner-specific purpose or terminal meaning. Those annotations stay here. Routing proposes nothing when metadata-backed tracks are absent or any annotation is missing or stale. Set a JSON array of { \"id\": \"EXACT_TRACK_OPTION_VALUE\", \"description\": \"one line\", \"closingSteps\": [\"EXACT_STAGE_OPTION_VALUE\"] }. Entries annotate tracks already returned by Twenty and never create tracks or steps; every closer must exactly match a current Twenty stage option.",
     readAt: ["services/chief-of-staff/lib/crm-brands.ts:16"],
   },
   {

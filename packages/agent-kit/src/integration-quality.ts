@@ -168,7 +168,6 @@ export function parseQualityFile(text: string, id: string): QualityFile {
  *  time, or the ratchet would have nothing fixed to compare against. */
 export const INTEGRATIONS_WITHOUT_SCALE: readonly string[] = [
   "transit",
-  "twenty",
 ];
 
 export interface QualityFinding {

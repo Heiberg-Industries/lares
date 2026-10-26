@@ -11,7 +11,7 @@ const manifests = loadIntegrationManifests(join(ROOT, "integrations"));
 
 describe("a manifest and the registries it will generate", () => {
   it("ships the declared integrations that sit on an SDK", () => {
-    expect(manifests.map((m) => m.id).sort()).toEqual(["google", "microsoft", "notion", "slack"]);
+    expect(manifests.map((m) => m.id).sort()).toEqual(["google", "microsoft", "notion", "slack", "twenty"]);
   });
 
   it("names known capabilities whose hosts are covered by the implementing provider union", () => {

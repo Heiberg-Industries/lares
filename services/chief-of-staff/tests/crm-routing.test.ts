@@ -5,7 +5,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
 import { ensureRouteTables, makeRouteStore, type RouteProposalInput } from "../lib/route-store.js";
-import { makeRouteClassifier, type RouteActivity, type OpenOpportunity } from "../lib/route-classify.js";
+import { makeRouteClassifier as buildRouteClassifier, type RouteActivity, type OpenOpportunity } from "../lib/route-classify.js";
 import { TwentyRateLimitedError } from "../lib/twenty-client.js";
 import { makeRouteEngine, decideProposalMode, LOW_CONFIDENCE, type RouteProposal } from "../lib/route-engine.js";
 import {
@@ -19,7 +19,7 @@ import {
 
 const SHARED_SYNC_SCHEMA_SQL = readFileSync(new URL("../../box/sql/027_shared_sync_schema.sql", import.meta.url), "utf8");
 
-// The brands are installation data (`CRM_BRANDS`); these made-up ones are set for every test here.
+// These synthetic tracks exercise routing prompts; they are not live Twenty evidence.
 let savedBrands: string | undefined;
 beforeEach(() => {
   savedBrands = process.env["CRM_BRANDS"];
@@ -33,6 +33,16 @@ afterEach(() => {
   if (savedBrands === undefined) delete process.env["CRM_BRANDS"];
   else process.env["CRM_BRANDS"] = savedBrands;
 });
+
+// Synthetic Tracks fixture for offline classifier/engine tests; not live Twenty evidence.
+const SYNTH_TRACKS = [
+  { id: "ALPHA", name: "Alpha", purpose: "first made-up brand", steps: ["NEW", "MEETING", "QUALIFIED", "PROPOSAL", "CUSTOMER", "LOST"], closingSteps: ["CUSTOMER", "LOST"] },
+  { id: "BETA", name: "Beta", purpose: "second made-up brand", steps: ["NEW", "MEETING", "QUALIFIED", "PROPOSAL", "CUSTOMER", "LOST"], closingSteps: ["CUSTOMER", "LOST"] },
+  { id: "GAMMA", name: "Gamma", purpose: "third made-up brand", steps: ["NEW", "MEETING", "QUALIFIED", "PROPOSAL", "CUSTOMER", "LOST"], closingSteps: ["CUSTOMER", "LOST"] },
+];
+function makeRouteClassifier(deps: Parameters<typeof buildRouteClassifier>[0]) {
+  return buildRouteClassifier({ ...deps, tracks: SYNTH_TRACKS });
+}
 
 /**
  * The `crm-routing` schedule, delivering via eve's native Slack approval
@@ -190,22 +200,22 @@ describe("makeRouteClassifier", () => {
     expect(under.confidence).toBe(0);
   });
 
-  it("lists the configured brands in the prompt and refuses a brand that is not configured", async () => {
+  it("lists the live tracks in the prompt and refuses a track that is not configured", async () => {
     const prompts: string[] = [];
     const llm = async (p: string) => {
       prompts.push(p);
       return JSON.stringify({ brand: "DELTA", stage: "NEW", action: "create", confidence: 0.9, reasoning: "x" });
     };
     const result = await makeRouteClassifier({ llm }).classify({ activity: [activity()], openOpportunities: [] });
-    expect(prompts[0]).toContain("  ALPHA — first made-up brand");
+    expect(prompts[0]).toContain("ALPHA (Alpha) — first made-up brand");
     expect(prompts[0]).toContain('"brand":"ALPHA|BETA|GAMMA|null"');
     expect(result.brand).toBeNull();
   });
 
-  it("proposes nothing, and makes no LLM call, when no brands are configured", async () => {
+  it("proposes nothing, and makes no LLM call, when there are no live tracks", async () => {
     delete process.env["CRM_BRANDS"];
     const llm = vi.fn(async () => "{}");
-    const result = await makeRouteClassifier({ llm }).classify({ activity: [activity()], openOpportunities: [] });
+    const result = await buildRouteClassifier({ llm }).classify({ activity: [activity()], openOpportunities: [], tracks: [] });
     expect(llm).not.toHaveBeenCalled();
     expect(result).toMatchObject({ brand: null, action: "none" });
   });
@@ -229,6 +239,7 @@ function makeFakeTwenty(opts: {
   personNames?: Record<string, string>;
 }) {
   return {
+    async listTracks() { return SYNTH_TRACKS; },
     async listRecentMessageParticipants() { return opts.msgParticipants ?? []; },
     async listRecentCalendarParticipants() { return opts.calParticipants ?? []; },
     async getMessage(id: string) { return opts.messages?.[id] ?? { subject: "", text: "", receivedAt: "" }; },
@@ -282,6 +293,7 @@ describe("makeRouteEngine — scan", () => {
       personId: "person-1", brand: "ALPHA", stage: "MEETING", action: "create",
       opportunityId: null, signalRef: "msg:msg-1", mode: "confirm", personHandle: "contact@example.com",
     });
+    expect(proposals[0]!.availableTracks).toEqual(SYNTH_TRACKS.map(({ id, name }) => ({ id, name })));
   });
 
   it("ignores self-handle participants (case-insensitive)", async () => {
@@ -460,6 +472,7 @@ describe("buildRouteProposalPrompt", () => {
   function proposal(overrides: Partial<RouteProposal> = {}): RouteProposal {
     return {
       personId: "person-1", opportunityId: null, brand: "ALPHA", stage: "MEETING",
+      availableTracks: SYNTH_TRACKS.map(({ id, name }) => ({ id, name })),
       action: "create", confidence: 0.8, reasoning: "mentions Alpha demo",
       signalRef: "msg:m1", mode: "confirm", personHandle: "contact@example.com",
       personName: "Contact Example",
@@ -477,13 +490,14 @@ describe("buildRouteProposalPrompt", () => {
     expect(text).not.toContain("twenty_set_stage");
   });
 
-  it("asks one question when another configured brand fits, allows something else, and calls no tool", () => {
+  it("asks one question when another live track fits, allows something else, and calls no tool", () => {
     const text = buildRouteProposalPrompt(proposal());
-    expect(text).toContain("ALPHA, BETA, GAMMA");
-    expect(text).toMatch(/another configured brand plausibly fits/);
+    expect(text).toContain("BETA (Beta), GAMMA (Gamma)");
+    expect(text).toMatch(/another live track plausibly fits/);
     expect(text).toMatch(/ONE short question/);
     expect(text).toContain("or something else — tell me which");
-    expect(text).toMatch(/deliberately not be a CRM brand/);
+    expect(text).toMatch(/do not call the tool/);
+    expect(text).toMatch(/does not fit any track/);
     expect(text).not.toContain("say so and stop");
   });
 
@@ -530,6 +544,7 @@ describe("makeCrmRoutingTick", () => {
   function proposal(overrides: Partial<RouteProposal> = {}): RouteProposal {
     return {
       personId: "person-1", opportunityId: null, brand: "ALPHA", stage: "MEETING",
+      availableTracks: SYNTH_TRACKS.map(({ id, name }) => ({ id, name })),
       action: "create", confidence: 0.8, reasoning: "x",
       signalRef: "msg:m1", mode: "confirm", personHandle: "contact@example.com",
       personName: "Contact Example",

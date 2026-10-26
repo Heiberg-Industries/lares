@@ -32,6 +32,7 @@ function fakes(opts: {
   const classifyCalls: unknown[] = [];
   const proposedSinceCalls: Array<{ personId: string; brand: string; sinceIso: string }> = [];
   const twenty = {
+    listTracks: async () => [{ id: "ACME", name: "Acme", purpose: "workflow", steps: ["NEW", "CONTACTED", "MEETING", "QUALIFIED", "PROPOSAL", "CUSTOMER", "LOST"], closingSteps: ["CUSTOMER", "LOST"] }, { id: "PROJECT_A", name: "Project A", purpose: "workflow", steps: ["NEW", "CONTACTED", "MEETING", "QUALIFIED", "PROPOSAL", "CUSTOMER", "LOST"], closingSteps: ["CUSTOMER", "LOST"] }],
     listRecentMessageParticipants: async () => opts.participants ?? [],
     listRecentCalendarParticipants: async () => [],
     getMessage: async () => ({ subject: "Re: Acme", text: "hei — data for kommunene", receivedAt: AT }),

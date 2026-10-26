@@ -8,27 +8,15 @@
  * These tests pin the two properties that fix it, plus the enum values themselves against the
  * live schema they were read from.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { z } from "zod";
 
 import {
   COMM_STATES,
-  OPPORTUNITY_STAGES,
   commStateSchema,
   opportunityStageSchema,
   opportunityBrandSchema,
 } from "../lib/twenty-enums.js";
-
-// The brand list is installation data: a made-up one, set for these tests only.
-let savedBrands: string | undefined;
-beforeEach(() => {
-  savedBrands = process.env["CRM_BRANDS"];
-  process.env["CRM_BRANDS"] = JSON.stringify([{ id: "ALPHA", description: "first" }, { id: "BETA_CO", description: "second" }]);
-});
-afterEach(() => {
-  if (savedBrands === undefined) delete process.env["CRM_BRANDS"];
-  else process.env["CRM_BRANDS"] = savedBrands;
-});
 
 describe("Twenty enum members match the live schema", () => {
   // Read from GET /rest/metadata/fields against the live CRM. If Twenty's
@@ -39,30 +27,27 @@ describe("Twenty enum members match the live schema", () => {
     ]);
   });
 
-  it("opportunity stage", () => {
-    expect([...OPPORTUNITY_STAGES]).toEqual([
-      "NEW", "CONTACTED", "MEETING", "QUALIFIED", "PROPOSAL", "CUSTOMER", "LOST",
-    ]);
-  });
-
-  it("every member is UPPERCASE — the runbook's lowercase spelling is what caused", () => {
-    for (const m of [...COMM_STATES, ...OPPORTUNITY_STAGES]) {
+  it("commState members are UPPERCASE — the runbook's lowercase spelling is what caused", () => {
+    for (const m of COMM_STATES) {
       expect(m).toBe(m.toUpperCase());
     }
   });
 });
 
-describe("case tolerance — the realistic model slip succeeds on the FIRST approval", () => {
+describe("commState normalization and exact dynamic metadata values", () => {
   it("THE CASE: lowercase email_sent normalises to EMAIL_SENT", () => {
     const r = commStateSchema.safeParse("email_sent");
     expect(r.success).toBe(true);
     expect(r.data).toBe("EMAIL_SENT");
   });
 
-  it("mixed case and surrounding whitespace normalise too", () => {
+  it("commState normalizes case and whitespace", () => {
     expect(commStateSchema.parse("  Replied_Positive  ")).toBe("REPLIED_POSITIVE");
-    expect(opportunityStageSchema.parse("qualified")).toBe("QUALIFIED");
-    expect(opportunityBrandSchema.parse(" alpha ")).toBe("ALPHA");
+  });
+
+  it("keeps dynamic track and step values exact for live metadata validation", () => {
+    expect(opportunityStageSchema.parse(" custom-step ")).toBe(" custom-step ");
+    expect(opportunityBrandSchema.parse(" alpha ")).toBe(" alpha ");
   });
 
   it("the value that reaches the write is the normalised one, never the raw guess", () => {
@@ -77,20 +62,8 @@ describe("a wrong VALUE is still rejected — before a card, not after a tap", (
     expect(commStateSchema.safeParse("").success).toBe(false);
   });
 
-  it("rejects a stage that is not a member", () => {
-    expect(opportunityStageSchema.safeParse("won").success).toBe(false);
-  });
-
-  it("a brand outside the configured list is rejected, naming the choices", () => {
-    const r = opportunityBrandSchema.safeParse("gamma");
-    expect(r.success).toBe(false);
-    expect(JSON.stringify(r.error?.issues)).toContain("brand must be one of: ALPHA, BETA_CO");
-    expect(opportunityBrandSchema.parse("beta_co")).toBe("BETA_CO");
-  });
-
-  it("with no brands configured the value is passed through for the CRM to judge", () => {
-    delete process.env["CRM_BRANDS"];
-    expect(opportunityBrandSchema.parse("gamma")).toBe("GAMMA");
+  it("accepts only nonempty values for dynamic metadata enums", () => {
+    expect(opportunityStageSchema.safeParse("").success).toBe(false);
     expect(opportunityBrandSchema.safeParse("").success).toBe(false);
   });
 
@@ -106,7 +79,6 @@ describe("the model can SEE the members — the root-cause fix", () => {
   // normalising wrapper, or the guess comes back.
   const schemas = {
     commState: commStateSchema,
-    stage: opportunityStageSchema,
   };
 
   for (const [name, schema] of Object.entries(schemas)) {
