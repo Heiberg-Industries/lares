@@ -93,25 +93,34 @@ it('retains the one pinned acknowledgement request and exposes only fixed safe f
 it('retries only a closed pre-connect ECONNREFUSED within the original deadline',async()=>{
  const stage='11111111-1111-4111-8111-111111111111',source='192.0.2.14';
  const valid=Buffer.from(`HTTP/1.1 403 Forbidden\r\nX-Lares-Route-Stage: ${stage}\r\n\r\n`);
+ vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout']});
+ vi.setSystemTime(new Date('2026-10-26T12:00:00.000Z'));
+ try{
  class RetrySocket extends EventEmitter {
   destroyed=false;closed=false;
-  constructor(public localAddress:string,public readonly refusal:boolean) {super();}
+  constructor(public localAddress:string,public readonly refusal:boolean,private readonly closedSignal?:()=>void) {super();}
   write=vi.fn(()=>{queueMicrotask(()=>{this.emit('data',valid);this.emit('end');});return true;});
-  destroy=vi.fn(()=>{this.destroyed=true;queueMicrotask(()=>{this.closed=true;this.emit('close',false);});return this as unknown as Socket;});
+  destroy=vi.fn(()=>{this.destroyed=true;queueMicrotask(()=>{this.closed=true;this.emit('close',false);this.closedSignal?.();});return this as unknown as Socket;});
  }
+ let refusalClosed!:()=>void;
+ const firstClosed=new Promise<void>(resolve=>{refusalClosed=resolve;});
  const sockets:RetrySocket[]=[],times:number[]=[],deadline=Date.now()+1500;
  const connect=vi.fn((options:{host:string;port:number;localAddress:string;family:number})=>{
   expect(options).toEqual({host:'lares-egress-proxy',port:8888,localAddress:source,family:4});
   if(sockets.length)expect(sockets.at(-1)?.closed).toBe(true);
   times.push(Date.now());
-  const socket=new RetrySocket(source,sockets.length===0);sockets.push(socket);
+  const socket=new RetrySocket(source,sockets.length===0,sockets.length===0?refusalClosed:undefined);sockets.push(socket);
   queueMicrotask(()=>socket.refusal?socket.emit('error',Object.assign(new Error('secret'),{code:'ECONNREFUSED'})):socket.emit('connect'));
   return socket as unknown as Socket;
  });
- await expect(acknowledgeOutsideSquidStage(stage,source,'http://lares-egress-proxy:8888/',deadline,connect as never)).resolves.toBeUndefined();
- expect(connect).toHaveBeenCalledTimes(2);expect(times[1]!-times[0]!).toBeGreaterThanOrEqual(50);
+ const acknowledgement=acknowledgeOutsideSquidStage(stage,source,'http://lares-egress-proxy:8888/',deadline,connect as never);
+ await firstClosed;
+ await vi.advanceTimersByTimeAsync(50);
+ await expect(acknowledgement).resolves.toBeUndefined();
+ expect(connect).toHaveBeenCalledTimes(2);expect(times[1]!-times[0]!).toBe(50);
  expect(sockets[0]?.write).not.toHaveBeenCalled();expect(sockets[1]?.write).toHaveBeenCalledTimes(1);
  expect(sockets.every(socket=>socket.destroyed&&socket.closed)).toBe(true);
+ }finally{vi.useRealTimers();}
 });
 it('caps refused attempts and counts the minimum retry delay against the single deadline',async()=>{
  const stage='11111111-1111-4111-8111-111111111111',source='192.0.2.14';
