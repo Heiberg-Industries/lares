@@ -12,6 +12,11 @@ application forwards the native application lifecycle and authentication. Existi
 external gateways remain operator-controlled: the engine does not administer,
 wrap, replace or fall back from them automatically.
 
+The rc.13 installation and member-budget path uses the included gateway only; the
+installer does not offer an external-gateway choice. A repair retains an older
+configured endpoint, but that does not make it part of rc.13's Keeper-enforced
+member-budget path. No external gateway is changed or automatically adopted.
+
 ## Version 1 signing and admission
 
 The service uses a separate protected file containing exactly 32 raw key bytes.

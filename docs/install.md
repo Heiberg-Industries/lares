@@ -19,6 +19,11 @@ this host and complete explicit model budget setup. Creating the first agent and
 happens afterwards in the console; [Using the console](how-to/using-the-console.md) is a tour of
 its pages.
 
+For rc.13, fresh installations use the included LiteLLM gateway for member-budget enforcement;
+there is no installer choice for an external LiteLLM. A repair keeps the saved gateway address, so
+an older external endpoint remains configured as before, but this release does not claim Keeper
+member-budget enforcement for that legacy setup.
+
 ## 1. What you need
 
 - **A server.** Ubuntu 24.04, x86-64, root SSH access, at least 6 GiB of memory and 20 GiB of

@@ -41,6 +41,10 @@
 #      password is a separate root-only input outside every online mount and is never copied into
 #      the keeper or normal database container.
 #      or capture_model_key, and its value is never echoed anywhere.
+#
+# rc.13's fresh-install and member-budget setup path uses the included LiteLLM gateway. There is
+# no external-gateway choice in this release. A repair keeps the saved GATEWAY_URL; retaining an
+# older external endpoint does not establish rc.13 member-budget enforcement for that gateway.
 set -euo pipefail
 umask 077
 
@@ -846,8 +850,10 @@ ensure_operator_password
 # grepped out of the file (its own header says how) never needs unquoting at all unless it looks
 # quoted to begin with.
 INSTALL_ENV="$PREFIX/etc/lares/installation.env"
-# The gateway is a compose service of the installation's own stack, reached on the fleet's own
-# docker network under this compose service name, never the public internet.
+# This is the included gateway selected for a fresh rc.13 installation. A repair skips
+# write_installation_env once its existing answers are complete, so it keeps the saved GATEWAY_URL.
+# The service is reached on the fleet's own docker network under this compose service name,
+# never the public internet.
 # It is written plainly, as one address: the contract test's host rule names it as a fleet-internal
 # service and says why, which is the honest way past that rule — splitting the string so the rule
 # cannot see it would leave the next reader with a puzzle and the rule with a hole.
