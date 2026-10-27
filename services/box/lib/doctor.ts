@@ -1,8 +1,9 @@
 // services/box/lib/doctor.ts — one command says what is wrong with this installation,
 // and what to type.
 //
-// READ-ONLY, BY CONSTRUCTION. Every check below is a SELECT, or a read of a file's existence and
-// readability (never its contents when a setting is marked secret). Nothing here writes to the
+// READ-ONLY, BY CONSTRUCTION. Every check below is a SELECT, or a read-only probe of a file.
+// A secret file's bytes are used only to determine whether its trimmed contents are empty; they
+// never leave the probe or appear in output. Nothing here writes to the
 // database, writes a file, restarts anything, or makes a network call: the "gateway" check is
 // always `unknown` unless the owner passes `--test-model`, because asking the model gateway
 // is a paid outside call. Everything else in this file makes none. `tests/doctor.test.ts`'s "only ever reads" case records every statement sent through a
@@ -10,8 +11,8 @@
 //
 // PURE CORE + INJECTED EFFECTS. `DoctorDeps` carries the environment, a `Queryable` (or `null`
 // when the database could not even be reached), the directory to read migrations from, a clock,
-// and — because `checkSettings` needs one — a way to probe a `*_FILE` setting's file
-// without ever reading its bytes. Every branch here is exercised by tests/doctor.test.ts with a
+// and — because `checkSettings` needs one — a way to check a `*_FILE` setting without exposing its
+// bytes. Every branch here is exercised by tests/doctor.test.ts with a
 // fake database, no Docker and no real files.
 //
 // NEVER A CRASH. A database that cannot be reached, or a table this file wants that a fresh
@@ -30,7 +31,7 @@
 // and compares the register's one row against what that statement actually inserts. The baseline
 // carries no such statement, so on a current tree the check finds nothing to compare against; the
 // test stands up a throwaway directory with a neutral seed to prove the comparison still works.
-import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
 import type { Queryable } from "./db.js";
 import { readMigrations, planMigrations, looksAlreadyMigrated } from "./migration-runner.js";
 import { listApplied, type AppliedMigration } from "./migration-ledger.js";
@@ -84,7 +85,15 @@ function isBlank(value: string | undefined): boolean {
   return value === undefined || value.trim().length === 0;
 }
 
-/** The real filesystem probe used outside a test: reads no bytes, only basic file/socket metadata. */
+/** Match POSIX's owner, then group, then other permission selection for the console identity. */
+export function readableByConsole(mode: number, uid: number, gid: number): boolean {
+  if (uid === 10001) return (mode & 0o400) !== 0;
+  if (gid === 10001) return (mode & 0o040) !== 0;
+  return (mode & 0o004) !== 0;
+}
+
+/** The real filesystem probe used outside a test. Secret bytes stay inside this function; it
+ *  returns only whether the runtime identity can read the file and whether trimmed content is empty. */
 function realProbeFile(path: string): FileProbe {
   let exists = false;
   let readable = false;
@@ -95,11 +104,25 @@ function realProbeFile(path: string): FileProbe {
     exists = existsSync(path);
     if (exists) {
       const stat = statSync(path);
-      empty = stat.size === 0;
       isSocket = stat.isSocket();
       isFile = stat.isFile();
-      try { accessSync(path, constants.R_OK); readable = true; }
-      catch { /* Metadata is still useful when the path exists but is not readable. */ }
+      if (isFile) {
+        // Docker runs this read-only diagnostic as root, while shipped runtimes run as
+        // 10001:10001. Check that identity's permission bits so root does not hide a broken mount.
+        try {
+          const mode = stat.mode & 0o777;
+          const readableByRuntime = readableByConsole(mode, stat.uid, stat.gid);
+          if (readableByRuntime) {
+            accessSync(path, constants.R_OK);
+            empty = readFileSync(path, "utf8").trim().length === 0;
+            readable = true;
+          }
+        } catch { /* Metadata is still useful when the path exists but is not readable. */ }
+      } else {
+        empty = stat.size === 0;
+        try { accessSync(path, constants.R_OK); readable = true; }
+        catch { /* Metadata is still useful when the path exists but is not readable. */ }
+      }
     }
   } catch {
     // exists but unreadable, or a race between the two checks — either way, not usable.
@@ -292,7 +315,7 @@ async function checkBackup(db: Queryable, now: Date): Promise<CheckResult> {
         id: "backup",
         state: "warn",
         say: "The nightly backup has never been verified — no successful or failed check has ever been recorded.",
-        fix: "Run `services/box/ops/backup-verify.sh` by hand once, then check again after tonight's scheduled run.",
+        fix: "Set up backups with `lares backups`, then run the installed verification service once: `systemctl start lares-backup-verify.service`. Check again after its next scheduled run.",
       };
     }
     if (verify.ok === false) {
@@ -300,7 +323,7 @@ async function checkBackup(db: Queryable, now: Date): Promise<CheckResult> {
         id: "backup",
         state: "fail",
         say: `The last backup verification failed${verify.detail ? `: ${verify.detail}` : "."}`,
-        fix: "Run `services/box/ops/backup-verify.sh` by hand and read what it says, then fix the underlying backup before trusting one again.",
+        fix: "Run `systemctl start lares-backup-verify.service`, then read `journalctl -u lares-backup-verify.service --no-pager -n 60` and fix the reported backup problem before trusting one again.",
       };
     }
     if (isStale(verify.checked_at, now)) {

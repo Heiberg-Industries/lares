@@ -46,12 +46,13 @@ export interface ParsedDoctorArgs {
   help: boolean;
   testModel: boolean;
   modelOnly: boolean;
+  installedSettingsFile: string | undefined;
   gatewayUrl: string | undefined;
   alias: string | undefined;
   keyFile: string | undefined;
 }
 
-const VALUE_FLAGS = new Set(["--gateway", "--alias", "--key-file"]);
+const VALUE_FLAGS = new Set(["--gateway", "--alias", "--key-file", "--installed-settings-file"]);
 
 /** Refuses an unknown flag rather than silently ignoring it. `--gateway`/`--alias`/`--key-file`
  *  each consume the argument that follows them. */
@@ -59,6 +60,7 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   let help = false;
   let testModel = false;
   let modelOnly = false;
+  let installedSettingsFile: string | undefined;
   let gatewayUrl: string | undefined;
   let alias: string | undefined;
   let keyFile: string | undefined;
@@ -75,7 +77,8 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
       if (value === undefined) throw new Error(`doctor: ${arg} needs a value.`);
       if (arg === "--gateway") gatewayUrl = value;
       else if (arg === "--alias") alias = value;
-      else keyFile = value;
+      else if (arg === "--key-file") keyFile = value;
+      else installedSettingsFile = value;
       i++;
     } else {
       throw new Error(
@@ -85,7 +88,37 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   }
 
   if (modelOnly && !testModel) throw new Error("doctor: --model-only requires --test-model.");
-  return { help, testModel, modelOnly, gatewayUrl, alias, keyFile };
+  return { help, testModel, modelOnly, installedSettingsFile, gatewayUrl, alias, keyFile };
+}
+
+/** Read one value from install.sh's data-only installation.env format. Never evaluate it as
+ *  shell; values are either restricted bare text or single-quoted with embedded quotes encoded
+ *  as the four-character sequence `'\\''`. */
+export function readInstalledSetting(file: string, name: string): string | undefined {
+  let contents: string;
+  try {
+    contents = readFileSync(file, "utf8");
+  } catch {
+    return undefined;
+  }
+  const line = contents.split(/\r?\n/).find((candidate) => candidate.startsWith(`${name}=`));
+  if (line === undefined) return undefined;
+  const raw = line.slice(name.length + 1);
+  if (/^[A-Za-z0-9@._:/=-]*$/.test(raw)) return raw;
+  if (!raw.startsWith("'") || !raw.endsWith("'")) return undefined;
+  const inner = raw.slice(1, -1);
+  let decoded = "";
+  for (let i = 0; i < inner.length; i++) {
+    if (inner.startsWith("'\\''", i)) {
+      decoded += "'";
+      i += 3;
+    } else if (inner[i] === "'") {
+      return undefined;
+    } else {
+      decoded += inner[i];
+    }
+  }
+  return decoded;
 }
 
 function messageOf(err: unknown): string {
@@ -100,6 +133,7 @@ export async function main(
   deps: {
     db: Pool;
     out: (s: string) => void;
+    env?: NodeJS.ProcessEnv;
     readKeyFile?: (path: string) => string;
     fetch?: typeof globalThis.fetch;
   },
@@ -143,7 +177,15 @@ export async function main(
 
   const results = await runDoctor({
     db: deps.db,
-    env: process.env,
+    env: (() => {
+      const env = { ...(deps.env ?? process.env) };
+      if (args.installedSettingsFile !== undefined) {
+        delete env.CONSOLE_ALLOWED_EMAILS;
+        const allowedEmails = readInstalledSetting(args.installedSettingsFile, "CONSOLE_ALLOWED_EMAILS");
+        if (allowedEmails !== undefined) env.CONSOLE_ALLOWED_EMAILS = allowedEmails;
+      }
+      return env;
+    })(),
     sqlDir: SQL_DIR,
     now: new Date(),
     testModel,
