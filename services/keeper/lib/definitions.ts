@@ -108,6 +108,9 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         expectedDefinitionHash: z.string().regex(/^[a-f0-9]{64}$/), expectedAccessRevision: z.number().int().positive(),
         connections: z.array(outsideToolSchema),
     });
+    const outsideConnectionsApplyInput = outsideConnectionsReadInput.extend({
+        expectedDefinitionHash: z.string().regex(/^[a-f0-9]{64}$/), expectedAccessRevision: z.number().int().positive(),
+    });
     const active = (name: string) => join(o.agentsDir, nameOf(name));
     const roots = () => { for (const d of [o.agentsDir, o.retiredDir, o.secretsDir])
         plainDirectory(d); };
@@ -268,8 +271,9 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 await client.query('BEGIN');
                 try {
                     const snapshot = await connectionSnapshot(client, input, false);
+                    const application = await connectionApplication(client, input.name, snapshot.loaded.definition.outsideTools ?? []);
                     await client.query('COMMIT');
-                    return { name: input.name, definitionHash: snapshot.loaded.hash, accessRevision: snapshot.revision, connections: snapshot.loaded.definition.outsideTools ?? [] };
+                    return { name: input.name, definitionHash: snapshot.loaded.hash, accessRevision: snapshot.revision, connections: snapshot.loaded.definition.outsideTools ?? [], ...application };
                 } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
             }
             const initial = await connectionSnapshot(client, input, true);
@@ -298,9 +302,41 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 await client.query('COMMIT');
             } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
             const result = await finishSave(saveInput, ctx, false, prepared.d, loaded);
-            return { name: result.name, definitionHash: result.hash, accessRevision: nextRevision, connections };
+            const application = await connectionApplication(o.pool, input.name, connections);
+            return { name: result.name, definitionHash: result.hash, accessRevision: nextRevision, connections, ...application };
         });
     }
+    async function connectionApplication(client: Pick<PoolClient, 'query'> | Pick<Pool, 'query'>, name: string, connections: AgentDefinition['outsideTools']) {
+        const row = await client.query<{ applied_definition: unknown | null }>('SELECT applied_definition FROM agent_resources WHERE name=$1', [name]);
+        const applied = row.rows[0]?.applied_definition;
+        if (!applied || typeof applied !== 'object' || Array.isArray(applied))
+            return { applicationStatus: 'unavailable' as const, appliedConnections: [] };
+        const parsed = z.array(outsideToolSchema).safeParse((applied as Record<string, unknown>).outsideTools ?? []);
+        if (!parsed.success) return { applicationStatus: 'unavailable' as const, appliedConnections: [] };
+        return { applicationStatus: isDeepStrictEqual(parsed.data, connections ?? []) ? 'applied' as const : 'pending' as const,
+            appliedConnections: parsed.data };
+    }
+    registerAction({ name: 'outside.connections.apply', input: outsideConnectionsApplyInput, secretFields: ['sessionToken'],
+        run: async (input) => {
+            nameOf(input.name);
+            return locked(async () => {
+                const client = connection.getStore();
+                if (!client) throw new Error('Connection access requires the definition namespace client.');
+                await client.query('BEGIN');
+                try {
+                    const snapshot = await connectionSnapshot(client, input, true);
+                    if (snapshot.loaded.hash !== input.expectedDefinitionHash || snapshot.revision !== input.expectedAccessRevision)
+                        refused('Definition or access changed; refresh before applying connections.');
+                    if (!o.compose.reconcile) refused('Runtime reconciliation is not configured');
+                    validate({ name: input.name, definition: snapshot.loaded.definition, duties: snapshot.loaded.dutiesMd, voice: snapshot.loaded.voiceMd });
+                    await o.compose.reconcile(input.name, snapshot.loaded.definition);
+                    const application = await connectionApplication(client, input.name, snapshot.loaded.definition.outsideTools ?? []);
+                    await client.query('COMMIT');
+                    return { name: input.name, definitionHash: snapshot.loaded.hash, accessRevision: snapshot.revision,
+                        connections: snapshot.loaded.definition.outsideTools ?? [], ...application };
+                } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+            });
+        } });
     registerAction({ name: 'outside.connections.get', input: outsideConnectionsReadInput, secretFields: ['sessionToken'],
         run: (input, ctx) => admittedConnectionEdit(input, ctx, false) });
     registerAction({ name: 'outside.connections.save', input: outsideConnectionsWriteInput, secretFields: ['sessionToken'],

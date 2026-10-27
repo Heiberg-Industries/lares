@@ -80,7 +80,9 @@ type OutsideClaimIdentityState = {
 type OutsideJson = null | boolean | number | string | OutsideJson[] | { [key: string]: OutsideJson };
 type OutsideListedTool = { name: string; description?: string; inputSchema: { [key: string]: OutsideJson } };
 type OutsideDiscoveryDocument = { protocolVersion: '2025-06-18'; serverInfo: { name: string; version: string }; tools: OutsideListedTool[] };
-export type HumanDiscoveryTarget={agentName:string;connectionName:string};
+export type HumanCredentialStatus={state:'unavailable'|'active'|'pending'|'active-pending'|'revoked';reviewPending:boolean;applyPending:boolean;
+  activeRevision:number|null;candidateRevision:number|null;discoveryRevision:number|null};
+export type HumanDiscoveryTarget={agentName:string;connectionName:string;credentialStatus:HumanCredentialStatus};
 export type HumanDiscoveryPreview={accountId:string;requestId:string;claimOperationId:string;agentName:string;connectionName:string;
   endpoint:string;purpose:'streamable-http-discovery-v1';definitionHash:string;accessRevision:number;destinationHash:string;
   routePolicyHash:string;expectedGeneration:number;expectedCandidateRevision:number|null;consentGeneration:number};
@@ -654,8 +656,32 @@ export class OutsideCustodyStore {
   }
 
   async listHumanDiscoveryTargets(sessionToken:string,options:{deadlineAtMs:number}):Promise<HumanDiscoveryTarget[]>{
-    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>
-      new PgGrantStore().listHumanOutsideDiscoveryTargets(memberId,{db:db as GrantDatabase}),options));
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const targets=await new PgGrantStore().listHumanOutsideDiscoveryTargets(memberId,{db:db as GrantDatabase});
+      return Promise.all(targets.map(async target=>{
+        await captureOutsideHumanUse(db,memberId,target.agentName,target.connectionName);
+        const identity=await db.query<Head>(`SELECT account_id,owner_member_id,resource_id,connection_name,generation::text,
+            active_revision::text,candidate_revision::text,consent_generation::text,state
+          FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 FOR SHARE`,
+          [memberId,target.agentName,target.connectionName]);
+        if(identity.rows.length===0)return {...target,credentialStatus:{state:'unavailable' as const,reviewPending:false,applyPending:false,
+          activeRevision:null,candidateRevision:null,discoveryRevision:null}};
+        if(identity.rows.length!==1)return denied();
+        const head=identity.rows[0]!;
+        if(head.owner_member_id!==memberId||head.resource_id!==target.agentName||head.connection_name!==target.connectionName)return denied();
+        const activeRevision=head.active_revision===null?null:number(head.active_revision);
+        const candidateRevision=head.candidate_revision===null?null:number(head.candidate_revision);
+        const discoveries=await db.query<{revision:string|null}>(`SELECT max(credential_revision)::text AS revision FROM outside_custody_operations
+          WHERE account_id=$1 AND owner_member_id=$2 AND operation_kind='discover' AND event_phase='result' AND outcome='completed'`,
+          [head.account_id,memberId]);
+        const discoveryRevision=discoveries.rows[0]?.revision===null||discoveries.rows[0]?.revision===undefined?null:number(discoveries.rows[0].revision);
+        const reviewPending=head.state!=='revoked'&&discoveryRevision!==null&&discoveryRevision>Math.max(activeRevision??0,candidateRevision??0);
+        const applyPending=candidateRevision!==null;
+        const state=head.state==='revoked'?'revoked':applyPending
+          ?activeRevision===null?'pending':'active-pending':activeRevision===null?'unavailable':'active';
+        return {...target,credentialStatus:{state,reviewPending,applyPending,activeRevision,candidateRevision,discoveryRevision}};
+      }));
+    },options));
   }
 
   async previewHumanDiscovery(sessionToken:string,input:{agentName:string;connectionName:string},options:{deadlineAtMs:number}):Promise<HumanDiscoveryPreview>{

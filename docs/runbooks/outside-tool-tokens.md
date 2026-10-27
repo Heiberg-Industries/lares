@@ -11,6 +11,23 @@ and the agent sees it at `/run/secrets/outside-<name>`. Restart the agent after 
 re-rendered its compose file; changing the file's content alone needs the same restart. The engine
 never names these files in a fixed list: the names come from the definition.
 
+In the Console, the agent's Outside connections page edits only these declarations. Saving a change
+marks it pending; use **Apply saved declarations** to reconcile it. The page compares the saved
+declaration with the last applied declaration. Apply may update the recorded runtime definition
+before agent startup fails, so an error does not prove that the previous declaration remains
+applied. The page uses a refreshed applied-definition comparison when available; if it cannot
+confirm the result, it marks the status unavailable and requires a refresh before another Apply.
+There is no durable Apply-failure history. Applying declarations does not stage, activate or revoke
+a separately held credential, and removing a declaration does not revoke or delete that credential.
+
+The member page's private discovery flow accepts a credential for one bounded tool-description
+lookup. A completed discovery awaits review; a staged candidate awaits Apply. These are distinct
+states, and a newer discovery and staged candidate may coexist. This flow does not itself activate a
+runtime credential. The page may show an active saved revision beside either pending state; this
+reports custody state only and does not prove that the outside server is reachable or that a
+credential has been mounted for agent use. A status that the current member cannot safely inspect
+is shown as unavailable.
+
 ## Outside tools: locked tool descriptions
 
 The words an outside server uses to describe its tools are read by the agent's model, but the owner

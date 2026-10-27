@@ -1,4 +1,6 @@
-export type OutsideDiscoveryTargetDto={agentName:string;connectionName:string};
+export type OutsideCredentialStatusDto={state:'unavailable'|'active'|'pending'|'active-pending'|'revoked';reviewPending:boolean;applyPending:boolean;activeRevision:number|null;
+  candidateRevision:number|null;discoveryRevision:number|null};
+export type OutsideDiscoveryTargetDto={agentName:string;connectionName:string;credentialStatus:OutsideCredentialStatusDto};
 export type OutsideDiscoveryPreviewDto={accountId:string;requestId:string;claimOperationId:string;agentName:string;connectionName:string;
   endpoint:string;purpose:'streamable-http-discovery-v1';definitionHash:string;accessRevision:number;destinationHash:string;
   routePolicyHash:string;expectedGeneration:number;expectedCandidateRevision:number|null;consentGeneration:number};
@@ -48,10 +50,22 @@ export function parseOutsideDiscoveryTargets(value:unknown):OutsideDiscoveryTarg
   const seen=new Set<string>();
   for(const candidate of value){
     const item=record(candidate);
-    if(!item||!exactKeys(item,['agentName','connectionName'])||!isName(item.agentName)||!isName(item.connectionName))return;
+    if(!item||!exactKeys(item,['agentName','connectionName','credentialStatus'])||!isName(item.agentName)||!isName(item.connectionName))return;
+    const status=record(item.credentialStatus);
+    if(!status||!exactKeys(status,['state','reviewPending','applyPending','activeRevision','candidateRevision','discoveryRevision'])||
+        !['unavailable','active','pending','active-pending','revoked'].includes(String(status.state))||
+        typeof status.reviewPending!=='boolean'||typeof status.applyPending!=='boolean'||
+        ![status.activeRevision,status.candidateRevision,status.discoveryRevision].every(revision=>revision===null||isInteger(revision,1)))return;
+    const hasActive=status.activeRevision!==null,hasCandidate=status.candidateRevision!==null;
+    const expectedState=String(status.state)==='revoked'?'revoked':hasCandidate?hasActive?'active-pending':'pending':hasActive?'active':'unavailable';
+    const discoveryRevision=status.discoveryRevision as number|null;
+    const expectedReview=status.state!=='revoked'&&discoveryRevision!==null&&
+      discoveryRevision>Math.max((status.activeRevision as number|null)??0,(status.candidateRevision as number|null)??0);
+    if(status.state!==expectedState||status.applyPending!==hasCandidate||status.reviewPending!==expectedReview||
+        status.state==='revoked'&&(hasActive||hasCandidate))return;
     const key=`${item.agentName}\0${item.connectionName}`;
     if(seen.has(key))return;
-    seen.add(key);targets.push({agentName:item.agentName,connectionName:item.connectionName});
+    seen.add(key);targets.push({agentName:item.agentName,connectionName:item.connectionName,credentialStatus:status as unknown as OutsideCredentialStatusDto});
   }
   return targets;
 }

@@ -23,6 +23,7 @@ let backup: {
 }, compose: {
     stop: AnyMock;
     create: AnyMock;
+    reconcile?: AnyMock;
     prepareSecretChange?:AnyMock;secretChanged?:AnyMock;
     ownedSecrets?:AnyMock;
 };
@@ -51,6 +52,8 @@ const declaration = { name: 'rates', url: 'https://tools.example.org/mcp', descr
     tools: { allow: ['find_rate'], read: ['find_rate'] }, trusted: false };
 const connectionCall = (sessionToken: string, name: string, expectedDefinitionHash: string, expectedAccessRevision: number, connections: unknown) =>
     runAction('outside.connections.save', { sessionToken, name, expectedDefinitionHash, expectedAccessRevision, connections }, ctx());
+const connectionApplyCall = (sessionToken: string, name: string, expectedDefinitionHash: string, expectedAccessRevision: number) =>
+    runAction('outside.connections.apply', { sessionToken, name, expectedDefinitionHash, expectedAccessRevision }, ctx());
 function register(ceiling = 2, storage = true) {
     resetActions();
     registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, ceiling: async () => ceiling, memory: () => 0, compose, backup,
@@ -118,6 +121,36 @@ it('lets the owner and a named editor change only outside declarations, while us
     expect(final.definition.outsideTools).toBeUndefined();
     expect({ ...final.definition, outsideTools: undefined }).toEqual({ ...original, outsideTools: undefined });
     expect(readFileSync(secretPath, 'utf8')).toBe(secretValue);
+});
+it('applies only with the current editor session and preserves the last applied declarations when reconciliation fails', async () => {
+    const { loaded, access, sessions } = await connectionFixture();
+    const applied = { ...loaded.definition, outsideTools: [declaration] };
+    await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,state,applied_definition,pending)
+        VALUES('bookkeeper','172.18.0.24','lares_connection_apply','legacy',gen_random_uuid(),'ready',$1::jsonb,false)`, [JSON.stringify(applied)]);
+    const pendingDeclaration = { ...declaration, description: 'Updated tool description' };
+    const saved: any = await connectionCall(sessions.editor, 'bookkeeper', loaded.hash, access.accessRevision, [pendingDeclaration]);
+    expect(saved.applicationStatus).toBe('pending');
+    expect(saved.appliedConnections).toEqual([declaration]);
+
+    compose.reconcile = vi.fn(async (_name: string, definition: any) => {
+        await pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb WHERE name=$1', ['bookkeeper', JSON.stringify(definition)]);
+        return { pending: false, reason: 'runtime activation held', running: false, healthy: null };
+    });
+    await expect(connectionApplyCall(sessions.user, 'bookkeeper', saved.definitionHash, saved.accessRevision)).rejects.toThrow();
+    await expect(connectionApplyCall(sessions.stranger, 'bookkeeper', saved.definitionHash, saved.accessRevision)).rejects.toThrow();
+    const reconciled: any = await connectionApplyCall(sessions.editor, 'bookkeeper', saved.definitionHash, saved.accessRevision);
+    expect(reconciled.applicationStatus).toBe('applied');
+    expect(reconciled.appliedConnections).toEqual([pendingDeclaration]);
+    expect(JSON.stringify(reconciled)).not.toContain('runtime activation held');
+
+    const next: any = await connectionCall(sessions.editor, 'bookkeeper', reconciled.definitionHash, reconciled.accessRevision,
+        [{ ...pendingDeclaration, description: 'Replacement pending' }]);
+    compose.reconcile.mockRejectedValueOnce(new Error('untrusted runtime detail with secrets'));
+    await expect(connectionApplyCall(sessions.editor, 'bookkeeper', next.definitionHash, next.accessRevision)).rejects.toThrow();
+    const state: any = await runAction('outside.connections.get', { sessionToken: sessions.editor, name: 'bookkeeper' }, ctx());
+    expect(state.applicationStatus).toBe('pending');
+    expect(state.appliedConnections).toEqual([pendingDeclaration]);
+    expect(JSON.stringify(state)).not.toContain('untrusted runtime detail');
 });
 it('holds the signed session and exact editor grant through connection publication', async () => {
     const { loaded, access, sessions } = await connectionFixture();

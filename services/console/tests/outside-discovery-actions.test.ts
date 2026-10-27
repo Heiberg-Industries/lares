@@ -13,6 +13,7 @@ const preview={accountId,requestId,claimOperationId,agentName:'worker',connectio
   purpose:'streamable-http-discovery-v1',definitionHash:'a'.repeat(64),accessRevision:1,destinationHash:'b'.repeat(64),
   routePolicyHash:'c'.repeat(64),expectedGeneration:0,expectedCandidateRevision:null,consentGeneration:1};
 const memberId='11111111-1111-4111-8111-111111111111',auditActor='member@example.test';
+const credentialStatus={state:'unavailable',reviewPending:false,applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null};
 beforeEach(()=>{vi.clearAllMocks();mocks.cookie.mockReturnValue(sessionToken);mocks.member.mockResolvedValue({id:memberId,role:'member'});
   mocks.auditAddress.mockResolvedValue(auditActor);mocks.keeper.mockResolvedValue([]);});
 
@@ -28,7 +29,7 @@ it('derives session and actor at the server boundary for target and preview requ
 });
 
 it('rejects malformed target and preview DTOs before they can reach the member page',async()=>{
-  mocks.keeper.mockResolvedValueOnce([{agentName:'worker',connectionName:'connector',extra:'ignored'}]);
+  mocks.keeper.mockResolvedValueOnce([{agentName:'worker',connectionName:'connector',credentialStatus,extra:'ignored'}]);
   await expect(listOutsideDiscoveryTargets()).rejects.toThrow(/unavailable/);
   mocks.keeper.mockResolvedValueOnce({accountId,requestId,claimOperationId,agentName:'worker',connectionName:'connector',
     endpoint:`https://${'x'.repeat(8200)}.test/mcp`,purpose:'streamable-http-discovery-v1',definitionHash:'a'.repeat(64),accessRevision:1,
@@ -37,13 +38,16 @@ it('rejects malformed target and preview DTOs before they can reach the member p
 });
 
 it('accepts target counts through the authority limit and rejects larger or malformed lists',()=>{
-  const targets=(count:number)=>Array.from({length:count},(_,index)=>({agentName:'worker',connectionName:`connector-${index}`}));
+  const targets=(count:number)=>Array.from({length:count},(_,index)=>({agentName:'worker',connectionName:`connector-${index}`,credentialStatus}));
   expect(parseOutsideDiscoveryTargets(targets(50))).toHaveLength(50);
   expect(parseOutsideDiscoveryTargets(targets(51))).toHaveLength(51);
   expect(parseOutsideDiscoveryTargets(targets(128))).toHaveLength(128);
   expect(parseOutsideDiscoveryTargets(targets(129))).toBeUndefined();
-  expect(parseOutsideDiscoveryTargets([{agentName:'worker',connectionName:'connector',unexpected:true}])).toBeUndefined();
-  expect(parseOutsideDiscoveryTargets([{agentName:'worker',connectionName:'connector'},{agentName:'worker',connectionName:'connector'}])).toBeUndefined();
+  expect(parseOutsideDiscoveryTargets([{agentName:'worker',connectionName:'connector',credentialStatus,unexpected:true}])).toBeUndefined();
+  expect(parseOutsideDiscoveryTargets([{agentName:'worker',connectionName:'connector',credentialStatus},
+    {agentName:'worker',connectionName:'connector',credentialStatus}])).toBeUndefined();
+  expect(parseOutsideDiscoveryTargets([{agentName:'worker',connectionName:'connector',credentialStatus:{...credentialStatus,state:'secrets'}}])).toBeUndefined();
+  expect(parseOutsideDiscoveryTargets([{agentName:'worker',connectionName:'connector',credentialStatus:{...credentialStatus,state:'active'}}])).toBeUndefined();
 });
 
 it('requires literal consent and accepts only preview expectations and the bearer',async()=>{

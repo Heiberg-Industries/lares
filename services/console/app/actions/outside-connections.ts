@@ -12,9 +12,11 @@ const resultSchema = z.strictObject({
   definitionHash: hashSchema,
   accessRevision: z.number().int().positive(),
   connections: z.array(outsideToolSchema),
+  applicationStatus: z.enum(["applied", "pending", "unavailable"]),
+  appliedConnections: z.array(outsideToolSchema),
 });
 export type OutsideConnectionsState = z.infer<typeof resultSchema>;
-export type OutsideConnectionsResult = { ok: true; result: OutsideConnectionsState } | { ok: false; message: string };
+export type OutsideConnectionsResult = { ok: true; result: OutsideConnectionsState } | { ok: false; message: string; current?: OutsideConnectionsState };
 
 async function admitted(): Promise<{ sessionToken: string; actor: string }> {
   const sessionToken = (await cookies()).get("lares_session")?.value;
@@ -57,5 +59,29 @@ export async function saveOutsideConnections(input: {
   } catch (error) {
     if (error instanceof KeeperRefusedError) return { ok: false, message: "The definition or access changed, or current agent edit access is missing. Refresh and review the connection again." };
     return { ok: false, message: "The connection change could not be confirmed. Refresh before trying again." };
+  }
+}
+
+export async function applyOutsideConnections(input: { name: string; expectedDefinitionHash: string; expectedAccessRevision: number }): Promise<OutsideConnectionsResult> {
+  const { sessionToken, actor } = await admitted();
+  const parsed = z.strictObject({ name: nameSchema, expectedDefinitionHash: hashSchema,
+    expectedAccessRevision: z.number().int().positive() }).safeParse(input);
+  if (!parsed.success) throw new Error("Connection details are invalid.");
+  try {
+    const result = resultSchema.parse(await keeper<unknown>("outside.connections.apply", { ...parsed.data, sessionToken }, actor, { timeoutMs: 90_000 }));
+    return { ok: true, result };
+  } catch (error) {
+    const current = await getOutsideConnections(input.name).catch(() => undefined);
+    const confirmed = current?.ok ? current.result : undefined;
+    if (error instanceof KeeperRefusedError) return { ok: false, message: confirmed?.applicationStatus === 'applied'
+      ? "The refreshed state confirms these declarations are applied, although the Apply request was refused or interrupted."
+      : confirmed?.applicationStatus === 'pending'
+        ? "Apply was refused or interrupted, and the refreshed state still shows pending declarations. Review the current state before trying again."
+        : "Apply was refused or interrupted. The current application state is unavailable; refresh before trying again.", ...(confirmed ? { current: confirmed } : {}) };
+    return { ok: false, message: confirmed?.applicationStatus === 'applied'
+      ? "The refreshed state confirms these declarations are applied, although the Apply request did not return normally."
+      : confirmed?.applicationStatus === 'pending'
+        ? "Apply did not return normally, and the refreshed state still shows pending declarations. Review the current state before trying again."
+        : "Apply did not return normally and its application state could not be confirmed. Refresh before trying again.", ...(confirmed ? { current: confirmed } : {}) };
   }
 }
