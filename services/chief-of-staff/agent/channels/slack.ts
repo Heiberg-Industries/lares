@@ -19,11 +19,14 @@ import {
   type SlackBotToken,
   type SlackMessage,
 } from "eve/channels/slack";
+import type { SessionContext } from "eve/context";
 
 import { isAllowedSlackUserId } from "../../lib/slack-allowlist.js";
+import { getPool } from "@lares/agent-kit/db";
 import { installSlackProxyDispatcher } from "@lares/agent-kit/slack-dispatcher";
 import { slackUnreadableNote } from "@lares/agent-kit/unreadable-content";
 import { continuityAuthAttributes, nativeConversationContinuity } from "../../lib/conversation-continuity.js";
+import { markRouteDeclineQuestionSent } from "../../lib/route-decline.js";
 import {
   respondToSessionFailed,
   respondToTurnFailed,
@@ -191,18 +194,79 @@ export async function admitSlackDirectMessage(
 ): Promise<{ auth: ReturnType<typeof defaultSlackAuth>; context?: string[] } | null> {
   const admitted = admitSlackMessage(ctx, message);
   if (!admitted?.auth) return admitted;
+  const replyAttributes: Record<string, string> = message.threadTs !== message.ts
+    ? { lares_route_decline_reply_anchor: `slack:${message.threadTs}` }
+    : {};
   try {
     const continuity = await nativeConversationContinuity("slack", admitted.auth);
     return {
       auth: continuity.identity
-        ? { ...admitted.auth, attributes: { ...admitted.auth.attributes, ...continuityAuthAttributes(continuity.identity) } }
-        : admitted.auth,
+        ? { ...admitted.auth, attributes: { ...admitted.auth.attributes, ...replyAttributes, ...continuityAuthAttributes(continuity.identity) } }
+        : { ...admitted.auth, attributes: { ...admitted.auth.attributes, ...replyAttributes } },
       ...((admitted.context?.length || continuity.context.length) ? { context: [...continuity.context, ...(admitted.context ?? [])] } : {}),
     };
   } catch (error) {
     console.warn("slack continuity unavailable; continuing without archived context", error instanceof Error ? error.message : "unknown error");
     return admitted;
   }
+}
+
+/** Replaces Eve's terminal Slack reply only to bind a scheduled decline question to its exact
+ * root DM message. Other replies retain Eve's short-message and long-snippet behavior. */
+export async function onSlackMessageCompleted(
+  data: { finishReason: string; message?: string | null },
+  channel: {
+    state: { pendingToolCallMessage?: string | null; triggeringUserId?: string | null };
+    thread: {
+      post(message: string): Promise<{ id: string }>;
+      postDirectMessage(userId: string, message: string): Promise<{ id: string }>;
+      startTyping(message?: string): Promise<void>;
+    };
+    slack: {
+      threadTs: string;
+      uploadFiles(files: readonly { data: Blob; filename: string; mimeType: string }[], options: {
+        initialComment?: string; snippetType: "markdown";
+      }): Promise<unknown>;
+    };
+  },
+  ctx: SessionContext,
+): Promise<void> {
+  if (data.finishReason === "tool-calls") {
+    channel.state.pendingToolCallMessage = data.message?.split(/\r?\n/u).find((line) => line.trim())?.trim() ?? null;
+    return;
+  }
+  channel.state.pendingToolCallMessage = null;
+  if (!data.message) {
+    await channel.thread.startTyping();
+    return;
+  }
+
+  const attrs = ctx.session.auth.current?.attributes;
+  const requestId = attrs?.lares_route_decline_request_id;
+  if (typeof requestId === "string") {
+    const address = attrs?.lares_continuity_address;
+    const linkedUser = typeof address === "string" && address.startsWith("slack-user:")
+      ? address.slice("slack-user:".length) : undefined;
+    const userId = typeof attrs?.user_id === "string" ? attrs.user_id : linkedUser ?? channel.state.triggeringUserId;
+    if (!userId) throw new Error("track-routing decline question has no bound Slack recipient");
+    const posted = await channel.thread.postDirectMessage(userId, data.message);
+    if (posted.id) await markRouteDeclineQuestionSent(getPool(), requestId, `slack:${posted.id}`);
+    return;
+  }
+
+  const longResponseNotice = "Here's a snippet with the full response.";
+  if (data.message.length <= 12_000) {
+    await channel.thread.post(data.message);
+    return;
+  }
+  const alreadyThreaded = channel.slack.threadTs.length > 0;
+  if (!alreadyThreaded && (!(await channel.thread.post(longResponseNotice)).id || channel.slack.threadTs.length === 0)) {
+    throw new Error("Slack did not return a thread timestamp for the long response notice.");
+  }
+  await channel.slack.uploadFiles([{ data: new Blob([data.message], { type: "text/markdown" }),
+    filename: "eve-response.md", mimeType: "text/markdown" }], {
+    ...(alreadyThreaded ? { initialComment: longResponseNotice } : {}), snippetType: "markdown",
+  });
 }
 
 // Install the outbound proxy routing as this module loads. Safe on the build path: it
@@ -216,6 +280,7 @@ export default slackChannel({
   onAppMention: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.channelId, text)) ? null : admitSlackMessage(ctx, message),
   onDirectMessage: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.channelId, text)) ? null : admitSlackDirectMessage(ctx, message),
   events: {
+    "message.completed": onSlackMessageCompleted,
     "turn.failed": onTurnFailed,
     "session.failed": onSessionFailed,
   },

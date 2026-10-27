@@ -9,7 +9,10 @@
  * happen FIRST, unconditionally of rotation state (even with the DB unreachable), and must
  * mirror the default's gating (no post on tool-call narration or empty message).
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+const { query } = vi.hoisted(() => ({ query: vi.fn(async () => ({ rows: [], rowCount: 1 })) }));
+vi.mock("@lares/agent-kit/db", () => ({ getPool: () => ({ query }) }));
 
 import { onMessageCompleted } from "../agent/channels/telegram.js";
 
@@ -25,7 +28,7 @@ function fakeChannel(chatId: string | null = OWNER_TG, chatType: string | null =
     channel: {
       state: { chatId, chatType },
       //: the handler now posts a body object carrying `parse_mode`, not a bare string.
-      telegram: { post: async (m: unknown) => { posted.push(m as { text: string; parse_mode?: string }); } },
+      telegram: { post: async (m: unknown) => { posted.push(m as { text: string; parse_mode?: string }); return { id: `tg-${posted.length}` }; } },
     },
   };
 }
@@ -71,6 +74,16 @@ describe("onMessageCompleted — delivery first, rotation second", () => {
     await expect(
       onMessageCompleted({ finishReason: "stop", message: "x" }, channel, ctx),
     ).rejects.toThrow("telegram down");
+  });
+
+  it("stores the exact native Telegram message id used by the sent question", async () => {
+    const { channel, posted } = fakeChannel();
+    const ctx = { session: { id: "wrun_question", auth: { current: {
+      attributes: { lares_route_decline_request_id: "request-question" },
+    } } } };
+    await onMessageCompleted({ finishReason: "stop", message: "Reply directly: Not now, or never?" }, channel, ctx);
+    expect(posted).toHaveLength(1);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("question_reply_anchor=$2"), ["request-question", "telegram:tg-1"]);
   });
 });
 

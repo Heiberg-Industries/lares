@@ -34,6 +34,18 @@ import type { AgentNote } from "./agent-notes.js";
 export const STANDING_FACT_CATEGORIES = ["travel", "schedule", "preference", "people", "places"] as const;
 export type StandingFactCategory = (typeof STANDING_FACT_CATEGORIES)[number];
 
+/** Build the transient input to the existing one-way forget ledger for one scoped route fact.
+ * The ledger stores only a hash of this value; the standing_facts row keeps the exact owner words. */
+export function routeScopedForgetWords(
+  fact: string,
+  scope: { personId: string; home: string; trackId: string; choice: "never" | "not_now" },
+): string {
+  const scopeHash = createHash("sha256").update(JSON.stringify([
+    scope.personId, scope.home, scope.trackId, scope.choice,
+  ])).digest("hex");
+  return `${fact}\nroute-fact-scope:${scopeHash}`;
+}
+
 /** Which shelf a standing fact belongs on (ADR-0018 rule 7).
  *  `world`   — a fact about a person, a company or a place. Its long-term home is that
  *              entity's page in the vault; the row is the dated, checkable version of it.
@@ -86,6 +98,10 @@ export interface StandingFact {
   /** The id of the row that replaced this one, or null. Set only by `supersedeFact`
    *  `forgetFact` leaves it null, because a retirement is not a replacement. */
   supersededBy: number | null;
+  routePersonId: string | null;
+  routeHome: string | null;
+  routeTrackId: string | null;
+  routeChoice: "never" | "not_now" | null;
   /** Which shelf this fact belongs on (ADR-0018 rule 7) — DERIVED from `category`, never
    *  stored: see `shelfOf`. */
   readonly shelf: FactShelf;
@@ -173,6 +189,10 @@ interface StandingFactRow {
   recorded_at: Date;
   source: string;
   superseded_by: string | null;
+  route_person_id: string | null;
+  route_home: string | null;
+  route_track_id: string | null;
+  route_choice: "never" | "not_now" | null;
 }
 
 function toFact(row: StandingFactRow): StandingFact {
@@ -188,13 +208,17 @@ function toFact(row: StandingFactRow): StandingFact {
     recordedAt: row.recorded_at,
     source: row.source,
     supersededBy: row.superseded_by == null ? null : Number(row.superseded_by),
+    routePersonId: row.route_person_id ?? null,
+    routeHome: row.route_home ?? null,
+    routeTrackId: row.route_track_id ?? null,
+    routeChoice: row.route_choice ?? null,
     shelf: shelfOf(row.category as StandingFactCategory),
   };
 }
 
 /** The columns every query in this file returns. */
 const FACT_COLUMNS =
-  "id, fact, category, source_turn, user_id, stated_at, retired_at, origin, recorded_at, source, superseded_by";
+  "id, fact, category, source_turn, user_id, stated_at, retired_at, origin, recorded_at, source, superseded_by, route_person_id, route_home, route_track_id, route_choice";
 
 /** Run a fact query with the full column list. `build` receives it so each query names its own
  *  statement around it. */
@@ -215,6 +239,8 @@ export interface NewStandingFact {
   userId: string;
   /** Defaults to the row's `now()` — passed only by tests and by a hand-dated backfill. */
   statedAt?: Date;
+  /** Set only after a current authenticated private reply is bound to its exact route question. */
+  routeScope?: { personId: string; home: string; trackId: string; choice: "never" | "not_now" };
 }
 
 /**
@@ -225,15 +251,17 @@ export interface NewStandingFact {
  * `remember.ts` is the gate that decides WHETHER to call this at all on a tainted turn; by the
  * time execution reaches here, the answer is always yes.
  */
-export async function rememberFact(db: Pool, f: NewStandingFact): Promise<StandingFact> {
+export async function rememberFact(db: Pool | PoolClient, f: NewStandingFact): Promise<StandingFact> {
   // `recorded_at` and `source` are not named in the INSERT: their column DEFAULTs (`now()` and
   // `'remember'`) are already the right answer.
   const rows = await queryFacts(
     db,
-    (columns) => `INSERT INTO standing_facts (fact, category, source_turn, user_id, stated_at, origin)
-     VALUES ($1, $2, $3, $4, COALESCE($5, now()), 'owner')
+    (columns) => `INSERT INTO standing_facts (fact, category, source_turn, user_id, stated_at, origin,
+       route_person_id,route_home,route_track_id,route_choice)
+     VALUES ($1, $2, $3, $4, COALESCE($5, now()), 'owner',$6,$7,$8,$9)
      RETURNING ${columns}`,
-    [f.fact.trim(), f.category, f.sourceTurn, f.userId, f.statedAt ?? null],
+    [f.fact.trim(), f.category, f.sourceTurn, f.userId, f.statedAt ?? null,
+      f.routeScope?.personId ?? null,f.routeScope?.home ?? null,f.routeScope?.trackId ?? null,f.routeScope?.choice ?? null],
   );
   return toFact(rows[0]!);
 }
@@ -463,6 +491,19 @@ export async function listActiveFacts(
     [userId, limit],
   );
   return rows.map(toFact);
+}
+
+/** Candidate-specific active never lookup, independent of the prompt's bounded fact list. */
+export async function hasActiveRouteNeverFact(
+  db: Pool,
+  userId: string,
+  scope: { personId: string; home: string; trackId: string },
+): Promise<boolean> {
+  const { rows } = await db.query(`SELECT 1 FROM standing_facts
+    WHERE user_id=$1 AND origin='owner' AND retired_at IS NULL AND superseded_by IS NULL
+      AND route_choice='never' AND route_person_id=$2 AND route_home=$3 AND route_track_id=$4
+    LIMIT 1`, [userId, scope.personId, scope.home, scope.trackId]);
+  return rows.length === 1;
 }
 
 /**

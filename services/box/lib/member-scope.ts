@@ -774,6 +774,15 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     reason: "Organisation commercial CRM proposal workflow and global dedup/cooldown state; person_id is an external CRM contact id outside Lares member ids, and rows retain identifiable business contact references.",
   },
 
+  {
+    table: "route_proposal_approval_links",
+    scope: "member",
+    column: "member_id",
+    idKind: "registry",
+    createdBy: `${BOX}/033_track_proposal_approval_links.sql`,
+    reason: "Exact private approval-to-route association and audience fence; erased with the member and cascades from approval_asks.",
+  },
+
   // ── The web chat door's mailbox, created by services/box/sql/004_web_inbox.sql ──
   {
     table: "web_inbox",

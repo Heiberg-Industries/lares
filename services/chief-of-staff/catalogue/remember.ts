@@ -57,6 +57,8 @@ import { stampFor, turnKeyFrom } from "@lares/agent-kit/origin-taint";
 import { isMissingLedgerTable, removeForgotten, wasForgotten } from "@lares/agent-kit/forget-ledger";
 import { humanTurnRefusal } from "../lib/approvals.js";
 import { configuredOwnerId } from "../lib/identity-client.js";
+import { nativeConversationContinuity, withCurrentNativeContinuity } from "../lib/conversation-continuity.js";
+import { routeDeclineAnswerForReply, routeDeclineAnswerScope } from "../lib/route-decline.js";
 import {
   MAX_FACT_LENGTH,
   STANDING_FACT_CATEGORIES,
@@ -65,6 +67,7 @@ import {
   rejectFact,
   rememberFact,
   rememberFactClearingForgotten,
+  routeScopedForgetWords,
   supersedeFact,
   type StandingFact,
 } from "../lib/standing-facts.js";
@@ -115,6 +118,7 @@ export default defineTool({
       ),
   }),
   async execute({ fact, category, supersedes, evenThoughForgotten }, ctx) {
+    const auth = ctx.session?.auth as { current?: { authenticator?: unknown; attributes?: Record<string, unknown> }; initiator?: { attributes?: Record<string, unknown> } } | undefined;
     // WHO is speaking, before WHAT was said: a fact quoted from nobody is not a quote.
     const notHim = humanTurnRefusal(
       ctx.session?.auth,
@@ -139,6 +143,43 @@ export default defineTool({
       };
     }
 
+    let routeScope: { personId: string; home: string; trackId: string; choice: "never" | "not_now" } | undefined;
+    let routeRequestId: string | undefined;
+    let routeAnswerIdentity: import("../lib/conversation-continuity.js").ContinuityIdentity | undefined;
+    const current = auth?.current;
+    const currentDoor = current?.authenticator === "slack-webhook" ? "slack" : current?.authenticator === "telegram-webhook" ? "telegram" : undefined;
+    const replyAnchor = current?.attributes?.lares_route_decline_reply_anchor;
+    const normalized = fact.trim().toLowerCase().replace(/[.!?]+$/u, "");
+    const choice = normalized === "never" ? "never" : normalized === "not now" ? "not_now" : undefined;
+    if (choice) {
+      const continuity = current && currentDoor ? await nativeConversationContinuity(currentDoor, current) : undefined;
+      const referent = continuity?.identity && typeof replyAnchor === "string"
+        ? await routeDeclineAnswerForReply(getPool(), continuity.identity, currentDoor!, replyAnchor)
+        : { kind: "none" as const };
+      if (referent.kind === "ambiguous" || referent.kind === "stale") {
+        return { remembered: false as const, message: "Not stored. The private route question cannot be matched to a fresh, unambiguous reply." };
+      }
+      if (referent.kind === "none") {
+        return { remembered: false as const, message: "Not stored. There is no current private route question to scope this answer to." };
+      }
+      if (referent.kind === "match") {
+        if (supersedes !== undefined || category !== "preference" || !current) {
+          return { remembered: false as const, message: "Not stored. This route follow-up only accepts a fresh, unambiguous owner answer of ‘never’ or ‘not now’." };
+        }
+        const bound = referent.door === currentDoor
+          ? await withCurrentNativeContinuity(currentDoor, current, referent.identity, async (client, identity) =>
+              identity.memberId === configuredOwnerId()
+                ? routeDeclineAnswerScope(client, referent.requestId, identity, replyAnchor as string)
+                : undefined)
+          : undefined;
+        const scope = bound?.result;
+        if (!scope) return { remembered: false as const, message: "Not stored. The original private route question is no longer current for this owner." };
+        routeScope = { ...scope, choice };
+        routeRequestId = referent.requestId;
+        routeAnswerIdentity = referent.identity;
+      }
+    }
+
     const refusal = rejectFact(fact);
     if (refusal) return { remembered: false as const, message: refusal };
 
@@ -147,7 +188,7 @@ export default defineTool({
     // made, not a resurrection, so it bypasses this check entirely (see the tool's doc comment).
     // `evenThoughForgotten` is their one-step way to mean it anyway, once they have been told — this
     // check runs even then, so the write below knows there IS a ledger entry to clear.
-    if (supersedes === undefined && !evenThoughForgotten) {
+    if (supersedes === undefined && !evenThoughForgotten && !routeScope) {
       let forgotten: Awaited<ReturnType<typeof wasForgotten>> = null;
       try {
         // HOT PATH: CANONICAL_USER_ID is the fail-soft configured owner key
@@ -159,7 +200,8 @@ export default defineTool({
         // by the time that repair fires, a mismatched write may already have happened, but no
         // FURTHER one goes unnoticed. `wasForgotten` itself also refuses a value that does not
         // even LOOK canonical (`assertCanonicalOwner`).
-        forgotten = await wasForgotten(getPool(), { owner: configuredOwnerId(), kind: "fact", words: fact });
+        forgotten = await wasForgotten(getPool(), { owner: configuredOwnerId(), kind: "fact",
+          words: routeScope ? routeScopedForgetWords(fact, routeScope) : fact });
       } catch (err) {
         // No ledger table — no way to check, so no refusal. The same fail-open shape `forget`
         // already uses for the opposite direction.
@@ -186,11 +228,11 @@ export default defineTool({
     // the writer is the allowlisted human, and live principal→user resolution is not wired for
     // this path: a half-wiring here would break brief turns, which run as the app principal
     // with no session user to resolve.
-    const replacement = { fact, category, sourceTurn, userId: configuredOwnerId() };
+    const replacement = { fact, category, sourceTurn, userId: configuredOwnerId(), ...(routeScope ? { routeScope } : {}) };
 
     if (supersedes === undefined) {
       let stored: StandingFact;
-      if (evenThoughForgotten) {
+      if (evenThoughForgotten && !routeScope) {
         // ONE TRANSACTION: the fact is written and the ledger entry for these exact words is
         // cleared together, or neither happens — see `rememberFactClearingForgotten`'s header.
         try {
@@ -208,7 +250,24 @@ export default defineTool({
           stored = await rememberFact(getPool(), replacement);
         }
       } else {
-        stored = await rememberFact(getPool(), replacement);
+        if (routeScope) {
+          const current = auth?.current;
+          const door = currentDoor!;
+          const bound = routeAnswerIdentity ? await withCurrentNativeContinuity(door, current!, routeAnswerIdentity, async (client, identity) => {
+            if (identity.memberId !== configuredOwnerId()) return undefined;
+            const currentScope = await routeDeclineAnswerScope(client, String(routeRequestId), identity, replyAnchor as string);
+            if (!currentScope || currentScope.personId !== routeScope!.personId || currentScope.home !== routeScope!.home || currentScope.trackId !== routeScope!.trackId) return undefined;
+            await removeForgotten(client, { owner: replacement.userId, kind: "fact",
+              words: routeScopedForgetWords(replacement.fact, routeScope!) });
+            const stored = await rememberFact(client, replacement);
+            const consumed = await client.query(`UPDATE route_proposal_approval_links SET answered_at=clock_timestamp()
+              WHERE request_id=$1 AND answered_at IS NULL`, [String(routeRequestId)]);
+            if (consumed.rowCount !== 1) throw new Error("route decline answer link was already consumed");
+            return stored;
+          }) : undefined;
+          if (!bound?.result) return { remembered: false as const, message: "Not stored. The original private route question is no longer current for this owner." };
+          stored = bound.result;
+        } else stored = await rememberFact(getPool(), replacement);
       }
       return {
         remembered: true as const,

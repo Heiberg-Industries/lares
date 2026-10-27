@@ -44,7 +44,7 @@ export const ENGINE_TABLE_PRIVILEGES = {
     "obligation_threads", "org_member_policy", "orgs", "outside_tool_pins", "outreach_threads",
     "owner_clock_signals", "personal_action_calls", "personal_actions", "proactivity_settings",
     "ratchet", "ratchet_audit", "reminders", "repairs", "resource_grants", "route_cursor",
-    "route_proposals", "schedule_settings", "sessions", "settings", "settings_audit",
+    "route_proposals", "route_proposal_approval_links", "schedule_settings", "sessions", "settings", "settings_audit",
     "standing_facts", "studio_runs", "telegram_daily_log", "telegram_session_rotation",
     "trigger_schedules", "update_history", "user_aliases", "users", "vault_areas",
     "vault_backing_stores", "voice_exemplar", "voice_profile", "web_inbox", "workflow_jobs",

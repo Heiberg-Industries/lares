@@ -16,6 +16,7 @@ const MAX_FIELD_CHARS = 1000;
 type Auth = { authenticator?: unknown; attributes?: Record<string, unknown> };
 export interface ContinuityIdentity { memberId: string; address: string; accessRevision: number }
 export interface ContinuityResult { identity?: ContinuityIdentity; context: string[] }
+export interface ContinuityTransactionResult<T> { identity: ContinuityIdentity; result: T }
 export function continuityAuthAttributes(identity: ContinuityIdentity): Record<string, string> {
   return {
     lares_continuity_member_id: identity.memberId,
@@ -32,9 +33,49 @@ const platformForDoor = (door: string): "slack" | "telegram" | undefined =>
 export function nativeContinuityIdentity(door: string, auth: Auth): { platform: "slack" | "telegram"; userId: string; address: string } | undefined {
   const platform = platformForDoor(door);
   const expectedAuthenticator = platform === "slack" ? "slack-webhook" : "telegram-webhook";
-  const userId = auth.attributes?.user_id;
-  if (!platform || auth.authenticator !== expectedAuthenticator || typeof userId !== "string" || !userId.trim()) return undefined;
-  return { platform, userId: userId.trim(), address: `${platform}-user:${userId.trim()}` };
+  const rawUserId = auth.attributes?.user_id;
+  const userId = typeof rawUserId === "string"
+    ? rawUserId.trim()
+    : platform === "telegram" && typeof rawUserId === "number" && Number.isSafeInteger(rawUserId) && rawUserId > 0
+      ? String(rawUserId)
+      : undefined;
+  if (!platform || auth.authenticator !== expectedAuthenticator || !userId) return undefined;
+  return { platform, userId, address: `${platform}-user:${userId}` };
+}
+
+/** Run a small protected write only while the same native private audience is still current.
+ * The callback shares the locked membership/grant transaction, matching the read path below. */
+export async function withCurrentNativeContinuity<T>(
+  door: string,
+  auth: Auth,
+  expected: ContinuityIdentity,
+  use: (db: import("pg").PoolClient, identity: ContinuityIdentity) => Promise<T>,
+): Promise<ContinuityTransactionResult<T> | undefined> {
+  const identity = nativeContinuityIdentity(door, auth);
+  if (!identity || identity.address !== expected.address) return undefined;
+  const pool = getPool();
+  const resolved = await resolveUser(pool, identity.platform, identity.userId);
+  if (!resolved) return undefined;
+  const db = await pool.connect();
+  try {
+    await db.query("BEGIN");
+    const alias = await db.query("SELECT 1 FROM user_aliases WHERE system=$1 AND alias=$2 AND user_id=$3 FOR SHARE", [identity.platform, identity.userId, resolved.id]);
+    const member = alias.rowCount ? await currentMember(db, resolved.id, { lock: "share" }) : undefined;
+    const accessRevision = member ? await new PgGrantStore().captureUse(member.id, agentName(), { db }) : undefined;
+    if (!member || accessRevision === undefined || member.id !== expected.memberId || accessRevision !== expected.accessRevision) {
+      await db.query("ROLLBACK");
+      return undefined;
+    }
+    const current = { memberId: member.id, address: identity.address, accessRevision };
+    const result = await use(db, current);
+    await db.query("COMMIT");
+    return { identity: current, result };
+  } catch (error) {
+    await db.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    db.release();
+  }
 }
 
 /** Human-readable archive context. Stored text is data, never a current request or authority. */
