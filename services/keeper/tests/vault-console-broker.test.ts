@@ -18,6 +18,8 @@ import { recordOutsideExecutionApproval, consumeOutsideExecutionApproval, outsid
 import { payloadFingerprint } from '../../../packages/agent-kit/src/approval-ledger.js';
 import { NoteNotFoundError } from '../../../packages/agent-kit/src/notes-store.js';
 import { ENGINE_DATABASE_ROLES, ENGINE_TABLE_PRIVILEGES } from '../../box/lib/database-privileges.js';
+import { requestOutsideApproval,respondOutsideApproval,runOutsideTool } from '../../chief-of-staff/lib/outside-tools.js';
+import { makeApprovalRecord } from '../../../packages/agent-kit/src/approval-record-hook.js';
 import { tracksApprovalAdapter } from '../../chief-of-staff/lib/tracks-approval.js';
 import { setVaultTurnCapability } from '../../chief-of-staff/agent/lib/vault-turn.js';
 
@@ -25,7 +27,7 @@ const ids = vi.hoisted(() => ({
   organisation: 'broker-org', member: 'broker-owner', area: '11111111-1111-4111-8111-111111111111',
   sharedArea: '44444444-4444-4444-8444-444444444444',
   backing: '22222222-2222-4222-8222-222222222222', readGate: undefined as (() => Promise<void>) | undefined, reads: 0, clock: Date.now(),
-  inventory: undefined as any, trackFiles: new Map<string, { content: string; contentRevision: string }>(), writes: 0, useRealFiles: false, outsideDispatch: vi.fn(), outsideTools: vi.fn(),
+  inventory: undefined as any, trackFiles: new Map<string, { content: string; contentRevision: string }>(), writes: 0, useRealFiles: false, outsideDispatch: vi.fn(), outsideTools: vi.fn(), outsideApprove:vi.fn(),
 }));
 vi.mock('@lares/agent-box/lib/vault-storage.js', () => ({
   loadVaultStorageInventory: () => ids.inventory,
@@ -129,7 +131,7 @@ async function startBroker(database:Pool=pool){
   return serveConsoleVaultBroker(database as never, join(root, 'secrets', 'console-vault-signing-key'), secrets, process.env.LARES_VAULT_RUNTIME_SOCKET!, {
     consoleSocket: process.env.LARES_VAULT_CONSOLE_SOCKET,
     rootUid: process.getuid?.() ?? 0, socketUid: process.getuid?.() ?? 0, socketGid: process.getgid?.() ?? 0, turnClockForTests: () => ids.clock,
-    outsideCustody:{acceptedRuntimeTools:(...args)=>ids.outsideTools(...args),dispatchApproved:(...args)=>ids.outsideDispatch(...args)},
+    outsideCustody:{approveExecution:(...args)=>ids.outsideApprove(...args),acceptedRuntimeTools:(...args)=>ids.outsideTools(...args),dispatchApproved:(...args)=>ids.outsideDispatch(...args)},
     vaultFilesForTests: { root: join(root, 'vault-files'), originRoot: join(root, 'vault-origins') },
   });
 }
@@ -158,7 +160,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  ids.trackFiles.clear(); ids.writes = 0; ids.outsideDispatch.mockReset();ids.outsideTools.mockReset();
+  ids.trackFiles.clear(); ids.writes = 0; ids.outsideDispatch.mockReset();ids.outsideTools.mockReset();ids.outsideApprove.mockReset();
   admissionNonce = 'a'.repeat(43); session = 'wrun_broker_test';
   approvalTurnId = 'turn-track-original'; approvalTurnSequence = 30;
   roleDefinition = defaultRoleDefinition; definitionHash = hashOf({ definition: roleDefinition, dutiesMd, voiceMd });
@@ -172,6 +174,9 @@ beforeEach(async () => {
     CREATE TABLE agent_conversations(agent text,incarnation uuid,session_id text,door text,observed_at timestamptz DEFAULT now(),terminal boolean DEFAULT false,PRIMARY KEY(agent,incarnation,session_id));
     CREATE TABLE connected_accounts(id text PRIMARY KEY,owner_member_id text,generation integer,status text);
     CREATE TABLE agent_resources(name text PRIMARY KEY,ownership_token uuid,runtime_control_token uuid,state text,pending boolean,applied_definition jsonb);
+    CREATE TABLE ratchet(agent text,capability text,action text,level text,updated_by text NOT NULL DEFAULT 'fixture',updated_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE ratchet_audit(id bigserial PRIMARY KEY,agent text NOT NULL,capability text NOT NULL,action text NOT NULL,
+      old_level text,new_level text,changed_by text NOT NULL,at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE outside_execution_approvals(call_id text PRIMARY KEY,request_id text,session_id text,member_id text,approver_member_id text,
       agent text,incarnation uuid,definition_hash bytea,connection_name text,account_id uuid,credential_revision bigint,
       tool_name text,payload_hash bytea,expires_at timestamptz,consumed_at timestamptz);
@@ -185,6 +190,12 @@ beforeEach(async () => {
     INSERT INTO org_member_policy VALUES('member-backup',NULL);
     INSERT INTO agent_definitions VALUES('${agent}','valid','${definitionHash}','${JSON.stringify(roleDefinition)}'::jsonb);
     INSERT INTO agent_resources VALUES('${agent}','${incarnation}','${incarnation}','ready',false,'${JSON.stringify(roleDefinition)}'::jsonb);`);
+  // Use the production audit trigger, so policy restoration tests exercise durable revision history.
+  const baseline=readFileSync(new URL('../../../services/box/sql/001_baseline.sql',import.meta.url),'utf8');
+  const auditFunction=baseline.match(/CREATE FUNCTION ratchet_audit_fn\(\) RETURNS trigger[\s\S]*?\$\$;/)?.[0];
+  if(!auditFunction)throw new Error('Production ratchet audit trigger is unavailable');
+  await pool.query(auditFunction);
+  await pool.query('CREATE TRIGGER ratchet_audit_trg AFTER INSERT OR DELETE OR UPDATE ON ratchet FOR EACH ROW EXECUTE FUNCTION ratchet_audit_fn()');
   for (const file of ['006_approval_session.sql','007_member_identity_sessions.sql','009_vault_areas.sql','013_console_turn_authority.sql','014_agent_access_grants.sql','015_exact_approval_execution.sql','016_console_agent_access_capture.sql','017_private_console_surface_capture.sql','018_private_account_history.sql','020_vault_resource_grants.sql','022_console_vault_source_history.sql'])
     await pool.query(readFileSync(new URL(`../../../services/box/sql/${file}`, import.meta.url), 'utf8'));
   await new PgGrantStore(pool).adoptAgent(ids.member, { agentName: agent, expectedDefinitionHash: definitionHash }, { designatedOwnerMemberId: ids.member });
@@ -471,67 +482,6 @@ it.each([
   expect(ids.reads).toBe(0);
 });
 
-// Recorded fixtures are deliberate: production approval creation is a separate surface.
-async function outsideFixture(){
- const call={callId:'outside-call',requestId:'outside-request',agent,incarnation,sessionId:session,memberId:ids.member,
-  approverMemberId:ids.member,definitionHash,connectionName:'registry',accountId:'55555555-5555-4555-8555-555555555555',credentialRevision:1,toolName:'lookup',input:{company:'Example'}};
- const {input:_input,...receipt}=call;
- await recordOutsideExecutionApproval(pool,{...receipt,payloadHash:outsidePayloadHash(call.toolName,call.input),expiresAt:Date.now()+60_000});
- const {requestId:_requestId,agent:_agent,incarnation:_incarnation,sessionId:_sessionId,memberId:_memberId,
-  approverMemberId:_approverMemberId,definitionHash:_definitionHash,accountId:_accountId,credentialRevision:_revision,...request}=call;
- return {call,request};
-}
-it('delegates only the requested call and admitted turn to custody, with no receipt in arguments',async()=>{
- const {turnId,opened}=await openTurn(70),{call,request}=await outsideFixture();
- const point={turnCapability:opened.turnCapability,turnId,sequence:70,sessionId:session,memberId:ids.member,admissionNonce};
- ids.outsideDispatch.mockImplementation(async(_binding,_call,options)=>{options.assertCurrent();return {content:[{type:'text',text:'Fixture result'}]}});
- const {executeApprovedOutsideCall}=await import('../../../packages/agent-kit/src/vault-broker-client.js');
- expect(await executeApprovedOutsideCall(point,request)).toEqual({content:[{type:'text',text:'Fixture result'}]});
- expect(ids.outsideDispatch).toHaveBeenCalledWith({agent,incarnation,sessionId:session,memberId:ids.member,approverMemberId:ids.member,
-  admissionNonce,policyRevision:2},request,{deadlineAtMs:expect.any(Number),assertCurrent:expect.any(Function)});
- ids.outsideDispatch.mockClear();
- for(const changed of [{turnCapability:'f'.repeat(43)},{memberId:'another-member'},{sessionId:'another-session'},
-  {admissionNonce:'f'.repeat(43)},{turnId:'another-turn'},{sequence:71}])
-  await expect(runtime('outside.execute',{...point,...changed,call:request})).rejects.toThrow('Vault reader unavailable');
- for(const changed of [{memberId:'invented-member'},{requestId:'copied-receipt'}])
-  await expect(runtime('outside.execute',{...point,call:{...request,...changed}})).rejects.toThrow('Vault reader unavailable');
- expect(ids.outsideDispatch).not.toHaveBeenCalled();
-});
-it('uses a real ordinary tool callback and atomically refuses concurrent retries before another dispatch',async()=>{
- const {turnId,opened}=await openTurn(71),{call}=await outsideFixture();
- setVaultTurnCapability({sessionId:session,turnId,sequence:71,incarnation},{turnId,sequence:71,capability:opened.turnCapability,expiresAt:Date.now()+60_000});
- let providerCalls=0;
- ids.outsideDispatch.mockImplementation(async(_binding,exact,options)=>{
-  options.assertCurrent();const {input:_input,...receipt}=call;await consumeOutsideExecutionApproval(pool,{...receipt,payloadHash:outsidePayloadHash(exact.toolName,exact.input)});
-  providerCalls++;return {content:[{type:'text',text:'Fixture result'}]};
- });
- const {resolveOutsideTools}=await import('../../../packages/agent-kit/src/outside-connections.js');
- const {runOutsideTool}=await import('../../chief-of-staff/lib/outside-tools.js');
- const tools=await resolveOutsideTools({...roleDefinition,grants:[{capability:'outside',scope:'read'}],autonomy:{outside:'gated'},
-  outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Lookup',token:true,trusted:false,tools:{allow:['lookup'],read:['lookup']}}]},
-  {acceptedTools:async()=>[{name:'lookup',inputSchema:{type:'object'}}],executor:(connection,tool)=>async(input,ctx)=>runOutsideTool(connection,tool,input,ctx)});
- const execute=tools!['registry__lookup']!.execute;
- const ctx={callId:call.callId,toolName:'registry__lookup',session:{id:session,turn:{id:turnId,sequence:71},auth:{current:{authenticator:'lares-console',
-  attributes:{lares_member_id:ids.member,lares_admission_nonce:admissionNonce,lares_purpose:'human'}}}}};
- const results=await Promise.allSettled([execute(call.input,ctx as never),execute(call.input,ctx as never)]);
- expect(results.filter(result=>result.status==='fulfilled')).toHaveLength(1);expect(providerCalls).toBe(1);
- await expect(execute(call.input,ctx as never)).rejects.toThrow();expect(providerCalls).toBe(1);
-});
-it('refuses a closed or expired outside turn and checks closure during dispatch',async()=>{
- const {turnId,opened}=await openTurn(72),{request}=await outsideFixture();
- const point={turnCapability:opened.turnCapability,turnId,sequence:72,sessionId:session,memberId:ids.member,admissionNonce};
- ids.clock+=5*60_000+1;
- await expect(runtime('outside.execute',{...point,call:request})).rejects.toThrow('Vault reader unavailable');
- expect(ids.outsideDispatch).not.toHaveBeenCalled();
- const next=await openTurn(73),nextPoint={...point,turnCapability:next.opened.turnCapability,turnId:next.turnId,sequence:73};
- ids.outsideDispatch.mockImplementation(async(_binding,_call,options)=>{
-  await runtime('turn.close',{turnCapability:nextPoint.turnCapability,turnId:nextPoint.turnId,sequence:73});
-  options.assertCurrent();return {content:[]};
- });
- await expect(runtime('outside.execute',{...nextPoint,call:request})).rejects.toThrow('Vault reader unavailable');
- expect(ids.outsideDispatch).toHaveBeenCalledOnce();ids.outsideDispatch.mockClear();
- await expect(runtime('outside.execute',{...nextPoint,call:request})).rejects.toThrow();expect(ids.outsideDispatch).not.toHaveBeenCalled();
-});
 it('reads accepted metadata through the signed broker only for the current private session',async()=>{
  ids.outsideTools.mockResolvedValue([{name:'lookup',inputSchema:{type:'object'}}]);
  const input={sessionId:session,memberId:ids.member,admissionNonce,connectionName:'registry'};
@@ -554,18 +504,197 @@ it('executes through the real application-role pool while that role cannot read 
   await pool.query(`GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.${tablename} TO ${role}`);
  const url=new URL(container.getConnectionUri());url.username=role;url.password=password;
  const application=quiet(new Pool({connectionString:url.href,max:2}));
+ const custodyRole=ENGINE_DATABASE_ROLES.outsideCustody;
+ await pool.query(`CREATE ROLE ${custodyRole} LOGIN PASSWORD '${password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT`);
+ await pool.query(`GRANT USAGE ON SCHEMA public TO ${custodyRole}`);
+ await pool.query(`GRANT SELECT,INSERT ON outside_execution_approvals TO ${custodyRole}`);
+ await pool.query(`GRANT UPDATE(consumed_at) ON outside_execution_approvals TO ${custodyRole}`);
+ const custodyUrl=new URL(container.getConnectionUri());custodyUrl.username=custodyRole;custodyUrl.password=password;
+ const custody=quiet(new Pool({connectionString:custodyUrl.href,max:2}));
  try{
   expect((await application.query('SELECT current_user AS role')).rows[0].role).toBe(role);
   expect((await application.query("SELECT has_table_privilege(current_user,'public.outside_execution_approvals','SELECT') AS allowed")).rows[0].allowed).toBe(false);
   await expect(application.query('SELECT call_id FROM outside_execution_approvals')).rejects.toMatchObject({code:'42501'});
   await stopBroker?.();stopBroker=undefined;stopBroker=await startBroker(application);
-  const {turnId,opened}=await openTurn(74),{request}=await outsideFixture();
-  ids.outsideDispatch.mockImplementation(async(_binding,call,options)=>{options.assertCurrent();expect(call).toEqual(request);return {content:[{type:'text',text:'Fixture result'}]}});
-  expect(await runtime('outside.execute',{turnCapability:opened.turnCapability,turnId,sequence:74,sessionId:session,memberId:ids.member,admissionNonce,call:request}))
-   .toMatchObject({result:{content:[{type:'text',text:'Fixture result'}]}});
-  expect(ids.outsideDispatch).toHaveBeenCalledOnce();
+  const exact=await exactOutsideFixture({receipts:custody});
+  expect(await exact.tool.execute(exact.input,exact.resumed)).toEqual({content:[{type:'text',text:'Fixture result'}]});
+  expect(ids.outsideApprove).toHaveBeenCalledOnce();expect(ids.outsideDispatch).toHaveBeenCalledOnce();
+  await expect(exact.tool.execute(exact.input,exact.resumed)).rejects.toThrow();
+  await expect(custody.query('SELECT * FROM approval_asks')).rejects.toMatchObject({code:'42501'});
   expect((await application.query("SELECT has_table_privilege(current_user,'public.outside_execution_approvals','SELECT') AS allowed")).rows[0].allowed).toBe(false);
  }finally{
-  await stopBroker?.();stopBroker=undefined;await application.end();stopBroker=await startBroker();
+  await stopBroker?.();stopBroker=undefined;await application.end();await custody.end();stopBroker=await startBroker();
  }
+});
+
+/** Real exact asks and durable tool phases; only the custody/provider boundary is substituted. */
+async function exactOutsideFixture(options:{answer?:boolean;receipts?:Pool}={}){
+ const receipts=options.receipts??pool;
+ roleDefinition=definitionSchema.parse({...defaultRoleDefinition,
+  grants:[...defaultRoleDefinition.grants,{capability:'outside',scope:'read'}],autonomy:{...defaultRoleDefinition.autonomy,outside:'gated'},
+  outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Lookup',token:true,trusted:false,tools:{allow:['lookup'],read:['lookup']}}]});
+ definitionHash=hashOf({definition:roleDefinition,dutiesMd,voiceMd});
+ session='outside_'+randomUUID().replaceAll('-','');admissionNonce=createHash('sha256').update(randomUUID()).digest('base64url');
+ await pool.query("UPDATE agent_definitions SET definition=$1,hash=$2 WHERE name=$3",[roleDefinition,definitionHash,agent]);
+ await pool.query('UPDATE agent_resources SET applied_definition=$1 WHERE name=$2',[roleDefinition,agent]);
+ expect(await new PgGrantStore(pool).captureUse(ids.member,agent)).toBeDefined();
+ await bindConsoleSession({agent,incarnation,sessionId:session,memberId:ids.member,admissionNonce},pool as never,env);
+ const {resolveOutsideTools}=await import('../../../packages/agent-kit/src/outside-connections.js');
+ const tools=await resolveOutsideTools(roleDefinition,{acceptedTools:async()=>[{name:'lookup',inputSchema:{type:'object'}}],
+  approval:(connection,tool)=>({request:ctx=>requestOutsideApproval(connection,tool,ctx),response:ctx=>respondOutsideApproval(connection,tool,ctx)}),
+  executor:(connection,tool)=>(input,ctx)=>runOutsideTool(connection,tool,input,ctx)});
+ const tool=tools!['registry__lookup']! as any,input={company:'Example'},call={callId:randomUUID(),connectionName:'registry',toolName:'lookup',input};
+ const toolName='registry__lookup',requestId=randomUUID(),human=memberAuth('human'),resolver=memberAuth('resolver');
+ const {turnId,opened}=await openTurn(80);
+ const context={callId:call.callId,toolName,toolInput:input,session:{id:session,turn:{id:turnId,sequence:80},auth:{current:human,initiator:human}}};
+ expect(await tool.approval.request(context)).toBe('user-approval');
+ await makeApprovalRecord()['input.requested']({data:{requests:[{kind:'tool-approval',requestId,action:{callId:call.callId,toolName,input}}]}},context as never);
+ await runtime('turn.close',{turnCapability:opened.turnCapability,turnId,sequence:80});
+ const response={request:{requestId,callId:call.callId,toolName,toolInput:input},responder:resolver,
+  session:{id:session,initiator:human,turn:{id:'answer-turn',sequence:81}}};
+ const resumed={...context,session:{...context.session,turn:{id:'answer-turn',sequence:81},auth:{current:resolver,initiator:human}}};
+ if(options.answer!==false)expect(await tool.approval.response(response)).toEqual({status:'allowed'});
+ const binding={sessionId:session,memberId:ids.member,admissionNonce};
+ // Keep the receipt strictly secret-free: the production recorder rejects unknown keys.
+ ids.outsideApprove.mockImplementation(async(binding,requested,approved,deadline)=>{
+  deadline.assertCurrent();await recordOutsideExecutionApproval(receipts,{callId:requested.callId,requestId:approved.requestId,
+   agent:binding.agent,incarnation:binding.incarnation,sessionId:binding.sessionId,memberId:binding.memberId,
+   approverMemberId:binding.approverMemberId,definitionHash:approved.definitionHash,connectionName:requested.connectionName,
+   accountId:'55555555-5555-4555-8555-555555555555',credentialRevision:1,toolName:requested.toolName,
+   payloadHash:outsidePayloadHash(requested.toolName,requested.input),expiresAt:approved.expiresAt});
+ });
+ ids.outsideDispatch.mockImplementation(async(binding,requested,deadline)=>{
+  deadline.assertCurrent();const row=(await receipts.query('SELECT request_id FROM outside_execution_approvals WHERE call_id=$1',[requested.callId])).rows[0];
+  await consumeOutsideExecutionApproval(receipts,{callId:requested.callId,requestId:row.request_id,
+   agent:binding.agent,incarnation:binding.incarnation,sessionId:binding.sessionId,memberId:binding.memberId,
+   approverMemberId:binding.approverMemberId,definitionHash,connectionName:requested.connectionName,
+   accountId:'55555555-5555-4555-8555-555555555555',credentialRevision:1,toolName:requested.toolName,
+   payloadHash:outsidePayloadHash(requested.toolName,requested.input)});
+  return {content:[{type:'text',text:'Fixture result'}]};
+ });
+ return {tool,input,call,binding,response,resumed,context};
+}
+it('resumes the real outside tool after original turn closure exactly once under concurrent responses',async()=>{
+ const f=await exactOutsideFixture();
+ const results=await Promise.allSettled([f.tool.execute(f.input,f.resumed),f.tool.execute(f.input,f.resumed)]);
+ expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+ expect(ids.outsideApprove).toHaveBeenCalledOnce();expect(ids.outsideDispatch).toHaveBeenCalledOnce();
+ await expect(f.tool.execute(f.input,f.resumed)).rejects.toThrow();expect(ids.outsideDispatch).toHaveBeenCalledOnce();
+ expect((await pool.query('SELECT use_count FROM approval_asks WHERE call_id=$1',[f.call.callId])).rows[0].use_count).toBe(1);
+});
+it.each(['rejection','different-responder','changed-payload','changed-member','changed-session','revocation','expiry','human-resume'])(
+ 'outside tool refuses %s before custody/provider',async(kind)=>{
+ const f=await exactOutsideFixture({answer:kind!=='rejection'&&kind!=='different-responder'});
+ let ctx=f.resumed,input=f.input;
+ if(kind==='rejection')await makeApprovalRecord()['input.resolved']({data:{resolutions:[{kind:'tool-approval',requestId:f.response.request.requestId,outcome:'denied'}]}},f.resumed as never);
+ if(kind==='different-responder'){
+  await expect(f.tool.approval.response({...f.response,responder:{...memberAuth('resolver'),attributes:{...memberAuth('resolver').attributes,lares_member_id:'member-backup'}}})).rejects.toThrow();
+ }
+ if(kind==='changed-payload')input={company:'Changed'};
+ if(kind==='changed-member')ctx={...ctx,session:{...ctx.session,auth:{...ctx.session.auth,current:{...memberAuth('resolver'),attributes:{...memberAuth('resolver').attributes,lares_member_id:'member-backup'}}}}};
+ if(kind==='changed-session')ctx={...ctx,session:{...ctx.session,id:'another-session'}};
+ if(kind==='revocation')await pool.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE session_id=$1',[session]);
+ if(kind==='human-resume')ctx=f.context;
+ if(kind==='expiry'){vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(Date.now()+25*60*60_000);}
+ try{await expect(f.tool.execute(input,ctx)).rejects.toThrow();}
+ finally{vi.useRealTimers();}
+ expect(ids.outsideApprove).not.toHaveBeenCalled();expect(ids.outsideDispatch).not.toHaveBeenCalled();
+});
+it('the exact-call handle cannot read Vault/open a turn, and altered calls consume it without dispatch',async()=>{
+ const f=await exactOutsideFixture(),approved=await runtime('outside.approve',{...f.binding,call:f.call});
+ await expect(runtime('vault.read',{...f.binding,turnCapability:approved.outsideCapability,turnId:'answer-turn',sequence:81,operation:'read',area:'private',path:'owner.md'})).rejects.toThrow();
+ await expect(runtime('turn.open',{pendingReceipt:approved.outsideCapability,...f.binding,turnId:'answer-turn',sequence:81,definition:{definition:roleDefinition,dutiesMd,voiceMd,hash:definitionHash}})).rejects.toThrow();
+ await expect(runtime('outside.execute',{...f.binding,...approved,call:{...f.call,input:{company:'Changed'}}})).rejects.toThrow();
+ await expect(runtime('outside.execute',{...f.binding,...approved,call:f.call})).rejects.toThrow();
+ expect(ids.outsideDispatch).not.toHaveBeenCalled();
+});
+it('a lost receipt response or broker restart cannot regrant a claimed ask',async()=>{
+ const f=await exactOutsideFixture();ids.outsideApprove.mockRejectedValueOnce(new Error('uncertain receipt outcome'));
+ await expect(runtime('outside.approve',{...f.binding,call:f.call})).rejects.toThrow();
+ await stopBroker?.();stopBroker=await startBroker();
+ await expect(runtime('outside.approve',{...f.binding,call:f.call})).rejects.toThrow();
+ expect(ids.outsideApprove).toHaveBeenCalledOnce();expect(ids.outsideDispatch).not.toHaveBeenCalled();
+});
+it('capability expiry refuses before provider dispatch',async()=>{
+ const f=await exactOutsideFixture(),approved=await runtime('outside.approve',{...f.binding,call:f.call});
+ vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(Date.now()+61_000);
+ try{await expect(runtime('outside.execute',{...f.binding,...approved,call:f.call})).rejects.toThrow();}
+ finally{vi.useRealTimers();}
+ expect(ids.outsideDispatch).not.toHaveBeenCalled();
+});
+
+it.each(['session-revoked','approval-cancelled','policy-changed','wrong-member','wrong-payload','old-turn-fallback'])(
+ 'an issued handle refuses %s before provider dispatch',async(kind)=>{
+ const f=await exactOutsideFixture(),approved=await runtime('outside.approve',{...f.binding,call:f.call});
+ if(kind==='session-revoked')await pool.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE session_id=$1',[session]);
+ if(kind==='approval-cancelled')await makeApprovalRecord()['input.resolved']({data:{resolutions:[{kind:'tool-approval',requestId:f.response.request.requestId,outcome:'denied'}]}},f.resumed as never);
+ if(kind==='policy-changed')await pool.query("INSERT INTO ratchet(agent,capability,action,level) VALUES($1,'outside','','never')",[agent]);
+ const request={...f.binding,...approved,call:f.call};
+ if(kind==='wrong-member')request.memberId='member-backup';
+ if(kind==='wrong-payload')request.call={...f.call,input:{company:'Changed'}};
+ if(kind==='old-turn-fallback'){delete request.outsideCapability;Object.assign(request,{turnCapability:'copied-turn',turnId:'original-turn',sequence:80});}
+ await expect(runtime('outside.execute',request)).rejects.toThrow();expect(ids.outsideDispatch).not.toHaveBeenCalled();
+});
+it('a broker restart loses an issued handle and cannot issue another for the consumed ask',async()=>{
+ const f=await exactOutsideFixture(),approved=await runtime('outside.approve',{...f.binding,call:f.call});
+ await stopBroker?.();stopBroker=await startBroker();
+ await expect(runtime('outside.execute',{...f.binding,...approved,call:f.call})).rejects.toThrow();
+ await expect(runtime('outside.approve',{...f.binding,call:f.call})).rejects.toThrow();expect(ids.outsideDispatch).not.toHaveBeenCalled();
+});
+
+const insertNever="INSERT INTO ratchet(agent,capability,action,level) VALUES($1,'outside','','never')";
+it('holds an absent ratchet override against the first never insertion until provider dispatch finishes',async()=>{
+ const f=await exactOutsideFixture(),approved=await runtime('outside.approve',{...f.binding,call:f.call});
+ expect((await pool.query("SELECT 1 FROM ratchet WHERE agent=$1 AND capability='outside'",[agent])).rowCount).toBe(0);
+ const originalDispatch=ids.outsideDispatch.getMockImplementation()!;
+ let enterDispatch!:()=>void,releaseDispatch!:()=>void,insertCommitted=false,providerCalls=0;
+ const entered=new Promise<void>(resolve=>{enterDispatch=resolve}),released=new Promise<void>(resolve=>{releaseDispatch=resolve});
+ ids.outsideDispatch.mockImplementation(async(...args)=>{
+  enterDispatch();await released;
+  expect(insertCommitted).toBe(false);providerCalls++;
+  return originalDispatch(...args);
+ });
+ const writer=await pool.connect();let execution:Promise<unknown>|undefined,mutation:Promise<void>|undefined;
+ try{
+  const pid=Number((await writer.query('SELECT pg_backend_pid() AS pid')).rows[0].pid);
+  execution=runtime('outside.execute',{...f.binding,...approved,call:f.call});
+  await entered;
+  await writer.query('BEGIN');
+  mutation=(async()=>{await writer.query(insertNever,[agent]);await writer.query('COMMIT');insertCommitted=true;})();
+  let waiting=false;
+  for(let attempt=0;attempt<100;attempt++){
+   const locks=await pool.query(`SELECT 1 FROM pg_locks WHERE pid=$1 AND locktype='relation'
+    AND relation='ratchet'::regclass AND mode='RowExclusiveLock' AND NOT granted`,[pid]);
+   if(locks.rowCount===1){waiting=true;break;}
+   await new Promise(resolve=>setTimeout(resolve,10));
+  }
+  expect(waiting).toBe(true);expect(insertCommitted).toBe(false);expect(providerCalls).toBe(0);
+  releaseDispatch();await execution;await mutation;
+  expect(providerCalls).toBe(1);expect(insertCommitted).toBe(true);
+  expect((await pool.query("SELECT level FROM ratchet WHERE agent=$1 AND capability='outside'",[agent])).rows[0].level).toBe('never');
+ }finally{
+  releaseDispatch();await Promise.allSettled([...(execution?[execution]:[]),...(mutation?[mutation]:[])]);
+  await writer.query('ROLLBACK');writer.release();
+ }
+});
+it('refuses before custody/provider when the first never override commits before dispatch',async()=>{
+ const f=await exactOutsideFixture(),approved=await runtime('outside.approve',{...f.binding,call:f.call});
+ const writer=await pool.connect();
+ try{
+  await writer.query('BEGIN');await writer.query(insertNever,[agent]);await writer.query('COMMIT');
+  await expect(runtime('outside.execute',{...f.binding,...approved,call:f.call})).rejects.toThrow();
+  expect(ids.outsideDispatch).not.toHaveBeenCalled();
+ }finally{await writer.query('ROLLBACK');writer.release();}
+});
+it.each(['pending','issued'])('does not revive an %s approval after absent -> never -> deleted restoration',async(stage)=>{
+ const f=await exactOutsideFixture({answer:stage!=='pending'});
+ const approved=stage==='issued'?await runtime('outside.approve',{...f.binding,call:f.call}):undefined;
+ await pool.query(insertNever,[agent]);
+ await pool.query("DELETE FROM ratchet WHERE agent=$1 AND capability='outside' AND action=''",[agent]);
+ expect((await pool.query("SELECT 1 FROM ratchet WHERE agent=$1 AND capability='outside'",[agent])).rowCount).toBe(0);
+ expect((await pool.query("SELECT count(*)::int AS count FROM ratchet_audit WHERE agent=$1 AND capability='outside'",[agent])).rows[0].count).toBe(2);
+ if(stage==='pending')await expect(f.tool.approval.response(f.response)).rejects.toThrow();
+ else await expect(runtime('outside.execute',{...f.binding,...approved,call:f.call})).rejects.toThrow();
+ expect(ids.outsideDispatch).not.toHaveBeenCalled();
+ if(stage==='pending')expect(ids.outsideApprove).not.toHaveBeenCalled();
 });

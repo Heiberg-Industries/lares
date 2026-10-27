@@ -12,7 +12,7 @@ import type { SourceBinding, SourcePool } from "@lares/agent-kit/console-source-
 import { checkConsoleSourceDeadlines, consoleSourceTransaction, gateConsoleOrganisation, requireSourceTransactionOwner, retainConsoleSourceDeadline, retainSourceTransactionDeadline, SourceAuthorityUnavailable, type SourceDatabase } from "@lares/agent-kit/console-source-transaction";
 import { requireConsoleSessionBinding } from "@lares/agent-kit/console-turn-authority";
 import { PgGrantStore, type GrantDatabase } from "@lares/agent-kit/grant-store";
-import { consumeOutsideExecutionApproval, outsideExecutionApprovalSchema, outsidePayloadHash, type OutsideExecutionApproval } from "@lares/agent-kit/outside-execution-receipts";
+import { recordOutsideExecutionApproval, consumeOutsideExecutionApproval, outsideExecutionApprovalSchema, outsidePayloadHash, type OutsideExecutionApproval } from "@lares/agent-kit/outside-execution-receipts";
 import { currentMember } from "@lares/agent-kit/member-store";
 import { z } from "zod";
 
@@ -2063,6 +2063,37 @@ export class OutsideCustodyStore {
         options.assertCurrent?.();
         return checked.projection!.tools.filter(tool=>checked.policy.publication.acceptedScope.allow.includes(tool.name)&&
           checked.projection!.allow.includes(tool.name)&&checked.capture.outside.connection.allow.includes(tool.name));
+      },undefined,options));
+    }catch{return requestDenied();}finally{release();}
+  }
+
+  /** Called only by the authenticated broker after it claims the immutable approved ask.
+   * Account/revision are resolved here on the custody role, never accepted from tool arguments. */
+  async approveExecution(binding:OutsideExecutionBinding,requested:OutsideToolCallRequest,
+    approval:{requestId:string;definitionHash:string;expiresAt:number},options:{deadlineAtMs:number;assertCurrent?:()=>void}):Promise<void>{
+    const release=this.#beginOperation(requestDenied);
+    try{
+      if(!requested||Object.keys(requested).some(key=>!['callId','connectionName','toolName','input'].includes(key))||
+          !outsideExecutionApprovalSchema.shape.callId.safeParse(requested.callId).success||
+          !outsideExecutionApprovalSchema.shape.connectionName.safeParse(requested.connectionName).success||
+          !outsideExecutionApprovalSchema.shape.toolName.safeParse(requested.toolName).success)return requestDenied();
+      await this.#inMainNamespace(options,()=>consoleSourceTransaction(this.pool,async source=>{
+        const db=source as PoolClient;
+        options.assertCurrent?.();
+        const capture=await captureOutsideHumanUse(db,binding.memberId,binding.agent,requested.connectionName);
+        const heads=await db.query<{account_id:string;active_revision:string}>(`SELECT account_id::text,active_revision::text
+          FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 AND state='active'
+          AND active_revision IS NOT NULL`,[capture.agent.ownerMemberId,binding.agent,requested.connectionName]);
+        if(heads.rows.length!==1)return denied();
+        const head=heads.rows[0]!,selectors={definitionHash:approval.definitionHash,connectionName:requested.connectionName,
+          accountId:head.account_id,credentialRevision:number(head.active_revision)};
+        await this.#checkRuntimeExecutable(binding,selectors,options,db,false,undefined,{...requested,requestId:approval.requestId});
+        options.assertCurrent?.();
+        await recordOutsideExecutionApproval(db,{...selectors,callId:requested.callId,requestId:approval.requestId,
+          sessionId:binding.sessionId,memberId:binding.memberId,approverMemberId:binding.approverMemberId,
+          agent:binding.agent,incarnation:binding.incarnation,toolName:requested.toolName,
+          payloadHash:outsidePayloadHash(requested.toolName,requested.input),expiresAt:approval.expiresAt});
+        options.assertCurrent?.();
       },undefined,options));
     }catch{return requestDenied();}finally{release();}
   }

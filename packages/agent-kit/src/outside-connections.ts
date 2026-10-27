@@ -198,6 +198,7 @@ type OutsideSchemaJson=null|boolean|number|string|OutsideSchemaJson[]|{[key:stri
 export interface AcceptedOutsideTool { name:string; description?:string; inputSchema:{[key:string]:OutsideSchemaJson} }
 export interface OutsideRuntimeDeps {
   acceptedTools:(connectionName:string)=>Promise<AcceptedOutsideTool[]>;
+  approval?:(connectionName:string,toolName:string)=>{request:(ctx:ApprovalContext)=>Promise<ApprovalStatus>;response:(ctx:ApprovalResponseContext)=>Promise<ApprovalResponseDecision>};
   /** Role-owned durable executor; its authority comes from the admitted-turn hook. */
   executor:(connectionName:string,toolName:string)=>(input:unknown,ctx:ToolContext)=>Promise<unknown>;
 }
@@ -213,7 +214,7 @@ export async function resolveOutsideTools(definition:OutsideDefinitionView,deps:
     for(const tool of accepted){
       if(!entry.tools.allow.includes(tool.name))continue;
       tools[`${entry.name}__${tool.name}`]=defineTool({description:tool.description??'',inputSchema:tool.inputSchema,
-        approval:defineDurableCallback({closure:{},callback:()=> 'user-approval' as const}),execute:deps.executor(entry.name,tool.name)});
+        approval:deps.approval?.(entry.name,tool.name)??defineDurableCallback({closure:{},callback:()=> 'user-approval' as const}),execute:deps.executor(entry.name,tool.name)});
     }
   }
   return Object.keys(tools).length?tools:null;
