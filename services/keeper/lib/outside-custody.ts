@@ -12,7 +12,7 @@ import type { SourceBinding, SourcePool } from "@lares/agent-kit/console-source-
 import { checkConsoleSourceDeadlines, consoleSourceTransaction, gateConsoleOrganisation, requireSourceTransactionOwner, retainConsoleSourceDeadline, retainSourceTransactionDeadline, SourceAuthorityUnavailable, type SourceDatabase } from "@lares/agent-kit/console-source-transaction";
 import { requireConsoleSessionBinding } from "@lares/agent-kit/console-turn-authority";
 import { PgGrantStore, type GrantDatabase } from "@lares/agent-kit/grant-store";
-import { consumeOutsideExecutionApproval, outsidePayloadHash, type OutsideExecutionApproval } from "@lares/agent-kit/outside-execution-receipts";
+import { consumeOutsideExecutionApproval, outsideExecutionApprovalSchema, outsidePayloadHash, type OutsideExecutionApproval } from "@lares/agent-kit/outside-execution-receipts";
 import { currentMember } from "@lares/agent-kit/member-store";
 import { z } from "zod";
 
@@ -91,6 +91,7 @@ export type OutsideExecutionBinding={agent:string;incarnation:string;sessionId:s
 export type OutsideToolCallResult={content:OutsideJson[];isError?:boolean;structuredContent?:OutsideJson};
 export type OutsideToolCallInput=Pick<OutsideExecutionApproval,'callId'|'requestId'|'sessionId'|'memberId'|'approverMemberId'|'agent'|'incarnation'|
   'definitionHash'|'connectionName'|'accountId'|'credentialRevision'|'toolName'> & {input:OutsideJson};
+export type OutsideToolCallRequest=Pick<OutsideToolCallInput,'callId'|'connectionName'|'toolName'|'input'>;
 type DescriptorProjection={version:1;connectionName:string;scope:'read'|'write'|'write-with-confirm';allow:string[];read:string[];tools:OutsideListedTool[]};
 type StoredEvidence={operation_id:string;account_id:string;owner_member_id:string;actor_member_id:string|null;operation_kind:string;
   request_hash:Buffer;result_nonce:Buffer;result_ciphertext:Buffer;evidence_kind:string|null;evidence_hash:Buffer|null;outcome:string;
@@ -1968,23 +1969,120 @@ export class OutsideCustodyStore {
     return denied();
   }
 
+  /** Shared current authority and accepted-catalog validation; metadata never opens credentials. */
+  async #checkRuntimeExecutable(binding:OutsideExecutionBinding,
+    input:Pick<OutsideToolCallInput,'definitionHash'|'connectionName'|'accountId'|'credentialRevision'>,
+    options:{assertCurrent?:()=>void},db:PoolClient,consume:boolean,assertRoute?:()=>Promise<unknown>,
+    execution?:Pick<OutsideToolCallInput,'callId'|'requestId'|'toolName'|'input'>){
+    const session=await requireConsoleSessionBinding({agent:binding.agent,incarnation:binding.incarnation,sessionId:binding.sessionId,
+      memberId:binding.memberId,admissionNonce:binding.admissionNonce},db as never);
+    if(session.policyRevision!==binding.policyRevision)return denied();
+    options.assertCurrent?.();
+    const current=await captureOutsideHumanUse(db,binding.memberId,binding.agent,input.connectionName);
+    if(current.actor.memberId!==binding.memberId||current.agent.definitionHash!==input.definitionHash||
+        current.outside.connection.name!==input.connectionName||(execution&&!current.outside.connection.allow.includes(execution.toolName)))return denied();
+    const actor=await currentMember(db as never,binding.memberId,{lock:'share'}),approver=await currentMember(db as never,binding.approverMemberId,{lock:'share'});
+    if(!actor||!approver||actor.organisationId!==approver.organisationId)return denied();
+    // A staged replacement is not active. Preserve the unchanged active pointer
+    // and generation after failed Apply; successful activation invalidates old work.
+    const head=await this.head(db,input.accountId,true);
+    if(!head||head.owner_member_id!==current.agent.ownerMemberId||head.resource_id!==binding.agent||
+        head.connection_name!==input.connectionName||head.state!=='active'||head.active_revision===null||
+        number(head.active_revision)!==input.credentialRevision)return denied();
+    const revision=await db.query<{owner_member_id:string;generation:string;credential_revision:string;consent_generation:string;
+      revision_purpose:string;policy_json:string;policy_hash:Buffer;operation_id:string;nonce:Buffer;ciphertext:Buffer}>(`SELECT owner_member_id,
+        generation::text,credential_revision::text,consent_generation::text,revision_purpose,policy_json::text,policy_hash,operation_id,nonce,ciphertext
+      FROM outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2`,[input.accountId,input.credentialRevision]);
+    const row=revision.rows[0];if(revision.rows.length!==1||!row||row.owner_member_id!==head.owner_member_id||row.revision_purpose!=='executable'||
+        !Buffer.isBuffer(row.policy_hash)||row.policy_hash.length!==32||!Buffer.isBuffer(row.nonce)||!Buffer.isBuffer(row.ciphertext))return denied();
+    let policy: z.infer<typeof executablePolicySchema>;
+    try{policy=executablePolicySchema.parse(JSON.parse(row.policy_json));}catch{return denied();}
+    if(createHash('sha256').update(canonicalJson(policy)).digest('hex')!==row.policy_hash.toString('hex')||
+        policy.ownerMemberId!==head.owner_member_id||policy.accountId!==input.accountId||policy.resourceId!==binding.agent||
+        policy.connectionName!==input.connectionName||canonicalJson(policy.capture)!==canonicalJson(current)||
+        number(row.generation)!==number(head.generation)||
+        (number(row.consent_generation)!==number(head.consent_generation)&&
+          !(head.candidate_revision!==null&&number(head.candidate_revision)>input.credentialRevision&&
+            number(row.consent_generation)<number(head.consent_generation)))||
+        (execution&&!policy.publication.acceptedScope.allow.includes(execution.toolName)))return denied();
+    const publication=await this.#readEvidence(db,input.accountId,policy.publication.id,'descriptor-publication-v1');
+    if(publication.row.outcome!=='published'||publication.body.publicationHash!==policy.publication.hash||
+        publication.row.evidence_hash?.toString('hex')!==publication.bodyHash)return denied();
+    const projection=publication.body.projection as DescriptorProjection;
+    // Keep the authenticated full-publication body hash above, and independently bind
+    // the descriptor to the validated projection that staging actually hashes.
+    if(createHash('sha256').update(canonicalJson(projection)).digest('hex')!==policy.publication.descriptorDigest||
+        projection.connectionName!==input.connectionName||(execution&&(!projection.allow.includes(execution.toolName)||
+        !projection.tools.some(tool=>tool.name===execution.toolName))))return denied();
+    const acceptance=await this.#readEvidence(db,input.accountId,policy.acceptance.id,'descriptor-acceptance-v1');
+    if(acceptance.row.outcome!=='accepted'||acceptance.row.evidence_hash?.toString('hex')!==policy.acceptance.hash||
+        acceptance.body.editorMemberId!==policy.acceptance.editorMemberId||acceptance.body.publicationId!==policy.publication.id||
+        acceptance.body.publicationHash!==policy.publication.hash)return denied();
+    let plaintext:Buffer|undefined;
+    if(consume){
+      if(!execution)return denied();
+      const selectors={callId:execution.callId,requestId:execution.requestId,sessionId:binding.sessionId,memberId:binding.memberId,
+        approverMemberId:binding.approverMemberId,agent:binding.agent,incarnation:binding.incarnation,definitionHash:input.definitionHash,
+        connectionName:input.connectionName,accountId:input.accountId,credentialRevision:input.credentialRevision,
+        toolName:execution.toolName,payloadHash:outsidePayloadHash(execution.toolName,execution.input)};
+
+      await assertRoute?.();
+      options.assertCurrent?.();
+      await consumeOutsideExecutionApproval(db,selectors);
+      await assertRoute?.();
+      plaintext=openBound(this.key,row.nonce,row.ciphertext,{ownerMemberId:row.owner_member_id,accountId:input.accountId,
+        resourceId:binding.agent,connectionName:input.connectionName,generation:number(row.generation),credentialRevision:input.credentialRevision,
+        consentGeneration:number(row.consent_generation),operationId:row.operation_id,revisionPurpose:'executable',policyHash:row.policy_hash.toString('hex')});
+      try{
+        outsideBearer(plaintext);
+        await checkConsoleSourceDeadlines(db);
+        return {capture:current,head,revision:row,policy,credential:plaintext};
+      }catch(error){plaintext.fill(0);throw error;}
+    }
+    await checkConsoleSourceDeadlines(db);
+    return {capture:current,head,revision:row,policy,projection};
+  }
+
+  /** Read only the currently executable, accepted descriptors under the existing source boundary. */
+  async acceptedRuntimeTools(binding:OutsideExecutionBinding,definitionHash:string,connectionName:string,
+    options:{deadlineAtMs:number;assertCurrent?:()=>void}):Promise<OutsideListedTool[]>{
+    const release=this.#beginOperation(requestDenied);
+    try{
+      if(!/^[a-z][a-z0-9-]{1,30}$/.test(connectionName)||!hashSchema.safeParse(definitionHash).success)return requestDenied();
+      return await this.#inMainNamespace(options,()=>consoleSourceTransaction(this.pool,async source=>{
+        const db=source as PoolClient;
+        options.assertCurrent?.();
+        const current=await captureOutsideHumanUse(db,binding.memberId,binding.agent,connectionName);
+        const heads=await db.query<{account_id:string;active_revision:string}>(`SELECT account_id::text,active_revision::text
+          FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 AND state='active'
+          AND active_revision IS NOT NULL`,[current.agent.ownerMemberId,binding.agent,connectionName]);
+        if(heads.rows.length!==1)return denied();
+        const head=heads.rows[0]!;
+        const checked=await this.#checkRuntimeExecutable(binding,{definitionHash,connectionName,accountId:head.account_id,
+          credentialRevision:number(head.active_revision)},options,db,false);
+        options.assertCurrent?.();
+        return checked.projection!.tools.filter(tool=>checked.policy.publication.acceptedScope.allow.includes(tool.name)&&
+          checked.projection!.allow.includes(tool.name)&&checked.capture.outside.connection.allow.includes(tool.name));
+      },undefined,options));
+    }catch{return requestDenied();}finally{release();}
+  }
+
   /** Keeper-only A1 seam. `binding` must come from the authenticated runtime transport; receipt
    *  selectors alone are never identity or session authority. The credential is decrypted only
    *  after current authority, accepted catalog, route, and one-use receipt checks succeed. */
-  async dispatchApproved(binding:OutsideExecutionBinding,input:OutsideToolCallInput,options:{deadlineAtMs:number;assertCurrent?:()=>void}):Promise<OutsideToolCallResult>{
+  async dispatchApproved(binding:OutsideExecutionBinding,requested:OutsideToolCallRequest,options:{deadlineAtMs:number;assertCurrent?:()=>void}):Promise<OutsideToolCallResult>{
     const release=this.#beginOperation(requestDenied);
     try{
       if(!binding||!/^([a-z][a-z0-9-]{1,30})$/.test(binding.agent)||!uuid.safeParse(binding.incarnation).success||
           !/^[A-Za-z0-9_-]{1,128}$/.test(binding.sessionId)||!/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(binding.memberId)||
           !/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(binding.approverMemberId))return requestDenied();
-      if(!Number.isFinite(options?.deadlineAtMs)||options.deadlineAtMs<=Date.now()||
-          input.agent!==binding.agent||input.incarnation!==binding.incarnation||input.sessionId!==binding.sessionId||
-          input.memberId!==binding.memberId||input.approverMemberId!==binding.approverMemberId||
-          !/^[a-z][a-z0-9-]{1,30}$/.test(input.connectionName)||!uuid.safeParse(input.accountId).success||
-          !Number.isSafeInteger(input.credentialRevision)||input.credentialRevision<1||
-          Buffer.byteLength(input.toolName)<1||Buffer.byteLength(input.toolName)>128||/[\x00-\x1f\x7f]/.test(input.toolName))return requestDenied();
+      if(!Number.isFinite(options?.deadlineAtMs)||options.deadlineAtMs<=Date.now()||!requested||
+          Object.keys(requested).some(key=>!['callId','connectionName','toolName','input'].includes(key))||
+          !outsideExecutionApprovalSchema.shape.callId.safeParse(requested.callId).success||
+          !outsideExecutionApprovalSchema.shape.connectionName.safeParse(requested.connectionName).success||
+          !outsideExecutionApprovalSchema.shape.toolName.safeParse(requested.toolName).success)return requestDenied();
       options.assertCurrent?.();
-      const payloadHash=outsidePayloadHash(input.toolName,input.input);
+      const payloadHash=outsidePayloadHash(requested.toolName,requested.input);
       const lifecycle=this.routeLifecycle;if(!lifecycle)return requestDenied();
       return await this.#inMainNamespace({deadlineAtMs:options.deadlineAtMs},async()=>{
         const namespaceClient=requireDefinitionNamespace();
@@ -1994,77 +2092,30 @@ export class OutsideCustodyStore {
         const runtimeRow=runtime.rows[0];
         if(runtime.rows.length!==1||!runtimeRow||runtimeRow.ownership_token!==binding.incarnation||
             runtimeRow.runtime_control_token!==binding.incarnation||runtimeRow.state!=='ready'||runtimeRow.pending!==false||
-            runtimeRow.hash!==input.definitionHash)return requestDenied();
+            !hashSchema.safeParse(runtimeRow.hash).success)return requestDenied();
+
+        // Receipt data belongs to the custody role. The broker's application role never reads it.
+        const receipt=await consoleSourceTransaction(this.pool,async source=>{
+          const rows=await source.query(`SELECT call_id AS "callId",request_id AS "requestId",session_id AS "sessionId",member_id AS "memberId",
+            approver_member_id AS "approverMemberId",agent,incarnation::text,encode(definition_hash,'hex') AS "definitionHash",
+            connection_name AS "connectionName",account_id::text AS "accountId",credential_revision::text AS "credentialRevision",
+            tool_name AS "toolName",encode(payload_hash,'hex') AS "payloadHash"
+            FROM outside_execution_approvals WHERE call_id=$1 AND agent=$2 AND incarnation=$3::uuid AND session_id=$4
+            AND member_id=$5 AND approver_member_id=$6 AND definition_hash=decode($7,'hex') AND connection_name=$8
+            AND tool_name=$9 AND payload_hash=decode($10,'hex') AND consumed_at IS NULL AND expires_at>clock_timestamp()`,
+            [requested.callId,binding.agent,binding.incarnation,binding.sessionId,binding.memberId,binding.approverMemberId,runtimeRow.hash,
+             requested.connectionName,requested.toolName,payloadHash]);
+          if(rows.rows.length!==1)return denied();
+          return outsideExecutionApprovalSchema.omit({expiresAt:true}).parse({...rows.rows[0],credentialRevision:Number(rows.rows[0]!.credentialRevision)});
+        },undefined,{deadlineAtMs:options.deadlineAtMs});
+        options.assertCurrent?.();
+        const {payloadHash:_payloadHash,...selectors}=receipt;
+        const input:OutsideToolCallInput={...selectors,input:requested.input};
 
         // Read only the stored executable revision to learn its already-reviewed route. Every
         // authority and receipt field is checked again under the owned source transaction below.
-        const check=async(db:PoolClient,consume:boolean,assertRoute?:()=>Promise<unknown>)=>{
-          const session=await requireConsoleSessionBinding({agent:binding.agent,incarnation:binding.incarnation,sessionId:binding.sessionId,
-            memberId:binding.memberId,admissionNonce:binding.admissionNonce},db as never);
-          if(session.policyRevision!==binding.policyRevision)return denied();
-          options.assertCurrent?.();
-          const current=await captureOutsideHumanUse(db,binding.memberId,input.agent,input.connectionName);
-          if(current.actor.memberId!==binding.memberId||current.agent.definitionHash!==input.definitionHash||
-              current.outside.connection.name!==input.connectionName||!current.outside.connection.allow.includes(input.toolName))return denied();
-          const actor=await currentMember(db as never,binding.memberId,{lock:'share'}),approver=await currentMember(db as never,binding.approverMemberId,{lock:'share'});
-          if(!actor||!approver||actor.organisationId!==approver.organisationId)return denied();
-          // A staged replacement is not active. Preserve the unchanged active pointer
-          // and generation after failed Apply; successful activation invalidates old work.
-          const head=await this.head(db,input.accountId,true);
-          if(!head||head.owner_member_id!==current.agent.ownerMemberId||head.resource_id!==input.agent||
-              head.connection_name!==input.connectionName||head.state!=='active'||head.active_revision===null||
-              number(head.active_revision)!==input.credentialRevision)return denied();
-          const revision=await db.query<{owner_member_id:string;generation:string;credential_revision:string;consent_generation:string;
-            revision_purpose:string;policy_json:string;policy_hash:Buffer;operation_id:string;nonce:Buffer;ciphertext:Buffer}>(`SELECT owner_member_id,
-              generation::text,credential_revision::text,consent_generation::text,revision_purpose,policy_json::text,policy_hash,operation_id,nonce,ciphertext
-            FROM outside_custody_revisions WHERE account_id=$1 AND credential_revision=$2`,[input.accountId,input.credentialRevision]);
-          const row=revision.rows[0];if(revision.rows.length!==1||!row||row.owner_member_id!==head.owner_member_id||row.revision_purpose!=='executable'||
-              !Buffer.isBuffer(row.policy_hash)||row.policy_hash.length!==32||!Buffer.isBuffer(row.nonce)||!Buffer.isBuffer(row.ciphertext))return denied();
-          let policy: z.infer<typeof executablePolicySchema>;
-          try{policy=executablePolicySchema.parse(JSON.parse(row.policy_json));}catch{return denied();}
-          if(createHash('sha256').update(canonicalJson(policy)).digest('hex')!==row.policy_hash.toString('hex')||
-              policy.ownerMemberId!==head.owner_member_id||policy.accountId!==input.accountId||policy.resourceId!==input.agent||
-              policy.connectionName!==input.connectionName||canonicalJson(policy.capture)!==canonicalJson(current)||
-              number(row.generation)!==number(head.generation)||
-              (number(row.consent_generation)!==number(head.consent_generation)&&
-                !(head.candidate_revision!==null&&number(head.candidate_revision)>input.credentialRevision&&
-                  number(row.consent_generation)<number(head.consent_generation)))||
-              !policy.publication.acceptedScope.allow.includes(input.toolName))return denied();
-          const publication=await this.#readEvidence(db,input.accountId,policy.publication.id,'descriptor-publication-v1');
-          if(publication.row.outcome!=='published'||publication.body.publicationHash!==policy.publication.hash||
-              publication.row.evidence_hash?.toString('hex')!==publication.bodyHash)return denied();
-          const projection=publication.body.projection as DescriptorProjection;
-          // Keep the authenticated full-publication body hash above, and independently bind
-          // the descriptor to the validated projection that staging actually hashes.
-          if(createHash('sha256').update(canonicalJson(projection)).digest('hex')!==policy.publication.descriptorDigest||
-              projection.connectionName!==input.connectionName||!projection.allow.includes(input.toolName)||
-              !projection.tools.some(tool=>tool.name===input.toolName))return denied();
-          const acceptance=await this.#readEvidence(db,input.accountId,policy.acceptance.id,'descriptor-acceptance-v1');
-          if(acceptance.row.outcome!=='accepted'||acceptance.row.evidence_hash?.toString('hex')!==policy.acceptance.hash||
-              acceptance.body.editorMemberId!==policy.acceptance.editorMemberId||acceptance.body.publicationId!==policy.publication.id||
-              acceptance.body.publicationHash!==policy.publication.hash)return denied();
-          const selectors={callId:input.callId,requestId:input.requestId,sessionId:binding.sessionId,memberId:binding.memberId,
-            approverMemberId:binding.approverMemberId,agent:binding.agent,incarnation:binding.incarnation,definitionHash:input.definitionHash,
-            connectionName:input.connectionName,accountId:input.accountId,credentialRevision:input.credentialRevision,
-            toolName:input.toolName,payloadHash};
-          let plaintext:Buffer|undefined;
-          if(consume){
-            await assertRoute?.();
-            options.assertCurrent?.();
-            await consumeOutsideExecutionApproval(db,selectors);
-            await assertRoute?.();
-            plaintext=openBound(this.key,row.nonce,row.ciphertext,{ownerMemberId:row.owner_member_id,accountId:input.accountId,
-              resourceId:input.agent,connectionName:input.connectionName,generation:number(row.generation),credentialRevision:input.credentialRevision,
-              consentGeneration:number(row.consent_generation),operationId:row.operation_id,revisionPurpose:'executable',policyHash:row.policy_hash.toString('hex')});
-            try{
-              outsideBearer(plaintext);
-              await checkConsoleSourceDeadlines(db);
-              return {capture:current,head,revision:row,policy,credential:plaintext};
-            }catch(error){plaintext.fill(0);throw error;}
-          }
-          await checkConsoleSourceDeadlines(db);
-          return {capture:current,head,revision:row,policy};
-        };
+        const check=(db:PoolClient,consume:boolean,assertRoute?:()=>Promise<unknown>)=>
+          this.#checkRuntimeExecutable(binding,input,options,db,consume,assertRoute,input);
         const prepare=(consume:boolean,assertRoute?:()=>Promise<unknown>)=>consoleSourceTransaction(this.pool,
           source=>check(source as PoolClient,consume,assertRoute),undefined,{deadlineAtMs:options.deadlineAtMs});
         const locator=await prepare(false);

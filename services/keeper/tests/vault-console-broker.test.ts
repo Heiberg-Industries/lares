@@ -14,8 +14,10 @@ import { PgVaultStore } from '../../../packages/agent-kit/src/vault-area-store.j
 import { bindConsoleSession } from '../../../packages/agent-kit/src/console-turn-authority.js';
 import { definitionSchema, hashOf } from '../../../packages/agent-kit/src/definition.js';
 import { reserveExactApproval, attachExactApproval, approveExactResponse, requireApprovedExecution } from '../../../packages/agent-kit/src/approval-execution.js';
+import { recordOutsideExecutionApproval, consumeOutsideExecutionApproval, outsidePayloadHash } from '../../../packages/agent-kit/src/outside-execution-receipts.js';
 import { payloadFingerprint } from '../../../packages/agent-kit/src/approval-ledger.js';
 import { NoteNotFoundError } from '../../../packages/agent-kit/src/notes-store.js';
+import { ENGINE_DATABASE_ROLES, ENGINE_TABLE_PRIVILEGES } from '../../box/lib/database-privileges.js';
 import { tracksApprovalAdapter } from '../../chief-of-staff/lib/tracks-approval.js';
 import { setVaultTurnCapability } from '../../chief-of-staff/agent/lib/vault-turn.js';
 
@@ -23,7 +25,7 @@ const ids = vi.hoisted(() => ({
   organisation: 'broker-org', member: 'broker-owner', area: '11111111-1111-4111-8111-111111111111',
   sharedArea: '44444444-4444-4444-8444-444444444444',
   backing: '22222222-2222-4222-8222-222222222222', readGate: undefined as (() => Promise<void>) | undefined, reads: 0, clock: Date.now(),
-  inventory: undefined as any, trackFiles: new Map<string, { content: string; contentRevision: string }>(), writes: 0, useRealFiles: false, outsideDispatch: vi.fn(),
+  inventory: undefined as any, trackFiles: new Map<string, { content: string; contentRevision: string }>(), writes: 0, useRealFiles: false, outsideDispatch: vi.fn(), outsideTools: vi.fn(),
 }));
 vi.mock('@lares/agent-box/lib/vault-storage.js', () => ({
   loadVaultStorageInventory: () => ids.inventory,
@@ -121,6 +123,17 @@ function interceptCommit(target: number, afterAck?: (query: (...args: any[]) => 
   return () => { pool.connect = originalConnect; };
 }
 
+async function startBroker(database:Pool=pool){
+  const secrets=join(root,'secrets');
+  const { serveConsoleVaultBroker } = await import('../lib/vault-console-broker.js');
+  return serveConsoleVaultBroker(database as never, join(root, 'secrets', 'console-vault-signing-key'), secrets, process.env.LARES_VAULT_RUNTIME_SOCKET!, {
+    consoleSocket: process.env.LARES_VAULT_CONSOLE_SOCKET,
+    rootUid: process.getuid?.() ?? 0, socketUid: process.getuid?.() ?? 0, socketGid: process.getgid?.() ?? 0, turnClockForTests: () => ids.clock,
+    outsideCustody:{acceptedRuntimeTools:(...args)=>ids.outsideTools(...args),dispatchApproved:(...args)=>ids.outsideDispatch(...args)},
+    vaultFilesForTests: { root: join(root, 'vault-files'), originRoot: join(root, 'vault-origins') },
+  });
+}
+
 beforeAll(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), 'keeper-vault-broker-')));
   const secrets = join(root, 'secrets');
@@ -136,13 +149,7 @@ beforeAll(async () => {
   pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   vi.stubEnv('DATABASE_URL', container.getConnectionUri());
   vi.stubEnv('LARES_AGENT_NAME', agent); vi.stubEnv('LARES_AGENT_INCARNATION', incarnation); vi.stubEnv('AGENT_OWNER_USER_ID', ids.member);
-  const { serveConsoleVaultBroker } = await import('../lib/vault-console-broker.js');
-  stopBroker = await serveConsoleVaultBroker(pool as never, join(secrets, 'console-vault-signing-key'), secrets, process.env.LARES_VAULT_RUNTIME_SOCKET, {
-    consoleSocket: process.env.LARES_VAULT_CONSOLE_SOCKET,
-    rootUid: process.getuid?.() ?? 0, socketUid: process.getuid?.() ?? 0, socketGid: process.getgid?.() ?? 0, turnClockForTests: () => ids.clock,
-    outsideCustody:{dispatchApproved:(...args)=>ids.outsideDispatch(...args)},
-    vaultFilesForTests: { root: join(root, 'vault-files'), originRoot: join(root, 'vault-origins') },
-  });
+  stopBroker = await startBroker();
 }, 120_000);
 
 afterAll(async () => {
@@ -151,7 +158,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  ids.trackFiles.clear(); ids.writes = 0; ids.outsideDispatch.mockReset();
+  ids.trackFiles.clear(); ids.writes = 0; ids.outsideDispatch.mockReset();ids.outsideTools.mockReset();
   admissionNonce = 'a'.repeat(43); session = 'wrun_broker_test';
   approvalTurnId = 'turn-track-original'; approvalTurnSequence = 30;
   roleDefinition = defaultRoleDefinition; definitionHash = hashOf({ definition: roleDefinition, dutiesMd, voiceMd });
@@ -165,6 +172,9 @@ beforeEach(async () => {
     CREATE TABLE agent_conversations(agent text,incarnation uuid,session_id text,door text,observed_at timestamptz DEFAULT now(),terminal boolean DEFAULT false,PRIMARY KEY(agent,incarnation,session_id));
     CREATE TABLE connected_accounts(id text PRIMARY KEY,owner_member_id text,generation integer,status text);
     CREATE TABLE agent_resources(name text PRIMARY KEY,ownership_token uuid,runtime_control_token uuid,state text,pending boolean,applied_definition jsonb);
+    CREATE TABLE outside_execution_approvals(call_id text PRIMARY KEY,request_id text,session_id text,member_id text,approver_member_id text,
+      agent text,incarnation uuid,definition_hash bytea,connection_name text,account_id uuid,credential_revision bigint,
+      tool_name text,payload_hash bytea,expires_at timestamptz,consumed_at timestamptz);
     CREATE TABLE approval_asks(request_id text PRIMARY KEY,call_id text NOT NULL,agent text NOT NULL,tool text NOT NULL,payload_hash text NOT NULL,
       asked_at timestamptz NOT NULL DEFAULT now(),answered_at timestamptz,outcome text,answered_via text,used_at timestamptz,use_count integer NOT NULL DEFAULT 0,
       CHECK ((answered_at IS NULL)=(outcome IS NULL)),CHECK (outcome IS NULL OR outcome IN ('approved','cancelled','ignored','invalid','expired','payload-changed')));
@@ -461,41 +471,101 @@ it.each([
   expect(ids.reads).toBe(0);
 });
 
-// The real signed socket and admission path own this binding. The custody tests separately
-// exercise the real dispatcher, encrypted accepted evidence, one-use receipt and protocol calls.
-it('binds outside execution to the signed runtime and Keeper-held admitted current turn',async()=>{
- const {turnId,opened}=await openTurn(70);
+// Recorded fixtures are deliberate: production approval creation is a separate surface.
+async function outsideFixture(){
  const call={callId:'outside-call',requestId:'outside-request',agent,incarnation,sessionId:session,memberId:ids.member,
   approverMemberId:ids.member,definitionHash,connectionName:'registry',accountId:'55555555-5555-4555-8555-555555555555',credentialRevision:1,toolName:'lookup',input:{company:'Example'}};
+ const {input:_input,...receipt}=call;
+ await recordOutsideExecutionApproval(pool,{...receipt,payloadHash:outsidePayloadHash(call.toolName,call.input),expiresAt:Date.now()+60_000});
+ const {requestId:_requestId,agent:_agent,incarnation:_incarnation,sessionId:_sessionId,memberId:_memberId,
+  approverMemberId:_approverMemberId,definitionHash:_definitionHash,accountId:_accountId,credentialRevision:_revision,...request}=call;
+ return {call,request};
+}
+it('delegates only the requested call and admitted turn to custody, with no receipt in arguments',async()=>{
+ const {turnId,opened}=await openTurn(70),{call,request}=await outsideFixture();
  const point={turnCapability:opened.turnCapability,turnId,sequence:70,sessionId:session,memberId:ids.member,admissionNonce};
  ids.outsideDispatch.mockImplementation(async(_binding,_call,options)=>{options.assertCurrent();return {content:[{type:'text',text:'Fixture result'}]}});
  const {executeApprovedOutsideCall}=await import('../../../packages/agent-kit/src/vault-broker-client.js');
- expect(await executeApprovedOutsideCall(point,call)).toEqual({content:[{type:'text',text:'Fixture result'}]});
+ expect(await executeApprovedOutsideCall(point,request)).toEqual({content:[{type:'text',text:'Fixture result'}]});
  expect(ids.outsideDispatch).toHaveBeenCalledWith({agent,incarnation,sessionId:session,memberId:ids.member,approverMemberId:ids.member,
-  admissionNonce,policyRevision:2},call,{deadlineAtMs:expect.any(Number),assertCurrent:expect.any(Function)});
+  admissionNonce,policyRevision:2},request,{deadlineAtMs:expect.any(Number),assertCurrent:expect.any(Function)});
  ids.outsideDispatch.mockClear();
  for(const changed of [{turnCapability:'f'.repeat(43)},{memberId:'another-member'},{sessionId:'another-session'},
-  {admissionNonce:'f'.repeat(43)},{turnId:'another-turn'},{sequence:71}]){
-  await expect(runtime('outside.execute',{...point,...changed,call})).rejects.toThrow('Vault reader unavailable');
- }
- expect(ids.outsideDispatch).not.toHaveBeenCalled();
- await pool.query('UPDATE console_session_bindings SET revoked_at=now() WHERE session_id=$1',[session]);
- await expect(runtime('outside.execute',{...point,call})).rejects.toThrow('Vault reader unavailable');
+  {admissionNonce:'f'.repeat(43)},{turnId:'another-turn'},{sequence:71}])
+  await expect(runtime('outside.execute',{...point,...changed,call:request})).rejects.toThrow('Vault reader unavailable');
+ for(const changed of [{memberId:'invented-member'},{requestId:'copied-receipt'}])
+  await expect(runtime('outside.execute',{...point,call:{...request,...changed}})).rejects.toThrow('Vault reader unavailable');
  expect(ids.outsideDispatch).not.toHaveBeenCalled();
 });
+it('uses a real ordinary tool callback and atomically refuses concurrent retries before another dispatch',async()=>{
+ const {turnId,opened}=await openTurn(71),{call}=await outsideFixture();
+ setVaultTurnCapability({sessionId:session,turnId,sequence:71,incarnation},{turnId,sequence:71,capability:opened.turnCapability,expiresAt:Date.now()+60_000});
+ let providerCalls=0;
+ ids.outsideDispatch.mockImplementation(async(_binding,exact,options)=>{
+  options.assertCurrent();const {input:_input,...receipt}=call;await consumeOutsideExecutionApproval(pool,{...receipt,payloadHash:outsidePayloadHash(exact.toolName,exact.input)});
+  providerCalls++;return {content:[{type:'text',text:'Fixture result'}]};
+ });
+ const {resolveOutsideTools}=await import('../../../packages/agent-kit/src/outside-connections.js');
+ const {runOutsideTool}=await import('../../chief-of-staff/lib/outside-tools.js');
+ const tools=await resolveOutsideTools({...roleDefinition,grants:[{capability:'outside',scope:'read'}],autonomy:{outside:'gated'},
+  outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Lookup',token:true,trusted:false,tools:{allow:['lookup'],read:['lookup']}}]},
+  {acceptedTools:async()=>[{name:'lookup',inputSchema:{type:'object'}}],executor:(connection,tool)=>async(input,ctx)=>runOutsideTool(connection,tool,input,ctx)});
+ const execute=tools!['registry__lookup']!.execute;
+ const ctx={callId:call.callId,toolName:'registry__lookup',session:{id:session,turn:{id:turnId,sequence:71},auth:{current:{authenticator:'lares-console',
+  attributes:{lares_member_id:ids.member,lares_admission_nonce:admissionNonce,lares_purpose:'human'}}}}};
+ const results=await Promise.allSettled([execute(call.input,ctx as never),execute(call.input,ctx as never)]);
+ expect(results.filter(result=>result.status==='fulfilled')).toHaveLength(1);expect(providerCalls).toBe(1);
+ await expect(execute(call.input,ctx as never)).rejects.toThrow();expect(providerCalls).toBe(1);
+});
 it('refuses a closed or expired outside turn and checks closure during dispatch',async()=>{
- const {turnId,opened}=await openTurn(71),point={turnCapability:opened.turnCapability,turnId,sequence:71,sessionId:session,memberId:ids.member,admissionNonce};
- const call={definitionHash};
+ const {turnId,opened}=await openTurn(72),{request}=await outsideFixture();
+ const point={turnCapability:opened.turnCapability,turnId,sequence:72,sessionId:session,memberId:ids.member,admissionNonce};
  ids.clock+=5*60_000+1;
- await expect(runtime('outside.execute',{...point,call})).rejects.toThrow('Vault reader unavailable');
+ await expect(runtime('outside.execute',{...point,call:request})).rejects.toThrow('Vault reader unavailable');
  expect(ids.outsideDispatch).not.toHaveBeenCalled();
- const next=await openTurn(72),nextPoint={...point,turnCapability:next.opened.turnCapability,turnId:next.turnId,sequence:72};
+ const next=await openTurn(73),nextPoint={...point,turnCapability:next.opened.turnCapability,turnId:next.turnId,sequence:73};
  ids.outsideDispatch.mockImplementation(async(_binding,_call,options)=>{
-  await runtime('turn.close',{turnCapability:nextPoint.turnCapability,turnId:nextPoint.turnId,sequence:72});
+  await runtime('turn.close',{turnCapability:nextPoint.turnCapability,turnId:nextPoint.turnId,sequence:73});
   options.assertCurrent();return {content:[]};
  });
- await expect(runtime('outside.execute',{...nextPoint,call})).rejects.toThrow('Vault reader unavailable');
+ await expect(runtime('outside.execute',{...nextPoint,call:request})).rejects.toThrow('Vault reader unavailable');
  expect(ids.outsideDispatch).toHaveBeenCalledOnce();ids.outsideDispatch.mockClear();
- await expect(runtime('outside.execute',{...nextPoint,call})).rejects.toThrow('Vault reader unavailable');
- expect(ids.outsideDispatch).not.toHaveBeenCalled();
+ await expect(runtime('outside.execute',{...nextPoint,call:request})).rejects.toThrow();expect(ids.outsideDispatch).not.toHaveBeenCalled();
+});
+it('reads accepted metadata through the signed broker only for the current private session',async()=>{
+ ids.outsideTools.mockResolvedValue([{name:'lookup',inputSchema:{type:'object'}}]);
+ const input={sessionId:session,memberId:ids.member,admissionNonce,connectionName:'registry'};
+ expect(await runtime('outside.tools',input)).toMatchObject({tools:[{name:'lookup'}]});
+ expect(ids.outsideTools).toHaveBeenCalledWith({agent,incarnation,sessionId:session,memberId:ids.member,approverMemberId:ids.member,
+  admissionNonce,policyRevision:2},definitionHash,'registry',expect.objectContaining({deadlineAtMs:expect.any(Number)}));
+ ids.outsideTools.mockClear();
+ for(const changed of [{memberId:'another-member'},{sessionId:'another-session'},{admissionNonce:'f'.repeat(43)}])
+  await expect(runtime('outside.tools',{...input,...changed})).rejects.toThrow();
+ expect(ids.outsideTools).not.toHaveBeenCalled();
+});
+
+it('executes through the real application-role pool while that role cannot read custody receipts',async()=>{
+ const role=ENGINE_DATABASE_ROLES.application,password=randomUUID();
+ await pool.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT`);
+ await pool.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
+ const tables=await pool.query<{tablename:string}>("SELECT tablename FROM pg_tables WHERE schemaname='public'");
+ const ordinary=new Set<string>(ENGINE_TABLE_PRIVILEGES.ordinary);
+ for(const {tablename} of tables.rows)if(ordinary.has(tablename))
+  await pool.query(`GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.${tablename} TO ${role}`);
+ const url=new URL(container.getConnectionUri());url.username=role;url.password=password;
+ const application=quiet(new Pool({connectionString:url.href,max:2}));
+ try{
+  expect((await application.query('SELECT current_user AS role')).rows[0].role).toBe(role);
+  expect((await application.query("SELECT has_table_privilege(current_user,'public.outside_execution_approvals','SELECT') AS allowed")).rows[0].allowed).toBe(false);
+  await expect(application.query('SELECT call_id FROM outside_execution_approvals')).rejects.toMatchObject({code:'42501'});
+  await stopBroker?.();stopBroker=undefined;stopBroker=await startBroker(application);
+  const {turnId,opened}=await openTurn(74),{request}=await outsideFixture();
+  ids.outsideDispatch.mockImplementation(async(_binding,call,options)=>{options.assertCurrent();expect(call).toEqual(request);return {content:[{type:'text',text:'Fixture result'}]}});
+  expect(await runtime('outside.execute',{turnCapability:opened.turnCapability,turnId,sequence:74,sessionId:session,memberId:ids.member,admissionNonce,call:request}))
+   .toMatchObject({result:{content:[{type:'text',text:'Fixture result'}]}});
+  expect(ids.outsideDispatch).toHaveBeenCalledOnce();
+  expect((await application.query("SELECT has_table_privilege(current_user,'public.outside_execution_approvals','SELECT') AS allowed")).rows[0].allowed).toBe(false);
+ }finally{
+  await stopBroker?.();stopBroker=undefined;await application.end();stopBroker=await startBroker();
+ }
 });

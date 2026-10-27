@@ -1,7 +1,6 @@
 import { createConnection } from 'node:net';
 import { createHmac, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import type { OutsideExecutionApproval } from './outside-execution-receipts.js';
 
 const DEFAULT_SOCKET='/run/lares-vault/read.sock',MAX_FRAME=256*1024;
 function identity(){
@@ -31,7 +30,7 @@ export async function vaultBrokerRequest<T>(op:string,input:unknown):Promise<T>{
  * The existing broker authenticates the runtime; Keeper rechecks the turn and exact receipt.
  * This is an explicit execution seam, not an Eve MCP execution override. */
 export async function executeApprovedOutsideCall<T>(turn:{turnCapability:string;turnId:string;sequence:number;sessionId:string;memberId:string;admissionNonce:string},
- call:Omit<OutsideExecutionApproval,'expiresAt'|'payloadHash'> & {input:unknown}):Promise<T>{
+ call:{callId:string;connectionName:string;toolName:string;input:unknown}):Promise<T>{
  const response=await request<{result:T}>('outside.execute',{...turn,call},10_000);
  return response.result;
 }

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { isIP } from 'node:net';
 import type { Pool } from 'pg';
 import { doorsOf, definitionSchema, hashOf, type AgentDefinition } from '@lares/agent-kit/definition';
-import { outsideHttpsHosts, outsideSecretName, outsideToolsInEffect } from '@lares/agent-kit/outside-tools';
+import { outsideHttpsHosts, outsideToolsInEffect } from '@lares/agent-kit/outside-tools';
 import { CAPABILITY_DOCS } from '@lares/agent-kit/persona';
 import { generateEgress } from './egress.js';
 import { renderAgentsCompose, nextAddress, DOOR_FILES, ROLE_DOORS, type AgentContainer } from './compose-agents.js';
@@ -46,13 +46,7 @@ function refusePendingRetirement(row: any): void {
         throw new KeeperRefusedError('Retry definition.retire to complete pending retirement');
 }
 function runtimeControlled(row: any): boolean { return !!row?.runtime_control_token && row.runtime_control_token === row.ownership_token; }
-/** Names of this definition's outside tools that need a token file. Only entries that take effect. */
-function outsideTokensOf(d: AgentDefinition): { outsideTokens?: string[] } {
-    const names = outsideToolsInEffect(d).filter(t => t.token).map(t => t.name);
-    return names.length ? { outsideTokens: names } : {};
-}
-const outsideTokenFiles = (secretsDir: string, name: string, tokens?: readonly string[]) => (tokens ?? []).map(t => join(secretsDir, outsideSecretName(name, t)));
-function fingerprint(d: AgentDefinition) { return createHash('sha256').update(JSON.stringify({ role: d.role, doors: doorsOf(d), personalGoogle: personalGoogleEnabled(d), personalMicrosoft: personalMicrosoftEnabled(d), ...outsideTokensOf(d) })).digest('hex'); }
+function fingerprint(d: AgentDefinition) { return createHash('sha256').update(JSON.stringify({ role: d.role, doors: doorsOf(d), personalGoogle: personalGoogleEnabled(d), personalMicrosoft: personalMicrosoftEnabled(d) })).digest('hex'); }
 /** All callers run within the audited definition action AND namespace advisory lock.
  * Partial failures leave resources and pending state for an explicit reconcile; never auto replay. */
 export class AgentLifecycle {
@@ -262,7 +256,7 @@ export class AgentLifecycle {
             const { NOTION_TOKEN_FILE: _, ...secrets } = binding.secrets;
             binding = { ...binding, secrets };
         }
-        return { name: row.name, incarnation: row.ownership_token, role, notionRevision: managedRevision, bindings: bindingsFor(role, binding), address: String(row.address).split('/')[0], doors: doorsOf(d), ...(personalGoogle ? { personalGoogle } : {}), ...(personalMicrosoft ? { personalMicrosoft } : {}), ...outsideTokensOf(d), runtime: { databaseUrl: r.databaseUrl, workflowUrl: url.toString(), gatewayUrl: r.gatewayUrl, proxyUrl: r.proxyUrl, schedulesLive: r.schedulesLive, ...(gatewayKeyFile ? { gatewayKeyFile } : {}), passwordFile: r.passwordFile, workflowPasswordFile: r.workflowPasswordFile, endpoints: c.egress.endpoints } };
+        return { name: row.name, incarnation: row.ownership_token, role, notionRevision: managedRevision, bindings: bindingsFor(role, binding), address: String(row.address).split('/')[0], doors: doorsOf(d), ...(personalGoogle ? { personalGoogle } : {}), ...(personalMicrosoft ? { personalMicrosoft } : {}), runtime: { databaseUrl: r.databaseUrl, workflowUrl: url.toString(), gatewayUrl: r.gatewayUrl, proxyUrl: r.proxyUrl, schedulesLive: r.schedulesLive, ...(gatewayKeyFile ? { gatewayKeyFile } : {}), passwordFile: r.passwordFile, workflowPasswordFile: r.workflowPasswordFile, endpoints: c.egress.endpoints } };
     }
     private async render(override?: {
         name: string;
@@ -639,7 +633,7 @@ export class AgentLifecycle {
         try { const fd = openSync(controlSecret, 'wx', 0o600); try { writeFileSync(fd, randomBytes(32).toString('hex')); fsyncSync(fd); } finally { closeSync(fd); } }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
         this.provisionSecret(controlSecret);
-        for (const path of [...(a.runtime.gatewayKeyFile ? [a.runtime.gatewayKeyFile] : []), a.runtime.passwordFile, a.runtime.workflowPasswordFile, ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a), ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)])
+        for (const path of [...(a.runtime.gatewayKeyFile ? [a.runtime.gatewayKeyFile] : []), a.runtime.passwordFile, a.runtime.workflowPasswordFile, ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a), ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`)))])
             this.provisionSecret(path);
         await this.publishCompose({ name, definition: d });
         await this.docker.stop(name); // Explicit action announces restart; no invented drain guarantee.
@@ -665,7 +659,7 @@ export class AgentLifecycle {
             verifyBindingSources(a.bindings);
             for (const path of [...(a.runtime.gatewayKeyFile ? [a.runtime.gatewayKeyFile] : []), a.runtime.passwordFile, a.runtime.workflowPasswordFile, join(this.paths.secretsDir, `${name}-runtime-control`),
                 ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a),
-                ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)]) {
+                ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`)))]) {
                 const st = lstatSync(path);
                 if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || !st.size) throw new KeeperRefusedError('Existing runtime secrets unavailable');
             }

@@ -4,7 +4,6 @@ import { isAbsolute, join, normalize } from 'node:path';
 import { stringify } from 'yaml';
 import { gatewayModels } from './gateway-keys.js';
 import { DOOR_SECRET_FILES } from '@lares/agent-kit/platform-secrets';
-import { outsideSecretName, outsideSecretTarget } from '@lares/agent-kit/outside-tools';
 import { personalReadSecretFiles, personalMicrosoftSchema, type PersonalMicrosoftConfig } from './personal-microsoft.js';
 import { personalGoogleSchema, type PersonalGoogleConfig } from './personal-google.js';
 import { bindingsFor, INTEGRATION_SECRET_FILES, type RuntimeBindings } from './runtime-bindings.js';
@@ -32,8 +31,6 @@ export interface AgentContainer {
         kind: string;
         enabled: boolean;
     }[];
-    /** Names of the outside tools that need a token (definition `outsideTools[].token`). */
-    outsideTokens?: readonly string[];
     /** Installation-supplied, password-free URLs. Workflow MUST be per-agent. */
     runtime: {
         databaseUrl: string;
@@ -223,13 +220,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
                     environment[variable] = `/run/secrets/${key}`;
                 }
             }
-        // Outside tools: one token file per entry that asks for one, placed on the
-        // server by the owner. The target is derived from the entry's name, never from a fixed list.
-        for (const tool of a.outsideTokens ?? []) {
-            if (!/^[a-z][a-z0-9-]{0,40}$/.test(tool)) throw new Error('Invalid outside tool name');
-            const key = outsideSecretName(a.name, tool);
-            secret(key, `${opts.secretsDir}/${key}`, outsideSecretTarget(tool));
-        }
+        // Outside credentials remain in Keeper custody; agents receive no token mounts.
         const dataMounts: unknown[] = [
             `${opts.agentsDir}/${a.name}:/definition:ro`,
             { type: 'bind', source: admission.hostDirectory, target: '/run/lares-maintenance/admission', read_only: true, bind: { create_host_path: false } },

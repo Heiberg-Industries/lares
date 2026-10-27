@@ -1941,7 +1941,8 @@ def safe_cleanup(label, action):
 
 WORKER_PHASES = {"configuration", "role identities", "neutral authorization fixture", "outside custody organisation gate contention",
               "outside custody human review and activation",
-              "signed outside execution", "outside replacement preservation", "outside execution revocation",
+              "signed outside execution", "signed outside execution open", "signed outside execution approve",
+              "signed outside execution execute", "outside replacement preservation", "outside execution revocation",
               "same-bridge direct-path control", "routed direct-path control",
               "generated route admission", "direct-path firewall counter",
               "routed direct-path firewall counter", "outside discovery preview", "outside discovery preview response",
@@ -2013,7 +2014,8 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
     if "executionProof" in value:
         execution = value["executionProof"]
         flags = {"complete", "failedApplyPreserved", "rotationRejected", "removalRejected"}
-        counts = {"positiveCalls", "peerRequests", "peerToolCalls"}
+        counts = {"positiveCalls", "peerRequests", "peerToolCalls", "dispatchApprovedReached", "dispatchApprovedDenied",
+                  "acceptedRuntimeToolsReached", "acceptedRuntimeToolsDenied"}
         refusals = {"member", "session", "agent", "tool", "payload", "connection", "credential-version", "runtime-incarnation",
                     "expired", "revoked", "replay", "cross-member-custody", "permission-revoked", "rotation", "removal"}
         if (not isinstance(execution, dict) or set(execution) != flags | counts | {"refusals"} or
@@ -2022,6 +2024,9 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
                 not isinstance(execution["refusals"], list) or len(execution["refusals"]) > len(refusals) or
                 any(not isinstance(item, str) or item not in refusals for item in execution["refusals"]) or
                 len(execution["refusals"]) != len(set(execution["refusals"]))):
+            return reject("executionProof")
+        if any(execution[denied] > execution[reached] for reached, denied in (
+                ("dispatchApprovedReached", "dispatchApprovedDenied"), ("acceptedRuntimeToolsReached", "acceptedRuntimeToolsDenied"))):
             return reject("executionProof")
         if execution["complete"] and (not all(execution[field] for field in flags) or
                 execution["positiveCalls"] != 4 or execution["peerRequests"] != 16 or execution["peerToolCalls"] != 4 or
@@ -2587,7 +2592,8 @@ def offline_complete_peer_exchange_self_test():
 def offline_execution_evidence_self_test():
     safe = {"complete": False, "positiveCalls": 0, "peerRequests": 0, "peerToolCalls": 0,
             "failedApplyPreserved": False, "rotationRejected": False, "removalRejected": False,
-            "refusals": []}
+            "refusals": [], "dispatchApprovedReached": 0, "dispatchApprovedDenied": 0,
+            "acceptedRuntimeToolsReached": 0, "acceptedRuntimeToolsDenied": 0}
     with tempfile.TemporaryDirectory(prefix="lares-execution-evidence-") as directory:
         root_path = pathlib.Path(directory)
         worker = root_path / "worker.json"
@@ -2595,7 +2601,21 @@ def offline_execution_evidence_self_test():
         projected = import_worker_evidence(root_path)
         if projected is None or projected.get("executionProof") != safe:
             raise RuntimeError("bounded partial execution evidence was lost")
-        for changed in ({"peerRequests": True}, {"peerRequests": -1}, {"peerRequests": 129},
+        for boundary in (1, 128):
+            bounded = {**safe, "dispatchApprovedReached": boundary, "dispatchApprovedDenied": boundary,
+                       "acceptedRuntimeToolsReached": boundary, "acceptedRuntimeToolsDenied": boundary}
+            worker.write_text(json.dumps({"checks": [], "executionProof": bounded}), encoding="utf-8")
+            projected = import_worker_evidence(root_path)
+            if projected is None or projected.get("executionProof") != bounded:
+                raise RuntimeError("bounded custody diagnostic counters were lost")
+        for field in ("dispatchApprovedReached", "dispatchApprovedDenied", "acceptedRuntimeToolsReached", "acceptedRuntimeToolsDenied"):
+            for invalid in (True, -1, 129, 1.0, "SECRET_SENTINEL", None):
+                worker.write_text(json.dumps({"checks": [], "executionProof": {**safe, field: invalid}}), encoding="utf-8")
+                diagnostics = {}
+                if import_worker_evidence(root_path, diagnostics=diagnostics) is not None or diagnostics != {"workerEvidenceStatus": "rejected:executionProof"}:
+                    raise RuntimeError("unsafe custody diagnostic counter was accepted")
+        for changed in ({"dispatchApprovedDenied": 1}, {"acceptedRuntimeToolsDenied": 1},
+                        {"peerRequests": True}, {"peerRequests": -1}, {"peerRequests": 129},
                         {"refusals": ["SECRET_SENTINEL"]}, {"refusals": ["member", "member"]},
                         {"complete": True}, {"credential": "SECRET_SENTINEL"}):
             worker.write_text(json.dumps({"checks": [], "executionProof": {**safe, **changed}}), encoding="utf-8")

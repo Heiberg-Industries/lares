@@ -2,17 +2,16 @@ import type { ApprovalContext, ApprovalResponseContext } from "eve/tools/approva
 import { afterEach, describe, expect, it } from "vitest";
 
 import { parseDefinition } from "../src/definition.js";
-import { coversApproval, resetOutsideConnectionsForTests, summarizeApproval } from "../src/approval-summary.js";
+import { coversApproval, registerOutsideConnections, resetOutsideConnectionsForTests, summarizeApproval } from "../src/approval-summary.js";
 import { resetTaintForTests, taintTurn } from "../src/origin-taint.js";
 import {
-  outsideConnection,
   outsideProblems,
   outsideProblemWording,
   outsideRequestPolicy,
   outsideResponsePolicy,
   outsideResultTaint,
-  outsideTokenPath,
-  resolveOutsideConnections,
+  resolveOutsideTools,
+  type AcceptedOutsideTool,
 } from "../src/outside-connections.js";
 
 const entry = (over: Record<string, unknown> = {}) => ({
@@ -32,68 +31,6 @@ const ctx = (toolName: string, turn = "t1"): ApprovalContext =>
   ({ abortSignal: new AbortController().signal, approvedTools: new Set(), callId: "c1", toolName, session: { id: "s1", turn: { id: turn, sequence: 0 } } }) as unknown as ApprovalContext;
 
 afterEach(() => { resetTaintForTests(); resetOutsideConnectionsForTests(); });
-
-describe("resolveOutsideConnections", () => {
-  it("returns null when there are no entries, no grant, or autonomy is never", () => {
-    expect(resolveOutsideConnections(def({ outsideTools: undefined }), allowAll)).toBeNull();
-    expect(resolveOutsideConnections(def({ grants: [] , autonomy: {} }), allowAll)).toBeNull();
-    expect(resolveOutsideConnections(def({ autonomy: { outside: "never" } }), allowAll)).toBeNull();
-  });
-
-  it("builds one connection per entry with the agent-scoped instance key and the allow list", () => {
-    const hosts: string[][] = [];
-    const out = resolveOutsideConnections(def(), { ...allowAll, addHosts: (h) => hosts.push(h) })!;
-    expect(Object.keys(out)).toEqual(["registry"]);
-    expect(out["registry"]).toMatchObject({
-      url: "https://tools.example.org/mcp",
-      description: "Looks up companies by name.",
-      instanceKey: "outside:bookkeeper:registry",
-      tools: { allow: ["lookup", "create_note"] },
-    });
-    expect(hosts).toEqual([["tools.example.org"]]);
-  });
-
-  it("is idempotent: a second resolve gives the same answer", () => {
-    const a = resolveOutsideConnections(def(), { ...allowAll, addHosts: () => {} })!;
-    const b = resolveOutsideConnections(def(), { ...allowAll, addHosts: () => {} })!;
-    expect(Object.keys(a)).toEqual(Object.keys(b));
-    expect(a["registry"]!.instanceKey).toBe(b["registry"]!.instanceKey);
-  });
-
-  it("registers the connection name so the approval card knows it", () => {
-    resolveOutsideConnections(def(), { ...allowAll, addHosts: () => {} });
-    expect(summarizeApproval("registry__create_note", { a: 1 })).toMatch(/^Ask outside tool registry/);
-    expect(coversApproval("registry__create_note")).toBe(false);
-  });
-
-  it("opens no host for a compose-internal http service", () => {
-    const hosts: string[][] = [];
-    resolveOutsideConnections(def({ outsideTools: [entry({ url: "http://registry-mcp:3000/mcp" })] }), { ...allowAll, addHosts: (h) => hosts.push(h) });
-    expect(hosts).toEqual([]);
-  });
-
-  it("reads the token from the keeper-mounted file, trimmed, at call time", async () => {
-    const paths: string[] = [];
-    const c = outsideConnection("bookkeeper", def().outsideTools![0]!, { ...allowAll, readTokenFile: async (p) => { paths.push(p); return " s3cret\n"; } });
-    const auth = c.auth as { credentialOwner: string; getToken: () => Promise<{ token: string }> };
-    expect(auth.credentialOwner).toBe("app");
-    expect(await auth.getToken()).toEqual({ token: "s3cret" });
-    expect(paths).toEqual(["/run/secrets/outside-registry"]);
-    expect(outsideTokenPath("registry")).toBe("/run/secrets/outside-registry");
-  });
-
-  it("has no auth when the entry needs no token", () => {
-    const c = outsideConnection("bookkeeper", def({ outsideTools: [entry({ token: false })] }).outsideTools![0]!, allowAll);
-    expect(c.auth).toBeUndefined();
-  });
-
-  it("names the file, never the contents, when the token cannot be read", async () => {
-    const c = outsideConnection("bookkeeper", def().outsideTools![0]!, { ...allowAll, readTokenFile: async () => { throw new Error("EACCES"); } });
-    await expect((c.auth as { getToken: () => Promise<unknown> }).getToken()).rejects.toThrow(/\/run\/secrets\/outside-registry/);
-    const empty = outsideConnection("bookkeeper", def().outsideTools![0]!, { ...allowAll, readTokenFile: async () => "  \n" });
-    await expect((empty.auth as { getToken: () => Promise<unknown> }).getToken()).rejects.toThrow(/empty/);
-  });
-});
 
 describe("the request policy", () => {
   const untrusted = def().outsideTools![0]!;
@@ -122,9 +59,6 @@ describe("the request policy", () => {
   it("trusted in a role that cannot taint (taintAware false): every call asks, even a read on a clean turn", async () => {
     const p = outsideRequestPolicy(trusted, { taintAware: false });
     expect(await p(ctx("registry__lookup"))).toBe("user-approval");
-    const conn = resolveOutsideConnections(def({ outsideTools: [entry({ trusted: true })] }), { ...allowAll, addHosts: () => {}, taintAware: false })!;
-    const request = (conn["registry"]!.approval as { request: (c: ApprovalContext) => Promise<unknown> }).request;
-    expect(await request(ctx("registry__lookup"))).toBe("user-approval");
   });
 
   it("asks when it cannot tell which turn it is in", async () => {
@@ -146,12 +80,7 @@ describe("the response policy (approver re-check)", () => {
     expect(policy(rctx({}))).toMatchObject({ status: "rejected" });
   });
 
-  it("is wired into every connection", () => {
-    const c = outsideConnection("bookkeeper", def().outsideTools![0]!, { isAllowedApprover: () => false });
-    const approval = c.approval as { request: unknown; response: (c: ApprovalResponseContext) => unknown };
-    expect(typeof approval.request).toBe("function");
-    expect(approval.response(rctx({}))).toMatchObject({ status: "rejected" });
-  });
+
 });
 
 describe("the taint rule", () => {
@@ -181,14 +110,14 @@ describe("the taint rule", () => {
 
 describe("the approval card", () => {
   it("names the connection, the tool and the arguments, not raw JSON", () => {
-    resolveOutsideConnections(def(), { ...allowAll, addHosts: () => {} });
+    registerOutsideConnections(['registry']);
     const title = summarizeApproval("registry__create_note", { company: "Acme", text: "met on Tuesday" })!;
     expect(title).toBe('Ask outside tool registry: create_note — company: "Acme", text: "met on Tuesday"');
     expect(title).not.toContain("{");
   });
 
   it("truncates long values and counts the arguments it leaves out", () => {
-    resolveOutsideConnections(def(), { ...allowAll, addHosts: () => {} });
+    registerOutsideConnections(['registry']);
     const input: Record<string, unknown> = { a: "x".repeat(300), b: 1, c: 2, d: 3, e: 4, f: 5, g: 6, h: 7 };
     const title = summarizeApproval("registry__create_note", input)!;
     expect(title).toContain("…");
@@ -198,13 +127,13 @@ describe("the approval card", () => {
   });
 
   it("does not claim a shortening when nothing was cut", () => {
-    resolveOutsideConnections(def(), { ...allowAll, addHosts: () => {} });
+    registerOutsideConnections(['registry']);
     expect(summarizeApproval("registry__lookup", { q: "Acme" })).not.toContain("shortened");
   });
 
   it("a registered connection gets a title but is never 'covered'; anything else keeps the generic card", () => {
     expect(coversApproval("registry__lookup")).toBe(false);
-    resolveOutsideConnections(def(), { ...allowAll, addHosts: () => {} });
+    registerOutsideConnections(['registry']);
     // Never covered: the full input stays on the card S1).
     expect(coversApproval("registry__lookup")).toBe(false);
     expect(coversApproval("other__lookup")).toBe(false);
@@ -212,7 +141,7 @@ describe("the approval card", () => {
   });
 
   it("says so when there are no arguments", () => {
-    resolveOutsideConnections(def(), { ...allowAll, addHosts: () => {} });
+    registerOutsideConnections(['registry']);
     expect(summarizeApproval("registry__lookup", {})).toBe("Ask outside tool registry: lookup — no arguments");
   });
 });
@@ -259,4 +188,25 @@ describe("outsideProblems", () => {
     expect(w.detail).toContain("console");
     expect(outsideProblemWording("bookkeeper", { connection: "registry", kind: "unreachable" }).summary).toContain("did not answer");
   });
+});
+
+describe('Keeper-proxied ordinary tools',()=>{
+ it('exposes accepted allowed schemas and executes an ordinary tool without token or provider settings',async()=>{
+  const calls:unknown[]=[];
+  const tools=await resolveOutsideTools(def(),{acceptedTools:async():Promise<AcceptedOutsideTool[]>=>[
+   {name:'lookup',description:'Accepted description',inputSchema:{type:'object',properties:{company:{type:'string'}}}},
+   {name:'not_allowed',inputSchema:{type:'object',properties:{}}}],
+   executor:(connectionName,toolName)=>async(input,context)=>{calls.push({connectionName,toolName,input,callId:context.callId});return {content:[]};}});
+  expect(Object.keys(tools!)).toEqual(['registry__lookup']);
+  const tool=tools!['registry__lookup']!;
+  expect(tool.description).toBe('Accepted description');
+  expect(tool.inputSchema).toMatchObject({type:'object'});
+  expect(tool).not.toHaveProperty('url');expect(tool).not.toHaveProperty('auth');
+  expect(await tool.execute({company:'Example'},ctx('registry__lookup') as never)).toEqual({content:[]});
+  expect(calls).toEqual([{connectionName:'registry',toolName:'lookup',input:{company:'Example'},callId:'c1'}]);
+ });
+ it('omits absent or stale accepted catalogs and never falls back to provider discovery',async()=>{
+  expect(await resolveOutsideTools(def(),{acceptedTools:async()=>{throw Error('stale');},executor:()=>{throw Error('unreachable');}})).toBeNull();
+  expect(await resolveOutsideTools(def({grants:[]}),{acceptedTools:async()=>{throw Error('unreachable');},executor:()=>{throw Error('unreachable');}})).toBeNull();
+ });
 });
