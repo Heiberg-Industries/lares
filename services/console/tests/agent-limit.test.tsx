@@ -18,7 +18,20 @@ it("shows the current number and labels the memory figures as estimates", () => 
   expect(text).toContain("8 GiB");
   expect(text).toContain("1.5 GiB");
   expect(text).toContain("estimates");
+  expect(text).toContain("fresh installation starts with a limit of 1");
+  expect(text).toContain("not a measurement of this server’s capacity");
+  expect(text).toContain("Only the installation owner can change it here");
   expect(screen.getByLabelText(/New limit/)).toHaveProperty("value", "2");
+});
+
+it("saves a limit of 2 through the existing owner control", async () => {
+  vi.mocked(setAgentLimit).mockResolvedValue({ ok: true, result: cap({ ceiling: 2 }) } as any);
+  render(<AgentLimitControl capacity={cap({ ceiling: 1 })} />);
+  await userEvent.clear(screen.getByLabelText(/New limit/));
+  await userEvent.type(screen.getByLabelText(/New limit/), "2");
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(setAgentLimit).toHaveBeenCalledWith({ ceiling: 2 }));
+  await waitFor(() => expect(document.body.textContent).toContain("Saved. The limit is now 2."));
 });
 
 it("warns above the suggested maximum but still lets the administrator save", async () => {
@@ -41,6 +54,7 @@ it("is read-only when the viewer cannot change it", () => {
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   expect(screen.queryByLabelText(/New limit/)).toBeNull();
   expect(screen.getByTestId("agent-limit").textContent).toBe("2");
+  expect(document.body.textContent).toContain("Ask the installation owner to review the separate RAM estimate before changing it in Settings → Agents.");
 });
 
 it("is read-only with no memory line when an older keeper sends no new fields", () => {

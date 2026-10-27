@@ -61,9 +61,11 @@ automatically for this reason.
 ## Agents
 
 The list of agents, and **New agent** (pick a role, name it, write its duties and personality,
-choose what it may touch; the keeper saves the definition and starts it). The box holds a limited
-number of agents; the new-agent page says why and how many (the limit protects the server from
-running out of memory, and a fresh install starts at one).
+choose what it may touch; the keeper saves the definition and starts it). A fresh installation
+starts with a limit of 1 as a conservative setting, not a measurement of this server’s capacity.
+**Settings → Agents** shows a separate rough RAM estimate: about 2.5 GiB for Lares, 2 GiB kept
+free, and 1.5 GiB per agent. Only the installation owner can change the limit; review that estimate
+first. If you cannot change it, ask the installation owner to review **Settings → Agents**.
 
 An agent's page has four tabs and two buttons, **Chat** and **Edit agent**:
 
