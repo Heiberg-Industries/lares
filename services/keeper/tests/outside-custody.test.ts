@@ -13,6 +13,7 @@ const mocks=vi.hoisted(()=>({
   captureUse:vi.fn(),
   captureUseWithExpiry:vi.fn(),
   captureOutsideUse:vi.fn(),
+  humanTargets:vi.fn(),
   captureOutsideDescriptorEdit:vi.fn(),
   gateOrganisation:vi.fn(),
   trackDecryptBuffers:false,
@@ -39,6 +40,7 @@ vi.mock('@lares/agent-kit/console-turn-authority',()=>({requireConsoleSessionBin
 vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class{captureUse(...args:unknown[]){return mocks.captureUse(...args);}
   captureUseWithExpiry(...args:unknown[]){return mocks.captureUseWithExpiry(...args);}
   captureOutsideUse(...args:unknown[]){return mocks.captureOutsideUse(...args);}
+  listHumanOutsideDiscoveryTargets(...args:unknown[]){return mocks.humanTargets(...args);}
   captureOutsideDescriptorEdit(...args:unknown[]){return mocks.captureOutsideDescriptorEdit(...args);}}}));
 vi.mock('../lib/definition-namespace.js',()=>({
   withDefinitionNamespace:async(_pool:unknown,work:(client:unknown)=>Promise<unknown>)=>mocks.namespace(_pool,work),
@@ -272,6 +274,7 @@ beforeEach(()=>{
   mocks.captureUse.mockResolvedValue(7);
   mocks.captureUseWithExpiry.mockResolvedValue({accessRevision:7,validUntil:null});
   mocks.captureOutsideUse.mockResolvedValue(undefined);
+  mocks.humanTargets.mockResolvedValue([{agentName:'worker',connectionName:'connector'}]);
   mocks.gateOrganisation.mockResolvedValue(undefined);
   mocks.retainDeadline.mockReturnValue(undefined);
   mocks.deadlines.mockResolvedValue(undefined);
@@ -303,6 +306,54 @@ it('runs the actual human preview for a new and an existing account inside the l
   });
   const existing=await store.previewHumanDiscovery(humanSession,{agentName:'worker',connectionName:'connector'},{deadlineAtMs:Date.now()+5000});
   expect(existing).toMatchObject({accountId,expectedGeneration:5,expectedCandidateRevision:4,consentGeneration:7});
+  store.close();
+});
+
+it('projects only the current member’s active, candidate, and discovered credential revisions',async()=>{
+  const store=humanStore();mocks.captureOutsideUse.mockResolvedValue(humanCapture);
+  installHumanSessionSql(async sql=>{
+    if(sql.includes('FROM outside_custody_accounts WHERE owner_member_id=$1'))return {rows:[{account_id:accountId,owner_member_id:'member-1',
+      resource_id:'worker',connection_name:'connector',generation:'5',active_revision:'2',candidate_revision:'4',consent_generation:'3',state:'active'}],rowCount:1};
+    if(sql.includes("operation_kind='discover'"))return {rows:[{revision:'5'}],rowCount:1};
+    throw new Error(`Unexpected credential status SQL: ${sql}`);
+  });
+  const [status]=await store.listHumanDiscoveryTargets(humanSession,{deadlineAtMs:Date.now()+5000});
+  expect(status).toEqual({agentName:'worker',connectionName:'connector',credentialStatus:{state:'active-pending',reviewPending:true,applyPending:true,
+    activeRevision:2,candidateRevision:4,discoveryRevision:5}});
+  expect(Object.keys(status.credentialStatus).sort()).toEqual(['activeRevision','applyPending','candidateRevision','discoveryRevision','reviewPending','state']);
+  expect(JSON.stringify(Object.values(status.credentialStatus))).not.toMatch(/ciphertext|credential|policy|token/i);
+  store.close();
+});
+
+it.each([
+  {active:'2',candidate:null,discovery:'4',expected:{state:'active',reviewPending:true,applyPending:false}},
+  {active:'2',candidate:'4',discovery:'3',expected:{state:'active-pending',reviewPending:false,applyPending:true}},
+])('distinguishes completed discovery review from staged candidate Apply ($active, $candidate, $discovery)',async input=>{
+  const store=humanStore();mocks.captureOutsideUse.mockResolvedValue(humanCapture);
+  installHumanSessionSql(async sql=>{
+    if(sql.includes('FROM outside_custody_accounts WHERE owner_member_id=$1'))return {rows:[{account_id:accountId,owner_member_id:'member-1',
+      resource_id:'worker',connection_name:'connector',generation:'5',active_revision:input.active,candidate_revision:input.candidate,
+      consent_generation:'3',state:'active'}],rowCount:1};
+    if(sql.includes("operation_kind='discover'"))return {rows:[{revision:input.discovery}],rowCount:1};
+    throw new Error(`Unexpected credential status SQL: ${sql}`);
+  });
+  const [status]=await store.listHumanDiscoveryTargets(humanSession,{deadlineAtMs:Date.now()+5000});
+  expect(status?.credentialStatus).toMatchObject(input.expected);
+  store.close();
+});
+
+it('shows revocation only to the credential owner with current connection use, and refuses cross-member projection',async()=>{
+  const store=humanStore();mocks.captureOutsideUse.mockResolvedValue(humanCapture);
+  installHumanSessionSql(async sql=>{
+    if(sql.includes('FROM outside_custody_accounts WHERE owner_member_id=$1'))return {rows:[{account_id:accountId,owner_member_id:'member-1',
+      resource_id:'worker',connection_name:'connector',generation:'6',active_revision:null,candidate_revision:null,consent_generation:'3',state:'revoked'}],rowCount:1};
+    if(sql.includes("operation_kind='discover'"))return {rows:[{revision:'5'}],rowCount:1};
+    throw new Error(`Unexpected credential status SQL: ${sql}`);
+  });
+  const [revoked]=await store.listHumanDiscoveryTargets(humanSession,{deadlineAtMs:Date.now()+5000});
+  expect(revoked?.credentialStatus.state).toBe('revoked');
+  mocks.captureOutsideUse.mockResolvedValue(undefined);
+  await expect(store.listHumanDiscoveryTargets(humanSession,{deadlineAtMs:Date.now()+5000})).rejects.toThrow();
   store.close();
 });
 

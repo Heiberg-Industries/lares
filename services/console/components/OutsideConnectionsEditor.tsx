@@ -1,7 +1,7 @@
 "use client";
 import { useState, type FormEvent } from "react";
 import type { OutsideToolDeclaration } from "@lares/agent-kit/definition";
-import { saveOutsideConnections, type OutsideConnectionsState } from "../app/actions/outside-connections";
+import { applyOutsideConnections, saveOutsideConnections, type OutsideConnectionsState } from "../app/actions/outside-connections";
 
 type Draft = {
   name: string; url: string; description: string; token: boolean;
@@ -20,6 +20,28 @@ export function OutsideConnectionsEditor({ initial }: { initial: OutsideConnecti
   const [editing, setEditing] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+
+  async function apply() {
+    if (busy || state.applicationStatus !== "pending") return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await applyOutsideConnections({ name: state.name, expectedDefinitionHash: state.definitionHash,
+        expectedAccessRevision: state.accessRevision });
+      if (!result.ok) {
+        setState(result.current ?? { ...state, applicationStatus: "unavailable", appliedConnections: [] });
+        setMessage(result.message); return;
+      }
+      setState(result.result);
+      setMessage(result.result.applicationStatus === "applied"
+        ? "Applied. The saved declarations match the last applied runtime definition."
+        : result.result.applicationStatus === "pending"
+          ? "Apply returned, but the saved declarations still differ from the last applied definition. Refresh before trying again."
+          : "Apply returned, but the applied declaration state is unavailable. Refresh before trying again.");
+    } catch {
+      setState(current => ({ ...current, applicationStatus: "unavailable", appliedConnections: [] }));
+      setMessage("Apply did not complete. Refresh to confirm which declarations are applied before trying again.");
+    } finally { setBusy(false); }
+  }
 
   async function publish(connections: OutsideToolDeclaration[]) {
     if (busy) return;
@@ -54,6 +76,15 @@ export function OutsideConnectionsEditor({ initial }: { initial: OutsideConnecti
   return <section className="lares-surface lares-stack" aria-label="Outside connection settings">
     <h1>Outside connections for {state.name}</h1>
     <p>Manage only this agent’s connection declarations. Connection credentials remain under their custodian’s control and are never entered here.</p>
+    <p>Removing a declaration does not revoke or delete its separately held credential.</p>
+    {state.applicationStatus === "applied" ? <p role="status">The last applied runtime definition matches these saved declarations.</p> : state.applicationStatus === "pending" ? <div className="lares-stack">
+      <p role="status">Saved declarations are pending Apply. The last applied declaration set is shown below.</p>
+      <button type="button" disabled={busy} onClick={() => void apply()}>{busy ? "Applying…" : "Apply saved declarations"}</button>
+    </div> : <p role="status">Applied declaration status is unavailable. Refresh before applying changes.</p>}
+    {state.applicationStatus === "pending" && <section aria-label="Currently applied connection declarations">
+      <h2>Currently applied declarations</h2>
+      {state.appliedConnections.length ? <ul>{state.appliedConnections.map(connection => <li key={connection.name}>{connection.name} — {connection.description}</li>)}</ul> : <p>No outside connections are currently applied.</p>}
+    </section>}
     {state.connections.length ? <ul className="lares-data-list">
       {state.connections.map(connection => <li key={connection.name}>
         <strong>{connection.name}</strong><p>{connection.description}</p><p>Address: <span className="mono">{connection.url}</span></p>

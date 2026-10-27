@@ -110,6 +110,25 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
         {targets.map(target=><option key={`${target.agentName}:${target.connectionName}`} value={`${target.agentName}\0${target.connectionName}`}>{target.agentName} · {target.connectionName}</option>)}
       </select>
     </label>}
+    {selectedTarget&&<p role="status">{selectedTarget.credentialStatus.reviewPending&&selectedTarget.credentialStatus.applyPending
+      ?selectedTarget.credentialStatus.state==='active-pending'
+        ?"A completed discovery is pending review and a staged credential revision is pending Apply. The active saved revision remains in place."
+        :"A completed discovery is pending review and a staged credential revision is pending Apply; no active saved revision is available."
+      :selectedTarget.credentialStatus.state==='unavailable'&&selectedTarget.credentialStatus.reviewPending
+      ?"A completed discovery is pending review; no active saved revision is available."
+      :selectedTarget.credentialStatus.state==='active'&&selectedTarget.credentialStatus.reviewPending
+        ?"A completed discovery is pending review. The active saved credential revision remains in place."
+      :selectedTarget.credentialStatus.state==='unavailable'
+      ?"Credential status is unavailable under your current account and connection access."
+      :selectedTarget.credentialStatus.state==='revoked'
+        ?"The saved credential is revoked. Removing the connection declaration does not revoke a credential."
+        :selectedTarget.credentialStatus.applyPending&&selectedTarget.credentialStatus.state==='pending'
+          ?"A staged credential revision is pending Apply; no active saved revision is available."
+        :selectedTarget.credentialStatus.applyPending
+          ?"A staged credential revision is pending Apply. The previous active saved revision remains in place."
+        :selectedTarget.credentialStatus.state==='active'
+          ?"An active saved credential revision exists. This status does not confirm that the outside server is reachable."
+          :"Credential status is unavailable under your current account and connection access."}</p>}
     <div className="lares-inline-form">
       <button type="button" disabled={busy||unresolved} onClick={()=>void loadTargets()}>Refresh connections</button>
       <button type="button" disabled={busy||unresolved||!selectedTarget} onClick={()=>void review()}>Review connection</button>

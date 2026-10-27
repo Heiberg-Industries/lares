@@ -17,7 +17,8 @@ import { listOutsideDiscoveryTargets } from '../app/actions/outside-discovery.js
 
 const sessionToken='S'.repeat(43),memberId='11111111-1111-4111-8111-111111111111',auditActor='member@example.test';
 let directory:string,stop:(()=>Promise<void>)|undefined;
-const records:AuditRecord[]=[],listTargets=vi.fn(async()=>[{agentName:'worker',connectionName:'connector'}]);
+const records:AuditRecord[]=[],listTargets=vi.fn(async()=>[{agentName:'worker',connectionName:'connector',credentialStatus:{
+  state:'unavailable',reviewPending:false,applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}}]);
 const ownerOnly=vi.fn(async()=>({ok:true}));
 beforeEach(async()=>{
   resetActions();records.length=0;listTargets.mockClear();ownerOnly.mockClear();
@@ -40,7 +41,8 @@ afterEach(async()=>{
 });
 
 it('sends the server-derived audit address for a UUID member through the real app socket',async()=>{
-  await expect(listOutsideDiscoveryTargets()).resolves.toEqual([{agentName:'worker',connectionName:'connector'}]);
+  await expect(listOutsideDiscoveryTargets()).resolves.toEqual([{agentName:'worker',connectionName:'connector',credentialStatus:{
+    state:'unavailable',reviewPending:false,applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}}]);
   expect(mocks.member).toHaveBeenCalledWith(sessionToken);
   expect(mocks.auditAddress).toHaveBeenCalledWith(memberId);
   expect(listTargets).toHaveBeenCalledTimes(1);

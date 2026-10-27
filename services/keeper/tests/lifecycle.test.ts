@@ -12,7 +12,9 @@ import type { LifecycleConfig } from '../lib/lifecycle-config.js';
 import { AgentNotHealthyError, NoOwnedContainerError, type DockerBoundary } from '../lib/docker.js';
 import { parse } from 'yaml';
 import { credentialRecordSchema, initialCredentialRecord } from '../lib/credential-state.js';
-import { definitionSchema, hashOf } from '@lares/agent-kit/definition';
+import { definitionSchema, hashOf, loadDefinition } from '@lares/agent-kit/definition';
+import { PgGrantStore } from '@lares/agent-kit/grant-store';
+import { createHash } from 'node:crypto';
 const repo=resolve('../..'), image='example/image@sha256:'+'a'.repeat(64);
 let pg:StartedPostgreSqlContainer,pool:Pool,adminPool:Pool,root:string,config:LifecycleConfig,events:string[],started:string[],fail:string|undefined;
 const definition:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/creative/agent.json'),'utf8')),name:'bookkeeper',role:'creative',doors:[],grants:[]};
@@ -217,7 +219,8 @@ beforeAll(async()=>{
  await pool.query("CREATE ROLE lares_workflow_provisioner LOGIN NOINHERIT CREATEDB PASSWORD 'test-only-provisioner'");
  await pool.query("GRANT lares_workflow_owner TO lares_workflow_provisioner");
  await pool.query("CREATE ROLE lares_workflow LOGIN NOINHERIT PASSWORD 'test-only-workflow'");
- for(const name of ['001_baseline.sql','008_connected_accounts.sql','012_connected_account_credentials.sql']) await pool.query(readFileSync(join(repo,'services/box/sql',name),'utf8'));
+ for(const name of ['001_baseline.sql','007_member_identity_sessions.sql','008_connected_accounts.sql','012_connected_account_credentials.sql',
+   '013_console_turn_authority.sql','014_agent_access_grants.sql']) await pool.query(readFileSync(join(repo,'services/box/sql',name),'utf8'));
  await pool.query('CREATE DATABASE empty_workflow OWNER lares_workflow_owner');
  const template=quiet(new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,'/empty_workflow')}));
  await template.query('CREATE SCHEMA workflow AUTHORIZATION lares_workflow_owner; CREATE TABLE workflow.memory(value text)');await template.query('ALTER TABLE workflow.memory OWNER TO lares_workflow_owner');await template.end();
@@ -229,7 +232,8 @@ afterAll(async()=>{await adminPool?.end();await pool?.end();await pg?.stop();if(
 beforeEach(async()=>{
  const rows=(await pool.query("SELECT datname FROM pg_database WHERE datname LIKE 'lares_%'")).rows;
  for(const row of rows)await pool.query(`DROP DATABASE "${row.datname}" WITH (FORCE)`);
- await pool.query('TRUNCATE agent_resources,agent_avatars,agent_definitions,agent_doors,agent_door_connections,agent_door_claim_audit,ratchet,ratchet_audit,agent_registry,proactivity_settings,heartbeat,sessions,confirmations,reminders,trigger_schedules,workflow_jobs,digest_requests,digest_skips');
+ await pool.query('TRUNCATE agent_resources,agent_avatars,agent_definitions,agent_doors,agent_door_connections,agent_door_claim_audit,ratchet,ratchet_audit,agent_registry,proactivity_settings,heartbeat,sessions,confirmations,reminders,trigger_schedules,workflow_jobs,digest_requests,digest_skips CASCADE');
+ await pool.query('TRUNCATE member_sessions,org_member_policy,users,orgs CASCADE');
  await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('models.alias_prefix','\"lares\"','test') ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value");
  if(root)rmSync(root,{recursive:true,force:true});root=mkdtempSync(join(tmpdir(),'lares-owned-'));
  for(const d of ['agents','secrets','egress'])mkdirSync(join(root,d));
@@ -238,6 +242,41 @@ beforeEach(async()=>{
  await pool.query("INSERT INTO agent_definitions(name,hash,definition,valid_at,status) VALUES($1,'test',$2::jsonb,now(),'valid')",['bookkeeper',JSON.stringify(definition)]);
  events=[];started=[];fail=undefined;
 });
+it('holds member edit authority through the real lifecycle reconciliation on separate pool connections',async()=>{
+ const {registerDefinitionActions}=await import('../lib/definitions.js');
+ const {resetActions,runAction}=await import('../lib/actions.js');
+ const {deployedToolsFor}=await import('@lares/agent-kit/persona');
+ const {agentsDir,retiredDir,secretsDir}={agentsDir:join(root,'agents'),retiredDir:join(root,'retired'),secretsDir:join(root,'secrets')};mkdirSync(retiredDir);
+ const agentDir=join(agentsDir,'bookkeeper');mkdirSync(agentDir);
+ const duties='Apply test duties.\n',voice='Apply test voice.\n',applyDefinition={...definition,autonomy:{}};
+ writeFileSync(join(agentDir,'agent.json'),JSON.stringify(applyDefinition));writeFileSync(join(agentDir,'duties.md'),duties);writeFileSync(join(agentDir,'voice.md'),voice);
+ const loaded=await loadDefinition({serviceDir:'unused',env:{LARES_DEFINITION_DIR:agentDir}});
+ await pool.query('UPDATE agent_definitions SET definition=$2::jsonb,hash=$3,duties=$4,voice=$5 WHERE name=$1',
+   ['bookkeeper',JSON.stringify(loaded.definition),loaded.hash,duties,voice]);
+ const l=lifecycle();await l.create('bookkeeper',loaded.definition);
+ await pool.query(`INSERT INTO orgs(id,display_name) VALUES('apply-org','Apply test');
+   INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES
+     ('apply-owner','Owner','apply-owner@example.test','apply-org','owner'),('apply-editor','Editor','apply-editor@example.test','apply-org','member');
+   INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('apply-owner',NULL),('apply-editor',NULL)`);
+ const grantStore=new PgGrantStore(pool),adopted=await grantStore.adoptAgent('apply-owner',
+   {agentName:'bookkeeper',expectedDefinitionHash:loaded.hash},{designatedOwnerMemberId:'apply-owner'});
+ await grantStore.updateAgentAccess('apply-owner',{agentName:'bookkeeper',expectedRevision:adopted.accessRevision,
+   grants:[{principal:{kind:'member',id:'apply-editor'},permission:'edit',expiresAt:null}]});
+ const token=Buffer.alloc(32,61).toString('base64url');
+ await pool.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval \'1 hour\')',
+   ['apply-editor-session','apply-editor',createHash('sha256').update(token).digest('hex')]);
+ resetActions();registerDefinitionActions({pool,agentsDir,retiredDir,secretsDir,ceiling:async()=>4,compose:l,storage:l,
+   backup:{commit:async()=>{}},roleInfo:r=>({roleMd:readFileSync(join(repo,'packages/agent-kit/templates',r,'role.md'),'utf8'),
+     deployedTools:deployedToolsFor(join(repo,'services',r))})});
+ const access=await pool.query<{revision:string}>('SELECT revision::text FROM agent_access WHERE agent_name=$1',['bookkeeper']);
+ events=[];
+ const result=await runAction('outside.connections.apply',{name:'bookkeeper',sessionToken:token,expectedDefinitionHash:loaded.hash,
+   expectedAccessRevision:Number(access.rows[0]!.revision)},{actor:'apply-editor@example.test',audit:async()=>{}}) as any;
+ expect(result).toMatchObject({applicationStatus:'applied',connections:[],appliedConnections:[]});
+ expect(events).toEqual(['config','stop:bookkeeper','parse-squid','parse-nft','apply-nft','reload-squid','start:bookkeeper']);
+ expect((await l.storage.row('bookkeeper')).applied_definition).toEqual(loaded.definition);
+ resetActions();
+},20000);
 it('clones an owned workflow database, seals before starting and reserves the whole network inventory',async()=>{
  const l=lifecycle();await l.create('bookkeeper',definition);
  const row=await l.storage.row('bookkeeper');expect(row.address).toBe('172.18.0.24');expect(row.workflow_database).toMatch(/^lares_[a-f0-9]{32}$/);

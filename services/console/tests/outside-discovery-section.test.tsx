@@ -13,9 +13,32 @@ const preview={...tuple,endpoint:'https://exact.example.test/mcp',purpose:'strea
   destinationHash:'b'.repeat(64),routePolicyHash:'c'.repeat(64),expectedGeneration:0,expectedCandidateRevision:null,consentGeneration:1};
 const document={protocolVersion:'2025-06-18',serverInfo:{name:'sample',version:'1'},tools:[{name:'read',description:'Read a record',inputSchema:{type:'object'}}]};
 const recoveryKey=(memberId:string)=>`lares.outside.discovery.recovery.v1:${encodeURIComponent(memberId)}`;
-beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector'}]);
+beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector',
+  credentialStatus:{state:'unavailable',reviewPending:false,applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}}]);
   actions.preview.mockResolvedValue(preview);actions.discover.mockResolvedValue({state:'complete',document});actions.inspect.mockResolvedValue({state:'unresolved'});});
 afterEach(()=>{cleanup();vi.restoreAllMocks();});
+
+it('shows the active credential separately from a pending token-only replacement without displaying credential data',async()=>{
+  actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector',credentialStatus:{state:'active',
+    reviewPending:true,applyPending:false,activeRevision:3,candidateRevision:null,discoveryRevision:4}}]);
+  render(<OutsideDiscoverySection memberId="member-a"/>);
+  await screen.findByText("A completed discovery is pending review. The active saved credential revision remains in place.");
+  expect(screen.queryByText(/private-token|ciphertext|policy/i)).toBeNull();
+});
+
+it('labels a staged replacement as pending Apply, separately from completed discovery review',async()=>{
+  actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector',credentialStatus:{state:'active-pending',
+    reviewPending:false,applyPending:true,activeRevision:3,candidateRevision:5,discoveryRevision:4}}]);
+  render(<OutsideDiscoverySection memberId="member-a"/>);
+  await screen.findByText("A staged credential revision is pending Apply. The previous active saved revision remains in place.");
+});
+
+it('reports both phases when a newer discovery and a staged candidate coexist',async()=>{
+  actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector',credentialStatus:{state:'active-pending',
+    reviewPending:true,applyPending:true,activeRevision:3,candidateRevision:5,discoveryRevision:6}}]);
+  render(<OutsideDiscoverySection memberId="member-a"/>);
+  await screen.findByText("A completed discovery is pending review and a staged credential revision is pending Apply. The active saved revision remains in place.");
+});
 
 async function prepareConsent(){
   render(<OutsideDiscoverySection memberId="member-a"/>);
