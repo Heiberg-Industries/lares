@@ -7,7 +7,7 @@ const GIB = 1024 ** 3;
 const gib = (bytes: number) => `${(Math.round((bytes / GIB) * 10) / 10).toString()} GiB`;
 const noun = (n: number) => (n === 1 ? "agent" : "agents");
 
-/** The agent limit. Only the administrator gets the field; everyone else sees the number. The
+/** The agent limit. Only the installation owner gets the field; everyone else sees the number. The
  * memory figures come from the keeper and are estimates; an older keeper sends none, and then
  * only the number is shown. */
 export function AgentLimitControl({ capacity }: { capacity: Capacity }) {
@@ -40,7 +40,7 @@ export function AgentLimitControl({ capacity }: { capacity: Capacity }) {
           Agent limit
           <p>
             {current === null ? "Not set yet." : `This server may run up to ${current} ${noun(current)}. You have ${capacity.activeCount}.`}
-            {" "}It protects the server from running out of memory.
+            {" "}A fresh installation starts with a limit of 1 as a conservative setting, not a measurement of this server’s capacity. {editable ? "Only the installation owner can change it here; review the separate RAM estimate below first." : "Ask the installation owner to review the separate RAM estimate before changing it in Settings → Agents."}
           </p>
         </div>
         {!editable && <span className="mono" data-testid="agent-limit">{current ?? "Not set"}</span>}

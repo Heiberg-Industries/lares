@@ -78,13 +78,19 @@ it("says why the box has a limit and, for the administrator, where to change it"
   expect(html).toContain("holds up to 1 agent");
   expect(html).not.toContain("agents.ceiling");
   expect(html).not.toContain("Change it in Settings");
-  expect(LIMIT_WHY).toContain("memory");
-  expect(LIMIT_WHY).not.toContain("cannot change it yet");
+  expect(LIMIT_WHY).toContain("starts with a limit of 1");
+  expect(LIMIT_WHY).toContain("separate rough RAM estimate");
+  expect(LIMIT_WHY).toContain("Only the installation owner can change the limit");
   const admin = renderToStaticMarkup(
     <CeilingNotice capacity={{ ceiling: 1, activeCount: 1, approved: true, creationAvailable: false, canChange: true }} />,
   );
-  expect(admin).toContain("Change it in Settings");
+  expect(admin).toContain("Open Settings → Agents");
   expect(admin).toContain('href="/settings"');
+  const member = renderToStaticMarkup(
+    <CeilingNotice capacity={{ ceiling: 1, activeCount: 1, approved: true, creationAvailable: false, canChange: false }} />,
+  );
+  expect(member).toContain("Ask the installation owner to review Settings → Agents");
+  expect(member).not.toContain('href="/settings"');
 });
 
 it("explains that instructions and personality are added to a built-in default, and shows it", () => {

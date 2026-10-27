@@ -117,7 +117,7 @@ it('serializes ceiling races across separate registration instances and refuses 
     const outcomes = await Promise.allSettled([first, second]);
     expect(outcomes.filter(r => r.status === 'fulfilled')).toHaveLength(1);
     expect(readdirSync(agentsDir).filter(n => !n.startsWith('.'))).toHaveLength(1);
-    await expect(runAction('definition.create', { ...save('third'), startingPoint: role }, ctx(), { host: true })).rejects.toThrow('this box holds 1 agents; retire one or move to a larger server');
+    await expect(runAction('definition.create', { ...save('third'), startingPoint: role }, ctx(), { host: true })).rejects.toThrow("this box's agent limit is 1; the installation owner can raise it in Settings → Agents after reviewing the RAM estimate, or retire an agent");
     await expect(runAction('definition.create', { ...save('third'), startingPoint: role, force: true }, ctx())).rejects.toThrow();
 });
 it('retirement preserves seeded owned/shared rows; deletion removes only owned memory with confirmation', async () => {
@@ -306,7 +306,7 @@ it('the administrator raises the limit and a second agent can then be created', 
     await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agents.ceiling','1','seed')");
     registerLimit();
     await create();
-    await expect(create('second')).rejects.toThrow('holds 1 agents');
+    await expect(create('second')).rejects.toThrow("this box's agent limit is 1; the installation owner can raise it in Settings → Agents after reviewing the RAM estimate, or retire an agent");
     const result: any = await runAction('definition.capacity_set', { ceiling: 2 }, asOwner());
     expect(result).toMatchObject({ ceiling: 2, activeCount: 1, approved: true, creationAvailable: true });
     await expect(create('second')).resolves.toBeTruthy();

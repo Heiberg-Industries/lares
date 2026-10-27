@@ -67,6 +67,25 @@ it("preserves an explicit lockout and an installation-specific alias prefix", as
   );
 });
 
+it("preserves an owner-adjusted limit across installer reruns", async () => {
+  await pool.query(
+    `INSERT INTO settings (key, value, updated_by)
+     VALUES ('agents.ceiling', '2', 'owner')`,
+  );
+
+  expect(await initializeInstallationSettings(pool)).toMatchObject({
+    agentCeiling: 2,
+    initialized: ["models.alias_prefix"],
+  });
+  expect(await initializeInstallationSettings(pool)).toMatchObject({
+    agentCeiling: 2,
+    initialized: [],
+  });
+  expect((await pool.query("SELECT value FROM settings WHERE key='agents.ceiling'")).rows).toEqual([
+    { value: 2 },
+  ]);
+});
+
 it("refuses a malformed existing value instead of disguising it with a default", async () => {
   await pool.query(
     `INSERT INTO settings (key, value, updated_by) VALUES

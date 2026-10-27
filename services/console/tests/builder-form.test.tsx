@@ -17,7 +17,7 @@ it('keeps new-agent permission writes unavailable and gives every field its timi
  const html=document.body.innerHTML;
  expect(html).toContain('Create this agent first');expect(html).not.toContain('role="group" aria-label=');
  expect(html).toContain('What is this agent for? Write it the way you would tell a person.');
- expect(html).toContain('This box holds up to 6 agents. You have 3.');expect(html).toContain('Change it in Settings');
+ expect(html).toContain('This box holds up to 6 agents. You have 3.');expect(html).toContain('Open Settings → Agents');
  expect(html).toContain('Access and skills');expect(html).toContain('Schedules');
  expect(html).not.toContain('installation-brain');
 });
@@ -29,7 +29,7 @@ it('prefills edit data, shows pending restart, and renders permission buttons as
 });
 it('distinguishes unapproved capacity and a full box',()=>{
  expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:null,activeCount:3,approved:false,creationAvailable:false}}/>)).toContain('not been measured and approved');
- expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:0,activeCount:0,approved:true,creationAvailable:false}}/>)).toContain('Move to a server with agent capacity');
+ expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:0,activeCount:0,approved:true,creationAvailable:false}}/>)).toContain('Ask the installation owner to review Settings → Agents');
  expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:1,activeCount:1,approved:true,creationAvailable:false}}/>)).toContain('up to 1 agent');
 });
 
