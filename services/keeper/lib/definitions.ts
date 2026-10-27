@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import type { Pool, PoolClient } from 'pg';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
-import { definitionSchema, parseDefinition, hashOf, loadDefinition, readDefinitionFiles, doorsOf, type AgentDefinition } from '@lares/agent-kit/definition';
+import { definitionSchema, outsideToolSchema, parseDefinition, hashOf, loadDefinition, readDefinitionFiles, doorsOf, type AgentDefinition } from '@lares/agent-kit/definition';
+import { currentSession } from '@lares/agent-kit/member-store';
+import { PgGrantStore, type GrantDatabase } from '@lares/agent-kit/grant-store';
 import { validateDefinition, doorSecretName } from '@lares/agent-kit/definition-validate';
 import { rememberValid } from '@lares/agent-kit/definition-cache';
 import { KeeperRefusedError, registerAction, type ActionContext } from './actions.js';
@@ -101,6 +103,11 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
     const db = () => connection.getStore() ?? o.pool;
     const nameInput = z.strictObject({ name: z.string() });
     const writeInput = z.strictObject({ name: z.string(), definition: z.unknown(), duties: z.string(), voice: z.string() });
+    const outsideConnectionsReadInput = z.strictObject({ sessionToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/), name: z.string() });
+    const outsideConnectionsWriteInput = outsideConnectionsReadInput.extend({
+        expectedDefinitionHash: z.string().regex(/^[a-f0-9]{64}$/), expectedAccessRevision: z.number().int().positive(),
+        connections: z.array(outsideToolSchema),
+    });
     const active = (name: string) => join(o.agentsDir, nameOf(name));
     const roots = () => { for (const d of [o.agentsDir, o.retiredDir, o.secretsDir])
         plainDirectory(d); };
@@ -168,7 +175,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             throw new KeeperRefusedError(findings.map(f => `[${f.check}] ${f.message}`).join('\n'), findings);
         return d;
     }
-    async function save(input: z.infer<typeof writeInput>, ctx: ActionContext, create: boolean) {
+    async function prepareSave(input: z.infer<typeof writeInput>, create: boolean) {
         const submitted = create ? input : { ...input, definition: migrateTrackRoutingDefinition(input.definition) };
         const d = validate(submitted), path = active(input.name), previous = await registry(input.name);
         if (create) {
@@ -190,6 +197,11 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         }
         await o.compose.prepare?.(input.name,d,create);
         const files = { 'agent.json': JSON.stringify(d, null, 2) + '\n', 'duties.md': input.duties, 'voice.md': input.voice };
+        return { d, path, files };
+    }
+    async function publishSave(input: z.infer<typeof writeInput>, create: boolean,
+        prepared: Awaited<ReturnType<typeof prepareSave>>) {
+        const { d, path, files } = prepared;
         if (create) {
             // Stage creation outside the counted namespace and publish a complete root in one rename.
             // Interrupted stages are inert; a subsequent create may use the unoccupied name.
@@ -208,6 +220,10 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             await db().query(`INSERT INTO agent_doors(agent,kind,enabled,settings) VALUES($1,$2,$3,$4::jsonb)
       ON CONFLICT(agent,kind) DO UPDATE SET enabled=EXCLUDED.enabled,settings=EXCLUDED.settings,updated_at=now()`, [input.name, door.kind, door.enabled, JSON.stringify(d.doors?.find(x => x.kind === door.kind)?.settings ?? {})]);
         await db().query('UPDATE agent_doors SET enabled=false,updated_at=now() WHERE agent=$1 AND NOT(kind=ANY($2::text[]))', [input.name, doorsOf(d).map(x => x.kind)]);
+        return loaded;
+    }
+    async function finishSave(input: z.infer<typeof writeInput>, ctx: ActionContext, create: boolean, d: AgentDefinition,
+        loaded: Awaited<ReturnType<typeof publishSave>>) {
         const backedUp = await backup(input.name, ctx, 'Saved definition');
         let runtime:unknown;
         try {
@@ -220,6 +236,76 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         }
         return { name: input.name, hash: loaded.hash, backup: backedUp, runtime };
     }
+    async function save(input: z.infer<typeof writeInput>, ctx: ActionContext, create: boolean) {
+        const prepared = await prepareSave(input, create);
+        const loaded = await publishSave(input, create, prepared);
+        return finishSave(input, ctx, create, prepared.d, loaded);
+    }
+    async function connectionSnapshot(client: PoolClient, input: z.infer<typeof outsideConnectionsReadInput> & Partial<z.infer<typeof outsideConnectionsWriteInput>>, write: boolean) {
+        const member = await currentSession(client, input.sessionToken, undefined, { lock: 'share' });
+        if (!member) refused('Sign in again to manage this agent.');
+        const loaded = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: active(input.name) } });
+        const row = await client.query<{ hash: string; status: string; revision: string }>(
+            `SELECT d.hash,d.status,a.revision FROM agent_definitions d JOIN agent_access a ON a.agent_name=d.name WHERE d.name=$1 FOR SHARE OF d,a`,
+            [input.name]);
+        const current = row.rows[0];
+        if (!current || current.status !== 'valid' || current.hash !== loaded.hash || !/^\d+$/.test(current.revision))
+            refused('Definition changed or is not recorded as valid; refresh before editing connections.');
+        const revision = Number(current.revision);
+        if (!Number.isSafeInteger(revision) || write && (revision !== input.expectedAccessRevision || loaded.hash !== input.expectedDefinitionHash))
+            refused('Definition or access changed; refresh before editing connections.');
+        if (!await new PgGrantStore().can(member.id, { kind: 'agent', id: input.name }, 'edit', {
+            expectedRevision: revision, db: client as GrantDatabase,
+        })) refused('Current agent edit access is required to manage connections.');
+        return { member, loaded, revision };
+    }
+    async function admittedConnectionEdit(input: z.infer<typeof outsideConnectionsReadInput> & Partial<z.infer<typeof outsideConnectionsWriteInput>>, ctx: ActionContext, write: boolean) {
+        nameOf(input.name);
+        return locked(async () => {
+            const client = connection.getStore();
+            if (!client) throw new Error('Connection access requires the definition namespace client.');
+            if (!write) {
+                await client.query('BEGIN');
+                try {
+                    const snapshot = await connectionSnapshot(client, input, false);
+                    await client.query('COMMIT');
+                    return { name: input.name, definitionHash: snapshot.loaded.hash, accessRevision: snapshot.revision, connections: snapshot.loaded.definition.outsideTools ?? [] };
+                } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+            }
+            const initial = await connectionSnapshot(client, input, true);
+            const connections = input.connections;
+            if (!connections) refused('Connection changes are required.');
+            if (new Set(connections.map(connection => connection.name)).size !== connections.length)
+                refused('Connection names must be unique.');
+            const definition = { ...initial.loaded.definition } as AgentDefinition & { outsideTools?: AgentDefinition['outsideTools'] };
+            if (connections.length) definition.outsideTools = connections;
+            else delete definition.outsideTools;
+            const saveInput = { name: input.name, definition, duties: initial.loaded.dutiesMd, voice: initial.loaded.voiceMd };
+            // Lifecycle preflight uses other pool queries. Run it before opening the authority transaction;
+            // the signed session and exact edit grant are rechecked and held through file/DB publication below.
+            const prepared = await prepareSave(saveInput, false);
+            let loaded: Awaited<ReturnType<typeof publishSave>>;
+            let nextRevision: number;
+            await client.query('BEGIN');
+            try {
+                const final = await connectionSnapshot(client, input, true);
+                if (final.loaded.hash !== initial.loaded.hash || final.revision !== initial.revision)
+                    refused('Definition or access changed; refresh before editing connections.');
+                loaded = await publishSave(saveInput, false, prepared);
+                const next = await client.query<{ revision: string }>('SELECT revision FROM agent_access WHERE agent_name=$1', [input.name]);
+                nextRevision = Number(next.rows[0]?.revision);
+                if (!Number.isSafeInteger(nextRevision) || nextRevision <= 0) refused('Connection save could not be confirmed.');
+                await client.query('COMMIT');
+            } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+            const result = await finishSave(saveInput, ctx, false, prepared.d, loaded);
+            return { name: result.name, definitionHash: result.hash, accessRevision: nextRevision, connections };
+        });
+    }
+    registerAction({ name: 'outside.connections.get', input: outsideConnectionsReadInput, secretFields: ['sessionToken'],
+        run: (input, ctx) => admittedConnectionEdit(input, ctx, false) });
+    registerAction({ name: 'outside.connections.save', input: outsideConnectionsWriteInput, secretFields: ['sessionToken'],
+        successDetail: (result: { definitionHash: string; accessRevision: number }) => JSON.stringify({ definitionHash: result.definitionHash, accessRevision: result.accessRevision }),
+        run: (input, ctx) => admittedConnectionEdit(input, ctx, true) });
     const successDetail = (result: {
         hash: string;
     }) => JSON.stringify({ hash: result.hash });

@@ -75,7 +75,7 @@ const scheduleSchema = z.strictObject({
  *  name, so the model sees tools as `<name>__<tool>`. Never put this on a service's neutral
  *  `agent.json`: it is installation data and lives only in a definition. */
 export const OUTSIDE_TOOL_NAME_RE = /^[a-z][a-z0-9-]{0,40}$/;
-const outsideToolSchema = z.strictObject({
+export const outsideToolSchema = z.strictObject({
   name: z.string().regex(OUTSIDE_TOOL_NAME_RE),
   url: z.string().min(1).max(2048),
   /** The owner's words about what this server is for; rendered into the persona. */
