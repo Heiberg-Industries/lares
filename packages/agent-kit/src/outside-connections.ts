@@ -1,49 +1,18 @@
-// Outside tools at run time, B2a): the one implementation both role services use to turn an
-// agent definition's `outsideTools` into eve MCP connections, and the rules around them.
-//
-// `outside-tools.ts` (same folder) holds the pure DEFINITION helpers (url check, which entries are in
-// effect, secret names). This file is the RUNTIME half: connection settings, the approval policy,
-// the approver re-check, the taint rule and the "something is wrong" classifier. Each role's
-// `agent/connections/outside-tools.ts` is a few lines that call `resolveOutsideConnections`.
-//
-// MODULE SCOPE IS INERT: `eve build` evaluates this with no secrets and no network. The token file
-// is read inside `getToken`, at call time, and never cached here.
-import { readFile } from "node:fs/promises";
+// Accepted outside tools execute only through Keeper; no agent-side provider or token access.
+import { defineTool, defineDurableCallback, type ToolContext } from "eve/tools";
 
-import type { McpClientConnectionDefinition } from "eve/connections";
 import type { ApprovalContext, ApprovalResponseContext, ApprovalResponseDecision, ApprovalStatus } from "eve/tools/approval";
 
 import type { AgentDefinition, OutsideToolDeclaration } from "./definition.js";
 import { registerOutsideConnections } from "./approval-summary.js";
-import { outsideHttpsHosts, outsideSecretTarget, outsideToolsInEffect } from "./outside-tools.js";
-import { addEgressHosts } from "./slack-dispatcher.js";
+import { outsideToolsInEffect } from "./outside-tools.js";
 import { asksAfterUntrustedText } from "./tainted-approval.js";
-import { listTools, pgPinStore, reportPinVerdict, verdictOncePerSession, verifyEntry, type PinCheckDeps, type PinReporter } from "./outside-pins.js";
-import { getPool } from "./db.js";
 import type { Taint } from "./origin-taint.js";
 
 /** The slice of a definition this file reads. */
 export type OutsideDefinitionView = Pick<AgentDefinition, "name" | "grants" | "autonomy" | "outsideTools">;
 
-export interface OutsideDeps {
-  /** True when this responder (eve's `SessionAuthContext`) may approve: the role service passes the
-   *  same allowlist check `assertApprover` uses (`isAllowedPrincipal`). */
-  isAllowedApprover: (responder: unknown) => boolean;
-  /** Reads a token file. Defaults to `fs.readFile`; tests inject. */
-  readTokenFile?: (path: string) => Promise<string>;
-  /** Registers the https hosts with the egress dispatcher. Defaults to the engine's; tests inject. */
-  addHosts?: (hosts: string[]) => void;
-  /** False for a role that has no origin-taint hook (creative): the turn's taint is never written
-   *  there, so "ask once the turn has read outside text" could never fire. Every call then asks.
-   *  Defaults to true. */
-  taintAware?: boolean;
-  /** Defaults to false. While it is false, an approval an outside tool needs is refused on a Telegram
-   *  conversation with a plain message to use Slack. Flip it only after a Telegram tap has been
-   *  seen approving an outside-tool write on the real bot (see `OUTSIDE_TELEGRAM_APPROVALS_PROVEN`). */
-  telegramApprovals?: boolean;
-  /** The locked-descriptions check (`checkedOutsideConnections`). Absent: no check (tests). */
-  descriptions?: () => DescriptionCheckDeps;
-}
+interface OutsideDeps { isAllowedApprover:(responder:unknown)=>boolean }
 
 /**
  * Whether the owner has seen a Telegram tap approve an outside-tool write on the real bot.
@@ -65,11 +34,6 @@ function sessionIsTelegram(ctx: unknown): boolean {
   const auth = (ctx as { session?: { auth?: { current?: unknown; initiator?: unknown } } } | null | undefined)?.session?.auth;
   const is = (a: unknown): boolean => (a as { authenticator?: unknown } | null | undefined)?.authenticator === TELEGRAM_AUTHENTICATOR;
   return is(auth?.current) || is(auth?.initiator);
-}
-
-/** Where the keeper mounts an entry's token inside the agent's container. */
-export function outsideTokenPath(toolName: string): string {
-  return `/run/secrets/${outsideSecretTarget(toolName)}`;
 }
 
 /** The bare tool name behind eve's `<connection>__<tool>`. */
@@ -135,115 +99,6 @@ export function outsideResponsePolicy(
     }
     return allowed ? { status: "allowed" } : { status: "rejected", reason: "this person is not an allowed approver for this agent" };
   };
-}
-
-/** Reads an entry's token file, at call time. Names the path, never the contents. */
-export async function readOutsideToken(entry: OutsideToolDeclaration, read: (path: string) => Promise<string>): Promise<string> {
-  const path = outsideTokenPath(entry.name);
-  let raw: string;
-  try {
-    raw = await read(path);
-  } catch {
-    throw new Error(`outside tool ${entry.name}: token file not readable: ${path}`);
-  }
-  const token = raw.trim();
-  if (token === "") throw new Error(`outside tool ${entry.name}: token file is empty: ${path}`);
-  return token;
-}
-
-/** One entry as eve connection settings. Pure; no I/O until eve calls `getToken`. */
-export function outsideConnection(agentName: string, entry: OutsideToolDeclaration, deps: OutsideDeps): McpClientConnectionDefinition {
-  const read = deps.readTokenFile ?? ((p: string) => readFile(p, "utf8"));
-  return {
-    url: entry.url,
-    description: entry.description,
-    instanceKey: `outside:${agentName}:${entry.name}`,
-    ...(entry.token === true
-      ? {
-          auth: {
-            credentialOwner: "app" as const,
-            getToken: async () => ({ token: await readOutsideToken(entry, read) }),
-          },
-        }
-      : {}),
-    tools: { allow: [...entry.tools.allow] },
-    approval: { request: outsideRequestPolicy(entry, { taintAware: deps.taintAware, telegramApprovals: deps.telegramApprovals }), response: outsideResponsePolicy(deps.isAllowedApprover) },
-  };
-}
-
-/**
- * The connections for one agent, or null when it has none in effect (no entries, no `outside` grant,
- * or autonomy `never`). eve runs the resolver several times per session and again after a restart, so
- * this is idempotent: the only state it touches is two in-process sets (the egress hosts and the card
- * connection names), and adding to them twice changes nothing.
- */
-export function resolveOutsideConnections(
-  definition: OutsideDefinitionView,
-  deps: OutsideDeps,
-): Record<string, McpClientConnectionDefinition> | null {
-  const entries = outsideToolsInEffect(definition);
-  if (entries.length === 0) return null;
-  const hosts = outsideHttpsHosts(entries);
-  if (hosts.length > 0) (deps.addHosts ?? addEgressHosts)(hosts);
-  registerOutsideConnections(entries.map((e) => e.name));
-  return Object.fromEntries(entries.map((e) => [e.name, outsideConnection(definition.name, e, deps)]));
-}
-
-// ─── Locked tool descriptions ──────────────────────────────────────────────────────────────
-
-export interface DescriptionCheckDeps extends PinCheckDeps {
-  reporter?: PinReporter;
-}
-
-/** The check wired to the box's database, built only when there is something to check (an agent with
- *  no outside tools never touches the database here). `signal` is the role's own sender, if any. */
-export function descriptionChecks(signal?: PinReporter["signal"]): () => DescriptionCheckDeps {
-  return () => {
-    const db = getPool();
-    return { store: pgPinStore(db), list: listTools, reporter: { db, ...(signal === undefined ? {} : { signal }) } };
-  };
-}
-
-/**
- * `resolveOutsideConnections`, then the locked-descriptions check (ADR-0019 rule 10): at most once
- * per session and entry, ask the server for `tools/list` and compare it with what was recorded when
- * the entry was first used. An entry whose descriptions changed, or whose record could not be read,
- * is dropped from this session and reported once. FAILS CLOSED: so is an entry whose key file cannot be
- * read or whose server cannot be asked, because a hostile server could fail the check and then serve
- * changed descriptions to eve's own client. Only `match` and a fresh `pinned` keep the connection.
- * Each drop opens the repair and sends the signal once per session and entry; `match` and `pinned`
- * resolve an open repair. Returns null when nothing is left.
- */
-export async function checkedOutsideConnections(
-  definition: OutsideDefinitionView,
-  deps: OutsideDeps,
-  sessionId: string | undefined,
-): Promise<Record<string, McpClientConnectionDefinition> | null> {
-  const configs = resolveOutsideConnections(definition, deps);
-  if (configs === null || deps.descriptions === undefined) return configs;
-  const checks = deps.descriptions();
-  const read = deps.readTokenFile ?? ((p: string) => readFile(p, "utf8"));
-  const kept: Record<string, McpClientConnectionDefinition> = {};
-  for (const entry of outsideToolsInEffect(definition)) {
-    const config = configs[entry.name];
-    if (config === undefined) continue;
-    const verdict = await verdictOncePerSession(sessionId, definition.name, entry.name, async () => {
-      let token: string | undefined;
-      if (entry.token === true) {
-        try {
-          token = await readOutsideToken(entry, read);
-        } catch {
-          // Fail closed: without the key the check cannot run, and an unchecked connection is not kept.
-          await reportPinVerdict(definition.name, entry.name, "unreachable", checks.reporter);
-          return "unreachable";
-        }
-      }
-      return verifyEntry(definition.name, entry, token, checks, checks.reporter);
-    });
-    // Fail closed: only a recorded match, or a first-time record just written, keeps the connection.
-    if (verdict === "match" || verdict === "pinned") kept[entry.name] = config;
-  }
-  return Object.keys(kept).length === 0 ? null : kept;
 }
 
 // ─── Taint ─────────────────────────────────────────────────────────────────────────────────
@@ -336,4 +191,30 @@ export function outsideProblemWording(agentName: string, p: OutsideProblem): { s
         summary: `${agentName}: outside tool ${p.connection} did not answer`,
         detail: `A call to outside tool "${p.connection}" did not complete. The server may be down or unreachable from the box. Check that it is running; ${agentName} will keep trying when asked.`,
       };
+}
+
+/** Secret-free accepted tool metadata read through Keeper, never from a provider in this process. */
+type OutsideSchemaJson=null|boolean|number|string|OutsideSchemaJson[]|{[key:string]:OutsideSchemaJson};
+export interface AcceptedOutsideTool { name:string; description?:string; inputSchema:{[key:string]:OutsideSchemaJson} }
+export interface OutsideRuntimeDeps {
+  acceptedTools:(connectionName:string)=>Promise<AcceptedOutsideTool[]>;
+  /** Role-owned durable executor; its authority comes from the admitted-turn hook. */
+  executor:(connectionName:string,toolName:string)=>(input:unknown,ctx:ToolContext)=>Promise<unknown>;
+}
+
+/** Ordinary Eve tools using the accepted catalog. The Keeper independently requires an exact,
+ * current, unused receipt on execution. An Eve approval card alone never grants that authority. */
+export async function resolveOutsideTools(definition:OutsideDefinitionView,deps:OutsideRuntimeDeps){
+  const tools:Record<string,ReturnType<typeof defineTool>>={};
+  for(const entry of outsideToolsInEffect(definition)){
+    let accepted:AcceptedOutsideTool[];
+    try{accepted=await deps.acceptedTools(entry.name);}catch{continue;}
+    registerOutsideConnections([entry.name]);
+    for(const tool of accepted){
+      if(!entry.tools.allow.includes(tool.name))continue;
+      tools[`${entry.name}__${tool.name}`]=defineTool({description:tool.description??'',inputSchema:tool.inputSchema,
+        approval:defineDurableCallback({closure:{},callback:()=> 'user-approval' as const}),execute:deps.executor(entry.name,tool.name)});
+    }
+  }
+  return Object.keys(tools).length?tools:null;
 }

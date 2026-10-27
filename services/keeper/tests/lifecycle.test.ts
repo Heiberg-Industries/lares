@@ -387,26 +387,27 @@ it('leaves a failed compose start applied (the console shows it as stopped) and 
  fail=undefined;events=[];await l.reconcile('bookkeeper',definition);
  expect(events.at(-1)).toBe('start:bookkeeper');expect(await l.status('bookkeeper')).toEqual({pending:false,reason:null});
 });
-it('opens the https host of an outside tool and mounts its token file; plain-http service names add nothing',async()=>{
+it('opens the https host of an outside tool without mounting its token; plain-http service names add nothing',async()=>{
  const l=lifecycle();await l.create('bookkeeper',definition);
  const outside=(url:string,token:boolean)=>({...definition,grants:[{capability:'outside',scope:'write-with-confirm'}],autonomy:{outside:'gated'},outsideTools:[{name:'registry',url,description:'Looks up companies.',token,tools:{allow:['lookup'],read:['lookup']}}]});
  await l.saved('bookkeeper',outside('https://tools.example.org/mcp',true));
  expect(readFileSync(join(config.egressDir,'squid.conf'),'utf8')).toContain('tools.example.org');
  await l.reconcile('bookkeeper',outside('https://tools.example.org/mcp',true));
  const s=parse(readFileSync(config.composeFile,'utf8'));
- expect(s.services['lares-bookkeeper'].secrets).toContainEqual({source:'bookkeeper-outside-registry-token',target:'outside-registry'});
- expect(s.secrets['bookkeeper-outside-registry-token'].file).toBe(join(root,'secrets','bookkeeper-outside-registry-token'));
+ expect(s.services['lares-bookkeeper'].secrets).not.toContainEqual(expect.objectContaining({target:'outside-registry'}));
+ expect(s.secrets).not.toHaveProperty('bookkeeper-outside-registry-token');
  await l.saved('bookkeeper',outside('http://registry-svc:3000/mcp',false));
  expect(readFileSync(join(config.egressDir,'squid.conf'),'utf8')).not.toContain('registry-svc');
 });
-it('provisions outside token files before stopping the agent, and a changed token list needs a restart',async()=>{
+it('does not provision outside token files or restart an agent when only its outside declarations change',async()=>{
  const provisioned:string[]=[];
  const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,(p:string)=>{provisioned.push(p);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
  await l.create('bookkeeper',definition);await l.reconcile('bookkeeper',definition);
  const withToken={...definition,grants:[{capability:'outside',scope:'write-with-confirm'}],autonomy:{outside:'gated'},outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Looks up companies.',token:true,tools:{allow:['lookup'],read:['lookup']}}]};
- expect((await l.saved('bookkeeper',withToken)).pending).toBe(true);
+ expect((await l.saved('bookkeeper',withToken)).pending).toBe(false);
  provisioned.length=0;await l.reconcile('bookkeeper',withToken);
- expect(provisioned).toContain(join(root,'secrets','bookkeeper-outside-registry-token'));
+ expect(provisioned).not.toContain(join(root,'secrets','bookkeeper-outside-registry-token'));
+ expect(JSON.stringify(parse(readFileSync(config.composeFile,'utf8')))).not.toContain('outside-registry');
 });
 it('applies grant ACLs immediately without restart and defers changed mounts with a visible pending reason',async()=>{
  const l=lifecycle();await l.create('bookkeeper',definition);events=[];

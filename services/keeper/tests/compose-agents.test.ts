@@ -150,13 +150,10 @@ it('routes Slack, Telegram and generic proxy fetch through the configured nondef
  }
 });
 
-it('mounts one token file per outside tool that asks for one, at a target named after the tool',()=>{
- const doc=parse(renderAgentsCompose([{...agent,outsideTokens:['registry','crm-lookup']}],opts)),s=doc.services['lares-bookkeeper'];
- expect(s.secrets).toContainEqual({source:'bookkeeper-outside-registry-token',target:'outside-registry'});
- expect(s.secrets).toContainEqual({source:'bookkeeper-outside-crm-lookup-token',target:'outside-crm-lookup'});
- expect(doc.secrets['bookkeeper-outside-registry-token']).toEqual({file:'/srv/secrets/bookkeeper-outside-registry-token'});
- expect(JSON.stringify(parse(renderAgentsCompose([agent],opts)))).not.toContain('outside');
- expect(()=>renderAgentsCompose([{...agent,outsideTokens:['Bad/../name']}],opts)).toThrow();
+it('never mounts outside credentials, even when a stale container projection lists token names',()=>{
+ const staleProjection={...agent,outsideTokens:['registry','crm-lookup']};
+ const doc=parse(renderAgentsCompose([staleProjection],opts));
+ expect(JSON.stringify(doc)).not.toContain('outside-');
 });
 it('passes the owner time zone from the binding into the agent container',()=>{
  const bound={...agent,bindings:{role:'creative' as const,ownerId:'owner-1',environment:{OWNER_HOME_TZ:'Europe/Berlin'},mounts:[],secrets:{}}};

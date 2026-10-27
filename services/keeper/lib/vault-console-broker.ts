@@ -17,7 +17,7 @@ import { boundText, DEFAULT_READ_LIMIT } from '@lares/agent-kit/bounded-text';
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
 import { turnAuthoritySchema, vaultWriteBindingSchema } from '@lares/agent-kit/authority-contract';
 import { VaultTracksHome, type TrackFileWriter } from '@lares/agent-kit/tracks';
-import type { OutsideCustodyStore, OutsideToolCallInput } from './outside-custody.js';
+import type { OutsideCustodyStore, OutsideToolCallRequest } from './outside-custody.js';
 import { loadVaultStorageInventory, verifyVaultStorageMetadata } from '@lares/agent-box/lib/vault-storage.js';
 
 const SOCKET='/run/lares/vault-console.sock', CONSOLE_LIMIT=16_384, RUNTIME_LIMIT=256*1024, CHALLENGE_MS=10_000, PENDING_MS=30_000, MAX_LIVE=4096;
@@ -28,7 +28,7 @@ type Capsule=Input & {version:1;purpose:'human';challenge:string;nonce:string;ex
 type SessionDefinitionMaterial={definition:ReturnType<typeof definitionSchema.parse>;dutiesMd:string;voiceMd:string;hash:string};
 type Turn={input:Input;turnId:string;sequence:number;definition:SessionDefinitionMaterial;areaIds:string[];expiry:number};
 export interface VaultBrokerSocketOptions {consoleSocket?:string;rootUid?:number;socketUid?:number;socketGid?:number;turnClockForTests?:()=>number;
- vaultFilesForTests?:{root:string;originRoot:string};outsideCustody?:Pick<OutsideCustodyStore,'dispatchApproved'>}
+ vaultFilesForTests?:{root:string;originRoot:string};outsideCustody?:Pick<OutsideCustodyStore,'dispatchApproved'|'acceptedRuntimeTools'>}
 const challenges=new Map<string,Challenge>(),pending=new Map<string,Pending>(),runtimeRequests=new Map<string,number>();
 const turns=new Map<string,Turn>();
 function object(v:unknown):Record<string,unknown>{if(!v||typeof v!=='object'||Array.isArray(v))throw new Error();return v as Record<string,unknown>}
@@ -153,7 +153,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
   const body=JSON.stringify({agent,incarnation,requestId,timestamp,op,input}),expected=mac(Buffer.from(token,'hex'),body),given=Buffer.from(req.mac,'base64url');
   prune(Date.now(),turnNow());if(given.length!==expected.length||!timingSafeEqual(given,expected)||runtimeRequests.has(requestId)||runtimeRequests.size>=MAX_LIVE)throw new Error('signature');
   runtimeRequests.set(requestId,Date.now()+60_000);
-  const active=await authorityTransaction(pool,async db=>{await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");return db.query("SELECT 1 FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid'",[agent,incarnation])},transactionDeadline);assertNotAborted();if(active.rows.length!==1)throw new Error('runtime');
+  const active=await authorityTransaction(pool,async db=>{await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");return db.query("SELECT d.hash FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid'",[agent,incarnation])},transactionDeadline);assertNotAborted();if(active.rows.length!==1)throw new Error('runtime');
   if(op==='outside.execute'){
    // The signed runtime identifies the agent; Keeper's admitted turn identifies the human.
    // Model arguments and copied receipt fields confer neither identity nor authority.
@@ -166,11 +166,27 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    const admitted=turn.input;
    if(!await current(pool,admitted,requestDeadline))throw new Error('authority');
    assertCurrent();
-   const call=object(input.call) as unknown as OutsideToolCallInput;
-   if(call.definitionHash!==admitted.definitionHash||!socketOptions.outsideCustody)throw new Error('outside');
+   const requested=object(input.call);
+   if(Object.keys(requested).some(key=>!['callId','connectionName','toolName','input'].includes(key))||
+      typeof requested.callId!=='string'||typeof requested.connectionName!=='string'||typeof requested.toolName!=='string'||
+      !socketOptions.outsideCustody)throw new Error('outside');
+   const call=requested as unknown as OutsideToolCallRequest;
    const result=await socketOptions.outsideCustody.dispatchApproved({agent:admitted.agent,incarnation:admitted.incarnation,
     sessionId:admitted.session,memberId:admitted.member,approverMemberId:admitted.member,admissionNonce:admitted.admissionNonce,policyRevision:admitted.policyRevision},call,{deadlineAtMs:requestDeadline,assertCurrent});
    assertCurrent();return {result};
+  }
+  if(op==='outside.tools'){
+   if(!socketOptions.outsideCustody||typeof input.sessionId!=='string'||typeof input.memberId!=='string'||
+      typeof input.admissionNonce!=='string'||typeof input.connectionName!=='string')throw new Error('outside');
+   const session=await requireConsoleSessionBinding({agent,incarnation,sessionId:input.sessionId,memberId:input.memberId,
+    admissionNonce:input.admissionNonce},pool as never);
+   assertNotAborted();
+   const tools=await socketOptions.outsideCustody.acceptedRuntimeTools({agent,incarnation,sessionId:input.sessionId,
+    memberId:input.memberId,approverMemberId:input.memberId,admissionNonce:input.admissionNonce,policyRevision:session.policyRevision},
+    String(active.rows[0]!.hash),input.connectionName,{deadlineAtMs:requestDeadline,assertCurrent:assertNotAborted});
+   await requireConsoleSessionBinding({agent,incarnation,sessionId:input.sessionId,memberId:input.memberId,
+    admissionNonce:input.admissionNonce},pool as never);
+   assertNotAborted();return {tools};
   }
   if(op==='tracks.list-scheduled'){
    const expectedOwner=input.ownerMemberId,personId=input.personId;

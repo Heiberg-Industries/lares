@@ -498,7 +498,27 @@ function exactCounterIncreaseMatches(before:CounterEvidence,after:CounterEvidenc
 // the production implementations; the peer and generated members/metadata are disposable.
 const EXECUTION_REFUSALS=['member','session','agent','tool','payload','connection','credential-version','runtime-incarnation',
  'expired','revoked','replay','cross-member-custody','permission-revoked','rotation','removal'] as const;
-type ExecutionProof={complete:boolean;positiveCalls:number;peerRequests:number;peerToolCalls:number;failedApplyPreserved:boolean;
+type ExecutionCustodyEvidence={dispatchApprovedReached:number;dispatchApprovedDenied:number;
+ acceptedRuntimeToolsReached:number;acceptedRuntimeToolsDenied:number};
+/** Fixed, bounded proof counters only. Delegate with the original receiver and rethrow unchanged. */
+export function trackExecutionCustody(store:Pick<OutsideCustodyStore,'dispatchApproved'|'acceptedRuntimeTools'>,
+ evidence:ExecutionCustodyEvidence):Pick<OutsideCustodyStore,'dispatchApproved'|'acceptedRuntimeTools'>{
+ return {
+  async dispatchApproved(...args){
+   evidence.dispatchApprovedReached=Math.min(128,evidence.dispatchApprovedReached+1);
+   try{return await store.dispatchApproved(...args)}catch(error){
+    evidence.dispatchApprovedDenied=Math.min(128,evidence.dispatchApprovedDenied+1);throw error;
+   }
+  },
+  async acceptedRuntimeTools(...args){
+   evidence.acceptedRuntimeToolsReached=Math.min(128,evidence.acceptedRuntimeToolsReached+1);
+   try{return await store.acceptedRuntimeTools(...args)}catch(error){
+    evidence.acceptedRuntimeToolsDenied=Math.min(128,evidence.acceptedRuntimeToolsDenied+1);throw error;
+   }
+  },
+ };
+}
+type ExecutionProof=ExecutionCustodyEvidence & {complete:boolean;positiveCalls:number;peerRequests:number;peerToolCalls:number;failedApplyPreserved:boolean;
  rotationRejected:boolean;removalRejected:boolean;refusals:string[]};
 async function proveSignedExecution(c:{main:Pool;outside:Pool;proof:Pool;store:OutsideCustodyStore;root:string;secretsDir:string;
  agent:string;incarnation:string;owner:string;editor:string;org:string;sessionToken:string;definition:ReturnType<typeof definitionSchema.parse>;
@@ -508,7 +528,8 @@ async function proveSignedExecution(c:{main:Pool;outside:Pool;proof:Pool;store:O
   'credential reached a non-custody projection')};
  assert(need('FIXTURE_BEARER')!==need('FIXTURE_ROTATED_BEARER'),'replacement token did not change');
  const result:ExecutionProof={complete:false,positiveCalls:0,peerRequests:0,peerToolCalls:0,failedApplyPreserved:false,
-  rotationRejected:false,removalRejected:false,refusals:[]};
+  rotationRejected:false,removalRejected:false,refusals:[],dispatchApprovedReached:0,dispatchApprovedDenied:0,
+  acceptedRuntimeToolsReached:0,acceptedRuntimeToolsDenied:0};
  c.evidence(result);
  const peer=()=>JSON.parse(readFileSync(need('FIXTURE_PEER_REPORT'),'utf8')) as PeerState;
  const initialPeer=peer();
@@ -534,9 +555,10 @@ async function proveSignedExecution(c:{main:Pool;outside:Pool;proof:Pool;store:O
  writeFileSync(inventoryPath,JSON.stringify({version:1,planId:randomUUID(),organisationId:org,provisionerMemberId:owner,
   backing:{id:backingId,kind:'git',root:'/srv'},areas:[{areaId,kind:'shared',owner:{kind:'organisation',id:org},
    relativePath:`vault/shared/${areaId}`,origin:`/var/lib/lares-vault-git/${areaId}.git`}]}),{mode:0o600});
- const stop=await serveConsoleVaultBroker(main,signerPath,secretsDir,process.env.LARES_VAULT_RUNTIME_SOCKET,{consoleSocket,outsideCustody:store});
+ const stop=await serveConsoleVaultBroker(main,signerPath,secretsDir,process.env.LARES_VAULT_RUNTIME_SOCKET,{consoleSocket,outsideCustody:trackExecutionCustody(store,result)});
  type Point={turnCapability:string;turnId:string;sequence:number;sessionId:string;memberId:string;admissionNonce:string};
  const open=async(memberId=owner):Promise<Point>=>{
+  c.phase('signed outside execution open');
   const sessionId='proof_'+randomBytes(12).toString('hex'),admissionNonce=randomBytes(32).toString('base64url');
   const binding=await bindConsoleSession({agent,incarnation,sessionId,memberId,admissionNonce},main);
   const rawBodyHash=createHash('sha256').update('{"message":"fixture"}').digest('hex');
@@ -559,9 +581,10 @@ async function proveSignedExecution(c:{main:Pool;outside:Pool;proof:Pool;store:O
  };
  let point:Point;
  type Call=Parameters<typeof executeApprovedOutsideCall>[1];
- const approve=async(revision=c.activeRevision,accountId=c.accountId):Promise<Call>=>{
+ const approve=async(revision=c.activeRevision,accountId=c.accountId,receiptAgent=agent):Promise<Call>=>{
+  c.phase('signed outside execution approve');
   const input={fixture:'outside-execution-v1'},call={callId:randomUUID(),requestId:randomUUID(),sessionId:point.sessionId,memberId:point.memberId,
-   approverMemberId:point.memberId,agent,incarnation,definitionHash:c.definitionHash,connectionName:'fixture',accountId,credentialRevision:revision,
+   approverMemberId:point.memberId,agent:receiptAgent,incarnation,definitionHash:c.definitionHash,connectionName:'fixture',accountId,credentialRevision:revision,
    toolName:'lookup_alpha',input};
   // Authenticated fixture human gives exact consent; use the durable production receipt API,
   // not an assumed success row or an execution bypass.
@@ -571,7 +594,12 @@ async function proveSignedExecution(c:{main:Pool;outside:Pool;proof:Pool;store:O
    await recordOutsideExecutionApproval(db,{...selectors,payloadHash:outsidePayloadHash(call.toolName,approvedInput),expiresAt:Date.now()+60_000});
   });return call;
  };
- const execute=(call:Call,p=point)=>executeApprovedOutsideCall<{content:unknown[]}>(p,call);
+ const execute=(call:Call,p=point)=>{
+  c.phase('signed outside execution execute');
+  return executeApprovedOutsideCall<{content:unknown[]}>(p,{
+   callId:call.callId,connectionName:call.connectionName,toolName:call.toolName,input:call.input,
+  });
+ };
  const positive=async(call:Call)=>{const before=peer();const response=await execute(call),after=peer();
   assert(after.requestCount===before.requestCount+3&&after.toolsCallCount===before.toolsCallCount+1&&after.exactCallMatches,
    'signed broker did not reach exactly one physical approved tools/call');
@@ -588,10 +616,10 @@ async function proveSignedExecution(c:{main:Pool;outside:Pool;proof:Pool;store:O
   const first=await approve();await positive(first);await refuse('replay',()=>execute(first));
   const pending=await approve();
   for(const [label,changed] of [
-   ['member',{memberId:editor}],['session',{sessionId:'another_session'}],['agent',{agent:'other-agent'}],
    ['tool',{toolName:'lookup_beta'}],['payload',{input:{fixture:'changed'}}],['connection',{connectionName:'other-connection'}],
-   ['credential-version',{credentialRevision:c.activeRevision+1}],
   ] as const)await refuse(label,()=>execute({...pending,...changed}));
+  await refuse('agent',async()=>execute(await approve(c.activeRevision,c.accountId,'other-agent')));
+  await refuse('credential-version',async()=>execute(await approve(c.activeRevision+1)));
   await refuse('member',()=>execute(pending,{...point,memberId:editor}));
   await refuse('session',()=>execute(pending,{...point,sessionId:'another_session'}));
   const originalIncarnation=process.env.LARES_AGENT_INCARNATION;process.env.LARES_AGENT_INCARNATION=randomUUID();
@@ -1103,7 +1131,8 @@ async function runConfigured():Promise<void>{
     writeReport(output,partial);
   }catch(error){
     const safePhases=new Set(['configuration','role identities','neutral authorization fixture','outside custody organisation gate contention',
-      'outside custody human review and activation','signed outside execution','outside replacement preservation','outside execution revocation','same-bridge direct-path control',
+      'outside custody human review and activation','signed outside execution',
+      'signed outside execution open','signed outside execution approve','signed outside execution execute','outside replacement preservation','outside execution revocation','same-bridge direct-path control',
       'routed direct-path control','generated route admission','outside discovery preview','outside discovery preview response',
       'prepare outside consent request','outside consent and discover','outside consent and discover response','direct-path firewall counter',
       'routed direct-path firewall counter','database discovery','durable result verification']);

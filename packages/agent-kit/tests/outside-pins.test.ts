@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDefinition } from "../src/definition.js";
 import { resetOutsideConnectionsForTests } from "../src/approval-summary.js";
 import {
-  checkedOutsideConnections,
   outsideRequestPolicy,
   TELEGRAM_OUTSIDE_REFUSAL,
 } from "../src/outside-connections.js";
@@ -263,93 +262,6 @@ describe("verifyEntry reporting", () => {
     current = tools();
     await verifyEntry("bookkeeper", declared(), undefined, deps, { db: db as never, signal });
     expect(queries.some((q) => q.includes("UPDATE repairs SET resolved_at"))).toBe(true);
-  });
-});
-
-describe("checkedOutsideConnections", () => {
-  const base = { isAllowedApprover: () => true, addHosts: () => {} };
-
-  it("keeps a pinned and a matching connection, and asks the server once per session", async () => {
-    const store = memoryStore();
-    const list = vi.fn(async () => tools());
-    const deps = { ...base, descriptions: () => ({ store, list }) };
-    for (let i = 0; i < 3; i += 1) expect(Object.keys((await checkedOutsideConnections(def(), deps, "s1"))!)).toEqual(["registry"]);
-    expect(list).toHaveBeenCalledTimes(1);
-    // a new session asks again
-    await checkedOutsideConnections(def(), deps, "s2");
-    expect(list).toHaveBeenCalledTimes(2);
-  });
-
-  it("drops the connection for the session when the descriptions changed, and says so once", async () => {
-    const store = memoryStore();
-    let current = tools();
-    const signal = vi.fn(async (_key: string, _summary: string, _detail: string) => undefined);
-    const db = { query: async () => ({ rows: [] }) };
-    const deps = { ...base, descriptions: () => ({ store, list: async () => current, reporter: { db: db as never, signal } }) };
-    expect(await checkedOutsideConnections(def(), deps, "s1")).not.toBeNull();
-    current = tools({ description: "now says something else" });
-    expect(await checkedOutsideConnections(def(), deps, "s2")).toBeNull();
-    expect(await checkedOutsideConnections(def(), deps, "s2")).toBeNull();
-    expect(signal).toHaveBeenCalledTimes(1);
-  });
-
-  const reporting = () => {
-    const queries: string[] = [];
-    const db = { query: async (text: string) => { queries.push(text); return { rows: [] }; } };
-    const signal = vi.fn(async (_key: string, _summary: string, _detail: string) => undefined);
-    return { queries, signal, reporter: { db: db as never, signal } };
-  };
-
-  it("drops a connection whose server cannot be asked, opens the repair, and says so once", async () => {
-    const r = reporting();
-    const down = { ...base, descriptions: () => ({ store: memoryStore(), list: async () => { throw new Error("down"); }, reporter: r.reporter }) };
-    expect(await checkedOutsideConnections(def(), down, "s1")).toBeNull();
-    expect(await checkedOutsideConnections(def(), down, "s1")).toBeNull();
-    expect(r.signal).toHaveBeenCalledTimes(1);
-    expect(r.signal.mock.calls[0]![1]).toBe("bookkeeper: outside tool registry could not be checked, so it is switched off for this conversation");
-    expect(r.queries.some((q) => q.includes("INSERT INTO repairs"))).toBe(true);
-  });
-
-  it("drops a keyed connection whose key file cannot be read, without asking the server", async () => {
-    const r = reporting();
-    const list = vi.fn(async () => tools());
-    const deps = { ...base, readTokenFile: async () => { throw new Error("no file"); }, descriptions: () => ({ store: memoryStore(), list, reporter: r.reporter }) };
-    expect(await checkedOutsideConnections(def({ outsideTools: [entryDecl({ token: true })] }), deps, "s1")).toBeNull();
-    expect(list).not.toHaveBeenCalled();
-    expect(r.signal).toHaveBeenCalledTimes(1);
-    expect(r.signal.mock.calls[0]![1]).toContain("could not be checked, so it is switched off for this conversation");
-  });
-
-  it("drops a connection whose record is unreadable", async () => {
-    const r = reporting();
-    const broken = memoryStore();
-    broken.fail = true;
-    expect(await checkedOutsideConnections(def(), { ...base, descriptions: () => ({ store: broken, list: async () => tools(), reporter: r.reporter }) }, "s9")).toBeNull();
-    expect(r.signal).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps a match and resolves an open repair, and does the same for a fresh pin", async () => {
-    const r = reporting();
-    const store = memoryStore();
-    const deps = { ...base, descriptions: () => ({ store, list: async () => tools(), reporter: r.reporter }) };
-    expect(await checkedOutsideConnections(def(), deps, "s1")).not.toBeNull(); // pinned
-    expect(r.queries.filter((q) => q.includes("UPDATE repairs SET resolved_at"))).toHaveLength(1);
-    expect(await checkedOutsideConnections(def(), deps, "s2")).not.toBeNull(); // match
-    expect(r.queries.filter((q) => q.includes("UPDATE repairs SET resolved_at"))).toHaveLength(2);
-    expect(r.signal).not.toHaveBeenCalled();
-  });
-
-  it("does not touch the database for an agent with no outside tools", async () => {
-    const factory = vi.fn();
-    expect(await checkedOutsideConnections(def({ outsideTools: undefined }), { ...base, descriptions: factory }, "s1")).toBeNull();
-    expect(factory).not.toHaveBeenCalled();
-  });
-
-  it("sends the key with the check when the entry has one", async () => {
-    const list = vi.fn(async () => tools());
-    const deps = { ...base, readTokenFile: async () => "secret-key\n", descriptions: () => ({ store: memoryStore(), list }) };
-    await checkedOutsideConnections(def({ outsideTools: [entryDecl({ token: true })] }), deps, "s1");
-    expect(list).toHaveBeenCalledWith({ url: "https://tools.example.org/mcp", token: "secret-key" });
   });
 });
 

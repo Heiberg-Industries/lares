@@ -26,6 +26,10 @@ const hash=(v:unknown)=>createHash('sha256').update(canonical(v)).digest('hex');
 function encrypt(value:unknown,aad:unknown){const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce);cipher.setAAD(Buffer.from(canonical(aad)));return {nonce,ciphertext:Buffer.concat([cipher.update(Buffer.isBuffer(value)?value:Buffer.from(canonical(value))),cipher.final(),cipher.getAuthTag()])}}
 function fixture(){
  let consumed=false,expired=false,revoked=false;
+ const receipt={callId:call.callId,requestId:call.requestId,sessionId:call.sessionId,memberId:call.memberId,
+  approverMemberId:call.approverMemberId,agent:call.agent,incarnation:call.incarnation,definitionHash:call.definitionHash,
+  connectionName:call.connectionName,accountId:call.accountId,credentialRevision:call.credentialRevision,toolName:call.toolName,
+  payloadHash:outsidePayloadHash(call.toolName,call.input)};
  const head={account_id:accountId,owner_member_id:'member-a',resource_id:'helper',connection_name:'registry',generation:'2',active_revision:'4',candidate_revision:null as string|null,consent_generation:'3',state:'active'};
  const projection={version:1,connectionName:'registry',scope:'read',allow:['lookup'],read:['lookup'],tools:[{name:'lookup',description:'Look up a company',inputSchema:{type:'object'}}]};
  const publication={version:1,organisationId:'org-1',actorMemberId:'member-a',publicationHash:hash(projection),
@@ -45,9 +49,15 @@ function fixture(){
   if(sql.includes('FROM member_sessions s JOIN users'))return {rows:[{member_id:'member-a',finite:true,deadline:'2099-01-01T00:00:00.000000Z'}],rowCount:1};
   if(sql.includes('FROM agent_resources'))result=[{state:'ready',pending:false,ownership_token:incarnation,runtime_control_token:incarnation,hash:call.definitionHash}];
   else if(sql.includes('FROM users'))result=[{id:params[0],org_id:'org-1',org_role:'member',status:'active',automation_mode:'draft-and-ask'}];
+  else if(sql.includes('SELECT account_id::text,active_revision::text'))result=[{account_id:head.account_id,active_revision:head.active_revision}];
   else if(sql.includes('FROM outside_custody_accounts'))result=[head];
   else if(sql.includes('FROM outside_custody_revisions'))result=revisions.has(Number(params[1]))?[revisions.get(Number(params[1]))]:[];
   else if(sql.includes('FROM outside_custody_operations'))result=rows.has(String(params[1]))?[rows.get(String(params[1]))]:[];
+  else if(sql.includes('SELECT call_id AS')){
+   const lookup=[receipt.callId,receipt.agent,receipt.incarnation,receipt.sessionId,receipt.memberId,receipt.approverMemberId,
+    receipt.definitionHash,receipt.connectionName,receipt.toolName,receipt.payloadHash];
+   if(!consumed&&!expired&&!revoked&&params.every((value,index)=>value===lookup[index]))result=[{...receipt,credentialRevision:String(receipt.credentialRevision)}];
+  }
   else if(sql.includes('SELECT call_id FROM outside_execution_approvals'))result=consumed&&!expired&&!revoked?[{call_id:call.callId}]:[];
   else if(sql.includes('UPDATE outside_execution_approvals')){if(!consumed&&!expired&&!revoked&&params.slice(0,13).every((v,i)=>v===expected[i])){consumed=true;result=[{call_id:call.callId}]}}
   else throw new Error('Unexpected dispatch SQL');
@@ -61,8 +71,8 @@ function fixture(){
  });
  const lease={assertCurrent:vi.fn(async()=>route)},lifecycle={withAppliedOutsideRoute:vi.fn(async(_url:string,_hash:string,_deadline:number,use:(lease:unknown)=>Promise<unknown>)=>use(lease))};
  const store=new OutsideCustodyStore({} as never,key,{mainPool:{} as never,lifecycle:lifecycle as never});
- const execute=(input=call,b=binding,assertCurrent?:()=>void)=>store.dispatchApproved(b,input,{deadlineAtMs:Date.now()+8000,assertCurrent});
- return {store,execute,head,revision,revisions,lease,lifecycle,policy,publication,rows,evidence,expire:()=>{expired=true},revoke:()=>{revoked=true},get consumed(){return consumed}};
+ const execute=(input=call,b=binding,assertCurrent?:()=>void)=>store.dispatchApproved(b,{callId:input.callId,connectionName:input.connectionName,toolName:input.toolName,input:input.input},{deadlineAtMs:Date.now()+8000,assertCurrent});
+ return {store,execute,receipt,head,revision,revisions,lease,lifecycle,policy,publication,rows,evidence,expire:()=>{expired=true},revoke:()=>{revoked=true},get consumed(){return consumed}};
 }
 beforeEach(()=>vi.clearAllMocks());afterEach(()=>vi.restoreAllMocks());
 it('dispatches the exact receipt once through the applied route with Keeper-only credential custody',async()=>{
@@ -81,7 +91,14 @@ it.each([
  ['payload',{input:{company:'Changed'}}],['connection',{connectionName:'another-connection'}],['tool',{toolName:'create'}],
  ['credential version',{credentialRevision:3}],['account',{accountId:'77777777-7777-4777-8777-777777777777'}],['definition',{definitionHash:'f'.repeat(64)}],
  ['request',{requestId:'another-request'}],['call',{callId:'another-call'}],
-] as const)('refuses changed %s before any provider request',async(_name,change)=>{const f=fixture();try{await expect(f.execute({...call,...change})).rejects.toThrow();expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false)}finally{f.store.close()}});
+] as const)('refuses changed %s before any provider request',async(name,change)=>{const f=fixture();try{
+ if(name==='request'){
+  await expect(f.store.dispatchApproved(binding,{callId:call.callId,connectionName:call.connectionName,toolName:call.toolName,input:call.input,...change} as never,
+   {deadlineAtMs:Date.now()+8000})).rejects.toThrow();
+ }else if(['payload','connection','tool','call'].includes(name))await expect(f.execute({...call,...change})).rejects.toThrow();
+ else{Object.assign(f.receipt,change);await expect(f.execute()).rejects.toThrow();}
+ expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false);
+ }finally{f.store.close()}});
 it.each(['expired','revoked','another member custody','removed connection','rotated token','missing grant','revoked session','wrong route','no runtime turn'] as const)('refuses %s before provider dispatch',async reason=>{
  const f=fixture();try{
   if(reason==='expired')f.expire();if(reason==='revoked')f.revoke();if(reason==='another member custody')f.head.owner_member_id='member-b';
@@ -142,14 +159,13 @@ it('keeps the previous working active revision usable when Apply of a valid repl
 it.each(['pending candidate','active generation changed','consent changed without pending','older pending revision','revoked after failed Apply','successfully rotated active pointer'] as const)(
  'refuses %s while preserving active-only execution',async reason=>{
  const f=fixture();f.head.candidate_revision='5';f.head.consent_generation='4';
- let input=call;
- if(reason==='pending candidate')input={...call,credentialRevision:5};
+ if(reason==='pending candidate')f.receipt.credentialRevision=5;
  if(reason==='active generation changed')f.head.generation='3';
  if(reason==='consent changed without pending')f.head.candidate_revision=null;
  if(reason==='older pending revision')f.head.candidate_revision='3';
  if(reason==='revoked after failed Apply')f.head.state='revoked';
  if(reason==='successfully rotated active pointer'){f.head.active_revision='5';f.head.candidate_revision=null;f.head.generation='3'}
- try{await expect(f.execute(input)).rejects.toThrow();expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false)}finally{f.store.close()}
+ try{await expect(f.execute()).rejects.toThrow();expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false)}finally{f.store.close()}
 });
 it.each(['ciphertext','evidence hash','authenticated full body','descriptor digest'] as const)('retains independent publication %s verification before dispatch',async reason=>{
  const f=fixture(),row=f.rows.get(publicationId)!;
@@ -168,4 +184,22 @@ it.each(['ciphertext','evidence hash','authenticated full body','descriptor dige
   f.policy.publication.descriptorDigest='f'.repeat(64);f.revision.policy_json=JSON.stringify(f.policy);f.revision.policy_hash=Buffer.from(hash(f.policy),'hex');
  }
  try{await expect(f.execute()).rejects.toThrow();expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false)}finally{f.store.close()}
+});
+
+it('reads only current accepted metadata with no credential or provider dispatch',async()=>{
+ const f=fixture();try{
+  expect(await f.store.acceptedRuntimeTools(binding,call.definitionHash,'registry',{deadlineAtMs:Date.now()+2000}))
+   .toEqual([{name:'lookup',description:'Look up a company',inputSchema:{type:'object'}}]);
+  expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false);
+ }finally{f.store.close()}
+});
+it.each(['grant','definition','acceptance','active credential','session'] as const)('refuses metadata with stale %s',async reason=>{
+ const f=fixture();try{
+  if(reason==='grant')mocks.capture.mockResolvedValue(undefined);
+  if(reason==='acceptance')f.rows.delete(acceptanceId);
+  if(reason==='active credential')f.head.active_revision='5';
+  if(reason==='session')mocks.session.mockRejectedValue(Error('revoked'));
+  await expect(f.store.acceptedRuntimeTools(binding,reason==='definition'?'f'.repeat(64):call.definitionHash,'registry',{deadlineAtMs:Date.now()+2000})).rejects.toThrow();
+  expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false);
+ }finally{f.store.close()}
 });
