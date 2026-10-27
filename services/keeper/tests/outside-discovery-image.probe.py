@@ -1941,6 +1941,7 @@ def safe_cleanup(label, action):
 
 WORKER_PHASES = {"configuration", "role identities", "neutral authorization fixture", "outside custody organisation gate contention",
               "outside custody human review and activation",
+              "signed outside execution", "outside replacement preservation", "outside execution revocation",
               "same-bridge direct-path control", "routed direct-path control",
               "generated route admission", "direct-path firewall counter",
               "routed direct-path firewall counter", "outside discovery preview", "outside discovery preview response",
@@ -1986,6 +1987,7 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
         "historical acceptance survives editor logout and current edit grant revocation blocks replay",
         "durable result decrypts under generated key/AAD and rejects changed request identity",
         "executable definition, ownership and applied state remain unchanged",
+        "signed broker executes exact approvals and refuses stale or mismatched work without peer dispatch",
     }
     recovery_stages = {"claim-admission", "claim-authority", "claim-capture", "claim-route-review", "claim-storage",
                        "authority-check", "initialize", "initialized-notification", "tools-list", "persist-result", "cleanup"}
@@ -2008,6 +2010,26 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
         if type(value["shutdownFailure"]) is not bool:
             return reject('shutdownFailure')
         evidence["shutdownFailure"] = value["shutdownFailure"]
+    if "executionProof" in value:
+        execution = value["executionProof"]
+        flags = {"complete", "failedApplyPreserved", "rotationRejected", "removalRejected"}
+        counts = {"positiveCalls", "peerRequests", "peerToolCalls"}
+        refusals = {"member", "session", "agent", "tool", "payload", "connection", "credential-version", "runtime-incarnation",
+                    "expired", "revoked", "replay", "cross-member-custody", "permission-revoked", "rotation", "removal"}
+        if (not isinstance(execution, dict) or set(execution) != flags | counts | {"refusals"} or
+                any(type(execution[field]) is not bool for field in flags) or
+                any(type(execution[field]) is not int or not 0 <= execution[field] <= 128 for field in counts) or
+                not isinstance(execution["refusals"], list) or len(execution["refusals"]) > len(refusals) or
+                any(not isinstance(item, str) or item not in refusals for item in execution["refusals"]) or
+                len(execution["refusals"]) != len(set(execution["refusals"]))):
+            return reject("executionProof")
+        if execution["complete"] and (not all(execution[field] for field in flags) or
+                execution["positiveCalls"] != 4 or execution["peerRequests"] != 16 or execution["peerToolCalls"] != 4 or
+                set(execution["refusals"]) != refusals):
+            return reject("executionProof")
+        evidence["executionProof"] = {field: execution[field] for field in sorted(execution)}
+    if value.get("success") is True and not evidence.get("executionProof", {}).get("complete"):
+        return reject("executionProof")
     predicate_fields = {
         "controlTlsComplete", "controlSocketClosed", "controlLookupMatchesTarget", "controlSourceMatchesConfigured",
         "controlPeerMatchesTarget", "directLookupMatchesTarget", "directSourceMatchesConfiguredOrMissing",
@@ -2044,8 +2066,8 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
     peer_values = value.get("peerDiagnostics")
     if "peerDiagnostics" in value:
         if (not isinstance(peer_values, dict) or set(peer_values) != peer_fields or
-                type(peer_values.get("requestCount")) is not int or not 0 <= peer_values["requestCount"] <= 12 or
-                type(peer_values.get("toolsListCount")) is not int or not 0 <= peer_values["toolsListCount"] <= 10 or
+                type(peer_values.get("requestCount")) is not int or not 0 <= peer_values["requestCount"] <= 128 or
+                type(peer_values.get("toolsListCount")) is not int or not 0 <= peer_values["toolsListCount"] <= 32 or
                 any(type(peer_values[key]) is not bool for key in peer_fields - {"requestCount", "toolsListCount"})):
             return reject('peerDiagnostics')
         evidence["peerDiagnostics"] = {key: peer_values[key] for key in sorted(peer_fields)}
@@ -2472,6 +2494,7 @@ def offline_worker_diagnostics_self_test():
                 ("previewResponseDiagnostics", {"SECRET_SENTINEL": True}),
                 ("discoveryResponseDiagnostics", {"SECRET_SENTINEL": True}),
                 ("peerDiagnostics", {"SECRET_SENTINEL": True}),
+                ("executionProof", {"SECRET_SENTINEL": True}),
                 ("directPathDiagnostics", "SECRET_SENTINEL"),
                 ("routedPathDiagnostics", "SECRET_SENTINEL"),
                 ("directTargetBlocked", True),
@@ -2512,12 +2535,73 @@ def offline_worker_diagnostics_self_test():
             raise RuntimeError("invalid stage JSON was reported")
     # Verify every worker phase transition persists only the phase before its work starts.
     worker_source = pathlib.Path(__file__).with_suffix(".mts").read_text(encoding="utf-8")
-    transitions = re.findall(r"startPhase\('([^']+)'\);", worker_source)
+    transitions = re.findall(r"(?:startPhase|c.phase)\('([^']+)'\);", worker_source)
     if (not transitions or any(phase not in WORKER_PHASES for phase in transitions) or
             "writeReport(resolve(output,'../worker-stage.json'),{phase});" not in worker_source or
             "startPhase(phase);\n  try{" not in worker_source or
             re.search(r"^    phase='", worker_source, re.MULTILINE)):
         raise RuntimeError("worker phase persistence contract changed")
+
+
+def complete_peer_exchange(peer, execution):
+    """Require the exact physical sequence, independently of the worker's success claim."""
+    discovery = ["initialize", "notifications/initialized", "tools/list", "tools/list"]
+    call = ["initialize", "notifications/initialized", "tools/call"]
+    expected = discovery + call + call + discovery + call + call
+    flags = {"bearerMatches", "tlsServername", "pathMatches", "protocolVersionMatches", "initializeMatches",
+             "paginationCursorMatches", "sessionMatches", "exactCallMatches"}
+    return (isinstance(peer, dict) and isinstance(execution, dict) and
+            peer.get("methods") == expected and
+            type(peer.get("requestCount")) is int and peer["requestCount"] == len(expected) and
+            type(peer.get("toolsCallCount")) is int and peer["toolsCallCount"] == 4 and
+            all(peer.get(field) is True for field in flags) and execution.get("complete") is True and
+            type(execution.get("positiveCalls")) is int and execution["positiveCalls"] == 4 and
+            type(execution.get("peerRequests")) is int and execution["peerRequests"] == len(expected) - len(discovery) and
+            type(execution.get("peerToolCalls")) is int and execution["peerToolCalls"] == peer["toolsCallCount"])
+
+
+def offline_complete_peer_exchange_self_test():
+    discovery = ["initialize", "notifications/initialized", "tools/list", "tools/list"]
+    call = ["initialize", "notifications/initialized", "tools/call"]
+    peer = {"methods": discovery + call + call + discovery + call + call, "requestCount": 20, "toolsCallCount": 4,
+            "bearerMatches": True, "tlsServername": True, "pathMatches": True, "protocolVersionMatches": True,
+            "initializeMatches": True, "paginationCursorMatches": True, "sessionMatches": True, "exactCallMatches": True}
+    execution = {"complete": True, "positiveCalls": 4, "peerRequests": 16, "peerToolCalls": 4}
+    if not complete_peer_exchange(peer, execution):
+        raise RuntimeError("exact extended peer exchange was refused")
+    for change in ({"methods": discovery}, {"methods": list(reversed(peer["methods"]))},
+                   {"requestCount": 4}, {"requestCount": 20.0}, {"toolsCallCount": 3}):
+        if complete_peer_exchange({**peer, **change}, execution):
+            raise RuntimeError("altered physical peer sequence or counter was accepted")
+    for field in ("bearerMatches", "tlsServername", "pathMatches", "protocolVersionMatches", "initializeMatches",
+                  "paginationCursorMatches", "sessionMatches", "exactCallMatches"):
+        absent = dict(peer)
+        absent.pop(field)
+        if complete_peer_exchange(absent, execution) or complete_peer_exchange({**peer, field: False}, execution):
+            raise RuntimeError("missing physical peer guard was accepted")
+    for change in ({"complete": False}, {"positiveCalls": 3}, {"peerRequests": 15}, {"peerToolCalls": 3}):
+        if complete_peer_exchange(peer, {**execution, **change}):
+            raise RuntimeError("worker and physical peer counter mismatch was accepted")
+
+
+def offline_execution_evidence_self_test():
+    safe = {"complete": False, "positiveCalls": 0, "peerRequests": 0, "peerToolCalls": 0,
+            "failedApplyPreserved": False, "rotationRejected": False, "removalRejected": False,
+            "refusals": []}
+    with tempfile.TemporaryDirectory(prefix="lares-execution-evidence-") as directory:
+        root_path = pathlib.Path(directory)
+        worker = root_path / "worker.json"
+        worker.write_text(json.dumps({"checks": [], "executionProof": safe}), encoding="utf-8")
+        projected = import_worker_evidence(root_path)
+        if projected is None or projected.get("executionProof") != safe:
+            raise RuntimeError("bounded partial execution evidence was lost")
+        for changed in ({"peerRequests": True}, {"peerRequests": -1}, {"peerRequests": 129},
+                        {"refusals": ["SECRET_SENTINEL"]}, {"refusals": ["member", "member"]},
+                        {"complete": True}, {"credential": "SECRET_SENTINEL"}):
+            worker.write_text(json.dumps({"checks": [], "executionProof": {**safe, **changed}}), encoding="utf-8")
+            diagnostics = {}
+            if import_worker_evidence(root_path, diagnostics=diagnostics) is not None or diagnostics != {"workerEvidenceStatus": "rejected:executionProof"}:
+                raise RuntimeError("unsafe or incomplete execution evidence was accepted")
 
 
 def offline_cleanup_self_test():
@@ -3289,6 +3373,8 @@ def offline_image_store_self_test():
 
 
 if self_test_mode:
+    offline_complete_peer_exchange_self_test()
+    offline_execution_evidence_self_test()
     offline_worker_diagnostics_self_test()
     offline_proxy_admission_self_test()
     offline_proxy_readiness_self_test()
@@ -3515,13 +3601,14 @@ try:
     workflow_password = secrets.token_urlsafe(32)
     session_token = secrets.token_urlsafe(32)
     bearer = secrets.token_urlsafe(32)
+    rotated_bearer = secrets.token_urlsafe(32)
     incarnation = str(uuid.uuid4())
     env_file = root / "fixture.env"
     env_values = {
         "PGPASSWORD": password, "PROOF_ADMIN_PASSWORD": password, "PROOF_APP_PASSWORD": app_password,
         "PROOF_OUTSIDE_PASSWORD": outside_password, "PROOF_WORKFLOW_PASSWORD": workflow_password,
         "PROOF_ADMIN_ROLE_PASSWORD": admin_password, "FIXTURE_SESSION_TOKEN": session_token,
-        "FIXTURE_BEARER": bearer, "FIXTURE_NETWORK": network, "FIXTURE_ROOT": str(root),
+        "FIXTURE_BEARER": bearer, "FIXTURE_ROTATED_BEARER": rotated_bearer, "FIXTURE_NETWORK": network, "FIXTURE_ROOT": str(root),
         "FIXTURE_DB_IP": ips["db"], "FIXTURE_PROXY_IP": ips["proxy"], "FIXTURE_PEER_IP": ips["peer"],
         "FIXTURE_AGENT_IP": ips["agent"], "FIXTURE_SOURCE_IP": ips["source"],
         "FIXTURE_ROUTED_TARGET_IP": routed_target_ip,
@@ -3536,10 +3623,10 @@ try:
     role_env.write_text(f"PGPASSWORD={password}\nFIXTURE_ROOT={root}\n", encoding="ascii")
     role_env.chmod(0o600)
     peer_env = root / "peer.env"
-    peer_env.write_text(f"FIXTURE_BEARER={bearer}\nFIXTURE_PEER_REPORT=/fixture/peer.json\n", encoding="ascii")
+    peer_env.write_text(f"FIXTURE_BEARER={bearer}\nFIXTURE_ROTATED_BEARER={rotated_bearer}\nFIXTURE_PEER_REPORT=/fixture/peer.json\n", encoding="ascii")
     peer_env.chmod(0o600)
     worker_env = root / "worker.env"
-    worker_keys = ("PROOF_ADMIN_PASSWORD", "FIXTURE_SESSION_TOKEN", "FIXTURE_BEARER", "FIXTURE_ROOT",
+    worker_keys = ("PROOF_ADMIN_PASSWORD", "FIXTURE_SESSION_TOKEN", "FIXTURE_BEARER", "FIXTURE_ROTATED_BEARER", "FIXTURE_ROOT",
                    "FIXTURE_AGENT", "FIXTURE_INCARNATION", "FIXTURE_KEY_HEX", "FIXTURE_SOURCE_IP",
                    "FIXTURE_PEER_IP",
                    "FIXTURE_ROUTED_TARGET_IP",
@@ -3764,11 +3851,7 @@ networks:
     phase = "first-hop-evidence"
     peer_final = json.loads((root / "peer.json").read_text(encoding="utf-8"))
     record("MCP peer observed exact path, protocol, session and fixed discovery exchange",
-           peer_final.get("methods") == ["initialize", "notifications/initialized", "tools/list", "tools/list"] and
-           peer_final.get("requestCount") == 4 and peer_final.get("bearerMatches") is True and
-           peer_final.get("tlsServername") is True and peer_final.get("pathMatches") is True and
-           peer_final.get("protocolVersionMatches") is True and peer_final.get("initializeMatches") is True and
-           peer_final.get("paginationCursorMatches") is True and peer_final.get("sessionMatches") is True)
+           complete_peer_exchange(peer_final, worker_evidence.get("executionProof")))
     access_log = command("docker", "exec", proxy_container, "sh", "-c", "cat /var/log/squid/access.log 2>/dev/null || true")
     access_lines = [line for line in access_log.splitlines() if "mcp.example.org:443" in line]
     record("Squid access log attributes CONNECT to the selected Keeper source", bool(access_lines) and all(ips["source"] in line for line in access_lines))
@@ -3778,7 +3861,9 @@ networks:
                               "protocolVersionMatches": peer_final.get("protocolVersionMatches") is True,
                               "paginationCursorMatches": peer_final.get("paginationCursorMatches") is True,
                               "sessionMatches": peer_final.get("sessionMatches") is True,
-                              "requestCount": peer_final.get("requestCount", 0)}
+                              "requestCount": peer_final.get("requestCount", 0),
+                              "toolsCallCount": peer_final.get("toolsCallCount", 0),
+                              "exactCallMatches": peer_final.get("exactCallMatches") is True}
 
     phase = "postconditions"
     state_after = json.loads(command("docker", "inspect", "--format", "{{json .State}}", agent_container_id))

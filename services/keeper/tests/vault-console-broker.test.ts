@@ -23,7 +23,7 @@ const ids = vi.hoisted(() => ({
   organisation: 'broker-org', member: 'broker-owner', area: '11111111-1111-4111-8111-111111111111',
   sharedArea: '44444444-4444-4444-8444-444444444444',
   backing: '22222222-2222-4222-8222-222222222222', readGate: undefined as (() => Promise<void>) | undefined, reads: 0, clock: Date.now(),
-  inventory: undefined as any, trackFiles: new Map<string, { content: string; contentRevision: string }>(), writes: 0, useRealFiles: false,
+  inventory: undefined as any, trackFiles: new Map<string, { content: string; contentRevision: string }>(), writes: 0, useRealFiles: false, outsideDispatch: vi.fn(),
 }));
 vi.mock('@lares/agent-box/lib/vault-storage.js', () => ({
   loadVaultStorageInventory: () => ids.inventory,
@@ -140,6 +140,7 @@ beforeAll(async () => {
   stopBroker = await serveConsoleVaultBroker(pool as never, join(secrets, 'console-vault-signing-key'), secrets, process.env.LARES_VAULT_RUNTIME_SOCKET, {
     consoleSocket: process.env.LARES_VAULT_CONSOLE_SOCKET,
     rootUid: process.getuid?.() ?? 0, socketUid: process.getuid?.() ?? 0, socketGid: process.getgid?.() ?? 0, turnClockForTests: () => ids.clock,
+    outsideCustody:{dispatchApproved:(...args)=>ids.outsideDispatch(...args)},
     vaultFilesForTests: { root: join(root, 'vault-files'), originRoot: join(root, 'vault-origins') },
   });
 }, 120_000);
@@ -150,7 +151,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  ids.trackFiles.clear(); ids.writes = 0;
+  ids.trackFiles.clear(); ids.writes = 0; ids.outsideDispatch.mockReset();
   admissionNonce = 'a'.repeat(43); session = 'wrun_broker_test';
   approvalTurnId = 'turn-track-original'; approvalTurnSequence = 30;
   roleDefinition = defaultRoleDefinition; definitionHash = hashOf({ definition: roleDefinition, dutiesMd, voiceMd });
@@ -458,4 +459,43 @@ it.each([
     await expect(runtime('vault.read', { turnCapability: opened.turnCapability, sessionId: session, memberId: ids.member, admissionNonce, turnId, sequence: 6, operation: 'read', area: 'private', path: 'owner.md' })).rejects.toThrow('Vault reader unavailable');
   } finally { restore(); }
   expect(ids.reads).toBe(0);
+});
+
+// The real signed socket and admission path own this binding. The custody tests separately
+// exercise the real dispatcher, encrypted accepted evidence, one-use receipt and protocol calls.
+it('binds outside execution to the signed runtime and Keeper-held admitted current turn',async()=>{
+ const {turnId,opened}=await openTurn(70);
+ const call={callId:'outside-call',requestId:'outside-request',agent,incarnation,sessionId:session,memberId:ids.member,
+  approverMemberId:ids.member,definitionHash,connectionName:'registry',accountId:'55555555-5555-4555-8555-555555555555',credentialRevision:1,toolName:'lookup',input:{company:'Example'}};
+ const point={turnCapability:opened.turnCapability,turnId,sequence:70,sessionId:session,memberId:ids.member,admissionNonce};
+ ids.outsideDispatch.mockImplementation(async(_binding,_call,options)=>{options.assertCurrent();return {content:[{type:'text',text:'Fixture result'}]}});
+ const {executeApprovedOutsideCall}=await import('../../../packages/agent-kit/src/vault-broker-client.js');
+ expect(await executeApprovedOutsideCall(point,call)).toEqual({content:[{type:'text',text:'Fixture result'}]});
+ expect(ids.outsideDispatch).toHaveBeenCalledWith({agent,incarnation,sessionId:session,memberId:ids.member,approverMemberId:ids.member,
+  admissionNonce,policyRevision:2},call,{deadlineAtMs:expect.any(Number),assertCurrent:expect.any(Function)});
+ ids.outsideDispatch.mockClear();
+ for(const changed of [{turnCapability:'f'.repeat(43)},{memberId:'another-member'},{sessionId:'another-session'},
+  {admissionNonce:'f'.repeat(43)},{turnId:'another-turn'},{sequence:71}]){
+  await expect(runtime('outside.execute',{...point,...changed,call})).rejects.toThrow('Vault reader unavailable');
+ }
+ expect(ids.outsideDispatch).not.toHaveBeenCalled();
+ await pool.query('UPDATE console_session_bindings SET revoked_at=now() WHERE session_id=$1',[session]);
+ await expect(runtime('outside.execute',{...point,call})).rejects.toThrow('Vault reader unavailable');
+ expect(ids.outsideDispatch).not.toHaveBeenCalled();
+});
+it('refuses a closed or expired outside turn and checks closure during dispatch',async()=>{
+ const {turnId,opened}=await openTurn(71),point={turnCapability:opened.turnCapability,turnId,sequence:71,sessionId:session,memberId:ids.member,admissionNonce};
+ const call={definitionHash};
+ ids.clock+=5*60_000+1;
+ await expect(runtime('outside.execute',{...point,call})).rejects.toThrow('Vault reader unavailable');
+ expect(ids.outsideDispatch).not.toHaveBeenCalled();
+ const next=await openTurn(72),nextPoint={...point,turnCapability:next.opened.turnCapability,turnId:next.turnId,sequence:72};
+ ids.outsideDispatch.mockImplementation(async(_binding,_call,options)=>{
+  await runtime('turn.close',{turnCapability:nextPoint.turnCapability,turnId:nextPoint.turnId,sequence:72});
+  options.assertCurrent();return {content:[]};
+ });
+ await expect(runtime('outside.execute',{...nextPoint,call})).rejects.toThrow('Vault reader unavailable');
+ expect(ids.outsideDispatch).toHaveBeenCalledOnce();ids.outsideDispatch.mockClear();
+ await expect(runtime('outside.execute',{...nextPoint,call})).rejects.toThrow('Vault reader unavailable');
+ expect(ids.outsideDispatch).not.toHaveBeenCalled();
 });
