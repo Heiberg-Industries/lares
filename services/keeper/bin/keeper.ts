@@ -201,7 +201,7 @@ async function main(): Promise<void> {
         // Vault is optional for older installations: missing custody removes only its dedicated
         // reader sockets and never prevents unrelated conversations or Keeper actions.
         if (vaultPool) {
-            try { if(!vaultKeyPath)throw new Error('Vault signing key unavailable');stops.push(await serveConsoleVaultBroker(vaultPool,vaultKeyPath,config.secretsDir,join(config.agentsDir,"..","run","vault","read.sock"))); }
+            try { if(!vaultKeyPath)throw new Error('Vault signing key unavailable');stops.push(await serveConsoleVaultBroker(vaultPool,vaultKeyPath,config.secretsDir,join(config.agentsDir,"..","run","vault","read.sock"),{outsideCustody})); }
             catch { console.warn("keeper: Vault reader unavailable until its dedicated broker path is repaired"); }
         }
         // The dedicated model-purpose signer enables its independent, bounded broker. A

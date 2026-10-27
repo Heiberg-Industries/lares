@@ -17,6 +17,7 @@ import { boundText, DEFAULT_READ_LIMIT } from '@lares/agent-kit/bounded-text';
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
 import { turnAuthoritySchema, vaultWriteBindingSchema } from '@lares/agent-kit/authority-contract';
 import { VaultTracksHome, type TrackFileWriter } from '@lares/agent-kit/tracks';
+import type { OutsideCustodyStore, OutsideToolCallInput } from './outside-custody.js';
 import { loadVaultStorageInventory, verifyVaultStorageMetadata } from '@lares/agent-box/lib/vault-storage.js';
 
 const SOCKET='/run/lares/vault-console.sock', CONSOLE_LIMIT=16_384, RUNTIME_LIMIT=256*1024, CHALLENGE_MS=10_000, PENDING_MS=30_000, MAX_LIVE=4096;
@@ -27,13 +28,13 @@ type Capsule=Input & {version:1;purpose:'human';challenge:string;nonce:string;ex
 type SessionDefinitionMaterial={definition:ReturnType<typeof definitionSchema.parse>;dutiesMd:string;voiceMd:string;hash:string};
 type Turn={input:Input;turnId:string;sequence:number;definition:SessionDefinitionMaterial;areaIds:string[];expiry:number};
 export interface VaultBrokerSocketOptions {consoleSocket?:string;rootUid?:number;socketUid?:number;socketGid?:number;turnClockForTests?:()=>number;
- vaultFilesForTests?:{root:string;originRoot:string}}
+ vaultFilesForTests?:{root:string;originRoot:string};outsideCustody?:Pick<OutsideCustodyStore,'dispatchApproved'>}
 const challenges=new Map<string,Challenge>(),pending=new Map<string,Pending>(),runtimeRequests=new Map<string,number>();
 const turns=new Map<string,Turn>();
 function object(v:unknown):Record<string,unknown>{if(!v||typeof v!=='object'||Array.isArray(v))throw new Error();return v as Record<string,unknown>}
 type SocketState={clients:Set<Socket>;inFlight:number};
-export function createBoundedVaultBrokerServer(handler:(line:string,signal:AbortSignal)=>Promise<Record<string,unknown>>,state:SocketState,limit=CONSOLE_LIMIT){
- return createServer(socket=>{if(state.clients.size>=32||state.inFlight>=32){socket.destroy();return;}state.clients.add(socket);let handled=false,buffer=Buffer.alloc(0);const controller=new AbortController(),deadline=setTimeout(()=>{controller.abort();socket.destroy()},2000);socket.on('error',()=>{});socket.on('close',()=>{controller.abort();clearTimeout(deadline);state.clients.delete(socket)});socket.on('data',chunk=>{
+export function createBoundedVaultBrokerServer(handler:(line:string,signal:AbortSignal)=>Promise<Record<string,unknown>>,state:SocketState,limit=CONSOLE_LIMIT,timeoutMs=2000){
+ return createServer(socket=>{if(state.clients.size>=32||state.inFlight>=32){socket.destroy();return;}state.clients.add(socket);let handled=false,buffer=Buffer.alloc(0);const controller=new AbortController(),deadline=setTimeout(()=>{controller.abort();socket.destroy()},timeoutMs);socket.on('error',()=>{});socket.on('close',()=>{controller.abort();clearTimeout(deadline);state.clients.delete(socket)});socket.on('data',chunk=>{
   if(handled){socket.destroy();return;}buffer=Buffer.concat([buffer,chunk]);if(buffer.length>limit){socket.destroy();return;}const end=buffer.indexOf(10);if(end<0)return;if(end!==buffer.length-1){socket.destroy();return;}handled=true;state.inFlight++;const line=buffer.subarray(0,end).toString('utf8');void handler(line,controller.signal).then(result=>{if(!controller.signal.aborted&&!socket.destroyed)socket.end(JSON.stringify({ok:true,...result})+'\n')}).catch(()=>{if(!controller.signal.aborted&&!socket.destroyed)socket.end('{"ok":false}\n')}).finally(()=>{state.inFlight--;});
  });});
 }
@@ -143,7 +144,8 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
   throw new Error('operation');
  }
  async function runtimeHandle(line:string,signal:AbortSignal):Promise<Record<string,unknown>>{
-  const requestDeadline=Date.now()+1700,transactionDeadline={deadlineAtMs:requestDeadline};
+  const operation=object(JSON.parse(line)).op;
+  const requestDeadline=Date.now()+(operation==='outside.execute'?8000:1700),transactionDeadline={deadlineAtMs:requestDeadline};
   const assertNotAborted=()=>{if(signal.aborted||Date.now()>=requestDeadline)throw new Error('deadline')};assertNotAborted();
   const req=object(JSON.parse(line)),agent=req.agent,incarnation=req.incarnation,requestId=req.requestId,timestamp=req.timestamp,op=req.op,input=object(req.input);
   if(typeof agent!=='string'||!/^[a-z][a-z0-9-]{1,30}$/.test(agent)||typeof incarnation!=='string'||!/^[a-f0-9-]{36}$/.test(incarnation)||typeof requestId!=='string'||!/^[A-Za-z0-9_-]{32,64}$/.test(requestId)||!Number.isSafeInteger(timestamp)||Math.abs(Date.now()-Number(timestamp))>30_000||typeof op!=='string'||typeof req.mac!=='string')throw new Error('identity');
@@ -152,6 +154,24 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
   prune(Date.now(),turnNow());if(given.length!==expected.length||!timingSafeEqual(given,expected)||runtimeRequests.has(requestId)||runtimeRequests.size>=MAX_LIVE)throw new Error('signature');
   runtimeRequests.set(requestId,Date.now()+60_000);
   const active=await authorityTransaction(pool,async db=>{await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");return db.query("SELECT 1 FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid'",[agent,incarnation])},transactionDeadline);assertNotAborted();if(active.rows.length!==1)throw new Error('runtime');
+  if(op==='outside.execute'){
+   // The signed runtime identifies the agent; Keeper's admitted turn identifies the human.
+   // Model arguments and copied receipt fields confer neither identity nor authority.
+   const cap=input.turnCapability,turn=typeof cap==='string'?turns.get(cap):undefined;
+   if(!turn||turn.input.agent!==agent||turn.input.incarnation!==incarnation||
+      turn.turnId!==input.turnId||turn.sequence!==input.sequence||turn.input.session!==input.sessionId||
+      turn.input.member!==input.memberId||turn.input.admissionNonce!==input.admissionNonce)throw new Error('turn');
+   const assertCurrent=()=>{assertNotAborted();if(turns.get(cap as string)!==turn||turn.expiry<=turnNow())throw new Error('turn')};
+   assertCurrent();
+   const admitted=turn.input;
+   if(!await current(pool,admitted,requestDeadline))throw new Error('authority');
+   assertCurrent();
+   const call=object(input.call) as unknown as OutsideToolCallInput;
+   if(call.definitionHash!==admitted.definitionHash||!socketOptions.outsideCustody)throw new Error('outside');
+   const result=await socketOptions.outsideCustody.dispatchApproved({agent:admitted.agent,incarnation:admitted.incarnation,
+    sessionId:admitted.session,memberId:admitted.member,approverMemberId:admitted.member,admissionNonce:admitted.admissionNonce,policyRevision:admitted.policyRevision},call,{deadlineAtMs:requestDeadline,assertCurrent});
+   assertCurrent();return {result};
+  }
   if(op==='tracks.list-scheduled'){
    const expectedOwner=input.ownerMemberId,personId=input.personId;
    if(typeof expectedOwner!=='string'||expectedOwner.length<1||expectedOwner.length>256||
@@ -303,7 +323,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
  }
  await mkdir(dirname(consoleSocket),{recursive:true,mode:0o750});
  try{const st=await lstat(consoleSocket);if(!st.isSocket()||st.uid!==rootUid)throw new Error('path');const stale=await new Promise<boolean>(resolve=>{const c=createConnection(consoleSocket);c.setTimeout(500,()=>{c.destroy();resolve(false)});c.once('connect',()=>{c.destroy();resolve(false)});c.once('error',(e:NodeJS.ErrnoException)=>resolve(e.code==='ECONNREFUSED'));});if(!stale)throw new Error('active');await unlink(consoleSocket);}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('keeper: vault console socket unavailable');}
- const server=createBoundedVaultBrokerServer(handle,socketState),runtimeServer=createBoundedVaultBrokerServer(runtimeHandle,socketState,RUNTIME_LIMIT);
+ const server=createBoundedVaultBrokerServer(handle,socketState),runtimeServer=createBoundedVaultBrokerServer(runtimeHandle,socketState,RUNTIME_LIMIT,10_000);
  try{
  await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(consoleSocket,()=>{server.off('error',reject);resolve()})});await chown(consoleSocket,socketUid,socketGid);await chmod(consoleSocket,0o660);
  await prepareVaultRuntimeDirectory(dirname(runtimeSocket),rootUid,socketGid);

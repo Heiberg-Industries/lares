@@ -51,6 +51,7 @@ const financialTables = ["budget_accounts", "budget_windows", "budget_gateway_bi
 const outsideCustodyAuthorityTables = [
   "orgs", "users", "org_member_policy", "agent_definitions", "agent_access", "resource_grants",
   "agent_resources", "console_session_bindings", "console_vault_source_captures",
+  "vault_areas", "vault_backing_stores",
 ];
 const outsideCustodyUpdateColumns: Readonly<Record<string, readonly string[]>> = {
   orgs: ["created_at"],
@@ -62,6 +63,8 @@ const outsideCustodyUpdateColumns: Readonly<Record<string, readonly string[]>> =
   agent_resources: ["updated_at"],
   console_session_bindings: ["created_at", "revoked_at"],
   member_sessions: ["created_at"],
+  vault_areas: ["created_at"],
+  vault_backing_stores: ["created_at"],
   outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at"],
   outside_execution_approvals: ["consumed_at"],
 };
@@ -147,6 +150,31 @@ afterAll(async () => {
 });
 
 describe("engine database privilege foundation", () => {
+  it("allows custody to lock retained Vault metadata without changing authority or reading content",async()=>{
+    await admin.query("INSERT INTO orgs(id,display_name) VALUES('metadata-org','Metadata fixture')");
+    await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('metadata-owner','Fixture owner','metadata-org','owner','active')");
+    await admin.query("INSERT INTO vault_backing_stores(id,organisation_id,kind) VALUES('metadata-backing','metadata-org','git')");
+    await admin.query("INSERT INTO vault_areas(id,organisation_id,kind,owner_member_id,backing_store_id,relative_path) VALUES('metadata-area','metadata-org','private','metadata-owner','metadata-backing','vault/private/metadata-area')");
+    const db=await outsideCustody.connect();
+    try{await db.query('BEGIN');
+      expect((await db.query("SELECT id FROM vault_backing_stores WHERE id='metadata-backing' FOR SHARE")).rowCount).toBe(1);
+      expect((await db.query("SELECT id FROM vault_areas WHERE id='metadata-area' FOR SHARE")).rowCount).toBe(1);
+      await db.query('ROLLBACK');
+    }finally{db.release()}
+    for(const [table,columns] of [
+      ['vault_areas',['id','organisation_id','kind','owner_member_id','owner_organisation_id','backing_store_id','relative_path','revision','status']],
+      ['vault_backing_stores',['id','organisation_id','kind','status']],
+    ] as const){
+      expect((await outsideCustody.query("SELECT has_column_privilege(current_user,$1,'created_at','UPDATE') AS allowed",['public.'+table])).rows[0].allowed).toBe(true);
+      for(const column of columns)await expectDenied(()=>outsideCustody.query(`UPDATE ${table} SET ${column}=${column} WHERE false`));
+      await expectDenied(()=>outsideCustody.query(`DELETE FROM ${table} WHERE false`));
+      await expectDenied(()=>outsideCustody.query(`INSERT INTO ${table}(id) VALUES('forbidden')`));
+    }
+    for(const table of ['atlas_notes','connected_account_credentials','oauth_tokens','keeper_credentials',...financialTables]){
+      await expectDenied(()=>outsideCustody.query(`SELECT * FROM ${table}`));
+    }
+  });
+
   it("refuses a grantable parameter privilege for each managed role, including outside custody", async () => {
     for (const role of ["lares_schema_owner", "lares_app", "lares_financial", "lares_outside_custody"]) {
       await admin.query(`GRANT SET ON PARAMETER session_replication_role TO "${role}" WITH GRANT OPTION`);
