@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync, symlinkSync, readdirSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -9,6 +10,8 @@ import { loadDefinition } from '@lares/agent-kit/definition';
 import { deployedToolsFor } from '@lares/agent-kit/persona';
 import { registerDefinitionActions } from '../lib/definitions.js';
 import { resetActions, runAction } from '../lib/actions.js';
+import { PgGrantStore } from '@lares/agent-kit/grant-store';
+import { outsideSecretName } from '@lares/agent-kit/outside-tools';
 // Vitest 4 types a bare `vi.fn()` as an unusable Procedure | Constructable union, so the fakes are typed as plain mocks.
 type AnyMock = Mock<(...args: any[]) => any>;
 const repo = resolve('../..');
@@ -26,6 +29,28 @@ let backup: {
 const ctx = () => ({ actor: 'owner@example.com', audit: vi.fn(async (_record: unknown) => { }) });
 const save = (name = 'bookkeeper', extra = {}) => ({ name, definition: { ...GOOD, name }, duties: 'Books.\n', voice: 'Dry.\n', ...extra });
 const create = (name = 'bookkeeper', extra = {}) => runAction('definition.create', { ...save(name, extra), startingPoint: role }, ctx());
+async function connectionFixture() {
+    await create('bookkeeper', { definition: { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope: 'write-with-confirm' }], autonomy: { ...GOOD.autonomy, outside: 'gated' } } });
+    const loaded = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } });
+    const grants = new PgGrantStore(pool);
+    const adopted = await grants.adoptAgent('connection-owner', { agentName: 'bookkeeper', expectedDefinitionHash: loaded.hash }, { designatedOwnerMemberId: 'connection-owner' });
+    const access = await grants.updateAgentAccess('connection-owner', { agentName: 'bookkeeper', expectedRevision: adopted.accessRevision, grants: [
+        { principal: { kind: 'member', id: 'connection-editor' }, permission: 'edit', expiresAt: null },
+        { principal: { kind: 'member', id: 'connection-user' }, permission: 'use', expiresAt: null },
+    ] });
+    const sessions: Record<string, string> = {};
+    for (const [key, memberId] of [['owner', 'connection-owner'], ['editor', 'connection-editor'], ['user', 'connection-user'], ['stranger', 'connection-stranger']]) {
+        const token = Buffer.alloc(32, key.length + memberId.length).toString('base64url');
+        sessions[key] = token;
+        await pool.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval \'1 hour\')',
+            [`connection-session-${key}`, memberId, createHash('sha256').update(token).digest('hex')]);
+    }
+    return { loaded, access, sessions };
+}
+const declaration = { name: 'rates', url: 'https://tools.example.org/mcp', description: 'Look up rates', token: false,
+    tools: { allow: ['find_rate'], read: ['find_rate'] }, trusted: false };
+const connectionCall = (sessionToken: string, name: string, expectedDefinitionHash: string, expectedAccessRevision: number, connections: unknown) =>
+    runAction('outside.connections.save', { sessionToken, name, expectedDefinitionHash, expectedAccessRevision, connections }, ctx());
 function register(ceiling = 2, storage = true) {
     resetActions();
     registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, ceiling: async () => ceiling, memory: () => 0, compose, backup,
@@ -37,6 +62,16 @@ beforeAll(async () => {
     container = await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
     pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(readFileSync(join(repo, 'services/box/sql', '001_baseline.sql'), 'utf8'));
+    for (const migration of ['007_member_identity_sessions.sql', '013_console_turn_authority.sql', '014_agent_access_grants.sql'])
+        await pool.query(readFileSync(join(repo, 'services/box/sql', migration), 'utf8'));
+    await pool.query(`INSERT INTO orgs(id,display_name) VALUES('connection-org','Connection test'),('connection-other-org','Other connection test');
+        INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES
+        ('connection-owner','Owner','connection-owner@example.test','connection-org','owner'),
+        ('connection-editor','Editor','connection-editor@example.test','connection-org','member'),
+        ('connection-user','User','connection-user@example.test','connection-org','member'),
+        ('connection-stranger','Stranger','connection-stranger@example.test','connection-other-org','owner');
+        INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES
+        ('connection-owner',NULL),('connection-editor',NULL),('connection-user',NULL),('connection-stranger',NULL);`);
     await pool.query('CREATE TABLE owned_memory(agent text, value text); CREATE TABLE standing_facts(user_id text, fact text)');
 });
 afterAll(async () => { await pool?.end(); await container?.stop(); if (root)
@@ -46,11 +81,96 @@ beforeEach(async () => {
         rmSync(root, { recursive: true, force: true });
     root = mkdtempSync(join(tmpdir(), 'keeper-definitions-'));
     [agentsDir, retiredDir, secretsDir] = ['agents', 'retired', 'secrets'].map(n => { const d = join(root, n); mkdirSync(d); return d; });
-    await pool.query('TRUNCATE agent_avatars, agent_definitions, agent_doors, owned_memory, standing_facts');
+    await pool.query('DELETE FROM agent_access; DELETE FROM member_sessions; DELETE FROM agent_definitions; TRUNCATE agent_avatars, agent_doors, owned_memory, standing_facts');
     backup = { commit: vi.fn(async () => { }) };
     compose = { stop: vi.fn(async () => { }), create: vi.fn(async () => { }),prepareSecretChange:vi.fn(async()=>{}),secretChanged:vi.fn(async()=>{}) };
     register();
 });
+it('lets the owner and a named editor change only outside declarations, while use-only, cross-member, stale and secret-shaped requests refuse', async () => {
+    const { loaded, access, sessions } = await connectionFixture();
+    const original = structuredClone(loaded.definition);
+    const secretValue = 'custodian-only-outside-token';
+    const secretPath = join(secretsDir, outsideSecretName('bookkeeper', 'rates'));
+    writeFileSync(secretPath, secretValue, { mode: 0o600 });
+    const bearerDeclaration = { ...declaration, token: true };
+    const first: any = await connectionCall(sessions.owner, 'bookkeeper', loaded.hash, access.accessRevision, [bearerDeclaration]);
+    expect(first.connections).toEqual([bearerDeclaration]);
+    const afterOwner = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } });
+    expect({ ...afterOwner.definition, outsideTools: undefined }).toEqual({ ...original, outsideTools: undefined });
+    expect(afterOwner.hash).toBe(first.definitionHash);
+    const ownerRead = await runAction('outside.connections.get', { sessionToken: sessions.owner, name: 'bookkeeper' }, ctx());
+    expect(JSON.stringify(ownerRead)).not.toContain(secretValue);
+
+    const edited = { ...bearerDeclaration, description: 'Look up current rates' };
+    const second: any = await connectionCall(sessions.editor, 'bookkeeper', first.definitionHash, first.accessRevision, [edited]);
+    expect(second.connections).toEqual([edited]);
+    const editorRead = await runAction('outside.connections.get', { sessionToken: sessions.editor, name: 'bookkeeper' }, ctx());
+    expect(JSON.stringify(editorRead)).not.toContain(secretValue);
+    await expect(connectionCall(sessions.user, 'bookkeeper', second.definitionHash, second.accessRevision, [])).rejects.toThrow();
+    await expect(connectionCall(sessions.stranger, 'bookkeeper', second.definitionHash, second.accessRevision, [])).rejects.toThrow();
+    await expect(connectionCall(sessions.editor, 'bookkeeper', first.definitionHash, first.accessRevision, [])).rejects.toThrow();
+    await expect(connectionCall(sessions.editor, 'bookkeeper', second.definitionHash, second.accessRevision,
+        [{ ...edited, credential: secretValue }])).rejects.toThrow();
+    expect(readFileSync(secretPath, 'utf8')).toBe(secretValue);
+    const removed: any = await connectionCall(sessions.editor, 'bookkeeper', second.definitionHash, second.accessRevision, []);
+    expect(removed.connections).toEqual([]);
+    const final = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } });
+    expect(final.definition.outsideTools).toBeUndefined();
+    expect({ ...final.definition, outsideTools: undefined }).toEqual({ ...original, outsideTools: undefined });
+    expect(readFileSync(secretPath, 'utf8')).toBe(secretValue);
+});
+it('holds the signed session and exact editor grant through connection publication', async () => {
+    const { loaded, access, sessions } = await connectionFixture();
+    const locker = await pool.connect();
+    const grantRevoker = await pool.connect();
+    const sessionRevoker = await pool.connect();
+    await pool.query(`CREATE OR REPLACE FUNCTION hold_connection_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN PERFORM pg_advisory_xact_lock(91827364,991); RETURN NEW; END $$;
+      CREATE TRIGGER hold_connection_publication BEFORE UPDATE OF hash ON agent_definitions
+      FOR EACH ROW EXECUTE FUNCTION hold_connection_publication();`);
+    await locker.query('SELECT pg_advisory_lock(91827364,991)');
+    let savePromise: Promise<unknown> | undefined;
+    let grantPromise: Promise<unknown> | undefined;
+    let sessionPromise: Promise<unknown> | undefined;
+    try {
+        savePromise = connectionCall(sessions.editor, 'bookkeeper', loaded.hash, access.accessRevision, [declaration]);
+        await vi.waitFor(async () => {
+            const { rows } = await pool.query(`SELECT pid FROM pg_stat_activity WHERE wait_event_type='Lock'
+              AND query LIKE 'INSERT INTO agent_definitions%'`);
+            expect(rows.length).toBeGreaterThan(0);
+        }, { timeout: 5000 });
+        await grantRevoker.query('BEGIN');
+        grantPromise = grantRevoker.query(`UPDATE resource_grants SET revoked_at=clock_timestamp()
+          WHERE resource_id='bookkeeper' AND principal_member_id='connection-editor' AND permission='edit'`);
+        await sessionRevoker.query('BEGIN');
+        sessionPromise = sessionRevoker.query(`UPDATE member_sessions SET revoked_at=clock_timestamp()
+          WHERE id='connection-session-editor'`);
+        await vi.waitFor(async () => {
+            const { rows } = await pool.query(`SELECT query FROM pg_stat_activity WHERE wait_event_type='Lock'
+              AND (query LIKE 'UPDATE resource_grants SET revoked_at=%' OR query LIKE 'UPDATE member_sessions SET revoked_at=%')`);
+            expect(rows).toHaveLength(2);
+        }, { timeout: 5000 });
+        await locker.query('SELECT pg_advisory_unlock(91827364,991)');
+        await expect(savePromise).resolves.toMatchObject({ connections: [declaration] });
+        await grantPromise;
+        await grantRevoker.query('COMMIT');
+        await sessionPromise;
+        await sessionRevoker.query('COMMIT');
+        expect((await pool.query(`SELECT revoked_at IS NOT NULL AS revoked FROM resource_grants
+          WHERE resource_id='bookkeeper' AND principal_member_id='connection-editor' AND permission='edit'`)).rows[0]?.revoked).toBe(true);
+        expect((await pool.query(`SELECT revoked_at IS NOT NULL AS revoked FROM member_sessions
+          WHERE id='connection-session-editor'`)).rows[0]?.revoked).toBe(true);
+    } finally {
+        await locker.query('SELECT pg_advisory_unlock(91827364,991)').catch(() => {});
+        if (savePromise) await savePromise.catch(() => {});
+        if (grantPromise) await grantPromise.catch(() => {});
+        if (sessionPromise) await sessionPromise.catch(() => {});
+        await grantRevoker.query('ROLLBACK').catch(() => {});
+        await sessionRevoker.query('ROLLBACK').catch(() => {});
+        await pool.query('DROP TRIGGER IF EXISTS hold_connection_publication ON agent_definitions; DROP FUNCTION IF EXISTS hold_connection_publication()');
+        locker.release(); grantRevoker.release(); sessionRevoker.release();
+    }
+}, 30000);
 it('creates, saves coherent files without changing the mounted root inode, and records hash evidence', async () => {
     await create();
     const inode = lstatSync(join(agentsDir, 'bookkeeper')).ino;
