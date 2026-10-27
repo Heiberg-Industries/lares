@@ -97,29 +97,33 @@ export function checkSettings(
   for (const name of requiredNamesFor(reader)) {
     const def = settingByName(name);
     if (!def) continue; // settings.ts guarantees every required name is declared; defensive only
-    const value = env[name];
+    const secretFileDef = def.secret ? settingByName(`${name}_FILE`) : undefined;
+    const secretFile = secretFileDef ? env[secretFileDef.name] : undefined;
+    const usingSecretFile = secretFileDef !== undefined && Boolean(secretFile);
+    const value = usingSecretFile ? secretFile : env[name];
+    const problemName = usingSecretFile && secretFileDef ? secretFileDef.name : name;
     if (name === "GATEWAY_KEY_FILE" && managedChiefTransport) continue;
     if (isBlank(value)) {
       const kind: SettingProblem["kind"] = value === undefined ? "missing" : "blank";
-      problems.push({ name, reader, kind, say: sentenceFor(name, def.breaksWithout, kind) });
+      problems.push({ name: problemName, reader, kind, say: sentenceFor(problemName, def.breaksWithout, kind) });
       continue;
     }
-    if (name.endsWith("_FILE")) {
+    if (name.endsWith("_FILE") || usingSecretFile) {
       const path = value!.trim();
       const probe = probeFile(path);
-      if (!probe.exists || !probe.readable) {
+      if (!probe.exists || !probe.readable || probe.isFile === false) {
         problems.push({
-          name,
+          name: problemName,
           reader,
           kind: "unreadable",
-          say: sentenceFor(name, def.breaksWithout, "unreadable", path),
+          say: sentenceFor(problemName, def.breaksWithout, "unreadable", path),
         });
       } else if (probe.empty) {
         problems.push({
-          name,
+          name: problemName,
           reader,
           kind: "empty",
-          say: sentenceFor(name, def.breaksWithout, "empty", path),
+          say: sentenceFor(problemName, def.breaksWithout, "empty", path),
         });
       }
     }

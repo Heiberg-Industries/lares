@@ -138,11 +138,20 @@ cmd_doctor() {
   BOX_DIR="$CUR/services/box"
   engine_resolve_image "$CUR/release.json" || die "this release has no engine image recorded ($BOX_DIR/engine-image). Run get-lares.sh again. Nothing was changed." "$EX_USAGE"
   local database_password_file="$PREFIX/etc/lares/secrets/database-password"
-  engine_run --ro "$database_password_file" \
+  local installation_env_file="$PREFIX/etc/lares/installation.env"
+  local console_session_secret_file="$PREFIX/etc/lares/secrets/console-session-secret"
+  local -a read_only_files=()
+  # A missing bind source would make Docker create a directory on the host. Mount only files
+  # that already exist; the doctor still sees a missing setting when either file is absent.
+  [ -f "$database_password_file" ] && read_only_files+=(--ro "$database_password_file")
+  [ -f "$installation_env_file" ] && read_only_files+=(--ro "$installation_env_file")
+  [ -f "$console_session_secret_file" ] && read_only_files+=(--ro "$console_session_secret_file")
+  engine_run "${read_only_files[@]}" \
     --env "DATABASE_PASSWORD_FILE=$database_password_file" \
+    --env "CONSOLE_SESSION_SECRET_FILE=$console_session_secret_file" \
     --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
     --env "PGDATABASE=${PGDATABASE:-lares_state}" --env "PGUSER=lares_app" \
-    bin/doctor.ts "$@"
+    bin/doctor.ts --installed-settings-file "$installation_env_file" "$@"
 }
 
 cmd_owner_bootstrap() {

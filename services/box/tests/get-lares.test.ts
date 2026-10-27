@@ -309,13 +309,22 @@ describe("lares", () => {
   });
 
   it("doctor runs the engine's doctor in a container of the current engine image", () => {
+    const secrets = join(prefix, "etc/lares/secrets");
+    mkdirSync(secrets, { recursive: true });
+    writeFileSync(join(secrets, "database-password"), "database-fixture");
+    writeFileSync(join(secrets, "console-session-secret"), "console-fixture");
+    writeFileSync(join(prefix, "etc/lares/installation.env"), "CONSOLE_ALLOWED_EMAILS=owner@example.invalid\n");
     const r = lares(["doctor"]);
     expect(r.code, r.stderr).toBe(0);
     const d = calls().find((l) => l.startsWith("docker run "))!;
     expect(d).toContain(KEEPER);
     expect(d).toContain("/app/services/box/bin/doctor.ts");
     expect(d).toContain(`${prefix}/etc/lares/secrets/database-password:${prefix}/etc/lares/secrets/database-password:ro`);
+    expect(d).toContain(`${prefix}/etc/lares/installation.env:${prefix}/etc/lares/installation.env:ro`);
+    expect(d).toContain(`${prefix}/etc/lares/secrets/console-session-secret:${prefix}/etc/lares/secrets/console-session-secret:ro`);
     expect(d).toContain(`DATABASE_PASSWORD_FILE=${prefix}/etc/lares/secrets/database-password`);
+    expect(d).toContain(`CONSOLE_SESSION_SECRET_FILE=${prefix}/etc/lares/secrets/console-session-secret`);
+    expect(d).toContain(`--installed-settings-file ${prefix}/etc/lares/installation.env`);
     expect(d).toContain("PGUSER=lares_app");
     expect(d).not.toContain(`${prefix}/etc/lares/secrets:${prefix}/etc/lares/secrets:ro`);
     expect(d).not.toMatch(/PGPASSWORD/);

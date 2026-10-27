@@ -102,6 +102,32 @@ describe("what a missing setting says", () => {
     expect(settingsReport(problems)).toMatch(/exists but is empty/);
   });
 
+  it("accepts a configured secret-file form for a required plain secret", () => {
+    const env = { CONSOLE_SESSION_SECRET_FILE: "/run/secrets/console-session-secret" };
+    const goodFile: ProbeFile = (path) => path === env.CONSOLE_SESSION_SECRET_FILE
+      ? { exists: true, readable: true, empty: false, isFile: true }
+      : { exists: false, readable: false, empty: true };
+    expect(checkSettings("console", env, goodFile)).toEqual([]);
+  });
+
+  it("matches file-first runtime resolution when the file reference is empty or whitespace", () => {
+    const probe: ProbeFile = () => ({ exists: true, readable: true, empty: false, isFile: true });
+    expect(checkSettings("console", { CONSOLE_SESSION_SECRET: "fixture-secret", CONSOLE_SESSION_SECRET_FILE: "" }, probe)).toEqual([]);
+    expect(checkSettings("console", { CONSOLE_SESSION_SECRET: "fixture-secret", CONSOLE_SESSION_SECRET_FILE: "   " }, probe).map((p) => p.kind)).toEqual(["blank"]);
+  });
+
+  it("rejects a missing, unreadable, directory or whitespace-only required secret file", () => {
+    const env = { CONSOLE_SESSION_SECRET_FILE: "/run/secrets/console-session-secret" };
+    const absent: ProbeFile = () => ({ exists: false, readable: false, empty: true });
+    const unreadable: ProbeFile = () => ({ exists: true, readable: false, empty: false, isFile: true });
+    const directory: ProbeFile = () => ({ exists: true, readable: true, empty: false, isFile: false });
+    const whitespace: ProbeFile = () => ({ exists: true, readable: true, empty: true, isFile: true });
+    expect(checkSettings("console", env, absent).map((p) => p.kind)).toEqual(["unreadable"]);
+    expect(checkSettings("console", env, unreadable).map((p) => p.kind)).toEqual(["unreadable"]);
+    expect(checkSettings("console", env, directory).map((p) => p.kind)).toEqual(["unreadable"]);
+    expect(checkSettings("console", env, whitespace).map((p) => p.kind)).toEqual(["empty"]);
+  });
+
   it("accepts only the exact chief managed transport when its two sockets and control file are verified", () => {
     expect(checkSettings("chief-of-staff", MANAGED_ENV, managedProbe)).toEqual([]);
     expect(checkSettings("creative", MANAGED_ENV, managedProbe).map((p) => p.name)).toContain("GATEWAY_KEY_FILE");

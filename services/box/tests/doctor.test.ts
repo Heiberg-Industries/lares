@@ -6,7 +6,7 @@ import { join, dirname } from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { runDoctor, doctorReport, doctorExitCode, type CheckResult } from "../lib/doctor.js";
+import { runDoctor, doctorReport, doctorExitCode, readableByConsole, type CheckResult } from "../lib/doctor.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = join(here, "..", "sql");
@@ -24,6 +24,12 @@ function fakeDb(answers: Record<string, unknown[]>) {
 const find = (rs: CheckResult[], id: string) => rs.find((r) => r.id === id)!;
 
 describe("lares doctor", () => {
+  it("uses the matching POSIX permission class for the console identity", () => {
+    expect(readableByConsole(0o404, 0, 10001)).toBe(false);
+    expect(readableByConsole(0o040, 0, 10001)).toBe(true);
+    expect(readableByConsole(0o400, 0, 0)).toBe(false);
+  });
+
   it("says the database is unreachable, and how to look, without a stack trace", async () => {
     const rs = await runDoctor({ db: null, env: {}, sqlDir: SQL_DIR, now: new Date() });
     expect(find(rs, "database").state).toBe("fail");
@@ -82,6 +88,19 @@ describe("lares doctor", () => {
     });
     expect(find(rs, "backup").state).toBe("warn");
     expect(find(rs, "backup").say).toMatch(/never/i);
+    expect(find(rs, "backup").fix).toContain("lares backups");
+    expect(find(rs, "backup").fix).toContain("systemctl start lares-backup-verify.service");
+    expect(find(rs, "backup").fix).not.toContain("services/box/ops/");
+  });
+
+  it("uses the installed verification service when the last backup check failed", async () => {
+    const rs = await runDoctor({
+      db: fakeDb({ "FROM backup_status": [{ check_name: "verify", ok: false, checked_at: new Date().toISOString(), last_pass_at: null, detail: "fixture failure", target: null }] }),
+      env: {}, sqlDir: SQL_DIR, now: new Date(),
+    });
+    expect(find(rs, "backup").fix).toContain("systemctl start lares-backup-verify.service");
+    expect(find(rs, "backup").fix).toContain("journalctl -u lares-backup-verify.service");
+    expect(find(rs, "backup").fix).not.toContain("services/box/ops/");
   });
 
   it("reports every open repair as its own line, in the owner's words", async () => {
