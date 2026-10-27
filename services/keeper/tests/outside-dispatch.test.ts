@@ -25,7 +25,7 @@ function canonical(value:unknown):string{if(Array.isArray(value))return '['+valu
 const hash=(v:unknown)=>createHash('sha256').update(canonical(v)).digest('hex');
 function encrypt(value:unknown,aad:unknown){const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce);cipher.setAAD(Buffer.from(canonical(aad)));return {nonce,ciphertext:Buffer.concat([cipher.update(Buffer.isBuffer(value)?value:Buffer.from(canonical(value))),cipher.final(),cipher.getAuthTag()])}}
 function fixture(){
- let consumed=false,expired=false,revoked=false;
+ let consumed=false,expired=false,revoked=false,recorded:Record<string,unknown>|undefined;
  const receipt={callId:call.callId,requestId:call.requestId,sessionId:call.sessionId,memberId:call.memberId,
   approverMemberId:call.approverMemberId,agent:call.agent,incarnation:call.incarnation,definitionHash:call.definitionHash,
   connectionName:call.connectionName,accountId:call.accountId,credentialRevision:call.credentialRevision,toolName:call.toolName,
@@ -53,6 +53,12 @@ function fixture(){
   else if(sql.includes('FROM outside_custody_accounts'))result=[head];
   else if(sql.includes('FROM outside_custody_revisions'))result=revisions.has(Number(params[1]))?[revisions.get(Number(params[1]))]:[];
   else if(sql.includes('FROM outside_custody_operations'))result=rows.has(String(params[1]))?[rows.get(String(params[1]))]:[];
+  else if(sql.includes('INSERT INTO outside_execution_approvals')){
+   recorded={request_id:params[1],session_id:params[2],member_id:params[3],approver_member_id:params[4],agent:params[5],incarnation:params[6],
+    definition_hash:params[7],connection_name:params[8],account_id:params[9],credential_revision:String(params[10]),tool_name:params[11],
+    payload_hash:params[12],expires_at_ms:String(params[13]),consumed_at:null};
+  }
+  else if(sql.includes('floor(extract(epoch from expires_at)'))result=recorded?[recorded]:[];
   else if(sql.includes('SELECT call_id AS')){
    const lookup=[receipt.callId,receipt.agent,receipt.incarnation,receipt.sessionId,receipt.memberId,receipt.approverMemberId,
     receipt.definitionHash,receipt.connectionName,receipt.toolName,receipt.payloadHash];
@@ -202,4 +208,25 @@ it.each(['grant','definition','acceptance','active credential','session'] as con
   await expect(f.store.acceptedRuntimeTools(binding,reason==='definition'?'f'.repeat(64):call.definitionHash,'registry',{deadlineAtMs:Date.now()+2000})).rejects.toThrow();
   expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false);
  }finally{f.store.close()}
+});
+
+it('creates a receipt from current custody metadata without opening credentials or calling the provider',async()=>{
+ const f=fixture(),requested={callId:call.callId,connectionName:call.connectionName,toolName:call.toolName,input:call.input};
+ await expect(f.store.approveExecution(binding,requested,{requestId:call.requestId,definitionHash:call.definitionHash,expiresAt:Date.now()+60_000},
+  {deadlineAtMs:Date.now()+8000})).resolves.toBeUndefined();
+ const inserts=mocks.query.mock.calls.filter(([sql])=>String(sql).includes('INSERT INTO outside_execution_approvals'));
+ expect(inserts).toHaveLength(1);expect(inserts[0][1]).toMatchObject({9:accountId,10:4});
+ expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false);
+});
+it.each(['unknown-selector','changed-member','revoked-session','changed-descriptor','expired'])(
+ 'refuses receipt creation for %s before provider access',async(kind)=>{
+ const f=fixture(),requested={callId:call.callId,connectionName:call.connectionName,toolName:call.toolName,input:call.input};
+ if(kind==='revoked-session')mocks.session.mockRejectedValueOnce(new Error('revoked'));
+ if(kind==='changed-descriptor'){f.publication.projection.tools[0].description='Changed';
+  f.rows.set(publicationId,f.evidence(publicationId,'descriptor-publication-v1',f.publication,'published'));}
+ await expect(f.store.approveExecution(kind==='changed-member'?{...binding,memberId:'member-b'}:binding,
+  kind==='unknown-selector'?{...requested,accountId:'model-selected'} as never:requested,
+  {requestId:call.requestId,definitionHash:call.definitionHash,expiresAt:Date.now()+(kind==='expired'?-1:60_000)},
+  {deadlineAtMs:Date.now()+8000})).rejects.toThrow('Outside credential change could not be confirmed');
+ expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false);
 });

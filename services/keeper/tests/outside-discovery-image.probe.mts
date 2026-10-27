@@ -18,8 +18,9 @@ import {lockOutsideHumanSession} from '../lib/outside-custody.js';
 import {withDefinitionNamespace} from '../lib/definition-namespace.js';
 import {consoleSourceTransaction} from '../../../packages/agent-kit/src/console-source-transaction.js';
 import {PgVaultStore} from '../../../packages/agent-kit/src/vault-area-store.js';
-import {bindConsoleSession} from '../../../packages/agent-kit/src/console-turn-authority.js';
-import {recordOutsideExecutionApproval,outsidePayloadHash} from '../../../packages/agent-kit/src/outside-execution-receipts.js';
+import {authorityTransaction,bindConsoleSession} from '../../../packages/agent-kit/src/console-turn-authority.js';
+import {reserveExactApproval,attachExactApproval,approveExactResponse,requireBoundExactApproval} from '../../../packages/agent-kit/src/approval-execution.js';
+import {outsideApprovalAdapter} from '../../../packages/agent-kit/src/outside-approval.js';
 import {vaultBrokerRequest,executeApprovedOutsideCall} from '../../../packages/agent-kit/src/vault-broker-client.js';
 import {serveConsoleVaultBroker} from '../lib/vault-console-broker.js';
 import type {DockerBoundary,OutsideRouteAcknowledgementFailure} from '../lib/docker.js';
@@ -501,9 +502,10 @@ const EXECUTION_REFUSALS=['member','session','agent','tool','payload','connectio
 type ExecutionCustodyEvidence={dispatchApprovedReached:number;dispatchApprovedDenied:number;
  acceptedRuntimeToolsReached:number;acceptedRuntimeToolsDenied:number};
 /** Fixed, bounded proof counters only. Delegate with the original receiver and rethrow unchanged. */
-export function trackExecutionCustody(store:Pick<OutsideCustodyStore,'dispatchApproved'|'acceptedRuntimeTools'>,
- evidence:ExecutionCustodyEvidence):Pick<OutsideCustodyStore,'dispatchApproved'|'acceptedRuntimeTools'>{
+export function trackExecutionCustody(store:Pick<OutsideCustodyStore,'dispatchApproved'|'acceptedRuntimeTools'|'approveExecution'>,
+ evidence:ExecutionCustodyEvidence):Pick<OutsideCustodyStore,'dispatchApproved'|'acceptedRuntimeTools'|'approveExecution'>{
  return {
+  approveExecution:(...args)=>store.approveExecution(...args),
   async dispatchApproved(...args){
    evidence.dispatchApprovedReached=Math.min(128,evidence.dispatchApprovedReached+1);
    try{return await store.dispatchApproved(...args)}catch(error){
@@ -581,24 +583,37 @@ async function proveSignedExecution(c:{main:Pool;outside:Pool;proof:Pool;store:O
  };
  let point:Point;
  type Call=Parameters<typeof executeApprovedOutsideCall>[1];
- const approve=async(revision=c.activeRevision,accountId=c.accountId,receiptAgent=agent):Promise<Call>=>{
+ const capabilities=new Map<string,string>();
+ const approve=async(revision?:number,accountId?:string,receiptAgent?:string):Promise<Call>=>{
+  point=await open();
   c.phase('signed outside execution approve');
-  const input={fixture:'outside-execution-v1'},call={callId:randomUUID(),requestId:randomUUID(),sessionId:point.sessionId,memberId:point.memberId,
-   approverMemberId:point.memberId,agent:receiptAgent,incarnation,definitionHash:c.definitionHash,connectionName:'fixture',accountId,credentialRevision:revision,
-   toolName:'lookup_alpha',input};
-  // Authenticated fixture human gives exact consent; use the durable production receipt API,
-  // not an assumed success row or an execution bypass.
+  const call={callId:randomUUID(),connectionName:'fixture',toolName:'lookup_alpha',input:{fixture:'outside-execution-v1'}};
+  const requestId=randomUUID(),toolName='fixture__lookup_alpha',adapter=outsideApprovalAdapter('fixture','lookup_alpha');
+  const auth=(purpose:string)=>({authenticator:'lares-console',attributes:{lares_member_id:point.memberId,
+   lares_admission_nonce:point.admissionNonce,lares_purpose:purpose}});
+  const ctx={callId:call.callId,toolName,toolInput:call.input,session:{id:point.sessionId,
+   turn:{id:point.turnId,sequence:point.sequence},auth:{current:auth('human'),initiator:auth('human')}}};
+  // Authenticate the fixture's answer independently, then drive the production exact-ask path.
   await consoleSourceTransaction(outside,async db=>{const human=await lockOutsideHumanSession(db,c.sessionToken);
-   assert(human.memberId===point.memberId,'approval fixture member mismatch');
-   const {input:approvedInput,...selectors}=call;
-   await recordOutsideExecutionApproval(db,{...selectors,payloadHash:outsidePayloadHash(call.toolName,approvedInput),expiresAt:Date.now()+60_000});
-  });return call;
+   assert(human.memberId===point.memberId,'approval fixture member mismatch');});
+  await reserveExactApproval(ctx,toolName,{db:main,adapter});
+  await attachExactApproval({requestId,callId:call.callId,tool:toolName,input:call.input},main);
+  await vaultBrokerRequest('turn.close',{turnCapability:point.turnCapability,turnId:point.turnId,sequence:point.sequence});
+  await approveExactResponse({request:{requestId,callId:call.callId,toolName,toolInput:call.input},responder:auth('resolver'),
+   session:{id:point.sessionId,initiator:auth('human'),turn:{id:'answer_'+randomUUID(),sequence:point.sequence+1}}},{db:main,adapter});
+  const approved=await vaultBrokerRequest<{outsideCapability:string}>('outside.approve',{
+   sessionId:point.sessionId,memberId:point.memberId,admissionNonce:point.admissionNonce,call});
+  capabilities.set(call.callId,approved.outsideCapability);
+  // Negative fixtures alone corrupt stored selectors to retain custody mismatch coverage.
+  if(revision!==undefined)await proof.query('UPDATE outside_execution_approvals SET credential_revision=$2 WHERE call_id=$1',[call.callId,revision]);
+  if(accountId!==undefined)await proof.query('UPDATE outside_execution_approvals SET account_id=$2 WHERE call_id=$1',[call.callId,accountId]);
+  if(receiptAgent!==undefined)await proof.query('UPDATE outside_execution_approvals SET agent=$2 WHERE call_id=$1',[call.callId,receiptAgent]);
+  return call;
  };
  const execute=(call:Call,p=point)=>{
   c.phase('signed outside execution execute');
-  return executeApprovedOutsideCall<{content:unknown[]}>(p,{
-   callId:call.callId,connectionName:call.connectionName,toolName:call.toolName,input:call.input,
-  });
+  return executeApprovedOutsideCall<{content:unknown[]}>({outsideCapability:capabilities.get(call.callId)??'',
+   sessionId:p.sessionId,memberId:p.memberId,admissionNonce:p.admissionNonce},call);
  };
  const positive=async(call:Call)=>{const before=peer();const response=await execute(call),after=peer();
   assert(after.requestCount===before.requestCount+3&&after.toolsCallCount===before.toolsCallCount+1&&after.exactCallMatches,
@@ -613,18 +628,21 @@ async function proveSignedExecution(c:{main:Pool;outside:Pool;proof:Pool;store:O
  };
  try{
   c.phase('signed outside execution');point=await open();
+  const accepted=await vaultBrokerRequest<{tools:{name:string}[]}>('outside.tools',{sessionId:point.sessionId,memberId:point.memberId,
+   admissionNonce:point.admissionNonce,connectionName:'fixture'});
+  assert(accepted.tools.some(tool=>tool.name==='lookup_alpha'),'accepted runtime tool metadata unavailable');secretFree(accepted);
   const first=await approve();await positive(first);await refuse('replay',()=>execute(first));
   const pending=await approve();
   for(const [label,changed] of [
    ['tool',{toolName:'lookup_beta'}],['payload',{input:{fixture:'changed'}}],['connection',{connectionName:'other-connection'}],
-  ] as const)await refuse(label,()=>execute({...pending,...changed}));
+  ] as const)await refuse(label,async()=>execute({...await approve(),...changed}));
   await refuse('agent',async()=>execute(await approve(c.activeRevision,c.accountId,'other-agent')));
   await refuse('credential-version',async()=>execute(await approve(c.activeRevision+1)));
-  await refuse('member',()=>execute(pending,{...point,memberId:editor}));
-  await refuse('session',()=>execute(pending,{...point,sessionId:'another_session'}));
+  await refuse('member',async()=>{const call=await approve();return execute(call,{...point,memberId:editor})});
+  await refuse('session',async()=>{const call=await approve();return execute(call,{...point,sessionId:'another_session'})});
   const originalIncarnation=process.env.LARES_AGENT_INCARNATION;process.env.LARES_AGENT_INCARNATION=randomUUID();
   try{await refuse('runtime-incarnation',()=>execute(pending))}finally{process.env.LARES_AGENT_INCARNATION=originalIncarnation}
-  await positive(pending);
+  await positive(await approve());
   const expired=await approve();await proof.query("UPDATE outside_execution_approvals SET expires_at=created_at+interval '1 millisecond' WHERE call_id=$1",[expired.callId]);
   await pause(5);await refuse('expired',()=>execute(expired));
   const foreignAccount=randomUUID();await proof.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,consent_generation,state)
@@ -674,23 +692,34 @@ async function proveSignedExecution(c:{main:Pool;outside:Pool;proof:Pool;store:O
   const stale=await approve();const rotated=await store.apply(c.sessionToken,{...apply,operationId:randomUUID()},{deadlineAtMs:Date.now()+7000});
   assert(rotated.outcome==='applied'&&rotated.credentialRevision===staged.credentialRevision,'replacement activation did not succeed');
   await refuse('rotation',()=>execute(stale));result.rotationRejected=true;
-  await positive(await approve(staged.credentialRevision));
+  await positive(await approve());
 
   c.phase('outside execution revocation');
-  const revoked=await approve(staged.credentialRevision);
+  const revoked=await approve();
   await proof.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE session_id=$1',[point.sessionId]);
   await refuse('revoked',()=>execute(revoked));point=await open();
-  const permission=await approve(staged.credentialRevision);
-  await proof.query("UPDATE org_member_policy SET allowed_capabilities=ARRAY[]::text[] WHERE user_id=$1",[owner]);
-  await refuse('permission-revoked',()=>execute(permission));
-  await proof.query("UPDATE org_member_policy SET allowed_capabilities=ARRAY['outside','vault']::text[] WHERE user_id=$1",[owner]);
-  // Policy invalidation permanently retires the old binding. Open a fresh admitted turn;
-  // never restore its nonce or revive a retired capability.
-  point=await open();const removal=await approve(staged.credentialRevision);
+  // Reserve both calls while the executable authority capture still matches Apply.
+  // Member-policy changes retire that capture even when the old ceiling is restored.
+  const permission=await approve(),permissionPoint=point;
+  const removal=await approve();
   const removed=await store.revoke({agent,incarnation,sessionId:point.sessionId,memberId:owner,admissionNonce:point.admissionNonce},
    {accountId:c.accountId,operationId:randomUUID(),expectedGeneration:rotated.generation},{deadlineAtMs:Date.now()+7000});
   assert(removed.outcome==='revoked','connection removal was not acknowledged');
+  const removalReached=result.dispatchApprovedReached,removalDenied=result.dispatchApprovedDenied;
   await refuse('removal',()=>execute(removal));result.removalRejected=true;
+  assert(result.dispatchApprovedReached===removalReached+1&&result.dispatchApprovedDenied===removalDenied+1,
+   'connection removal did not reach custody refusal');
+
+  // The retained ask/session is valid after removal. The next refusal must happen before
+  // custody dispatch, proving loss of member permission rather than the removed connection.
+  await authorityTransaction(main,db=>requireBoundExactApproval({agent,incarnation,sessionId:permissionPoint.sessionId,
+   memberId:permissionPoint.memberId,admissionNonce:permissionPoint.admissionNonce,callId:permission.callId},
+   'fixture__lookup_alpha',permission.input,{db,adapter:outsideApprovalAdapter('fixture','lookup_alpha'),claimed:true}));
+  const permissionReached=result.dispatchApprovedReached;
+  await proof.query("UPDATE org_member_policy SET allowed_capabilities=ARRAY[]::text[] WHERE user_id=$1",[owner]);
+  await refuse('permission-revoked',()=>execute(permission,permissionPoint));
+  assert(result.dispatchApprovedReached===permissionReached,'permission revocation reached custody dispatch');
+  await proof.query("UPDATE org_member_policy SET allowed_capabilities=ARRAY['outside','vault']::text[] WHERE user_id=$1",[owner]);
   const final=peer();assert(final.bearerMatches&&final.sessionMatches&&final.exactCallMatches,'physical peer contract changed');
   result.peerRequests=final.requestCount-initialPeer.requestCount;result.peerToolCalls=final.toolsCallCount-initialPeer.toolsCallCount;
   assert(result.positiveCalls===4&&result.peerRequests===16&&result.peerToolCalls===4,'physical peer counter totals differ');

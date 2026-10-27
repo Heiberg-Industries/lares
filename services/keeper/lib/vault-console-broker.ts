@@ -14,6 +14,9 @@ import { PgVaultStore } from '@lares/agent-kit/vault-area-store';
 import { GuardedVaultFiles, type VaultFilesBackings } from '@lares/agent-kit/vault-files';
 import { NoteNotFoundError, visibleTo, type Reader, type StoreName } from '@lares/agent-kit/notes-store';
 import { boundText, DEFAULT_READ_LIMIT } from '@lares/agent-kit/bounded-text';
+import { requireBoundExactApproval } from '@lares/agent-kit/approval-execution';
+import { outsideApprovalAdapter } from '@lares/agent-kit/outside-approval';
+import { outsidePayloadHash } from '@lares/agent-kit/outside-execution-receipts';
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
 import { turnAuthoritySchema, vaultWriteBindingSchema } from '@lares/agent-kit/authority-contract';
 import { VaultTracksHome, type TrackFileWriter } from '@lares/agent-kit/tracks';
@@ -28,7 +31,7 @@ type Capsule=Input & {version:1;purpose:'human';challenge:string;nonce:string;ex
 type SessionDefinitionMaterial={definition:ReturnType<typeof definitionSchema.parse>;dutiesMd:string;voiceMd:string;hash:string};
 type Turn={input:Input;turnId:string;sequence:number;definition:SessionDefinitionMaterial;areaIds:string[];expiry:number};
 export interface VaultBrokerSocketOptions {consoleSocket?:string;rootUid?:number;socketUid?:number;socketGid?:number;turnClockForTests?:()=>number;
- vaultFilesForTests?:{root:string;originRoot:string};outsideCustody?:Pick<OutsideCustodyStore,'dispatchApproved'|'acceptedRuntimeTools'>}
+ vaultFilesForTests?:{root:string;originRoot:string};outsideCustody?:Pick<OutsideCustodyStore,'dispatchApproved'|'acceptedRuntimeTools'|'approveExecution'>}
 const challenges=new Map<string,Challenge>(),pending=new Map<string,Pending>(),runtimeRequests=new Map<string,number>();
 const turns=new Map<string,Turn>();
 function object(v:unknown):Record<string,unknown>{if(!v||typeof v!=='object'||Array.isArray(v))throw new Error();return v as Record<string,unknown>}
@@ -133,6 +136,9 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
   if(process.env.NODE_ENV!=='test'||paths.some(path=>!isAbsolute(path)||!path.startsWith(temporary)||relative(temporary,path).startsWith('..')||path==='/srv'||path==='/var/lib'))throw new Error('test Vault paths refused');}
  const consoleSocket=socketOptions.consoleSocket??SOCKET,rootUid=socketOptions.rootUid??0,socketUid=socketOptions.socketUid??0,socketGid=socketOptions.socketGid??10001;
  const turnNow=socketOptions.turnClockForTests??Date.now;
+ // A separate namespace: these capabilities cannot be used by turn.open, vault.read or tracks.
+ const outsideResumes=new Map<string,{binding:{agent:string;incarnation:string;sessionId:string;memberId:string;approverMemberId:string;admissionNonce:string;policyRevision:number};
+  call:Pick<OutsideToolCallRequest,'callId'|'connectionName'|'toolName'>;payloadHash:string;expiresAt:number}>();
  const clients=new Set<Socket>(),secret=await keyFile(consoleSigningKeyFile),socketState:SocketState={clients,inFlight:0};
  async function handle(line:string,signal:AbortSignal):Promise<Record<string,unknown>>{
   const deadlineAtMs=Date.now()+1700,assertLive=()=>{if(signal.aborted||Date.now()>=deadlineAtMs)throw new Error('deadline')};assertLive();const req=object(JSON.parse(line));prune();
@@ -154,26 +160,65 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
   prune(Date.now(),turnNow());if(given.length!==expected.length||!timingSafeEqual(given,expected)||runtimeRequests.has(requestId)||runtimeRequests.size>=MAX_LIVE)throw new Error('signature');
   runtimeRequests.set(requestId,Date.now()+60_000);
   const active=await authorityTransaction(pool,async db=>{await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");return db.query("SELECT d.hash FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid'",[agent,incarnation])},transactionDeadline);assertNotAborted();if(active.rows.length!==1)throw new Error('runtime');
-  if(op==='outside.execute'){
-   // The signed runtime identifies the agent; Keeper's admitted turn identifies the human.
-   // Model arguments and copied receipt fields confer neither identity nor authority.
-   const cap=input.turnCapability,turn=typeof cap==='string'?turns.get(cap):undefined;
-   if(!turn||turn.input.agent!==agent||turn.input.incarnation!==incarnation||
-      turn.turnId!==input.turnId||turn.sequence!==input.sequence||turn.input.session!==input.sessionId||
-      turn.input.member!==input.memberId||turn.input.admissionNonce!==input.admissionNonce)throw new Error('turn');
-   const assertCurrent=()=>{assertNotAborted();if(turns.get(cap as string)!==turn||turn.expiry<=turnNow())throw new Error('turn')};
-   assertCurrent();
-   const admitted=turn.input;
-   if(!await current(pool,admitted,requestDeadline))throw new Error('authority');
-   assertCurrent();
+  if(op==='outside.approve'||op==='outside.execute'){
    const requested=object(input.call);
    if(Object.keys(requested).some(key=>!['callId','connectionName','toolName','input'].includes(key))||
       typeof requested.callId!=='string'||typeof requested.connectionName!=='string'||typeof requested.toolName!=='string'||
+      typeof input.sessionId!=='string'||typeof input.memberId!=='string'||typeof input.admissionNonce!=='string'||
       !socketOptions.outsideCustody)throw new Error('outside');
-   const call=requested as unknown as OutsideToolCallRequest;
-   const result=await socketOptions.outsideCustody.dispatchApproved({agent:admitted.agent,incarnation:admitted.incarnation,
-    sessionId:admitted.session,memberId:admitted.member,approverMemberId:admitted.member,admissionNonce:admitted.admissionNonce,policyRevision:admitted.policyRevision},call,{deadlineAtMs:requestDeadline,assertCurrent});
-   assertCurrent();return {result};
+   const call=requested as unknown as OutsideToolCallRequest,tool=`${call.connectionName}__${call.toolName}`;
+   const tuple={agent,incarnation,sessionId:input.sessionId,memberId:input.memberId,admissionNonce:input.admissionNonce,callId:call.callId};
+   const adapter=outsideApprovalAdapter(call.connectionName,call.toolName),payloadHash=outsidePayloadHash(call.toolName,call.input);
+   for(const [id,resume] of outsideResumes)if(resume.expiresAt<=Date.now())outsideResumes.delete(id);
+   if(op==='outside.approve'){
+    if(!socketOptions.outsideCustody.approveExecution||outsideResumes.size>=MAX_LIVE)throw new Error('outside');
+    const checked=await authorityTransaction(pool,async db=>{
+     const approved=await requireBoundExactApproval(tuple,tool,call.input,{db,adapter});
+     const binding=await requireConsoleSessionBinding(tuple,db);
+     if(approved.target.kind!=='outside-call'||approved.target.id!==call.callId||approved.target.fingerprint!==payloadHash)throw new Error('approval');
+     const claim=await db.query(`UPDATE approval_asks SET used_at=clock_timestamp(),use_count=use_count+1
+       WHERE call_id=$1 AND request_id=$2 AND outcome='approved' AND used_at IS NULL RETURNING call_id`,[call.callId,approved.authority.requestId]);
+     if(claim.rows.length!==1)throw new Error('replay');
+     return {approved,binding};
+    },transactionDeadline);
+    // A committed claim precedes custody I/O. An uncertain failure requires a new approval.
+    const binding={agent,incarnation,sessionId:tuple.sessionId,memberId:tuple.memberId,admissionNonce:tuple.admissionNonce,
+     approverMemberId:tuple.memberId,policyRevision:checked.binding.policyRevision};
+    const expiresAt=Math.min(checked.approved.expiresAt,Date.now()+60_000);
+    const assertCurrent=()=>{assertNotAborted();if(expiresAt<=Date.now())throw new Error('expired')};assertCurrent();
+    await socketOptions.outsideCustody.approveExecution(binding,call,{requestId:checked.approved.authority.requestId,
+     definitionHash:String(active.rows[0]!.hash),expiresAt},{deadlineAtMs:requestDeadline,assertCurrent});
+    await authorityTransaction(pool,db=>requireBoundExactApproval(tuple,tool,call.input,{db,adapter,claimed:true}),transactionDeadline);
+    assertCurrent();const outsideCapability=randomBytes(32).toString('base64url');
+    outsideResumes.set(outsideCapability,{binding,call:{callId:call.callId,connectionName:call.connectionName,toolName:call.toolName},payloadHash,expiresAt});
+    return {outsideCapability,expiresAt};
+   }
+   const capability=input.outsideCapability,resume=typeof capability==='string'?outsideResumes.get(capability):undefined;
+   // Take before any await: two responses can never dispatch the same capability.
+   if(typeof capability==='string')outsideResumes.delete(capability);
+   if(!resume||resume.expiresAt<=Date.now()||resume.binding.agent!==agent||resume.binding.incarnation!==incarnation||
+      resume.binding.sessionId!==tuple.sessionId||resume.binding.memberId!==tuple.memberId||resume.binding.admissionNonce!==tuple.admissionNonce||
+      resume.call.callId!==call.callId||resume.call.connectionName!==call.connectionName||resume.call.toolName!==call.toolName||resume.payloadHash!==payloadHash)
+    throw new Error('approval');
+   await authorityTransaction(pool,db=>requireBoundExactApproval(tuple,tool,call.input,{db,adapter,claimed:true}),transactionDeadline);
+   const assertCurrent=()=>{assertNotAborted();if(resume.expiresAt<=Date.now())throw new Error('expired')};assertCurrent();
+   const custody=socketOptions.outsideCustody;
+   // Hold only the ask/policy locks across custody. Holding the organisation source lock here
+   // would deadlock custody's independent source transaction on its separate database role.
+   return await authorityTransaction(pool,async db=>{
+    const rows=await db.query(`SELECT original_authority FROM approval_asks WHERE call_id=$1 AND agent=$2 AND session_id=$3
+      AND acting_member_id=$4 AND resolved_by_member_id=$4 AND tool=$5 AND payload_hash=$6
+      AND outcome='approved' AND used_at IS NOT NULL FOR UPDATE`,
+      [call.callId,agent,tuple.sessionId,tuple.memberId,tool,payloadFingerprint(tool,call.input)]);
+    const reservation=rows.rows[0]?.original_authority;
+    // Row locks cannot protect a missing override. Serialize the first INSERT as well
+    // as updates/deletes against dispatch, using the same table lock as personal sends.
+    await db.query('LOCK TABLE ratchet IN SHARE MODE');
+    if(rows.rows.length!==1||Date.parse(reservation?.expiresAt)<=Date.now()||
+       await adapter.readPolicyHash(db,agent,incarnation)!==reservation?.policyHash)throw new Error('approval');
+    assertCurrent();const result=await custody.dispatchApproved(resume.binding,call,{deadlineAtMs:requestDeadline,assertCurrent});
+    assertCurrent();return {result};
+   },transactionDeadline);
   }
   if(op==='outside.tools'){
    if(!socketOptions.outsideCustody||typeof input.sessionId!=='string'||typeof input.memberId!=='string'||
@@ -346,7 +391,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
  try{const st=await lstat(runtimeSocket);if(!st.isSocket()||st.uid!==rootUid)throw new Error('path');const stale=await new Promise<boolean>(resolve=>{const c=createConnection(runtimeSocket);c.setTimeout(500,()=>{c.destroy();resolve(false)});c.once('connect',()=>{c.destroy();resolve(false)});c.once('error',(e:NodeJS.ErrnoException)=>resolve(e.code==='ECONNREFUSED'));});if(!stale)throw new Error('active');await unlink(runtimeSocket);}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('keeper: Vault runtime socket unavailable');}
  await new Promise<void>((resolve,reject)=>{runtimeServer.once('error',reject);runtimeServer.listen(runtimeSocket,()=>{runtimeServer.off('error',reject);resolve()})});await chown(runtimeSocket,socketUid,socketGid);await chmod(runtimeSocket,0o660);
  }catch(error){for(const client of clients)client.destroy();await Promise.all([new Promise<void>(resolve=>server.close(()=>resolve())),new Promise<void>(resolve=>runtimeServer.close(()=>resolve()))]);throw error;}
- return async()=>{for(const client of clients)client.destroy();await Promise.all([new Promise<void>(resolve=>server.close(()=>resolve())),new Promise<void>(resolve=>runtimeServer.close(()=>resolve()))]);challenges.clear();pending.clear();turns.clear();runtimeRequests.clear()};
+ return async()=>{for(const client of clients)client.destroy();await Promise.all([new Promise<void>(resolve=>server.close(()=>resolve())),new Promise<void>(resolve=>runtimeServer.close(()=>resolve()))]);challenges.clear();pending.clear();turns.clear();runtimeRequests.clear();outsideResumes.clear()};
 }
 export function consumePendingVaultReceipt(handle:string,input:Pick<Input,'agent'|'incarnation'|'session'|'member'|'admissionNonce'>):Pending|undefined{
  prune();const value=pending.get(handle);if(!value)return undefined;pending.delete(handle);if(value.expiry<=Date.now()||value.input.agent!==input.agent||value.input.incarnation!==input.incarnation||value.input.session!==input.session||value.input.member!==input.member||value.input.admissionNonce!==input.admissionNonce)return undefined;return value;

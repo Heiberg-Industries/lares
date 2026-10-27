@@ -26,10 +26,10 @@ async function request<T>(op:string,input:unknown,timeoutMs:number):Promise<T>{
 }
 
 export async function vaultBrokerRequest<T>(op:string,input:unknown):Promise<T>{return request<T>(op,input,2000)}
-/** Trusted server caller only. Coordinates come from the real admitted turn, never tool input.
- * The existing broker authenticates the runtime; Keeper rechecks the turn and exact receipt.
+/** Trusted server caller only. Coordinates come from the authenticated session, never tool input.
+ * Keeper issues a dedicated one-use capability from the exact approved ask and rechecks it at execution.
  * This is an explicit execution seam, not an Eve MCP execution override. */
-export async function executeApprovedOutsideCall<T>(turn:{turnCapability:string;turnId:string;sequence:number;sessionId:string;memberId:string;admissionNonce:string},
+export async function executeApprovedOutsideCall<T>(turn:{outsideCapability:string;sessionId:string;memberId:string;admissionNonce:string},
  call:{callId:string;connectionName:string;toolName:string;input:unknown}):Promise<T>{
  const response=await request<{result:T}>('outside.execute',{...turn,call},10_000);
  return response.result;

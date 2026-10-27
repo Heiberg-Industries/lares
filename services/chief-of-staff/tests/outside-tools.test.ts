@@ -1,8 +1,9 @@
 import { beforeEach,afterEach,expect,it,vi } from 'vitest';
 import { pathToFileURL,fileURLToPath } from 'node:url';
-const fake=vi.hoisted(()=>({broker:vi.fn(),execute:vi.fn(),privateSession:vi.fn(),definition:vi.fn()}));
+const fake=vi.hoisted(()=>({broker:vi.fn(),execute:vi.fn(),privateSession:vi.fn(),definition:vi.fn(),reserve:vi.fn(),response:vi.fn(),approved:vi.fn()}));
 vi.mock('@lares/agent-kit/vault-broker-client',()=>({vaultBrokerRequest:fake.broker,executeApprovedOutsideCall:fake.execute}));
 vi.mock('@lares/agent-kit/private-console-surface',()=>({verifyPrivateConsoleSession:fake.privateSession}));
+vi.mock('@lares/agent-kit/approval-execution',()=>({reserveExactApproval:fake.reserve,approveExactResponse:fake.response,requireApprovedExecution:fake.approved}));
 vi.mock('../lib/definition.js',()=>({thisAgent:fake.definition}));
 import { clearSessionVaultTurnCapabilities } from '../agent/lib/vault-turn.js';
 import resolver from '../agent/tools/outside-tools.js';
@@ -21,11 +22,11 @@ beforeEach(()=>{
  fake.definition.mockResolvedValue({loaded:{definition,dutiesMd:'',voiceMd:'',hash:'a'.repeat(64)}});
  fake.privateSession.mockResolvedValue(true);
  fake.broker.mockImplementation(async op=>op==='turn.open'?{turnCapability:capability,expiresAt:Date.now()+60_000}:
-  op==='outside.tools'?{tools:[{name:'lookup',description:'Accepted lookup',inputSchema:{type:'object',properties:{company:{type:'string'}}}}]}:{});
+  op==='outside.approve'?{outsideCapability:capability}:op==='outside.tools'?{tools:[{name:'lookup',description:'Accepted lookup',inputSchema:{type:'object',properties:{company:{type:'string'}}}}]}:{});
  fake.execute.mockResolvedValue({content:[{type:'text',text:'Example'}]});
 });
 afterEach(()=>{vi.unstubAllEnvs();vi.clearAllMocks();});
-it('uses installed Eve durable ordinary tool shape and the existing admitted-turn hook',async()=>{
+it('uses installed Eve durable tool shape after the original admitted turn closes',async()=>{
  await hook.events['turn.started']!(started as never,context as never);
  const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
  const {ContextContainer,contextStorage}=await import(`${dist}context/container.js`),keys=await import(`${dist}context/keys.js`);
@@ -38,22 +39,23 @@ it('uses installed Eve durable ordinary tool shape and the existing admitted-tur
   await dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'outside-tools',logicalPath:'tools/outside-tools.ts',eventNames:['session.started'],events:resolver.events}],
    event:{type:'session.started',data:{},meta:{}},messages:[]});
   const tools=buildDynamicTools(storage);expect(tools.map((tool:any)=>tool.name)).toEqual(['registry__lookup']);
+  await hook.events['turn.completed']!(started as never,context as never);
+  const responder={...auth,attributes:{...auth.attributes,lares_purpose:'resolver'}};
+  storage.set(keys.AuthKey,responder);storage.set(keys.SessionKey,{sessionId:context.session.id,auth:{current:responder,initiator:auth},turn:{id:'answer-turn',sequence:2}});
   await expect(tools[0].execute({company:'Example'},{toolCallId:'call-1'})).resolves.toEqual({content:[{type:'text',text:'Example'}]});
  });
- expect(fake.execute).toHaveBeenCalledWith({turnCapability:capability,turnId:'turn-1',sequence:1,sessionId:context.session.id,
+ expect(fake.execute).toHaveBeenCalledWith({outsideCapability:capability,sessionId:context.session.id,
   memberId:'member-a',admissionNonce:nonce},{callId:'call-1',connectionName:'registry',toolName:'lookup',input:{company:'Example'}});
 });
-it('refuses missing, ended, or mismatched turns before the signed execution client',async()=>{
- const tools=await resolver.events['session.started']!({} as never,context as never);
- const execute=(tools as any)['registry__lookup'].execute;
- const ctx={...context,callId:'call-1',toolName:'registry__lookup'};
- await expect(execute({},ctx)).rejects.toThrow('unavailable');
- await hook.events['turn.started']!(started as never,context as never);
- for(const changed of [{callId:''},{toolName:'registry__write'},{session:{...context.session,turn:{id:'other',sequence:1}}},
-  {session:{...context.session,auth:{current:{...auth,attributes:{...auth.attributes,lares_purpose:'resolver'}},initiator:auth}}}])
-  await expect(execute({memberId:'invented'}, {...ctx,...changed})).rejects.toThrow();
- await hook.events['turn.completed']!(started as never,context as never);
- await expect(execute({},ctx)).rejects.toThrow('unavailable');expect(fake.execute).not.toHaveBeenCalled();
+it('refuses missing exact approval, invalid call IDs and non-resolver execution before the signed client',async()=>{
+ const tools=await resolver.events['session.started']!({} as never,context as never),execute=(tools as any)['registry__lookup'].execute;
+ const responder={...auth,attributes:{...auth.attributes,lares_purpose:'resolver'}};
+ const ctx={...context,callId:'call-1',toolName:'registry__lookup',session:{...context.session,auth:{current:responder,initiator:auth}}};
+ for(const changed of [{callId:''},{toolName:'registry__write'},{session:context.session}])
+  await expect(execute({}, {...ctx,...changed})).rejects.toThrow('unavailable');
+ fake.approved.mockRejectedValueOnce(new Error('Exact approval unavailable'));
+ await expect(execute({},ctx)).rejects.toThrow('Exact approval unavailable');
+ expect(fake.execute).not.toHaveBeenCalled();expect(fake.broker.mock.calls.some(([op])=>op==='outside.approve')).toBe(false);
 });
 it('offers no direct connection in either role and no outside tools on native or unresolved sessions',async()=>{
  expect(await creative.events['session.started']!({} as never,context as never)).toBeNull();

@@ -13,7 +13,7 @@ import { autonomyOf, grantFor, scopeAtLeast } from './manifest.js';
 
 export const EXACT_APPROVAL_REFUSED = 'Exact approval authority is unavailable or has changed';
 const refuse = (): never => { throw new Error(EXACT_APPROVAL_REFUSED); };
-const targetSchema = z.strictObject({ kind: z.enum(['deadline','deadline-candidate','track','track-item','track-create']), id: z.string().min(1),
+const targetSchema = z.strictObject({ kind: z.enum(['deadline','deadline-candidate','track','track-item','track-create','outside-call']), id: z.string().min(1),
   ownerMemberId: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   approvedOrigin: z.enum(['agent','synced','third_party']).optional() });
 export type ExactApprovalTarget = z.infer<typeof targetSchema>;
@@ -34,7 +34,7 @@ export interface ExactApprovalOptions {
   adapter?: ExactApprovalAdapter; db?: AuthorityDatabase; env?: NodeJS.ProcessEnv; now?: Date;
 }
 interface Row { request_id: string | null; call_id: string; agent: string; tool: string; payload_hash: string;
-  original_authority: unknown; acting_member_id: string | null; resolved_by_member_id: string | null; outcome: string | null }
+  used_at: unknown; session_id: string; original_authority: unknown; acting_member_id: string | null; resolved_by_member_id: string | null; outcome: string | null }
 export interface ApprovedExecution {
   authority: Extract<TurnAuthority,{origin:'approval-resume'}>;
   target: ExactApprovalTarget;
@@ -165,6 +165,22 @@ export async function requireApprovedExecution(ctx: ConsoleAuthorityContext, too
   return {authority:{...r.original,origin:'approval-resume',actingMemberId:r.original.actingMemberId!,
     resolvedByMemberId:responder!.memberId,requestId:row.request_id!},target:r.target,
     callId:row.call_id,toolName:row.tool,payloadHash:row.payload_hash};
+}
+/** Trusted broker seam. Identity comes from the signed runtime and the current session binding;
+ * approval comes only from the immutable ask and its independently authenticated resolver.
+ * This returns exact-call provenance, never human-turn or general Vault authority. Call inside
+ * authorityTransaction; the caller must atomically claim used_at before issuing a capability. */
+export async function requireBoundExactApproval(binding: {agent:string;incarnation:string;sessionId:string;memberId:string;admissionNonce:string;callId:string},
+  tool:string,input:unknown,o:ExactApprovalOptions & {claimed?:boolean} = {}):Promise<ApprovedExecution & {expiresAt:number}> {
+  const row=await rowForCall(database(o),binding.callId),r=exact(row,tool,input,o);
+  if(!row.request_id||row.outcome!=='approved'||row.acting_member_id!==binding.memberId||row.resolved_by_member_id!==binding.memberId||
+      row.session_id!==binding.sessionId||row.agent!==binding.agent||r.incarnation!==binding.incarnation||
+      (o.claimed ? row.used_at == null : row.used_at != null))refuse();
+  await current(r,binding.memberId,binding.admissionNonce,binding.sessionId,tool,input,{...o,
+    env:{...o.env,LARES_AGENT_NAME:binding.agent,LARES_AGENT_INCARNATION:binding.incarnation}});
+  return {authority:{...r.original,origin:'approval-resume',actingMemberId:binding.memberId,
+    resolvedByMemberId:binding.memberId,requestId:row.request_id!},target:r.target,callId:row.call_id,
+    toolName:row.tool,payloadHash:row.payload_hash,expiresAt:Date.parse(r.expiresAt)};
 }
 /** Terminal cancellation remains a refusal; legacy recorder cannot approve strict reservations. */
 export async function settleExactInput(requestId: string, outcome: string, db: AuthorityDatabase = getPool()): Promise<void> {
