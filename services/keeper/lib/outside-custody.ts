@@ -174,8 +174,20 @@ const DISCOVERY_PROFILE = Object.freeze({
   maxSessionIdBytes: 1024,
   maxCredentialBytes: 4096,
 });
+export type OutsideDiscoveryFailureStage = 'claim-admission' | 'claim-authority' | 'claim-capture' |
+  'claim-route-review' | 'claim-storage' | 'authority-check' | 'initialize' | 'initialized-notification' |
+  'tools-list' | 'persist-result' | 'cleanup';
 export class OutsideCustodyRecoveryRequired extends Error {
-  constructor(readonly operationId: string) { super(REQUEST_REFUSED); this.name = "OutsideCustodyRecoveryRequired"; }
+  constructor(readonly operationId: string, readonly stage?: OutsideDiscoveryFailureStage) {
+    super(REQUEST_REFUSED); this.name = "OutsideCustodyRecoveryRequired";
+  }
+}
+/** Convert an uncertain discovery outcome without losing a known protocol stage. */
+export function outsideDiscoveryRecovery(error:unknown,operationId:string,stage:OutsideDiscoveryFailureStage|undefined,
+  dispatched=false):OutsideCustodyRecoveryRequired|undefined{
+  if(error instanceof OutsideCustodyRecoveryRequired)return error.stage?error:new OutsideCustodyRecoveryRequired(operationId,stage);
+  if(dispatched||error instanceof SourceAuthorityUnavailable)return new OutsideCustodyRecoveryRequired(operationId,stage);
+  return undefined;
 }
 const denied = (): never => { throw new Error(REFUSED); };
 const requestDenied = (): never => { throw new Error(REQUEST_REFUSED); };
@@ -812,7 +824,8 @@ export class OutsideCustodyStore {
       if(!Number.isFinite(deadlineAtMs)||deadlineAtMs<=Date.now())return requestDenied();
       const boundedOptions={deadlineAtMs};
       return await this.#inMainNamespace(boundedOptions,async()=>{
-        const identity=await this.#claimDiscovery(sessionToken,input,boundedOptions);
+        const progress:{dispatched:boolean;stage?:OutsideDiscoveryFailureStage}={dispatched:false,stage:'claim-admission'};
+        const identity=await this.#claimDiscovery(sessionToken,input,boundedOptions,progress);
         return this.#phase2Authority(identity,sessionToken);
       });
     }finally{if(Buffer.isBuffer(input.credential))input.credential.fill(0);}
@@ -828,7 +841,7 @@ export class OutsideCustodyStore {
   async #claimDiscovery(sessionToken:string,input:{requestId:string;operationId:string;accountId:string;agentName:string;connectionName:string;
     expectedGeneration:number;expectedCandidateRevision:number|null;expectedDefinitionHash:string;expectedAccessRevision:number;
     expectedDestinationHash:string;expectedRoutePolicyHash:string;consentGeneration:number;credential:Buffer},
-    options:{deadlineAtMs:number}):Promise<OutsideClaimIdentity>{
+    options:{deadlineAtMs:number},progress:{dispatched:boolean;stage?:OutsideDiscoveryFailureStage}):Promise<OutsideClaimIdentity>{
     return this.#inMainNamespace(options,async()=>{
       const release=this.#beginOperation(requestDenied);
       try{
@@ -839,8 +852,10 @@ export class OutsideCustodyStore {
             !/^[a-f0-9]{64}$/.test(input.expectedDefinitionHash)||!Number.isSafeInteger(input.expectedAccessRevision)||input.expectedAccessRevision<1||
             !/^[a-f0-9]{64}$/.test(input.expectedDestinationHash)||!/^[a-f0-9]{64}$/.test(input.expectedRoutePolicyHash)||
             !Number.isSafeInteger(input.consentGeneration)||input.consentGeneration<1||input.consentGeneration>Number.MAX_SAFE_INTEGER)return requestDenied();
+        progress.stage='claim-authority';
         const result=await this.#withHumanSession(sessionToken,async(db,memberId)=>{
           this.#assertOpen(requestDenied);
+          progress.stage='claim-capture';
           const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName,
             {definitionHash:input.expectedDefinitionHash,accessRevision:input.expectedAccessRevision});
           if(capture.actor.memberId!==memberId||capture.agent.name!==input.agentName||capture.outside.connection.name!==input.connectionName)return requestDenied();
@@ -848,6 +863,7 @@ export class OutsideCustodyStore {
           const destinationHash=createHash('sha256').update(canonicalJson(['lares-outside-endpoint-v1',destination])).digest('hex');
           if(destinationHash!==input.expectedDestinationHash||!this.routeLifecycle)return requestDenied();
           const namespaceClient=requireDefinitionNamespace();
+          progress.stage='claim-route-review';
           const route=await this.routeLifecycle.reviewOutsideRoute(destination,options.deadlineAtMs);
           this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);
           if(route.policyHash!==input.expectedRoutePolicyHash)return requestDenied();
@@ -861,6 +877,7 @@ export class OutsideCustodyStore {
           const policyHashBytes=Buffer.from(policyHash,'hex');
 
           // Lock the immutable unique account identity before checking operation replay.
+          progress.stage='claim-storage';
           const identity=await db.query<Head>(`SELECT account_id,owner_member_id,resource_id,connection_name,generation::text,
               active_revision::text,candidate_revision::text,consent_generation::text,state
             FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 FOR UPDATE`,
@@ -933,8 +950,8 @@ export class OutsideCustodyStore {
         },options);
         return this.#mintClaimIdentity(result);
       }catch(error){
-        if(error instanceof OutsideCustodyRecoveryRequired)throw error;
-        if(error instanceof SourceAuthorityUnavailable)throw new OutsideCustodyRecoveryRequired(input.operationId);
+        const recovery=outsideDiscoveryRecovery(error,input.operationId,progress.stage);
+        if(recovery)throw recovery;
         return requestDenied();
       }finally{if(Buffer.isBuffer(input.credential))input.credential.fill(0);release();}
     });
@@ -942,7 +959,7 @@ export class OutsideCustodyStore {
 
   /** Concrete transport is private to the owned phase-two transaction and has no caller URL or route inputs. */
   async #exchangeDiscovery(db:PoolClient,state:OutsideClaimIdentityState,lease:import('./lifecycle.js').OutsideRouteLease,
-    credential:Buffer,progress:{dispatched:boolean}):Promise<OutsideDiscoveryDocument>{
+    credential:Buffer,progress:{dispatched:boolean;stage?:OutsideDiscoveryFailureStage}):Promise<OutsideDiscoveryDocument>{
     const endpoint=discoveryEndpoint(state.claim.destination);
     const networkDeadlineAtMs=Math.min(Date.now()+DISCOVERY_PROFILE.transportTimeoutMs,
       state.deadlineAtMs-DISCOVERY_PROFILE.cleanupReserveMs);
@@ -1110,7 +1127,8 @@ export class OutsideCustodyStore {
           targetOrigin.search||targetOrigin.hash||typeof supplied!=='function')return requestDenied();
       const base=supplied as Connector;
       const connect=registerConnector(base,params=>params.protocol==='https:'&&params.hostname===endpoint.hostname&&
-        params.host===endpoint.host&&Number(params.port??443)===443&&params.servername===endpoint.hostname&&!params.httpSocket,false);
+        params.host===endpoint.host&&(params.port===undefined||params.port===null||params.port===''?443:Number(params.port))===443&&
+        params.servername===endpoint.hostname&&!params.httpSocket,false);
       return new Client(targetOrigin,{...options,connect:connect as never,allowH2:false,autoSelectFamily:false,connectTimeout:DISCOVERY_PROFILE.connectTimeoutMs,
         headersTimeout:DISCOVERY_PROFILE.idleTimeoutMs,bodyTimeout:DISCOVERY_PROFILE.idleTimeoutMs,maxHeaderSize:DISCOVERY_PROFILE.headerBytes,
         pipelining:1});
@@ -1187,6 +1205,8 @@ export class OutsideCustodyStore {
       await Promise.all(closures);
       if(sockets.size!==0)return requestDenied();
     };
+    let recoveryFailure:OutsideCustodyRecoveryRequired|undefined;
+    let completedDocument:OutsideDiscoveryDocument|undefined;
     try{
       deadlineTimer=setTimeout(abort,Math.max(1,networkDeadlineAtMs-Date.now()));
       touch();
@@ -1198,6 +1218,7 @@ export class OutsideCustodyStore {
         connectTimeout:DISCOVERY_PROFILE.connectTimeoutMs,headersTimeout:DISCOVERY_PROFILE.idleTimeoutMs,
         bodyTimeout:DISCOVERY_PROFILE.idleTimeoutMs,maxHeaderSize:DISCOVERY_PROFILE.headerBytes});
       const initId=++requestId;
+      progress.stage='initialize';
       const init=await post({jsonrpc:'2.0',id:initId,method:'initialize',params:{protocolVersion:DISCOVERY_PROFILE.protocolVersion,
         capabilities:{},clientInfo:{name:'lares-outside-discovery',version:'1'}}},initId);
       const initResult=init.result;
@@ -1205,12 +1226,14 @@ export class OutsideCustodyStore {
           !initResult.serverInfo||Array.isArray(initResult.serverInfo)||typeof initResult.serverInfo!=='object')return requestDenied();
       assertBoundedJson(initResult.serverInfo);
       const serverInfo=projectOutsideServerInfo(initResult.serverInfo);
+      progress.stage='initialized-notification';
       const notification=await post({jsonrpc:'2.0',method:'notifications/initialized',params:{}},undefined);
       if(notification.status!==202)return requestDenied();
       const tools:OutsideListedTool[]=[];const names=new Set<string>();const cursors=new Set<string>();let cursor:string|undefined;
       for(let page=0;page<DISCOVERY_PROFILE.maxPages;page++){
         const id=++requestId;
         const params:OutsideJson=cursor===undefined?{}:{cursor};
+        progress.stage='tools-list';
         const listed=await post({jsonrpc:'2.0',id,method:'tools/list',params},id);
         const result=listed.result;
         if(!result||Array.isArray(result)||typeof result!=='object'||!Array.isArray(result.tools))return requestDenied();
@@ -1237,12 +1260,17 @@ export class OutsideCustodyStore {
       const canonical=Buffer.from(canonicalJson(document),'utf8');
       if(canonical.length>DISCOVERY_PROFILE.resultBytes)return requestDenied();
       await assertCurrent();
-      return document;
+      completedDocument=document;
     }catch(error){
-      if(progress.dispatched)throw new OutsideCustodyRecoveryRequired(state.claim.operationId);
-      if(error instanceof OutsideCustodyRecoveryRequired)throw error;
-      return requestDenied();
-    }finally{await closeOwnedWork();}
+      recoveryFailure=outsideDiscoveryRecovery(error,state.claim.operationId,progress.stage,progress.dispatched);
+      if(!recoveryFailure)return requestDenied();
+    }finally{
+      progress.stage='cleanup';
+      try{await closeOwnedWork();}catch(cleanupError){if(!recoveryFailure)throw cleanupError;}
+    }
+    if(recoveryFailure)throw recoveryFailure;
+    if(!completedDocument)return requestDenied();
+    return completedDocument;
   }
 
   /** Reauthorize an acknowledged claim on a fresh owned client. The concrete exchange and
@@ -1253,7 +1281,7 @@ export class OutsideCustodyStore {
     const state=this.#consumeClaimIdentity(identity);
     const lifecycle=this.routeLifecycle;
     if(!lifecycle)return requestDenied();
-    const progress={dispatched:false};
+    const progress:{dispatched:boolean;stage?:OutsideDiscoveryFailureStage}={dispatched:false,stage:'authority-check'};
     try{return await this.#inMainNamespace({deadlineAtMs:state.deadlineAtMs},async()=>{
       return lifecycle.withAppliedOutsideRoute(state.claim.destination,state.routePolicyHash,state.deadlineAtMs,async lease=>{
         const namespaceClient=requireDefinitionNamespace();
@@ -1316,6 +1344,7 @@ export class OutsideCustodyStore {
               credentialHash:createHash('sha256').update(credential).digest('hex')})).digest('hex');
             if(requestDigest!==state.requestHash)return requestDenied();
             const document=await this.#exchangeDiscovery(db,state,lease,credential,progress);
+            progress.stage='persist-result';
             const plain=Buffer.from(canonicalJson(document),'utf8');
             try{
               if(plain.length>DISCOVERY_PROFILE.resultBytes)return requestDenied();
@@ -1346,8 +1375,8 @@ export class OutsideCustodyStore {
         return result;
       });
     });}catch(error){
-      if(progress.dispatched||error instanceof SourceAuthorityUnavailable||error instanceof OutsideCustodyRecoveryRequired)
-        throw new OutsideCustodyRecoveryRequired(state.claim.operationId);
+      const recovery=outsideDiscoveryRecovery(error,state.claim.operationId,progress.stage,progress.dispatched);
+      if(recovery)throw recovery;
       return requestDenied();
     }
   }

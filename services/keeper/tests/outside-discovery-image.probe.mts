@@ -38,6 +38,18 @@ function safeOperationFailureCategory(error:unknown):SafeOperationFailureCategor
   if(error instanceof Error&&error.message==='Outside credential change could not be confirmed')return 'request-refused';
   return 'unknown';
 }
+function safePeerDiagnostics():Record<string,boolean|number>|undefined{
+  try{
+    const value=JSON.parse(readFileSync(need('FIXTURE_PEER_REPORT'),'utf8')) as Partial<PeerState>;
+    const methods=Array.isArray(value.methods)?value.methods.filter((method):method is string=>typeof method==='string'):[];
+    return {requestCount:Number.isSafeInteger(value.requestCount)?value.requestCount!:0,
+      initializeSeen:methods.includes('initialize'),initializedNotificationSeen:methods.includes('notifications/initialized'),
+      toolsListCount:methods.filter(method=>method==='tools/list').length,bearerMatches:value.bearerMatches===true,
+      tlsServernameMatches:value.tlsServername===true,pathMatches:value.pathMatches===true,
+      protocolVersionMatches:value.protocolVersionMatches===true,initializeMatches:value.initializeMatches===true,
+      paginationCursorMatches:value.paginationCursorMatches===true,sessionMatches:value.sessionMatches===true};
+  }catch{return undefined;}
+}
 async function withRevisionTableLock<T>(pool:Pool,work:()=>Promise<T>):Promise<T>{
   const client=await pool.connect();
   try{
@@ -488,6 +500,11 @@ async function runConfigured():Promise<void>{
   let failureRecord:{phase:string;reason:string;category:SafeOperationFailureCategory;routeBoundary?:RouteBoundaryFailure;
     acknowledgementReason?:OutsideRouteAcknowledgementFailure}|undefined;
   let phase='configuration';
+  const startPhase=(next:string):void=>{
+    phase=next;
+    writeReport(resolve(output,'../worker-stage.json'),{phase});
+  };
+  startPhase(phase);
   try{
     const root=need('FIXTURE_ROOT'),agent=need('FIXTURE_AGENT'),owner='outside-proof-owner',editor='outside-proof-editor',org='outside-proof-org';
     const incarnation=need('FIXTURE_INCARNATION');
@@ -510,14 +527,14 @@ async function runConfigured():Promise<void>{
     proof=new Pool({host:'proof-db',port:5432,database:'proof',user:'proof',password:need('PROOF_ADMIN_PASSWORD'),
       max:2,connectionTimeoutMillis:3000,query_timeout:12000});
 
-    phase='role identities';
+    startPhase('role identities');
     const appIdentity=await main.query('SELECT current_user,session_user');
     const outsideIdentity=await outside.query('SELECT current_user,session_user');
     assert(appIdentity.rows[0]?.current_user==='lares_app'&&appIdentity.rows[0]?.session_user==='lares_app','application pool identity mismatch');
     assert(outsideIdentity.rows[0]?.current_user==='lares_outside_custody'&&outsideIdentity.rows[0]?.session_user==='lares_outside_custody','outside pool identity mismatch');
     partial.checks.push('actual configured lares_app and lares_outside_custody logins');
 
-    phase='neutral authorization fixture';
+    startPhase('neutral authorization fixture');
     const session=need('FIXTURE_SESSION_TOKEN'),editorSession=randomBytes(32).toString('base64url');
     const sessionHash=createHash('sha256').update(session).digest('hex');
     const template=JSON.parse(readFileSync(new URL('../../../packages/agent-kit/templates/chief-of-staff/definition.json',import.meta.url),'utf8')) as Record<string,unknown>;
@@ -533,7 +550,7 @@ async function runConfigured():Promise<void>{
       [randomUUID(),owner,sessionHash]);
     await proof.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval \'1 hour\')',
       [randomUUID(),editor,createHash('sha256').update(editorSession).digest('hex')]);
-    phase='outside custody organisation gate contention';
+    startPhase('outside custody organisation gate contention');
     for(const [firstToken,secondToken,direction] of [[session,editorSession,'owner-first'],[editorSession,session,'editor-first']] as const){
       let enteredResolve!:()=>void,releaseResolve!:()=>void;
       const entered=new Promise<void>(resolve=>{enteredResolve=resolve;}),hold=new Promise<void>(resolve=>{releaseResolve=resolve;});
@@ -573,7 +590,7 @@ async function runConfigured():Promise<void>{
     assert(access.accessRevision>adopted.accessRevision,'real grant store did not establish use access');
     partial.checks.push('neutral definition, finite human session and real owner adoption/use grant');
 
-    phase='same-bridge direct-path control';
+    startPhase('same-bridge direct-path control');
     const controlCounters=await firewallCounters();
     partial.directPathDiagnostics={control:{status:'not-attempted'},before:counterReports(controlCounters),direct:{status:'not-attempted'},
       after:counterReports(controlCounters),inetCounterIncreased:false,bridgeCounterIncreased:false};
@@ -584,7 +601,7 @@ async function runConfigured():Promise<void>{
     assert(bridgeControl.tlsCompleted&&bridgeControl.socketClosed&&bridgeControl.lookupAddress===need('FIXTURE_PEER_IP')&&
       bridgeControl.assignedSourceAddress===need('FIXTURE_SOURCE_IP')&&bridgeControl.connectedPeerAddress===need('FIXTURE_PEER_IP'),
       'same-bridge direct-path control did not verify the bound source and peer');
-    phase='routed direct-path control';
+    startPhase('routed direct-path control');
     const routedControl=await tlsControlEvidence('routed.mcp.example.org',need('FIXTURE_ROUTED_TARGET_IP'),
       need('FIXTURE_SOURCE_IP'),443);
     partial.routedPathDiagnostics.control=routedControl;
@@ -592,14 +609,14 @@ async function runConfigured():Promise<void>{
       routedControl.assignedSourceAddress===need('FIXTURE_SOURCE_IP')&&routedControl.connectedPeerAddress===need('FIXTURE_ROUTED_TARGET_IP'),
       'routed direct-path control did not verify the bound source and published gateway peer');
 
-    phase='generated route admission';
+    startPhase('generated route admission');
     await withDefinitionNamespace(main,()=>lifecycle.saved(agent,definition));
     partial.firewallApplied=true;
     const route=await lifecycle.reviewOutsideRoute('https://mcp.example.org/mcp?fixture=outside-proof-v1',Date.now()+5000);
     assert(route.sourceAddress===need('FIXTURE_SOURCE_IP')&&route.proxyUrl==='http://lares-egress-proxy:8888/','actual route did not match configured source/proxy');
     partial.checks.push('public saved lifecycle installed and acknowledged generated route without native authority');
 
-    phase='direct-path firewall counter';
+    startPhase('direct-path firewall counter');
     const directBefore=await firewallCounters();
     partial.directPathDiagnostics.before=counterReports(directBefore);
     partial.directPathDiagnostics.after=counterReports(directBefore);
@@ -641,7 +658,7 @@ async function runConfigured():Promise<void>{
     }};
     assert(bridgeTargetBlocked,'same-bridge direct target attempt did not produce a closed socket and bridge-family drop');
 
-    phase='routed direct-path firewall counter';
+    startPhase('routed direct-path firewall counter');
     const routed=await directTargetEvidence('routed.mcp.example.org','/',need('FIXTURE_ROUTED_TARGET_IP'),
       need('FIXTURE_SOURCE_IP'),443);
     partial.routedPathDiagnostics.direct=routed;
@@ -680,32 +697,34 @@ async function runConfigured():Promise<void>{
       'routed direct target closes before TLS and increments the inet-family drop counter after a verified positive control');
 
     const deadlineAtMs=Date.now()+7000;
-    phase='outside discovery preview';
+    startPhase('outside discovery preview');
     const capture=await store.previewDiscovery(session,{agentName:agent,connectionName:'fixture'},{deadlineAtMs});
-    phase='outside discovery preview response';
+    startPhase('outside discovery preview response');
     partial.previewResponseDiagnostics={agentDefinitionHashPresent:typeof capture?.agent?.definitionHash==='string',
       agentAccessRevisionPresent:Number.isSafeInteger(capture?.agent?.accessRevision),
       outsideConnectionPresent:typeof capture?.outside?.connection==='object'&&capture.outside.connection!==null,
       allowListPresent:Array.isArray(capture?.outside?.connection?.allow),readListPresent:Array.isArray(capture?.outside?.connection?.read)};
-    phase='prepare outside consent request';
+    startPhase('prepare outside consent request');
     const endpointHash=createHash('sha256').update(JSON.stringify(['lares-outside-endpoint-v1','https://mcp.example.org/mcp?fixture=outside-proof-v1'])).digest('hex');
     const accountId=randomUUID(),requestId=randomUUID(),claimOperationId=randomUUID();
     credential=Buffer.from(need('FIXTURE_BEARER'),'ascii');
-    phase='outside consent and discover';
+    startPhase('outside consent and discover');
     const document=await store.consentAndDiscover(session,{requestId,operationId:claimOperationId,accountId,agentName:agent,
       connectionName:'fixture',expectedGeneration:0,expectedCandidateRevision:null,
       expectedDefinitionHash:capture.agent.definitionHash,expectedAccessRevision:capture.agent.accessRevision,
       expectedDestinationHash:endpointHash,expectedRoutePolicyHash:route.policyHash,consentGeneration:1,credential},{deadlineAtMs});
     credential.fill(0);credential=undefined;
-    phase='outside consent and discover response';
+    startPhase('outside consent and discover response');
     partial.discoveryResponseDiagnostics={protocolVersionMatches:document?.protocolVersion==='2025-06-18',
       serverNameMatches:document?.serverInfo?.name==='local-fixture',toolCountMatches:Array.isArray(document?.tools)&&document.tools.length===2,
       firstToolMatches:document?.tools?.[0]?.name==='lookup_alpha',secondToolMatches:document?.tools?.[1]?.name==='lookup_beta'};
-    assert(document.protocolVersion==='2025-06-18'&&document.serverInfo.name==='local-fixture'&&document.tools.length===2&&
-      document.tools[0]?.name==='lookup_alpha'&&document.tools[1]?.name==='lookup_beta','configured discovery projection differs');
-    partial.checks.push('normal consentAndDiscover returned bounded two-page JSON and SSE projection');
+    assert(new URL('https://mcp.example.org/mcp?fixture=outside-proof-v1').port===''&&
+      document.protocolVersion==='2025-06-18'&&document.serverInfo.name==='local-fixture'&&document.tools.length===2&&
+      document.tools[0]?.name==='lookup_alpha'&&document.tools[1]?.name==='lookup_beta',
+      'default HTTPS discovery without an explicit port did not complete');
+    partial.checks.push('default HTTPS URL without an explicit port completed the guarded discovery exchange');
 
-    phase='outside custody human review and activation';
+    startPhase('outside custody human review and activation');
     const allowed=[...capture.outside.connection.allow].sort(),read=[...capture.outside.connection.read].sort();
     const byName=new Map(document.tools.map(tool=>[tool.name,tool]));
     const projection={version:1 as const,connectionName:'fixture',scope:capture.outside.scope,allow:allowed,read,
@@ -885,10 +904,12 @@ async function runConfigured():Promise<void>{
       'routed direct-path control','generated route admission','outside discovery preview','outside discovery preview response',
       'prepare outside consent request','outside consent and discover','outside consent and discover response','direct-path firewall counter',
       'routed direct-path firewall counter','database discovery','durable result verification']);
-    const failure:{phase:string;reason:string;routeBoundary?:RouteBoundaryFailure;
+    const failure:{phase:string;reason:string;recoveryStage?:NonNullable<OutsideCustodyRecoveryRequired['stage']>;
+      routeBoundary?:RouteBoundaryFailure;
       acknowledgementReason?:OutsideRouteAcknowledgementFailure;category:SafeOperationFailureCategory}={
       phase:safePhases.has(phase)?phase:'worker',reason:'configured outside discovery worker failed',
       category:safeOperationFailureCategory(error)};
+    if(error instanceof OutsideCustodyRecoveryRequired&&error.stage)failure.recoveryStage=error.stage;
     if(phase==='generated route admission'){
       const boundary=routeBoundaryFailure?.();
       if(boundary){
@@ -898,7 +919,8 @@ async function runConfigured():Promise<void>{
       }
     }
     failureRecord=failure;
-    writeReport(output,{...partial,failure});
+    const peerDiagnostics=safePeerDiagnostics();
+    writeReport(output,{...partial,...(peerDiagnostics?{peerDiagnostics}:{}),failure});
     throw new Error('configured outside discovery proof failed');
   }finally{
     key?.fill(0);

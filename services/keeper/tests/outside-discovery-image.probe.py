@@ -1939,15 +1939,38 @@ def safe_cleanup(label, action):
         return False
 
 
-def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=None):
+WORKER_PHASES = {"configuration", "role identities", "neutral authorization fixture", "outside custody organisation gate contention",
+              "outside custody human review and activation",
+              "same-bridge direct-path control", "routed direct-path control",
+              "generated route admission", "direct-path firewall counter",
+              "routed direct-path firewall counter", "outside discovery preview", "outside discovery preview response",
+              "prepare outside consent request", "outside consent and discover", "outside consent and discover response", "worker"}
+
+
+def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=None, diagnostics=None):
     """Accept only fixed worker fields and enum values; never copy arbitrary worker output."""
+    def reject(field):
+        if diagnostics is not None:
+            diagnostics["workerEvidenceStatus"] = "rejected:" + field
+        return None
+
     worker_path = root_path / "worker.json"
     try:
         value = json.loads(worker_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError:
+        status = "worker-file-missing"
+    except (OSError, UnicodeError):
+        status = "worker-file-unreadable"
+    except json.JSONDecodeError:
+        status = "worker-file-invalid-json"
+    else:
+        status = None
+    if status is not None:
+        if diagnostics is not None:
+            diagnostics["workerEvidenceStatus"] = status
         return None
     if not isinstance(value, dict):
-        return None
+        return reject("checks")
     valid_checks = {
         "actual configured lares_app and lares_outside_custody logins",
         "neutral definition, finite human session and real owner adoption/use grant",
@@ -1955,7 +1978,7 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
         "public saved lifecycle installed and acknowledged generated route without native authority",
         "same-bridge direct target closes before TLS and increments the bridge-family drop counter",
         "routed direct target closes before TLS and increments the inet-family drop counter after a verified positive control",
-        "normal consentAndDiscover returned bounded two-page JSON and SSE projection",
+        "default HTTPS URL without an explicit port completed the guarded discovery exchange",
         "authenticated publication, current editor acceptance and exact custodian preview/stage/apply complete",
         "stage and apply request deadlines expire while a PostgreSQL lock blocks the discovery revision read",
         "exact stage and apply replays recover receipts while current custody and editor grants remain valid",
@@ -1964,27 +1987,26 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
         "durable result decrypts under generated key/AAD and rejects changed request identity",
         "executable definition, ownership and applied state remain unchanged",
     }
-    phases = {"configuration", "role identities", "neutral authorization fixture", "outside custody organisation gate contention",
-              "outside custody human review and activation",
-              "same-bridge direct-path control", "routed direct-path control",
-              "generated route admission", "direct-path firewall counter",
-              "routed direct-path firewall counter", "outside discovery preview", "outside discovery preview response",
-              "prepare outside consent request", "outside consent and discover", "outside consent and discover response", "worker"}
+    recovery_stages = {"claim-admission", "claim-authority", "claim-capture", "claim-route-review", "claim-storage",
+                       "authority-check", "initialize", "initialized-notification", "tools-list", "persist-result", "cleanup"}
+    peer_fields = {"requestCount", "initializeSeen", "initializedNotificationSeen", "toolsListCount", "bearerMatches",
+                   "tlsServernameMatches", "pathMatches", "protocolVersionMatches", "initializeMatches",
+                   "paginationCursorMatches", "sessionMatches"}
     route_boundaries = {"runtime-stop", "squid-validation", "firewall-check", "firewall-apply",
                         "proxy-reload", "route-acknowledgement"}
     checks = value.get("checks")
     failure = value.get("failure")
     if not isinstance(checks, list) or any(not isinstance(item, str) or item not in valid_checks for item in checks):
-        return None
+        return reject('checks')
     if value.get("success") is True and set(checks) != valid_checks:
-        return None
+        return reject('success')
     evidence = {"checks": checks, "firewallApplied": value.get("firewallApplied") is True,
                 "workerReportedDirectTargetBlocked": value.get("directTargetBlocked") is True,
                 "directTargetBlocked": value.get("directTargetBlocked") is True,
                 "success": value.get("success") is True}
     if "shutdownFailure" in value:
         if type(value["shutdownFailure"]) is not bool:
-            return None
+            return reject('shutdownFailure')
         evidence["shutdownFailure"] = value["shutdownFailure"]
     predicate_fields = {
         "controlTlsComplete", "controlSocketClosed", "controlLookupMatchesTarget", "controlSourceMatchesConfigured",
@@ -1997,12 +2019,12 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
     if "directPathPredicateDiagnostics" in value:
         if (not isinstance(predicate_diagnostics, dict) or not predicate_diagnostics or
                 set(predicate_diagnostics) - {"sameBridge", "routed"}):
-            return None
+            return reject('directPathPredicateDiagnostics')
         safe_predicates = {}
         for path_name, path_values in predicate_diagnostics.items():
             if (not isinstance(path_values, dict) or set(path_values) != predicate_fields or
                     any(type(path_values[field]) is not bool for field in predicate_fields)):
-                return None
+                return reject('directPathPredicateDiagnostics')
             safe_predicates[path_name] = {field: path_values[field] for field in sorted(predicate_fields)}
         evidence["directPathPredicateDiagnostics"] = safe_predicates
     response_fields = {
@@ -2017,13 +2039,23 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
             continue
         if (not isinstance(response_values, dict) or set(response_values) != expected_fields or
                 any(type(response_values[key]) is not bool for key in expected_fields)):
-            return None
+            return reject(field)
         evidence[field] = {key: response_values[key] for key in sorted(expected_fields)}
+    peer_values = value.get("peerDiagnostics")
+    if "peerDiagnostics" in value:
+        if (not isinstance(peer_values, dict) or set(peer_values) != peer_fields or
+                type(peer_values.get("requestCount")) is not int or not 0 <= peer_values["requestCount"] <= 12 or
+                type(peer_values.get("toolsListCount")) is not int or not 0 <= peer_values["toolsListCount"] <= 10 or
+                any(type(peer_values[key]) is not bool for key in peer_fields - {"requestCount", "toolsListCount"})):
+            return reject('peerDiagnostics')
+        evidence["peerDiagnostics"] = {key: peer_values[key] for key in sorted(peer_fields)}
     direct_diagnostics = value.get("directPathDiagnostics")
     routed_diagnostics = value.get("routedPathDiagnostics")
     if direct_diagnostics is not None or routed_diagnostics is not None:
-        if not isinstance(direct_diagnostics, dict) or not isinstance(routed_diagnostics, dict):
-            return None
+        if not isinstance(direct_diagnostics, dict):
+            return reject("directPathDiagnostics")
+        if not isinstance(routed_diagnostics, dict):
+            return reject("routedPathDiagnostics")
 
         def counter_projection(item, family):
             if (not isinstance(item, dict) or not isinstance(item.get("failure"), str) or
@@ -2333,7 +2365,7 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
         direct_projection = project_path("sameBridge", direct_diagnostics, "FIXTURE_PEER_IP", "bridge")
         routed_projection = project_path("routed", routed_diagnostics, "FIXTURE_ROUTED_TARGET_IP", "inet")
         if direct_projection is None or routed_projection is None:
-            return None
+            return reject("directPathDiagnostics" if direct_projection is None else "routedPathDiagnostics")
         evidence["directPathDiagnostics"], direct_success = direct_projection
         evidence["routedPathDiagnostics"], routed_success = routed_projection
         successful_block = context_verified and direct_success and routed_success
@@ -2341,10 +2373,10 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
         evidence["pathCertificationDiagnostics"] = certification_diagnostics
         evidence["pathEvidenceCertified"] = successful_block
         if value.get("success") is True and not successful_block:
-            return None
+            return reject('success')
         evidence["directTargetBlocked"] = successful_block
     elif evidence["directTargetBlocked"]:
-        return None
+        return reject('directTargetBlocked')
     if isinstance(failure, dict):
         phase_value = failure.get("phase")
         reason_value = failure.get("reason")
@@ -2352,23 +2384,29 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
         if "routeBoundary" in failure and (phase_value != "generated route admission" or
                                              not isinstance(route_boundary, str) or
                                              route_boundary not in route_boundaries):
-            return None
+            return reject('failure')
         acknowledgement_reason = failure.get("acknowledgementReason")
         if "acknowledgementReason" in failure and (phase_value != "generated route admission" or
                                                      route_boundary != "route-acknowledgement" or
                                                      not isinstance(acknowledgement_reason, str) or
                                                      acknowledgement_reason not in ACKNOWLEDGEMENT_REASONS):
-            return None
+            return reject('failure')
         evidence["failure"] = {
-            "phase": phase_value if phase_value in phases else "worker",
+            "phase": phase_value if phase_value in WORKER_PHASES else "worker",
             "reason": reason_value if reason_value == "configured outside discovery worker failed" else "worker failed",
         }
         category = failure.get("category", "unknown")
         if not isinstance(category, str) or category not in {"request-refused", "recovery-required", "unknown"}:
-            return None
+            return reject('failure')
         evidence["failure"]["category"] = category
+        if "recoveryStage" in failure:
+            recovery_stage = failure["recoveryStage"]
+            if (category != "recovery-required" or phase_value != "outside consent and discover" or
+                    not isinstance(recovery_stage, str) or recovery_stage not in recovery_stages):
+                return reject('failure')
+            evidence["failure"]["recoveryStage"] = recovery_stage
         if evidence["failure"]["phase"] == "direct-path firewall counter" and "directPathDiagnostics" not in evidence:
-            return None
+            return reject('failure')
         if "routeBoundary" in failure:
             evidence["failure"]["routeBoundary"] = route_boundary
         if "acknowledgementReason" in failure:
@@ -2376,15 +2414,110 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
     return evidence
 
 
+def preserve_worker_stage(report, root_path):
+    """Project the phase only through the worker evidence phase allow-list."""
+    try:
+        stage = json.loads((root_path / "worker-stage.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return
+    if isinstance(stage, dict) and set(stage) == {"phase"} and isinstance(stage["phase"], str) and stage["phase"] in WORKER_PHASES:
+        report["workerLastPhase"] = stage["phase"]
+
+
+def preserve_worker_exit(report, root_path, facts):
+    report["workerFileExisted"] = (root_path / "worker.json").exists()
+    if isinstance(facts, dict) and type(facts.get("exitCode")) is int:
+        report["workerExitCode"] = facts["exitCode"]
+    preserve_worker_stage(report, root_path)
+
+
 def preserve_worker_failure_evidence(report, root_path):
     """Keep an earlier context-rich import; mark fallback evidence explicitly unavailable."""
-    if "workerFailure" in report:
+    if "workerFailure" in report or "workerEvidenceStatus" in report:
         return
-    evidence = import_worker_evidence(root_path)
+    evidence = import_worker_evidence(root_path, diagnostics=report)
     if evidence is None:
-        report["workerEvidenceStatus"] = "unavailable"
         return
     report["workerFailure"] = evidence
+
+
+def offline_worker_diagnostics_self_test():
+    """No arbitrary values survive rejection, hard-death phases or exit diagnostics."""
+    with tempfile.TemporaryDirectory(prefix="lares-worker-diagnostics-") as directory:
+        root_path = pathlib.Path(directory)
+        worker_path = root_path / "worker.json"
+        stage_path = root_path / "worker-stage.json"
+        def rejected(expected):
+            diagnostics = {}
+            if import_worker_evidence(root_path, diagnostics=diagnostics) is not None or diagnostics != {
+                    "workerEvidenceStatus": expected}:
+                raise RuntimeError("worker rejection diagnostic regression")
+            preserve_worker_failure_evidence(diagnostics, root_path)
+            if diagnostics != {"workerEvidenceStatus": expected}:
+                raise RuntimeError("worker rejection diagnostic was overwritten")
+        rejected("worker-file-missing")
+        worker_path.mkdir()
+        rejected("worker-file-unreadable")
+        worker_path.rmdir()
+        worker_path.write_bytes(b"\xff")
+        rejected("worker-file-unreadable")
+        worker_path.write_text("not-json", encoding="utf-8")
+        rejected("worker-file-invalid-json")
+        worker_path.write_text("[]", encoding="utf-8")
+        rejected("rejected:checks")
+        for field, invalid in (
+                ("checks", ["SECRET_SENTINEL"]), ("success", True),
+                ("shutdownFailure", "SECRET_SENTINEL"),
+                ("directPathPredicateDiagnostics", {"SECRET_SENTINEL": True}),
+                ("previewResponseDiagnostics", {"SECRET_SENTINEL": True}),
+                ("discoveryResponseDiagnostics", {"SECRET_SENTINEL": True}),
+                ("peerDiagnostics", {"SECRET_SENTINEL": True}),
+                ("directPathDiagnostics", "SECRET_SENTINEL"),
+                ("routedPathDiagnostics", "SECRET_SENTINEL"),
+                ("directTargetBlocked", True),
+                ("failure", {"phase": "configuration", "category": "SECRET_SENTINEL"})):
+            value = {"checks": [], field: invalid}
+            if field == "routedPathDiagnostics":
+                value["directPathDiagnostics"] = {}
+            worker_path.write_text(json.dumps(value), encoding="utf-8")
+            rejected("rejected:" + field)
+        worker_path.unlink()
+        diagnostics = {}
+        preserve_worker_exit(diagnostics, root_path, {"exitCode": 137})
+        if diagnostics != {"workerFileExisted": False, "workerExitCode": 137}:
+            raise RuntimeError("missing worker file or integer exit code diagnostic regression")
+        worker_path.write_text("{}", encoding="utf-8")
+        for code in (True, "137", None):
+            diagnostics = {}
+            preserve_worker_exit(diagnostics, root_path, {"exitCode": code})
+            if diagnostics != {"workerFileExisted": True}:
+                raise RuntimeError("non-integer worker exit code was reported")
+        for phase in WORKER_PHASES:
+            stage_path.write_text(json.dumps({"phase": phase}), encoding="utf-8")
+            diagnostics = {}
+            preserve_worker_exit(diagnostics, root_path, {"exitCode": 1})
+            if diagnostics != {"workerFileExisted": True, "workerExitCode": 1, "workerLastPhase": phase}:
+                raise RuntimeError("safe last worker phase was lost")
+        for unsafe in ({"phase": "SECRET_SENTINEL"}, {"phase": []},
+                       {"phase": "configuration", "secret": "SECRET_SENTINEL"}, [], None):
+            stage_path.write_text(json.dumps(unsafe), encoding="utf-8")
+            diagnostics = {}
+            preserve_worker_stage(diagnostics, root_path)
+            if diagnostics:
+                raise RuntimeError("unsafe last worker phase was reported")
+        stage_path.write_text("not-json", encoding="utf-8")
+        diagnostics = {}
+        preserve_worker_stage(diagnostics, root_path)
+        if diagnostics:
+            raise RuntimeError("invalid stage JSON was reported")
+    # Verify every worker phase transition persists only the phase before its work starts.
+    worker_source = pathlib.Path(__file__).with_suffix(".mts").read_text(encoding="utf-8")
+    transitions = re.findall(r"startPhase\('([^']+)'\);", worker_source)
+    if (not transitions or any(phase not in WORKER_PHASES for phase in transitions) or
+            "writeReport(resolve(output,'../worker-stage.json'),{phase});" not in worker_source or
+            "startPhase(phase);\n  try{" not in worker_source or
+            re.search(r"^    phase='", worker_source, re.MULTILINE)):
+        raise RuntimeError("worker phase persistence contract changed")
 
 
 def offline_cleanup_self_test():
@@ -2517,6 +2650,23 @@ def offline_cleanup_self_test():
                     evidence.get("failure", {}).get("category") != "request-refused" or \
                     evidence.get(phase_response_field) != phase_response:
                 raise RuntimeError("operation-specific phase or safe refusal category was not retained")
+        safe_peer = {"requestCount": 2, "initializeSeen": True, "initializedNotificationSeen": True,
+                     "toolsListCount": 0, "bearerMatches": True, "tlsServernameMatches": True, "pathMatches": True,
+                     "protocolVersionMatches": True, "initializeMatches": True, "paginationCursorMatches": True,
+                     "sessionMatches": True}
+        worker_path.write_text(json.dumps({"success": False, "checks": [], "peerDiagnostics": safe_peer,
+            "failure": {"phase": "outside consent and discover", "reason": "configured outside discovery worker failed",
+                        "category": "recovery-required", "recoveryStage": "initialized-notification"}}), encoding="utf-8")
+        evidence = import_worker_evidence(pathlib.Path(directory))
+        if (not evidence or evidence.get("failure", {}).get("recoveryStage") != "initialized-notification" or
+                evidence.get("peerDiagnostics") != safe_peer):
+            raise RuntimeError("fixed discovery recovery stage and safe peer diagnostics were not retained")
+        for unsafe_stage in ("credential-secret-detail", {"method": "initialize"}):
+            worker_path.write_text(json.dumps({"success": False, "checks": [],
+                "failure": {"phase": "outside consent and discover", "reason": "worker failed",
+                            "category": "recovery-required", "recoveryStage": unsafe_stage}}), encoding="utf-8")
+            if import_worker_evidence(pathlib.Path(directory)) is not None:
+                raise RuntimeError("unallowlisted recovery-stage detail was retained")
         for reason in sorted(ACKNOWLEDGEMENT_REASONS):
             worker_path.write_text(json.dumps({"success": False, "checks": [],
                 "failure": {"phase": "generated route admission", "reason": "worker failed",
@@ -2720,7 +2870,7 @@ def offline_cleanup_self_test():
         malformed_path.write_text("not-json", encoding="utf-8")
         unavailable_report = {}
         preserve_worker_failure_evidence(unavailable_report, pathlib.Path(directory))
-        if unavailable_report != {"workerEvidenceStatus": "unavailable"}:
+        if unavailable_report != {"workerEvidenceStatus": "worker-file-invalid-json"}:
             raise RuntimeError("unavailable worker evidence was not explicitly recorded")
         worker_path.write_text(json.dumps(worker_value(blocked=True, direct_path=diagnostic,
             routed_path=routed_diagnostic, path_predicates={"sameBridge": predicate_ok, "routed": predicate_ok})),
@@ -3139,6 +3289,7 @@ def offline_image_store_self_test():
 
 
 if self_test_mode:
+    offline_worker_diagnostics_self_test()
     offline_proxy_admission_self_test()
     offline_proxy_readiness_self_test()
     offline_image_store_self_test()
@@ -3599,11 +3750,11 @@ networks:
     shared_endpoints = inspect_shared_bridge_endpoints(network_metadata["Id"], worker_endpoint, peer_endpoint)
     live_projection_hashes = live_firewall_projection_hashes(root, shared_endpoints["worker"]["ipv4"])
     if facts is None or facts["id"] != worker_container_id or facts["status"] != "exited" or facts["exitCode"] != 0:
-        worker_evidence = import_worker_evidence(root, shared_endpoints, live_projection_hashes)
+        worker_evidence = import_worker_evidence(root, shared_endpoints, live_projection_hashes, report)
         if worker_evidence:
             report["workerFailure"] = worker_evidence
         raise RuntimeError("configured production discovery worker did not complete")
-    worker_evidence = import_worker_evidence(root, shared_endpoints, live_projection_hashes)
+    worker_evidence = import_worker_evidence(root, shared_endpoints, live_projection_hashes, report)
     if not worker_evidence or worker_evidence.get("success") is not True:
         raise RuntimeError("configured production discovery worker did not complete")
     report["configuredDiscovery"] = worker_evidence
@@ -3649,6 +3800,16 @@ except Exception as error:
     if forward_rule_marker is not None:
         report["ownedForwardRuleEvidence"] = routed_forward_rule_evidence()
     if root is not None:
+        if phase == "configured-discovery":
+            worker_facts = None
+            try:
+                worker_facts = container_facts(worker_container_id or worker_container)
+            except Exception:
+                pass
+            if worker_facts is not None and (worker_facts["labels"].get("lares.proof.owner") != owner or
+                                             (worker_container_id and worker_facts["id"] != worker_container_id)):
+                worker_facts = None
+            preserve_worker_exit(report, root, worker_facts)
         preserve_worker_failure_evidence(report, root)
 finally:
     phase_before_cleanup = phase
