@@ -193,9 +193,9 @@ stage='bookmark seen store';const seen=makePgSeenStore(db);await seen.ensure();i
 stage='route cursor';const routes=makeRouteStore(db);await ensureRouteTables(db);if(await routes.getCursor()!==null)throw Error();
 const cursor='2026-10-22T12:00:00.000Z';await routes.setCursor(cursor);if(await routes.getCursor()!==cursor)throw Error();
 stage='route proposal persistence';
-const proposalArgs={personId:'runtime-image-person-proof',opportunityId:'runtime-image-opportunity-proof',brand:'runtime-image-brand-proof',proposedStage:'QUALIFIED',signalRef:'runtime-image-signal-proof',confidence:0.75};
-if(await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef})||await routes.proposedSince({personId:proposalArgs.personId,brand:proposalArgs.brand,sinceIso:'2000-01-01T00:00:00.000Z'}))throw Error();
-const proposal=await routes.recordProposal(proposalArgs);if(!proposal.id||!await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef})||!await routes.proposedSince({personId:proposalArgs.personId,brand:proposalArgs.brand,sinceIso:'2000-01-01T00:00:00.000Z'}))throw Error();
+const proposalArgs={personId:'runtime-image-person-proof',opportunityId:'runtime-image-opportunity-proof',home:'twenty',trackId:'runtime-image-track-proof',proposedStage:'QUALIFIED',signalRef:'runtime-image-signal-proof',confidence:0.75};
+if(await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef})||await routes.proposedSince({personId:proposalArgs.personId,home:proposalArgs.home,trackId:proposalArgs.trackId,sinceIso:'2000-01-01T00:00:00.000Z'}))throw Error();
+const proposal=await routes.recordProposal(proposalArgs);if(!proposal.id||!await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef})||!await routes.proposedSince({personId:proposalArgs.personId,home:proposalArgs.home,trackId:proposalArgs.trackId,sinceIso:'2000-01-01T00:00:00.000Z'}))throw Error();
 await routes.markResolved(proposal.id,'skipped');if(!await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef}))throw Error();
 stage='memory row cleanup';const deleted=await db.query('DELETE FROM dream_observations WHERE id=$1',[observation.id]);if(deleted.rowCount!==1)throw Error();
 await db.query('DELETE FROM dream_preferences WHERE id=ANY($1::uuid[])',[[old.id,current.id]]);await db.query('DELETE FROM obligation_threads WHERE thread_id=$1',[threadId]);
@@ -203,7 +203,11 @@ for(const [index,ddl] of ['CREATE TABLE public.memory_probe_ddl (id integer)','A
 console.log('memory-schema-proof:complete');
 }catch(error){const code=typeof error?.code==='string'&&/^[0-9A-Z]{5}$/.test(error.code)?error.code:'none';console.log('memory-schema-proof:failed stage='+stage+' sqlstate='+code);process.exitCode=1;}finally{await db.end();}}
 void main();"""
- memory_access_output=cmd('docker','run','--rm','--user','10001:10001','--network',name,'--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--workdir','/app/services/chief-of-staff','-e','MEMORY_PROOF_DATABASE_URL=postgresql://lares_app@proof-db:5432/proof','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'-e',memory_access_probe)
+ try:
+  memory_access_output=cmd('docker','run','--rm','--user','10001:10001','--network',name,'--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--workdir','/app/services/chief-of-staff','-e','MEMORY_PROOF_DATABASE_URL=postgresql://lares_app@proof-db:5432/proof','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'-e',memory_access_probe)
+ except subprocess.CalledProcessError as e:
+  print(e.output,flush=True)
+  raise
  assert memory_access_output=='memory-schema-proof:complete','Fresh migration schema failed the nonowner readiness and store proof'
  # Reapplying the fixed schema migration must retain the existing shared cursor and dedup rows.
  sql((repo/'services/box/sql/027_shared_sync_schema.sql').read_text())
