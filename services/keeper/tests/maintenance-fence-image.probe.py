@@ -457,7 +457,7 @@ def prove_keeper_default_admission() -> None:
         destination = secrets_dir / name
         destination.write_bytes(value)
         destination.chmod(0o600)
-    for name in ("gateway-master-key", "eve-route-password", "console-vault-signing-key"):
+    for name in ("gateway-master-key", "eve-route-password", "console-vault-signing-key", "outside-custody-database-password"):
         destination = secrets_dir / name
         destination.write_text(secrets.token_urlsafe(32) + "\n", encoding="ascii")
         destination.chmod(0o600)
