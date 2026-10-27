@@ -1,7 +1,7 @@
 import { afterEach,beforeEach,expect,it,vi } from 'vitest';
 import { registerHumanOutsideDiscoveryActions } from '../lib/outside-discovery-actions.js';
 import { actionNames,resetActions,runAction } from '../lib/actions.js';
-import type { OutsideCustodyStore } from '../lib/outside-custody.js';
+import { OutsideCustodyRecoveryRequired,outsideDiscoveryRecovery,type OutsideCustodyStore } from '../lib/outside-custody.js';
 
 const methods=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn()}));
 const sessionToken='S'.repeat(43),accountId='00000000-0000-4000-8000-000000000001',requestId='00000000-0000-4000-8000-000000000002',claimOperationId='00000000-0000-4000-8000-000000000003';
@@ -43,4 +43,16 @@ it('keeps target, preview and inspection inputs strict and passes only the sessi
     {actor:'member',audit})).resolves.toEqual({state:'unresolved'});
   expect(methods.preview).toHaveBeenCalledWith(sessionToken,{agentName:'worker',connectionName:'connector'},expect.any(Object));
   expect(methods.inspect).toHaveBeenCalledWith(sessionToken,{accountId,agentName:'worker',connectionName:'connector',requestId,claimOperationId},expect.any(Object));
+});
+
+it('retains the last discovery stage when recovery is required before cleanup',()=>{
+  const unstaged=new OutsideCustodyRecoveryRequired(claimOperationId);
+  expect(unstaged.stage).toBeUndefined();
+  const dispatched=outsideDiscoveryRecovery(new Error('synthetic transport failure'),claimOperationId,'initialize',true);
+  expect(dispatched).toBeInstanceOf(OutsideCustodyRecoveryRequired);
+  expect(dispatched?.stage).toBe('initialize');
+  const rethrown=outsideDiscoveryRecovery(unstaged,claimOperationId,'claim-storage');
+  expect(rethrown?.stage).toBe('claim-storage');
+  const known=outsideDiscoveryRecovery(new OutsideCustodyRecoveryRequired(claimOperationId,'tools-list'),claimOperationId,'cleanup');
+  expect(known?.stage).toBe('tools-list');
 });
