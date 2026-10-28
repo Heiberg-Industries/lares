@@ -21,10 +21,21 @@ same description hash at each step. If the definition or access changes, the old
 Editing an agent does not grant authority over another member's credential.
 
 A staged candidate is **pending Apply**. It is not active and does not mean that the outside server
-is reachable. The current member flow stops at staging; it does not activate, rotate or revoke the
-credential. An existing active credential remains the active revision until a separate, successful
-Apply. Removing the declaration, revoking Lares custody and revoking the key at the outside provider
-are separate actions.
+is reachable. The credential custodian can now apply the exact staged revision from the member page.
+Keeper activates that candidate only when the current session, candidate revision, generation,
+accepted description set, definition and access revisions still match. A token can be replaced while
+the connection declaration stays unchanged; its new custody revision still requires its own Apply.
+Until that Apply succeeds, an existing active credential remains active. The page reports custody
+activation only; it does not prove that the agent runtime started or can reach the outside server.
+If the page reloads while a candidate is pending, Keeper can recover the exact saved stage and
+activation-review evidence for the current custodian and candidate. If that evidence is missing or
+ambiguous, Apply remains unavailable. Refresh status; if the candidate remains pending, an
+authorized custodian can refresh the connection, review a fresh discovery and stage a replacement
+against the currently displayed candidate revision when Keeper permits it. If Keeper refuses that
+replacement or the old evidence remains ambiguous, stop and use the existing custody resolution
+process; agent editors do not gain credential authority.
+Removing the declaration, revoking Lares custody and revoking the key at the outside provider are
+separate actions.
 
 ## Signed outside-tool dispatch
 
@@ -34,6 +45,8 @@ required human approval before dispatch. The agent does not receive the bearer c
 connection does not automatically trust new descriptions: a custodian must review and accept the
 exact descriptions before a credential candidate can be staged.
 
-The member-facing flow currently ends at staging. Apply, credential rotation, custody revocation,
-provider-side key revocation and channel-specific approval verification are separate operations;
-this flow does not perform them or claim that a staged candidate is active or reachable.
+Credential Apply activates a staged custody revision. It does not apply an agent definition, restart
+the agent, prove provider reachability, or revoke the previous key at the provider. If Apply's result
+is uncertain, the page checks the current exact custody revision and asks you to refresh before
+trying again; it does not blindly repeat the request. Custody revocation, provider-side key revocation
+and channel-specific approval verification remain separate operations.

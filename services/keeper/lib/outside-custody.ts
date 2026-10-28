@@ -89,6 +89,10 @@ export type HumanDiscoveryPreview={accountId:string;requestId:string;claimOperat
 export type HumanDiscoveryInspection={state:'unresolved'}|{state:'complete';document:OutsideDiscoveryDocument};
 export type HumanDescriptorReviewPreview={descriptor:DescriptorProjection;descriptorHash:string;expectedGeneration:number;
   expectedCandidateRevision:number|null;expectedConsentGeneration:number;expectedDefinitionHash:string;expectedAccessRevision:number};
+export type HumanPendingApply={accountId:string;agentName:string;connectionName:string;requestId:string;claimOperationId:string;publicationId:string;
+  acceptanceId:string;expectedGeneration:number;expectedCandidateRevision:number|null;expectedConsentGeneration:number;expectedDefinitionHash:string;
+  expectedAccessRevision:number;expectedPublicationHash:string;expectedAcceptanceHash:string;expectedPolicyHash:string;activationReviewId:string;
+  activationReviewHash:string;stageOperationId:string;candidateRevision:number};
 /** Trusted Keeper-side identity supplied by the authenticated runtime transport. Never accept it
  *  from MCP tool arguments or use receipt selectors as a substitute for this binding. */
 export type OutsideExecutionBinding={agent:string;incarnation:string;sessionId:string;memberId:string;approverMemberId:string;admissionNonce:string;policyRevision:number};
@@ -683,6 +687,68 @@ export class OutsideCustodyStore {
           ?activeRevision===null?'pending':'active-pending':activeRevision===null?'unavailable':'active';
         return {...target,credentialStatus:{state,reviewPending,applyPending,activeRevision,candidateRevision,discoveryRevision}};
       }));
+    },options));
+  }
+
+  /** Reconstruct the one exact pending stage receipt from its existing encrypted evidence.
+   * The request hash binds the original activation-preview ID; no new receipt is created. */
+  async inspectHumanPendingApply(sessionToken:string,input:{agentName:string;connectionName:string},options:{deadlineAtMs:number}):Promise<HumanPendingApply>{
+    if(!/^[a-z][a-z0-9-]{1,30}$/.test(input.agentName)||!/^[a-z][a-z0-9-]{1,30}$/.test(input.connectionName)||
+        !Number.isFinite(options?.deadlineAtMs)||options.deadlineAtMs<=Date.now())return requestDenied();
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName);
+      if(capture.actor.memberId!==memberId||capture.agent.name!==input.agentName||capture.outside.connection.name!==input.connectionName)return requestDenied();
+      const found=await db.query<Head>(`SELECT account_id,owner_member_id,resource_id,connection_name,generation::text,active_revision::text,
+          candidate_revision::text,consent_generation::text,state FROM outside_custody_accounts
+        WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 FOR SHARE`,[memberId,input.agentName,input.connectionName]);
+      const head=found.rows[0];
+      if(found.rows.length!==1||!head||head.owner_member_id!==memberId||head.resource_id!==input.agentName||head.connection_name!==input.connectionName||
+          head.state!=='active'||head.candidate_revision===null)return requestDenied();
+      const candidateRevision=number(head.candidate_revision),generation=number(head.generation),consentGeneration=number(head.consent_generation);
+      const stages=await db.query<StoredEvidence>(`SELECT operation_id,account_id,owner_member_id,actor_member_id,operation_kind,request_hash,
+          result_nonce,result_ciphertext,evidence_kind,evidence_hash,outcome,expected_generation::text,result_generation::text,credential_revision::text
+        FROM outside_custody_operations WHERE account_id=$1 AND owner_member_id=$2 AND actor_member_id=$2 AND operation_kind='stage'
+          AND event_phase='operation' AND outcome='staged' AND credential_revision=$3`,[head.account_id,memberId,candidateRevision]);
+      const stage=stages.rows[0];
+      if(stages.rows.length!==1||!stage||stage.operation_kind!=='stage'||stage.actor_member_id!==memberId||!stage.operation_id)return requestDenied();
+      const staged=await this.#readEvidence(db,head.account_id,stage.operation_id,'activation-review-v1');
+      const body=staged.body as unknown as z.infer<typeof stagedEvidenceSchema>,review=body.review;
+      if(staged.row.actor_member_id!==memberId||staged.row.operation_kind!=='stage'||staged.row.outcome!=='staged'||
+          body.candidateRevision!==candidateRevision||body.candidateGeneration!==generation+1||body.consentGeneration!==consentGeneration||
+          number(staged.row.expected_generation)!==generation||number(staged.row.result_generation)!==generation||
+          staged.row.credential_revision!==String(candidateRevision)||
+          review.expectedGeneration!==generation||review.consentGeneration!==consentGeneration||review.accountId!==head.account_id||
+          review.ownerMemberId!==memberId||review.resourceId!==input.agentName||review.connectionName!==input.connectionName||
+          createHash('sha256').update(canonicalJson(review)).digest('hex')!==body.reviewHash||
+          createHash('sha256').update(canonicalJson(body.policyJson)).digest('hex')!==review.policyHash||
+          body.policyJson.accountId!==head.account_id||body.policyJson.ownerMemberId!==memberId||
+          body.policyJson.resourceId!==input.agentName||body.policyJson.connectionName!==input.connectionName||
+          review.capture.agent.definitionHash!==capture.agent.definitionHash||review.capture.agent.accessRevision!==capture.agent.accessRevision||
+          review.capture.agent.definitionHash!==body.policyJson.capture.agent.definitionHash||
+          review.capture.agent.accessRevision!==body.policyJson.capture.agent.accessRevision)return requestDenied();
+      const previews=await db.query<StoredEvidence>(`SELECT operation_id,account_id,owner_member_id,actor_member_id,operation_kind,request_hash,
+          result_nonce,result_ciphertext,evidence_kind,evidence_hash,outcome,expected_generation::text,result_generation::text,credential_revision::text
+        FROM outside_custody_operations WHERE account_id=$1 AND owner_member_id=$2 AND actor_member_id=$2 AND operation_kind='activation-preview'
+          AND event_phase='operation' AND outcome='previewed' AND evidence_hash=$3`,
+        [head.account_id,memberId,Buffer.from(body.reviewHash,'hex')]);
+      const matching:string[]=[];
+      for(const previewRow of previews.rows){
+        const preview=await this.#readEvidence(db,head.account_id,previewRow.operation_id,'activation-review-v1');
+        if(preview.row.actor_member_id!==memberId||canonicalJson(preview.body)!==canonicalJson(review))continue;
+        const expectedHash=createHash('sha256').update(canonicalJson({kind:'stage',operationId:stage.operation_id,accountId:head.account_id,
+          ownerMemberId:memberId,actorMemberId:memberId,expectedGeneration:number(stage.expected_generation),
+          resultGeneration:number(stage.result_generation),credentialRevision:candidateRevision,
+          requestIdentity:{activationReviewId:previewRow.operation_id,activationReviewHash:body.reviewHash},bodyHash:staged.bodyHash})).digest();
+        if(expectedHash.equals(stage.request_hash))matching.push(previewRow.operation_id);
+      }
+      if(matching.length!==1)return requestDenied();
+      return {accountId:head.account_id,agentName:input.agentName,connectionName:input.connectionName,requestId:review.sourceRequestId,
+        claimOperationId:review.sourceClaimOperationId,publicationId:review.publicationId,acceptanceId:review.acceptanceId,
+        expectedGeneration:review.expectedGeneration,expectedCandidateRevision:review.expectedCandidateRevision,
+        expectedConsentGeneration:review.consentGeneration,expectedDefinitionHash:review.capture.agent.definitionHash,
+        expectedAccessRevision:review.capture.agent.accessRevision,expectedPublicationHash:review.publicationHash,
+        expectedAcceptanceHash:review.acceptanceHash,expectedPolicyHash:review.policyHash,activationReviewId:matching[0]!,
+        activationReviewHash:body.reviewHash,stageOperationId:stage.operation_id,candidateRevision};
     },options));
   }
 

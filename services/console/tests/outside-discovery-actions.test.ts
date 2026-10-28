@@ -4,7 +4,7 @@ vi.mock('next/headers',()=>({cookies:async()=>({get:()=>({value:mocks.cookie()})
 vi.mock('../lib/auth',()=>({sessionMember:mocks.member,memberAuditAddress:mocks.auditAddress}));
 vi.mock('../lib/keeper-client',()=>({keeper:mocks.keeper,KeeperRefusedError:class extends Error{},KeeperUnavailableError:class extends Error{outcomeMayBeUnknown=false;}}));
 import { acceptOutsideDescriptorReview,discoverOutsideTools,inspectOutsideDiscovery,listOutsideDiscoveryTargets,previewOutsideDescriptorReview,
-  previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate } from '../app/actions/outside-discovery.js';
+  previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate,applyOutsideCredentialCandidate,previewOutsideCredentialApply } from '../app/actions/outside-discovery.js';
 import { KeeperUnavailableError } from '../lib/keeper-client.js';
 import { parseOutsideDescriptorReview,parseOutsideDiscoveryTargets } from '../lib/outside-discovery-dto.js';
 
@@ -144,8 +144,26 @@ it('derives the custodian from the signed-in session for exact preview, publicat
   const stage={...discovery,publicationId:publication.publicationId,acceptanceId:'00000000-0000-4000-8000-000000000005',
     expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,
     expectedPublicationHash:publication.publicationHash,expectedAcceptanceHash:'c'.repeat(64)};
-  mocks.keeper.mockResolvedValueOnce({staged:true});
-  await expect(stageOutsideCredentialCandidate(stage)).resolves.toEqual({staged:true});
+  const staged={staged:true,activationReviewId:'00000000-0000-4000-8000-000000000006',activationReviewHash:'d'.repeat(64),
+    expectedPolicyHash:'e'.repeat(64),stageOperationId:'00000000-0000-4000-8000-000000000007',candidateRevision:7};
+  mocks.keeper.mockResolvedValueOnce(staged);
+  await expect(stageOutsideCredentialCandidate(stage)).resolves.toEqual(staged);
   expect(mocks.keeper).toHaveBeenLastCalledWith('outside.candidate-stage',{sessionToken,...stage},auditActor);
+  const {staged:_staged,...receipt}=staged;
+  const apply={...stage,...receipt};
+  mocks.keeper.mockResolvedValueOnce({kind:'apply',outcome:'applied',credentialRevision:7});
+  await expect(applyOutsideCredentialCandidate(apply)).resolves.toEqual({state:'applied',credentialRevision:7});
+  expect(mocks.keeper).toHaveBeenLastCalledWith('outside.candidate-apply',{sessionToken,...apply},auditActor,{timeoutMs:90_000});
   await expect(previewOutsideDescriptorReview({...discovery,actor:'submitted'})).rejects.toThrow(/Invalid discovery input/);
+});
+
+it('recovers an exact pending Apply projection using the signed-in custodian session',async()=>{
+  const pending={accountId,agentName:'worker',connectionName:'connector',requestId,claimOperationId,publicationId:requestId,acceptanceId:claimOperationId,
+    expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,
+    expectedPublicationHash:'b'.repeat(64),expectedAcceptanceHash:'c'.repeat(64),expectedPolicyHash:'d'.repeat(64),activationReviewId:requestId,
+    activationReviewHash:'e'.repeat(64),stageOperationId:claimOperationId,candidateRevision:7};
+  mocks.keeper.mockResolvedValueOnce(pending);
+  await expect(previewOutsideCredentialApply({agentName:'worker',connectionName:'connector'})).resolves.toEqual(pending);
+  expect(mocks.keeper).toHaveBeenLastCalledWith('outside.candidate-apply-preview',{sessionToken,agentName:'worker',connectionName:'connector'},auditActor);
+  await expect(previewOutsideCredentialApply({agentName:'worker',connectionName:'connector',candidateRevision:7})).rejects.toThrow(/Invalid discovery input/);
 });
