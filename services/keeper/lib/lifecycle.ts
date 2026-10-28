@@ -2,8 +2,9 @@ import { randomUUID, createHash, randomBytes } from 'node:crypto';
 import { lstatSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { isIP } from 'node:net';
+import { isDeepStrictEqual } from 'node:util';
 import type { Pool } from 'pg';
-import { doorsOf, definitionSchema, hashOf, type AgentDefinition } from '@lares/agent-kit/definition';
+import { doorsOf, definitionSchema, hashOf, readDefinitionFiles, type AgentDefinition, type DefinitionFileContents } from '@lares/agent-kit/definition';
 import { outsideHttpsHosts, outsideToolsInEffect } from '@lares/agent-kit/outside-tools';
 import { CAPABILITY_DOCS } from '@lares/agent-kit/persona';
 import { generateEgress } from './egress.js';
@@ -24,6 +25,7 @@ import { LiteLLMGatewayKeys, gatewayModels, type GatewayKeyProvisioner } from '.
 import { readSetting } from './settings.js';
 import { effectiveGrantedAgents, type CredentialRecord } from './credential-state.js';
 import { requireDefinitionNamespace, withDefinitionNamespace } from './definition-namespace.js';
+import { clearFirstActivation, clearUnknownApplyBaseline, recordAppliedDefinition } from './definition-files.js';
 function atomic(path: string, body: string, mode = 0o600) { const temp = `${path}.${randomUUID()}`; const fd = openSync(temp, 'wx', mode); try {
     writeFileSync(fd, body);
     fsyncSync(fd);
@@ -61,6 +63,25 @@ export class AgentLifecycle {
     /** Agents the owner switched on to receive the managed key (effective view, as notionRevision). */
     private async notionGranted(): Promise<ReadonlySet<string>> {
         return effectiveGrantedAgents(await this.credentialState?.());
+    }
+    private async definitionFiles(name: string): Promise<DefinitionFileContents | null> {
+        const dir = join(this.paths.agentsDir, name);
+        try { lstatSync(dir); }
+        catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+            throw error;
+        }
+        return readDefinitionFiles(dir);
+    }
+    private async recordSuccessfulDefinitionStart(name: string, before: DefinitionFileContents | null,
+        result: { running?: boolean; healthy?: boolean | null }): Promise<void> {
+        if (!before || result.running !== true || result.healthy !== true) return;
+        const after = await this.definitionFiles(name);
+        if (!after || !isDeepStrictEqual(before, after))
+            throw new KeeperRefusedError('Definition files changed while the runtime was starting; applied generation is unknown');
+        recordAppliedDefinition(join(this.paths.agentsDir, name), before);
+        clearFirstActivation(join(this.paths.agentsDir, name));
+        clearUnknownApplyBaseline(join(this.paths.agentsDir, name));
     }
     /** True when installation configuration alone gives this agent the key (a revoke must not unmount it). */
     installationBindsNotion(name: string): boolean {
@@ -624,6 +645,7 @@ export class AgentLifecycle {
             throw new KeeperRefusedError('Only active resources can reconcile');
         await this.modelPrefix(); // Refuse before anything is marked, published or stopped.
         const plan = await this.plan({ name, definition: d }); // Before pending, publish and stop: an unbuildable list must not take the agent down.
+        const definitionFiles = await this.definitionFiles(name);
         await this.pool.query("UPDATE agent_resources SET pending=true,pending_reason='Runtime reconciliation in progress',updated_at=now() WHERE name=$1", [name]);
         const a = await this.connections(this.container(row, d, await this.notionRevision(), await this.notionGranted()),true);
         verifyBindingSources(a.bindings);
@@ -642,7 +664,9 @@ export class AgentLifecycle {
         await this.pool.query(`UPDATE agent_door_connections SET applied_revision=revision,applied_connection=jsonb_build_object('kind',kind,'principal',principal,'revision',revision,'owner_email',owner_email,'org',org,'mailbox',mailbox) WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL`,[name,row.ownership_token]);
         await this.pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=false,pending_reason=NULL,updated_at=now() WHERE name=$1', [name, JSON.stringify(d)]);
         // A held native runtime remains fully staged and ready for the explicit provision/activate/reconcile flow.
-        return this.startWithCurrentAuthority(name, a.address);
+        const result = await this.startWithCurrentAuthority(name, a.address);
+        await this.recordSuccessfulDefinitionStart(name, definitionFiles, result);
+        return result;
     }
     /** No provisioning, provider access, claim application or definition writes. Uses the
      * existing compose, seals and private health route for one already-owned ready runtime. */
@@ -677,11 +701,13 @@ export class AgentLifecycle {
         if (!runtimeControlled(row) || row.state !== 'ready' || row.pending || !row.applied_definition)
             throw new KeeperRefusedError('Ready applied runtime required');
         const plan = await this.plan();
+        const definitionFiles = await this.definitionFiles(name);
         if (revision || grantOp && record.activeRevision) this.provisionSecret(join(this.paths.secretsDir, 'notion-token'));
         await this.publishCompose();
         await this.docker.stop(name);
         await this.apply(plan);
-        await this.startWithCurrentAuthority(name, String(row.address).split('/')[0], true);
+        const result = await this.startWithCurrentAuthority(name, String(row.address).split('/')[0], true);
+        await this.recordSuccessfulDefinitionStart(name, definitionFiles, result);
     }
     async stop(name: string) {
         const row = await this.storage.row(name);

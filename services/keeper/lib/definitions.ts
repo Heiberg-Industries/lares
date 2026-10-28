@@ -11,7 +11,7 @@ import { validateDefinition, doorSecretName } from '@lares/agent-kit/definition-
 import { rememberValid } from '@lares/agent-kit/definition-cache';
 import { KeeperRefusedError, registerAction, type ActionContext } from './actions.js';
 import { DOOR_FILES } from './compose-agents.js';
-import { publishDefinition, plainDirectory, syncDefinitionDirectory } from './definition-files.js';
+import { appliedDefinitionGeneration, clearUnknownApplyBaseline, forgetDefinitionGeneration, hasFirstActivation, hasUnknownApplyBaseline, markFirstActivation, markUnknownApplyBaseline, preserveDefinitionGeneration, publishDefinition, plainDirectory, preservedDefinitionGeneration, restoreDefinitionGeneration, syncDefinitionDirectory } from './definition-files.js';
 import type { Backup } from './git-backup.js';
 import { totalmem } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
@@ -199,12 +199,30 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             plainDirectory(path);
         }
         await o.compose.prepare?.(input.name,d,create);
+        let rollbackTarget: string | null = null;
+        if (!create) {
+            const applied = appliedDefinitionGeneration(path);
+            rollbackTarget = preservedDefinitionGeneration(path);
+            if (rollbackTarget && applied && rollbackTarget !== applied) {
+                forgetDefinitionGeneration(path, rollbackTarget);
+                rollbackTarget = null;
+            }
+            if (!rollbackTarget) {
+                if (applied) {
+                    preserveDefinitionGeneration(path, applied);
+                    rollbackTarget = applied;
+                }
+            }
+            if (hasUnknownApplyBaseline(path) && applied && isDeepStrictEqual(await readDefinitionFiles(path), await readDefinitionFiles(join(path, applied))))
+                clearUnknownApplyBaseline(path);
+        }
         const files = { 'agent.json': JSON.stringify(d, null, 2) + '\n', 'duties.md': input.duties, 'voice.md': input.voice };
-        return { d, path, files };
+        return { d, path, files, rollbackTarget };
     }
     async function publishSave(input: z.infer<typeof writeInput>, create: boolean,
         prepared: Awaited<ReturnType<typeof prepareSave>>) {
         const { d, path, files } = prepared;
+        if (!create && !prepared.rollbackTarget && !appliedDefinitionGeneration(path) && !hasFirstActivation(path)) markUnknownApplyBaseline(path);
         if (create) {
             // Stage creation outside the counted namespace and publish a complete root in one rename.
             // Interrupted stages are inert; a subsequent create may use the unoccupied name.
@@ -213,6 +231,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             await publishDefinition(stage, files);
             renameSync(stage, path);
             syncDefinitionDirectory(o.agentsDir);
+            markFirstActivation(path);
         }
         else
             await publishDefinition(path, files);
@@ -316,25 +335,91 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         return { applicationStatus: isDeepStrictEqual(parsed.data, connections ?? []) ? 'applied' as const : 'pending' as const,
             appliedConnections: parsed.data };
     }
+    function runtimeStarted(result: unknown): boolean {
+        if (!result || typeof result !== 'object' || !('running' in result)) return true;
+        const state = result as { running?: unknown; healthy?: unknown };
+        return state.running === true && state.healthy === true;
+    }
+    function nativeHeld(result: unknown): boolean {
+        return !!result && typeof result === 'object' &&
+            (result as { running?: unknown; reason?: unknown }).running === false &&
+            (result as { reason?: unknown }).reason === 'Native budget activation required';
+    }
+    async function applyWithRecovery(name: string, d: AgentDefinition, beforeRecovery?: () => Promise<void>): Promise<unknown> {
+        const path = active(name);
+        const markedUnknown = hasUnknownApplyBaseline(path), knownApplied = appliedDefinitionGeneration(path);
+        const unknownBaseline = markedUnknown && !(knownApplied && isDeepStrictEqual(await readDefinitionFiles(path), await readDefinitionFiles(join(path, knownApplied))));
+        if (markedUnknown && !unknownBaseline) clearUnknownApplyBaseline(path);
+        if (unknownBaseline) refused('The previous applied definition cannot be verified; runtime was not stopped. Save after a successful runtime start before applying changed files.');
+        let rollbackTarget = preservedDefinitionGeneration(path);
+        if (!rollbackTarget) {
+            const applied = appliedDefinitionGeneration(path);
+            if (applied && isDeepStrictEqual(await readDefinitionFiles(path), await readDefinitionFiles(join(path, applied)))) {
+                preserveDefinitionGeneration(path, applied);
+                rollbackTarget = applied;
+            }
+        }
+        const held = !rollbackTarget ? await o.compose.liveStatus?.(name).catch(() => null) as { reason?: string; running?: boolean | null; pending?: boolean } | null : null;
+        const firstHeldActivation = hasFirstActivation(path) && held?.reason === 'Native budget activation required' && held.running === false;
+        if (!rollbackTarget && !firstHeldActivation)
+            refused('The previous complete applied definition is unknown; runtime was not stopped. Restore an owner-verified baseline before applying.');
+        try {
+            const result = await o.compose.reconcile!(name, d);
+            if (runtimeStarted(result)) {
+                if (rollbackTarget) forgetDefinitionGeneration(path, rollbackTarget);
+                clearUnknownApplyBaseline(path);
+                return result;
+            }
+            if (!rollbackTarget && firstHeldActivation && nativeHeld(result)) return result;
+            throw new Error('Runtime did not start healthy');
+        } catch (applyError) {
+            await beforeRecovery?.();
+            if (!rollbackTarget) {
+                await db().query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'Apply failed; no verified previous full definition is available; runtime recovery required']);
+                throw new Error('Apply failed and no verified previous full definition is available; runtime recovery is required.', { cause: applyError });
+            }
+            try {
+                const previous = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(path, rollbackTarget) } });
+                restoreDefinitionGeneration(path, rollbackTarget);
+                await rememberValid(db() as Pool, previous);
+                for (const door of doorsOf(previous.definition))
+                    await db().query(`INSERT INTO agent_doors(agent,kind,enabled,settings) VALUES($1,$2,$3,$4::jsonb)
+                      ON CONFLICT(agent,kind) DO UPDATE SET enabled=EXCLUDED.enabled,settings=EXCLUDED.settings,updated_at=now()`, [name, door.kind, door.enabled, JSON.stringify(previous.definition.doors?.find(x => x.kind === door.kind)?.settings ?? {})]);
+                await db().query('UPDATE agent_doors SET enabled=false,updated_at=now() WHERE agent=$1 AND NOT(kind=ANY($2::text[]))', [name, doorsOf(previous.definition).map(x => x.kind)]);
+                await db().query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=false,pending_reason=NULL,updated_at=now() WHERE name=$1', [name, JSON.stringify(previous.definition)]);
+                const restored = await o.compose.reconcile!(name, previous.definition);
+                if (!runtimeStarted(restored)) throw new Error('Previous runtime did not start healthy');
+            } catch (rollbackError) {
+                await db().query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'Apply failed; previous definition restored but runtime recovery failed']);
+                throw new Error('Apply failed. The previous saved definition was restored, but runtime recovery failed; explicit recovery is required.', { cause: rollbackError });
+            }
+            throw new Error('Apply failed. The previous working definition was restored; save the edit again before retrying.', { cause: applyError });
+        }
+    }
     registerAction({ name: 'outside.connections.apply', input: outsideConnectionsApplyInput, secretFields: ['sessionToken'],
         run: async (input) => {
             nameOf(input.name);
             return locked(async () => {
                 const client = connection.getStore();
                 if (!client) throw new Error('Connection access requires the definition namespace client.');
-                await client.query('BEGIN');
+            await client.query('BEGIN');
+            let transactionOpen = true;
                 try {
                     const snapshot = await connectionSnapshot(client, input, true);
                     if (snapshot.loaded.hash !== input.expectedDefinitionHash || snapshot.revision !== input.expectedAccessRevision)
                         refused('Definition or access changed; refresh before applying connections.');
                     if (!o.compose.reconcile) refused('Runtime reconciliation is not configured');
                     validate({ name: input.name, definition: snapshot.loaded.definition, duties: snapshot.loaded.dutiesMd, voice: snapshot.loaded.voiceMd });
-                    await o.compose.reconcile(input.name, snapshot.loaded.definition);
+                await applyWithRecovery(input.name, snapshot.loaded.definition, async () => {
+                    await client.query('ROLLBACK');
+                    transactionOpen = false;
+                });
                     const application = await connectionApplication(client, input.name, snapshot.loaded.definition.outsideTools ?? []);
                     await client.query('COMMIT');
+                transactionOpen = false;
                     return { name: input.name, definitionHash: snapshot.loaded.hash, accessRevision: snapshot.revision,
                         connections: snapshot.loaded.definition.outsideTools ?? [], ...application };
-                } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+            } catch (error) { if (transactionOpen) await client.query('ROLLBACK').catch(() => {}); throw error; }
             });
         } });
     registerAction({ name: 'outside.connections.get', input: outsideConnectionsReadInput, secretFields: ['sessionToken'],
@@ -403,7 +488,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         const row=await db().query("SELECT hash,status FROM agent_definitions WHERE name=$1",[name]);
         if(row.rows[0]?.hash!==hash||row.rows[0]?.status!=='valid') refused('Save a valid definition before reconciliation');
         validate({name,definition:loaded.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd});
-        return o.compose.reconcile!(name,loaded.definition);
+        return applyWithRecovery(name, loaded.definition);
     }) });
     registerAction({ name: 'definition.retire', input: nameInput, run: ({ name }, ctx) => locked(async () => {
             const path = active(name);
