@@ -4,7 +4,8 @@ vi.mock('next/headers',()=>({cookies:async()=>({get:()=>({value:mocks.cookie()})
 vi.mock('../lib/auth',()=>({sessionMember:mocks.member,memberAuditAddress:mocks.auditAddress}));
 vi.mock('../lib/keeper-client',()=>({keeper:mocks.keeper,KeeperRefusedError:class extends Error{},KeeperUnavailableError:class extends Error{outcomeMayBeUnknown=false;}}));
 import { acceptOutsideDescriptorReview,discoverOutsideTools,inspectOutsideDiscovery,listOutsideDiscoveryTargets,previewOutsideDescriptorReview,
-  previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate,applyOutsideCredentialCandidate,previewOutsideCredentialApply } from '../app/actions/outside-discovery.js';
+  previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate,applyOutsideCredentialCandidate,previewOutsideCredentialApply,
+  removeOutsideCredential } from '../app/actions/outside-discovery.js';
 import { KeeperUnavailableError } from '../lib/keeper-client.js';
 import { parseOutsideDescriptorReview,parseOutsideDiscoveryTargets } from '../lib/outside-discovery-dto.js';
 
@@ -14,7 +15,8 @@ const preview={accountId,requestId,claimOperationId,agentName:'worker',connectio
   purpose:'streamable-http-discovery-v1',definitionHash:'a'.repeat(64),accessRevision:1,destinationHash:'b'.repeat(64),
   routePolicyHash:'c'.repeat(64),expectedGeneration:0,expectedCandidateRevision:null,consentGeneration:1};
 const memberId='11111111-1111-4111-8111-111111111111',auditActor='member@example.test';
-const credentialStatus={state:'unavailable',reviewPending:false,applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null};
+const credentialStatus={state:'unavailable',reviewPending:false,applyPending:false,accountId:null,generation:null,hasCredentialMaterial:false,
+  activeRevision:null,candidateRevision:null,discoveryRevision:null};
 beforeEach(()=>{vi.clearAllMocks();mocks.cookie.mockReturnValue(sessionToken);mocks.member.mockResolvedValue({id:memberId,role:'member'});
   mocks.auditAddress.mockResolvedValue(auditActor);mocks.keeper.mockResolvedValue([]);});
 
@@ -27,6 +29,17 @@ it('derives session and actor at the server boundary for target and preview requ
   await previewOutsideDiscovery({agentName:'worker',connectionName:'connector'});
   expect(mocks.keeper).toHaveBeenLastCalledWith('outside.discovery-preview',{sessionToken,agentName:'worker',connectionName:'connector'},auditActor);
   await expect(previewOutsideDiscovery({agentName:'worker',connectionName:'connector',endpoint:'https://untrusted.test'})).rejects.toThrow(/Invalid discovery/);
+});
+
+it('removes only the exact account generation through the signed Keeper session',async()=>{
+  const generation=8;
+  mocks.keeper.mockResolvedValueOnce({kind:'revoke',outcome:'revoked',accountId,generation:generation+1});
+  await expect(removeOutsideCredential({accountId,agentName:'worker',connectionName:'connector',expectedGeneration:generation}))
+    .resolves.toEqual({removed:true,generation:generation+1});
+  expect(mocks.keeper).toHaveBeenCalledWith('outside.credential-remove',
+    {sessionToken,accountId,agentName:'worker',connectionName:'connector',expectedGeneration:generation},auditActor);
+  await expect(removeOutsideCredential({accountId,agentName:'worker',connectionName:'connector',expectedGeneration:generation,owner:'other'}))
+    .rejects.toThrow(/Invalid discovery input/);
 });
 
 it('rejects malformed target and preview DTOs before they can reach the member page',async()=>{
@@ -49,6 +62,15 @@ it('accepts target counts through the authority limit and rejects larger or malf
     {agentName:'worker',connectionName:'connector',credentialStatus}])).toBeUndefined();
   expect(parseOutsideDiscoveryTargets([{agentName:'worker',connectionName:'connector',credentialStatus:{...credentialStatus,state:'secrets'}}])).toBeUndefined();
   expect(parseOutsideDiscoveryTargets([{agentName:'worker',connectionName:'connector',credentialStatus:{...credentialStatus,state:'active'}}])).toBeUndefined();
+});
+
+it('accepts an unavailable discovery-only account while reporting its held credential material',()=>{
+  const discoveryOnly={state:'unavailable',reviewPending:true,applyPending:false,accountId,
+    generation:3,hasCredentialMaterial:true,activeRevision:null,candidateRevision:null,discoveryRevision:2};
+  expect(parseOutsideDiscoveryTargets([{agentName:'worker',connectionName:'connector',credentialStatus:discoveryOnly}]))
+    .toEqual([{agentName:'worker',connectionName:'connector',credentialStatus:discoveryOnly}]);
+  expect(parseOutsideDiscoveryTargets([{agentName:'worker',connectionName:'connector',credentialStatus:{...discoveryOnly,accountId:null,generation:null}}]))
+    .toBeUndefined();
 });
 
 it('requires literal consent and accepts only preview expectations and the bearer',async()=>{

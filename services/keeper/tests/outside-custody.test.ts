@@ -317,12 +317,14 @@ it('projects only the current member’s active, candidate, and discovered crede
     if(sql.includes('FROM outside_custody_accounts WHERE owner_member_id=$1'))return {rows:[{account_id:accountId,owner_member_id:'member-1',
       resource_id:'worker',connection_name:'connector',generation:'5',active_revision:'2',candidate_revision:'4',consent_generation:'3',state:'active'}],rowCount:1};
     if(sql.includes("operation_kind='discover'"))return {rows:[{revision:'5'}],rowCount:1};
+    if(sql.includes('SELECT EXISTS(SELECT 1 FROM outside_custody_revisions'))return {rows:[{present:true}],rowCount:1};
     throw new Error(`Unexpected credential status SQL: ${sql}`);
   });
   const [status]=await store.listHumanDiscoveryTargets(humanSession,{deadlineAtMs:Date.now()+5000});
   expect(status).toEqual({agentName:'worker',connectionName:'connector',credentialStatus:{state:'active-pending',reviewPending:true,applyPending:true,
-    activeRevision:2,candidateRevision:4,discoveryRevision:5}});
-  expect(Object.keys(status.credentialStatus).sort()).toEqual(['activeRevision','applyPending','candidateRevision','discoveryRevision','reviewPending','state']);
+    accountId,generation:5,hasCredentialMaterial:true,activeRevision:2,candidateRevision:4,discoveryRevision:5}});
+  expect(Object.keys(status.credentialStatus).sort()).toEqual(['accountId','activeRevision','applyPending','candidateRevision','discoveryRevision','generation',
+    'hasCredentialMaterial','reviewPending','state']);
   expect(JSON.stringify(Object.values(status.credentialStatus))).not.toMatch(/ciphertext|credential|policy|token/i);
   store.close();
 });
@@ -337,6 +339,7 @@ it.each([
       resource_id:'worker',connection_name:'connector',generation:'5',active_revision:input.active,candidate_revision:input.candidate,
       consent_generation:'3',state:'active'}],rowCount:1};
     if(sql.includes("operation_kind='discover'"))return {rows:[{revision:input.discovery}],rowCount:1};
+    if(sql.includes('SELECT EXISTS(SELECT 1 FROM outside_custody_revisions'))return {rows:[{present:true}],rowCount:1};
     throw new Error(`Unexpected credential status SQL: ${sql}`);
   });
   const [status]=await store.listHumanDiscoveryTargets(humanSession,{deadlineAtMs:Date.now()+5000});
@@ -350,6 +353,7 @@ it('shows revocation only to the credential owner with current connection use, a
     if(sql.includes('FROM outside_custody_accounts WHERE owner_member_id=$1'))return {rows:[{account_id:accountId,owner_member_id:'member-1',
       resource_id:'worker',connection_name:'connector',generation:'6',active_revision:null,candidate_revision:null,consent_generation:'3',state:'revoked'}],rowCount:1};
     if(sql.includes("operation_kind='discover'"))return {rows:[{revision:'5'}],rowCount:1};
+    if(sql.includes('SELECT EXISTS(SELECT 1 FROM outside_custody_revisions'))return {rows:[{present:false}],rowCount:1};
     throw new Error(`Unexpected credential status SQL: ${sql}`);
   });
   const [revoked]=await store.listHumanDiscoveryTargets(humanSession,{deadlineAtMs:Date.now()+5000});

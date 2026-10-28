@@ -81,7 +81,7 @@ type OutsideJson = null | boolean | number | string | OutsideJson[] | { [key: st
 type OutsideListedTool = { name: string; description?: string; inputSchema: { [key: string]: OutsideJson } };
 type OutsideDiscoveryDocument = { protocolVersion: '2025-06-18'; serverInfo: { name: string; version: string }; tools: OutsideListedTool[] };
 export type HumanCredentialStatus={state:'unavailable'|'active'|'pending'|'active-pending'|'revoked';reviewPending:boolean;applyPending:boolean;
-  activeRevision:number|null;candidateRevision:number|null;discoveryRevision:number|null};
+  accountId:string|null;generation:number|null;hasCredentialMaterial:boolean;activeRevision:number|null;candidateRevision:number|null;discoveryRevision:number|null};
 export type HumanDiscoveryTarget={agentName:string;connectionName:string;credentialStatus:HumanCredentialStatus};
 export type HumanDiscoveryPreview={accountId:string;requestId:string;claimOperationId:string;agentName:string;connectionName:string;
   endpoint:string;purpose:'streamable-http-discovery-v1';definitionHash:string;accessRevision:number;destinationHash:string;
@@ -671,7 +671,7 @@ export class OutsideCustodyStore {
           FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 FOR SHARE`,
           [memberId,target.agentName,target.connectionName]);
         if(identity.rows.length===0)return {...target,credentialStatus:{state:'unavailable' as const,reviewPending:false,applyPending:false,
-          activeRevision:null,candidateRevision:null,discoveryRevision:null}};
+          accountId:null,generation:null,hasCredentialMaterial:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}};
         if(identity.rows.length!==1)return denied();
         const head=identity.rows[0]!;
         if(head.owner_member_id!==memberId||head.resource_id!==target.agentName||head.connection_name!==target.connectionName)return denied();
@@ -680,12 +680,15 @@ export class OutsideCustodyStore {
         const discoveries=await db.query<{revision:string|null}>(`SELECT max(credential_revision)::text AS revision FROM outside_custody_operations
           WHERE account_id=$1 AND owner_member_id=$2 AND operation_kind='discover' AND event_phase='result' AND outcome='completed'`,
           [head.account_id,memberId]);
+        const revisions=await db.query<{present:boolean}>(`SELECT EXISTS(SELECT 1 FROM outside_custody_revisions WHERE account_id=$1 AND owner_member_id=$2) AS present`,
+          [head.account_id,memberId]);
         const discoveryRevision=discoveries.rows[0]?.revision===null||discoveries.rows[0]?.revision===undefined?null:number(discoveries.rows[0].revision);
         const reviewPending=head.state!=='revoked'&&discoveryRevision!==null&&discoveryRevision>Math.max(activeRevision??0,candidateRevision??0);
         const applyPending=candidateRevision!==null;
         const state=head.state==='revoked'?'revoked':applyPending
           ?activeRevision===null?'pending':'active-pending':activeRevision===null?'unavailable':'active';
-        return {...target,credentialStatus:{state,reviewPending,applyPending,activeRevision,candidateRevision,discoveryRevision}};
+        return {...target,credentialStatus:{state,reviewPending,applyPending,accountId:head.account_id,generation:number(head.generation),
+          hasCredentialMaterial:revisions.rows[0]?.present===true,activeRevision,candidateRevision,discoveryRevision}};
       }));
     },options));
   }
@@ -768,7 +771,8 @@ export class OutsideCustodyStore {
       if(identity.rows.length>1)return denied();
       const head=identity.rows[0];
       if(head&&(head.account_id.length===0||head.owner_member_id!==memberId||head.resource_id!==input.agentName||
-          head.connection_name!==input.connectionName||head.state!=='active'))return denied();
+          head.connection_name!==input.connectionName||head.state!=='active'&&head.state!=='revoked'||
+          head.state==='revoked'&&(head.active_revision!==null||head.candidate_revision!==null)))return denied();
       const accountId=head?.account_id??randomUUID();
       let expectedGeneration=0,expectedCandidateRevision:number|null=null,consentGeneration=1;
       if(head){
@@ -1014,7 +1018,8 @@ export class OutsideCustodyStore {
           let headConsentGeneration:number;
           if(byIdentity){
             if(byIdentity.account_id!==accountId||byIdentity.owner_member_id!==memberId||byIdentity.resource_id!==input.agentName||
-                byIdentity.connection_name!==input.connectionName||byIdentity.state!=='active'||
+                byIdentity.connection_name!==input.connectionName||byIdentity.state!=='active'&&byIdentity.state!=='revoked'||
+                byIdentity.state==='revoked'&&(byIdentity.active_revision!==null||byIdentity.candidate_revision!==null)||
                 number(byIdentity.generation)!==input.expectedGeneration||
                 (byIdentity.candidate_revision===null?null:number(byIdentity.candidate_revision))!==input.expectedCandidateRevision)return requestDenied();
             const latest=await db.query<{consent:string}>(`SELECT COALESCE(max(consent_generation),0)::text AS consent
@@ -1037,11 +1042,19 @@ export class OutsideCustodyStore {
           let generation:number,revision:number;
           if(head){
             generation=number(head.generation);
-            const last=await db.query<{revision:string}>(`SELECT COALESCE(max(credential_revision),0)::text AS revision
-              FROM outside_custody_revisions WHERE account_id=$1`,[accountId]);
-            const previous=Number(last.rows[0]?.revision??'0');
-            if(!Number.isSafeInteger(previous)||previous<0||previous>=Number.MAX_SAFE_INTEGER)return requestDenied();
+            const last=await db.query<{revision:string;receipt:string}>(`SELECT
+                COALESCE((SELECT max(credential_revision) FROM outside_custody_revisions WHERE account_id=$1),0)::text AS revision,
+                COALESCE((SELECT max(credential_revision) FROM outside_custody_operations WHERE account_id=$1),0)::text AS receipt`,[accountId]);
+            const previous=Math.max(generation,Number(last.rows[0]?.revision??'0'),Number(last.rows[0]?.receipt??'0'));
+            if(!Number.isSafeInteger(previous)||previous<1||previous>=Number.MAX_SAFE_INTEGER)return requestDenied();
             revision=previous+1;
+            if(head.state==='revoked'){
+              const reopened=await db.query(`UPDATE outside_custody_accounts SET state='active',updated_at=clock_timestamp()
+                WHERE account_id=$1 AND owner_member_id=$2 AND resource_id=$3 AND connection_name=$4 AND generation=$5
+                  AND active_revision IS NULL AND candidate_revision IS NULL AND state='revoked'`,
+                [accountId,memberId,input.agentName,input.connectionName,generation]);
+              if(reopened.rowCount!==1)return requestDenied();
+            }
           }else{
             generation=1;revision=1;
             const created=await db.query(`INSERT INTO outside_custody_accounts
@@ -1899,8 +1912,12 @@ export class OutsideCustodyStore {
           let sourcePlain:Buffer|undefined;
           try{
             await lease.assertCurrent();this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);await checkConsoleSourceDeadlines(db);
-            const max=await db.query<{revision:string}>(`SELECT COALESCE(max(credential_revision),0)::text AS revision FROM outside_custody_revisions WHERE account_id=$1`,[accountId]);
-            const previous=Number(max.rows[0]?.revision??'0');if(!Number.isSafeInteger(previous)||previous<1||previous>=Number.MAX_SAFE_INTEGER)return requestDenied();
+            const max=await db.query<{revision:string;receipt:string;generation:string}>(`SELECT
+                COALESCE((SELECT max(credential_revision) FROM outside_custody_revisions WHERE account_id=$1),0)::text AS revision,
+                COALESCE((SELECT max(credential_revision) FROM outside_custody_operations WHERE account_id=$1),0)::text AS receipt,
+                generation::text AS generation FROM outside_custody_accounts WHERE account_id=$1 AND owner_member_id=$2 FOR UPDATE`,[accountId,memberId]);
+            const previous=Math.max(Number(max.rows[0]?.generation??'0'),Number(max.rows[0]?.revision??'0'),Number(max.rows[0]?.receipt??'0'));
+            if(!Number.isSafeInteger(previous)||previous<1||previous>=Number.MAX_SAFE_INTEGER)return requestDenied();
             const candidateRevision=previous+1,candidateGeneration=value.expectedGeneration+1;
             if(candidateGeneration>Number.MAX_SAFE_INTEGER)return requestDenied();
             await lease.assertCurrent();this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);await checkConsoleSourceDeadlines(db);
@@ -2044,6 +2061,51 @@ export class OutsideCustodyStore {
 
   async revoke(binding: SourceBinding, input:{accountId:string;operationId:string;expectedGeneration:number}, options:{deadlineAtMs?:number}={}):Promise<OutsideOperationResult>{
     return this.transition(binding,input,options);
+  }
+
+  /** Erase held bearer revisions for the current custodian while retaining non-secret receipts.
+   * The account generation is advanced past every erased revision so no later reconnect can reuse
+   * an approval's credential revision number. */
+  async removeHumanCredential(sessionToken:string,input:{accountId:string;agentName:string;connectionName:string;operationId:string;expectedGeneration:number},
+    options:{deadlineAtMs:number}):Promise<OutsideOperationResult>{
+    if(!/^[a-z][a-z0-9-]{1,30}$/.test(input.agentName)||!/^[a-z][a-z0-9-]{1,30}$/.test(input.connectionName)||
+        !Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<1||input.expectedGeneration>=Number.MAX_SAFE_INTEGER)return requestDenied();
+    const operationId=uuid.parse(input.operationId),accountId=uuid.parse(input.accountId);
+    return this.#inMainNamespace({...options,operationId},()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      // Current agent access is re-evaluated under the signed session transaction. Actor text and
+      // declarations never confer custody; the account owner must be this authenticated member.
+      const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName);
+      if(capture.actor.memberId!==memberId||capture.agent.name!==input.agentName||capture.outside.connection.name!==input.connectionName)return requestDenied();
+      const found=await db.query<Head>(`SELECT account_id,owner_member_id,resource_id,connection_name,generation::text,
+          active_revision::text,candidate_revision::text,consent_generation::text,state
+        FROM outside_custody_accounts WHERE account_id=$1 AND owner_member_id=$2 AND resource_id=$3 AND connection_name=$4 FOR UPDATE`,
+        [accountId,memberId,input.agentName,input.connectionName]);
+      const head=found.rows[0];
+      if(found.rows.length!==1||!head||head.account_id!==accountId||head.owner_member_id!==memberId||head.resource_id!==input.agentName||
+          head.connection_name!==input.connectionName)return requestDenied();
+      const consentGeneration=number(head.consent_generation),generation=number(head.generation);
+      const hash=requestHash('revoke',accountId,memberId,input.agentName,input.expectedGeneration,null,null,consentGeneration);
+      const prior=await this.priorOperation(db,operationId,hash,accountId,memberId,'revoke',input.expectedGeneration);
+      if(prior)return prior;
+      if(generation!==input.expectedGeneration||head.state!=='active'&&head.state!=='revoked')return requestDenied();
+      if(head.state==='revoked'&&(head.active_revision!==null||head.candidate_revision!==null))return requestDenied();
+      await this.capacity(db,accountId,'revoke',false);
+      const highWater=await db.query<{revision:string;receipt:string}>(`SELECT
+          COALESCE((SELECT max(credential_revision) FROM outside_custody_revisions WHERE account_id=$1 AND owner_member_id=$2),0)::text AS revision,
+          COALESCE((SELECT max(credential_revision) FROM outside_custody_operations WHERE account_id=$1 AND owner_member_id=$2),0)::text AS receipt`,
+        [accountId,memberId]);
+      const revision=Math.max(number(head.generation),Number(highWater.rows[0]?.revision??'0'),Number(highWater.rows[0]?.receipt??'0'));
+      if(!Number.isSafeInteger(revision)||revision<1||revision>=Number.MAX_SAFE_INTEGER)return requestDenied();
+      const next=revision+1;
+      const changed=await db.query(`UPDATE outside_custody_accounts SET generation=$2,active_revision=NULL,candidate_revision=NULL,
+          state='revoked',updated_at=clock_timestamp() WHERE account_id=$1 AND owner_member_id=$3 AND resource_id=$4 AND connection_name=$5
+          AND generation=$6 AND state=$7`,[accountId,next,memberId,input.agentName,input.connectionName,input.expectedGeneration,head.state]);
+      if(changed.rowCount!==1)return requestDenied();
+      await db.query('DELETE FROM outside_custody_revisions WHERE account_id=$1 AND owner_member_id=$2',[accountId,memberId]);
+      await checkConsoleSourceDeadlines(db);
+      return this.record(db,{operationId,accountId,ownerMemberId:memberId,kind:'revoke',hash,expected:input.expectedGeneration,
+        result:next,revision,outcome:'revoked'});
+    },{...options,operationId}));
   }
 
   private async transition(binding:SourceBinding,input:{accountId:string;operationId:string;expectedGeneration:number},options:{deadlineAtMs?:number}={}):Promise<OutsideOperationResult>{

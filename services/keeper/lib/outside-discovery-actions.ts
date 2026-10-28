@@ -14,6 +14,10 @@ const deadline=()=>({deadlineAtMs:Date.now()+8000});
 export function registerHumanOutsideDiscoveryActions(store:OutsideCustodyStore):void{
   registerAction({name:'outside.discovery-targets',input:z.strictObject({sessionToken}),secretFields:['sessionToken'],
     run:input=>store.listHumanDiscoveryTargets(input.sessionToken,deadline())});
+  registerAction({name:'outside.credential-remove',input:z.strictObject({sessionToken,accountId:uuid,agentName:z.string().regex(NAME),
+    connectionName:z.string().regex(NAME),expectedGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}),
+    secretFields:['sessionToken'],run:input=>store.removeHumanCredential(input.sessionToken,{accountId:input.accountId,agentName:input.agentName,
+      connectionName:input.connectionName,expectedGeneration:input.expectedGeneration,operationId:randomUUID()},deadline())});
   registerAction({name:'outside.candidate-apply-preview',input:z.strictObject({sessionToken,agentName:z.string().regex(NAME),connectionName:z.string().regex(NAME)}),
     secretFields:['sessionToken'],run:input=>store.inspectHumanPendingApply(input.sessionToken,
       {agentName:input.agentName,connectionName:input.connectionName},deadline())});

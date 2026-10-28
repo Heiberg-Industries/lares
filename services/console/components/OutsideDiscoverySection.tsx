@@ -2,13 +2,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { acceptOutsideDescriptorReview,discoverOutsideTools,inspectOutsideDiscovery,listOutsideDiscoveryTargets,previewOutsideDescriptorReview,
   previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate,applyOutsideCredentialCandidate,
-  previewOutsideCredentialApply } from "../app/actions/outside-discovery";
+  previewOutsideCredentialApply,removeOutsideCredential } from "../app/actions/outside-discovery";
 import type { OutsideDescriptorAcceptanceDto,OutsideDescriptorPublicationDto,OutsideDescriptorReviewDto,OutsideDiscoveryDocumentDto,
   OutsideDiscoveryPreviewDto,OutsideDiscoveryTargetDto,OutsidePendingApplyDto } from "../lib/outside-discovery-dto";
 
 type Target=OutsideDiscoveryTargetDto;
 type Preview=OutsideDiscoveryPreviewDto;
 type Recovery={accountId:string;requestId:string;claimOperationId:string;agentName:string;connectionName:string};
+type RemovalIdentity={accountId:string;agentName:string;connectionName:string;generation:number};
 type Discovery=OutsideDiscoveryDocumentDto;
 const RECOVERY_KEY="lares.outside.discovery.recovery.v1";
 function recoveryKey(memberId:string):string{return `${RECOVERY_KEY}:${encodeURIComponent(memberId)}`;}
@@ -34,8 +35,9 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     [recovery,setRecovery]=useState<Recovery>(),[inspected,setInspected]=useState(false),[unresolved,setUnresolved]=useState(false),
     [descriptorReview,setDescriptorReview]=useState<OutsideDescriptorReviewDto>(),[publication,setPublication]=useState<OutsideDescriptorPublicationDto>(),
     [acceptance,setAcceptance]=useState<OutsideDescriptorAcceptanceDto>(),[staged,setStaged]=useState<OutsidePendingApplyDto>(),
-    [applyUncertain,setApplyUncertain]=useState(false);
-  const selectionRef=useRef(""),activeRecoveryRef=useRef<string|undefined>(undefined),reviewPreviewVersion=useRef(0),pendingApplyVersion=useRef(0);
+    [applyUncertain,setApplyUncertain]=useState(false),[removalUncertain,setRemovalUncertain]=useState<RemovalIdentity>();
+  const selectionRef=useRef(""),activeRecoveryRef=useRef<string|undefined>(undefined),reviewPreviewVersion=useRef(0),pendingApplyVersion=useRef(0),
+    credentialMutationVersion=useRef(0);
   const selectedTarget=useMemo(()=>targets.find(t=>`${t.agentName}\0${t.connectionName}`===selected),[targets,selected]);
 
   useEffect(()=>{
@@ -89,16 +91,42 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     if(!applyUncertain)setStaged(undefined);
     reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
     setBusy(true);setError("");
-    try{const items=await listOutsideDiscoveryTargets();setTargets(items);if(items.length){const first=`${items[0]!.agentName}\0${items[0]!.connectionName}`;
-      selectionRef.current=first;setSelected(first);const target=items[0]!;
+    try{const items=await listOutsideDiscoveryTargets();setTargets(items);
+      if(removalUncertain){
+        const exact=items.find(item=>item.agentName===removalUncertain.agentName&&item.connectionName===removalUncertain.connectionName&&
+          item.credentialStatus.accountId===removalUncertain.accountId);
+        if(exact?.credentialStatus.state==='revoked'&&!exact.credentialStatus.hasCredentialMaterial&&
+            exact.credentialStatus.generation!==null&&exact.credentialStatus.generation>removalUncertain.generation){
+          clearRemovedRecovery(removalUncertain);setRemovalUncertain(undefined);
+          setMessage(`Keeper confirms removal for ${removalUncertain.agentName} · ${removalUncertain.connectionName}; audit receipts remain.`);
+        }else if(exact?.credentialStatus.hasCredentialMaterial&&exact.credentialStatus.generation===removalUncertain.generation){
+          setRemovalUncertain(undefined);setMessage(`The exact ${removalUncertain.agentName} · ${removalUncertain.connectionName} account remains at the requested generation with held material; removal did not commit.`);
+        }else setMessage(`Removal remains unconfirmed for ${removalUncertain.agentName} · ${removalUncertain.connectionName}. Its exact account version is unavailable or has since changed; do not repeat the request.`);
+      }
+      if(items.length){const current=items.find(item=>`${item.agentName}\0${item.connectionName}`===selectionRef.current);
+      const target=current??items[0]!;const selectedKey=`${target.agentName}\0${target.connectionName}`;
+      selectionRef.current=selectedKey;setSelected(selectedKey);
       if(applyUncertain&&staged?.agentName===target.agentName&&staged.connectionName===target.connectionName){
         if(target.credentialStatus.activeRevision===staged.candidateRevision&&!target.credentialStatus.applyPending){
           setStaged(undefined);setApplyUncertain(false);setMessage(`Credential revision ${staged.candidateRevision} is active in Keeper custody. This does not confirm that the outside server is reachable or the agent is running.`);
-        }else if(target.credentialStatus.applyPending&&target.credentialStatus.candidateRevision===staged.candidateRevision)void restorePendingApply(target,first);
-      }else if(!applyUncertain&&target.credentialStatus.applyPending)void restorePendingApply(target,first);
-    }setMessage(items.length?"Current connections loaded.":"No saved bearer connections are available for your agents.");}
+        }else if(target.credentialStatus.applyPending&&target.credentialStatus.candidateRevision===staged.candidateRevision)void restorePendingApply(target,selectedKey);
+      }else if(!applyUncertain&&target.credentialStatus.applyPending)void restorePendingApply(target,selectedKey);
+    }if(!removalUncertain)setMessage(items.length?"Current connections loaded.":"No saved bearer connections are available for your agents.");}
     catch{setError("Private discovery connections are unavailable. Refresh membership to try again.");}
     finally{setBusy(false);}
+  }
+  function clearRemovedRecovery(identity:RemovalIdentity){
+    try{
+      const savedText=sessionStorage.getItem(memberRecoveryKey);
+      const saved=savedText===null?undefined:asRecovery(JSON.parse(savedText));
+      if(saved&&saved.accountId===identity.accountId&&saved.agentName===identity.agentName&&saved.connectionName===identity.connectionName){
+        sessionStorage.removeItem(memberRecoveryKey);
+        if(activeRecoveryRef.current===recoveryIdentity(saved))activeRecoveryRef.current=undefined;
+        reviewPreviewVersion.current++;pendingApplyVersion.current++;
+        setRecovery(undefined);setDocument(undefined);setPreview(undefined);setConsent(false);setCredential("");setInspected(false);
+        setUnresolved(false);setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(undefined);
+      }
+    }catch{/* Keep stale recovery if it cannot be safely matched and removed. */}
   }
   async function review(){
     if(!selectedTarget)return;
@@ -216,11 +244,38 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     }finally{setBusy(false);}
   }
 
+  async function removeHeldCredential(){
+    const target=selectedTarget,status=selectedTarget?.credentialStatus,selection=selectionRef.current,version=++credentialMutationVersion.current;
+    if(!target||!status?.accountId||status.generation===null||!status.hasCredentialMaterial||busy||unresolved||applyUncertain||removalUncertain)return;
+    const identity:RemovalIdentity={accountId:status.accountId,agentName:target.agentName,connectionName:target.connectionName,generation:status.generation};
+    setBusy(true);setError("");setMessage("");
+    const confirms=(items:Target[])=>items.find(item=>item.agentName===identity.agentName&&item.connectionName===identity.connectionName&&
+      item.credentialStatus.accountId===identity.accountId&&item.credentialStatus.state==='revoked'&&!item.credentialStatus.hasCredentialMaterial&&
+      item.credentialStatus.generation!==null&&item.credentialStatus.generation>identity.generation);
+    try{
+      await removeOutsideCredential({accountId:status.accountId,agentName:target.agentName,connectionName:target.connectionName,expectedGeneration:status.generation});
+      const current=await listOutsideDiscoveryTargets();
+      if(version!==credentialMutationVersion.current||selectionRef.current!==selection)return;
+      setTargets(current);
+      if(confirms(current)){clearRemovedRecovery(identity);setRemovalUncertain(undefined);setMessage("Keeper confirmed that use is stopped and the held credential material is removed. Non-secret audit receipts remain. Reconnect requires a fresh review and consent.");}
+      else{setRemovalUncertain(identity);setError("The removal result could not be matched to this exact account version. Refresh custody status before another action.");}
+    }catch{
+      if(version!==credentialMutationVersion.current||selectionRef.current!==selection)return;
+      try{
+        const current=await listOutsideDiscoveryTargets();
+        if(version!==credentialMutationVersion.current||selectionRef.current!==selection)return;
+        setTargets(current);
+        if(confirms(current)){clearRemovedRecovery(identity);setRemovalUncertain(undefined);setMessage("Keeper confirmed that use is stopped and the held credential material is removed. Non-secret audit receipts remain. Reconnect requires a fresh review and consent.");}
+        else{setRemovalUncertain(identity);setError("Removal could not be confirmed for the exact account version. Refresh custody status before another action; do not repeat an uncertain request.");}
+      }catch{setRemovalUncertain(identity);setError("Removal could not be confirmed and current custody status is unavailable. Refresh before taking another action.");}
+    }finally{if(version===credentialMutationVersion.current)setBusy(false);}
+  }
+
   return <section className="lares-stack" aria-label="Private outside-tool discovery">
     <h2>Discover available tools</h2>
     <p>Review a saved connection and, if you choose, share its bearer credential for one bounded description lookup. This does not enable or run tools.</p>
     {targets.length>0&&<label className="lares-field-label">Agent connection
-      <select value={selected} disabled={busy||unresolved} onChange={event=>{pendingApplyVersion.current++;if(!applyUncertain)setStaged(undefined);selectionRef.current=event.target.value;reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
+      <select value={selected} disabled={busy||unresolved} onChange={event=>{pendingApplyVersion.current++;credentialMutationVersion.current++;if(!applyUncertain)setStaged(undefined);selectionRef.current=event.target.value;reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
         setSelected(event.target.value);setPreview(undefined);setConsent(false);setCredential("");setInspected(false);setDocument(undefined);
         setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(undefined);
         const target=targets.find(item=>`${item.agentName}\0${item.connectionName}`===event.target.value);
@@ -228,7 +283,7 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
         {targets.map(target=><option key={`${target.agentName}:${target.connectionName}`} value={`${target.agentName}\0${target.connectionName}`}>{target.agentName} · {target.connectionName}</option>)}
       </select>
     </label>}
-    {selectedTarget&&<p role="status">{applyUncertain?"The last Apply result is uncertain. No candidate is ready to Apply until the exact current custody state and evidence are recovered.":selectedTarget.credentialStatus.reviewPending&&selectedTarget.credentialStatus.applyPending
+    {selectedTarget&&<p role="status">{removalUncertain?"The last credential-removal result is uncertain. Do not repeat it until the exact current custody state is confirmed.":applyUncertain?"The last Apply result is uncertain. No candidate is ready to Apply until the exact current custody state and evidence are recovered.":selectedTarget.credentialStatus.reviewPending&&selectedTarget.credentialStatus.applyPending
       ?selectedTarget.credentialStatus.state==='active-pending'
         ?"A completed discovery is pending review and a staged credential revision is pending Apply. The active saved revision remains in place."
         :"A completed discovery is pending review and a staged credential revision is pending Apply; no active saved revision is available."
@@ -239,7 +294,7 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       :selectedTarget.credentialStatus.state==='unavailable'
       ?"Credential status is unavailable under your current account and connection access."
       :selectedTarget.credentialStatus.state==='revoked'
-        ?"The saved credential is revoked. Removing the connection declaration does not revoke a credential."
+        ?selectedTarget.credentialStatus.hasCredentialMaterial?"Use is stopped, but Keeper still holds encrypted credential material. Remove it here or reconnect after review.":"Use is stopped and no credential material is held. A fresh review and consent can reconnect this account."
         :selectedTarget.credentialStatus.applyPending&&selectedTarget.credentialStatus.state==='pending'
           ?"A staged credential revision is pending Apply; no active saved revision is available."
         :selectedTarget.credentialStatus.applyPending
@@ -251,6 +306,16 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       <button type="button" disabled={busy||unresolved} onClick={()=>void loadTargets()}>Refresh connections</button>
       <button type="button" disabled={busy||unresolved||applyUncertain||!selectedTarget} onClick={()=>void review()}>Review connection</button>
     </div>
+    {selectedTarget?.credentialStatus.hasCredentialMaterial&&<div className="lares-surface lares-stack">
+      <strong>Credential custodian controls</strong>
+      <p>This action immediately stops Lares use, invalidates pending work and approval revisions, removes held credential material from live Keeper rows, and keeps non-secret audit receipts. It does not revoke the key at its provider; backups may retain encrypted database snapshots.</p>
+      <button type="button" disabled={busy||unresolved||applyUncertain||!!removalUncertain||!selectedTarget.credentialStatus.accountId||
+        selectedTarget.credentialStatus.generation===null} onClick={()=>void removeHeldCredential()}>Stop use and remove held credential</button>
+    </div>}
+    {removalUncertain&&<div className="lares-surface lares-stack" role="status">
+      <p>Removal is unconfirmed for {removalUncertain.agentName} · {removalUncertain.connectionName} at generation {removalUncertain.generation}. Do not repeat the request; another account’s status cannot resolve it.</p>
+      <button type="button" disabled={busy} onClick={()=>void loadTargets()}>Refresh uncertain removal status</button>
+    </div>}
     {preview&&<div className="lares-surface lares-stack">
       <strong>Exact destination</strong><code>{preview.endpoint}</code>
       <p>Purpose: read the tool descriptions once, using the current reviewed network route.</p>

@@ -16,7 +16,7 @@ beforeEach(()=>{vi.clearAllMocks();registerHumanOutsideDiscoveryActions({listHum
 afterEach(()=>resetActions());
 
 it('registers only private member discovery actions and strictly requires explicit consent',async()=>{
-  expect(actionNames()).toEqual(['outside.candidate-apply','outside.candidate-apply-preview','outside.candidate-stage','outside.discover','outside.discovery-inspect','outside.discovery-preview',
+  expect(actionNames()).toEqual(['outside.candidate-apply','outside.candidate-apply-preview','outside.candidate-stage','outside.credential-remove','outside.discover','outside.discovery-inspect','outside.discovery-preview',
     'outside.discovery-review-accept','outside.discovery-review-preview','outside.discovery-review-publish','outside.discovery-targets']);
   methods.discover.mockResolvedValue({protocolVersion:'2025-06-18',serverInfo:{name:'sample',version:'1'},tools:[]});
   await expect(runAction('outside.discover',{...base,consent:false},{actor:'derived-member',audit})).rejects.toThrow(/invalid input/);

@@ -1,4 +1,5 @@
-export type OutsideCredentialStatusDto={state:'unavailable'|'active'|'pending'|'active-pending'|'revoked';reviewPending:boolean;applyPending:boolean;activeRevision:number|null;
+export type OutsideCredentialStatusDto={state:'unavailable'|'active'|'pending'|'active-pending'|'revoked';reviewPending:boolean;applyPending:boolean;
+  accountId:string|null;generation:number|null;hasCredentialMaterial:boolean;activeRevision:number|null;
   candidateRevision:number|null;discoveryRevision:number|null};
 export type OutsideDiscoveryTargetDto={agentName:string;connectionName:string;credentialStatus:OutsideCredentialStatusDto};
 export type OutsideDiscoveryPreviewDto={accountId:string;requestId:string;claimOperationId:string;agentName:string;connectionName:string;
@@ -61,9 +62,11 @@ export function parseOutsideDiscoveryTargets(value:unknown):OutsideDiscoveryTarg
     const item=record(candidate);
     if(!item||!exactKeys(item,['agentName','connectionName','credentialStatus'])||!isName(item.agentName)||!isName(item.connectionName))return;
     const status=record(item.credentialStatus);
-    if(!status||!exactKeys(status,['state','reviewPending','applyPending','activeRevision','candidateRevision','discoveryRevision'])||
+    if(!status||!exactKeys(status,['state','reviewPending','applyPending','accountId','generation','hasCredentialMaterial','activeRevision','candidateRevision','discoveryRevision'])||
         !['unavailable','active','pending','active-pending','revoked'].includes(String(status.state))||
         typeof status.reviewPending!=='boolean'||typeof status.applyPending!=='boolean'||
+        !(status.accountId===null||isUuid(status.accountId))||!(status.generation===null||isInteger(status.generation,1))||
+        typeof status.hasCredentialMaterial!=='boolean'||
         ![status.activeRevision,status.candidateRevision,status.discoveryRevision].every(revision=>revision===null||isInteger(revision,1)))return;
     const hasActive=status.activeRevision!==null,hasCandidate=status.candidateRevision!==null;
     const expectedState=String(status.state)==='revoked'?'revoked':hasCandidate?hasActive?'active-pending':'pending':hasActive?'active':'unavailable';
@@ -71,6 +74,10 @@ export function parseOutsideDiscoveryTargets(value:unknown):OutsideDiscoveryTarg
     const expectedReview=status.state!=='revoked'&&discoveryRevision!==null&&
       discoveryRevision>Math.max((status.activeRevision as number|null)??0,(status.candidateRevision as number|null)??0);
     if(status.state!==expectedState||status.applyPending!==hasCandidate||status.reviewPending!==expectedReview||
+        (hasActive||hasCandidate)&&!status.hasCredentialMaterial||
+        (status.accountId===null)!==(status.generation===null)||
+        status.state==='unavailable'&&(hasActive||hasCandidate)||
+        status.accountId===null&&(status.hasCredentialMaterial||discoveryRevision!==null)||
         status.state==='revoked'&&(hasActive||hasCandidate))return;
     const key=`${item.agentName}\0${item.connectionName}`;
     if(seen.has(key))return;

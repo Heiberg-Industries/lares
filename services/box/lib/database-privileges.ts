@@ -492,7 +492,7 @@ async function requireManagedAcls(client: PoolClient, database: string, custody 
     else if ((FINANCIAL_TABLES as readonly string[]).includes(table)) for (const privilege of ["SELECT","INSERT"]) expected.push(expectedAclKey(FINANCIAL,privilege));
     if (custody && (OUTSIDE_CUSTODY_AUTHORITY_TABLES as readonly string[]).includes(table)) expected.push(expectedAclKey(OUTSIDE_CUSTODY,"SELECT"));
     if (custody && (ENGINE_TABLE_PRIVILEGES.outsideCustody as readonly string[]).includes(table)) {
-      const privileges = table === "outside_custody_accounts" ? ["SELECT","INSERT"] : ["SELECT","INSERT"];
+      const privileges = table === "outside_custody_revisions" ? ["SELECT","INSERT","DELETE"] : ["SELECT","INSERT"];
       for (const privilege of privileges) expected.push(expectedAclKey(OUTSIDE_CUSTODY,privilege));
     }
     const tableAcl = `SELECT COALESCE(r.rolname,'PUBLIC') AS grantee, a.privilege_type AS privilege, a.is_grantable AS grantable
@@ -575,7 +575,8 @@ async function applyGrants(client: PoolClient): Promise<void> {
     if (columns?.length) await client.query(`GRANT UPDATE (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(FINANCIAL)}`);
   }
   for (const table of ENGINE_TABLE_PRIVILEGES.outsideCustody) {
-    await client.query(`GRANT SELECT, INSERT ON TABLE ${qname(table)} TO ${qid(OUTSIDE_CUSTODY)}`);
+    const privileges=table==="outside_custody_revisions"?"SELECT, INSERT, DELETE":"SELECT, INSERT";
+    await client.query(`GRANT ${privileges} ON TABLE ${qname(table)} TO ${qid(OUTSIDE_CUSTODY)}`);
   }
   for (const [table, columns] of Object.entries(FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS)) {
     await client.query(`GRANT SELECT (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(FINANCIAL)}`);
