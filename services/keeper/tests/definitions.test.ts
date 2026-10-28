@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync, symlinkSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readlinkSync, writeFileSync, mkdirSync, existsSync, lstatSync, symlinkSync, readdirSync, rmSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -6,12 +6,13 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { Pool } from 'pg';
 import { quiet } from './helpers/quiet-pool.js';
 import { afterAll, beforeAll, beforeEach, expect, it, vi, type Mock } from 'vitest';
-import { loadDefinition } from '@lares/agent-kit/definition';
+import { loadDefinition, readDefinitionFiles } from '@lares/agent-kit/definition';
 import { deployedToolsFor } from '@lares/agent-kit/persona';
 import { registerDefinitionActions } from '../lib/definitions.js';
-import { resetActions, runAction } from '../lib/actions.js';
+import { KeeperRefusedError, resetActions, runAction } from '../lib/actions.js';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { outsideSecretName } from '@lares/agent-kit/outside-tools';
+import { recordAppliedDefinition } from '../lib/definition-files.js';
 // Vitest 4 types a bare `vi.fn()` as an unusable Procedure | Constructable union, so the fakes are typed as plain mocks.
 type AnyMock = Mock<(...args: any[]) => any>;
 const repo = resolve('../..');
@@ -30,6 +31,10 @@ let backup: {
 const ctx = () => ({ actor: 'owner@example.com', audit: vi.fn(async (_record: unknown) => { }) });
 const save = (name = 'bookkeeper', extra = {}) => ({ name, definition: { ...GOOD, name }, duties: 'Books.\n', voice: 'Dry.\n', ...extra });
 const create = (name = 'bookkeeper', extra = {}) => runAction('definition.create', { ...save(name, extra), startingPoint: role }, ctx());
+async function recordApplied(name = 'bookkeeper') {
+    const path = join(agentsDir, name);
+    recordAppliedDefinition(path, await readDefinitionFiles(path));
+}
 async function connectionFixture() {
     await create('bookkeeper', { definition: { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope: 'write-with-confirm' }], autonomy: { ...GOOD.autonomy, outside: 'gated' } } });
     const loaded = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } });
@@ -84,7 +89,7 @@ beforeEach(async () => {
         rmSync(root, { recursive: true, force: true });
     root = mkdtempSync(join(tmpdir(), 'keeper-definitions-'));
     [agentsDir, retiredDir, secretsDir] = ['agents', 'retired', 'secrets'].map(n => { const d = join(root, n); mkdirSync(d); return d; });
-    await pool.query('DELETE FROM agent_access; DELETE FROM member_sessions; DELETE FROM agent_definitions; TRUNCATE agent_avatars, agent_doors, owned_memory, standing_facts');
+    await pool.query('DELETE FROM agent_access; DELETE FROM member_sessions; DELETE FROM agent_definitions; TRUNCATE agent_resources,agent_avatars, agent_doors, owned_memory, standing_facts');
     backup = { commit: vi.fn(async () => { }) };
     compose = { stop: vi.fn(async () => { }), create: vi.fn(async () => { }),prepareSecretChange:vi.fn(async()=>{}),secretChanged:vi.fn(async()=>{}) };
     register();
@@ -124,6 +129,7 @@ it('lets the owner and a named editor change only outside declarations, while us
 });
 it('applies only with the current editor session and preserves the last applied declarations when reconciliation fails', async () => {
     const { loaded, access, sessions } = await connectionFixture();
+    await recordApplied();
     const applied = { ...loaded.definition, outsideTools: [declaration] };
     await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,state,applied_definition,pending)
         VALUES('bookkeeper','172.18.0.24','lares_connection_apply','legacy',gen_random_uuid(),'ready',$1::jsonb,false)`, [JSON.stringify(applied)]);
@@ -134,7 +140,8 @@ it('applies only with the current editor session and preserves the last applied 
 
     compose.reconcile = vi.fn(async (_name: string, definition: any) => {
         await pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb WHERE name=$1', ['bookkeeper', JSON.stringify(definition)]);
-        return { pending: false, reason: 'runtime activation held', running: false, healthy: null };
+        recordAppliedDefinition(join(agentsDir, 'bookkeeper'), await readDefinitionFiles(join(agentsDir, 'bookkeeper')));
+        return { pending: false, reason: null, running: true, healthy: true };
     });
     await expect(connectionApplyCall(sessions.user, 'bookkeeper', saved.definitionHash, saved.accessRevision)).rejects.toThrow();
     await expect(connectionApplyCall(sessions.stranger, 'bookkeeper', saved.definitionHash, saved.accessRevision)).rejects.toThrow();
@@ -148,7 +155,7 @@ it('applies only with the current editor session and preserves the last applied 
     compose.reconcile.mockRejectedValueOnce(new Error('untrusted runtime detail with secrets'));
     await expect(connectionApplyCall(sessions.editor, 'bookkeeper', next.definitionHash, next.accessRevision)).rejects.toThrow();
     const state: any = await runAction('outside.connections.get', { sessionToken: sessions.editor, name: 'bookkeeper' }, ctx());
-    expect(state.applicationStatus).toBe('pending');
+    expect(state.applicationStatus).toBe('applied');
     expect(state.appliedConnections).toEqual([pendingDeclaration]);
     expect(JSON.stringify(state)).not.toContain('untrusted runtime detail');
 });
@@ -242,6 +249,127 @@ it('renames legacy routing settings through definition.save and leaves explicit 
     expect(result.runtime).toMatchObject({ pending: true });
     expect(saved).toHaveBeenCalledTimes(1);
     expect(backup.commit).toHaveBeenCalledTimes(2);
+});
+it('restores the complete previous definition when Apply startup fails, then requires a new save to retry', async () => {
+    await create();
+    const path = join(agentsDir, 'bookkeeper');
+    await recordApplied();
+    const previous = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: path } });
+    const oldPointer = readFileSync(join(path, '.applied-generation'), 'utf8');
+    const incarnation = '00000000-0000-4000-8000-000000000001';
+    await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending)
+      VALUES('bookkeeper','192.0.2.2','workflow_test','owned',$1,$1,'ready',$2::jsonb,false)`, [incarnation, JSON.stringify(previous.definition)]);
+    Object.assign(compose, { liveStatus: vi.fn(async () => ({ pending: false, running: true, healthy: true })) });
+    let calls = 0;
+    Object.assign(compose, { reconcile: vi.fn(async (_name: string, definition: any) => {
+        calls++;
+        if (calls === 1) {
+            await pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=true WHERE name=$1', ['bookkeeper', JSON.stringify(definition)]);
+            throw new Error('injected startup failure');
+        }
+        recordAppliedDefinition(path, await readDefinitionFiles(path));
+        return { pending: false, running: true, healthy: true };
+    }) });
+    register();
+    const stale: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'older candidate' }, duties: 'Older duties.\n', voice: 'Older voice.\n' }), ctx());
+    const candidate: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'candidate' }, duties: 'Candidate duties.\n', voice: 'Candidate voice.\n' }), ctx());
+    expect(readFileSync(join(path, '.apply-rollback'), 'utf8')).toBe(oldPointer);
+    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: stale.hash }, ctx())).rejects.toThrow('changed');
+    expect(compose.reconcile).not.toHaveBeenCalled();
+    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: candidate.hash }, ctx())).rejects.toThrow('keeper: action failed');
+    const restored = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: path } });
+    expect(readlinkSync(join(path, '.current'))).toBe(oldPointer);
+    expect(restored).toMatchObject({ definition: previous.definition, dutiesMd: previous.dutiesMd, voiceMd: previous.voiceMd });
+    expect((await pool.query("SELECT definition,duties,voice,hash,status FROM agent_definitions WHERE name='bookkeeper'")).rows[0]).toMatchObject({ definition: previous.definition, duties: previous.dutiesMd, voice: previous.voiceMd, hash: previous.hash, status: 'valid' });
+    expect((await pool.query("SELECT applied_definition,pending,pending_reason FROM agent_resources WHERE name='bookkeeper'")).rows[0]).toMatchObject({ applied_definition: previous.definition, pending: false, pending_reason: null });
+    expect(calls).toBe(2);
+    expect((await pool.query("SELECT count(*)::int AS count FROM agent_definitions WHERE name='bookkeeper' AND hash=$1", [candidate.hash])).rows[0].count).toBe(0);
+});
+it('keeps the new definition after a successful Apply and clears its rollback marker', async () => {
+    await create();
+    const path = join(agentsDir, 'bookkeeper');
+    await recordApplied();
+    const previous = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: path } });
+    unlinkSync(join(path, '.current'));
+    for (const [file, content] of Object.entries({ 'agent.json': JSON.stringify(previous.definition, null, 2) + '\n', 'duties.md': previous.dutiesMd, 'voice.md': previous.voiceMd })) {
+        unlinkSync(join(path, file));
+        writeFileSync(join(path, file), content);
+    }
+    const incarnation = '00000000-0000-4000-8000-000000000004';
+    await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending)
+      VALUES('bookkeeper','192.0.2.2','workflow_test','owned',$1,$1,'ready',$2::jsonb,false)`, [incarnation, JSON.stringify(previous.definition)]);
+    Object.assign(compose, { liveStatus: vi.fn(async () => ({ pending: false, running: true, healthy: true })), reconcile: vi.fn(async () => { recordAppliedDefinition(path, await readDefinitionFiles(path)); return { pending: false, running: true, healthy: true }; }) });
+    register();
+    const saved: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'candidate' } }), ctx());
+    expect(existsSync(join(path, '.apply-rollback'))).toBe(true);
+    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: saved.hash }, ctx())).resolves.toMatchObject({ running: true });
+    expect(existsSync(join(path, '.apply-rollback'))).toBe(false);
+    expect((await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: path } })).definition.description).toBe('candidate');
+});
+it('replaces an interrupted stale rollback marker with the latest recorded applied generation on the next save', async () => {
+    await create();
+    const path = join(agentsDir, 'bookkeeper');
+    await recordApplied();
+    await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'started candidate' } }), ctx());
+    const staleRollback = readFileSync(join(path, '.apply-rollback'), 'utf8');
+    recordAppliedDefinition(path, await readDefinitionFiles(path));
+    const applied = readFileSync(join(path, '.applied-generation'), 'utf8');
+    expect(applied).not.toBe(staleRollback);
+    await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'next candidate' } }), ctx());
+    expect(readFileSync(join(path, '.apply-rollback'), 'utf8')).toBe(applied);
+});
+it('refuses Apply before stopping when the previous runtime baseline was not verified', async () => {
+    await create();
+    unlinkSync(join(agentsDir, 'bookkeeper', '.first-activation'));
+    const incarnation = '00000000-0000-4000-8000-000000000002';
+    await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending)
+      VALUES('bookkeeper','192.0.2.2','workflow_test','owned',$1,$1,'ready',$2::jsonb,false)`, [incarnation, JSON.stringify(GOOD)]);
+    Object.assign(compose, { liveStatus: vi.fn(async () => ({ pending: false, running: false, healthy: null })), reconcile: vi.fn(async () => ({ pending: false })) });
+    register();
+    const candidate: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'candidate' } }), ctx());
+    Object.assign(compose, { liveStatus: vi.fn(async () => ({ pending: false, running: true, healthy: true })) });
+    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: candidate.hash }, ctx())).rejects.toThrow('previous applied definition cannot be verified');
+    expect(compose.reconcile).not.toHaveBeenCalled();
+});
+it('allows a new definition explicitly held before its first runtime start without treating a legacy hold as new', async () => {
+    await create();
+    const path = join(agentsDir, 'bookkeeper');
+    Object.assign(compose, {
+        liveStatus: vi.fn(async () => ({ pending: true, reason: 'Native budget activation required', running: false, healthy: null })),
+        reconcile: vi.fn(async () => ({ pending: true, reason: 'Native budget activation required', running: false, healthy: null })),
+    });
+    register();
+    const saved: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'first held candidate' } }), ctx());
+    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: saved.hash }, ctx())).resolves.toMatchObject({ running: false, healthy: null });
+    expect(existsSync(join(path, '.first-activation'))).toBe(true);
+    expect(existsSync(join(path, '.apply-rollback'))).toBe(false);
+    unlinkSync(join(path, '.first-activation'));
+    const legacy: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'legacy held candidate' } }), ctx());
+    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: legacy.hash }, ctx())).rejects.toThrow('previous applied definition cannot be verified');
+});
+it('marks recovery required when current authority blocks restoration after candidate startup fails', async () => {
+    await create();
+    const path = join(agentsDir, 'bookkeeper');
+    await recordApplied();
+    const previous = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: path } });
+    const incarnation = '00000000-0000-4000-8000-000000000003';
+    await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending)
+      VALUES('bookkeeper','192.0.2.2','workflow_test','owned',$1,$1,'ready',$2::jsonb,false)`, [incarnation, JSON.stringify(previous.definition)]);
+    let authorityActive = true, starts = 0;
+    Object.assign(compose, { liveStatus: vi.fn(async () => ({ pending: false, running: true, healthy: true })), reconcile: vi.fn(async () => {
+        if (!authorityActive) throw new KeeperRefusedError('Native budget activation required');
+        starts++;
+        authorityActive = false;
+        throw new Error('injected candidate startup failure');
+    }) });
+    register();
+    const candidate: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'candidate' } }), ctx());
+    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: candidate.hash }, ctx())).rejects.toThrow('keeper: action failed');
+    const restored = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: path } });
+    expect(restored).toMatchObject({ definition: previous.definition, dutiesMd: previous.dutiesMd, voiceMd: previous.voiceMd });
+    expect((await pool.query("SELECT definition,hash,status FROM agent_definitions WHERE name='bookkeeper'")).rows[0]).toMatchObject({ definition: previous.definition, hash: previous.hash, status: 'valid' });
+    expect((await pool.query("SELECT applied_definition,pending,pending_reason FROM agent_resources WHERE name='bookkeeper'")).rows[0]).toMatchObject({ applied_definition: previous.definition, pending: true, pending_reason: 'Apply failed; previous definition restored but runtime recovery failed' });
+    expect(starts).toBe(1);
 });
 it('refuses conflicting old and new routing keys without publishing or backing up', async () => {
     await create();
@@ -414,7 +542,7 @@ it('reports unconfigured capacity distinctly from zero without blocking existing
  expect(await runAction('definition.capacity',{},ctx())).toEqual({ceiling:0,activeCount:1,approved:true,creationAvailable:false,serverMemoryBytes:null,suggestedMax:null,canChange:false});
 });
 it('rejects stale reconciliation hashes before lifecycle side effects',async()=>{
- await create(); const reconcile=vi.fn(async()=>({pending:false}));Object.assign(compose,{reconcile});register();
+ await create(); await recordApplied(); const reconcile=vi.fn(async()=>({pending:false}));Object.assign(compose,{reconcile});register();
  await expect(runAction('definition.reconcile',{name:'bookkeeper',hash:'0'.repeat(64)},ctx())).rejects.toThrow('changed');expect(reconcile).not.toHaveBeenCalled();
  const loaded=await loadDefinition({serviceDir:'unused',env:{LARES_DEFINITION_DIR:join(agentsDir,'bookkeeper')}});
  await expect(runAction('definition.reconcile',{name:'bookkeeper',hash:loaded.hash},ctx())).resolves.toEqual({pending:false});expect(reconcile).toHaveBeenCalledTimes(1);
