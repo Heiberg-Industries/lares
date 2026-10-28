@@ -3,9 +3,10 @@ const mocks=vi.hoisted(()=>({member:vi.fn(),auditAddress:vi.fn(),keeper:vi.fn(),
 vi.mock('next/headers',()=>({cookies:async()=>({get:()=>({value:mocks.cookie()})})}));
 vi.mock('../lib/auth',()=>({sessionMember:mocks.member,memberAuditAddress:mocks.auditAddress}));
 vi.mock('../lib/keeper-client',()=>({keeper:mocks.keeper,KeeperRefusedError:class extends Error{},KeeperUnavailableError:class extends Error{outcomeMayBeUnknown=false;}}));
-import { discoverOutsideTools,inspectOutsideDiscovery,listOutsideDiscoveryTargets,previewOutsideDiscovery } from '../app/actions/outside-discovery.js';
+import { acceptOutsideDescriptorReview,discoverOutsideTools,inspectOutsideDiscovery,listOutsideDiscoveryTargets,previewOutsideDescriptorReview,
+  previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate } from '../app/actions/outside-discovery.js';
 import { KeeperUnavailableError } from '../lib/keeper-client.js';
-import { parseOutsideDiscoveryTargets } from '../lib/outside-discovery-dto.js';
+import { parseOutsideDescriptorReview,parseOutsideDiscoveryTargets } from '../lib/outside-discovery-dto.js';
 
 const sessionToken='S'.repeat(43),accountId='00000000-0000-4000-8000-000000000001',requestId='00000000-0000-4000-8000-000000000002',
   claimOperationId='00000000-0000-4000-8000-000000000003';
@@ -97,6 +98,17 @@ it('accepts normalized tool descriptions with empty text and permitted multiline
   await expect(discoverOutsideTools(input)).resolves.toEqual({state:'complete',document});
 });
 
+it('accepts only the exact reviewed tool set and rejects invalid tool names or altered allow lists',()=>{
+  const descriptor={version:1,connectionName:'connector',scope:'read',allow:['lookup_alpha'],read:['lookup_alpha'],
+    tools:[{name:'lookup_alpha',description:'Find a record',inputSchema:{type:'object'}}]};
+  const review={descriptor,descriptorHash:'d'.repeat(64),expectedGeneration:1,expectedCandidateRevision:null,
+    expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1};
+  expect(parseOutsideDescriptorReview(review)?.descriptor.allow).toEqual(['lookup_alpha']);
+  expect(parseOutsideDescriptorReview({...review,descriptor:{...descriptor,tools:[...descriptor.tools,{name:'extra',inputSchema:{}}]}})).toBeUndefined();
+  expect(parseOutsideDescriptorReview({...review,descriptor:{...descriptor,allow:['lookup_alpha','extra']}})).toBeUndefined();
+  expect(parseOutsideDescriptorReview({...review,descriptor:{...descriptor,tools:[{...descriptor.tools[0],name:'lookup\u0001alpha'}]}})).toBeUndefined();
+});
+
 it('refuses missing session or unavailable active-member audit identity before Keeper',async()=>{
   mocks.member.mockResolvedValueOnce(null);
   await expect(listOutsideDiscoveryTargets()).rejects.toThrow(/Sign in again/);
@@ -104,4 +116,36 @@ it('refuses missing session or unavailable active-member audit identity before K
   mocks.auditAddress.mockResolvedValueOnce(null);
   await expect(listOutsideDiscoveryTargets()).rejects.toThrow(/Sign in again/);
   expect(mocks.keeper).not.toHaveBeenCalled();
+});
+
+it('derives the custodian from the signed-in session for exact preview, publication, acceptance and stage',async()=>{
+  const discovery={accountId,agentName:'worker',connectionName:'connector',requestId,claimOperationId};
+  const descriptor={version:1,connectionName:'connector',scope:'read',allow:['lookup_alpha'],read:['lookup_alpha'],
+    tools:[{name:'lookup_alpha',description:'Lookup',inputSchema:{type:'object'}}]};
+  const review={descriptor,descriptorHash:'d'.repeat(64),expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,
+    expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1};
+  mocks.keeper.mockResolvedValueOnce(review);
+  await previewOutsideDescriptorReview(discovery);
+  expect(mocks.keeper).toHaveBeenLastCalledWith('outside.discovery-review-preview',{sessionToken,...discovery},auditActor);
+
+  mocks.keeper.mockResolvedValueOnce({publicationId:'00000000-0000-4000-8000-000000000004',publicationHash:'b'.repeat(64),descriptor});
+  await publishOutsideDescriptorReview({...discovery,expectedGeneration:1,expectedDescriptorHash:review.descriptorHash});
+  expect(mocks.keeper).toHaveBeenLastCalledWith('outside.discovery-review-publish',{sessionToken,...discovery,expectedGeneration:1,
+    expectedDescriptorHash:review.descriptorHash},auditActor);
+
+  const publication={publicationId:'00000000-0000-4000-8000-000000000004',publicationHash:'b'.repeat(64)};
+  mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce({acceptanceId:'00000000-0000-4000-8000-000000000005',
+    publicationHash:publication.publicationHash,acceptanceHash:'c'.repeat(64)});
+  await acceptOutsideDescriptorReview({...discovery,publicationId:publication.publicationId,expectedPublicationHash:publication.publicationHash});
+  expect(mocks.keeper).toHaveBeenNthCalledWith(3,'outside.discovery-review-preview',{sessionToken,...discovery},auditActor);
+  expect(mocks.keeper).toHaveBeenNthCalledWith(4,'outside.discovery-review-accept',{sessionToken,accountId,publicationId:publication.publicationId,
+    expectedPublicationHash:publication.publicationHash},auditActor);
+
+  const stage={...discovery,publicationId:publication.publicationId,acceptanceId:'00000000-0000-4000-8000-000000000005',
+    expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,
+    expectedPublicationHash:publication.publicationHash,expectedAcceptanceHash:'c'.repeat(64)};
+  mocks.keeper.mockResolvedValueOnce({staged:true});
+  await expect(stageOutsideCredentialCandidate(stage)).resolves.toEqual({staged:true});
+  expect(mocks.keeper).toHaveBeenLastCalledWith('outside.candidate-stage',{sessionToken,...stage},auditActor);
+  await expect(previewOutsideDescriptorReview({...discovery,actor:'submitted'})).rejects.toThrow(/Invalid discovery input/);
 });

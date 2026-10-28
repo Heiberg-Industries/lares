@@ -87,6 +87,8 @@ export type HumanDiscoveryPreview={accountId:string;requestId:string;claimOperat
   endpoint:string;purpose:'streamable-http-discovery-v1';definitionHash:string;accessRevision:number;destinationHash:string;
   routePolicyHash:string;expectedGeneration:number;expectedCandidateRevision:number|null;consentGeneration:number};
 export type HumanDiscoveryInspection={state:'unresolved'}|{state:'complete';document:OutsideDiscoveryDocument};
+export type HumanDescriptorReviewPreview={descriptor:DescriptorProjection;descriptorHash:string;expectedGeneration:number;
+  expectedCandidateRevision:number|null;expectedConsentGeneration:number;expectedDefinitionHash:string;expectedAccessRevision:number};
 /** Trusted Keeper-side identity supplied by the authenticated runtime transport. Never accept it
  *  from MCP tool arguments or use receipt selectors as a substitute for this binding. */
 export type OutsideExecutionBinding={agent:string;incarnation:string;sessionId:string;memberId:string;approverMemberId:string;admissionNonce:string;policyRevision:number};
@@ -845,6 +847,27 @@ export class OutsideCustodyStore {
         try{document=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(plaintext)) as unknown;}catch{return denied();}
         return {state:'complete',document:validateStoredDiscoveryDocument(document)};
       }finally{plaintext.fill(0);}
+    },options));
+  }
+
+  /** Return the exact current declaration projection for owner review without publishing or accepting it. */
+  async previewHumanDescriptorReview(sessionToken:string,input:{accountId:string;agentName:string;connectionName:string;requestId:string;claimOperationId:string},
+    options:{deadlineAtMs:number}):Promise<HumanDescriptorReviewPreview>{
+    const accountId=uuid.parse(input.accountId);
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const organisation=await this.#humanOrganisation(db,memberId);
+      const discovered=await this.#readDiscoveryOnClient(db,memberId,input,organisation.id);
+      if(discovered.head.owner_member_id!==memberId||discovered.capture.actor.memberId!==memberId)return denied();
+      const descriptor=projectDescriptorDocument(discovered.document,discovered.capture);
+      const descriptorHash=createHash('sha256').update(canonicalJson(descriptor)).digest('hex');
+      const latest=await db.query<{consent:string}>(`SELECT COALESCE(max(consent_generation),0)::text AS consent
+        FROM outside_custody_revisions WHERE account_id=$1`,[accountId]);
+      const lastConsent=Math.max(number(discovered.head.consent_generation),Number(latest.rows[0]?.consent??'0'));
+      if(!Number.isSafeInteger(lastConsent)||lastConsent>=Number.MAX_SAFE_INTEGER)return denied();
+      return {descriptor,descriptorHash,expectedGeneration:number(discovered.head.generation),
+        expectedCandidateRevision:discovered.head.candidate_revision===null?null:number(discovered.head.candidate_revision),
+        expectedConsentGeneration:lastConsent+1,expectedDefinitionHash:discovered.capture.agent.definitionHash,
+        expectedAccessRevision:discovered.capture.agent.accessRevision};
     },options));
   }
 

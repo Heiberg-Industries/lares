@@ -1,7 +1,9 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
-import { discoverOutsideTools, inspectOutsideDiscovery, listOutsideDiscoveryTargets, previewOutsideDiscovery } from "../app/actions/outside-discovery";
-import type { OutsideDiscoveryDocumentDto,OutsideDiscoveryPreviewDto,OutsideDiscoveryTargetDto } from "../lib/outside-discovery-dto";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { acceptOutsideDescriptorReview,discoverOutsideTools,inspectOutsideDiscovery,listOutsideDiscoveryTargets,previewOutsideDescriptorReview,
+  previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate } from "../app/actions/outside-discovery";
+import type { OutsideDescriptorAcceptanceDto,OutsideDescriptorPublicationDto,OutsideDescriptorReviewDto,OutsideDiscoveryDocumentDto,
+  OutsideDiscoveryPreviewDto,OutsideDiscoveryTargetDto } from "../lib/outside-discovery-dto";
 
 type Target=OutsideDiscoveryTargetDto;
 type Preview=OutsideDiscoveryPreviewDto;
@@ -9,6 +11,7 @@ type Recovery={accountId:string;requestId:string;claimOperationId:string;agentNa
 type Discovery=OutsideDiscoveryDocumentDto;
 const RECOVERY_KEY="lares.outside.discovery.recovery.v1";
 function recoveryKey(memberId:string):string{return `${RECOVERY_KEY}:${encodeURIComponent(memberId)}`;}
+function recoveryIdentity(value:Recovery):string{return `${value.accountId}\0${value.requestId}\0${value.claimOperationId}\0${value.agentName}\0${value.connectionName}`;}
 function asRecovery(value:unknown):Recovery|undefined{
   if(!value||typeof value!=="object")return;
   const v=value as Record<string,unknown>;
@@ -27,23 +30,28 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
   const [targets,setTargets]=useState<Target[]>([]),[selected,setSelected]=useState(""),[preview,setPreview]=useState<Preview>(),
     [credential,setCredential]=useState(""),[consent,setConsent]=useState(false),[busy,setBusy]=useState(false),
     [message,setMessage]=useState(""),[error,setError]=useState(""),[document,setDocument]=useState<Discovery>(),
-    [recovery,setRecovery]=useState<Recovery>(),[inspected,setInspected]=useState(false),[unresolved,setUnresolved]=useState(false);
+    [recovery,setRecovery]=useState<Recovery>(),[inspected,setInspected]=useState(false),[unresolved,setUnresolved]=useState(false),
+    [descriptorReview,setDescriptorReview]=useState<OutsideDescriptorReviewDto>(),[publication,setPublication]=useState<OutsideDescriptorPublicationDto>(),
+    [acceptance,setAcceptance]=useState<OutsideDescriptorAcceptanceDto>(),[staged,setStaged]=useState(false);
+  const selectionRef=useRef(""),activeRecoveryRef=useRef<string|undefined>(undefined),reviewPreviewVersion=useRef(0);
   const selectedTarget=useMemo(()=>targets.find(t=>`${t.agentName}\0${t.connectionName}`===selected),[targets,selected]);
 
   useEffect(()=>{
     let active=true;
-    void listOutsideDiscoveryTargets().then(items=>{if(active){setTargets(items);if(items.length)setSelected(`${items[0]!.agentName}\0${items[0]!.connectionName}`);}})
+    void listOutsideDiscoveryTargets().then(items=>{if(active){setTargets(items);if(items.length){const first=`${items[0]!.agentName}\0${items[0]!.connectionName}`;
+      selectionRef.current=first;setSelected(first);}}})
       .catch(()=>{if(active)setError("Private discovery connections are unavailable. Refresh membership to try again.");});
     try{
       const savedText=sessionStorage.getItem(memberRecoveryKey);
       if(savedText!==null){
         const saved=asRecovery(JSON.parse(savedText));
         if(!saved){setUnresolved(true);setInspected(true);setMessage("Saved discovery recovery information is incomplete. Its status cannot be confirmed; do not send consent again.");}
-        else{setRecovery(saved);setUnresolved(true);void inspectOutsideDiscovery(saved).then(result=>{
+        else{setRecovery(saved);activeRecoveryRef.current=recoveryIdentity(saved);setUnresolved(true);void inspectOutsideDiscovery(saved).then(result=>{
         if(!active)return;
         setInspected(true);
         if(result?.state==="complete"){
           setDocument(result.document);setUnresolved(false);setInspected(true);setMessage("The saved discovery result is available for review.");
+          void prepareDescriptorReview(saved);
         }else setMessage("This request has no confirmed result. Its status is unresolved; do not send the consent again.");
         }).catch(()=>{if(active){setInspected(true);setMessage("The saved request could not be inspected. Its status is unresolved; do not send the consent again.");}});}
       }
@@ -51,15 +59,30 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     return()=>{active=false;};
   },[memberRecoveryKey]);
 
+  async function prepareDescriptorReview(identity:Recovery){
+    const version=++reviewPreviewVersion.current,identityKey=recoveryIdentity(identity),selection=`${identity.agentName}\0${identity.connectionName}`;
+    setError("");setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(false);
+    try{
+      const review=await previewOutsideDescriptorReview(identity);
+      if(version!==reviewPreviewVersion.current||selectionRef.current!==selection||activeRecoveryRef.current!==identityKey)return;
+      setDescriptorReview(review);setMessage("Exact current tool descriptions are ready for your review. No credential has been staged.");
+    }catch{if(version===reviewPreviewVersion.current&&selectionRef.current===selection&&activeRecoveryRef.current===identityKey)
+      setError("These descriptions could not be prepared. Refresh the connection and review the discovery again.");}
+  }
+
   async function loadTargets(){
+    reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
     setBusy(true);setError("");
-    try{const items=await listOutsideDiscoveryTargets();setTargets(items);if(items.length)setSelected(`${items[0]!.agentName}\0${items[0]!.connectionName}`);setMessage(items.length?"Current connections loaded.":"No saved bearer connections are available for your agents.");}
+    try{const items=await listOutsideDiscoveryTargets();setTargets(items);if(items.length){const first=`${items[0]!.agentName}\0${items[0]!.connectionName}`;
+      selectionRef.current=first;setSelected(first);}setMessage(items.length?"Current connections loaded.":"No saved bearer connections are available for your agents.");}
     catch{setError("Private discovery connections are unavailable. Refresh membership to try again.");}
     finally{setBusy(false);}
   }
   async function review(){
     if(!selectedTarget)return;
+    reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
     setBusy(true);setError("");setMessage("");setDocument(undefined);setPreview(undefined);setConsent(false);setCredential("");setInspected(false);setUnresolved(false);
+    setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(false);
     try{setPreview(await previewOutsideDiscovery({agentName:selectedTarget.agentName,connectionName:selectedTarget.connectionName}));}
     catch{setError("This connection could not be reviewed. Refresh the list and try again.");}
     finally{setBusy(false);}
@@ -73,11 +96,13 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     try{
       // Persist synchronously before the only bearer-consent button becomes available.
       sessionStorage.setItem(memberRecoveryKey,JSON.stringify(tuple));
+      activeRecoveryRef.current=recoveryIdentity(tuple);
       setRecovery(tuple);setConsent(true);
     }catch{setConsent(false);setError("Recovery information could not be saved in this tab. Consent cannot be sent.");}
   }
   async function consentAndDiscover(){
     if(!preview||!recovery||!consent||!credential||busy||unresolved||inspected)return;
+    reviewPreviewVersion.current++;activeRecoveryRef.current=recoveryIdentity(recovery);
     setBusy(true);setConsent(false);setError("");setMessage("");setDocument(undefined);
     try{
       const result=await discoverOutsideTools({consent:true,requestId:preview.requestId,claimOperationId:preview.claimOperationId,
@@ -87,26 +112,69 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
         expectedDestinationHash:preview.destinationHash,expectedRoutePolicyHash:preview.routePolicyHash,
         consentGeneration:preview.consentGeneration,credential});
       setCredential("");
-      if(result.state==="complete"){setDocument(result.document);setInspected(true);setMessage("Discovery finished. Review the descriptions below.");return;}
+      if(result.state==="complete"){setDocument(result.document);setInspected(true);setMessage("Discovery finished. Review the descriptions below.");void prepareDescriptorReview(recovery);return;}
       setUnresolved(true);setMessage("The request result is not confirmed. Checking its saved record without sending again.");
       const found=await inspectOutsideDiscovery(recovery);
-      if(found.state==="complete"){setDocument(found.document);setUnresolved(false);setInspected(true);setMessage("The saved discovery result is available for review.");}
+      if(found.state==="complete"){setDocument(found.document);setUnresolved(false);setInspected(true);setMessage("The saved discovery result is available for review.");void prepareDescriptorReview(recovery);}
       else{setInspected(true);setMessage("No completed result is recorded. Its status is unresolved; do not send the consent again.");}
     }catch{
       // An action error can follow transmission, so only inspect the exact saved IDs.
       setCredential("");setUnresolved(true);setMessage("The request may have been sent. Checking its saved result without sending again.");
       try{const found=await inspectOutsideDiscovery(recovery);
-        if(found.state==="complete"){setDocument(found.document);setUnresolved(false);setInspected(true);setMessage("The saved discovery result is available for review.");}
+        if(found.state==="complete"){setDocument(found.document);setUnresolved(false);setInspected(true);setMessage("The saved discovery result is available for review.");void prepareDescriptorReview(recovery);}
         else{setInspected(true);setMessage("No completed result is recorded. Its status is unresolved; do not send the consent again.");}
       }catch{setInspected(true);setMessage("The saved request could not be inspected. Its status is unresolved; do not send the consent again.");}
     }finally{setBusy(false);}
+  }
+
+  async function publishReviewedDescriptions(){
+    if(!recovery||!descriptorReview||busy)return;
+    setBusy(true);setError("");
+    try{
+      const result=await publishOutsideDescriptorReview({...recovery,expectedGeneration:descriptorReview.expectedGeneration,
+        expectedDescriptorHash:descriptorReview.descriptorHash});
+      setPublication(result);setMessage("These exact descriptions are recorded for acceptance. The credential is still not staged.");
+    }catch{setError("The descriptions changed or could not be published. Refresh and review them again.");}
+    finally{setBusy(false);}
+  }
+
+  async function acceptReviewedDescriptions(){
+    if(!recovery||!publication||busy)return;
+    setBusy(true);setError("");
+    try{
+      const result=await acceptOutsideDescriptorReview({...recovery,publicationId:publication.publicationId,expectedPublicationHash:publication.publicationHash});
+      setAcceptance(result);setMessage("Exact tool descriptions accepted. Stage the credential candidate when ready.");
+    }catch{setError("The descriptions could not be accepted under your current account access. Reload and review again.");}
+    finally{setBusy(false);}
+  }
+
+  async function stageReviewedCandidate(){
+    if(!recovery||!descriptorReview||!publication||!acceptance||busy)return;
+    setBusy(true);setError("");
+    try{
+      await stageOutsideCredentialCandidate({...recovery,publicationId:publication.publicationId,acceptanceId:acceptance.acceptanceId,
+        expectedGeneration:descriptorReview.expectedGeneration,expectedCandidateRevision:descriptorReview.expectedCandidateRevision,
+        expectedConsentGeneration:descriptorReview.expectedConsentGeneration,expectedDefinitionHash:descriptorReview.expectedDefinitionHash,
+        expectedAccessRevision:descriptorReview.expectedAccessRevision,expectedPublicationHash:publication.publicationHash,
+        expectedAcceptanceHash:acceptance.acceptanceHash});
+      setStaged(true);setMessage("Credential candidate staged and pending Apply. It is not active.");
+      const items=await listOutsideDiscoveryTargets();setTargets(items);
+    }catch{
+      try{
+        const items=await listOutsideDiscoveryTargets();setTargets(items);
+        setError("The stage result could not be confirmed. A pending candidate may be from an earlier attempt; refresh status before proceeding.");
+      }catch{setError("The stage result could not be confirmed. Refresh status before trying again.");}
+    }
+    finally{setBusy(false);}
   }
 
   return <section className="lares-stack" aria-label="Private outside-tool discovery">
     <h2>Discover available tools</h2>
     <p>Review a saved connection and, if you choose, share its bearer credential for one bounded description lookup. This does not enable or run tools.</p>
     {targets.length>0&&<label className="lares-field-label">Agent connection
-      <select value={selected} disabled={busy||unresolved} onChange={event=>{setSelected(event.target.value);setPreview(undefined);setConsent(false);setCredential("");setInspected(false);setDocument(undefined);}}>
+      <select value={selected} disabled={busy||unresolved} onChange={event=>{selectionRef.current=event.target.value;reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
+        setSelected(event.target.value);setPreview(undefined);setConsent(false);setCredential("");setInspected(false);setDocument(undefined);
+        setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(false);}}>
         {targets.map(target=><option key={`${target.agentName}:${target.connectionName}`} value={`${target.agentName}\0${target.connectionName}`}>{target.agentName} · {target.connectionName}</option>)}
       </select>
     </label>}
@@ -150,6 +218,20 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     {document&&<div className="lares-stack" aria-label="Discovered tool descriptions">
       <p>{document.serverInfo.name} {document.serverInfo.version} · {document.tools.length} tools found</p>
       {document.tools.map(tool=><div className="lares-surface lares-stack" key={tool.name}><strong>{tool.name}</strong>{tool.description&&<span>{tool.description}</span>}</div>)}
+    </div>}
+    {descriptorReview&&<div className="lares-surface lares-stack" aria-label="Exact tool description review">
+      <h3>Exact descriptions covered by this review</h3>
+      <p>Connection: {descriptorReview.descriptor.connectionName} · Scope: {descriptorReview.descriptor.scope}</p>
+      <p>Allowed tools: {descriptorReview.descriptor.allow.length?descriptorReview.descriptor.allow.join(", "):"none"}</p>
+      <p>Read tools: {descriptorReview.descriptor.read.length?descriptorReview.descriptor.read.join(", "):"none"}</p>
+      {descriptorReview.descriptor.tools.map(tool=><div className="lares-surface lares-stack" key={tool.name}>
+        <strong>{tool.name}</strong>{tool.description&&<span>{tool.description}</span>}
+        <pre>{JSON.stringify(tool.inputSchema,null,2)}</pre>
+      </div>)}
+      {!publication&&<button type="button" disabled={busy} onClick={()=>void publishReviewedDescriptions()}>Record these exact descriptions for acceptance</button>}
+      {publication&&!acceptance&&<button type="button" disabled={busy} onClick={()=>void acceptReviewedDescriptions()}>Accept these exact descriptions</button>}
+      {acceptance&&!staged&&<button type="button" disabled={busy} onClick={()=>void stageReviewedCandidate()}>Stage credential candidate</button>}
+      {staged&&<p role="status">This candidate is pending Apply and is not active.</p>}
     </div>}
   </section>;
 }
