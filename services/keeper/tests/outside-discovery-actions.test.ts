@@ -3,7 +3,7 @@ import { registerHumanOutsideDiscoveryActions } from '../lib/outside-discovery-a
 import { actionNames,resetActions,runAction } from '../lib/actions.js';
 import { OutsideCustodyRecoveryRequired,outsideDiscoveryRecovery,type OutsideCustodyStore } from '../lib/outside-custody.js';
 
-const methods=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn(),review:vi.fn(),publish:vi.fn(),accept:vi.fn(),activation:vi.fn(),stage:vi.fn()}));
+const methods=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn(),review:vi.fn(),publish:vi.fn(),accept:vi.fn(),activation:vi.fn(),stage:vi.fn(),apply:vi.fn(),pending:vi.fn()}));
 const sessionToken='S'.repeat(43),accountId='00000000-0000-4000-8000-000000000001',requestId='00000000-0000-4000-8000-000000000002',claimOperationId='00000000-0000-4000-8000-000000000003';
 const base={sessionToken,consent:true,accountId,requestId,claimOperationId,agentName:'worker',connectionName:'connector',expectedGeneration:0,
   expectedCandidateRevision:null,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,expectedDestinationHash:'b'.repeat(64),
@@ -12,11 +12,11 @@ const audit=vi.fn(async()=>{});
 beforeEach(()=>{vi.clearAllMocks();registerHumanOutsideDiscoveryActions({listHumanDiscoveryTargets:methods.targets,
   previewHumanDiscovery:methods.preview,consentAndDiscover:methods.discover,inspectHumanDiscovery:methods.inspect,
   previewHumanDescriptorReview:methods.review,publishDiscoveredDescriptorReview:methods.publish,acceptPublishedDescriptorReview:methods.accept,
-  previewExecutableActivation:methods.activation,stage:methods.stage} as unknown as OutsideCustodyStore);});
+  previewExecutableActivation:methods.activation,stage:methods.stage,apply:methods.apply,inspectHumanPendingApply:methods.pending} as unknown as OutsideCustodyStore);});
 afterEach(()=>resetActions());
 
 it('registers only private member discovery actions and strictly requires explicit consent',async()=>{
-  expect(actionNames()).toEqual(['outside.candidate-stage','outside.discover','outside.discovery-inspect','outside.discovery-preview',
+  expect(actionNames()).toEqual(['outside.candidate-apply','outside.candidate-apply-preview','outside.candidate-stage','outside.discover','outside.discovery-inspect','outside.discovery-preview',
     'outside.discovery-review-accept','outside.discovery-review-preview','outside.discovery-review-publish','outside.discovery-targets']);
   methods.discover.mockResolvedValue({protocolVersion:'2025-06-18',serverInfo:{name:'sample',version:'1'},tools:[]});
   await expect(runAction('outside.discover',{...base,consent:false},{actor:'derived-member',audit})).rejects.toThrow(/invalid input/);
@@ -41,20 +41,29 @@ it('uses only the current Keeper session for exact descriptor review, acceptance
   methods.review.mockResolvedValue({descriptor:{}});
   methods.publish.mockResolvedValue({publicationId:preview.publicationId,publicationHash:'b'.repeat(64),descriptor:{}});
   methods.accept.mockResolvedValue({acceptanceId:preview.acceptanceId,publicationHash:'b'.repeat(64),acceptanceHash:'c'.repeat(64)});
-  methods.activation.mockResolvedValue({reviewId:'00000000-0000-4000-8000-000000000006',reviewHash:'d'.repeat(64),policyHash:'e'.repeat(64)});
+  const activation={reviewId:'00000000-0000-4000-8000-000000000006',reviewHash:'d'.repeat(64),policyHash:'e'.repeat(64)};
+  methods.activation.mockResolvedValue(activation);
   methods.stage.mockResolvedValue({outcome:'staged',credentialRevision:7});
+  methods.apply.mockResolvedValue({kind:'apply',outcome:'applied',credentialRevision:7});
   await runAction('outside.discovery-review-preview',{sessionToken,...discovery},{actor:'audit-member',audit});
   await runAction('outside.discovery-review-publish',{sessionToken,...discovery,expectedGeneration:1,expectedDescriptorHash:'b'.repeat(64)},
     {actor:'audit-member',audit});
   await runAction('outside.discovery-review-accept',{sessionToken,accountId,publicationId:preview.publicationId,expectedPublicationHash:'b'.repeat(64)},
     {actor:'audit-member',audit});
-  await runAction('outside.candidate-stage',{sessionToken,...preview},{actor:'audit-member',audit});
+  const staged=await runAction('outside.candidate-stage',{sessionToken,...preview},{actor:'audit-member',audit});
   expect(methods.review).toHaveBeenCalledWith(sessionToken,discovery,expect.objectContaining({deadlineAtMs:expect.any(Number)}));
   expect(methods.publish).toHaveBeenCalledWith(sessionToken,expect.objectContaining({expectedDescriptorHash:'b'.repeat(64)}),expect.any(Object));
   expect(methods.accept).toHaveBeenCalledWith(sessionToken,expect.objectContaining({expectedPublicationHash:'b'.repeat(64)}),expect.any(Object));
   expect(methods.activation).toHaveBeenCalledWith(sessionToken,expect.objectContaining({expectedAcceptanceHash:'c'.repeat(64)}),expect.any(Object));
   expect(methods.stage).toHaveBeenCalledWith(sessionToken,expect.objectContaining({expectedAcceptanceHash:'c'.repeat(64),
     expectedActivationReviewHash:'d'.repeat(64)}),expect.any(Object));
+  expect(staged).toMatchObject({staged:true,candidateRevision:7,activationReviewHash:'d'.repeat(64),expectedPolicyHash:'e'.repeat(64)});
+  const stageOperationId=(staged as {stageOperationId:string}).stageOperationId;
+  await runAction('outside.candidate-apply',{sessionToken,...preview,expectedPolicyHash:activation.policyHash,
+    activationReviewId:activation.reviewId,activationReviewHash:activation.reviewHash,stageOperationId,candidateRevision:7},
+    {actor:'audit-member',audit});
+  expect(methods.apply).toHaveBeenCalledWith(sessionToken,expect.objectContaining({candidateRevision:7,
+    activationReviewId:activation.reviewId,expectedActivationReviewHash:activation.reviewHash}),expect.objectContaining({deadlineAtMs:expect.any(Number)}));
   expect(JSON.stringify(audit.mock.calls)).not.toContain(sessionToken);
   expect(JSON.stringify(audit.mock.calls)).not.toContain('credential');
 });
@@ -81,6 +90,20 @@ it('keeps target, preview and inspection inputs strict and passes only the sessi
     {actor:'member',audit})).resolves.toEqual({state:'unresolved'});
   expect(methods.preview).toHaveBeenCalledWith(sessionToken,{agentName:'worker',connectionName:'connector'},expect.any(Object));
   expect(methods.inspect).toHaveBeenCalledWith(sessionToken,{accountId,agentName:'worker',connectionName:'connector',requestId,claimOperationId},expect.any(Object));
+});
+
+it('recovers a pending Apply projection only from the authenticated custodian session',async()=>{
+  const pending={accountId,agentName:'worker',connectionName:'connector',requestId,claimOperationId,publicationId:requestId,acceptanceId:claimOperationId,
+    expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,
+    expectedPublicationHash:'b'.repeat(64),expectedAcceptanceHash:'c'.repeat(64),expectedPolicyHash:'d'.repeat(64),activationReviewId:requestId,
+    activationReviewHash:'e'.repeat(64),stageOperationId:claimOperationId,candidateRevision:7};
+  methods.pending.mockResolvedValue(pending);
+  // The action delegates to Keeper's existing evidence projection; actor identity is derived from the session.
+  await expect(runAction('outside.candidate-apply-preview',{sessionToken,agentName:'worker',connectionName:'connector'},
+    {actor:'audit-member',audit})).resolves.toEqual(pending);
+  expect(methods.pending).toHaveBeenCalledWith(sessionToken,{agentName:'worker',connectionName:'connector'},expect.objectContaining({deadlineAtMs:expect.any(Number)}));
+  await expect(runAction('outside.candidate-apply-preview',{sessionToken,agentName:'worker',connectionName:'connector',candidateRevision:7},
+    {actor:'audit-member',audit})).rejects.toThrow(/invalid input/);
 });
 
 it('retains the last discovery stage when recovery is required before cleanup',()=>{

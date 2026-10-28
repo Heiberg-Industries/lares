@@ -12,6 +12,10 @@ export type OutsideDescriptorReviewDto={descriptor:{version:1;connectionName:str
   expectedConsentGeneration:number;expectedDefinitionHash:string;expectedAccessRevision:number};
 export type OutsideDescriptorPublicationDto={publicationId:string;publicationHash:string;descriptor:OutsideDescriptorReviewDto['descriptor']};
 export type OutsideDescriptorAcceptanceDto={acceptanceId:string;publicationHash:string;acceptanceHash:string};
+export type OutsidePendingApplyDto={accountId:string;agentName:string;connectionName:string;requestId:string;claimOperationId:string;publicationId:string;
+  acceptanceId:string;expectedGeneration:number;expectedCandidateRevision:number|null;expectedConsentGeneration:number;expectedDefinitionHash:string;
+  expectedAccessRevision:number;expectedPublicationHash:string;expectedAcceptanceHash:string;expectedPolicyHash:string;activationReviewId:string;
+  activationReviewHash:string;stageOperationId:string;candidateRevision:number};
 
 type RecordValue=Record<string,unknown>;
 const MAX_DOCUMENT_BYTES=65536;
@@ -159,4 +163,17 @@ export function parseOutsideDescriptorAcceptance(value:unknown):OutsideDescripto
   const item=record(value);
   if(!item||!exactKeys(item,['acceptanceId','publicationHash','acceptanceHash'])||!isUuid(item.acceptanceId)||!isHash(item.publicationHash)||!isHash(item.acceptanceHash))return;
   return {acceptanceId:item.acceptanceId,publicationHash:item.publicationHash,acceptanceHash:item.acceptanceHash};
+}
+
+export function parseOutsidePendingApply(value:unknown):OutsidePendingApplyDto|undefined{
+  const item=record(value),keys=['accountId','agentName','connectionName','requestId','claimOperationId','publicationId','acceptanceId','expectedGeneration',
+    'expectedCandidateRevision','expectedConsentGeneration','expectedDefinitionHash','expectedAccessRevision','expectedPublicationHash',
+    'expectedAcceptanceHash','expectedPolicyHash','activationReviewId','activationReviewHash','stageOperationId','candidateRevision'];
+  if(!item||!exactKeys(item,keys)||!isUuid(item.accountId)||!isName(item.agentName)||!isName(item.connectionName)||!isUuid(item.requestId)||
+      !isUuid(item.claimOperationId)||!isUuid(item.publicationId)||!isUuid(item.acceptanceId)||!isInteger(item.expectedGeneration,1)||
+      item.expectedCandidateRevision!==null&&!isInteger(item.expectedCandidateRevision,1)||!isInteger(item.expectedConsentGeneration,1)||
+      !isHash(item.expectedDefinitionHash)||!isInteger(item.expectedAccessRevision,1)||!isHash(item.expectedPublicationHash)||
+      !isHash(item.expectedAcceptanceHash)||!isHash(item.expectedPolicyHash)||!isUuid(item.activationReviewId)||!isHash(item.activationReviewHash)||
+      !isUuid(item.stageOperationId)||!isInteger(item.candidateRevision,1))return;
+  return item as unknown as OutsidePendingApplyDto;
 }

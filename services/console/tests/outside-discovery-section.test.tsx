@@ -2,10 +2,11 @@
 import { afterEach,beforeEach,expect,it,vi } from 'vitest';
 import { cleanup,fireEvent,render,screen,waitFor } from '@testing-library/react';
 
-const actions=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn(),review:vi.fn(),publish:vi.fn(),accept:vi.fn(),stage:vi.fn()}));
+const actions=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn(),review:vi.fn(),publish:vi.fn(),accept:vi.fn(),stage:vi.fn(),apply:vi.fn(),previewApply:vi.fn()}));
 vi.mock('../app/actions/outside-discovery',()=>({listOutsideDiscoveryTargets:actions.targets,previewOutsideDiscovery:actions.preview,
   discoverOutsideTools:actions.discover,inspectOutsideDiscovery:actions.inspect,previewOutsideDescriptorReview:actions.review,
-  publishOutsideDescriptorReview:actions.publish,acceptOutsideDescriptorReview:actions.accept,stageOutsideCredentialCandidate:actions.stage}));
+  publishOutsideDescriptorReview:actions.publish,acceptOutsideDescriptorReview:actions.accept,stageOutsideCredentialCandidate:actions.stage,
+  applyOutsideCredentialCandidate:actions.apply,previewOutsideCredentialApply:actions.previewApply}));
 import { OutsideDiscoverySection } from '../components/OutsideDiscoverySection.js';
 
 const tuple={accountId:'00000000-0000-4000-8000-000000000001',requestId:'00000000-0000-4000-8000-000000000002',
@@ -23,7 +24,9 @@ beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();actions.targets.mockRe
   credentialStatus:{state:'unavailable',reviewPending:false,applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}}]);
   actions.preview.mockResolvedValue(preview);actions.discover.mockResolvedValue({state:'complete',document});actions.inspect.mockResolvedValue({state:'unresolved'});
   actions.review.mockResolvedValue(descriptorReview);actions.publish.mockResolvedValue(publication);actions.accept.mockResolvedValue(acceptance);
-  actions.stage.mockResolvedValue({staged:true});});
+  actions.stage.mockResolvedValue({staged:true,activationReviewId:'00000000-0000-4000-8000-000000000006',activationReviewHash:'d'.repeat(64),
+    expectedPolicyHash:'e'.repeat(64),stageOperationId:'00000000-0000-4000-8000-000000000007',candidateRevision:7});
+  actions.apply.mockResolvedValue({state:'applied',credentialRevision:7});});
 afterEach(()=>{cleanup();vi.restoreAllMocks();});
 
 it('shows the active credential separately from a pending token-only replacement without displaying credential data',async()=>{
@@ -73,6 +76,9 @@ it('saves only the recovery tuple before enabling one explicit consent and never
 });
 
 it('reviews exact descriptions, records and accepts them, then stages a candidate pending Apply',async()=>{
+  actions.targets.mockResolvedValueOnce([{agentName:'worker',connectionName:'connector',credentialStatus:{state:'unavailable',reviewPending:false,
+    applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}}]).mockResolvedValueOnce([{agentName:'worker',connectionName:'connector',
+      credentialStatus:{state:'pending',reviewPending:false,applyPending:true,activeRevision:null,candidateRevision:7,discoveryRevision:4}}]);
   await prepareConsent();
   fireEvent.click(screen.getByRole('checkbox'));
   fireEvent.click(screen.getByRole('button',{name:'Send one discovery request'}));
@@ -85,12 +91,108 @@ it('reviews exact descriptions, records and accepts them, then stages a candidat
   fireEvent.click(screen.getByRole('button',{name:'Accept these exact descriptions'}));
   await screen.findByRole('button',{name:'Stage credential candidate'});
   fireEvent.click(screen.getByRole('button',{name:'Stage credential candidate'}));
-  await screen.findByText('This candidate is pending Apply and is not active.');
+  await screen.findByText(/Credential revision 7 is pending Apply and is not active/);
   expect(actions.publish).toHaveBeenCalledWith({...tuple,expectedGeneration:1,expectedDescriptorHash:'d'.repeat(64)});
   expect(actions.accept).toHaveBeenCalledWith({...tuple,publicationId:publication.publicationId,expectedPublicationHash:publication.publicationHash});
   expect(actions.stage).toHaveBeenCalledWith({...tuple,publicationId:publication.publicationId,acceptanceId:acceptance.acceptanceId,
     expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,
     expectedPublicationHash:publication.publicationHash,expectedAcceptanceHash:acceptance.acceptanceHash});
+});
+
+it('applies the exact staged custody revision and reports no runtime claim',async()=>{
+  actions.targets.mockResolvedValueOnce([{agentName:'worker',connectionName:'connector',credentialStatus:{state:'unavailable',reviewPending:false,
+    applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}}]).mockResolvedValueOnce([{agentName:'worker',connectionName:'connector',
+      credentialStatus:{state:'pending',reviewPending:false,applyPending:true,activeRevision:null,candidateRevision:7,discoveryRevision:4}}])
+    .mockResolvedValueOnce([{agentName:'worker',connectionName:'connector',credentialStatus:{state:'active',reviewPending:false,applyPending:false,
+      activeRevision:7,candidateRevision:null,discoveryRevision:4}}]);
+  await prepareConsent();fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByRole('button',{name:'Send one discovery request'}));
+  await screen.findByText('Exact current tool descriptions are ready for your review. No credential has been staged.');
+  fireEvent.click(screen.getByRole('button',{name:'Record these exact descriptions for acceptance'}));
+  await screen.findByRole('button',{name:'Accept these exact descriptions'});fireEvent.click(screen.getByRole('button',{name:'Accept these exact descriptions'}));
+  await screen.findByRole('button',{name:'Stage credential candidate'});fireEvent.click(screen.getByRole('button',{name:'Stage credential candidate'}));
+  const apply=await screen.findByRole('button',{name:'Apply credential revision'});fireEvent.click(apply);
+  await screen.findByText(/Credential revision 7 is active in Keeper custody/);
+  expect(actions.apply).toHaveBeenCalledWith(expect.objectContaining({candidateRevision:7,stageOperationId:'00000000-0000-4000-8000-000000000007',
+    expectedPolicyHash:'e'.repeat(64),activationReviewHash:'d'.repeat(64)}));
+  expect(screen.getByText(/does not confirm that the outside server is reachable or the agent is running/)).toBeTruthy();
+});
+
+it('recovers exact pending Apply evidence after reload and applies only the projected revision',async()=>{
+  const pending={...tuple,publicationId:'00000000-0000-4000-8000-000000000004',acceptanceId:'00000000-0000-4000-8000-000000000005',
+    expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,
+    expectedPublicationHash:'b'.repeat(64),expectedAcceptanceHash:'c'.repeat(64),expectedPolicyHash:'e'.repeat(64),
+    activationReviewId:'00000000-0000-4000-8000-000000000006',activationReviewHash:'d'.repeat(64),
+    stageOperationId:'00000000-0000-4000-8000-000000000007',candidateRevision:7};
+  actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector',credentialStatus:{state:'pending',reviewPending:false,
+    applyPending:true,activeRevision:null,candidateRevision:7,discoveryRevision:4}}]);
+  actions.previewApply.mockResolvedValue(pending);
+  render(<OutsideDiscoverySection memberId="member-reload"/>);
+  const button=await screen.findByRole('button',{name:'Apply credential revision'});
+  expect(actions.previewApply).toHaveBeenCalledWith({agentName:'worker',connectionName:'connector'});
+  fireEvent.click(button);
+  await screen.findByText(/Credential revision 7 is active in Keeper custody/);
+  expect(actions.apply).toHaveBeenCalledWith(pending);
+});
+
+it('clears a recovered receipt on refresh when the selected target changes at the same revision number',async()=>{
+  const pending={...tuple,agentName:'other',publicationId:'00000000-0000-4000-8000-000000000004',acceptanceId:'00000000-0000-4000-8000-000000000005',
+    expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,
+    expectedPublicationHash:'b'.repeat(64),expectedAcceptanceHash:'c'.repeat(64),expectedPolicyHash:'e'.repeat(64),
+    activationReviewId:'00000000-0000-4000-8000-000000000006',activationReviewHash:'d'.repeat(64),
+    stageOperationId:'00000000-0000-4000-8000-000000000007',candidateRevision:2};
+  const status=(agentName:string)=>({agentName,connectionName:'connector',credentialStatus:{state:'active-pending',reviewPending:false,
+    applyPending:true,activeRevision:1,candidateRevision:2,discoveryRevision:1}});
+  actions.targets.mockResolvedValueOnce([status('worker'),status('other')]).mockResolvedValueOnce([status('worker')]);
+  actions.previewApply.mockResolvedValue(pending);
+  render(<OutsideDiscoverySection memberId="member-target-refresh"/>);
+  const select=await screen.findByLabelText('Agent connection');
+  fireEvent.change(select,{target:{value:'other\0connector'}});
+  await screen.findByRole('button',{name:'Apply credential revision'});
+  fireEvent.click(screen.getByRole('button',{name:'Refresh connections'}));
+  await waitFor(()=>expect(screen.queryByRole('button',{name:'Apply credential revision'})).toBeNull());
+  expect(actions.apply).not.toHaveBeenCalled();
+});
+
+it('ignores delayed pending-receipt recovery after an A to B to A selection change',async()=>{
+  const status=(agentName:string)=>({agentName,connectionName:'connector',credentialStatus:{state:agentName==='worker'?'active':'active-pending',reviewPending:false,
+    applyPending:agentName!=='worker',activeRevision:agentName==='worker'?null:1,candidateRevision:agentName==='worker'?null:2,discoveryRevision:1}});
+  const pending={...tuple,publicationId:'00000000-0000-4000-8000-000000000004',acceptanceId:'00000000-0000-4000-8000-000000000005',
+    expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,
+    expectedPublicationHash:'b'.repeat(64),expectedAcceptanceHash:'c'.repeat(64),expectedPolicyHash:'e'.repeat(64),
+    activationReviewId:'00000000-0000-4000-8000-000000000006',activationReviewHash:'d'.repeat(64),
+    stageOperationId:'00000000-0000-4000-8000-000000000007',candidateRevision:2};
+  const resolvePending:Array<(value:typeof pending)=>void>=[];
+  actions.targets.mockResolvedValue([status('worker'),status('other')]);
+  actions.previewApply.mockImplementation(()=>new Promise(resolve=>{resolvePending.push(resolve);}));
+  render(<OutsideDiscoverySection memberId="member-target-aba"/>);
+  const select=await screen.findByLabelText('Agent connection');
+  fireEvent.change(select,{target:{value:'other\0connector'}});
+  await waitFor(()=>expect(actions.previewApply).toHaveBeenCalledTimes(1));
+  fireEvent.change(select,{target:{value:'worker\0connector'}});
+  fireEvent.change(select,{target:{value:'other\0connector'}});
+  await waitFor(()=>expect(actions.previewApply).toHaveBeenCalledTimes(2));
+  resolvePending[0]({...pending,agentName:'other'});
+  await waitFor(()=>expect(screen.queryByRole('button',{name:'Apply credential revision'})).toBeNull());
+  expect(actions.apply).not.toHaveBeenCalled();
+});
+
+it('hides pending Apply and disables submission when both Apply and its status refresh are lost',async()=>{
+  const pending={...tuple,publicationId:'00000000-0000-4000-8000-000000000004',acceptanceId:'00000000-0000-4000-8000-000000000005',
+    expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,
+    expectedPublicationHash:'b'.repeat(64),expectedAcceptanceHash:'c'.repeat(64),expectedPolicyHash:'e'.repeat(64),
+    activationReviewId:'00000000-0000-4000-8000-000000000006',activationReviewHash:'d'.repeat(64),
+    stageOperationId:'00000000-0000-4000-8000-000000000007',candidateRevision:7};
+  actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector',credentialStatus:{state:'pending',reviewPending:false,
+    applyPending:true,activeRevision:null,candidateRevision:7,discoveryRevision:4}}]);
+  actions.previewApply.mockResolvedValue(pending);actions.apply.mockRejectedValue(new Error('lost response'));
+  render(<OutsideDiscoverySection memberId="member-uncertain"/>);
+  const apply=await screen.findByRole('button',{name:'Apply credential revision'});
+  actions.targets.mockRejectedValueOnce(new Error('status unavailable'));
+  fireEvent.click(apply);
+  await screen.findByText(/last Apply result is uncertain/);
+  expect(screen.queryByText(/Credential revision 7 is pending Apply and is not active/)).toBeNull();
+  expect(screen.queryByRole('button',{name:'Apply credential revision'})).toBeNull();
+  expect(actions.apply).toHaveBeenCalledTimes(1);
 });
 
 it('does not treat an older pending candidate as success when replacement staging is refused',async()=>{

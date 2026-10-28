@@ -14,6 +14,9 @@ const deadline=()=>({deadlineAtMs:Date.now()+8000});
 export function registerHumanOutsideDiscoveryActions(store:OutsideCustodyStore):void{
   registerAction({name:'outside.discovery-targets',input:z.strictObject({sessionToken}),secretFields:['sessionToken'],
     run:input=>store.listHumanDiscoveryTargets(input.sessionToken,deadline())});
+  registerAction({name:'outside.candidate-apply-preview',input:z.strictObject({sessionToken,agentName:z.string().regex(NAME),connectionName:z.string().regex(NAME)}),
+    secretFields:['sessionToken'],run:input=>store.inspectHumanPendingApply(input.sessionToken,
+      {agentName:input.agentName,connectionName:input.connectionName},deadline())});
   registerAction({name:'outside.discovery-preview',input:z.strictObject({sessionToken,agentName:z.string().regex(NAME),connectionName:z.string().regex(NAME)}),
     secretFields:['sessionToken'],run:input=>store.previewHumanDiscovery(input.sessionToken,{agentName:input.agentName,connectionName:input.connectionName},deadline())});
   registerAction({name:'outside.discover',input:z.strictObject({sessionToken,consent:z.literal(true),requestId:uuid,claimOperationId:uuid,accountId:uuid,
@@ -48,10 +51,17 @@ export function registerHumanOutsideDiscoveryActions(store:OutsideCustodyStore):
     // The bounded review receipt is prepared inside Keeper and immediately consumed by the
     // existing stage operation. It never activates the candidate or exposes activation controls.
     const {sessionToken,...value}=input;
-    const activation=await store.previewExecutableActivation(sessionToken,{...value,operationId:randomUUID()},deadline());
-    const result=await store.stage(sessionToken,{...value,operationId:randomUUID(),expectedPolicyHash:activation.policyHash,
+    const activationReviewId=randomUUID();
+    const activation=await store.previewExecutableActivation(sessionToken,{...value,operationId:activationReviewId},deadline());
+    const stageOperationId=randomUUID();
+    const result=await store.stage(sessionToken,{...value,operationId:stageOperationId,expectedPolicyHash:activation.policyHash,
       activationReviewId:activation.reviewId,expectedActivationReviewHash:activation.reviewHash},deadline());
     if(result.outcome!=='staged'||result.credentialRevision===null)throw new Error('Outside credential change could not be confirmed');
-    return {staged:true};
+    return {staged:true,activationReviewId,activationReviewHash:activation.reviewHash,expectedPolicyHash:activation.policyHash,
+      stageOperationId,candidateRevision:result.credentialRevision};
   }});
+  registerAction({name:'outside.candidate-apply',input:z.strictObject({sessionToken,...selectors.shape,expectedPolicyHash:hash,
+    activationReviewId:uuid,activationReviewHash:hash,stageOperationId:uuid,candidateRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}),
+    secretFields:['sessionToken'],run:input=>{const {sessionToken,activationReviewHash,...value}=input;
+      return store.apply(sessionToken,{...value,operationId:randomUUID(),expectedActivationReviewHash:activationReviewHash},deadline());}});
 }

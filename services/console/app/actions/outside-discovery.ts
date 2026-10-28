@@ -4,7 +4,7 @@ import { memberAuditAddress,sessionMember } from "../../lib/auth";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
 import { parseOutsideDiscoveryDocument,parseOutsideDiscoveryInspection,parseOutsideDiscoveryPreview,parseOutsideDiscoveryTargets,
   parseOutsideDescriptorAcceptance,parseOutsideDescriptorPublication,parseOutsideDescriptorReview,
-  type OutsideDescriptorAcceptanceDto,type OutsideDescriptorPublicationDto,type OutsideDescriptorReviewDto,
+  parseOutsidePendingApply,type OutsidePendingApplyDto,type OutsideDescriptorAcceptanceDto,type OutsideDescriptorPublicationDto,type OutsideDescriptorReviewDto,
   type OutsideDiscoveryDocumentDto,type OutsideDiscoveryInspectionDto,type OutsideDiscoveryPreviewDto,type OutsideDiscoveryTargetDto }
   from "../../lib/outside-discovery-dto";
 
@@ -38,6 +38,17 @@ export async function listOutsideDiscoveryTargets():Promise<OutsideDiscoveryTarg
     return targets;
   }
   catch(error){return unavailable(error);}
+}
+
+export async function previewOutsideCredentialApply(value:unknown):Promise<OutsidePendingApplyDto>{
+  const {sessionToken,auditActor}=await admitted();
+  const raw=strict(value,['agentName','connectionName']);
+  if(!isName(raw.agentName)||!isName(raw.connectionName))throw new Error('Invalid credential Apply input');
+  try{
+    const pending=parseOutsidePendingApply(await keeper<unknown>('outside.candidate-apply-preview',{sessionToken,...raw},auditActor));
+    if(!pending)throw new Error('Invalid pending credential response');
+    return pending;
+  }catch(error){return unavailable(error);}
 }
 
 export async function previewOutsideDiscovery(value:unknown):Promise<OutsideDiscoveryPreviewDto>{
@@ -128,7 +139,7 @@ export async function acceptOutsideDescriptorReview(value:unknown):Promise<Outsi
   }catch(error){return unavailable(error);}
 }
 
-export async function stageOutsideCredentialCandidate(value:unknown):Promise<{staged:true}>{
+export async function stageOutsideCredentialCandidate(value:unknown):Promise<{staged:true;activationReviewId:string;activationReviewHash:string;expectedPolicyHash:string;stageOperationId:string;candidateRevision:number}>{
   const {sessionToken,auditActor}=await admitted();
   const keys=['accountId','agentName','connectionName','requestId','claimOperationId','publicationId','acceptanceId','expectedGeneration',
     'expectedCandidateRevision','expectedConsentGeneration','expectedDefinitionHash','expectedAccessRevision','expectedPublicationHash','expectedAcceptanceHash'];
@@ -141,7 +152,30 @@ export async function stageOutsideCredentialCandidate(value:unknown):Promise<{st
   try{
     const result=await keeper<unknown>('outside.candidate-stage',{sessionToken,...raw},auditActor);
     const response=record(result);
-    if(!response||Object.keys(response).join(',')!=='staged'||response.staged!==true)throw new Error('Invalid staging response');
-    return {staged:true};
+    if(!response||Object.keys(response).sort().join(',')!=='activationReviewHash,activationReviewId,candidateRevision,expectedPolicyHash,stageOperationId,staged'||response.staged!==true||
+        !isUuid(response.activationReviewId)||!isHash(response.activationReviewHash)||!isHash(response.expectedPolicyHash)||!isUuid(response.stageOperationId)||!isSafeInteger(response.candidateRevision,1))
+      throw new Error('Invalid staging response');
+    return {staged:true,activationReviewId:response.activationReviewId,activationReviewHash:response.activationReviewHash,
+      expectedPolicyHash:response.expectedPolicyHash,stageOperationId:response.stageOperationId,candidateRevision:response.candidateRevision};
+  }catch(error){return unavailable(error);}
+}
+
+export async function applyOutsideCredentialCandidate(value:unknown):Promise<{state:'applied';credentialRevision:number}>{
+  const {sessionToken,auditActor}=await admitted();
+  const keys=['accountId','agentName','connectionName','requestId','claimOperationId','publicationId','acceptanceId','expectedGeneration',
+    'expectedCandidateRevision','expectedConsentGeneration','expectedDefinitionHash','expectedAccessRevision','expectedPublicationHash',
+    'expectedAcceptanceHash','expectedPolicyHash','activationReviewId','activationReviewHash','stageOperationId','candidateRevision'];
+  const raw=strict(value,keys);
+  if(!isUuid(raw.accountId)||!isName(raw.agentName)||!isName(raw.connectionName)||!isUuid(raw.requestId)||!isUuid(raw.claimOperationId)||
+      !isUuid(raw.publicationId)||!isUuid(raw.acceptanceId)||!isSafeInteger(raw.expectedGeneration,1)||
+      raw.expectedCandidateRevision!==null&&!isSafeInteger(raw.expectedCandidateRevision,1)||!isSafeInteger(raw.expectedConsentGeneration,1)||
+      !isHash(raw.expectedDefinitionHash)||!isSafeInteger(raw.expectedAccessRevision,1)||!isHash(raw.expectedPublicationHash)||
+      !isHash(raw.expectedAcceptanceHash)||!isHash(raw.expectedPolicyHash)||!isUuid(raw.activationReviewId)||!isHash(raw.activationReviewHash)||
+      !isUuid(raw.stageOperationId)||!isSafeInteger(raw.candidateRevision,1))throw new Error('Invalid credential Apply input');
+  try{
+    const result=record(await keeper<unknown>('outside.candidate-apply',{sessionToken,...raw},auditActor,{timeoutMs:90_000}));
+    if(!result||result.kind!=='apply'||result.outcome!=='applied'||result.credentialRevision!==raw.candidateRevision)
+      throw new Error('Invalid credential Apply response');
+    return {state:'applied',credentialRevision:raw.candidateRevision};
   }catch(error){return unavailable(error);}
 }

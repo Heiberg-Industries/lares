@@ -1,9 +1,10 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { acceptOutsideDescriptorReview,discoverOutsideTools,inspectOutsideDiscovery,listOutsideDiscoveryTargets,previewOutsideDescriptorReview,
-  previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate } from "../app/actions/outside-discovery";
+  previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate,applyOutsideCredentialCandidate,
+  previewOutsideCredentialApply } from "../app/actions/outside-discovery";
 import type { OutsideDescriptorAcceptanceDto,OutsideDescriptorPublicationDto,OutsideDescriptorReviewDto,OutsideDiscoveryDocumentDto,
-  OutsideDiscoveryPreviewDto,OutsideDiscoveryTargetDto } from "../lib/outside-discovery-dto";
+  OutsideDiscoveryPreviewDto,OutsideDiscoveryTargetDto,OutsidePendingApplyDto } from "../lib/outside-discovery-dto";
 
 type Target=OutsideDiscoveryTargetDto;
 type Preview=OutsideDiscoveryPreviewDto;
@@ -32,14 +33,15 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     [message,setMessage]=useState(""),[error,setError]=useState(""),[document,setDocument]=useState<Discovery>(),
     [recovery,setRecovery]=useState<Recovery>(),[inspected,setInspected]=useState(false),[unresolved,setUnresolved]=useState(false),
     [descriptorReview,setDescriptorReview]=useState<OutsideDescriptorReviewDto>(),[publication,setPublication]=useState<OutsideDescriptorPublicationDto>(),
-    [acceptance,setAcceptance]=useState<OutsideDescriptorAcceptanceDto>(),[staged,setStaged]=useState(false);
-  const selectionRef=useRef(""),activeRecoveryRef=useRef<string|undefined>(undefined),reviewPreviewVersion=useRef(0);
+    [acceptance,setAcceptance]=useState<OutsideDescriptorAcceptanceDto>(),[staged,setStaged]=useState<OutsidePendingApplyDto>(),
+    [applyUncertain,setApplyUncertain]=useState(false);
+  const selectionRef=useRef(""),activeRecoveryRef=useRef<string|undefined>(undefined),reviewPreviewVersion=useRef(0),pendingApplyVersion=useRef(0);
   const selectedTarget=useMemo(()=>targets.find(t=>`${t.agentName}\0${t.connectionName}`===selected),[targets,selected]);
 
   useEffect(()=>{
     let active=true;
     void listOutsideDiscoveryTargets().then(items=>{if(active){setTargets(items);if(items.length){const first=`${items[0]!.agentName}\0${items[0]!.connectionName}`;
-      selectionRef.current=first;setSelected(first);}}})
+      selectionRef.current=first;setSelected(first);const target=items[0]!;if(target.credentialStatus.applyPending)void restorePendingApply(target,first);}}})
       .catch(()=>{if(active)setError("Private discovery connections are unavailable. Refresh membership to try again.");});
     try{
       const savedText=sessionStorage.getItem(memberRecoveryKey);
@@ -59,9 +61,21 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     return()=>{active=false;};
   },[memberRecoveryKey]);
 
+  async function restorePendingApply(target:Target,selection:string){
+    const version=++pendingApplyVersion.current;
+    try{
+      const pending=await previewOutsideCredentialApply({agentName:target.agentName,connectionName:target.connectionName});
+      if(version!==pendingApplyVersion.current||selectionRef.current!==selection||pending.agentName!==target.agentName||pending.connectionName!==target.connectionName||
+          pending.candidateRevision!==target.credentialStatus.candidateRevision)return;
+      setStaged(pending);setApplyUncertain(false);setMessage("The exact pending custody revision was recovered from Keeper's saved stage evidence and is ready for Apply.");
+    }catch{
+      if(version===pendingApplyVersion.current&&selectionRef.current===selection)setError("The pending credential's exact Apply evidence is unavailable or ambiguous. Refresh status and review this connection again; if the old candidate still blocks staging, stop and contact the credential custodian for the normal custody resolution path.");
+    }
+  }
+
   async function prepareDescriptorReview(identity:Recovery){
     const version=++reviewPreviewVersion.current,identityKey=recoveryIdentity(identity),selection=`${identity.agentName}\0${identity.connectionName}`;
-    setError("");setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(false);
+    setError("");setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);
     try{
       const review=await previewOutsideDescriptorReview(identity);
       if(version!==reviewPreviewVersion.current||selectionRef.current!==selection||activeRecoveryRef.current!==identityKey)return;
@@ -71,10 +85,18 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
   }
 
   async function loadTargets(){
+    pendingApplyVersion.current++;
+    if(!applyUncertain)setStaged(undefined);
     reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
     setBusy(true);setError("");
     try{const items=await listOutsideDiscoveryTargets();setTargets(items);if(items.length){const first=`${items[0]!.agentName}\0${items[0]!.connectionName}`;
-      selectionRef.current=first;setSelected(first);}setMessage(items.length?"Current connections loaded.":"No saved bearer connections are available for your agents.");}
+      selectionRef.current=first;setSelected(first);const target=items[0]!;
+      if(applyUncertain&&staged?.agentName===target.agentName&&staged.connectionName===target.connectionName){
+        if(target.credentialStatus.activeRevision===staged.candidateRevision&&!target.credentialStatus.applyPending){
+          setStaged(undefined);setApplyUncertain(false);setMessage(`Credential revision ${staged.candidateRevision} is active in Keeper custody. This does not confirm that the outside server is reachable or the agent is running.`);
+        }else if(target.credentialStatus.applyPending&&target.credentialStatus.candidateRevision===staged.candidateRevision)void restorePendingApply(target,first);
+      }else if(!applyUncertain&&target.credentialStatus.applyPending)void restorePendingApply(target,first);
+    }setMessage(items.length?"Current connections loaded.":"No saved bearer connections are available for your agents.");}
     catch{setError("Private discovery connections are unavailable. Refresh membership to try again.");}
     finally{setBusy(false);}
   }
@@ -82,7 +104,7 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     if(!selectedTarget)return;
     reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
     setBusy(true);setError("");setMessage("");setDocument(undefined);setPreview(undefined);setConsent(false);setCredential("");setInspected(false);setUnresolved(false);
-    setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(false);
+    setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(undefined);
     try{setPreview(await previewOutsideDiscovery({agentName:selectedTarget.agentName,connectionName:selectedTarget.connectionName}));}
     catch{setError("This connection could not be reviewed. Refresh the list and try again.");}
     finally{setBusy(false);}
@@ -152,12 +174,15 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     if(!recovery||!descriptorReview||!publication||!acceptance||busy)return;
     setBusy(true);setError("");
     try{
-      await stageOutsideCredentialCandidate({...recovery,publicationId:publication.publicationId,acceptanceId:acceptance.acceptanceId,
+      const selectors={...recovery,publicationId:publication.publicationId,acceptanceId:acceptance.acceptanceId,
         expectedGeneration:descriptorReview.expectedGeneration,expectedCandidateRevision:descriptorReview.expectedCandidateRevision,
         expectedConsentGeneration:descriptorReview.expectedConsentGeneration,expectedDefinitionHash:descriptorReview.expectedDefinitionHash,
         expectedAccessRevision:descriptorReview.expectedAccessRevision,expectedPublicationHash:publication.publicationHash,
-        expectedAcceptanceHash:acceptance.acceptanceHash});
-      setStaged(true);setMessage("Credential candidate staged and pending Apply. It is not active.");
+        expectedAcceptanceHash:acceptance.acceptanceHash};
+      const receipt=await stageOutsideCredentialCandidate(selectors);
+      setStaged({...selectors,activationReviewId:receipt.activationReviewId,activationReviewHash:receipt.activationReviewHash,
+        expectedPolicyHash:receipt.expectedPolicyHash,stageOperationId:receipt.stageOperationId,candidateRevision:receipt.candidateRevision});
+      setMessage("Credential candidate staged and pending Apply. It is not active.");
       const items=await listOutsideDiscoveryTargets();setTargets(items);
     }catch{
       try{
@@ -168,17 +193,42 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     finally{setBusy(false);}
   }
 
+  async function applyCandidate(){
+    if(!staged||busy||applyUncertain||!selectedTarget||selectedTarget.agentName!==staged.agentName||selectedTarget.connectionName!==staged.connectionName||
+        !selectedTarget.credentialStatus.applyPending||selectedTarget.credentialStatus.candidateRevision!==staged.candidateRevision)return;
+    setBusy(true);setError("");setMessage("");
+    try{
+      const result=await applyOutsideCredentialCandidate(staged);
+      setStaged(undefined);setApplyUncertain(false);setMessage(`Credential revision ${result.credentialRevision} is active in Keeper custody. This does not confirm that the outside server is reachable or the agent is running.`);
+      try{setTargets(await listOutsideDiscoveryTargets());}catch{setError("Apply succeeded and Keeper confirmed the active custody revision, but the refreshed connection list is unavailable.");}
+    }catch{
+      setApplyUncertain(true);
+      try{
+        const current=await listOutsideDiscoveryTargets();setTargets(current);
+        const target=current.find(item=>item.agentName===staged.agentName&&item.connectionName===staged.connectionName);
+        if(target?.credentialStatus.activeRevision===staged.candidateRevision&&!target.credentialStatus.applyPending){
+          setApplyUncertain(false);setMessage(`Credential revision ${staged.candidateRevision} is active in Keeper custody. This does not confirm that the outside server is reachable or the agent is running.`);
+        }else if(target?.credentialStatus.applyPending&&target.credentialStatus.candidateRevision===staged.candidateRevision&&
+            selectionRef.current===`${staged.agentName}\0${staged.connectionName}`){
+          setError("Apply was not confirmed. The exact current candidate and evidence were recovered; review it before choosing Apply again.");
+        }else setError("Apply could not be confirmed and the exact candidate is no longer current. Refresh status; no Apply action is available until the current revision is recovered.");
+      }catch{setError("Apply could not be confirmed and current custody state is unavailable. Refresh before taking another action.");}
+    }finally{setBusy(false);}
+  }
+
   return <section className="lares-stack" aria-label="Private outside-tool discovery">
     <h2>Discover available tools</h2>
     <p>Review a saved connection and, if you choose, share its bearer credential for one bounded description lookup. This does not enable or run tools.</p>
     {targets.length>0&&<label className="lares-field-label">Agent connection
-      <select value={selected} disabled={busy||unresolved} onChange={event=>{selectionRef.current=event.target.value;reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
+      <select value={selected} disabled={busy||unresolved} onChange={event=>{pendingApplyVersion.current++;if(!applyUncertain)setStaged(undefined);selectionRef.current=event.target.value;reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
         setSelected(event.target.value);setPreview(undefined);setConsent(false);setCredential("");setInspected(false);setDocument(undefined);
-        setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(false);}}>
+        setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(undefined);
+        const target=targets.find(item=>`${item.agentName}\0${item.connectionName}`===event.target.value);
+        if(target?.credentialStatus.applyPending)void restorePendingApply(target,event.target.value);}}>
         {targets.map(target=><option key={`${target.agentName}:${target.connectionName}`} value={`${target.agentName}\0${target.connectionName}`}>{target.agentName} · {target.connectionName}</option>)}
       </select>
     </label>}
-    {selectedTarget&&<p role="status">{selectedTarget.credentialStatus.reviewPending&&selectedTarget.credentialStatus.applyPending
+    {selectedTarget&&<p role="status">{applyUncertain?"The last Apply result is uncertain. No candidate is ready to Apply until the exact current custody state and evidence are recovered.":selectedTarget.credentialStatus.reviewPending&&selectedTarget.credentialStatus.applyPending
       ?selectedTarget.credentialStatus.state==='active-pending'
         ?"A completed discovery is pending review and a staged credential revision is pending Apply. The active saved revision remains in place."
         :"A completed discovery is pending review and a staged credential revision is pending Apply; no active saved revision is available."
@@ -199,7 +249,7 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
           :"Credential status is unavailable under your current account and connection access."}</p>}
     <div className="lares-inline-form">
       <button type="button" disabled={busy||unresolved} onClick={()=>void loadTargets()}>Refresh connections</button>
-      <button type="button" disabled={busy||unresolved||!selectedTarget} onClick={()=>void review()}>Review connection</button>
+      <button type="button" disabled={busy||unresolved||applyUncertain||!selectedTarget} onClick={()=>void review()}>Review connection</button>
     </div>
     {preview&&<div className="lares-surface lares-stack">
       <strong>Exact destination</strong><code>{preview.endpoint}</code>
@@ -231,7 +281,13 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       {!publication&&<button type="button" disabled={busy} onClick={()=>void publishReviewedDescriptions()}>Record these exact descriptions for acceptance</button>}
       {publication&&!acceptance&&<button type="button" disabled={busy} onClick={()=>void acceptReviewedDescriptions()}>Accept these exact descriptions</button>}
       {acceptance&&!staged&&<button type="button" disabled={busy} onClick={()=>void stageReviewedCandidate()}>Stage credential candidate</button>}
-      {staged&&<p role="status">This candidate is pending Apply and is not active.</p>}
+    </div>}
+    {staged&&!applyUncertain&&<div className="lares-surface lares-stack" aria-label="Pending credential revision">
+      <p role="status">Credential revision {staged.candidateRevision} is pending Apply and is not active.</p>
+      <button type="button" disabled={busy||applyUncertain||selectedTarget?.agentName!==staged.agentName||selectedTarget.connectionName!==staged.connectionName||
+        !selectedTarget.credentialStatus.applyPending||selectedTarget.credentialStatus.candidateRevision!==staged.candidateRevision}
+        onClick={()=>void applyCandidate()}>{busy?"Applying credential…":"Apply credential revision"}</button>
+      <p>Apply activates this exact credential revision in Keeper custody. It does not apply agent declarations or confirm runtime availability.</p>
     </div>}
   </section>;
 }
