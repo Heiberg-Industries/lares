@@ -82,7 +82,7 @@ async function removeTestOwnedOutsideCustodyGrants(): Promise<void> {
   await admin.query(`REVOKE CONNECT ON DATABASE "${database}" FROM lares_outside_custody`);
   await admin.query("REVOKE USAGE ON SCHEMA public FROM lares_outside_custody");
   for (const table of ENGINE_TABLE_PRIVILEGES.outsideCustody) {
-    await admin.query(`REVOKE SELECT, INSERT ON TABLE public."${table}" FROM lares_outside_custody`);
+    await admin.query(`REVOKE SELECT, INSERT, DELETE ON TABLE public."${table}" FROM lares_outside_custody`);
   }
   for (const table of outsideCustodyAuthorityTables) {
     await admin.query(`REVOKE SELECT ON TABLE public."${table}" FROM lares_outside_custody`);
@@ -150,6 +150,18 @@ afterAll(async () => {
 });
 
 describe("engine database privilege foundation", () => {
+  it("grants live revision deletion only to the isolated custody role",async()=>{
+    expect((await outsideCustody.query(`SELECT has_table_privilege(current_user,'outside_custody_revisions','DELETE') AS revisions,
+      has_table_privilege(current_user,'outside_custody_accounts','DELETE') AS accounts,
+      has_table_privilege(current_user,'outside_custody_operations','DELETE') AS receipts,
+      has_table_privilege(current_user,'outside_execution_approvals','DELETE') AS approvals`)).rows[0])
+      .toEqual({revisions:true,accounts:false,receipts:false,approvals:false});
+    expect((await outsideCustody.query('DELETE FROM outside_custody_revisions WHERE false')).rowCount).toBe(0);
+    await expectDenied(()=>outsideCustody.query('DELETE FROM outside_custody_operations WHERE false'));
+    await expectDenied(()=>outsideCustody.query('DELETE FROM outside_custody_accounts WHERE false'));
+    await expectDenied(()=>app.query('DELETE FROM outside_custody_revisions WHERE false'));
+  });
+
   it("allows custody to lock retained Vault metadata without changing authority or reading content",async()=>{
     await admin.query("INSERT INTO orgs(id,display_name) VALUES('metadata-org','Metadata fixture')");
     await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('metadata-owner','Fixture owner','metadata-org','owner','active')");

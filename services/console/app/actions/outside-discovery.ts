@@ -40,6 +40,19 @@ export async function listOutsideDiscoveryTargets():Promise<OutsideDiscoveryTarg
   catch(error){return unavailable(error);}
 }
 
+export async function removeOutsideCredential(value:unknown):Promise<{removed:true;generation:number}>{
+  const {sessionToken,auditActor}=await admitted();
+  const raw=strict(value,['accountId','agentName','connectionName','expectedGeneration']);
+  if(!isUuid(raw.accountId)||!isName(raw.agentName)||!isName(raw.connectionName)||!isSafeInteger(raw.expectedGeneration,1))
+    throw new Error('Invalid credential removal input');
+  try{
+    const result=record(await keeper<unknown>('outside.credential-remove',{sessionToken,...raw},auditActor));
+    if(!result||result.kind!=='revoke'||result.outcome!=='revoked'||result.accountId!==raw.accountId||
+        !isSafeInteger(result.generation,1))throw new Error('Invalid credential removal response');
+    return {removed:true,generation:result.generation};
+  }catch(error){return unavailable(error);}
+}
+
 export async function previewOutsideCredentialApply(value:unknown):Promise<OutsidePendingApplyDto>{
   const {sessionToken,auditActor}=await admitted();
   const raw=strict(value,['agentName','connectionName']);

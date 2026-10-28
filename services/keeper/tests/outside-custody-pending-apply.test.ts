@@ -275,3 +275,108 @@ it('uses the old active revision before rotation and refuses an unconsumed old e
     expect(http.request).toHaveBeenCalledTimes(3);
   }finally{http.request.mockReset();}
 });
+
+it('removes held revisions under the runtime role, retains receipts, and reconnects above every old revision',async()=>{
+  const binding={agent:'worker',incarnation,sessionId,memberId:owner,approverMemberId:owner,admissionNonce,policyRevision:2};
+  const callBefore={callId:randomUUID(),connectionName:'connector',toolName:'lookup',input:{query:'before-removal'}};
+  const staleCall={callId:randomUUID(),connectionName:'connector',toolName:'lookup',input:{query:'stale-after-removal'}};
+  const newCall={callId:randomUUID(),connectionName:'connector',toolName:'lookup',input:{query:'after-reconnect'}};
+  const approval=async(call:typeof callBefore,revision:number)=>admin.query(`INSERT INTO outside_execution_approvals(call_id,request_id,session_id,member_id,
+    approver_member_id,agent,incarnation,definition_hash,connection_name,account_id,credential_revision,tool_name,payload_hash,expires_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,clock_timestamp()+interval '1 minute')`,[call.callId,randomUUID(),sessionId,
+    owner,owner,'worker',incarnation,Buffer.from('a'.repeat(64),'hex'),'connector',accountId,revision,'lookup',Buffer.from(outsidePayloadHash('lookup',call.input),'hex')]);
+  await approval(callBefore,1);await approval(staleCall,1);
+  let peerCalls=0;
+  http.request.mockImplementation(async(_url:string,options:{body:Buffer})=>{
+    peerCalls++;
+    const message=JSON.parse(options.body.toString()) as {id?:number;method:string};
+    let result:unknown;
+    if(message.method==='initialize')result={protocolVersion:'2025-06-18',serverInfo:{name:'Fixture',version:'1'}};
+    else if(message.method==='tools/list')result={tools:[{name:'lookup',description:'Lookup',inputSchema:{type:'object'}}]};
+    else result={content:[{type:'text',text:'Fixture result'}]};
+    return {statusCode:message.id===undefined?202:200,headers:{'content-type':'application/json','mcp-session-id':'fixture-session'},
+      body:Readable.from(message.id===undefined?[]:[Buffer.from(JSON.stringify({jsonrpc:'2.0',id:message.id,result}))])};
+  });
+  try{
+    await expect(store.dispatchApproved(binding,callBefore,{deadlineAtMs:Date.now()+10000})).resolves.toMatchObject({content:[{text:'Fixture result'}]});
+    const before=await store.inspectHumanPendingApply(token,{agentName:'worker',connectionName:'connector'},deadline());
+    const oldApply={...before,operationId:randomUUID()};
+    await expect(store.removeHumanCredential(otherToken,{accountId,agentName:'worker',connectionName:'connector',expectedGeneration:1,
+      operationId:randomUUID()},deadline())).rejects.toThrow();
+    grant.capture={...capture,actor:{...capture.actor,memberId:other}};
+    await expect(store.removeHumanCredential(otherToken,{accountId,agentName:'worker',connectionName:'connector',expectedGeneration:1,
+      operationId:randomUUID()},deadline())).rejects.toThrow();
+    grant.capture=capture;
+    grant.capture=undefined;
+    await expect(store.removeHumanCredential(token,{accountId,agentName:'worker',connectionName:'connector',expectedGeneration:1,
+      operationId:randomUUID()},deadline())).rejects.toThrow();
+    grant.capture=capture;
+    await expect(store.removeHumanCredential(token,{accountId,agentName:'worker',connectionName:'connector',expectedGeneration:2,
+      operationId:randomUUID()},deadline())).rejects.toThrow();
+    await admin.query('REVOKE DELETE ON TABLE outside_custody_revisions FROM lares_outside_custody');
+    await expect(store.removeHumanCredential(token,{accountId,agentName:'worker',connectionName:'connector',expectedGeneration:1,
+      operationId:randomUUID()},deadline())).rejects.toThrow();
+    expect((await admin.query('SELECT generation::text,state FROM outside_custody_accounts WHERE account_id=$1',[accountId])).rows[0])
+      .toEqual({generation:'1',state:'active'});
+    expect((await admin.query('SELECT count(*)::int AS count FROM outside_custody_revisions WHERE account_id=$1',[accountId])).rows[0]?.count).toBe(3);
+    await admin.query('GRANT DELETE ON TABLE outside_custody_revisions TO lares_outside_custody');
+    const removalOperationId=randomUUID();
+    const removed=await store.removeHumanCredential(token,{accountId,agentName:'worker',connectionName:'connector',expectedGeneration:1,
+      operationId:removalOperationId},deadline());
+    expect(removed).toMatchObject({kind:'revoke',outcome:'revoked',generation:4,credentialRevision:3});
+    expect((await custody.query('SELECT current_user')).rows[0]?.current_user).toBe('lares_outside_custody');
+    expect((await app.query('SELECT current_user')).rows[0]?.current_user).toBe('lares_app');
+    expect((await admin.query('SELECT count(*)::int AS count FROM outside_custody_revisions WHERE account_id=$1',[accountId])).rows[0]?.count).toBe(0);
+    expect((await admin.query('SELECT count(*)::int AS count FROM outside_custody_operations WHERE account_id=$1',[accountId])).rows[0]?.count).toBeGreaterThan(4);
+    expect((await admin.query('SELECT generation::text,state,active_revision,candidate_revision FROM outside_custody_accounts WHERE account_id=$1',[accountId])).rows[0])
+      .toEqual({generation:'4',state:'revoked',active_revision:null,candidate_revision:null});
+    await expect(store.removeHumanCredential(token,{accountId,agentName:'worker',connectionName:'connector',expectedGeneration:1,
+      operationId:removalOperationId},deadline())).resolves.toMatchObject({generation:4,outcome:'revoked'});
+    await expect(store.removeHumanCredential(token,{accountId,agentName:'worker',connectionName:'connector',expectedGeneration:1,
+      operationId:randomUUID()},deadline())).rejects.toThrow();
+    await expect(app.query('SELECT * FROM outside_custody_revisions WHERE account_id=$1',[accountId])).rejects.toThrow();
+    await expect(app.query('DELETE FROM outside_custody_revisions WHERE account_id=$1',[accountId])).rejects.toThrow();
+    await expect(store.dispatchApproved(binding,staleCall,{deadlineAtMs:Date.now()+10000})).rejects.toThrow();
+    expect(peerCalls).toBe(3);
+    await expect(store.apply(token,{...oldApply,expectedActivationReviewHash:before.activationReviewHash},deadline())).rejects.toThrow();
+    await expect(store.stage(token,{...selectors,operationId:staged.operationId,activationReviewId:activation.reviewId,
+      expectedActivationReviewHash:activation.reviewHash},deadline())).rejects.toThrow();
+
+    const preview=await store.previewHumanDiscovery(token,{agentName:'worker',connectionName:'connector'},deadline());
+    expect(preview).toMatchObject({accountId,expectedGeneration:4,expectedCandidateRevision:null,consentGeneration:4});
+    const document=await store.consentAndDiscover(token,{requestId:preview.requestId,operationId:preview.claimOperationId,accountId,
+      agentName:'worker',connectionName:'connector',expectedGeneration:preview.expectedGeneration,
+      expectedCandidateRevision:preview.expectedCandidateRevision,expectedDefinitionHash:preview.definitionHash,
+      expectedAccessRevision:preview.accessRevision,expectedDestinationHash:preview.destinationHash,
+      expectedRoutePolicyHash:preview.routePolicyHash,consentGeneration:preview.consentGeneration,credential:Buffer.from('fresh-token')},deadline());
+    expect(document.tools).toHaveLength(1);
+    const review=await store.previewHumanDescriptorReview(token,{accountId,agentName:'worker',connectionName:'connector',requestId:preview.requestId,
+      claimOperationId:preview.claimOperationId},deadline());
+    const published=await store.publishDiscoveredDescriptorReview(token,{accountId,agentName:'worker',connectionName:'connector',requestId:preview.requestId,
+      claimOperationId:preview.claimOperationId,operationId:randomUUID(),expectedGeneration:review.expectedGeneration,expectedDescriptorHash:review.descriptorHash},deadline());
+    const accepted=await store.acceptPublishedDescriptorReview(token,{accountId,publicationId:published.publicationId,operationId:randomUUID(),
+      expectedPublicationHash:published.publicationHash},deadline());
+    const activationSelectors={accountId,agentName:'worker',connectionName:'connector',requestId:preview.requestId,claimOperationId:preview.claimOperationId,
+      publicationId:published.publicationId,acceptanceId:accepted.acceptanceId,expectedGeneration:review.expectedGeneration,
+      expectedCandidateRevision:review.expectedCandidateRevision,expectedConsentGeneration:review.expectedConsentGeneration,
+      expectedDefinitionHash:review.expectedDefinitionHash,expectedAccessRevision:review.expectedAccessRevision,
+      expectedPublicationHash:published.publicationHash,expectedAcceptanceHash:accepted.acceptanceHash};
+    const freshActivation=await store.previewExecutableActivation(token,{...activationSelectors,operationId:randomUUID()},deadline());
+    const freshStage=await store.stage(token,{...activationSelectors,operationId:randomUUID(),expectedPolicyHash:freshActivation.policyHash,
+      activationReviewId:freshActivation.reviewId,expectedActivationReviewHash:freshActivation.reviewHash},deadline());
+    const applyInput={...activationSelectors,operationId:randomUUID(),expectedPolicyHash:freshActivation.policyHash,
+      activationReviewId:freshActivation.reviewId,expectedActivationReviewHash:freshActivation.reviewHash,
+      stageOperationId:freshStage.operationId,candidateRevision:freshStage.credentialRevision!};
+    await store.apply(token,applyInput,deadline());
+    expect(freshStage.credentialRevision).toBeGreaterThan(3);
+    expect((await admin.query('SELECT active_revision::text FROM outside_custody_accounts WHERE account_id=$1',[accountId])).rows[0]?.active_revision)
+      .toBe(String(freshStage.credentialRevision));
+    await expect(store.dispatchApproved(binding,staleCall,{deadlineAtMs:Date.now()+10000})).rejects.toThrow();
+    expect(peerCalls).toBe(6);
+    await approval(newCall,freshStage.credentialRevision!);
+    await expect(store.dispatchApproved(binding,newCall,{deadlineAtMs:Date.now()+10000})).resolves.toMatchObject({content:[{text:'Fixture result'}]});
+    expect(peerCalls).toBe(9);
+    expect((await admin.query('SELECT count(*)::int AS count FROM outside_custody_operations WHERE account_id=$1',[accountId])).rows[0]?.count)
+      .toBeGreaterThan(10);
+  }finally{http.request.mockReset();}
+});

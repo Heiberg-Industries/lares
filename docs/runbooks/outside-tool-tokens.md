@@ -37,6 +37,32 @@ process; agent editors do not gain credential authority.
 Removing the declaration, revoking Lares custody and revoking the key at the outside provider are
 separate actions.
 
+## Stop use and remove held credential material
+
+The current credential custodian can use **Stop use and remove held credential** on the member
+page. Keeper checks the signed current session, current access to the exact agent connection, account
+owner, account identity and displayed generation inside one locked transaction. It then clears the
+active and candidate pointers, advances the account generation, marks the account revoked, and
+deletes the account's live encrypted credential revisions. Pending work and approvals tied to older
+revisions no longer match. Non-secret operation and audit receipts remain with the account, and the
+same account can be reconnected after a fresh review and consent. Revision numbers are never reused
+for that account.
+
+This removes Lares's held credential material from live Keeper revision rows. It does not remove the
+agent's connection declaration, revoke the credential at its provider, or rewrite prior database
+backups. A database snapshot may retain encrypted revision bytes; backup expiry and any separate
+key-retention policy determine how long those snapshots remain useful. To disable the key itself,
+revoke it with its provider using that provider's own procedure. Lares does not make that provider
+change for you.
+
+If a removal response is uncertain, refresh custody status and act only on the displayed exact
+connection and generation. The page does not retry the removal automatically. A removed credential
+can be reconnected by reviewing the connection and destination again and giving fresh consent.
+
+Whole-agent runtime-start rollback after custody activation is not established by this flow. A
+successful Keeper Apply or removal proves only the stored custody state; it is not evidence that the
+runtime started, or that all runtime state can be rolled back.
+
 ## Signed outside-tool dispatch
 
 When an outside tool is used, the agent sends a signed request to the Keeper broker. The broker

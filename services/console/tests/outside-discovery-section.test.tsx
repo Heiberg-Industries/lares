@@ -2,11 +2,11 @@
 import { afterEach,beforeEach,expect,it,vi } from 'vitest';
 import { cleanup,fireEvent,render,screen,waitFor } from '@testing-library/react';
 
-const actions=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn(),review:vi.fn(),publish:vi.fn(),accept:vi.fn(),stage:vi.fn(),apply:vi.fn(),previewApply:vi.fn()}));
+const actions=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn(),review:vi.fn(),publish:vi.fn(),accept:vi.fn(),stage:vi.fn(),apply:vi.fn(),previewApply:vi.fn(),remove:vi.fn()}));
 vi.mock('../app/actions/outside-discovery',()=>({listOutsideDiscoveryTargets:actions.targets,previewOutsideDiscovery:actions.preview,
   discoverOutsideTools:actions.discover,inspectOutsideDiscovery:actions.inspect,previewOutsideDescriptorReview:actions.review,
   publishOutsideDescriptorReview:actions.publish,acceptOutsideDescriptorReview:actions.accept,stageOutsideCredentialCandidate:actions.stage,
-  applyOutsideCredentialCandidate:actions.apply,previewOutsideCredentialApply:actions.previewApply}));
+  applyOutsideCredentialCandidate:actions.apply,previewOutsideCredentialApply:actions.previewApply,removeOutsideCredential:actions.remove}));
 import { OutsideDiscoverySection } from '../components/OutsideDiscoverySection.js';
 
 const tuple={accountId:'00000000-0000-4000-8000-000000000001',requestId:'00000000-0000-4000-8000-000000000002',
@@ -37,11 +37,94 @@ it('shows the active credential separately from a pending token-only replacement
   expect(screen.queryByText(/private-token|ciphertext|policy/i)).toBeNull();
 });
 
+it('lists discovery-only account history as reviewable and retains removal for its held revision',async()=>{
+  actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector',credentialStatus:{state:'unavailable',reviewPending:true,applyPending:false,
+    accountId:'00000000-0000-4000-8000-000000000011',generation:3,hasCredentialMaterial:true,activeRevision:null,candidateRevision:null,discoveryRevision:2}}]);
+  render(<OutsideDiscoverySection memberId="member-a"/>);
+  await screen.findByText('A completed discovery is pending review; no active saved revision is available.');
+  expect((screen.getByRole('button',{name:'Review connection'}) as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.getByRole('button',{name:'Stop use and remove held credential'})).toBeTruthy();
+});
+
 it('labels a staged replacement as pending Apply, separately from completed discovery review',async()=>{
   actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector',credentialStatus:{state:'active-pending',
     reviewPending:false,applyPending:true,activeRevision:3,candidateRevision:5,discoveryRevision:4}}]);
   render(<OutsideDiscoverySection memberId="member-a"/>);
   await screen.findByText("A staged credential revision is pending Apply. The previous active saved revision remains in place.");
+});
+
+it('removes held credential material only for the selected exact account generation and reconciles the result',async()=>{
+  const accountId='00000000-0000-4000-8000-000000000011';
+  const held={agentName:'worker',connectionName:'connector',credentialStatus:{state:'active',reviewPending:false,applyPending:false,
+    accountId,generation:4,hasCredentialMaterial:true,activeRevision:3,candidateRevision:null,discoveryRevision:4}};
+  const removed={agentName:'worker',connectionName:'connector',credentialStatus:{state:'revoked',reviewPending:false,applyPending:false,
+    accountId,generation:5,hasCredentialMaterial:false,activeRevision:null,candidateRevision:null,discoveryRevision:4}};
+  actions.targets.mockResolvedValueOnce([held]).mockResolvedValueOnce([removed]);
+  actions.remove.mockResolvedValue({removed:true,generation:5});
+  render(<OutsideDiscoverySection memberId="member-a"/>);
+  fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove held credential'}));
+  await screen.findByText('Keeper confirmed that use is stopped and the held credential material is removed. Non-secret audit receipts remain. Reconnect requires a fresh review and consent.');
+  expect(actions.remove).toHaveBeenCalledWith({accountId,agentName:'worker',connectionName:'connector',expectedGeneration:4});
+  expect(screen.queryByRole('button',{name:'Stop use and remove held credential'})).toBeNull();
+});
+
+it.each(['normal response','uncertain response reconciliation'] as const)('clears only matching recovery after %s so reload can reconnect',async resultPath=>{
+  const held={agentName:'worker',connectionName:'connector',credentialStatus:{state:'active',reviewPending:false,applyPending:false,
+    accountId:tuple.accountId,generation:4,hasCredentialMaterial:true,activeRevision:3,candidateRevision:null,discoveryRevision:4}};
+  const removed={agentName:'worker',connectionName:'connector',credentialStatus:{state:'revoked',reviewPending:false,applyPending:false,
+    accountId:tuple.accountId,generation:5,hasCredentialMaterial:false,activeRevision:null,candidateRevision:null,discoveryRevision:4}};
+  actions.targets.mockResolvedValueOnce([held]).mockResolvedValueOnce([removed]).mockResolvedValue([removed]);
+  actions.inspect.mockResolvedValue({state:'complete',document});
+  if(resultPath==='normal response')actions.remove.mockResolvedValue({removed:true,generation:5});
+  else actions.remove.mockRejectedValue(new Error('lost reply after removal committed'));
+  const reconnectPreview={...preview,requestId:'00000000-0000-4000-8000-000000000008',claimOperationId:'00000000-0000-4000-8000-000000000009',
+    expectedGeneration:5,consentGeneration:3};
+  actions.preview.mockResolvedValueOnce(reconnectPreview);
+  sessionStorage.setItem(recoveryKey('member-a'),JSON.stringify(tuple));
+  const view=render(<OutsideDiscoverySection memberId="member-a"/>);
+  await screen.findByText('Exact current tool descriptions are ready for your review. No credential has been staged.');
+  fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove held credential'}));
+  await screen.findByText('Keeper confirmed that use is stopped and the held credential material is removed. Non-secret audit receipts remain. Reconnect requires a fresh review and consent.');
+  expect(sessionStorage.getItem(recoveryKey('member-a'))).toBeNull();
+  expect(screen.queryByText('Recovery reference saved for worker · connector.')).toBeNull();
+
+  view.unmount();
+  render(<OutsideDiscoverySection memberId="member-a"/>);
+  await waitFor(()=>expect((screen.getByRole('button',{name:'Review connection'}) as HTMLButtonElement).disabled).toBe(false));
+  expect(actions.inspect).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button',{name:'Review connection'}));
+  await screen.findByText('https://exact.example.test/mcp');
+  fireEvent.change(screen.getByLabelText('Bearer credential'),{target:{value:'new-private-token'}});
+  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.click(screen.getByRole('button',{name:'Send one discovery request'}));
+  await screen.findByText('Exact current tool descriptions are ready for your review. No credential has been staged.');
+  expect(actions.discover).toHaveBeenCalledTimes(1);
+  expect(actions.inspect).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(sessionStorage.getItem(recoveryKey('member-a'))!)).toEqual({...tuple,requestId:reconnectPreview.requestId,
+    claimOperationId:reconnectPreview.claimOperationId});
+});
+
+it('keeps removal uncertainty bound to account A when only B or a reconnected A can be read',async()=>{
+  const accountA='00000000-0000-4000-8000-000000000011',accountB='00000000-0000-4000-8000-000000000012';
+  const heldA={agentName:'worker',connectionName:'connector',credentialStatus:{state:'active',reviewPending:false,applyPending:false,
+    accountId:accountA,generation:4,hasCredentialMaterial:true,activeRevision:3,candidateRevision:null,discoveryRevision:4}};
+  const heldB={agentName:'worker',connectionName:'connector-b',credentialStatus:{state:'active',reviewPending:false,applyPending:false,
+    accountId:accountB,generation:2,hasCredentialMaterial:true,activeRevision:1,candidateRevision:null,discoveryRevision:1}};
+  const reconnectedA={...heldA,credentialStatus:{...heldA.credentialStatus,generation:7,activeRevision:6}};
+  actions.targets.mockResolvedValueOnce([heldA]).mockResolvedValueOnce([heldB]).mockResolvedValueOnce([reconnectedA]);
+  actions.remove.mockRejectedValue(new Error('lost response'));
+  render(<OutsideDiscoverySection memberId="member-a"/>);
+  fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove held credential'}));
+  await screen.findByText('Removal could not be confirmed for the exact account version. Refresh custody status before another action; do not repeat an uncertain request.');
+  expect(screen.getByText(/Removal is unconfirmed for worker · connector at generation 4/)).toBeTruthy();
+  expect(screen.queryByText(/removal did not commit/i)).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Refresh uncertain removal status'}));
+  await screen.findByText(/Removal remains unconfirmed for worker · connector/);
+  expect(screen.queryByText(/Keeper confirms removal for worker · connector-b/)).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Refresh uncertain removal status'}));
+  await screen.findByText(/Removal remains unconfirmed for worker · connector/);
+  expect(screen.queryByText(/Keeper confirms removal for worker · connector/)).toBeNull();
+  expect(actions.remove).toHaveBeenCalledTimes(1);
 });
 
 it('reports both phases when a newer discovery and a staged candidate coexist',async()=>{
