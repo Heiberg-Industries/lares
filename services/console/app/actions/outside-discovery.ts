@@ -3,6 +3,8 @@ import { cookies } from "next/headers";
 import { memberAuditAddress,sessionMember } from "../../lib/auth";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
 import { parseOutsideDiscoveryDocument,parseOutsideDiscoveryInspection,parseOutsideDiscoveryPreview,parseOutsideDiscoveryTargets,
+  parseOutsideDescriptorAcceptance,parseOutsideDescriptorPublication,parseOutsideDescriptorReview,
+  type OutsideDescriptorAcceptanceDto,type OutsideDescriptorPublicationDto,type OutsideDescriptorReviewDto,
   type OutsideDiscoveryDocumentDto,type OutsideDiscoveryInspectionDto,type OutsideDiscoveryPreviewDto,type OutsideDiscoveryTargetDto }
   from "../../lib/outside-discovery-dto";
 
@@ -83,4 +85,63 @@ export async function inspectOutsideDiscovery(value:unknown):Promise<OutsideDisc
     return inspection??{state:'unresolved'};
   }
   catch(error){return unavailable(error);}
+}
+
+export async function previewOutsideDescriptorReview(value:unknown):Promise<OutsideDescriptorReviewDto>{
+  const {sessionToken,auditActor}=await admitted();
+  const raw=strict(value,['accountId','agentName','connectionName','requestId','claimOperationId']);
+  if(!isUuid(raw.accountId)||!isName(raw.agentName)||!isName(raw.connectionName)||!isUuid(raw.requestId)||!isUuid(raw.claimOperationId))
+    throw new Error('Invalid discovery review input');
+  try{
+    const review=parseOutsideDescriptorReview(await keeper<unknown>('outside.discovery-review-preview',{sessionToken,...raw},auditActor));
+    if(!review)throw new Error('Invalid descriptor review response');
+    return review;
+  }catch(error){return unavailable(error);}
+}
+
+export async function publishOutsideDescriptorReview(value:unknown):Promise<OutsideDescriptorPublicationDto>{
+  const {sessionToken,auditActor}=await admitted();
+  const raw=strict(value,['accountId','agentName','connectionName','requestId','claimOperationId','expectedGeneration','expectedDescriptorHash']);
+  if(!isUuid(raw.accountId)||!isName(raw.agentName)||!isName(raw.connectionName)||!isUuid(raw.requestId)||!isUuid(raw.claimOperationId)||
+      !isSafeInteger(raw.expectedGeneration,1)||!isHash(raw.expectedDescriptorHash))throw new Error('Invalid discovery review input');
+  try{
+    const publication=parseOutsideDescriptorPublication(await keeper<unknown>('outside.discovery-review-publish',{sessionToken,...raw},auditActor));
+    if(!publication)throw new Error('Invalid descriptor publication response');
+    return publication;
+  }catch(error){return unavailable(error);}
+}
+
+export async function acceptOutsideDescriptorReview(value:unknown):Promise<OutsideDescriptorAcceptanceDto>{
+  const {sessionToken,auditActor}=await admitted();
+  const raw=strict(value,['accountId','agentName','connectionName','requestId','claimOperationId','publicationId','expectedPublicationHash']);
+  if(!isUuid(raw.accountId)||!isName(raw.agentName)||!isName(raw.connectionName)||!isUuid(raw.requestId)||!isUuid(raw.claimOperationId)||
+      !isUuid(raw.publicationId)||!isHash(raw.expectedPublicationHash))throw new Error('Invalid discovery review input');
+  try{
+    const {agentName,connectionName,requestId,claimOperationId,...publication}=raw;
+    // This slice is custodian-only: the discovery projection check also verifies that the
+    // current Keeper session belongs to the member who submitted this credential.
+    const preview=await keeper<unknown>('outside.discovery-review-preview',{sessionToken,accountId:raw.accountId,agentName,connectionName,requestId,claimOperationId},auditActor);
+    if(!parseOutsideDescriptorReview(preview))throw new Error('Invalid descriptor review response');
+    const acceptance=parseOutsideDescriptorAcceptance(await keeper<unknown>('outside.discovery-review-accept',{sessionToken,...publication},auditActor));
+    if(!acceptance)throw new Error('Invalid descriptor acceptance response');
+    return acceptance;
+  }catch(error){return unavailable(error);}
+}
+
+export async function stageOutsideCredentialCandidate(value:unknown):Promise<{staged:true}>{
+  const {sessionToken,auditActor}=await admitted();
+  const keys=['accountId','agentName','connectionName','requestId','claimOperationId','publicationId','acceptanceId','expectedGeneration',
+    'expectedCandidateRevision','expectedConsentGeneration','expectedDefinitionHash','expectedAccessRevision','expectedPublicationHash','expectedAcceptanceHash'];
+  const raw=strict(value,keys);
+  if(!isUuid(raw.accountId)||!isName(raw.agentName)||!isName(raw.connectionName)||!isUuid(raw.requestId)||!isUuid(raw.claimOperationId)||
+      !isUuid(raw.publicationId)||!isUuid(raw.acceptanceId)||!isSafeInteger(raw.expectedGeneration,1)||
+      raw.expectedCandidateRevision!==null&&!isSafeInteger(raw.expectedCandidateRevision,1)||!isSafeInteger(raw.expectedConsentGeneration,1)||
+      !isHash(raw.expectedDefinitionHash)||!isSafeInteger(raw.expectedAccessRevision,1)||!isHash(raw.expectedPublicationHash)||!isHash(raw.expectedAcceptanceHash))
+    throw new Error('Invalid discovery review input');
+  try{
+    const result=await keeper<unknown>('outside.candidate-stage',{sessionToken,...raw},auditActor);
+    const response=record(result);
+    if(!response||Object.keys(response).join(',')!=='staged'||response.staged!==true)throw new Error('Invalid staging response');
+    return {staged:true};
+  }catch(error){return unavailable(error);}
 }

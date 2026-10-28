@@ -2,9 +2,10 @@
 import { afterEach,beforeEach,expect,it,vi } from 'vitest';
 import { cleanup,fireEvent,render,screen,waitFor } from '@testing-library/react';
 
-const actions=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn()}));
+const actions=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn(),review:vi.fn(),publish:vi.fn(),accept:vi.fn(),stage:vi.fn()}));
 vi.mock('../app/actions/outside-discovery',()=>({listOutsideDiscoveryTargets:actions.targets,previewOutsideDiscovery:actions.preview,
-  discoverOutsideTools:actions.discover,inspectOutsideDiscovery:actions.inspect}));
+  discoverOutsideTools:actions.discover,inspectOutsideDiscovery:actions.inspect,previewOutsideDescriptorReview:actions.review,
+  publishOutsideDescriptorReview:actions.publish,acceptOutsideDescriptorReview:actions.accept,stageOutsideCredentialCandidate:actions.stage}));
 import { OutsideDiscoverySection } from '../components/OutsideDiscoverySection.js';
 
 const tuple={accountId:'00000000-0000-4000-8000-000000000001',requestId:'00000000-0000-4000-8000-000000000002',
@@ -12,10 +13,17 @@ const tuple={accountId:'00000000-0000-4000-8000-000000000001',requestId:'0000000
 const preview={...tuple,endpoint:'https://exact.example.test/mcp',purpose:'streamable-http-discovery-v1' as const,definitionHash:'a'.repeat(64),accessRevision:1,
   destinationHash:'b'.repeat(64),routePolicyHash:'c'.repeat(64),expectedGeneration:0,expectedCandidateRevision:null,consentGeneration:1};
 const document={protocolVersion:'2025-06-18',serverInfo:{name:'sample',version:'1'},tools:[{name:'read',description:'Read a record',inputSchema:{type:'object'}}]};
+const descriptorReview={descriptor:{version:1 as const,connectionName:'connector',scope:'read' as const,allow:['read'],read:['read'],tools:document.tools},
+  descriptorHash:'d'.repeat(64),expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,
+  expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1};
+const publication={publicationId:'00000000-0000-4000-8000-000000000004',publicationHash:'b'.repeat(64),descriptor:descriptorReview.descriptor};
+const acceptance={acceptanceId:'00000000-0000-4000-8000-000000000005',publicationHash:publication.publicationHash,acceptanceHash:'c'.repeat(64)};
 const recoveryKey=(memberId:string)=>`lares.outside.discovery.recovery.v1:${encodeURIComponent(memberId)}`;
 beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();actions.targets.mockResolvedValue([{agentName:'worker',connectionName:'connector',
   credentialStatus:{state:'unavailable',reviewPending:false,applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}}]);
-  actions.preview.mockResolvedValue(preview);actions.discover.mockResolvedValue({state:'complete',document});actions.inspect.mockResolvedValue({state:'unresolved'});});
+  actions.preview.mockResolvedValue(preview);actions.discover.mockResolvedValue({state:'complete',document});actions.inspect.mockResolvedValue({state:'unresolved'});
+  actions.review.mockResolvedValue(descriptorReview);actions.publish.mockResolvedValue(publication);actions.accept.mockResolvedValue(acceptance);
+  actions.stage.mockResolvedValue({staged:true});});
 afterEach(()=>{cleanup();vi.restoreAllMocks();});
 
 it('shows the active credential separately from a pending token-only replacement without displaying credential data',async()=>{
@@ -57,11 +65,67 @@ it('saves only the recovery tuple before enabling one explicit consent and never
   expect(JSON.parse(sessionStorage.getItem(recoveryKey('member-a'))!)).toEqual(tuple);
   expect(sessionStorage.getItem(recoveryKey('member-a'))).not.toContain('private-token');
   fireEvent.click(submit);
-  await screen.findByText('Discovery finished. Review the descriptions below.');
+  await screen.findByText('Exact current tool descriptions are ready for your review. No credential has been staged.');
   expect(actions.discover).toHaveBeenCalledTimes(1);
   expect(actions.inspect).not.toHaveBeenCalled();
   expect((screen.getByLabelText('Bearer credential') as HTMLInputElement).value).toBe('');
   expect((screen.getByRole('button',{name:'Send one discovery request'}) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('reviews exact descriptions, records and accepts them, then stages a candidate pending Apply',async()=>{
+  await prepareConsent();
+  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.click(screen.getByRole('button',{name:'Send one discovery request'}));
+  await screen.findByText('Exact current tool descriptions are ready for your review. No credential has been staged.');
+  await screen.findByText('Exact descriptions covered by this review');
+  expect(actions.review).toHaveBeenCalledWith(tuple);
+  expect(screen.getAllByText('Read a record')).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button',{name:'Record these exact descriptions for acceptance'}));
+  await screen.findByRole('button',{name:'Accept these exact descriptions'});
+  fireEvent.click(screen.getByRole('button',{name:'Accept these exact descriptions'}));
+  await screen.findByRole('button',{name:'Stage credential candidate'});
+  fireEvent.click(screen.getByRole('button',{name:'Stage credential candidate'}));
+  await screen.findByText('This candidate is pending Apply and is not active.');
+  expect(actions.publish).toHaveBeenCalledWith({...tuple,expectedGeneration:1,expectedDescriptorHash:'d'.repeat(64)});
+  expect(actions.accept).toHaveBeenCalledWith({...tuple,publicationId:publication.publicationId,expectedPublicationHash:publication.publicationHash});
+  expect(actions.stage).toHaveBeenCalledWith({...tuple,publicationId:publication.publicationId,acceptanceId:acceptance.acceptanceId,
+    expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:2,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,
+    expectedPublicationHash:publication.publicationHash,expectedAcceptanceHash:acceptance.acceptanceHash});
+});
+
+it('does not treat an older pending candidate as success when replacement staging is refused',async()=>{
+  const existingPending={agentName:'worker',connectionName:'connector',credentialStatus:{state:'active-pending',reviewPending:false,applyPending:true,
+    activeRevision:2,candidateRevision:3,discoveryRevision:2}};
+  actions.targets.mockResolvedValue([existingPending]);
+  actions.stage.mockRejectedValue(new Error('replacement refused'));
+  await prepareConsent();
+  fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByRole('button',{name:'Send one discovery request'}));
+  await screen.findByRole('button',{name:'Record these exact descriptions for acceptance'});
+  fireEvent.click(screen.getByRole('button',{name:'Record these exact descriptions for acceptance'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Accept these exact descriptions'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Stage credential candidate'}));
+  await screen.findByText('The stage result could not be confirmed. A pending candidate may be from an earlier attempt; refresh status before proceeding.');
+  expect(screen.queryByText('This candidate is pending Apply and is not active.')).toBeNull();
+  expect(screen.getByText('A staged credential revision is pending Apply. The previous active saved revision remains in place.')).toBeTruthy();
+});
+
+it('ignores a descriptor preview response after the selected connection changes',async()=>{
+  let resolveReview!:(value:typeof descriptorReview)=>void;
+  actions.targets.mockResolvedValue([
+    {agentName:'worker',connectionName:'connector',credentialStatus:{state:'unavailable',reviewPending:false,applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}},
+    {agentName:'worker',connectionName:'connector-two',credentialStatus:{state:'unavailable',reviewPending:false,applyPending:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}},
+  ]);
+  actions.review.mockImplementationOnce(()=>new Promise(resolve=>{resolveReview=resolve;}));
+  render(<OutsideDiscoverySection memberId="member-a"/>);
+  fireEvent.click(await screen.findByRole('button',{name:'Review connection'}));
+  await screen.findByText('https://exact.example.test/mcp');
+  fireEvent.change(screen.getByLabelText('Bearer credential'),{target:{value:'private-token'}});
+  fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByRole('button',{name:'Send one discovery request'}));
+  await waitFor(()=>expect(actions.review).toHaveBeenCalledTimes(1));
+  fireEvent.change(screen.getByLabelText('Agent connection'),{target:{value:'worker\0connector-two'}});
+  resolveReview(descriptorReview);
+  await waitFor(()=>expect(screen.queryByLabelText('Exact tool description review')).toBeNull());
+  expect(screen.queryByText('Exact current tool descriptions are ready for your review. No credential has been staged.')).toBeNull();
 });
 
 it('refuses consent when same-tab recovery storage fails',async()=>{

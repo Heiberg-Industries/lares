@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
-import {createCipheriv,createHash,randomBytes} from 'node:crypto';
+import {createCipheriv,createHash,randomBytes,randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
 import {SourceAuthorityUnavailable} from '@lares/agent-kit/console-source-transaction';
 import {loadOutsideCustodyKey,OutsideCustodyStore} from '../lib/outside-custody.js';
@@ -189,6 +189,8 @@ function humanStore(lifecycle:{reviewOutsideRoute:(endpoint:string,deadline:numb
 function installInspectSql(rows:ReturnType<typeof discoveryOperationRows>,options:{claim?:boolean;result?:boolean;identity?:boolean;
   session?:{discovered?:boolean;current?:boolean}}={}){
   installHumanSessionSql(async sql=>{
+    if(sql.includes("FROM users WHERE id=$1 AND status='active'"))return {rows:[{id:'org-1',role:'member'}],rowCount:1};
+    if(sql.includes('COALESCE(max(consent_generation),0)'))return {rows:[{consent:'3'}],rowCount:1};
     if(sql.includes('FROM outside_custody_accounts WHERE account_id=$1'))return options.identity===false?{rows:[],rowCount:0}:
       {rows:[rows.identity],rowCount:1};
     if(sql.includes('FROM outside_custody_operations c'))return options.claim===false?{rows:[],rowCount:0}:
@@ -389,6 +391,21 @@ it('uses the actual inspector to recover a matching encrypted normalized result 
   expect(mocks.decryptBuffers.every(buffer=>buffer.equals(Buffer.alloc(buffer.length)))).toBe(true);
   expect(route).not.toHaveBeenCalled();
   expect(mocks.captureOutsideUse).toHaveBeenCalledWith('member-1','worker',expect.objectContaining({connectionName:'connector'}));
+  store.close();
+});
+
+it('previews the exact custodian descriptor with the existing projection and refuses a stale published hash',async()=>{
+  const rows=discoveryOperationRows(),store=humanStore();mocks.captureOutsideUse.mockResolvedValue(humanCapture);installInspectSql(rows);
+  const selectors={accountId,agentName:'worker',connectionName:'connector',requestId:humanRequest,claimOperationId:humanClaim};
+  const preview=await store.previewHumanDescriptorReview(humanSession,selectors,{deadlineAtMs:Date.now()+5000});
+  expect(preview).toMatchObject({descriptor:{version:1,connectionName:'connector',scope:'read',allow:['read'],read:['read'],
+      tools:[{name:'read',description:'Read safely'}]},expectedGeneration:1,expectedCandidateRevision:null,expectedConsentGeneration:4,
+    expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:7});
+  expect(preview.descriptorHash).toBe(createHash('sha256').update(canonicalJson(preview.descriptor)).digest('hex'));
+  mocks.query.mockClear();
+  await expect(store.publishDiscoveredDescriptorReview(humanSession,{...selectors,operationId:randomUUID(),expectedGeneration:1,
+    expectedDescriptorHash:'f'.repeat(64)},{deadlineAtMs:Date.now()+5000})).rejects.toThrow();
+  expect(mocks.query.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO outside_custody_operations'))).toBe(false);
   store.close();
 });
 

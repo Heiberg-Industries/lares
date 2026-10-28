@@ -7,6 +7,11 @@ export type OutsideDiscoveryPreviewDto={accountId:string;requestId:string;claimO
 export type OutsideDiscoveryDocumentDto={protocolVersion:'2025-06-18';serverInfo:{name:string;version:string};
   tools:{name:string;description?:string;inputSchema:Record<string,unknown>}[]};
 export type OutsideDiscoveryInspectionDto={state:'unresolved'}|{state:'complete';document:OutsideDiscoveryDocumentDto};
+export type OutsideDescriptorReviewDto={descriptor:{version:1;connectionName:string;scope:'read'|'write'|'write-with-confirm';allow:string[];read:string[];
+  tools:OutsideDiscoveryDocumentDto['tools']};descriptorHash:string;expectedGeneration:number;expectedCandidateRevision:number|null;
+  expectedConsentGeneration:number;expectedDefinitionHash:string;expectedAccessRevision:number};
+export type OutsideDescriptorPublicationDto={publicationId:string;publicationHash:string;descriptor:OutsideDescriptorReviewDto['descriptor']};
+export type OutsideDescriptorAcceptanceDto={acceptanceId:string;publicationHash:string;acceptanceHash:string};
 
 type RecordValue=Record<string,unknown>;
 const MAX_DOCUMENT_BYTES=65536;
@@ -119,4 +124,39 @@ export function parseOutsideDiscoveryInspection(value:unknown):OutsideDiscoveryI
     if(document)return {state:'complete',document};
   }
   return;
+}
+
+export function parseOutsideDescriptorReview(value:unknown):OutsideDescriptorReviewDto|undefined{
+  const item=record(value),descriptor=item&&record(item.descriptor);
+  if(!item||!descriptor||!exactKeys(item,['descriptor','descriptorHash','expectedGeneration','expectedCandidateRevision','expectedConsentGeneration',
+      'expectedDefinitionHash','expectedAccessRevision'])||!exactKeys(descriptor,['version','connectionName','scope','allow','read','tools'])||
+      descriptor.version!==1||!isName(descriptor.connectionName)||!['read','write','write-with-confirm'].includes(String(descriptor.scope))||
+      !Array.isArray(descriptor.allow)||!Array.isArray(descriptor.read)||!Array.isArray(descriptor.tools)||descriptor.allow.length>256||
+      descriptor.read.length>256||descriptor.tools.length>256||!descriptor.allow.every(name=>typeof name==='string')||
+      !descriptor.read.every(name=>typeof name==='string')||!isHash(item.descriptorHash)||!isInteger(item.expectedGeneration,1)||
+      item.expectedCandidateRevision!==null&&!isInteger(item.expectedCandidateRevision,1)||!isInteger(item.expectedConsentGeneration,1)||
+      !isHash(item.expectedDefinitionHash)||!isInteger(item.expectedAccessRevision,1))return;
+  const allow=descriptor.allow as string[],read=descriptor.read as string[];
+  if(new Set(allow).size!==allow.length||new Set(read).size!==read.length||read.some(name=>!allow.includes(name)))return;
+  const doc=parseOutsideDiscoveryDocument({protocolVersion:'2025-06-18',serverInfo:{name:'review',version:'1'},tools:descriptor.tools});
+  if(!doc||doc.tools.length!==descriptor.tools.length||doc.tools.map(tool=>tool.name).join('\0')!==allow.join('\0'))return;
+  return {descriptor:{version:1,connectionName:descriptor.connectionName,scope:descriptor.scope as 'read'|'write'|'write-with-confirm',
+    allow,read,tools:doc.tools},descriptorHash:item.descriptorHash,
+    expectedGeneration:item.expectedGeneration,expectedCandidateRevision:item.expectedCandidateRevision as number|null,
+    expectedConsentGeneration:item.expectedConsentGeneration,expectedDefinitionHash:item.expectedDefinitionHash,expectedAccessRevision:item.expectedAccessRevision};
+}
+
+export function parseOutsideDescriptorPublication(value:unknown):OutsideDescriptorPublicationDto|undefined{
+  const item=record(value);
+  if(!item||!exactKeys(item,['publicationId','publicationHash','descriptor'])||!isUuid(item.publicationId)||!isHash(item.publicationHash))return;
+  const parsed=parseOutsideDescriptorReview({descriptor:item.descriptor,descriptorHash:item.publicationHash,expectedGeneration:1,
+    expectedCandidateRevision:null,expectedConsentGeneration:1,expectedDefinitionHash:'0'.repeat(64),expectedAccessRevision:1});
+  if(!parsed)return;
+  return {publicationId:item.publicationId,publicationHash:item.publicationHash,descriptor:parsed.descriptor};
+}
+
+export function parseOutsideDescriptorAcceptance(value:unknown):OutsideDescriptorAcceptanceDto|undefined{
+  const item=record(value);
+  if(!item||!exactKeys(item,['acceptanceId','publicationHash','acceptanceHash'])||!isUuid(item.acceptanceId)||!isHash(item.publicationHash)||!isHash(item.acceptanceHash))return;
+  return {acceptanceId:item.acceptanceId,publicationHash:item.publicationHash,acceptanceHash:item.acceptanceHash};
 }
