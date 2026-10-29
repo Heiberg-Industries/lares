@@ -11,6 +11,8 @@
 #   lares restore  [restore.sh options]                 ops/restore.sh of the current release
 #   lares doctor   [doctor options]                     what is wrong with this installation, run
 #                                                       in a container of the current engine image
+#   lares import-preview <archive.tar>                  verify source archive/schema, then report
+#                                                       the remaining blocked inventory work
 #   lares owner-bootstrap                               pin a verified first-owner identity
 #   lares backups  [setup-backups.sh options]           switch on or check backups (setup-backups.sh)
 #
@@ -42,6 +44,7 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares rollback [--dry-run] [--yes]
        lares restore --snapshot <id|latest> [--old-server-stopped] [--dry-run] [--yes]
        lares doctor [--help]
+       lares import-preview <archive.tar>
        lares owner-bootstrap
        lares backups [--dry-run] [--yes] [setup-backups.sh options]
 
@@ -54,7 +57,7 @@ EOF
 cmd="$1"
 shift
 case "$cmd" in
-  update|rollback|restore|doctor|owner-bootstrap|backups) ;;
+  update|rollback|restore|doctor|import-preview|owner-bootstrap|backups) ;;
   -h|--help) usage; exit "$EX_USAGE" ;;
   *) printf 'lares: I do not know the command %s.\n' "'$cmd'" >&2; usage; exit "$EX_USAGE" ;;
 esac
@@ -154,6 +157,59 @@ cmd_doctor() {
     bin/doctor.ts --installed-settings-file "$installation_env_file" "$@"
 }
 
+cmd_import_preview() {
+  [ "$#" -eq 1 ] || die "import-preview needs exactly one existing export archive path." "$EX_USAGE"
+  local archive="$1" helper_image scratch ledger_file
+  [ -f "$archive" ] && [ ! -L "$archive" ] || die "the archive must be an existing regular file, not a symlink." "$EX_USAGE"
+  archive="$(cd "$(dirname "$archive")" && pwd -P)/$(basename "$archive")"
+  BOX_DIR="$CUR/services/box"
+  # Copied from releases/2026-10-21-rc.12.json; keep the accepted helper fixed in this
+  # installed script so archive content and caller input can never select an image.
+  helper_image='docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b'
+
+  . "$OPS/engine-run.sh"
+  engine_resolve_image "$CUR/release.json" || die "this release has no pinned Keeper image for the inspection command." "$EX_USAGE"
+  # Validate the archive before passing its database dump to pg_restore. This run is read-only,
+  # uses the current Keeper image with networking disabled, and prints no archive content.
+  engine_run --network-none --ro "$archive" bin/import-preview.ts --check-archive "$archive" >/dev/null || \
+    die "the export archive failed inspection; the pinned helper was not run." "$EX_USAGE"
+
+  # This helper reads the custom dump without connecting to a database. The source archive and
+  # the small migration ledger are the only mounted files; no installation credentials or socket
+  # are present. --pull=never prevents a preview from contacting a registry.
+  scratch=$(mktemp -d "${TMPDIR:-/var/tmp}/lares-import-preview.XXXXXX") || die "could not create private preview scratch space." "$EX_USAGE"
+  chmod 0700 "$scratch"
+  trap 'rm -rf -- "$scratch"; exit 130' INT
+  trap 'rm -rf -- "$scratch"; exit 143' TERM
+  ledger_file="$scratch/schema-migrations.copy"
+  local helper_status=0 ledger_bytes
+  # Stream the full dump; cap only the small schema ledger output (256 512-byte blocks).
+  # The execution timeout bounds a stuck parser without imposing a byte limit on the dump.
+  timeout --signal=INT --kill-after=10 120 docker run --rm --pull=never --network none --read-only --tmpfs /tmp \
+    --cap-drop ALL --security-opt no-new-privileges \
+    -v "$archive:/input.tar:ro" -v "$scratch:/output:rw" \
+    --entrypoint sh "$helper_image" -ec \
+    'ulimit -f 256; tar -xOf /input.tar ./lares_state.dump | pg_restore --data-only --table=schema_migrations -f - > /output/schema-migrations.copy' \
+    >/dev/null 2>&1 || helper_status=$?
+  if [ "$helper_status" -ne 0 ] || [ ! -s "$ledger_file" ]; then
+    rm -rf "$scratch"
+    die "the source schema could not be read by the pinned local helper image; no database was contacted." "$EX_USAGE"
+  fi
+  ledger_bytes=$(wc -c < "$ledger_file" | tr -d '[:space:]')
+  case "$ledger_bytes" in
+    ''|*[!0-9]*) rm -rf "$scratch"; die "the source schema output was invalid; no database was contacted." "$EX_USAGE" ;;
+  esac
+  if [ "$ledger_bytes" -gt 131072 ]; then
+    rm -rf "$scratch"
+    die "the source migration ledger exceeded its safe size limit; no database was contacted." "$EX_USAGE"
+  fi
+  local run_status=0
+  engine_run --network-none --ro "$archive" --ro "$ledger_file" \
+    bin/import-preview.ts --archive "$archive" --ledger-copy "$ledger_file" || run_status=$?
+  rm -rf "$scratch"
+  return "$run_status"
+}
+
 cmd_owner_bootstrap() {
   [ "$#" -eq 0 ] || die "owner-bootstrap takes no options; paste the setup JSON at its protected prompt" "$EX_USAGE"
   python3 "$OPS/owner-bootstrap.py" --prefix "${PREFIX:-/}"
@@ -164,6 +220,7 @@ case "$cmd" in
   rollback) cmd_rollback "$@" ;;
   restore) exec bash "$OPS/restore.sh" "$@" ;;
   owner-bootstrap) cmd_owner_bootstrap "$@" ;;
+  import-preview) cmd_import_preview "$@" ;;
   backups) exec bash "$OPS/setup-backups.sh" "$@" ;;
   doctor) cmd_doctor "$@" ;;
 esac
