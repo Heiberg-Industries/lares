@@ -50,7 +50,7 @@ export const ENGINE_TABLE_PRIVILEGES = {
     "vault_backing_stores", "voice_exemplar", "voice_profile", "web_inbox", "workflow_jobs",
   ],
   financial: FINANCIAL_TABLES,
-  outsideCustody: ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations", "outside_execution_approvals"],
+  outsideCustody: ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations", "outside_execution_approvals", "private_metadata_devices"],
   ledger: LEDGER_TABLES,
 } as const;
 
@@ -161,7 +161,9 @@ const FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS: Readonly<Record<string, readonly
   outside_custody_accounts: ["owner_member_id", "resource_id"],
   outside_custody_revisions: ["owner_member_id"],
   outside_custody_operations: ["owner_member_id"],
+  private_metadata_devices: ["owner_member_id"],
 };
+const FINANCIAL_OUTSIDE_CUSTODY_DELETE_TABLES = ["private_metadata_devices"] as const;
 const OUTSIDE_CUSTODY_UPDATE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   orgs: ["created_at"],
   users: ["created_at"],
@@ -175,6 +177,7 @@ const OUTSIDE_CUSTODY_UPDATE_COLUMNS: Readonly<Record<string, readonly string[]>
   vault_areas: ["created_at"],
   vault_backing_stores: ["created_at"],
   outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at"],
+  private_metadata_devices: ["state", "revoked_at"],
   outside_execution_approvals: ["consumed_at"],
 };
 const OUTSIDE_CUSTODY_SELECT_COLUMNS: Readonly<Record<string, readonly string[]>> = {
@@ -491,6 +494,7 @@ async function requireManagedAcls(client: PoolClient, database: string, custody 
     if (ordinary) for (const role of [APPLICATION, FINANCIAL]) for (const privilege of ["SELECT","INSERT","UPDATE","DELETE"]) expected.push(expectedAclKey(role,privilege));
     else if ((FINANCIAL_TABLES as readonly string[]).includes(table)) for (const privilege of ["SELECT","INSERT"]) expected.push(expectedAclKey(FINANCIAL,privilege));
     if (custody && (OUTSIDE_CUSTODY_AUTHORITY_TABLES as readonly string[]).includes(table)) expected.push(expectedAclKey(OUTSIDE_CUSTODY,"SELECT"));
+    if (custody && (FINANCIAL_OUTSIDE_CUSTODY_DELETE_TABLES as readonly string[]).includes(table)) expected.push(expectedAclKey(FINANCIAL,"DELETE"));
     if (custody && (ENGINE_TABLE_PRIVILEGES.outsideCustody as readonly string[]).includes(table)) {
       const privileges = table === "outside_custody_revisions" ? ["SELECT","INSERT","DELETE"] : ["SELECT","INSERT"];
       for (const privilege of privileges) expected.push(expectedAclKey(OUTSIDE_CUSTODY,privilege));
@@ -577,6 +581,9 @@ async function applyGrants(client: PoolClient): Promise<void> {
   for (const table of ENGINE_TABLE_PRIVILEGES.outsideCustody) {
     const privileges=table==="outside_custody_revisions"?"SELECT, INSERT, DELETE":"SELECT, INSERT";
     await client.query(`GRANT ${privileges} ON TABLE ${qname(table)} TO ${qid(OUTSIDE_CUSTODY)}`);
+  }
+  for (const table of FINANCIAL_OUTSIDE_CUSTODY_DELETE_TABLES) {
+    await client.query(`GRANT DELETE ON TABLE ${qname(table)} TO ${qid(FINANCIAL)}`);
   }
   for (const [table, columns] of Object.entries(FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS)) {
     await client.query(`GRANT SELECT (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(FINANCIAL)}`);

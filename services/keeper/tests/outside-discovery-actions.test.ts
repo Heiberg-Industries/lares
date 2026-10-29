@@ -1,9 +1,10 @@
 import { afterEach,beforeEach,expect,it,vi } from 'vitest';
 import { registerHumanOutsideDiscoveryActions } from '../lib/outside-discovery-actions.js';
+import { registerPrivateMetadataActions } from '../lib/private-metadata.js';
 import { actionNames,resetActions,runAction } from '../lib/actions.js';
 import { OutsideCustodyRecoveryRequired,outsideDiscoveryRecovery,type OutsideCustodyStore } from '../lib/outside-custody.js';
 
-const methods=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn(),review:vi.fn(),publish:vi.fn(),accept:vi.fn(),activation:vi.fn(),stage:vi.fn(),apply:vi.fn(),pending:vi.fn()}));
+const methods=vi.hoisted(()=>({targets:vi.fn(),preview:vi.fn(),discover:vi.fn(),inspect:vi.fn(),review:vi.fn(),publish:vi.fn(),accept:vi.fn(),activation:vi.fn(),stage:vi.fn(),apply:vi.fn(),pending:vi.fn(),issue:vi.fn(),revoke:vi.fn(),validate:vi.fn()}));
 const sessionToken='S'.repeat(43),accountId='00000000-0000-4000-8000-000000000001',requestId='00000000-0000-4000-8000-000000000002',claimOperationId='00000000-0000-4000-8000-000000000003';
 const base={sessionToken,consent:true,accountId,requestId,claimOperationId,agentName:'worker',connectionName:'connector',expectedGeneration:0,
   expectedCandidateRevision:null,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:1,expectedDestinationHash:'b'.repeat(64),
@@ -12,12 +13,14 @@ const audit=vi.fn(async()=>{});
 beforeEach(()=>{vi.clearAllMocks();registerHumanOutsideDiscoveryActions({listHumanDiscoveryTargets:methods.targets,
   previewHumanDiscovery:methods.preview,consentAndDiscover:methods.discover,inspectHumanDiscovery:methods.inspect,
   previewHumanDescriptorReview:methods.review,publishDiscoveredDescriptorReview:methods.publish,acceptPublishedDescriptorReview:methods.accept,
-  previewExecutableActivation:methods.activation,stage:methods.stage,apply:methods.apply,inspectHumanPendingApply:methods.pending} as unknown as OutsideCustodyStore);});
+  previewExecutableActivation:methods.activation,stage:methods.stage,apply:methods.apply,inspectHumanPendingApply:methods.pending,
+  enrollPrivateMetadataDevice:methods.issue,revokePrivateMetadataDevice:methods.revoke} as unknown as OutsideCustodyStore);});
 afterEach(()=>resetActions());
 
 it('registers only private member discovery actions and strictly requires explicit consent',async()=>{
   expect(actionNames()).toEqual(['outside.candidate-apply','outside.candidate-apply-preview','outside.candidate-stage','outside.credential-remove','outside.discover','outside.discovery-inspect','outside.discovery-preview',
-    'outside.discovery-review-accept','outside.discovery-review-preview','outside.discovery-review-publish','outside.discovery-targets']);
+    'outside.discovery-review-accept','outside.discovery-review-preview','outside.discovery-review-publish','outside.discovery-targets',
+    'private-metadata.device-issue','private-metadata.device-revoke','private-metadata.device-status','private-metadata.target-preview']);
   methods.discover.mockResolvedValue({protocolVersion:'2025-06-18',serverInfo:{name:'sample',version:'1'},tools:[]});
   await expect(runAction('outside.discover',{...base,consent:false},{actor:'derived-member',audit})).rejects.toThrow(/invalid input/);
   expect(methods.discover).not.toHaveBeenCalled();
@@ -31,6 +34,24 @@ it('registers only private member discovery actions and strictly requires explic
   const record=auditCalls.find(([entry])=>(entry as {outcome?:string}).outcome==='pending')?.[0] as {actor:string;input:Record<string,string>};
   expect(record.actor).toBe('derived-member');
   expect(record.input).toMatchObject({sessionToken:'<redacted>',credential:'<redacted>'});
+});
+
+it('returns the upload credential once while redacting both setup and lookup credentials from audit records',async()=>{
+  const uploadToken='U'.repeat(43),readToken='R'.repeat(43),deviceId='00000000-0000-4000-8000-000000000019';
+  methods.issue.mockResolvedValue({deviceId,deviceGeneration:1,accountGeneration:0,uploadToken});
+  const input={sessionToken,consent:true,accountId:'00000000-0000-4000-8000-000000000010',resourceBindingId:'00000000-0000-4000-8000-000000000011',
+    agentName:'worker',connectionName:'mac-private-metadata',expectedDescriptorFingerprint:'a'.repeat(64)};
+  await expect(runAction('private-metadata.device-issue',input,{actor:'member',audit})).resolves.toMatchObject({uploadToken});
+  expect(methods.issue).toHaveBeenCalledWith(sessionToken,expect.objectContaining({connectionName:'mac-private-metadata'}),expect.any(Object));
+  methods.validate.mockResolvedValue({datasetId:'fixture-dataset',accountId:input.accountId,ownerMemberId:'member',scope:'read',generation:0});
+  registerPrivateMetadataActions({validatePrivateMetadataCredential:methods.validate} as unknown as OutsideCustodyStore);
+  await expect(runAction('private-metadata.credential.validate',{token:readToken,scope:'read'},{actor:'host',audit},{host:true}))
+    .resolves.toMatchObject({datasetId:'fixture-dataset',scope:'read'});
+  const auditJson=JSON.stringify(audit.mock.calls);
+  expect(auditJson).not.toContain(sessionToken);
+  expect(auditJson).not.toContain(uploadToken);
+  expect(auditJson).not.toContain(readToken);
+  expect(auditJson).toContain('<redacted>');
 });
 
 it('uses only the current Keeper session for exact descriptor review, acceptance, and staging',async()=>{

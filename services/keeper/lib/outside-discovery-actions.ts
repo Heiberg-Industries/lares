@@ -12,6 +12,18 @@ const deadline=()=>({deadlineAtMs:Date.now()+8000});
 /** Private member actions. The browser can select and consent, while Keeper rechecks current
  * session and use authority inside its own transactions for every request. */
 export function registerHumanOutsideDiscoveryActions(store:OutsideCustodyStore):void{
+  registerAction({name:'private-metadata.target-preview',input:z.strictObject({sessionToken,agentName:z.string().regex(NAME)}),secretFields:['sessionToken'],
+    successDetail:()=> 'private metadata descriptor previewed',run:input=>store.previewPrivateMetadataTarget(input.sessionToken,{agentName:input.agentName},deadline())});
+  registerAction({name:'private-metadata.device-status',input:z.strictObject({sessionToken,agentName:z.string().regex(NAME)}),secretFields:['sessionToken'],
+    successDetail:()=> 'private metadata device status read',run:input=>store.privateMetadataDeviceStatus(input.sessionToken,{agentName:input.agentName},deadline())});
+  registerAction({name:'private-metadata.device-issue',input:z.strictObject({sessionToken,consent:z.literal(true),accountId:uuid,
+    resourceBindingId:uuid,agentName:z.string().regex(NAME),connectionName:z.literal('mac-private-metadata'),expectedDescriptorFingerprint:hash}),
+    secretFields:['sessionToken'],successDetail:()=> 'member-consented private metadata device credential issued',run:input=>
+      store.enrollPrivateMetadataDevice(input.sessionToken,{accountId:input.accountId,resourceBindingId:input.resourceBindingId,
+        agentName:input.agentName,connectionName:input.connectionName,expectedDescriptorFingerprint:input.expectedDescriptorFingerprint},deadline())});
+  registerAction({name:'private-metadata.device-revoke',input:z.strictObject({sessionToken,deviceId:uuid,expectedGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}),
+    secretFields:['sessionToken'],successDetail:()=> 'member private metadata device revoked',run:input=>
+      store.revokePrivateMetadataDevice(input.sessionToken,{deviceId:input.deviceId,expectedGeneration:input.expectedGeneration},deadline())});
   registerAction({name:'outside.discovery-targets',input:z.strictObject({sessionToken}),secretFields:['sessionToken'],
     run:input=>store.listHumanDiscoveryTargets(input.sessionToken,deadline())});
   registerAction({name:'outside.credential-remove',input:z.strictObject({sessionToken,accountId:uuid,agentName:z.string().regex(NAME),

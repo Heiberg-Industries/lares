@@ -199,6 +199,20 @@ it('reads only current accepted metadata with no credential or provider dispatch
   expect(mocks.request).not.toHaveBeenCalled();expect(f.consumed).toBe(false);
  }finally{f.store.close()}
 });
+it('refuses an enrolled agent-owner account when the admitted second member has no Mac custody account',async()=>{
+ const f=fixture(),actor='member-b',agentOwner='member-a';
+ mocks.capture.mockResolvedValue({...structuredClone(capture),actor:{...capture.actor,memberId:actor},agent:{...capture.agent,ownerMemberId:agentOwner}});
+ mocks.query.mockImplementation(async(sql:string,params:unknown[]=[])=>{
+  if(sql.includes('FROM outside_custody_accounts')&&sql.includes('active_revision IS NOT NULL'))return {rows:[],rowCount:0};
+  throw new Error('Unexpected query before member-custody refusal');
+ });
+ try{
+  await expect(f.store.acceptedRuntimeTools({...binding,memberId:actor},call.definitionHash,'mac-private-metadata',{deadlineAtMs:Date.now()+2000})).rejects.toThrow();
+  const selection=mocks.query.mock.calls.find(([sql])=>String(sql).includes('FROM outside_custody_accounts'));
+  expect(selection?.[1]).toEqual([actor,binding.agent,'mac-private-metadata-device']);
+  expect(mocks.request).not.toHaveBeenCalled();
+ }finally{f.store.close()}
+});
 it.each(['grant','definition','acceptance','active credential','session'] as const)('refuses metadata with stale %s',async reason=>{
  const f=fixture();try{
   if(reason==='grant')mocks.capture.mockResolvedValue(undefined);

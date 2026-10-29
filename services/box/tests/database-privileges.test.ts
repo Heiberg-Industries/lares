@@ -67,6 +67,7 @@ const outsideCustodyUpdateColumns: Readonly<Record<string, readonly string[]>> =
   vault_backing_stores: ["created_at"],
   outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at"],
   outside_execution_approvals: ["consumed_at"],
+  private_metadata_devices: ["state", "revoked_at"],
 };
 const outsideCustodySelectColumns: Readonly<Record<string, readonly string[]>> = {
   member_sessions: ["member_id", "token_hash", "expires_at", "revoked_at"],
@@ -160,6 +161,40 @@ describe("engine database privilege foundation", () => {
     await expectDenied(()=>outsideCustody.query('DELETE FROM outside_custody_operations WHERE false'));
     await expectDenied(()=>outsideCustody.query('DELETE FROM outside_custody_accounts WHERE false'));
     await expectDenied(()=>app.query('DELETE FROM outside_custody_revisions WHERE false'));
+  });
+
+  it("keeps Mac private metadata hashes inside the custody role and binds them to member-owned accounts",async()=>{
+    await admin.query("INSERT INTO orgs(id,display_name) VALUES('mac-meta-org','Metadata fixture')");
+    await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('mac-meta-member','Fixture member','mac-meta-org','member','active')");
+    await admin.query("INSERT INTO agent_definitions(name,definition,hash,status) VALUES('mac-meta-agent','{}','fixture','valid')");
+    await admin.query(`INSERT INTO agent_access(agent_name,owner_member_id,organisation_id,revision)
+      VALUES('mac-meta-agent','mac-meta-member','mac-meta-org',1)`);
+    await admin.query(`INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status)
+      VALUES('00000000-0000-4000-8000-000000000801','mac-meta-member','lares-private-metadata-v1','lares-private-metadata-v1','dataset-account','Private metadata','ok')`);
+    await admin.query(`INSERT INTO connected_resource_bindings(id,owner_member_id,connected_account_id,resource_kind,external_id,provider_label)
+      VALUES('00000000-0000-4000-8000-000000000802','mac-meta-member','00000000-0000-4000-8000-000000000801','dataset','dataset-id','Private metadata dataset')`);
+    await admin.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,consent_generation,state)
+      VALUES('00000000-0000-4000-8000-000000000803','mac-meta-member','mac-meta-agent','mac-private-metadata',1,'active')`);
+    await admin.query(`INSERT INTO private_metadata_devices(id,owner_member_id,connected_account_id,dataset_resource_id,dataset_id,agent_name,
+      connection_name,custody_account_id,descriptor_fingerprint,descriptor_json,consent_operation_id,consent_session_id,consent_json,
+      upload_token_hash,read_token_hash,generation,connected_account_generation,state)
+      VALUES('00000000-0000-4000-8000-000000000804','mac-meta-member','00000000-0000-4000-8000-000000000801',
+      '00000000-0000-4000-8000-000000000802','dataset-id','mac-meta-agent','mac-private-metadata','00000000-0000-4000-8000-000000000803',
+      decode(repeat('a',64),'hex'),'{}','00000000-0000-4000-8000-000000000805','session-hash','{}',decode(repeat('b',64),'hex'),
+      decode(repeat('c',64),'hex'),1,0,'active')`);
+    expect((await outsideCustody.query(`SELECT dataset_id FROM private_metadata_devices WHERE id='00000000-0000-4000-8000-000000000804'`)).rows[0])
+      .toEqual({dataset_id:'dataset-id'});
+    expect((await outsideCustody.query(`UPDATE private_metadata_devices SET state='revoked',revoked_at=clock_timestamp()
+      WHERE id='00000000-0000-4000-8000-000000000804'`)).rowCount).toBe(1);
+    await expectDenied(()=>outsideCustody.query("UPDATE private_metadata_devices SET upload_token_hash=upload_token_hash WHERE false"));
+    await expectDenied(()=>outsideCustody.query("SELECT * FROM connected_accounts"));
+    await expectDenied(()=>app.query("SELECT * FROM private_metadata_devices"));
+    await expectDenied(()=>app.query("SELECT upload_token_hash FROM private_metadata_devices"));
+    expect((await financial.query(`SELECT has_table_privilege(current_user,'private_metadata_devices','DELETE') AS erase,
+      has_column_privilege(current_user,'private_metadata_devices','owner_member_id','SELECT') AS owner_filter,
+      has_column_privilege(current_user,'private_metadata_devices','upload_token_hash','SELECT') AS token_read`)).rows[0])
+      .toEqual({erase:true,owner_filter:true,token_read:false});
+    expect((await financial.query("DELETE FROM private_metadata_devices WHERE owner_member_id='mac-meta-member'")).rowCount).toBe(1);
   });
 
   it("allows custody to lock retained Vault metadata without changing authority or reading content",async()=>{

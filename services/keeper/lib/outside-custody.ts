@@ -15,11 +15,18 @@ import { PgGrantStore, type GrantDatabase } from "@lares/agent-kit/grant-store";
 import { recordOutsideExecutionApproval, consumeOutsideExecutionApproval, outsideExecutionApprovalSchema, outsidePayloadHash, type OutsideExecutionApproval } from "@lares/agent-kit/outside-execution-receipts";
 import { currentMember } from "@lares/agent-kit/member-store";
 import { z } from "zod";
+import { KeeperRefusedError } from './actions.js';
 
 const uuid = z.string().uuid();
 const MAX_CREDENTIAL_BYTES = 4096;
 const REFUSED = "Outside credential is not available";
 const REQUEST_REFUSED = "Outside credential change could not be confirmed";
+export const MEMBER_PRIVATE_METADATA_CONNECTION='mac-private-metadata';
+const PRIVATE_METADATA_CUSTODY_CONNECTION='mac-private-metadata-device';
+function custodyConnectionName(connectionName:string):string{return connectionName===MEMBER_PRIVATE_METADATA_CONNECTION?PRIVATE_METADATA_CUSTODY_CONNECTION:connectionName;}
+export function outsideCustodyOwnerForConnection(connectionName:string,admittedMemberId:string,agentOwnerMemberId:string):string{
+  return connectionName===MEMBER_PRIVATE_METADATA_CONNECTION?admittedMemberId:agentOwnerMemberId;
+}
 const coordinateSchema = z.strictObject({
   ownerMemberId: z.string().min(1).max(256),
   accountId: uuid,
@@ -153,7 +160,7 @@ const publicationEvidenceSchema=z.strictObject({version:z.literal(1),organisatio
 const acceptanceEvidenceSchema=z.strictObject({version:z.literal(1),organisationId:z.string().min(1).max(256),editorMemberId:memberIdSchema,
   publicationId:uuid,publicationHash:hashSchema,resourceId:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
   connectionName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),definitionHash:z.string().min(1).max(256),
-  accessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),grant:descriptorEditCaptureSchema.shape.grant});
+  accessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),grant:z.union([descriptorEditCaptureSchema.shape.grant,outsideUseCaptureSchema.shape.grant]),sessionHash:hashSchema.optional()});
 const stagedEvidenceSchema=z.strictObject({version:z.literal(1),review:activationReviewSchema,reviewHash:hashSchema,
   candidateRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),candidateGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   consentGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),policyJson:executablePolicySchema});
@@ -625,6 +632,228 @@ export class OutsideCustodyStore {
       if (error instanceof SourceAuthorityUnavailable || error instanceof OutsideCustodyRecoveryRequired) throw error;
       return requestDenied();
     } finally { release(); }
+  }
+
+  /** Member-consented Mac enrollment. The configured owner descriptor is only public schema
+   * evidence; the new executable policy and consent belong to the authenticated member. */
+  async enrollPrivateMetadataDevice(sessionToken:string,input:{accountId:string;resourceBindingId:string;agentName:string;
+    connectionName:string;expectedDescriptorFingerprint:string},options:{deadlineAtMs:number}):Promise<{deviceId:string;deviceGeneration:number;accountGeneration:number;uploadToken:string}> {
+    const operationId=randomUUID();
+    if(!uuid.safeParse(input.accountId).success||!uuid.safeParse(input.resourceBindingId).success||
+        !/^[a-z][a-z0-9-]{1,30}$/.test(input.agentName)||input.connectionName!=='mac-private-metadata'||
+        !/^[a-f0-9]{64}$/.test(input.expectedDescriptorFingerprint))return requestDenied();
+    const uploadToken=randomBytes(32).toString('base64url'),readToken=randomBytes(32).toString('base64url');
+    try{return await this.#inMainNamespace({...options,operationId},()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const namespace=requireDefinitionNamespace();
+      const connected=await namespace.query<{owner_member_id:string;status:string;generation:number}>(
+        `SELECT owner_member_id,status,generation FROM connected_accounts WHERE id=$1 FOR SHARE`,[input.accountId]);
+      if(connected.rows.length!==1||connected.rows[0]!.owner_member_id!==memberId||connected.rows[0]!.status!=='ok')return requestDenied();
+      const resource=await namespace.query<{external_id:string;resource_kind:string}>(`SELECT external_id,resource_kind FROM connected_resource_bindings
+        WHERE id=$1 AND connected_account_id=$2 AND owner_member_id=$3 FOR SHARE`,[input.resourceBindingId,input.accountId,memberId]);
+      if(resource.rows.length!==1||resource.rows[0]!.resource_kind!=='dataset')return requestDenied();
+      const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName);
+      if(capture.actor.memberId!==memberId||capture.agent.name!==input.agentName||capture.outside.connection.name!==input.connectionName||
+          capture.outside.scope!=='read'||capture.outside.connection.allow.length===0)return requestDenied();
+      const ownerHead=await db.query<{account_id:string;active_revision:string;generation:string;consent_generation:string}>(`SELECT account_id::text,
+        active_revision::text,generation::text,consent_generation::text FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id=$2
+        AND connection_name=$3 AND state='active' AND active_revision IS NOT NULL`,[capture.agent.ownerMemberId,input.agentName,input.connectionName]);
+      if(ownerHead.rows.length!==1)return requestDenied();
+      const configured=ownerHead.rows[0]!;
+      const configuredRevision=await db.query<{policy_json:string;policy_hash:Buffer;credential_revision:string;generation:string;consent_generation:string}>(
+        `SELECT policy_json::text,policy_hash,credential_revision::text,generation::text,consent_generation::text FROM outside_custody_revisions
+         WHERE account_id=$1 AND credential_revision=$2 AND revision_purpose='executable'`,[configured.account_id,configured.active_revision]);
+      if(configuredRevision.rows.length!==1)return requestDenied();
+      const configuredPolicy=executablePolicySchema.safeParse(JSON.parse(configuredRevision.rows[0]!.policy_json));
+      if(!configuredPolicy.success||createHash('sha256').update(canonicalJson(configuredPolicy.data)).digest('hex')!==configuredRevision.rows[0]!.policy_hash.toString('hex')||
+          configuredPolicy.data.ownerMemberId!==capture.agent.ownerMemberId||configuredPolicy.data.resourceId!==input.agentName||
+          configuredPolicy.data.connectionName!==input.connectionName||configuredPolicy.data.publication.descriptorDigest!==input.expectedDescriptorFingerprint||
+          configuredPolicy.data.publication.acceptedScope.scope!=='read')return requestDenied();
+      const configuredPublication=await this.#readEvidence(db,configured.account_id,configuredPolicy.data.publication.id,'descriptor-publication-v1');
+      const configuredAcceptance=await this.#readEvidence(db,configured.account_id,configuredPolicy.data.acceptance.id,'descriptor-acceptance-v1');
+      const projection=descriptorProjectionSchema.parse(configuredPublication.body.projection) as unknown as DescriptorProjection;
+      if(configuredPublication.row.outcome!=='published'||configuredAcceptance.row.outcome!=='accepted'||
+          configuredAcceptance.body.publicationHash!==configuredPolicy.data.publication.hash||
+          projection.connectionName!==input.connectionName||createHash('sha256').update(canonicalJson(projection)).digest('hex')!==input.expectedDescriptorFingerprint||
+          projection.scope!=='read'||projection.allow.some(tool=>!capture.outside.connection.allow.includes(tool)))return requestDenied();
+      const namespaceClient=requireDefinitionNamespace();
+      if(!this.routeLifecycle)return requestDenied();
+      const route=await this.routeLifecycle.reviewOutsideRoute(capture.outside.connection.url,options.deadlineAtMs);
+      this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);
+      if(canonicalJson(route)!==canonicalJson(configuredPolicy.data.route))return requestDenied();
+
+      const custodyConnection=custodyConnectionName(input.connectionName);
+      const prior=await db.query<{account_id:string;generation:string;consent_generation:string;state:string}>(`SELECT account_id::text,generation::text,
+        consent_generation::text,state FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 FOR UPDATE`,
+        [memberId,input.agentName,custodyConnection]);
+      if(prior.rows.length>1)return requestDenied();
+      const accountId=prior.rows[0]?.account_id??randomUUID();
+      const generation=prior.rows[0]?number(prior.rows[0]!.generation)+1:1;
+      const consentGeneration=prior.rows[0]?number(prior.rows[0]!.consent_generation)+1:1;
+      if(generation>Number.MAX_SAFE_INTEGER||consentGeneration>Number.MAX_SAFE_INTEGER)return requestDenied();
+      await db.query(`UPDATE private_metadata_devices SET state='revoked',revoked_at=clock_timestamp()
+        WHERE owner_member_id=$1 AND agent_name=$2 AND connection_name=$3 AND state='active'`,[memberId,input.agentName,input.connectionName]);
+      if(prior.rows[0]){
+        await db.query(`UPDATE outside_custody_accounts SET generation=$2,active_revision=NULL,candidate_revision=NULL,
+          consent_generation=$3,state='active',updated_at=clock_timestamp() WHERE account_id=$1 AND owner_member_id=$4`,
+          [accountId,generation,consentGeneration,memberId]);
+      }else{
+        await db.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,
+          active_revision,candidate_revision,consent_generation,state) VALUES($1,$2,$3,$4,$5,NULL,NULL,$6,'active')`,
+          [accountId,memberId,input.agentName,custodyConnection,generation,consentGeneration]);
+      }
+      await db.query(`UPDATE outside_custody_accounts SET state='revoked',active_revision=NULL,candidate_revision=NULL,
+        generation=generation+1,updated_at=clock_timestamp() WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3
+        AND account_id<>$4 AND state='active'`,[memberId,input.agentName,custodyConnection,accountId]);
+      const revisionResult=await db.query<{n:string}>(`SELECT COALESCE(max(credential_revision),0)::text AS n FROM outside_custody_revisions WHERE account_id=$1`,[accountId]);
+      const credentialRevision=Number(revisionResult.rows[0]?.n??0)+1;
+      if(!Number.isSafeInteger(credentialRevision)||credentialRevision>Number.MAX_SAFE_INTEGER)return requestDenied();
+      const consentOperationId=randomUUID(),sessionHash=createHash('sha256').update(sessionToken).digest('hex');
+      const consent={version:1,purpose:'mac-private-metadata-read-v1',memberId,sessionHash,connectedAccountId:input.accountId,
+        resourceBindingId:input.resourceBindingId,datasetId:resource.rows[0]!.external_id,agentName:input.agentName,
+        connectionName:input.connectionName,descriptorFingerprint:input.expectedDescriptorFingerprint,
+        definitionHash:capture.agent.definitionHash,accessRevision:capture.agent.accessRevision,generation:connected.rows[0]!.generation};
+      const consentHash=createHash('sha256').update(canonicalJson(consent)).digest('hex');
+      const publicationId=randomUUID(),acceptanceBody={version:1,organisationId:capture.actor.organisationId,editorMemberId:memberId,publicationId,
+        publicationHash:input.expectedDescriptorFingerprint,resourceId:input.agentName,connectionName:input.connectionName,
+        definitionHash:capture.agent.definitionHash,accessRevision:capture.agent.accessRevision,grant:capture.grant,sessionHash};
+      const acceptanceHash=createHash('sha256').update(canonicalJson(acceptanceBody)).digest('hex');
+      const policy={version:1 as const,purpose:'outside-executable-v1' as const,ownerMemberId:memberId,accountId,
+        resourceId:input.agentName,connectionName:input.connectionName,capture,route,
+        publication:{id:publicationId,hash:input.expectedDescriptorFingerprint,descriptorDigest:input.expectedDescriptorFingerprint,
+          acceptedScope:{scope:projection.scope,allow:projection.allow,read:projection.read}},
+        acceptance:{id:consentOperationId,hash:acceptanceHash,editorMemberId:memberId}};
+      const policyJson=canonicalJson(policy),policyHash=createHash('sha256').update(policyJson).digest('hex');
+      const encrypted=sealBound(this.key,Buffer.from(readToken),{ownerMemberId:memberId,accountId,resourceId:input.agentName,
+        connectionName:input.connectionName,generation,credentialRevision,consentGeneration,operationId:consentOperationId,
+        revisionPurpose:'executable',policyHash});
+      await db.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,
+        revision_purpose,policy_json,policy_hash,operation_id,nonce,ciphertext) VALUES($1,$2,$3,$4,$5,'executable',$6::jsonb,decode($7,'hex'),$8,$9,$10)`,
+        [accountId,memberId,credentialRevision,generation,consentGeneration,policyJson,policyHash,consentOperationId,encrypted.nonce,encrypted.ciphertext]);
+      const publicationBody={version:1,organisationId:capture.actor.organisationId,actorMemberId:memberId,
+        publicationHash:input.expectedDescriptorFingerprint,source:{requestId:consentOperationId,claimOperationId:consentOperationId,
+          revision:credentialRevision,consentGeneration,policyHash},definition:{hash:capture.agent.definitionHash,accessRevision:capture.agent.accessRevision},
+        capture,projection};
+      await this.#recordEvidence(db,{operationId:publicationId,accountId,ownerMemberId:memberId,actorMemberId:memberId,kind:'publish',
+        evidenceKind:'descriptor-publication-v1',body:publicationBody,expectedGeneration:generation,resultGeneration:generation,
+        credentialRevision,outcome:'published',requestIdentity:{expectedDescriptorFingerprint:input.expectedDescriptorFingerprint,consentOperationId}});
+      await this.#recordEvidence(db,{operationId:consentOperationId,accountId,ownerMemberId:memberId,actorMemberId:memberId,kind:'accept',
+        evidenceKind:'descriptor-acceptance-v1',body:acceptanceBody,expectedGeneration:generation,resultGeneration:generation,
+        credentialRevision,outcome:'accepted',requestIdentity:{publicationId,expectedPublicationHash:input.expectedDescriptorFingerprint}});
+      readToken.replace(/./g,'\0');
+      const applyOperationId=randomUUID(),requestHashValue=createHash('sha256').update(canonicalJson({kind:'apply',memberId,accountId,consentHash,generation})).digest();
+      await db.query(`INSERT INTO outside_custody_operations(operation_id,account_id,owner_member_id,actor_member_id,operation_kind,
+        request_hash,expected_generation,result_generation,credential_revision,outcome) VALUES($1,$2,$3,$3,'apply',$4,$5,$5,$6,'applied')`,
+        [applyOperationId,accountId,memberId,requestHashValue,generation,credentialRevision]);
+      const changed=await db.query(`UPDATE outside_custody_accounts SET active_revision=$2,updated_at=clock_timestamp()
+        WHERE account_id=$1 AND owner_member_id=$3 AND generation=$4 AND consent_generation=$5 AND state='active'`,
+        [accountId,credentialRevision,memberId,generation,consentGeneration]);
+      if(changed.rowCount!==1)return requestDenied();
+      const deviceId=randomUUID();
+      await db.query(`INSERT INTO private_metadata_devices(id,owner_member_id,connected_account_id,dataset_resource_id,dataset_id,
+        agent_name,connection_name,custody_account_id,descriptor_fingerprint,descriptor_json,consent_operation_id,consent_session_id,
+        consent_json,upload_token_hash,read_token_hash,generation,connected_account_generation,state)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,decode($9,'hex'),$10::jsonb,$11,$12,$13::jsonb,$14,$15,$16,$17,'active')`,
+        [deviceId,memberId,input.accountId,input.resourceBindingId,resource.rows[0]!.external_id,input.agentName,input.connectionName,accountId,
+          input.expectedDescriptorFingerprint,canonicalJson(projection),consentOperationId,sessionHash,canonicalJson(consent),
+          createHash('sha256').update(uploadToken).digest(),createHash('sha256').update(readToken).digest(),generation,connected.rows[0]!.generation]);
+      return {deviceId,deviceGeneration:generation,accountGeneration:Number(connected.rows[0]!.generation),uploadToken};
+    },options));}catch{return requestDenied();}finally{readToken.replace(/./g,'\0');}
+  }
+
+  async revokePrivateMetadataDevice(sessionToken:string,input:{deviceId:string;expectedGeneration:number},options:{deadlineAtMs:number}):
+    Promise<{revoked:true;generation:number}>{
+    if(!uuid.safeParse(input.deviceId).success||!Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<1)return requestDenied();
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const device=await db.query<{custody_account_id:string;generation:number}>(`SELECT custody_account_id::text,generation FROM private_metadata_devices
+        WHERE id=$1 AND owner_member_id=$2 AND state='active' FOR UPDATE`,[input.deviceId,memberId]);
+      if(device.rows.length!==1||Number(device.rows[0]!.generation)!==input.expectedGeneration)return requestDenied();
+      const account=await this.head(db,device.rows[0]!.custody_account_id,true);
+      if(!account||account.owner_member_id!==memberId||account.state!=='active'||number(account.generation)!==input.expectedGeneration)return requestDenied();
+      const next=input.expectedGeneration+1;
+      const changed=await db.query(`UPDATE outside_custody_accounts SET generation=$2,active_revision=NULL,candidate_revision=NULL,
+        state='revoked',updated_at=clock_timestamp() WHERE account_id=$1 AND owner_member_id=$3 AND generation=$4 AND state='active'`,
+        [account.account_id,next,memberId,input.expectedGeneration]);
+      if(changed.rowCount!==1)return requestDenied();
+      const retired=await db.query(`UPDATE private_metadata_devices SET state='revoked',revoked_at=clock_timestamp()
+        WHERE id=$1 AND owner_member_id=$2 AND state='active'`,[input.deviceId,memberId]);
+      if(retired.rowCount!==1)return requestDenied();
+      return {revoked:true,generation:next};
+    },options));
+  }
+
+  async privateMetadataDeviceStatus(sessionToken:string,input:{agentName:string},options:{deadlineAtMs:number}):Promise<{
+    accountId:string;resourceBindingId:string;datasetId:string;accountGeneration:number;deviceId:string;deviceGeneration:number;state:'active'|'revoked'
+  }|null>{
+    if(!/^[a-z][a-z0-9-]{1,30}$/.test(input.agentName))return requestDenied();
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const row=await db.query<{account_id:string;dataset_resource_id:string;dataset_id:string;connected_account_generation:number;
+        id:string;generation:number;state:'active'|'revoked'}>(`SELECT connected_account_id AS account_id,dataset_resource_id,dataset_id,
+          connected_account_generation,id,generation,state FROM private_metadata_devices
+        WHERE owner_member_id=$1 AND agent_name=$2 AND connection_name=$3 ORDER BY created_at DESC LIMIT 1 FOR SHARE`,
+        [memberId,input.agentName,MEMBER_PRIVATE_METADATA_CONNECTION]);
+      if(row.rows.length===0)return null;
+      const device=row.rows[0]!;
+      return {accountId:device.account_id,resourceBindingId:device.dataset_resource_id,datasetId:device.dataset_id,
+        accountGeneration:Number(device.connected_account_generation),deviceId:device.id,deviceGeneration:Number(device.generation),state:device.state};
+    },options));
+  }
+
+  async previewPrivateMetadataTarget(sessionToken:string,input:{agentName:string},options:{deadlineAtMs:number}):Promise<{
+    agentName:string;connectionName:'mac-private-metadata';descriptorFingerprint:string;tools:string[];purpose:'read-only private metadata lookup'}>{
+    if(!/^[a-z][a-z0-9-]{1,30}$/.test(input.agentName))return requestDenied();
+    return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
+      const current=await captureOutsideHumanUse(db,memberId,input.agentName,'mac-private-metadata');
+      if(current.actor.memberId!==memberId||current.outside.scope!=='read')return requestDenied();
+      const owner=await db.query<{account_id:string;active_revision:string}>(`SELECT account_id::text,active_revision::text FROM outside_custody_accounts
+        WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name='mac-private-metadata' AND state='active' AND active_revision IS NOT NULL`,
+        [current.agent.ownerMemberId,input.agentName]);
+      if(owner.rows.length!==1)return requestDenied();
+      const revision=await db.query<{policy_json:string;policy_hash:Buffer;credential_revision:string;generation:string;consent_generation:string}>(
+        `SELECT policy_json::text,policy_hash,credential_revision::text,generation::text,consent_generation::text FROM outside_custody_revisions
+         WHERE account_id=$1 AND credential_revision=$2 AND revision_purpose='executable'`,[owner.rows[0]!.account_id,owner.rows[0]!.active_revision]);
+      if(revision.rows.length!==1)return requestDenied();
+      const parsed=executablePolicySchema.safeParse(JSON.parse(revision.rows[0]!.policy_json));
+      if(!parsed.success||createHash('sha256').update(canonicalJson(parsed.data)).digest('hex')!==revision.rows[0]!.policy_hash.toString('hex')||
+          parsed.data.ownerMemberId!==current.agent.ownerMemberId||parsed.data.resourceId!==input.agentName||parsed.data.connectionName!=='mac-private-metadata')return requestDenied();
+      const publication=await this.#readEvidence(db,owner.rows[0]!.account_id,parsed.data.publication.id,'descriptor-publication-v1');
+      const acceptance=await this.#readEvidence(db,owner.rows[0]!.account_id,parsed.data.acceptance.id,'descriptor-acceptance-v1');
+      const projection=descriptorProjectionSchema.parse(publication.body.projection) as unknown as DescriptorProjection;
+      if(publication.row.outcome!=='published'||acceptance.row.outcome!=='accepted'||
+          acceptance.body.publicationHash!==parsed.data.publication.hash||projection.scope!=='read'||
+          projection.connectionName!=='mac-private-metadata'||
+          createHash('sha256').update(canonicalJson(projection)).digest('hex')!==parsed.data.publication.descriptorDigest)return requestDenied();
+      if(!this.routeLifecycle)return requestDenied();
+      const route=await this.routeLifecycle.reviewOutsideRoute(current.outside.connection.url,options.deadlineAtMs);
+      if(canonicalJson(route)!==canonicalJson(parsed.data.route))return requestDenied();
+      return {agentName:input.agentName,connectionName:'mac-private-metadata',descriptorFingerprint:parsed.data.publication.descriptorDigest,
+        tools:[...projection.allow],purpose:'read-only private metadata lookup'};
+    },options));
+  }
+
+  /** Verify an upload/read bearer against the custody-only hash table, then recheck its
+   * connected account and generation in Keeper's main namespace. A token is valid at request
+   * start only; revocation does not promise to cancel a request already authorized. */
+  async validatePrivateMetadataCredential(token:string,scope:'upload'|'read'):
+    Promise<{datasetId:string;accountId:string;scope:'upload'|'read';generation:number}>{
+    const deniedResult=():never=>{throw new KeeperRefusedError('Private metadata credential refused');};
+    if(typeof token!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(token)||(scope!=='upload'&&scope!=='read'))return deniedResult();
+    const hash=createHash('sha256').update(token,'utf8').digest();
+    const deadlineAtMs=Date.now()+2500;
+    return this.#inMainNamespace({deadlineAtMs},()=>consoleSourceTransaction(this.pool,async source=>{
+      const result=await source.query(`SELECT owner_member_id,connected_account_id,
+          dataset_id,connected_account_generation,upload_token_hash,read_token_hash FROM private_metadata_devices
+          WHERE state='active' AND ${scope==='upload'?'upload_token_hash':'read_token_hash'}=$1 FOR SHARE`,[hash]);
+      hash.fill(0);
+      if(result.rows.length!==1)return deniedResult();
+      const row=result.rows[0]!;
+      const namespace=requireDefinitionNamespace();
+      if(!namespace)return deniedResult();
+      const account=await namespace.query<{status:string;generation:number;owner_member_id:string}>(
+        `SELECT status,generation,owner_member_id FROM connected_accounts WHERE id=$1`,[row.connected_account_id]);
+      if(account.rows.length!==1||account.rows[0]!.owner_member_id!==row.owner_member_id||account.rows[0]!.status!=='ok'||
+          Number(account.rows[0]!.generation)!==Number(row.connected_account_generation))return deniedResult();
+      return {datasetId:row.dataset_id,accountId:row.connected_account_id,scope,generation:Number(account.rows[0]!.generation)};
+    },undefined,{deadlineAtMs}));
   }
 
   async #humanOrganisation(db:PoolClient,memberId:string):Promise<{id:string;role:string}>{
@@ -2156,6 +2385,7 @@ export class OutsideCustodyStore {
     if(session.policyRevision!==binding.policyRevision)return denied();
     options.assertCurrent?.();
     const current=await captureOutsideHumanUse(db,binding.memberId,binding.agent,input.connectionName);
+    const memberScoped=input.connectionName===MEMBER_PRIVATE_METADATA_CONNECTION;
     if(current.actor.memberId!==binding.memberId||current.agent.definitionHash!==input.definitionHash||
         current.outside.connection.name!==input.connectionName||(execution&&!current.outside.connection.allow.includes(execution.toolName)))return denied();
     const actor=await currentMember(db as never,binding.memberId,{lock:'share'}),approver=await currentMember(db as never,binding.approverMemberId,{lock:'share'});
@@ -2163,8 +2393,8 @@ export class OutsideCustodyStore {
     // A staged replacement is not active. Preserve the unchanged active pointer
     // and generation after failed Apply; successful activation invalidates old work.
     const head=await this.head(db,input.accountId,true);
-    if(!head||head.owner_member_id!==current.agent.ownerMemberId||head.resource_id!==binding.agent||
-        head.connection_name!==input.connectionName||head.state!=='active'||head.active_revision===null||
+    if(!head||head.owner_member_id!==(memberScoped?binding.memberId:current.agent.ownerMemberId)||head.resource_id!==binding.agent||
+        head.connection_name!==custodyConnectionName(input.connectionName)||head.state!=='active'||head.active_revision===null||
         number(head.active_revision)!==input.credentialRevision)return denied();
     const revision=await db.query<{owner_member_id:string;generation:string;credential_revision:string;consent_generation:string;
       revision_purpose:string;policy_json:string;policy_hash:Buffer;operation_id:string;nonce:Buffer;ciphertext:Buffer}>(`SELECT owner_member_id,
@@ -2182,19 +2412,66 @@ export class OutsideCustodyStore {
           !(head.candidate_revision!==null&&number(head.candidate_revision)>input.credentialRevision&&
             number(row.consent_generation)<number(head.consent_generation)))||
         (execution&&!policy.publication.acceptedScope.allow.includes(execution.toolName)))return denied();
-    const publication=await this.#readEvidence(db,input.accountId,policy.publication.id,'descriptor-publication-v1');
-    if(publication.row.outcome!=='published'||publication.body.publicationHash!==policy.publication.hash||
-        publication.row.evidence_hash?.toString('hex')!==publication.bodyHash)return denied();
-    const projection=publication.body.projection as DescriptorProjection;
+    let projection:DescriptorProjection;
+    if(memberScoped){
+      const device=await db.query<{owner_member_id:string;agent_name:string;connection_name:string;descriptor_fingerprint:Buffer;
+        descriptor_json:string;consent_operation_id:string;consent_session_id:string;consent_json:string;generation:number;connected_account_generation:number}>(
+        `SELECT owner_member_id,agent_name,connection_name,descriptor_fingerprint,descriptor_json::text,consent_operation_id::text,
+          consent_session_id,consent_json::text,generation,connected_account_generation FROM private_metadata_devices
+         WHERE custody_account_id=$1 AND owner_member_id=$2 AND state='active' FOR SHARE`,[input.accountId,binding.memberId]);
+      if(device.rows.length!==1)return denied();
+      const enrolled=device.rows[0]!,fingerprint=enrolled.descriptor_fingerprint.toString('hex');
+      let consent:unknown;
+      try{consent=JSON.parse(enrolled.consent_json);}catch{return denied();}
+      const consentHash=createHash('sha256').update(canonicalJson(consent)).digest('hex');
+      if(enrolled.agent_name!==binding.agent||enrolled.connection_name!==input.connectionName||fingerprint!==policy.publication.descriptorDigest||
+          fingerprint!==policy.publication.hash||enrolled.consent_operation_id!==policy.acceptance.id||policy.acceptance.editorMemberId!==binding.memberId||
+          !consent||typeof consent!=='object'||Array.isArray(consent)||
+          (consent as Record<string,unknown>).memberId!==binding.memberId||
+          (consent as Record<string,unknown>).sessionHash!==enrolled.consent_session_id||
+          (consent as Record<string,unknown>).descriptorFingerprint!==fingerprint||
+          Number(enrolled.generation)!==number(head.generation))return denied();
+      const accepted=await this.#readEvidence(db,input.accountId,policy.acceptance.id,'descriptor-acceptance-v1');
+      if(accepted.row.outcome!=='accepted'||accepted.bodyHash!==policy.acceptance.hash||
+          accepted.body.editorMemberId!==binding.memberId||accepted.body.publicationId!==policy.publication.id||
+          accepted.body.publicationHash!==fingerprint||(accepted.body as Record<string,unknown>).sessionHash!==enrolled.consent_session_id)return denied();
+      const published=await this.#readEvidence(db,input.accountId,policy.publication.id,'descriptor-publication-v1');
+      if(published.row.outcome!=='published'||
+          published.body.actorMemberId!==binding.memberId||published.body.publicationHash!==fingerprint)return denied();
+      projection=descriptorProjectionSchema.parse(JSON.parse(enrolled.descriptor_json)) as unknown as DescriptorProjection;
+      if(createHash('sha256').update(canonicalJson(projection)).digest('hex')!==fingerprint)return denied();
+      const account=requireDefinitionNamespace();
+      const connected=await account.query<{owner_member_id:string;generation:number;status:string}>(
+        `SELECT owner_member_id,generation,status FROM connected_accounts WHERE id=$1`,[(consent as Record<string,unknown>).connectedAccountId]);
+      if(connected.rows.length!==1||connected.rows[0]!.owner_member_id!==binding.memberId||connected.rows[0]!.status!=='ok'||
+          Number(connected.rows[0]!.generation)!==Number(enrolled.connected_account_generation))return denied();
+      const owner=await db.query<{account_id:string;active_revision:string}>(`SELECT account_id::text,active_revision::text FROM outside_custody_accounts
+        WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 AND state='active' AND active_revision IS NOT NULL`,
+        [current.agent.ownerMemberId,binding.agent,input.connectionName]);
+      if(owner.rows.length!==1)return denied();
+      const live=await db.query<{policy_json:string;policy_hash:Buffer}>(`SELECT policy_json::text,policy_hash FROM outside_custody_revisions
+        WHERE account_id=$1 AND credential_revision=$2 AND revision_purpose='executable'`,[owner.rows[0]!.account_id,owner.rows[0]!.active_revision]);
+      if(live.rows.length!==1)return denied();
+      const ownerPolicy=executablePolicySchema.safeParse(JSON.parse(live.rows[0]!.policy_json));
+      if(!ownerPolicy.success||createHash('sha256').update(canonicalJson(ownerPolicy.data)).digest('hex')!==live.rows[0]!.policy_hash.toString('hex')||
+          ownerPolicy.data.publication.descriptorDigest!==fingerprint||ownerPolicy.data.connectionName!==input.connectionName)return denied();
+    }else{
+      const publication=await this.#readEvidence(db,input.accountId,policy.publication.id,'descriptor-publication-v1');
+      if(publication.row.outcome!=='published'||publication.body.publicationHash!==policy.publication.hash||
+          publication.row.evidence_hash?.toString('hex')!==publication.bodyHash)return denied();
+      projection=publication.body.projection as DescriptorProjection;
+    }
     // Keep the authenticated full-publication body hash above, and independently bind
     // the descriptor to the validated projection that staging actually hashes.
     if(createHash('sha256').update(canonicalJson(projection)).digest('hex')!==policy.publication.descriptorDigest||
         projection.connectionName!==input.connectionName||(execution&&(!projection.allow.includes(execution.toolName)||
         !projection.tools.some(tool=>tool.name===execution.toolName))))return denied();
-    const acceptance=await this.#readEvidence(db,input.accountId,policy.acceptance.id,'descriptor-acceptance-v1');
-    if(acceptance.row.outcome!=='accepted'||acceptance.row.evidence_hash?.toString('hex')!==policy.acceptance.hash||
-        acceptance.body.editorMemberId!==policy.acceptance.editorMemberId||acceptance.body.publicationId!==policy.publication.id||
-        acceptance.body.publicationHash!==policy.publication.hash)return denied();
+    if(!memberScoped){
+      const acceptance=await this.#readEvidence(db,input.accountId,policy.acceptance.id,'descriptor-acceptance-v1');
+      if(acceptance.row.outcome!=='accepted'||acceptance.row.evidence_hash?.toString('hex')!==policy.acceptance.hash||
+          acceptance.body.editorMemberId!==policy.acceptance.editorMemberId||acceptance.body.publicationId!==policy.publication.id||
+          acceptance.body.publicationHash!==policy.publication.hash)return denied();
+    }
     let plaintext:Buffer|undefined;
     if(consume){
       if(!execution)return denied();
@@ -2230,9 +2507,10 @@ export class OutsideCustodyStore {
         const db=source as PoolClient;
         options.assertCurrent?.();
         const current=await captureOutsideHumanUse(db,binding.memberId,binding.agent,connectionName);
+      const custodyOwner=outsideCustodyOwnerForConnection(connectionName,binding.memberId,current.agent.ownerMemberId);
         const heads=await db.query<{account_id:string;active_revision:string}>(`SELECT account_id::text,active_revision::text
           FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 AND state='active'
-          AND active_revision IS NOT NULL`,[current.agent.ownerMemberId,binding.agent,connectionName]);
+          AND active_revision IS NOT NULL`,[custodyOwner,binding.agent,custodyConnectionName(connectionName)]);
         if(heads.rows.length!==1)return denied();
         const head=heads.rows[0]!;
         const checked=await this.#checkRuntimeExecutable(binding,{definitionHash,connectionName,accountId:head.account_id,
@@ -2258,9 +2536,10 @@ export class OutsideCustodyStore {
         const db=source as PoolClient;
         options.assertCurrent?.();
         const capture=await captureOutsideHumanUse(db,binding.memberId,binding.agent,requested.connectionName);
+        const custodyOwner=outsideCustodyOwnerForConnection(requested.connectionName,binding.memberId,capture.agent.ownerMemberId);
         const heads=await db.query<{account_id:string;active_revision:string}>(`SELECT account_id::text,active_revision::text
           FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id=$2 AND connection_name=$3 AND state='active'
-          AND active_revision IS NOT NULL`,[capture.agent.ownerMemberId,binding.agent,requested.connectionName]);
+          AND active_revision IS NOT NULL`,[custodyOwner,binding.agent,custodyConnectionName(requested.connectionName)]);
         if(heads.rows.length!==1)return denied();
         const head=heads.rows[0]!,selectors={definitionHash:approval.definitionHash,connectionName:requested.connectionName,
           accountId:head.account_id,credentialRevision:number(head.active_revision)};

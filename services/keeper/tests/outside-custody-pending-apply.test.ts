@@ -6,6 +6,7 @@ import {Pool} from 'pg';
 import {quiet} from './helpers/quiet-pool.js';
 import {outsidePayloadHash} from '@lares/agent-kit/outside-execution-receipts';
 import {provisionEngineDatabasePrivileges} from '../../box/lib/database-privileges.js';
+import {PgAccountStore} from '@lares/agent-kit/account-store';
 
 const grant=vi.hoisted(()=>({capture:undefined as unknown,edit:undefined as unknown}));
 const http=vi.hoisted(()=>({request:vi.fn()}));
@@ -42,15 +43,17 @@ function canonical(value:unknown):string{
   if(Array.isArray(value))return `[${value.map(canonical).join(',')}]`;
   return `{${Object.entries(value as Record<string,unknown>).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
 }
-function sealEvidence(body:unknown,operationId:string,kind:'activation-review-v1'|'descriptor-publication-v1'|'descriptor-acceptance-v1',hash:string){
-  const aad=Buffer.from(canonical(['lares-outside-custody-evidence-v1',{accountId,ownerMemberId:owner,resourceId:'worker',connectionName:'connector',operationId,kind,hash}]));
+type MacCoordinates={accountId:string;ownerMemberId:string;resourceId:string;connectionName:string};
+const defaultCoordinates:MacCoordinates={accountId,ownerMemberId:owner,resourceId:'worker',connectionName:'connector'};
+function sealEvidence(body:unknown,operationId:string,kind:'activation-review-v1'|'descriptor-publication-v1'|'descriptor-acceptance-v1',hash:string,coordinates=defaultCoordinates){
+  const aad=Buffer.from(canonical(['lares-outside-custody-evidence-v1',{...coordinates,operationId,kind,hash}]));
   const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',KEY,nonce);cipher.setAAD(aad);
   const plaintext=Buffer.from(canonical(body));
   return {nonce,ciphertext:Buffer.concat([cipher.update(plaintext),cipher.final(),cipher.getAuthTag()])};
 }
-function sealBound(plaintext:Buffer,input:{generation:number;revision:number;consent:number;operationId:string;purpose:'discovery'|'executable';policyHash:string}){
-  const aad=Buffer.from(JSON.stringify(['lares-outside-custody-v1',owner,accountId,'worker',input.generation,input.revision,input.consent,input.operationId]));
-  const bound=Buffer.from(JSON.stringify(['lares-outside-custody-bound-v1',aad.toString('utf8'),'connector',input.purpose,input.policyHash]));
+function sealBound(plaintext:Buffer,input:{generation:number;revision:number;consent:number;operationId:string;purpose:'discovery'|'executable';policyHash:string},coordinates=defaultCoordinates){
+  const aad=Buffer.from(JSON.stringify(['lares-outside-custody-v1',coordinates.ownerMemberId,coordinates.accountId,coordinates.resourceId,input.generation,input.revision,input.consent,input.operationId]));
+  const bound=Buffer.from(JSON.stringify(['lares-outside-custody-bound-v1',aad.toString('utf8'),coordinates.connectionName,input.purpose,input.policyHash]));
   const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',KEY,nonce);cipher.setAAD(bound);
   return {nonce,ciphertext:Buffer.concat([cipher.update(plaintext),cipher.final(),cipher.getAuthTag()])};
 }
@@ -93,6 +96,39 @@ let selectors:{accountId:string;agentName:string;connectionName:string;requestId
 let activation:{reviewId:string;reviewHash:string;policyHash:string};
 let staged:{operationId:string;credentialRevision:number};
 const deadline=()=>({deadlineAtMs:Date.now()+10000});
+async function seedMacDescriptor():Promise<{fingerprint:string;projection:Record<string,unknown>;ownerAccountId:string}>{
+  const connectionName='mac-private-metadata',ownerAccountId=randomUUID(),publicationId=randomUUID(),acceptanceId=randomUUID(),operationId=randomUUID();
+  const coordinates={accountId:ownerAccountId,ownerMemberId:owner,resourceId:'worker',connectionName};
+  const macCapture={...structuredClone(capture),outside:{...capture.outside,connection:{...capture.outside.connection,name:connectionName}}};
+  const projection={version:1,connectionName,scope:'read',allow:['lookup'],read:['lookup'],tools:document.tools};
+  const fingerprint=createHash('sha256').update(canonical(projection)).digest('hex');
+  const publicationBody={version:1,organisationId:org,actorMemberId:owner,publicationHash:fingerprint,
+    source:{requestId:randomUUID(),claimOperationId:randomUUID(),revision:1,consentGeneration:1,policyHash:'d'.repeat(64)},
+    definition:{hash:'a'.repeat(64),accessRevision:7},capture:macCapture,projection};
+  const acceptanceBody={version:1,organisationId:org,editorMemberId:owner,publicationId,publicationHash:fingerprint,
+    resourceId:'worker',connectionName,definitionHash:'a'.repeat(64),accessRevision:7,grant:{kind:'owner',validUntil:null}};
+  const publicationEvidenceHash=createHash('sha256').update(canonical(publicationBody)).digest('hex');
+  const acceptanceHash=createHash('sha256').update(canonical(acceptanceBody)).digest('hex');
+  const policy={version:1,purpose:'outside-executable-v1',ownerMemberId:owner,accountId:ownerAccountId,resourceId:'worker',connectionName,
+    capture:macCapture,route:reviewRoute,publication:{id:publicationId,hash:fingerprint,descriptorDigest:fingerprint,
+      acceptedScope:{scope:'read',allow:['lookup'],read:['lookup']}},acceptance:{id:acceptanceId,hash:acceptanceHash,editorMemberId:owner}};
+  const policyHash=createHash('sha256').update(canonical(policy)).digest('hex');
+  const encrypted=sealBound(Buffer.from('owner-config-secret'),{generation:1,revision:1,consent:1,operationId,purpose:'executable',policyHash},coordinates);
+  await admin.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,active_revision,
+    candidate_revision,consent_generation,state) VALUES($1,$2,'worker',$3,1,1,NULL,1,'active')`,[ownerAccountId,owner,connectionName]);
+  await admin.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,
+    revision_purpose,policy_json,policy_hash,operation_id,nonce,ciphertext) VALUES($1,$2,1,1,1,'executable',$3::jsonb,$4,$5,$6,$7)`,
+    [ownerAccountId,owner,canonical(policy),Buffer.from(policyHash,'hex'),operationId,encrypted.nonce,encrypted.ciphertext]);
+  for(const [id,kind,body,digest,outcome] of [[publicationId,'descriptor-publication-v1',publicationBody,publicationEvidenceHash,'published'],
+      [acceptanceId,'descriptor-acceptance-v1',acceptanceBody,acceptanceHash,'accepted']] as const){
+    const evidence=sealEvidence(body,id,kind,digest,coordinates);
+    await admin.query(`INSERT INTO outside_custody_operations(operation_id,account_id,owner_member_id,actor_member_id,operation_kind,event_phase,
+      request_hash,expected_generation,result_generation,outcome,result_nonce,result_ciphertext,evidence_kind,evidence_hash)
+      VALUES($1,$2,$3,$3,$4,'operation',$5,1,1,$6,$7,$8,$9,$10)`,
+      [id,ownerAccountId,owner,kind==='descriptor-publication-v1'?'publish':'accept',Buffer.alloc(32,4),outcome,evidence.nonce,evidence.ciphertext,kind,Buffer.from(digest,'hex')]);
+  }
+  return {fingerprint,projection,ownerAccountId};
+}
 function previewBody(){return {version:1,accountId,ownerMemberId:owner,resourceId:'worker',connectionName:'connector',expectedGeneration:1,
   expectedCandidateRevision:null,sourceRevision:2,sourceRequestId,sourceClaimOperationId:sourceClaimId,publicationId,publicationHash,
   acceptanceId,acceptanceHash,policyHash:activation.policyHash,capture:editorCapture,route:reviewRoute,consentGeneration:3};}
@@ -274,6 +310,143 @@ it('uses the old active revision before rotation and refuses an unconsumed old e
     await expect(store.dispatchApproved(binding,callAfter,{deadlineAtMs:Date.now()+10000})).rejects.toThrow();
     expect(http.request).toHaveBeenCalledTimes(3);
   }finally{http.request.mockReset();}
+});
+
+it('enrolls two members into separate datasets and dispatches only their own exact-approved lookup credential',async()=>{
+  const descriptor=await seedMacDescriptor(),connectionName='mac-private-metadata',definitionHash='a'.repeat(64);
+  const third='pending-apply-third',thirdToken='T'.repeat(43),thirdSession='pending-apply-third-session';
+  const macNonces=new Map<string,string>();
+  await admin.query(`INSERT INTO users(id,display_name,org_id,org_role,status,automation_mode) VALUES($1,'third',$2,'member','active','draft-and-ask')`,[third,org]);
+  await admin.query(`INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval '1 hour')`,
+    [third,third,createHash('sha256').update(thirdToken).digest('hex')]);
+  for(const [member,memberSession] of [[other,`pending-apply-${other}-session`],[third,thirdSession]] as const){
+    const macNonce=randomBytes(32).toString('base64url');macNonces.set(member,macNonce);
+    await admin.query(`INSERT INTO console_session_bindings(agent,incarnation,session_id,admission_nonce,place_id,member_id,
+      agent_access_revision,private_surface_revision,source_history_guard_revision,policy_revision)
+      VALUES('worker',$1,$2,$3,'fixture',$4,7,2,1,2)`,[incarnation,memberSession,macNonce,member]);
+  }
+  const adapter={connectorId:'lares-private-metadata-v1',verifyAccount:async()=>({issuer:'lares-private-metadata-v1',subject:randomUUID(),label:'Private dataset'}),
+    verifyResource:async()=>({resourceKind:'dataset',externalId:randomUUID(),providerLabel:'Private metadata dataset'})};
+  const accountRepo=new PgAccountStore(app as never),accountStore=accountRepo.forTrustedAdapter(adapter);
+  const ownerDataset=await accountStore.createPersonalAccount(owner,null,undefined,[null]);
+  const ownerResources=await accountRepo.listResources(owner,ownerDataset.id,ownerDataset.generation);
+  const members=[{id:owner,token,session:sessionId},{id:other,token:otherToken,session:`pending-apply-${other}-session`},{id:third,token:thirdToken,session:thirdSession}];
+  const datasets=new Map<string,{accountId:string;resourceId:string;datasetId:string;uploadToken:string;deviceId:string;generation:number}>();
+  const ownerMacCapture={...structuredClone(capture),outside:{...capture.outside,connection:{...capture.outside.connection,name:connectionName}}};
+  grant.capture=ownerMacCapture;
+  const ownerBinding={agent:'worker',incarnation,sessionId,memberId:owner,approverMemberId:owner,admissionNonce,policyRevision:2};
+  await expect(store.acceptedRuntimeTools(ownerBinding,definitionHash,connectionName,deadline())).rejects.toThrow();
+  expect(http.request).not.toHaveBeenCalled();
+  for(const member of members){
+    const account=member.id===owner?ownerDataset:await accountStore.createPersonalAccount(member.id,null,undefined,[null]);
+    const resources=member.id===owner?ownerResources:await accountRepo.listResources(member.id,account.id,account.generation);
+    expect(resources).toHaveLength(1);
+    const memberCapture=member.id===owner?ownerMacCapture:{...structuredClone(capture),actor:{...capture.actor,memberId:member.id,role:'member'},
+      outside:{...capture.outside,connection:{...capture.outside.connection,name:connectionName}},
+      grant:{kind:'grant',id:`grant-${member.id}`,principal:{kind:'member',id:member.id},permission:'use',validUntil:null}};
+    grant.capture=memberCapture;
+    if(member.id===owner){
+      const ownerBinding={agent:'worker',incarnation,sessionId,memberId:owner,approverMemberId:owner,admissionNonce,policyRevision:2};
+      await expect(store.acceptedRuntimeTools(ownerBinding,definitionHash,connectionName,deadline())).rejects.toThrow();
+      expect(await store.privateMetadataDeviceStatus(member.token,{agentName:'worker'},deadline())).toBeNull();
+    }
+    if(member.id===other){
+      await expect(store.enrollPrivateMetadataDevice(member.token,{accountId:ownerDataset.id,resourceBindingId:ownerResources[0]!.id,
+        agentName:'worker',connectionName,expectedDescriptorFingerprint:descriptor.fingerprint},deadline())).rejects.toThrow();
+      expect((await custody.query(`SELECT account_id FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id='worker'
+        AND connection_name='mac-private-metadata-device' AND state='active'`,[member.id])).rows).toEqual([]);
+      await expect(store.enrollPrivateMetadataDevice(member.token,{accountId:account.id,resourceBindingId:resources[0]!.id,
+        agentName:'worker',connectionName,expectedDescriptorFingerprint:'f'.repeat(64)},deadline())).rejects.toThrow();
+      expect((await custody.query(`SELECT account_id FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id='worker'
+        AND connection_name='mac-private-metadata-device' AND state='active'`,[member.id])).rows).toEqual([]);
+    }
+    const enrollment=await store.enrollPrivateMetadataDevice(member.token,{accountId:account.id,resourceBindingId:resources[0]!.id,
+      agentName:'worker',connectionName,expectedDescriptorFingerprint:descriptor.fingerprint},deadline());
+    const status=await store.privateMetadataDeviceStatus(member.token,{agentName:'worker'},deadline());
+    expect(status).toMatchObject({accountId:account.id,resourceBindingId:resources[0]!.id,datasetId:resources[0]!.externalId,
+      deviceId:enrollment.deviceId,state:'active'});
+    expect(enrollment.uploadToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(JSON.stringify(enrollment)).not.toContain('readToken');
+    datasets.set(member.id,{accountId:account.id,resourceId:resources[0]!.id,datasetId:resources[0]!.externalId,
+      uploadToken:enrollment.uploadToken,deviceId:enrollment.deviceId,generation:enrollment.deviceGeneration});
+    if(member.id===owner){
+      expect((await custody.query(`SELECT state,active_revision FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id='worker'
+        AND connection_name='mac-private-metadata'`,[owner])).rows).toEqual([{state:'active',active_revision:'1'}]);
+      expect((await custody.query(`SELECT account_id FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id='worker'
+        AND connection_name='mac-private-metadata-device' AND state='active'`,[owner])).rows).toHaveLength(1);
+      expect(await store.previewPrivateMetadataTarget(member.token,{agentName:'worker'},deadline())).toMatchObject({descriptorFingerprint:descriptor.fingerprint});
+    }
+  }
+
+  const peerRequests:{authorization:string|undefined;datasetId:string|undefined;method:string}[]=[];
+  http.request.mockImplementation(async(_url:string,options:{body:Buffer;headers:Record<string,string>})=>{
+    const message=JSON.parse(options.body.toString()) as {id?:number;method:string};
+    const authorization=options.headers.authorization;
+    let datasetId:string|undefined;
+    if(message.method==='tools/call'){
+      const bearer=/^Bearer ([A-Za-z0-9_-]{43})$/.exec(authorization??'')?.[1];
+      if(!bearer)throw new Error('synthetic peer received no scoped bearer');
+      datasetId=(await store.validatePrivateMetadataCredential(bearer,'read')).datasetId;
+      peerRequests.push({authorization,datasetId,method:message.method});
+    }
+    const result=message.method==='initialize'?{protocolVersion:'2025-06-18',serverInfo:{name:'Fixture',version:'1'}}:
+      message.method==='tools/list'?{tools:[{name:'lookup',description:'Lookup',inputSchema:{type:'object'}}]}:{content:[{type:'text',text:'Fixture result'}]};
+    return {statusCode:message.id===undefined?202:200,headers:{'content-type':'application/json','mcp-session-id':'fixture-session'},
+      body:Readable.from(message.id===undefined?[]:[Buffer.from(JSON.stringify({jsonrpc:'2.0',id:message.id,result}))])};
+  });
+
+  try{
+    for(const member of members){
+      const dataset=datasets.get(member.id)!;
+      const memberCapture=member.id===owner?ownerMacCapture:{...structuredClone(capture),actor:{...capture.actor,memberId:member.id,role:'member'},
+        outside:{...capture.outside,connection:{...capture.outside.connection,name:connectionName}},
+        grant:{kind:'grant',id:`grant-${member.id}`,principal:{kind:'member',id:member.id},permission:'use',validUntil:null}};
+      grant.capture=memberCapture;
+      const binding={agent:'worker',incarnation,sessionId:member.session,memberId:member.id,approverMemberId:member.id,
+        admissionNonce:macNonces.get(member.id)!,policyRevision:2};
+      await expect(store.acceptedRuntimeTools(binding,definitionHash,connectionName,deadline()).catch(error=>{throw new Error(`member ${member.id}: ${String(error)}`)})).resolves.toEqual([{name:'lookup',description:'Lookup',inputSchema:{type:'object'}}]);
+      const request={callId:randomUUID(),connectionName,toolName:'lookup',input:{query:`for-${member.id}`}};
+      const requestId=randomUUID();
+      await store.approveExecution(binding,request,{requestId,definitionHash,expiresAt:Date.now()+60_000},deadline());
+      const receipt=(await custody.query(`SELECT connection_name,account_id FROM outside_execution_approvals WHERE call_id=$1`,[request.callId])).rows[0];
+      const scopedAccount=(await custody.query(`SELECT custody_account_id AS account_id FROM private_metadata_devices WHERE id=$1`,[dataset.deviceId])).rows[0];
+      expect(receipt).toEqual({connection_name:connectionName,account_id:scopedAccount?.account_id});
+      await expect(store.dispatchApproved(binding,request,{deadlineAtMs:Date.now()+10_000})).resolves.toMatchObject({content:[{text:'Fixture result'}]});
+      const peer=peerRequests.at(-1)!;
+      expect(peer.datasetId).toBe(dataset.datasetId);
+      expect(peer.authorization).toMatch(/^Bearer [A-Za-z0-9_-]{43}$/);
+    }
+    expect(peerRequests).toHaveLength(3);
+    expect(new Set(peerRequests.map(peer=>peer.authorization)).size).toBe(3);
+    expect(new Set(peerRequests.map(peer=>peer.datasetId)).size).toBe(3);
+
+    const first=members[1]!,second=members[2]!,ownerData=datasets.get(owner)!,firstData=datasets.get(first.id)!;
+    const firstCapture={...structuredClone(capture),actor:{...capture.actor,memberId:first.id,role:'member'},
+      outside:{...capture.outside,connection:{...capture.outside.connection,name:connectionName}},
+      grant:{kind:'grant',id:`grant-${first.id}`,principal:{kind:'member',id:first.id},permission:'use',validUntil:null}};
+    const firstBinding={agent:'worker',incarnation,sessionId:first.session,memberId:first.id,approverMemberId:first.id,
+      admissionNonce:macNonces.get(first.id)!,policyRevision:2};
+    grant.capture={...firstCapture,actor:{...firstCapture.actor,memberId:second.id}};
+    await expect(store.acceptedRuntimeTools(firstBinding,definitionHash,connectionName,deadline())).rejects.toThrow();
+    grant.capture=undefined;
+    await expect(store.acceptedRuntimeTools(firstBinding,definitionHash,connectionName,deadline())).rejects.toThrow();
+    grant.capture=firstCapture;
+    await store.revokePrivateMetadataDevice(first.token,{deviceId:firstData.deviceId,expectedGeneration:firstData.generation},deadline());
+    await expect(store.acceptedRuntimeTools(firstBinding,definitionHash,connectionName,deadline())).rejects.toThrow();
+    await store.revokePrivateMetadataDevice(token,{deviceId:ownerData.deviceId,expectedGeneration:ownerData.generation},deadline());
+    expect((await custody.query(`SELECT state,active_revision FROM outside_custody_accounts WHERE owner_member_id=$1 AND resource_id='worker'
+      AND connection_name='mac-private-metadata'`,[owner])).rows).toEqual([{state:'active',active_revision:'1'}]);
+    grant.capture={...structuredClone(capture),actor:{...capture.actor,memberId:second.id,role:'member'},
+      outside:{...capture.outside,connection:{...capture.outside.connection,name:connectionName}},
+      grant:{kind:'grant',id:`grant-${second.id}`,principal:{kind:'member',id:second.id},permission:'use',validUntil:null}};
+    const secondBinding={agent:'worker',incarnation,sessionId:second.session,memberId:second.id,approverMemberId:second.id,
+      admissionNonce:macNonces.get(second.id)!,policyRevision:2};
+    const afterOwnerRevoke={callId:randomUUID(),connectionName,toolName:'lookup',input:{query:'after-owner-device-revoke'}};
+    await store.approveExecution(secondBinding,afterOwnerRevoke,{requestId:randomUUID(),definitionHash,expiresAt:Date.now()+60_000},deadline());
+    await expect(store.dispatchApproved(secondBinding,afterOwnerRevoke,{deadlineAtMs:Date.now()+10_000})).resolves.toMatchObject({content:[{text:'Fixture result'}]});
+    expect(peerRequests).toHaveLength(4);
+    expect(peerRequests.at(-1)?.datasetId).toBe(datasets.get(second.id)?.datasetId);
+  }finally{http.request.mockReset();grant.capture=capture;}
 });
 
 it('removes held revisions under the runtime role, retains receipts, and reconnects above every old revision',async()=>{

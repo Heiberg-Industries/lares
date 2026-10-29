@@ -7,6 +7,7 @@ import Link from "next/link";
 import { requireMember, isConsoleOwner } from "../../lib/auth";
 import { signOutEverywhere } from "../actions/members";
 import { OutsideDiscoverySection } from "../../components/OutsideDiscoverySection";
+import { PrivateMetadataDeviceSection } from "../../components/PrivateMetadataDeviceSection";
 export const dynamic = "force-dynamic";
 export default async function MembershipPage({ searchParams }: { searchParams: Promise<{ added?: string; error?: string }> }) {
   const member = await requireMember();
@@ -43,6 +44,7 @@ export default async function MembershipPage({ searchParams }: { searchParams: P
       </form></>}
     </section>
     <OutsideDiscoverySection memberId={member.id} />
+    <PrivateMetadataDeviceSection />
     <Link href="/chat">Open private chat →</Link>
     {isConsoleOwner(member) && <Link href="/">Open the owner console →</Link>}
     <form method="post" action="/api/auth/logout"><button type="submit">Sign out</button></form>
