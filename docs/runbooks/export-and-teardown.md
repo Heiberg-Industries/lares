@@ -240,7 +240,132 @@ write to the installation, or print archived rows. Its result is deliberately **
 all authority-contract categories remain `not-inventoried` until the separate record and file
 mapping is complete. Keep the source and archive; this check is not approval to restore or erase.
 
-### 4g. Copy the archive off this server, and check it again there
+### 4g. Import mapping coverage contract (rc.12 to rc.13)
+
+This is the source and mapping boundary for a future read-only import plan. It does not change
+the installed command: `lares import-preview` remains an inspection-only result, all 22 import
+categories remain `not-inventoried`, and import remains blocked. The table below is a coverage
+contract for the verified source schema, not evidence that an archive has been completely
+inventoried or can be restored.
+
+The accepted Box source is exactly `2026-10-21-rc.12`, whose `lares_state` migration ledger has
+these six files and checksums. The hashes match the SQL files committed here:
+
+| Source migration | SHA-256 |
+| --- | --- |
+| `001_baseline.sql` | `a2a50ac42a53b25ba28faf41e8b8970354292f131e0e673cb7cc2a0001fa725a` |
+| `002_standing_facts.sql` | `8d1abbab5d997af30f185454aac3a46407bc6d96fde2f555065522fd0df7b58a` |
+| `003_outside_tool_seen.sql` | `a7a43c6ae74466e398935afac6ec379f39ee2ccdf7d4ca8e78b2cdc482949cfa` |
+| `004_web_inbox.sql` | `56c5e04433aa350c9ed7bbed4d7aa0eb533d910f921cba2fe526183ac262dd0b` |
+| `005_model_steps.sql` | `e1ecab54f9c18c63b057f7970c70fa835ebeb0e09381b6295c4f64a20a91be66` |
+| `006_approval_session.sql` | `2de295f5c742a004addeb28579d579865bb7832a5d5287be742d0e2e7944827b` |
+
+The 74 table names below are the exhaustive `public` table inventory declared by those six Box
+migrations, including `schema_migrations`. They say nothing about table rows. The export includes
+every non-template database, while the current helper reads only `schema_migrations` from
+`lares_state.dump`; extra database dumps are not known to be empty or compatible. The source
+baseline also says that role workflow schemas and dream tables are created outside the Box
+migrations. The rc.12 release record identifies the chief-of-staff workflow upgrade, but the
+current preview does not validate those schema ledgers or inventory those rows. Treat other
+database names, runtime-created schemas, and any unrecognized source table as unverified and
+blocking until separately covered by a pinned source map.
+
+```text
+agent_avatars             agent_conversations       agent_definitions
+agent_door_claim_audit    agent_door_connections    agent_doors
+agent_notes               agent_registry            agent_resources
+approval_asks             approval_events           atlas_notes
+atlas_proposals           audit                     backup_status
+brief_settings            clipping_choice           clipping_items
+clipping_requests         clipping_sources          confirmations
+conversation_entries      conversation_retention    cross_member_grants
+cross_member_reads        deadline_candidates       deadline_settings
+deadlines                 digest_requests           digest_skips
+email_triage_processed    email_watch_cursors       forget_ledger
+heartbeat                 initiations               keeper_audit
+keeper_credentials        meeting_followup_sent      memory_proposals
+memory_reads              memory_use                model_steps
+notion_sync_docs          notion_sync_fidelity      notion_sync_proposals
+notion_sync_run           oauth_tokens              obligation_threads
+org_member_policy         orgs                      outreach_threads
+outside_tool_pins         owner_clock_signals       proactivity_settings
+ratchet                   ratchet_audit             reminders
+repairs                   schedule_settings        schema_migrations
+sessions                  settings                  settings_audit
+standing_facts            telegram_daily_log        telegram_session_rotation
+trigger_schedules         update_history            user_aliases
+users                     voice_exemplar            voice_profile
+web_inbox                 workflow_jobs
+```
+
+The v1 category inventory must account for every category, including zero-count categories, and
+must not turn a candidate table name into a claim about its rows. These source candidates and
+gaps define the mapping work:
+
+| v1 category | rc.12 source evidence | Mapping boundary |
+| --- | --- | --- |
+| `members` | `users`, `orgs`, `org_member_policy`, `user_aliases` | `users.id` is a source member key and `user_aliases.user_id` refers to it. Map each source member to an explicit destination member; names, emails, old owner roles, and organization membership do not select or create current authority. |
+| `identities` | `user_aliases`; `oauth_tokens` carries provider and email labels | An alias or email is not a verified provider identity. Require a separately verified issuer/subject/tenant mapping or mark reconnection required. |
+| `grants` | `cross_member_grants`, `cross_member_reads`, `org_member_policy` | These rows are historical source evidence, not current rc.13 grants. Each retained grant needs an explicit resource and member mapping plus fresh authority review; never widen sharing by inference. |
+| `agents` | `agent_registry`, `agent_definitions`, `agent_avatars`, `agent_notes`, `agent_resources`, `agent_doors`, `agent_door_connections`, `agent_door_claim_audit` | Preserve source agent keys only through an explicit unique mapping. Adoption, stewardship, and member ownership require current destination identities and must not be inferred from a label or old administrator role. |
+| `accounts` | `oauth_tokens`, `keeper_credentials` | The source dump contains encrypted sign-in material. Ordinary import must exclude its values, flag its presence without exposing them, and require a separately protected transfer or reconnection decision. Account IDs, generations, consent, and automation mode need explicit destination mappings. |
+| `resource-bindings` | `agent_resources`, `agent_doors`, `outside_tool_pins` | These source associations do not establish the rc.13 account/resource binding contract. Map only with explicit stable account, resource, and owner identities; labels alone confer no authority. |
+| `conversations` | `conversation_entries`, `agent_conversations`, `sessions`, `conversation_retention` | Preserve recoverable history. Archive-only is the sole approved usability fallback; it does not make history available in a destination session or establish current readers. |
+| `vault` | Optional `.bundle` and data `.tar` members; no rc.12 Box vault-area table is in the pinned schema | File presence, ownership, area identity, and contents are not proven by counting bundle/tar members. Require explicit source-to-destination area and file mappings; keep private areas private. |
+| `facts` | `standing_facts`, `memory_proposals`, `memory_reads`, `memory_use`, `agent_notes` | Preserve the source owner/provenance fields only after mapping their owner to a destination member. Rows without a resolvable owner remain blocked. |
+| `taste` | The optional `/srv/taste` data directory; `voice_exemplar`, `voice_profile` | File and voice-profile ownership are not established by the archive manifest. Require explicit resource/member mapping and preserve the existing audience. |
+| `archives` | Exported `.tar` and `.bundle` members | This is an archive-level disposition, not a substitute for inventorying the files and records inside. List each archive and its verified digest; unresolved contents remain blocked. |
+| `jobs` | `workflow_jobs`, `trigger_schedules`, `initiations`, `reminders`; role `workflow` schemas are separately created | The Box rows do not carry all rc.13 job authority references, and role workflow ledgers are not checked by the current preview. Inventory those sources separately. Every imported job stays disabled and pending adoption. |
+| `approvals` | `approval_asks`, `approval_events`, `confirmations` | These are historical records, not fresh exact-action approvals. Keep imported approvals disabled; never treat a prior approval as current authority. |
+| `actions` | No dedicated action table appears in the pinned Box schema | No zero is established for other databases or runtime schemas. Any discovered action records need explicit owner/provenance mapping and remain disabled. |
+| `budgets` | No budget table appears in the pinned Box schema | No zero is established for other databases or runtime schemas. Preserve financial/suppression evidence only through an explicit mapping; do not reset liability by omission. |
+| `settings` | `settings`, `settings_audit`, `brief_settings`, `deadline_settings`, `proactivity_settings`, `schedule_settings`, `conversation_retention` | Inventory each setting and its provenance. Do not apply source values to a different owner or broaden a setting's audience. |
+| `safety` | `forget_ledger`, `ratchet`, `ratchet_audit`, `repairs`, `audit`, `keeper_audit` | Preserve suppression and safety state without weakening it. A forget record is hash-only; no forgotten content or reversible identity may be reconstructed from it. |
+| `sync` | `notion_sync_docs`, `notion_sync_fidelity`, `notion_sync_proposals`, `notion_sync_run`, `email_watch_cursors`, `email_triage_processed` | Sync state is not proof that a connection still exists. Map the source link and destination resource explicitly; unresolved or stale connections require reconnection. |
+| `suppression` | `forget_ledger`, `digest_skips`, `initiations`, `email_triage_processed` | Preserve each suppression key and scope without turning it into content or dropping it as operational data. Unreadable/unmapped suppression blocks import. |
+| `contacts` | No dedicated contact table appears in the pinned Box schema; `atlas_*` and `notion_sync_*` may refer to people | These candidates need row-level classification. Do not infer a contact identity from a display name or email, and do not report zero until other schemas and files are inventoried. |
+| `source-links` | `notion_sync_docs`, `notion_sync_fidelity`, `notion_sync_proposals`, `clipping_sources`, `clipping_items` | Source IDs and paths are not destination permissions. Preserve links only with explicit source, owner, and destination-resource mappings. |
+| `domain-records` | `atlas_notes`, `atlas_proposals`, `clipping_*`, `deadline_*`, `deadlines`, `obligation_threads`, `outreach_threads`, `web_inbox`, `digest_requests`, `digest_skips` | Retained records need their own owner, source, dependency, and provenance mapping. The current schema names alone do not prove complete CRM, Tracks, calendar, or mail-cache coverage. |
+
+These source tables are also in the verified 74-table set, but this design has not assigned them
+to an import category or chosen a safe disposition: `backup_status`, `clipping_choice`,
+`clipping_requests`, `deadline_candidates`, `heartbeat`, `meeting_followup_sent`, `model_steps`,
+`owner_clock_signals`, `schema_migrations`, `telegram_daily_log`, `telegram_session_rotation`,
+and `update_history`. That is an explicit unresolved part of the mapping. `schema_migrations` is
+used as source-schema evidence only; whether the other operational records are preserved, reset,
+or blocked needs an evidenced rule before an inventory can be complete.
+
+For a record-level plan, `users.id` is the only source member key identified here. Every foreign
+member reference must pass through an explicit source-member-to-destination-member map. Do not
+match by email, display name, provider label, or presumed single-owner status. `oauth_tokens.id`
+is a source token-row identifier, not a destination connected-account identity; its encrypted
+fields stay out of the ordinary plan. Existing approvals, jobs, actions, and account metadata do
+not carry renewed authority. Pending jobs, actions, and approvals remain disabled after any
+future import.
+
+The current `ImportManifest` schema can record category counts/checksums, source-to-destination
+IDs, a provenance label, and protected-account transfer dispositions. It does not record
+per-record dependency edges or a reason for each unresolved omission. A future preview must make
+those dependencies and omissions reviewable alongside the manifest, or keep the plan blocked;
+schema validation or a `reconciled` label alone is not evidence of complete mapping. This slice
+records that requirement without changing the contract or runtime behavior.
+
+An rc.12 export manifest records archive member names, sizes, and whole-member checksums, but not
+the configured source directory roots or a complete per-file inventory. Those settings can be
+customized, Vault bundles are optional, and data archives are validated only for safe paths and
+regular-file counts by the current preview. Therefore an old manifest cannot show whether a
+missing file store was intentionally absent or left out. Before a complete inventory can be
+claimed, the operator must provide a checked declaration of the databases, runtime schemas,
+configured data roots, Vault repositories, and separately protected credential material that
+were in scope. This is a prerequisite for a future inventory implementation; this runbook does
+not change the export format or assume that declaration exists.
+
+Until every category has actual counts and checksums, every source table/archive has a reviewed
+disposition, all identities and dependencies map uniquely, protected credentials have a separate
+resolved path, and no omission remains, the inventory is incomplete and import remains blocked.
+No destination write or apply behavior is specified by this coverage contract.
+
+### 4h. Copy the archive off this server, and check it again there
 
 A copy that exists only on the server you are about to erase is not a copy.
 
