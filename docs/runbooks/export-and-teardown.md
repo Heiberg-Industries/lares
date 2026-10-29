@@ -224,7 +224,23 @@ done
 The first path in each listing is the directory name the tar will recreate — note it; section 5
 needs the directory it sat in.
 
-### 4f. Copy the archive off this server, and check it again there
+### 4f. Run the inspection-only import preview
+
+On a machine with the installed `lares` command, you can independently check the archive's
+manifest, checksums, paths, nested data archives and source migration ledger:
+
+```bash
+sudo lares import-preview "$ARCHIVE"
+```
+
+The preview accepts only the verified rc.12 source schema and identifies rc.13 as the destination.
+It uses a locally cached, digest-pinned database helper with network disabled; if that image is not
+already present, the command stops instead of downloading it. It does not connect to a database,
+write to the installation, or print archived rows. Its result is deliberately **blocked for import**:
+all authority-contract categories remain `not-inventoried` until the separate record and file
+mapping is complete. Keep the source and archive; this check is not approval to restore or erase.
+
+### 4g. Copy the archive off this server, and check it again there
 
 A copy that exists only on the server you are about to erase is not a copy.
 

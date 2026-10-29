@@ -10,7 +10,7 @@ runs them from there. This works for rc.12 and later.
 | File | What it does |
 |---|---|
 | `get-lares.sh` | The one file you download: fetches a named release, pulls its engine image by digest, unpacks the scripts, runs `install.sh`, then switches `current` and installs `lares` |
-| `lares` | The command installed in `/usr/local/bin`: `lares update`, `rollback`, `restore`, `doctor`, `backups` |
+| `lares` | The command installed in `/usr/local/bin`: `lares update`, `rollback`, `restore`, `doctor`, `import-preview`, `backups` |
 | `install.sh` | First install and re-runs: preflight, secrets, database, keeper, stack, first owner |
 | `update.sh` | Move the box to a released version (images pulled by digest, never built on the box). Run it through `lares update` |
 | `rollback.sh` | Put the previous images back, one step only (see below). Run it through `lares rollback` |
@@ -56,6 +56,21 @@ keeper puts its configured image back the next time it applies the agent.
 `lares doctor` is a read-only check of the installation's settings,
 database, migrations, owner, backup record, open repairs and gateway. See
 [`services/box/README.md`](../README.md#lares-doctor).
+
+## Inspect an export before migration
+
+`lares import-preview /path/to/export.tar` checks the archive's manifest, file checksums,
+archive paths and ordinary data archives. It then reads the source migration ledger from the
+`lares_state.dump` using the exact rc.12 database helper image already present on the machine;
+the helper is pinned by digest, runs without network access, and refuses to pull a missing image.
+The archive is mounted read-only. No application database connection or installation credentials
+are used. Output contains only safe file counts and schema identifiers, never archived row values.
+
+This command is an inspection-only step. It accepts the specifically verified rc.12 source schema
+and names rc.13 as the destination. It does not inventory application records, make an import
+manifest, or apply data. Every authority-contract category remains explicitly `not-inventoried`
+until the follow-up category mapper accounts for all records, files, identities, dependencies and
+omissions. A refusal leaves the archive intact; do not treat an inspection result as import approval.
 
 ## Backups
 

@@ -197,6 +197,23 @@ jobs:
       - uses: docker/build-push-action@v6
         id: firewall-image
         with: {context: ., file: images/firewall-helper/Dockerfile, pull: true, load: true, tags: 'lares-nft:test'}
+      - name: Check bounded import preview proof logic offline
+        run: python3 -B services/keeper/tests/import-preview-image.probe.py --self-test
+      - name: Prove packaged import preview refuses to claim an inventory
+        run: |
+          proof="$RUNNER_TEMP/import-preview-proof.json"
+          printf '{"format":1,"status":"running","stage":"fixture","phase":"fixture-setup","failureKind":null,"commandExitCode":null,"checks":{"syntheticCustomDump":false,"actualInstalledCommand":false,"allCategoriesRemainUninventoried":false,"unsafeArchiveRefusedAndRedacted":false,"helperRanOfflineWithReadOnlyInput":false,"scratchRemoved":false},"unmappedCategoryCount":22,"cleanupOkay":false}\n' > "$proof"
+          status=0
+          sudo env CI=true GITHUB_SHA="$GITHUB_SHA" python3 -B services/keeper/tests/import-preview-image.probe.py \
+            "lares-keeper@${{ steps.keeper-image.outputs.digest }}" "$GITHUB_SHA" "$proof" || status=$?
+          sudo chown "$(id -u):$(id -g)" "$proof" || status=1
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keeper-import-preview-proof
+          path: ${{ runner.temp }}/import-preview-proof.json
+          if-no-files-found: error
       - name: Scan final keeper image
         run: scripts/scan-image.sh lares-keeper:test "$RUNNER_TEMP/image-scans/keeper"
       - name: Scan final network helper images
