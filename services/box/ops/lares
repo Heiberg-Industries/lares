@@ -159,7 +159,7 @@ cmd_doctor() {
 
 cmd_import_preview() {
   [ "$#" -eq 1 ] || die "import-preview needs exactly one existing export archive path." "$EX_USAGE"
-  local archive="$1" helper_image scratch ledger_file
+  local archive="$1" helper_image scratch ledger_file toc_dir
   [ -f "$archive" ] && [ ! -L "$archive" ] || die "the archive must be an existing regular file, not a symlink." "$EX_USAGE"
   archive="$(cd "$(dirname "$archive")" && pwd -P)/$(basename "$archive")"
   BOX_DIR="$CUR/services/box"
@@ -174,24 +174,27 @@ cmd_import_preview() {
   engine_run --network-none --ro "$archive" bin/import-preview.ts --check-archive "$archive" >/dev/null || \
     die "the export archive failed inspection; the pinned helper was not run." "$EX_USAGE"
 
-  # This helper reads the custom dump without connecting to a database. The source archive and
-  # the small migration ledger are the only mounted files; no installation credentials or socket
-  # are present. --pull=never prevents a preview from contacting a registry.
+  # This helper reads custom dumps without connecting to a database. The source archive and
+  # private scratch output are mounted; no installation credentials or socket are present.
+  # --pull=never prevents a preview from contacting a registry.
   scratch=$(mktemp -d "${TMPDIR:-/var/tmp}/lares-import-preview.XXXXXX") || die "could not create private preview scratch space." "$EX_USAGE"
   chmod 0700 "$scratch"
   trap 'rm -rf -- "$scratch"; exit 130' INT
   trap 'rm -rf -- "$scratch"; exit 143' TERM
   ledger_file="$scratch/schema-migrations.copy"
+  toc_dir="$scratch/database-toc"
+  mkdir -m 0700 "$toc_dir"
   local helper_status=0 ledger_bytes
-  # Stream the full dump; cap only the small schema ledger output (256 512-byte blocks).
-  # The execution timeout bounds a stuck parser without imposing a byte limit on the dump.
+  # Read the source migration ledger and each dump's pg_restore table-of-contents metadata only.
+  # No SQL is executed and no row values are read. Each TOC is size-capped here, then parsed to
+  # schema names by the existing Keeper inspection process using the bundled strict parser.
   timeout --signal=INT --kill-after=10 120 docker run --rm --pull=never --network none --read-only --tmpfs /tmp \
     --cap-drop ALL --security-opt no-new-privileges \
     -v "$archive:/input.tar:ro" -v "$scratch:/output:rw" \
     --entrypoint sh "$helper_image" -ec \
-    'ulimit -f 256; tar -xOf /input.tar ./lares_state.dump | pg_restore --data-only --table=schema_migrations -f - > /output/schema-migrations.copy' \
+    'ulimit -f 512; tar -xOf /input.tar ./lares_state.dump | pg_restore --data-only --table=schema_migrations -f - > /output/schema-migrations.copy; for db in $(tar -tf /input.tar | sed -n "s#^\\./\\([A-Za-z0-9_-]*\\)\\.dump\$#\\1#p"); do tar -xOf /input.tar "./$db.dump" | pg_restore --list > "/output/database-toc/$db.toc"; done' \
     >/dev/null 2>&1 || helper_status=$?
-  if [ "$helper_status" -ne 0 ] || [ ! -s "$ledger_file" ]; then
+  if [ "$helper_status" -ne 0 ] || [ ! -s "$ledger_file" ] || [ ! -s "$toc_dir/lares_state.toc" ]; then
     rm -rf "$scratch"
     die "the source schema could not be read by the pinned local helper image; no database was contacted." "$EX_USAGE"
   fi
@@ -203,9 +206,17 @@ cmd_import_preview() {
     rm -rf "$scratch"
     die "the source migration ledger exceeded its safe size limit; no database was contacted." "$EX_USAGE"
   fi
+  local toc_files toc_file toc_bytes
+  toc_files=("$toc_dir"/*.toc)
+  [ ${#toc_files[@]} -gt 0 ] || { rm -rf "$scratch"; die "the source schema metadata was empty; no database was contacted." "$EX_USAGE"; }
+  for toc_file in "${toc_files[@]}"; do
+    toc_bytes=$(wc -c < "$toc_file" | tr -d '[:space:]')
+    case "$toc_bytes" in ''|*[!0-9]*) rm -rf "$scratch"; die "the source schema metadata was invalid; no database was contacted." "$EX_USAGE" ;; esac
+    if [ "$toc_bytes" -gt 262144 ]; then rm -rf "$scratch"; die "the source schema metadata exceeded its safe size limit; no database was contacted." "$EX_USAGE"; fi
+  done
   local run_status=0
-  engine_run --network-none --ro "$archive" --ro "$ledger_file" \
-    bin/import-preview.ts --archive "$archive" --ledger-copy "$ledger_file" || run_status=$?
+  engine_run --network-none --ro "$archive" --ro "$ledger_file" --ro "$toc_dir" \
+    bin/import-preview.ts --archive "$archive" --ledger-copy "$ledger_file" --database-toc-dir "$toc_dir" || run_status=$?
   rm -rf "$scratch"
   return "$run_status"
 }

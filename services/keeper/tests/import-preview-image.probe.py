@@ -30,12 +30,25 @@ PHASES = {
 FAILURES = {"command-failed", "command-timeout", "command-execution-failed", "assertion-failed", "unexpected-output", "cleanup-failed"}
 DIAGNOSTIC_CATEGORIES = {
     "command-nonzero", "command-timeout", "command-execution-failed", "unsupported-source-release",
-    "source-schema-mismatch", "archive-refused", "helper-read-failed", "inspection-failed",
+    "source-schema-mismatch", "source-schema-inventory-mismatch", "archive-refused", "helper-read-failed", "inspection-failed",
     "output-invalid", "output-assertion-failed", "unknown-output",
 }
+INSPECTION_CHECKS = {
+    "toc_too_large", "toc_encoding_invalid", "toc_archive_header_missing", "toc_selection_header_missing",
+    "toc_entry_format_invalid", "toc_tokenization_failed", "toc_entry_tokens_empty", "toc_security_wrapper_invalid",
+    "toc_comment_acl_wrapper_invalid", "toc_wrapped_object_missing", "toc_wrapped_schema_invalid",
+    "toc_schema_declaration_invalid", "toc_default_acl_invalid", "toc_namespace_object_incomplete",
+    "toc_global_object_invalid", "toc_object_type_unsupported", "toc_schema_identifier_invalid",
+    "toc_explicit_schema_duplicate", "toc_entries_missing", "parser_internal_failure",
+    "toc_read_failed", "parser_unavailable", "parser_launch_failed", "parser_output_limit", "parser_signaled",
+    "parser_exit_unclassified", "parser_output_json_invalid", "parser_output_shape_invalid",
+    "parser_schema_value_invalid", "parser_schema_order_invalid", "schema_list_mismatch",
+}
+INSPECTION_MARKER = b"lares import-preview inspectionCheck="
 KNOWN_ERROR_MARKERS = {
     b"lares import-preview: refused (unsupported_source_release); no import data was written.": "unsupported-source-release",
     b"lares import-preview: refused (source_schema_mismatch); no import data was written.": "source-schema-mismatch",
+    b"lares import-preview: refused (source_schema_inventory_mismatch); no import data was written.": "source-schema-inventory-mismatch",
     b"lares import-preview: refused (unreadable_archive); no import data was written.": "archive-refused",
     b"the source schema could not be read by the pinned local helper image; no database was contacted.": "helper-read-failed",
     b"this release has no pinned Keeper image for the inspection command.": "inspection-failed",
@@ -64,6 +77,7 @@ def fresh_proof() -> dict[str, object]:
         "failureKind": None,
         "commandExitCode": None,
         "failureCategory": None,
+        "inspectionCheck": None,
         "checks": dict(CHECKS),
         "unmappedCategoryCount": 22,
         "cleanupOkay": False,
@@ -72,7 +86,7 @@ def fresh_proof() -> dict[str, object]:
 
 def proof_is_safe(proof: object) -> bool:
     if not isinstance(proof, dict) or set(proof) != {
-        "format", "status", "stage", "phase", "failureKind", "commandExitCode", "failureCategory", "checks",
+        "format", "status", "stage", "phase", "failureKind", "commandExitCode", "failureCategory", "inspectionCheck", "checks",
         "unmappedCategoryCount", "cleanupOkay"
     }:
         return False
@@ -89,6 +103,9 @@ def proof_is_safe(proof: object) -> bool:
         return False
     category = proof["failureCategory"]
     if category is not None and (not isinstance(category, str) or category not in DIAGNOSTIC_CATEGORIES):
+        return False
+    inspection_check = proof["inspectionCheck"]
+    if inspection_check is not None and (not isinstance(inspection_check, str) or inspection_check not in INSPECTION_CHECKS):
         return False
     if proof["unmappedCategoryCount"] != len(CATEGORIES):
         return False
@@ -112,6 +129,7 @@ def set_phase(proof: dict[str, object], path: pathlib.Path, phase: str) -> None:
     proof["phase"] = phase
     proof["commandExitCode"] = None
     proof["failureCategory"] = None
+    proof["inspectionCheck"] = None
     atomic_proof(path, proof)
 
 
@@ -156,6 +174,20 @@ def classify_installed_failure(stdout: bytes, stderr: bytes) -> str:
     return "unknown-output"
 
 
+def inspection_check_from_stderr(stderr: bytes) -> str | None:
+    lines = [line for line in stderr.splitlines() if line.startswith(INSPECTION_MARKER)]
+    if len(lines) != 1:
+        return None
+    prefix, separator, value = lines[0].partition(b"=")
+    if prefix != INSPECTION_MARKER.removesuffix(b"=") or not separator:
+        return None
+    try:
+        check = value.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    return check if check in INSPECTION_CHECKS else None
+
+
 def run_installed(argv: list[str], *, env: dict[str, str], timeout: int,
                   proof: dict[str, object], proof_path: pathlib.Path) -> subprocess.CompletedProcess[bytes]:
     try:
@@ -175,6 +207,7 @@ def run_installed(argv: list[str], *, env: dict[str, str], timeout: int,
         proof["commandExitCode"] = max(0, min(255, result.returncode))
         proof["failureKind"] = "command-failed"
         proof["failureCategory"] = classify_installed_failure(result.stdout or b"", result.stderr or b"")
+        proof["inspectionCheck"] = inspection_check_from_stderr(result.stderr or b"")
         atomic_proof(proof_path, proof)
         raise ProbeFailure("command-failed")
     return result
@@ -187,6 +220,8 @@ def self_test() -> None:
     assert not proof_is_safe({**proof, "rawStderr": "SECRET_SENTINEL"})
     assert not proof_is_safe({**proof, "failureKind": "SECRET_SENTINEL"})
     assert not proof_is_safe({**proof, "failureCategory": "SECRET_SENTINEL"})
+    assert not proof_is_safe({**proof, "inspectionCheck": "SECRET_SENTINEL"})
+    assert proof["inspectionCheck"] is None
     assert not proof_is_safe({**proof, "status": ["SECRET_SENTINEL"]})
     assert refusal_is_redacted(78, b"lares: the export archive failed inspection; the pinned helper was not run.\n",
                                b"", b"SECRET_SENTINEL")
@@ -250,6 +285,72 @@ def self_test() -> None:
         parsed = json.loads(installed_path.read_text(encoding="utf-8"))
         assert parsed["stage"] == "installed-command" and parsed["phase"] == "installed-preview"
         assert parsed["commandExitCode"] == 78 and parsed["failureCategory"] == "source-schema-mismatch"
+        assert parsed["inspectionCheck"] is None
+
+        inspected = fresh_proof()
+        inspected["stage"] = "installed-command"
+        inspected["phase"] = "installed-preview"
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "subprocess.run", return_value=subprocess.CompletedProcess(
+                ["hidden"], 78, stdout=b"", stderr=(
+                    b"lares import-preview: refused (source_schema_inventory_mismatch); no import data was written.\n"
+                    b"lares import-preview inspectionCheck=toc_schema_identifier_invalid\n"
+                    b"SECRET_SENTINEL"
+                )
+            )
+        ):
+            try:
+                run_installed(["hidden"], env={}, timeout=1, proof=inspected, proof_path=installed_path)
+                raise AssertionError("mocked installed command should fail")
+            except ProbeFailure as failure:
+                assert failure.kind == "command-failed"
+        saved = installed_path.read_text(encoding="utf-8")
+        parsed = json.loads(saved)
+        assert parsed["inspectionCheck"] == "toc_schema_identifier_invalid"
+        assert "SECRET_SENTINEL" not in saved
+
+        for marker in (
+            b"lares import-preview inspectionCheck=unknown\n",
+            b"lares import-preview inspectionCheck=toc_schema_identifier_invalid extra\n",
+            b"lares import-preview inspectionCheck=toc_schema_identifier_invalid\n"
+            b"lares import-preview inspectionCheck=toc_object_type_unsupported\n",
+        ):
+            malformed = fresh_proof()
+            malformed["stage"] = "installed-command"
+            malformed["phase"] = "installed-preview"
+            with __import__("unittest.mock", fromlist=["patch"]).patch(
+                "subprocess.run", return_value=subprocess.CompletedProcess(
+                    ["hidden"], 78, stdout=b"", stderr=marker
+                )
+            ):
+                try:
+                    run_installed(["hidden"], env={}, timeout=1, proof=malformed, proof_path=installed_path)
+                    raise AssertionError("mocked installed command should fail")
+                except ProbeFailure:
+                    pass
+            parsed = json.loads(installed_path.read_text(encoding="utf-8"))
+            assert parsed["inspectionCheck"] is None
+
+        schema_inventory = fresh_proof()
+        schema_inventory["stage"] = "installed-command"
+        schema_inventory["phase"] = "installed-preview"
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "subprocess.run", return_value=subprocess.CompletedProcess(
+                ["hidden"], 78, stdout=b"", stderr=(
+                    b"lares import-preview: refused (source_schema_inventory_mismatch); "
+                    b"no import data was written. SECRET_SENTINEL"
+                )
+            )
+        ):
+            try:
+                run_installed(["hidden"], env={}, timeout=1, proof=schema_inventory, proof_path=installed_path)
+                raise AssertionError("mocked installed command should fail")
+            except ProbeFailure as failure:
+                assert failure.kind == "command-failed"
+        saved = installed_path.read_text(encoding="utf-8")
+        parsed = json.loads(saved)
+        assert parsed["failureCategory"] == "source-schema-inventory-mismatch"
+        assert "SECRET_SENTINEL" not in saved and "source_schema_inventory_mismatch" not in saved
 
         unknown = fresh_proof()
         unknown["stage"] = "installed-command"
@@ -410,10 +511,26 @@ def archive_from_dump(dump_path: pathlib.Path, destination: pathlib.Path, *, uns
     manifest = {
         "engineVersion": "2026-10-21-rc.12",
         "date": "2026-10-21T00:00:00Z",
+        "inventoryVersion": 1,
         "files": [
             {"name": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
             for name, data in sorted(files.items())
         ],
+        "sourceInventory": {
+            "databaseCoverage": "all-nontemplate-databases",
+            "databases": [
+                {"name": name, "member": name + ".dump", "sha256": hashlib.sha256(files[name + ".dump"]).hexdigest(), "schemas": ["public"]}
+                for name in ("lares_state", "postgres")
+            ],
+            "dataRoots": [{"storeKind": "agent-definitions", "disposition": "included", "member": "agents.tar", "sha256": hashlib.sha256(files["agents.tar"]).hexdigest()}],
+            "dataSelection": "configured",
+            "absentDataRoots": [{"storeKind": "installation-inventory", "disposition": "absent"}],
+            "vaultRepositories": [],
+            "vaultSelection": "configured-empty",
+            "supportFiles": [{"kind": "postgres-roles-without-passwords", "member": "globals.sql", "sha256": hashlib.sha256(files["globals.sql"]).hexdigest()}],
+            "protectedMaterial": {"credentialFiles": "excluded", "encryptedDatabaseCredentials": "may-be-present", "ordinaryImport": "blocked"},
+            "unverified": ["stores outside the configured export paths", "database table and row contents beyond the declared schema names", "source-version compatibility and identity mappings"],
+        },
     }
     files["manifest.json"] = json.dumps(manifest, separators=(",", ":")).encode()
     with tarfile.open(destination, "w") as outer:
@@ -528,6 +645,11 @@ def main() -> int:
         require_installed([entry.get("category") for entry in categories] == CATEGORIES, proof, proof_path)
         require_installed(all(entry.get("status") == "not-inventoried" and entry.get("count") is None
                               and entry.get("checksum") is None for entry in categories), proof, proof_path)
+        inventory = result.get("sourceInventory")
+        require_installed(isinstance(inventory, dict)
+                          and [item.get("name") for item in inventory.get("databases", [])] == ["lares_state", "postgres"]
+                          and all(item.get("schemas") == ["public"] for item in inventory.get("databases", []))
+                          and inventory.get("protectedMaterial", {}).get("ordinaryImport") == "blocked", proof, proof_path)
         require_installed("RAW_REFUSAL_SENTINEL" not in valid.stdout.decode("utf-8", "replace"), proof, proof_path)
         events_before_refusal = boundary_events.read_text(encoding="utf-8").splitlines()
         require(events_before_refusal.count("helper-safe") == 1)

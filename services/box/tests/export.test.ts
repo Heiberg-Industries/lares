@@ -64,7 +64,7 @@ function makeBareVault(bareDir: string, seed: string) {
 // list (one per line, matching `-tAc`'s output), pg_dumpall prints fixture roles,
 // and pg_dump prints deterministic fixture bytes for every database except
 // `failDb`, which it fails for — simulating a database that cannot be dumped.
-function writeDockerStub(dbs: string[], failDb?: string) {
+function writeDockerStub(dbs: string[], failDb?: string, tocLines = ["SCHEMA - public fixture_owner"]) {
   writeFileSync(
     join(binDir, "docker"),
     `#!/usr/bin/env python3
@@ -72,6 +72,7 @@ import sys
 a = sys.argv
 dbs = ${JSON.stringify(dbs)}
 fail_db = ${JSON.stringify(failDb ?? "")}
+toc_lines = ${JSON.stringify(tocLines)}
 with open(${JSON.stringify(dockerLog)}, "a") as log:
     log.write(" ".join(a[1:]) + "\\n")
 if a[1:3] == ["compose", "-f"] and "config" in a:
@@ -80,6 +81,11 @@ elif "pg_isready" in a:
     sys.exit(0)
 elif "pg_dumpall" in a:
     print("-- fixture role definitions; hashes excluded")
+elif "pg_restore" in a:
+    print("; Archive created at fixture")
+    print("; Selected TOC Entries:")
+    for index, line in enumerate(toc_lines, 3):
+        print(f"{index}; 1259 16385 {line}")
 elif "pg_dump" in a:
     db = a[-1]
     if fail_db and db == fail_db:
@@ -91,6 +97,7 @@ elif "psql" in a:
 `,
     { mode: 0o755 },
   );
+  writeFileSync(join(binDir, "timeout"), "#!/bin/bash\n[ \"$1\" = 120 ] || exit 125\nshift\nexec \"$@\"\n", { mode: 0o755 });
 }
 
 function baseEnv(overrides: Record<string, string> = {}) {
@@ -154,15 +161,16 @@ beforeEach(() => {
 
 afterEach(() => roots.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
-it("produces one archive with a dump per database, both vault bundles, both data tars and a manifest", () => {
-  writeDockerStub(["dbone", "dbtwo"]);
+it("produces one archive with a dump per database, both vault bundles, both data tars and a source inventory manifest", () => {
+  writeDockerStub(["lares_state", "postgres"], undefined, ["TABLE public schema_migrations fixture_owner", "TABLE DATA public schema_migrations fixture_owner"]);
   const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
   expect(result.status).toBe(0);
   const calls = readFileSync(dockerLog, "utf8");
   expect(calls).toContain(`-v ${operatorPasswordFile}:/run/secrets/database-operator:ro`);
   expect(calls).toContain("pg_dumpall -U lares_operator -l postgres --globals-only --no-role-passwords");
-  expect(calls).toContain("pg_dump -U lares_operator --create --format=custom dbone");
-  expect(calls).toContain("pg_dump -U lares_operator --create --format=custom dbtwo");
+  expect(calls).toContain("pg_dump -U lares_operator --create --format=custom lares_state");
+  expect(calls).toContain("pg_dump -U lares_operator --create --format=custom postgres");
+  expect(calls).toContain("pg_restore --list -");
   expect(calls).toContain("run --rm -i --network host");
   expect(calls).not.toContain("compose exec");
   expect(calls).not.toContain("/etc/lares/secrets:");
@@ -173,8 +181,8 @@ it("produces one archive with a dump per database, both vault bundles, both data
   const entries = execFileSync("tar", ["-tf", finalPath], { encoding: "utf8" });
   for (const name of [
     "globals.sql",
-    "dbone.dump",
-    "dbtwo.dump",
+    "lares_state.dump",
+    "postgres.dump",
     "vault1.bundle",
     "vault2.bundle",
     "data-lares.tar",
@@ -188,28 +196,55 @@ it("produces one archive with a dump per database, both vault bundles, both data
   roots.push(extractDir);
   execFileSync("tar", ["-xf", finalPath, "-C", extractDir]);
   expect(readFileSync(join(extractDir, "globals.sql"), "utf8")).not.toMatch(/password|md5|scram/i);
-  const manifest = JSON.parse(readFileSync(join(extractDir, "manifest.json"), "utf8"));
+  const manifest: any = JSON.parse(readFileSync(join(extractDir, "manifest.json"), "utf8"));
   expect(manifest.engineVersion).toBe("9.9.9-fixture");
+  expect(manifest.inventoryVersion).toBe(1);
   expect(typeof manifest.date).toBe("string");
   const byName = new Map(manifest.files.map((f: any) => [f.name, f]));
-  for (const name of ["globals.sql", "dbone.dump", "dbtwo.dump", "vault1.bundle", "data-lares.tar"]) {
+  for (const name of ["globals.sql", "lares_state.dump", "postgres.dump", "vault1.bundle", "data-lares.tar"]) {
     const entry = byName.get(name) as any;
     expect(entry, `manifest is missing ${name}`).toBeTruthy();
     expect(typeof entry.size).toBe("number");
     expect(entry.size).toBeGreaterThan(0);
     expect(entry.sha256).toMatch(/^[0-9a-f]{64}$/);
   }
+  expect(manifest.sourceInventory.databases).toEqual([
+    { name: "lares_state", member: "lares_state.dump", sha256: (byName.get("lares_state.dump") as any).sha256, schemas: ["public"] },
+    { name: "postgres", member: "postgres.dump", sha256: (byName.get("postgres.dump") as any).sha256, schemas: ["public"] },
+  ]);
+  expect(manifest.sourceInventory.dataRoots.map((store: any) => [store.storeKind, store.disposition, store.member])).toEqual([
+    ["configured-data-directory", "included", "data-lares.tar"],
+    ["configured-data-directory", "included", "data-taste.tar"],
+  ]);
+  expect(manifest.sourceInventory.dataSelection).toBe("configured");
+  expect(manifest.sourceInventory.protectedMaterial).toEqual({
+    credentialFiles: "excluded", encryptedDatabaseCredentials: "may-be-present", ordinaryImport: "blocked",
+  });
+  expect(JSON.stringify(manifest)).not.toContain(dataLares);
+  expect(JSON.stringify(manifest)).not.toContain(dataTaste);
+});
+
+it("records an empty dump-observed schema list when valid TOC metadata has no schema evidence", () => {
+  writeDockerStub(["lares_state", "postgres"], undefined, ["DATABASE - lares_state fixture_owner"]);
+  const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
+  expect(result.status).toBe(0);
+  const archive = join(exportDir, `lares-export-${todayUTC()}.tar`);
+  const extractDir = mkdtempSync(join(tmpdir(), "export-empty-schema-extract-"));
+  roots.push(extractDir);
+  execFileSync("tar", ["-xf", archive, "-C", extractDir]);
+  const manifest: any = JSON.parse(readFileSync(join(extractDir, "manifest.json"), "utf8"));
+  expect(manifest.sourceInventory.databases.map((database: any) => database.schemas)).toEqual([[], []]);
 });
 
 it("removes the work dir after a successful export", () => {
-  writeDockerStub(["dbone"]);
+  writeDockerStub(["lares_state"]);
   const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
   expect(result.status).toBe(0);
   expect(readdirSync(workdirRoot)).toEqual([]);
 });
 
 it("keeps a verified export when another export runs on the same day", () => {
-  writeDockerStub(["dbone"]);
+  writeDockerStub(["lares_state"]);
   const first = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
   expect(first.status).toBe(0);
   const firstPath = join(exportDir, `lares-export-${todayUTC()}.tar`);
@@ -259,7 +294,7 @@ describe("hard refusals — a configured path never leaves the box", () => {
 });
 
 it("refuses a nested .env file found deeper inside a data path, without exporting it", () => {
-  writeDockerStub(["dbone"]);
+  writeDockerStub(["lares_state"]);
   mkdirSync(join(dataLares, "nested", "deep"), { recursive: true });
   writeFileSync(join(dataLares, "nested", "deep", ".env"), "SECRET=1");
   const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
@@ -270,7 +305,7 @@ it("refuses a nested .env file found deeper inside a data path, without exportin
 });
 
 it("refuses a nested *.age file found deeper inside a data path, without exporting it", () => {
-  writeDockerStub(["dbone"]);
+  writeDockerStub(["lares_state"]);
   mkdirSync(join(dataTaste, "nested"), { recursive: true });
   writeFileSync(join(dataTaste, "nested", "identity.age"), "age-ciphertext");
   const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
@@ -281,7 +316,7 @@ it("refuses a nested *.age file found deeper inside a data path, without exporti
 });
 
 it("refuses a nested secrets directory on the current installation layout", () => {
-  writeDockerStub(["dbone"]);
+  writeDockerStub(["lares_state"]);
   mkdirSync(join(dataLares, "secrets"));
   writeFileSync(join(dataLares, "secrets", "agent-gateway-key"), "fixture-only");
   const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });

@@ -150,7 +150,7 @@ Inside that one `.tar` are:
 | `<database>.dump` | one dump per database, Postgres custom format |
 | `<vault>.bundle` | one git bundle per vault, holding every branch and tag |
 | `<directory>.tar` | one tar per data directory |
-| `manifest.json` | the engine version, the date, and every file's name, size and `sha256` |
+| `manifest.json` | the engine version, date, each file's name, size and `sha256`, and the fresh source-store inventory |
 
 No plaintext credential file is inside. Database dumps and agent definitions are
 still sensitive; protect and encrypt the archive before off-box transfer. Saved
@@ -350,15 +350,27 @@ those dependencies and omissions reviewable alongside the manifest, or keep the 
 schema validation or a `reconciled` label alone is not evidence of complete mapping. This slice
 records that requirement without changing the contract or runtime behavior.
 
-An rc.12 export manifest records archive member names, sizes, and whole-member checksums, but not
-the configured source directory roots or a complete per-file inventory. Those settings can be
-customized, Vault bundles are optional, and data archives are validated only for safe paths and
-regular-file counts by the current preview. Therefore an old manifest cannot show whether a
-missing file store was intentionally absent or left out. Before a complete inventory can be
-claimed, the operator must provide a checked declaration of the databases, runtime schemas,
-configured data roots, Vault repositories, and separately protected credential material that
-were in scope. This is a prerequisite for a future inventory implementation; this runbook does
-not change the export format or assume that declaration exists.
+Fresh exports write `inventoryVersion: 1` and `sourceInventory` into `manifest.json`. The exporter
+binds every database dump, data archive, Vault bundle and globals file to its member checksum.
+For each database dump it records dump-observed schema names from explicit schema entries
+and recognized object namespace fields in `pg_restore --list`; a valid list may be empty and does
+not prove that the source catalog has no schemas. The preview independently reads that metadata
+from the archived dump and refuses a mismatch. It does not run archived SQL or read row values
+for this check. The inventory records configured data-root kinds,
+whether that configured list was empty, known absent optional roots, whether the Vault list was
+empty, and that encrypted credentials may be present in database dumps while credential files
+are excluded. Raw source paths and credential values are not included.
+
+This declaration covers only the database and file stores that the exporter observed from its
+database list and configured path lists. A store outside those lists remains unverified. Schema
+names do not establish table or row coverage, compatibility with an older source release, or
+identity mappings. Protected credentials remain blocked from ordinary import. The preview keeps
+all 22 application categories `not-inventoried` and import blocked until record-level mapping is
+complete.
+
+An older archive has no verifiable inventory declaration. `lares import-preview` refuses it;
+there is no sidecar declaration path. Make a fresh export with an exporter that writes this
+inventory. Freshness alone does not prove compatibility with its source schema.
 
 Until every category has actual counts and checksums, every source table/archive has a reviewed
 disposition, all identities and dependencies map uniquely, protected credentials have a separate
