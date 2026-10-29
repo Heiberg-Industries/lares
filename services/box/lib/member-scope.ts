@@ -131,6 +131,7 @@ const BOX = "services/box/sql";
 const DREAM_SCHEMA = `${BOX}/026_dream_schema.sql`;
 
 export const MEMBER_SCOPE: readonly ScopedTable[] = [
+  { table: "private_metadata_devices", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/034_private_metadata_devices.sql`, reason: "Member-bound private metadata upload and lookup credentials; deletion revokes the device and removes its hashes." },
   { table: "console_vault_source_captures", scope: "member", column: "member_id", idKind: "registry", createdBy: `${BOX}/022_console_vault_source_history.sql`, reason: "Immutable conversation source dependencies; erasure refuses retained captures until history reconciliation is implemented." },
   { table: "budget_accounts", scope: "member", column: "live_member_id", idKind: "registry", createdBy: `${BOX}/011_budget_admission.sql`, reason: "Retire authority and erase member metadata, retaining numeric liability and keyed canonical/provider replay suppression. Installation accounts name no person." },
   { table: "budget_windows", scope: "member", column: "live_member_id", idKind: "registry", createdBy: `${BOX}/011_budget_admission.sql`, reason: "Erase the member link; retain immutable financial windows so old liabilities cannot reset." },

@@ -25,6 +25,7 @@ import { AgentLifecycle } from "../lib/lifecycle.js";
 import { keeperFinancialPool, keeperOutsideCustodyPool, keeperPool, loadKeeperConfig } from "../lib/config.js";
 import { loadBoundOutsideCustodyKey, OutsideCustodyStore } from "../lib/outside-custody.js";
 import { registerHumanOutsideDiscoveryActions } from "../lib/outside-discovery-actions.js";
+import { registerPrivateMetadataActions } from "../lib/private-metadata.js";
 import { auditor } from "../lib/audit.js";
 import { serve } from "../lib/socket-server.js";
 import {serveGatewayBudget} from '../lib/gateway-budget-server.js';
@@ -114,6 +115,7 @@ async function main(): Promise<void> {
             outsidePool.on('error',()=>{});
             outsideCustody=new OutsideCustodyStore(outsidePool,outsideKey,{mainPool:pool,lifecycle});
             registerHumanOutsideDiscoveryActions(outsideCustody);
+            registerPrivateMetadataActions(outsideCustody);
         }finally{outsideKey.fill(0);}
     }
     const credentialStore = new PgCredentialStore(pool);

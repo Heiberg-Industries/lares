@@ -12,6 +12,9 @@ export async function middleware(req: NextRequest) {
   if (req.method === "POST" && /^\/api\/doors\/[a-z][a-z0-9-]{1,30}\/(slack|telegram)\/events$/.test(req.nextUrl.pathname)) return NextResponse.next();
   // Exact machine RPC paths only. Keeper verifies the original HMAC over exact bytes.
   if(req.method==='POST'&&!req.nextUrl.search&&/^\/v1\/gateway-budget\/(admit|settle)$/.test(req.nextUrl.pathname))return NextResponse.next();
+  // Exact bearer-authenticated server validator. The handler verifies the bearer before
+  // relaying to Keeper; browser mutations retain the origin and session-cookie checks below.
+  if(req.method==='POST'&&!req.nextUrl.search&&req.nextUrl.pathname==='/api/private-metadata/credential')return NextResponse.next();
   // SameSite cookies still accompany requests from other origins on the same site.
   // Protect raw routes as well as server actions; never trust forwarded host headers
   // to decide which browser origin may mutate data. OAuth callbacks use GET.

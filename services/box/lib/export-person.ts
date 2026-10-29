@@ -163,6 +163,7 @@ const ALWAYS_WITHHELD: Readonly<Record<string, readonly string[]>> = {
   oauth_tokens: ["refresh_token_enc"],
   connected_account_credentials: ["oauth_token_id"],
   outside_custody_revisions: ["nonce", "ciphertext"],
+  private_metadata_devices: ["upload_token_hash", "read_token_hash"],
 };
 
 /** Never an output directory: a secrets mount or the system's own configuration. */

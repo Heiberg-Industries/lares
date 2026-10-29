@@ -465,6 +465,31 @@ const SEED_ROWS: SeedRow[] = [
     ];
   }),
 
+  // Member-bound device rows participate in erasure inventory just like the encrypted
+  // custody rows they reference. These are opaque synthetic records, never usable tokens.
+  ...[FIXTURE_OWNER, FIXTURE_SECOND].map((member, index) => {
+    const accountId = `33333333-3333-4333-8333-${String(index + 1).padStart(12, "0")}`;
+    const connectedAccountId = `fixture-metadata-account-${index}`;
+    const resourceId = `fixture-metadata-resource-${index}`;
+    const deviceId = `55555555-5555-4555-8555-${String(index + 1).padStart(12, "0")}`;
+    return row("private_metadata_devices", "owner_member_id", member,
+      `WITH connected AS (
+         INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status,generation)
+         VALUES($1,$2,'fixture','https://example.invalid','fixture-subject','Fixture','ok',1) RETURNING id
+       ), resource AS (
+         INSERT INTO connected_resource_bindings(id,owner_member_id,connected_account_id,resource_kind,external_id,provider_label)
+         SELECT $3,$2,id,'fixture','fixture-dataset','Fixture' FROM connected RETURNING id
+       )
+       INSERT INTO private_metadata_devices(id,owner_member_id,connected_account_id,dataset_resource_id,dataset_id,agent_name,
+         connection_name,custody_account_id,descriptor_fingerprint,descriptor_json,consent_operation_id,consent_session_id,consent_json,
+         upload_token_hash,read_token_hash,generation,connected_account_generation,state)
+       SELECT $4,$2,connected.id,resource.id,'fixture-dataset','fixture-agent','mac-private-metadata',$5,decode(repeat('a',64),'hex'),
+         '{"fixture":true}'::jsonb,$6,'fixture-session','{"fixture":true}'::jsonb,decode(repeat('b',64),'hex'),
+         decode(repeat('c',64),'hex'),1,1,'revoked' FROM connected,resource`,
+      [connectedAccountId, member, resourceId, deviceId, accountId,
+        `66666666-6666-4666-8666-${String(index + 1).padStart(12, "0")}`]);
+  }),
+
   ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("console_session_bindings", "member_id", member,
     `INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision,policy_revision) VALUES('fixture-agent','11111111-1111-1111-1111-111111111111',$1,$2,$3,$4,1,$5,2)`,
     [`console-session-${index}`,member,String(index+1).repeat(43),`console-place-${index}`,PRIVATE_CONSOLE_SURFACE_REVISION])),

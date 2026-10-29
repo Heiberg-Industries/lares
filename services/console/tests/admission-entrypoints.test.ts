@@ -51,6 +51,15 @@ describe("all console member entry points guard before reading data", () => {
   for (const file of files(join(app, "api")).filter(p => p.endsWith("/route.ts"))) {
     const path = relative(app, file);
     if (path === "api/auth/[...route]/route.ts") continue; // OIDC, state and revocation tests exercise this public flow.
+    if (path === "api/private-metadata/credential/route.ts") {
+      it("private metadata validator uses its exact bearer-only middleware boundary", () => {
+        const source = readFileSync(file, "utf8");
+        expect(source).toContain("export const POST = POSTHandler");
+        expect(source).toContain("private-metadata.credential.validate");
+        expect(source).not.toContain("memberId");
+      });
+      continue;
+    }
     if (path === "api/doors/[name]/[kind]/events/route.ts") {
       it("platform webhook delegates to its original platform authentication boundary", () => {
         expect(readFileSync(file, "utf8")).toContain("return forwardDoor(request,name,kind");

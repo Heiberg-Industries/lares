@@ -229,7 +229,7 @@ async function countWhere(q: Queryable, sql: string, params: unknown[] = []): Pr
   return Number(rows[0]?.n ?? 0);
 }
 
-const OUTSIDE_CUSTODY_TABLES = ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations"] as const;
+const OUTSIDE_CUSTODY_TABLES = ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations", "private_metadata_devices"] as const;
 const OUTSIDE_CUSTODY_FK_SHAPE_SQL = `
 WITH expected(child, child_columns, parent, parent_columns) AS (
   VALUES
@@ -239,6 +239,9 @@ WITH expected(child, child_columns, parent, parent_columns) AS (
     ('outside_custody_revisions', ARRAY['account_id','owner_member_id']::text[], 'outside_custody_accounts', ARRAY['account_id','owner_member_id']::text[]),
     ('outside_custody_operations', ARRAY['owner_member_id']::text[], 'users', ARRAY['id']::text[]),
     ('outside_custody_operations', ARRAY['account_id','owner_member_id']::text[], 'outside_custody_accounts', ARRAY['account_id','owner_member_id']::text[]),
+    ('private_metadata_devices', ARRAY['owner_member_id']::text[], 'users', ARRAY['id']::text[]),
+    ('private_metadata_devices', ARRAY['connected_account_id','owner_member_id']::text[], 'connected_accounts', ARRAY['id','owner_member_id']::text[]),
+    ('private_metadata_devices', ARRAY['custody_account_id','owner_member_id']::text[], 'outside_custody_accounts', ARRAY['account_id','owner_member_id']::text[]),
     ('agent_access', ARRAY['owner_member_id']::text[], 'users', ARRAY['id']::text[])
 )
 SELECT e.child, e.child_columns, e.parent, e.parent_columns, c.conname,
@@ -288,7 +291,7 @@ async function hasExpectedOutsideCustodyForeignKeys(q: Queryable): Promise<boole
     WHERE c.conrelid='public.outside_custody_operations'::regclass AND c.contype='f'
       AND a.attnum=ANY(c.conkey)
   ) AS has_fk`);
-  return rows.length === 7 && actor.rows[0]?.has_fk === false && rows.every((row) => row.conname !== null &&
+  return rows.length === 10 && actor.rows[0]?.has_fk === false && rows.every((row) => row.conname !== null &&
     JSON.stringify(row.child_columns) === JSON.stringify(row.actual_child_columns) &&
     JSON.stringify(row.parent_columns) === JSON.stringify(row.actual_parent_columns) &&
     row.confdeltype === "c" && row.confupdtype === "a" && row.confmatchtype === "s" &&
