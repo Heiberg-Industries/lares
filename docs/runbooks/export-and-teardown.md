@@ -233,20 +233,36 @@ manifest, checksums, paths, nested data archives and source migration ledger:
 sudo lares import-preview "$ARCHIVE"
 ```
 
+The command accepts an optional explicit source-to-destination mapping file:
+
+```bash
+sudo lares import-preview "$ARCHIVE" --member-map ./member-map.json
+```
+
+The JSON file has `version: 1`, a `members` list, and an `organizations` list. Each list entry has
+only `sourceId` and `destinationId`. The preview validates IDs and uniqueness, but it does not
+check that a destination member or organisation exists or grant anyone authority. If the map is
+omitted or incomplete, the members category remains partial with the unresolved source IDs listed.
+The preview reports row counts and checksums for the pinned `users`, `orgs`, `org_member_policy`,
+and `user_aliases` source tables. It keeps names, emails, policy values, aliases, and raw rows out
+of its output. Alias records remain historical evidence, not verified provider identities.
+
 The preview accepts only the verified rc.12 source schema and identifies rc.13 as the destination.
 It uses a locally cached, digest-pinned database helper with network disabled; if that image is not
-already present, the command stops instead of downloading it. It does not connect to a database,
-write to the installation, or print archived rows. Its result is deliberately **blocked for import**:
-all authority-contract categories remain `not-inventoried` until the separate record and file
-mapping is complete. Keep the source and archive; this check is not approval to restore or erase.
+already present, the command stops instead of downloading it. It does not connect to a live
+database, write to the installation, or print archived row values. Its result is deliberately **blocked for import**:
+the members category is source-inventoried only when all four pinned tables decode and both maps are
+complete; otherwise it is partial. The other 21 categories remain `not-inventoried` until their
+record and file mappings are complete. Keep the source and archive; this check is not approval to
+restore or erase.
 
 ### 4g. Import mapping coverage contract (rc.12 to rc.13)
 
-This is the source and mapping boundary for a future read-only import plan. It does not change
-the installed command: `lares import-preview` remains an inspection-only result, all 22 import
-categories remain `not-inventoried`, and import remains blocked. The table below is a coverage
-contract for the verified source schema, not evidence that an archive has been completely
-inventoried or can be restored.
+This is the source and mapping boundary for a future read-only import plan. `lares import-preview`
+remains inspection-only and import remains blocked. It inventories the four listed members-source
+tables and applies only explicit member and organisation ID mappings; the other 21 categories
+remain `not-inventoried`. The table below is a coverage contract for the verified source schema,
+not evidence that an archive has been completely inventoried or can be restored.
 
 The accepted Box source is exactly `2026-10-21-rc.12`, whose `lares_state` migration ledger has
 these six files and checksums. The hashes match the SQL files committed here:
@@ -262,8 +278,9 @@ these six files and checksums. The hashes match the SQL files committed here:
 
 The 74 table names below are the exhaustive `public` table inventory declared by those six Box
 migrations, including `schema_migrations`. They say nothing about table rows. The export includes
-every non-template database, while the current helper reads only `schema_migrations` from
-`lares_state.dump`; extra database dumps are not known to be empty or compatible. The source
+every non-template database. The helper reads `schema_migrations` and only the four pinned members
+candidate tables from `lares_state.dump`; extra database dumps are not known to be empty or
+compatible. The source
 baseline also says that role workflow schemas and dream tables are created outside the Box
 migrations. The rc.12 release record identifies the chief-of-staff workflow upgrade, but the
 current preview does not validate those schema ledgers or inventory those rows. Treat other
@@ -347,8 +364,10 @@ The current `ImportManifest` schema can record category counts/checksums, source
 IDs, a provenance label, and protected-account transfer dispositions. It does not record
 per-record dependency edges or a reason for each unresolved omission. A future preview must make
 those dependencies and omissions reviewable alongside the manifest, or keep the plan blocked;
-schema validation or a `reconciled` label alone is not evidence of complete mapping. This slice
-records that requirement without changing the contract or runtime behavior.
+schema validation or a `reconciled` label alone is not evidence of complete mapping. The current
+members evidence reports dependency counts and explicit unresolved member/organisation IDs while
+keeping policy values and alias labels out of output. It does not grant capabilities or verify a
+destination account.
 
 Fresh exports write `inventoryVersion: 1` and `sourceInventory` into `manifest.json`. The exporter
 binds every database dump, data archive, Vault bundle and globals file to its member checksum.
@@ -364,9 +383,10 @@ are excluded. Raw source paths and credential values are not included.
 This declaration covers only the database and file stores that the exporter observed from its
 database list and configured path lists. A store outside those lists remains unverified. Schema
 names do not establish table or row coverage, compatibility with an older source release, or
-identity mappings. Protected credentials remain blocked from ordinary import. The preview keeps
-all 22 application categories `not-inventoried` and import blocked until record-level mapping is
-complete.
+identity mappings. Protected credentials remain blocked from ordinary import. The preview decodes
+only the four pinned members tables after verifying the fresh export metadata. The other 21
+application categories remain `not-inventoried`; incomplete member/org mappings keep the members
+category partial, and import remains blocked.
 
 An older archive has no verifiable inventory declaration. `lares import-preview` refuses it;
 there is no sidecar declaration path. Make a fresh export with an exporter that writes this

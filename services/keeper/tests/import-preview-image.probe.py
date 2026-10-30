@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,7 @@ FAILURES = {"command-failed", "command-timeout", "command-execution-failed", "as
 DIAGNOSTIC_CATEGORIES = {
     "command-nonzero", "command-timeout", "command-execution-failed", "unsupported-source-release",
     "source-schema-mismatch", "source-schema-inventory-mismatch", "archive-refused", "helper-read-failed", "inspection-failed",
+    "member-copy-refused",
     "output-invalid", "output-assertion-failed", "unknown-output",
 }
 INSPECTION_CHECKS = {
@@ -43,20 +45,33 @@ INSPECTION_CHECKS = {
     "toc_read_failed", "parser_unavailable", "parser_launch_failed", "parser_output_limit", "parser_signaled",
     "parser_exit_unclassified", "parser_output_json_invalid", "parser_output_shape_invalid",
     "parser_schema_value_invalid", "parser_schema_order_invalid", "schema_list_mismatch",
+    "member_copy_envelope_invalid", "unsupported_copy_format", "malformed_copy_data",
+    "copy_data_too_large", "copy_row_too_large", "copy_row_limit_exceeded",
+}
+MEMBER_COPY_REFUSALS = {
+    "member_copy_envelope_invalid", "unsupported_copy_format", "malformed_copy_data",
+    "copy_data_too_large", "copy_row_too_large", "copy_row_limit_exceeded",
 }
 INSPECTION_MARKER = b"lares import-preview inspectionCheck="
+MEMBER_REFUSAL_MARKER = b"lares import-preview: refused ("
 KNOWN_ERROR_MARKERS = {
     b"lares import-preview: refused (unsupported_source_release); no import data was written.": "unsupported-source-release",
     b"lares import-preview: refused (source_schema_mismatch); no import data was written.": "source-schema-mismatch",
     b"lares import-preview: refused (source_schema_inventory_mismatch); no import data was written.": "source-schema-inventory-mismatch",
     b"lares import-preview: refused (unreadable_archive); no import data was written.": "archive-refused",
+    b"lares import-preview: refused (member_copy_envelope_invalid); no import data was written.": "member-copy-refused",
+    b"lares import-preview: refused (unsupported_copy_format); no import data was written.": "member-copy-refused",
+    b"lares import-preview: refused (malformed_copy_data); no import data was written.": "member-copy-refused",
+    b"lares import-preview: refused (copy_data_too_large); no import data was written.": "member-copy-refused",
+    b"lares import-preview: refused (copy_row_too_large); no import data was written.": "member-copy-refused",
+    b"lares import-preview: refused (copy_row_limit_exceeded); no import data was written.": "member-copy-refused",
     b"the source schema could not be read by the pinned local helper image; no database was contacted.": "helper-read-failed",
     b"this release has no pinned Keeper image for the inspection command.": "inspection-failed",
 }
 CHECKS = {
     "syntheticCustomDump": False,
     "actualInstalledCommand": False,
-    "allCategoriesRemainUninventoried": False,
+    "nonMemberCategoriesRemainUninventoried": False,
     "unsafeArchiveRefusedAndRedacted": False,
     "helperRanOfflineWithReadOnlyInput": False,
     "scratchRemoved": False,
@@ -79,7 +94,7 @@ def fresh_proof() -> dict[str, object]:
         "failureCategory": None,
         "inspectionCheck": None,
         "checks": dict(CHECKS),
-        "unmappedCategoryCount": 22,
+        "unmappedCategoryCount": 21,
         "cleanupOkay": False,
     }
 
@@ -107,7 +122,7 @@ def proof_is_safe(proof: object) -> bool:
     inspection_check = proof["inspectionCheck"]
     if inspection_check is not None and (not isinstance(inspection_check, str) or inspection_check not in INSPECTION_CHECKS):
         return False
-    if proof["unmappedCategoryCount"] != len(CATEGORIES):
+    if proof["unmappedCategoryCount"] != len(CATEGORIES) - 1:
         return False
     checks = proof["checks"]
     return (isinstance(checks, dict) and set(checks) == set(CHECKS)
@@ -175,17 +190,31 @@ def classify_installed_failure(stdout: bytes, stderr: bytes) -> str:
 
 
 def inspection_check_from_stderr(stderr: bytes) -> str | None:
-    lines = [line for line in stderr.splitlines() if line.startswith(INSPECTION_MARKER)]
-    if len(lines) != 1:
+    lines = stderr.splitlines()
+    toc_lines = [line for line in lines if line.startswith(INSPECTION_MARKER)]
+    if toc_lines:
+        if len(toc_lines) != 1:
+            return None
+        prefix, separator, value = toc_lines[0].partition(b"=")
+        if prefix != INSPECTION_MARKER.removesuffix(b"=") or not separator:
+            return None
+        try:
+            check = value.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+        return check if check in INSPECTION_CHECKS else None
+
+    refusal_lines = [line for line in lines if MEMBER_REFUSAL_MARKER in line]
+    if len(refusal_lines) != 1:
         return None
-    prefix, separator, value = lines[0].partition(b"=")
-    if prefix != INSPECTION_MARKER.removesuffix(b"=") or not separator:
+    match = re.fullmatch(rb"lares import-preview: refused \(([^()\r\n]+)\); no import data was written\.", refusal_lines[0])
+    if match is None:
         return None
     try:
-        check = value.decode("ascii")
+        reason = match.group(1).decode("ascii")
     except UnicodeDecodeError:
         return None
-    return check if check in INSPECTION_CHECKS else None
+    return reason if reason in MEMBER_COPY_REFUSALS else None
 
 
 def run_installed(argv: list[str], *, env: dict[str, str], timeout: int,
@@ -216,7 +245,23 @@ def run_installed(argv: list[str], *, env: dict[str, str], timeout: int,
 def self_test() -> None:
     proof = fresh_proof()
     assert proof_is_safe(proof)
-    assert proof["unmappedCategoryCount"] == 22
+    assert proof["unmappedCategoryCount"] == 21
+    assert classify_installed_failure(
+        b"", b"lares import-preview: refused (member_copy_envelope_invalid); no import data was written."
+    ) == "member-copy-refused"
+    assert classify_installed_failure(
+        b"", b"lares import-preview: refused (member_copy_envelope_invalid extra); token=SECRET_SENTINEL"
+    ) == "unknown-output"
+    for reason in sorted(MEMBER_COPY_REFUSALS):
+        refusal = f"lares import-preview: refused ({reason}); no import data was written.".encode("ascii")
+        assert inspection_check_from_stderr(refusal) == reason
+        assert proof_is_safe({**proof, "inspectionCheck": reason})
+        assert inspection_check_from_stderr(refusal + b"\n" + refusal) is None
+        assert inspection_check_from_stderr(b"SECRET_SENTINEL" + refusal) is None
+        assert inspection_check_from_stderr(refusal + b" SECRET_SENTINEL") is None
+    assert inspection_check_from_stderr(
+        b"lares import-preview: refused (unknown_copy_error); no import data was written."
+    ) is None
     assert not proof_is_safe({**proof, "rawStderr": "SECRET_SENTINEL"})
     assert not proof_is_safe({**proof, "failureKind": "SECRET_SENTINEL"})
     assert not proof_is_safe({**proof, "failureCategory": "SECRET_SENTINEL"})
@@ -286,6 +331,28 @@ def self_test() -> None:
         assert parsed["stage"] == "installed-command" and parsed["phase"] == "installed-preview"
         assert parsed["commandExitCode"] == 78 and parsed["failureCategory"] == "source-schema-mismatch"
         assert parsed["inspectionCheck"] is None
+
+        member_copy = fresh_proof()
+        member_copy["stage"] = "installed-command"
+        member_copy["phase"] = "installed-preview"
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "subprocess.run", return_value=subprocess.CompletedProcess(
+                ["hidden"], 78, stdout=b"", stderr=(
+                    b"lares import-preview: refused (member_copy_envelope_invalid); no import data was written.\n"
+                    b"SECRET_SENTINEL"
+                )
+            )
+        ):
+            try:
+                run_installed(["hidden"], env={}, timeout=1, proof=member_copy, proof_path=installed_path)
+                raise AssertionError("mocked command should fail")
+            except ProbeFailure as failure:
+                assert failure.kind == "command-failed"
+        saved = installed_path.read_text(encoding="utf-8")
+        parsed = json.loads(saved)
+        assert parsed["failureCategory"] == "member-copy-refused"
+        assert parsed["inspectionCheck"] == "member_copy_envelope_invalid"
+        assert "SECRET_SENTINEL" not in saved
 
         inspected = fresh_proof()
         inspected["stage"] = "installed-command"
@@ -479,7 +546,27 @@ def migration_sql() -> str:
         "('%s', %d, '%s', TIMESTAMPTZ '2026-10-21 00:00:00+00', 'applied', 0, %d)"
         % (name, i, checksum, i) for i, (name, checksum) in enumerate(zip(names, checksums), 1)
     )
-    return """CREATE TABLE public.schema_migrations (
+    return """CREATE TABLE public.users (
+      id text PRIMARY KEY, display_name text NOT NULL, primary_email text,
+      created_at timestamptz NOT NULL, org_id text NOT NULL, org_role text NOT NULL
+    );
+    INSERT INTO public.users VALUES ('member-a', 'PRIVATE_NAME_SENTINEL', 'private@example.invalid',
+      TIMESTAMPTZ '2026-10-21 00:00:00+00', 'org-a', 'owner');
+    CREATE TABLE public.orgs (
+      id text PRIMARY KEY, display_name text NOT NULL, created_at timestamptz NOT NULL, domains text[] NOT NULL
+    );
+    INSERT INTO public.orgs VALUES ('org-a', 'PRIVATE_ORG_LABEL_SENTINEL', TIMESTAMPTZ '2026-10-21 00:00:00+00', ARRAY['example.invalid']);
+    CREATE TABLE public.org_member_policy (
+      user_id text PRIMARY KEY, allowed_capabilities text[] NOT NULL, may_create_agents boolean NOT NULL,
+      spend_cap_usd_month numeric NOT NULL
+    );
+    INSERT INTO public.org_member_policy VALUES ('member-a', ARRAY['agent:write'], true, 25.00);
+    CREATE TABLE public.user_aliases (
+      system text NOT NULL, alias text NOT NULL, user_id text NOT NULL, created_at timestamptz NOT NULL,
+      PRIMARY KEY (system, alias)
+    );
+    INSERT INTO public.user_aliases VALUES ('legacy', 'PRIVATE_ALIAS_SENTINEL', 'member-a', TIMESTAMPTZ '2026-10-21 00:00:00+00');
+    CREATE TABLE public.schema_migrations (
       filename text PRIMARY KEY, number integer NOT NULL, checksum text NOT NULL,
       applied_at timestamptz NOT NULL DEFAULT now(), how text NOT NULL,
       took_ms integer NOT NULL DEFAULT 0, seq bigserial NOT NULL
@@ -643,20 +730,63 @@ def main() -> int:
                           and result.get("importReadiness") == "blocked", proof, proof_path)
         require_installed(isinstance(categories, list) and len(categories) == 22, proof, proof_path)
         require_installed([entry.get("category") for entry in categories] == CATEGORIES, proof, proof_path)
+        member_category = categories[0]
+        require_installed(member_category.get("status") == "partially-inventoried"
+                          and member_category.get("count") == 1
+                          and isinstance(member_category.get("checksum"), str)
+                          and member_category.get("unresolvedMemberIds") == ["member-a"]
+                          and member_category.get("unresolvedOrganisationIds") == ["org-a"]
+                          and len(member_category.get("sourceTables", [])) == 4, proof, proof_path)
         require_installed(all(entry.get("status") == "not-inventoried" and entry.get("count") is None
-                              and entry.get("checksum") is None for entry in categories), proof, proof_path)
+                              and entry.get("checksum") is None for entry in categories[1:]), proof, proof_path)
         inventory = result.get("sourceInventory")
         require_installed(isinstance(inventory, dict)
                           and [item.get("name") for item in inventory.get("databases", [])] == ["lares_state", "postgres"]
                           and all(item.get("schemas") == ["public"] for item in inventory.get("databases", []))
                           and inventory.get("protectedMaterial", {}).get("ordinaryImport") == "blocked", proof, proof_path)
-        require_installed("RAW_REFUSAL_SENTINEL" not in valid.stdout.decode("utf-8", "replace"), proof, proof_path)
+        valid_text = valid.stdout.decode("utf-8", "replace")
+        require_installed(all(sentinel not in valid_text for sentinel in
+                              ("RAW_REFUSAL_SENTINEL", "PRIVATE_NAME_SENTINEL", "private@example.invalid",
+                               "PRIVATE_ORG_LABEL_SENTINEL", "PRIVATE_ALIAS_SENTINEL", "agent:write", "25.00")), proof, proof_path)
+        member_map = root / "member-map.json"
+        member_map.write_text(json.dumps({
+            "version": 1,
+            "members": [{"sourceId": "member-a", "destinationId": "mapped-member-a"}],
+            "organizations": [{"sourceId": "org-a", "destinationId": "mapped-org-a"}],
+        }), encoding="utf-8")
+        member_map.chmod(0o400)
+        mapped = run_installed([str(installed), "import-preview", str(archive), "--member-map", str(member_map)],
+                               env=env, timeout=180, proof=proof, proof_path=proof_path)
+        try:
+            mapped_result = json.loads(mapped.stdout)
+        except Exception:
+            record_installed_output_failure(proof, proof_path, "output-invalid")
+            raise ProbeFailure("unexpected-output") from None
+        mapped_categories = mapped_result.get("categories") if isinstance(mapped_result, dict) else None
+        require_installed(isinstance(mapped_categories, list) and len(mapped_categories) == len(CATEGORIES), proof, proof_path)
+        require_installed(mapped_categories[0].get("status") == "inventoried"
+                          and mapped_categories[0].get("sourceMembers") == [{
+                              "sourceId": "member-a", "destinationId": "mapped-member-a",
+                              "provenance": "explicit-import-map",
+                          }]
+                          and mapped_categories[0].get("sourceOrganisations") == [{
+                              "sourceId": "org-a", "destinationId": "mapped-org-a",
+                              "provenance": "explicit-import-map",
+                          }], proof, proof_path)
+        require_installed(mapped_result.get("importReadiness") == "blocked"
+                          and mapped_categories[1].get("status") == "not-inventoried"
+                          and "destination existence and authority are not verified" in mapped_categories[0].get("authority", ""),
+                          proof, proof_path)
+        mapped_text = mapped.stdout.decode("utf-8", "replace")
+        require_installed(all(sentinel not in mapped_text for sentinel in
+                              ("RAW_REFUSAL_SENTINEL", "PRIVATE_NAME_SENTINEL", "private@example.invalid",
+                               "PRIVATE_ORG_LABEL_SENTINEL", "PRIVATE_ALIAS_SENTINEL", "agent:write", "25.00")), proof, proof_path)
         events_before_refusal = boundary_events.read_text(encoding="utf-8").splitlines()
-        require(events_before_refusal.count("helper-safe") == 1)
-        require(events_before_refusal.count("keeper-preview-safe") >= 2)
+        require(events_before_refusal.count("helper-safe") == 2)
+        require(events_before_refusal.count("keeper-preview-safe") >= 3)
         require(not list(root.glob("lares-import-preview.*")), "cleanup-failed")
         proof["checks"]["actualInstalledCommand"] = True  # type: ignore[index]
-        proof["checks"]["allCategoriesRemainUninventoried"] = True  # type: ignore[index]
+        proof["checks"]["nonMemberCategoriesRemainUninventoried"] = True  # type: ignore[index]
         proof["checks"]["helperRanOfflineWithReadOnlyInput"] = True  # type: ignore[index]
 
         proof["stage"] = "refusal"
