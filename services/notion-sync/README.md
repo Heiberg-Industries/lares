@@ -29,6 +29,7 @@ this package is usable by any installation. Copy
 | `projects[]` | `{ notionProject, vaultFolder }` pairs — the Notion `Project` select value mapped to a vault folder. Must be non-empty with unique `notionProject` values. Validated today but not read by the attendee job — used by the later passes. |
 | `deskDirs[]` | `{ dir, project, exclude? }` — the human-editable folders, each pushed by the same engine as the wiki with its own Notion `Project`. Presence of this key is what turns the desk passes on; `docsDataSourceId` is required alongside it (desk rows live in the same Docs database). Dirs are bare vault-relative paths and may not overlap `wikiDir` or each other. `exclude[]` names sub-folders (relative to `dir`) that this dir's passes must leave alone — the carve-out that hands `<dir>/transcripts/` to the transcript pass. |
 | `twoWayDirs[]` | The pilot dial: which desk dirs `notion-sync enable-two-way` will accept. Every entry must be one of `deskDirs`' dirs. Listing a dir here changes nothing on its own — direction is per row, and only the command flips it, only after both fidelity legs pass. Optional, defaults to `[]`. |
+| `autoTwoWayDirs[]` | The subset of `twoWayDirs` the tick's `auto-two-way` pass watches. A synced, vault-owned row there is put through the same gates as `enable-two-way` (the offline round trip computed on the file as it stands, then the live leg) and flipped when they all pass — so files written after the last operator run become editable too. Notion-owned rows are never promoted automatically. Every entry must be one of `twoWayDirs`. Optional, defaults to `[]`. |
 | `mirrorFilePrefixes[]` | Vault-path prefixes that stay one-way md→Notion whatever folder they live in — machine-generated files inside an otherwise human-edited desk folder. `enable-two-way` refuses them. Optional, defaults to `[]`. |
 | `transcripts` | `{ dir, projects[] }` — where Notion Meetings transcripts land in the vault. Absent ⇒ the transcript pass does not run. |
 | `people` | `{ dataSourceId, databaseId? }` — the Notion **People** database the attendee projection writes to. Absent ⇒ the People pass does not run. See *The People database contract* below for the exact properties it requires. |
@@ -152,6 +153,7 @@ tsx services/notion-sync/bin/notion-sync.ts --adoption-report
 tsx services/notion-sync/bin/notion-sync.ts --transcripts [--dry-run]
 tsx services/notion-sync/bin/notion-sync.ts --notion-born [--dry-run]
 tsx services/notion-sync/bin/notion-sync.ts --people [--dry-run]
+tsx services/notion-sync/bin/notion-sync.ts --auto-two-way [--dry-run]
 tsx services/notion-sync/bin/notion-sync.ts --approve <path>
 tsx services/notion-sync/bin/notion-sync.ts --reject <path>
 ```
@@ -159,7 +161,7 @@ tsx services/notion-sync/bin/notion-sync.ts --reject <path>
 Three different dry-run postures, each deliberate:
 
 - **Default LIVE, `--dry-run` rehearses** — `--fidelity-record`, `--reconcile`,
-  `--enable-two-way`, and the three single-pass flags. The pass flags exist because a rollout
+  `--enable-two-way`, and the four single-pass flags. The pass flags exist because a rollout
   previews one pass at a time and `--once --dry-run` would rehearse all of them.
 - **Default DRY-RUN, `--no-dry-run` writes** — `--archive-excluded` alone, because it trashes
   real Notion pages. It refuses `--no-dry-run` alongside `--dry-run`/`NOTION_SYNC_DRY_RUN=1`
@@ -238,10 +240,14 @@ don't-re-enter guard is process-local. The runbook's go-live section spells the 
   frozen row's `Sync` property, icon and lock, because those describe which *direction* the
   row is in, not what either side says — a frozen mirror row that silently stopped looking
   locked would be a worse lie than the freeze is an inconvenience.
-- **Nothing becomes two-way by itself.** Every row starts 🔒 Mirror. `enable-two-way` is the
-  only thing that changes that, one file at a time, and only when the file both has a passing
-  row in the fidelity table *and* survives a live round trip through Notion's own serializer
-  right then. Files listed under `mirrorFilePrefixes` are refused outright.
+- **Nothing becomes two-way by itself, unless a dir is opted in.** Every row starts 🔒 Mirror.
+  `enable-two-way` changes that one file at a time, only when the file both has a passing row
+  in the fidelity table *and* survives a live round trip through Notion's own serializer right
+  then. For a dir listed in `autoTwoWayDirs`, the tick's `auto-two-way` pass applies the same
+  gates to every synced, vault-owned row each tick, computing the offline leg on the file as it
+  stands instead of reading the table; a file that fails is named once in the log with its
+  reason and re-checked only after it changes. Files listed under `mirrorFilePrefixes` are
+  refused outright either way.
 - **Blank lines between blocks do not survive Notion, and the round trip says so.** Notion's
   `GET /markdown` joins top-level blocks with a single `\n` — the vault's own blank lines are
   gone by the time a pull sees the page, and no rule can infer them back. So a pulled body is

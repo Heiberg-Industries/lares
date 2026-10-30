@@ -26,7 +26,7 @@ const DESKS: DesksConfig = {
     { dir: "Example Company", project: "Example Company", exclude: ["transcripts"] },
     { dir: "example-service", project: "example-service" },
   ],
-  twoWayDirs: [],
+  twoWayDirs: [], autoTwoWayDirs: [],
   mirrorFilePrefixes: [],
 };
 const isExcluded = makeDeskExclusion(DESKS);

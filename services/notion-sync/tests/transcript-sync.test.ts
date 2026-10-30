@@ -27,7 +27,7 @@ const EXCLUDED = makeDeskExclusion({
     { dir: "beta", project: "Beta", exclude: ["transcripts"] },
     { dir: "unexcluded", project: "Gamma" },
   ],
-  twoWayDirs: [],
+  twoWayDirs: [], autoTwoWayDirs: [],
   mirrorFilePrefixes: [],
 });
 const OPTS: TranscriptSyncOptions = {

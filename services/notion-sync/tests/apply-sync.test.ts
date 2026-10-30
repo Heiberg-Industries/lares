@@ -21,7 +21,7 @@ const TEST_SCOPE = makeCreateScope({
       { dir: "acme", project: "Z", exclude: ["transcripts"] },
       { dir: "wikipedia", project: "W" },
     ],
-    twoWayDirs: [],
+    twoWayDirs: [], autoTwoWayDirs: [],
     mirrorFilePrefixes: [],
   },
   transcripts: { dir: "transcripts", projects: [] },

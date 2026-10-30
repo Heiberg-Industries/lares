@@ -19,7 +19,7 @@ const DESKS: DesksConfig = {
     { dir: "desk-a", project: "A", exclude: ["transcripts"] },
     { dir: "desk-b", project: "B" },
   ],
-  twoWayDirs: [],
+  twoWayDirs: [], autoTwoWayDirs: [],
   mirrorFilePrefixes: [],
 };
 
@@ -131,7 +131,7 @@ describe("makeDeskExclusion", () => {
   it("takes a nested entry, and covers only that branch", () => {
     const nested = makeDeskExclusion({
       deskDirs: [{ dir: "desk-a", project: "A", exclude: ["notes/transcripts"] }],
-      twoWayDirs: [], mirrorFilePrefixes: [],
+      twoWayDirs: [], autoTwoWayDirs: [], mirrorFilePrefixes: [],
     });
     expect(nested("desk-a/notes/transcripts/b.md")).toBe(true);
     expect(nested("desk-a/notes/other.md")).toBe(false);

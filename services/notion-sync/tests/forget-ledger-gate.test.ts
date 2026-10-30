@@ -18,7 +18,7 @@ import { makeCollisionLookup } from "./helpers/collision-world.js";
 import type { LinkedRow, ProposalRow } from "../lib/store.js";
 
 const SCOPE = makeCreateScope({
-  desks: { deskDirs: [{ dir: "people", project: "W" }], twoWayDirs: [], mirrorFilePrefixes: [] },
+  desks: { deskDirs: [{ dir: "people", project: "W" }], twoWayDirs: [], autoTwoWayDirs: [], mirrorFilePrefixes: [] },
   transcripts: { dir: "transcripts", projects: [] },
 });
 const OPTS: ApplySyncOptions = { dryRun: false, inCreateScope: SCOPE };

@@ -209,7 +209,7 @@ function parseExcludeDirs(raw: unknown, deskIndex: number): string[] {
  */
 function parseDesksConfig(root: Record<string, unknown>, wiki: WikiConfig | undefined): DesksConfig | undefined {
   if (root.deskDirs === undefined) {
-    for (const key of ["twoWayDirs", "mirrorFilePrefixes"]) {
+    for (const key of ["twoWayDirs", "autoTwoWayDirs", "mirrorFilePrefixes"]) {
       if (root[key] !== undefined) {
         throw new Error(
           `notion-sync config: ${key} is set but deskDirs is not — ` +
@@ -276,6 +276,22 @@ function parseDesksConfig(root: Record<string, unknown>, wiki: WikiConfig | unde
     return value;
   });
 
+  // Auto-two-way is a narrowing of the pilot dial, never a way around it: a dir the
+  // operator has not opened for two-way cannot be opened automatically either.
+  const autoRaw = root.autoTwoWayDirs ?? [];
+  if (!Array.isArray(autoRaw)) {
+    throw new Error("notion-sync config: autoTwoWayDirs must be an array of desk dir names");
+  }
+  const autoTwoWayDirs = autoRaw.map((value, i) => {
+    if (typeof value !== "string" || !twoWayDirs.includes(value)) {
+      throw new Error(
+        `notion-sync config: autoTwoWayDirs[${i}] must be one of the twoWayDirs dirs ` +
+        `(${twoWayDirs.join(", ") || "none"}), got ${JSON.stringify(value)}`,
+      );
+    }
+    return value;
+  });
+
   const prefixesRaw = root.mirrorFilePrefixes ?? [];
   if (!Array.isArray(prefixesRaw)) {
     throw new Error("notion-sync config: mirrorFilePrefixes must be an array of vault-path prefixes");
@@ -289,7 +305,7 @@ function parseDesksConfig(root: Record<string, unknown>, wiki: WikiConfig | unde
     return value;
   });
 
-  return { deskDirs, twoWayDirs, mirrorFilePrefixes };
+  return { deskDirs, twoWayDirs, autoTwoWayDirs, mirrorFilePrefixes };
 }
 
 /**

@@ -10,6 +10,7 @@
     { "dir": "writing", "project": "Portfolio" }
   ],
   "twoWayDirs": ["desks/example-project"],
+  "autoTwoWayDirs": [],
   "mirrorFilePrefixes": ["writing/generated__"],
   "vaultPath": "/srv/vault",
   "selfEmail": ["you@example.com", "you@second-org.example"],

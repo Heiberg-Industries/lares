@@ -882,7 +882,7 @@ describe("runPullSync — vault paths carved out of the desk scope", () => {
       { dir: "desk-a", project: "A", exclude: ["transcripts"] },
       { dir: "desk-b", project: "B" },
     ],
-    twoWayDirs: [],
+    twoWayDirs: [], autoTwoWayDirs: [],
     mirrorFilePrefixes: [],
   };
   const SCOPED: PullSyncOptions = { ...OPTS, isExcluded: makeDeskExclusion(DESKS) };

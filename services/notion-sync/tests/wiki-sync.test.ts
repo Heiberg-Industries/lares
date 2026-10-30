@@ -933,7 +933,7 @@ describe("runWikiSync — isExcluded: rows this dir no longer owns", () => {
   const EXCLUDED = "wiki/transcripts/2026-08-01-foo.md";
   const isExcluded = makeDeskExclusion({
     deskDirs: [{ dir: "wiki", project: "Portfolio", exclude: ["transcripts"] }],
-    twoWayDirs: [],
+    twoWayDirs: [], autoTwoWayDirs: [],
     mirrorFilePrefixes: [],
   });
 

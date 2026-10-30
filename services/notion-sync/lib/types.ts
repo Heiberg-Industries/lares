@@ -66,6 +66,16 @@ export interface DesksConfig {
    */
   twoWayDirs: string[];
   /**
+   * The subset of `twoWayDirs` the tick's auto-two-way pass watches. A synced,
+   * vault-owned row under one of these dirs is put through the same gates as
+   * `enable-two-way` (the offline round trip computed on the file as it stands, then
+   * the live leg) and flipped when every gate passes — so a file an agent writes
+   * later becomes editable without an operator step. Notion-owned rows are never
+   * promoted here; that stays an operator decision. Default empty: nothing changes
+   * for a deployment that does not list a dir.
+   */
+  autoTwoWayDirs: string[];
+  /**
    * Vault-path prefixes that stay one-way md→Notion whatever dir they live in
    * (e.g. a folder's machine-generated files). `enable-two-way`
    * refuses them, so their direction never leaves `md_to_notion`.
