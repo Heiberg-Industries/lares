@@ -2,13 +2,14 @@
 /**
  * PR1a: inspect the real installation export without applying it.
  *
- * This is deliberately an inspection result, not an ImportManifest/ImportReceipt. The later
- * category mapper must account for application rows and file stores before an import plan exists.
+ * This is deliberately an inspection result, not an ImportManifest/ImportReceipt. The bounded
+ * members evidence does not cover the remaining application categories or file stores.
  */
 import * as childProcess from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { IMPORT_CATEGORIES } from "@lares/agent-kit/authority-contract";
+import { IMPORT_CATEGORIES, memberSchema } from "@lares/agent-kit/authority-contract";
 
 const SOURCE_RELEASE = "2026-10-21-rc.12";
 const INSPECTION_CHECKS = [
@@ -33,6 +34,203 @@ const EXPECTED_MIGRATIONS = [
   ["005_model_steps.sql", "e1ecab54f9c18c63b057f7970c70fa835ebeb0e09381b6295c4f64a20a91be66"],
   ["006_approval_session.sql", "2de295f5c742a004addeb28579d579865bb7832a5d5287be742d0e2e7944827b"],
 ] as const;
+
+const MEMBER_TABLES = {
+  users: ["id", "display_name", "primary_email", "created_at", "org_id", "org_role"],
+  orgs: ["id", "display_name", "created_at", "domains"],
+  org_member_policy: ["user_id", "allowed_capabilities", "may_create_agents", "spend_cap_usd_month"],
+  user_aliases: ["system", "alias", "user_id", "created_at"],
+} as const;
+type MemberTable = keyof typeof MEMBER_TABLES;
+const MAX_COPY_BYTES = 8 * 1024 * 1024;
+const MAX_COPY_LINE_BYTES = 64 * 1024;
+const MAX_COPY_ROWS = 100_000;
+// Fixed for the known public-schema dump contract. REL_16_STABLE pg_backup_archiver.c emits
+// this setup in order; archived search_path values are never parsed or executed here.
+const RESTORE_SETUP = [
+  "SET statement_timeout = 0;",
+  "SET lock_timeout = 0;",
+  "SET idle_in_transaction_session_timeout = 0;",
+  "SET client_encoding = 'UTF8';",
+  "SET standard_conforming_strings = on;",
+  "SELECT pg_catalog.set_config('search_path', '', false);",
+  "SET check_function_bodies = false;",
+  "SET xmloption = content;",
+  "SET client_min_messages = warning;",
+  "SET row_security = off;",
+] as const;
+const MAX_MEMBER_MAP_BYTES = 1024 * 1024;
+const memberId = memberSchema.shape.id;
+
+type CopyTable = { count: number; checksum: string; ids: string[]; references: string[]; aliasKeys: string[] };
+
+function decodeCopyField(field: string): string | null {
+  if (field === "\\N") return null;
+  const bytes: number[] = [];
+  for (let i = 0; i < field.length; i++) {
+    const char = field[i]!;
+    if (char !== "\\") {
+      const encoded = Buffer.from(char, "utf8");
+      for (const byte of encoded) bytes.push(byte);
+      continue;
+    }
+    const next = field[++i];
+    if (next === undefined) throw new ImportInspectionRefused("malformed_copy_data");
+    if (next === "b") bytes.push(8);
+    else if (next === "f") bytes.push(12);
+    else if (next === "n") bytes.push(10);
+    else if (next === "r") bytes.push(13);
+    else if (next === "t") bytes.push(9);
+    else if (next === "v") bytes.push(11);
+    else if (next === "\\") bytes.push(92);
+    else if (next === "x") {
+      const digits = /^[0-9a-fA-F]{1,2}/.exec(field.slice(i + 1))?.[0];
+      if (!digits) throw new ImportInspectionRefused("malformed_copy_data");
+      bytes.push(Number.parseInt(digits, 16));
+      i += digits.length;
+    } else if (/[0-7]/.test(next)) {
+      const digits = next + (/^[0-7]{0,2}/.exec(field.slice(i + 1))?.[0] ?? "");
+      bytes.push(Number.parseInt(digits, 8));
+      i += digits.length - 1;
+    } else throw new ImportInspectionRefused("malformed_copy_data");
+  }
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes)); }
+  catch { throw new ImportInspectionRefused("malformed_copy_data"); }
+}
+
+function parseMemberCopy(table: MemberTable, bytes: Buffer): CopyTable {
+  if (bytes.byteLength > MAX_COPY_BYTES) throw new ImportInspectionRefused("copy_data_too_large");
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw new ImportInspectionRefused("malformed_copy_data"); }
+  const lines = text.split("\n");
+  const expectedHeader = `COPY public.${table} (${MEMBER_TABLES[table].join(", ")}) FROM stdin;`;
+  let header = -1;
+  let restriction: string | undefined;
+  let setupIndex = 0;
+  let setupStarted = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!.replace(/\r$/, "");
+    if (line === expectedHeader) {
+      if (setupStarted && setupIndex !== RESTORE_SETUP.length) throw new ImportInspectionRefused("member_copy_envelope_invalid");
+      header = i; break;
+    }
+    if (line === "" || line.startsWith("--")) continue;
+    const restrictionMatch = /^\\restrict ([A-Za-z0-9]{63})$/.exec(line);
+    if (!setupStarted && !restriction && restrictionMatch) { restriction = restrictionMatch[1]; continue; }
+    if (setupIndex < RESTORE_SETUP.length && line === RESTORE_SETUP[setupIndex]) {
+      setupStarted = true;
+      setupIndex++;
+      continue;
+    }
+    throw new ImportInspectionRefused("member_copy_envelope_invalid");
+  }
+  if (header < 0) throw new ImportInspectionRefused("source_table_missing_or_unsupported");
+  const columns = MEMBER_TABLES[table];
+  const index = (name: string): number => columns.indexOf(name as never);
+  const hash = createHash("sha256");
+  const ids: string[] = [];
+  const idSet = new Set<string>();
+  const references: string[] = [];
+  const aliasKeys: string[] = [];
+  const aliasSet = new Set<string>();
+  let ended = false;
+  let unrestricted = false;
+  let count = 0;
+  for (let i = header + 1; i < lines.length; i++) {
+    const line = lines[i]!.replace(/\r$/, "");
+    if (Buffer.byteLength(line, "utf8") > MAX_COPY_LINE_BYTES) throw new ImportInspectionRefused("copy_row_too_large");
+    if (line === "\\.") { if (ended) throw new ImportInspectionRefused("member_copy_envelope_invalid"); ended = true; continue; }
+    if (ended) {
+      if (restriction && !unrestricted && line === `\\unrestrict ${restriction}`) { unrestricted = true; continue; }
+      if (line !== "" && !line.startsWith("--")) throw new ImportInspectionRefused("member_copy_envelope_invalid");
+      continue;
+    }
+    if (line.startsWith("\\unrestrict") || /^\\restrict\b/.test(line)) throw new ImportInspectionRefused("member_copy_envelope_invalid");
+    const fields = line.split("\t");
+    if (fields.length !== columns.length) throw new ImportInspectionRefused("malformed_copy_data");
+    hash.update(line, "utf8"); hash.update("\n");
+    if (++count > MAX_COPY_ROWS) throw new ImportInspectionRefused("copy_row_limit_exceeded");
+    const get = (column: string): string | null => decodeCopyField(fields[index(column)]!);
+    if (table === "users" || table === "orgs") {
+      const id = get("id");
+      if (id === null || memberId.safeParse(id).data !== id || idSet.has(id)) throw new ImportInspectionRefused("invalid_or_duplicate_source_id");
+      ids.push(id); idSet.add(id);
+      if (table === "users") {
+        const organisation = get("org_id");
+        if (organisation === null || memberId.safeParse(organisation).data !== organisation) throw new ImportInspectionRefused("unresolved_member_organisation");
+        references.push(organisation);
+      }
+    } else if (table === "org_member_policy") {
+      const id = get("user_id");
+      if (id === null || memberId.safeParse(id).data !== id || idSet.has(id)) throw new ImportInspectionRefused("invalid_or_duplicate_source_reference");
+      ids.push(id); idSet.add(id);
+    } else {
+      const system = get("system"), alias = get("alias"), id = get("user_id");
+      if (system === null || alias === null || id === null || memberId.safeParse(id).data !== id) throw new ImportInspectionRefused("invalid_source_alias_reference");
+      const key = JSON.stringify([system, alias]);
+      if (aliasSet.has(key)) throw new ImportInspectionRefused("duplicate_source_alias");
+      aliasSet.add(key); aliasKeys.push(key); ids.push(id);
+    }
+  }
+  if (!ended) throw new ImportInspectionRefused("malformed_copy_data");
+  if (restriction && !unrestricted) throw new ImportInspectionRefused("member_copy_envelope_invalid");
+  return { count, checksum: hash.digest("hex"), ids, references, aliasKeys };
+}
+
+export function mapMemberEvidence(copies: Record<MemberTable, Buffer>, mapInput?: unknown) {
+  const parsed = Object.fromEntries(Object.keys(MEMBER_TABLES).map((table) => [table, parseMemberCopy(table as MemberTable, copies[table as MemberTable])])) as Record<MemberTable, CopyTable>;
+  const userIds = parsed.users.ids;
+  const organisationIds = parsed.orgs.ids;
+  const userSet = new Set(userIds), orgSet = new Set(organisationIds);
+  if (parsed.users.references.some((id) => !orgSet.has(id)) || parsed.org_member_policy.ids.some((id) => !userSet.has(id)) || parsed.user_aliases.ids.some((id) => !userSet.has(id))) {
+    throw new ImportInspectionRefused("source_member_dependency_mismatch");
+  }
+  const input = mapInput === undefined ? { version: 1, members: [], organizations: [] } : mapInput;
+  if (typeof input !== "object" || input === null || Object.keys(input).sort().join(",") !== "members,organizations,version" || (input as { version?: unknown }).version !== 1 || !Array.isArray((input as { members?: unknown }).members) || !Array.isArray((input as { organizations?: unknown }).organizations)) {
+    throw new ImportInspectionRefused("member_map_invalid");
+  }
+  const parseEntries = (value: unknown, sources: Set<string>): Array<{ sourceId: string; destinationId: string }> => {
+    if (!Array.isArray(value)) throw new ImportInspectionRefused("member_map_invalid");
+    const result: Array<{ sourceId: string; destinationId: string }> = [];
+    const sourceSeen = new Set<string>(), destinationSeen = new Set<string>();
+    for (const item of value) {
+      if (typeof item !== "object" || item === null || Object.keys(item).sort().join(",") !== "destinationId,sourceId") throw new ImportInspectionRefused("member_map_invalid");
+      const sourceId = (item as { sourceId?: unknown }).sourceId, destinationId = (item as { destinationId?: unknown }).destinationId;
+      if (typeof sourceId !== "string" || memberId.safeParse(sourceId).data !== sourceId || typeof destinationId !== "string" || memberId.safeParse(destinationId).data !== destinationId || !sources.has(sourceId) || sourceSeen.has(sourceId) || destinationSeen.has(destinationId)) {
+        throw new ImportInspectionRefused("member_map_invalid");
+      }
+      sourceSeen.add(sourceId); destinationSeen.add(destinationId); result.push({ sourceId, destinationId });
+    }
+    return result;
+  };
+  const mappedMembers = parseEntries((input as { members: unknown }).members, userSet);
+  const mappedOrganisations = parseEntries((input as { organizations: unknown }).organizations, orgSet);
+  if (new Set([...mappedMembers.map((entry) => entry.destinationId), ...mappedOrganisations.map((entry) => entry.destinationId)]).size !== mappedMembers.length + mappedOrganisations.length) {
+    throw new ImportInspectionRefused("member_map_invalid");
+  }
+  const memberMap = new Map(mappedMembers.map(({ sourceId, destinationId }) => [sourceId, destinationId]));
+  const organisationMap = new Map(mappedOrganisations.map(({ sourceId, destinationId }) => [sourceId, destinationId]));
+  const tableEvidence = (Object.keys(MEMBER_TABLES) as MemberTable[]).map((table) => ({ table, count: parsed[table].count, checksum: parsed[table].checksum }));
+  const checksum = createHash("sha256").update(JSON.stringify(tableEvidence)).digest("hex");
+  const complete = mappedMembers.length === userIds.length && mappedOrganisations.length === organisationIds.length;
+  return {
+    status: complete ? "inventoried" as const : "partially-inventoried" as const,
+    count: userIds.length,
+    checksum,
+    sourceTables: tableEvidence,
+    sourceMembers: userIds.map((sourceId) => ({ sourceId, destinationId: memberMap.get(sourceId) ?? null, provenance: "explicit-import-map" as const })),
+    sourceOrganisations: organisationIds.map((sourceId) => ({ sourceId, destinationId: organisationMap.get(sourceId) ?? null, provenance: "explicit-import-map" as const })),
+    unresolvedMemberIds: userIds.filter((id) => !memberMap.has(id)),
+    unresolvedOrganisationIds: organisationIds.filter((id) => !organisationMap.has(id)),
+    dependencies: { userOrganisationReferences: parsed.users.references.length, policyMemberReferences: parsed.org_member_policy.ids.length, aliasMemberReferences: parsed.user_aliases.ids.length, allReferencesResolved: true },
+    authority: "mapping-evidence-only; destination existence and authority are not verified",
+    omissions: [
+      "org_member_policy values are inventoried as historical evidence and are not applied as grants or capabilities",
+      "user_aliases values are inventoried as historical evidence and do not verify a provider identity",
+    ],
+  };
+}
 
 const ARCHIVE_CHECK = String.raw`
 import hashlib, json, re, sys, tarfile
@@ -343,8 +541,16 @@ export function verifySourceLedger(copyOutput: string): void {
   }
 }
 
-export function buildInspection(archive: ArchiveInspection) {
+export function buildInspection(archive: ArchiveInspection, memberEvidence?: ReturnType<typeof mapMemberEvidence>) {
   if (archive.engineVersion !== SOURCE_RELEASE) throw new ImportInspectionRefused("unsupported_source_release");
+  const sourceDumpChecksum = archive.sourceInventory.databases.find((database) => database.name === "lares_state")?.sha256;
+  if (memberEvidence !== undefined && sourceDumpChecksum === undefined) throw new ImportInspectionRefused("source_schema_inventory_mismatch");
+  const memberChecksum = memberEvidence === undefined ? undefined : createHash("sha256").update(JSON.stringify({
+    sourceRelease: SOURCE_RELEASE,
+    destinationSchema: DESTINATION_SCHEMA,
+    sourceDumpChecksum,
+    tables: memberEvidence.sourceTables,
+  })).digest("hex");
   return {
     format: "lares.import-inspection",
     inspectionVersion: 1,
@@ -360,39 +566,86 @@ export function buildInspection(archive: ArchiveInspection) {
       vaultBundleCount: archive.kinds.vaultBundles,
       nestedRegularFileCount: archive.nestedRegularFiles,
     },
-    categories: IMPORT_CATEGORIES.map((category) => ({
+    categories: IMPORT_CATEGORIES.map((category) => category === "members" && memberEvidence !== undefined ? {
+      category,
+      status: memberEvidence.status,
+      count: memberEvidence.count,
+      checksum: memberChecksum!,
+      sourceDumpChecksum,
+      sourceTables: memberEvidence.sourceTables,
+      sourceMembers: memberEvidence.sourceMembers,
+      sourceOrganisations: memberEvidence.sourceOrganisations,
+      unresolvedMemberIds: memberEvidence.unresolvedMemberIds,
+      unresolvedOrganisationIds: memberEvidence.unresolvedOrganisationIds,
+      dependencies: memberEvidence.dependencies,
+      authority: memberEvidence.authority,
+      omissions: memberEvidence.omissions,
+      reason: memberEvidence.status === "inventoried" ? "Source rows are fully counted and explicitly mapped; destination existence and authority remain unverified." : "Source rows are counted, but explicit member or organisation mappings are incomplete.",
+    } : {
       category,
       status: "not-inventoried",
       count: null,
       checksum: null,
-      reason: "The complete record and resource mapper is PR1b; no category count is inferred from archive file counts.",
-    })),
+      reason: "The record mapper is incomplete; no category count is inferred from archive file counts.",
+    }),
     sourceInventory: archive.sourceInventory,
     blockers: [
-      "The fresh export declares archive stores and database schema names only; it does not inventory application rows, individual file resources, or all configured storage outside the declared paths.",
+      "This slice does not inventory individual file resources or all configured storage outside the export's declared paths.",
       "Encrypted database credentials may be present and remain blocked from ordinary import; a separate protected transfer or reconnection decision is still required.",
-      "Every application category, identity, provenance, dependency, and omission still needs record-level mapping before an ImportManifest v1 can be produced.",
+      "The other 21 application categories, and their identity, provenance, dependency, and omission mappings, still need record-level mapping before an ImportManifest v1 can be produced.",
     ],
   } as const;
 }
 
+function readMemberCopies(directory: string): Record<MemberTable, Buffer> {
+  const copies = {} as Record<MemberTable, Buffer>;
+  for (const table of Object.keys(MEMBER_TABLES) as MemberTable[]) {
+    const path = `${directory}/${table}.copy`;
+    try {
+      const size = statSync(path).size;
+      if (size < 1 || size > MAX_COPY_BYTES) throw new ImportInspectionRefused("copy_data_too_large");
+      copies[table] = readFileSync(path);
+    } catch (error) {
+      if (error instanceof ImportInspectionRefused) throw error;
+      throw new ImportInspectionRefused("source_table_missing_or_unsupported");
+    }
+  }
+  return copies;
+}
+
+function readMemberMap(path: string | undefined): unknown {
+  if (path === undefined) return undefined;
+  try {
+    const size = statSync(path).size;
+    if (size < 1 || size > MAX_MEMBER_MAP_BYTES) throw new ImportInspectionRefused("member_map_invalid");
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    if (error instanceof ImportInspectionRefused) throw error;
+    throw new ImportInspectionRefused("member_map_invalid");
+  }
+}
+
 function main(args: string[]): void {
   const checkOnly = args.length === 2 && args[0] === "--check-archive";
-  if (!checkOnly && (args.length !== 6 || args[0] !== "--archive" || args[2] !== "--ledger-copy" || args[4] !== "--database-toc-dir")) {
-    process.stderr.write("Usage: import-preview.ts --check-archive <archive.tar> | --archive <archive.tar> --ledger-copy <schema-migrations-copy.txt> --database-toc-dir <dir>\n");
+  const options = !checkOnly && (args.length === 8 || args.length === 10) && args[0] === "--archive" && args[2] === "--ledger-copy" && args[4] === "--database-toc-dir" && args[6] === "--copy-directory" && (args.length === 8 || args[8] === "--member-map")
+    ? { archive: args[1]!, ledger: args[3]!, tocDirectory: args[5]!, copyDirectory: args[7]!, memberMapPath: args[9] }
+    : null;
+  if (!checkOnly && options === null) {
+    process.stderr.write("Usage: import-preview.ts --check-archive <archive.tar> | --archive <archive.tar> --ledger-copy <file> --database-toc-dir <dir> --copy-directory <dir> [--member-map <file>]\n");
     process.exitCode = 64;
     return;
   }
   try {
-    const archive = inspectExportArchive(args[1]!);
+    const archive = inspectExportArchive(checkOnly ? args[1]! : options!.archive);
     if (checkOnly) {
       if (archive.engineVersion !== SOURCE_RELEASE) throw new ImportInspectionRefused("unsupported_source_release");
       process.stdout.write('{"status":"archive-verified","importReadiness":"blocked"}\n');
       return;
     }
-    verifySourceLedger(readFileSync(args[3]!, "utf8"));
-    verifyDatabaseSchemas(archive, args[5]!);
-    const inspection = buildInspection(archive);
+    verifySourceLedger(readFileSync(options!.ledger, "utf8"));
+    verifyDatabaseSchemas(archive, options!.tocDirectory);
+    const members = mapMemberEvidence(readMemberCopies(options!.copyDirectory), readMemberMap(options!.memberMapPath));
+    const inspection = buildInspection(archive, members);
     process.stdout.write(`${JSON.stringify(inspection, null, 2)}\n`);
   } catch (error) {
     const reason = error instanceof ImportInspectionRefused ? error.reason : "inspection_failed";

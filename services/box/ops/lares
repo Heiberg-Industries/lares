@@ -158,8 +158,14 @@ cmd_doctor() {
 }
 
 cmd_import_preview() {
-  [ "$#" -eq 1 ] || die "import-preview needs exactly one existing export archive path." "$EX_USAGE"
-  local archive="$1" helper_image scratch ledger_file toc_dir
+  [ "$#" -eq 1 ] || [ "$#" -eq 3 ] || die "import-preview needs an export archive and optional --member-map file." "$EX_USAGE"
+  local archive="$1" member_map="" helper_image scratch ledger_file toc_dir
+  if [ "$#" -eq 3 ]; then
+    [ "$2" = "--member-map" ] || die "import-preview accepts only --member-map after the archive." "$EX_USAGE"
+    member_map="$3"
+    [ -f "$member_map" ] && [ ! -L "$member_map" ] || die "the member map must be an existing regular file, not a symlink." "$EX_USAGE"
+    member_map="$(cd "$(dirname "$member_map")" && pwd -P)/$(basename "$member_map")"
+  fi
   [ -f "$archive" ] && [ ! -L "$archive" ] || die "the archive must be an existing regular file, not a symlink." "$EX_USAGE"
   archive="$(cd "$(dirname "$archive")" && pwd -P)/$(basename "$archive")"
   BOX_DIR="$CUR/services/box"
@@ -174,8 +180,9 @@ cmd_import_preview() {
   engine_run --network-none --ro "$archive" bin/import-preview.ts --check-archive "$archive" >/dev/null || \
     die "the export archive failed inspection; the pinned helper was not run." "$EX_USAGE"
 
-  # This helper reads custom dumps without connecting to a database. The source archive and
-  # private scratch output are mounted; no installation credentials or socket are present.
+  # This helper reads fixed, allow-listed COPY streams without connecting to a database. The
+  # source archive, optional mapping file and private scratch output are mounted; no installation
+  # credentials or socket are present. Raw source rows stay only in this mode-0700 scratch area.
   # --pull=never prevents a preview from contacting a registry.
   scratch=$(mktemp -d "${TMPDIR:-/var/tmp}/lares-import-preview.XXXXXX") || die "could not create private preview scratch space." "$EX_USAGE"
   chmod 0700 "$scratch"
@@ -184,15 +191,15 @@ cmd_import_preview() {
   ledger_file="$scratch/schema-migrations.copy"
   toc_dir="$scratch/database-toc"
   mkdir -m 0700 "$toc_dir"
-  local helper_status=0 ledger_bytes
-  # Read the source migration ledger and each dump's pg_restore table-of-contents metadata only.
-  # No SQL is executed and no row values are read. Each TOC is size-capped here, then parsed to
-  # schema names by the existing Keeper inspection process using the bundled strict parser.
+  local helper_status=0 ledger_bytes row_bytes
+  # Read the source migration ledger and each dump's pg_restore table-of-contents metadata, then
+  # render only four pinned rc.12 tables as PostgreSQL text COPY. No SQL is executed. The COPY
+  # files are bounded, private, read-only inputs to the strict record decoder.
   timeout --signal=INT --kill-after=10 120 docker run --rm --pull=never --network none --read-only --tmpfs /tmp \
     --cap-drop ALL --security-opt no-new-privileges \
     -v "$archive:/input.tar:ro" -v "$scratch:/output:rw" \
     --entrypoint sh "$helper_image" -ec \
-    'ulimit -f 512; tar -xOf /input.tar ./lares_state.dump | pg_restore --data-only --table=schema_migrations -f - > /output/schema-migrations.copy; for db in $(tar -tf /input.tar | sed -n "s#^\\./\\([A-Za-z0-9_-]*\\)\\.dump\$#\\1#p"); do tar -xOf /input.tar "./$db.dump" | pg_restore --list > "/output/database-toc/$db.toc"; done' \
+    'ulimit -Sf 512; tar -xOf /input.tar ./lares_state.dump | pg_restore --data-only --table=schema_migrations -f - > /output/schema-migrations.copy; (ulimit -Sf 16384; for table in users orgs org_member_policy user_aliases; do tar -xOf /input.tar ./lares_state.dump | pg_restore --data-only --schema=public --table="$table" -f - > "/output/$table.copy"; done); for db in $(tar -tf /input.tar | sed -n "s#^\\./\\([A-Za-z0-9_-]*\\)\\.dump\$#\\1#p"); do tar -xOf /input.tar "./$db.dump" | pg_restore --list > "/output/database-toc/$db.toc"; done' \
     >/dev/null 2>&1 || helper_status=$?
   if [ "$helper_status" -ne 0 ] || [ ! -s "$ledger_file" ] || [ ! -s "$toc_dir/lares_state.toc" ]; then
     rm -rf "$scratch"
@@ -214,9 +221,21 @@ cmd_import_preview() {
     case "$toc_bytes" in ''|*[!0-9]*) rm -rf "$scratch"; die "the source schema metadata was invalid; no database was contacted." "$EX_USAGE" ;; esac
     if [ "$toc_bytes" -gt 262144 ]; then rm -rf "$scratch"; die "the source schema metadata exceeded its safe size limit; no database was contacted." "$EX_USAGE"; fi
   done
+  for table in users orgs org_member_policy user_aliases; do
+    local copy_file="$scratch/$table.copy"
+    [ -s "$copy_file" ] || { rm -rf "$scratch"; die "the pinned source table evidence was incomplete; no database was contacted." "$EX_USAGE"; }
+    row_bytes=$(wc -c < "$copy_file" | tr -d '[:space:]')
+    case "$row_bytes" in ''|*[!0-9]*) rm -rf "$scratch"; die "the source record output was invalid; no database was contacted." "$EX_USAGE" ;; esac
+    if [ "$row_bytes" -gt 8388608 ]; then rm -rf "$scratch"; die "the source record output exceeded its safe size limit; no database was contacted." "$EX_USAGE"; fi
+  done
   local run_status=0
-  engine_run --network-none --ro "$archive" --ro "$ledger_file" --ro "$toc_dir" \
-    bin/import-preview.ts --archive "$archive" --ledger-copy "$ledger_file" --database-toc-dir "$toc_dir" || run_status=$?
+  if [ -n "$member_map" ]; then
+    engine_run --network-none --ro "$archive" --ro "$ledger_file" --ro "$toc_dir" --ro "$scratch" --ro "$member_map" \
+      bin/import-preview.ts --archive "$archive" --ledger-copy "$ledger_file" --database-toc-dir "$toc_dir" --copy-directory "$scratch" --member-map "$member_map" || run_status=$?
+  else
+    engine_run --network-none --ro "$archive" --ro "$ledger_file" --ro "$toc_dir" --ro "$scratch" \
+      bin/import-preview.ts --archive "$archive" --ledger-copy "$ledger_file" --database-toc-dir "$toc_dir" --copy-directory "$scratch" || run_status=$?
+  fi
   rm -rf "$scratch"
   return "$run_status"
 }
