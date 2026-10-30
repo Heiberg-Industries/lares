@@ -785,6 +785,16 @@ export function assertPullSafe(markdown: string): void {
  *      vault side makes such a file FAIL the live leg and stay one-way, instead
  *      of passing and then being silently rewritten into the other document.
  *      This rule only ever makes the gate stricter.
+ *   5. **Notion's own links on bare web addresses** (2026-10-30). Notion links a
+ *      bare domain written in prose (`example.com`) on its own, so the page's
+ *      markdown comes back as `[example.com](http://example.com)` for a vault
+ *      line that never had a link. Outside fenced code, a link whose text is
+ *      EXACTLY its URL minus the `http://`/`https://` scheme (an optional
+ *      trailing `/` aside) compares equal to that bare text. Any other link, a
+ *      link whose text differs from its target by a single character, and
+ *      everything inside a fence still compare byte for byte. What the gate can
+ *      no longer see, named: a link someone added by hand in Notion whose text is
+ *      its own address. An approved apply writes Notion's linked form, once.
  */
 export function normalizeForFidelity(md: string): string {
   const lines = md
@@ -810,10 +820,17 @@ export function normalizeForFidelity(md: string): string {
       if (structuralBlank(out[out.length - 1], nextNonBlank(lines, index))) out.push(line);
       continue;
     }
-    out.push(line);
+    out.push(unlinkBareAddresses(line));
   }
 
   return out.join("\n");
+}
+
+/** Rule 5: `[example.com](https://example.com)` → `example.com`, and nothing else. */
+const SELF_LINK = /\[([^\[\]\s]+)\]\(https?:\/\/([^()\s]+)\)/g;
+function unlinkBareAddresses(line: string): string {
+  return line.replace(SELF_LINK, (match, text: string, rest: string) =>
+    rest === text || rest === `${text}/` ? text : match);
 }
 
 /** The next line after `index` that is not blank — what a blank run separates

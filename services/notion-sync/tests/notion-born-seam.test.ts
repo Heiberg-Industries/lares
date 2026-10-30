@@ -36,7 +36,7 @@ import type {
 const CONFIG = {
   desks: {
     deskDirs: [{ dir: "alpha", project: "Alpha", exclude: ["transcripts"] }],
-    twoWayDirs: [],
+    twoWayDirs: [], autoTwoWayDirs: [],
     mirrorFilePrefixes: [],
   },
 };

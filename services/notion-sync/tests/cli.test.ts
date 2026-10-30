@@ -11,7 +11,7 @@ import { makeNotionStore, meetingPageProps } from "./helpers/fake-notion-store.j
 import {
   runPassesContained, syncWikiOnce, runFidelityOnce, tickPasses, syncStampFor, makeDocRender,
   parseOneShotArgs, archiveExcludedDryRun,
-  syncPullOnce, syncApplyOnce, syncDeskPushOnce, runReconcile, runEnableTwoWay,
+  syncPullOnce, syncApplyOnce, syncDeskPushOnce, runReconcile, runEnableTwoWay, runAutoTwoWayOnce,
   syncNotionBornOnce, syncPeopleOnce,
   syncArchiveExcludedOnce, syncTranscriptsOnce, runAdoptionReportOnce,
   listOpenProposals, approveProposal, rejectProposal, resolveFrozenDoc,
@@ -101,7 +101,7 @@ describe("runPassesContained — the tick's pass isolation", () => {
 });
 
 describe("tickPasses — the tick's order", () => {
-  it("is attendees → transcripts → notion-born → pull → apply → push wiki → push desks → people, in that order", async () => {
+  it("is attendees → transcripts → notion-born → pull → apply → push wiki → push desks → auto-two-way → people, in that order", async () => {
     const ran: string[] = [];
     const spy = (name: string) => async (): Promise<number> => {
       ran.push(name);
@@ -111,10 +111,10 @@ describe("tickPasses — the tick's order", () => {
       attendees: spy("attendees"), transcripts: spy("transcripts"),
       notionBorn: spy("notion-born"),
       pull: spy("pull"), apply: spy("apply"),
-      wiki: spy("wiki"), desk: spy("desk"), people: spy("people"),
+      wiki: spy("wiki"), desk: spy("desk"), autoTwoWay: spy("auto-two-way"), people: spy("people"),
     });
 
-    const order = ["attendees", "transcripts", "notion-born", "pull", "apply", "wiki", "desk", "people"];
+    const order = ["attendees", "transcripts", "notion-born", "pull", "apply", "wiki", "desk", "auto-two-way", "people"];
     expect(passes.map((p) => p.name)).toEqual(order);
     expect(await runPassesContained(passes)).toBe(true);
     // The assertion that matters: every push runs AFTER pull. A push before pull
@@ -130,6 +130,9 @@ describe("tickPasses — the tick's order", () => {
     // …and people runs AFTER attendees, whose `Attendees` string it derives the
     // relation from. It is last because nothing else reads what it writes.
     expect(ran.indexOf("attendees")).toBeLessThan(ran.indexOf("people"));
+    // …and auto-two-way runs AFTER the desk push: the live leg must read the page
+    // the push has just written, never the one before it.
+    expect(ran.indexOf("desk")).toBeLessThan(ran.indexOf("auto-two-way"));
   });
 
   it("still runs the later passes when an earlier one throws — containment is unchanged", async () => {
@@ -144,10 +147,10 @@ describe("tickPasses — the tick's order", () => {
         attendees: ok("attendees"), transcripts: ok("transcripts"),
         notionBorn: ok("notion-born"),
         pull: async () => { throw new Error("notion down"); },
-        apply: ok("apply"), wiki: ok("wiki"), desk: ok("desk"), people: ok("people"),
+        apply: ok("apply"), wiki: ok("wiki"), desk: ok("desk"), autoTwoWay: ok("auto-two-way"), people: ok("people"),
       }));
       expect(clean).toBe(false);
-      expect(ran).toEqual(["attendees", "transcripts", "notion-born", "apply", "wiki", "desk", "people"]);
+      expect(ran).toEqual(["attendees", "transcripts", "notion-born", "apply", "wiki", "desk", "auto-two-way", "people"]);
     } finally {
       spy.mockRestore();
     }
@@ -186,6 +189,12 @@ describe("parseOneShotArgs — the entrypoint's flag guard", () => {
     // bin/notion-sync.ts, so it travels through here untouched.
     expect(parseOneShotArgs(["--transcripts", "--dry-run"])).toEqual({ once: false, mode: "transcripts" });
     expect(parseOneShotArgs(["--people", "--dry-run"])).toEqual({ once: false, mode: "people" });
+  });
+
+  it("reads --auto-two-way as a single-pass preview, exclusive like every other one-shot", () => {
+    expect(parseOneShotArgs(["--auto-two-way", "--dry-run"])).toEqual({ once: false, mode: "auto-two-way" });
+    expect(() => parseOneShotArgs(["--auto-two-way", "--people"])).toThrow(/one one-shot flag at a time/);
+    expect(() => parseOneShotArgs(["--auto-two-way", "--once"])).toThrow(/--once runs the tick/);
   });
 
   it("holds the four new modes to the same mutual exclusivity as every other one-shot", () => {
@@ -2163,6 +2172,118 @@ describe("makeDocRender, reconcile and enable-two-way (real Postgres, fake Notio
         `SELECT vault_path FROM notion_sync_docs WHERE target = 'docs'`,
       );
       expect(rows.rows.map((r) => r.vault_path)).toContain(`${DESK}/fresh.md`);
+    }, 30_000);
+  });
+
+  describe("runAutoTwoWayOnce — the same gates, each tick, for opted-in dirs", () => {
+    const configPath = (): string => process.env.NOTION_SYNC_CONFIG as string;
+    let original: string;
+
+    beforeEach(async () => {
+      original = await readFile(configPath(), "utf8");
+      await writeFile(configPath(), JSON.stringify({ ...JSON.parse(original), autoTwoWayDirs: [DESK] }));
+    });
+    afterEach(async () => {
+      await writeFile(configPath(), original);
+    });
+
+    async function seed(name: string, pageId: string, vault: string): Promise<void> {
+      await writeFile(join(vaultPath, DESK, name), vault);
+      await upsertDocSynced(db, {
+        vaultPath: `${DESK}/${name}`, pageId, mdHash: "h", notionHash: "n",
+        notionLastEdited: "2026-08-04T09:00:00.000Z",
+      });
+    }
+    const directionOf = async (name: string): Promise<string> => (await db.query<{ direction: string }>(
+      `SELECT direction FROM notion_sync_docs WHERE vault_path = $1`, [`${DESK}/${name}`],
+    )).rows[0].direction;
+    const markdownReads = (fake: ReturnType<typeof makeNotionFetch>): string[] =>
+      fake.requests.filter((r) => r.method === "GET" && r.path.endsWith("/markdown")).map((r) => r.path);
+
+    it("is a no-op returning null when no dir is opted in", async () => {
+      await writeFile(configPath(), original);
+      expect(await runAutoTwoWayOnce({ dryRun: false }, new Map())).toBeNull();
+    });
+
+    it("flips what passes with no fidelity record, refuses the rest with the gate's own reason, and never promotes a Notion-owned row", async () => {
+      await seed("ok.md", "pok", `${STAMP}hello\n`);
+      await seed("drift.md", "pdrift", `${STAMP}hello\n`);
+      await seed("ghost__post.md", "pghost", `${STAMP}hello\n`);
+      await seed("nostamp.md", "pnostamp", "hello\n");
+      await seed("owned.md", "powned", `${STAMP}hello\n`);
+      await db.query(`UPDATE notion_sync_docs SET direction = 'notion_to_md' WHERE vault_path = $1`, [`${DESK}/owned.md`]);
+      const fake = makeNotionFetch({
+        markdown: { pok: "hello", pdrift: "something else entirely", pghost: "hello", pnostamp: "hello", powned: "hello" },
+        queries: [[{ pageId: "pok", vaultPath: `${DESK}/ok.md`, lastEditedTime: "2026-08-04T12:00:00.000Z" }]],
+      });
+      vi.stubGlobal("fetch", fake.impl);
+
+      const result = await runAutoTwoWayOnce({ dryRun: false }, new Map());
+
+      expect(result?.enabled).toEqual([`${DESK}/ok.md`]);
+      expect(result?.inScope).toBe(4); // owned.md is not a candidate at all
+      const reasons = new Map(result?.skipped.map((s) => [s.vaultPath, s.reason]));
+      expect(reasons.get(`${DESK}/drift.md`)).toMatch(/live round-trip differs/);
+      expect(reasons.get(`${DESK}/ghost__post.md`)).toMatch(/mirrorFilePrefixes/);
+      expect(reasons.get(`${DESK}/nostamp.md`)).toMatch(/^offline round trip: .*no origin at all/);
+      expect(await directionOf("ok.md")).toBe("two_way");
+      for (const name of ["drift.md", "ghost__post.md", "nostamp.md"]) expect(await directionOf(name)).toBe("md_to_notion");
+      expect(await directionOf("owned.md")).toBe("notion_to_md");
+      // Enabled exactly as the operator command enables: unlocked, stamped ✍️ Desk,
+      // and baselined from a reading taken after those writes.
+      const metaPatch = fake.requests.find((r) => r.method === "PATCH" && r.body?.is_locked !== undefined);
+      expect(metaPatch?.body).toMatchObject({ is_locked: false, icon: null });
+      const row = (await db.query<{ notion_hash: string; notion_last_edited: Date }>(
+        `SELECT notion_hash, notion_last_edited FROM notion_sync_docs WHERE vault_path = $1`, [`${DESK}/ok.md`],
+      )).rows[0];
+      expect(row.notion_hash).toBe(sha256("hello"));
+      expect(row.notion_last_edited.toISOString()).toBe("2026-08-04T12:00:00.000Z");
+      // The offline leg fails nostamp.md before its page is read; the mirror prefix is
+      // refused before anything. Only ok and drift needed the live leg.
+      expect(markdownReads(fake).sort()).toEqual(["/v1/pages/pdrift/markdown", "/v1/pages/pok/markdown"]);
+    }, 30_000);
+
+    it("does not re-read a failed file until it changes, then checks it again", async () => {
+      await seed("drift.md", "pdrift", `${STAMP}hello\n`);
+      const failures = new Map<string, string>();
+      const fake = makeNotionFetch({ markdown: { pdrift: "something else entirely" }, queries: [[]] });
+      vi.stubGlobal("fetch", fake.impl);
+
+      await runAutoTwoWayOnce({ dryRun: false }, failures);
+      const second = await runAutoTwoWayOnce({ dryRun: false }, failures);
+      expect(second).toMatchObject({ enabled: [], skipped: [], unchanged: 1 });
+      expect(markdownReads(fake)).toHaveLength(1);
+
+      await writeFile(join(vaultPath, DESK, "drift.md"), `${STAMP}hello again\n`);
+      const third = await runAutoTwoWayOnce({ dryRun: false }, failures);
+      expect(third?.unchanged).toBe(0);
+      expect(markdownReads(fake)).toHaveLength(2);
+    }, 30_000);
+
+    it("does not remember a row that is only waiting to be synced", async () => {
+      await seed("pending.md", "ppending", `${STAMP}hello\n`);
+      await db.query(`UPDATE notion_sync_docs SET state = 'frozen' WHERE vault_path = $1`, [`${DESK}/pending.md`]);
+      const failures = new Map<string, string>();
+      vi.stubGlobal("fetch", makeNotionFetch({ markdown: {}, queries: [[]] }).impl);
+
+      const result = await runAutoTwoWayOnce({ dryRun: false }, failures);
+      expect(result?.skipped[0].reason).toMatch(/row state is 'frozen'/);
+      expect(failures.size).toBe(0);
+    }, 30_000);
+
+    it("dry run reports what would flip and changes nothing, not even its memory", async () => {
+      await seed("ok.md", "pok", `${STAMP}hello\n`);
+      await seed("drift.md", "pdrift", `${STAMP}hello\n`);
+      const failures = new Map<string, string>();
+      const fake = makeNotionFetch({ markdown: { pok: "hello", pdrift: "different" }, queries: [[]] });
+      vi.stubGlobal("fetch", fake.impl);
+
+      const result = await runAutoTwoWayOnce({ dryRun: true }, failures);
+      expect(result?.enabled).toEqual([`${DESK}/ok.md`]);
+      expect(result?.summary).toContain("(dry-run)");
+      expect(await directionOf("ok.md")).toBe("md_to_notion");
+      expect(failures.size).toBe(0);
+      expect(fake.requests.filter((r) => r.method === "PATCH")).toHaveLength(0);
     }, 30_000);
   });
 });

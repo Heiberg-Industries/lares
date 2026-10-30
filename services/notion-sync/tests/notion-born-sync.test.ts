@@ -36,7 +36,7 @@ const CONFIG = {
       // matches path segments, never string prefixes, so this must be allowed.
       { dir: "wikipedia", project: "Wikipedia" },
     ],
-    twoWayDirs: [],
+    twoWayDirs: [], autoTwoWayDirs: [],
     mirrorFilePrefixes: [],
   },
   transcripts: { dir: "transcripts", projects: [] },

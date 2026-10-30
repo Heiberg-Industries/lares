@@ -83,7 +83,7 @@ import {
   syncAttendeesOnce, syncWikiOnce, syncDeskPushOnce, syncPullOnce, syncApplyOnce,
   syncTranscriptsOnce, syncNotionBornOnce, syncPeopleOnce,
   runPassesContained, tickPasses, parseOneShotArgs,
-  runReconcile, runEnableTwoWay, runFidelityOnce, syncDirPrefixes, resolveFrozenDoc,
+  runReconcile, runEnableTwoWay, runAutoTwoWayOnce, runFidelityOnce, syncDirPrefixes, resolveFrozenDoc,
   syncArchiveExcludedOnce, archiveExcludedDryRun,
   runAdoptionReportOnce, printAdoptionReport,
   approveProposal, rejectProposal, approveConsequence, rejectConsequence,
@@ -259,6 +259,27 @@ async function runApplyPass(): Promise<number> {
   return result.bookkeepingFailed;
 }
 
+/**
+ * Rows under `autoTwoWayDirs` that pass every two-way gate become editable in Notion.
+ * A file that stays locked is named once per content version, with the gate's reason,
+ * so an owner can see why a page is still 🔒 without running anything. Only a flip
+ * that failed part-way counts against the tick: a file that does not round-trip is a
+ * finding, not a failure.
+ */
+async function runAutoTwoWayPass(): Promise<number> {
+  const result = await runAutoTwoWayOnce({ dryRun: DRY_RUN });
+  if (result === null) {
+    console.log("notion-sync: auto-two-way: not configured, skipping");
+    return 0;
+  }
+  for (const path of result.enabled) console.log(`notion-sync: auto-two-way: ${path} is now editable in Notion`);
+  for (const skip of result.skipped) {
+    console.log(`notion-sync: auto-two-way: ${skip.vaultPath} stays locked — ${skip.reason}`);
+  }
+  console.log(`notion-sync: ${result.summary}`);
+  return result.skipped.filter((skip) => skip.reason.startsWith("enable failed")).length;
+}
+
 /** Each configured desk folder, pushed md→Notion by the same engine as the wiki. */
 async function runDeskPass(): Promise<number> {
   const result = await syncDeskPushOnce({ dryRun: DRY_RUN });
@@ -284,6 +305,7 @@ const runTick = (): Promise<boolean> => runPassesContained(tickPasses({
   apply: runApplyPass,
   wiki: runWikiPass,
   desk: runDeskPass,
+  autoTwoWay: runAutoTwoWayPass,
   people: runPeoplePass,
 }));
 
@@ -306,6 +328,7 @@ async function runOneShot(): Promise<boolean> {
   if (ONE_SHOT_MODE === "transcripts") return await runTranscriptPass() === 0;
   if (ONE_SHOT_MODE === "notion-born") return await runNotionBornPass() === 0;
   if (ONE_SHOT_MODE === "people") return await runPeoplePass() === 0;
+  if (ONE_SHOT_MODE === "auto-two-way") return await runAutoTwoWayPass() === 0;
 
   if (ONE_SHOT_MODE === "adoption-report") {
     // Never opens a database connection — see runAdoptionReportOnce's own doc
@@ -435,7 +458,7 @@ if (ONE_SHOT_MODE !== undefined) {
 
   console.log(
     `notion-sync: daemon up — one tick ` +
-    `(attendees → transcripts → notion-born → pull → apply → push wiki → push desks → people) ` +
+    `(attendees → transcripts → notion-born → pull → apply → push wiki → push desks → auto-two-way → people) ` +
     `every ${TICK_MS}ms, tolerance ${TOLERANCE_MINUTES} min` +
     `${DRY_RUN ? ", DRY-RUN (writes nothing)" : ""}`,
   );

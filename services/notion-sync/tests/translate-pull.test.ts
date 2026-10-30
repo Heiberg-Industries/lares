@@ -628,6 +628,28 @@ describe("normalizeForFidelity", () => {
   it("normalises CRLF to LF", () => {
     expect(normalizeForFidelity("a\r\nb\r\n")).toBe("a\nb");
   });
+
+  // Rule 5. Shaped from the markdown Notion returned for a pushed desk page on
+  // 2026-10-30, where prose "Both on example.com, both in English." came back with
+  // the domain linked; tests/live/notion-autolink.live.mts reads a real page.
+  it("treats Notion's own link on a bare address as the bare address", () => {
+    expect(normalizeForFidelity("Both on [example.com](http://example.com), both in English."))
+      .toBe(normalizeForFidelity("Both on example.com, both in English."));
+    expect(normalizeForFidelity("See [example.com/notes](https://example.com/notes)."))
+      .toBe(normalizeForFidelity("See example.com/notes."));
+    expect(normalizeForFidelity("[example.com](https://example.com/)")).toBe("example.com");
+  });
+
+  it("still sees every other link, including one whose text differs from its target by a character", () => {
+    expect(normalizeForFidelity("[the site](https://example.com)")).not.toBe(normalizeForFidelity("the site"));
+    expect(normalizeForFidelity("[example.com](https://example.org)")).not.toBe(normalizeForFidelity("example.com"));
+    expect(normalizeForFidelity("[example.com](ftp://example.com)")).not.toBe(normalizeForFidelity("example.com"));
+  });
+
+  it("never touches a link inside a fenced code block", () => {
+    const fenced = "```\n[example.com](http://example.com)\n```";
+    expect(normalizeForFidelity(fenced)).toBe(fenced);
+  });
 });
 
 describe("round-trip against real wiki fixtures", () => {

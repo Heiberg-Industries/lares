@@ -144,6 +144,7 @@ describe("parseNotionSyncConfig — desk dirs", () => {
         { dir: "writing", project: "Portfolio" },
       ],
       twoWayDirs: ["desks/one"],
+      autoTwoWayDirs: [],
       mirrorFilePrefixes: ["writing/ghost__"],
     });
 
@@ -151,8 +152,21 @@ describe("parseNotionSyncConfig — desk dirs", () => {
     expect(parseNotionSyncConfig(bare).desks).toEqual({
       deskDirs: bare.deskDirs,
       twoWayDirs: [],
+      autoTwoWayDirs: [],
       mirrorFilePrefixes: [],
     });
+  });
+
+  it("accepts autoTwoWayDirs only as a subset of twoWayDirs — it narrows the pilot dial, never widens it", () => {
+    expect(parseNotionSyncConfig({ ...desksValid, autoTwoWayDirs: ["desks/one"] }).desks?.autoTwoWayDirs)
+      .toEqual(["desks/one"]);
+    // "writing" is a desk dir but not opened for two-way: auto may not open it.
+    expect(() => parseNotionSyncConfig({ ...desksValid, autoTwoWayDirs: ["writing"] }))
+      .toThrow(/autoTwoWayDirs\[0\] must be one of the twoWayDirs/);
+    expect(() => parseNotionSyncConfig({ ...desksValid, autoTwoWayDirs: "desks/one" }))
+      .toThrow(/autoTwoWayDirs must be an array/);
+    expect(() => parseNotionSyncConfig({ ...valid, ...wikiKeys, autoTwoWayDirs: ["desks/one"] }))
+      .toThrow(/deskDirs/);
   });
 
   it("rejects a stray desk key without deskDirs — a typo'd list must not become a silent skip", () => {

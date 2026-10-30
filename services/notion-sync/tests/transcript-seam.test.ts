@@ -58,7 +58,7 @@ function deskRowPaths(store: Map<string, StoreRow>): string[] {
 const CONFIG = {
   desks: {
     deskDirs: [{ dir: "alpha", project: "Alpha", exclude: ["transcripts"] }],
-    twoWayDirs: [],
+    twoWayDirs: [], autoTwoWayDirs: [],
     mirrorFilePrefixes: [],
   },
   transcripts: { dir: "transcripts", projects: [{ notionProject: "Alpha", vaultFolder: "alpha" }] },

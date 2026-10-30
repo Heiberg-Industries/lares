@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import type { Command } from "commander";
 import { poolFromEnv, type Queryable } from "@lares/agent-box";
 import { loadNotionSyncConfig } from "./config.js";
-import type { NotionSyncConfig } from "./types.js";
+import type { NotionSyncConfig, DesksConfig } from "./types.js";
 import {
   DEFAULT_CREATED_TOLERANCE_MINUTES, DEFAULT_STARVATION_STREAK,
   DEFAULT_STARVATION_WINDOW_DAYS, DEFAULT_TOLERANCE_MINUTES,
@@ -1881,6 +1881,147 @@ function frontmatterCloseDisagrees(source: string): boolean {
   return trimClose !== startsWithClose;
 }
 
+/** What one candidate row's two-way gate needs. Shared by `enable-two-way` and the
+ *  auto-two-way pass so the two can never disagree about which file may flip. */
+interface TwoWayGateContext {
+  desks: DesksConfig;
+  notion: Pick<ReturnType<typeof makeNotionClient>, "getPageMarkdown">;
+  vault: Pick<ReturnType<typeof makeVaultWalk>, "readVaultFile">;
+  resolvePage: ReturnType<typeof buildPageResolver>;
+  /** The offline leg: null when it passed, otherwise the reason it did not. The
+   *  operator command consults the recorded fidelity table; the auto pass runs the
+   *  same offline round trip on the file as it stands. */
+  offline: (vaultPath: string) => Promise<string | null>;
+}
+
+type TwoWayVerdict =
+  | { ok: true; live: string; reflowed: boolean }
+  | { ok: false; reason: string };
+
+/**
+ * Every gate a vault-owned or Notion-owned desk row must pass before its direction
+ * may become two-way, in the order `enable-two-way` has always applied them: state,
+ * mirror-by-config, the offline leg, the live leg (this page's REAL markdown,
+ * reverse-translated), the frontmatter close, the origin stamp, and the normalised
+ * body comparison. Nothing here writes anything.
+ */
+async function gateRowForTwoWay(ctx: TwoWayGateContext, vaultPath: string, row: DeskRow): Promise<TwoWayVerdict> {
+  if (row.state !== "synced") return { ok: false, reason: `row state is '${row.state}', not 'synced'` };
+  const mirrored = ctx.desks.mirrorFilePrefixes.find((prefix) => vaultPath.startsWith(prefix));
+  if (mirrored !== undefined) {
+    return { ok: false, reason: `mirror by config (mirrorFilePrefixes: "${mirrored}")` };
+  }
+  const offline = await ctx.offline(vaultPath);
+  if (offline !== null) return { ok: false, reason: offline };
+
+  let live: string;
+  let pulledBody: string;
+  try {
+    live = await ctx.notion.getPageMarkdown(row.pageId);
+    const parsed = parseNotionPage(live, { resolvePage: ctx.resolvePage });
+    assertPullSafe(parsed.body);
+    pulledBody = parsed.body;
+  } catch (err) {
+    return { ok: false, reason: `live leg: ${errorText(err)}` };
+  }
+
+  let vaultSource: string;
+  let sourceBody: string;
+  try {
+    vaultSource = await ctx.vault.readVaultFile(vaultPath);
+    sourceBody = splitSource(vaultSource).body;
+  } catch (err) {
+    return { ok: false, reason: `vault read: ${errorText(err)}` };
+  }
+
+  // ADR-0017 rule 9, live leg: the same verdict the offline gate computes in
+  // lib/fidelity.ts's checkOne, against the file as it stands right now — the
+  // offline leg only proves the LAST recorded fidelity pass, and the file may
+  // have changed on disk since. The two legs must never disagree (fidelity.ts's
+  // own header), so the reasons are identical.
+  if (frontmatterCloseDisagrees(vaultSource)) {
+    return {
+      ok: false,
+      reason: "this file's frontmatter block ends ambiguously (a line starting with \"---\" that " +
+        "is not exactly \"---\") — refusing rather than guessing which stamp survives a pull",
+    };
+  }
+  const stamp = readOriginFrontmatter(vaultSource);
+  if (stamp === undefined) return { ok: false, reason: "a pull would leave this file with no origin at all" };
+  const afterStamp = originAfterWrite(stamp, "synced");
+  if (afterStamp !== stamp) {
+    return {
+      ok: false,
+      reason: `a pull would leave this file's origin as "${afterStamp}" instead of "${stamp}" — refusing rather than widening it`,
+    };
+  }
+
+  if (normalizeForFidelity(sourceBody) !== normalizeForFidelity(pulledBody)) {
+    const preview = diffPreview(normalizeForFidelity(sourceBody), normalizeForFidelity(pulledBody));
+    return { ok: false, reason: `live round-trip differs (Notion's own serialisation) — ${preview.split("\n")[0]}` };
+  }
+  return { ok: true, live, reflowed: sourceBody !== pulledBody };
+}
+
+/**
+ * The Notion half of enabling a row: unlock, drop the 🔒, stamp ✍️ Desk. Every one
+ * of these is idempotent, which is what lets an already-two-way row be REPAIRED
+ * rather than skipped. Unlock and drop the 🔒 in the same beat as the property: the
+ * icon is the glance-level signal and the lock is the speed bump, and a page that
+ * is now editable must not keep advertising that it is not.
+ */
+async function openPageForTwoWay(
+  notion: Pick<ReturnType<typeof makeNotionClient>, "updatePageMeta" | "updateDocProps">,
+  pageId: string,
+): Promise<void> {
+  await notion.updatePageMeta(pageId, { icon: null, isLocked: false });
+  await notion.updateDocProps(pageId, { sync: SYNC_DESK });
+}
+
+/** The store flip, then the Notion half. Not one transaction (cannot be): a failure
+ *  between them leaves the row two-way and still locked, which `enable-two-way`'s
+ *  re-assert branch repairs. */
+async function flipRowToTwoWay(
+  pool: Queryable,
+  notion: Pick<ReturnType<typeof makeNotionClient>, "updatePageMeta" | "updateDocProps">,
+  vaultPath: string,
+  pageId: string,
+): Promise<void> {
+  await setDocDirection(pool, vaultPath, TWO_WAY);
+  await openPageForTwoWay(notion, pageId);
+}
+
+/**
+ * Same ordering rule as reconcile: the writes that enabled these rows bumped
+ * `last_edited_time`, so the watermark comes from a query taken after them, and only
+ * for rows the query actually returns (never a guessed value). The hash is the one
+ * read for the live leg. Properties and icons do not change a page's markdown; if
+ * that ever stopped being true the next tick would re-read, see a different hash and
+ * raise a proposal: visible, gated, never a silent write.
+ */
+async function baselineEnabledRows(
+  pool: Queryable,
+  notion: Pick<ReturnType<typeof makeNotionClient>, "queryDocs">,
+  docsDataSourceId: string,
+  toBaseline: Array<{ vaultPath: string; pageId: string; notionHash: string }>,
+): Promise<void> {
+  if (toBaseline.length === 0) return;
+  const observed = new Map(
+    (await notion.queryDocs(docsDataSourceId)).map((remote) => [pageKey(remote.pageId), remote.lastEditedTime]),
+  );
+  for (const entry of toBaseline) {
+    const lastEdited = observed.get(pageKey(entry.pageId));
+    if (lastEdited === undefined || lastEdited === "") {
+      console.warn(
+        `notion-sync: ${entry.vaultPath} enabled but not baselined — no page in the fresh ` +
+        `Docs query; the next pull tick reads it once and baselines it then`,
+      );
+      continue;
+    }
+    await updateNotionWatermark(pool, entry.vaultPath, entry.notionHash, lastEdited);
+  }
+}
+
 export async function runEnableTwoWay(dir: string, opts: { dryRun: boolean }): Promise<EnableTwoWayResult> {
   const cfg = loadNotionSyncConfig();
   const wiki = cfg.wiki;
@@ -1936,18 +2077,15 @@ export async function runEnableTwoWay(dir: string, opts: { dryRun: boolean }): P
       .filter(([vaultPath]) => vaultPath.startsWith(`${dir}/`) && !isExcluded(vaultPath))
       .sort(([a], [b]) => (a < b ? -1 : 1));
 
-    /**
-     * The Notion half of enabling a row: unlock, drop the 🔒, stamp ✍️ Desk.
-     * Every one of these is idempotent, which is what lets an already-two-way row
-     * be REPAIRED rather than skipped (see the branch below).
-     */
-    async function openPage(pageId: string): Promise<void> {
-      // Unlock and drop the 🔒 in the same beat as the property: the icon is the
-      // glance-level signal and the lock is the speed bump, and a page that is now
-      // editable must not keep advertising that it is not.
-      await notion.updatePageMeta(pageId, { icon: null, isLocked: false });
-      await notion.updateDocProps(pageId, { sync: SYNC_DESK });
-    }
+    const openPage = (pageId: string): Promise<void> => openPageForTwoWay(notion, pageId);
+    const gate: TwoWayGateContext = {
+      desks, notion, vault, resolvePage,
+      // The operator command's offline leg is the RECORDED one: the table
+      // `fidelity --record` wrote, consulted as-is.
+      offline: async (vaultPath) => (passed.has(vaultPath)
+        ? null
+        : "no passing fidelity record — run `notion-sync fidelity --record` and read its report"),
+    };
 
     for (const [vaultPath, row] of rows) {
       if (row.direction === TWO_WAY) {
@@ -1991,86 +2129,16 @@ export async function runEnableTwoWay(dir: string, opts: { dryRun: boolean }): P
         }
         continue;
       }
-      if (row.state !== "synced") {
-        skipped.push({ vaultPath, reason: `row state is '${row.state}', not 'synced'` });
+      const verdict = await gateRowForTwoWay(gate, vaultPath, row);
+      if (!verdict.ok) {
+        skipped.push({ vaultPath, reason: verdict.reason });
         continue;
       }
-      const mirrored = desks.mirrorFilePrefixes.find((prefix) => vaultPath.startsWith(prefix));
-      if (mirrored !== undefined) {
-        skipped.push({ vaultPath, reason: `mirror by config (mirrorFilePrefixes: "${mirrored}")` });
-        continue;
-      }
-      if (!passed.has(vaultPath)) {
-        skipped.push({
-          vaultPath,
-          reason: "no passing fidelity record — run `notion-sync fidelity --record` and read its report",
-        });
-        continue;
-      }
-
-      let live: string;
-      let pulledBody: string;
-      try {
-        live = await notion.getPageMarkdown(row.pageId);
-        const parsed = parseNotionPage(live, { resolvePage });
-        assertPullSafe(parsed.body);
-        pulledBody = parsed.body;
-      } catch (err) {
-        skipped.push({ vaultPath, reason: `live leg: ${errorText(err)}` });
-        continue;
-      }
-
-      let vaultSource: string;
-      let sourceBody: string;
-      try {
-        vaultSource = await vault.readVaultFile(vaultPath);
-        sourceBody = splitSource(vaultSource).body;
-      } catch (err) {
-        skipped.push({ vaultPath, reason: `vault read: ${errorText(err)}` });
-        continue;
-      }
-
-      // ADR-0017 rule 9, live leg: the same verdict the offline gate computes in
-      // lib/fidelity.ts's checkOne, against the file as it stands right now — the
-      // offline leg only proves the LAST recorded fidelity pass, and the file may
-      // have changed on disk since. The two legs must never disagree (fidelity.ts's
-      // own header), so the reasons are identical.
-      if (frontmatterCloseDisagrees(vaultSource)) {
-        skipped.push({
-          vaultPath,
-          reason: "this file's frontmatter block ends ambiguously (a line starting with \"---\" that " +
-            "is not exactly \"---\") — refusing rather than guessing which stamp survives a pull",
-        });
-        continue;
-      }
-      const stamp = readOriginFrontmatter(vaultSource);
-      if (stamp === undefined) {
-        skipped.push({ vaultPath, reason: "a pull would leave this file with no origin at all" });
-        continue;
-      }
-      const afterStamp = originAfterWrite(stamp, "synced");
-      if (afterStamp !== stamp) {
-        skipped.push({
-          vaultPath,
-          reason: `a pull would leave this file's origin as "${afterStamp}" instead of "${stamp}" — refusing rather than widening it`,
-        });
-        continue;
-      }
-
-      if (normalizeForFidelity(sourceBody) !== normalizeForFidelity(pulledBody)) {
-        const preview = diffPreview(normalizeForFidelity(sourceBody), normalizeForFidelity(pulledBody));
-        skipped.push({
-          vaultPath,
-          reason: `live round-trip differs (Notion's own serialisation) — ${preview.split("\n")[0]}`,
-        });
-        continue;
-      }
-
       // Equal after normalisation, not before: this file's blocks are spaced
       // some way other than the canonical one, so the first Notion edit applied
       // to it will rewrite that spacing once. Reported, never a reason to
       // refuse — the content round-trips, which is what direction turns on.
-      if (sourceBody !== pulledBody) reflowed.push(vaultPath);
+      if (verdict.reflowed) reflowed.push(vaultPath);
 
       if (opts.dryRun) {
         enabled.push(vaultPath);
@@ -2084,14 +2152,13 @@ export async function runEnableTwoWay(dir: string, opts: { dryRun: boolean }): P
       // loop repairs on the next run, so the reported failure is actionable rather
       // than terminal.
       try {
-        await setDocDirection(pool, vaultPath, TWO_WAY);
-        await openPage(row.pageId);
+        await flipRowToTwoWay(pool, notion, vaultPath, row.pageId);
       } catch (err) {
         skipped.push({ vaultPath, reason: `enable failed (re-run to repair): ${errorText(err)}` });
         continue;
       }
       enabled.push(vaultPath);
-      toBaseline.push({ vaultPath, pageId: row.pageId, notionHash: sha256(live) });
+      toBaseline.push({ vaultPath, pageId: row.pageId, notionHash: sha256(verdict.live) });
     }
 
     // Same ordering rule as reconcile: the writes above bumped
@@ -2105,23 +2172,7 @@ export async function runEnableTwoWay(dir: string, opts: { dryRun: boolean }): P
     // converges to all-skips — and if that ever stopped being true the next tick
     // would re-read, see a different hash and raise a proposal: visible, gated,
     // never a silent write.
-    if (toBaseline.length > 0) {
-      const observed = new Map(
-        (await notion.queryDocs(wiki.docsDataSourceId))
-          .map((remote) => [pageKey(remote.pageId), remote.lastEditedTime]),
-      );
-      for (const entry of toBaseline) {
-        const lastEdited = observed.get(pageKey(entry.pageId));
-        if (lastEdited === undefined || lastEdited === "") {
-          console.warn(
-            `notion-sync: ${entry.vaultPath} enabled but not baselined — no page in the fresh ` +
-            `Docs query; the next pull tick reads it once and baselines it then`,
-          );
-          continue;
-        }
-        await updateNotionWatermark(pool, entry.vaultPath, entry.notionHash, lastEdited);
-      }
-    }
+    await baselineEnabledRows(pool, notion, wiki.docsDataSourceId, toBaseline);
 
     return {
       dir,
@@ -2132,6 +2183,137 @@ export async function runEnableTwoWay(dir: string, opts: { dryRun: boolean }): P
         `enable-two-way ${dir}: ${enabled.length} enabled (${reflowed.length} will reflow on first apply), ` +
         `${skipped.length} skipped, ` +
         `${rows.length} row(s) in scope${opts.dryRun ? " (dry-run)" : ""}`,
+    };
+  } finally {
+    await pool.end();
+  }
+}
+
+export interface AutoTwoWayResult {
+  enabled: string[];
+  /** Candidates that failed a gate this tick, with the gate's own reason. */
+  skipped: Array<{ vaultPath: string; reason: string }>;
+  /** Candidates not re-checked because the file is unchanged since it last failed. */
+  unchanged: number;
+  inScope: number;
+  summary: string;
+}
+
+/**
+ * Failed checks by vault path → the sha256 of the file the check ran against. A
+ * file that failed is not re-checked until its content changes, so a folder of
+ * old files that will never round-trip costs one live read each per process, not
+ * one per tick. In process on purpose: losing it on a restart costs exactly one
+ * re-check per file, and keeping it in the store would need a schema change for
+ * what is only a cache.
+ */
+const autoTwoWayFailures = new Map<string, string>();
+
+/**
+ * The auto-two-way pass: the gates `enable-two-way` applies, run each tick over
+ * the synced, vault-owned rows under `autoTwoWayDirs`, so a file written after the
+ * operator's last `enable-two-way` run becomes editable without another quiesce.
+ *
+ * Differences from the operator command, each deliberate:
+ *   - The offline leg is computed on the file as it stands (lib/fidelity.ts's
+ *     runFidelity over that one file), not read from the recorded table: the table
+ *     is a record of a past run and can never know about a file written since.
+ *   - Only `md_to_notion` rows are candidates. Promoting a Notion-owned page to
+ *     two-way stays an operator decision.
+ *   - Already-two-way rows are not re-asserted here; that repair stays with the
+ *     operator command, which is where an interrupted flip is reported.
+ *
+ * It runs inside the daemon's own tick, after the desk push — so the page it reads
+ * is the one the push just wrote, and no other pass of this process is running at
+ * the same time (the reason the operator command needs a quiesced daemon does not
+ * apply to a pass of the daemon itself).
+ */
+export async function runAutoTwoWayOnce(
+  opts: { dryRun: boolean },
+  failures: Map<string, string> = autoTwoWayFailures,
+): Promise<AutoTwoWayResult | null> {
+  const cfg = loadNotionSyncConfig();
+  const wiki = cfg.wiki;
+  const desks = cfg.desks;
+  if (wiki === undefined || desks === undefined || desks.autoTwoWayDirs.length === 0) return null;
+
+  const pool = poolFromEnv();
+  try {
+    const notion = makeNotionClient({ token: readSecret("NOTION_TOKEN"), version: cfg.notionVersion });
+    const vault = makeVaultWalk({ vaultPath: cfg.vaultPath });
+    const allRows = await getDeskRows(pool);
+    const isExcluded = makeDeskExclusion(desks);
+    // Scoped exactly as enable-two-way and pull scope it — see runEnableTwoWay.
+    const resolvePage = buildPageResolver(withoutExcluded(allRows, isExcluded));
+    const gate: TwoWayGateContext = {
+      desks, notion, vault, resolvePage,
+      offline: async (vaultPath) => {
+        const run = await runFidelity([vaultPath], (path) => vault.readVaultFile(path));
+        return run.passed === 1 ? null : `offline round trip: ${run.failed[0]?.reason ?? "failed"}`;
+      },
+    };
+
+    const candidates = [...allRows]
+      .filter(([vaultPath, row]) =>
+        desks.autoTwoWayDirs.some((dir) => vaultPath.startsWith(`${dir}/`)) &&
+        !isExcluded(vaultPath) &&
+        vaultOwns(row.direction))
+      .sort(([a], [b]) => (a < b ? -1 : 1));
+
+    const enabled: string[] = [];
+    const skipped: Array<{ vaultPath: string; reason: string }> = [];
+    const toBaseline: Array<{ vaultPath: string; pageId: string; notionHash: string }> = [];
+    let unchanged = 0;
+
+    for (const [vaultPath, row] of candidates) {
+      let contentHash: string;
+      try {
+        contentHash = sha256(await vault.readVaultFile(vaultPath));
+      } catch (err) {
+        skipped.push({ vaultPath, reason: `vault read: ${errorText(err)}` });
+        continue;
+      }
+      if (failures.get(vaultPath) === contentHash) {
+        unchanged += 1;
+        continue;
+      }
+
+      const verdict = await gateRowForTwoWay(gate, vaultPath, row);
+      if (!verdict.ok) {
+        skipped.push({ vaultPath, reason: verdict.reason });
+        // A row that is not synced yet will be once a later push lands it, with the
+        // file unchanged — so only content-dependent failures are remembered.
+        if (!opts.dryRun && !verdict.reason.startsWith("row state is")) failures.set(vaultPath, contentHash);
+        continue;
+      }
+      if (opts.dryRun) {
+        enabled.push(vaultPath);
+        continue;
+      }
+      try {
+        await flipRowToTwoWay(pool, notion, vaultPath, row.pageId);
+      } catch (err) {
+        // Not remembered: a transient failure is retried next tick. A flip that
+        // failed half-way is repaired by the operator command's re-assert.
+        skipped.push({ vaultPath, reason: `enable failed (retried next tick): ${errorText(err)}` });
+        continue;
+      }
+      failures.delete(vaultPath);
+      enabled.push(vaultPath);
+      toBaseline.push({ vaultPath, pageId: row.pageId, notionHash: sha256(verdict.live) });
+    }
+
+    await baselineEnabledRows(pool, notion, wiki.docsDataSourceId, toBaseline);
+
+    return {
+      enabled,
+      skipped,
+      unchanged,
+      inScope: candidates.length,
+      summary:
+        `auto-two-way: ${enabled.length} enabled, ${skipped.length} skipped, ` +
+        `${unchanged} unchanged since their last check, ${candidates.length} in scope` +
+        `${opts.dryRun ? " (dry-run)" : ""}`,
     };
   } finally {
     await pool.end();
@@ -2159,7 +2341,7 @@ function formatAge(ms: number): string {
  */
 export type OneShotMode =
   | "reconcile" | "fidelity-record" | "enable-two-way" | "resolve" | "archive-excluded"
-  | "adoption-report" | "transcripts" | "notion-born" | "people" | "approve" | "reject";
+  | "adoption-report" | "transcripts" | "notion-born" | "people" | "auto-two-way" | "approve" | "reject";
 
 export interface OneShotArgs {
   /** `--once`: run a single tick. Mutually exclusive with every mode below. */
@@ -2272,12 +2454,12 @@ export function parseOneShotArgs(argv: string[]): OneShotArgs {
   }
   const knownBooleanFlags = new Set([
     "--once", "--dry-run", "--no-dry-run", "--reconcile", "--fidelity-record",
-    "--archive-excluded", "--adoption-report", "--transcripts", "--notion-born", "--people",
+    "--archive-excluded", "--adoption-report", "--transcripts", "--notion-born", "--people", "--auto-two-way",
   ]);
   const validOneShots =
     "--approve <path>, --reject <path>, --resolve <path> --keep md|notion, --enable-two-way <dir>, " +
     "--reconcile, --fidelity-record, --archive-excluded, --adoption-report, --transcripts, " +
-    "--notion-born, --people, or --once";
+    "--notion-born, --people, --auto-two-way, or --once";
   for (let i = 0; i < argv.length; i++) {
     if (consumed.has(i) || knownBooleanFlags.has(argv[i])) continue;
     const token = argv[i];
@@ -2308,6 +2490,7 @@ export function parseOneShotArgs(argv: string[]): OneShotArgs {
     ...(argv.includes("--transcripts") ? [["transcripts", "--transcripts"] as [OneShotMode, string]] : []),
     ...(argv.includes("--notion-born") ? [["notion-born", "--notion-born"] as [OneShotMode, string]] : []),
     ...(argv.includes("--people") ? [["people", "--people"] as [OneShotMode, string]] : []),
+    ...(argv.includes("--auto-two-way") ? [["auto-two-way", "--auto-two-way"] as [OneShotMode, string]] : []),
     ...(enableAt === -1 ? [] : [["enable-two-way", "--enable-two-way"] as [OneShotMode, string]]),
     ...(resolveAt === -1 ? [] : [["resolve", "--resolve"] as [OneShotMode, string]]),
     ...(approveAt === -1 ? [] : [["approve", "--approve"] as [OneShotMode, string]]),
@@ -2399,6 +2582,7 @@ export interface TickRunners {
   apply: () => Promise<number>;
   wiki: () => Promise<number>;
   desk: () => Promise<number>;
+  autoTwoWay: () => Promise<number>;
   people: () => Promise<number>;
 }
 
@@ -2475,6 +2659,7 @@ export function tickPasses(runners: TickRunners): SyncPass[] {
     { name: "apply", run: runners.apply },
     { name: "wiki", run: runners.wiki },
     { name: "desk", run: runners.desk },
+    { name: "auto-two-way", run: runners.autoTwoWay },
     { name: "people", run: runners.people },
   ];
 }
