@@ -9,17 +9,20 @@ import {
   buildInspection,
   inspectExportArchive,
   verifySourceLedger,
+  verifyDatabaseSchemas,
+  parseDatabaseSchemas,
 } from "../bin/import-preview.js";
 import { IMPORT_CATEGORIES } from "@lares/agent-kit/authority-contract";
 
 const roots: string[] = [];
-function fixtureArchive(options: { badChecksum?: boolean; nestedName?: string; source?: string; oversizedManifest?: boolean } = {}): string {
+function fixtureArchive(options: { badChecksum?: boolean; badInventory?: boolean; legacy?: boolean; nestedName?: string; source?: string; oversizedManifest?: boolean; schemas?: string[] } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "import-preview-"));
   roots.push(root);
   const archive = join(root, "export.tar");
   const script = String.raw`
 import hashlib, io, json, sys, tarfile
-root, archive, bad, nested_name, source, oversized = sys.argv[1:]
+root, archive, bad, nested_name, source, oversized, bad_inventory, legacy, schemas_json = sys.argv[1:]
+schemas = json.loads(schemas_json)
 files = {
   "globals.sql": b"-- fixture globals without password material\n",
   "lares_state.dump": b"synthetic custom database dump",
@@ -39,6 +42,21 @@ manifest = {"engineVersion": source, "date": "x" * (1024 * 1024 + 1) if oversize
 for name, data in files.items():
     manifest["files"].append({"name": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
 if bad == "yes": manifest["files"][0]["sha256"] = "0" * 64
+if legacy != "yes":
+    by_name = {entry["name"]: entry for entry in manifest["files"]}
+    manifest["inventoryVersion"] = 1
+    manifest["sourceInventory"] = {
+        "databaseCoverage": "all-nontemplate-databases",
+        "databases": [{"name": name, "member": name + ".dump", "sha256": by_name[name + ".dump"]["sha256"], "schemas": schemas} for name in ["lares_state", "postgres"]],
+        "dataRoots": [{"storeKind": "agent-definitions", "disposition": "included", "member": "agents.tar", "sha256": by_name["agents.tar"]["sha256"]}],
+        "dataSelection": "configured",
+        "absentDataRoots": [{"storeKind": "installation-inventory", "disposition": "absent"}],
+        "vaultRepositories": [], "vaultSelection": "configured-empty",
+        "supportFiles": [{"kind": "postgres-roles-without-passwords", "member": "globals.sql", "sha256": by_name["globals.sql"]["sha256"]}],
+        "protectedMaterial": {"credentialFiles": "excluded", "encryptedDatabaseCredentials": "may-be-present", "ordinaryImport": "blocked"},
+        "unverified": ["stores outside the configured export paths", "database table and row contents beyond the declared schema names", "source-version compatibility and identity mappings"],
+    }
+    if bad_inventory == "yes": manifest["sourceInventory"]["dataRoots"] = []
 with tarfile.open(archive, mode="w") as tf:
     payloads = {**files, "manifest.json": json.dumps(manifest).encode()}
     for name, data in payloads.items():
@@ -46,7 +64,7 @@ with tarfile.open(archive, mode="w") as tf:
         info.size = len(data)
         tf.addfile(info, io.BytesIO(data))
 `;
-  execFileSync("python3", ["-c", script, root, archive, options.badChecksum ? "yes" : "no", options.nestedName ?? "agents/example/agent.json", options.source ?? "2026-10-21-rc.12", options.oversizedManifest ? "yes" : "no"]);
+  execFileSync("python3", ["-c", script, root, archive, options.badChecksum ? "yes" : "no", options.nestedName ?? "agents/example/agent.json", options.source ?? "2026-10-21-rc.12", options.oversizedManifest ? "yes" : "no", options.badInventory ? "yes" : "no", options.legacy ? "yes" : "no", JSON.stringify(options.schemas ?? ["public"])]);
   return archive;
 }
 
@@ -68,7 +86,9 @@ function ledgerCopy(extra?: string): string {
   ].join("\n");
 }
 
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(() => {
+  roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
+});
 
 function installedHarness(mode: "success" | "overflow" | "timeout" | "inspect" = "success") {
   const root = mkdtempSync(join(tmpdir(), "lares-cli-harness-"));
@@ -101,7 +121,14 @@ case "$*" in
         for arg in "$@"; do case "$arg" in *:/output:rw) target="${'${arg%:/output:rw}'}"; printf 'RAW-LEDGER-SECRET%s' "$(python3 -c 'print("x" * 140000)')" > "$target/schema-migrations.copy";; esac; done
         ;;
       success|inspect)
-        for arg in "$@"; do case "$arg" in *:/output:rw) target="${'${arg%:/output:rw}'}"; printf '%s' "$LEDGER_PAYLOAD" > "$target/schema-migrations.copy";; esac; done
+        for arg in "$@"; do case "$arg" in *:/output:rw)
+          target="${'${arg%:/output:rw}'}"
+          printf '%s' "$LEDGER_PAYLOAD" > "$target/schema-migrations.copy"
+          mkdir -p "$target/database-toc"
+          printf '; Archive created at fixture\n; Selected TOC Entries:\n3; 1259 16385 TABLE public schema_migrations fixture_owner\n4; 0 0 TABLE DATA public schema_migrations fixture_owner\n' > "$target/database-toc/lares_state.toc"
+          cp "$target/database-toc/lares_state.toc" "$target/database-toc/postgres.toc"
+          ;;
+        esac; done
         ;;
     esac
     ;;
@@ -170,22 +197,171 @@ describe("PR1a export archive inspection", () => {
     );
   });
 
-  it("runs the CLI entrypoint with four arguments and redacts a rejected ledger", () => {
+  it("requires matching dump schema metadata and redacts a rejected ledger", () => {
     const archive = fixtureArchive();
     const root = dirname(archive);
     const ledgerPath = join(root, "schema-migrations.copy");
+    const tocDir = join(root, "database-toc");
+    mkdirSync(tocDir);
+    const toc = [
+      "; Archive created at fixture", "; Selected TOC Entries:",
+      "3; 2615 2200 SCHEMA - public fixture_owner",
+      "4; 1259 16385 TABLE public notes fixture_owner",
+      "5; 0 0 SEQUENCE OWNED BY public notes_id_seq notes_id fixture_owner",
+      "6; 0 0 SEQUENCE SET public notes_id_seq fixture_owner",
+      "7; 0 0 TABLE DATA public notes fixture_owner",
+      "",
+    ].join("\n");
+    writeFileSync(join(tocDir, "lares_state.toc"), toc);
+    writeFileSync(join(tocDir, "postgres.toc"), toc);
     const script = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "import-preview.ts");
     writeFileSync(ledgerPath, ledgerCopy());
-    const accepted = spawnSync(process.execPath, ["--import", "tsx/esm", script, "--archive", archive, "--ledger-copy", ledgerPath], { encoding: "utf8" });
+    const accepted = spawnSync(process.execPath, ["--import", "tsx/esm", script, "--archive", archive, "--ledger-copy", ledgerPath, "--database-toc-dir", tocDir], { encoding: "utf8" });
     expect(accepted.status, accepted.stderr).toBe(0);
     const result = JSON.parse(accepted.stdout);
-    expect(result).toMatchObject({ format: "lares.import-inspection", status: "inspection-only", importReadiness: "blocked" });
+    expect(result).toMatchObject({ format: "lares.import-inspection", status: "inspection-only", importReadiness: "blocked", sourceInventory: { databases: [{ name: "lares_state", schemas: ["public"] }, { name: "postgres", schemas: ["public"] }] } });
+    const parser = join(dirname(fileURLToPath(import.meta.url)), "..", "ops", "pg-restore-list-schemas.py");
+    const parsed = spawnSync("python3", [parser], { input: toc, encoding: "utf8" });
+    expect(parsed.status, parsed.stdout).toBe(0);
+    expect(JSON.parse(parsed.stdout)).toEqual({ schemas: ["public"] });
 
     writeFileSync(ledgerPath, "SECRET-LEDGER-SENTINEL");
-    const refused = spawnSync(process.execPath, ["--import", "tsx/esm", script, "--archive", archive, "--ledger-copy", ledgerPath], { encoding: "utf8" });
+    const refused = spawnSync(process.execPath, ["--import", "tsx/esm", script, "--archive", archive, "--ledger-copy", ledgerPath, "--database-toc-dir", tocDir], { encoding: "utf8" });
     expect(refused.status).toBe(78);
     expect(refused.stderr).toContain("source_schema_mismatch");
     expect(refused.stderr).not.toContain("SECRET-LEDGER-SENTINEL");
+
+    writeFileSync(ledgerPath, ledgerCopy());
+    writeFileSync(join(tocDir, "postgres.toc"), "; Archive created at fixture\n; Selected TOC Entries:\n3; 2615 2200 SCHEMA - unverified fixture_owner\n");
+    let schemaMismatch: unknown;
+    try { verifyDatabaseSchemas(inspectExportArchive(archive), tocDir); }
+    catch (error) { schemaMismatch = error; }
+    expect(schemaMismatch).toEqual(new ImportInspectionRefused("source_schema_inventory_mismatch", "schema_list_mismatch"));
+
+    writeFileSync(join(tocDir, "postgres.toc"), "; Archive created at fixture\n; Selected TOC Entries:\n3; 1259 16385 UNKNOWN public SECRET_OBJECT_SENTINEL fixture_owner\n");
+    const metadataRefusal = spawnSync(process.execPath, ["--import", "tsx/esm", script, "--archive", archive, "--ledger-copy", ledgerPath, "--database-toc-dir", tocDir], { encoding: "utf8" });
+    expect(metadataRefusal.status).toBe(78);
+    expect(metadataRefusal.stderr).toContain("refused (source_schema_inventory_mismatch)");
+    expect(metadataRefusal.stderr).toContain("inspectionCheck=toc_object_type_unsupported");
+    expect(metadataRefusal.stderr).not.toContain("SECRET_OBJECT_SENTINEL");
+    expect(metadataRefusal.stderr).not.toContain("fixture_owner");
+  });
+
+  it("refuses legacy manifests and omitted source stores", () => {
+    expect(() => inspectExportArchive(fixtureArchive({ legacy: true }))).toThrowError(
+      new ImportInspectionRefused("legacy_manifest_without_inventory"),
+    );
+    expect(() => inspectExportArchive(fixtureArchive({ badInventory: true }))).toThrowError(
+      new ImportInspectionRefused("source_inventory_mismatch"),
+    );
+  });
+
+  it("parses only unambiguous schema entries from PostgreSQL TOC metadata", () => {
+    const parser = join(dirname(fileURLToPath(import.meta.url)), "..", "ops", "pg-restore-list-schemas.py");
+    const toc = "; Archive created at fixture\n; Selected TOC Entries:\n3; 1259 16385 TABLE public notes fixture_owner\n4; 0 0 TABLE DATA public notes fixture_owner\n";
+    const accepted = spawnSync("python3", [parser], { input: toc, encoding: "utf8" });
+    expect(accepted.status).toBe(0);
+    expect(JSON.parse(accepted.stdout)).toEqual({ schemas: ["public"] });
+    const emptyCustom = spawnSync("python3", [parser], { input: "; Archive created at fixture\n; Selected TOC Entries:\n3; 2615 2200 SCHEMA - custom fixture_owner\n", encoding: "utf8" });
+    expect(emptyCustom.status).toBe(0);
+    expect(JSON.parse(emptyCustom.stdout)).toEqual({ schemas: ["custom"] });
+    const noSchemaEvidence = spawnSync("python3", [parser], { input: [
+      "; Archive created at fixture", "; Selected TOC Entries:",
+      "3; 0 0 ENCODING - UTF8", "4; 0 0 STDSTRINGS - ON", "5; 0 0 SEARCHPATH - \"$user\", public",
+    ].join("\n") + "\n", encoding: "utf8" });
+    expect(noSchemaEvidence.status).toBe(0);
+    expect(JSON.parse(noSchemaEvidence.stdout)).toEqual({ schemas: [] });
+    for (const invalid of [
+      "", "; Archive created at fixture\n", "; Selected TOC Entries:\n3; 1259 16385 TABLE public notes owner\n",
+      "; Archive created at fixture\n; Selected TOC Entries:\n3; broken\n", "; Archive created at fixture\n; Selected TOC Entries:\n3; 1259 16385 TABLE public\n",
+      '3; 1259 16385 TABLE "two words" notes fixture_owner\n',
+      "3; 1259 16385 UNKNOWN - object fixture_owner\n",
+      "x".repeat(256 * 1024 + 1),
+    ]) {
+      const refused = spawnSync("python3", [parser], { input: invalid, encoding: "utf8" });
+      expect(refused.status).not.toBe(0);
+      expect(refused.stdout).not.toContain("two words");
+      expect(refused.stdout).not.toContain("fixture_owner");
+    }
+  });
+
+  it("keeps parser and subprocess refusal diagnostics fixed and redacted", () => {
+    const malformed = Buffer.from("; Archive created at fixture\n; Selected TOC Entries:\n3; 1259 16385 UNKNOWN public SECRET_SENTINEL fixture_owner\n");
+    expect(() => parseDatabaseSchemas(malformed)).toThrowError(
+      new ImportInspectionRefused("source_schema_inventory_mismatch", "toc_object_type_unsupported"),
+    );
+    expect(() => parseDatabaseSchemas(Buffer.alloc(256 * 1024 + 1))).toThrowError(
+      new ImportInspectionRefused("source_schema_inventory_mismatch", "toc_too_large"),
+    );
+
+    const refusals: Array<[Record<string, unknown>, string]> = [
+      [{ code: "ENOENT" }, "parser_unavailable"],
+      [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }, "parser_output_limit"],
+      [{ signal: "SIGTERM" }, "parser_signaled"],
+      [{ code: "EACCES" }, "parser_launch_failed"],
+      [{ status: 1, stdout: Buffer.from("SECRET_SENTINEL") }, "parser_output_json_invalid"],
+      [{ status: 1, stdout: Buffer.from('{"error":"unsupported_schema_metadata","inspectionCheck":"SECRET_SENTINEL"}') }, "parser_exit_unclassified"],
+      [{ status: 1, stdout: Buffer.from('{"error":"wrong","inspectionCheck":"toc_entries_missing"}') }, "parser_output_shape_invalid"],
+      [{ status: 0, stdout: "not-json" }, "parser_output_json_invalid"],
+      [{ status: 0, stdout: "{}" }, "parser_output_shape_invalid"],
+      [{ status: 0, stdout: '{"schemas":["SECRET_SENTINEL BAD"]}' }, "parser_schema_value_invalid"],
+      [{ status: 0, stdout: '{"schemas":["zeta","alpha"]}' }, "parser_schema_order_invalid"],
+    ];
+    for (const [failure, expected] of refusals) {
+      const bin = mkdtempSync(join(tmpdir(), "import-preview-parser-stub-"));
+      roots.push(bin);
+      const python = join(bin, "python3");
+      let script: string;
+      if (failure.code === "ENOENT") {
+        script = "";
+      } else if (failure.code === "EACCES") {
+        writeFileSync(python, "#!/bin/sh\nexit 0\n");
+        chmodSync(python, 0o644);
+        script = "";
+      } else if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+        script = "#!/bin/bash\nprintf '%070000d' 0\n";
+      } else if (failure.signal) {
+        script = "#!/bin/bash\nkill -TERM $$\n";
+      } else {
+        const output = String(failure.stdout ?? "");
+        const status = typeof failure.status === "number" ? failure.status : 0;
+        script = `#!/bin/bash\nprintf '%s' '${output}'\nexit ${status}\n`;
+      }
+      if (script) {
+        writeFileSync(python, script);
+        chmodSync(python, 0o755);
+      }
+      const previousPath = process.env.PATH;
+      process.env.PATH = bin;
+      try {
+        let error: unknown;
+        try { parseDatabaseSchemas(Buffer.from("bounded input")); }
+        catch (caught) { error = caught; }
+        expect(error, `expected parser refusal: ${expected}`).toBeInstanceOf(ImportInspectionRefused);
+        expect((error as ImportInspectionRefused).reason).toBe("source_schema_inventory_mismatch");
+        expect((error as ImportInspectionRefused).inspectionCheck).toBe(expected);
+        expect(String(error)).not.toContain("SECRET_SENTINEL");
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+      }
+    }
+  });
+
+  it("accepts an empty dump-observed schema list only when both declarations and TOCs agree", () => {
+    const archive = fixtureArchive({ schemas: [] });
+    const root = dirname(archive);
+    const tocDir = join(root, "database-toc");
+    mkdirSync(tocDir);
+    for (const database of ["lares_state", "postgres"]) {
+      writeFileSync(join(tocDir, `${database}.toc`), "; Archive created at fixture\n; Selected TOC Entries:\n3; 0 0 ENCODING - UTF8\n4; 0 0 STDSTRINGS - ON\n5; 0 0 SEARCHPATH - \"$user\", public\n");
+    }
+    expect(inspectExportArchive(archive).sourceInventory.databases.map((database) => database.schemas)).toEqual([[], []]);
+    expect(() => verifyDatabaseSchemas(inspectExportArchive(archive), tocDir)).not.toThrow();
+    writeFileSync(join(tocDir, "postgres.toc"), "; Archive created at fixture\n; Selected TOC Entries:\n3; 1259 16385 TABLE public notes fixture_owner\n");
+    expect(() => verifyDatabaseSchemas(inspectExportArchive(archive), tocDir)).toThrowError(
+      new ImportInspectionRefused("source_schema_inventory_mismatch", "schema_list_mismatch"),
+    );
   });
 });
 
@@ -200,12 +376,25 @@ describe("installed import-preview command boundary", () => {
     expect(cli).toContain("-v \"$archive:/input.tar:ro\"");
     expect(cli).toContain("pg_restore --data-only --table=schema_migrations -f -");
     expect(cli).toContain("timeout --signal=INT --kill-after=10 120 docker run");
-    expect(cli).toContain("ulimit -f 256");
+    expect(cli).toContain("ulimit -f 512");
     expect(cli).toContain("bin/import-preview.ts --check-archive \"$archive\"");
-    expect(cli).toContain("engine_run --network-none --ro \"$archive\" --ro \"$ledger_file\"");
+    expect(cli).toContain("pg_restore --list");
+    expect(cli).toContain("/output/database-toc/$db.toc");
+    expect(cli).not.toContain("python3 /app/services/box/ops/pg-restore-list-schemas.py");
+    expect(cli).toContain("engine_run --network-none --ro \"$archive\" --ro \"$ledger_file\" --ro \"$toc_dir\"");
+    expect(cli).toContain("--database-toc-dir \"$toc_dir\"");
     const previewCommand = cli.split("cmd_import_preview() {")[1]?.split("cmd_owner_bootstrap()")[0] ?? "";
     expect(previewCommand).not.toMatch(/DATABASE_PASSWORD|LARES_OPERATOR_PASSWORD|docker\.sock/);
     expect(previewCommand).not.toMatch(/pg_restore[^\n]*\s-d\s/);
+  });
+
+  it("runs the wrapper's extracted dump-name expression through a shell", () => {
+    const path = join(dirname(fileURLToPath(import.meta.url)), "..", "ops", "lares");
+    const cli = readFileSync(path, "utf8");
+    const sedExpression = cli.match(/sed -n ("[^"]+")/)?.[1];
+    expect(sedExpression).toBeTruthy();
+    const output = execFileSync("bash", ["-c", `printf '%s\\n' ./lares_state.dump ./postgres.dump ./manifest.json | sed -n ${sedExpression}`], { encoding: "utf8" });
+    expect(output.trim().split("\n")).toEqual(["lares_state", "postgres"]);
   });
 
   it("keeps engine-run networking unchanged unless a caller explicitly disables it", () => {
@@ -274,10 +463,12 @@ print(guard)
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(join(harness.prefix, "opt/lares/current/services/box/engine-image"), "utf8").trim()).toBe(image);
     const inspection = JSON.parse(result.stdout);
-    expect(inspection).toMatchObject({ status: "inspection-only", importReadiness: "blocked", archive: { verifiedFiles: 4, nestedRegularFileCount: 1 } });
+    expect(inspection).toMatchObject({ status: "inspection-only", importReadiness: "blocked", archive: { verifiedFiles: 4, nestedRegularFileCount: 1 }, sourceInventory: { databases: [{ name: "lares_state", schemas: ["public"] }, { name: "postgres", schemas: ["public"] }] } });
     expect(inspection.categories.map((entry: { category: string }) => entry.category)).toEqual(IMPORT_CATEGORIES);
     expect(inspection.categories.every((entry: { status: string; count: unknown; checksum: unknown }) => entry.status === "not-inventoried" && entry.count === null && entry.checksum === null)).toBe(true);
     expect(readFileSync(harness.dockerLog, "utf8").match(/--network none/g)).toHaveLength(4);
+    expect(readFileSync(harness.dockerLog, "utf8")).toContain("/output/database-toc/$db.toc");
+    expect(readFileSync(harness.dockerLog, "utf8")).toContain("pg_restore --list");
     expect(readFileSync(env.LARES_PROBE_EVENTS!, "utf8").trim().split("\n")).toEqual([
       "keeper-preview-safe", "helper-safe", "keeper-preview-safe",
     ]);

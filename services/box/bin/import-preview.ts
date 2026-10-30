@@ -5,11 +5,25 @@
  * This is deliberately an inspection result, not an ImportManifest/ImportReceipt. The later
  * category mapper must account for application rows and file stores before an import plan exists.
  */
-import { execFileSync } from "node:child_process";
+import * as childProcess from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { IMPORT_CATEGORIES } from "@lares/agent-kit/authority-contract";
 
 const SOURCE_RELEASE = "2026-10-21-rc.12";
+const INSPECTION_CHECKS = [
+  "toc_too_large", "toc_encoding_invalid", "toc_archive_header_missing", "toc_selection_header_missing",
+  "toc_entry_format_invalid", "toc_tokenization_failed", "toc_entry_tokens_empty", "toc_security_wrapper_invalid",
+  "toc_comment_acl_wrapper_invalid", "toc_wrapped_object_missing", "toc_wrapped_schema_invalid",
+  "toc_schema_declaration_invalid", "toc_default_acl_invalid", "toc_namespace_object_incomplete",
+  "toc_global_object_invalid", "toc_object_type_unsupported", "toc_schema_identifier_invalid",
+  "toc_explicit_schema_duplicate", "toc_entries_missing", "parser_internal_failure",
+  "toc_read_failed", "parser_unavailable", "parser_launch_failed", "parser_output_limit", "parser_signaled",
+  "parser_exit_unclassified", "parser_output_json_invalid", "parser_output_shape_invalid",
+  "parser_schema_value_invalid", "parser_schema_order_invalid", "schema_list_mismatch",
+] as const;
+type InspectionCheck = typeof INSPECTION_CHECKS[number];
+const PARSER_INSPECTION_CHECKS = new Set<string>(INSPECTION_CHECKS.slice(0, 20));
 const DESTINATION_SCHEMA = "rc.13@ec0c6cd8b2a2072d0cf066c1192c8d46787f2134";
 const EXPECTED_MIGRATIONS = [
   ["001_baseline.sql", "a2a50ac42a53b25ba28faf41e8b8970354292f131e0e673cb7cc2a0001fa725a"],
@@ -81,7 +95,11 @@ try:
         if len(manifest_bytes) > 1024 * 1024 or len(manifest_bytes) != manifest_member.size:
             raise ValueError("invalid_manifest")
         manifest = json.loads(manifest_bytes)
-        if not isinstance(manifest, dict) or set(manifest) != {"engineVersion", "date", "files"}:
+        if isinstance(manifest, dict) and ("inventoryVersion" not in manifest or "sourceInventory" not in manifest):
+            raise ValueError("legacy_manifest_without_inventory")
+        if not isinstance(manifest, dict) or set(manifest) != {"engineVersion", "date", "inventoryVersion", "files", "sourceInventory"}:
+            raise ValueError("invalid_manifest")
+        if manifest["inventoryVersion"] != 1:
             raise ValueError("invalid_manifest")
         if not isinstance(manifest["engineVersion"], str) or not isinstance(manifest["date"], str) or not isinstance(manifest["files"], list):
             raise ValueError("invalid_manifest")
@@ -95,6 +113,68 @@ try:
                 raise ValueError("invalid_manifest")
             entries[name] = entry
         if set(entries) != (set(by_name) - {"manifest.json"}): raise ValueError("manifest_file_set_mismatch")
+        inventory = manifest["sourceInventory"]
+        if not isinstance(inventory, dict) or set(inventory) != {"databaseCoverage", "databases", "dataRoots", "dataSelection", "absentDataRoots", "vaultRepositories", "vaultSelection", "supportFiles", "protectedMaterial", "unverified"}:
+            raise ValueError("invalid_source_inventory")
+        if inventory["databaseCoverage"] != "all-nontemplate-databases" or not isinstance(inventory["databases"], list):
+            raise ValueError("invalid_source_inventory")
+        db_names, db_members = set(), set()
+        for item in inventory["databases"]:
+            if not isinstance(item, dict) or set(item) != {"name", "member", "sha256", "schemas"}:
+                raise ValueError("invalid_source_inventory")
+            if not isinstance(item["name"], str) or not re.fullmatch(r"[A-Za-z0-9_-]+", item["name"]):
+                raise ValueError("invalid_source_inventory")
+            member = safe_name(item["member"])
+            schemas = item["schemas"]
+            if (member != item["name"] + ".dump" or member not in entries or entries[member]["sha256"] != item["sha256"] or
+                not isinstance(schemas, list) or
+                any(not isinstance(schema, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", schema) for schema in schemas) or
+                schemas != sorted(set(schemas)) or item["name"] in db_names):
+                raise ValueError("invalid_source_inventory")
+            db_names.add(item["name"]); db_members.add(member)
+        if "lares_state" not in db_names or db_members != {name for name in entries if name.endswith(".dump")}:
+            raise ValueError("source_inventory_mismatch")
+
+        def validate_stores(key, suffix):
+            records = inventory[key]
+            if not isinstance(records, list): raise ValueError("invalid_source_inventory")
+            members = set()
+            for item in records:
+                if not isinstance(item, dict) or set(item) != {"storeKind", "disposition", "member", "sha256"}:
+                    raise ValueError("invalid_source_inventory")
+                member = safe_name(item["member"])
+                if (not isinstance(item["storeKind"], str) or not re.fullmatch(r"[a-z][a-z0-9-]*", item["storeKind"]) or
+                    item["disposition"] != "included" or not member.endswith(suffix) or member not in entries or
+                    entries[member]["sha256"] != item["sha256"] or member in members):
+                    raise ValueError("invalid_source_inventory")
+                members.add(member)
+            if members != {name for name in entries if name.endswith(suffix)}:
+                raise ValueError("source_inventory_mismatch")
+            return members
+        data_members = validate_stores("dataRoots", ".tar")
+        vault_members = validate_stores("vaultRepositories", ".bundle")
+        if inventory["dataSelection"] != ("configured" if data_members else "configured-empty"):
+            raise ValueError("invalid_source_inventory")
+        if not isinstance(inventory["absentDataRoots"], list): raise ValueError("invalid_source_inventory")
+        absent = set()
+        for item in inventory["absentDataRoots"]:
+            if not isinstance(item, dict) or set(item) != {"storeKind", "disposition"} or item["disposition"] != "absent" or not isinstance(item["storeKind"], str) or not re.fullmatch(r"[a-z][a-z0-9-]*", item["storeKind"]) or item["storeKind"] in absent:
+                raise ValueError("invalid_source_inventory")
+            absent.add(item["storeKind"])
+        if inventory["vaultSelection"] != ("configured" if vault_members else "configured-empty"):
+            raise ValueError("invalid_source_inventory")
+        support = inventory["supportFiles"]
+        if (not isinstance(support, list) or len(support) != 1 or not isinstance(support[0], dict) or
+            set(support[0]) != {"kind", "member", "sha256"} or support[0]["kind"] != "postgres-roles-without-passwords" or
+            support[0]["member"] != "globals.sql" or "globals.sql" not in entries or entries["globals.sql"]["sha256"] != support[0]["sha256"]):
+            raise ValueError("invalid_source_inventory")
+        protected = inventory["protectedMaterial"]
+        if (not isinstance(protected, dict) or protected != {"credentialFiles": "excluded", "encryptedDatabaseCredentials": "may-be-present", "ordinaryImport": "blocked"}):
+            raise ValueError("invalid_source_inventory")
+        if inventory["unverified"] != ["stores outside the configured export paths", "database table and row contents beyond the declared schema names", "source-version compatibility and identity mappings"]:
+            raise ValueError("invalid_source_inventory")
+        if db_members | data_members | vault_members | {"globals.sql"} != set(entries):
+            raise ValueError("source_inventory_mismatch")
         kinds = {"databaseDumps": 0, "dataArchives": 0, "vaultBundles": 0, "otherFiles": 0}
         nested_files = 0
         for name, entry in entries.items():
@@ -121,9 +201,10 @@ try:
         if "lares_state.dump" not in entries or kinds["databaseDumps"] < 2 or "globals.sql" not in entries:
             raise ValueError("incomplete_export")
         print(json.dumps({"engineVersion": manifest["engineVersion"], "date": manifest["date"],
-                          "verifiedFiles": len(entries), "kinds": kinds, "nestedRegularFiles": nested_files}))
+                          "verifiedFiles": len(entries), "kinds": kinds, "nestedRegularFiles": nested_files,
+                          "sourceInventory": inventory}))
 except Exception as exc:
-    reason = str(exc) if str(exc) in {"unsafe_path", "secret_path", "unsafe_archive_entry", "duplicate_archive_path", "missing_manifest", "invalid_manifest", "manifest_file_set_mismatch", "checksum_mismatch", "unsupported_database_name", "unsupported_archive_file", "incomplete_export"} else "unreadable_archive"
+    reason = str(exc) if str(exc) in {"unsafe_path", "secret_path", "unsafe_archive_entry", "duplicate_archive_path", "missing_manifest", "invalid_manifest", "legacy_manifest_without_inventory", "invalid_source_inventory", "source_inventory_mismatch", "manifest_file_set_mismatch", "checksum_mismatch", "unsupported_database_name", "unsupported_archive_file", "incomplete_export"} else "unreadable_archive"
     print(json.dumps({"error": reason}))
 `;
 
@@ -133,16 +214,23 @@ export interface ArchiveInspection {
   verifiedFiles: number;
   kinds: { databaseDumps: number; dataArchives: number; vaultBundles: number; otherFiles: number };
   nestedRegularFiles: number;
+  sourceInventory: {
+    databases: Array<{ name: string; member: string; sha256: string; schemas: string[] }>;
+    dataRoots: Array<{ storeKind: string; disposition: "included"; member: string; sha256: string }>;
+    absentDataRoots: Array<{ storeKind: string; disposition: "absent" }>;
+    vaultRepositories: Array<{ storeKind: string; disposition: "included"; member: string; sha256: string }>;
+    protectedMaterial: { credentialFiles: "excluded"; encryptedDatabaseCredentials: "may-be-present"; ordinaryImport: "blocked" };
+  };
 }
 
 export class ImportInspectionRefused extends Error {
-  constructor(readonly reason: string) { super(`import preview inspection refused (${reason})`); }
+  constructor(readonly reason: string, readonly inspectionCheck: InspectionCheck | null = null) { super(`import preview inspection refused (${reason})`); }
 }
 
 export function inspectExportArchive(archivePath: string): ArchiveInspection {
   let result: unknown;
   try {
-    const stdout = execFileSync("python3", ["-c", ARCHIVE_CHECK, archivePath], { encoding: "utf8", maxBuffer: 1024 * 1024 });
+    const stdout = childProcess.execFileSync("python3", ["-c", ARCHIVE_CHECK, archivePath], { encoding: "utf8", maxBuffer: 1024 * 1024 });
     result = JSON.parse(stdout);
   } catch {
     throw new ImportInspectionRefused("unreadable_archive");
@@ -152,6 +240,74 @@ export function inspectExportArchive(archivePath: string): ArchiveInspection {
     throw new ImportInspectionRefused(reason);
   }
   return result as ArchiveInspection;
+}
+
+function isInspectionCheck(value: unknown): value is InspectionCheck {
+  return typeof value === "string" && INSPECTION_CHECKS.includes(value as InspectionCheck);
+}
+
+function parserFailureCheck(stdout: unknown): InspectionCheck {
+  if (typeof stdout !== "string" && !Buffer.isBuffer(stdout)) return "parser_output_json_invalid";
+  const output = Buffer.isBuffer(stdout) ? stdout.toString("utf8") : stdout;
+  if (Buffer.byteLength(output, "utf8") > 64 * 1024) return "parser_output_limit";
+  let parsed: unknown;
+  try { parsed = JSON.parse(output); }
+  catch { return "parser_output_json_invalid"; }
+  if (typeof parsed !== "object" || parsed === null || Object.keys(parsed).length !== 2 ||
+      (parsed as { error?: unknown }).error !== "unsupported_schema_metadata" ||
+      !("inspectionCheck" in parsed)) return "parser_output_shape_invalid";
+  const check = (parsed as { inspectionCheck: unknown }).inspectionCheck;
+  return typeof check === "string" && PARSER_INSPECTION_CHECKS.has(check)
+    ? check as InspectionCheck : "parser_exit_unclassified";
+}
+
+export function parseDatabaseSchemas(toc: Buffer): string[] {
+  const refuse = (inspectionCheck: InspectionCheck): never => {
+    throw new ImportInspectionRefused("source_schema_inventory_mismatch", inspectionCheck);
+  };
+  if (toc.byteLength > 256 * 1024) refuse("toc_too_large");
+  let parser: string;
+  try {
+    parser = fileURLToPath(new URL("../ops/pg-restore-list-schemas.py", import.meta.url));
+  } catch {
+    return refuse("parser_unavailable");
+  }
+  let output: string;
+  try {
+    output = childProcess.execFileSync("python3", [parser], { input: toc, encoding: "utf8", maxBuffer: 64 * 1024 });
+  } catch (error) {
+    const failure = error as { code?: unknown; signal?: unknown; status?: unknown; stdout?: unknown };
+    if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return refuse("parser_output_limit");
+    if (typeof failure.signal === "string") return refuse("parser_signaled");
+    if (failure.code === "ENOENT") return refuse("parser_unavailable");
+    if (typeof failure.status === "number") return refuse(parserFailureCheck(failure.stdout));
+    return refuse("parser_launch_failed");
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(output); }
+  catch { return refuse("parser_output_json_invalid"); }
+  if (typeof parsed !== "object" || parsed === null || Object.keys(parsed).length !== 1 ||
+      !Array.isArray((parsed as { schemas?: unknown }).schemas)) return refuse("parser_output_shape_invalid");
+  const schemas = (parsed as { schemas: unknown[] }).schemas;
+  if (schemas.some((schema) => typeof schema !== "string" || !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(schema))) {
+    return refuse("parser_schema_value_invalid");
+  }
+  if (JSON.stringify(schemas) !== JSON.stringify([...new Set(schemas)].sort())) return refuse("parser_schema_order_invalid");
+  return schemas as string[];
+}
+
+export function verifyDatabaseSchemas(archive: ArchiveInspection, tocDirectory: string): void {
+  for (const database of archive.sourceInventory.databases) {
+    let toc: Buffer;
+    try {
+      toc = readFileSync(`${tocDirectory}/${database.name}.toc`);
+    } catch {
+      throw new ImportInspectionRefused("source_schema_inventory_mismatch", "toc_read_failed");
+    }
+    if (JSON.stringify(parseDatabaseSchemas(toc)) !== JSON.stringify(database.schemas)) {
+      throw new ImportInspectionRefused("source_schema_inventory_mismatch", "schema_list_mismatch");
+    }
+  }
 }
 
 export function verifySourceLedger(copyOutput: string): void {
@@ -211,17 +367,19 @@ export function buildInspection(archive: ArchiveInspection) {
       checksum: null,
       reason: "The complete record and resource mapper is PR1b; no category count is inferred from archive file counts.",
     })),
+    sourceInventory: archive.sourceInventory,
     blockers: [
-      "PR1a verifies the supported source archive and Box schema only; it does not inventory application records or file resources.",
-      "PR1b must map every application category, selection, stable identity, provenance, dependency, and omission before an ImportManifest v1 can be produced.",
+      "The fresh export declares archive stores and database schema names only; it does not inventory application rows, individual file resources, or all configured storage outside the declared paths.",
+      "Encrypted database credentials may be present and remain blocked from ordinary import; a separate protected transfer or reconnection decision is still required.",
+      "Every application category, identity, provenance, dependency, and omission still needs record-level mapping before an ImportManifest v1 can be produced.",
     ],
   } as const;
 }
 
 function main(args: string[]): void {
   const checkOnly = args.length === 2 && args[0] === "--check-archive";
-  if (!checkOnly && (args.length !== 4 || args[0] !== "--archive" || args[2] !== "--ledger-copy")) {
-    process.stderr.write("Usage: import-preview.ts --check-archive <archive.tar> | --archive <archive.tar> --ledger-copy <schema-migrations-copy.txt>\n");
+  if (!checkOnly && (args.length !== 6 || args[0] !== "--archive" || args[2] !== "--ledger-copy" || args[4] !== "--database-toc-dir")) {
+    process.stderr.write("Usage: import-preview.ts --check-archive <archive.tar> | --archive <archive.tar> --ledger-copy <schema-migrations-copy.txt> --database-toc-dir <dir>\n");
     process.exitCode = 64;
     return;
   }
@@ -233,11 +391,15 @@ function main(args: string[]): void {
       return;
     }
     verifySourceLedger(readFileSync(args[3]!, "utf8"));
+    verifyDatabaseSchemas(archive, args[5]!);
     const inspection = buildInspection(archive);
     process.stdout.write(`${JSON.stringify(inspection, null, 2)}\n`);
   } catch (error) {
     const reason = error instanceof ImportInspectionRefused ? error.reason : "inspection_failed";
     process.stderr.write(`lares import-preview: refused (${reason}); no import data was written.\n`);
+    if (error instanceof ImportInspectionRefused && error.inspectionCheck !== null) {
+      process.stderr.write(`lares import-preview inspectionCheck=${error.inspectionCheck}\n`);
+    }
     process.exitCode = 78;
   }
 }

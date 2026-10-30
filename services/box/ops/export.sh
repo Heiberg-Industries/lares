@@ -47,6 +47,8 @@ EXPORT_VAULT_PATHS="${EXPORT_VAULT_PATHS-}"
 # The installation's own data (e.g. the deadline calendar) is portable too, where the folder exists.
 DEFAULT_DATA_PATHS="/srv/lares/agents /srv/lares/retired /srv/taste"
 [ -d /srv/lares/installation ] && DEFAULT_DATA_PATHS="$DEFAULT_DATA_PATHS /srv/lares/installation"
+DATA_PATHS_DEFAULTED=0
+if [ "${EXPORT_DATA_PATHS+x}" != x ]; then DATA_PATHS_DEFAULTED=1; fi
 EXPORT_DATA_PATHS="${EXPORT_DATA_PATHS-$DEFAULT_DATA_PATHS}"
 EXPORT_COMPOSE_FILE="${EXPORT_COMPOSE_FILE:-/opt/lares/compose.yaml}"
 EXPORT_DIR="${EXPORT_DIR:-/var/backups/export}"
@@ -172,6 +174,7 @@ DBS=$(operator_db psql -U "$DB_USER" -d postgres -tAc \
 EXPECTED=0
 for db in $DBS; do
   [ -n "$db" ] || continue
+  [[ "$db" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "export: unsupported database name — refusing an incomplete inventory" >&2; exit 1; }
   EXPECTED=$((EXPECTED + 1))
   operator_db pg_dump -U "$DB_USER" --create --format=custom "$db" > "$WORKDIR/${db}.dump" </dev/null
 done
@@ -186,12 +189,30 @@ dumps=("$WORKDIR"/*.dump)
   exit 1
 }
 
+# The inventory is extracted from each finished custom dump, not guessed from the current
+# checkout's migrations or read from the live catalog. pg_restore --list reads archive metadata
+# only; its output contains object names but never row values. Keep its raw output out of the
+# manifest and use the same strict parser later in import-preview.
+SCHEMA_PARSER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pg-restore-list-schemas.py"
+mkdir -p "$WORKDIR/.inventory"
+INVENTORY_RECORDS="$WORKDIR/.inventory/source-roots.tsv"
+: > "$INVENTORY_RECORDS"
+for dump in "${dumps[@]}"; do
+  db=$(basename "$dump" .dump)
+  OPERATOR_DB_TIMEOUT=120 operator_db pg_restore --list - < "$dump" | python3 "$SCHEMA_PARSER" > "$WORKDIR/.inventory/$db.json"
+done
+if [ "$DATA_PATHS_DEFAULTED" = 1 ] && [ ! -e /srv/lares/installation ]; then
+  printf 'absent\tinstallation-inventory\tabsent\t\n' >> "$INVENTORY_RECORDS"
+fi
+
 # --- 2. Vault bundles ----------------------------------------------------------------------
 for vault in $EXPORT_VAULT_PATHS; do
   [ -e "$vault" ] || { echo "export: vault path '$vault' does not exist — refusing an incomplete export" >&2; exit 1; }
   name=$(basename "$vault")
   name=${name%.git}
-  git --git-dir="$vault" bundle create "$WORKDIR/${name}.bundle" --all
+  member="${name}.bundle"
+  git --git-dir="$vault" bundle create "$WORKDIR/$member" --all
+  printf 'vault\tconfigured-vault-repository\tincluded\t%s\n' "$member" >> "$INVENTORY_RECORDS"
 done
 
 # --- 3. Data directories ---------------------------------------------------------------------
@@ -200,41 +221,23 @@ for data in $EXPORT_DATA_PATHS; do
   check_no_nested_secrets "$data"
   name=$(basename "$data")
   tar --exclude='*/.git/lares-vault.lock' -C "$(dirname "$data")" -cf "$WORKDIR/${name}.tar" "$name"
+  case "$data" in
+    /srv/lares/agents) store_kind=agent-definitions ;;
+    /srv/lares/retired) store_kind=retired-definitions ;;
+    /srv/taste) store_kind=taste-data ;;
+    */srv/lares/installation) store_kind=installation-inventory ;;
+    */srv/vault) store_kind=vault-data ;;
+    */var/lib/lares-vault-git) store_kind=vault-git-metadata ;;
+    *) store_kind=configured-data-directory ;;
+  esac
+  printf 'data\t%s\tincluded\t%s.tar\n' "$store_kind" "$name" >> "$INVENTORY_RECORDS"
 done
 
-# --- 4. Manifest: engine version, date, and per-file name/size/sha256 -----------------------
-sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
-  else
-    shasum -a 256 "$1" | awk '{print $1}'
-  fi
-}
-
+# --- 4. Manifest: exact archive members plus path-free source inventory ---------------------
 MANIFEST_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 MANIFEST="$WORKDIR/manifest.json"
-{
-  printf '{\n'
-  printf '  "engineVersion": "%s",\n' "$ENGINE_VERSION"
-  printf '  "date": "%s",\n' "$MANIFEST_DATE"
-  printf '  "files": [\n'
-  first=1
-  for f in "$WORKDIR"/*; do
-    [ -f "$f" ] || continue
-    base=$(basename "$f")
-    [ "$base" != "manifest.json" ] || continue
-    size=$(wc -c < "$f" | tr -d '[:space:]')  # not `stat`: its flags differ between Linux and macOS
-    sha=$(sha256_of "$f")
-    if [ "$first" -eq 1 ]; then
-      first=0
-    else
-      printf ',\n'
-    fi
-    printf '    {"name": "%s", "size": %s, "sha256": "%s"}' "$base" "$size" "$sha"
-  done
-  printf '\n  ]\n'
-  printf '}\n'
-} > "$MANIFEST"
+python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build-export-manifest.py" \
+  "$WORKDIR" "$ENGINE_VERSION" "$MANIFEST_DATE" "$INVENTORY_RECORDS"
 
 # --- 5. One final archive --------------------------------------------------------------------
 mkdir -p "$EXPORT_DIR"
