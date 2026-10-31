@@ -193,13 +193,13 @@ cmd_import_preview() {
   mkdir -m 0700 "$toc_dir"
   local helper_status=0 ledger_bytes row_bytes
   # Read the source migration ledger and each dump's pg_restore table-of-contents metadata, then
-  # render only four pinned rc.12 tables as PostgreSQL text COPY. No SQL is executed. The COPY
+  # render only the pinned member and owned-record tables as PostgreSQL text COPY. No SQL is executed. The COPY
   # files are bounded, private, read-only inputs to the strict record decoder.
   timeout --signal=INT --kill-after=10 120 docker run --rm --pull=never --network none --read-only --tmpfs /tmp \
     --cap-drop ALL --security-opt no-new-privileges \
     -v "$archive:/input.tar:ro" -v "$scratch:/output:rw" \
     --entrypoint sh "$helper_image" -ec \
-    'ulimit -Sf 512; tar -xOf /input.tar ./lares_state.dump | pg_restore --data-only --table=schema_migrations -f - > /output/schema-migrations.copy; (ulimit -Sf 16384; for table in users orgs org_member_policy user_aliases; do tar -xOf /input.tar ./lares_state.dump | pg_restore --data-only --schema=public --table="$table" -f - > "/output/$table.copy"; done); for db in $(tar -tf /input.tar | sed -n "s#^\\./\\([A-Za-z0-9_-]*\\)\\.dump\$#\\1#p"); do tar -xOf /input.tar "./$db.dump" | pg_restore --list > "/output/database-toc/$db.toc"; done' \
+    'ulimit -Sf 512; tar -xOf /input.tar ./lares_state.dump | pg_restore --data-only --table=schema_migrations -f - > /output/schema-migrations.copy; (ulimit -Sf 16384; for table in users orgs org_member_policy user_aliases standing_facts memory_proposals memory_reads memory_use agent_notes settings settings_audit brief_settings deadline_settings proactivity_settings schedule_settings conversation_retention forget_ledger digest_skips initiations email_triage_processed; do tar -xOf /input.tar ./lares_state.dump | pg_restore --data-only --schema=public --table="$table" -f - > "/output/$table.copy"; done); for db in $(tar -tf /input.tar | sed -n "s#^\\./\\([A-Za-z0-9_-]*\\)\\.dump\$#\\1#p"); do tar -xOf /input.tar "./$db.dump" | pg_restore --list > "/output/database-toc/$db.toc"; done' \
     >/dev/null 2>&1 || helper_status=$?
   if [ "$helper_status" -ne 0 ] || [ ! -s "$ledger_file" ] || [ ! -s "$toc_dir/lares_state.toc" ]; then
     rm -rf "$scratch"
@@ -221,7 +221,7 @@ cmd_import_preview() {
     case "$toc_bytes" in ''|*[!0-9]*) rm -rf "$scratch"; die "the source schema metadata was invalid; no database was contacted." "$EX_USAGE" ;; esac
     if [ "$toc_bytes" -gt 262144 ]; then rm -rf "$scratch"; die "the source schema metadata exceeded its safe size limit; no database was contacted." "$EX_USAGE"; fi
   done
-  for table in users orgs org_member_policy user_aliases; do
+  for table in users orgs org_member_policy user_aliases standing_facts memory_proposals memory_reads memory_use agent_notes settings settings_audit brief_settings deadline_settings proactivity_settings schedule_settings conversation_retention forget_ledger digest_skips initiations email_triage_processed; do
     local copy_file="$scratch/$table.copy"
     [ -s "$copy_file" ] || { rm -rf "$scratch"; die "the pinned source table evidence was incomplete; no database was contacted." "$EX_USAGE"; }
     row_bytes=$(wc -c < "$copy_file" | tr -d '[:space:]')
