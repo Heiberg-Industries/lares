@@ -20,6 +20,7 @@ import {
   buildInspection,
   inspectExportArchive,
   mapMemberEvidence,
+  mapOwnedRecordEvidence,
   verifySourceLedger,
   verifyDatabaseSchemas,
   parseDatabaseSchemas,
@@ -49,6 +50,49 @@ const memberCopies = () => ({
     "legacy-system\tPRIVATE_ALIAS\\tSENTINEL\tmember-a\t2026-10-21 00:00:00+00",
   ]),
 });
+
+const ownedColumns = {
+  standing_facts: "id, fact, category, source_turn, user_id, stated_at, retired_at, recorded_at, source, origin, superseded_by",
+  memory_proposals: "id, action, existing_id, existing_text, proposed_text, subject, origin, source, state, announced_at, created_at, ref, kind",
+  memory_reads: "session_id, turn_id, owner, kind, ref, at",
+  memory_use: "kind, ref, owner, first_used, last_used, uses",
+  agent_notes: "id, owner, agent, kind, note, origin, session_id, turn_id, at",
+  settings: "key, value, updated_by, updated_at",
+  settings_audit: "id, key, old_value, new_value, changed_by, at",
+  brief_settings: "owner, language, updated_by, updated_at",
+  deadline_settings: "owner, ladder_enabled, updated_by, updated_at",
+  proactivity_settings: "owner, agent, door, quiet_start, quiet_end, event_per_door_per_day, escalation_per_door_per_day, per_owner_per_day, dnd, updated_by, updated_at",
+  schedule_settings: "owner, schedule, hours, updated_by, updated_at",
+  conversation_retention: "owner, months, updated_by, updated_at",
+  forget_ledger: "id, owner, kind, match_hash, forgotten_at, reason",
+  digest_skips: "agent, path, reason, asked_at",
+  initiations: "id, owner, agent, door, cls, item_key, status, reason, until_at, owner_day, decided_at, sent_at",
+  email_triage_processed: "mailbox, gmail_message_id, principal, outcome, processed_at, attempts, draft_id, thread_id",
+} as const;
+const ownedCopies = (): Record<keyof typeof ownedColumns, Buffer> => Object.fromEntries(Object.entries(ownedColumns).map(([table, columns]) => [
+  table,
+  framed(copy(table, columns, table === "standing_facts"
+    ? ["1\tPRIVATE_FACT_SENTINEL\tpreference\tturn-1\tmember-a\t2026-10-21 00:00:00+00\t\\N\t2026-10-21 00:00:00+00\tremember\towner\t\\N"]
+    : table === "memory_proposals"
+      ? ["1\tadd\t\t\tPRIVATE_PROPOSAL_SENTINEL\t\tagent\tdream\tpending\t\\N\t2026-10-21 00:00:00+00\tref-1\tpreference"]
+      : table === "memory_reads" ? ["session-1\tturn-1\tmember-a\tstanding_fact\tfact-1\t2026-10-21 00:00:00+00"]
+      : table === "memory_use" ? [
+        "standing_fact\tfact-1\tmember-a\t2026-10-21 00:00:00+00\t2026-10-21 00:00:00+00\t1",
+        "preference\tref-2\tPRIVATE_OWNER_ID_SENTINEL\t2026-10-21 00:00:00+00\t2026-10-21 00:00:00+00\t1",
+      ]
+      : table === "agent_notes" ? ["1\tmember-a\tagent-a\tworking\tPRIVATE_NOTE_SENTINEL\towner\tsession-1\tturn-1\t2026-10-21 00:00:00+00"]
+      : table === "settings" ? ["private.setting\t{\"secret\":\"PRIVATE_SETTING_SENTINEL\"}\tmember-a\t2026-10-21 00:00:00+00"]
+      : table === "settings_audit" ? ["1\tprivate.setting\t\\N\t{\"secret\":\"PRIVATE_AUDIT_SENTINEL\"}\tmember-a\t2026-10-21 00:00:00+00"]
+      : table === "brief_settings" ? ["member-a\ten\tmember-a\t2026-10-21 00:00:00+00"]
+      : table === "deadline_settings" ? ["member-a\tf\tmember-a\t2026-10-21 00:00:00+00"]
+      : table === "proactivity_settings" ? ["member-a\t*\t*\t\\N\t\\N\t1\t1\t1\tf\tmember-a\t2026-10-21 00:00:00+00"]
+      : table === "schedule_settings" ? ["member-a\tdaily\t{9}\tmember-a\t2026-10-21 00:00:00+00"]
+      : table === "conversation_retention" ? ["member-a\t12\tmember-a\t2026-10-21 00:00:00+00"]
+      : table === "forget_ledger" ? ["1\tmember-a\tfact\t" + "a".repeat(64) + "\t2026-10-21 00:00:00+00\tforget"]
+      : table === "digest_skips" ? ["agent-a\tprivate/path\towner request\t2026-10-21 00:00:00+00"]
+      : table === "initiations" ? ["1\tmember-a\tagent-a\tmail\tscheduled\titem-1\tsuppressed\t\\N\t\\N\t2026-10-21\t2026-10-21 00:00:00+00\t\\N"]
+      : ["private-mailbox\tmessage-1\tprivate-principal\tprocessed\t2026-10-21 00:00:00+00\t1\t\\N\t\\N"])),
+])) as Record<keyof typeof ownedColumns, Buffer>;
 
 const roots: string[] = [];
 function fixtureArchive(options: { badChecksum?: boolean; badInventory?: boolean; legacy?: boolean; nestedName?: string; source?: string; oversizedManifest?: boolean; schemas?: string[] } = {}): string {
@@ -129,6 +173,9 @@ afterEach(() => {
 function installedHarness(mode: "success" | "overflow" | "timeout" | "inspect" = "success") {
   const root = mkdtempSync(join(tmpdir(), "lares-cli-harness-"));
   roots.push(root);
+  const ownedCopyDir = join(root, "owned-copies");
+  mkdirSync(ownedCopyDir);
+  for (const [table, content] of Object.entries(ownedCopies())) writeFileSync(join(ownedCopyDir, `${table}.copy`), content);
   const prefix = join(root, "prefix");
   const release = join(prefix, "opt", "lares", "releases", "fixture");
   const current = join(prefix, "opt", "lares", "current");
@@ -174,6 +221,7 @@ case "$*" in
           frame_copy "$target/orgs.copy"
           frame_copy "$target/org_member_policy.copy"
           frame_copy "$target/user_aliases.copy"
+          cp "$OWNED_COPY_DIR"/*.copy "$target/"
           printf '; Archive created at fixture\n; Selected TOC Entries:\n3; 1259 16385 TABLE public schema_migrations fixture_owner\n4; 0 0 TABLE DATA public schema_migrations fixture_owner\n' > "$target/database-toc/lares_state.toc"
           cp "$target/database-toc/lares_state.toc" "$target/database-toc/postgres.toc"
           ;;
@@ -201,7 +249,7 @@ exit 0
   const timeoutPath = join(bin, "timeout");
   writeFileSync(timeoutPath, "#!/bin/bash\n[ \"$1\" = --signal=INT ] || exit 125\nshift\n[ \"$1\" = --kill-after=10 ] || exit 125\nshift\n[ \"$1\" = 120 ] || exit 125\nshift\nexec \"$@\"\n");
   chmodSync(timeoutPath, 0o755);
-  return { root, prefix, bin, privateTmp, cli: join(ops, "lares"), dockerLog: join(root, "docker.log") };
+  return { root, prefix, bin, privateTmp, cli: join(ops, "lares"), dockerLog: join(root, "docker.log"), ownedCopyDir };
 }
 
 describe("PR1a export archive inspection", () => {
@@ -255,6 +303,7 @@ describe("PR1a export archive inspection", () => {
     mkdirSync(tocDir);
     mkdirSync(copyDir);
     for (const [table, content] of Object.entries(memberCopies())) writeFileSync(join(copyDir, `${table}.copy`), content);
+    for (const [table, content] of Object.entries(ownedCopies())) writeFileSync(join(copyDir, `${table}.copy`), content);
     const toc = [
       "; Archive created at fixture", "; Selected TOC Entries:",
       "3; 2615 2200 SCHEMA - public fixture_owner",
@@ -273,6 +322,9 @@ describe("PR1a export archive inspection", () => {
     const result = JSON.parse(accepted.stdout);
     expect(result).toMatchObject({ format: "lares.import-inspection", status: "inspection-only", importReadiness: "blocked", sourceInventory: { databases: [{ name: "lares_state", schemas: ["public"] }, { name: "postgres", schemas: ["public"] }] } });
     expect(result.categories[0]).toMatchObject({ category: "members", status: "partially-inventoried", unresolvedMemberIds: ["member-a", "member-b"], unresolvedOrganisationIds: ["org-a"] });
+    expect(result.categories[8]).toMatchObject({ category: "facts", status: "partially-inventoried", count: 6 });
+    expect(result.categories[15]).toMatchObject({ category: "settings", status: "partially-inventoried", count: 7 });
+    expect(result.categories[18]).toMatchObject({ category: "suppression", status: "partially-inventoried", count: 4 });
     const parser = join(dirname(fileURLToPath(import.meta.url)), "..", "ops", "pg-restore-list-schemas.py");
     const parsed = spawnSync("python3", [parser], { input: toc, encoding: "utf8" });
     expect(parsed.status, parsed.stdout).toBe(0);
@@ -298,6 +350,29 @@ describe("PR1a export archive inspection", () => {
     expect(metadataRefusal.stderr).toContain("inspectionCheck=toc_object_type_unsupported");
     expect(metadataRefusal.stderr).not.toContain("SECRET_OBJECT_SENTINEL");
     expect(metadataRefusal.stderr).not.toContain("fixture_owner");
+  });
+
+  it("keeps owned-record groups partial, reports unmapped dependencies, and redacts payloads", () => {
+    const members = mapMemberEvidence(memberCopies());
+    const copies = ownedCopies();
+    const owned = mapOwnedRecordEvidence(copies, members);
+    expect(owned.facts).toMatchObject({
+      status: "partially-inventoried",
+      count: 6,
+      ownerMappings: [{ sourceId: "member-a", destinationId: null, provenance: "explicit-import-map" }],
+      unresolvedOwnerIds: ["member-a"],
+      dependencies: { allObservedOwnerReferencesMapped: false, ownerReferencesWithoutMemberIdentity: 1, rowsWithoutExplicitMemberOwner: 1, destinationRecordMappings: "not-provided" },
+    });
+    expect(owned.facts.sourceTables.find((table) => table.table === "standing_facts")?.unresolvedDependencies)
+      .toEqual([{ column: "source_turn", rows: 1 }, { column: "superseded_by", rows: 0 }]);
+    expect(owned.settings.sourceTables.find((table) => table.table === "settings")?.unresolvedDependencies)
+      .toEqual([{ column: "updated_by", rows: 1 }]);
+    const output = JSON.stringify(buildInspection(inspectExportArchive(fixtureArchive()), members, owned));
+    for (const sentinel of ["PRIVATE_FACT_SENTINEL", "PRIVATE_PROPOSAL_SENTINEL", "PRIVATE_NOTE_SENTINEL", "PRIVATE_SETTING_SENTINEL", "PRIVATE_AUDIT_SENTINEL", "PRIVATE_OWNER_ID_SENTINEL", "private.setting", "private-mailbox", "private-principal"]) {
+      expect(output).not.toContain(sentinel);
+    }
+    const malformed = { ...copies, settings: Buffer.from(copies.settings.toString("utf8").replace("\\restrict", "\\unrestrict")) };
+    expect(() => mapOwnedRecordEvidence(malformed, members)).toThrowError(new ImportInspectionRefused("member_copy_envelope_invalid"));
   });
 
   it("refuses legacy manifests and omitted source stores", () => {
@@ -630,6 +705,7 @@ proof.archive_from_dump(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]))
     const env: NodeJS.ProcessEnv = {
       ...process.env, LARES_PREFIX: harness.prefix, TMPDIR: harness.privateTmp,
       PATH: `${harness.bin}:${process.env.PATH}`, DOCKER_LOG: harness.dockerLog,
+      OWNED_COPY_DIR: harness.ownedCopyDir,
       DOCKER_MODE: "inspect", LEDGER_PAYLOAD: ledgerCopy(), PREVIEW_RUNTIME_TMP: runtimeTmp, PREVIEW_NODE: process.execPath,
       PREVIEW_SCRIPT: join(repo, "services/box/bin/import-preview.ts"),
     };
@@ -663,10 +739,14 @@ print(guard)
     expect(inspection).toMatchObject({ status: "inspection-only", importReadiness: "blocked", archive: { verifiedFiles: 4, nestedRegularFileCount: 1 }, sourceInventory: { databases: [{ name: "lares_state", schemas: ["public"] }, { name: "postgres", schemas: ["public"] }] } });
     expect(inspection.categories.map((entry: { category: string }) => entry.category)).toEqual(IMPORT_CATEGORIES);
     expect(inspection.categories[0]).toMatchObject({ category: "members", status: "inventoried", count: 1, sourceMembers: [{ sourceId: "member-a", destinationId: "dest-member-a" }], sourceOrganisations: [{ sourceId: "org-a", destinationId: "dest-org-a" }] });
-    expect(inspection.categories.slice(1).every((entry: { status: string; count: unknown; checksum: unknown }) => entry.status === "not-inventoried" && entry.count === null && entry.checksum === null)).toBe(true);
+    expect(inspection.categories[8]).toMatchObject({ category: "facts", status: "partially-inventoried", count: 6 });
+    expect(inspection.categories[15]).toMatchObject({ category: "settings", status: "partially-inventoried", count: 7 });
+    expect(inspection.categories[18]).toMatchObject({ category: "suppression", status: "partially-inventoried", count: 4 });
+    expect(inspection.categories.slice(1).filter((entry: { category: string }) => !["facts", "settings", "suppression"].includes(entry.category)).every((entry: { status: string; count: unknown; checksum: unknown }) => entry.status === "not-inventoried" && entry.count === null && entry.checksum === null)).toBe(true);
     expect(result.stdout).not.toContain("PRIVATE_NAME_SENTINEL");
     expect(result.stdout).not.toContain("private@example.invalid");
     expect(result.stdout).not.toContain("PRIVATE_ALIAS_SENTINEL");
+    for (const sentinel of ["PRIVATE_FACT_SENTINEL", "PRIVATE_PROPOSAL_SENTINEL", "PRIVATE_NOTE_SENTINEL", "PRIVATE_SETTING_SENTINEL", "PRIVATE_AUDIT_SENTINEL", "private.setting", "private-mailbox", "private-principal"]) expect(result.stdout).not.toContain(sentinel);
     expect(readFileSync(harness.dockerLog, "utf8").match(/--network none/g)).toHaveLength(4);
     expect(readFileSync(harness.dockerLog, "utf8")).toContain("/output/database-toc/$db.toc");
     const canonicalMemberMap = realpathSync(memberMap);
@@ -687,6 +767,7 @@ print(guard)
     const env: NodeJS.ProcessEnv = {
       ...process.env, LARES_PREFIX: harness.prefix, TMPDIR: harness.privateTmp, PATH: `${harness.bin}:${process.env.PATH}`,
       DOCKER_LOG: harness.dockerLog, DOCKER_MODE: "success", LEDGER_PAYLOAD: ledgerCopy(),
+      OWNED_COPY_DIR: harness.ownedCopyDir,
       PREVIEW_RUNTIME_TMP: runtimeTmp, PREVIEW_NODE: process.execPath,
       PREVIEW_SCRIPT: join(repo, "services/box/bin/import-preview.ts"),
     };
@@ -697,7 +778,11 @@ print(guard)
     expect(result.stderr).toBe("");
     const inspection = JSON.parse(result.stdout);
     expect(inspection.categories[0]).toMatchObject({ category: "members", status: "partially-inventoried", count: 1, unresolvedMemberIds: ["member-a"], unresolvedOrganisationIds: ["org-a"] });
-    expect(inspection.categories.slice(1).every((entry: { status: string }) => entry.status === "not-inventoried")).toBe(true);
+    expect(inspection.categories[8]).toMatchObject({ category: "facts", status: "partially-inventoried", count: 6, dependencies: { rowsWithoutExplicitMemberOwner: 1, ownerReferencesWithoutMemberIdentity: 1 } });
+    expect(inspection.categories[15]).toMatchObject({ category: "settings", status: "partially-inventoried", count: 7 });
+    expect(inspection.categories[18]).toMatchObject({ category: "suppression", status: "partially-inventoried", count: 4 });
+    expect(inspection.categories.slice(1).filter((entry: { category: string }) => !["facts", "settings", "suppression"].includes(entry.category)).every((entry: { status: string }) => entry.status === "not-inventoried")).toBe(true);
+    for (const sentinel of ["PRIVATE_FACT_SENTINEL", "PRIVATE_PROPOSAL_SENTINEL", "PRIVATE_NOTE_SENTINEL", "PRIVATE_SETTING_SENTINEL", "PRIVATE_AUDIT_SENTINEL", "PRIVATE_OWNER_ID_SENTINEL", "private.setting", "private-mailbox", "private-principal"]) expect(result.stdout).not.toContain(sentinel);
     expect(readFileSync(harness.dockerLog, "utf8").match(/--network none/g)).toHaveLength(3);
     expect(readFileSync(harness.dockerLog, "utf8")).toContain("example.invalid/keeper@sha256:");
     expect(readdirSync(harness.privateTmp)).toEqual([]);
@@ -706,7 +791,7 @@ print(guard)
   it.each(["overflow", "timeout"] as const)("cleans private output and redacts Docker diagnostics on %s", (mode) => {
     const harness = installedHarness(mode);
     const archive = fixtureArchive();
-    const env: NodeJS.ProcessEnv = { ...process.env, LARES_PREFIX: harness.prefix, TMPDIR: harness.privateTmp, PATH: `${harness.bin}:${process.env.PATH}`, DOCKER_LOG: harness.dockerLog, DOCKER_MODE: mode, LEDGER_PAYLOAD: ledgerCopy() };
+    const env: NodeJS.ProcessEnv = { ...process.env, LARES_PREFIX: harness.prefix, TMPDIR: harness.privateTmp, PATH: `${harness.bin}:${process.env.PATH}`, DOCKER_LOG: harness.dockerLog, OWNED_COPY_DIR: harness.ownedCopyDir, DOCKER_MODE: mode, LEDGER_PAYLOAD: ledgerCopy() };
     delete env.LARES_ENGINE_IMAGE;
     delete env.BOX_DIR;
     const result = spawnSync("bash", [harness.cli, "import-preview", archive], { env, encoding: "utf8" });
