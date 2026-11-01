@@ -42,6 +42,30 @@ const MEMBER_TABLES = {
   user_aliases: ["system", "alias", "user_id", "created_at"],
 } as const;
 type MemberTable = keyof typeof MEMBER_TABLES;
+const OWNED_RECORD_TABLES = {
+  standing_facts: { columns: ["id", "fact", "category", "source_turn", "user_id", "stated_at", "retired_at", "recorded_at", "source", "origin", "superseded_by"], owner: "user_id", dependencies: ["source_turn", "superseded_by"] },
+  memory_proposals: { columns: ["id", "action", "existing_id", "existing_text", "proposed_text", "subject", "origin", "source", "state", "announced_at", "created_at", "ref", "kind"], dependencies: ["existing_id", "subject", "ref"] },
+  memory_reads: { columns: ["session_id", "turn_id", "owner", "kind", "ref", "at"], owner: "owner", dependencies: ["session_id", "turn_id", "ref"] },
+  memory_use: { columns: ["kind", "ref", "owner", "first_used", "last_used", "uses"], owner: "owner", dependencies: ["ref"] },
+  agent_notes: { columns: ["id", "owner", "agent", "kind", "note", "origin", "session_id", "turn_id", "at"], owner: "owner", dependencies: ["agent", "session_id", "turn_id"] },
+  settings: { columns: ["key", "value", "updated_by", "updated_at"], dependencies: ["updated_by"] },
+  settings_audit: { columns: ["id", "key", "old_value", "new_value", "changed_by", "at"], dependencies: ["changed_by"] },
+  brief_settings: { columns: ["owner", "language", "updated_by", "updated_at"], owner: "owner", dependencies: ["updated_by"] },
+  deadline_settings: { columns: ["owner", "ladder_enabled", "updated_by", "updated_at"], owner: "owner", dependencies: ["updated_by"] },
+  proactivity_settings: { columns: ["owner", "agent", "door", "quiet_start", "quiet_end", "event_per_door_per_day", "escalation_per_door_per_day", "per_owner_per_day", "dnd", "updated_by", "updated_at"], owner: "owner", dependencies: ["agent", "door", "updated_by"] },
+  schedule_settings: { columns: ["owner", "schedule", "hours", "updated_by", "updated_at"], owner: "owner", dependencies: ["schedule", "updated_by"] },
+  conversation_retention: { columns: ["owner", "months", "updated_by", "updated_at"], owner: "owner", dependencies: ["updated_by"] },
+  forget_ledger: { columns: ["id", "owner", "kind", "match_hash", "forgotten_at", "reason"], owner: "owner" },
+  digest_skips: { columns: ["agent", "path", "reason", "asked_at"], dependencies: ["agent", "path"] },
+  initiations: { columns: ["id", "owner", "agent", "door", "cls", "item_key", "status", "reason", "until_at", "owner_day", "decided_at", "sent_at"], owner: "owner", dependencies: ["agent", "door", "item_key"] },
+  email_triage_processed: { columns: ["mailbox", "gmail_message_id", "principal", "outcome", "processed_at", "attempts", "draft_id", "thread_id"], dependencies: ["mailbox", "gmail_message_id", "principal", "draft_id", "thread_id"] },
+} as const;
+type OwnedRecordTable = keyof typeof OWNED_RECORD_TABLES;
+const OWNED_RECORD_GROUPS = {
+  facts: ["standing_facts", "memory_proposals", "memory_reads", "memory_use", "agent_notes"],
+  settings: ["settings", "settings_audit", "brief_settings", "deadline_settings", "proactivity_settings", "schedule_settings", "conversation_retention"],
+  suppression: ["forget_ledger", "digest_skips", "initiations", "email_triage_processed"],
+} as const;
 const MAX_COPY_BYTES = 8 * 1024 * 1024;
 const MAX_COPY_LINE_BYTES = 64 * 1024;
 const MAX_COPY_ROWS = 100_000;
@@ -176,6 +200,152 @@ function parseMemberCopy(table: MemberTable, bytes: Buffer): CopyTable {
   if (!ended) throw new ImportInspectionRefused("malformed_copy_data");
   if (restriction && !unrestricted) throw new ImportInspectionRefused("member_copy_envelope_invalid");
   return { count, checksum: hash.digest("hex"), ids, references, aliasKeys };
+}
+
+type OwnedTableEvidence = {
+  count: number;
+  checksum: string;
+  ownerReferences: number;
+  memberOwnerIds: string[];
+  unresolvedOwnerIds: string[];
+  ownerReferencesWithoutMemberIdentity: number;
+  rowsWithoutMemberOwner: number;
+  unresolvedDependencies: Array<{ column: string; rows: number }>;
+};
+
+function parseOwnedRecordCopy(
+  table: OwnedRecordTable,
+  bytes: Buffer,
+  mappedMembers: Map<string, string>,
+  sourceMemberIds: Set<string>,
+): OwnedTableEvidence {
+  if (bytes.byteLength > MAX_COPY_BYTES) throw new ImportInspectionRefused("copy_data_too_large");
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw new ImportInspectionRefused("malformed_copy_data"); }
+  const spec = OWNED_RECORD_TABLES[table];
+  const expectedHeader = `COPY public.${table} (${spec.columns.join(", ")}) FROM stdin;`;
+  const lines = text.split("\n");
+  let header = -1;
+  let restriction: string | undefined;
+  let setupIndex = 0;
+  let setupStarted = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!.replace(/\r$/, "");
+    if (line === expectedHeader) {
+      if (setupStarted && setupIndex !== RESTORE_SETUP.length) throw new ImportInspectionRefused("member_copy_envelope_invalid");
+      header = i;
+      break;
+    }
+    if (line === "" || line.startsWith("--")) continue;
+    const restrictionMatch = /^\\restrict ([A-Za-z0-9]{63})$/.exec(line);
+    if (!setupStarted && !restriction && restrictionMatch) { restriction = restrictionMatch[1]; continue; }
+    if (setupIndex < RESTORE_SETUP.length && line === RESTORE_SETUP[setupIndex]) {
+      setupStarted = true;
+      setupIndex++;
+      continue;
+    }
+    throw new ImportInspectionRefused("member_copy_envelope_invalid");
+  }
+  if (header < 0) throw new ImportInspectionRefused("source_table_missing_or_unsupported");
+  const ownerIndex = "owner" in spec ? (spec.columns as readonly string[]).indexOf(spec.owner) : -1;
+  const hash = createHash("sha256");
+  const owners = new Set<string>();
+  let ownerReferences = 0;
+  let ownerReferencesWithoutMemberIdentity = 0;
+  let rowsWithoutMemberOwner = 0;
+  const dependencyColumns = "dependencies" in spec ? spec.dependencies : [];
+  const dependencyCounts = new Map(dependencyColumns.map((column) => [column, 0]));
+  let count = 0;
+  let ended = false;
+  let unrestricted = false;
+  for (let i = header + 1; i < lines.length; i++) {
+    const line = lines[i]!.replace(/\r$/, "");
+    if (Buffer.byteLength(line, "utf8") > MAX_COPY_LINE_BYTES) throw new ImportInspectionRefused("copy_row_too_large");
+    if (line === "\\.") { if (ended) throw new ImportInspectionRefused("member_copy_envelope_invalid"); ended = true; continue; }
+    if (ended) {
+      if (restriction && !unrestricted && line === `\\unrestrict ${restriction}`) { unrestricted = true; continue; }
+      if (line !== "" && !line.startsWith("--")) throw new ImportInspectionRefused("member_copy_envelope_invalid");
+      continue;
+    }
+    if (/^\\(?:un)?restrict\b/.test(line)) throw new ImportInspectionRefused("member_copy_envelope_invalid");
+    const fields = line.split("\t");
+    if (fields.length !== spec.columns.length) throw new ImportInspectionRefused("malformed_copy_data");
+    if (++count > MAX_COPY_ROWS) throw new ImportInspectionRefused("copy_row_limit_exceeded");
+    const decodedFields = fields.map(decodeCopyField);
+    hash.update(line, "utf8").update("\n");
+    if (ownerIndex >= 0) {
+      const owner = decodedFields[ownerIndex]!;
+      if (owner === null) throw new ImportInspectionRefused("malformed_copy_data");
+      owners.add(owner);
+      ownerReferences++;
+      if (!sourceMemberIds.has(owner)) ownerReferencesWithoutMemberIdentity++;
+    } else rowsWithoutMemberOwner++;
+    for (const column of dependencyColumns) {
+      if (decodedFields[(spec.columns as readonly string[]).indexOf(column)] !== null) dependencyCounts.set(column, dependencyCounts.get(column)! + 1);
+    }
+  }
+  if (!ended || (restriction && !unrestricted)) throw new ImportInspectionRefused("malformed_copy_data");
+  return {
+    count,
+    checksum: hash.digest("hex"),
+    memberOwnerIds: [...owners].filter((owner) => sourceMemberIds.has(owner)).sort(),
+    ownerReferences,
+    unresolvedOwnerIds: [...owners].filter((owner) => sourceMemberIds.has(owner) && !mappedMembers.has(owner)).sort(),
+    ownerReferencesWithoutMemberIdentity,
+    rowsWithoutMemberOwner,
+    unresolvedDependencies: [...dependencyCounts].map(([column, rows]) => ({ column, rows })),
+  };
+}
+
+export function mapOwnedRecordEvidence(copies: Record<OwnedRecordTable, Buffer>, memberEvidence: ReturnType<typeof mapMemberEvidence>) {
+  const memberMap = new Map(memberEvidence.sourceMembers.flatMap((member) => member.destinationId === null ? [] : [[member.sourceId, member.destinationId] as const]));
+  const sourceMemberIds = new Set(memberEvidence.sourceMembers.map((member) => member.sourceId));
+  const parsed = Object.fromEntries((Object.keys(OWNED_RECORD_TABLES) as OwnedRecordTable[]).map((table) => [
+    table, parseOwnedRecordCopy(table, copies[table], memberMap, sourceMemberIds),
+  ])) as Record<OwnedRecordTable, OwnedTableEvidence>;
+  const tableEvidence = (tables: readonly OwnedRecordTable[]) => tables.map((table) => ({
+    table,
+    count: parsed[table].count,
+    checksum: parsed[table].checksum,
+    ownerReferences: parsed[table].ownerReferences,
+    memberOwnerIds: parsed[table].memberOwnerIds,
+    unresolvedOwnerIds: parsed[table].unresolvedOwnerIds,
+    ownerReferencesWithoutMemberIdentity: parsed[table].ownerReferencesWithoutMemberIdentity,
+    rowsWithoutMemberOwner: parsed[table].rowsWithoutMemberOwner,
+    unresolvedDependencies: parsed[table].unresolvedDependencies,
+  }));
+  const buildGroup = (category: keyof typeof OWNED_RECORD_GROUPS) => {
+    const sourceTables = tableEvidence(OWNED_RECORD_GROUPS[category]);
+    const count = sourceTables.reduce((sum, table) => sum + table.count, 0);
+    const checksum = createHash("sha256").update(JSON.stringify(sourceTables)).digest("hex");
+    const ownerIds = [...new Set(sourceTables.flatMap((table) => table.memberOwnerIds))].sort();
+    const ownerMappings = ownerIds.map((sourceId) => ({
+      sourceId,
+      destinationId: memberMap.get(sourceId) ?? null,
+      provenance: "explicit-import-map" as const,
+    }));
+    return {
+      status: "partially-inventoried" as const,
+      count,
+      checksum,
+      sourceTables,
+      ownerMappings,
+      unresolvedOwnerIds: ownerMappings.filter((mapping) => mapping.destinationId === null).map((mapping) => mapping.sourceId),
+      dependencies: {
+        allObservedOwnerReferencesMapped: sourceTables.every((table) => table.unresolvedOwnerIds.length === 0 && table.ownerReferencesWithoutMemberIdentity === 0),
+        ownerReferencesWithoutMemberIdentity: sourceTables.reduce((sum, table) => sum + table.ownerReferencesWithoutMemberIdentity, 0),
+        rowsWithoutExplicitMemberOwner: sourceTables.reduce((sum, table) => sum + table.rowsWithoutMemberOwner, 0),
+        destinationRecordMappings: "not-provided",
+      },
+      authority: "mapping-evidence-only; destination existence, resource identity, and authority are not verified",
+    };
+  };
+  return {
+    facts: buildGroup("facts"),
+    settings: buildGroup("settings"),
+    suppression: buildGroup("suppression"),
+  };
 }
 
 export function mapMemberEvidence(copies: Record<MemberTable, Buffer>, mapInput?: unknown) {
@@ -541,7 +711,11 @@ export function verifySourceLedger(copyOutput: string): void {
   }
 }
 
-export function buildInspection(archive: ArchiveInspection, memberEvidence?: ReturnType<typeof mapMemberEvidence>) {
+export function buildInspection(
+  archive: ArchiveInspection,
+  memberEvidence?: ReturnType<typeof mapMemberEvidence>,
+  ownedEvidence?: ReturnType<typeof mapOwnedRecordEvidence>,
+) {
   if (archive.engineVersion !== SOURCE_RELEASE) throw new ImportInspectionRefused("unsupported_source_release");
   const sourceDumpChecksum = archive.sourceInventory.databases.find((database) => database.name === "lares_state")?.sha256;
   if (memberEvidence !== undefined && sourceDumpChecksum === undefined) throw new ImportInspectionRefused("source_schema_inventory_mismatch");
@@ -581,6 +755,23 @@ export function buildInspection(archive: ArchiveInspection, memberEvidence?: Ret
       authority: memberEvidence.authority,
       omissions: memberEvidence.omissions,
       reason: memberEvidence.status === "inventoried" ? "Source rows are fully counted and explicitly mapped; destination existence and authority remain unverified." : "Source rows are counted, but explicit member or organisation mappings are incomplete.",
+    } : (category === "facts" || category === "settings" || category === "suppression") && ownedEvidence !== undefined ? {
+      category,
+      ...ownedEvidence[category],
+      omissions: category === "facts" ? [
+        "memory_proposals has no member-owner column",
+        "fact and note resource references are not mapped to destination records",
+        "source owner mapping does not map each source record to a destination record",
+      ] : category === "settings" ? [
+        "settings and settings_audit have arbitrary JSON values and actor fields, not a verified member owner",
+        "setting values are hashed but never displayed or applied",
+        "source owner mapping does not map each source setting to a destination setting",
+      ] : [
+        "digest_skips and email_triage_processed have no explicit member-owner column",
+        "initiations overlaps jobs and email_triage_processed overlaps sync; cross-category row disposition is unresolved",
+        "source owner mapping does not map each suppression key to a destination key",
+      ],
+      reason: "Source tables are counted and hashed, but unresolved owners or record dependencies keep this category partial.",
     } : {
       category,
       status: "not-inventoried",
@@ -592,7 +783,7 @@ export function buildInspection(archive: ArchiveInspection, memberEvidence?: Ret
     blockers: [
       "This slice does not inventory individual file resources or all configured storage outside the export's declared paths.",
       "Encrypted database credentials may be present and remain blocked from ordinary import; a separate protected transfer or reconnection decision is still required.",
-      "The other 21 application categories, and their identity, provenance, dependency, and omission mappings, still need record-level mapping before an ImportManifest v1 can be produced.",
+      "The other 18 application categories, plus unresolved record, identity, provenance, dependency, and omission mappings in this slice, still need review before an ImportManifest v1 can be produced.",
     ],
   } as const;
 }
@@ -600,6 +791,22 @@ export function buildInspection(archive: ArchiveInspection, memberEvidence?: Ret
 function readMemberCopies(directory: string): Record<MemberTable, Buffer> {
   const copies = {} as Record<MemberTable, Buffer>;
   for (const table of Object.keys(MEMBER_TABLES) as MemberTable[]) {
+    const path = `${directory}/${table}.copy`;
+    try {
+      const size = statSync(path).size;
+      if (size < 1 || size > MAX_COPY_BYTES) throw new ImportInspectionRefused("copy_data_too_large");
+      copies[table] = readFileSync(path);
+    } catch (error) {
+      if (error instanceof ImportInspectionRefused) throw error;
+      throw new ImportInspectionRefused("source_table_missing_or_unsupported");
+    }
+  }
+  return copies;
+}
+
+function readOwnedRecordCopies(directory: string): Record<OwnedRecordTable, Buffer> {
+  const copies = {} as Record<OwnedRecordTable, Buffer>;
+  for (const table of Object.keys(OWNED_RECORD_TABLES) as OwnedRecordTable[]) {
     const path = `${directory}/${table}.copy`;
     try {
       const size = statSync(path).size;
@@ -645,7 +852,8 @@ function main(args: string[]): void {
     verifySourceLedger(readFileSync(options!.ledger, "utf8"));
     verifyDatabaseSchemas(archive, options!.tocDirectory);
     const members = mapMemberEvidence(readMemberCopies(options!.copyDirectory), readMemberMap(options!.memberMapPath));
-    const inspection = buildInspection(archive, members);
+    const owned = mapOwnedRecordEvidence(readOwnedRecordCopies(options!.copyDirectory), members);
+    const inspection = buildInspection(archive, members, owned);
     process.stdout.write(`${JSON.stringify(inspection, null, 2)}\n`);
   } catch (error) {
     const reason = error instanceof ImportInspectionRefused ? error.reason : "inspection_failed";

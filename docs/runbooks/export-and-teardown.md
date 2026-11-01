@@ -244,24 +244,34 @@ only `sourceId` and `destinationId`. The preview validates IDs and uniqueness, b
 check that a destination member or organisation exists or grant anyone authority. If the map is
 omitted or incomplete, the members category remains partial with the unresolved source IDs listed.
 The preview reports row counts and checksums for the pinned `users`, `orgs`, `org_member_policy`,
-and `user_aliases` source tables. It keeps names, emails, policy values, aliases, and raw rows out
-of its output. Alias records remain historical evidence, not verified provider identities.
+and `user_aliases` tables, plus candidate tables for facts, settings, and suppression. It reports
+explicit owner mappings and per-column unresolved dependency counts while keeping names, emails,
+policy values, aliases, setting values, and raw rows out of its output. Alias records remain historical evidence,
+not verified provider identities.
 
 The preview accepts only the verified rc.12 source schema and identifies rc.13 as the destination.
 It uses a locally cached, digest-pinned database helper with network disabled; if that image is not
 already present, the command stops instead of downloading it. It does not connect to a live
 database, write to the installation, or print archived row values. Its result is deliberately **blocked for import**:
 the members category is source-inventoried only when all four pinned tables decode and both maps are
-complete; otherwise it is partial. The other 21 categories remain `not-inventoried` until their
-record and file mappings are complete. Keep the source and archive; this check is not approval to
+complete; otherwise it is partial. Facts, settings, and suppression are counted and hashed but
+remain partial while owner, record, and destination mappings are unresolved. The other 18
+categories remain `not-inventoried` until their record and file mappings are complete. Keep the
+source and archive; this check is not approval to
 restore or erase.
 
 ### 4g. Import mapping coverage contract (rc.12 to rc.13)
 
 This is the source and mapping boundary for a future read-only import plan. `lares import-preview`
 remains inspection-only and import remains blocked. It inventories the four listed members-source
-tables and applies only explicit member and organisation ID mappings; the other 21 categories
-remain `not-inventoried`. The table below is a coverage contract for the verified source schema,
+tables and applies only explicit member and organisation ID mappings. It also counts and hashes
+16 candidate tables across `facts`, `settings`, and `suppression`, reports direct owner mappings,
+and lists rows whose owner or record dependencies are unresolved. `conversation_retention` also
+appears in the conversations contract; `initiations` and `email_triage_processed` also appear in
+the jobs and sync contracts. This slice reports those source rows in the settings/suppression
+evidence only; a future manifest must settle cross-category row ownership before counting them
+elsewhere. These three categories remain
+partial; the other 18 categories remain `not-inventoried`. The table below is a coverage contract for the verified source schema,
 not evidence that an archive has been completely inventoried or can be restored.
 
 The accepted Box source is exactly `2026-10-21-rc.12`, whose `lares_state` migration ledger has
@@ -278,8 +288,8 @@ these six files and checksums. The hashes match the SQL files committed here:
 
 The 74 table names below are the exhaustive `public` table inventory declared by those six Box
 migrations, including `schema_migrations`. They say nothing about table rows. The export includes
-every non-template database. The helper reads `schema_migrations` and only the four pinned members
-candidate tables from `lares_state.dump`; extra database dumps are not known to be empty or
+every non-template database. The helper reads `schema_migrations`, the four pinned members tables,
+and the 16 candidate facts, settings, and suppression tables from `lares_state.dump`; extra database dumps are not known to be empty or
 compatible. The source
 baseline also says that role workflow schemas and dream tables are created outside the Box
 migrations. The rc.12 release record identifies the chief-of-staff workflow upgrade, but the
@@ -384,8 +394,18 @@ This declaration covers only the database and file stores that the exporter obse
 database list and configured path lists. A store outside those lists remains unverified. Schema
 names do not establish table or row coverage, compatibility with an older source release, or
 identity mappings. Protected credentials remain blocked from ordinary import. The preview decodes
-only the four pinned members tables after verifying the fresh export metadata. The other 21
-application categories remain `not-inventoried`; incomplete member/org mappings keep the members
+the four pinned members tables and 16 candidate facts, settings, and suppression tables after
+verifying the fresh export metadata. It emits only aggregate counts, checksums, explicit owner
+mappings, unresolved source-member IDs, and counts for owner values that do not match a source
+member. It never emits record values or unmatched owner text, including arbitrary JSON settings
+values. `memory_proposals` has no member-owner column; settings and audit rows have values and actors
+without a verified destination owner; `digest_skips` and `email_triage_processed` have no
+member-owner column; resource and record references are not mapped to destination records.
+`conversation_retention` overlaps conversations; `initiations` overlaps jobs; and
+`email_triage_processed` overlaps sync. This slice reports each such table only in its selected
+group and leaves any cross-category row disposition unresolved. Therefore these three categories
+remain partial even when the member map is complete. The other 18
+application categories remain `not-inventoried`, incomplete member/org mappings keep the members
 category partial, and import remains blocked.
 
 An older archive has no verifiable inventory declaration. `lares import-preview` refuses it;
