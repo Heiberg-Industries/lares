@@ -66,6 +66,19 @@ const OWNED_RECORD_GROUPS = {
   settings: ["settings", "settings_audit", "brief_settings", "deadline_settings", "proactivity_settings", "schedule_settings", "conversation_retention"],
   suppression: ["forget_ledger", "digest_skips", "initiations", "email_triage_processed"],
 } as const;
+// Keep the source schema explicit. Payload columns are hashed for integrity but never decoded
+// or returned; only opaque association keys are inspected.
+const AGENT_LINK_TABLES = {
+  agent_registry: { columns: ["name", "display_name", "role", "grants", "autonomy", "skills", "doors", "tools", "started_at"], agent: "name", key: ["name"] },
+  agent_definitions: { columns: ["name", "definition", "duties", "voice", "hash", "status", "status_reason", "valid_at", "checked_at", "retired_folder"], agent: "name", key: ["name"] },
+  agent_avatars: { columns: ["name", "image", "updated_at"], agent: "name", key: ["name"] },
+  agent_resources: { columns: ["name", "address", "workflow_database", "ownership", "ownership_token", "state", "applied_definition", "pending", "pending_reason", "updated_at", "runtime_control_token"], agent: "name", key: ["name"] },
+  agent_doors: { columns: ["agent", "kind", "enabled", "secret_set_at", "settings", "updated_at"], agent: "agent", door: "kind", key: ["agent", "kind"] },
+  agent_door_connections: { columns: ["agent", "kind", "incarnation", "revision", "owner_email", "code_hash", "expires_at", "attempts", "principal", "org", "mailbox", "claimed_at", "applied_revision", "applied_connection", "webhook_set_at"], agent: "agent", door: "kind", key: ["agent", "kind"] },
+  agent_door_claim_audit: { columns: ["id", "agent", "kind", "incarnation", "principal", "claimed_at"], agent: "agent", door: "kind", key: ["id"] },
+  outside_tool_pins: { columns: ["agent", "tool", "config_hash", "pin_hash", "pinned_at", "pin_tools", "seen_hash", "seen_tools", "seen_at"], agent: "agent", resource: "tool", key: ["agent", "tool"] },
+} as const;
+type AgentLinkTable = keyof typeof AGENT_LINK_TABLES;
 const MAX_COPY_BYTES = 8 * 1024 * 1024;
 const MAX_COPY_LINE_BYTES = 64 * 1024;
 const MAX_COPY_ROWS = 100_000;
@@ -213,6 +226,77 @@ type OwnedTableEvidence = {
   unresolvedDependencies: Array<{ column: string; rows: number }>;
 };
 
+type AgentLinkTableEvidence = { count: number; checksum: string; agentReferences: number; unresolvedAgentReferences: number; doorReferences: number; unresolvedDoorReferences: number; resourceReferences: number };
+const validOpaqueAgentKey = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200 && value.trim() === value && !/[\x00-\x1f\x7f]/.test(value);
+
+function parseAgentLinkCopy(table: AgentLinkTable, bytes: Buffer): AgentLinkTableEvidence & { agents: string[]; agentKeys: string[]; doorKeys: string[] } {
+  if (bytes.byteLength > MAX_COPY_BYTES) throw new ImportInspectionRefused("copy_data_too_large");
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw new ImportInspectionRefused("malformed_copy_data"); }
+  const spec = AGENT_LINK_TABLES[table];
+  const lines = text.split("\n");
+  const expectedHeader = "COPY public." + table + " (" + spec.columns.join(", ") + ") FROM stdin;";
+  let header = -1, restriction: string | undefined, setupIndex = 0, setupStarted = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!.replace(/\r$/, "");
+    if (line === expectedHeader) {
+      if (setupStarted && setupIndex !== RESTORE_SETUP.length) throw new ImportInspectionRefused("member_copy_envelope_invalid");
+      header = i; break;
+    }
+    if (line === "" || line.startsWith("--")) continue;
+    const restrictionMatch = /^\\restrict ([A-Za-z0-9]{63})$/.exec(line);
+    if (!setupStarted && !restriction && restrictionMatch) { restriction = restrictionMatch[1]; continue; }
+    if (setupIndex < RESTORE_SETUP.length && line === RESTORE_SETUP[setupIndex]) { setupStarted = true; setupIndex++; continue; }
+    throw new ImportInspectionRefused("member_copy_envelope_invalid");
+  }
+  if (header < 0) throw new ImportInspectionRefused("source_table_missing_or_unsupported");
+  const at = (column: string) => spec.columns.indexOf(column as never);
+  const agentIndex = at(spec.agent);
+  const doorIndex = "door" in spec ? at(spec.door) : -1;
+  const keyIndexes = spec.key.map(at);
+  const hash = createHash("sha256"), agents: string[] = [], agentSet = new Set<string>(), doorKeys: string[] = [], keys = new Set<string>();
+  let count = 0, agentReferences = 0, doorReferences = 0, resourceReferences = 0, ended = false, unrestricted = false;
+  for (let i = header + 1; i < lines.length; i++) {
+    const line = lines[i]!.replace(/\r$/, "");
+    if (Buffer.byteLength(line, "utf8") > MAX_COPY_LINE_BYTES) throw new ImportInspectionRefused("copy_row_too_large");
+    if (line === "\\.") { if (ended) throw new ImportInspectionRefused("member_copy_envelope_invalid"); ended = true; continue; }
+    if (ended) {
+      if (restriction && !unrestricted && line === "\\unrestrict " + restriction) { unrestricted = true; continue; }
+      if (line !== "" && !line.startsWith("--")) throw new ImportInspectionRefused("member_copy_envelope_invalid");
+      continue;
+    }
+    if (/^\\(?:un)?restrict\b/.test(line)) throw new ImportInspectionRefused("member_copy_envelope_invalid");
+    const fields = line.split("\t");
+    if (fields.length !== spec.columns.length) throw new ImportInspectionRefused("malformed_copy_data");
+    if (++count > MAX_COPY_ROWS) throw new ImportInspectionRefused("copy_row_limit_exceeded");
+    // Decode only key fields. Do not interpret definition, image, connection, address, token,
+    // principal, settings, or tool configuration payloads.
+    hash.update(line, "utf8").update("\n");
+    const keyParts = keyIndexes.map((index) => decodeCopyField(fields[index]!));
+    if (keyParts.some((part) => !validOpaqueAgentKey(part))) throw new ImportInspectionRefused("malformed_copy_data");
+    const key = JSON.stringify(keyParts);
+    if (keys.has(key)) throw new ImportInspectionRefused("duplicate_agent_source_key");
+    keys.add(key);
+    const agent = decodeCopyField(fields[agentIndex]!);
+    if (!validOpaqueAgentKey(agent)) throw new ImportInspectionRefused("malformed_copy_data");
+    agents.push(agent); agentSet.add(agent); agentReferences++;
+    if (doorIndex >= 0) {
+      const door = decodeCopyField(fields[doorIndex]!);
+      if (!validOpaqueAgentKey(door)) throw new ImportInspectionRefused("malformed_copy_data");
+      doorReferences++;
+      doorKeys.push(JSON.stringify([agent, door]));
+    }
+    if ("resource" in spec) {
+      const resource = decodeCopyField(fields[at(spec.resource)]!);
+      if (!validOpaqueAgentKey(resource)) throw new ImportInspectionRefused("malformed_copy_data");
+      resourceReferences++;
+    }
+  }
+  if (!ended || (restriction && !unrestricted)) throw new ImportInspectionRefused("malformed_copy_data");
+  return { count, checksum: hash.digest("hex"), agentReferences, unresolvedAgentReferences: 0, doorReferences, unresolvedDoorReferences: 0, resourceReferences, agents: [...agents], agentKeys: table === "agent_registry" || table === "agent_definitions" ? [...agentSet] : [], doorKeys };
+}
+
 function parseOwnedRecordCopy(
   table: OwnedRecordTable,
   bytes: Buffer,
@@ -357,7 +441,7 @@ export function mapMemberEvidence(copies: Record<MemberTable, Buffer>, mapInput?
     throw new ImportInspectionRefused("source_member_dependency_mismatch");
   }
   const input = mapInput === undefined ? { version: 1, members: [], organizations: [] } : mapInput;
-  if (typeof input !== "object" || input === null || Object.keys(input).sort().join(",") !== "members,organizations,version" || (input as { version?: unknown }).version !== 1 || !Array.isArray((input as { members?: unknown }).members) || !Array.isArray((input as { organizations?: unknown }).organizations)) {
+  if (typeof input !== "object" || input === null || !["members,organizations,version", "agents,members,organizations,version"].includes(Object.keys(input).sort().join(",")) || (input as { version?: unknown }).version !== 1 || !Array.isArray((input as { members?: unknown }).members) || !Array.isArray((input as { organizations?: unknown }).organizations) || ("agents" in input && !Array.isArray((input as { agents?: unknown }).agents))) {
     throw new ImportInspectionRefused("member_map_invalid");
   }
   const parseEntries = (value: unknown, sources: Set<string>): Array<{ sourceId: string; destinationId: string }> => {
@@ -376,6 +460,15 @@ export function mapMemberEvidence(copies: Record<MemberTable, Buffer>, mapInput?
   };
   const mappedMembers = parseEntries((input as { members: unknown }).members, userSet);
   const mappedOrganisations = parseEntries((input as { organizations: unknown }).organizations, orgSet);
+  const rawAgents = "agents" in input ? (input as { agents: unknown }).agents : [];
+  const mappedAgents: Array<{ sourceId: string; destinationId: string }> = [];
+  const agentSources = new Set<string>(), agentDestinations = new Set<string>();
+  for (const item of rawAgents as unknown[]) {
+    if (typeof item !== "object" || item === null || Object.keys(item).sort().join(",") !== "destinationId,sourceId") throw new ImportInspectionRefused("agent_map_invalid");
+    const sourceId = (item as { sourceId?: unknown }).sourceId, destinationId = (item as { destinationId?: unknown }).destinationId;
+    if (!validOpaqueAgentKey(sourceId) || !validOpaqueAgentKey(destinationId) || agentSources.has(sourceId) || agentDestinations.has(destinationId)) throw new ImportInspectionRefused("agent_map_invalid");
+    agentSources.add(sourceId); agentDestinations.add(destinationId); mappedAgents.push({ sourceId, destinationId });
+  }
   if (new Set([...mappedMembers.map((entry) => entry.destinationId), ...mappedOrganisations.map((entry) => entry.destinationId)]).size !== mappedMembers.length + mappedOrganisations.length) {
     throw new ImportInspectionRefused("member_map_invalid");
   }
@@ -393,6 +486,7 @@ export function mapMemberEvidence(copies: Record<MemberTable, Buffer>, mapInput?
     sourceOrganisations: organisationIds.map((sourceId) => ({ sourceId, destinationId: organisationMap.get(sourceId) ?? null, provenance: "explicit-import-map" as const })),
     unresolvedMemberIds: userIds.filter((id) => !memberMap.has(id)),
     unresolvedOrganisationIds: organisationIds.filter((id) => !organisationMap.has(id)),
+    agentMappings: mappedAgents,
     dependencies: { userOrganisationReferences: parsed.users.references.length, policyMemberReferences: parsed.org_member_policy.ids.length, aliasMemberReferences: parsed.user_aliases.ids.length, allReferencesResolved: true },
     authority: "mapping-evidence-only; destination existence and authority are not verified",
     omissions: [
@@ -400,6 +494,69 @@ export function mapMemberEvidence(copies: Record<MemberTable, Buffer>, mapInput?
       "user_aliases values are inventoried as historical evidence and do not verify a provider identity",
     ],
   };
+}
+
+export function mapAgentLinkEvidence(copies: Record<AgentLinkTable, Buffer>, memberEvidence: ReturnType<typeof mapMemberEvidence>) {
+  const parsed = Object.fromEntries((Object.keys(AGENT_LINK_TABLES) as AgentLinkTable[]).map((table) => [table, parseAgentLinkCopy(table, copies[table])])) as Record<AgentLinkTable, ReturnType<typeof parseAgentLinkCopy>>;
+  const sourceAgents = new Set([
+    ...parsed.agent_registry.agentKeys,
+    ...parsed.agent_definitions.agentKeys,
+  ]);
+  const sourceAgentIds = [...sourceAgents].sort();
+  const mappings = memberEvidence.agentMappings;
+  if (mappings.some(({ sourceId, destinationId }) => !sourceAgents.has(sourceId) || !validOpaqueAgentKey(destinationId))) throw new ImportInspectionRefused("member_map_invalid");
+  const mapping = new Map(mappings.map(({ sourceId, destinationId }) => [sourceId, destinationId]));
+  const knownDoors = new Set(parsed.agent_doors.doorKeys);
+  const tableEvidence = (tables: readonly AgentLinkTable[]) => tables.map((table) => {
+    const evidence = parsed[table];
+    return {
+      table,
+      count: evidence.count,
+      checksum: evidence.checksum,
+      agentReferences: evidence.agentReferences,
+      unresolvedAgentReferences: evidence.agents.filter((agent) => !sourceAgents.has(agent)).length,
+      doorReferences: evidence.doorReferences,
+      unresolvedDoorReferences: table === "agent_doors" ? 0 : evidence.doorKeys.filter((key) => !knownDoors.has(key)).length,
+      resourceReferences: evidence.resourceReferences,
+    };
+  });
+  const agentsTables = tableEvidence(["agent_registry", "agent_definitions", "agent_avatars", "agent_resources", "agent_doors", "agent_door_connections", "agent_door_claim_audit"]);
+  const resourceBindingTables = tableEvidence(["outside_tool_pins"]);
+  const count = agentsTables.reduce((sum, table) => sum + table.count, 0);
+  const agentCategory = {
+    status: "partially-inventoried" as const,
+    count,
+    checksum: createHash("sha256").update(JSON.stringify(agentsTables)).digest("hex"),
+    sourceTables: agentsTables,
+    explicitAgentMappingCount: mappings.length,
+    unresolvedAgentMappingCount: sourceAgentIds.filter((id) => !mapping.has(id)).length,
+    dependencies: {
+      unresolvedAgentReferences: agentsTables.reduce((sum, table) => sum + table.unresolvedAgentReferences, 0),
+      orphanAvatarReferences: parsed.agent_avatars.agents.filter((agent) => !sourceAgents.has(agent)).length,
+      doorReferences: agentsTables.reduce((sum, table) => sum + table.doorReferences, 0),
+      unresolvedDoorReferences: agentsTables.reduce((sum, table) => sum + table.unresolvedDoorReferences, 0),
+      memberOwnership: "not-present-in-pinned-agent-source-columns",
+      destinationAuthority: "unverified",
+    },
+    omissions: ["agent_notes is counted once under facts; its agent association is not added to this category", "permission, definition, avatar, resource, and connection payloads are not emitted or applied"],
+    authority: "mapping-evidence-only; destination existence, adoption, stewardship, permissions, and authority are unverified",
+  };
+  const bindings = {
+    status: "partially-inventoried" as const,
+    count: resourceBindingTables.reduce((sum, table) => sum + table.count, 0),
+    checksum: createHash("sha256").update(JSON.stringify(resourceBindingTables)).digest("hex"),
+    sourceTables: resourceBindingTables,
+    crossCategoryReferences: {
+      agentResourceRows: parsed.agent_resources.count,
+      agentDoorRows: parsed.agent_doors.count,
+      includedInPrimaryCategory: "agents",
+    },
+    unresolvedAgentReferences: resourceBindingTables.reduce((sum, table) => sum + table.unresolvedAgentReferences, 0),
+    unresolvedResourceReferences: resourceBindingTables.reduce((sum, table) => sum + table.resourceReferences, 0),
+    destinationResourceMappings: "not-provided",
+    authority: "source association evidence only; no account, resource, door, or destination permission is established",
+  };
+  return { agents: agentCategory, "resource-bindings": bindings };
 }
 
 const ARCHIVE_CHECK = String.raw`
@@ -715,6 +872,7 @@ export function buildInspection(
   archive: ArchiveInspection,
   memberEvidence?: ReturnType<typeof mapMemberEvidence>,
   ownedEvidence?: ReturnType<typeof mapOwnedRecordEvidence>,
+  agentEvidence?: ReturnType<typeof mapAgentLinkEvidence>,
 ) {
   if (archive.engineVersion !== SOURCE_RELEASE) throw new ImportInspectionRefused("unsupported_source_release");
   const sourceDumpChecksum = archive.sourceInventory.databases.find((database) => database.name === "lares_state")?.sha256;
@@ -755,6 +913,10 @@ export function buildInspection(
       authority: memberEvidence.authority,
       omissions: memberEvidence.omissions,
       reason: memberEvidence.status === "inventoried" ? "Source rows are fully counted and explicitly mapped; destination existence and authority remain unverified." : "Source rows are counted, but explicit member or organisation mappings are incomplete.",
+    } : (category === "agents" || category === "resource-bindings") && agentEvidence !== undefined ? {
+      category,
+      ...agentEvidence[category],
+      reason: "Source rows and association references are inspected, but destination identities and authority remain unverified.",
     } : (category === "facts" || category === "settings" || category === "suppression") && ownedEvidence !== undefined ? {
       category,
       ...ownedEvidence[category],
@@ -783,7 +945,7 @@ export function buildInspection(
     blockers: [
       "This slice does not inventory individual file resources or all configured storage outside the export's declared paths.",
       "Encrypted database credentials may be present and remain blocked from ordinary import; a separate protected transfer or reconnection decision is still required.",
-      "The other 18 application categories, plus unresolved record, identity, provenance, dependency, and omission mappings in this slice, still need review before an ImportManifest v1 can be produced.",
+      "The other 16 application categories, plus unresolved record, identity, provenance, dependency, and omission mappings in this slice, still need review before an ImportManifest v1 can be produced.",
     ],
   } as const;
 }
@@ -808,6 +970,22 @@ function readOwnedRecordCopies(directory: string): Record<OwnedRecordTable, Buff
   const copies = {} as Record<OwnedRecordTable, Buffer>;
   for (const table of Object.keys(OWNED_RECORD_TABLES) as OwnedRecordTable[]) {
     const path = `${directory}/${table}.copy`;
+    try {
+      const size = statSync(path).size;
+      if (size < 1 || size > MAX_COPY_BYTES) throw new ImportInspectionRefused("copy_data_too_large");
+      copies[table] = readFileSync(path);
+    } catch (error) {
+      if (error instanceof ImportInspectionRefused) throw error;
+      throw new ImportInspectionRefused("source_table_missing_or_unsupported");
+    }
+  }
+  return copies;
+}
+
+function readAgentLinkCopies(directory: string): Record<AgentLinkTable, Buffer> {
+  const copies = {} as Record<AgentLinkTable, Buffer>;
+  for (const table of Object.keys(AGENT_LINK_TABLES) as AgentLinkTable[]) {
+    const path = directory + "/" + table + ".copy";
     try {
       const size = statSync(path).size;
       if (size < 1 || size > MAX_COPY_BYTES) throw new ImportInspectionRefused("copy_data_too_large");
@@ -853,7 +1031,8 @@ function main(args: string[]): void {
     verifyDatabaseSchemas(archive, options!.tocDirectory);
     const members = mapMemberEvidence(readMemberCopies(options!.copyDirectory), readMemberMap(options!.memberMapPath));
     const owned = mapOwnedRecordEvidence(readOwnedRecordCopies(options!.copyDirectory), members);
-    const inspection = buildInspection(archive, members, owned);
+    const agents = mapAgentLinkEvidence(readAgentLinkCopies(options!.copyDirectory), members);
+    const inspection = buildInspection(archive, members, owned, agents);
     process.stdout.write(`${JSON.stringify(inspection, null, 2)}\n`);
   } catch (error) {
     const reason = error instanceof ImportInspectionRefused ? error.reason : "inspection_failed";

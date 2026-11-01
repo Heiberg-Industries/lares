@@ -21,6 +21,7 @@ import {
   inspectExportArchive,
   mapMemberEvidence,
   mapOwnedRecordEvidence,
+  mapAgentLinkEvidence,
   verifySourceLedger,
   verifyDatabaseSchemas,
   parseDatabaseSchemas,
@@ -69,6 +70,29 @@ const ownedColumns = {
   initiations: "id, owner, agent, door, cls, item_key, status, reason, until_at, owner_day, decided_at, sent_at",
   email_triage_processed: "mailbox, gmail_message_id, principal, outcome, processed_at, attempts, draft_id, thread_id",
 } as const;
+const agentLinkColumns = {
+  agent_registry: "name, display_name, role, grants, autonomy, skills, doors, tools, started_at",
+  agent_definitions: "name, definition, duties, voice, hash, status, status_reason, valid_at, checked_at, retired_folder",
+  agent_avatars: "name, image, updated_at",
+  agent_resources: "name, address, workflow_database, ownership, ownership_token, state, applied_definition, pending, pending_reason, updated_at, runtime_control_token",
+  agent_doors: "agent, kind, enabled, secret_set_at, settings, updated_at",
+  agent_door_connections: "agent, kind, incarnation, revision, owner_email, code_hash, expires_at, attempts, principal, org, mailbox, claimed_at, applied_revision, applied_connection, webhook_set_at",
+  agent_door_claim_audit: "id, agent, kind, incarnation, principal, claimed_at",
+  outside_tool_pins: "agent, tool, config_hash, pin_hash, pinned_at, pin_tools, seen_hash, seen_tools, seen_at",
+} as const;
+const agentLinkCopies = (): Record<keyof typeof agentLinkColumns, Buffer> => Object.fromEntries(Object.entries(agentLinkColumns).map(([table, columns]) => [
+  table,
+  framed(copy(table, columns, ({
+    agent_registry: ["agent-a\tPRIVATE_AGENT_LABEL_SENTINEL\trole\t{}\t{}\t[]\t[]\t\\N\t2026-10-21 00:00:00+00"],
+    agent_definitions: ["agent-a\t{\"persona\":\"PRIVATE_PERSONA_SENTINEL\"}\tPRIVATE_DUTIES_SENTINEL\tPRIVATE_VOICE_SENTINEL\thash\tvalid\t\\N\t2026-10-21 00:00:00+00\t2026-10-21 00:00:00+00\t\\N"],
+    agent_avatars: ["agent-a\tPRIVATE_AVATAR_SENTINEL\t2026-10-21 00:00:00+00"],
+    agent_resources: ["agent-a\tPRIVATE_RESOURCE_ENDPOINT_SENTINEL\tworkflow\towned\tPRIVATE_OWNERSHIP_TOKEN_SENTINEL\tready\tPRIVATE_APPLIED_DEFINITION_SENTINEL\tf\t\\N\t2026-10-21 00:00:00+00\tPRIVATE_RUNTIME_CONTROL_TOKEN_SENTINEL"],
+    agent_doors: ["agent-a\tslack\tt\t2026-10-21 00:00:00+00\t{\"secret\":\"PRIVATE_DOOR_SETTINGS_SENTINEL\"}\t2026-10-21 00:00:00+00"],
+    agent_door_connections: ["ghost-agent\tmail\tincarnation\trevision\tPRIVATE_OWNER_EMAIL_SENTINEL\tPRIVATE_CODE_HASH_SENTINEL\t\\N\t0\tPRIVATE_PRINCIPAL_SENTINEL\tPRIVATE_ORG_SENTINEL\tPRIVATE_MAILBOX_SENTINEL\t\\N\t\\N\tPRIVATE_APPLIED_CONNECTION_SENTINEL\t\\N"],
+    agent_door_claim_audit: ["1\tagent-a\tslack\tincarnation\tPRIVATE_AUDIT_PRINCIPAL_SENTINEL\t2026-10-21 00:00:00+00"],
+    outside_tool_pins: ["ghost-agent\tPRIVATE_TOOL_ID_SENTINEL\t" + "a".repeat(64) + "\t" + "b".repeat(64) + "\t2026-10-21 00:00:00+00\t[{\"description\":\"PRIVATE_PIN_TOOLS_SENTINEL\"}]\t\\N\t[{\"description\":\"PRIVATE_SEEN_TOOLS_SENTINEL\"}]\t2026-10-21 00:00:00+00"],
+  } as Record<keyof typeof agentLinkColumns, string[]>)[table as keyof typeof agentLinkColumns])),
+])) as Record<keyof typeof agentLinkColumns, Buffer>;
 const ownedCopies = (): Record<keyof typeof ownedColumns, Buffer> => Object.fromEntries(Object.entries(ownedColumns).map(([table, columns]) => [
   table,
   framed(copy(table, columns, table === "standing_facts"
@@ -175,7 +199,7 @@ function installedHarness(mode: "success" | "overflow" | "timeout" | "inspect" =
   roots.push(root);
   const ownedCopyDir = join(root, "owned-copies");
   mkdirSync(ownedCopyDir);
-  for (const [table, content] of Object.entries(ownedCopies())) writeFileSync(join(ownedCopyDir, `${table}.copy`), content);
+  for (const [table, content] of Object.entries({ ...ownedCopies(), ...agentLinkCopies() })) writeFileSync(join(ownedCopyDir, `${table}.copy`), content);
   const prefix = join(root, "prefix");
   const release = join(prefix, "opt", "lares", "releases", "fixture");
   const current = join(prefix, "opt", "lares", "current");
@@ -303,7 +327,7 @@ describe("PR1a export archive inspection", () => {
     mkdirSync(tocDir);
     mkdirSync(copyDir);
     for (const [table, content] of Object.entries(memberCopies())) writeFileSync(join(copyDir, `${table}.copy`), content);
-    for (const [table, content] of Object.entries(ownedCopies())) writeFileSync(join(copyDir, `${table}.copy`), content);
+    for (const [table, content] of Object.entries({ ...ownedCopies(), ...agentLinkCopies() })) writeFileSync(join(copyDir, `${table}.copy`), content);
     const toc = [
       "; Archive created at fixture", "; Selected TOC Entries:",
       "3; 2615 2200 SCHEMA - public fixture_owner",
@@ -373,6 +397,76 @@ describe("PR1a export archive inspection", () => {
     }
     const malformed = { ...copies, settings: Buffer.from(copies.settings.toString("utf8").replace("\\restrict", "\\unrestrict")) };
     expect(() => mapOwnedRecordEvidence(malformed, members)).toThrowError(new ImportInspectionRefused("member_copy_envelope_invalid"));
+  });
+
+  it("counts agent links once, reports unresolved references, validates explicit maps, and redacts payloads", () => {
+    const members = mapMemberEvidence(memberCopies());
+    const copies = agentLinkCopies();
+    const agents = mapAgentLinkEvidence(copies, members);
+    expect(agents.agents).toMatchObject({
+      status: "partially-inventoried",
+      count: 7,
+      explicitAgentMappingCount: 0,
+      unresolvedAgentMappingCount: 1,
+      dependencies: { unresolvedAgentReferences: 1, doorReferences: 3, unresolvedDoorReferences: 1, memberOwnership: "not-present-in-pinned-agent-source-columns", destinationAuthority: "unverified" },
+    });
+    expect(agents["resource-bindings"]).toMatchObject({
+      status: "partially-inventoried",
+      count: 1,
+      crossCategoryReferences: { agentResourceRows: 1, agentDoorRows: 1, includedInPrimaryCategory: "agents" },
+      unresolvedAgentReferences: 1,
+      unresolvedResourceReferences: 1,
+      destinationResourceMappings: "not-provided",
+    });
+    const owned = mapOwnedRecordEvidence(ownedCopies(), members);
+    const output = JSON.stringify(buildInspection(inspectExportArchive(fixtureArchive()), members, owned, agents));
+    for (const sentinel of ["PRIVATE_AGENT_LABEL_SENTINEL", "PRIVATE_PERSONA_SENTINEL", "PRIVATE_DUTIES_SENTINEL", "PRIVATE_VOICE_SENTINEL", "PRIVATE_AVATAR_SENTINEL", "PRIVATE_RESOURCE_ENDPOINT_SENTINEL", "PRIVATE_OWNERSHIP_TOKEN_SENTINEL", "PRIVATE_RUNTIME_CONTROL_TOKEN_SENTINEL", "PRIVATE_APPLIED_DEFINITION_SENTINEL", "PRIVATE_DOOR_SETTINGS_SENTINEL", "PRIVATE_OWNER_EMAIL_SENTINEL", "PRIVATE_CODE_HASH_SENTINEL", "PRIVATE_PRINCIPAL_SENTINEL", "PRIVATE_ORG_SENTINEL", "PRIVATE_MAILBOX_SENTINEL", "PRIVATE_APPLIED_CONNECTION_SENTINEL", "PRIVATE_AUDIT_PRINCIPAL_SENTINEL", "PRIVATE_TOOL_ID_SENTINEL", "PRIVATE_PIN_TOOLS_SENTINEL", "PRIVATE_SEEN_TOOLS_SENTINEL", "ghost-agent", "agent-a"]) {
+      expect(output).not.toContain(sentinel);
+    }
+    const mapped = mapMemberEvidence(memberCopies(), {
+      version: 1, members: [], organizations: [], agents: [{ sourceId: "agent-a", destinationId: "destination-agent" }],
+    });
+    expect(mapAgentLinkEvidence(copies, mapped).agents).toMatchObject({
+      explicitAgentMappingCount: 1,
+      unresolvedAgentMappingCount: 0,
+      status: "partially-inventoried",
+    });
+    expect(() => mapMemberEvidence(memberCopies(), {
+      version: 1, members: [], organizations: [], agents: [
+        { sourceId: "agent-a", destinationId: "destination-agent" },
+        { sourceId: "agent-a", destinationId: "other-destination" },
+      ],
+    })).toThrowError(new ImportInspectionRefused("agent_map_invalid"));
+    expect(() => mapMemberEvidence(memberCopies(), {
+      version: 1, members: [], organizations: [], agents: [
+        { sourceId: "agent-a", destinationId: "destination-agent" },
+        { sourceId: "other-agent", destinationId: "destination-agent" },
+      ],
+    })).toThrowError(new ImportInspectionRefused("agent_map_invalid"));
+    expect(() => mapAgentLinkEvidence(copies, mapMemberEvidence(memberCopies(), {
+      version: 1, members: [], organizations: [], agents: [{ sourceId: "unknown-agent", destinationId: "destination-agent" }],
+    }))).toThrowError(new ImportInspectionRefused("member_map_invalid"));
+    const avatarOnly = {
+      ...copies,
+      agent_avatars: framed(copy("agent_avatars", agentLinkColumns.agent_avatars, ["avatar-only\tPRIVATE_AVATAR_ONLY_SENTINEL\t2026-10-21 00:00:00+00"])),
+      agent_door_connections: Buffer.from(copies.agent_door_connections.toString("utf8").replace("ghost-agent", "avatar-only")),
+      outside_tool_pins: Buffer.from(copies.outside_tool_pins.toString("utf8").replace("ghost-agent", "avatar-only")),
+    };
+    const avatarOnlyEvidence = mapAgentLinkEvidence(avatarOnly, members);
+    expect(avatarOnlyEvidence.agents).toMatchObject({
+      count: 7,
+      dependencies: { unresolvedAgentReferences: 2, orphanAvatarReferences: 1 },
+    });
+    expect(() => mapAgentLinkEvidence(avatarOnly, mapMemberEvidence(memberCopies(), {
+      version: 1, members: [], organizations: [], agents: [{ sourceId: "avatar-only", destinationId: "destination-agent" }],
+    }))).toThrowError(new ImportInspectionRefused("member_map_invalid"));
+    const badFraming = { ...copies, agent_registry: Buffer.from(copies.agent_registry.toString("utf8").replace("SET statement_timeout = 0;", "SET statement_timeout = 1;")) };
+    expect(() => mapAgentLinkEvidence(badFraming, members)).toThrowError(new ImportInspectionRefused("member_copy_envelope_invalid"));
+    const duplicate = { ...copies, agent_registry: framed(copy("agent_registry", agentLinkColumns.agent_registry, [
+      "agent-a\tlabel\trole\t{}\t{}\t[]\t[]\t\\N\t2026-10-21 00:00:00+00",
+      "agent-a\tother-label\trole\t{}\t{}\t[]\t[]\t\\N\t2026-10-21 00:00:00+00",
+    ])) };
+    expect(() => mapAgentLinkEvidence(duplicate, members)).toThrowError(new ImportInspectionRefused("duplicate_agent_source_key"));
   });
 
   it("refuses legacy manifests and omitted source stores", () => {
@@ -742,7 +836,9 @@ print(guard)
     expect(inspection.categories[8]).toMatchObject({ category: "facts", status: "partially-inventoried", count: 6 });
     expect(inspection.categories[15]).toMatchObject({ category: "settings", status: "partially-inventoried", count: 7 });
     expect(inspection.categories[18]).toMatchObject({ category: "suppression", status: "partially-inventoried", count: 4 });
-    expect(inspection.categories.slice(1).filter((entry: { category: string }) => !["facts", "settings", "suppression"].includes(entry.category)).every((entry: { status: string; count: unknown; checksum: unknown }) => entry.status === "not-inventoried" && entry.count === null && entry.checksum === null)).toBe(true);
+    expect(inspection.categories[3]).toMatchObject({ category: "agents", status: "partially-inventoried", count: 7, unresolvedAgentMappingCount: 1 });
+    expect(inspection.categories[5]).toMatchObject({ category: "resource-bindings", status: "partially-inventoried", count: 1 });
+    expect(inspection.categories.slice(1).filter((entry: { category: string }) => !["agents", "resource-bindings", "facts", "settings", "suppression"].includes(entry.category)).every((entry: { status: string; count: unknown; checksum: unknown }) => entry.status === "not-inventoried" && entry.count === null && entry.checksum === null)).toBe(true);
     expect(result.stdout).not.toContain("PRIVATE_NAME_SENTINEL");
     expect(result.stdout).not.toContain("private@example.invalid");
     expect(result.stdout).not.toContain("PRIVATE_ALIAS_SENTINEL");
@@ -781,7 +877,9 @@ print(guard)
     expect(inspection.categories[8]).toMatchObject({ category: "facts", status: "partially-inventoried", count: 6, dependencies: { rowsWithoutExplicitMemberOwner: 1, ownerReferencesWithoutMemberIdentity: 1 } });
     expect(inspection.categories[15]).toMatchObject({ category: "settings", status: "partially-inventoried", count: 7 });
     expect(inspection.categories[18]).toMatchObject({ category: "suppression", status: "partially-inventoried", count: 4 });
-    expect(inspection.categories.slice(1).filter((entry: { category: string }) => !["facts", "settings", "suppression"].includes(entry.category)).every((entry: { status: string }) => entry.status === "not-inventoried")).toBe(true);
+    expect(inspection.categories[3]).toMatchObject({ category: "agents", status: "partially-inventoried", count: 7 });
+    expect(inspection.categories[5]).toMatchObject({ category: "resource-bindings", status: "partially-inventoried", count: 1 });
+    expect(inspection.categories.slice(1).filter((entry: { category: string }) => !["agents", "resource-bindings", "facts", "settings", "suppression"].includes(entry.category)).every((entry: { status: string }) => entry.status === "not-inventoried")).toBe(true);
     for (const sentinel of ["PRIVATE_FACT_SENTINEL", "PRIVATE_PROPOSAL_SENTINEL", "PRIVATE_NOTE_SENTINEL", "PRIVATE_SETTING_SENTINEL", "PRIVATE_AUDIT_SENTINEL", "PRIVATE_OWNER_ID_SENTINEL", "private.setting", "private-mailbox", "private-principal"]) expect(result.stdout).not.toContain(sentinel);
     expect(readFileSync(harness.dockerLog, "utf8").match(/--network none/g)).toHaveLength(3);
     expect(readFileSync(harness.dockerLog, "utf8")).toContain("example.invalid/keeper@sha256:");

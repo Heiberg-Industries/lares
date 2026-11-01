@@ -239,15 +239,22 @@ The command accepts an optional explicit source-to-destination mapping file:
 sudo lares import-preview "$ARCHIVE" --member-map ./member-map.json
 ```
 
-The JSON file has `version: 1`, a `members` list, and an `organizations` list. Each list entry has
-only `sourceId` and `destinationId`. The preview validates IDs and uniqueness, but it does not
-check that a destination member or organisation exists or grant anyone authority. If the map is
-omitted or incomplete, the members category remains partial with the unresolved source IDs listed.
+The JSON file has `version: 1`, `members` and `organizations` lists, and an optional `agents` list.
+Each list entry has only `sourceId` and `destinationId`. Agent entries use the source agent key
+from the pinned database. The preview validates IDs and uniqueness, but it does not check that a
+destination member, organisation, or agent exists or grant anyone authority. If member or
+organisation mappings are omitted or incomplete, the members category remains partial and lists
+unresolved source IDs. Missing agent mappings keep the agents category partial and are reported as
+a count without echoing agent keys.
 The preview reports row counts and checksums for the pinned `users`, `orgs`, `org_member_policy`,
-and `user_aliases` tables, plus candidate tables for facts, settings, and suppression. It reports
-explicit owner mappings and per-column unresolved dependency counts while keeping names, emails,
-policy values, aliases, setting values, and raw rows out of its output. Alias records remain historical evidence,
-not verified provider identities.
+and `user_aliases` tables, plus candidate tables for agents, resource bindings, facts, settings, and
+suppression. Agent definitions and associations are counted and hashed; payloads, labels,
+connections, and resource details stay out of the report. `agent_notes` remains counted under
+facts, while `agent_resources` and `agent_doors` are counted only under agents and shown as
+cross-category references under resource bindings. It reports per-column unresolved dependency
+counts while keeping names, emails, policy values, aliases, setting values, agent keys, and raw rows
+out of the new agent/resource evidence. Alias records remain historical evidence, not verified
+provider identities.
 
 The preview accepts only the verified rc.12 source schema and identifies rc.13 as the destination.
 It uses a locally cached, digest-pinned database helper with network disabled; if that image is not
@@ -255,7 +262,7 @@ already present, the command stops instead of downloading it. It does not connec
 database, write to the installation, or print archived row values. Its result is deliberately **blocked for import**:
 the members category is source-inventoried only when all four pinned tables decode and both maps are
 complete; otherwise it is partial. Facts, settings, and suppression are counted and hashed but
-remain partial while owner, record, and destination mappings are unresolved. The other 18
+remain partial while owner, record, and destination mappings are unresolved. The other 16
 categories remain `not-inventoried` until their record and file mappings are complete. Keep the
 source and archive; this check is not approval to
 restore or erase.
@@ -265,13 +272,17 @@ restore or erase.
 This is the source and mapping boundary for a future read-only import plan. `lares import-preview`
 remains inspection-only and import remains blocked. It inventories the four listed members-source
 tables and applies only explicit member and organisation ID mappings. It also counts and hashes
-16 candidate tables across `facts`, `settings`, and `suppression`, reports direct owner mappings,
+16 candidate tables across `facts`, `settings`, and `suppression`, plus eight agent/resource-link
+tables, reports explicit member, organisation, and agent mapping evidence,
 and lists rows whose owner or record dependencies are unresolved. `conversation_retention` also
 appears in the conversations contract; `initiations` and `email_triage_processed` also appear in
 the jobs and sync contracts. This slice reports those source rows in the settings/suppression
 evidence only; a future manifest must settle cross-category row ownership before counting them
-elsewhere. These three categories remain
-partial; the other 18 categories remain `not-inventoried`. The table below is a coverage contract for the verified source schema,
+elsewhere. `agent_notes` remains under facts; `agent_resources` and `agent_doors` count under
+agents and appear only as references under resource bindings. The agents and resource-bindings
+categories remain partial because destination authority and resource mappings are not verified.
+Facts, settings, and suppression also remain partial; the other 16 categories remain
+`not-inventoried`. The table below is a coverage contract for the verified source schema,
 not evidence that an archive has been completely inventoried or can be restored.
 
 The accepted Box source is exactly `2026-10-21-rc.12`, whose `lares_state` migration ledger has
@@ -289,7 +300,8 @@ these six files and checksums. The hashes match the SQL files committed here:
 The 74 table names below are the exhaustive `public` table inventory declared by those six Box
 migrations, including `schema_migrations`. They say nothing about table rows. The export includes
 every non-template database. The helper reads `schema_migrations`, the four pinned members tables,
-and the 16 candidate facts, settings, and suppression tables from `lares_state.dump`; extra database dumps are not known to be empty or
+16 candidate facts, settings, and suppression tables, and eight agent/resource-link tables from
+`lares_state.dump`; extra database dumps are not known to be empty or
 compatible. The source
 baseline also says that role workflow schemas and dream tables are created outside the Box
 migrations. The rc.12 release record identifies the chief-of-staff workflow upgrade, but the
@@ -334,9 +346,9 @@ gaps define the mapping work:
 | `members` | `users`, `orgs`, `org_member_policy`, `user_aliases` | `users.id` is a source member key and `user_aliases.user_id` refers to it. Map each source member to an explicit destination member; names, emails, old owner roles, and organization membership do not select or create current authority. |
 | `identities` | `user_aliases`; `oauth_tokens` carries provider and email labels | An alias or email is not a verified provider identity. Require a separately verified issuer/subject/tenant mapping or mark reconnection required. |
 | `grants` | `cross_member_grants`, `cross_member_reads`, `org_member_policy` | These rows are historical source evidence, not current rc.13 grants. Each retained grant needs an explicit resource and member mapping plus fresh authority review; never widen sharing by inference. |
-| `agents` | `agent_registry`, `agent_definitions`, `agent_avatars`, `agent_notes`, `agent_resources`, `agent_doors`, `agent_door_connections`, `agent_door_claim_audit` | Preserve source agent keys only through an explicit unique mapping. Adoption, stewardship, and member ownership require current destination identities and must not be inferred from a label or old administrator role. |
+| `agents` | `agent_registry`, `agent_definitions`, `agent_avatars`, `agent_resources`, `agent_doors`, `agent_door_connections`, `agent_door_claim_audit` | Count and hash source rows and require an explicit unique source-agent map. `agent_notes` remains counted under facts. Do not expose definition, avatar, resource, connection, or door payloads. Adoption, stewardship, and member ownership require current destination identities and must not be inferred from a label or old administrator role. |
 | `accounts` | `oauth_tokens`, `keeper_credentials` | The source dump contains encrypted sign-in material. Ordinary import must exclude its values, flag its presence without exposing them, and require a separately protected transfer or reconnection decision. Account IDs, generations, consent, and automation mode need explicit destination mappings. |
-| `resource-bindings` | `agent_resources`, `agent_doors`, `outside_tool_pins` | These source associations do not establish the rc.13 account/resource binding contract. Map only with explicit stable account, resource, and owner identities; labels alone confer no authority. |
+| `resource-bindings` | `outside_tool_pins`; cross-category references to `agent_resources` and `agent_doors` | Count `outside_tool_pins` once here. Report agent-resource and agent-door links as references only; they are counted under agents. These source associations do not establish the rc.13 account/resource binding contract or authority. |
 | `conversations` | `conversation_entries`, `agent_conversations`, `sessions`, `conversation_retention` | Preserve recoverable history. Archive-only is the sole approved usability fallback; it does not make history available in a destination session or establish current readers. |
 | `vault` | Optional `.bundle` and data `.tar` members; no rc.12 Box vault-area table is in the pinned schema | File presence, ownership, area identity, and contents are not proven by counting bundle/tar members. Require explicit source-to-destination area and file mappings; keep private areas private. |
 | `facts` | `standing_facts`, `memory_proposals`, `memory_reads`, `memory_use`, `agent_notes` | Preserve the source owner/provenance fields only after mapping their owner to a destination member. Rows without a resolvable owner remain blocked. |
@@ -394,8 +406,8 @@ This declaration covers only the database and file stores that the exporter obse
 database list and configured path lists. A store outside those lists remains unverified. Schema
 names do not establish table or row coverage, compatibility with an older source release, or
 identity mappings. Protected credentials remain blocked from ordinary import. The preview decodes
-the four pinned members tables and 16 candidate facts, settings, and suppression tables after
-verifying the fresh export metadata. It emits only aggregate counts, checksums, explicit owner
+the four pinned members tables, 16 candidate facts, settings, and suppression tables, and eight
+agent/resource-link tables after verifying the fresh export metadata. It emits only aggregate counts, checksums, explicit owner
 mappings, unresolved source-member IDs, and counts for owner values that do not match a source
 member. It never emits record values or unmatched owner text, including arbitrary JSON settings
 values. `memory_proposals` has no member-owner column; settings and audit rows have values and actors
@@ -403,8 +415,8 @@ without a verified destination owner; `digest_skips` and `email_triage_processed
 member-owner column; resource and record references are not mapped to destination records.
 `conversation_retention` overlaps conversations; `initiations` overlaps jobs; and
 `email_triage_processed` overlaps sync. This slice reports each such table only in its selected
-group and leaves any cross-category row disposition unresolved. Therefore these three categories
-remain partial even when the member map is complete. The other 18
+group and leaves any cross-category row disposition unresolved. The five record/link categories
+remain partial even when the member map is complete. The other 16
 application categories remain `not-inventoried`, incomplete member/org mappings keep the members
 category partial, and import remains blocked.
 
