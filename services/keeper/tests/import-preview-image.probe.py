@@ -95,7 +95,7 @@ def fresh_proof() -> dict[str, object]:
         "failureCategory": None,
         "inspectionCheck": None,
         "checks": dict(CHECKS),
-        "unmappedCategoryCount": 18,
+        "unmappedCategoryCount": 16,
         "cleanupOkay": False,
     }
 
@@ -123,7 +123,7 @@ def proof_is_safe(proof: object) -> bool:
     inspection_check = proof["inspectionCheck"]
     if inspection_check is not None and (not isinstance(inspection_check, str) or inspection_check not in INSPECTION_CHECKS):
         return False
-    if proof["unmappedCategoryCount"] != len(CATEGORIES) - 4:
+    if proof["unmappedCategoryCount"] != len(CATEGORIES) - 6:
         return False
     checks = proof["checks"]
     return (isinstance(checks, dict) and set(checks) == set(CHECKS)
@@ -246,10 +246,15 @@ def run_installed(argv: list[str], *, env: dict[str, str], timeout: int,
 def self_test() -> None:
     seeded_sql = migration_sql()
     assert "INSERT INTO public.forget_ledger VALUES (1, 'member-a', 'fact', '%s'" % ("a" * 64) in seeded_sql
+    for sentinel in ("PRIVATE_AGENT_LABEL_SENTINEL", "PRIVATE_PERSONA_SENTINEL",
+                     "PRIVATE_OWNERSHIP_TOKEN_SENTINEL", "PRIVATE_RUNTIME_CONTROL_TOKEN_SENTINEL",
+                     "PRIVATE_APPLIED_CONNECTION_SENTINEL", "PRIVATE_RESOURCE_ENDPOINT_SENTINEL",
+                     "PRIVATE_PIN_TOOLS_SENTINEL", "PRIVATE_SEEN_TOOLS_SENTINEL"):
+        assert sentinel in seeded_sql
     assert "INSERT INTO public.schema_migrations(filename,number,checksum,applied_at,how,took_ms,seq)\n      VALUES ('001_baseline.sql', 1, 'a2a50ac42a53b25ba28faf41e8b8970354292f131e0e673cb7cc2a0001fa725a'" in seeded_sql
     proof = fresh_proof()
     assert proof_is_safe(proof)
-    assert proof["unmappedCategoryCount"] == 18
+    assert proof["unmappedCategoryCount"] == 16
     assert classify_installed_failure(
         b"", b"lares import-preview: refused (member_copy_envelope_invalid); no import data was written."
     ) == "member-copy-refused"
@@ -593,6 +598,52 @@ def migration_sql() -> str:
     );
     INSERT INTO public.agent_notes VALUES (1, 'member-a', 'agent-a', 'working', 'PRIVATE_NOTE_SENTINEL', 'owner',
       'session-1', 'turn-1', TIMESTAMPTZ '2026-10-21 00:00:00+00');
+    CREATE TABLE public.agent_registry (
+      name text, display_name text, role text, grants jsonb, autonomy jsonb, skills jsonb, doors jsonb, tools jsonb, started_at timestamptz
+    );
+    INSERT INTO public.agent_registry VALUES ('agent-a', 'PRIVATE_AGENT_LABEL_SENTINEL', 'role', '{}', '{}', '[]', '[]', NULL, TIMESTAMPTZ '2026-10-21 00:00:00+00');
+    CREATE TABLE public.agent_definitions (
+      name text, definition jsonb, duties text, voice text, hash text, status text, status_reason text,
+      valid_at timestamptz, checked_at timestamptz, retired_folder text
+    );
+    INSERT INTO public.agent_definitions VALUES ('agent-a', '{"persona":"PRIVATE_PERSONA_SENTINEL"}', 'PRIVATE_DUTIES_SENTINEL',
+      'PRIVATE_VOICE_SENTINEL', 'hash', 'valid', NULL, TIMESTAMPTZ '2026-10-21 00:00:00+00',
+      TIMESTAMPTZ '2026-10-21 00:00:00+00', NULL);
+    CREATE TABLE public.agent_avatars (name text, image bytea, updated_at timestamptz);
+    INSERT INTO public.agent_avatars VALUES ('agent-a', decode('505249564154455f4156415441525f53454e54494e454c', 'hex'), TIMESTAMPTZ '2026-10-21 00:00:00+00');
+    CREATE TABLE public.agent_resources (
+      name text, address text, workflow_database text, ownership text, ownership_token text, state text,
+      applied_definition jsonb, pending boolean, pending_reason text, updated_at timestamptz, runtime_control_token text
+    );
+    INSERT INTO public.agent_resources VALUES ('agent-a', 'PRIVATE_RESOURCE_ENDPOINT_SENTINEL', 'workflow', 'owned',
+      'PRIVATE_OWNERSHIP_TOKEN_SENTINEL', 'ready', '{"secret":"PRIVATE_APPLIED_DEFINITION_SENTINEL"}', false, NULL,
+      TIMESTAMPTZ '2026-10-21 00:00:00+00', 'PRIVATE_RUNTIME_CONTROL_TOKEN_SENTINEL');
+    CREATE TABLE public.agent_doors (
+      agent text, kind text, enabled boolean, secret_set_at timestamptz, settings jsonb, updated_at timestamptz
+    );
+    INSERT INTO public.agent_doors VALUES ('agent-a', 'slack', true, TIMESTAMPTZ '2026-10-21 00:00:00+00',
+      '{"secret":"PRIVATE_DOOR_SETTINGS_SENTINEL"}', TIMESTAMPTZ '2026-10-21 00:00:00+00');
+    CREATE TABLE public.agent_door_connections (
+      agent text, kind text, incarnation uuid, revision uuid, owner_email text, code_hash text, expires_at timestamptz,
+      attempts integer, principal text, org text, mailbox text, claimed_at timestamptz, applied_revision uuid,
+      applied_connection jsonb, webhook_set_at timestamptz
+    );
+    INSERT INTO public.agent_door_connections VALUES ('agent-a', 'slack', '00000000-0000-0000-0000-000000000003',
+      '00000000-0000-0000-0000-000000000004', 'PRIVATE_OWNER_EMAIL_SENTINEL', 'PRIVATE_CODE_HASH_SENTINEL', NULL,
+      0, 'PRIVATE_PRINCIPAL_SENTINEL', 'PRIVATE_ORG_SENTINEL', 'PRIVATE_MAILBOX_SENTINEL', NULL, NULL,
+      '{"secret":"PRIVATE_APPLIED_CONNECTION_SENTINEL"}', NULL);
+    CREATE TABLE public.agent_door_claim_audit (
+      id bigint, agent text, kind text, incarnation uuid, principal text, claimed_at timestamptz
+    );
+    INSERT INTO public.agent_door_claim_audit VALUES (1, 'agent-a', 'slack',
+      '00000000-0000-0000-0000-000000000005', 'PRIVATE_AUDIT_PRINCIPAL_SENTINEL', TIMESTAMPTZ '2026-10-21 00:00:00+00');
+    CREATE TABLE public.outside_tool_pins (
+      agent text, tool text, config_hash text, pin_hash text, pinned_at timestamptz, pin_tools jsonb,
+      seen_hash text, seen_tools jsonb, seen_at timestamptz
+    );
+    INSERT INTO public.outside_tool_pins VALUES ('ghost-agent', 'PRIVATE_TOOL_ID_SENTINEL', '%s', '%s',
+      TIMESTAMPTZ '2026-10-21 00:00:00+00', '[{"description":"PRIVATE_PIN_TOOLS_SENTINEL"}]', NULL,
+      '[{"description":"PRIVATE_SEEN_TOOLS_SENTINEL"}]', TIMESTAMPTZ '2026-10-21 00:00:00+00');
     CREATE TABLE public.settings (key text, value jsonb, updated_by text, updated_at timestamptz);
     INSERT INTO public.settings VALUES ('private.setting', '{"secret":"PRIVATE_SETTING_SENTINEL"}', 'member-a', TIMESTAMPTZ '2026-10-21 00:00:00+00');
     CREATE TABLE public.settings_audit (id bigint, key text, old_value jsonb, new_value jsonb, changed_by text, at timestamptz);
@@ -632,7 +683,7 @@ def migration_sql() -> str:
       took_ms integer NOT NULL DEFAULT 0, seq bigserial NOT NULL
     );
     INSERT INTO public.schema_migrations(filename,number,checksum,applied_at,how,took_ms,seq)
-      VALUES %s;""" % ("a" * 64, rows)
+      VALUES %s;""" % ("b" * 64, "c" * 64, "a" * 64, rows)
 
 
 def custom_dump_argv(container: str) -> list[str]:
@@ -797,6 +848,20 @@ def main() -> int:
                           and member_category.get("unresolvedMemberIds") == ["member-a"]
                           and member_category.get("unresolvedOrganisationIds") == ["org-a"]
                           and len(member_category.get("sourceTables", [])) == 4, proof, proof_path)
+        require_installed(categories[3].get("category") == "agents"
+                          and categories[3].get("status") == "partially-inventoried"
+                          and categories[3].get("count") == 7
+                          and categories[3].get("unresolvedAgentMappingCount") == 1
+                          and categories[3].get("dependencies", {}).get("memberOwnership") == "not-present-in-pinned-agent-source-columns",
+                          proof, proof_path)
+        require_installed(categories[5].get("category") == "resource-bindings"
+                          and categories[5].get("status") == "partially-inventoried"
+                          and categories[5].get("count") == 1
+                          and categories[5].get("crossCategoryReferences", {}).get("agentResourceRows") == 1
+                          and categories[5].get("crossCategoryReferences", {}).get("agentDoorRows") == 1
+                          and categories[5].get("unresolvedAgentReferences") == 1
+                          and categories[5].get("unresolvedResourceReferences") == 1,
+                          proof, proof_path)
         require_installed(categories[8].get("category") == "facts"
                           and categories[8].get("status") == "partially-inventoried"
                           and categories[8].get("count") == 6
@@ -813,7 +878,7 @@ def main() -> int:
                           proof, proof_path)
         require_installed(all(entry.get("status") == "not-inventoried" and entry.get("count") is None
                               and entry.get("checksum") is None for entry in categories[1:]
-                              if entry.get("category") not in {"facts", "settings", "suppression"}), proof, proof_path)
+                              if entry.get("category") not in {"agents", "resource-bindings", "facts", "settings", "suppression"}), proof, proof_path)
         inventory = result.get("sourceInventory")
         require_installed(isinstance(inventory, dict)
                           and [item.get("name") for item in inventory.get("databases", [])] == ["lares_state", "postgres"]
@@ -825,12 +890,23 @@ def main() -> int:
                                "PRIVATE_ORG_LABEL_SENTINEL", "PRIVATE_ALIAS_SENTINEL", "agent:write", "25.00",
                                "PRIVATE_FACT_SENTINEL", "PRIVATE_PROPOSAL_SENTINEL", "PRIVATE_NOTE_SENTINEL",
                                "PRIVATE_SETTING_SENTINEL", "PRIVATE_AUDIT_SENTINEL", "private.setting",
-                               "PRIVATE_OWNER_ID_SENTINEL", "private-mailbox", "private-principal")), proof, proof_path)
+                               "PRIVATE_OWNER_ID_SENTINEL", "private-mailbox", "private-principal",
+                               "PRIVATE_AGENT_LABEL_SENTINEL", "PRIVATE_PERSONA_SENTINEL", "PRIVATE_DUTIES_SENTINEL",
+                               "PRIVATE_VOICE_SENTINEL", "PRIVATE_APPLIED_DEFINITION_SENTINEL",
+                               "PRIVATE_OWNERSHIP_TOKEN_SENTINEL", "PRIVATE_RUNTIME_CONTROL_TOKEN_SENTINEL",
+                               "PRIVATE_RESOURCE_ENDPOINT_SENTINEL",
+                               "PRIVATE_DOOR_SETTINGS_SENTINEL", "PRIVATE_OWNER_EMAIL_SENTINEL",
+                               "PRIVATE_CODE_HASH_SENTINEL", "PRIVATE_PRINCIPAL_SENTINEL",
+                               "PRIVATE_ORG_SENTINEL", "PRIVATE_MAILBOX_SENTINEL",
+                               "PRIVATE_APPLIED_CONNECTION_SENTINEL", "PRIVATE_AUDIT_PRINCIPAL_SENTINEL",
+                               "PRIVATE_TOOL_ID_SENTINEL", "PRIVATE_PIN_TOOLS_SENTINEL",
+                               "PRIVATE_SEEN_TOOLS_SENTINEL", "ghost-agent", "agent-a")), proof, proof_path)
         member_map = root / "member-map.json"
         member_map.write_text(json.dumps({
             "version": 1,
             "members": [{"sourceId": "member-a", "destinationId": "mapped-member-a"}],
             "organizations": [{"sourceId": "org-a", "destinationId": "mapped-org-a"}],
+            "agents": [{"sourceId": "agent-a", "destinationId": "mapped-agent-a"}],
         }), encoding="utf-8")
         member_map.chmod(0o400)
         mapped = run_installed([str(installed), "import-preview", str(archive), "--member-map", str(member_map)],
@@ -853,6 +929,10 @@ def main() -> int:
                           }], proof, proof_path)
         require_installed(mapped_result.get("importReadiness") == "blocked"
                           and mapped_categories[1].get("status") == "not-inventoried"
+                          and mapped_categories[3].get("explicitAgentMappingCount") == 1
+                          and mapped_categories[3].get("unresolvedAgentMappingCount") == 0
+                          and mapped_categories[3].get("status") == "partially-inventoried"
+                          and mapped_categories[5].get("status") == "partially-inventoried"
                           and mapped_categories[8].get("status") == "partially-inventoried"
                           and mapped_categories[8].get("ownerMappings") == [{
                               "sourceId": "member-a", "destinationId": "mapped-member-a",
@@ -868,7 +948,17 @@ def main() -> int:
                                "PRIVATE_ORG_LABEL_SENTINEL", "PRIVATE_ALIAS_SENTINEL", "agent:write", "25.00",
                                "PRIVATE_FACT_SENTINEL", "PRIVATE_PROPOSAL_SENTINEL", "PRIVATE_NOTE_SENTINEL",
                                "PRIVATE_SETTING_SENTINEL", "PRIVATE_AUDIT_SENTINEL", "private.setting",
-                               "PRIVATE_OWNER_ID_SENTINEL", "private-mailbox", "private-principal")), proof, proof_path)
+                               "PRIVATE_OWNER_ID_SENTINEL", "private-mailbox", "private-principal",
+                               "PRIVATE_AGENT_LABEL_SENTINEL", "PRIVATE_PERSONA_SENTINEL", "PRIVATE_DUTIES_SENTINEL",
+                               "PRIVATE_VOICE_SENTINEL", "PRIVATE_APPLIED_DEFINITION_SENTINEL",
+                               "PRIVATE_OWNERSHIP_TOKEN_SENTINEL", "PRIVATE_RUNTIME_CONTROL_TOKEN_SENTINEL",
+                               "PRIVATE_RESOURCE_ENDPOINT_SENTINEL",
+                               "PRIVATE_DOOR_SETTINGS_SENTINEL", "PRIVATE_OWNER_EMAIL_SENTINEL",
+                               "PRIVATE_CODE_HASH_SENTINEL", "PRIVATE_PRINCIPAL_SENTINEL",
+                               "PRIVATE_ORG_SENTINEL", "PRIVATE_MAILBOX_SENTINEL",
+                               "PRIVATE_APPLIED_CONNECTION_SENTINEL", "PRIVATE_AUDIT_PRINCIPAL_SENTINEL",
+                               "PRIVATE_TOOL_ID_SENTINEL", "PRIVATE_PIN_TOOLS_SENTINEL",
+                               "PRIVATE_SEEN_TOOLS_SENTINEL", "ghost-agent", "agent-a")), proof, proof_path)
         events_before_refusal = boundary_events.read_text(encoding="utf-8").splitlines()
         require(events_before_refusal.count("helper-safe") == 2)
         require(events_before_refusal.count("keeper-preview-safe") >= 3)
