@@ -244,6 +244,9 @@ def run_installed(argv: list[str], *, env: dict[str, str], timeout: int,
 
 
 def self_test() -> None:
+    seeded_sql = migration_sql()
+    assert "INSERT INTO public.forget_ledger VALUES (1, 'member-a', 'fact', '%s'" % ("a" * 64) in seeded_sql
+    assert "INSERT INTO public.schema_migrations(filename,number,checksum,applied_at,how,took_ms,seq)\n      VALUES ('001_baseline.sql', 1, 'a2a50ac42a53b25ba28faf41e8b8970354292f131e0e673cb7cc2a0001fa725a'" in seeded_sql
     proof = fresh_proof()
     assert proof_is_safe(proof)
     assert proof["unmappedCategoryCount"] == 18
@@ -629,7 +632,7 @@ def migration_sql() -> str:
       took_ms integer NOT NULL DEFAULT 0, seq bigserial NOT NULL
     );
     INSERT INTO public.schema_migrations(filename,number,checksum,applied_at,how,took_ms,seq)
-      VALUES %s;""" % (rows, "a" * 64)
+      VALUES %s;""" % ("a" * 64, rows)
 
 
 def custom_dump_argv(container: str) -> list[str]:
