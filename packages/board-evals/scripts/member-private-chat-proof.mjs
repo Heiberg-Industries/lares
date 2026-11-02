@@ -129,9 +129,9 @@ const scripted=mockModel(({lastUserMessage,messages,tools,toolResults})=>{
   if(lastUserMessage?.startsWith('SEND_ATTACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(12))}]};
   if(lastUserMessage?.startsWith('SEND_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(12));return {toolCalls:[{name:'personal_mailbox_send',input},{name:'personal_mailbox_read',input:{selection:input.selection,id:'proof-message'}}]};}
   if(lastUserMessage?.startsWith('MAIL ')&&!toolResults.length)return {toolCalls:[{name:'gmail_read',input:{id:'proof-message',selection:JSON.parse(lastUserMessage.slice(5))}}]};
-  if(lastUserMessage?.startsWith('TRACK ')&&!currentResults)return {toolCalls:[{name:'track_create',input:JSON.parse(lastUserMessage.slice(6))}]};
-  if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&!currentResults)return {toolCalls:[{name:'track_create',input:JSON.parse(lastUserMessage.slice(13))}]};
-  if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(13));return {toolCalls:[{name:'track_create',input:{...input,trackId:input.trackId+'-second'}},{name:'tracks_list',input:{}},{name:'agent-kit__vault_read',input:{area:'shared',path:'tracks/'+input.trackId+'/track.md'}}]};}
+  if(lastUserMessage?.startsWith('TRACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'track_create',input:JSON.parse(lastUserMessage.slice(6))}]};
+  if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'track_create',input:JSON.parse(lastUserMessage.slice(13))}]};
+  if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(13));return {toolCalls:[{id:uniqueCall(),name:'track_create',input:{...input,trackId:input.trackId+'-second'}},{id:uniqueCall(),name:'tracks_list',input:{}}]};}
   if(lastUserMessage==='VAULT_READ'&&!currentResults)return {toolCalls:[{name:'agent-kit__vault_read',input:{area:'private',path:'owner.md'}}]};
   if(lastUserMessage?.startsWith('SKILL ')&&!toolResults.length)return {toolCalls:[{name:'load_skill',input:{skill:lastUserMessage.slice(6)}}]};
   if(lastUserMessage==='question')return 'Which topic would you like to discuss?';
