@@ -38,7 +38,7 @@ import {serveModelPurposeBroker,modelPurposeDigest,modelPurposeMac,signModelPurp
 import {MODEL_PURPOSE_EMPTY_DIGEST,modelPurposeAckFields,modelPurposeEqualMac,modelPurposeRuntimeRequestFields,parseModelPurposeAdmissionResponse} from '../../../packages/agent-kit/src/model-purpose-protocol.js';
 import {openBudgetMonth} from '../../keeper/lib/budget-account-provisioning.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
-import {observeFinancialDatabase} from '../../keeper/lib/financial-continuity.js';
+import {observeFinancialDatabase,runScheduledLedgerCheck,verifyFullFinancialContinuity} from '../../keeper/lib/financial-continuity.js';
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
 const pricing={version:1,capabilityHash:profile,format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'10',output:'90',cacheRead:'5',cacheWrite:'0'}};
 let sessionGeneration=0;
@@ -607,6 +607,110 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     }
     const grant={...a.grant};delete grant.state;delete grant.validForMs;
     expect(proposals.at(-1).record.atoms).toEqual(expect.arrayContaining([expect.objectContaining({kind:'attempt',state:'settled',actualAmount:'0.0098'}),expect.objectContaining({kind:'grant',grantHash:gatewayGrantHash(grant)})]));
+  });
+  describe('numbered ledger books',()=>{
+    const small=200*1024,journalOptions={ownershipUid:testJournalUid,lock:platformTestJournalLock};
+    const tiny={usage:{inputTokens:1,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0}};
+    const adopt=(journal:HostFinancialJournal)=>{files.journal=journal;files.writer=new JournalBudgetFinancialWriter(journal);gatewayPreparedStore=new PgBudgetAdmissionStore(db,env(),30_000,files.writer);};
+    const useBooks=(bookBytes?:number)=>{files.journal.close();adopt(HostFinancialJournal.openExisting(files.directory,{...journalOptions,requirePrepared:true,...(bookBytes?{bookBytes}:{})}));};
+    /** The order keeper startup uses. */
+    const restart=async(bookBytes=small)=>{
+      files.journal.close();
+      const journal=HostFinancialJournal.openExistingForStartupVerification(files.directory,{...journalOptions,requirePrepared:true,bookBytes});files.journal=journal;
+      const client=await db.connect();try{await verifyFullFinancialContinuity(journal,client);}finally{client.release();}
+      journal.acquireWriterLease();adopt(journal);
+    };
+    const oneCall=async()=>{const a=await allowed();const settled=await rpc(a.selected,GATEWAY_SETTLE_PATH,terminal(a.grant,0,tiny));expect(settled.document.state).toBe('settled');};
+    const books=()=>readdirSync(files.directory).filter(name=>/^journal.*\.jsonl$/.test(name));
+    const editAttempts=async(sql:string)=>{
+      await db.query('ALTER TABLE budget_attempts DISABLE TRIGGER budget_attempt_immutable');
+      try{return (await db.query(sql)).rowCount;}finally{await db.query('ALTER TABLE budget_attempts ENABLE TRIGGER budget_attempt_immutable');}
+    };
+    /** A finished row that each step no longer compares one by one. */
+    const oldestAttempt="(SELECT id FROM budget_attempts WHERE state='settled' ORDER BY created_at,id LIMIT 1)";
+    it('keeps spending past many full books and across a keeper restart',async()=>{
+      useBooks(small);
+      for(let n=0;n<40;n++)await oneCall();
+      await restart();
+      for(let n=0;n<40;n++)await oneCall();
+      expect(books().length).toBeGreaterThan(4);
+      expect(files.journal.isFrozen).toBe(false);
+      expect((await db.query("SELECT count(*)::int n FROM budget_attempts WHERE state='settled'")).rows[0].n).toBe(80);
+      const projection=files.journal.expectedProjection();
+      expect(projection.counts.attempts).toBe(80);
+      expect(projection.atoms.filter(atom=>atom.kind==='attempt').length).toBeLessThanOrEqual(64);
+      await expect(runScheduledLedgerCheck(files.journal,db as never)).resolves.toBe('matched');
+      await restart();
+      await oneCall();
+    },300_000);
+    it('catches a changed amount in this month at the next step',async()=>{
+      useBooks(small);
+      for(let n=0;n<70;n++)await oneCall();
+      expect(await editAttempts(`UPDATE budget_attempts SET actual_amount=0 WHERE id=${oldestAttempt}`)).toBe(1);
+      await expect(prepared()).rejects.toThrow();
+      expect(files.journal.isFrozen).toBe(true);
+    },300_000);
+    it('catches a removed newest checkpoint at the next step, as a restored backup would look',async()=>{
+      await oneCall();
+      await db.query('ALTER TABLE budget_financial_checkpoints DISABLE TRIGGER budget_financial_checkpoint_immutable');
+      try{await db.query('DELETE FROM budget_financial_checkpoints WHERE proposal_sequence=(SELECT max(proposal_sequence) FROM budget_financial_checkpoints)');}
+      finally{await db.query('ALTER TABLE budget_financial_checkpoints ENABLE TRIGGER budget_financial_checkpoint_immutable');}
+      await expect(prepared()).rejects.toThrow();
+      expect(files.journal.isFrozen).toBe(true);
+    });
+    it.each(['nightly','startup'] as const)('the whole-ledger check finds a change each step no longer reads (%s)',async when=>{
+      useBooks(small);
+      for(let n=0;n<70;n++)await oneCall();
+      expect(await editAttempts(`UPDATE budget_attempts SET settlement_hash='${'9'.repeat(64)}' WHERE id=${oldestAttempt}`)).toBe(1);
+      // This is the agreed trade-off: this difference moves no money, so a step carries on.
+      await oneCall();
+      expect(files.journal.isFrozen).toBe(false);
+      if(when==='nightly')await expect(runScheduledLedgerCheck(files.journal,db as never)).resolves.toBe('mismatch');
+      else await expect(restart()).rejects.toThrow('recovery');
+      expect(files.journal.isFrozen).toBe(true);
+    },300_000);
+    it('the nightly check lets calls carry on while it reads, without a false difference',async()=>{
+      useBooks(small);
+      for(let n=0;n<70;n++)await oneCall();
+      const holds:number[]=[],hold=files.journal.withFullCheckBarrier.bind(files.journal);
+      files.journal.withFullCheckBarrier=async work=>hold(async()=>{const started=performance.now();try{return await work();}finally{holds.push(performance.now()-started);}});
+      let finished=false,during=0;
+      const check=runScheduledLedgerCheck(files.journal,db as never).finally(()=>{finished=true;});
+      // A step that meets the short final hold is refused like any other overlap.
+      while(!finished){try{await oneCall();during++;}catch{await new Promise(resolve=>setTimeout(resolve,20));}}
+      expect(await check).toBe('matched');
+      expect(during).toBeGreaterThan(0);
+      expect(files.journal.isFrozen).toBe(false);
+      expect(holds.length).toBeGreaterThan(0);
+      expect(Math.max(...holds)).toBeLessThan(1000);
+    },300_000);
+    it('the nightly check reports a held barrier or an unreadable database without freezing',async()=>{
+      await oneCall();
+      let release!:()=>void;const held=files.journal.withFullCheckBarrier(()=>new Promise<void>(resolve=>{release=resolve;}));
+      await expect(runScheduledLedgerCheck(files.journal,db as never,200)).resolves.toBe('busy');
+      release();await held;
+      await expect(runScheduledLedgerCheck(files.journal,{connect:async()=>{throw new Error('database away');}})).resolves.toBe('unavailable');
+      await expect(runScheduledLedgerCheck(files.journal,{connect:async()=>({query:async()=>{throw new Error('lost');},release:()=>{}})} as never)).resolves.toBe('unavailable');
+      expect(files.journal.isFrozen).toBe(false);
+      await oneCall();
+    });
+    // Run by hand: real limits, real fsyncs, several times past where the journal used to stop.
+    it.runIf(process.env.LARES_LEDGER_LONG_PROOF)('long proof at real limits',async()=>{
+      const out=process.env.LARES_LEDGER_LONG_PROOF!,samples:unknown[]=[];let window=performance.now();
+      for(let n=1;n<=1500;n++){
+        const called=performance.now();
+        // Any refusal is recorded with its timing. A slow moment may refuse a call; a freeze fails the proof.
+        try{await oneCall();}catch(error){samples.push({refusedAtCall:n,ms:Math.round(performance.now()-called),frozen:files.journal.isFrozen,error:String(error).slice(0,120)});await new Promise(resolve=>setTimeout(resolve,5000));expect(files.journal.isFrozen).toBe(false);}
+        if(n%100===0){samples.push({calls:n,books:books().length,msPerCall:Math.round((performance.now()-window)/100)});window=performance.now();writeFileSync(out,JSON.stringify(samples,null,1));}
+      }
+      const holds:number[]=[],hold=files.journal.withFullCheckBarrier.bind(files.journal);
+      files.journal.withFullCheckBarrier=async work=>hold(async()=>{const held=performance.now();try{return await work();}finally{holds.push(Math.round(performance.now()-held));}});
+      const checked=performance.now(),result=await runScheduledLedgerCheck(files.journal,db as never);
+      samples.push({nightly:result,nightlyMs:Math.round(performance.now()-checked),barrierHoldsMs:holds});
+      const started=performance.now();await restart(8*1024*1024);
+      samples.push({restartMs:Math.round(performance.now()-started)});writeFileSync(out,JSON.stringify(samples,null,1));
+      await oneCall();
+    },3_000_000);
   });
   it('refuses settlement without a writer and leaves the admitted liability unchanged',async()=>{
     const a=await allowed(),before=(await db.query('SELECT state,actual_amount FROM budget_attempts')).rows[0];

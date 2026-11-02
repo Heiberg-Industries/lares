@@ -162,12 +162,20 @@ cmd_doctor() {
     read_only_files+=(--ro "$operator_password_file")
     ledger_args=(--ledger-password-file "$operator_password_file")
   fi
+  # The ledger lives on the host, out of the engine container's reach, so this line is read here.
+  local ledger_status=0 doctor_status=0
+  case " $* " in
+    *" --help "*|*" -h "*) ;;
+    *) python3 "$OPS/ledger-status.py" --prefix "${PREFIX:-/}" || ledger_status=$? ;;
+  esac
   engine_run "${read_only_files[@]}" \
     --env "DATABASE_PASSWORD_FILE=$database_password_file" \
     --env "CONSOLE_SESSION_SECRET_FILE=$console_session_secret_file" \
     --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
     --env "PGDATABASE=${PGDATABASE:-lares_state}" --env "PGUSER=lares_app" \
-    bin/doctor.ts --installed-settings-file "$installation_env_file" "${ledger_args[@]}" "$@"
+    bin/doctor.ts --installed-settings-file "$installation_env_file" "${ledger_args[@]}" "$@" || doctor_status=$?
+  [ "$doctor_status" -ne 0 ] && return "$doctor_status"
+  return "$ledger_status"
 }
 
 cmd_import_preview() {

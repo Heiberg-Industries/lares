@@ -86,11 +86,34 @@ subsequent prepared open durably freezes it before any result can resume.
 
 Each canonical JSON line has a version, sequence, operation UUID, previous digest,
 strict record body and SHA256 integrity digest. Records are at most 65,536 bytes;
-the file is at most 8 MiB and 8192 records. Proposals contain at most 128 atoms.
+a book is at most 8 MiB and 8192 records. Proposals contain at most 128 atoms.
 Prepared operations reserve space for begin, maximum proposal, terminal,
-checkpoint control, writer-close and a freeze before database checkout. Capacity
-exhaustion refuses new work. There is no compaction, truncation or tail repair.
+checkpoint control, writer-close and a freeze before database checkout. There is no
+compaction, truncation or tail repair, and no book is ever removed.
 Short writes are handled; fsync precedes advancement of operation state.
+
+## Ledger books
+
+The journal is a series of books. Book 1 is `journal.jsonl`; later books are
+`journal-000002.jsonl` and so on. When a book cannot hold the next operation, and no
+operation is in progress, Keeper seals it with a final `book-seal` record, then writes the
+next book's first record, `book-open`. That record continues the same sequence and digest
+chain and holds the sealed book's whole-file SHA256 and length. It is written to a `.partial`
+file, fsynced, renamed into place and the directory fsynced. A full book therefore does not
+stop work while the disk has room, and a keeper restart can record its writer lease.
+
+Startup verifies every sealed book against the fingerprint in the next book, and checks the
+newest book record by record. A changed, shortened, missing, renamed or unknown book file
+stops startup. Removing the newest book leaves a sealed last book, which freezes. A crash while
+changing book also leaves a sealed last book and freezes, like any other unclean writer. If the next
+book exists but cannot be finished, the writer stops in memory and adds nothing to the sealed book,
+including for `budget.freeze`; the writer lease left open makes the next start freeze durably.
+
+Before sealing, Keeper requires free disk for two more books. If that is missing it refuses
+new work and writes nothing, without a freeze, so freeing disk space is enough to carry on.
+Books are not covered by ordinary backups, and they keep growing: about 24.5 KB per model
+call, or roughly 9 GB a year at 1,000 calls a day. `lares doctor` reports the current book, the
+space used and free, and any freeze.
 
 The financial projection permits opaque account, window, binding and attempt
 UUIDs, monetary values, reviewed prices, suppression digests, correlation hashes,
@@ -114,6 +137,40 @@ PostgreSQL instance and matching completed checkpoint. A missing or ambiguous
 observation, PostgreSQL restart, fresh cluster, changed database, mismatched
 checkpoint or unclean journal durably freezes custody. Matching later database
 state never clears a freeze. No database epoch is used as a recovery witness.
+
+### What is compared, and when
+
+Every step, meaning transaction start, pre-COMMIT and post-COMMIT observation, compares:
+
+- database identity and every table's row count;
+- every account, window, binding and tombstone, and every attempt that is not yet summarised;
+- the newest 64 to 128 checkpoints and every checkpoint of a non-gateway operation.
+
+Once per operation, at transaction start, each current month's count and amounts are compared
+per attempt state, including summarised attempts. Those are the numbers admission uses.
+
+Settled and retired attempts and their grants are summarised to a fingerprint once 64 are
+waiting, and at every book change and keeper start, so each step stops reading them one by one.
+Prepared attempts past their expiry follow at a book change or keeper start. An attempt proposed
+again, such as a settled one becoming a conflict, returns to the compared rows.
+
+The whole ledger is compared row by row at every keeper start, before the writer lease, and
+once a night at 03:00 UTC. The night check reads and compares with no barrier held, so model calls
+carry on during it. A row can look different while an operation commits it, so a row difference
+counts only after the row is read again with the barrier held. Recorded checkpoints cannot change
+during the read, so a checkpoint difference needs no re-read. Those re-reads and the final comparison
+of database identity and row counts are short holds. If it cannot get the barrier within 5 seconds, it
+tries again each minute, up to 30 times. If the database cannot be read that night it logs this and
+tries the next night; only an actual difference freezes.
+
+What this leaves open: a hand edit to a finished row that does not change a current month's
+totals, or to a finished row from an earlier month, is found at the next keeper start or night
+check, not at the next step. An edit made behind the night check's read position waits until the next
+check. A restored older database is still found at the next step, through
+row counts and the newest checkpoints. The keeper holds a small fingerprint in memory for each
+summarised row, about 0.4 KB per model call. Each step's row counts take longer as the tables
+grow, and any statement past the financial login's 1.5-second limit freezes the ledger, as a failed
+observation always has. Neither has been measured beyond the long proof in the store tests.
 
 The optional `JournalBudgetFinancialWriter` follows this order:
 
