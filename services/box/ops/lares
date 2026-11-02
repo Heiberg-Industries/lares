@@ -166,7 +166,7 @@ cmd_doctor() {
   local ledger_status=0 doctor_status=0
   case " $* " in
     *" --help "*|*" -h "*) ;;
-    *) python3 "$OPS/ledger-status.py" --prefix "${PREFIX:-/}" || ledger_status=$? ;;
+    *) [ ! -f "$OPS/ledger-status.py" ] || python3 "$OPS/ledger-status.py" --prefix "${PREFIX:-/}" || ledger_status=$? ;;
   esac
   engine_run "${read_only_files[@]}" \
     --env "DATABASE_PASSWORD_FILE=$database_password_file" \
