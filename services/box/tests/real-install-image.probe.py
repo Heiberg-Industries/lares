@@ -382,6 +382,25 @@ def diagnostics(fixture: pathlib.Path | None) -> None:
         print((fixture / "calls.jsonl").read_text()[-8000:], flush=True)
 
 
+def match_fresh_server_folders() -> None:
+    """A hosted runner's /opt is wide open and makes every new folder wide open, whatever the umask.
+
+    The installation's safety checks rightly refuse that, and a fresh Ubuntu server does not do it.
+    """
+    os.umask(0o022)
+    if not shutil.which("setfacl"):
+        run("apt-get", "update", "-qq", timeout=300, show=False)
+        run("apt-get", "install", "-y", "-qq", "acl", timeout=300, show=False)
+    run("setfacl", "-b", "/opt")
+    os.chmod("/opt", 0o755)
+    trial = pathlib.Path("/opt/lares-proof-folder-trial")
+    trial.mkdir()
+    mode = trial.stat().st_mode & 0o777
+    trial.rmdir()
+    if mode != 0o755:
+        raise RuntimeError(f"a new folder under /opt is still mode {mode:o}")
+
+
 def main(argv: list[str]) -> int:
     global proof_path
     if len(argv) != 8 or os.environ.get("GITHUB_ACTIONS") != "true" or os.geteuid() != 0:
@@ -392,10 +411,7 @@ def main(argv: list[str]) -> int:
     proof_path.parent.mkdir(parents=True, exist_ok=True)
     proof["commit"] = commit
     save_proof()
-    # A hosted runner differs from a fresh Ubuntu server in two ways the installation's safety
-    # checks rightly refuse: a wide-open /opt, and no umask under sudo.
-    os.umask(0o022)
-    os.chmod("/opt", 0o755)
+    match_fresh_server_folders()
     work = pathlib.Path(tempfile.mkdtemp(prefix="lares-real-install-", dir="/var/tmp"))
     os.chmod(work, 0o755)
     fixture: pathlib.Path | None = None
