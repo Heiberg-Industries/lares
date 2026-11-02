@@ -40,7 +40,6 @@ export const RAW_LEFT: Record<string, Record<string, number>> = {
   "app/signals/page.tsx": { button: 0, select: 3, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },
   "app/taste/page.tsx": { button: 0, select: 2, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },
   "components/AddAccountForm.tsx": { button: 0, select: 1, textarea: 0, fieldset: 0, input: 0, style: 0, inlineMaxWidth: 0 },
-  "components/AgentAccess.tsx": { button: 2, select: 1, textarea: 0, fieldset: 2, input: 3, style: 0, inlineMaxWidth: 0 },
   "components/AgentChip.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 0, style: 2, inlineMaxWidth: 0 },
   "components/AgentLimitControl.tsx": { button: 1, select: 0, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },
   "components/AvatarEditor.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },

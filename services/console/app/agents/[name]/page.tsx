@@ -70,9 +70,9 @@ export default async function AgentPage({
   const access = await agentAccess.agentAccess(actor.id,name);
   const directory = await members.listMembers(actor.id);
   return (
-    <Page className="lares-stack">
-    <div>
+    <Page>
     <AgentDetail
+      accessSettings={definition.status === "fulfilled" && definition.value.initial ? <AgentAccess name={name} hash={definition.value.initial.hash} access={access} members={directory.filter(entry=>entry.member.status==='active').map(entry=>({id:entry.member.id,displayName:entry.displayName}))}/> : undefined}
       routing={routing}
       outsideTools={outsideTools}
       agent={agent}
@@ -99,8 +99,6 @@ export default async function AgentPage({
           : { available: false }
       }
     />
-    </div>
-    {definition.status === "fulfilled" && definition.value.initial && <AgentAccess name={name} hash={definition.value.initial.hash} access={access} members={directory.filter(entry=>entry.member.status==='active').map(entry=>({id:entry.member.id,displayName:entry.displayName}))}/>}
     </Page>
   );
 }

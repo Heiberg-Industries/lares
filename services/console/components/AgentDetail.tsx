@@ -1,4 +1,5 @@
 "use client";
+import type { ReactNode } from "react";
 import Link from "next/link";
 import {
   Tabs,
@@ -31,6 +32,7 @@ export function AgentDetail({
   routing,
   outsideTools = { tools: [], inEffect: true },
   promptCache = null,
+  accessSettings,
 }: {
   agent: AgentFolder;
   board: Reading<BoardRowDTO[]>;
@@ -41,6 +43,8 @@ export function AgentDetail({
   outsideTools?: { tools: OutsideToolView[]; inEffect: boolean; evidence?: OutsideToolEvidence };
   /** The finished prompt-cache sentence; null when it could not be read (the line is then left out). */
   promptCache?: string | null;
+  /** Who may use or edit this agent, shown first on the Access tab; absent when the definition could not be read. */
+  accessSettings?: ReactNode;
 }) {
   const edit = `/agents/${encodeURIComponent(agent.name)}/edit`;
   const groups = [
@@ -121,7 +125,8 @@ export function AgentDetail({
             </section>
           </div>
         </TabsContent>
-        <TabsContent value="access">
+        <TabsContent value="access" className="lares-stack">
+          {accessSettings}
           <OutsideToolsSection agent={agent.name} tools={outsideTools.tools} inEffect={outsideTools.inEffect} evidence={outsideTools.evidence} />
           {!board.available ? (
             <Notice error>
@@ -193,7 +198,7 @@ export function AgentDetail({
             </div>
           )}
         </TabsContent>
-        <TabsContent value="schedules">
+        <TabsContent value="schedules" className="lares-stack">
           <section className="lares-surface">
             <h2 className="lares-section-title">Recurring work</h2>
             {!schedules.available ? (

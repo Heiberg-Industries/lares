@@ -156,7 +156,8 @@
 .lares-stack > .lares-button {
   justify-self: start;
 }
-.lares-stack > .lares-notice {
+.lares-stack > .lares-notice,
+.lares-stack > p {
   margin-block: 0;
 }
 .lares-field {
@@ -249,6 +250,10 @@
   margin: 0;
   padding: 0;
   border: 0;
+}
+.lares-fieldset > p {
+  margin: 0;
+  font: var(--text-body-sm);
 }
 .lares-fieldset > legend {
   padding: 0;
