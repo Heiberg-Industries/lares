@@ -204,12 +204,14 @@ private route. Who may answer does not change: only the member who started that 
 the same session and admission, for the exact unexpired card. The route finds the card's immutable
 reservation by request, agent, session and member, and compares the admission recorded when the
 card was raised. A card that has been settled or spent takes no further answer; an expired card can
-still be cancelled.
+still be cancelled, and a card already approved takes only a repeat of that approval.
 
 The answer then carries the original member and admission, marked with purpose `resolver`, the
 request and the option. That purpose is never a human turn: it opens no Vault turn, reads no source
 and creates no other action, and any tool call other than the exact approved one refuses. The
-response check also requires that the answer named this card and chose approve. Keeper still
+response check also requires that the answer named this card and chose approve, and nothing runs
+under a cancel. Cards raised in one step settle together under the last answer, so execution checks
+each call's own approved row rather than requiring the answer to name it. Keeper still
 rechecks the current edit grant, the target's content and the one-use claim at write, so a card
 raised while a member could edit cannot write after that right is withdrawn. Answering a Tracks
 card reads no Vault file: only the reserved target is compared.
@@ -218,8 +220,11 @@ Personal mail keeps its own resolver identity and immutable proposal. Each kind 
 accepted only by the code written for it; the surface, model and budget checks accept both and
 apply the same outcome rules: approved and resolved by this member, or cancelled.
 
-The private surface offers these cards for the four Tracks changes and for outside tools, which
-have their own resolver and reach private conversations through the same exact reservation.
+The private surface offers these cards for the four Vault Tracks changes and for outside tools,
+which have their own resolver and reach private conversations through the same exact reservation.
+A track in the company's Twenty CRM is refused before a card is raised. It writes with the
+installation's credentials and no member-level approve authority exists for it (rule 7), so a
+member could otherwise approve their own company change. That needs its own decision.
 `member-private-chat-proof.mjs` with `PRIVATE_CHAT_PROOF_TRACKS=1` runs a Tracks card for two
 members through the compiled role, the real proxy, Keeper's real broker and a real Git Vault. It is
 runtime source proof with a synthetic model, not deployment evidence. A cold restart that replays

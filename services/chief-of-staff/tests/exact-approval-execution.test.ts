@@ -17,7 +17,7 @@ import { readApprovalCounts } from '@lares/agent-kit/approval-stats';
 import { makeApprovalRecord } from '@lares/agent-kit/approval-record-hook';
 import { deadlineApprovalAdapter, dismissExactDeadline } from '../lib/deadlines-store.js';
 import resolver from '../agent/tools/catalogue.js';
-import { catalogueApprovalRequest, guardCatalogueExecution, humanTurnRefusal } from '../lib/approvals.js';
+import { assertApproval, catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution, humanTurnRefusal } from '../lib/approvals.js';
 
 const inc='11111111-1111-4111-8111-111111111111';
 const env={LARES_AGENT_NAME:'helper',LARES_AGENT_INCARNATION:inc,AGENT_OWNER_USER_ID:'member-a'};
@@ -326,6 +326,7 @@ describe('answering an exact card through the private route',()=>{
  it('takes no answer to a settled or spent card',async()=>{
   await approved();
   await expect(answer()).resolves.toMatchObject({lares_resume_request_id:'request-1'});
+  await expect(answer({optionId:'cancel'})).rejects.toThrow();
   await getPool().query("UPDATE approval_asks SET used_at=clock_timestamp(),use_count=1 WHERE request_id='request-1'");
   await expect(answer()).rejects.toThrow();
   await expect(answer({optionId:'cancel'})).rejects.toThrow();
@@ -380,6 +381,25 @@ describe('answering an exact card through the private route',()=>{
   await approved();
   await expect(catalogueApprovalRequest('track_create',{...context('resolver'),callId:'another-call',toolName:'track_create'},()=>'user-approval')).resolves.toBe('denied');
   expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(1);
+ });
+ it('runs nothing under a cancel answer, even a call approved earlier',async()=>{
+  await approved();
+  const cancelling=context('resolver');
+  (cancelling.session.auth.current.attributes as Record<string,unknown>).lares_resume_option='cancel';
+  await expect(requireApprovedExecution(cancelling,'deadline_dismiss',input,opts())).rejects.toThrow();
+  const unnamed=context('resolver');
+  delete (unnamed.session.auth.current.attributes as Record<string,unknown>).lares_resume_option;
+  await expect(requireApprovedExecution(unnamed,'deadline_dismiss',input,opts())).rejects.toThrow();
+  await expect(requireApprovedExecution(context('resolver'),'deadline_dismiss',input,opts())).resolves.toMatchObject({callId:'call-1'});
+ });
+ it('cannot raise, answer or run a card that writes to the company CRM',async()=>{
+  const twenty={home:'twenty',trackId:'sales',who:{personId:'person-1'},step:'Open',note:'n',sourceSignal:'s'};
+  const raised={...context('human',twenty),toolName:'track_add_item'};
+  await expect(catalogueApprovalRequest('track_add_item',raised,()=>'user-approval')).resolves.toMatchObject({type:'denied'});
+  expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(0);
+  await expect(catalogueApprovalResponse('track_add_item',{request:{requestId:'request-1',callId:'call-1',toolName:'track_add_item',toolInput:twenty},responder:auth('resolver'),session:{id:'wrun_exact',initiator:auth(),turn:{id:'t',sequence:1}}})).rejects.toThrow();
+  await expect(guardCatalogueExecution({...context('resolver',twenty),toolName:'track_add_item'},'track_add_item',twenty)).rejects.toThrow();
+  await expect(assertApproval(context('resolver',twenty),'track_add_item',twenty)).rejects.toThrow();
  });
  it('gives an approval resume no reading rights',async()=>{
   await approved();

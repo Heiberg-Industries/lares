@@ -216,8 +216,9 @@ beforeEach(async () => {
 });
 
 const memberAuth = (purpose: 'human'|'resolver') => ({ authenticator: 'lares-console', principalId: ids.member, principalType: 'user',
-  attributes: { user_id: ids.member, lares_member_id: ids.member, lares_admission_nonce: admissionNonce, lares_purpose: purpose } });
-const answeredAuth = (requestId: string) => { const auth = memberAuth('resolver'); return { ...auth, attributes: { ...auth.attributes, lares_resume_request_id: requestId, lares_resume_option: 'approve' } }; };
+  attributes: { user_id: ids.member, lares_member_id: ids.member, lares_admission_nonce: admissionNonce, lares_purpose: purpose,
+    ...(purpose === 'resolver' ? { lares_resume_request_id: 'track-request-1', lares_resume_option: 'approve' } : {}) } });
+const answeredAuth = (requestId: string) => { const auth = memberAuth('resolver'); return { ...auth, attributes: { ...auth.attributes, lares_resume_request_id: requestId } }; };
 const trackInput = { trackId: 'follow-up', name: 'Follow up', purpose: 'Open work', steps: ['Open', 'Done'], closingSteps: ['Done'] };
 const trackAdapter = {
   toolNames: ['track_create'],

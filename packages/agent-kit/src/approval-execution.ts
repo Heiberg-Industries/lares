@@ -155,7 +155,10 @@ export async function requireApprovedExecution(ctx: ConsoleAuthorityContext, too
   supported(tool,o);
   const row = await rowForCall(database(o),callIdFrom(ctx) ?? ''), r = exact(row,tool,input,o);
   const responder = consoleAdmission(ctx.session?.auth?.current), initial = consoleAdmission(ctx.session?.auth?.initiator);
+  // Cards raised in one step settle together under the last answer, so this answer may name a
+  // sibling card. Each call still needs its own approved row. A cancel never runs anything.
   if (!row.request_id || row.outcome !== 'approved' || !responder || responder.purpose !== 'resolver' ||
+      exactResolverAdmission(ctx.session?.auth?.current)?.optionId !== 'approve' ||
       row.resolved_by_member_id !== responder.memberId || !initial || initial.purpose !== 'human' ||
       initial.memberId !== responder.memberId || initial.admissionNonce !== responder.admissionNonce) refuse();
   await current(r,responder!.memberId,responder!.admissionNonce,ctx.session?.id ?? '',tool,input,o,ctx);

@@ -232,7 +232,8 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
       const card=await exactCardForRequest(client,{requestId:answer.requestId,agent:own!.name,incarnation:own!.incarnation,sessionId:sessionId!,memberId:memberId!,admissionNonce:nonce!});
       if(card){
         // A settled or spent card takes no further answer. Eve would otherwise replay it to the model.
-        const open=!card.used&&(card.outcome===null||(card.outcome==='approved'&&card.resolvedByMemberId===memberId));
+        // Only a repeated approve may reach an approved card, in case its first attempt was lost.
+        const open=!card.used&&(card.outcome===null||(answer.optionId==='approve'&&card.outcome==='approved'&&card.resolvedByMemberId===memberId));
         if(!open||(answer.optionId==='approve'&&!card.alive))denied();
       }else{
         const current=await personalActionForRequest(client,{requestId:answer.requestId,memberId:memberId!,agentId:own!.name,sessionId:sessionId!});
