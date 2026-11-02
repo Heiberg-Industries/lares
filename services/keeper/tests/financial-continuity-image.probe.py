@@ -681,6 +681,30 @@ await j.drainForShutdown();j.close();console.log('clean');"""
     assert keeper_host_command('freeze').returncode == 0, 'Restore freeze was refused by a keeper started frozen'
     assert [r['kind'] for r in journal_records()[count:]] == ['freeze'], 'Frozen keeper wrote more than the restore freeze'
     command('docker', 'stop', keeper)
+    # The owner's command, in the keeper image, with the keeper stopped as the command itself does.
+    def recover(mode):
+        result = command('docker', 'run', '--rm', '--user', '0:0', '--network', name,
+                         '--mount', f'type=volume,src={volume},dst=/var/lib/lares',
+                         '--mount', f'type=bind,src={db_fixture},dst=/fixtures,readonly',
+                         '--mount', f'type=bind,src={keeper_config},dst=/etc/lares/keeper.json,readonly',
+                         '--entrypoint', tsx, image, '/app/services/keeper/bin/budget-financial.ts', 'recover', mode, check=False)
+        return result.returncode, json.loads([line for line in result.stdout.splitlines() if line.startswith('{')][-1])
+    before_check = journal_records()
+    code, report = recover('--check')
+    assert code == 0 and report['frozen'] and report['freezeReasons'] == ['restore'] and report['result'] == 'nothing-interrupted' and not report['applied'], report
+    assert journal_records() == before_check, 'The owner check wrote to the ledger'
+    code, report = recover('--apply')
+    assert code == 0 and report['applied'], report
+    assert journal_records()[-1]['kind'] == 'recovered' and journal_records()[-1]['by'] == 'owner', 'The owner command recorded no lift'
+    keeper_serving()
+    assert journal_records()[-1]['kind'] == 'writer-open', 'Keeper did not take the writer after the owner lifted the freeze'
+    command('docker', 'stop', keeper)
+    # The same command refuses a real difference and clears nothing.
+    command('docker', 'exec', name + '-db', 'psql', '-U', 'proof', '-d', 'proof', '-c', "ALTER TABLE budget_financial_checkpoints DISABLE TRIGGER USER; DELETE FROM budget_financial_checkpoints WHERE proposal_sequence=(SELECT max(proposal_sequence) FROM budget_financial_checkpoints); ALTER TABLE budget_financial_checkpoints ENABLE TRIGGER USER;")
+    before_refusal = journal_records()
+    code, report = recover('--apply')
+    assert code != 0 and report['result'] == 'different' and not report['applied'], report
+    assert journal_records() == before_refusal, 'A refused recovery wrote to the ledger'
     command('docker', 'rm', '--force', keeper)
     # Fresh cluster under the same hostname/database name also refuses old custody.
     command('docker', 'rm', '--force', name + '-db')
