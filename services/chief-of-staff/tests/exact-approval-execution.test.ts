@@ -17,7 +17,7 @@ import { readApprovalCounts } from '@lares/agent-kit/approval-stats';
 import { makeApprovalRecord } from '@lares/agent-kit/approval-record-hook';
 import { deadlineApprovalAdapter, dismissExactDeadline } from '../lib/deadlines-store.js';
 import resolver from '../agent/tools/catalogue.js';
-import { guardCatalogueExecution, humanTurnRefusal } from '../lib/approvals.js';
+import { catalogueApprovalRequest, guardCatalogueExecution, humanTurnRefusal } from '../lib/approvals.js';
 
 const inc='11111111-1111-4111-8111-111111111111';
 const env={LARES_AGENT_NAME:'helper',LARES_AGENT_INCARNATION:inc,AGENT_OWNER_USER_ID:'member-a'};
@@ -375,6 +375,11 @@ describe('answering an exact card through the private route',()=>{
   await settleExactInput('request-1','cancelled');
   await expect(requireConsoleResume(resumed(answered()),'model',{env})).rejects.toThrow();
   await expect(requireConsoleResume(resumed(answered('request-1','cancel')),'model',{env})).resolves.toBeDefined();
+ });
+ it('refuses a new card during an approval resume without failing the turn',async()=>{
+  await approved();
+  await expect(catalogueApprovalRequest('track_create',{...context('resolver'),callId:'another-call',toolName:'track_create'},()=>'user-approval')).resolves.toBe('denied');
+  expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(1);
  });
  it('gives an approval resume no reading rights',async()=>{
   await approved();

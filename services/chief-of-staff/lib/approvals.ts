@@ -236,7 +236,9 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
   }
   const c = ctx as ConsoleAuthorityContext & {callId?:string;toolInput?:unknown};
   if (consoleAdmission(c.session?.auth?.current)?.purpose === 'resolver') {
-    await requireApprovedExecution(c,name,c.toolInput,{adapter:adapterFor(name,c.toolInput)});
+    // An approval answer can raise no new card. Refuse this call and let the turn finish, as mail does.
+    try { await requireApprovedExecution(c,name,c.toolInput,{adapter:adapterFor(name,c.toolInput)}); }
+    catch { return 'denied'; }
     return 'user-approval';
   }
   await reserveExactApproval(c,name,{adapter:adapterFor(name,c.toolInput)});
