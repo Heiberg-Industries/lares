@@ -37,7 +37,7 @@ import { AutonomyControl } from "./AutonomyControl";
 import { TakesEffect } from "./TakesEffect";
 import { CeilingNotice } from "./CeilingNotice";
 import { scheduleExplanation, scheduleLabel } from "../lib/schedule-labels";
-import { firstChatPath } from "../lib/first-conversation";
+import { afterCreationPath } from "../lib/first-conversation";
 import { withStartingDelivery } from "../lib/delivery";
 
 export interface DefinitionFormProps {
@@ -276,7 +276,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
             if (!editing) {
               setUncertain(true);
               router.push(
-                firstChatPath(definition.name, result.result.backup.status ?? (result.result.backup.ok ? "saved" : "failed")),
+                afterCreationPath(definition.name, result.result.backup.status ?? (result.result.backup.ok ? "saved" : "failed")),
               );
             }
             if (!editing) setCreating("done");

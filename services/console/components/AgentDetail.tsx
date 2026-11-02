@@ -103,13 +103,20 @@ export function AgentDetail({
               <p>
                 {agent.role} · <span className="mono">{agent.name}</span>
               </p>
-              <p className="lares-muted">
-                Last registered:{" "}
-                <time dateTime={agent.startedAt}>
-                  {agent.startedAt.replace("T", " ").slice(0, 19)} UTC
-                </time>
-                . Registration is not a current health check.
-              </p>
+              {agent.startedAt ? (
+                <p className="lares-muted">
+                  Last registered:{" "}
+                  <time dateTime={agent.startedAt}>
+                    {agent.startedAt.replace("T", " ").slice(0, 19)} UTC
+                  </time>
+                  . Registration is not a current health check.
+                </p>
+              ) : (
+                <p className="lares-muted">
+                  Not started yet. Adopt it on the Access tab, then run{" "}
+                  <code>sudo lares agent start {agent.name}</code> on the server.
+                </p>
+              )}
               <p>
                 {agent.grants.filter((g) => g.scope !== "none").length} granted
                 capabilities · {agent.skills.length} skills
