@@ -11,6 +11,10 @@
  * database, and a client component may not pull that in. The page reads them from the one constant.
  */
 import { useState, useTransition } from "react";
+import { Choice } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
+import { Checkbox } from "@lares/ui/primitives/checkbox";
+import { Input } from "@lares/ui/primitives/input";
 import { saveCeilings, saveDnd, saveQuietHours } from "../app/actions/proactivity";
 import type { SaveResult } from "../app/actions/proactivity";
 
@@ -55,24 +59,14 @@ export interface EngineMaxima {
   perOwnerPerDay: number;
 }
 
-const inp = {
-  border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 8px",
-  fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--card)", color: "var(--ink)",
-} as const;
-
-const btn = {
-  border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 12px",
-  background: "var(--signal)", color: "#fff", cursor: "pointer", fontSize: 12,
-} as const;
-
 function Note({ children }: { children: React.ReactNode }) {
-  return <p style={{ color: "var(--mist)", fontSize: 12, margin: "2px 0 0" }}>{children}</p>;
+  return <p className="lares-note">{children}</p>;
 }
 
 function Msg({ msg }: { msg: { ok: boolean; text: string } | null }) {
   if (!msg) return null;
   return (
-    <span className="mono" style={{ fontSize: 12, color: msg.ok ? "var(--ok)" : "var(--bad)" }}>{msg.text}</span>
+    <span className={msg.ok ? "lares-form-success" : "lares-form-error"}>{msg.text}</span>
   );
 }
 
@@ -80,7 +74,7 @@ function Msg({ msg }: { msg: { ok: boolean; text: string } | null }) {
  *  overriding is the one thing this page must not let an owner read as truth. */
 function Override({ note }: { note: string | null }) {
   if (!note) return null;
-  return <span className="mono" style={{ fontSize: 12, color: "var(--warn)" }}>{note}</span>;
+  return <span className="mono lares-small lares-status-warning">{note}</span>;
 }
 
 // ── Do not disturb ─────────────────────────────────────────────────────────────────────────────
@@ -107,12 +101,12 @@ function DndRow({ scope }: { scope: DndScope }) {
   }
 
   return (
-    <div style={{ marginBottom: 10 }}>
-      <label className="mono" style={{ fontSize: 13, display: "flex", gap: 8, alignItems: "baseline" }}>
-        <input type="checkbox" checked={on} disabled={pending} onChange={(e) => toggle(e.target.checked)} />
+    <div>
+      <Choice>
+        <Checkbox checked={on} disabled={pending} onChange={(e) => toggle(e.target.checked)} />
         <span>{scope.label}{on ? " — ON" : ""}</span>
         <Msg msg={msg} />
-      </label>
+      </Choice>
       <Note>
         {scope.agent === "*"
           ? "On = no agent starts a conversation with you: no briefs, no nudges. Your replies to a message you send still work, and nothing is lost — held items are reconsidered when you switch it off."
@@ -126,7 +120,7 @@ function DndRow({ scope }: { scope: DndScope }) {
 
 export function DndSection({ scopes }: { scopes: DndScope[] }) {
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8, maxWidth: 720 }}>
+    <div className="card lares-control-card lares-stack">
       {scopes.map((s) => <DndRow key={s.agent} scope={s} />)}
     </div>
   );
@@ -154,15 +148,15 @@ function QuietRow({ scope }: { scope: QuietScope }) {
 
   return (
     <tr>
-      <td className="mono" style={{ fontSize: 12 }}>
+      <td className="mono lares-small">
         {scope.label}
-        {scope.isDefault && <span style={{ color: "var(--mist)" }}> · default</span>}
+        {scope.isDefault && <span className="lares-status-muted"> · default</span>}
       </td>
-      <td><input style={inp} type="time" value={startAt} onChange={(e) => setStart(e.target.value)} aria-label={`${scope.label} quiet from`} /></td>
-      <td><input style={inp} type="time" value={endAt} onChange={(e) => setEnd(e.target.value)} aria-label={`${scope.label} quiet until`} /></td>
+      <td><Input type="time" value={startAt} onChange={(e) => setStart(e.target.value)} aria-label={`${scope.label} quiet from`} /></td>
+      <td><Input type="time" value={endAt} onChange={(e) => setEnd(e.target.value)} aria-label={`${scope.label} quiet until`} /></td>
       <td>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button style={btn} disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</button>
+        <div className="lares-actions">
+          <Button type="button" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</Button>
           <Msg msg={msg} />
           <Override note={scope.note} />
         </div>
@@ -173,12 +167,12 @@ function QuietRow({ scope }: { scope: QuietScope }) {
 
 export function QuietSection({ scopes }: { scopes: QuietScope[] }) {
   return (
-    <table className="card" style={{ marginTop: 8 }}>
+    <div className="lares-table-scroll"><table className="card lares-operational-table">
       <thead><tr><th>Door</th><th>Quiet from</th><th>Until</th><th /></tr></thead>
       <tbody>
         {scopes.map((s) => <QuietRow key={s.door} scope={s} />)}
       </tbody>
-    </table>
+    </table></div>
   );
 }
 
@@ -227,23 +221,23 @@ export function CeilingSection({ values, engine }: {
   }
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8, display: "grid", gap: 12, maxWidth: 720 }}>
+    <div className="card lares-control-card lares-stack">
       {fields.map((f) => (
         <div key={f.label}>
-          <label className="mono" style={{ fontSize: 12, display: "flex", gap: 8, alignItems: "center" }}>
-            <input
-              style={{ ...inp, width: 72 }} type="number" min={0} max={f.max} step={1}
+          <Choice>
+            <Input
+              className="lares-short-input" type="number" min={0} max={f.max} step={1}
               value={f.value} onChange={(e) => f.set(Number(e.target.value))}
             />
             <span>{f.label}</span>
-            <span style={{ color: "var(--mist)" }}>engine max {f.max}</span>
+            <span className="lares-small lares-status-muted">engine max {f.max}</span>
             <Override note={f.note} />
-          </label>
+          </Choice>
           <Note>{f.what}</Note>
         </div>
       ))}
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <button style={btn} disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save ceilings"}</button>
+      <div className="lares-actions">
+        <Button type="button" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save ceilings"}</Button>
         <Msg msg={msg} />
       </div>
       <Note>A ceiling can only be lowered. Above the engine maximum the save is refused, not quietly trimmed.</Note>

@@ -97,7 +97,7 @@ describe("/deadlines", () => {
       // checkbox disabled. term 4 falls 10 October, still ahead, so its checkbox is live.
       expect(html).toMatch(/VAT return, term 3<span[^>]*> — already past/u);
       expect(html).toMatch(/disabled=""[^>]*aria-label="Include VAT return, term 3"/u);
-      expect(html).toMatch(/<input type="checkbox" aria-label="Include VAT return, term 4"/u);
+      expect(html).toMatch(/<input(?![^>]*disabled)[^>]*aria-label="Include VAT return, term 4"/u);
     } finally {
       vi.useRealTimers();
     }
@@ -131,9 +131,9 @@ describe("/deadlines", () => {
     const overdueIdx = html.indexOf("Overdue filing");
     const soonIdx = html.indexOf("Due tomorrow");
     const laterIdx = html.indexOf("Due in a month");
-    expect(html.slice(overdueIdx, overdueIdx + 400)).toMatch(/var\(--bad\)/);
-    expect(html.slice(soonIdx, soonIdx + 400)).toMatch(/var\(--warn\)/);
-    expect(html.slice(laterIdx, laterIdx + 400)).not.toMatch(/var\(--bad\)|var\(--warn\)/);
+    expect(html.slice(overdueIdx, overdueIdx + 400)).toMatch(/lares-status-error/);
+    expect(html.slice(soonIdx, soonIdx + 400)).toMatch(/lares-status-warning/);
+    expect(html.slice(laterIdx, laterIdx + 400)).not.toMatch(/lares-status-error|lares-status-warning/);
   });
 
   it("shows the mint form's confirm line and every statutory rule with a standing date", async () => {

@@ -6,7 +6,7 @@ import { AutonomyControl } from "./AutonomyControl";
  *  Integrations page so the two pages say the same thing. */
 export function NoControl({ scope }: { scope: string }) {
   return (
-    <span style={{ color: "var(--mist)" }}>
+    <span className="lares-status-muted">
       {scope === "write" ? "acts without asking — its definition grants a plain write" : "reads — allowed while granted"}
     </span>
   );
@@ -14,18 +14,18 @@ export function NoControl({ scope }: { scope: string }) {
 
 export function PermissionsBoard({ detail }: { detail: AgentDetailDTO }) {
   return (
-    <div style={{ display: "flex", gap: 24 }}>
+    <div className="lares-connections">
       {detail.capabilities.map((c) => (
-        <div key={c.name} className="card" style={{ flex: 1, padding: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span className="mono" style={{ fontWeight: 600 }}>
+        <div key={c.name} className="lares-surface lares-surface-compact">
+          <div className="lares-section-heading">
+            <span className="mono">
               {c.name}
             </span>
             {c.scope === "write-with-confirm"
               ? <AutonomyControl agent={detail.name} capability={c.name} level={c.defaultLevel} />
               : <NoControl scope={c.scope} />}
           </div>
-          <div className="mono" style={{ fontSize: 11, color: "var(--mist)", margin: "4px 0 12px" }}>
+          <div className="mono lares-small lares-status-muted">
             {c.scope}
           </div>
         </div>

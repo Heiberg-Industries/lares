@@ -62,19 +62,9 @@ export function age(createdAt: string | null, now: number): string {
   return `${days} days ago`;
 }
 
-const preStyle = {
-  margin: 0,
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-  font: "inherit",
-  background: "transparent",
-  border: 0,
-  padding: 0,
-} as const;
-
 function Body({ part }: { part: WaitingBody }) {
   const label = part.label ? (
-    <p className="mono lares-muted" style={{ fontSize: 11, letterSpacing: ".04em", textTransform: "uppercase", margin: "0 0 6px" }}>
+    <p className="lares-eyebrow">
       {part.label}
     </p>
   ) : null;
@@ -91,7 +81,7 @@ function Body({ part }: { part: WaitingBody }) {
   return (
     <section>
       {label}
-      <pre style={preStyle}>{part.format === "text" ? part.text : part.markdown}</pre>
+      <pre className="lares-pre">{part.format === "text" ? part.text : part.markdown}</pre>
     </section>
   );
 }
@@ -147,25 +137,26 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide }: W
           When an agent asks for your approval, or Notion or the shared notes propose a change, it shows up here.
         </EmptyState>
       ) : (
-        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", alignItems: "start" }}>
+        <div className="lares-master-detail">
           <section className="lares-surface" aria-label="Waiting items">
-            <ul className="lares-data-list" style={{ margin: 0, padding: 0, listStyle: "none" }}>
+            <ul className="lares-data-list">
               {shown.map((item) => {
                 const done = decided[item.id];
                 return (
                   <li key={item.id}>
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      className="lares-list-option"
                       onClick={() => setSelectedId(item.id)}
                       aria-current={item.id === selected?.id ? "true" : undefined}
-                      style={{ all: "unset", cursor: "pointer", display: "block", width: "100%", fontWeight: item.id === selected?.id ? 600 : 400 }}
                     >
-                      <span style={{ display: "block", wordBreak: "break-word" }}>{item.title}</span>
-                      <span className="lares-muted" style={{ fontSize: 13 }}>
+                      <span className="lares-list-option-title">{item.title}</span>
+                      <span className="lares-muted lares-small">
                         {labelOf(item)} · {item.agent} · {item.channel} · {age(item.createdAt, now)}
                       </span>{" "}
                       {done ? <StatusBadge tone={done.result.ok ? "success" : "quiet"}>Decided</StatusBadge> : null}
-                    </button>
+                    </Button>
                   </li>
                 );
               })}
@@ -174,10 +165,10 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide }: W
           {selected ? (
             <article className="lares-surface lares-stack" aria-label="Selected item">
               <header>
-                <p className="mono lares-muted" style={{ fontSize: 11, letterSpacing: ".04em", textTransform: "uppercase", margin: "0 0 6px" }}>
+                <p className="lares-eyebrow">
                   {labelOf(selected)} · {selected.agent} · {selected.channel} · {age(selected.createdAt, now)}
                 </p>
-                <h2 className="lares-section-title" style={{ wordBreak: "break-word" }}>{selected.title}</h2>
+                <h2 className="lares-section-title">{selected.title}</h2>
               </header>
               {selected.body.map((part, i) => (
                 <Body key={i} part={part} />
@@ -198,7 +189,7 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide }: W
               ) : (
                 <>
                   {selected.note ? <p className="lares-muted">{selected.note}</p> : null}
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <div className="lares-actions">
                     {selected.actions.map((action) => (
                       <Button
                         key={action.id}
