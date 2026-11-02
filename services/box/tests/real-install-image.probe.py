@@ -59,7 +59,7 @@ APPROVAL_PROMPT = "PROOF_ASK_APPROVAL please make the track."
 APPROVAL_TOOL = "track_create"
 APPROVAL_TRACK = "proof-track"
 APPROVAL_INPUT = {"trackId": APPROVAL_TRACK, "name": "Proof track", "purpose": "Shows an approval answer reaches the tool.",
-                  "steps": ["First"], "closingSteps": ["Done"]}
+                  "steps": ["Open", "Done"], "closingSteps": ["Done"]}
 APPROVAL_REPLY = "PROOF_APPROVED_TOOL_RAN"
 TOOL_REPLY = "PROOF_TOOL_RESULT_RECEIVED"
 FOLLOW_UP_REPLY = "PROOF_CONVERSATION_KEPT"

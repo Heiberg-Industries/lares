@@ -69,6 +69,7 @@ const steps = {
     await send(settings.approvalPrompt);
     await page.locator(".lares-actions button", { hasText: /approve/i }).first().click({ timeout: STEP_MS });
     await page.locator(".lares-message-agent", { hasText: settings.approvalReply }).first().waitFor({ timeout: STEP_MS });
+    console.log(`the answered card says: ${await page.locator(".lares-approval-note").first().innerText().catch(() => "(nothing)")}`);
     await send(settings.followUpPrompt);
     await page.locator(".lares-message-agent", { hasText: settings.followUpReply }).first().waitFor({ timeout: STEP_MS });
     if (await page.getByText("This conversation is unavailable").count()) throw new Error("The conversation became unavailable");
