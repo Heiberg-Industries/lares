@@ -53,7 +53,7 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
       const end = text.indexOf("`", i + 1);
       if (end > i + 1) {
         flush();
-        out.push(<code key={key()} className="mono" style={{ fontSize: "0.92em" }}>{text.slice(i + 1, end)}</code>);
+        out.push(<code key={key()} className="mono lares-md-code">{text.slice(i + 1, end)}</code>);
         i = end + 1;
         continue;
       }
@@ -84,7 +84,7 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
           flush();
           const k = key();
           out.push(
-            <a key={k} href={m[2]!.trim()} target="_blank" rel="noopener noreferrer" style={{ color: "var(--signal)", textDecoration: "underline" }}>
+            <a key={k} href={m[2]!.trim()} target="_blank" rel="noopener noreferrer" className="lares-md-link">
               {renderInline(m[1]!, k)}
             </a>,
           );
@@ -118,8 +118,6 @@ const ORDERED = /^\s{0,3}\d{1,9}[.)]\s+(.*)$/;
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const FENCE = /^\s{0,3}(```|~~~)/;
 
-const para = { margin: "0 0 8px" } as const;
-const HEADING_SIZE = [17, 16, 15, 14, 14, 14] as const;
 
 export function SafeMarkdown({ text }: { text: string }) {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
@@ -136,7 +134,7 @@ export function SafeMarkdown({ text }: { text: string }) {
       while (i < lines.length && !FENCE.test(lines[i]!)) body.push(lines[i++]!);
       i++; // the closing fence (or the end of a still-streaming block)
       blocks.push(
-        <pre key={k} className="mono" style={{ margin: "0 0 8px", padding: "6px 10px", fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-word", border: "1px solid var(--rule)", borderRadius: 4 }}>
+        <pre key={k} className="mono lares-md-pre">
           <code>{body.join("\n")}</code>
         </pre>,
       );
@@ -144,7 +142,7 @@ export function SafeMarkdown({ text }: { text: string }) {
       const m = HEADING.exec(line)!;
       const level = m[1]!.length;
       blocks.push(
-        <p key={k} role="heading" aria-level={Math.min(level + 2, 6)} style={{ margin: "0 0 6px", fontWeight: 600, fontSize: HEADING_SIZE[level - 1] }}>
+        <p key={k} role="heading" aria-level={Math.min(level + 2, 6)} className={`lares-md-heading lares-md-heading-${level}`}>
           {renderInline(m[2]!, k)}
         </p>,
       );
@@ -157,16 +155,15 @@ export function SafeMarkdown({ text }: { text: string }) {
         items.push(<li key={`${k}.i${items.length}`}>{renderInline(marker.exec(lines[i]!)![1]!, `${k}.i${items.length}`)}</li>);
         i++;
       }
-      const style = { margin: "0 0 8px", paddingLeft: 22 } as const;
-      blocks.push(ordered ? <ol key={k} style={style}>{items}</ol> : <ul key={k} style={style}>{items}</ul>);
+      blocks.push(ordered ? <ol key={k} className="lares-md-list">{items}</ol> : <ul key={k} className="lares-md-list">{items}</ul>);
     } else {
       const chunk: string[] = [];
       while (
         i < lines.length && lines[i]!.trim() !== "" && !FENCE.test(lines[i]!) &&
         !HEADING.test(lines[i]!) && !BULLET.test(lines[i]!) && !ORDERED.test(lines[i]!)
       ) chunk.push(lines[i++]!);
-      blocks.push(<p key={k} style={para}>{renderLines(chunk, k)}</p>);
+      blocks.push(<p key={k} className="lares-md-para">{renderLines(chunk, k)}</p>);
     }
   }
-  return <div style={{ wordBreak: "break-word" }}>{blocks}</div>;
+  return <div className="lares-md">{blocks}</div>;
 }

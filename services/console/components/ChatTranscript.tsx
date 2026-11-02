@@ -1,4 +1,5 @@
 import type { EveMessage, EveMessagePart, EveMessageInputRequest, UseEveAgentStatus } from "eve/react";
+import { Button } from "@lares/ui/primitives/button";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { approvalArguments,personalSendCardFields,type PersonalSendCard, type ApprovalField } from "../lib/approval-text";
 
@@ -160,14 +161,6 @@ export function settledSay(part: Extract<EveMessagePart, { type: "dynamic-tool" 
   }
 }
 
-const cardStyle = {
-  border: "1px solid var(--rule)",
-  borderRadius: 12,
-  background: "var(--card)",
-  padding: 20,
-  margin: "8px 0",
-} as const;
-
 function ApprovalCard({
   part,
   request,
@@ -191,55 +184,39 @@ function ApprovalCard({
   const live = settled === null && !expired && onAnswer !== undefined && answering === null;
   const body = personal?{fields:personalCard?personalSendCardFields(personalCard):[],notice:personalCard?null:'Full mail review is unavailable. You can cancel this proposal.'}:approvalCardFields(part.input);
   return (
-    <div style={cardStyle}>
-      <p className="mono" style={{ fontSize: 11, letterSpacing: ".04em", color: "var(--warn)", margin: "0 0 6px" }}>
-        Needs your approval
-      </p>
-      <p style={{ margin: "0 0 8px", whiteSpace: "pre-wrap", wordBreak: "break-word", fontWeight: 600 }}>{request.prompt}</p>
+    <div className="lares-approval">
+      <p className="mono lares-approval-eyebrow">Needs your approval</p>
+      <p className="lares-approval-prompt">{request.prompt}</p>
       {body.fields.map((field, i) => (
-        <div key={i} style={{ margin: "0 0 8px" }}>
-          <p className="mono" style={{ fontSize: 11, color: "var(--mist)", margin: "0 0 2px", wordBreak: "break-word" }}>{field.key}</p>
-          <pre
-            className="mono"
-            style={{ margin: 0, fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-word", color: "var(--ink)", background: "transparent", border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 8px" }}
-          >
-            {field.value}
-          </pre>
+        <div key={i} className="lares-approval-field">
+          <p className="mono lares-approval-key">{field.key}</p>
+          <pre className="mono lares-approval-value">{field.value}</pre>
         </div>
       ))}
       {body.notice === null ? null : (
-        <p className="mono" style={{ fontSize: 12, color: "var(--mist)", margin: "0 0 10px" }}>{body.notice}</p>
+        <p className="mono lares-approval-note lares-approval-gap">{body.notice}</p>
       )}
       {settled !== null ? (
-        <p className="mono" style={{ fontSize: 12, color: "var(--mist)", margin: 0 }}>{settled}</p>
+        <p className="mono lares-approval-note">{settled}</p>
       ) : expired ? (
-        <p className="mono" style={{ fontSize: 12, color: "var(--mist)", margin: 0 }}>
+        <p className="mono lares-approval-note">
           This card is more than 24 hours old, so it can no longer be answered. Ask again to get a fresh one.
         </p>
       ) : (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div className="lares-actions">
           {(request.options ?? []).map((option) => (
-            <button
+            <Button
               key={option.id}
               type="button"
+              variant={option.style === "primary" ? "default" : "outline"}
               disabled={!live||(personal&&!personalCard&&option.id==='approve')}
               onClick={live && (!personal||personalCard||option.id==='cancel') && onAnswer ? () => onAnswer(request.requestId, option.id) : undefined}
-              className="mono"
-              style={{
-                padding: "6px 14px",
-                border: "1px solid var(--rule)",
-                borderRadius: 4,
-                background: option.style === "primary" ? "var(--signal)" : "var(--card)",
-                color: option.style === "primary" ? "#fff" : "var(--ink)",
-                fontSize: 13,
-                cursor: live ? "pointer" : "not-allowed",
-              }}
             >
               {option.label}
-            </button>
+            </Button>
           ))}
           {answering === request.requestId ? (
-            <span className="mono" style={{ fontSize: 12, color: "var(--mist)", alignSelf: "center" }}>Sending your answer…</span>
+            <span className="mono lares-approval-note">Sending your answer…</span>
           ) : null}
         </div>
       )}
@@ -260,7 +237,7 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState, role: E
     // builds a fixed set of elements and never interprets raw HTML (see its header).
     if (role === "user") {
       return (
-        <span key={key} style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+        <span key={key} className="lares-user-text">
           {part.text}
         </span>
       );
@@ -288,13 +265,13 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState, role: E
     const outcome = part.state === "output-error" ? " failed"
       : part.state === "output-available" ? " completed" : " is running…";
     return (
-      <p key={key} className="mono" style={{ color: "var(--mist)", fontSize: 12, margin: "4px 0" }}>
+      <p key={key} className="mono lares-tool-line">
         {part.toolName}{outcome}
       </p>
     );
   }
   return (
-    <p key={key} className="mono" style={{ color: "var(--mist)", fontSize: 13, margin: "4px 0" }}>
+    <p key={key} className="mono lares-tool-line lares-tool-line-large">
       {UNSUPPORTED_PART}
     </p>
   );
@@ -304,12 +281,7 @@ function TranscriptMessage({ message, cards, agentName }: { message: EveMessage;
   const who = message.role === "user" ? "You" : agentName || "Agent";
   return (
     <article className={`lares-message ${message.role === "user" ? "lares-message-user" : "lares-message-agent"}`}>
-      <div
-        className="mono"
-        style={{ fontSize: 11, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--mist)", marginBottom: 4 }}
-      >
-        {who}
-      </div>
+      <div className="mono lares-message-who">{who}</div>
       <div>{message.parts.map((part, i) => renderPart(part, i, cards, message.role))}</div>
     </article>
   );
@@ -322,7 +294,7 @@ export function ChatTranscript({ messages, status, error, expired = NONE, answer
   return (
     <div>
       {messages.length === 0 ? (
-        <p style={{ color: "var(--mist)" }}>
+        <p className="lares-status-muted">
           {status === "resuming"
             ? "Reconnecting to this conversation…"
             : status === "error"
@@ -333,7 +305,7 @@ export function ChatTranscript({ messages, status, error, expired = NONE, answer
         messages.map((message) => <TranscriptMessage key={message.id} message={message} cards={cards} {...(agentName === undefined ? {} : { agentName })} />)
       )}
       {status === "error" && error ? (
-        <p role="alert" style={{ color: "var(--bad)" }}>
+        <p role="alert" className="lares-status-error">
           {error}
         </p>
       ) : null}
