@@ -392,6 +392,10 @@ def main(argv: list[str]) -> int:
     proof_path.parent.mkdir(parents=True, exist_ok=True)
     proof["commit"] = commit
     save_proof()
+    # A hosted runner differs from a fresh Ubuntu server in two ways the installation's safety
+    # checks rightly refuse: a wide-open /opt, and no umask under sudo.
+    os.umask(0o022)
+    os.chmod("/opt", 0o755)
     work = pathlib.Path(tempfile.mkdtemp(prefix="lares-real-install-", dir="/var/tmp"))
     os.chmod(work, 0o755)
     fixture: pathlib.Path | None = None

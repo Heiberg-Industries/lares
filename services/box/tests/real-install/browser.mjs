@@ -75,12 +75,19 @@ async function startSignIn(page) {
 const browser = await chromium.launch({ args: ["--no-sandbox"] });
 const context = await browser.newContext({ ignoreHTTPSErrors: true, storageState: ["discover-owner", "sign-in"].includes(step) ? undefined : settings.stateFile });
 await context.route(/^https:\/\/accounts\.google\.com\//, async (route) => {
-  const answer = await fetch(route.request().url(), { redirect: "manual" });
-  await route.fulfill({ status: answer.status, headers: Object.fromEntries(answer.headers), body: Buffer.from(await answer.arrayBuffer()) });
+  try {
+    const answer = await fetch(route.request().url(), { redirect: "manual" });
+    await route.fulfill({ status: answer.status, headers: Object.fromEntries(answer.headers), body: Buffer.from(await answer.arrayBuffer()) });
+  } catch (error) {
+    console.log(`sign-in provider request failed: ${error.cause?.message ?? error.message}`);
+    await route.abort();
+  }
 });
 const page = await context.newPage();
 page.setDefaultTimeout(30_000);
 page.on("pageerror", (error) => console.log(`page error: ${error.message}`));
+page.on("requestfailed", (request) => console.log(`request failed: ${request.url().split("?")[0]} ${request.failure()?.errorText}`));
+page.on("response", (response) => { if (response.status() >= 300) console.log(`${response.status()} ${response.url().split("?")[0]}`); });
 let failed = null;
 try {
   await steps[step](page, context);
