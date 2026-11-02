@@ -309,8 +309,8 @@ def fake_calls(fixture: pathlib.Path) -> list[dict]:
 
 # --- the owner's steps ---------------------------------------------------------------------------
 
-def browser(step: str, settings_file: pathlib.Path) -> None:
-    run("node", str(HERE / "browser.mjs"), step, str(settings_file), timeout=420, cwd=str(HERE))
+def browser(step: str, settings_file: pathlib.Path, tls: dict[str, pathlib.Path]) -> None:
+    run("node", str(HERE / "browser.mjs"), step, str(settings_file), timeout=420, cwd=str(HERE), env={"NODE_EXTRA_CA_CERTS": str(tls["ca_cert"])})
     passed(f"browser:{step}")
 
 
@@ -468,29 +468,29 @@ def main(argv: list[str]) -> int:
             "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY, "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
             "screenshotDir": str(shots),
         }))
-        browser("discover-owner", settings_file)
+        browser("discover-owner", settings_file, tls)
         owner_bootstrap((work / "receipt.json").read_text())
         passed("owner-bootstrap-accepted-the-receipt")
         # The guide's command for this step, word for word.
         run("docker", "compose", "-f", "/opt/lares/compose.yaml", "up", "-d", "--no-deps", "--force-recreate", "console", env={"COMPOSE_IGNORE_ORPHANS": "1"}, timeout=180)
         wait_for_sign_in_offer()
-        browser("sign-in", settings_file)
+        browser("sign-in", settings_file, tls)
 
         stage("sudo lares budget setup")
         run("lares", "budget", "setup", "--installation-limit", "30", "--person-limit", MEMBER_LIMIT, "--yes", timeout=600)
         passed("budget-setup-finished")
 
         stage("create, adopt and limit on the console's pages")
-        browser("create-agent", settings_file)
-        browser("adopt", settings_file)
-        browser("member-limit", settings_file)
+        browser("create-agent", settings_file, tls)
+        browser("adopt", settings_file, tls)
+        browser("member-limit", settings_file, tls)
 
         stage("sudo lares agent start")
         run("lares", "agent", "start", AGENT, timeout=600)
         passed("agent-start-finished")
 
         stage("a chat where a tool runs and the conversation carries on")
-        browser("chat", settings_file)
+        browser("chat", settings_file, tls)
         models = [call for call in fake_calls(fixture) if call["kind"] == "model"]
         tool_calls = [index for index, call in enumerate(models) if call["answer"].get("tool")]
         if not tool_calls:

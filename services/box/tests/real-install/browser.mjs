@@ -5,6 +5,8 @@
 //
 // Chromium is installed by the workflow, outside the repository's dependencies. The test authority
 // is not in Chromium's own trust store; only this browser ignores that, never the installation.
+// Chromium also refuses any stand-in for the sign-in provider's address outright, because that
+// address is pinned inside it, so this script carries those requests itself.
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
@@ -72,6 +74,10 @@ async function startSignIn(page) {
 
 const browser = await chromium.launch({ args: ["--no-sandbox"] });
 const context = await browser.newContext({ ignoreHTTPSErrors: true, storageState: ["discover-owner", "sign-in"].includes(step) ? undefined : settings.stateFile });
+await context.route(/^https:\/\/accounts\.google\.com\//, async (route) => {
+  const answer = await fetch(route.request().url(), { redirect: "manual" });
+  await route.fulfill({ status: answer.status, headers: Object.fromEntries(answer.headers), body: Buffer.from(await answer.arrayBuffer()) });
+});
 const page = await context.newPage();
 page.setDefaultTimeout(30_000);
 page.on("pageerror", (error) => console.log(`page error: ${error.message}`));
