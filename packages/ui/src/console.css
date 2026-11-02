@@ -46,6 +46,9 @@
   max-width: var(--lares-page-width);
   margin-inline: auto;
 }
+.lares-page[data-width="narrow"] {
+  max-width: var(--lares-page-width-narrow);
+}
 .lares-page-header {
   display: flex;
   align-items: flex-start;
@@ -146,7 +149,15 @@
 }
 .lares-stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
+}
+/* A stack sets the width of its sections, never of its buttons. */
+.lares-stack > .lares-button {
+  justify-self: start;
+}
+.lares-stack > .lares-notice {
+  margin-block: 0;
 }
 .lares-field {
   min-height: var(--lares-control-height);
@@ -161,6 +172,87 @@
   display: grid;
   gap: var(--space-1);
   color: var(--foreground);
+  font: var(--text-label);
+}
+/* Chrome draws an empty date too faintly to read in dark mode. */
+[data-slot="input"]::-webkit-datetime-edit {
+  color: var(--foreground);
+}
+[data-slot="select"],
+[data-slot="textarea"] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border-radius: var(--lares-control-radius);
+  font: var(--text-body);
+}
+[data-slot="select"] {
+  min-height: var(--lares-control-height);
+  border: 1px solid var(--input);
+  background-color: var(--card);
+  color: var(--foreground);
+  padding: var(--space-2) var(--space-3);
+}
+/* The browser's own dropdown, so keyboard, phone pickers and form posts stay as they are. */
+[data-slot="select"]:not([multiple]) {
+  appearance: none;
+  padding-right: var(--space-8);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    right 17px center,
+    right 12px center;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+[data-slot="textarea"] {
+  min-height: 6rem;
+  resize: vertical;
+}
+[data-slot="select"]:disabled,
+[data-slot="textarea"]:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+[data-slot="select"]:focus-visible,
+[data-slot="textarea"]:focus-visible {
+  border-color: var(--ring);
+}
+[data-slot="checkbox"],
+[data-slot="radio"] {
+  flex: none;
+  width: var(--space-4);
+  height: var(--space-4);
+  margin: 0;
+  accent-color: var(--primary);
+}
+.lares-field-label > [data-slot="input"],
+.lares-field-label > [data-slot="select"] {
+  max-width: var(--lares-field-width);
+}
+.lares-field-hint {
+  color: var(--muted-foreground);
+  font: var(--text-body-sm);
+}
+.lares-choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: var(--text-body);
+  cursor: pointer;
+}
+.lares-fieldset {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.lares-fieldset > legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
   font: var(--text-label);
 }
 .lares-field:disabled {

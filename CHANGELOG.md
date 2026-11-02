@@ -4,6 +4,8 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
+- Every console page now sits on one grid: the same left edge and title position everywhere, wide for tables and lists, narrow for forms, settings and chat. The agent page's Agent access section no longer runs wider than the rest of the page. Dropdowns, text boxes, checkboxes and field groups are now design-system parts, and pages are being moved onto them. A test fails when a page leaves the grid or adds a hand-built control.
+
 - Restore cleanup now keeps its evidence when a temporary client identity or removal cannot be verified. In that case, stop and have an operator review the server before taking another recovery action.
 
 - Delivery routing, engine side. An agent definition may now carry an optional `delivery` map: for each kind of message the agent starts on its own (briefs, nudges, deadlines, proposals, email triage, meeting follow-ups, outreach replies, CRM routing, digest, reminders) an ordered list of doors (`web`, `slack`, `telegram`). The first connected door is used; if none is, the message goes to web chat and the activity ledger records why. An agent without a `delivery` map keeps its current doors exactly. Web chat is a new inbox table (`services/box/sql/004_web_inbox.sql`, applied by `pnpm -C services/box migrate`).

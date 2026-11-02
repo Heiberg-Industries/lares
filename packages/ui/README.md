@@ -12,10 +12,17 @@ owns control geometry and semantic button colors, including links rendered as bu
 - `@lares/ui/primitives/button`, `input`, `dialog`, `tabs`: selected shadcn source.
   Buttons, dialogs and tabs use client boundaries; Input and presentation patterns may
   render on the server. Radix owns dialog focus/trapping and tab keyboard behavior.
-- `@lares/ui/patterns`: PageHeader, EmptyState, Notice, StatusBadge, Mark, HomeIcon,
-  AgentAvatar. No runtime state, network requests or domain data.
+- `@lares/ui/primitives/select`, `textarea`, `checkbox` (Checkbox, Radio): the browser's
+  own controls in the design system's appearance, so forms post and phones pick as usual.
+- `@lares/ui/patterns`: Page, PageHeader, EmptyState, Notice, StatusBadge, Field, Choice,
+  FieldGroup, Mark, HomeIcon, AgentAvatar. No runtime state, network requests or domain data.
 - `@lares/ui/icons`: the approved monochrome Lucide navigation/control icons.
 - `@lares/ui/console.css`: reusable console patterns; only tokens define the palette.
+
+Every console route renders one `Page`: `width="wide"` (the default) for tables and lists,
+`width="narrow"` for forms, settings and chat. Sections fill their page and set no width of
+their own. `services/console/tests/design-system-drift.test.ts` holds pages and controls to
+this.
 
 The `.dark` class is applied to the root element. The console owns local preference
 persistence and initial theme script; marketing may retain its own theme control.

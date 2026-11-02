@@ -1,3 +1,4 @@
+import { Page } from "@lares/ui/patterns";
 import { requireMember } from "../../../lib/auth";
 import { listPrivateChatAgents } from "../../../lib/agents";
 import { requireConsoleAgentUse } from "@lares/agent-kit/console-turn-authority";
@@ -12,8 +13,8 @@ export default async function ChatAgentPage({ params }: { params: Promise<{ name
   try { await requireConsoleAgentUse(name, member.id, pool); } catch { notFound(); }
   const agents = await listPrivateChatAgents(member);
   if (!agents.some(agent => agent.name === name)) notFound();
-  return <div className="lares-page lares-stack">
+  return <Page width="narrow" className="lares-stack">
     <Link href={`/agents/${encodeURIComponent(name)}/outside-tools`}>Outside connection settings (editors)</Link>
     <Chat name={name} memberId={member.id} agents={agents} />
-  </div>;
+  </Page>;
 }

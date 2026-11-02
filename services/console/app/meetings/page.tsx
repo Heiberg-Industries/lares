@@ -1,7 +1,7 @@
 import { requireConsolePage } from "../../lib/auth";
 import { listAutoSendSeries } from "../../lib/meeting-series";
 import { MeetingSeriesRow } from "../../components/MeetingSeriesRow";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +10,7 @@ export default async function MeetingsPage() {
   const series = await listAutoSendSeries();
 
   return (
-    <div className="lares-page lares-operational">
+    <Page className="lares-operational">
       <PageHeader title="Meeting follow-ups" description="Recurring series with approved automatic follow-ups." />
       <p className="lares-muted">
         Recurring meeting series an agent is allowed to send the follow-up email for without asking
@@ -39,6 +39,6 @@ export default async function MeetingsPage() {
           </tbody>
         </table></div>
       )}
-    </div>
+    </Page>
   );
 }

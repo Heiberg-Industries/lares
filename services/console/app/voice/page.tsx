@@ -5,7 +5,7 @@ import { VoiceSettings } from "../../components/VoiceSettings";
 import { ProposedCard } from "../../components/ProposedCard";
 import { ExampleToggle } from "../../components/ExampleToggle";
 import { RelearnButton } from "../../components/RelearnButton";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +18,7 @@ export default async function VoicePage() {
   const def = cards[0]!;
   const mailboxes = cards.slice(1);
   return (
-    <div className="lares-page lares-operational">
+    <Page className="lares-operational">
       <PageHeader title="Email writing style" description="Mailbox-specific style and shared defaults." />
       <p className="lares-muted lares-operational-intro">
         One card per mailbox — you write differently from each. Learned from that mailbox&apos;s Sent mail; your edits always win.
@@ -72,6 +72,6 @@ export default async function VoicePage() {
           ))}
         </tbody>
       </table></div>
-    </div>
+    </Page>
   );
 }

@@ -1,6 +1,6 @@
 import { requireConsolePage } from "../../lib/auth";
 import { getBackupStatus, type BackupCheckRow, type BackupState } from "../../lib/backup-status";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 
 export const dynamic = "force-dynamic";
 
@@ -48,7 +48,7 @@ export default async function BackupPage() {
   const status = await getBackupStatus();
 
   return (
-    <div className="lares-page lares-operational">
+    <Page className="lares-operational">
       <PageHeader title="Backup" description="Recorded backup and restore evidence for this installation." />
       <p className="lares-muted lares-operational-intro">
         Whether this installation&apos;s data is protected: when the nightly backup was last
@@ -85,6 +85,6 @@ export default async function BackupPage() {
           </table></div>
         </>
       )}
-    </div>
+    </Page>
   );
 }

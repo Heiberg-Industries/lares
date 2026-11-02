@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 import { memberAuditAddress, requireConsolePage, members } from "../../lib/auth";
 import { InviteMember } from "../../components/InviteMember";
 import { removeMember, revokeInvitation, signOutMember } from "../actions/members";
@@ -16,7 +16,7 @@ export default async function MembersPage() {
     auditActor?listInitialMemberBudgetStatus(sessionToken,auditActor):{available:false as const,members:[] as []},
   ]);
   const budgetByMember=new Map(budgetStatus.members.map(status=>[status.memberId,status]));
-  return <div className="lares-page lares-stack">
+  return <Page className="lares-stack">
     <PageHeader title="Members" description="Manage sign-in invitations and current membership." />
     <p>Invited members can view their own membership and sign out. Shared console screens remain limited to the designated existing owner while resource access is being integrated. An owner role does not grant access to another person's private data.</p>
     <Link href="/membership">Your membership →</Link>
@@ -38,5 +38,5 @@ export default async function MembersPage() {
         <form action={revokeInvitation}><input type="hidden" name="id" value={invite.id} /><button type="submit">Revoke invitation</button></form>
       </li>)}</ul> : <p>No open invitations.</p>}
     </section>
-  </div>;
+  </Page>;
 }

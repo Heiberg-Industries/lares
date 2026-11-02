@@ -3,7 +3,7 @@ import { agentAccess } from "../../../lib/agent-access";
 import { members } from "../../../lib/auth";
 import { requireConsolePage } from "../../../lib/auth";
 import { notFound } from "next/navigation";
-import { Notice, PageHeader } from "@lares/ui/patterns";
+import { Notice, PageHeader, Page } from "@lares/ui/patterns";
 import { listAgents } from "../../../lib/agents";
 import { getBoardRows } from "../../../lib/board";
 import { builderData } from "../../../lib/builder";
@@ -26,12 +26,12 @@ export default async function AgentPage({
     agents = await listAgents({ strict: true });
   } catch {
     return (
-      <div className="lares-page">
+      <Page>
         <PageHeader title="Agent unavailable" />
         <Notice error>
           The agent registry could not be read. Reload to try again.
         </Notice>
-      </div>
+      </Page>
     );
   }
   const agent = agents.find((a) => a.name === name);
@@ -70,7 +70,8 @@ export default async function AgentPage({
   const access = await agentAccess.agentAccess(actor.id,name);
   const directory = await members.listMembers(actor.id);
   return (
-    <>
+    <Page className="lares-stack">
+    <div>
     <AgentDetail
       routing={routing}
       outsideTools={outsideTools}
@@ -98,7 +99,8 @@ export default async function AgentPage({
           : { available: false }
       }
     />
+    </div>
     {definition.status === "fulfilled" && definition.value.initial && <AgentAccess name={name} hash={definition.value.initial.hash} access={access} members={directory.filter(entry=>entry.member.status==='active').map(entry=>({id:entry.member.id,displayName:entry.displayName}))}/>}
-    </>
+    </Page>
   );
 }

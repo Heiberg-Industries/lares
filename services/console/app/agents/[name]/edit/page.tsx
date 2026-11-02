@@ -1,5 +1,5 @@
 import { requireConsolePage } from "../../../../lib/auth";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 import { builderData, editedOutsideTheConsole } from "../../../../lib/builder";
 import { DefinitionForm } from "../../../../components/DefinitionForm";
 export const dynamic = "force-dynamic";
@@ -14,7 +14,7 @@ export default async function EditAgentPage({
     const data = await builderData(name);
     const outside = await editedOutsideTheConsole(name);
     return (
-      <div className="lares-page lares-settings">
+      <Page width="narrow" className="lares-settings">
         <PageHeader
           title={`Edit ${name}`}
           description="Identity, instructions, access and schedules."
@@ -34,11 +34,11 @@ export default async function EditAgentPage({
           </p>
         )}
         <DefinitionForm {...data} />
-      </div>
+      </Page>
     );
   } catch (error) {
     return (
-      <div className="lares-page lares-settings">
+      <Page width="narrow" className="lares-settings">
         <PageHeader
           title={`Edit ${name}`}
           description="Identity, instructions, access and schedules."
@@ -49,7 +49,7 @@ export default async function EditAgentPage({
             ? error.message
             : "Could not load keeper state."}
         </p>
-      </div>
+      </Page>
     );
   }
 }

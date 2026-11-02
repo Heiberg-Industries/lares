@@ -76,7 +76,7 @@ html.dark {
   font: var(--text-h2);
 }
 .lares-page-header {
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-6);
 }
 .lares-page.lares-stack > .lares-page-header {
   margin-bottom: 8px;
@@ -90,9 +90,6 @@ th {
 .lares-surface,
 .card {
   border-color: var(--border);
-}
-.lares-settings {
-  max-width: 880px;
 }
 .lares-settings h2 {
   margin-bottom: 18px;
@@ -131,9 +128,6 @@ th {
 }
 .lares-event-table time {
   white-space: nowrap;
-}
-.lares-chat {
-  max-width: 920px;
 }
 .lares-chat-top {
   display: flex;

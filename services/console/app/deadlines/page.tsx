@@ -1,5 +1,5 @@
 import { requireConsolePage } from "../../lib/auth";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 import {
   daysUntil,
   dueColor,
@@ -79,7 +79,7 @@ export default async function DeadlinesPage() {
   }));
 
   return (
-    <div className="lares-page lares-operational">
+    <Page className="lares-operational">
       <PageHeader
         title="Deadlines"
         description="What is due, and what needs a little preparation."
@@ -251,6 +251,6 @@ export default async function DeadlinesPage() {
           />
         )}
       </details>
-    </div>
+    </Page>
   );
 }

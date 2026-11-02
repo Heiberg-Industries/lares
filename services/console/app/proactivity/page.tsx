@@ -10,7 +10,7 @@ import { BriefLanguageControl } from "../../components/BriefLanguageControl";
 import { readBriefLanguage } from "../../lib/brief-settings";
 import { ScheduleHoursControl } from "../../components/ScheduleHoursControl";
 import { readScheduleHoursSettings } from "../../lib/schedule-settings";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 
 export const dynamic = "force-dynamic";
 
@@ -75,7 +75,7 @@ export default async function ProactivityPage() {
   const today = foldTodayByDoor(view.today);
 
   return (
-    <div className="lares-page lares-operational">
+    <Page className="lares-operational">
       <PageHeader title="Proactivity" description="When agents may speak, and what the gate decided." />
       <p className="lares-muted lares-operational-intro">
         When the agents may start a conversation with you, how often, and what they decided today.
@@ -167,6 +167,6 @@ export default async function ProactivityPage() {
           ))}
         </tbody>
       </table></div>
-    </div>
+    </Page>
   );
 }

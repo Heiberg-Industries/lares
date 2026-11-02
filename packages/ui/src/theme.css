@@ -75,6 +75,8 @@
   --lares-control-height: 42px;
   --lares-sidebar-width: 232px;
   --lares-page-width: 1120px;
+  --lares-page-width-narrow: 880px;
+  --lares-field-width: 32rem;
   --lares-dialog-width: 560px;
   --lares-avatar-size: 36px;
   --lares-overlay: oklch(0.15 0.025 185 / 0.4);

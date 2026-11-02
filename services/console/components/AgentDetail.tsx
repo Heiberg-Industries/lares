@@ -61,7 +61,7 @@ export function AgentDetail({
     },
   ];
   return (
-    <div className="lares-page">
+    <>
       <div className={styles.back}>
         <Link href="/agents">← Agents</Link>
       </div>
@@ -253,6 +253,6 @@ export function AgentDetail({
           </section>
         </TabsContent>
       </Tabs>
-    </div>
+    </>
   );
 }

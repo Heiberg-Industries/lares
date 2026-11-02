@@ -266,7 +266,7 @@ function ChatSession({
   }
 
   return (
-    <div className="lares-page lares-chat">
+    <div>
       <PageHeader
         title="Chat"
         description="Talk things through. Your agents are here."

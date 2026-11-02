@@ -1,6 +1,6 @@
 import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 import { SettingsThemeControl } from "../../components/ThemeControl";
 import { ModelsSection } from "../../components/ModelsSection";
 import { AgentLimitControl } from "../../components/AgentLimitControl";
@@ -21,7 +21,7 @@ export default async function SettingsPage() {
         effectiveQuietWindow(null, null))
       : null;
   return (
-    <div className="lares-page lares-settings">
+    <Page width="narrow" className="lares-settings">
       <PageHeader
         title="Settings"
         description="The shared defaults for your house."
@@ -90,6 +90,6 @@ export default async function SettingsPage() {
           </div>
         </section>
       </div>
-    </div>
+    </Page>
   );
 }

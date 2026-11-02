@@ -1,7 +1,7 @@
 import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
 import { getRecentSignals } from "../../lib/signals";
-import { Notice, PageHeader } from "@lares/ui/patterns";
+import { Notice, PageHeader, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +12,7 @@ export default async function SignalsPage({ searchParams }: { searchParams: Prom
   const q = await searchParams;
   const r = await getRecentSignals({ severity: q.severity, project: q.project, kind: q.kind, state: q.state, since: q.since });
   return (
-    <div className="lares-page lares-operational">
+    <Page className="lares-operational">
       <PageHeader title="Signals" description="Recent recorded alerts, events and reports." />
       <nav className="lares-operational-nav" aria-label="Signals sections">
         <Link href="/signals" aria-current="page">Recent</Link>
@@ -47,6 +47,6 @@ export default async function SignalsPage({ searchParams }: { searchParams: Prom
           </tbody>
         </table></div>
       )}</>}
-    </div>
+    </Page>
   );
 }
