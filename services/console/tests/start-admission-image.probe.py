@@ -232,7 +232,9 @@ def assert_admission_mount_contract(raw_text: str, service: dict[str, object], s
         rf"\s+bind:\n"
         rf"\s+create_host_path: false\s*$"
     )
-    if len(raw_mount.findall(raw_text)) != 1:
+    # Other generated services bind the same directory, so count only inside the console's own block.
+    console_block = re.search(r"(?ms)^  console:\n(.*?)(?=^ {0,2}\S|\Z)", raw_text)
+    if console_block is None or len(raw_mount.findall(console_block.group(1))) != 1:
         raise ProbeFailure("raw-admission-mount-contract")
 
     volumes = service.get("volumes")
