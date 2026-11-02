@@ -130,6 +130,7 @@ const scripted=mockModel(({lastUserMessage,messages,tools,toolResults})=>{
   if(lastUserMessage?.startsWith('SEND_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(12));return {toolCalls:[{name:'personal_mailbox_send',input},{name:'personal_mailbox_read',input:{selection:input.selection,id:'proof-message'}}]};}
   if(lastUserMessage?.startsWith('MAIL ')&&!toolResults.length)return {toolCalls:[{name:'gmail_read',input:{id:'proof-message',selection:JSON.parse(lastUserMessage.slice(5))}}]};
   if(lastUserMessage?.startsWith('TRACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'track_create',input:JSON.parse(lastUserMessage.slice(6))}]};
+  if(lastUserMessage?.startsWith('TRACK_COMPANY ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'track_add_item',input:JSON.parse(lastUserMessage.slice(14))}]};
   if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'track_create',input:JSON.parse(lastUserMessage.slice(13))}]};
   if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(13));return {toolCalls:[{id:uniqueCall(),name:'track_create',input:{...input,trackId:input.trackId+'-second'}},{id:uniqueCall(),name:'tracks_list',input:{}}]};}
   if(lastUserMessage==='VAULT_READ'&&!currentResults)return {toolCalls:[{name:'agent-kit__vault_read',input:{area:'private',path:'owner.md'}}]};
@@ -300,6 +301,10 @@ async function proveTracksCards(app,sa,sb,vault){
  const changed=await answer(a,sa,held);assert.ok(changed.includes('ANSWER'),changed);
  assert.match(readFileSync(file('shared-name'),'utf8'),/From member B/);assert.doesNotMatch(readFileSync(file('shared-name'),'utf8'),/From member A/);
  assert.equal((await ask(held)).use_count,0,'A changed target spent the approval');
+
+ // A company CRM track is the designated owner's alone: a member gets a refusal, with no card or CRM read.
+ const company=await send(app,a,sa,'TRACK_COMPANY '+JSON.stringify({home:'twenty',trackId:'sales',who:{personId:'person-1'},step:'Open',note:'n',sourceSignal:'s'}));
+ assert.ok(company.includes('ANSWER'),company);assert.equal((await db.query("SELECT count(*)::int n FROM approval_asks WHERE tool='track_add_item'")).rows[0].n,0,'A member raised a company CRM card');
 
  // An expired card refuses an approval and can still be cancelled.
  const stale=await card(a,sa,track('stale-one'));const row=(await db.query('SELECT * FROM approval_asks WHERE call_id=$1',[stale.call_id])).rows[0];

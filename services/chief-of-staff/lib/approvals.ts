@@ -3,7 +3,7 @@ import { assertPrivateConsoleTool } from "@lares/agent-kit/private-console-surfa
 import { isExactApprovalContext, isExactApprovalResponse, reserveExactApproval, approveExactResponse,
   requireApprovedExecution, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
 import { deadlineApprovalAdapter } from "./deadlines-store.js";
-import { tracksApprovalAdapter } from "./tracks-approval.js";
+import { canApproveCompanyTrack, tracksApprovalAdapter, twentyTracksApprovalAdapter } from "./tracks-approval.js";
 import { consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
 /**
  * The approver re-check every gated write calls, on both channels.
@@ -17,13 +17,11 @@ import type { ApprovedExecution } from "@lares/agent-kit/approval-execution";
 
 import { declaredApprover, isAllowedPrincipal, principalFromAuth } from "./principals.js";
 
-/** A Twenty track writes to the company's CRM with the installation's own credentials. No
- *  member-level approve authority for it exists yet (ADR-0023 rule 7), so a private conversation
- *  cannot raise, answer or run such a card: its member could otherwise approve their own change. */
 const companyHome = (input: unknown) => !!input && typeof input === 'object' && !Array.isArray(input) && (input as Record<string, unknown>).home === 'twenty';
 const adapterFor = (tool: string, input?: unknown) => {
-  if (companyHome(input)) throw new Error('Exact approval is unavailable for this action target');
-  return tracksApprovalAdapter.toolNames.includes(tool) ? tracksApprovalAdapter : deadlineApprovalAdapter;
+  return companyHome(input) && twentyTracksApprovalAdapter.toolNames.includes(tool)
+    ? twentyTracksApprovalAdapter
+    : tracksApprovalAdapter.toolNames.includes(tool) ? tracksApprovalAdapter : deadlineApprovalAdapter;
 };
 
 /**
@@ -237,7 +235,11 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
     return (authored as (ctx:unknown)=>unknown)(ctx);
   }
   const c = ctx as ConsoleAuthorityContext & {callId?:string;toolInput?:unknown};
-  if (companyHome(c.toolInput)) return { type: 'denied', reason: 'This conversation cannot approve a change to the company CRM.' };
+  // Refused before any card or provider read. The adapter repeats this at each later step.
+  const asking = consoleAdmission(c.session?.auth?.current);
+  if (companyHome(c.toolInput) && !(asking && await canApproveCompanyTrack(getPool(), asking.memberId))) {
+    return { type: 'denied', reason: 'Only the owner can approve a change to the company CRM.' };
+  }
   if (consoleAdmission(c.session?.auth?.current)?.purpose === 'resolver') {
     // An approval answer can raise no new card. Refuse this call and let the turn finish, as mail does.
     try { await requireApprovedExecution(c,name,c.toolInput,{adapter:adapterFor(name,c.toolInput)}); }

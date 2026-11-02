@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TwentyTracksHome } from '../lib/twenty-tracks.js';
 import { tracksApprovalAdapter, twentyTracksApprovalAdapter } from '../lib/tracks-approval.js';
 import { runApprovedTwentyTrackOnce } from '../lib/approvals.js';
@@ -6,13 +6,32 @@ import { runApprovedTwentyTrackOnce } from '../lib/approvals.js';
 const context = { session: { turn: { id: 'turn-1', sequence: 1 } } } as never;
 const track = { id: 'sales', name: 'Sales', purpose: 'Qualified work', steps: ['Open', 'Qualified', 'Won'], closingSteps: ['Won'] };
 
+const memberRow = { id: 'member-1', display_name: 'Owner', org_id: 'org', org_role: 'owner', status: 'active', primary_email: null, automation_mode: 'draft-and-ask' };
+const ownerDb = { query: async () => ({ rows: [memberRow] }) } as never;
+
 describe('exact Twenty Tracks approval binding', () => {
+  beforeEach(() => { vi.stubEnv('AGENT_OWNER_USER_ID', 'member-1'); });
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+  it('reads nothing from the CRM for anyone but the designated owner still in the owner role', async () => {
+    const listTracks = vi.spyOn(TwentyTracksHome.prototype, 'listTracks').mockResolvedValue([track]);
+    const input = { home: 'twenty', trackId: 'sales', who: { personId: 'person-1' }, step: 'Open', note: 'n', sourceSignal: 's' };
+    await expect(twentyTracksApprovalAdapter.readTarget(ownerDb, input, 'member-2', 'track_add_item', context)).rejects.toThrow('unavailable');
+    const demoted = { query: async () => ({ rows: [{ ...memberRow, org_role: 'member' }] }) } as never;
+    await expect(twentyTracksApprovalAdapter.readTarget(demoted, input, 'member-1', 'track_add_item', context)).rejects.toThrow('unavailable');
+    const removed = { query: async () => ({ rows: [] }) } as never;
+    await expect(twentyTracksApprovalAdapter.readTarget(removed, input, 'member-1', 'track_add_item', context)).rejects.toThrow('unavailable');
+    vi.stubEnv('AGENT_OWNER_USER_ID', '');
+    await expect(twentyTracksApprovalAdapter.readTarget(ownerDb, input, 'member-1', 'track_add_item', context)).rejects.toThrow('unavailable');
+    expect(listTracks).not.toHaveBeenCalled();
+  });
+
   it('rejects a Vault home and refuses a step removed from current metadata', async () => {
     vi.spyOn(TwentyTracksHome.prototype, 'listTracks').mockResolvedValue([track]);
-    await expect(twentyTracksApprovalAdapter.readTarget({} as never, {
+    await expect(twentyTracksApprovalAdapter.readTarget(ownerDb, {
       home: 'vault:shared-area', trackId: 'sales', who: { personId: 'person-1' }, step: 'Open', note: 'n', sourceSignal: 's',
     }, 'member-1', 'track_add_item', context)).rejects.toThrow('Exact Twenty track target is unavailable');
-    await expect(twentyTracksApprovalAdapter.readTarget({} as never, {
+    await expect(twentyTracksApprovalAdapter.readTarget(ownerDb, {
       home: 'twenty', trackId: 'sales', who: { personId: 'person-1' }, step: 'Stale', note: 'n', sourceSignal: 's',
     }, 'member-1', 'track_add_item', context)).rejects.toThrow('Exact Twenty track target is unavailable');
   });
@@ -20,13 +39,13 @@ describe('exact Twenty Tracks approval binding', () => {
   it('binds exact input and current metadata so changed payload or stale track data cannot reuse approval', async () => {
     const listTracks = vi.spyOn(TwentyTracksHome.prototype, 'listTracks').mockResolvedValue([track]);
     const input = { home: 'twenty', trackId: 'sales', who: { personId: 'person-1' }, step: 'Open', note: 'n', sourceSignal: 's' };
-    const original = await twentyTracksApprovalAdapter.readTarget({} as never, input, 'member-1', 'track_add_item', context);
-    const changedPayload = await twentyTracksApprovalAdapter.readTarget({} as never, { ...input, step: 'Qualified' }, 'member-1', 'track_add_item', context);
+    const original = await twentyTracksApprovalAdapter.readTarget(ownerDb, input, 'member-1', 'track_add_item', context);
+    const changedPayload = await twentyTracksApprovalAdapter.readTarget(ownerDb, { ...input, step: 'Qualified' }, 'member-1', 'track_add_item', context);
     expect(changedPayload.fingerprint).not.toBe(original.fingerprint);
     listTracks.mockResolvedValue([{ ...track, purpose: 'Different current purpose' }]);
-    const changedMetadata = await twentyTracksApprovalAdapter.readTarget({} as never, input, 'member-1', 'track_add_item', context);
+    const changedMetadata = await twentyTracksApprovalAdapter.readTarget(ownerDb, input, 'member-1', 'track_add_item', context);
     expect(changedMetadata.fingerprint).not.toBe(original.fingerprint);
-    await expect(twentyTracksApprovalAdapter.readTarget({} as never, input, 'member-1', 'track_add_item', context, original))
+    await expect(twentyTracksApprovalAdapter.readTarget(ownerDb, input, 'member-1', 'track_add_item', context, original))
       .rejects.toThrow('Exact Twenty track target changed');
   });
 
@@ -36,9 +55,9 @@ describe('exact Twenty Tracks approval binding', () => {
       id: 'item-1', trackId: 'sales', who: { personId: 'person-1' }, step: 'Open', since: '2026-10-26', note: 'background', sourceSignal: 's',
     }]);
     const input = { home: 'twenty', trackId: 'sales', itemId: 'item-1', step: 'Qualified', note: 'n', sourceSignal: 's' };
-    const target = await twentyTracksApprovalAdapter.readTarget({} as never, input, 'member-1', 'track_move_item', context);
+    const target = await twentyTracksApprovalAdapter.readTarget(ownerDb, input, 'member-1', 'track_move_item', context);
     expect(target.id).toBe('twenty:sales:item-1');
-    await expect(twentyTracksApprovalAdapter.readTarget({} as never, { ...input, trackId: 'other' }, 'member-1', 'track_move_item', context, target))
+    await expect(twentyTracksApprovalAdapter.readTarget(ownerDb, { ...input, trackId: 'other' }, 'member-1', 'track_move_item', context, target))
       .rejects.toThrow('Exact Twenty track target is unavailable');
   });
 
@@ -46,7 +65,7 @@ describe('exact Twenty Tracks approval binding', () => {
     const current = { ...track, id: 'Legacy_Sales_2024' };
     vi.spyOn(TwentyTracksHome.prototype, 'listTracks').mockResolvedValue([current]);
     const input = { home: 'twenty', trackId: current.id, who: { personId: 'person-1' }, step: 'Open', note: 'n', sourceSignal: 's' };
-    const target = await twentyTracksApprovalAdapter.readTarget({} as never, input, 'member-1', 'track_add_item', context);
+    const target = await twentyTracksApprovalAdapter.readTarget(ownerDb, input, 'member-1', 'track_add_item', context);
     expect(target.id).toBe('twenty:Legacy_Sales_2024');
   });
 

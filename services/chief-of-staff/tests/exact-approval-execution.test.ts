@@ -2,7 +2,7 @@
  * No model/provider credentials or installation data. */
 import { Pool } from 'pg';
 import { spawn } from 'node:child_process';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -17,7 +17,8 @@ import { readApprovalCounts } from '@lares/agent-kit/approval-stats';
 import { makeApprovalRecord } from '@lares/agent-kit/approval-record-hook';
 import { deadlineApprovalAdapter, dismissExactDeadline } from '../lib/deadlines-store.js';
 import resolver from '../agent/tools/catalogue.js';
-import { assertApproval, catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution, humanTurnRefusal } from '../lib/approvals.js';
+import { assertApproval, catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution, humanTurnRefusal, runApprovedTwentyTrackOnce } from '../lib/approvals.js';
+import { TwentyTracksHome } from '../lib/twenty-tracks.js';
 
 const inc='11111111-1111-4111-8111-111111111111';
 const env={LARES_AGENT_NAME:'helper',LARES_AGENT_INCARNATION:inc,AGENT_OWNER_USER_ID:'member-a'};
@@ -392,14 +393,50 @@ describe('answering an exact card through the private route',()=>{
   await expect(requireApprovedExecution(unnamed,'deadline_dismiss',input,opts())).rejects.toThrow();
   await expect(requireApprovedExecution(context('resolver'),'deadline_dismiss',input,opts())).resolves.toMatchObject({callId:'call-1'});
  });
- it('cannot raise, answer or run a card that writes to the company CRM',async()=>{
+ describe('a card that writes to the company CRM',()=>{
   const twenty={home:'twenty',trackId:'sales',who:{personId:'person-1'},step:'Open',note:'n',sourceSignal:'s'};
-  const raised={...context('human',twenty),toolName:'track_add_item'};
-  await expect(catalogueApprovalRequest('track_add_item',raised,()=>'user-approval')).resolves.toMatchObject({type:'denied'});
-  expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(0);
-  await expect(catalogueApprovalResponse('track_add_item',{request:{requestId:'request-1',callId:'call-1',toolName:'track_add_item',toolInput:twenty},responder:auth('resolver'),session:{id:'wrun_exact',initiator:auth(),turn:{id:'t',sequence:1}}})).rejects.toThrow();
-  await expect(guardCatalogueExecution({...context('resolver',twenty),toolName:'track_add_item'},'track_add_item',twenty)).rejects.toThrow();
-  await expect(assertApproval(context('resolver',twenty),'track_add_item',twenty)).rejects.toThrow();
+  const crm=(member='member-a')=>({...context('human',twenty),toolName:'track_add_item',session:{...context('human',twenty).session,auth:{current:auth('human',member),initiator:auth('human',member)}}});
+  const answerCard=(raw:unknown=twenty)=>({request:{requestId:'request-1',callId:'call-1',toolName:'track_add_item',toolInput:raw},responder:auth('resolver'),session:{id:'wrun_exact',initiator:auth(),turn:{id:'t',sequence:1}}});
+  const running=()=>({...context('resolver',twenty),toolName:'track_add_item'});
+  let listTracks:ReturnType<typeof vi.spyOn>;
+  beforeEach(async()=>{
+   await getPool().query("UPDATE agent_resources SET applied_definition=$1 WHERE name='helper'",[{...def,grants:[{capability:'twenty',scope:'write-with-confirm'}],autonomy:{twenty:'gated'}}]);
+   listTracks=vi.spyOn(TwentyTracksHome.prototype,'listTracks').mockResolvedValue([{id:'sales',name:'Sales',purpose:'Work',steps:['Open','Won'],closingSteps:['Won']}]);
+  });
+  afterEach(()=>{listTracks.mockRestore();});
+  async function raise(){
+   expect(await catalogueApprovalRequest('track_add_item',crm(),()=>'user-approval')).toBe('user-approval');
+   await attachExactApproval({requestId:'request-1',callId:'call-1',tool:'track_add_item',input:twenty});
+  }
+  it('lets the designated owner raise, answer and run it once',async()=>{
+   await raise();
+   await expect(catalogueApprovalResponse('track_add_item',answerCard())).resolves.toEqual({status:'allowed'});
+   await expect(guardCatalogueExecution(running(),'track_add_item',twenty)).resolves.toBeUndefined();
+   const approved=await assertApproval(running(),'track_add_item',twenty);
+   const write=vi.fn(async()=>'written');
+   await expect(runApprovedTwentyTrackOnce(approved,write)).resolves.toBe('written');
+   await expect(runApprovedTwentyTrackOnce(approved,write)).rejects.toThrow();
+   expect(write).toHaveBeenCalledOnce();
+  });
+  it('refuses every other member before a card or a CRM read, including another with the owner role',async()=>{
+   await bindConsoleSession({agent:'helper',incarnation:inc,sessionId:'wrun_b',memberId:'member-b',admissionNonce:'b'.repeat(43)}).catch(()=>undefined);
+   const other=crm('member-b');
+   await expect(catalogueApprovalRequest('track_add_item',other,()=>'user-approval')).resolves.toMatchObject({type:'denied'});
+   expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(0);
+   expect(listTracks).not.toHaveBeenCalled();
+  });
+  it('refuses the answer once the owner has lost the role',async()=>{
+   await raise();
+   await getPool().query("UPDATE users SET org_role='member' WHERE id='member-a'");
+   await expect(catalogueApprovalResponse('track_add_item',answerCard())).rejects.toThrow();
+  });
+  it('refuses the execution once there is no designated owner',async()=>{
+   await raise();
+   await catalogueApprovalResponse('track_add_item',answerCard());
+   vi.stubEnv('AGENT_OWNER_USER_ID','');
+   try{await expect(assertApproval(running(),'track_add_item',twenty)).rejects.toThrow();}
+   finally{vi.stubEnv('AGENT_OWNER_USER_ID','member-a');}
+  });
  });
  it('gives an approval resume no reading rights',async()=>{
   await approved();

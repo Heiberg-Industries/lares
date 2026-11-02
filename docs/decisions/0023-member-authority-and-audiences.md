@@ -222,9 +222,11 @@ apply the same outcome rules: approved and resolved by this member, or cancelled
 
 The private surface offers these cards for the four Vault Tracks changes and for outside tools,
 which have their own resolver and reach private conversations through the same exact reservation.
-A track in the company's Twenty CRM is refused before a card is raised. It writes with the
-installation's credentials and no member-level approve authority exists for it (rule 7), so a
-member could otherwise approve their own company change. That needs its own decision.
+A track in the company's Twenty CRM writes with the installation's credentials, so under rule 7
+only the designated owner, active and still in the owner role, may raise and answer its card. Any
+other member, including another member with the owner role, is refused before a card or a CRM read,
+and the check repeats at the answer and at execution. A Twenty write has no Keeper step, so its
+one-use claim in the role's own database is its only guard against a repeat.
 `member-private-chat-proof.mjs` with `PRIVATE_CHAT_PROOF_TRACKS=1` runs a Tracks card for two
 members through the compiled role, the real proxy, Keeper's real broker and a real Git Vault. It is
 runtime source proof with a synthetic model, not deployment evidence. A cold restart that replays
