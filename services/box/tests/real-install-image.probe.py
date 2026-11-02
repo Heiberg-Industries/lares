@@ -321,7 +321,7 @@ def wait_for_sign_in_offer() -> None:
     while time.monotonic() < deadline:
         answer = run("curl", "-sS", "-o", "/dev/null", "-w", "%{http_code} %{redirect_url}", "--max-time", "10",
                      f"https://{DOMAIN}/api/auth/login", check=False, show=False).stdout
-        if answer.startswith("302 https://accounts.google.com/"):
+        if re.match(r"30[27] https://accounts\.google\.com/", answer):
             return
         time.sleep(2)
     raise RuntimeError(f"the console does not offer sign-in: {answer}")
