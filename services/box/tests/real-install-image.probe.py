@@ -309,9 +309,31 @@ def fake_calls(fixture: pathlib.Path) -> list[dict]:
 
 # --- the owner's steps ---------------------------------------------------------------------------
 
+def wait_for_quiet_network() -> None:
+    """Chromium drops requests in flight whenever a container's network interface appears."""
+    deadline = time.monotonic() + 60
+    seen, since = "", time.monotonic()
+    while time.monotonic() < deadline:
+        now = output("ip", "-o", "link")
+        if now != seen:
+            seen, since = now, time.monotonic()
+        elif time.monotonic() - since >= 8:
+            return
+        time.sleep(1)
+
+
 def browser(step: str, settings_file: pathlib.Path, tls: dict[str, pathlib.Path]) -> None:
-    run("node", str(HERE / "browser.mjs"), step, str(settings_file), timeout=420, cwd=str(HERE), env={"NODE_EXTRA_CA_CERTS": str(tls["ca_cert"])})
-    passed(f"browser:{step}")
+    """Tries again only when the browser itself reports that interface change, never on a page's answer."""
+    for attempt in range(3):
+        wait_for_quiet_network()
+        result = run("node", str(HERE / "browser.mjs"), step, str(settings_file), timeout=420, cwd=str(HERE),
+                     env={"NODE_EXTRA_CA_CERTS": str(tls["ca_cert"])}, check=False)
+        if result.returncode == 0:
+            passed(f"browser:{step}")
+            return
+        if "ERR_NETWORK_CHANGED" not in result.stdout:
+            break
+    raise RuntimeError(f"the browser step {step} failed")
 
 
 def wait_for_sign_in_offer() -> None:

@@ -14,7 +14,7 @@ const { chromium } = createRequire(`${process.env.PLAYWRIGHT_DIR}/`)("playwright
 const [step, settingsFile] = process.argv.slice(2);
 const settings = JSON.parse(readFileSync(settingsFile, "utf8"));
 const origin = `https://${settings.domain}`;
-const STEP_MS = 180_000;
+const STEP_MS = 90_000;
 
 const steps = {
   // The first sign-in on a fresh install issues no session; it shows the owner what to paste.
