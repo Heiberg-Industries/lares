@@ -118,6 +118,21 @@ function requestOf(part: EveMessagePart): EveMessageInputRequest | undefined {
   return part.type === "dynamic-tool" ? part.toolMetadata?.eve?.inputRequest : undefined;
 }
 
+/** The question on an `ask_question` part, for showing as text rather than as a running tool.
+ *  An answered part may no longer carry its request, so the tool's own input is the fallback. */
+export function questionOf(
+  part: Extract<EveMessagePart, { type: "dynamic-tool" }>,
+  request: EveMessageInputRequest | undefined,
+): { prompt: string; choices: string[] } | undefined {
+  if (request?.kind === "question") {
+    const waiting = part.state !== "output-available" && part.state !== "output-error";
+    return { prompt: request.prompt, choices: waiting ? (request.options ?? []).map((option) => option.label) : [] };
+  }
+  const input = part.input as { prompt?: unknown } | null | undefined;
+  if (part.toolName !== "ask_question" || typeof input?.prompt !== "string") return undefined;
+  return { prompt: input.prompt, choices: [] };
+}
+
 /**
  * Request ids whose card is past {@link APPROVAL_LIFETIME_MS}, read from the session stream's own
  * event timestamps. Pure: `now` is a parameter and the events are the ones eve already delivered.
@@ -259,6 +274,16 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState, role: E
         onAnswer={cards.onAnswer}
         personalCard={cards.personalSendCards?.[request.requestId]}
       />
+    );
+  }
+  const question = part.type === "dynamic-tool" ? questionOf(part, request) : undefined;
+  if (question !== undefined) {
+    // The agent's own words, so plain text like an approval card, and answered in the box below.
+    return (
+      <div key={key}>
+        <p className="whitespace-pre-wrap break-words">{question.prompt}</p>
+        {question.choices.length > 0 ? <p className="mono lares-tool-line break-words">You can reply: {question.choices.join(", ")}</p> : null}
+      </div>
     );
   }
   if (part.type === "dynamic-tool") {

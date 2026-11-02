@@ -3,10 +3,14 @@
  * disposable files; all grant, session, generation, custody and model guards stay real.
  * Use PRIVATE_CHAT_PROOF_ROLE=chief-of-staff or creative for a serial subset.
  * PRIVATE_CHAT_PROOF_BUDGET=1 adds inactive preparation/cold-replay proof to chief/Anthropic + SEND.
+ * PRIVATE_CHAT_PROOF_TRACKS=1 adds the Tracks approval card for two members on the chief role, through
+ * Keeper's real broker and a real Git Vault. Only the storage inventory's fixed path is mapped to a
+ * file. Set TMPDIR to a real path with no symlink in it, as Vault paths refuse one.
  * Run: pnpm -C packages/board-evals exec tsx scripts/member-private-chat-proof.mjs
  */
 import assert from 'node:assert/strict';
-import {mkdtempSync,cpSync,symlinkSync,writeFileSync,readFileSync,readdirSync,mkdirSync,rmSync,existsSync} from 'node:fs';
+import fs,{mkdtempSync,cpSync,symlinkSync,writeFileSync,readFileSync,readdirSync,mkdirSync,rmSync,existsSync} from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join,resolve,basename,relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -19,7 +23,9 @@ import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {PgMemberStore} from '@lares/agent-kit/member-store';
 import {budgetIdentitySuppression} from '@lares/agent-kit/budget-admission-store';
 import {requireConsoleTurnAuthority} from '@lares/agent-kit/console-turn-authority';
-import {requirePrivateConsoleResume} from '@lares/agent-kit/private-console-resume';
+import {requireConsoleResume} from '@lares/agent-kit/private-console-resume';
+import {PgVaultStore} from '@lares/agent-kit/vault-area-store';
+import {VAULT_AREA_MARKER} from '@lares/agent-kit/vault-files';
 import {PgAccountStore} from '@lares/agent-kit/account-store';
 import {loadDefinition} from '@lares/agent-kit/definition';
 import {forwardChat} from '../../../services/console/lib/chat-proxy.ts';
@@ -35,9 +41,11 @@ const withSend=process.env.PRIVATE_CHAT_PROOF_SEND==='1';
 const gatewayLane=process.env.PRIVATE_CHAT_PROOF_GATEWAY_LANE;
 const withBudget=process.env.PRIVATE_CHAT_PROOF_BUDGET==='1';
 const withVault=process.env.PRIVATE_CHAT_PROOF_VAULT==='1';
+const withTracks=process.env.PRIVATE_CHAT_PROOF_TRACKS==='1';
 if(withBudget)assert.ok(gatewayLane==='anthropic'&&process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&withSend,'Durable proof uses the bounded chief/Anthropic approval fixture');
 if(withVault)assert.equal(process.env.PRIVATE_CHAT_PROOF_ROLE,'chief-of-staff','Vault custody fixture is bounded to the chief-of-staff role');
-let gateway;
+if(withTracks)assert.ok(process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&!withVault,'Tracks proof uses the real broker on the chief-of-staff role, not the recording Vault fixture');
+let gateway,trackVault;
 const observedSteps=new Set();
 const vaultCalls=[],vaultWire=[],vaultChallenges=new Map(),vaultTurns=new Map(),vaultServers=[];
 const snapshots=[],ownedSessionIds=new Set();
@@ -64,11 +72,44 @@ async function startVaultFixture(){
   throw new Error('runtime operation');
  });
 }
+/** Keeper's real broker over real Git repositories. The two members both hold edit on the area. */
+async function startTrackVault(){
+ const consoleKey='2'.repeat(64),runtimeKey='3'.repeat(64),secrets=join(root,'broker-secrets'),org='proof-org';mkdirSync(secrets);
+ const keyFile=join(secrets,'console-vault-signing-key'),consoleSocket=join(root,'console-vault.sock'),runtimeSocket=join(root,'runtime-vault.sock');
+ writeFileSync(keyFile,consoleKey);writeFileSync(join(secrets,'proof-chief-runtime-control'),runtimeKey);writeFileSync(join(root,'runtime-control-key'),runtimeKey);
+ process.env.CONSOLE_VAULT_SIGNING_KEY_FILE=keyFile;process.env.LARES_VAULT_CONSOLE_SOCKET=consoleSocket;
+ const backing=randomUUID(),area=randomUUID(),relativePath=`vault/shared/${area}`,vaultRoot=join(root,'vault-files'),originRoot=join(root,'vault-origins'),vault=new PgVaultStore(db),authority={designatedOwnerMemberId:owner};
+ await vault.provisionBacking(owner,{id:backing,kind:'git'},authority);
+ const shared=await vault.provisionArea(owner,{id:area,kind:'shared',owner:{kind:'organisation',id:org},backingStoreId:backing,relativePath},authority);
+ const grantsFor=members=>members.flatMap(({id,permissions})=>permissions.map(permission=>({principal:{kind:'member',id},permission,expiresAt:null})));
+ const configure=async members=>{const current=(await db.query('SELECT revision FROM vault_areas WHERE id=$1',[area])).rows[0];await vault.configureAccess(owner,{areaId:area,expectedRevision:Number(current.revision),grants:grantsFor(members)},authority);};
+ await vault.configureAccess(owner,{areaId:area,expectedRevision:shared.accessRevision,grants:grantsFor([{id:a,permissions:['use','edit']},{id:b,permissions:['use','edit']}])},authority);
+ const marker={version:1,areaId:area,backingStoreId:backing,relativePath,kind:'shared',owner:{kind:'organisation',id:org}},path=join(vaultRoot,relativePath),origin=join(originRoot,`${area}.git`);
+ mkdirSync(path,{recursive:true});mkdirSync(originRoot,{recursive:true});
+ const git=(...args)=>execFileSync('git',args,{encoding:'utf8',stdio:['ignore','pipe','ignore']});
+ git('init','--bare','-b','main',origin);git('init','-b','main',path);git('-C',path,'remote','add','origin',origin);
+ writeFileSync(join(path,VAULT_AREA_MARKER),JSON.stringify(marker));git('-C',path,'add','--',VAULT_AREA_MARKER);
+ git('-C',path,'config','user.name','Fixture');git('-C',path,'config','user.email','fixture@example.invalid');
+ git('-C',path,'commit','-qm','initialize fixture');git('-C',path,'push','-q','-u','origin','HEAD');
+ const inventory={version:1,planId:randomUUID(),organisationId:org,provisionerMemberId:owner,backing:{id:backing,kind:'git',root:'/srv'},
+  areas:[{areaId:area,kind:'shared',owner:{kind:'organisation',id:org},relativePath,origin:`/var/lib/lares-vault-git/${area}.git`}]};
+ // Keeper reads this one root-owned file from a fixed path, so the proof maps just that path.
+ const fixed='/srv/lares/installation/vault-storage.json',{readFileSync:read,lstatSync:stat}=fs;
+ fs.readFileSync=function(file,...rest){return file===fixed?JSON.stringify(inventory):read.call(this,file,...rest);};
+ fs.lstatSync=function(file,...rest){return file===fixed?{isFile:()=>true,isSymbolicLink:()=>false,nlink:1,uid:0}:stat.call(this,file,...rest);};
+ syncBuiltinESMExports();
+ process.env.NODE_ENV='test'; // The broker accepts test Vault paths only under this and only below the temp directory.
+ const {serveConsoleVaultBroker}=await import(new URL('../../../services/keeper/lib/vault-console-broker.ts',import.meta.url).href);
+ const uid=process.getuid(),gid=process.getgid();
+ const stopBroker=await serveConsoleVaultBroker(db,keyFile,secrets,runtimeSocket,{consoleSocket,rootUid:uid,socketUid:uid,socketGid:gid,vaultFilesForTests:{root:vaultRoot,originRoot}});
+ return {stopBroker,path,area,configure,git};
+}
 function encrypt(value){const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',Buffer.from(key,'hex'),iv);return Buffer.concat([iv,cipher.update(value),cipher.final(),cipher.getAuthTag()]).toString('base64');}
 function hashOutput(path){const h=createHash('sha256');for(const file of readdirSync(join(path,'.output'),{recursive:true,withFileTypes:true}).filter(d=>d.isFile()).map(d=>join(d.parentPath,d.name)).sort()){h.update(relative(path,file));h.update(readFileSync(file));}return h.digest('hex');}
 function modelSource(role){const source = `
 import {mockModel} from 'eve/evals';
 import {appendFileSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
 ${role==='chief-of-staff'?`import {mountedPersonalSendRuntime} from './personal-send.js';
 mountedPersonalSendRuntime.open=async()=>({adapter:{send:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,'SEND_ACCEPTED\\n');return {state:'accepted',providerReceiptId:'synthetic-message'};}}});
 import {__setTestGmailApiFactory} from './google.js';
@@ -77,15 +118,21 @@ __setTestGmailApiFactory((_config,token)=>{
   if(!member)throw new Error('Unknown synthetic credential');
   return {users:{messages:{list:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,member+'\\n');return {data:{messages:[{id:'proof-message'}]}};},get:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,member+'\\n');return {data:{id:'proof-message',payload:{mimeType:'text/plain',headers:[],body:{data:Buffer.from(member).toString('base64url')}}}};}}}} as never;
 });`:''}
+// The mock's own call ids repeat between sessions; a provider's do not, and approval rows key on them.
+const uniqueCall=()=>'proof-call-'+randomUUID();
 const attacked=new Set<string>();
 const scripted=mockModel(({lastUserMessage,messages,tools,toolResults})=>{
   appendFileSync(process.env.PROOF_MODEL_LOG,JSON.stringify({message:lastUserMessage,messages,tools,toolResults})+'\\n');
   const lastHuman=messages.findLastIndex(message=>message.role==='user'&&message.text===lastUserMessage);
   const currentResults=messages.slice(lastHuman+1).some(message=>message.role==='tool');
-  if(lastUserMessage?.startsWith('SEND ')&&!currentResults)return {toolCalls:[{name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(5))}]};
-  if(lastUserMessage?.startsWith('SEND_ATTACK ')&&!currentResults)return {toolCalls:[{name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(12))}]};
+  if(lastUserMessage?.startsWith('SEND ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(5))}]};
+  if(lastUserMessage?.startsWith('SEND_ATTACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(12))}]};
   if(lastUserMessage?.startsWith('SEND_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(12));return {toolCalls:[{name:'personal_mailbox_send',input},{name:'personal_mailbox_read',input:{selection:input.selection,id:'proof-message'}}]};}
   if(lastUserMessage?.startsWith('MAIL ')&&!toolResults.length)return {toolCalls:[{name:'gmail_read',input:{id:'proof-message',selection:JSON.parse(lastUserMessage.slice(5))}}]};
+  if(lastUserMessage?.startsWith('TRACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'track_create',input:JSON.parse(lastUserMessage.slice(6))}]};
+  if(lastUserMessage?.startsWith('TRACK_COMPANY ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'track_add_item',input:JSON.parse(lastUserMessage.slice(14))}]};
+  if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'track_create',input:JSON.parse(lastUserMessage.slice(13))}]};
+  if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(13));return {toolCalls:[{id:uniqueCall(),name:'track_create',input:{...input,trackId:input.trackId+'-second'}},{id:uniqueCall(),name:'tracks_list',input:{}}]};}
   if(lastUserMessage==='VAULT_READ'&&!currentResults)return {toolCalls:[{name:'agent-kit__vault_read',input:{area:'private',path:'owner.md'}}]};
   if(lastUserMessage?.startsWith('SKILL ')&&!toolResults.length)return {toolCalls:[{name:'load_skill',input:{skill:lastUserMessage.slice(6)}}]};
   if(lastUserMessage==='question')return 'Which topic would you like to discuss?';
@@ -97,14 +144,14 @@ export const gatewayKey=()=>{throw new Error('No live gateway in proof');};
 export const IDENTITY_ENCODING_HEADERS={'Accept-Encoding':'identity'};
 `;return gatewayLane?gatewayModelSource(source):source;}
 async function stop(){if(!child)return;const process=child;child=undefined;if(process.exitCode!==null||process.signalCode!==null)return;try{globalThis.process.kill(-process.pid,'SIGKILL');}catch{try{process.kill('SIGKILL');}catch{}}await new Promise(resolve=>process.once('close',resolve));}
-async function start(app){port=await freePort();child=spawn(app.eve,['start','--host','127.0.0.1','--port',String(port)],{cwd:app.cwd,env:app.env,detached:true,stdio:['ignore','pipe','pipe']});child.stdout.on('data',d=>{logs+=d;});child.stderr.on('data',d=>{logs+=d;});for(let i=0;i<600;i++){if(child.exitCode!==null)throw new Error('Role exited: '+logs.slice(-4000));try{if((await fetch(`http://127.0.0.1:${port}/eve/v1/health`)).ok)return;}catch{}await sleep(100);}throw new Error('Role did not become healthy within60s (pid='+child.pid+', exit='+child.exitCode+', signal='+child.signalCode+'): '+logs.slice(-4000));}
+async function start(app){port=await freePort();child=spawn(app.eve,['start','--host','127.0.0.1','--port',String(port)],{cwd:app.cwd,env:app.env,detached:true,stdio:['ignore','pipe','pipe']});child.stdout.on('data',d=>{logs+=d;});child.stderr.on('data',d=>{logs+=d;});for(let i=0;i<1800;i++){if(child.exitCode!==null)throw new Error('Role exited: '+logs.slice(-4000));try{if((await fetch(`http://127.0.0.1:${port}/eve/v1/health`)).ok)return;}catch{}await sleep(100);}throw new Error('Role did not become healthy within 180s (pid='+child.pid+', exit='+child.exitCode+', signal='+child.signalCode+'): '+logs.slice(-4000));}
 async function makeRole(role){
  logs='';
  const cwd=join(root,'services',role);mkdirSync(join(root,'services'),{recursive:true});
  cpSync(join(repo,'services',role),cwd,{recursive:true,filter:path=>!['node_modules','.output','.eve','tests'].includes(basename(path))});
  symlinkSync(join(repo,'services',role,'node_modules'),join(cwd,'node_modules'));
  const definition=join(root,role+'-definition');mkdirSync(definition);
- const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'},...(withVault?[{capability:'vault',scope:'read',areas:['private']}]:[]),...(withSend?[{capability:'personal_mailbox',scope:'write-with-confirm'}]:[])],autonomy:role==='creative'?{}:{gmail:'autonomous',...(withVault?{vault:'autonomous'}:{}),...(withSend?{personal_mailbox:'autonomous'}:{})},skills:[]};
+ const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'},...(withVault?[{capability:'vault',scope:'read',areas:['private']}]:[]),...(withTracks?[{capability:'vault',scope:'write-with-confirm',areas:['shared']}]:[]),...(withSend?[{capability:'personal_mailbox',scope:'write-with-confirm'}]:[])],autonomy:role==='creative'?{}:{gmail:'autonomous',...(withVault?{vault:'autonomous'}:{}),...(withTracks?{vault:'gated'}:{}),...(withSend?{personal_mailbox:'autonomous'}:{})},skills:[]};
  writeFileSync(join(definition,'agent.json'),JSON.stringify(declaration));writeFileSync(join(definition,'voice.md'),canaries.owner);writeFileSync(join(definition,'duties.md'),canaries.owner);
  const modelLog=join(root,role+'-model.jsonl'),providerLog=join(root,role+'-provider.log');writeFileSync(modelLog,'');writeFileSync(providerLog,'');
  if(gatewayLane){gateway.setRole(role);writeFileSync(modelLog+'.scope','');writeFileSync(modelLog+'.compaction','');if(withBudget)writeFileSync(modelLog+'.budget','');
@@ -112,7 +159,7 @@ async function makeRole(role){
  }
  writeFileSync(join(cwd,'lib/gateway-provider.ts'),modelSource(role));
  const inherited=Object.fromEntries(['PATH','HOME','TMPDIR'].filter(k=>process.env[k]).map(k=>[k,process.env[k]]));
- const env={...inherited,EVE_TELEMETRY_DISABLED:'1',NODE_ENV:'production',EVE_SCHEDULES_LIVE:'0',EGRESS_PROXY_URL:'http://synthetic-proxy.invalid:8888',LARES_AGENT_NAME:declaration.name,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:owner,OWNER_HOME_TZ:'UTC',LARES_DEFINITION_DIR:definition,EVE_ROUTE_PASSWORD_FILE:join(root,'password'),PROOF_MODEL_LOG:modelLog,PROOF_PROVIDER_LOG:providerLog,VAULT_PATH:join(root,'vault'),TOKEN_ENC_KEY_FILE:'/run/secrets/google-token-key',LARES_PERSONAL_GOOGLE_CLIENTS:JSON.stringify({proof:{clientIdFile:'/run/secrets/personal-google-proof-id',clientSecretFile:'/run/secrets/personal-google-proof-secret'}}),NODE_OPTIONS:`--import=${join(root,'mounts.mjs')}`,...(withVault?{CONSOLE_VAULT_SIGNING_KEY_FILE:join(root,'console-vault-key'),LARES_RUNTIME_CONTROL_SECRET_FILE:join(root,'runtime-control-key'),LARES_VAULT_RUNTIME_SOCKET:join(root,'runtime-vault.sock')}:{})};
+ const env={...inherited,EVE_TELEMETRY_DISABLED:'1',NODE_ENV:'production',EVE_SCHEDULES_LIVE:'0',EGRESS_PROXY_URL:'http://synthetic-proxy.invalid:8888',LARES_AGENT_NAME:declaration.name,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:owner,OWNER_HOME_TZ:'UTC',LARES_DEFINITION_DIR:definition,EVE_ROUTE_PASSWORD_FILE:join(root,'password'),PROOF_MODEL_LOG:modelLog,PROOF_PROVIDER_LOG:providerLog,VAULT_PATH:join(root,'vault'),TOKEN_ENC_KEY_FILE:'/run/secrets/google-token-key',LARES_PERSONAL_GOOGLE_CLIENTS:JSON.stringify({proof:{clientIdFile:'/run/secrets/personal-google-proof-id',clientSecretFile:'/run/secrets/personal-google-proof-secret'}}),NODE_OPTIONS:`--import=${join(root,'mounts.mjs')}`,...(withVault?{CONSOLE_VAULT_SIGNING_KEY_FILE:join(root,'console-vault-key')}:{}),...(withVault||withTracks?{LARES_RUNTIME_CONTROL_SECRET_FILE:join(root,'runtime-control-key'),LARES_VAULT_RUNTIME_SOCKET:join(root,'runtime-vault.sock')}:{})};
  const eve=join(cwd,'node_modules/.bin/eve');
  console.log(role+': building actual role with synthetic provider');
  await run(eve,['build'],{cwd,env,timeout:300000});
@@ -185,7 +232,7 @@ async function proveDurableBudget(app){
  for(const scope of selected){
   const ctx={session:{...scope.session,turn:{id:scope.event.data.turnId,sequence:scope.event.data.sequence}}};
   // Confirm fresh authority independently while it is still valid, before revocation tests.
-  if(scope.session.auth.current.attributes.lares_purpose==='resolver')await requirePrivateConsoleResume(ctx,'model',{db,env:app.env});else await requireConsoleTurnAuthority(ctx,db,app.env);
+  if(scope.session.auth.current.attributes.lares_purpose==='resolver')await requireConsoleResume(ctx,'model',{db,env:app.env});else await requireConsoleTurnAuthority(ctx,db,app.env);
   const binding=(await db.query("SELECT id,profile_hash FROM budget_gateway_bindings WHERE agent=$1 AND live_member_id=$2 AND state='active'",[app.name,scope.session.auth.initiator.attributes.lares_member_id])).rows[0];
   const fixture={databaseUrl:container.getConnectionUri(),scope,env:{LARES_AGENT_NAME:app.name,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:owner},request:{bindingId:binding.id,profileHash:binding.profile_hash,requestHash:'b'.repeat(64)}};
   const result=await run(process.execPath,['--import',join(repo,'services/box/node_modules/tsx/dist/loader.mjs'),'--input-type=module','--eval',code],{cwd:join(repo,'services/box'),env:{...process.env,BUDGET_PROOF_FIXTURE:JSON.stringify(fixture)},timeout:15000});
@@ -193,6 +240,92 @@ async function proveDurableBudget(app){
  }
  assert.deepEqual(await rows(),before,'Cold reconstruction changed retained invocation hashes or attempt count');
  console.log(app.name+': actual human and blank approve/cancel preparation, unchanged hashes/count after valid-authority cold replay PASS (preparation only)');
+}
+/** A card that is not personal mail, end to end. Who may answer does not change: only the member who
+ * started that conversation, on the same session and admission, for the exact unexpired card. */
+async function proveTracksCards(app,sa,sb,vault){
+ const file=id=>join(vault.path,`tracks/${id}/track.md`),commits=()=>Number(vault.git('-C',vault.path,'rev-list','--count','HEAD'));
+ const track=(trackId,name=`Track ${trackId}`)=>({trackId,name,purpose:'Open work',steps:['Open','Done'],closingSteps:['Done']});
+ async function card(member,session,input,verb='TRACK'){
+  const transcript=await send(app,member,session,verb+' '+JSON.stringify(input));
+  const row=(await db.query("SELECT * FROM approval_asks WHERE session_id=$1 AND tool='track_create' AND outcome IS NULL ORDER BY asked_at DESC LIMIT 1",[session.id])).rows[0];
+  assert.ok(row?.request_id,'Card was never reserved: '+transcript);assert.ok(transcript.includes('input.requested'),'No card reached the member');
+  return row;
+ }
+ const post=(member,session,row,option)=>request(app,member,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId:row.request_id??row,optionId:option}]},session.cookie);
+ async function answer(member,session,row,option='approve'){const response=await post(member,session,row,option);assert.ok(response.ok,'exact answer '+response.status+' '+await response.clone().text());return stream(app,member,session);}
+ const ask=async row=>(await db.query('SELECT outcome,resolved_by_member_id,used_at,use_count FROM approval_asks WHERE call_id=$1',[row.call_id])).rows[0];
+ // Straight to the role, as a holder of the route password would be: the console's own checks are out of the way.
+ const direct=(memberId,admission,sessionId,requestId)=>fetch(`http://127.0.0.1:${port}/eve/v1/session/${sessionId}`,{method:'POST',headers:{authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),'content-type':'application/json','x-lares-member-id':memberId,'x-lares-admission':admission,'x-lares-purpose':'resolver'},body:JSON.stringify({inputResponses:[{requestId,optionId:'approve'}]})});
+ const nonce=async session=>(await db.query('SELECT admission_nonce FROM console_session_bindings WHERE session_id=$1',[session.id])).rows[0].admission_nonce;
+
+ // Cancelled: nothing written, and the conversation carries on.
+ const cancelled=await card(a,sa,track('cancelled-one'));
+ const afterCancel=await answer(a,sa,cancelled,'cancel');assert.ok(afterCancel.includes('ANSWER'),afterCancel);
+ assert.equal((await ask(cancelled)).outcome,'cancelled');assert.equal(existsSync(file('cancelled-one')),false);
+ assert.equal((await post(a,sa,cancelled,'approve')).ok,false,'A cancelled card was approved afterwards');
+
+ // Nobody else can answer, and the refusals happen before the model or the Vault.
+ const pending=await card(a,sa,track('member-a-track'));
+ const nonceA=await nonce(sa),nonceB=await nonce(sb),beforeWrong=models(app).length,commitsBefore=commits();
+ for(const [member,session,requestId]of [[b,sa,pending.request_id],[a,sb,pending.request_id],[a,sa,'forged-request'],[outsider,sa,pending.request_id]]){
+  const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId,optionId:'approve'}]},session.cookie);
+  assert.equal(response.ok,false,'Wrong member, session or request reached the runtime');
+ }
+ for(const [memberId,admission,sessionId]of [[b,nonceA,sa.id],[b,nonceB,sa.id],[a,'z'.repeat(43),sa.id],[a,nonceA,sb.id],[b,nonceB,sb.id]]){
+  assert.equal((await direct(memberId,admission,sessionId,pending.request_id)).status,401,'The role admitted an answer from outside the conversation');
+ }
+ assert.equal(models(app).length,beforeWrong);assert.equal(commits(),commitsBefore);assert.equal((await ask(pending)).outcome,null);
+
+ // The member who started it can answer, across a cold restart of the runtime.
+ await stop();await start(app);
+ const approved=await answer(a,sa,pending);
+ assert.ok(approved.includes('ANSWER'),approved);assert.ok(models(app).length>beforeWrong,'The approved call must continue to the model');
+ assert.match(readFileSync(file('member-a-track'),'utf8'),/name: Track member-a-track/);assert.equal(commits(),commitsBefore+1);
+ assert.deepEqual({...await ask(pending),used_at:undefined},{outcome:'approved',resolved_by_member_id:a,used_at:undefined,use_count:1});
+ assert.equal((await post(a,sa,pending,'approve')).ok,false,'A spent card was answered again');assert.equal(commits(),commitsBefore+1);
+
+ // After approval the model gets one exact write: no second write and no new read.
+ const attack=await card(a,sa,track('attack-one'),'TRACK_ATTACK');const beforeAttack=readFileSync(app.providerLog,'utf8');
+ const attacked=await answer(a,sa,attack);assert.ok(attacked.includes('ANSWER'),attacked);
+ assert.equal(existsSync(file('attack-one')),true);assert.equal(existsSync(file('attack-one-second')),false,'The approval resume wrote a second track');
+ assert.equal((await db.query("SELECT count(*)::int n FROM approval_asks WHERE tool='track_create' AND payload_hash IS NOT NULL AND original_authority#>>'{target,id}'=$1",['tracks/attack-one-second/track.md'])).rows[0].n,0,'The approval resume raised a new card');
+ const last=models(app).at(-1);assert.ok(!JSON.stringify(last.toolResults).includes('type: track'),'The approval resume read a track file');
+ assert.equal(readFileSync(app.providerLog,'utf8'),beforeAttack);
+
+ // The second member works alone in their own conversation, and content cannot change under a card.
+ const held=await card(a,sa,track('shared-name','From member A'));
+ const ownB=await card(b,sb,track('shared-name','From member B'));
+ assert.equal((await post(a,sa,ownB,'approve')).ok,false);assert.equal(existsSync(file('shared-name')),false);
+ await answer(b,sb,ownB);assert.deepEqual((await ask(ownB)).resolved_by_member_id,b);assert.match(readFileSync(file('shared-name'),'utf8'),/From member B/);
+ const changed=await answer(a,sa,held);assert.ok(changed.includes('ANSWER'),changed);
+ assert.match(readFileSync(file('shared-name'),'utf8'),/From member B/);assert.doesNotMatch(readFileSync(file('shared-name'),'utf8'),/From member A/);
+ assert.equal((await ask(held)).use_count,0,'A changed target spent the approval');
+
+ // A company CRM track is the designated owner's alone: a member gets a refusal, with no card or CRM read.
+ const company=await send(app,a,sa,'TRACK_COMPANY '+JSON.stringify({home:'twenty',trackId:'sales',who:{personId:'person-1'},step:'Open',note:'n',sourceSignal:'s'}));
+ assert.ok(company.includes('ANSWER'),company);assert.equal((await db.query("SELECT count(*)::int n FROM approval_asks WHERE tool='track_add_item'")).rows[0].n,0,'A member raised a company CRM card');
+
+ // An expired card refuses an approval and can still be cancelled.
+ const stale=await card(a,sa,track('stale-one'));const row=(await db.query('SELECT * FROM approval_asks WHERE call_id=$1',[stale.call_id])).rows[0];
+ await db.query('DELETE FROM approval_asks WHERE call_id=$1',[stale.call_id]);
+ await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,session_id,asked_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()-interval '25 hours')`,[row.call_id,row.request_id,row.agent,row.tool,row.payload_hash,row.original_authority,row.acting_member_id,row.session_id]);
+ assert.equal((await post(a,sa,stale,'approve')).ok,false,'An expired card was approved');await answer(a,sa,stale,'cancel');assert.equal(existsSync(file('stale-one')),false);
+
+ console.log('chief-of-staff: Tracks card approve/cancel/replay/cold-restart, two members, changed content, expiry and no new reads PASS (real Keeper broker and Git Vault)');
+}
+/** Last, because changing an area's access retires every conversation that holds it as a source. */
+async function proveTrackEditWithdrawn(app,vault){
+ const trackId='no-edit-one',file=join(vault.path,`tracks/${trackId}/track.md`);
+ const session=await create(app,a,'Before edit is withdrawn');await stream(app,a,session);
+ await send(app,a,session,'TRACK '+JSON.stringify({trackId,name:'No edit',purpose:'Open work',steps:['Open','Done'],closingSteps:['Done']}));
+ const row=(await db.query("SELECT request_id,call_id FROM approval_asks WHERE session_id=$1 AND tool='track_create'",[session.id])).rows[0];assert.ok(row?.request_id);
+ await vault.configure([{id:a,permissions:['use']},{id:b,permissions:['use','edit']}]);
+ const before=models(app).length,response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId:row.request_id,optionId:'approve'}]},session.cookie);
+ assert.equal(response.ok,false,'A card raised under edit rights was still answered after they were withdrawn');assert.equal(models(app).length,before);
+ assert.equal(existsSync(file),false);assert.equal((await db.query('SELECT use_count FROM approval_asks WHERE call_id=$1',[row.call_id])).rows[0].use_count,0);
+ await vault.configure([{id:a,permissions:['use','edit']},{id:b,permissions:['use','edit']}]);
+ console.log('chief-of-staff: withdrawn edit refuses the pending card before the runtime PASS (Keeper rechecks at write: its own suite)');
 }
 function assertGatewayScopes(app){
   gateway.assertHealthy();
@@ -256,6 +389,7 @@ try{
  await db.query("INSERT INTO users(id,display_name,org_id,org_role) VALUES($1,'Owner','proof-org','owner'),($2,'A','proof-org','member'),($3,'B','proof-org','member'),($4,'Ungrant','proof-org','member')",[owner,a,b,outsider]);
  await db.query('INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES($1,NULL)',[owner]);
  const memberStore=new PgMemberStore(db);for(const id of [a,b])await db.query('INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES($1,NULL)',[id]);
+ if(withTracks)trackVault=await startTrackVault();
  for(const id of [owner,a,b,outsider]){await db.query('INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,\'https://identity.example.invalid\',$1,\'\')',[id]);const session=await memberStore.createSession({identity:{issuer:'https://identity.example.invalid',subject:id},verifiedAt:new Date()},new Date(Date.now()+3600000));members.set(id,session.token);}
  const accounts=new PgAccountStore(db);const selections=new Map();const adapter=accounts.forTrustedAdapter({connectorId:'google',verifyAccount:async evidence=>({issuer:'https://accounts.google.com',subject:evidence,label:'Personal mailbox'}),verifyResource:async(account)=>({resourceKind:'mailbox',externalId:account.providerAccount.subject,providerLabel:'Inbox'})});
  for(const id of [a,b]){const account=await adapter.createPersonalAccount(id,id,{persist:async client=>{const result=await client.query("INSERT INTO oauth_tokens(principal,provider,org_id,email_address,scopes,refresh_token_enc) VALUES($1,'google','proof','proof@example.invalid',ARRAY['openid','https://www.googleapis.com/auth/gmail.readonly','https://www.googleapis.com/auth/calendar.readonly','https://www.googleapis.com/auth/gmail.send'],$2) RETURNING id",[id,encrypt('refresh-'+id)]);return result.rows[0].id;}},['mailbox']);const [resource]=await accounts.listResources(id,account.id,account.generation);selections.set(id,{accountId:account.id,generation:account.generation,resourceBindingId:resource.id});}
@@ -279,6 +413,7 @@ try{
   if(withVault){const vaultSession=await create(app,a,'Vault custody seam');await stream(app,a,vaultSession);const startIndex=vaultCalls.length,transcript=await send(app,a,vaultSession,'VAULT_READ'),events=transcript.split('\n').filter(Boolean).map(JSON.parse),started=events.find(event=>event.type==='turn.started');assert.ok(started,'Actual Eve turn.started event');assert.ok(transcript.includes('VAULT_PRIVATE_CANARY'),'Actual tool context returned the bounded broker read');const chain=vaultCalls.slice(startIndex);assert.deepEqual(chain.map(call=>call.op),['challenge','request.admit','turn.open','vault.read','turn.close']);const opened=chain.find(call=>call.op==='turn.open').body.input,read=chain.find(call=>call.op==='vault.read').body.input,admitted=chain.find(call=>call.op==='request.admit').body.input,capsule=JSON.parse(Buffer.from(admitted.capsule.split('.')[0],'base64url').toString('utf8'));assert.equal(opened.sessionId,vaultSession.id);assert.equal(opened.turnId,started.data.turnId);assert.equal(opened.sequence,started.data.sequence);assert.equal(read.turnId,started.data.turnId);assert.equal(read.sequence,started.data.sequence);assert.equal(admitted.receipt.method,'POST');assert.equal(admitted.receipt.path,`/eve/v1/session/${vaultSession.id}`);assert.equal(admitted.receipt.rawBodyHash,capsule.rawBodyHash);assert.equal(capsule.member,a);assert.equal(capsule.purpose,'human');console.log('chief-of-staff: actual compiled HTTP Request → signed exact receipt → Eve auth clone/turn.started → real tool context → bounded broker read PASS (recording broker fixture)');}
   if(role==='chief-of-staff'){const mailA=await send(app,a,sa,'MAIL '+JSON.stringify(selections.get(a)));const mailB=await send(app,b,sb,'MAIL '+JSON.stringify(selections.get(b)));assert.ok(mailA.includes('MEMBER_A_MAIL_CANARY'));assert.ok(!mailA.includes('MEMBER_B_MAIL_CANARY'));assert.ok(mailB.includes('MEMBER_B_MAIL_CANARY'));}
   if(role==='creative')for(const skill of ['private-owner-skill','/vault/owner.md','../../agent/voice.md']){const result=await send(app,a,sa,'SKILL '+skill);assert.ok(result.includes('No skill named'),result);assert.ok(!result.includes(canaries.owner));}
+  if(role==='chief-of-staff'&&withTracks)await proveTracksCards(app,sa,sb,trackVault);
   if(role==='chief-of-staff'&&withSend){
     const sendCount=()=>readFileSync(app.providerLog,'utf8').split('\n').filter(line=>line==='SEND_ACCEPTED').length;
     const input={selection:selections.get(a),to:['recipient@example.invalid','second@example.invalid'],subject:'Exact own mail',body:'Whole plaintext body\nSecond line'};
@@ -321,13 +456,14 @@ try{
     await answer(sa,expired,'cancel');
     console.log('chief-of-staff: exact prepare/approve/cancel/replay/cold-restart and second-call refusal PASS');
   }
-  const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['ask_question','load_skill','todo']:['ask_question','gmail_accounts','gmail_read','gmail_search','todo',...(withSend?['personal_mailbox_accounts','personal_mailbox_list','personal_mailbox_read','personal_mailbox_send']:[]),...(withVault?['agent-kit__vault_list','agent-kit__vault_read']:[])].sort());assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
+  const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['ask_question','lares_read_public_doc','load_skill','todo']:['ask_question','gmail_accounts','gmail_read','gmail_search','lares_read_public_doc','load_skill','todo',...(withSend?['personal_mailbox_accounts','personal_mailbox_list','personal_mailbox_read','personal_mailbox_send']:[]),...(withVault?['agent-kit__vault_list','agent-kit__vault_read']:[]),...(withTracks?['tracks_list','track_items','track_add_item','track_move_item','track_create','track_set_steps']:[])].sort());assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
   const beforeCold=gatewayLane?readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(s=>s.session.id===sa.id):[];
   await stop();await start(app);assert.equal(hashOutput(app.cwd),outputHash);assert.ok((await send(app,a,sa,'After cold restart')).includes('ANSWER'));
   if(gatewayLane){const after=readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(s=>s.session.id===sa.id);assert.ok(after.at(-1).event.data.sequence>Math.max(...beforeCold.map(s=>s.event.data.sequence)),'Cold fresh human turn reused previous sequence');assert.ok(after.at(-1).event.data.turnId,'Cold fresh human turn did not retain actual nonempty turn');}
 
   if(gatewayLane)await proveGatewayInvocation(app);
   if(withBudget)await proveDurableBudget(app);
+  if(withTracks)await proveTrackEditWithdrawn(app,trackVault);
   const current=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:current.accessRevision,grants:[{principal:{kind:'member',id:b},permission:'use',expiresAt:null}]});await denyOld(app,a,sa);
   const revoked=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:revoked.accessRevision,grants:[a,b].map(id=>({principal:{kind:'member',id},permission:'use',expiresAt:null}))});await denyOld(app,a,sa);await denyOld(app,b,sb);
   const fresh=await create(app,a,'New empty private context');await stream(app,a,fresh);assert.ok(!JSON.stringify(models(app).at(-1)).includes(canaries.a));
@@ -352,4 +488,4 @@ try{
 }catch(error){writeFileSync(join(root,'server.log'),logs);console.error(logs.slice(-6000));throw error;}finally{await stop();
  // Eve's session sandboxes outlive its server. Remove only exact synthetic session labels.
  for(const id of ownedSessionIds){try{const ids=execFileSync('docker',['ps','-aq','--filter','label=eve.sandbox=1','--filter',`label=eve.sandbox.tag.sessionId=${id}`],{encoding:'utf8'}).trim().split('\n').filter(Boolean);if(ids.length){assert.ok(ids.every(value=>/^[a-f0-9]{12,64}$/.test(value)));execFileSync('docker',['rm','-f',...ids],{stdio:'ignore'});}}catch{console.warn('Synthetic sandbox cleanup needs attention for '+id);}}
- await Promise.all(vaultServers.map(server=>new Promise(resolve=>{const timeout=setTimeout(()=>{server.closeAllConnections?.();resolve();},1000);server.close(()=>{clearTimeout(timeout);resolve();});})));await gateway?.close();await db?.end();await container?.stop();if(withVault)writeFileSync(join(root,'vault-wire.json'),JSON.stringify({vaultWire,vaultCalls},null,2));if(process.env.PRIVATE_CHAT_PROOF_KEEP)console.log('Kept synthetic fixture: '+root);else rmSync(root,{recursive:true,force:true});}
+ await Promise.all(vaultServers.map(server=>new Promise(resolve=>{const timeout=setTimeout(()=>{server.closeAllConnections?.();resolve();},1000);server.close(()=>{clearTimeout(timeout);resolve();});})));await gateway?.close();await trackVault?.stopBroker();await db?.end();await container?.stop();if(withVault)writeFileSync(join(root,'vault-wire.json'),JSON.stringify({vaultWire,vaultCalls},null,2));if(process.env.PRIVATE_CHAT_PROOF_KEEP)console.log('Kept synthetic fixture: '+root);else rmSync(root,{recursive:true,force:true});}

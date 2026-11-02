@@ -2,7 +2,7 @@ import { modelPurposeRequest } from '@lares/agent-kit/model-purpose-client';
 import { requestAndAttachModelPurposeClaim, type ModelInvocation } from '@lares/agent-kit/model-invocation';
 import { consoleAdmission, type ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
-import { privateResolverAdmission } from '@lares/agent-kit/private-console-resume';
+import { exactResolverAdmission, privateResumeAdmission } from '@lares/agent-kit/private-console-resume';
 
 type Point = Readonly<{ sessionId: string; turnId: string; sequence: number; incarnation: string }>;
 type ResumeBinding = Readonly<{
@@ -107,9 +107,11 @@ function pointFrom(event: unknown, session: Session | undefined, incarnation: st
 }
 
 function resumeBinding(session: Session | undefined, receipt: string): ResumeBinding {
-  const resolver = privateResolverAdmission(session?.auth?.current);
+  const resolver = privateResumeAdmission(session?.auth?.current);
   const initial = consoleAdmission(session?.auth?.initiator);
   if (!resolver || !initial || initial.purpose !== 'human' || resolver.memberId !== initial.memberId) throw deny();
+  const exact = exactResolverAdmission(session?.auth?.current);
+  if (exact && exact.admissionNonce !== initial.admissionNonce) throw deny();
   return Object.freeze({ resolverMemberId: resolver.memberId, requestId: resolver.requestId, optionId: resolver.optionId,
     initiatorMemberId: initial.memberId, admissionNonce: initial.admissionNonce, receipt });
 }
@@ -129,7 +131,7 @@ export function prepareModelPurposeInvocation(event: unknown, session: Session |
   const pending = pendingFrom(current);
   if (!pending.required && !pending.receipt) return;
   if (!pending.receipt) throw deny();
-  if (!privateResolverAdmission(current)) return; // Human turns are opened by turn.started.
+  if (!privateResumeAdmission(current)) return; // Human turns are opened by turn.started.
   const binding = resumeBinding(session, pending.receipt);
   const own = managedIdentity(process.env);
   if (!own) throw deny();
@@ -216,7 +218,7 @@ export async function claimModelPurposeForInvocation(invocation: ModelInvocation
   };
   const id = key(point), entry = entries.get(id);
   if (!entry?.active || entry.expiresAt <= Date.now()) throw deny();
-  const resolver = privateResolverAdmission(current);
+  const resolver = privateResumeAdmission(current);
   if (resolver) {
     const binding = resumeBinding(invocation.session, pending.receipt);
     if (!sameResumeBinding(entry.resume, binding)) throw deny();

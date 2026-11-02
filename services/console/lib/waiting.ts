@@ -647,9 +647,6 @@ const approvals: WaitingSource = {
         };
       }
     }
-    if (approved && conversation.door !== "slack" && conversation.door !== "telegram") {
-      return {ok:false,reason:"action-failed",message:"Your approval arrived, but this conversation cannot resume the original action authority yet. Nothing is confirmed as carried out."};
-    }
     if (approved) {
       return { ok: true, outcome: "approved", message: APPROVED_PENDING };
     }

@@ -6,7 +6,7 @@ const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),resume:vi.fn(),docsRead
 vi.mock('../src/console-turn-authority.js',async original=>({...await original<typeof import('../src/console-turn-authority.js')>(),requireConsoleSessionBinding:fake.binding,guardConsoleToolContext:fake.turn}));
 vi.mock('../src/private-console-resume.js',async original=>({...await original<typeof import('../src/private-console-resume.js')>(),
  privateResolverAdmission:(auth:any)=>auth?.attributes?.lares_purpose==='resolver'?{memberId:auth.attributes.lares_resolver_member_id,requestId:auth.attributes.lares_resume_request_id,optionId:auth.attributes.lares_resume_option}:undefined,
- requirePrivateConsoleResume:fake.resume}));
+ requirePrivateConsoleResume:fake.resume,requireConsoleResume:fake.resume}));
 vi.mock('@lares/agent-kit/public-docs-runtime',()=>({publicDocsIndex:fake.docsIndex,readBakedPublicDoc:fake.docsRead}));
 vi.mock('../src/catalogue.js',()=>({grantedToolNames:()=>fake.granted}));
 vi.mock('../src/outside-connections.js',()=>({checkedOutsideConnections:fake.outside,descriptionChecks:vi.fn()}));
