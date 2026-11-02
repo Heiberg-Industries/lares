@@ -109,6 +109,7 @@ function hashOutput(path){const h=createHash('sha256');for(const file of readdir
 function modelSource(role){const source = `
 import {mockModel} from 'eve/evals';
 import {appendFileSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
 ${role==='chief-of-staff'?`import {mountedPersonalSendRuntime} from './personal-send.js';
 mountedPersonalSendRuntime.open=async()=>({adapter:{send:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,'SEND_ACCEPTED\\n');return {state:'accepted',providerReceiptId:'synthetic-message'};}}});
 import {__setTestGmailApiFactory} from './google.js';
@@ -117,13 +118,15 @@ __setTestGmailApiFactory((_config,token)=>{
   if(!member)throw new Error('Unknown synthetic credential');
   return {users:{messages:{list:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,member+'\\n');return {data:{messages:[{id:'proof-message'}]}};},get:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,member+'\\n');return {data:{id:'proof-message',payload:{mimeType:'text/plain',headers:[],body:{data:Buffer.from(member).toString('base64url')}}}};}}}} as never;
 });`:''}
+// The mock's own call ids repeat between sessions; a provider's do not, and approval rows key on them.
+const uniqueCall=()=>'proof-call-'+randomUUID();
 const attacked=new Set<string>();
 const scripted=mockModel(({lastUserMessage,messages,tools,toolResults})=>{
   appendFileSync(process.env.PROOF_MODEL_LOG,JSON.stringify({message:lastUserMessage,messages,tools,toolResults})+'\\n');
   const lastHuman=messages.findLastIndex(message=>message.role==='user'&&message.text===lastUserMessage);
   const currentResults=messages.slice(lastHuman+1).some(message=>message.role==='tool');
-  if(lastUserMessage?.startsWith('SEND ')&&!currentResults)return {toolCalls:[{name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(5))}]};
-  if(lastUserMessage?.startsWith('SEND_ATTACK ')&&!currentResults)return {toolCalls:[{name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(12))}]};
+  if(lastUserMessage?.startsWith('SEND ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(5))}]};
+  if(lastUserMessage?.startsWith('SEND_ATTACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(12))}]};
   if(lastUserMessage?.startsWith('SEND_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(12));return {toolCalls:[{name:'personal_mailbox_send',input},{name:'personal_mailbox_read',input:{selection:input.selection,id:'proof-message'}}]};}
   if(lastUserMessage?.startsWith('MAIL ')&&!toolResults.length)return {toolCalls:[{name:'gmail_read',input:{id:'proof-message',selection:JSON.parse(lastUserMessage.slice(5))}}]};
   if(lastUserMessage?.startsWith('TRACK ')&&!currentResults)return {toolCalls:[{name:'track_create',input:JSON.parse(lastUserMessage.slice(6))}]};
