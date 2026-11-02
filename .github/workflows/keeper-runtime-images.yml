@@ -13,12 +13,82 @@ on:
         description: Public docs identity (candidate, or the exact release ID whose source is this ref)
         type: string
         default: candidate
+      real_install_only:
+        description: Run only the real install proof, to work on it without the other jobs
+        type: boolean
+        default: false
 permissions: {contents: read, packages: write}
 env:
   EVE_TELEMETRY_DISABLED: "1"
 jobs:
-  runtime:
+  real-install:
     if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PUBLIC_DOCS_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.docs_release || 'candidate' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable corepack and prepare pnpm 9.15.0
+        run: corepack enable && corepack prepare pnpm@9.15.0 --activate
+      - name: Setup Node 24 + pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+      - name: Install the docs exporter
+        run: pnpm install --frozen-lockfile --filter lares
+      - name: Export and stage the verified public docs corpus
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          export_dir="$RUNNER_TEMP/public-docs-corpus"
+          node --import tsx scripts/public-docs.ts export --root "$GITHUB_WORKSPACE" --release "$PUBLIC_DOCS_RELEASE" --out "$export_dir" > "$RUNNER_TEMP/public-docs-identity.json"
+          mkdir -p .public-docs-bake
+          cp -R "$export_dir" .public-docs-bake/snapshot
+          cp "$RUNNER_TEMP/public-docs-identity.json" .public-docs-bake/identity.json
+          expected_hash="$(node -e 'const i=JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if(i.sourceCommit!==process.argv[2]||i.release!==process.argv[3]) process.exit(1); process.stdout.write(i.corpusSha256)' "$RUNNER_TEMP/public-docs-identity.json" "$GITHUB_SHA" "$PUBLIC_DOCS_RELEASE")"
+          node --import tsx scripts/public-docs.ts verify --snapshot "$GITHUB_WORKSPACE/.public-docs-bake/snapshot" --expected-corpus "$expected_hash"
+      - name: Install the browser that plays the owner
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/playwright"
+          npm install --prefix "$RUNNER_TEMP/playwright" --no-audit --no-fund playwright@1.64.1
+          (cd "$RUNNER_TEMP/playwright" && sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH" npx playwright install --with-deps chromium)
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: services/keeper/Dockerfile, pull: true, load: true, tags: 'lares-keeper:test', cache-from: 'type=gha,scope=real-install-keeper', cache-to: 'type=gha,mode=min,scope=real-install-keeper'}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: images/egress-proxy/Dockerfile, pull: true, load: true, tags: 'lares-squid:test'}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: images/firewall-helper/Dockerfile, pull: true, load: true, tags: 'lares-nft:test'}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: services/console/Dockerfile, pull: true, load: true, tags: 'lares-console:test', cache-from: 'type=gha,scope=real-install-console', cache-to: 'type=gha,mode=min,scope=real-install-console'}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: services/chief-of-staff/Dockerfile, target: runtime, pull: true, load: true, tags: 'lares-chief:test', cache-from: 'type=gha,scope=real-install-chief', cache-to: 'type=gha,mode=min,scope=real-install-chief'}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: services/creative/Dockerfile, target: runtime, pull: true, load: true, tags: 'lares-creative:test', cache-from: 'type=gha,scope=real-install-creative', cache-to: 'type=gha,mode=min,scope=real-install-creative'}
+      - name: Install the real path on this server and use it
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
+          PLAYWRIGHT_DIR: ${{ runner.temp }}/playwright
+        run: |
+          set -euo pipefail
+          df -h /
+          free -m
+          sudo env "PATH=$PATH" GITHUB_ACTIONS=true "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH" "PLAYWRIGHT_DIR=$PLAYWRIGHT_DIR" \
+            python3 -B services/box/tests/real-install-image.probe.py \
+            lares-keeper:test lares-squid:test lares-nft:test lares-console:test lares-chief:test lares-creative:test "$GITHUB_SHA" "$RUNNER_TEMP/real-install-proof/proof.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-install-proof
+          path: ${{ runner.temp }}/real-install-proof
+          if-no-files-found: error
+  runtime:
+    if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only }}
     runs-on: ubuntu-latest
     env:
       PUBLIC_DOCS_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.docs_release || 'candidate' }}
@@ -170,7 +240,7 @@ jobs:
           tags: ghcr.io/heiberg-industries/lares-engine-${{ matrix.role }}-runtime:sha-${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares
   keeper:
-    if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
