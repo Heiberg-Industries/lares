@@ -586,7 +586,7 @@ it('resumes the real outside tool after original turn closure exactly once under
 it.each(['rejection','different-responder','changed-payload','changed-member','changed-session','revocation','expiry','human-resume'])(
  'outside tool refuses %s before custody/provider',async(kind)=>{
  const f=await exactOutsideFixture({answer:kind!=='rejection'&&kind!=='different-responder'});
- let ctx=f.resumed,input=f.input;
+ let ctx:any=f.resumed,input=f.input;
  if(kind==='rejection')await makeApprovalRecord()['input.resolved']({data:{resolutions:[{kind:'tool-approval',requestId:f.response.request.requestId,outcome:'denied'}]}},f.resumed as never);
  if(kind==='different-responder'){
   await expect(f.tool.approval.response({...f.response,responder:{...memberAuth('resolver'),attributes:{...memberAuth('resolver').attributes,lares_member_id:'member-backup'}}})).rejects.toThrow();
