@@ -242,10 +242,16 @@ def bridge_address(container: str) -> str:
 
 
 def write_hosts(fake_ip: str) -> None:
-    lines = [f"{host_address()} {DOMAIN}", f"{REGISTRY_ADDRESS} ghcr.io"]
-    lines += [f"{fake_ip} {host}" for host in FAKE_HOSTS]
-    with open("/etc/hosts", "a", encoding="utf-8") as hosts:
-        hosts.write("\n".join(lines) + "\n")
+    """Replaces any line naming these hosts: a hosted runner can already pin some of them."""
+    wanted = {DOMAIN: host_address(), "ghcr.io": REGISTRY_ADDRESS, **{host: fake_ip for host in FAKE_HOSTS}}
+    path = pathlib.Path("/etc/hosts")
+    kept = [line for line in path.read_text().splitlines() if not set(line.split("#")[0].split()[1:]) & set(wanted)]
+    path.write_text("\n".join(kept + [f"{address} {host}" for host, address in wanted.items()]) + "\n")
+    # A push must never reach the real registry, so check before the first one.
+    for host, address in wanted.items():
+        found = output("getent", "ahostsv4", host).split()[0]
+        if found != address:
+            raise RuntimeError(f"{host} resolves to {found}, not {address}")
 
 
 class WorldConnector(threading.Thread):
