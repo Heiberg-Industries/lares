@@ -352,10 +352,11 @@ def read_only_query(sql: str, release: dict) -> str:
 
 def diagnostics(fixture: pathlib.Path | None) -> None:
     print("\n=== diagnostics ===", flush=True)
+    run("docker", "info", "--format", "{{.ServerVersion}} {{.Driver}} {{.DriverStatus}}", check=False)
     run("docker", "ps", "-a", "--format", "table {{.Names}}\t{{.Status}}\t{{.Image}}", check=False)
     names = run("docker", "ps", "-a", "--format", "{{.Names}}", check=False, show=False).stdout.split()
     for name in names:
-        if "registry" in name:
+        if "buildkit" in name:
             continue
         print(f"\n--- logs: {name} ---", flush=True)
         logs = run("docker", "logs", "--tail", "120", name, check=False, show=False)
