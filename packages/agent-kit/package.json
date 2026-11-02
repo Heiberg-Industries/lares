@@ -165,7 +165,7 @@
     "jszip": "^3.10.2",
     "mammoth": "^1.13.0",
     "pg": "^8.23.1",
-    "undici": "^8.11.2",
+    "undici": "^8.12.3",
     "zod": "4.5.4"
   },
   "devDependencies": {
