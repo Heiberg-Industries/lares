@@ -90,8 +90,10 @@ retains that descriptor for the writer lifetime after the acquisition child exit
 A competing writer refuses immediately. There is no PID file, TTL, lock stealing
 or expiring lease. Closing an active operation refuses. Normal keeper shutdown
 stops new financial operations, drains the current owner and appends/fsyncs a clean
-writer-close before releasing custody. A crash leaves an unclean writer; a
-subsequent prepared open durably freezes it before any result can resume.
+writer-close before releasing custody. It does this before closing its database pools,
+so a database that has already gone cannot delay it. Those pools tolerate dropped
+connections, so a database restart does not end the process. A crash leaves an unclean
+writer; a subsequent prepared open durably freezes it before any result can resume.
 
 Each canonical JSON line has a version, sequence, operation UUID, previous digest,
 strict record body and SHA256 integrity digest. Records are at most 65,536 bytes;
@@ -129,8 +131,8 @@ unfinished.
 A fresh cluster, changed database, mismatched row or checkpoint, or unclean journal
 durably freezes custody. So does a missing or ambiguous observation, except during
 Keeper startup: no operation has run then, so a database that does not answer proves
-nothing and the start simply fails without a record. An answer that is wrong still
-freezes. Matching later database state never clears a freeze. No database epoch is
+nothing and the start simply fails without a record. An answer that is wrong, or a
+database with no ledger tables, still freezes. Matching later database state never clears a freeze. No database epoch is
 used as a recovery witness.
 
 An older copy of the same database lacks later checkpoints and rows, so it is refused

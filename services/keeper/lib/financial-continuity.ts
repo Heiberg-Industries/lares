@@ -70,8 +70,17 @@ async function observeFinancialProjection(db:SourceDatabase,projection:Financial
 }
 /** The database did not answer, which is a different fact from answering wrongly. */
 export class FinancialObservationUnavailable extends Error {}
+/** A missing ledger table or column is an answer: this database cannot hold the ledger.
+ * A freeze cannot be undone, so every other failure counts as silence and is retried. */
 function answering(db:SourceDatabase):SourceDatabase {
-  return {query:async(sql,values)=>{try{return await db.query(sql,values);}catch{throw new FinancialObservationUnavailable('Financial observation unavailable');}}};
+  return {query:async(sql,values)=>{
+    try{return await db.query(sql,values);}
+    catch(error){
+      const code=error&&typeof error==='object'?(error as {code?:unknown}).code:undefined;
+      if(code==='42P01'||code==='42703')throw error;
+      throw new FinancialObservationUnavailable('Financial observation unavailable');
+    }
+  }};
 }
 export async function verifyFinancialContinuity(journal:HostFinancialJournal,db:SourceDatabase,proposed=false):Promise<void>{
   try{
@@ -93,7 +102,7 @@ export async function openFinancialJournalForKeeper(directory:string,pool:Pick<S
     // Keep protected ownership through the full check, then publish writer ownership
     // before any host action or listener can reach the journal.
     if(!journal.isFrozen){
-      const db=await pool.connect();
+      const db=await pool.connect().catch(()=>{throw new FinancialObservationUnavailable('Financial observation unavailable');});
       try{await verifyFinancialContinuity(journal,db);}
       catch(error){if(error instanceof FinancialObservationUnavailable)throw error;}
       finally{db.release();}

@@ -96,10 +96,15 @@ it('a database that cannot answer at startup writes nothing, opens no writer and
   expect(records(directory)).toEqual(before);
   const next=startupOpen(directory);await expect(verifyFinancialContinuity(next,projectionDb())).resolves.toBeUndefined();next.acquireWriterLease();
 });
-it('a wrong answer at startup still freezes: only silence is retried',async()=>{
+it('a malformed answer at startup still freezes: only silence is retried',async()=>{
   const directory=prepared(),j=startupOpen(directory);
   await expect(verifyFinancialContinuity(j,{query:async()=>({rows:[]})})).rejects.toThrow('recovery');
   expect(j.isFrozen).toBe(true);expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'uncertain'});
+});
+it('a missing ledger table at startup is an answer, not silence',async()=>{
+  const directory=prepared(),j=startupOpen(directory);
+  await expect(verifyFinancialContinuity(j,{query:async()=>{throw Object.assign(new Error('relation does not exist'),{code:'42P01'});}})).rejects.toThrow('recovery');
+  expect(j.isFrozen).toBe(true);expect(records(directory).at(-1)?.kind).toBe('freeze');
 });
 it('resumes after a database restart when identity and the complete ledger match, adding no record of its own',async()=>{
   const directory=prepared(),j=open(directory),checkpoints:FinancialCheckpoint[]=[],rows=[accountRow(account(uuid(41)))];
@@ -172,7 +177,7 @@ it('keeper startup returns a frozen journal instead of failing, with spending cl
 it.each(['connect','query'])('keeper startup waits when the database cannot answer (%s), writes nothing and releases custody',async failure=>{
   const directory=prepared(),before=records(directory);
   const pool={connect:async()=>{if(failure==='connect')throw new Error('starting up');return {release:()=>{},query:async()=>{throw new Error('statement timeout');}};}};
-  await expect(openFinancialJournalForKeeper(directory,pool,options)).rejects.toThrow();
+  await expect(openFinancialJournalForKeeper(directory,pool,options)).rejects.toBeInstanceOf(FinancialObservationUnavailable);
   expect(records(directory)).toEqual(before);
   const next=await openFinancialJournalForKeeper(directory,{connect:async()=>({...projectionDb(),release:()=>{}})},options);journals.push(next);
   expect(next.isFrozen).toBe(false);expect(records(directory).at(-1)?.kind).toBe('writer-open');

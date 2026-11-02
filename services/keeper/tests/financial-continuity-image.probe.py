@@ -582,22 +582,27 @@ await j.drainForShutdown();j.close();console.log('clean');"""
     def keeper_host_command(action, body=''):
         return command('docker', 'exec', '-i', keeper, tsx, '/app/services/keeper/bin/budget-financial.ts', action, '--host', input=body, check=False)
     refused_plan = json.dumps({'installationCap':'10','memberIds':['proof-nobody']})
+    def keeper_running():
+        return command('docker', 'inspect', '--format', '{{.State.Running}}', keeper).stdout.strip() == 'true'
     keeper_serving()
     assert journal_records()[-1]['kind'] == 'writer-open', 'Keeper did not publish its writer'
-    # The database alone restarts under a running keeper. The next operation must pass the
-    # continuity check and be refused by its own plan, not by a freeze.
+    # Leave idle connections in the keeper's pools, as a working keeper always has.
+    assert keeper_host_command('provision-accounts', refused_plan).returncode != 0, 'Unknown member was provisioned'
+    # The database alone restarts under a running keeper. The keeper must survive losing those
+    # connections, and the next operation must be refused by its own plan, not by a freeze.
     command('docker', 'restart', name + '-db')
     ready()
     time.sleep(1)
+    assert keeper_running(), 'Database restart ended the keeper process'
     assert keeper_host_command('provision-accounts', refused_plan).returncode != 0, 'Unknown member was provisioned'
     last_abort = [r for r in journal_records() if r['kind'] == 'abort'][-1]
     assert last_abort['reason'] == 'rollback-acknowledged', 'Operation did not reach its own refusal'
     assert not [r for r in journal_records() if r['kind'] == 'freeze'], 'Database restart froze a running keeper'
-    # docker stop gives the same signal and the same ten seconds as a server shutdown.
-    command('docker', 'stop', keeper)
+    # A server shutdown: the same signal and ten seconds, to the keeper and database together.
+    command('docker', 'stop', keeper, name + '-db')
     assert journal_records()[-1]['kind'] == 'writer-close', 'Keeper did not close the journal when stopped'
-    # Reboot order: the database restarts, then the keeper starts and takes the writer again.
-    command('docker', 'restart', name + '-db')
+    # After the reboot the database comes back and the keeper takes the writer again.
+    command('docker', 'start', name + '-db')
     ready()
     keeper_serving()
     assert journal_records()[-1]['kind'] == 'writer-open', 'Keeper did not resume after a reboot'
@@ -608,7 +613,7 @@ await j.drainForShutdown();j.close();console.log('clean');"""
     command('docker', 'stop', name + '-db')
     command('docker', 'start', keeper)
     command('docker', 'wait', keeper)
-    assert 'keeper: startup failed' in command('docker', 'logs', '--tail', '5', keeper).stdout
+    assert 'the database is not answering yet' in command('docker', 'logs', '--tail', '5', keeper).stdout
     assert journal_records() == settled, 'An unavailable database changed the journal'
     command('docker', 'start', name + '-db')
     ready()
