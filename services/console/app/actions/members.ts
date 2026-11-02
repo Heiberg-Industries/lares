@@ -2,7 +2,7 @@
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { members, requireConsoleMember, requireMember, verify } from "../../lib/auth";
+import { memberAuditAddress, members, requireConsoleMember, requireMember, verify } from "../../lib/auth";
 import { MemberStoreError } from "@lares/agent-kit/member-store";
 import { ConsoleAdmissionUnavailableError } from "../../lib/admission-error";
 import { consoleRedirect } from "../../lib/console-oidc";
@@ -24,8 +24,10 @@ export async function setInitialMemberLimit(_previous: InitialLimitResult, form:
   const targetMemberId = form.get("memberId"), monthlyLimit = form.get("monthlyLimit");
   if (!sessionToken) return { error: "Console sign-in expired. Refresh membership and try again." };
   if (typeof targetMemberId !== "string" || typeof monthlyLimit !== "string") return { error: "Enter a monthly limit." };
+  const auditActor=await memberAuditAddress(actor.id);
+  if (!auditActor) return { error: "Console sign-in expired. Refresh membership and try again." };
   try {
-    await setInitialMemberBudgetLimit({ sessionToken, targetMemberId, monthlyLimit },actor.id);
+    await setInitialMemberBudgetLimit({ sessionToken, targetMemberId, monthlyLimit },auditActor);
     revalidatePath("/members");
     return { saved: true };
   } catch (error) {

@@ -28,6 +28,10 @@ function activePool(): Pool {
 // secret is intentionally absent. Defer reading it until database access; the first query
 // then fails closed before opening a connection if the explicit file is unavailable.
 export const pool = new Proxy({} as Pool, {
+  // The source transaction owner tells a pool from a checked-out client with `in`.
+  has(_target, property) {
+    return Reflect.has(activePool(), property);
+  },
   get(_target, property) {
     const current = activePool();
     const value = Reflect.get(current, property, current) as unknown;
