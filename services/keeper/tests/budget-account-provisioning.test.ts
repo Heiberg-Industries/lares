@@ -9,7 +9,7 @@ import {quiet} from './helpers/quiet-pool.js';
 import {HostFinancialJournal} from '../lib/financial-journal.js';
 import {prepareFinancialCustody} from '../lib/financial-continuity.js';
 import {JournalBudgetFinancialWriter} from '../lib/budget-financial-writer.js';
-import {budgetAccountProvisionPlanSchema,provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
+import {budgetAccountProvisionPlanSchema,openBudgetMonth,provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
 import {listInitialMemberBudgetStatus,registerInitialMemberBudgetActions,setInitialMemberBudgetLimit} from '../lib/initial-member-budget.js';
 import {provisionEngineDatabasePrivileges} from '../../box/lib/database-privileges.js';
 import {verifyFinancialContinuity} from '../lib/financial-continuity.js';
@@ -311,6 +311,126 @@ it('withholds an expired closed result after the observation journal fsync',asyn
   const later=(await financial.query(`SELECT a.state,a.reason,w.opening_cap::text AS opening_cap FROM budget_accounts a JOIN budget_windows w ON w.id=a.active_window_id WHERE a.live_member_id=$1`,[users.b])).rows[0];
   expect(later).toEqual({state:'closed',reason:'unreconciled',opening_cap:'40'});
   expect(journalRecords(directory).some(record=>record.kind==='observation')).toBe(true);
+  await verifyFinancialContinuity(journal,financial as never);
+},30_000);
+
+async function lastMonth(selected:Pool):Promise<{startsAt:string;endsAt:string}>{
+  const row=(await selected.query(`WITH month AS (SELECT date_trunc('month',clock_timestamp() AT TIME ZONE 'UTC') AS ends_utc)
+    SELECT to_char(ends_utc-interval '1 month','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS starts_at,to_char(ends_utc,'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ends_at FROM month`)).rows[0];
+  return {startsAt:row.starts_at,endsAt:row.ends_at};
+}
+const journaledFixture=(journal:HostFinancialJournal,selected:Pool,work:Parameters<typeof consoleSourceTransaction>[1])=>
+  new JournalBudgetFinancialWriter(journal).run('provision',boundary=>consoleSourceTransaction(selected,work,boundary));
+const memberWindow=async(selected:Pool,member:string)=>(await selected.query(`SELECT a.state,w.opening_cap::text AS cap,w.starts_at<=clock_timestamp() AND w.ends_at>clock_timestamp() AS covers_now
+  FROM budget_accounts a JOIN budget_windows w ON w.id=a.active_window_id WHERE a.live_member_id=$1`,[member])).rows[0];
+
+it('opens the month for accounts in use with the limit on record, and skips what must stay shut',async()=>{
+  const {selected,financial}=await restrictedCase('budget_month_rules'),users=await seed(selected,'-month-rules'),{journal,directory}=await custody(selected);
+  const month=await lastMonth(selected);
+  // A closed person mid-setup, a person whose limit gets removed, and a person who has left.
+  await setMemberCapThroughRegisteredActions(selected,financial,users.owner,users.owner,'25');
+  await selected.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('budget-month-leaver','Leaver',$1,'member','active')",[users.org]);
+  await selected.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES('budget-month-leaver','https://identity.example.invalid','month-leaver','tenant')");
+  await selected.query("INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES('budget-month-leaver',15)");
+  await provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.owner,users.a,users.b,'budget-month-leaver']},async()=>month);
+  const leaver=(await financial.query("SELECT id,active_window_id FROM budget_accounts WHERE live_member_id='budget-month-leaver'")).rows[0]!;
+  await selected.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('budget-month-erased','Erased',$1,'member','active')",[users.org]);
+  await selected.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES('budget-month-erased','https://identity.example.invalid','month-erased','tenant')");
+  await selected.query("INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES('budget-month-erased',15)");
+  await provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:['budget-month-erased']},async()=>month);
+  const erased=(await financial.query("SELECT id,active_window_id FROM budget_accounts WHERE live_member_id='budget-month-erased'")).rows[0]!;
+  const opening=(await financial.query("SELECT i.id AS installation_id,m.id AS member_id FROM budget_accounts i JOIN budget_accounts m ON m.installation_account_id=i.id AND m.live_member_id=$1 WHERE i.kind='installation'",[users.owner])).rows[0]!;
+  const installationId=opening.installation_id as string;
+  await journaledFixture(journal,financial,async db=>{
+    await db.query("UPDATE budget_accounts SET state='open',reason='approved',selected_endpoint=$2,endpoint_generation=1,recovery_epoch='month-rules-epoch' WHERE id=$1",[installationId,'a'.repeat(64)]);
+    await db.query("UPDATE budget_accounts SET state='open',reason='approved' WHERE id=$1",[opening.member_id]);
+    noteBudgetFinancialChange(db,'budget_accounts',installationId);noteBudgetFinancialChange(db,'budget_accounts',opening.member_id);
+  });
+  await journaledFixture(journal,financial,async db=>{
+    await db.query("UPDATE users SET status='removed' WHERE id='budget-month-leaver'");
+    noteBudgetFinancialChange(db,'budget_accounts',leaver.id);
+    await db.query("DELETE FROM users WHERE id='budget-month-erased'");
+    noteBudgetFinancialChange(db,'budget_accounts',erased.id);
+    noteBudgetFinancialChange(db,'budget_accounts',installationId);
+    const a=(await db.query('SELECT id FROM budget_accounts WHERE live_member_id=$1',[users.a])).rows[0]!;
+    await db.query('DELETE FROM org_member_policy WHERE user_id=$1',[users.a]);
+    noteBudgetFinancialChange(db,'budget_accounts',a.id);
+  });
+
+  const before=journalRecords(directory).length;
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:3,skipped:1,blocked:0,failed:0});
+  expect(await memberWindow(financial,users.owner)).toEqual({state:'open',cap:'25',covers_now:true});
+  expect(await memberWindow(financial,users.b)).toEqual({state:'closed',cap:'40',covers_now:true});
+  expect(await memberWindow(financial,users.a)).toMatchObject({state:'closed',covers_now:false});
+  expect((await financial.query('SELECT state,active_window_id FROM budget_accounts WHERE id=$1',[leaver.id])).rows[0]).toEqual({state:'retired',active_window_id:leaver.active_window_id});
+  expect((await financial.query('SELECT state,active_window_id FROM budget_accounts WHERE id=$1',[erased.id])).rows[0]).toEqual({state:'retired',active_window_id:erased.active_window_id});
+  expect((await financial.query("SELECT w.opening_cap::text AS cap,a.state FROM budget_accounts a JOIN budget_windows w ON w.id=a.active_window_id WHERE a.kind='installation'")).rows[0]).toEqual({cap:'100',state:'open'});
+  // Three accounts, one journal operation each; nothing written for the person without a limit.
+  expect(journalRecords(directory).length-before).toBe(15);
+  expect(journalRecords(directory).slice(before).filter(record=>record.kind==='begin').every(record=>record.operation==='provision')).toBe(true);
+
+  // Unchanged results write nothing, and a restored limit opens on the next pass.
+  const quiet=journalRecords(directory).length;
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:0,skipped:1,blocked:0,failed:0});
+  expect(journalRecords(directory).length).toBe(quiet);
+  await journaledFixture(journal,financial,async db=>{
+    const a=(await db.query('SELECT id FROM budget_accounts WHERE live_member_id=$1',[users.a])).rows[0]!;
+    await db.query('INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES($1,33)',[users.a]);
+    noteBudgetFinancialChange(db,'budget_accounts',a.id);
+  });
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:1,skipped:0,blocked:0,failed:0});
+  expect(await memberWindow(financial,users.a)).toEqual({state:'closed',cap:'33',covers_now:true});
+  await verifyFinancialContinuity(journal,financial as never);
+},30_000);
+
+it('leaves a frozen or never-opened installation shut and writes nothing',async()=>{
+  const {selected,financial}=await restrictedCase('budget_month_frozen'),users=await seed(selected,'-month-frozen',false,false),{journal,directory}=await custody(selected);
+  const month=await lastMonth(selected);
+  await setMemberCapThroughRegisteredActions(selected,financial,users.owner,users.owner,'25');
+  await provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.owner]},async()=>month);
+  const unopened=journalRecords(directory).length;
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:0,skipped:0,blocked:0,failed:0});
+  expect(journalRecords(directory).length).toBe(unopened);
+  const ids=(await financial.query("SELECT id,kind FROM budget_accounts ORDER BY kind")).rows;
+  await journaledFixture(journal,financial,async db=>{
+    await db.query("UPDATE budget_accounts SET state='open',reason='approved',selected_endpoint=$2,endpoint_generation=1,recovery_epoch='month-frozen-epoch' WHERE id=$1",[ids[0]!.id,'a'.repeat(64)]);
+    await db.query("UPDATE budget_accounts SET state='open',reason='approved' WHERE id=$1",[ids[1]!.id]);
+    await db.query("UPDATE budget_accounts SET state='frozen',reason='receipt_conflict' WHERE id=$1",[ids[0]!.id]);
+    for(const row of ids)noteBudgetFinancialChange(db,'budget_accounts',row.id);
+  });
+  const before=await budgetFinancialRows(financial),records=journalRecords(directory).length;
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:0,skipped:0,blocked:0,failed:0});
+  expect(await budgetFinancialRows(financial)).toEqual(before);
+  expect(journalRecords(directory).length).toBe(records);
+},30_000);
+
+it('blocks without writing when a window is off the month',async()=>{
+  const {selected,financial}=await restrictedCase('budget_month_blocked'),users=await seed(selected,'-month-blocked',false,false),{journal,directory}=await custody(selected);
+  const shifted=await microsecondShiftedMonth(selected);
+  await activateOwner(selected,financial,journal,users,shifted);
+  const before=await budgetFinancialRows(financial),records=journalRecords(directory).length;
+  // Both accounts' windows overlap this month without matching it exactly.
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:0,skipped:0,blocked:2,failed:0});
+  expect(await budgetFinancialRows(financial)).toEqual(before);
+  expect(journalRecords(directory).length).toBe(records);
+  await verifyFinancialContinuity(journal,financial as never);
+},30_000);
+
+it('fails a pass safely while the journal is busy, completes on the next one, and stops between accounts when asked',async()=>{
+  const {selected,financial}=await restrictedCase('budget_month_busy'),users=await seed(selected,'-month-busy',false,false),{journal}=await custody(selected);
+  await activateOwner(selected,financial,journal,users,await lastMonth(selected));
+  const before=await budgetFinancialRows(financial);
+  let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});
+  const holder=new JournalBudgetFinancialWriter(journal).run('admit',boundary=>consoleSourceTransaction(financial,()=>held,boundary));
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:0,skipped:0,blocked:1,failed:1});
+  expect(await budgetFinancialRows(financial)).toEqual(before);
+  release();await holder;
+  const released=await budgetFinancialRows(financial);
+  expect(await openBudgetMonth(financial,journal,()=>true)).toEqual({opened:0,skipped:0,blocked:0,failed:0});
+  expect(await budgetFinancialRows(financial)).toEqual(released);
+  let checks=0;
+  expect(await openBudgetMonth(financial,journal,()=>++checks>1)).toEqual({opened:1,skipped:0,blocked:0,failed:0});
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:1,skipped:0,blocked:0,failed:0});
   await verifyFinancialContinuity(journal,financial as never);
 },30_000);
 

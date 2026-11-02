@@ -173,6 +173,49 @@ and recovery fields remain empty. Provisioning does not create gateway bindings,
 open accounts, reconcile liability, or enable spending. The bounded response
 contains only state, reason and counts, never member or provider identities.
 
+## Opening each new month
+
+A monthly window is immutable and ends at 00:00 UTC on the first of the next month.
+While it runs with prepared custody, Keeper opens the next month itself: once at
+start, to catch up after downtime, and again right after each month ends. A failed
+account retries after one second, doubling up to an hour but never past the next
+month change. The checks in between only read, and a pass that finds nothing to do
+writes nothing.
+
+Each account gets its own `provision` journal operation, the installation first, so
+an older Keeper can still read the journal after a rollback:
+
+- The new window starts at zero. Its opening cap is the installation cap, or the
+  member's monthly limit on record at that moment.
+- Unused budget does not carry over. Old windows and attempts stay as they were.
+- A call admitted before midnight settles against the month it started in. Grants
+  and settlements wait up to a second for a busy journal, because the gateway never
+  resends them. A later refusal leaves the reservation held.
+- Attempts with no settlement or with a conflict keep counting against every new
+  month. **Nothing resolves them yet**: a call that was cancelled, reported no usage,
+  or lost its settlement holds its full reservation for good, so that person's
+  usable limit stays lower in every later month. This errs towards spending too
+  little, never too much. A reviewed way to resolve them is still needed.
+- A prepared attempt not yet admitted at midnight is retired and never runs. Its
+  conversation step does not rearm; the agent's next step is a new attempt.
+
+Members who are open, or still closed and unreconciled during setup, get the month.
+A closed member with a current window can still activate. Frozen and never-opened
+installations, and retired or erased members, are left alone. A member without a
+positive limit, or whose user is not active, is skipped until that changes. A window
+that overlaps the month without matching it exactly, or a current window that has
+not ended, blocks that account for recovery, as does a member whose organisation has
+changed. Skipped and blocked accounts spend no journal records, because a refused
+transaction would.
+
+Spending stops until the month is open, which is normally a moment after midnight.
+If opening keeps failing, Keeper logs that, with counts and no identities, and agents
+stay stopped. A full or frozen journal is one such failure.
+
+The guarded runtime check accepts any later month only with the current window that
+the journal recorded, at the caps recorded at activation. A cap change therefore
+still needs its own reviewed path.
+
 ## Native credential custody and cleanup
 
 Native credential custody is optional and requires prepared financial custody.
