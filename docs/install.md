@@ -227,8 +227,8 @@ docker compose -f /opt/lares/compose.yaml ps
 docker compose -f /opt/lares/compose.yaml logs --tail 200 console caddy
 ```
 
-You should see `db`, `console` and `caddy` running. The gateway starts during explicit model
-budget setup. The keeper and the egress
+You should see `db`, `console` and `caddy` running. The gateway starts during `sudo lares budget
+setup`, described below. The keeper and the egress
 proxy run from `/opt/lares/compose.lares-keeper.yaml`; list them with
 `env -u COMPOSE_FILE docker compose --env-file /etc/lares/keeper.env ps`.
 
@@ -262,10 +262,52 @@ use the stored identity binding. This bootstrap is only for the first owner on a
 installation. Existing installations or a setup that is no longer fresh require separately
 reviewed recovery; do not set or edit the protected mapping by hand.
 
-After confirming this host and completing model budget setup, create your first agent on
-`/agents/new`. To end the session, use **Sign out** at the bottom of the sidebar. To admit another
-member, create an invitation from **Members**; changing the legacy email list has no effect on
-admission.
+**Switch model spending on.** After confirming this host, and before creating an agent, run this on
+the server:
+
+```bash
+sudo lares budget setup
+```
+
+It asks for two monthly limits in US dollars: the most the whole installation may spend, and the
+most one person may spend. It shows the model and its prices for you to confirm against your
+provider's current pricing page, and it shows how much each model call holds until it finishes. A
+per-person limit below that hold is refused. It then creates the spending records and starts the
+gateway. The console cannot manage agents while this runs.
+
+If it is interrupted, run the same command again: it continues with the answers you already gave.
+The exception is the first few seconds, while it creates the two ledgers. That step cannot be
+repeated and has no reset, so the command stops and says so. Nothing has been spent at that point;
+on a new server the fix is to wipe it and install again.
+
+**Create and start your first agent.** Create it on `/agents/new`, adopt it on its **Access** tab,
+then start it on the server:
+
+```bash
+sudo lares agent start <name>
+```
+
+**Adding another person.** Create an invitation from **Members** and have them sign in once; changing
+the legacy email list has no effect on admission. Give them access on the agent's **Access** tab, then
+run:
+
+```bash
+sudo lares agent start <name> --member <their-email>
+```
+
+The agent keeps running. If they have no monthly limit yet they get the per-person limit from budget
+setup, so to give someone a different limit, set it on **Members** before this command.
+
+These limits apply today:
+
+- Once a person is connected, their limit cannot be changed, and the installation limit cannot be
+  changed once the first agent has started.
+- One person can be connected to one agent.
+- If `lares agent start` stops while creating a person's key and cannot tell whether the key was
+  made, it does not retry. That key stays blocked and cannot spend, but there is no clean-up command
+  yet.
+
+To end the session, use **Sign out** at the bottom of the sidebar.
 
 To check the installation from the command line, run `lares doctor`, a read-only check that says in
 plain sentences what is wrong and what to type to fix it (settings, database, migrations, owner,
