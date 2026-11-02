@@ -1,7 +1,10 @@
 import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
 import { getRecentSignals } from "../../lib/signals";
-import { Notice, PageHeader, Page } from "@lares/ui/patterns";
+import { Field, Notice, PageHeader, Page } from "@lares/ui/patterns";
+import { Input } from "@lares/ui/primitives/input";
+import { Select } from "@lares/ui/primitives/select";
+
 import { Button } from "@lares/ui/primitives/button";
 
 export const dynamic = "force-dynamic";
@@ -23,10 +26,10 @@ export default async function SignalsPage({ searchParams }: { searchParams: Prom
         <Notice error>Signals could not be loaded because the record service is unavailable. Check its service status, then reload this page. Routes and catalogue remain available above.</Notice>
       ) : <>
       <form method="get" className="lares-inline-form lares-operational-filter">
-        <label className="lares-field-label">Severity<select className="lares-field" name="severity" defaultValue={q.severity ?? ""}><option value="">Any severity</option><option>error</option><option>warn</option><option>info</option></select></label>
-        <label className="lares-field-label">Kind<select className="lares-field" name="kind" defaultValue={q.kind ?? ""}><option value="">Any kind</option><option>alert</option><option>event</option><option>report</option></select></label>
-        <label className="lares-field-label">State<select className="lares-field" name="state" defaultValue={q.state ?? ""}><option value="">Any state</option><option>open</option><option>recovered</option><option>closed</option></select></label>
-        <label className="lares-field-label">Project<input className="lares-field" name="project" placeholder="All projects" defaultValue={q.project ?? ""} /></label>
+        <Field label="Severity"><Select name="severity" defaultValue={q.severity ?? ""}><option value="">Any severity</option><option>error</option><option>warn</option><option>info</option></Select></Field>
+        <Field label="Kind"><Select name="kind" defaultValue={q.kind ?? ""}><option value="">Any kind</option><option>alert</option><option>event</option><option>report</option></Select></Field>
+        <Field label="State"><Select name="state" defaultValue={q.state ?? ""}><option value="">Any state</option><option>open</option><option>recovered</option><option>closed</option></Select></Field>
+        <Field label="Project"><Input name="project" placeholder="All projects" defaultValue={q.project ?? ""} /></Field>
         <Button type="submit" variant="outline">Filter</Button>
       </form>
       {r.signals.length === 0 ? (

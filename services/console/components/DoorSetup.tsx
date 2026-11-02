@@ -1,4 +1,6 @@
 "use client";
+import { FieldGroup } from "@lares/ui/patterns";
+import { Input } from "@lares/ui/primitives/input";
 import {useEffect,useRef,useState} from 'react';
 import {slackClaimMessage,slackManifest,telegramConnectLink,telegramSteps,doorStateText,doorTouched} from '../lib/doors';
 import {connectDoor,doorStatus,claimCode,registerTelegram,setDoorEnabled,applyConnections,verifyDoor,type DefinitionActionResult} from '../app/actions/definition';
@@ -66,12 +68,12 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
  {!createUrl&&<p role="alert">Configure the public HTTPS webhook address before creating new apps or connecting a chat door.</p>}
  {busy&&<p role="status" aria-live="polite" className="lares-door-progress"><strong>{progress}</strong> Keep this page open.</p>}
  {!busy&&touchedPending&&<p role="status" className="lares-door-progress"><strong>Changes are waiting to be applied.</strong> The agent restarts when you apply them.</p>}
- {SUPPORTED[p.role]?.map(kind=>{const row=rows.find(r=>r.kind===kind);const touched=doorTouched(row);const step=connect?.kind===kind?connect:null;return <fieldset key={kind} disabled={busy||unknown}><legend>{LABEL[kind]}</legend>
+ {SUPPORTED[p.role]?.map(kind=>{const row=rows.find(r=>r.kind===kind);const touched=doorTouched(row);const step=connect?.kind===kind?connect:null;return <FieldGroup key={kind} legend={LABEL[kind]} disabled={busy||unknown}>
  <p>{doorStateText(row)}</p>
  {kind==='slack'&&<><ol><li>Create the Slack app from the manifest below: pick your workspace and confirm.</li><li>Install the app into your workspace. Copy its Bot User OAuth Token (OAuth &amp; Permissions) and its Signing Secret (Basic Information).</li><li>Paste both here and press Connect.</li><li>Then send the app one direct message, <code>claim</code> followed by the code shown here. That is the only manual step.</li></ol>
   <p>{createUrl&&<a href={createUrl} target="_blank" rel="noreferrer">Create this Slack app from its manifest</a>}{manifestText&&<> <Button variant="outline" type="button" onClick={()=>copy(manifestText,'Manifest copied. In Slack, choose Create new app, From a manifest, and paste it.')}>Copy manifest</Button></>}</p>
-  <label>Bot token<input type="password" autoComplete="off" value={tokens.slack??''} onChange={e=>setTokens({...tokens,slack:e.target.value})}/></label><label>Signing secret<input type="password" autoComplete="off" value={signing} onChange={e=>setSigning(e.target.value)}/></label></>}
- {kind==='telegram'&&<><ol>{telegramSteps(p.display).map(s=><li key={s.step}>{s.text}</li>)}</ol><label>Bot token<input type="password" autoComplete="off" value={tokens.telegram??''} onChange={e=>setTokens({...tokens,telegram:e.target.value})}/></label></>}
+  <label>Bot token<Input type="password" autoComplete="off" value={tokens.slack??''} onChange={e=>setTokens({...tokens,slack:e.target.value})}/></label><label>Signing secret<Input type="password" autoComplete="off" value={signing} onChange={e=>setSigning(e.target.value)}/></label></>}
+ {kind==='telegram'&&<><ol>{telegramSteps(p.display).map(s=><li key={s.step}>{s.text}</li>)}</ol><label>Bot token<Input type="password" autoComplete="off" value={tokens.telegram??''} onChange={e=>setTokens({...tokens,telegram:e.target.value})}/></label></>}
  {kind!=='email'&&<>
  <Button type="button" disabled={!tokens[kind]||(kind==='slack'&&!signing)||(kind==='telegram'&&!createUrl)||(kind==='slack'&&!createUrl)} onClick={()=>void run(()=>connectChat(kind))}>{touched?'Replace credentials and connect':'Connect'}</Button>
  {!step&&row?.enabled&&!row.claimed&&!row.pending&&<Button variant="outline" type="button" onClick={()=>void run(()=>showConnectStep(kind))}>{kind==='telegram'?'Show the tap-to-connect link':'Show the one-time code'}</Button>}
@@ -80,7 +82,7 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
  {step?.message&&<div role="status" className="lares-door-connect"><p><strong>Last step:</strong> {step.who?`open a direct message with ${step.who}`:'open a direct message with the app'} in Slack and send exactly:</p><p><code>{step.message}</code> <Button variant="outline" type="button" onClick={()=>copy(step.message!,'Copied. Paste it into the direct message with the app.')}>Copy</Button></p><p>This page notices by itself and finishes applying. The code works once, for 10 minutes{Number.isFinite(expiredAt)&&expiredAt<Date.now()?' (it has expired; ask for a new one above)':''}.</p></div>}</>}
  {kind==='email'&&<><p>This agent can use only its selected mailbox. Email triage also requires an applied Slack owner door for approval cards.</p>{row?.mailbox&&<p>Selected mailbox: <strong>{row.mailbox}</strong></p>}<p>New mailbox connections are pending the account-aware runtime adapter. <a href="/membership">Manage personal Google consent</a>. Saving personal consent does not connect this agent.</p></>}
  {touched&&<Button variant="outline" type="button" onClick={()=>void run(async()=>{const result=unwrap(await setDoorEnabled(p.name,kind,!row?.enabled));latestHash.current=result.hash;p.onDefinitionChanged?.(result.hash);setMessage(`Door ${row?.enabled?'disabled':'enabled'} in the saved definition.${result.backup.ok?'':` ${result.backup.message??'Git backup failed; definition remains saved.'}`} Apply connection changes to update runtime mounts.`);})}>{row?.enabled?'Disable door':'Enable door'}</Button>}
- </fieldset>;})}
+ </FieldGroup>;})}
  {touchedPending&&<Button type="button" disabled={busy||unknown} onClick={()=>void run(()=>applyAndReload('Applying (restarts the agent, about a minute)…'))}>Apply connection changes (restarts agent)</Button>}
  {message&&<p role="status">{message}</p>}{error&&<p role="alert">{error}{unknown?' Some changes may already have taken effect. Inspect current state before retrying.':''}</p>}
  {unknown&&<p><a href={`/agents/${encodeURIComponent(p.name)}/edit`}>Reload this agent’s current state</a> before trying again.</p>}

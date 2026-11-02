@@ -304,7 +304,7 @@ export function MintForm({
             // hand. The mint skips it either way — the checkbox has no say in that.
             const past = ruleDueDate(r, fiscalYear) < today;
             return (
-              <tr key={r.key} className={past ? "lares-past-row" : undefined}>
+              <tr key={r.key} className={past ? "lares-dim-row" : undefined}>
                 <td><Checkbox checked={included[r.key] ?? true} disabled={past} onChange={() => toggle(r.key)} aria-label={`Include ${r.title}`} /></td>
                 <td className="lares-small">
                   {r.title}
