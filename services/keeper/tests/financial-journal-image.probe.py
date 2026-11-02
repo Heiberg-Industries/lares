@@ -61,6 +61,15 @@ try:
     # tsx -e uses CJS; keep asynchronous fixture execution inside an explicit main.
     clean = clean.replace("for(let i=0;", "async function main(){for(let i=0;").replace("console.log('clean');", "console.log('clean');}void main();")
     assert run(clean) == 'clean'
+    stage = 'journal-next-book'
+    books = f"""import{{HostFinancialJournal}}from'{module}';import{{readdirSync}}from'node:fs';
+const dir='/proof/books',options={{requirePrepared:true,bookBytes:80*1024}},work=j=>j.operation('admit',async id=>{{j.propose(id,[]);j.committed(id)}});
+const p=HostFinancialJournal.prepareFresh(dir,{{systemIdentifier:'1',postmasterStartedAt:'2026-10-22T00:00:00.000000Z',databaseOid:'1'}});p.complete();p.close();
+(async()=>{{let j=HostFinancialJournal.openExisting(dir,options);
+while(readdirSync(dir).filter(name=>name.startsWith('journal')).length<2)await work(j);
+j.close();j=HostFinancialJournal.openExisting(dir,options);
+if(j.isFrozen)process.exit(2);await work(j);j.close();console.log('books');}})().catch(()=>process.exit(3));"""
+    assert run(books) == 'books', 'The journal did not carry on into its next book on the final image'
 
     # The native custody owner uses the production root UID/GID, filesystem sync and
     # inherited Linux flock implementation. No unit-test seams enter this image proof.

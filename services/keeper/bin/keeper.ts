@@ -1,7 +1,7 @@
 import {z} from 'zod';
 import {registerAction} from '../lib/actions.js';
 import {HostFinancialJournal} from '../lib/financial-journal.js';
-import {FinancialObservationUnavailable,openFinancialJournalForKeeper} from '../lib/financial-continuity.js';
+import {FinancialObservationUnavailable,openFinancialJournalForKeeper,scheduleNightlyLedgerCheck} from '../lib/financial-continuity.js';
 import {budgetAccountProvisionPlanSchema,provisionBudgetAccounts,startBudgetMonthOpening} from '../lib/budget-account-provisioning.js';
 import { Credentials, registerCredentialActions } from "../lib/credentials.js";
 import { CredentialFiles } from "../lib/credential-files.js";
@@ -200,6 +200,7 @@ async function main(): Promise<void> {
         registerOutsideToolActions({ pool, agentsDir: config.agentsDir, secretsDir: config.secretsDir });
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));
         stops.push(await serve({ socket: "/run/lares-host/keeper.sock", host: true, context }));
+        if(financialPool&&financialJournal?.prepared)stops.push(scheduleNightlyLedgerCheck(financialJournal,financialPool));
         if(financialPool)stops.push(await serveGatewayBudget({socket:'/run/lares/gateway-budget.sock',authority:productionGatewayBudgetAuthority(financialPool,config.gatewayBudget?.serviceKeyFile,financialJournal)}));
         if(financialPool&&financialJournal?.prepared)stops.push(startBudgetMonthOpening(financialPool,financialJournal));
         // Vault is optional for older installations: missing custody removes only its dedicated
