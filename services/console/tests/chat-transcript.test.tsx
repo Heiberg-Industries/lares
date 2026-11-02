@@ -303,6 +303,6 @@ describe('complete trusted personal mail review',()=>{
   const html=renderToStaticMarkup(<ChatTranscript status="ready" messages={messages} onAnswer={()=>{}}/>);
   expect(html).toContain('Full mail review is unavailable');expect(html).not.toContain('MODEL_');
   const buttons=[...html.matchAll(/<button[^>]*>[^<]*<\/button>/g)].map(m=>m[0]);
-  expect(buttons.find(b=>b.includes('Approve'))).toContain('disabled');expect(buttons.find(b=>b.includes('Cancel'))).not.toContain('disabled');
+  expect(buttons.find(b=>b.includes('Approve'))).toContain('disabled=""');expect(buttons.find(b=>b.includes('Cancel'))).not.toContain('disabled=""');
  });
 });
