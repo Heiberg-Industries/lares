@@ -1,7 +1,7 @@
 /** Server-only observation on the caller's actual owned PostgreSQL connection. */
-import {querySourceBounded,sourceObservationCommit,type SourceDatabase,type SourceObservationCommit} from '@lares/agent-kit/console-source-transaction';
+import {querySourceBounded,sourceObservationCommit,type SourceDatabase,type SourceObservationCommit,type SourcePool} from '@lares/agent-kit/console-source-transaction';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
-import {FINANCIAL_DATABASE_SCHEMA,FINANCIAL_CHECKPOINT_SCHEMA,HostFinancialJournal,financialAtomKey,type FinancialAtom,type FinancialCheckpoint,type FinancialProjection,type FinancialObservation} from './financial-journal.js';
+import {FINANCIAL_DATABASE_SCHEMA,FINANCIAL_CHECKPOINT_SCHEMA,HostFinancialJournal,financialAtomKey,type FinancialAtom,type FinancialCheckpoint,type FinancialProjection,type FinancialObservation,type JournalOptions} from './financial-journal.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
 declare const financialObservationHandleBrand:unique symbol;
 export interface FinancialObservationHandle {readonly [financialObservationHandleBrand]:true}
@@ -68,12 +68,48 @@ async function observeFinancialProjection(db:SourceDatabase,projection:Financial
   atoms.sort((left,right)=>financialAtomKey(left).localeCompare(financialAtomKey(right)));
   return {checkpoints,atoms};
 }
+/** The database did not answer, which is a different fact from answering wrongly. */
+export class FinancialObservationUnavailable extends Error {}
+/** A missing ledger table or column is an answer: this database cannot hold the ledger.
+ * A freeze cannot be undone, so every other failure counts as silence and is retried. */
+function answering(db:SourceDatabase):SourceDatabase {
+  return {query:async(sql,values)=>{
+    try{return await db.query(sql,values);}
+    catch(error){
+      const code=error&&typeof error==='object'?(error as {code?:unknown}).code:undefined;
+      if(code==='42P01'||code==='42703')throw error;
+      throw new FinancialObservationUnavailable('Financial observation unavailable');
+    }
+  }};
+}
 export async function verifyFinancialContinuity(journal:HostFinancialJournal,db:SourceDatabase,proposed=false):Promise<void>{
   try{
-    const projection=journal.expectedProjection(proposed),database=await observeFinancialDatabase(db),observed=await observeFinancialProjection(db,projection);
+    const asked=answering(db),projection=journal.expectedProjection(proposed),database=await observeFinancialDatabase(asked),observed=await observeFinancialProjection(asked,projection);
     journal.verifyContinuity(database,observed.checkpoints,observed.atoms,proposed);
   }
-  catch{if(!journal.isFrozen)journal.freeze();throw new Error('Financial continuity requires recovery');}
+  catch(error){
+    // At startup no operation has run, so a silent database proves nothing about money.
+    if(error instanceof FinancialObservationUnavailable&&journal.awaitingStartupVerification)throw error;
+    if(!journal.isFrozen)journal.freeze();throw new Error('Financial continuity requires recovery');
+  }
+}
+/** Keeper startup. Returns a journal that either holds the writer lease or is durably frozen,
+ * in which case spending stays closed and the rest of Keeper runs. A database that cannot
+ * answer yet throws and writes nothing, so the restart policy simply tries again. */
+export async function openFinancialJournalForKeeper(directory:string,pool:Pick<SourcePool,'connect'>,options:JournalOptions={}):Promise<HostFinancialJournal>{
+  const journal=HostFinancialJournal.openExistingForStartupVerification(directory,{...options,requirePrepared:true});
+  try{
+    // Keep protected ownership through the full check, then publish writer ownership
+    // before any host action or listener can reach the journal.
+    if(!journal.isFrozen){
+      const db=await pool.connect().catch(()=>{throw new FinancialObservationUnavailable('Financial observation unavailable');});
+      try{await verifyFinancialContinuity(journal,db);}
+      catch(error){if(error instanceof FinancialObservationUnavailable)throw error;}
+      finally{db.release();}
+    }
+    if(!journal.isFrozen)journal.acquireWriterLease();
+    return journal;
+  }catch(error){journal.close();throw error;}
 }
 /** Fresh, same-client read-only observation after the source mutation COMMIT. The caller
  * keeps this exact checked-out client owned until the observer COMMIT is acknowledged. */

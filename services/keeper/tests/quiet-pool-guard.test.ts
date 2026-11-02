@@ -1,7 +1,7 @@
 // : a test that starts a throwaway Postgres must not let the container's shutdown (FATAL
 // 57P01 on every open session) surface as an unhandled error that fails an otherwise green run.
-// Every such file has to build its pool through tests/helpers/quiet-pool.ts or register the
-// "error" listeners itself.
+// Every such file has to build its pool through tests/helpers/quiet-pool.ts, register the
+// "error" listeners itself, or use keeperPool, which registers them.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
@@ -16,13 +16,14 @@ describe("tests that start a database container quiet their pools", () => {
     expect(files.length).toBeGreaterThan(0);
   });
 
-  it("every file with a PostgreSqlContainer uses quiet()/quietPool() or registers its own error listeners", () => {
+  it("every file with a PostgreSqlContainer uses quiet()/quietPool(), keeperPool or its own error listeners", () => {
     const offenders = files.filter((f) => {
       const src = readFileSync(f, "utf8");
       if (!/PostgreSqlContainer\s*\(/.test(src)) return false;
       const quieted = /\bquiet(Pool)?\(/.test(src) && /quiet-pool(\.js)?["']/.test(src);
       const inline = /\.on\(\s*["']error["']/.test(src) && /\.on\(\s*["']connect["']/.test(src);
-      return !quieted && !inline;
+      const keeper = /\bkeeperPool\(/.test(src);
+      return !quieted && !inline && !keeper;
     });
     expect(offenders.map((f) => f.slice(testsDir.length + 1))).toEqual([]);
   });

@@ -118,7 +118,12 @@ export function keeperPool(db: KeeperDatabaseConfig,limits:Pick<PoolConfig,'max'
   try {
     const password = readFileSync(db.passwordFile, "utf8").trimEnd();
     if (!password) throw new Error("empty database credential");
-    return new Pool({ host: db.host, port: db.port, database: db.database, user: db.user, password, connectionTimeoutMillis: 5000,...limits });
+    const pool = new Pool({ host: db.host, port: db.port, database: db.database, user: db.user, password, connectionTimeoutMillis: 5000,...limits });
+    // A database restart drops every connection. Callers learn that from their own query;
+    // without these listeners it also kills the process, which leaves the ledger unclean.
+    pool.on("error", () => {});
+    pool.on("connect", client => { client.on("error", () => {}); });
+    return pool;
   }
   catch {
     throw new Error("keeper: database credentials unavailable");

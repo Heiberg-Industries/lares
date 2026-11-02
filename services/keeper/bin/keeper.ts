@@ -1,7 +1,7 @@
 import {z} from 'zod';
 import {registerAction} from '../lib/actions.js';
 import {HostFinancialJournal} from '../lib/financial-journal.js';
-import {verifyFinancialContinuity} from '../lib/financial-continuity.js';
+import {FinancialObservationUnavailable,openFinancialJournalForKeeper} from '../lib/financial-continuity.js';
 import {budgetAccountProvisionPlanSchema,provisionBudgetAccounts,startBudgetMonthOpening} from '../lib/budget-account-provisioning.js';
 import { Credentials, registerCredentialActions } from "../lib/credentials.js";
 import { CredentialFiles } from "../lib/credential-files.js";
@@ -132,12 +132,11 @@ async function main(): Promise<void> {
         // source rows or files. An unbound leftover is recovery, never an empty legacy store.
         if(config.budgetFinancial){
             if(!financialPool)throw new Error('Financial database credentials unavailable');
-            financialJournal=HostFinancialJournal.openExistingForStartupVerification(config.budgetFinancial.directory,{requirePrepared:true});
-            // Keep protected ownership through the full check, then publish writer ownership
-            // before any host action or listener can reach the journal.
-            const db=await financialPool.connect();
-            try{await verifyFinancialContinuity(financialJournal,db);}finally{db.release();}
-            financialJournal.acquireWriterLease();
+            financialJournal=await openFinancialJournalForKeeper(config.budgetFinancial.directory,financialPool).catch(error=>{
+                if(error instanceof FinancialObservationUnavailable)console.error("keeper: the database is not answering yet; this start stops and will be retried");
+                throw error;
+            });
+            if(financialJournal.isFrozen)console.error("keeper: the spending ledger is frozen; model calls that need a budget are refused until recovery, everything else keeps running");
         }
         registerInitialMemberBudgetActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
         if(financialPool)registerBudgetAgentStartActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
@@ -258,10 +257,13 @@ async function main(): Promise<void> {
         try{outsideCustody?.close();}catch(error){failures.push(error);}
         try{await nativeCustody?.drainForShutdown();}catch(error){failures.push(error);}
         try{await financialJournal?.drainForShutdown();}catch(error){failures.push(error);}
-        const pools=[pool.end(),vaultPool?.end(),modelPurposePool?.end(),financialPool?.end(),outsidePool?.end(),admin?.end()].filter(Boolean) as Promise<void>[];
-        for(const result of await Promise.allSettled(pools))if(result.status==='rejected')failures.push(result.reason);
+        // Nothing can use custody after the drains, and closing it needs no database. Close it
+        // first: during a reboot the database may be gone, and a pool stuck on it must not
+        // cost the journal its clean close.
         try{nativeCustody?.close();}catch(error){failures.push(error);}
         try{financialJournal?.close();}catch(error){failures.push(error);}
+        const pools=[pool.end(),vaultPool?.end(),modelPurposePool?.end(),financialPool?.end(),outsidePool?.end(),admin?.end()].filter(Boolean) as Promise<void>[];
+        for(const result of await Promise.allSettled(pools))if(result.status==='rejected')failures.push(result.reason);
         if(failures.length)throw new Error('keeper: shutdown did not complete cleanly');
     };
     for (const signal of ["SIGTERM", "SIGINT"] as const)
