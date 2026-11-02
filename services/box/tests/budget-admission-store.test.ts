@@ -365,14 +365,14 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     try{
       await expect(prepared()).rejects.toThrow();
       expect(await openBudgetMonth(db as unknown as SourcePool,files.journal)).toEqual({opened:3,skipped:0,blocked:0,failed:0});
-      // Nothing is forgiven by the new month: calls with no settlement still count against it.
-      expect(await status()).toEqual(['0.2','0.2']);
+      // Calls with no settlement stay charged to the month they began in, not this one.
+      expect(await status()).toEqual(['0','0']);
       // A call admitted before midnight settles against the month it started in.
       const oldWindow=(await db.query('SELECT member_window_id FROM budget_attempts WHERE id=$1',[inFlight.attemptId])).rows[0].member_window_id;
       expect(await gatewayPreparedStore!.settle(receipt(inFlight,'0.05'))).toBe('settled');
       expect((await db.query('SELECT member_window_id FROM budget_attempts WHERE id=$1',[inFlight.attemptId])).rows[0].member_window_id).toBe(oldWindow);
       expect(oldWindow).not.toBe((await store.readStatus(context())).windowId);
-      expect(await status()).toEqual(['0.1','0.1']);
+      expect(await status()).toEqual(['0','0']);
       // Calls cleared seconds before the next midnight, with their 30 seconds still running.
       await setClock(`${monthEnd}-interval '5 seconds'`);
       const beforeOpening=await prepared(),afterOpening=await prepared(),straddling=await admittedHere();
@@ -387,17 +387,55 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
       const waiting=gatewayPreparedStore!.settle(receipt(straddling,'0.05'));
       await new Promise(resolve=>setTimeout(resolve,50));release();await holder;
       expect(await waiting).toBe('settled');
-      expect(await status()).toEqual(['0.1','0.1']);
+      expect(await status()).toEqual(['0','0']);
       // The next step runs against the new month, and the same $1 limit still holds.
       const next=await admittedHere();
       expect(await gatewayPreparedStore!.settle(receipt(next,'0.05'))).toBe('settled');
-      expect(await status()).toEqual(['0.15','0.15']);
+      expect(await status()).toEqual(['0.05','0.05']);
       expect(await gatewayPreparedStore!.settle(receipt(unresolved,'0.05'))).toBe('settled');
       expect(await status()).toEqual(['0.05','0.05']);
       for(let call=0;call<9;call++)await admittedHere();
       expect(await status()).toEqual(['0.95','0.95']);
       const over=await prepared();
       expect((await gatewayPreparedStore!.admit(over.ticket,over.observation,recovery())).state).toBe('denied');
+    }finally{
+      await db.query('RESET search_path;DROP FUNCTION public.clock_timestamp()');
+    }
+  });
+  it('counts a call with no final cost in full, but only against the month it began in',async()=>{
+    const status=async()=>[(await store.readStatus(context())).liability,(await store.readStatus(context(),'installation')).liability];
+    const admittedHere=async()=>{
+      const p=await prepared(),a=await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery());
+      expect(a.state).toBe('allowed');if(a.state!=='allowed')throw new Error('Not admitted');return {...p,...a};
+    };
+    const refusedNow=async()=>{const p=await prepared();expect((await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery())).state).toBe('denied');};
+    // Within its own month every unfinished call holds its whole reservation and the limit refuses.
+    const unfinished=[];for(let call=0;call<10;call++)unfinished.push(await admittedHere());
+    await gatewayPreparedStore!.markUnknown(unfinished[0]!.attemptId);
+    expect(await status()).toEqual(['1','1']);
+    await refusedNow();
+    const oldMonth=(await store.readStatus(context())).windowId,oldInstallationMonth=(await store.readStatus(context(),'installation')).windowId;
+    const shift=(await db.query(`SELECT (pg_catalog.clock_timestamp()+interval '1 month'-pg_catalog.clock_timestamp())::text AS shift`)).rows[0].shift;
+    await db.query(`CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE AS 'SELECT pg_catalog.clock_timestamp()+interval ''${shift}'''`);
+    await db.query('SET search_path=public,pg_catalog');
+    try{
+      expect(await openBudgetMonth(db as unknown as SourcePool,files.journal)).toEqual({opened:3,skipped:0,blocked:0,failed:0});
+      // The new month starts clear, and the old month is still charged the full holds: nothing was released.
+      expect(await status()).toEqual(['0','0']);
+      const charged=(await db.query("SELECT count(*)::int AS calls,sum(reserved_amount)::text AS held FROM budget_attempts WHERE member_window_id=$1 AND installation_window_id=$2 AND state IN ('admitted','unknown')",[oldMonth,oldInstallationMonth])).rows[0];
+      expect(charged.calls).toBe(10);expect(Number(charged.held)).toBe(1);
+      // The new month has its whole limit, and no more than that.
+      for(let call=0;call<10;call++)await admittedHere();
+      expect(await status()).toEqual(['1','1']);
+      await refusedNow();
+      // A final cost arriving late corrects the month it began in and leaves this month alone.
+      expect(await gatewayPreparedStore!.settle(receipt(unfinished[1]!,'0.05'))).toBe('settled');
+      expect((await db.query('SELECT member_window_id FROM budget_attempts WHERE id=$1',[unfinished[1]!.attemptId])).rows[0].member_window_id).toBe(oldMonth);
+      expect(await status()).toEqual(['1','1']);
+      // A cost above the hold still follows the account into later months, and freezes the installation.
+      expect(await gatewayPreparedStore!.settle(receipt(unfinished[2]!,'0.5'))).toBe('conflict');
+      expect(await status()).toEqual(['1.5','1.5']);
+      expect((await store.readStatus(context(),'installation')).state).toBe('frozen');
     }finally{
       await db.query('RESET search_path;DROP FUNCTION public.clock_timestamp()');
     }
@@ -789,14 +827,14 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     expect((await db.query('SELECT actual_amount,highest_observed_liability FROM budget_attempts')).rows[0]).toEqual({actual_amount:'0.1808',highest_observed_liability:'0.1808'});
     expect((await db.query('SELECT state FROM budget_accounts WHERE id=$1',[installation])).rows[0].state).toBe('frozen');
   });
-  it('retains late exact grant correlation after rotation, old-window carry and member erasure',async()=>{
+  it('retains late exact grant correlation after rotation, a window change and member erasure',async()=>{
     const a=await allowed();await gatewayPreparedStore!.markUnknown(a.grant.attemptId);
     await journalGatewayFixture(files.writer,async source=>{
       await source.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[a.grant.bindingId]);
       noteBudgetFinancialChange(source,'budget_gateway_bindings',a.grant.bindingId);
     });
     await journalGatewayWindow(files.writer,installation,null);await journalGatewayWindow(files.writer,accounts['member-a']!,'member-a');
-    expect((await store.readStatus(context())).liability).toBe('0.1');
+    expect((await store.readStatus(context())).liability).toBe('0');
     await files.writer.run('member-remove',boundary=>consoleSourceTransaction(db as unknown as SourcePool,async source=>{
       for(const table of ['budget_accounts','budget_windows','budget_gateway_bindings','budget_attempts'] as const){
         const rows=await source.query(`SELECT id FROM ${table} WHERE live_member_id=$1`,['member-a']);
@@ -1345,10 +1383,10 @@ describe('inactive budget admission on real PostgreSQL',()=>{
     expect((await db.query('SELECT actual_amount FROM budget_attempts')).rows[0].actual_amount).toBe('0.123456789123456789');
     expect((await store.readStatus(context(),'installation')).state).toBe('frozen');
   });
-  it('carries unknown reservations across explicit windows; old verified settlement never double-charges the new window',async()=>{
+  it('leaves unknown reservations in their own window; old verified settlement never charges the new window',async()=>{
     const a=await admitted();await store.markUnknown(a.attemptId);
     await window(installation,null);await window(accounts['member-a']!,'member-a');
-    expect((await store.readStatus(context())).liability).toBe('0.1');
+    expect((await store.readStatus(context())).liability).toBe('0');
     expect(await store.settle(receipt(a,'0.05'))).toBe('settled');
     expect((await store.readStatus(context())).liability).toBe('0');expect((await store.readStatus(context(),'installation')).liability).toBe('0');
     const original=(await db.query('SELECT member_window_id FROM budget_attempts')).rows[0].member_window_id;

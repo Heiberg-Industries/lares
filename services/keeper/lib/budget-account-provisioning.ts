@@ -194,7 +194,7 @@ const positiveCap=(value:unknown):string|null=>{
 };
 
 /** Gives one account the month. Windows stay immutable and start at zero: an attempt keeps the
- * window it began in, and admission counts every unresolved attempt against the current one. */
+ * window it began in, and only a conflict from an earlier month counts against the current one. */
 async function openAccountMonth(db:SourceDatabase,account:Record<string,any>,cap:string,liveMember:string|null,month:UtcMonth):Promise<boolean>{
   const overlapping=(await db.query(`SELECT id,starts_at=$2::timestamptz AND ends_at=$3::timestamptz AS exact FROM budget_windows
     WHERE account_id=$1 AND starts_at<$3::timestamptz AND ends_at>$2::timestamptz ORDER BY id LIMIT 2 FOR UPDATE`,[account.id,month.startsAt,month.endsAt])).rows;
