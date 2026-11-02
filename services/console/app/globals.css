@@ -294,7 +294,6 @@ th {
 .lares-section-count { color: var(--muted-foreground); font: var(--text-body-sm); }
 .lares-stats-table {
   margin-top: var(--space-2);
-  max-width: 30rem;
 }
 .lares-operational-filter {
   margin-top: var(--space-3);
@@ -320,7 +319,6 @@ th {
 }
 .lares-control-card {
   margin-top: var(--space-2);
-  max-width: 45rem;
 }
 .lares-control-card > .lares-muted {
   margin: var(--space-2) 0 0;
@@ -343,11 +341,29 @@ th {
   max-width: 6rem;
 }
 .lares-wide-input { min-width: min(100%, 14rem); }
+.lares-entity-input { flex: 1 1 14rem; width: auto; }
+.lares-past-row { opacity: .45; }
+.lares-row-controls { display: grid; gap: var(--space-2); min-width: 14rem; }
+.lares-master-detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+.lares-list-option {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: var(--space-2);
+  text-align: left;
+  white-space: normal;
+}
+.lares-list-option[aria-current="true"] { font-weight: 600; }
+.lares-list-option-title { display: block; overflow-wrap: anywhere; }
 .lares-deadline-form {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
   gap: var(--space-3);
-  max-width: 55rem;
 }
 .lares-deadline-submit { align-self: end; }
 .lares-inset-disclosure { margin-top: var(--space-4); }

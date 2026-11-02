@@ -15,6 +15,8 @@
  * `lib/schedule-hours.ts` — a database-free module — never from `lib/schedule-settings.ts`. The
  * row's current values arrive as a prop, read server-side.
  */
+import { Button } from "@lares/ui/primitives/button";
+import { Input } from "@lares/ui/primitives/input";
 import { useState, useTransition } from "react";
 import { saveScheduleHours } from "../app/actions/proactivity";
 import type { SaveResult } from "../app/actions/proactivity";
@@ -33,16 +35,6 @@ export interface ScheduleHoursProps {
   /** Set when `schedule_settings` could not be read (including a table that does not exist yet). */
   unavailable?: boolean;
 }
-
-const inp = {
-  border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 8px",
-  fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--card)", color: "var(--ink)",
-} as const;
-
-const btn = {
-  border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 12px",
-  background: "var(--signal)", color: "#fff", cursor: "pointer", fontSize: 12,
-} as const;
 
 /** "8" or "9, 13, 17" — how a schedule's hours are shown and typed. */
 const hoursText = (hours: number[]): string => hours.join(", ");
@@ -80,16 +72,16 @@ function ScheduleRow({ row }: { row: ScheduleHoursRow }) {
 
   return (
     <tr>
-      <td className="mono" style={{ fontSize: 12 }}>
+      <td className="mono lares-small">
         {row.label}
-        {row.isDefault && <span style={{ color: "var(--mist)" }}> · default</span>}
+        {row.isDefault && <span className="lares-status-muted"> · default</span>}
         {scheduleExplanation(row.schedule) && (
-          <div style={{ color: "var(--mist)", fontFamily: "inherit", marginTop: 2 }}>{scheduleExplanation(row.schedule)}</div>
+          <div className="lares-status-muted">{scheduleExplanation(row.schedule)}</div>
         )}
       </td>
       <td>
-        <input
-          style={{ ...inp, width: single ? 48 : 120 }}
+        <Input
+          className="lares-short-input"
           type="text"
           inputMode="numeric"
           value={text}
@@ -98,14 +90,14 @@ function ScheduleRow({ row }: { row: ScheduleHoursRow }) {
           aria-label={`${row.label} hour${single ? "" : "s"}`}
         />
       </td>
-      <td style={{ color: "var(--mist)", fontSize: 12 }}>
+      <td className="lares-small lares-status-muted">
         {single ? "one hour, 0–23" : "up to 6 hours, comma-separated"}
       </td>
       <td>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button style={btn} disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</button>
+        <div className="lares-actions">
+          <Button type="button" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</Button>
           {msg && (
-            <span className="mono" style={{ fontSize: 12, color: msg.ok ? "var(--ok)" : "var(--bad)" }}>{msg.text}</span>
+            <span className={msg.ok ? "lares-form-success" : "lares-form-error"}>{msg.text}</span>
           )}
         </div>
       </td>
@@ -116,7 +108,7 @@ function ScheduleRow({ row }: { row: ScheduleHoursRow }) {
 export function ScheduleHoursControl({ rows, unavailable }: ScheduleHoursProps) {
   if (unavailable) {
     return (
-      <p className="mono" style={{ marginTop: 8, color: "var(--bad)", fontSize: 12 }}>
+      <p className="mono lares-operational-note lares-status-error">
         Schedule hours couldn&apos;t be read. If this installation has not applied
         sql/001_baseline.sql yet, apply it on the server and reload this page; otherwise
         the database is not answering.
@@ -125,11 +117,11 @@ export function ScheduleHoursControl({ rows, unavailable }: ScheduleHoursProps) 
   }
 
   return (
-    <table className="card" style={{ marginTop: 8 }}>
+    <div className="lares-table-scroll"><table className="card lares-operational-table">
       <thead><tr><th>Schedule</th><th>Hour(s)</th><th /><th /></tr></thead>
       <tbody>
         {rows.map((r) => <ScheduleRow key={r.schedule} row={r} />)}
       </tbody>
-    </table>
+    </table></div>
   );
 }

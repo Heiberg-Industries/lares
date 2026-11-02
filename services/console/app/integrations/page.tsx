@@ -1,6 +1,6 @@
 import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
-import { PageHeader, Page } from "@lares/ui/patterns";
+import { Notice, PageHeader, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { getNotionSyncStatus } from "../../lib/queries";
 import { getConnectionRows } from "../../lib/connections";
@@ -69,17 +69,10 @@ export default async function IntegrationsPage({
       />
 
       {params.added && (
-        <p
-          className="mono"
-          style={{ marginTop: 12, color: "var(--good, #2a7)" }}
-        >
-          ✓ Connected {decodeURIComponent(params.added)}.
-        </p>
+        <Notice>✓ Connected {decodeURIComponent(params.added)}.</Notice>
       )}
       {params.error && (
-        <p className="mono" style={{ marginTop: 12, color: "var(--bad)" }}>
-          ✕ {decodeURIComponent(params.error)}
-        </p>
+        <Notice error>✕ {decodeURIComponent(params.error)}</Notice>
       )}
 
       <p className="lares-muted lares-operational-intro">
@@ -94,19 +87,19 @@ export default async function IntegrationsPage({
         <p className="lares-muted">These services report recorded activity separately from account connections.</p>
       <h2>Notion sync</h2>
       {notionSync.unavailable ? (
-        <p className="mono" style={{ marginTop: 8, color: "var(--bad)" }}>
+        <p className="mono lares-operational-note lares-status-error">
           Status unavailable.
         </p>
       ) : noNotionRun ? (
-        <p className="mono" style={{ marginTop: 8, color: "var(--mist)" }}>
+        <p className="mono lares-operational-note lares-status-muted">
           No sync run recorded. Check the service setup before expecting Notion changes here.
         </p>
       ) : (
-        <p className="mono" style={{ marginTop: 8 }}>
+        <p className="mono lares-operational-note">
           Last run: {notionSync.lastRunAt ?? "never"} · {notionSync.synced}{" "}
           synced
           {notionSync.needsYou > 0 && (
-            <span style={{ color: "var(--bad)" }}>
+            <span className="lares-status-error">
               {" "}
               · {notionSync.needsYou} need you
             </span>
@@ -115,7 +108,7 @@ export default async function IntegrationsPage({
             <span> · {notionSync.retrying} retrying</span>
           )}
           {notionSync.unmatched > 0 && (
-            <span style={{ color: "var(--mist)" }}>
+            <span className="lares-status-muted">
               {" "}
               · {notionSync.unmatched} unmatched
             </span>
@@ -124,7 +117,7 @@ export default async function IntegrationsPage({
       )}
 
       {notionProposals.unavailable ? (
-        <p className="mono" style={{ marginTop: 8, color: "var(--bad)" }}>
+        <p className="mono lares-operational-note lares-status-error">
           Proposals unavailable.
         </p>
       ) : (
@@ -136,14 +129,14 @@ export default async function IntegrationsPage({
       </details>
 
       <h2>Agent permissions</h2>
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+      <p className="lares-muted lares-operational-note">
         These counts record permission checks, not every read or conversation. ✓ acts on its own · ✋ asks first ·
         🚫 never. A change reaches the agent at its next action. 🔒 Some actions
         always ask, even at ✓ (🚫 still refuses them): moving money, deleting
         data, contacting someone for the first time, publishing, an agent
         changing its own autonomy.
       </p>
-      <div className="lares-table-scroll"><table className="card" style={{ marginTop: 8 }}>
+      <div className="lares-table-scroll"><table className="card lares-operational-table">
         <thead>
           <tr>
             <th>Agent</th>
@@ -162,7 +155,7 @@ export default async function IntegrationsPage({
               <td className="mono">
                 {b.capability}
                 {b.actionLabel && (
-                  <span style={{ color: "var(--mist)" }}>
+                  <span className="lares-status-muted">
                     {" "}
                     · {b.actionLabel}
                   </span>
@@ -180,29 +173,29 @@ export default async function IntegrationsPage({
                   <NoControl scope={b.scope} />
                 )}
               </td>
-              <td style={{ color: "var(--mist)", fontSize: 12 }}>
+              <td className="lares-small lares-status-muted">
                 {b.source.kind === "board"
                   ? `${b.source.by}, ${b.source.at.slice(0, 10)}`
                   : "its definition"}
               </td>
-              <td className="mono" style={{ fontSize: 12 }}>
+              <td className="mono lares-small">
                 {b.evidence.asked} asked · {b.evidence.autonomous} on its own ·{" "}
                 {b.evidence.denied} refused
                 {b.evidence.locked > 0 && <> · {b.evidence.locked} 🔒</>}
                 {b.evidence.failedClosed > 0 && (
                   <> · {b.evidence.failedClosed} couldn&apos;t check</>
                 )}
-                <div style={{ color: "var(--mist)", marginTop: 2 }}>
+                <div className="lares-status-muted">
                   {answersLine(b.answers)}
                 </div>
                 {b.couldGraduate && (
-                  <div style={{ color: "var(--mist)", marginTop: 2 }}>
+                  <div className="lares-status-muted">
                     You have approved every one of these. You could set this to
                     act on its own.
                   </div>
                 )}
               </td>
-              <td style={{ fontSize: 12 }}>
+              <td className="lares-small">
                 {b.lockedTools.length === 0
                   ? "—"
                   : b.lockedTools.map((l) => (

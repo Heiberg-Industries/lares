@@ -96,7 +96,7 @@ export default async function DeadlinesPage() {
           ({today}, your clock)
         </span>
       </h2>
-      <table className="card" style={{ marginTop: 8 }}>
+      <div className="lares-table-scroll"><table className="card lares-operational-table">
         <thead>
           <tr>
             <th>Entity</th>
@@ -113,7 +113,7 @@ export default async function DeadlinesPage() {
         <tbody>
           {openRows.length === 0 && (
             <tr>
-              <td colSpan={9} style={{ color: "var(--mist)" }}>
+              <td colSpan={9} className="lares-status-muted">
                 Nothing open.
               </td>
             </tr>
@@ -122,7 +122,7 @@ export default async function DeadlinesPage() {
             <OpenRow key={row.id} row={row} />
           ))}
         </tbody>
-      </table>
+      </table></div>
       <p className="lares-muted lares-operational-note">Done closes a completed deadline; Dismiss closes one that no longer applies. Both ask for a reason before saving.</p>
 
       <h2>
@@ -131,7 +131,7 @@ export default async function DeadlinesPage() {
       <p className="lares-muted lares-operational-intro">
         Deadlines the mail scanner has spotted but not yet turned into a row.
       </p>
-      <table className="card" style={{ marginTop: 8 }}>
+      <div className="lares-table-scroll"><table className="card lares-operational-table">
         <thead>
           <tr>
             <th>Subject</th>
@@ -144,7 +144,7 @@ export default async function DeadlinesPage() {
         <tbody>
           {candidates.length === 0 && (
             <tr>
-              <td colSpan={5} style={{ color: "var(--mist)" }}>
+              <td colSpan={5} className="lares-status-muted">
                 No unresolved candidates.
               </td>
             </tr>
@@ -153,7 +153,7 @@ export default async function DeadlinesPage() {
             <CandidateRow key={c.threadId} candidate={c} />
           ))}
         </tbody>
-      </table>
+      </table></div>
 
       <h2>
         Closed, last 20{" "}
@@ -161,7 +161,7 @@ export default async function DeadlinesPage() {
           ({view.closed.length} shown)
         </span>
       </h2>
-      <table className="card" style={{ marginTop: 8 }}>
+      <div className="lares-table-scroll"><table className="card lares-operational-table">
         <thead>
           <tr>
             <th>Entity</th>
@@ -175,42 +175,33 @@ export default async function DeadlinesPage() {
         <tbody>
           {view.closed.length === 0 && (
             <tr>
-              <td colSpan={6} style={{ color: "var(--mist)" }}>
+              <td colSpan={6} className="lares-status-muted">
                 Nothing closed yet.
               </td>
             </tr>
           )}
           {view.closed.map((d) => (
             <tr key={d.id}>
-              <td className="mono" style={{ fontSize: 12 }}>
+              <td className="mono lares-small">
                 {d.entity}
               </td>
-              <td style={{ fontSize: 13 }}>{d.title}</td>
-              <td className="mono" style={{ fontSize: 12 }}>
+              <td className="lares-small">{d.title}</td>
+              <td className="mono lares-small">
                 {d.dueDate}
               </td>
-              <td
-                className="mono"
-                style={{
-                  fontSize: 12,
-                  color: d.status === "done" ? "var(--ok)" : "var(--mist)",
-                }}
-              >
+              <td className={`mono lares-small ${d.status === "done" ? "lares-status-success" : "lares-status-muted"}`}>
                 {d.status}
               </td>
-              <td style={{ fontSize: 12, color: "var(--mist)" }}>
+              <td className="lares-small lares-status-muted">
                 {d.statusReason ?? "—"}
               </td>
-              <td
-                className="mono"
-                style={{ fontSize: 12, color: "var(--mist)" }}
-              >
+              <td className="mono lares-small lares-status-muted">
                 {d.resolvedAt ? d.resolvedAt.toISOString().slice(0, 10) : "—"}
               </td>
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
       <details className="lares-disclosure">
         <summary>Add a deadline</summary>{" "}
         <h2>
