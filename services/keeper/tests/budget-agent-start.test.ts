@@ -104,7 +104,7 @@ it('applies the default limit only to a person without one',async()=>{
 it('refuses an amount the ledger would not store as written',async()=>{
   for(const monthlyLimit of ['0','12.50','ten'])
     await expect(runAction('budget.apply-default-member-limit',{memberId:owner,monthlyLimit},context(),{host:true}),monthlyLimit).rejects.toThrow(/invalid/);
-  expect(await limitOf(owner)).toBeUndefined();
+  expect(await limitOf(owner)).toBeNull();
 });
 
 it('sees access, the account and the binding once they exist',async()=>{
