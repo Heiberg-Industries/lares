@@ -1,4 +1,5 @@
-/** Root-host account/window provisioning. New state is always closed and unreconciled. */
+/** Root-host account/window provisioning, where new state is always closed and unreconciled,
+ * and the monthly opening that gives accounts already in use their next UTC month. */
 import {randomUUID} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
 import {z} from 'zod';
@@ -185,4 +186,128 @@ export async function provisionBudgetAccounts(pool:SourcePool,journal:HostFinanc
   // terminal journal fsync, an expired closed result is withheld without inventing an abort.
   if(activeDeadline!==undefined&&performance.now()>=activeDeadline)throw new Error('Budget account provisioning outcome is unavailable');
   return result;
+}
+
+export type BudgetMonthOpening={opened:number;skipped:number;blocked:number;failed:number};
+const positiveCap=(value:unknown):string|null=>{
+  try{const cap=canonicalMoney(value);return cap==='0'?null:cap;}catch{return null;}
+};
+
+/** Gives one account the month. Windows stay immutable and start at zero: an attempt keeps the
+ * window it began in, and only a conflict from an earlier month counts against the current one. */
+async function openAccountMonth(db:SourceDatabase,account:Record<string,any>,cap:string,liveMember:string|null,month:UtcMonth):Promise<boolean>{
+  const overlapping=(await db.query(`SELECT id,starts_at=$2::timestamptz AND ends_at=$3::timestamptz AS exact FROM budget_windows
+    WHERE account_id=$1 AND starts_at<$3::timestamptz AND ends_at>$2::timestamptz ORDER BY id LIMIT 2 FOR UPDATE`,[account.id,month.startsAt,month.endsAt])).rows;
+  if(overlapping.length){
+    if(overlapping.length===1&&overlapping[0]!.exact===true&&overlapping[0]!.id===account.active_window_id)return false;
+    throw refusal();
+  }
+  // Refuses a database clock that moved back: only a month that has ended is ever replaced.
+  const previous=(await db.query('SELECT ends_at<=$3::timestamptz AS ended FROM budget_windows WHERE id=$1 AND account_id=$2',[account.active_window_id,account.id,month.startsAt])).rows[0];
+  if(previous?.ended!==true)throw refusal();
+  const generation=BigInt(String(account.policy_generation));
+  if(generation<0n||generation>=10n**18n)throw refusal();
+  const windowId=id();
+  await db.query(`INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision)
+    VALUES($1,$2,$3,$4::timestamptz,$5::timestamptz,0,$6,$7)`,[windowId,account.id,liveMember,month.startsAt,month.endsAt,cap,String(generation+1n)]);
+  noteBudgetFinancialChange(db,'budget_windows',windowId);
+  const updated=(await db.query('UPDATE budget_accounts SET active_window_id=$2 WHERE id=$1 AND state=$3 AND reason=$4 RETURNING id',[account.id,windowId,account.state,account.reason])).rows[0];
+  if(!updated)throw refusal();
+  noteBudgetFinancialChange(db,'budget_accounts',account.id);
+  return true;
+}
+
+async function openInstallationMonth(db:SourceDatabase,installationId:string):Promise<boolean>{
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('lares-budget-account-provisioning',0))");
+  const install=(await db.query(`SELECT * FROM budget_accounts WHERE id=$1 AND kind='installation' FOR UPDATE`,[installationId])).rows[0];
+  if(install?.state!=='open'||install.reason!=='approved')throw refusal();
+  const cap=positiveCap(install.installation_cap);if(!cap)throw refusal();
+  return openAccountMonth(db,install,cap,null,await databaseMonth(db));
+}
+
+/** Same lock order as provisioning and admission: source and policy rows, then financial rows. */
+async function openMemberMonth(db:SourceDatabase,installationId:string,accountId:string,memberId:string):Promise<boolean>{
+  await gateConsoleOrganisation(db,memberId);requireConsoleSourceOwner(db);
+  const user=(await db.query('SELECT org_id FROM users WHERE id=$1',[memberId])).rows[0];
+  const policy=(await db.query('SELECT spend_cap_usd_month FROM org_member_policy WHERE user_id=$1 FOR SHARE',[memberId])).rows[0];
+  const cap=positiveCap(policy?.spend_cap_usd_month);if(!cap)throw refusal();
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('lares-budget-account-provisioning',0))");
+  const install=(await db.query(`SELECT * FROM budget_accounts WHERE id=$1 AND kind='installation' FOR UPDATE`,[installationId])).rows[0];
+  if(install?.state!=='open'||install.reason!=='approved')throw refusal();
+  const member=(await db.query(`SELECT * FROM budget_accounts WHERE id=$1 AND kind='member' AND installation_account_id=$2 FOR UPDATE`,[accountId,installationId])).rows[0];
+  if(!member||member.live_member_id!==memberId||member.organisation_id!==user?.org_id||
+    !(member.state==='open'&&member.reason==='approved'||member.state==='closed'&&member.reason==='unreconciled'))throw refusal();
+  const month=await databaseMonth(db);
+  const installationCurrent=(await db.query('SELECT 1 FROM budget_windows WHERE id=$1 AND starts_at=$2::timestamptz AND ends_at=$3::timestamptz',[install.active_window_id,month.startsAt,month.endsAt])).rows.length;
+  if(!installationCurrent)throw refusal();
+  return openAccountMonth(db,member,cap,memberId,month);
+}
+
+/** Opens the current UTC month for an open installation and its members, leaving frozen, retired
+ * and erased accounts alone. A refused transaction spends journal records, so this read sets aside
+ * whatever it can already see would be refused, without opening a journal operation. Finding
+ * nothing to do writes nothing. A commit that crosses midnight is harmless: it leaves an ended
+ * window that admission refuses and the next pass replaces. Runs as provisioning in the journal,
+ * which an older Keeper can still read after a rollback. */
+export async function openBudgetMonth(pool:SourcePool,journal:HostFinancialJournal,shouldStop:()=>boolean=()=>false):Promise<BudgetMonthOpening>{
+  const result:BudgetMonthOpening={opened:0,skipped:0,blocked:0,failed:0};
+  const month=await databaseMonth(pool as unknown as QueryDatabase);
+  const accounts=(await pool.query(`SELECT a.id,a.kind,a.installation_account_id,a.live_member_id,u.status AS member_status,u.org_id IS NOT DISTINCT FROM a.organisation_id AS same_organisation,
+      p.spend_cap_usd_month::text AS member_cap,(w.starts_at=$1::timestamptz AND w.ends_at=$2::timestamptz) AS current_month,w.ends_at<=$1::timestamptz AS ended,
+      EXISTS(SELECT 1 FROM budget_windows o WHERE o.account_id=a.id AND o.starts_at<$2::timestamptz AND o.ends_at>$1::timestamptz) AS overlapping
+    FROM budget_accounts a JOIN budget_accounts i ON i.id=a.installation_account_id
+      LEFT JOIN budget_windows w ON w.id=a.active_window_id
+      LEFT JOIN users u ON u.id=a.live_member_id
+      LEFT JOIN org_member_policy p ON p.user_id=a.live_member_id
+    WHERE i.kind='installation' AND i.state='open' AND i.reason='approved' AND (a.kind='installation' OR (a.live_member_id IS NOT NULL AND
+      ((a.state='open' AND a.reason='approved') OR (a.state='closed' AND a.reason='unreconciled'))))
+    ORDER BY a.kind,a.id LIMIT 129`,[month.startsAt,month.endsAt])).rows;
+  const writer=new JournalBudgetFinancialWriter(journal);
+  let installationCurrent=false,wrote=false;
+  for(const account of accounts){
+    if(account.current_month===true){if(account.kind==='installation')installationCurrent=true;continue;}
+    if(account.overlapping===true||account.ended!==true){result.blocked++;continue;}
+    if(account.kind==='member'&&(account.member_status!=='active'||!positiveCap(account.member_cap))){result.skipped++;continue;}
+    if(account.kind==='member'&&(!installationCurrent||account.same_organisation!==true)){result.blocked++;continue;}
+    if(shouldStop())break;
+    // A gap between accounts lets a waiting grant or settlement take the journal.
+    if(wrote)await new Promise(resolve=>setTimeout(resolve,20));
+    wrote=true;
+    try{
+      const opened=await writer.run('provision',boundary=>consoleSourceTransaction(pool,db=>account.kind==='installation'
+        ?openInstallationMonth(db,account.id):openMemberMonth(db,account.installation_account_id,account.id,account.live_member_id),boundary));
+      if(opened)result.opened++;
+      if(account.kind==='installation')installationCurrent=true;
+    }catch{result.failed++;}
+  }
+  return result;
+}
+
+const MONTH_CHECK_MS=5*60_000,MONTH_RETRY_MIN_MS=1000,MONTH_RETRY_MAX_MS=60*60_000;
+/** Keeps the month open while Keeper runs: a catch-up at start, then a pass right after each UTC
+ * month ends. A failed account retries, slower each time, because a refusal spends journal records;
+ * the wait never runs past the next month change. The checks in between only read. Log lines carry
+ * counts, never identities. */
+export function startBudgetMonthOpening(pool:SourcePool,journal:HostFinancialJournal,log:(line:string)=>void=console.warn):()=>Promise<void>{
+  let stopped=false,timer:ReturnType<typeof setTimeout>|undefined,running:Promise<void>=Promise.resolve(),retry=MONTH_RETRY_MIN_MS,reported='';
+  const report=(line:string)=>{if(line&&line!==reported)log(line);reported=line;};
+  const pass=async()=>{
+    let delay=Math.min(retry,MONTH_CHECK_MS);
+    try{
+      const {endsAt}=await databaseMonth(pool as unknown as QueryDatabase);
+      const result=await openBudgetMonth(pool,journal,()=>stopped);
+      if(result.opened)log(`keeper: budget month opened for ${result.opened} accounts`);
+      report(result.skipped||result.blocked||result.failed?`keeper: budget month not opened for every account: ${result.skipped} without a usable limit, ${result.blocked} blocked, ${result.failed} failed`:'');
+      const row=(await pool.query(`SELECT floor(extract(epoch FROM ($1::timestamptz-clock_timestamp()))*1000)::text AS remaining_ms`,[endsAt])).rows[0];
+      const remaining=Number(row?.remaining_ms),untilChange=Number.isFinite(remaining)?Math.max(remaining+50,100):MONTH_CHECK_MS;
+      delay=Math.min(result.failed?retry:MONTH_CHECK_MS,untilChange);
+      retry=result.failed?Math.min(retry*2,MONTH_RETRY_MAX_MS):MONTH_RETRY_MIN_MS;
+    }catch{
+      report('keeper: budget month check failed; retrying');
+      retry=Math.min(retry*2,MONTH_RETRY_MAX_MS);
+    }
+    if(!stopped)timer=setTimeout(()=>{running=pass();},delay);
+  };
+  running=pass();
+  return async()=>{stopped=true;if(timer)clearTimeout(timer);await running;};
 }

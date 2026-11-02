@@ -2,24 +2,27 @@
  * No model/provider credentials or installation data. */
 import { Pool } from 'pg';
 import { spawn } from 'node:child_process';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { getPool, closePool } from '@lares/agent-kit/db';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
-import { bindConsoleSession } from '@lares/agent-kit/console-turn-authority';
+import { bindConsoleSession, consoleAdmission, consoleRouteAdmission, requireConsoleTurnAuthority } from '@lares/agent-kit/console-turn-authority';
+import { assertPrivateConsoleRequest } from '@lares/agent-kit/private-console-envelope';
+import { exactResolverAdmission, privateResolverAdmission, requireConsoleResume, requirePrivateConsoleResume } from '@lares/agent-kit/private-console-resume';
 import { reserveExactApproval, attachExactApproval, approveExactResponse, requireApprovedExecution, settleExactInput } from '@lares/agent-kit/approval-execution';
 import { recordAsk, recordAnswer, assertApprovedCall, approvalLedger, payloadFingerprint, APPROVAL_TTL_MS } from '@lares/agent-kit/approval-ledger';
 import { readApprovalCounts } from '@lares/agent-kit/approval-stats';
 import { makeApprovalRecord } from '@lares/agent-kit/approval-record-hook';
 import { deadlineApprovalAdapter, dismissExactDeadline } from '../lib/deadlines-store.js';
 import resolver from '../agent/tools/catalogue.js';
-import { humanTurnRefusal } from '../lib/approvals.js';
+import { assertApproval, catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution, humanTurnRefusal, runApprovedTwentyTrackOnce } from '../lib/approvals.js';
+import { TwentyTracksHome } from '../lib/twenty-tracks.js';
 
 const inc='11111111-1111-4111-8111-111111111111';
 const env={LARES_AGENT_NAME:'helper',LARES_AGENT_INCARNATION:inc,AGENT_OWNER_USER_ID:'member-a'};
-const auth=(purpose='human',member='member-a',nonce='a'.repeat(43))=>({authenticator:'lares-console',principalId:member,principalType:'user',attributes:{user_id:member,lares_member_id:member,lares_admission_nonce:nonce,lares_purpose:purpose}});
+const auth=(purpose='human',member='member-a',nonce='a'.repeat(43))=>({authenticator:'lares-console',principalId:member,principalType:'user',attributes:{user_id:member,lares_member_id:member,lares_admission_nonce:nonce,lares_purpose:purpose,...(purpose==='resolver'?{lares_resume_request_id:'request-1',lares_resume_option:'approve'}:{})}});
 const input={id:'11111111-2222-4333-8444-555555555555',reason:'Duplicate filing'};
 const context=(purpose='human',raw:unknown=input)=>({callId:'call-1',toolName:'deadline_dismiss',toolInput:raw,abortSignal:new AbortController().signal,approvedTools:new Set<string>(),session:{id:'wrun_exact',turn:{id:purpose==='human'?'turn-original':'turn-resolver',sequence:purpose==='human'?0:1},auth:{current:auth(purpose),initiator:auth()}}});
 const def={name:'helper',model:'fixture-brain',persona:'voice.md',role:'chief-of-staff',channels:[],grants:[{capability:'deadline',scope:'write-with-confirm'}],autonomy:{deadline:'gated'},skills:[]};
@@ -285,5 +288,160 @@ describe('exact private approval execution',()=>{
   await expect(tool.execute(input,context())).rejects.toThrow('Conversation authority');
   await expect(tool.execute(input,context('resolver'))).rejects.toThrow('Conversation authority');
   await stillOpen();
+ });
+});
+
+describe('answering an exact card through the private route',()=>{
+ const body=(requestId='request-1',optionId='approve')=>JSON.stringify({inputResponses:[{requestId,optionId}]});
+ async function answer(o:{member?:string;nonce?:string;session?:string;requestId?:string;optionId?:string}={}){
+  const r=new Request(`http://runtime.invalid/eve/v1/session/${o.session??'wrun_exact'}`,{method:'POST',body:body(o.requestId,o.optionId),
+   headers:{'x-lares-member-id':o.member??'member-a','x-lares-admission':o.nonce??'a'.repeat(43),'x-lares-purpose':'resolver'}});
+  await assertPrivateConsoleRequest(r);return consoleRouteAdmission(r,getPool(),env);
+ }
+ const answered=(requestId='request-1',optionId='approve',nonce='a'.repeat(43))=>({authenticator:'lares-console',attributes:{lares_member_id:'member-a',lares_admission_nonce:nonce,lares_purpose:'resolver',lares_resume_request_id:requestId,lares_resume_option:optionId}});
+ const resumed=(current:unknown)=>({session:{id:'wrun_exact',turn:{id:'',sequence:1},auth:{current,initiator:auth()}}});
+ async function backdate(){
+  const ask=(await getPool().query("SELECT * FROM approval_asks WHERE request_id='request-1'")).rows[0];
+  await getPool().query("DELETE FROM approval_asks WHERE request_id='request-1'");
+  await getPool().query("INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,session_id,asked_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()-interval '25 hours')",[ask.call_id,ask.request_id,ask.agent,ask.tool,ask.payload_hash,ask.original_authority,ask.acting_member_id,ask.session_id]);
+ }
+ it('admits the member who started the conversation, with their original admission and this card only',async()=>{
+  await reserved();
+  const attrs=await answer();
+  expect(attrs).toEqual({lares_member_id:'member-a',lares_admission_nonce:'a'.repeat(43),lares_purpose:'resolver',lares_resume_request_id:'request-1',lares_resume_option:'approve'});
+  expect(consoleAdmission({authenticator:'lares-console',attributes:attrs})).toEqual({memberId:'member-a',admissionNonce:'a'.repeat(43),purpose:'resolver'});
+  expect(privateResolverAdmission({authenticator:'lares-console',attributes:attrs})).toBeUndefined();
+  expect(exactResolverAdmission({authenticator:'lares-console',attributes:attrs})).toMatchObject({memberId:'member-a',requestId:'request-1',optionId:'approve'});
+  await expect(requireConsoleTurnAuthority({session:{id:'wrun_exact',turn:{id:'t',sequence:1},auth:{current:{authenticator:'lares-console',attributes:attrs},initiator:auth()}}})).rejects.toThrow('Conversation authority');
+ });
+ it('refuses another member, another admission, another conversation and an unknown card',async()=>{
+  await reserved();
+  await getPool().query("INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('member-b',NULL) ON CONFLICT DO NOTHING");
+  await expect(answer({member:'member-b'})).rejects.toThrow();
+  await expect(answer({nonce:'z'.repeat(43)})).rejects.toThrow();
+  await bindConsoleSession({agent:'helper',incarnation:inc,sessionId:'wrun_other',memberId:'member-a',admissionNonce:'b'.repeat(43)});
+  await expect(answer({session:'wrun_other',nonce:'b'.repeat(43)})).rejects.toThrow();
+  await expect(answer({session:'wrun_other'})).rejects.toThrow();
+  await expect(answer({requestId:'forged-request'})).rejects.toThrow();
+ });
+ it('takes no answer to a settled or spent card',async()=>{
+  await approved();
+  await expect(answer()).resolves.toMatchObject({lares_resume_request_id:'request-1'});
+  await expect(answer({optionId:'cancel'})).rejects.toThrow();
+  await getPool().query("UPDATE approval_asks SET used_at=clock_timestamp(),use_count=1 WHERE request_id='request-1'");
+  await expect(answer()).rejects.toThrow();
+  await expect(answer({optionId:'cancel'})).rejects.toThrow();
+  await getPool().query("DELETE FROM approval_asks");await reserved();
+  await settleExactInput('request-1','cancelled');
+  await expect(answer()).rejects.toThrow();
+  await expect(answer({optionId:'cancel'})).rejects.toThrow();
+ });
+ it('refuses an approval once the card has expired, and still lets it be cancelled',async()=>{
+  await reserved();await backdate();
+  await expect(answer()).rejects.toThrow();
+  await expect(answer({optionId:'cancel'})).resolves.toMatchObject({lares_resume_option:'cancel'});
+ });
+ it('uses the earlier of the two lifetimes the reservation carries',async()=>{
+  await reserveExactApproval(context(),'deadline_dismiss',{...opts(),now:new Date(Date.now()-25*60*60_000)});
+  await attachExactApproval({requestId:'request-1',callId:'call-1',tool:'deadline_dismiss',input});
+  await expect(answer()).rejects.toThrow();
+ });
+ it('refuses a tampered reservation rather than treating it as absent',async()=>{
+  await reserved();
+  await getPool().query("ALTER TABLE approval_asks DISABLE TRIGGER exact_approval_authority_guard");
+  try{
+   await getPool().query("UPDATE approval_asks SET original_authority=original_authority||'{\"admissionHash\":\"changed\"}'::jsonb WHERE request_id='request-1'");
+   await expect(answer()).rejects.toThrow();
+  }finally{await getPool().query("ALTER TABLE approval_asks ENABLE TRIGGER exact_approval_authority_guard");}
+ });
+ it('approves only the card this answer named, and only an approve answer',async()=>{
+  await reserved();
+  const respond=(responder:unknown)=>approveExactResponse({...response(),responder},opts());
+  await expect(respond(answered('another-request'))).rejects.toThrow();
+  await expect(respond(answered('request-1','cancel'))).rejects.toThrow();
+  await expect(respond(auth('human'))).rejects.toThrow();
+  await expect(respond({authenticator:'lares-console',attributes:{lares_member_id:'member-a',lares_admission_nonce:'a'.repeat(43),lares_purpose:'resolver'}})).rejects.toThrow();
+  await expect(respond(answered('request-1','approve','z'.repeat(43)))).rejects.toThrow();
+  expect((await getPool().query("SELECT outcome FROM approval_asks WHERE request_id='request-1'")).rows[0].outcome).toBeNull();
+  await expect(respond(answered())).resolves.toEqual({status:'allowed'});
+ });
+ it('lets the model continue only after this member answered, and never past expiry',async()=>{
+  await reserved();
+  await expect(requireConsoleResume(resumed(answered()),'surface',{env})).resolves.toMatchObject({binding:{memberId:'member-a'}});
+  await expect(requireConsoleResume(resumed(answered()),'model',{env})).rejects.toThrow();
+  await expect(requireConsoleResume(resumed(answered('request-1','cancel')),'model',{env})).rejects.toThrow();
+  await approveExactResponse(response(),opts());
+  await expect(requireConsoleResume(resumed(answered()),'model',{env})).resolves.toMatchObject({validUntil:expect.any(String)});
+  await expect(requireConsoleResume(resumed(answered('request-1','approve','z'.repeat(43))),'model',{env})).rejects.toThrow();
+  await expect(requirePrivateConsoleResume(resumed(answered()),'action',{env})).rejects.toThrow();
+  await settleExactInput('request-1','cancelled');
+  await expect(requireConsoleResume(resumed(answered()),'model',{env})).rejects.toThrow();
+  await expect(requireConsoleResume(resumed(answered('request-1','cancel')),'model',{env})).resolves.toBeDefined();
+ });
+ it('refuses a new card during an approval resume without failing the turn',async()=>{
+  await approved();
+  await expect(catalogueApprovalRequest('track_create',{...context('resolver'),callId:'another-call',toolName:'track_create'},()=>'user-approval')).resolves.toBe('denied');
+  expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(1);
+ });
+ it('runs nothing under a cancel answer, even a call approved earlier',async()=>{
+  await approved();
+  const cancelling=context('resolver');
+  (cancelling.session.auth.current.attributes as Record<string,unknown>).lares_resume_option='cancel';
+  await expect(requireApprovedExecution(cancelling,'deadline_dismiss',input,opts())).rejects.toThrow();
+  const unnamed=context('resolver');
+  delete (unnamed.session.auth.current.attributes as Record<string,unknown>).lares_resume_option;
+  await expect(requireApprovedExecution(unnamed,'deadline_dismiss',input,opts())).rejects.toThrow();
+  await expect(requireApprovedExecution(context('resolver'),'deadline_dismiss',input,opts())).resolves.toMatchObject({callId:'call-1'});
+ });
+ describe('a card that writes to the company CRM',()=>{
+  const twenty={home:'twenty',trackId:'sales',who:{personId:'person-1'},step:'Open',note:'n',sourceSignal:'s'};
+  const crm=(member='member-a')=>({...context('human',twenty),toolName:'track_add_item',session:{...context('human',twenty).session,auth:{current:auth('human',member),initiator:auth('human',member)}}});
+  const answerCard=(raw:unknown=twenty)=>({request:{requestId:'request-1',callId:'call-1',toolName:'track_add_item',toolInput:raw},responder:auth('resolver'),session:{id:'wrun_exact',initiator:auth(),turn:{id:'t',sequence:1}}});
+  const running=()=>({...context('resolver',twenty),toolName:'track_add_item'});
+  let listTracks:ReturnType<typeof vi.spyOn>;
+  beforeEach(async()=>{
+   await getPool().query("UPDATE agent_resources SET applied_definition=$1 WHERE name='helper'",[{...def,grants:[{capability:'twenty',scope:'write-with-confirm'}],autonomy:{twenty:'gated'}}]);
+   listTracks=vi.spyOn(TwentyTracksHome.prototype,'listTracks').mockResolvedValue([{id:'sales',name:'Sales',purpose:'Work',steps:['Open','Won'],closingSteps:['Won']}]);
+  });
+  afterEach(()=>{listTracks.mockRestore();});
+  async function raise(){
+   expect(await catalogueApprovalRequest('track_add_item',crm(),()=>'user-approval')).toBe('user-approval');
+   await attachExactApproval({requestId:'request-1',callId:'call-1',tool:'track_add_item',input:twenty});
+  }
+  it('lets the designated owner raise, answer and run it once',async()=>{
+   await raise();
+   await expect(catalogueApprovalResponse('track_add_item',answerCard())).resolves.toEqual({status:'allowed'});
+   await expect(guardCatalogueExecution(running(),'track_add_item',twenty)).resolves.toBeUndefined();
+   const approved=await assertApproval(running(),'track_add_item',twenty);
+   const write=vi.fn(async()=>'written');
+   await expect(runApprovedTwentyTrackOnce(approved,write)).resolves.toBe('written');
+   await expect(runApprovedTwentyTrackOnce(approved,write)).rejects.toThrow();
+   expect(write).toHaveBeenCalledOnce();
+  });
+  it('refuses every other member before a card or a CRM read, including another with the owner role',async()=>{
+   await bindConsoleSession({agent:'helper',incarnation:inc,sessionId:'wrun_b',memberId:'member-b',admissionNonce:'b'.repeat(43)}).catch(()=>undefined);
+   const other=crm('member-b');
+   await expect(catalogueApprovalRequest('track_add_item',other,()=>'user-approval')).resolves.toMatchObject({type:'denied'});
+   expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(0);
+   expect(listTracks).not.toHaveBeenCalled();
+  });
+  it('refuses the answer once the owner has lost the role',async()=>{
+   await raise();
+   await getPool().query("UPDATE users SET org_role='member' WHERE id='member-a'");
+   await expect(catalogueApprovalResponse('track_add_item',answerCard())).rejects.toThrow();
+  });
+  it('refuses the execution once there is no designated owner',async()=>{
+   await raise();
+   await catalogueApprovalResponse('track_add_item',answerCard());
+   vi.stubEnv('AGENT_OWNER_USER_ID','');
+   try{await expect(assertApproval(running(),'track_add_item',twenty)).rejects.toThrow();}
+   finally{vi.stubEnv('AGENT_OWNER_USER_ID','member-a');}
+  });
+ });
+ it('gives an approval resume no reading rights',async()=>{
+  await approved();
+  await expect(guardCatalogueExecution(context('resolver'),'tracks_list',{})).rejects.toThrow();
+  await expect(guardCatalogueExecution(context('resolver'),'gmail_read',{id:'x'})).rejects.toThrow();
+  await expect(guardCatalogueExecution({...context('resolver'),callId:'another-call'},'deadline_dismiss',input)).rejects.toThrow();
  });
 });

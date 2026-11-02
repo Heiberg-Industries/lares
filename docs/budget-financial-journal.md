@@ -74,6 +74,15 @@ other fields in its JSON object:
 Startup opens existing custody and verifies continuity before exposing sockets.
 These steps prepare custody only. Spending remains closed.
 
+Three startup outcomes follow. When continuity holds, Keeper takes the writer lease.
+When the journal is frozen, or the check durably freezes it, Keeper keeps running with
+spending closed: it logs that the ledger is frozen, takes no writer lease and refuses
+every journal operation, while restore's host freeze still works. When the database
+cannot answer yet, this start fails and writes nothing, and the restart policy tries
+again. Custody that cannot be opened at all (missing key, changed files, another
+writer) still stops Keeper, because a missing journal must never look like an
+installation without financial custody.
+
 ## Kernel ownership, framing and capacity
 
 On Linux, util-linux `flock` locks an inherited open file description. The parent
@@ -81,8 +90,10 @@ retains that descriptor for the writer lifetime after the acquisition child exit
 A competing writer refuses immediately. There is no PID file, TTL, lock stealing
 or expiring lease. Closing an active operation refuses. Normal keeper shutdown
 stops new financial operations, drains the current owner and appends/fsyncs a clean
-writer-close before releasing custody. A crash leaves an unclean writer; a
-subsequent prepared open durably freezes it before any result can resume.
+writer-close before releasing custody. It does this before closing its database pools,
+so a database that has already gone cannot delay it. Those pools tolerate dropped
+connections, so a database restart does not end the process. A crash leaves an unclean
+writer; a subsequent prepared open durably freezes it before any result can resume.
 
 Each canonical JSON line has a version, sequence, operation UUID, previous digest,
 strict record body and SHA256 integrity digest. Records are at most 65,536 bytes;
@@ -105,15 +116,33 @@ custody; they do not prevent privileged host rewrites or full host rollback.
 A strict control record in the journal binds its journal identity to:
 
 - PostgreSQL's `pg_control_system().system_identifier` as decimal text;
-- `pg_postmaster_start_time()` with all six fractional digits;
+- `pg_postmaster_start_time()` with all six fractional digits, recorded as evidence;
 - the current database's OID;
 - the last completed operation's checkpoint tuple, or null before one exists.
 
-A clean keeper-only restart can resume continuity with the identical running
-PostgreSQL instance and matching completed checkpoint. A missing or ambiguous
-observation, PostgreSQL restart, fresh cluster, changed database, mismatched
-checkpoint or unclean journal durably freezes custody. Matching later database
-state never clears a freeze. No database epoch is used as a recovery witness.
+Identity is the system identifier and the database OID. Continuity holds when both
+match and every checkpoint and financial row matches the journal's complete fold.
+The start time is not compared, because every ordinary restart changes it. Each
+observation record keeps the start time it saw, so restarts stay visible in history.
+A keeper restart, a PostgreSQL restart under a running keeper and a full server
+reboot therefore all resume when that comparison holds and the journal has nothing
+unfinished.
+
+A fresh cluster, changed database, mismatched row or checkpoint, or unclean journal
+durably freezes custody. So does a missing or ambiguous observation, except during
+Keeper startup: no operation has run then, so a database that does not answer proves
+nothing and the start simply fails without a record. An answer that is wrong, or a
+database with no ledger tables, still freezes. Matching later database state never clears a freeze. No database epoch is
+used as a recovery witness.
+
+An older copy of the same database lacks later checkpoints and rows, so it is refused
+even though its identity matches. The one exception is a copy swapped in by hand with
+no financial change since it was taken: its money rows are correct, but non-financial
+data such as a spending limit saved afterwards may be older, and nothing detects that.
+`restore.sh` is not affected, because it freezes custody before replacing anything.
+
+A process crash, a power cut, or a restart that lands inside a running operation
+still leaves an unclean journal or an unknown outcome, and still freezes custody.
 
 The optional `JournalBudgetFinancialWriter` follows this order:
 
@@ -137,6 +166,42 @@ BEGIN/COMMIT/ROLLBACK acknowledgement remains unknown despite later cleanup,
 destroys the borrowed connection, freezes custody and exposes no financial result.
 Failure of journal/control durability after financial COMMIT retains database
 liability/checkpoint and returns no permit or ticket.
+
+### Overlapping operations
+
+The journal runs one operation at a time, and a model call needs four: prepare, admit,
+grant and settle. So two people or agents calling at the same moment overlap often.
+A step that finds the journal busy waits in line rather than failing the person's turn:
+
+| Step | Waits up to | Place in line |
+| --- | --- | --- |
+| Prepare | 1 second | Arrival order |
+| Admit | 1 second | Arrival order |
+| Grant | 1.5 seconds | Ahead of the steps above |
+| Settle | 2 seconds | Ahead of the steps above |
+
+Grant and settle go first because the gateway never resends them: a lost grant or
+settlement holds that call's whole reservation for good. Prepare and admit have
+spent nothing yet, so they can still be refused safely.
+
+The turn passes on when an operation ends and is taken in the same moment, so nothing
+overtakes the line. There is no lock stealing and no way to displace a running
+operation. A wait that runs out does no work and writes nothing, and the step is refused
+as before. A refused prepare or admit has reserved nothing; a refused grant or settle
+leaves its reservation held. Stopping the keeper, a restore freeze or any other freeze
+refuses everyone in line at once. Every other operation, such as provisioning or member
+removal, still refuses straight away if the journal is busy.
+
+The gateway's recovery check before admit does not wait. It reads only committed journal
+state, never a pending proposal, while another operation runs. Admit then verifies the
+database against the journal in its own turn and compares the check's answer with the
+current row under lock, so an answer overtaken by a later change is refused.
+
+A step leaves the line while its caller still has time, so it never starts after the
+caller has given up. Prepare's wait ends well inside the broker's 2 seconds. Admit, grant
+and settle share the gateway's 3 seconds: admit leaves the line with a second to spare for
+its own work and the grant, and grant and settle with 0.3 seconds. Sustained overload still
+refuses. A refused prepare ends that turn, and a refused admit ends the conversation.
 
 ## Closed account and monthly-window provisioning
 
@@ -172,6 +237,59 @@ Every provisioned account remains `closed` with reason `unreconciled`; endpoint
 and recovery fields remain empty. Provisioning does not create gateway bindings,
 open accounts, reconcile liability, or enable spending. The bounded response
 contains only state, reason and counts, never member or provider identities.
+
+## Opening each new month
+
+A monthly window is immutable and ends at 00:00 UTC on the first of the next month.
+While it runs with prepared custody, Keeper opens the next month itself: once at
+start, to catch up after downtime, and again right after each month ends. A failed
+account retries after one second, doubling up to an hour but never past the next
+month change. The checks in between only read, and a pass that finds nothing to do
+writes nothing.
+
+Each account gets its own `provision` journal operation, the installation first, so
+an older Keeper can still read the journal after a rollback:
+
+- The new window starts at zero. Its opening cap is the installation cap, or the
+  member's monthly limit on record at that moment.
+- Unused budget does not carry over. Old windows and attempts stay as they were.
+- A call admitted before midnight settles against the month it started in. Grants
+  and settlements wait for a busy journal (see "Overlapping operations"), because the
+  gateway never resends them. A later refusal leaves the reservation held.
+- An attempt with no settlement stays charged, at its full reservation, to the month
+  it began in, and does not count against later months. No money is released and no
+  provider's cost is assumed: a call that was cancelled, reported no usage, or lost its
+  settlement simply never gets a lower figure than its reservation. **Within its month
+  nothing resolves it**, so many unfinished calls can use up that person's limit or the
+  installation limit for the month, and whoever is affected waits for the next month. A
+  settlement that arrives later corrects the month the call began in. A prompt larger
+  than the reviewed token bound can still cost more than its reservation, and an
+  unfinished call never reveals that.
+- Each ledger month stays within its limit, but calls still running at midnight belong
+  to the old month while the new one has its whole limit. A provider's calendar-month
+  invoice can therefore exceed the limit by what those calls cost.
+- An attempt with a conflict keeps counting against every later month. It freezes the
+  installation account, which stops all spending and all new months. There is no
+  command to reconcile it yet.
+- A prepared attempt not yet admitted at midnight is retired and never runs. Its
+  conversation step does not rearm; the agent's next step is a new attempt.
+
+Members who are open, or still closed and unreconciled during setup, get the month.
+A closed member with a current window can still activate. Frozen and never-opened
+installations, and retired or erased members, are left alone. A member without a
+positive limit, or whose user is not active, is skipped until that changes. A window
+that overlaps the month without matching it exactly, or a current window that has
+not ended, blocks that account for recovery, as does a member whose organisation has
+changed. Skipped and blocked accounts spend no journal records, because a refused
+transaction would.
+
+Spending stops until the month is open, which is normally a moment after midnight.
+If opening keeps failing, Keeper logs that, with counts and no identities, and agents
+stay stopped. A full or frozen journal is one such failure.
+
+The guarded runtime check accepts any later month only with the current window that
+the journal recorded, at the caps recorded at activation. A cap change therefore
+still needs its own reviewed path.
 
 ## Native credential custody and cleanup
 
@@ -277,6 +395,8 @@ reopen fresh caps. None of these remaining activation guarantees is claimed here
 Focused filesystem, subprocess/kernel, socket, configuration and restore tests
 cover implemented boundaries. Mac tests do not prove Linux. The manual
 keeper/neutral-image workflow must pass its actual final-image Linux lock probe
-and PostgreSQL continuity probe before this source reaches main. Its pool-one
+and PostgreSQL continuity probe before this source reaches main. That probe stops
+and starts the real keeper process across PostgreSQL restarts, the way a server
+reboot does, and checks the journal closes cleanly and resumes. Its pool-one
 transaction with no financial row changes proves continuity/commit ordering only;
 it is not proof of production activation or all financial writers.

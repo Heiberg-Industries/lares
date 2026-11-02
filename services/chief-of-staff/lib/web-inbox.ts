@@ -17,6 +17,11 @@ export interface WebContinuityFence {
   accountEpochs: { id: string; generation: number; lifecycleRevision: number; status: string }[];
 }
 
+/** A client checked out of a pool has `connect` too, and calling it throws. Only a client has
+ *  `release`, and a client belongs to its caller's transaction: use it as it is. */
+const isPool = (db: Pick<Pool, "query">): db is Pool =>
+  typeof (db as Pool).connect === "function" && !("release" in db);
+
 async function currentFence(db: Pick<Pool, "query">, memberId: string, agent: string): Promise<WebContinuityFence | undefined> {
   const member = await currentMember(db as never, memberId, { lock: "share" });
   if (!member) return undefined;
@@ -32,9 +37,8 @@ async function currentFence(db: Pick<Pool, "query">, memberId: string, agent: st
  *  publication; later reconnects invalidate retrieval. This fence is deliberately conservative:
  *  any connected-account lifecycle change retires the post. */
 export async function captureWebContinuityFence(db: Pick<Pool, "query" >, memberId: string, agent: string): Promise<WebContinuityFence | undefined> {
-  const pool = db as Pool;
-  if (typeof pool.connect !== "function") return currentFence(db, memberId, agent);
-  const client = await pool.connect();
+  if (!isPool(db)) return currentFence(db, memberId, agent);
+  const client = await db.connect();
   try {
     await client.query("BEGIN");
     const fence = await currentFence(client, memberId, agent);
@@ -64,8 +68,7 @@ export interface InboxMessage {
 }
 
 export async function putInbox(db: Pick<Pool, "query">, m: InboxMessage): Promise<void> {
-  const pool = db as Pool;
-  const tx = typeof pool.connect === "function" ? await pool.connect() : undefined;
+  const tx = isPool(db) ? await db.connect() : undefined;
   const client = tx ?? db;
   try {
     if (tx) await tx.query("BEGIN");

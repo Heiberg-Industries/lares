@@ -27,7 +27,7 @@ import {runErase} from '../lib/run-erase.js';
 import {scopeOf} from '../lib/member-scope.js';
 import {quiet} from './helpers/quiet-pool.js';
 import {OUTSIDE_CUSTODY_FIXTURE_POLICY_HASH,OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON} from './helpers/three-spellings.js';
-import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
+import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness,journalRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
 import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,gatewayGrantHash,gatewayRawRequestHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
 import {consoleSourceTransaction,noteBudgetFinancialChange,retainConsoleSourceDeadline,sourceTransactionBoundary,type SourceDatabase,type SourcePool} from '../../../packages/agent-kit/src/console-source-transaction.js';
 import {captureBudgetAuthorityReference} from '../../../packages/agent-kit/src/budget-model-authority.js';
@@ -36,8 +36,10 @@ import {JournalBudgetFinancialWriter} from '../../keeper/lib/budget-financial-wr
 import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
 import {serveModelPurposeBroker,modelPurposeDigest,modelPurposeMac,signModelPurposeRequest,type ModelPurposeRequest} from '../../keeper/lib/model-purpose-broker.js';
 import {MODEL_PURPOSE_EMPTY_DIGEST,modelPurposeAckFields,modelPurposeEqualMac,modelPurposeRuntimeRequestFields,parseModelPurposeAdmissionResponse} from '../../../packages/agent-kit/src/model-purpose-protocol.js';
+import {openBudgetMonth} from '../../keeper/lib/budget-account-provisioning.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
-import {observeFinancialDatabase} from '../../keeper/lib/financial-continuity.js';
+import {observeFinancialDatabase,openFinancialJournalForKeeper} from '../../keeper/lib/financial-continuity.js';
+import {execFileSync} from 'node:child_process';
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
 const pricing={version:1,capabilityHash:profile,format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'10',output:'90',cacheRead:'5',cacheWrite:'0'}};
 let sessionGeneration=0;
@@ -342,6 +344,102 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const evidence={...echoes,kind:'terminal-usage',format:'openai',usage:{inputTokens:100,outputTokens,cacheReadTokens:40,cacheWriteTokens:0},...changes};
     return {...evidence,receiptHash:gatewayHash(gatewayCanonical(evidence))};
   }
+  it('charges calls across a month change to the right month and keeps enforcing the limit afterwards',async()=>{
+    const status=async()=>[(await store.readStatus(context())).liability,(await store.readStatus(context(),'installation')).liability];
+    const admittedHere=async()=>{
+      const p=await prepared(),a=await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery());
+      expect(a.state).toBe('allowed');if(a.state!=='allowed')throw new Error('Not admitted');return {...p,...a};
+    };
+    // Production SQL calls clock_timestamp() by its bare name, so a same-named function earlier on
+    // the search path moves this one connection's clock with the code under test untouched.
+    const setClock=async(target:string)=>{
+      const shift=(await db.query(`SELECT (${target}-pg_catalog.clock_timestamp())::text AS shift`)).rows[0].shift;
+      await db.query(`CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE AS 'SELECT pg_catalog.clock_timestamp()+interval ''${shift}'''`);
+    };
+    const monthEnd=`(date_trunc('month',pg_catalog.clock_timestamp() AT TIME ZONE 'UTC'+interval '2 months') AT TIME ZONE 'UTC')`;
+    const inFlight=await admittedHere(),unresolved=await admittedHere();
+    await gatewayPreparedStore!.markUnknown(unresolved.attemptId);
+    expect(await status()).toEqual(['0.2','0.2']);
+    await setClock("pg_catalog.clock_timestamp()+interval '1 month'");
+    await db.query('SET search_path=public,pg_catalog');
+    try{
+      await expect(prepared()).rejects.toThrow();
+      expect(await openBudgetMonth(db as unknown as SourcePool,files.journal)).toEqual({opened:3,skipped:0,blocked:0,failed:0});
+      // Calls with no settlement stay charged to the month they began in, not this one.
+      expect(await status()).toEqual(['0','0']);
+      // A call admitted before midnight settles against the month it started in.
+      const oldWindow=(await db.query('SELECT member_window_id FROM budget_attempts WHERE id=$1',[inFlight.attemptId])).rows[0].member_window_id;
+      expect(await gatewayPreparedStore!.settle(receipt(inFlight,'0.05'))).toBe('settled');
+      expect((await db.query('SELECT member_window_id FROM budget_attempts WHERE id=$1',[inFlight.attemptId])).rows[0].member_window_id).toBe(oldWindow);
+      expect(oldWindow).not.toBe((await store.readStatus(context())).windowId);
+      expect(await status()).toEqual(['0','0']);
+      // Calls cleared seconds before the next midnight, with their 30 seconds still running.
+      await setClock(`${monthEnd}-interval '5 seconds'`);
+      const beforeOpening=await prepared(),afterOpening=await prepared(),straddling=await admittedHere();
+      await setClock(`${monthEnd}+interval '1 second'`);
+      expect((await gatewayPreparedStore!.admit(beforeOpening.ticket,beforeOpening.observation,recovery())).state).toBe('denied');
+      expect(await openBudgetMonth(db as unknown as SourcePool,files.journal)).toEqual({opened:3,skipped:0,blocked:0,failed:0});
+      expect((await gatewayPreparedStore!.admit(afterOpening.ticket,afterOpening.observation,recovery())).state).toBe('denied');
+      expect((await db.query("SELECT count(*)::int AS n FROM budget_attempts WHERE ticket_hash=ANY($1::text[]) AND state='retired'",[[h(beforeOpening.ticket),h(afterOpening.ticket)]])).rows[0].n).toBe(2);
+      // A settlement finishing while the journal is busy waits its turn instead of being lost.
+      let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});
+      const holder=files.writer.run('provision',boundary=>consoleSourceTransaction(db as unknown as SourcePool,()=>held,boundary));
+      const waiting=gatewayPreparedStore!.settle(receipt(straddling,'0.05'));
+      await new Promise(resolve=>setTimeout(resolve,50));release();await holder;
+      expect(await waiting).toBe('settled');
+      expect(await status()).toEqual(['0','0']);
+      // The next step runs against the new month, and the same $1 limit still holds.
+      const next=await admittedHere();
+      expect(await gatewayPreparedStore!.settle(receipt(next,'0.05'))).toBe('settled');
+      expect(await status()).toEqual(['0.05','0.05']);
+      expect(await gatewayPreparedStore!.settle(receipt(unresolved,'0.05'))).toBe('settled');
+      expect(await status()).toEqual(['0.05','0.05']);
+      for(let call=0;call<9;call++)await admittedHere();
+      expect(await status()).toEqual(['0.95','0.95']);
+      const over=await prepared();
+      expect((await gatewayPreparedStore!.admit(over.ticket,over.observation,recovery())).state).toBe('denied');
+    }finally{
+      await db.query('RESET search_path;DROP FUNCTION public.clock_timestamp()');
+    }
+  },30_000);
+  it('counts a call with no final cost in full, but only against the month it began in',async()=>{
+    const status=async()=>[(await store.readStatus(context())).liability,(await store.readStatus(context(),'installation')).liability];
+    const admittedHere=async()=>{
+      const p=await prepared(),a=await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery());
+      expect(a.state).toBe('allowed');if(a.state!=='allowed')throw new Error('Not admitted');return {...p,...a};
+    };
+    const refusedNow=async()=>{const p=await prepared();expect((await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery())).state).toBe('denied');};
+    // Within its own month every unfinished call holds its whole reservation and the limit refuses.
+    const unfinished=[];for(let call=0;call<10;call++)unfinished.push(await admittedHere());
+    await gatewayPreparedStore!.markUnknown(unfinished[0]!.attemptId);
+    expect(await status()).toEqual(['1','1']);
+    await refusedNow();
+    const oldMonth=(await store.readStatus(context())).windowId,oldInstallationMonth=(await store.readStatus(context(),'installation')).windowId;
+    const shift=(await db.query(`SELECT (pg_catalog.clock_timestamp()+interval '1 month'-pg_catalog.clock_timestamp())::text AS shift`)).rows[0].shift;
+    await db.query(`CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE AS 'SELECT pg_catalog.clock_timestamp()+interval ''${shift}'''`);
+    await db.query('SET search_path=public,pg_catalog');
+    try{
+      expect(await openBudgetMonth(db as unknown as SourcePool,files.journal)).toEqual({opened:3,skipped:0,blocked:0,failed:0});
+      // The new month starts clear, and the old month is still charged the full holds: nothing was released.
+      expect(await status()).toEqual(['0','0']);
+      const charged=(await db.query("SELECT count(*)::int AS calls,sum(reserved_amount)::text AS held FROM budget_attempts WHERE member_window_id=$1 AND installation_window_id=$2 AND state IN ('admitted','unknown')",[oldMonth,oldInstallationMonth])).rows[0];
+      expect(charged.calls).toBe(10);expect(Number(charged.held)).toBe(1);
+      // The new month has its whole limit, and no more than that.
+      for(let call=0;call<10;call++)await admittedHere();
+      expect(await status()).toEqual(['1','1']);
+      await refusedNow();
+      // A final cost arriving late corrects the month it began in and leaves this month alone.
+      expect(await gatewayPreparedStore!.settle(receipt(unfinished[1]!,'0.05'))).toBe('settled');
+      expect((await db.query('SELECT member_window_id FROM budget_attempts WHERE id=$1',[unfinished[1]!.attemptId])).rows[0].member_window_id).toBe(oldMonth);
+      expect(await status()).toEqual(['1','1']);
+      // A cost above the hold still follows the account into later months, and freezes the installation.
+      expect(await gatewayPreparedStore!.settle(receipt(unfinished[2]!,'0.5'))).toBe('conflict');
+      expect(await status()).toEqual(['1.5','1.5']);
+      expect((await store.readStatus(context(),'installation')).state).toBe('frozen');
+    }finally{
+      await db.query('RESET search_path;DROP FUNCTION public.clock_timestamp()');
+    }
+  },30_000);
   it('consumes a signed Console human step through the real Keeper socket and prepared journal',async()=>{
     const definitionHash=h('model-purpose-definition'),selected=await selectPurposeModel(definitionHash),{sessionId,admissionNonce}=selected;
     const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());
@@ -549,6 +647,149 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const grant={...a.grant};delete grant.state;delete grant.validForMs;
     expect(proposals.at(-1).record.atoms).toEqual(expect.arrayContaining([expect.objectContaining({kind:'attempt',state:'settled',actualAmount:'0.0098'}),expect.objectContaining({kind:'grant',grantHash:gatewayGrantHash(grant)})]));
   });
+  describe('calls that overlap on the one-at-a-time journal',{timeout:30_000},()=>{
+    const usage={usage:{inputTokens:1,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0}};
+    /** A real journal operation with its real transaction, holding its turn until released. */
+    function holdJournal(){
+      let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});
+      const holder=files.writer.run('provision',boundary=>consoleSourceTransaction(db as unknown as SourcePool,()=>held,boundary));
+      return {release,holder};
+    }
+    const attemptState=async(ticket:string)=>(await db.query('SELECT state FROM budget_attempts WHERE ticket_hash=$1',[h(ticket)])).rows[0]?.state;
+    it('completes two people preparing at the same moment',async()=>{
+      for(let round=0;round<3;round++)await expect(Promise.all([prepared('member-a'),prepared('member-b')])).resolves.toHaveLength(2);
+      expect(files.journal.isFrozen).toBe(false);
+    });
+    /** A second connection, as in Keeper, so calls reach the journal line instead of waiting for the pool. */
+    function keeperGate(){
+      const other=quiet(new Pool({connectionString:container.getConnectionUri(),max:1}));
+      return {other,gate:authority(other,journalRecoveryWitness(files.journal))};
+    }
+    const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+    it('carries a whole call through a busy journal, with the real recovery check',async()=>{
+      const {other,gate}=keeperGate();
+      try{
+        let hold=holdJournal();
+        const preparing=prepared();
+        await sleep(50);hold.release();await hold.holder;
+        const p=await preparing,before=files.records().length;
+        hold=holdJournal();
+        const admitting=rpc(gate,GATEWAY_ADMIT_PATH,admitDocument(p));
+        await sleep(100);
+        // Still waiting in line, and nothing written for it yet.
+        expect(files.records().slice(before).map(frame=>frame.record.operation)).not.toContain('admit');
+        hold.release();await hold.holder;
+        const admitted=await admitting;
+        expect(admitted.reply.status).toBe(200);expect(admitted.document.state).toBe('allowed');
+        // The gateway counts validity from when it sent the request: the wait must not count twice.
+        expect(admitted.document.validForMs).toBeGreaterThanOrEqual(2990);
+        hold=holdJournal();
+        const settling=rpc(gate,GATEWAY_SETTLE_PATH,terminal(admitted.document,0,usage));
+        await sleep(50);hold.release();await hold.holder;
+        expect((await settling).document.state).toBe('settled');
+        expect(await attemptState(p.ticket)).toBe('settled');expect(files.journal.isFrozen).toBe(false);
+      }finally{await other.end();}
+    });
+    it('lets a settlement go ahead of a step that can still be refused',async()=>{
+      const {other,gate}=keeperGate();
+      try{
+        const p=await prepared(),admitted=await rpc(gate,GATEWAY_ADMIT_PATH,admitDocument(p)),order:string[]=[];
+        const hold=holdJournal();
+        const preparing=prepared('member-b').then(value=>{order.push('prepare');return value;});
+        await sleep(20);
+        const settling=rpc(gate,GATEWAY_SETTLE_PATH,terminal(admitted.document,0,usage)).then(value=>{order.push('settle');return value;});
+        await sleep(100);hold.release();await hold.holder;await preparing;
+        expect((await settling).document.state).toBe('settled');expect(order).toEqual(['settle','prepare']);
+      }finally{await other.end();}
+    });
+    it('leaves the line in time, so nothing commits for a caller who has gone',async()=>{
+      const {other,gate}=keeperGate();
+      try{
+        const p=await prepared(),before=files.records().length,hold=holdJournal();
+        const raw=gatewayCanonical(admitDocument(p));
+        // A late arrival: the caller gives up after 0.4 s, sooner than admit's usual one-second wait.
+        const reply=await gate.handle(GATEWAY_ADMIT_PATH,gatewaySignature(serviceKey,'request',GATEWAY_ADMIT_PATH,raw),raw,performance.now()+400);
+        expect(reply.status).toBe(503);
+        // Without the limit it would still be in line here, and would commit once the journal is free.
+        hold.release();await hold.holder;await sleep(300);
+        expect(await attemptState(p.ticket)).toBe('prepared');
+        expect(files.records().slice(before).map(frame=>frame.record.operation)).not.toContain('admit');
+      }finally{await other.end();}
+    });
+    it('refuses an admit whose recovery check was read just before a change committed',async()=>{
+      let stale:Awaited<ReturnType<GatewayRecoveryWitness['observe']>>;
+      const live=journalRecoveryWitness(files.journal),selected=new PgBudgetAdmissionStore(db,env(),30_000,files.writer);
+      await files.writer.run('provision',boundary=>consoleSourceTransaction(db as unknown as SourcePool,async source=>{
+        stale=await live.observe({installationAccountId:installation,epoch:'epoch-1',endpointGeneration:'0'});
+        await source.query('UPDATE budget_accounts SET endpoint_generation=endpoint_generation+1 WHERE id=$1',[installation]);
+        noteBudgetFinancialChange(source,'budget_accounts',installation);
+      },boundary));
+      expect(stale).toEqual(recovery());
+      // Prepared after the change, so only the out-of-date check can cause this refusal.
+      const p=await prepared();
+      expect((await selected.admit(p.ticket,p.observation,stale!)).state).toBe('denied');
+      expect(await attemptState(p.ticket)).toBe('retired');
+    });
+    it('still refuses when the journal stays busy past the wait, leaving nothing held',async()=>{
+      const {other,gate}=keeperGate();
+      const p=await prepared(),before=files.records().length,hold=holdJournal();
+      try{
+        const admit=await rpc(gate,GATEWAY_ADMIT_PATH,admitDocument(p));
+        expect(admit.reply.status).toBe(503);
+      }finally{hold.release();await hold.holder;await other.end();}
+      expect(await attemptState(p.ticket)).toBe('prepared');expect(files.journal.isFrozen).toBe(false);
+      expect(files.records().slice(before).map(frame=>frame.record.kind)).not.toContain('freeze');
+    });
+  });
+  describe('real database restarts',()=>{
+    const custody={ownershipUid:testJournalUid,lock:platformTestJournalLock};
+    const reconnect=()=>{db=quiet(new Pool({connectionString:container.getConnectionUri(),max:1,connectionTimeoutMillis:5000}));};
+    const restartDatabase=async()=>{await db.end();await container.restart();reconnect();};
+    const useJournal=(journal:HostFinancialJournal)=>{files.journal=journal;files.writer=new JournalBudgetFinancialWriter(journal);gatewayPreparedStore=new PgBudgetAdmissionStore(db,env(),30_000,files.writer);};
+    const spend=async()=>{const a=await allowed();expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,terminal(a.grant))).document.state).toBe('settled');};
+    const freezes=()=>files.records().filter(frame=>frame.record.kind==='freeze');
+    // A file-level copy keeps the system identifier and database id, so only the ledger can tell.
+    const dataDirectory=(command:string)=>execFileSync('docker',['run','--rm','--volumes-from',container.getId(),'--entrypoint','sh','pgvector/pgvector:pg16','-c',`cd /var/lib/postgresql/data && ${command}`],{stdio:'ignore'});
+    const stopDatabase=async()=>{await db.end();execFileSync('docker',['stop',container.getId()],{stdio:'ignore'});};
+    it('resumes spending after the keeper and the database both restart with a clean ledger',async()=>{
+      await spend();const before=await observeFinancialDatabase(db);files.journal.close();
+      await restartDatabase();
+      const after=await observeFinancialDatabase(db);
+      expect(after.postmasterStartedAt).not.toBe(before.postmasterStartedAt);expect({...after,postmasterStartedAt:''}).toEqual({...before,postmasterStartedAt:''});
+      const journal=await openFinancialJournalForKeeper(files.directory,db,custody);useJournal(journal);
+      expect(journal.isFrozen).toBe(false);await spend();
+      journal.close();const again=await openFinancialJournalForKeeper(files.directory,db,custody);useJournal(again);
+      expect(again.isFrozen).toBe(false);await spend();expect(freezes()).toEqual([]);
+    },180_000);
+    it('keeps spending when only the database restarts while the keeper runs',async()=>{
+      await spend();await restartDatabase();useJournal(files.journal);
+      await spend();expect(files.journal.isFrozen).toBe(false);expect(freezes()).toEqual([]);
+    },180_000);
+    it('refuses an older backup of the same database, with spending closed and the journal kept for restore',async()=>{
+      await spend();await stopDatabase();
+      dataDirectory('mkdir .older && find . -mindepth 1 -maxdepth 1 ! -name .older -exec cp -a -t .older {} +');
+      await container.restart();reconnect();useJournal(files.journal);
+      const before=await observeFinancialDatabase(db);
+      await spend();await stopDatabase();files.journal.close();
+      dataDirectory('find . -mindepth 1 -maxdepth 1 ! -name .older -exec rm -rf {} + && cp -a .older/. . && rm -rf .older');
+      await container.restart();reconnect();
+      const after=await observeFinancialDatabase(db);
+      expect({...after,postmasterStartedAt:''}).toEqual({...before,postmasterStartedAt:''});
+      const journal=await openFinancialJournalForKeeper(files.directory,db,custody);useJournal(journal);
+      expect(journal.isFrozen).toBe(true);
+      expect(files.records().at(-1).record.kind).toBe('freeze');
+      await expect(prepared()).rejects.toThrow();
+      await expect(journal.freezeForRestore()).resolves.toBeUndefined();expect(freezes().at(-1).record.reason).toBe('restore');
+    },180_000);
+    it('refuses a database whose money rows were changed behind the ledger across a restart',async()=>{
+      await spend();files.journal.close();await restartDatabase();
+      await db.query('ALTER TABLE budget_financial_checkpoints DISABLE TRIGGER USER');
+      await db.query('DELETE FROM budget_financial_checkpoints WHERE proposal_sequence=(SELECT max(proposal_sequence) FROM budget_financial_checkpoints)');
+      await db.query('ALTER TABLE budget_financial_checkpoints ENABLE TRIGGER USER');
+      const journal=await openFinancialJournalForKeeper(files.directory,db,custody);useJournal(journal);
+      expect(journal.isFrozen).toBe(true);expect(freezes()).toHaveLength(1);
+    },180_000);
+  });
   it('refuses settlement without a writer and leaves the admitted liability unchanged',async()=>{
     const a=await allowed(),before=(await db.query('SELECT state,actual_amount FROM budget_attempts')).rows[0];
     const closed=new GatewayBudgetAuthority(db,serviceKey,undefined,witness);
@@ -680,14 +921,14 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     expect((await db.query('SELECT actual_amount,highest_observed_liability FROM budget_attempts')).rows[0]).toEqual({actual_amount:'0.1808',highest_observed_liability:'0.1808'});
     expect((await db.query('SELECT state FROM budget_accounts WHERE id=$1',[installation])).rows[0].state).toBe('frozen');
   });
-  it('retains late exact grant correlation after rotation, old-window carry and member erasure',async()=>{
+  it('retains late exact grant correlation after rotation, a window change and member erasure',async()=>{
     const a=await allowed();await gatewayPreparedStore!.markUnknown(a.grant.attemptId);
     await journalGatewayFixture(files.writer,async source=>{
       await source.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[a.grant.bindingId]);
       noteBudgetFinancialChange(source,'budget_gateway_bindings',a.grant.bindingId);
     });
     await journalGatewayWindow(files.writer,installation,null);await journalGatewayWindow(files.writer,accounts['member-a']!,'member-a');
-    expect((await store.readStatus(context())).liability).toBe('0.1');
+    expect((await store.readStatus(context())).liability).toBe('0');
     await files.writer.run('member-remove',boundary=>consoleSourceTransaction(db as unknown as SourcePool,async source=>{
       for(const table of ['budget_accounts','budget_windows','budget_gateway_bindings','budget_attempts'] as const){
         const rows=await source.query(`SELECT id FROM ${table} WHERE live_member_id=$1`,['member-a']);
@@ -1236,10 +1477,10 @@ describe('inactive budget admission on real PostgreSQL',()=>{
     expect((await db.query('SELECT actual_amount FROM budget_attempts')).rows[0].actual_amount).toBe('0.123456789123456789');
     expect((await store.readStatus(context(),'installation')).state).toBe('frozen');
   });
-  it('carries unknown reservations across explicit windows; old verified settlement never double-charges the new window',async()=>{
+  it('leaves unknown reservations in their own window; old verified settlement never charges the new window',async()=>{
     const a=await admitted();await store.markUnknown(a.attemptId);
     await window(installation,null);await window(accounts['member-a']!,'member-a');
-    expect((await store.readStatus(context())).liability).toBe('0.1');
+    expect((await store.readStatus(context())).liability).toBe('0');
     expect(await store.settle(receipt(a,'0.05'))).toBe('settled');
     expect((await store.readStatus(context())).liability).toBe('0');expect((await store.readStatus(context(),'installation')).liability).toBe('0');
     const original=(await db.query('SELECT member_window_id FROM budget_attempts')).rows[0].member_window_id;

@@ -546,11 +546,92 @@ await j.drainForShutdown();j.close();console.log('clean');"""
     # Ambiguous observation is permanently frozen even after a fresh matching connection.
     assert run("const j=HostFinancialJournal.openExisting('/proof/unknown',{requirePrepared:true});try{await verifyFinancialContinuity(j,{query:async()=>{throw Error('unobserved');}});}catch{}j.close();console.log('unknown');", 'unknownproof') == 'unknown'
     assert run("const j=HostFinancialJournal.openExisting('/proof/unknown',{requirePrepared:true});const db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();j.close();}if(!denied)throw Error('unknown cleared');console.log('closed');", 'unknownproof') == 'closed'
-    # Restart PostgreSQL retaining its data: even the exact same committed checkpoint is
-    # insufficient because the full-precision postmaster start changed.
+    # Restart PostgreSQL retaining its data: the start time changed, but the identity and the
+    # complete ledger match, so the same custody resumes and the next operation commits.
+    before_restart = sql('SELECT pg_postmaster_start_time()::text;')
     command('docker', 'restart', name + '-db')
     ready()
-    assert run("const path='/proof/restart',records=()=>readFileSync(path+'/journal.jsonl','utf8').trimEnd().split('\\n').map(line=>JSON.parse(line).record),before=records().length,j=HostFinancialJournal.openExistingForStartupVerification(path,{requirePrepared:true}),db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();}let leaseDenied=false;try{j.acquireWriterLease();}catch{leaseDenied=true;}j.close();const tail=records().slice(before);if(!denied||!leaseDenied||tail.at(-1)?.kind!=='freeze'||tail.at(-1)?.reason!=='continuity'||tail.some(r=>r.kind==='writer-open'||r.kind==='writer-close'))throw Error('restart refusal wrote writer lease');console.log('closed');") == 'closed'
+    assert sql('SELECT pg_postmaster_start_time()::text;') != before_restart
+    assert run("const path='/proof/restart',records=()=>readFileSync(path+'/journal.jsonl','utf8').trimEnd().split('\\n').map(line=>JSON.parse(line).record),j=HostFinancialJournal.openExistingForStartupVerification(path,{requirePrepared:true}),db=await pool.connect();try{await verifyFinancialContinuity(j,db);}finally{db.release();}j.acquireWriterLease();const writer=new JournalBudgetFinancialWriter(j);await writer.run('prepare',boundary=>consoleSourceTransaction(pool,async()=>42,boundary));await j.drainForShutdown();j.close();if(records().some(r=>r.kind==='freeze')||records().at(-1).kind!=='writer-close')throw Error('restart did not resume');console.log('resumed');") == 'resumed'
+    # The real keeper process, stopped and started the way a server reboot does it.
+    keeper = name + '-keeper'
+    keeper_config = offline_fixture / 'keeper.json'
+    keeper_database = {'host':'proof-db','port':5432,'database':'proof'}
+    keeper_config.write_text(json.dumps({'mode':'overlay','project':'proof','dir':'/tmp','files':['config'],
+        'agentsDir':'/tmp','retiredDir':'/tmp','secretsDir':'/tmp','rolesDir':'/tmp','templatesDir':'/tmp','backupDir':'/tmp',
+        'db':{**keeper_database,'user':'lares_app','passwordFile':'/fixtures/application-password'},
+        'budgetFinancial':{'directory':'/var/lib/lares/budget-financial','db':{**keeper_database,'user':'lares_financial','passwordFile':'/fixtures/financial-password'}}}))
+    command('docker', 'run', '--rm', '--mount', f'type=volume,src={volume},dst=/var/lib/lares', '--entrypoint', 'mv', image,
+            '/var/lib/lares/restart', '/var/lib/lares/budget-financial')
+    command('docker', 'create', '--name', keeper, '--user', '0:0', '--network', name,
+            '--mount', f'type=volume,src={volume},dst=/var/lib/lares',
+            '--mount', f'type=bind,src={db_fixture},dst=/fixtures,readonly',
+            '--mount', f'type=bind,src={keeper_config},dst=/etc/lares/keeper.json,readonly',
+            '--entrypoint', tsx, image, '/app/services/keeper/bin/keeper.ts', 'serve')
+    def journal_records():
+        output = command('docker', 'run', '--rm', '--mount', f'type=volume,src={volume},dst=/var/lib/lares', '--entrypoint', 'cat', image,
+                         '/var/lib/lares/budget-financial/journal.jsonl').stdout
+        return [json.loads(line)['record'] for line in output.strip().splitlines()]
+    def keeper_serving():
+        command('docker', 'start', keeper)
+        for _ in range(150):
+            if command('docker', 'exec', keeper, 'test', '-S', '/run/lares-host/keeper.sock', check=False).returncode == 0:
+                return
+            time.sleep(.2)
+        raise RuntimeError('Keeper did not start serving')
+    def keeper_host_command(action, body=''):
+        return command('docker', 'exec', '-i', keeper, tsx, '/app/services/keeper/bin/budget-financial.ts', action, '--host', input=body, check=False)
+    refused_plan = json.dumps({'installationCap':'10','memberIds':['proof-nobody']})
+    def keeper_running():
+        return command('docker', 'inspect', '--format', '{{.State.Running}}', keeper).stdout.strip() == 'true'
+    keeper_serving()
+    assert journal_records()[-1]['kind'] == 'writer-open', 'Keeper did not publish its writer'
+    # Leave idle connections in the keeper's pools, as a working keeper always has.
+    assert keeper_host_command('provision-accounts', refused_plan).returncode != 0, 'Unknown member was provisioned'
+    # The database alone restarts under a running keeper. The keeper must survive losing those
+    # connections, and the next operation must be refused by its own plan, not by a freeze.
+    command('docker', 'restart', name + '-db')
+    ready()
+    time.sleep(1)
+    assert keeper_running(), 'Database restart ended the keeper process'
+    assert keeper_host_command('provision-accounts', refused_plan).returncode != 0, 'Unknown member was provisioned'
+    last_abort = [r for r in journal_records() if r['kind'] == 'abort'][-1]
+    assert last_abort['reason'] == 'rollback-acknowledged', 'Operation did not reach its own refusal'
+    assert not [r for r in journal_records() if r['kind'] == 'freeze'], 'Database restart froze a running keeper'
+    # A server shutdown: the same signal and ten seconds, to the keeper and database together.
+    command('docker', 'stop', keeper, name + '-db')
+    assert journal_records()[-1]['kind'] == 'writer-close', 'Keeper did not close the journal when stopped'
+    # After the reboot the database comes back and the keeper takes the writer again.
+    command('docker', 'start', name + '-db')
+    ready()
+    keeper_serving()
+    assert journal_records()[-1]['kind'] == 'writer-open', 'Keeper did not resume after a reboot'
+    assert not [r for r in journal_records() if r['kind'] == 'freeze'], 'Reboot froze the journal'
+    command('docker', 'stop', keeper)
+    # A database that cannot answer yet fails this start and writes nothing, so a later start succeeds.
+    settled = journal_records()
+    command('docker', 'stop', name + '-db')
+    command('docker', 'start', keeper)
+    command('docker', 'wait', keeper)
+    assert 'the database is not answering yet' in command('docker', 'logs', '--tail', '5', keeper).stdout
+    assert journal_records() == settled, 'An unavailable database changed the journal'
+    command('docker', 'start', name + '-db')
+    ready()
+    keeper_serving()
+    assert journal_records()[-1]['kind'] == 'writer-open', 'Keeper did not start once the database answered'
+    # A frozen journal stops spending, not the keeper: restore's own freeze path still works.
+    frozen = keeper_host_command('freeze')
+    assert frozen.returncode == 0, 'Host freeze was refused by a running keeper'
+    assert journal_records()[-1]['kind'] == 'freeze' and journal_records()[-1]['reason'] == 'restore'
+    command('docker', 'stop', keeper)
+    keeper_serving()
+    assert 'the spending ledger is frozen' in command('docker', 'logs', '--tail', '5', keeper).stdout
+    count = len(journal_records())
+    assert keeper_host_command('provision-accounts', refused_plan).returncode != 0, 'Frozen journal accepted an operation'
+    assert keeper_host_command('freeze').returncode == 0, 'Restore freeze was refused by a keeper started frozen'
+    assert [r['kind'] for r in journal_records()[count:]] == ['freeze'], 'Frozen keeper wrote more than the restore freeze'
+    command('docker', 'stop', keeper)
+    command('docker', 'rm', '--force', keeper)
     # Fresh cluster under the same hostname/database name also refuses old custody.
     command('docker', 'rm', '--force', name + '-db')
     command('docker', 'run', '-d', '--name', name + '-db', '--network', name,
@@ -572,12 +653,15 @@ await j.drainForShutdown();j.close();console.log('clean');"""
     assert run("const j=HostFinancialJournal.openExisting('/proof/cluster',{requirePrepared:true});const db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();j.close();}if(!denied)throw Error('fresh cluster resumed');console.log('closed');", 'clusterproof') == 'closed'
     print(json.dumps({'preparedWriterCrashPermanentFreeze': True, 'sameRunningPostgresCleanRestart': True, 'ownedPoolOneContinuity': True,
                       'supportedRestoreStaysFrozenWithoutPostgresRestart': True,
-                      'unknownObservationPermanent': True, 'retainedDataPostgresRestartFrozen': True,
+                      'unknownObservationPermanent': True, 'retainedDataPostgresRestartResumes': True,
+                      'realKeeperClosesOnStop': True, 'realKeeperResumesAfterReboot': True,
+                      'realKeeperWaitsForDatabase': True, 'realKeeperRunsWithFrozenSpending': True,
                       'freshClusterFrozen': True, 'nativeProvisioningBoundClosed': True,
                       'nativeFinancialReceiptVerified': True, 'nativeAccountsRemainClosed': True,
                       'nativeKeyBlockedAuth': True, 'nativeLostReplyReconciledOriginalKey': True}))
 finally:
     command('docker', 'rm', '--force', name + '-holder', check=False)
+    command('docker', 'rm', '--force', name + '-keeper', check=False)
     command('docker', 'rm', '--force', name + '-native-provision', check=False)
     command('docker', 'rm', '--force', name + '-native-custody-init', check=False)
     for container in managed_databases:

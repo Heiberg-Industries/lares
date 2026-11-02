@@ -21,8 +21,9 @@ export async function acceptedOutsideTools(ctx:Context,connectionName:string):Pr
 export async function requestOutsideApproval(connectionName:string,toolName:string,ctx:unknown){
  const name=`${connectionName}__${toolName}`,c=ctx as Context & {toolInput?:unknown};
  const options={adapter:outsideApprovalAdapter(connectionName,toolName)};
- if(consoleAdmission(c.session?.auth?.current)?.purpose==='resolver')await requireApprovedExecution(c,name,c.toolInput,options);
- else await reserveExactApproval(c,name,options);
+ if(consoleAdmission(c.session?.auth?.current)?.purpose==='resolver'){
+  try{await requireApprovedExecution(c,name,c.toolInput,options);}catch{return 'denied' as const;}
+ }else await reserveExactApproval(c,name,options);
  return 'user-approval' as const;
 }
 export async function respondOutsideApproval(connectionName:string,toolName:string,ctx:unknown){

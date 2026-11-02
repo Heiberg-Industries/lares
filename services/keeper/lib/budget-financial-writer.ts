@@ -1,9 +1,23 @@
 import {type BudgetFinancialOperation,type BudgetFinancialWriter} from '@lares/agent-kit/budget-admission-store';
 import {sourceTransactionBoundary,type SourceDatabase,type BudgetFinancialChange,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
-import {HostFinancialJournal,markJournaledAbort,type FinancialAtom,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt} from './financial-journal.js';
+import {HostFinancialJournal,markJournaledAbort,type FinancialAtom,type FinancialTurnWait,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt} from './financial-journal.js';
 import {observeCommittedFinancialProjection,verifyFinancialContinuity} from './financial-continuity.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
+import {performance} from 'node:perf_hooks';
 import type {Pool} from 'pg';
+/** A model call needs these four steps. A step that lost a momentary race would cost a person their
+ * turn, and the gateway never resends a grant or settlement, so losing one holds a whole reservation
+ * for good. Everything else refuses on contention. */
+const TURN_WAITS:Partial<Record<BudgetFinancialOperation,FinancialTurnWait>>={prepare:{ms:1000},admit:{ms:1000},grant:{ms:1500,first:true},settle:{ms:2000,first:true}};
+/** With a caller's deadline, a step leaves the line while there is still time to finish and reply.
+ * It must never start after that: an admission nobody receives holds its reservation for good, so
+ * admit also leaves room for the grant that follows it. Prepare needs no entry: its one-second wait
+ * ends well inside the broker's two seconds, and it rechecks its caller before committing. */
+const LEAVE_FOR_THE_WORK_MS:Partial<Record<BudgetFinancialOperation,number>>={admit:1000,grant:300,settle:300};
+function turnWait(operation:BudgetFinancialOperation,deadline:number):FinancialTurnWait|undefined {
+  const wait=TURN_WAITS[operation],left=deadline-performance.now()-(LEAVE_FOR_THE_WORK_MS[operation]??0);
+  return wait&&left>0?{...wait,ms:Math.min(wait.ms,left)}:undefined;
+}
 /** Keeper-owned adapter. The production gateway authority receives this prepared journal;
  * no runtime or configuration switch can supply an alternate writer. It never checks out a
  * second pool client. */
@@ -11,13 +25,16 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
   constructor(private journal:HostFinancialJournal){}
   get journalId():string{return this.journal.id;}
   run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<T> {
-    return this.execute(operation,work).then(result=>result.value);
+    return this.execute(operation,work,undefined,TURN_WAITS[operation]).then(result=>result.value);
+  }
+  until(deadline:number):BudgetFinancialWriter {
+    return {run:(operation,work)=>this.execute(operation,work,undefined,turnWait(operation,deadline)).then(result=>result.value)};
   }
   runWithReceipt<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>,publish?:(receipt:CommittedFinancialReceipt,value:T)=>undefined):Promise<{value:T;receipt:CommittedFinancialReceipt}> {
     if(!this.journal.prepared)return Promise.reject(new Error('Prepared financial journal receipt unavailable'));
     return this.execute(operation,work,publish).then(result=>{if(!result.receipt)throw new Error('Financial commit receipt unavailable');return {value:result.value,receipt:result.receipt};});
   }
-  private execute<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>,publish?:(receipt:CommittedFinancialReceipt,value:T)=>undefined):Promise<{value:T;receipt?:CommittedFinancialReceipt}> {
+  private execute<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>,publish?:(receipt:CommittedFinancialReceipt,value:T)=>undefined,wait?:FinancialTurnWait):Promise<{value:T;receipt?:CommittedFinancialReceipt}> {
     let abortReceipt:DurableFinancialAbortReceipt|undefined;
     return this.journal.operation(operation,async operationId=>{
       let settled=false,proposed=false,receipt:CommittedFinancialReceipt|undefined;
@@ -58,7 +75,7 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
         }
         return {value:result,receipt};
       }finally{if(!settled){try{this.journal.freeze();}catch{/* Preserve the owner failure; the writer remains closed. */}}}
-    }).catch(error=>{markJournaledAbort(error,abortReceipt);throw error;});
+    },wait).catch(error=>{markJournaledAbort(error,abortReceipt);throw error;});
   }
 }
 /** The model-purpose broker can prepare tickets only when Keeper startup has both the
