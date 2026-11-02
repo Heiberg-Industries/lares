@@ -556,13 +556,16 @@ def main(argv: list[str]) -> int:
         passed("tool-call-came-back-to-the-provider-with-its-caller")
         proof["modelCalls"] = [{"tool": call["answer"].get("tool"), "messages": call["messages"], "returnedCallers": call["returnedCallers"], "toolResults": call["toolResults"]} for call in models]
         save_proof()
+        # Recorded now and reported at the end, so one fault does not hide the steps after it.
+        deferred: list[str] = []
         failed_tools = [result for call in models for result in call["toolResults"] if result["isError"]]
         if failed_tools:
-            raise RuntimeError(f"a tool call came back as failed: {failed_tools}")
+            deferred.append(f"a tool call came back as failed: {failed_tools}")
         written = list(pathlib.Path("/srv/vault").rglob(f"tracks/{APPROVAL_TRACK}/track.md"))
-        if len(written) != 1:
-            raise RuntimeError(f"the approved tool did not write its one file: {written}")
-        passed("approval-answer-ran-the-tool-and-wrote-the-file")
+        if len(written) == 1:
+            passed("approval-answer-ran-the-tool-and-wrote-the-file")
+        else:
+            deferred.append(f"the approved tool did not write its one file: {written}")
         deadline = time.monotonic() + 60
         while True:
             attempts = read_only_query("SELECT state, count(*) FROM budget_attempts GROUP BY state ORDER BY state", release)
@@ -592,6 +595,10 @@ def main(argv: list[str]) -> int:
         if "Every migration on disk has already been applied." not in said:
             raise RuntimeError("lares doctor gave no real answer on migrations")
         passed("doctor-answers-on-migrations")
+
+        stage("faults recorded along the way")
+        if deferred:
+            raise RuntimeError("; ".join(deferred))
 
         proof["status"] = "passed"
         proof["stage"] = "done"
