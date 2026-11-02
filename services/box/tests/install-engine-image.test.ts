@@ -154,7 +154,7 @@ describe("what install.sh asks the engine image to run", () => {
         expect(line).toContain(`-v ${operator}:${operator}:ro`);
         expect(line).not.toContain(`${secrets}/database-password`);
       } else {
-        expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/database-password`);
+        expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/${programOf(line) === "first-organisation.ts" ? "financial-" : ""}database-password`);
         expect(line).toContain(`-v ${secrets}:${secrets}:ro`);
       }
     }
