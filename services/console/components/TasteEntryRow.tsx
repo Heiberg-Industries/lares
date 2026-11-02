@@ -25,16 +25,16 @@ export function TasteEntryRow({
 }) {
   const [pending, start] = useTransition();
   return (
-    <tr style={pending ? { opacity: 0.4 } : undefined}>
+    <tr className={pending ? "lares-dim-row" : undefined}>
       <td className="mono">
         {name}
         {badge && <> <FreshBadge badge={badge} /></>}
         {broken && (
-          <span style={{ color: "var(--bad)", fontSize: 12 }}> · unreadable file: {broken}</span>
+          <span className="lares-small lares-status-error"> · unreadable file: {broken}</span>
         )}
       </td>
-      <td style={{ color: "var(--mist)", fontSize: 12 }}>{detail}</td>
-      <td style={{ color: "var(--mist)", fontSize: 12 }}>{file}</td>
+      <td className="lares-small lares-status-muted">{detail}</td>
+      <td className="lares-small lares-status-muted">{file}</td>
       <td>
         <Button
           variant="outline"

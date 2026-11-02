@@ -1,17 +1,8 @@
 "use client";
+import { Button } from "@lares/ui/primitives/button";
 import { useState, useTransition } from "react";
 
 import { repairContradictedPins, type PinRepairResult } from "../app/actions/taste";
-
-const button = {
-  padding: "6px 12px",
-  fontSize: 13,
-  border: "1px solid var(--rule)",
-  borderRadius: 3,
-  background: "transparent",
-  color: "var(--ink)",
-  cursor: "pointer",
-} as const;
 
 const km = (metres: number) => (metres >= 1000 ? `${Math.round(metres / 1000)} km` : `${metres} m`);
 
@@ -40,25 +31,25 @@ export function PinAudit() {
     });
 
   return (
-    <div style={{ marginTop: 8 }}>
-      <div style={{ display: "flex", gap: 8 }}>
-        <button type="button" style={button} disabled={pending} onClick={() => run(true)}>
+    <div className="lares-row-actions">
+      <div className="lares-actions">
+        <Button type="button" variant="outline" disabled={pending} onClick={() => run(true)}>
           {pending ? "Checking…" : "Find misplaced pins"}
-        </button>
+        </Button>
         {result !== null && result.found > 0 && !repaired && (
-          <button type="button" style={button} disabled={pending} onClick={() => run(false)}>
+          <Button type="button" disabled={pending} onClick={() => run(false)}>
             Correct {result.found} pins
-          </button>
+          </Button>
         )}
       </div>
 
       {error && (
-        <p className="mono" style={{ color: "var(--warn, #c66)", fontSize: 12, marginTop: 8 }}>{error}</p>
+        <p className="mono lares-small lares-status-warning lares-row-actions">{error}</p>
       )}
 
       {result !== null && (
-        <div style={{ marginTop: 8 }}>
-          <p className="mono" style={{ fontSize: 12 }}>
+        <div className="lares-row-actions">
+          <p className="mono lares-small">
             {result.found === 0
               ? "No saved pins conflict with their source links."
               : repaired
@@ -66,20 +57,20 @@ export function PinAudit() {
                 : `${result.found} pins are far from their source links. Nothing has changed yet.`}
           </p>
           {result.rows.length > 0 && (
-            <table className="mono" style={{ fontSize: 12, marginTop: 8, borderCollapse: "collapse" }}>
+            <div className="lares-table-scroll"><table className="mono lares-small">
               <tbody>
                 {result.rows.map((row) => (
                   <tr key={`${row.sourceList}/${row.name}`}>
-                    <td style={{ padding: "2px 12px 2px 0", color: "var(--mist)" }}>{row.sourceList}</td>
-                    <td style={{ padding: "2px 12px 2px 0" }}>{row.name}</td>
-                    <td style={{ padding: "2px 12px 2px 0", color: "var(--mist)" }}>{km(row.wrongBy)} away</td>
-                    <td style={{ padding: "2px 0" }}>
+                    <td className="lares-status-muted">{row.sourceList}</td>
+                    <td>{row.name}</td>
+                    <td className="lares-status-muted">{km(row.wrongBy)} away</td>
+                    <td>
                       {row.outcome === "exact" ? "→ confirmed" : `→ unchanged${row.reason ? ` (${row.reason})` : ""}`}
                     </td>
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
         </div>
       )}

@@ -1,4 +1,5 @@
 'use client';
+import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { CREDENTIAL_SLOT, credentialStatusSchema, type CredentialStatus, type CredentialMutation } from '@lares/agent-kit/credential-lifecycle';
 import type { CredentialView } from '../lib/credentials';
@@ -116,7 +117,7 @@ export function NotionCredential({ initial }: { initial: CredentialView }) {
         <p>{confirm === 'apply' ? 'Apply the tested replacement' : 'Remove the Notion binding locally'} and restart every affected agent:</p>
         {status.consumers.length ? <ul>{status.consumers.map(c => <li key={c.name}>{c.name}</li>)}</ul> : <p>No affected agents are recorded.</p>}
         <p className="lares-muted">Agents will stop and restart. This does not guarantee that current work has finished.</p>
-        <label><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /> I confirm the complete consumer list and these restarts.</label>
+        <label className="lares-choice"><Checkbox checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /> I confirm the complete consumer list and these restarts.</label>
         <div className="lares-inline-form"><Button disabled={busy || !confirmed || !editable} onClick={activate}>Confirm {confirm === 'apply' ? 'Apply' : 'local Disconnect'}</Button><Button variant="outline" disabled={busy} onClick={() => setConfirm(null)}>Cancel</Button></div>
       </div>}
     </> : <p role="status">{messages[view.kind]}</p>}

@@ -1,3 +1,5 @@
+import { Input } from "@lares/ui/primitives/input";
+import { Select } from "@lares/ui/primitives/select";
 import { requireConsolePage } from "../../lib/auth";
 import { EmptyState, PageHeader, StatusBadge, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
@@ -49,11 +51,10 @@ function Facet({
       <label htmlFor={`taste-${name}`}>
         {label}
       </label>
-      <select
+      <Select
         id={`taste-${name}`}
         name={name}
         defaultValue={value}
-        className="lares-field"
       >
         <option value="">all</option>
         {options.map((o) => (
@@ -61,7 +62,7 @@ function Facet({
             {o}
           </option>
         ))}
-      </select>
+      </Select>
     </div>
   );
 }
@@ -102,27 +103,25 @@ function FilterBar({
         <label htmlFor="taste-q">
           Name contains
         </label>
-        <input
+        <Input
           id="taste-q"
           name="q"
           defaultValue={filters.q}
           placeholder="Search names"
-          className="lares-field"
         />
       </div>
       <div className="lares-field-label">
         <label htmlFor="taste-sort">
           Sort
         </label>
-        <select
+        <Select
           id="taste-sort"
           name="sort"
           defaultValue={filters.sort}
-          className="lares-field"
         >
           <option value="navn">name</option>
           <option value="nyeste">newest first</option>
-        </select>
+        </Select>
       </div>
       <Button type="submit" variant="outline">Show</Button>
       {isFiltered(filters) && (
@@ -214,7 +213,7 @@ export default async function TastePage({
                 : "Nothing matches these filters"}
             </p>
           ) : (
-            <table className="card lares-operational-table">
+            <div className="lares-table-scroll"><table className="card lares-operational-table">
               <thead>
                 <tr>
                   <th>Name</th>
@@ -236,7 +235,7 @@ export default async function TastePage({
                   />
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
         </section>
       ))}

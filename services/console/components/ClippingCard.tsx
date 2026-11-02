@@ -1,4 +1,6 @@
 'use client';
+import { Select } from "@lares/ui/primitives/select";
+import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { useEffect, useRef, useState } from 'react';
 import {
   CREDENTIAL_SLOT, credentialStatusSchema, type CredentialGrantPreview, type CredentialMutation, type CredentialStatus,
@@ -327,10 +329,10 @@ function MappingPicker({ schema, source, busy, link, setLink, wait, onRead, onSa
   const nameOf = (id: string | null) => (id ? ds?.columns.find((c) => c.id === id)?.name ?? null : null);
   const pick = (label: string, value: string, set: (v: string) => void, types: string[], optional: boolean) =>
     <label className="lares-field-label">{label}
-      <select className="lares-field" value={value} disabled={busy} onChange={(e) => set(e.target.value)}>
+      <Select value={value} disabled={busy} onChange={(e) => set(e.target.value)}>
         {optional ? <option value="">None</option> : <option value="">Choose a column</option>}
         {cols(types).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-      </select>
+      </Select>
     </label>;
   return <div className="lares-stack">
     {source && <p>Saved columns: URL is {nameOf(source.urlPropertyId) ?? 'a column you picked earlier'}.</p>}
@@ -342,9 +344,9 @@ function MappingPicker({ schema, source, busy, link, setLink, wait, onRead, onSa
     {wait && <p role="status">{wait}</p>}
     {schema && <div className="lares-stack">
       {schema.dataSources.length > 1 && <label className="lares-field-label">Data source
-        <select className="lares-field" value={dsId} disabled={busy} onChange={(e) => { setDsId(e.target.value); setUrl(''); setNote(''); setTags(''); setSaved(''); }}>
+        <Select value={dsId} disabled={busy} onChange={(e) => { setDsId(e.target.value); setUrl(''); setNote(''); setTags(''); setSaved(''); }}>
           {schema.dataSources.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-        </select></label>}
+        </Select></label>}
       <p>{ds ? `Found “${ds.name}” with ${ds.columns.length} columns.` : 'No data source chosen.'}</p>
       {ds && <>
         {pick('URL column', url, setUrl, ['url'], false)}
@@ -396,7 +398,7 @@ function SwitchBlock(p: {
       <p>{p.flow.kind === 'on' ? 'Switch clipping on' : 'Switch clipping off'} and restart every affected agent:</p>
       {consumers.length ? <ul>{consumers.map((c) => <li key={c.name}>{c.name}</li>)}</ul> : <p>No affected agents are recorded.</p>}
       <p className="lares-muted">Agents will stop and restart. This does not guarantee that current work has finished.</p>
-      <label><input type="checkbox" checked={p.confirmed} onChange={(e) => p.setConfirmed(e.target.checked)} /> I confirm the complete list and these restarts.</label>
+      <label className="lares-choice"><Checkbox checked={p.confirmed} onChange={(e) => p.setConfirmed(e.target.checked)} /> I confirm the complete list and these restarts.</label>
       <div className="lares-inline-form">
         <Button disabled={p.busy || !p.confirmed} onClick={p.onConfirm}>Confirm switch {p.flow.kind === 'on' ? 'on' : 'off'}</Button>
         <Button variant="outline" disabled={p.busy} onClick={p.onCancel}>Cancel</Button>

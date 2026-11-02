@@ -337,12 +337,13 @@ th {
 .lares-checkbox-row input {
   accent-color: var(--primary);
 }
-.lares-short-input {
+.lares-short-input,
+.lares-field-label > [data-slot="input"].lares-short-input {
   max-width: 6rem;
 }
 .lares-wide-input { min-width: min(100%, 14rem); }
 .lares-entity-input { flex: 1 1 14rem; width: auto; }
-.lares-past-row { opacity: .45; }
+.lares-dim-row { opacity: .45; }
 .lares-row-controls { display: grid; gap: var(--space-2); min-width: 14rem; }
 .lares-master-detail {
   display: grid;
@@ -370,6 +371,9 @@ th {
 .lares-inset-disclosure > summary { cursor: pointer; font: var(--text-label); }
 .lares-copy-value { overflow-wrap: anywhere; user-select: all; }
 .lares-row-actions { margin-top: var(--space-2); }
+.lares-inline-field { display: grid; gap: var(--space-1); min-width: min(100%, 12rem); font: var(--text-label); }
+.lares-state-pill { display: inline-flex; align-items: center; gap: var(--space-2); }
+.lares-state-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; flex: none; }
 .lares-form-success { color: var(--lares-status-success); font: var(--text-body-sm); }
 .lares-form-error { color: var(--destructive); font: var(--text-body-sm); }
 
