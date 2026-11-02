@@ -4,7 +4,7 @@ import { members } from "../../../lib/auth";
 import { requireConsolePage } from "../../../lib/auth";
 import { notFound } from "next/navigation";
 import { Notice, PageHeader, Page } from "@lares/ui/patterns";
-import { listAgents } from "../../../lib/agents";
+import { listAgents, savedAgentFolder } from "../../../lib/agents";
 import { getBoardRows } from "../../../lib/board";
 import { builderData } from "../../../lib/builder";
 import { getPermissionEvents } from "../../../lib/console-overview";
@@ -34,8 +34,6 @@ export default async function AgentPage({
       </Page>
     );
   }
-  const agent = agents.find((a) => a.name === name);
-  if (!agent) notFound();
   const [board, definition, events, promptCache] = await Promise.allSettled([
     getBoardRows({ strict: true }),
     builderData(name),
@@ -44,6 +42,8 @@ export default async function AgentPage({
   ]);
   const saved =
     definition.status === "fulfilled" ? definition.value.initial?.definition : undefined;
+  const agent = agents.find((a) => a.name === name) ?? (saved ? savedAgentFolder(name, saved) : undefined);
+  if (!agent) notFound();
   const outsideTools = saved
     ? {
         tools: (saved.outsideTools ?? []).map((t) => {

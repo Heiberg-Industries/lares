@@ -42,7 +42,7 @@ describe("controls and styling come from the design system", () => {
       if (Object.values(counts).some(Boolean)) found[file] = counts;
     }
     expect(found, [
-      "A count went up: use Button, Input, Select, Textarea, Checkbox, Radio, Field, Choice or FieldGroup from @lares/ui, and classes instead of inline styles.",
+      "A count went up: use Button, Input, Select, Textarea, Checkbox, Radio, Field, Choice or FieldGroup from @lares/ui, classes instead of inline styles, and a lares-table-scroll wrapper around each table.",
       "A count went down: well done, lower it in tests/design-system-baseline.ts so it stays down.",
     ].join(" ")).toEqual(RAW_LEFT);
   });
@@ -57,7 +57,12 @@ describe("the scan itself", () => {
 
   it("counts drawn controls, and not hidden fields or design-system parts", () => {
     expect(countRaw(`<form><input type="hidden" /><input type="date" /><select /><Select /><Button /><button style={{ maxWidth: 1 }} /></form>`))
-      .toEqual({ button: 1, select: 1, textarea: 0, fieldset: 0, input: 1, style: 1, inlineMaxWidth: 1 });
+      .toEqual({ button: 1, select: 1, textarea: 0, fieldset: 0, input: 1, unscrolledTable: 0, style: 1, inlineMaxWidth: 1 });
+  });
+
+  it("counts a table that cannot scroll sideways on a phone", () => {
+    expect(countRaw(`<div><table /></div>`).unscrolledTable).toBe(1);
+    expect(countRaw(`<div className="lares-table-scroll"><table /></div>`).unscrolledTable).toBe(0);
   });
 
   it("reads width limits, and ignores media conditions and comments", () => {

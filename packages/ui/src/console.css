@@ -86,6 +86,28 @@
 .lares-surface-compact .lares-section-title {
   margin-bottom: var(--space-2);
 }
+.lares-small {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.lares-note {
+  margin: var(--space-1) 0 0;
+  color: var(--muted-foreground);
+  font: var(--text-body-sm);
+}
+.lares-eyebrow {
+  margin: 0 0 var(--space-1);
+  color: var(--muted-foreground);
+  font: var(--text-mono-sm);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.lares-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
 .lares-surface pre {
   overflow-x: auto;
 }

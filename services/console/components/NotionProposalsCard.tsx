@@ -1,4 +1,5 @@
 "use client";
+import { Button } from "@lares/ui/primitives/button";
 import { useState, useTransition } from "react";
 import type { NotionProposalDTO, FrozenDocDTO } from "../lib/notion-proposals";
 import { approveConsequence, rejectConsequence } from "@lares/agent-box/lib/notion-proposals.js";
@@ -41,32 +42,24 @@ function ProposalRow(p: { proposal: NotionProposalDTO; onResolved: (id: number) 
   const isCreate = p.proposal.kind === "create";
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8 }}>
-      <div className="mono" style={{ fontSize: 12, color: "var(--signal)" }}>
-        {isCreate && <span style={{ color: "var(--mist)" }}>NEW FILE </span>}
-        {p.proposal.vaultPath} <span style={{ color: "var(--mist)" }}>· {p.proposal.state} · {p.proposal.createdAt.slice(0, 10)}</span>
+    <div className="card lares-control-card">
+      <div className="mono lares-small lares-status-warning">
+        {isCreate && <span className="lares-status-muted">NEW FILE </span>}
+        {p.proposal.vaultPath} <span className="lares-status-muted">· {p.proposal.state} · {p.proposal.createdAt.slice(0, 10)}</span>
       </div>
-      <pre style={{ whiteSpace: "pre-wrap", fontSize: 13, marginTop: 8 }}>{p.proposal.preview}</pre>
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 8 }}>
+      <pre className="lares-pre lares-small lares-row-actions">{p.proposal.preview}</pre>
+      <p className="lares-muted lares-operational-note">
         {isCreate && "This file does not exist in the vault yet. "}
         Approve: {approveConsequence(p.proposal)}. Reject: {rejectConsequence(p.proposal)}.
       </p>
-      <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
-        <button
-          disabled={pending}
-          onClick={() => act("approve")}
-          style={{ border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 12px", background: "var(--signal)", color: "#fff", cursor: pending ? "default" : "pointer" }}
-        >
+      <div className="lares-actions">
+        <Button type="button" disabled={pending} onClick={() => act("approve")}>
           Approve
-        </button>
-        <button
-          disabled={pending}
-          onClick={() => act("reject")}
-          style={{ border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 12px", background: "var(--card)", color: "var(--bad)", cursor: pending ? "default" : "pointer" }}
-        >
+        </Button>
+        <Button type="button" variant="outline" disabled={pending} onClick={() => act("reject")}>
           Reject
-        </button>
-        {err && <span title={err} style={{ color: "var(--bad)" }}>!</span>}
+        </Button>
+        {err && <span title={err} className="lares-status-error">!</span>}
       </div>
     </div>
   );
@@ -82,50 +75,50 @@ export function NotionProposalsCard(p: { proposals: NotionProposalDTO[]; frozen:
 
   return (
     <>
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+      <h2>
         Notion proposals {proposals.length > 0 && `(${proposals.length})`}
       </h2>
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+      <p className="lares-muted lares-operational-note">
         Changes made in Notion, awaiting your approve/reject — edits to files that exist, and
         files Notion wants to add (marked NEW FILE). What each choice means is stated on the
         row: rejecting does one of three different things depending on which side owns the
         document. Either way the write happens on the sync&apos;s next tick, not immediately.
       </p>
       {proposals.length === 0 ? (
-        <p style={{ color: "var(--mist)", fontSize: 13, marginTop: 8 }}>No open proposals.</p>
+        <p className="lares-muted lares-operational-note">No open proposals.</p>
       ) : (
         proposals.map((proposal) => (
           <ProposalRow key={proposal.id} proposal={proposal} onResolved={resolve} />
         ))
       )}
 
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+      <h2>
         Frozen {p.frozen.length > 0 && `(${p.frozen.length})`}
       </h2>
       {p.frozen.length === 0 ? (
-        <p style={{ color: "var(--mist)", fontSize: 13, marginTop: 8 }}>Nothing frozen.</p>
+        <p className="lares-muted lares-operational-note">Nothing frozen.</p>
       ) : (
         <>
-          <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+          <p className="lares-muted lares-operational-note">
             Conflicts nothing here can resolve automatically — a human picks a side, on the box, with
             the daemon quiesced. <code>--keep md</code> overwrites the Notion page from the vault;{" "}
             <code>--keep notion</code> queues a proposal you still approve.
           </p>
-          <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 8 }}>
+          <p className="lares-muted lares-operational-note">
             {NOTION_RESOLVE_GUIDANCE}
           </p>
-          <table className="card" style={{ marginTop: 8 }}>
+          <div className="lares-table-scroll"><table className="card lares-operational-table">
             <thead><tr><th>Path</th><th>Reason</th><th>Frozen</th></tr></thead>
             <tbody>
               {p.frozen.map((row) => (
                 <tr key={row.vaultPath}>
                   <td className="mono">{row.vaultPath}</td>
-                  <td style={{ color: "var(--mist)" }}>{row.reason ?? "—"}</td>
-                  <td style={{ color: "var(--mist)" }}>{row.frozenAt.slice(0, 10)}</td>
+                  <td className="lares-status-muted">{row.reason ?? "—"}</td>
+                  <td className="lares-status-muted">{row.frozenAt.slice(0, 10)}</td>
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         </>
       )}
     </>

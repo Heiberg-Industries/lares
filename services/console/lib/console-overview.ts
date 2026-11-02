@@ -1,4 +1,4 @@
-import { listAgents, type AgentFolder } from "./agents";
+import { listAgents, listSavedAgentsNotStarted, type AgentFolder } from "./agents";
 import { pool } from "./db";
 export type Reading<T> = { available: true; value: T } | { available: false };
 export interface WorkflowCount {
@@ -12,7 +12,7 @@ export interface FleetSnapshot {
 }
 export async function getFleetSnapshot(): Promise<FleetSnapshot> {
   const [agents, workflows] = await Promise.allSettled([
-    listAgents({ strict: true }),
+    Promise.all([listAgents({ strict: true }), listSavedAgentsNotStarted()]).then(([running, saved]) => [...running, ...saved]),
     pool.query<{ agent: string; status: string; n: string }>(
       "SELECT agent, status, count(*) n FROM workflow_jobs GROUP BY agent, status",
     ),

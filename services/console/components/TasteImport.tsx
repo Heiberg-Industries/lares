@@ -1,4 +1,6 @@
 "use client";
+import { Textarea } from "@lares/ui/primitives/textarea";
+import { Select } from "@lares/ui/primitives/select";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { Button } from "@lares/ui/primitives/button";
 import { Input } from "@lares/ui/primitives/input";
@@ -62,7 +64,7 @@ export function TakeoutImport() {
   const removedNames = preview?.flatMap((p) => p.removedNames) ?? [];
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8 }}>
+    <div className="card lares-control-card">
       <div>
         <label className="lares-field-label" htmlFor="taste-csv">Google Takeout CSV files</label>
         <Input
@@ -76,7 +78,7 @@ export function TakeoutImport() {
       </div>
 
       {lists.length > 0 && (
-        <table className="card" style={{ marginTop: 8 }}>
+        <div className="lares-table-scroll"><table className="card lares-operational-table">
           <thead><tr><th>List name</th><th>City (optional)</th><th>Country (optional)</th><th></th></tr></thead>
           <tbody>
             {lists.map((l, i) => (
@@ -90,11 +92,11 @@ export function TakeoutImport() {
                   <Input className="lares-field" value={l.country ?? ""} placeholder="USA"
                     onChange={(e) => edit(i, { country: e.target.value })} />
                 </td>
-                <td style={{ color: "var(--mist)", fontSize: 12 }}>{l.csvText.split("\n").length - 1} rows</td>
+                <td className="lares-small lares-status-muted">{l.csvText.split("\n").length - 1} rows</td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
 
       {lists.length > 0 && (
@@ -104,11 +106,11 @@ export function TakeoutImport() {
         </Button>
       )}
 
-      {error && <p className="mono" style={{ marginTop: 8, fontSize: 12, color: "var(--bad)" }}>✕ {error}</p>}
+      {error && <p className="mono lares-small lares-status-error lares-row-actions">✕ {error}</p>}
 
       {preview && (
-        <div style={{ marginTop: 12 }}>
-          <table className="card">
+        <div className="lares-row-actions">
+          <div className="lares-table-scroll"><table className="card lares-operational-table">
             <thead><tr><th>List</th><th>+ added</th><th>~ updated</th><th>− removed</th><th>Coordinates</th></tr></thead>
             <tbody>
               {preview.map((p) => (
@@ -116,8 +118,8 @@ export function TakeoutImport() {
                   <td className="mono">{p.listName}</td>
                   <td>{p.added}</td>
                   <td>{p.updated}</td>
-                  <td style={p.removed > 0 ? { color: "var(--bad)" } : undefined}>{p.removed}</td>
-                  <td style={{ color: "var(--mist)", fontSize: 12 }}>
+                  <td className={p.removed > 0 ? "lares-status-error" : undefined}>{p.removed}</td>
+                  <td className="lares-small lares-status-muted">
                     {p.withCoords} from file
                     {p.keepsCoords > 0 && `, ${p.keepsCoords} retained`}
                     {p.needsLookup > 0 && `, ${p.needsLookup} need lookup`}
@@ -125,9 +127,9 @@ export function TakeoutImport() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
           {removedNames.length > 0 && (
-            <p style={{ fontSize: 12, marginTop: 8, color: "var(--bad)" }}>
+            <p className="lares-small lares-status-error lares-row-actions">
               Removed from these lists: {removedNames.slice(0, 12).join(", ")}
               {removedNames.length > 12 && ` … (+${removedNames.length - 12})`}
             </p>
@@ -164,17 +166,17 @@ export function ListCountry({ lists }: { lists: string[] }) {
   if (lists.length === 0) return null;
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8 }}>
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-        <div style={{ minWidth: 220 }}>
+    <div className="card lares-control-card">
+      <div className="lares-inline-form">
+        <div className="lares-inline-field">
           <label className="lares-field-label" htmlFor="country-list">List</label>
-          <select id="country-list" className="lares-field" value={listName}
+          <Select id="country-list" value={listName}
             onChange={(e) => { setListName(e.target.value); setResult(null); }}>
             <option value="">Choose a list</option>
             {lists.map((l) => <option key={l} value={l}>{l}</option>)}
-          </select>
+          </Select>
         </div>
-        <div style={{ minWidth: 160 }}>
+        <div className="lares-inline-field">
           <label className="lares-field-label" htmlFor="country-value">Country</label>
           <Input id="country-value" className="lares-field" value={country} placeholder="Denmark"
             onChange={(e) => { setCountry(e.target.value); setResult(null); }} />
@@ -195,9 +197,9 @@ export function ListCountry({ lists }: { lists: string[] }) {
         >
           Set country
         </Button>
-        {error && <span className="mono" style={{ fontSize: 12, color: "var(--bad)" }}>✕ {error}</span>}
+        {error && <span className="mono lares-small lares-status-error">✕ {error}</span>}
         {result && (
-          <span className="mono" style={{ fontSize: 12, color: "var(--ok)" }}>
+          <span className="mono lares-small lares-status-success">
             ✓ {result.listName}: {result.changed} updated
             {result.alreadySet > 0 && `, ${result.alreadySet} already set`}
             {result.changed === 0 && result.alreadySet === 0 && " — this list has no entries"}
@@ -235,31 +237,31 @@ export function PasteImport() {
   }
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8 }}>
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+    <div className="card lares-control-card">
+      <div className="lares-inline-form">
         <div>
           <label className="lares-field-label" htmlFor="paste-domain">Category</label>
-          <select id="paste-domain" className="lares-field" value={domain} onChange={(e) => setDomain(e.target.value)}>
+          <Select id="paste-domain" value={domain} onChange={(e) => setDomain(e.target.value)}>
             <option value="music">music — playlists and tracks</option>
             <option value="food">food — dishes and notes</option>
             <option value="notes">notes — everything else</option>
             <option value="places">places — one place per line</option>
-          </select>
+          </Select>
         </div>
-        <div style={{ minWidth: 200 }}>
+        <div className="lares-inline-field">
           <label className="lares-field-label" htmlFor="paste-name">List name</label>
           <Input id="paste-name" className="lares-field" value={name} placeholder="Summer 2026"
             onChange={(e) => setName(e.target.value)} />
         </div>
         {domain === "places" && (
-          <div style={{ minWidth: 160 }}>
+          <div className="lares-inline-field">
             <label className="lares-field-label" htmlFor="paste-city">City (optional)</label>
             <Input id="paste-city" className="lares-field" value={city} placeholder="Example City"
               onChange={(e) => setCity(e.target.value)} />
           </div>
         )}
         {domain === "places" && (
-          <div style={{ minWidth: 140 }}>
+          <div className="lares-inline-field">
             <label className="lares-field-label" htmlFor="paste-country">Country (optional)</label>
             <Input id="paste-country" className="lares-field" value={country} placeholder="USA"
               onChange={(e) => setCountry(e.target.value)} />
@@ -267,22 +269,22 @@ export function PasteImport() {
         )}
       </div>
       {domain === "places" && (
-        <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 8 }}>
+        <p className="lares-small lares-status-muted lares-row-actions">
           Each pasted place becomes one entry without coordinates. Add a city to help your agents find it later.
         </p>
       )}
-      <textarea
-        className="lares-field lares-preferences-paste"
+      <Textarea
+        className="lares-preferences-paste"
         value={text}
         placeholder={"- Artist One — Album One\n- Artist Two — Album Two"}
         onChange={(e) => setText(e.target.value)}
       />
-      <div style={{ marginTop: 8 }}>
+      <div className="lares-actions lares-row-actions">
         <Button  disabled={pending || text.trim() === "" || name.trim() === ""} onClick={onSave}>
           Save
         </Button>
-        {error && <span className="mono" style={{ marginLeft: 12, fontSize: 12, color: "var(--bad)" }}>✕ {error}</span>}
-        {message && <span className="mono" style={{ marginLeft: 12, fontSize: 12, color: "var(--good, #2a7)" }}>✓ {message}</span>}
+        {error && <span className="mono lares-small lares-status-error">✕ {error}</span>}
+        {message && <span className="mono lares-small lares-status-success">✓ {message}</span>}
       </div>
     </div>
   );
@@ -310,7 +312,7 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
 
   return (
     <div ref={ref} className="lares-result-card">
-      <p className="mono" style={{ fontSize: 13, color: "var(--ok)" }}>
+      <p className="mono lares-small lares-status-success">
         ✓ Saved {results.length} {results.length === 1 ? "list" : "lists"}: +{sum((r) => r.added)} added,{" "}
         ~{sum((r) => r.changed)} changed, −{sum((r) => r.removed)} removed
         {sum((r) => r.geocoded) > 0 && `, ${sum((r) => r.geocoded)} located`}
@@ -319,7 +321,7 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
       </p>
 
       {results.map((r) => (
-        <p key={r.listName} className="mono" style={{ fontSize: 12, marginTop: 4, color: "var(--mist)" }}>
+        <p key={r.listName} className="mono lares-small lares-status-muted lares-row-actions">
           {r.listName}: +{r.added} ~{r.updated} −{r.removed}
           {r.updated > 0 && (r.changed > 0
             ? ` · ${r.changed} of ${r.updated} actually changed`
@@ -330,7 +332,7 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
       ))}
 
       {approximate.length > 0 && (
-        <div style={{ marginTop: 6 }}>
+        <div className="lares-row-actions">
           <Button
             type="button"
             onClick={() => setShowApprox((v) => !v)}
@@ -339,7 +341,7 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
             {showApprox ? "Hide" : "Show"} {approximate.length} approximate locations
           </Button>
           {showApprox && (
-            <p style={{ fontSize: 12, marginTop: 4, color: "var(--mist)" }}>
+            <p className="lares-small lares-status-muted lares-row-actions">
               Placed from the link location without a confirmed match:{" "}
               {approximate.map((u) => `${u.name} (${u.reason})`).join(", ")}
             </p>
@@ -348,7 +350,7 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
       )}
 
       {unresolved.length > 0 && (
-        <p style={{ fontSize: 12, marginTop: 6, color: "var(--mist)" }}>
+        <p className="lares-small lares-status-muted lares-row-actions">
           No coordinates available (never guessed):{" "}
           {unresolved.slice(0, 12).map((u) => `${u.name} (${u.reason})`).join(", ")}
           {unresolved.length > 12 && ` … (+${unresolved.length - 12})`}

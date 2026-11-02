@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const { query, list } = vi.hoisted(() => ({ query: vi.fn(), list: vi.fn() }));
 vi.mock("../lib/db", () => ({ pool: { query } }));
-vi.mock("../lib/agents", () => ({ listAgents: list }));
+vi.mock("../lib/agents", () => ({ listAgents: list, listSavedAgentsNotStarted: async () => [] }));
 import { getFleetSnapshot, getPermissionEvents } from "../lib/console-overview";
 import { workflowState } from "../lib/workflow-state";
 beforeEach(() => vi.resetAllMocks());

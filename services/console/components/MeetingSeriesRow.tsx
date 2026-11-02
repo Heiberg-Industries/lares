@@ -1,4 +1,5 @@
 "use client";
+import { Button } from "@lares/ui/primitives/button";
 import { useState, useTransition } from "react";
 import { revokeSeries } from "../app/actions/meeting-series";
 
@@ -20,11 +21,13 @@ export function MeetingSeriesRow(p: {
   return (
     <tr>
       <td>{p.name}</td>
-      <td className="mono" style={{ color: "var(--mist)" }}>{p.updatedBy}</td>
-      <td className="mono" style={{ color: "var(--mist)" }}>{p.updatedAt}</td>
+      <td className="mono lares-status-muted">{p.updatedBy}</td>
+      <td className="mono lares-status-muted">{p.updatedAt}</td>
       <td>
-        <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-          <button
+        <span className="lares-actions">
+          <Button
+            type="button"
+            variant="outline"
             disabled={pending}
             title={`Turn off auto-send for ${p.name}`}
             onClick={() =>
@@ -38,15 +41,10 @@ export function MeetingSeriesRow(p: {
                 }
               })
             }
-            style={{
-              border: "1px solid var(--rule)", borderRadius: 4, padding: "2px 8px",
-              cursor: pending ? "default" : "pointer", background: "var(--card)",
-              color: "var(--bad)", fontSize: 12,
-            }}
           >
             {pending ? "…" : "Revoke"}
-          </button>
-          {err && <span title={err} style={{ color: "var(--bad)" }}>!</span>}
+          </Button>
+          {err && <span title={err} className="lares-status-error">!</span>}
         </span>
       </td>
     </tr>

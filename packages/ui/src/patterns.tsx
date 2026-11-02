@@ -212,13 +212,15 @@ export function Choice({ children }: { children: ReactNode }) {
 /** A named group of related controls. */
 export function FieldGroup({
   legend,
+  disabled,
   children,
 }: {
   legend: ReactNode;
+  disabled?: boolean;
   children: ReactNode;
 }) {
   return (
-    <fieldset className="lares-fieldset">
+    <fieldset className="lares-fieldset" disabled={disabled}>
       <legend>{legend}</legend>
       {children}
     </fieldset>

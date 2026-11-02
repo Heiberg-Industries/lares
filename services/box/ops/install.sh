@@ -511,9 +511,11 @@ fi
 
 # --- 7. an existing installation ----------------------------------------------------------
 # Found, not fixed: a partial install is reported as what it is, never silently repaired
-# by this installer.
+# by this installer. Authentication custody is the first thing a fresh install writes, long
+# before /srv/lares exists, so its folder also marks a first install that stopped partway. A
+# re-run then validates that custody and carries on; it cannot be prepared fresh a second time.
 REPAIR_MODE=0
-if [ -d "$PREFIX/srv/lares" ]; then
+if [ -d "$PREFIX/srv/lares" ] || [ -d "$PREFIX/var/lib/lares-maintenance" ]; then
   REPAIR_MODE=1
 fi
 
@@ -566,7 +568,7 @@ if [ -s "$PROBLEMS" ]; then
 fi
 
 if [ "$REPAIR_MODE" -eq 1 ]; then
-  say "found an existing installation under $PREFIX/srv/lares — this would update it in place, not start over."
+  say "found an existing or unfinished installation under ${PREFIX:-/} — this would update it in place, not start over."
 else
   say "found no existing installation under $PREFIX/srv/lares — this would start a fresh install."
 fi
@@ -773,7 +775,7 @@ lares_secret token-enc-key          32 hex  # writes $SECRETS_DIR/token-enc-key
 # cannot silently adopt an old password.
 ensure_operator_password() {
   local tmp
-  if ! python3 - "$PREFIX" "$OPERATOR_DIR" "$SECRETS_DIR" "$PREFIX/var/lib/lares" "$PREFIX/srv/lares" <<'PYOPERATOR'
+  if ! python3 - "${PREFIX:-/}" "$OPERATOR_DIR" "$SECRETS_DIR" "$PREFIX/var/lib/lares" "$PREFIX/srv/lares" <<'PYOPERATOR'
 import os,stat,sys
 prefix,operator,secrets,keeper,agents=map(os.path.abspath,sys.argv[1:])
 def overlaps(a,b):return a==b or a.startswith(b.rstrip(os.sep)+os.sep) or b.startswith(a.rstrip(os.sep)+os.sep)
@@ -1545,13 +1547,15 @@ run_first_owner() {
 # configured domain before the keeper starts. The command is transactional and refuses to
 # adopt or change an existing organisation on a repair run.
 run_first_organisation() {
-  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares_app}"
+  # The financial login, as Keeper uses for this table: inserting a member policy fires the
+  # budget trigger, which the application login is deliberately not allowed to run.
+  local db_name="${PGDATABASE:-lares_state}"
   local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
   local domain owner_email code=0
   domain=$(read_setting LARES_DOMAIN "$INSTALL_ENV")
   owner_email=$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")
-  engine_run --ro "$SECRETS_DIR" --env DATABASE_PASSWORD_FILE="$SECRETS_DIR/database-password" \
-    --env PGHOST="$db_host" --env PGPORT="$db_port" --env PGDATABASE="$db_name" --env PGUSER="$db_user" \
+  engine_run --ro "$SECRETS_DIR" --env DATABASE_PASSWORD_FILE="$SECRETS_DIR/financial-database-password" \
+    --env PGHOST="$db_host" --env PGPORT="$db_port" --env PGDATABASE="$db_name" --env PGUSER=lares_financial \
     --env LARES_OWNER_ID="$OWNER_ID" --env LARES_OWNER_EMAIL="$owner_email" --env LARES_DOMAIN="$domain" \
     bin/first-organisation.ts || code=$?
   if [ "$code" -ne 0 ]; then

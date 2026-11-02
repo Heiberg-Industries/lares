@@ -8,11 +8,15 @@ export type RawCounts = {
   textarea: number;
   fieldset: number;
   input: number;
+  unscrolledTable: number;
   style: number;
   inlineMaxWidth: number;
 };
 
 const CONTROLS = ["button", "select", "textarea", "fieldset"] as const;
+
+// A wide table scrolls inside one of these instead of stretching the page on a phone.
+const SCROLL_WRAPPER = /lares-table-scroll|lares-event-table|styles\.frame/;
 
 const parse = (source: string) =>
   ts.createSourceFile("scan.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -23,18 +27,25 @@ function attribute(node: ts.JsxOpeningLikeElement, name: string) {
   );
 }
 
+function scrolls(node: ts.JsxOpeningLikeElement) {
+  const wrapper = (ts.isJsxSelfClosingElement(node) ? node : node.parent).parent;
+  if (!ts.isJsxElement(wrapper)) return false;
+  return SCROLL_WRAPPER.test(attribute(wrapper.openingElement, "className")?.getText() ?? "");
+}
+
 function literal(attr: ts.JsxAttribute | undefined) {
   return attr?.initializer && ts.isStringLiteral(attr.initializer) ? attr.initializer.text : undefined;
 }
 
 /** Controls and styling written by hand in one source file. Hidden inputs draw nothing, so they do not count. */
 export function countRaw(source: string): RawCounts {
-  const counts: RawCounts = { button: 0, select: 0, textarea: 0, fieldset: 0, input: 0, style: 0, inlineMaxWidth: 0 };
+  const counts: RawCounts = { button: 0, select: 0, textarea: 0, fieldset: 0, input: 0, unscrolledTable: 0, style: 0, inlineMaxWidth: 0 };
   const visit = (node: ts.Node) => {
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
       const tag = node.tagName.getText();
       if ((CONTROLS as readonly string[]).includes(tag)) counts[tag as (typeof CONTROLS)[number]]++;
       if (tag === "input" && literal(attribute(node, "type")) !== "hidden") counts.input++;
+      if (tag === "table" && !scrolls(node)) counts.unscrolledTable++;
       if (attribute(node, "style")) counts.style++;
     }
     ts.forEachChild(node, visit);

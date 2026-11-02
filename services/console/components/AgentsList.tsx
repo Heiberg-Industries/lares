@@ -168,14 +168,18 @@ export function AgentsList({
                           )}
                         </td>
                         <td>
-                          <Button variant="ghost" asChild>
-                            <Link
-                              href={`/chat/${encodeURIComponent(agent.name)}`}
-                              aria-label={`Chat with ${agent.displayName || agent.name}`}
-                            >
-                              Chat <ArrowRight aria-hidden="true" />
-                            </Link>
-                          </Button>
+                          {agent.startedAt ? (
+                            <Button variant="ghost" asChild>
+                              <Link
+                                href={`/chat/${encodeURIComponent(agent.name)}`}
+                                aria-label={`Chat with ${agent.displayName || agent.name}`}
+                              >
+                                Chat <ArrowRight aria-hidden="true" />
+                              </Link>
+                            </Button>
+                          ) : (
+                            <span className="lares-muted">Not started</span>
+                          )}
                         </td>
                       </tr>
                     );

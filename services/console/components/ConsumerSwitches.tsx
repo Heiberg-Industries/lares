@@ -1,4 +1,6 @@
 "use client";
+import { Choice } from "@lares/ui/patterns";
+import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { useState } from "react";
 import type { ConsumerRow } from "../lib/signals";
 
@@ -37,17 +39,17 @@ export function ConsumerSwitches({ initial, onSave }: {
     }
   }
   return (
-    <div style={{ marginTop: 12, borderBottom: "1px solid var(--rule)", paddingBottom: 12 }}>
+    <div className="lares-stack lares-operational-section">
       {rows.map((r) => (
-        <div key={r.name} style={{ marginBottom: 8 }}>
-          <label className="mono" style={{ fontSize: 13, display: "flex", gap: 8, alignItems: "baseline" }}>
-            <input type="checkbox" checked={r.enabled} onChange={(e) => void toggle(r.name, e.target.checked)} />
+        <div key={r.name}>
+          <Choice>
+            <Checkbox checked={r.enabled} onChange={(e) => void toggle(r.name, e.target.checked)} />
             <span>{r.name}{r.enabled ? "" : " — OFF"}</span>
-          </label>
-          <p style={{ color: "var(--mist)", fontSize: 12, margin: "2px 0 0 24px" }}>{WHAT[r.name]}</p>
+          </Choice>
+          <p className="lares-note">{WHAT[r.name]}</p>
         </div>
       ))}
-      <span className="mono" style={{ fontSize: 12, color: msg.startsWith("saved") ? "var(--good, #2a7)" : "var(--bad)" }}>{msg}</span>
+      <span className={msg.startsWith("saved") ? "lares-form-success" : "lares-form-error"}>{msg}</span>
     </div>
   );
 }

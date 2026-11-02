@@ -204,7 +204,8 @@ class Profile:
                 kind = block.get("type")
                 fields = {
                     "text": {"type", "text", "cache_control"},
-                    "tool_use": {"type", "id", "name", "input", "cache_control"},
+                    # A provider's own tool call carries caller; only a direct call may come back.
+                    "tool_use": {"type", "id", "name", "input", "caller", "cache_control"},
                     "tool_result": {"type", "tool_use_id", "content", "is_error", "cache_control"},
                     "thinking": {"type", "thinking", "signature"},
                     "redacted_thinking": {"type", "data"},
@@ -213,6 +214,7 @@ class Profile:
                 if path == "/v1/chat/completions" and kind != "text": raise Refused()
                 cache(block.get("cache_control"))
                 if kind == "text" and not isinstance(block.get("text"), str): raise Refused()
+                if kind == "tool_use" and block.get("caller", {"type": "direct"}) != {"type": "direct"}: raise Refused()
                 if kind == "tool_result": content(block.get("content"), tools=False)
         content(body.get("system"), tools=False)
         for message in body["messages"]:

@@ -1,4 +1,7 @@
 "use client";
+import { Field } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
+import { Input } from "@lares/ui/primitives/input";
 import { useState, useTransition } from "react";
 import { setAgentLimit } from "../app/actions/definition";
 import type { Capacity } from "../lib/builder";
@@ -52,12 +55,13 @@ export function AgentLimitControl({ capacity }: { capacity: Capacity }) {
         </p>
       )}
       {editable && (
-        <form onSubmit={e => { e.preventDefault(); if (valid && !pending) save(); }}>
-          <label>
-            New limit (0 to 50)
-            <input type="number" min={0} max={50} step={1} inputMode="numeric" value={value} onChange={e => { setValue(e.target.value); setSaved(false); }} />
-          </label>{" "}
-          <button type="submit" disabled={!valid || pending}>{pending ? "Saving…" : "Save"}</button>
+        <form className="lares-stack" onSubmit={e => { e.preventDefault(); if (valid && !pending) save(); }}>
+          <div className="lares-inline-form">
+            <Field label="New limit (0 to 50)">
+              <Input className="lares-short-input" type="number" min={0} max={50} step={1} inputMode="numeric" value={value} onChange={e => { setValue(e.target.value); setSaved(false); }} />
+            </Field>
+            <Button type="submit" disabled={!valid || pending}>{pending ? "Saving…" : "Save"}</Button>
+          </div>
           {tooHigh && <p role="alert">This is more than the estimate of about {suggestedMax} {noun(suggestedMax!)} this server can hold. You can still save it, but the server may run out of memory.</p>}
           {error && <p role="alert">{error}</p>}
           {saved && <p role="status">Saved. The limit is now {current}.</p>}

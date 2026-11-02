@@ -1,17 +1,8 @@
 "use client";
+import { Button } from "@lares/ui/primitives/button";
 import { useState, useTransition } from "react";
 
 import { deriveMissingPlaceNames, type PlaceNameBackfill } from "../app/actions/taste";
-
-const button = {
-  padding: "6px 12px",
-  fontSize: 13,
-  border: "1px solid var(--rule)",
-  borderRadius: 3,
-  background: "transparent",
-  color: "var(--ink)",
-  cursor: "pointer",
-} as const;
 
 /** One button: derive city and country for every pinned entry that has neither. Offline and
  *  idempotent, so unlike the pin repair it needs no dry run to be safe to press. */
@@ -21,10 +12,10 @@ export function DerivePlaceNames() {
   const [pending, start] = useTransition();
 
   return (
-    <div style={{ marginTop: 8 }}>
-      <button
+    <div className="lares-row-actions">
+      <Button
         type="button"
-        style={button}
+        variant="outline"
         disabled={pending}
         onClick={() =>
           start(async () => {
@@ -38,10 +29,10 @@ export function DerivePlaceNames() {
         }
       >
         {pending ? "Filling in…" : "Fill in city and country"}
-      </button>
-      {error && <p className="mono" style={{ color: "var(--bad)", fontSize: 12, marginTop: 8 }}>{error}</p>}
+      </Button>
+      {error && <p className="mono lares-small lares-status-error lares-row-actions">{error}</p>}
       {result && (
-        <p className="mono" style={{ fontSize: 12, marginTop: 8, color: "var(--ok)" }}>
+        <p className="mono lares-small lares-status-success lares-row-actions">
           {result.named} received a city and country
           {result.alreadyNamed > 0 && `, ${result.alreadyNamed} already had them`}
           {result.noPin > 0 && `, ${result.noPin} have no coordinates`}.

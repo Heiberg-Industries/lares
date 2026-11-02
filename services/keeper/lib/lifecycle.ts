@@ -185,7 +185,9 @@ export class AgentLifecycle {
         let unhealthy = false;
         try {
             if (credential) await this.docker.start(name, address, true);
-            else await this.docker.start(name, address, false, 15);
+            // A first start on a real server has taken about 27 seconds. 45 probes stay inside
+            // the Console's 90-second wait for this action.
+            else await this.docker.start(name, address, false, 45);
         }
         catch (error) {
             startError = error;

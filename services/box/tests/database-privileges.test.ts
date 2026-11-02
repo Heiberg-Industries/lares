@@ -252,6 +252,25 @@ describe("engine database privilege foundation", () => {
     await expectDenied(() => app.query("SELECT budget_retire_member('probe-member',false)"));
   });
 
+  it("enrols the first organisation under the financial login the installer uses, never the app login", async () => {
+    const owner = "first-organisation-owner", input = { ownerId: owner, ownerEmail: "first@example.invalid", domain: "first-org.example.invalid" };
+    await admin.query("INSERT INTO users (id, display_name, primary_email) VALUES ($1, 'Owner', $2)", [owner, input.ownerEmail]);
+    // enrolFirstOrganisation's counts refuse a database with other people; the role check is what matters here.
+    const enrol = async (pool: Pool) => {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("INSERT INTO orgs (id, display_name) VALUES ($1, $1)", [input.domain]);
+        await client.query("UPDATE users SET org_id = $1, org_role = 'owner' WHERE id = $2", [input.domain, owner]);
+        await client.query("INSERT INTO org_member_policy (user_id) VALUES ($1)", [owner]);
+        await client.query("COMMIT");
+      } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+    };
+    await expectDenied(() => enrol(app));
+    await enrol(financial);
+    expect((await admin.query("SELECT user_id FROM org_member_policy WHERE user_id=$1", [owner])).rows).toHaveLength(1);
+  });
+
   it("keeps custody tables outside app/financial access and excludes OAuth and ledger data from the custody role", async()=>{
     expect((await outsideCustody.query("SELECT current_user,session_user")).rows[0]).toEqual({current_user:"lares_outside_custody",session_user:"lares_outside_custody"});
     for(const role of [app,financial])for(const table of ENGINE_TABLE_PRIVILEGES.outsideCustody){

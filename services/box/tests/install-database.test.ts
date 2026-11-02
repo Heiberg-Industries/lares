@@ -10,9 +10,9 @@
 // install-model-test.test.ts's harness shape: every call here bakes in `--yes`, since this file
 // is not about screen one's fresh-or-restore prompt.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, realpathSync,
+  existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -91,6 +91,22 @@ it("passes / at the custody boundary when the installer prefix is empty", () => 
   expect(source.match(/maintenance-custody\.py" (?:prepare-fresh|validate) "\$\{PREFIX:-\/\}"/g)).toHaveLength(4);
   const emptyPrefixArgument = execFileSync("/bin/bash", ["-c", 'PREFIX=""; printf "%s" "${PREFIX:-/}"'], { encoding: "utf8" });
   expect(emptyPrefixArgument).toBe("/");
+});
+
+it("does not depend on the folder the installer is run from when the prefix is empty", () => {
+  // The guide downloads and runs the installer from the home folder. Run the installer's own
+  // check from an ordinary folder with what it passes when the prefix is the real root.
+  const source = readFileSync(SCRIPT, "utf8");
+  const check = /<<'PYOPERATOR'\n([\s\S]*?)\nPYOPERATOR/.exec(source)![1]!;
+  expect(source).toContain(`python3 - "\${PREFIX:-/}" "$OPERATOR_DIR" "$SECRETS_DIR" "$PREFIX/var/lib/lares" "$PREFIX/srv/lares" <<'PYOPERATOR'`);
+  const cwd = mkdtempSync(join(tmpdir(), "lares-install-cwd-"));
+  try {
+    const run = (prefixArgument: string) => spawnSync("python3", ["-", prefixArgument,
+      "/lares-nonexistent/etc/operator", "/lares-nonexistent/etc/secrets", "/lares-nonexistent/var", "/lares-nonexistent/srv"],
+      { input: check, cwd, encoding: "utf8" });
+    expect(run("/").status, run("/").stderr).toBe(0);
+    expect(run("").stderr).toMatch(/outside the installation prefix/);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 
 beforeEach(() => {
@@ -216,6 +232,28 @@ describe("the database the installer creates", () => {
     expect(calls).toMatch(/first-owner/);
     expect(calls).toMatch(/first-organisation/);
     expect(calls).not.toMatch(/render-keeper-config/);
+  });
+
+  it("carries on from a first install that stopped partway, instead of refusing to start again", () => {
+    stub("pnpm", 'case "$3" in first-organisation) echo "membership conflict" >&2; exit 1 ;; esac\nexit 0');
+    expect(runWithStdin([], answers).code).toBe(78);
+    expect(existsSync(join(prefix, "srv", "lares")), "this test is about a stop before /srv/lares exists").toBe(false);
+    stub("pnpm", "exit 0");
+    writeFileSync(log, "");
+    const second = runWithStdin([], "");
+    expect(second.code, second.stderr).toBe(0);
+    const calls = readFileSync(log, "utf8");
+    expect(calls).toMatch(/first-organisation/);
+    expect(calls).toMatch(/render-keeper-config/);
+    expect(calls).not.toMatch(/CREATE DATABASE/);
+  });
+
+  it("enrols the first organisation under the financial login, because its budget trigger needs it", () => {
+    stub("pnpm", "exit 0");
+    okRun(runWithStdin([], answers));
+    const line = readFileSync(log, "utf8").split("\n").find((l) => l.includes("first-organisation"))!;
+    expect(line).toContain("PGUSER=lares_financial");
+    expect(line).toContain(`DATABASE_PASSWORD_FILE=${join(prefix, "etc/lares/secrets/financial-database-password")}`);
   });
 
   it("is safe to run twice: the second run applies nothing and says so", () => {
