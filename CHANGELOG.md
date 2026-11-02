@@ -10,6 +10,8 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 - Budgets now carry on into a new month. At 00:00 UTC on the first, Keeper opens the month by itself for the installation and everyone on it: the limit on record, counted from zero. Unused money does not carry over, and calls whose cost is still unknown keep counting until resolved. Before this, every agent stopped spending at the first month change and nothing could reopen it.
 
+- Budgets now survive a server reboot. A database restart no longer freezes the spending ledger when it is the same database, the ledger has nothing unfinished and every money row matches; an older backup is still refused. A ledger that really is frozen now stops spending only, so the console and restore keep working, and the log says why. A crash or power cut during spending can still freeze the ledger, and there is no way yet to undo a freeze.
+
 - Every console page now sits on one grid: the same left edge and title position everywhere, wide for tables and lists, narrow for forms, settings and chat. The agent page's Agent access section no longer runs wider than the rest of the page, and now lives on that page's Access tab. Dropdowns, text boxes, checkboxes and field groups are now design-system parts, and every page uses them. A test fails when a page leaves the grid or adds a hand-built control.
 
 - Restore cleanup now keeps its evidence when a temporary client identity or removal cannot be verified. In that case, stop and have an operator review the server before taking another recovery action.

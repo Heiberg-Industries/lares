@@ -1156,6 +1156,6 @@ it('refuses an unbound existing financial directory instead of treating it as a 
 it('reports prepared restored data as recovery-required without keeper or runtime readiness instructions',()=>{
   write('etc/lares/keeper.json',keeperConfig({budgetFinancial:financialBinding()}));
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
-  const result=run(base());expect(result.code).toBe(0);expect(result.all).toContain('Financial recovery is required');expect(result.all).toContain('keeper startup refuses');
+  const result=run(base());expect(result.code).toBe(0);expect(result.all).toContain('Financial recovery is required');expect(result.all).toContain('the keeper starts with spending closed');
   expect(result.all).not.toContain('Sign in to the console');expect(result.all).not.toContain('Apply each agent');expect(result.all).not.toContain('keeper started');expect(result.all).toContain('Keep agents stopped');
 });
