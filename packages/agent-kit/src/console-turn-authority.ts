@@ -3,6 +3,7 @@ import {retainedConsoleSources,prepareConsoleVaultSources,insertConsoleVaultSour
 import {currentMember} from './member-store.js';
 import {verifiedPrivateConsoleResponse} from './private-console-envelope.js';
 import {personalActionForRequest} from './personal-action-store.js';
+import {exactCardForRequest} from './exact-approval-request.js';
 /** Trusted server admission only. No model-facing input can supply these coordinates.
  * This bounded runtime supports explicitly authorised members in singleton private console audiences.
  * Native channels and approval resumes do not inherit this authority.
@@ -223,16 +224,28 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
   }
   if(purpose==='resolver'){
     const answer=verifiedPrivateConsoleResponse(request);
-    await authorityTransaction(db,async client=>{
+    const exact=await authorityTransaction(db,async client=>{
       await requireConsoleSessionBinding(tuple,client,env);
       const member=await currentMember(client as never,memberId!);if(!member)denied();
       await client.query('SELECT id FROM orgs WHERE id=$1 FOR SHARE',[member!.organisationId]);
       const locked=await currentMember(client as never,memberId!,{lock:'share'});if(!locked||locked.organisationId!==member!.organisationId)denied();
-      const current=await personalActionForRequest(client,{requestId:answer.requestId,memberId:memberId!,agentId:own!.name,sessionId:sessionId!});
-      if(current.reference.selection.incarnation!==own!.incarnation||(answer.optionId==='approve'&&!current.alive))denied();
+      const card=await exactCardForRequest(client,{requestId:answer.requestId,agent:own!.name,incarnation:own!.incarnation,sessionId:sessionId!,memberId:memberId!,admissionNonce:nonce!});
+      if(card){
+        // A settled or spent card takes no further answer. Eve would otherwise replay it to the model.
+        const open=!card.used&&(card.outcome===null||(card.outcome==='approved'&&card.resolvedByMemberId===memberId));
+        if(!open||(answer.optionId==='approve'&&!card.alive))denied();
+      }else{
+        const current=await personalActionForRequest(client,{requestId:answer.requestId,memberId:memberId!,agentId:own!.name,sessionId:sessionId!});
+        if(current.reference.selection.incarnation!==own!.incarnation||(answer.optionId==='approve'&&!current.alive))denied();
+      }
       await requireConsoleSessionBinding(tuple,client,env);
+      return !!card;
     });
-    return {lares_resolver_member_id:memberId!,lares_purpose:'resolver',lares_resume_request_id:answer.requestId,lares_resume_option:answer.optionId};
+    // Exact cards carry the original admission, which their response and execution checks compare
+    // with the session initiator. Personal mail deliberately carries the resolver identity only.
+    return exact
+      ? {lares_member_id:memberId!,lares_admission_nonce:nonce!,lares_purpose:'resolver',lares_resume_request_id:answer.requestId,lares_resume_option:answer.optionId}
+      : {lares_resolver_member_id:memberId!,lares_purpose:'resolver',lares_resume_request_id:answer.requestId,lares_resume_option:answer.optionId};
   }
   return purpose!.startsWith('legacy-')
     ? {lares_resolver_member_id:memberId!,lares_purpose:purpose!}

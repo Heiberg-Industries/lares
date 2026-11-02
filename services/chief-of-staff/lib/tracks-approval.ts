@@ -37,7 +37,9 @@ export const tracksApprovalAdapter: ExactApprovalAdapter = {
     if (neutralWrite && (typeof suppliedHome !== 'string' || !/^vault:[A-Za-z0-9_-]{1,128}$/.test(suppliedHome) ||
         typeof raw.trackId !== 'string' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(raw.trackId)))
       throw new Error('Exact Tracks home or track is unavailable');
-    const home = tracksHome(ctx as never, typeof suppliedHome === 'string' ? suppliedHome : undefined);
+    // An approval answer carries no human turn and gains no read: it checks the reserved target
+    // only. Keeper compares the target's current bytes with the reserved fingerprint at write.
+    const home = reservedTarget ? undefined : tracksHome(ctx as never, typeof suppliedHome === 'string' ? suppliedHome : undefined);
     const path = tool === 'track_move_item'
       ? (reservedTarget?.id ?? await home?.findItemPath(String((input as {itemId?:unknown}).itemId)))
       : trackPathFor(input);

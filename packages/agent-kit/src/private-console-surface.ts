@@ -1,4 +1,4 @@
-import {privateResolverAdmission,requirePrivateConsoleResume} from './private-console-resume.js';
+import {privateResumeAdmission,requireConsoleResume} from './private-console-resume.js';
 /** The deliberately bounded private console surface. Native channels keep their definition. */
 import { defineState } from 'eve/context';
 import { consoleAdmission, hasConsoleTurnAuthorityTag, requireConsoleSessionBinding,
@@ -16,7 +16,7 @@ export type PrivateRole = 'chief-of-staff' | 'creative';
 const surfaceVersion = defineState<number>('lares.private-console-surface-version', () => 0);
 export function markPrivateConsoleSurface(): void { surfaceVersion.update(() => 1); }
 export async function verifyPrivateConsoleModel(ctx: unknown): Promise<void> {
-  if(privateResolverAdmission((ctx as ConsoleAuthorityContext)?.session?.auth?.current))await requirePrivateConsoleResume(ctx as ConsoleAuthorityContext,'model');
+  if(privateResumeAdmission((ctx as ConsoleAuthorityContext)?.session?.auth?.current))await requireConsoleResume(ctx as ConsoleAuthorityContext,'model');
   if (await verifyPrivateConsoleSession(ctx) && surfaceVersion.get() !== 1) throw new Error(CONSOLE_AUTHORITY_REFUSED);
 }
 const PERSONAL_READ_TOOLS = new Set(['personal_mailbox_send','personal_mailbox_accounts', 'personal_mailbox_list', 'personal_mailbox_read', 'personal_calendar_accounts', 'personal_calendar_events']);
@@ -34,7 +34,7 @@ export function privateToolAllowed(role: PrivateRole, name: string): boolean {
 export async function verifyPrivateConsoleSession(ctx: unknown): Promise<boolean> {
   if (!hasConsoleTurnAuthorityTag(ctx)) return false;
   const c = ctx as ConsoleAuthorityContext;
-  if(privateResolverAdmission(c.session?.auth?.current)){await requirePrivateConsoleResume(c,'surface');return true;}
+  if(privateResumeAdmission(c.session?.auth?.current)){await requireConsoleResume(c,'surface');return true;}
   const current = consoleAdmission(c.session?.auth?.current);
   const initial = consoleAdmission(c.session?.auth?.initiator);
   const own = managedIdentity(process.env);

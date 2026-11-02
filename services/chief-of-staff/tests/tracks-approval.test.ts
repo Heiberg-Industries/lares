@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TwentyTracksHome } from '../lib/twenty-tracks.js';
-import { twentyTracksApprovalAdapter } from '../lib/tracks-approval.js';
+import { tracksApprovalAdapter, twentyTracksApprovalAdapter } from '../lib/tracks-approval.js';
 import { runApprovedTwentyTrackOnce } from '../lib/approvals.js';
 
 const context = { session: { turn: { id: 'turn-1', sequence: 1 } } } as never;
@@ -78,5 +78,22 @@ describe('exact Twenty Tracks approval binding', () => {
     await expect(run()).resolves.toBe('sent');
     await expect(run()).rejects.toThrow('already used');
     expect(writes).toBe(1);
+  });
+});
+
+describe('exact Vault Tracks approval answers', () => {
+  const input = { trackId: 'follow-up', name: 'Follow up', purpose: 'Open work', steps: ['Open', 'Done'], closingSteps: ['Done'] };
+  const reserved = { kind: 'track-create' as const, id: 'tracks/follow-up/track.md', ownerMemberId: 'member-1', fingerprint: 'a'.repeat(64), approvedOrigin: 'agent' as const };
+  // An approval answer is never a human turn with a Vault capability, so any read would refuse.
+  const answer = { session: { id: 'session-1', turn: { id: '', sequence: 2 }, auth: {
+    current: { authenticator: 'lares-console', attributes: { lares_member_id: 'member-1', lares_admission_nonce: 'a'.repeat(43), lares_purpose: 'resolver' } } } } } as never;
+
+  it('checks the reserved target without reading the Vault', async () => {
+    await expect(tracksApprovalAdapter.readTarget({} as never, input, 'member-1', 'track_create', answer, reserved)).resolves.toEqual(reserved);
+  });
+  it('refuses another member, another track and a first reservation from an answer', async () => {
+    await expect(tracksApprovalAdapter.readTarget({} as never, input, 'member-2', 'track_create', answer, reserved)).rejects.toThrow('Exact Tracks target changed');
+    await expect(tracksApprovalAdapter.readTarget({} as never, { ...input, trackId: 'another' }, 'member-1', 'track_create', answer, reserved)).rejects.toThrow('Exact Tracks target changed');
+    await expect(tracksApprovalAdapter.readTarget({} as never, input, 'member-1', 'track_create', answer)).rejects.toThrow('Track access');
   });
 });

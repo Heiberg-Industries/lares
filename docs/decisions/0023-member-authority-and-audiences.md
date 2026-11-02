@@ -184,9 +184,9 @@ Restored account access requires a fresh conversation and fresh resource selecti
 previous history cannot be copied into the new session as a recovery mechanism.
 
 The bounded surface exposes only the role's authorised personal mailbox reads plus local
-session controls. Questions can be answered in plain text. Structured question-card
-continuation is not exposed by the current browser UI; resolver identities are not promoted
-into human model authority to support it. The private proxy excludes Eve's administrative
+session controls. Questions are shown as text and can be answered in plain text. Structured
+question-card continuation is not exposed by the current browser UI; resolver identities are
+not promoted into human model authority to support it. The private proxy excludes Eve's administrative
 `info` endpoint, whose compiled metadata is broader than this surface.
 
 The offline `packages/board-evals/scripts/member-private-chat-proof.mjs` builds actual role
@@ -196,6 +196,34 @@ provider acceptance or deployment evidence.
 
 Revocation refuses later requests and model/provider starts. It cannot recall content already
 delivered to a browser or undo a call that began before revocation committed.
+
+### Answering other approval cards in a private conversation
+
+An approval card other than personal mail, such as a Tracks change, is answered through the same
+private route. Who may answer does not change: only the member who started that conversation, on
+the same session and admission, for the exact unexpired card. The route finds the card's immutable
+reservation by request, agent, session and member, and compares the admission recorded when the
+card was raised. A card that has been settled or spent takes no further answer; an expired card can
+still be cancelled.
+
+The answer then carries the original member and admission, marked with purpose `resolver`, the
+request and the option. That purpose is never a human turn: it opens no Vault turn, reads no source
+and creates no other action, and any tool call other than the exact approved one refuses. The
+response check also requires that the answer named this card and chose approve. Keeper still
+rechecks the current edit grant, the target's content and the one-use claim at write, so a card
+raised while a member could edit cannot write after that right is withdrawn. Answering a Tracks
+card reads no Vault file: only the reserved target is compared.
+
+Personal mail keeps its own resolver identity and immutable proposal. Each kind of answer is
+accepted only by the code written for it; the surface, model and budget checks accept both and
+apply the same outcome rules: approved and resolved by this member, or cancelled.
+
+The private surface offers these cards for the four Tracks changes and for outside tools, which
+have their own resolver and reach private conversations through the same exact reservation.
+`member-private-chat-proof.mjs` with `PRIVATE_CHAT_PROOF_TRACKS=1` runs a Tracks card for two
+members through the compiled role, the real proxy, Keeper's real broker and a real Git Vault. It is
+runtime source proof with a synthetic model, not deployment evidence. A cold restart that replays
+outside tools during an approval answer has not been proven.
 
 
 ## Vault metadata and current area authority

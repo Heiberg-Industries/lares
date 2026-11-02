@@ -86,7 +86,8 @@ const AREA_AUTHORITY = { designatedOwnerMemberId: 'member-a' };
 
 const auth = (purpose: 'human' | 'resolver', member: MemberId) => ({
   authenticator: 'lares-console', principalId: member, principalType: 'user',
-  attributes: { user_id: member, lares_member_id: member, lares_admission_nonce: NONCE[member], lares_purpose: purpose },
+  attributes: { user_id: member, lares_member_id: member, lares_admission_nonce: NONCE[member], lares_purpose: purpose,
+    ...(purpose === 'resolver' ? { lares_resume_request_id: 'request-1', lares_resume_option: 'approve' } : {}) },
 });
 /** A tool-call context as eve hands it to the catalogue: who is speaking (current) and who opened
  *  the session (initiator) come from the authenticated console admission, never from content. */

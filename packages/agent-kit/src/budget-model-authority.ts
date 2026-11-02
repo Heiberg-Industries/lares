@@ -2,7 +2,7 @@ import type { SourceDatabase } from './console-source-transaction.js';
 import { checkConsoleSourceDeadlines, requireSourceTransactionOwner } from './console-source-transaction.js';
 import { consoleAdmission, requireConsoleSessionBinding, requireConsoleTurnAuthority,
   type ConsoleAuthorityContext, type ConsoleBinding } from './console-turn-authority.js';
-import { privateResolverAdmission, requirePrivateConsoleResume, requirePersistedPrivateConsoleModelResume } from './private-console-resume.js';
+import { privateResumeAdmission, requireConsoleResume, requirePersistedPrivateConsoleModelResume } from './private-console-resume.js';
 import { PgGrantStore } from './grant-store.js';
 import { managedIdentity } from './door-authority.js';
 import { payloadFingerprint } from './approval-ledger.js';
@@ -18,9 +18,9 @@ export async function captureBudgetAuthorityReference(db:SourceDatabase,ctx:Cons
   requireSourceTransactionOwner(db);
   const own=managedIdentity(env),session=ctx.session;
   if(!own||!session?.id||typeof session.turn?.id!=='string'||(session.turn.id!==''&&!session.turn.id.trim())||!Number.isSafeInteger(session.turn.sequence)||session.turn.sequence!<0)throw new Error('Unsupported budget authority');
-  const resolver=privateResolverAdmission(session.auth?.current);
+  const resolver=privateResumeAdmission(session.auth?.current);
   if(resolver){
-    const current=await requirePrivateConsoleResume(ctx,'model',{db,env});
+    const current=await requireConsoleResume(ctx,'model',{db,env});
     return {kind:'resume',binding:current.binding,turnId:session.turn.id,turnSequence:session.turn.sequence!,resume:{requestId:resolver.requestId,optionId:resolver.optionId}};
   }
   await requireConsoleTurnAuthority(ctx,db,env);

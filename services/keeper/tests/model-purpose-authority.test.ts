@@ -13,6 +13,7 @@ import { captureBudgetAuthorityReference, validateBudgetAuthorityReference } fro
 import { gatewayRawRequestHash } from '@lares/agent-kit/gateway-admission-protocol';
 import { assertPrivateConsoleRequest, PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER, verifiedPrivateConsoleModelMessageReceipt } from '@lares/agent-kit/private-console-envelope';
 import { PgPersonalActionStore } from '@lares/agent-kit/personal-action-store';
+import { attachExactApproval, reserveExactApproval } from '@lares/agent-kit/approval-execution';
 import { serveModelPurposeBroker, modelPurposeDigest, modelPurposeMac, signModelPurposeRequest, type ModelPurposeRequest } from '../lib/model-purpose-broker.js';
 import { modelPurposeRawBodyHash, signPrivateModelPurposeRequest } from '../../console/lib/model-purpose-capsule.js';
 import { modelPurposeAckFields, parseModelPurposeAdmissionResponse } from '@lares/agent-kit/model-purpose-protocol';
@@ -168,6 +169,27 @@ describe('budget model authority source proof', () => {
 
     await db.query("UPDATE approval_asks SET outcome='cancelled' WHERE request_id=$1", [requestId]);
     await expect(consoleSourceTransaction(db, client => validateBudgetAuthorityReference(client as never, reference, env))).rejects.toThrow();
+  });
+
+  it('captures and revalidates an approval resume for a card other than personal mail',async()=>{
+    await bindConsoleSession(binding,db,env);
+    const requestId='track-card-request',callId='track-card-call',input={trackId:'follow-up'};
+    const adapter={toolNames:['track_create'],readPolicyHash:async()=>'e'.repeat(64),
+      readTarget:async(_db:unknown,_input:unknown,memberId:string)=>({kind:'track-create' as const,id:'tracks/follow-up/track.md',ownerMemberId:memberId,fingerprint:'d'.repeat(64),approvedOrigin:'agent' as const})};
+    await reserveExactApproval({...humanContext(),callId,toolInput:input} as never,'track_create',{adapter,db:db as never,env});
+    await attachExactApproval({requestId,callId,tool:'track_create',input},db as never);
+    const answer=(optionId:string,admission=nonce)=>({session:{id:sessionId,turn:{id:'',sequence:0},auth:{initiator:auth(),current:{authenticator:'lares-console',attributes:{
+      lares_member_id:'Owner-ID',lares_admission_nonce:admission,lares_purpose:'resolver',lares_resume_request_id:requestId,lares_resume_option:optionId}}}}});
+    const capture=(context:unknown)=>consoleSourceTransaction(db,client=>captureBudgetAuthorityReference(client as never,context as never,env));
+    await expect(capture(answer('approve'))).rejects.toThrow();
+    await db.query("UPDATE approval_asks SET outcome='approved',answered_at=clock_timestamp(),resolved_by_member_id='Owner-ID' WHERE request_id=$1",[requestId]);
+    await expect(capture(answer('approve','z'.repeat(43)))).rejects.toThrow();
+    const reference=await capture(answer('approve'));
+    expect(reference).toMatchObject({kind:'resume',binding,turnId:'',turnSequence:0,resume:{requestId,optionId:'approve'}});
+    expect(await consoleSourceTransaction(db,client=>validateBudgetAuthorityReference(client as never,reference,env))).toEqual(expect.any(String));
+    await db.query("UPDATE approval_asks SET outcome='cancelled' WHERE request_id=$1",[requestId]);
+    await expect(consoleSourceTransaction(db,client=>validateBudgetAuthorityReference(client as never,reference,env))).rejects.toThrow();
+    await expect(capture(answer('cancel'))).resolves.toMatchObject({resume:{requestId,optionId:'cancel'}});
   });
 });
 
