@@ -1,7 +1,7 @@
 import {z} from 'zod';
 import {registerAction} from '../lib/actions.js';
 import {HostFinancialJournal} from '../lib/financial-journal.js';
-import {verifyFinancialContinuity} from '../lib/financial-continuity.js';
+import {openFinancialJournalForKeeper} from '../lib/financial-continuity.js';
 import {budgetAccountProvisionPlanSchema,provisionBudgetAccounts,startBudgetMonthOpening} from '../lib/budget-account-provisioning.js';
 import { Credentials, registerCredentialActions } from "../lib/credentials.js";
 import { CredentialFiles } from "../lib/credential-files.js";
@@ -132,12 +132,8 @@ async function main(): Promise<void> {
         // source rows or files. An unbound leftover is recovery, never an empty legacy store.
         if(config.budgetFinancial){
             if(!financialPool)throw new Error('Financial database credentials unavailable');
-            financialJournal=HostFinancialJournal.openExistingForStartupVerification(config.budgetFinancial.directory,{requirePrepared:true});
-            // Keep protected ownership through the full check, then publish writer ownership
-            // before any host action or listener can reach the journal.
-            const db=await financialPool.connect();
-            try{await verifyFinancialContinuity(financialJournal,db);}finally{db.release();}
-            financialJournal.acquireWriterLease();
+            financialJournal=await openFinancialJournalForKeeper(config.budgetFinancial.directory,financialPool);
+            if(financialJournal.isFrozen)console.error("keeper: the spending ledger is frozen; model calls that need a budget are refused until recovery, everything else keeps running");
         }
         registerInitialMemberBudgetActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
         if(financialPool)registerBudgetAgentStartActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});

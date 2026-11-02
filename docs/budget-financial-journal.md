@@ -74,6 +74,15 @@ other fields in its JSON object:
 Startup opens existing custody and verifies continuity before exposing sockets.
 These steps prepare custody only. Spending remains closed.
 
+Three startup outcomes follow. When continuity holds, Keeper takes the writer lease.
+When the journal is frozen, or the check durably freezes it, Keeper keeps running with
+spending closed: it logs that the ledger is frozen, takes no writer lease and refuses
+every journal operation, while restore's host freeze still works. When the database
+cannot answer yet, this start fails and writes nothing, and the restart policy tries
+again. Custody that cannot be opened at all (missing key, changed files, another
+writer) still stops Keeper, because a missing journal must never look like an
+installation without financial custody.
+
 ## Kernel ownership, framing and capacity
 
 On Linux, util-linux `flock` locks an inherited open file description. The parent
@@ -105,15 +114,33 @@ custody; they do not prevent privileged host rewrites or full host rollback.
 A strict control record in the journal binds its journal identity to:
 
 - PostgreSQL's `pg_control_system().system_identifier` as decimal text;
-- `pg_postmaster_start_time()` with all six fractional digits;
+- `pg_postmaster_start_time()` with all six fractional digits, recorded as evidence;
 - the current database's OID;
 - the last completed operation's checkpoint tuple, or null before one exists.
 
-A clean keeper-only restart can resume continuity with the identical running
-PostgreSQL instance and matching completed checkpoint. A missing or ambiguous
-observation, PostgreSQL restart, fresh cluster, changed database, mismatched
-checkpoint or unclean journal durably freezes custody. Matching later database
-state never clears a freeze. No database epoch is used as a recovery witness.
+Identity is the system identifier and the database OID. Continuity holds when both
+match and every checkpoint and financial row matches the journal's complete fold.
+The start time is not compared, because every ordinary restart changes it. Each
+observation record keeps the start time it saw, so restarts stay visible in history.
+A keeper restart, a PostgreSQL restart under a running keeper and a full server
+reboot therefore all resume when that comparison holds and the journal has nothing
+unfinished.
+
+A fresh cluster, changed database, mismatched row or checkpoint, or unclean journal
+durably freezes custody. So does a missing or ambiguous observation, except during
+Keeper startup: no operation has run then, so a database that does not answer proves
+nothing and the start simply fails without a record. An answer that is wrong still
+freezes. Matching later database state never clears a freeze. No database epoch is
+used as a recovery witness.
+
+An older copy of the same database lacks later checkpoints and rows, so it is refused
+even though its identity matches. The one exception is a copy swapped in by hand with
+no financial change since it was taken: its money rows are correct, but non-financial
+data such as a spending limit saved afterwards may be older, and nothing detects that.
+`restore.sh` is not affected, because it freezes custody before replacing anything.
+
+A process crash, a power cut, or a restart that lands inside a running operation
+still leaves an unclean journal or an unknown outcome, and still freezes custody.
 
 The optional `JournalBudgetFinancialWriter` follows this order:
 
@@ -320,6 +347,8 @@ reopen fresh caps. None of these remaining activation guarantees is claimed here
 Focused filesystem, subprocess/kernel, socket, configuration and restore tests
 cover implemented boundaries. Mac tests do not prove Linux. The manual
 keeper/neutral-image workflow must pass its actual final-image Linux lock probe
-and PostgreSQL continuity probe before this source reaches main. Its pool-one
+and PostgreSQL continuity probe before this source reaches main. That probe stops
+and starts the real keeper process across PostgreSQL restarts, the way a server
+reboot does, and checks the journal closes cleanly and resumes. Its pool-one
 transaction with no financial row changes proves continuity/commit ordering only;
 it is not proof of production activation or all financial writers.
