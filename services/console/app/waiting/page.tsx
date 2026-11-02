@@ -1,6 +1,6 @@
 import { requireConsolePage } from "../../lib/auth";
 import { cookies } from "next/headers";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 import { verify } from "../../lib/auth";
 import { listWaiting } from "../../lib/waiting";
 import { waitingDeps } from "../../lib/waiting-deps";
@@ -21,7 +21,7 @@ export default async function WaitingPage({ searchParams }: { searchParams: Prom
   if (!member) throw new Error("unauthenticated");
   const [{ request }, list] = await Promise.all([searchParams, listWaiting(member, waitingDeps)]);
   return (
-    <div className="lares-page lares-stack">
+    <Page className="lares-stack">
       <PageHeader
         title="Waiting on you"
         description="What your agents have asked you, from every conversation, with everything they would do, plus Notion and shared notes changes waiting for your yes or no. Decide here or where it was asked."
@@ -33,6 +33,6 @@ export default async function WaitingPage({ searchParams }: { searchParams: Prom
         onDecide={decide}
         {...(typeof request === "string" ? { selectedRef: request } : {})}
       />
-    </div>
+    </Page>
   );
 }

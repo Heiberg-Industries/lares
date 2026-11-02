@@ -1,6 +1,6 @@
 import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { Input } from "@lares/ui/primitives/input";
 import { getPermissionEvents } from "../../lib/console-overview";
@@ -16,7 +16,7 @@ export default async function ActivityPage({
   const events = await getPermissionEvents({ agent, before });
   const next = events.available && events.value.next;
   return (
-    <div className="lares-page lares-stack">
+    <Page className="lares-stack">
       <PageHeader
         title="Permission activity"
         description="Permission decisions across your agents."
@@ -56,6 +56,6 @@ export default async function ActivityPage({
           </Link>
         </Button>
       )}
-    </div>
+    </Page>
   );
 }

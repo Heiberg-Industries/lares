@@ -1,5 +1,5 @@
 import { requireConsolePage } from "../../lib/auth";
-import { EmptyState, PageHeader, StatusBadge } from "@lares/ui/patterns";
+import { EmptyState, PageHeader, StatusBadge, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { TASTE_DOMAINS, type TasteDomain } from "@lares/taste";
 
@@ -157,7 +157,7 @@ export default async function TastePage({
   const matching = TASTE_DOMAINS.reduce((n, d) => n + shown[d].length, 0);
 
   return (
-    <div className="lares-page lares-operational">
+    <Page className="lares-operational">
       <PageHeader
         title="Preferences"
         description="Places, music and preferences your agents can draw on."
@@ -283,6 +283,6 @@ export default async function TastePage({
         </p>
         <PinAudit />
       </details>
-    </div>
+    </Page>
   );
 }

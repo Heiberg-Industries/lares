@@ -1,3 +1,4 @@
+import { Page } from "@lares/ui/patterns";
 import { PgAccountStore } from "@lares/agent-kit/account-store";
 import { pool } from "../../lib/db";
 import { AddAccountForm, PersonalConsentPowerSelect } from "../../components/AddAccountForm";
@@ -14,7 +15,7 @@ export default async function MembershipPage({ searchParams }: { searchParams: P
   const params = await searchParams;
   let accounts: ConnectedAccountView[] = [], unavailable = false;
   try { accounts = await new PgAccountStore(pool).list(member.id); } catch { unavailable = true; }
-  return <div className="lares-page lares-stack">
+  return <Page width="narrow" className="lares-stack">
     <h1>Your membership</h1>
     <p>Your membership is active. Your current role is {member.role}. New members begin with draft-and-ask automation.</p>
     <p>Private chat is available with agents you have permission to use. Your membership does not give access to other people's conversations, accounts or private files.</p>
@@ -49,5 +50,5 @@ export default async function MembershipPage({ searchParams }: { searchParams: P
     {isConsoleOwner(member) && <Link href="/">Open the owner console →</Link>}
     <form method="post" action="/api/auth/logout"><button type="submit">Sign out</button></form>
     <form action={signOutEverywhere}><button type="submit">Sign out everywhere</button></form>
-  </div>;
+  </Page>;
 }

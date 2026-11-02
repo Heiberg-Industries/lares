@@ -1,6 +1,6 @@
 import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
-import { PageHeader } from "@lares/ui/patterns";
+import { PageHeader, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { getNotionSyncStatus } from "../../lib/queries";
 import { getConnectionRows } from "../../lib/connections";
@@ -56,7 +56,7 @@ export default async function IntegrationsPage({
     notionSync.retrying === 0 && notionSync.unmatched === 0;
 
   return (
-    <div className="lares-page lares-operational">
+    <Page className="lares-operational">
       <PageHeader
         title="Connections"
         description="Accounts, recorded connection status and agent access."
@@ -215,6 +215,6 @@ export default async function IntegrationsPage({
           ))}
         </tbody>
       </table></div>
-    </div>
+    </Page>
   );
 }

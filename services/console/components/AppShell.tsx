@@ -9,7 +9,7 @@ export function AppShell({ children, owner }: { children: React.ReactNode; owner
     <div className={styles.shell}>
       <a className={styles.skip} href="#main-content">Skip to content</a>
       <Nav owner={owner} />
-      <main id="main-content" className={styles.main}>{children}</main>
+      <main id="main-content" className={styles.main}><div className={styles.content}>{children}</div></main>
     </div>
   );
 }

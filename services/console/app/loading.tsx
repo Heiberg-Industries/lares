@@ -1,8 +1,8 @@
-import { Notice } from "@lares/ui/patterns";
+import { Notice, Page } from "@lares/ui/patterns";
 export default function Loading() {
   return (
-    <div className="lares-page">
+    <Page>
       <Notice>Reading the current state…</Notice>
-    </div>
+    </Page>
   );
 }

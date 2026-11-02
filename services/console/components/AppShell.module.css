@@ -107,6 +107,9 @@
   min-width: 0;
   padding: 40px 60px 64px;
 }
+.content {
+  max-width: var(--lares-page-width);
+}
 .mobileBar {
   display: none;
 }

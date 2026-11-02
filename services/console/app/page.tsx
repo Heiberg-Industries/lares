@@ -6,6 +6,7 @@ import {
   EmptyState,
   Notice,
   AgentAvatar,
+  Page,
 } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { getFleetSnapshot, getPermissionEvents } from "../lib/console-overview";
@@ -21,7 +22,7 @@ export default async function HomePage() {
     ? snapshot.workflows.value.filter((r) => r.status === "failed" && r.n > 0)
     : [];
   return (
-    <div className="lares-page lares-stack">
+    <Page className="lares-stack">
       <PageHeader
         title="Your house"
         description="A quiet place to keep an eye on things."
@@ -71,6 +72,6 @@ export default async function HomePage() {
           <Link href="/activity">View activity →</Link>
         </section>
       </div>
-    </div>
+    </Page>
   );
 }

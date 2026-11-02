@@ -99,6 +99,25 @@ export function AgentAvatar({ role, src }: { role: string; src?: string }) {
     </span>
   );
 }
+/** The one page frame: same left edge everywhere, wide for tables and lists, narrow for forms, settings and chat. */
+export function Page({
+  width = "wide",
+  className,
+  children,
+}: {
+  width?: "wide" | "narrow";
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={className ? `lares-page ${className}` : "lares-page"}
+      data-width={width}
+    >
+      {children}
+    </div>
+  );
+}
 export function PageHeader({
   title,
   description,
@@ -166,5 +185,42 @@ export function StatusBadge({
       <span aria-hidden="true" />
       {children}
     </span>
+  );
+}
+/** A labelled control. The label wraps the control, so clicking the words focuses it. */
+export function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <label className="lares-field-label">
+      {label}
+      {children}
+      {hint && <span className="lares-field-hint">{hint}</span>}
+    </label>
+  );
+}
+/** One Checkbox or Radio with its words beside it. */
+export function Choice({ children }: { children: ReactNode }) {
+  return <label className="lares-choice">{children}</label>;
+}
+/** A named group of related controls. */
+export function FieldGroup({
+  legend,
+  children,
+}: {
+  legend: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <fieldset className="lares-fieldset">
+      <legend>{legend}</legend>
+      {children}
+    </fieldset>
   );
 }

@@ -36,7 +36,7 @@ export function AgentsList({
     </Button>
   );
   return (
-    <section className="lares-page">
+    <section>
       {!compact && (
         <PageHeader
           title="Agents"

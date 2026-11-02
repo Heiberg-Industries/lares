@@ -2,7 +2,7 @@ import { requireConsolePage } from "../../../lib/auth";
 import { AgentsList } from "../../../components/AgentsList";
 import { getFleetSnapshot } from "../../../lib/console-overview";
 import Link from "next/link";
-import { PageHeader, EmptyState } from "@lares/ui/patterns";
+import { PageHeader, EmptyState, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { builderData } from "../../../lib/builder";
 import { DefinitionForm } from "../../../components/DefinitionForm";
@@ -12,13 +12,13 @@ export default async function NewAgentPage() {
   const data = await builderData().catch(() => null);
   if (data)
     return (
-      <>
+      <Page>
         <AgentsList snapshot={await getFleetSnapshot()} />
         <DefinitionForm {...data} />
-      </>
+      </Page>
     );
   return (
-    <div className="lares-page lares-settings">
+    <Page width="narrow" className="lares-settings">
       <PageHeader
         title="Create an agent"
         description="A purpose, a name, and a clear set of permissions."
@@ -35,6 +35,6 @@ export default async function NewAgentPage() {
         The agent manager could not be reached. Your existing agents have not
         been changed.
       </EmptyState>
-    </div>
+    </Page>
   );
 }
