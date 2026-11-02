@@ -46,6 +46,7 @@ function resolverRows(failure:ResolverFixture='exact'){
   if(sql.includes('FROM users WHERE'))return {rows:values[0]==='Owner-ID'?[{id:'Owner-ID',org_id:'fixture-org',org_role:'owner',status:'active',automation_mode:'draft-and-ask'}]:[]};
   if(sql.includes('FROM orgs WHERE'))return {rows:values[0]==='fixture-org'?[{id:'fixture-org'}]:[]};
   if(sql.includes('FROM personal_actions WHERE'))return {rows:failure!=='missing-action'&&values.join('|')===[action.approval_request_id,action.actor_member_id,action.agent,action.session_id].join('|')?[action]:[]};
+  if(/FROM approval_asks\s+WHERE request_id=/.test(sql))return {rows:values.join('|')===[approval.request_id,'helper','wrun_test','Owner-ID'].join('|')?[approval]:[]};
   if(sql.includes('FROM approval_asks WHERE'))return {rows:values[0]===approval.call_id?[approval]:[]};
   if(sql.includes('AS alive'))return {rows:[{alive:failure!=='expired'}]};
   throw new Error('Unexpected resolver fixture query: '+sql);

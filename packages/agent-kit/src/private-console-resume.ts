@@ -49,7 +49,11 @@ export async function requireConsoleResume(ctx:ConsoleAuthorityContext,phase:'su
  * reference from a row created after authenticated requireConsoleResume succeeds.
  * Parsing client JSON, or knowing these coordinates, never establishes that provenance. */
 export async function requirePersistedPrivateConsoleModelResume(reference:ResumeReference,options:{db:AuthorityDatabase;env?:NodeJS.ProcessEnv}){
-  return await requireExactResume(reference,'model',options)??await requireResumeReference(reference,'model',options);
+  return requireResumeReference(reference,'model',options);
+}
+/** The same replay for either kind of answer: the persisted request says which card it was. */
+export async function requirePersistedConsoleModelResume(reference:ResumeReference,options:{db:AuthorityDatabase;env?:NodeJS.ProcessEnv}){
+  return await requireExactResume(reference,'model',options)??await requirePersistedPrivateConsoleModelResume(reference,options);
 }
 /** Undefined when the request is not an exact card, so the caller can try personal mail. The
  * immutable reservation already proves member, session and admission; this adds the outcome. */

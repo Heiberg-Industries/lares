@@ -2,7 +2,7 @@ import type { SourceDatabase } from './console-source-transaction.js';
 import { checkConsoleSourceDeadlines, requireSourceTransactionOwner } from './console-source-transaction.js';
 import { consoleAdmission, requireConsoleSessionBinding, requireConsoleTurnAuthority,
   type ConsoleAuthorityContext, type ConsoleBinding } from './console-turn-authority.js';
-import { privateResumeAdmission, requireConsoleResume, requirePersistedPrivateConsoleModelResume } from './private-console-resume.js';
+import { privateResumeAdmission, requireConsoleResume, requirePersistedConsoleModelResume } from './private-console-resume.js';
 import { PgGrantStore } from './grant-store.js';
 import { managedIdentity } from './door-authority.js';
 import { payloadFingerprint } from './approval-ledger.js';
@@ -37,7 +37,7 @@ export async function validateBudgetAuthorityReference(db:SourceDatabase,ref:Bud
   if(!own||own.name!==ref.binding.agent||own.incarnation!==ref.binding.incarnation)throw new Error('Stale runtime');
   if(ref.kind==='resume') {
     if(!ref.resume)throw new Error('Missing resume');
-    const current=await requirePersistedPrivateConsoleModelResume({binding:ref.binding,...ref.resume},{db,env});
+    const current=await requirePersistedConsoleModelResume({binding:ref.binding,...ref.resume},{db,env});
     if(ref.resume.optionId==='approve')resumeValidUntil=current.validUntil;
   }else if(ref.kind==='human'){
     const current=await requireConsoleSessionBinding(ref.binding,db,env);
