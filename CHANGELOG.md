@@ -4,6 +4,8 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
+- Two people or agents calling a model at the same moment no longer lose out to each other. Spending steps now wait briefly in line, for two seconds at most, instead of being refused. Before this, an overlap could stop a reply or end a conversation with a message about the gateway setup. Sustained overload is still refused.
+
 - Approval cards other than personal mail, such as creating a track, can now be answered in private chat. Who may answer has not changed: only the member who started the conversation, for that exact card, and edit rights are checked again when the change is written. A change to a track in a Twenty CRM can be approved only by the installation's owner. A question from an agent now shows as its text instead of "is running…".
 
 - Budgets now carry on into a new month. At 00:00 UTC on the first, Keeper opens the month by itself for the installation and everyone on it: the limit on record, counted from zero. Unused money does not carry over, and calls whose cost is still unknown keep counting until resolved. Before this, every agent stopped spending at the first month change and nothing could reopen it.

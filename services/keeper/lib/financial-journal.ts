@@ -64,6 +64,10 @@ type JournalRecord=z.infer<typeof FINANCIAL_JOURNAL_RECORD_SCHEMA>;
 const frameSchema=z.object({record:FINANCIAL_JOURNAL_RECORD_SCHEMA,digest:hash}).strict();
 /** Thrown before any record or database work, so the same operation can safely be tried again. */
 export class FinancialJournalBusy extends Error {constructor(){super('Financial journal is closed or busy');}}
+/** How long a step may wait for its turn. `first` goes ahead of steps that can still be refused
+ * safely: a step that follows a committed admission is never resent, so it cannot lose its place. */
+export interface FinancialTurnWait {ms:number;first?:boolean}
+interface WaitingTurn {first:boolean;start:()=>void;refuse:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}
 export const JOURNAL_MAX_RECORD_BYTES=65_536,JOURNAL_MAX_BYTES=8*1024*1024,JOURNAL_MAX_RECORDS=8192;
 const CONTROL_RECORD_BYTES=1024;
 const digest=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -239,7 +243,7 @@ export function committedFinancialEvidence(receipt:CommittedFinancialReceipt,req
 }
 export class HostFinancialJournal {
   #key:Buffer;
-  private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private writerLease=false;private startupLeasePending=false;private startupContinuityVerified=false;private pending?:{id:string;proposal?:string;operation?:BudgetFinancialOperation;atoms?:FinancialAtom[]};private activeOperationId?:string;private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private checkpoints:FinancialCheckpoint[]=[];private projection=new Map<string,FinancialAtom>();private idle=new Set<()=>void>();private preparationComplete=false;
+  private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private writerLease=false;private startupLeasePending=false;private startupContinuityVerified=false;private pending?:{id:string;proposal?:string;operation?:BudgetFinancialOperation;atoms?:FinancialAtom[]};private activeOperationId?:string;private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private checkpoints:FinancialCheckpoint[]=[];private projection=new Map<string,FinancialAtom>();private idle=new Set<()=>void>();private preparationComplete=false;private line:WaitingTurn[]=[];
   private pendingAbortReceipt?:DurableFinancialAbortReceipt;
   private constructor(private directory:string,private journalFd:number,private lockFd:number,private directoryFd:number,private keyFd:number,key:Buffer,private uid:number,private sync:(fd:number)=>void){this.#key=key;}
   /** No mkdir, key creation, restore adoption, tail repair or automatic initialization. */
@@ -373,10 +377,33 @@ export class HostFinancialJournal {
     }
   }
   /** The in-process barrier precedes pool checkout. Kernel ownership spans this object's
-   * entire life; contention refuses rather than queueing another spending operation. */
-  async operation<T>(kind:BudgetFinancialOperation,work:(operationId:string)=>Promise<T>):Promise<T> {
-    if(this.closed||this.frozen||this.stopping||!this.writerLease)throw new Error('Financial journal is closed or busy');
-    if(this.busy)throw new FinancialJournalBusy();
+   * entire life. One operation runs at a time: contention refuses, unless the caller asks to wait
+   * in line for a bounded time. The turn passes on when an operation ends, nothing overtakes the
+   * line and no holder is ever displaced. A wait that runs out has done no work and written nothing. */
+  async operation<T>(kind:BudgetFinancialOperation,work:(operationId:string)=>Promise<T>,wait?:FinancialTurnWait):Promise<T> {
+    if(this.unavailable)throw new Error('Financial journal is closed or busy');
+    if(!this.busy&&!this.line.length)return this.startOperation(kind,work);
+    if(!wait)throw new FinancialJournalBusy();
+    return new Promise<T>((resolve,reject)=>this.joinLine(wait,()=>{this.startOperation(kind,work).then(resolve,reject);},reject));
+  }
+  private get unavailable():boolean{return this.closed||this.frozen||this.stopping||!this.writerLease;}
+  private joinLine(wait:FinancialTurnWait,start:()=>void,refuse:(error:Error)=>void):void {
+    const first=wait.first===true;
+    const turn:WaitingTurn={first,start,refuse,timer:setTimeout(()=>{this.line.splice(this.line.indexOf(turn),1);refuse(new FinancialJournalBusy());},wait.ms)};
+    const ahead=first?this.line.findIndex(other=>!other.first):-1;
+    if(ahead<0)this.line.push(turn);else this.line.splice(ahead,0,turn);
+  }
+  /** Starts synchronously, so the barrier is taken again before anything else can run. */
+  private nextInLine():void {
+    while(this.line.length&&!this.busy){
+      const turn=this.line.shift()!;clearTimeout(turn.timer);
+      if(this.unavailable)turn.refuse(new Error('Financial journal is closed or busy'));else turn.start();
+    }
+  }
+  private refuseLine():void {
+    for(const turn of this.line.splice(0)){clearTimeout(turn.timer);turn.refuse(new Error('Financial journal is closed or busy'));}
+  }
+  private async startOperation<T>(kind:BudgetFinancialOperation,work:(operationId:string)=>Promise<T>):Promise<T> {
     // Reserve begin, maximum proposal, terminal and writer-close BEFORE any database
     // work. Capacity exhaustion leaves this writer able to close cleanly.
     this.requireCapacity(this.control?6:4,JOURNAL_MAX_RECORD_BYTES+5*CONTROL_RECORD_BYTES);
@@ -394,7 +421,7 @@ export class HostFinancialJournal {
       }
       if(this.pending)this.frozen=true;if(this.pendingAbortReceipt){const proof=durableAbortReceipts.get(this.pendingAbortReceipt);if(proof){proof.failure=error;if(error&&typeof error==='object')currentAbortFailures.set(error,this.pendingAbortReceipt);}}throw error;
     }
-    finally{this.busy=false;this.activeOperationId=undefined;if(this.pending)this.frozen=true;if(this.pendingAbortReceipt){const proof=durableAbortReceipts.get(this.pendingAbortReceipt);if(proof)proof.finished=!this.pending&&!this.frozen;this.pendingAbortReceipt=undefined;}for(const resolve of this.idle)resolve();this.idle.clear();}
+    finally{this.busy=false;this.activeOperationId=undefined;if(this.pending)this.frozen=true;if(this.pendingAbortReceipt){const proof=durableAbortReceipts.get(this.pendingAbortReceipt);if(proof)proof.finished=!this.pending&&!this.frozen;this.pendingAbortReceipt=undefined;}for(const resolve of this.idle)resolve();this.idle.clear();this.nextInLine();}
   }
   propose(operationId:string,atoms:readonly FinancialAtom[]):FinancialJournalProposal {
     if(this.pending?.id!==operationId||this.pending.proposal)throw new Error('Financial proposal unavailable');
@@ -499,7 +526,18 @@ export class HostFinancialJournal {
    * fold. This is discovery only: the owned admission transaction still rechecks the
    * complete database projection, account policy and current window before mutation. */
   observeGatewayRecoveryReference(raw:Pick<BudgetRecoveryReference,'installationAccountId'|'epoch'|'endpointGeneration'>):BudgetRecoveryReference|undefined {
-    if(this.closed||this.frozen||this.stopping||this.busy||this.pending||!this.preparationComplete||!this.control)return undefined;
+    if(this.busy||this.pending)return undefined;
+    return this.committedRecoveryReference(raw);
+  }
+  /** The same observation for the gateway's admission path, while another operation may be
+   * running. It reads only the committed fold, never a pending proposal, so a change committed a
+   * moment later is simply missed here. Admit then takes its own turn, verifies the database against
+   * the fold, and compares this reference with the current row under lock, which refuses. */
+  observeCommittedGatewayRecoveryReference(raw:Pick<BudgetRecoveryReference,'installationAccountId'|'epoch'|'endpointGeneration'>):BudgetRecoveryReference|undefined {
+    return this.committedRecoveryReference(raw);
+  }
+  private committedRecoveryReference(raw:Pick<BudgetRecoveryReference,'installationAccountId'|'epoch'|'endpointGeneration'>):BudgetRecoveryReference|undefined {
+    if(this.closed||this.frozen||this.stopping||!this.preparationComplete||!this.control)return undefined;
     let reference:ReturnType<typeof gatewayRecoveryReferenceSchema.parse>;
     try{reference=gatewayRecoveryReferenceSchema.parse(raw);}catch{return undefined;}
     const account=this.projection.get(`account:${reference.installationAccountId}`);
@@ -533,14 +571,14 @@ export class HostFinancialJournal {
   get awaitingStartupVerification():boolean{return this.startupLeasePending;}
   get id():string{return this.journalId;}
   async drainForShutdown():Promise<void>{
-    this.stopping=true;
+    this.stopping=true;this.refuseLine();
     if(this.busy)await new Promise<void>(resolve=>{this.idle.add(resolve);});
   }
   async freezeForRestore(timeoutMs=2000):Promise<void>{
     // A keeper running with a journal frozen at startup never takes a lease; restore still needs this.
     if(this.startupLeasePending&&!this.frozen)throw new Error('Financial writer lease unavailable');
     if(!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>5000)throw new Error('Invalid freeze deadline');
-    this.stopping=true; // synchronous: no new operation can cross the barrier
+    this.stopping=true;this.refuseLine(); // synchronous: no new operation can cross the barrier
     if(this.busy){let timer:ReturnType<typeof setTimeout>|undefined;
       try{await Promise.race([new Promise<void>(resolve=>{this.idle.add(resolve);}),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Financial operation did not drain')),timeoutMs);})]);}
       finally{if(timer)clearTimeout(timer);}

@@ -2,7 +2,7 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {chmodSync,fsyncSync,readFileSync,rmSync,unlinkSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS,committedFinancialEvidence,financialAtomKey,requireCurrentFinancialPublicationProof,markJournaledAbort,isJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAbortOutcome,type FinancialAtom} from '../lib/financial-journal.js';
+import {FinancialJournalBusy,HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS,committedFinancialEvidence,financialAtomKey,requireCurrentFinancialPublicationProof,markJournaledAbort,isJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAbortOutcome,type FinancialAtom} from '../lib/financial-journal.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import * as sourceTransactions from '@lares/agent-kit/console-source-transaction';
 import {consoleSourceTransaction,sourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
@@ -439,6 +439,80 @@ it.each([false,true])('reserves record capacity before work and keeps its final 
   const full=readFileSync(path);expect(()=>f.open()).toThrow('unavailable');expect(readFileSync(path)).toEqual(full);
 // Each case validates the full 8192-record history repeatedly; allow bounded CI headroom.
 },30_000);
+function heldJournal(){
+  const f=fixture(),j=open(f);let release!:()=>void;const paused=new Promise<void>(resolve=>{release=resolve;});
+  const holder=j.operation('provision',async id=>{await paused;j.propose(id,[]);j.committed(id);});
+  return {f,j,release,holder};
+}
+it('runs waiting operations one at a time, finishing steps first and otherwise in arrival order',async()=>{
+  const {j,release,holder}=heldJournal(),order:string[]=[];let running=0,overlapped=false;
+  const step=(name:string,kind:'prepare'|'admit'|'grant'|'settle',first=false)=>j.operation(kind,async id=>{
+    if(++running>1)overlapped=true;order.push(name);await new Promise(resolve=>setTimeout(resolve,5));j.propose(id,[]);j.committed(id);running--;
+  },{ms:2000,first});
+  const steps=[step('prepare-1','prepare'),step('admit-1','admit'),step('settle-1','settle',true),step('prepare-2','prepare'),step('grant-1','grant',true)];
+  expect(order).toEqual([]);release();await holder;await Promise.all(steps);
+  expect(order).toEqual(['settle-1','grant-1','prepare-1','admit-1','prepare-2']);expect(overlapped).toBe(false);
+});
+it('never lets a newcomer overtake the line, and still refuses at once without a wait',async()=>{
+  const {j,release,holder}=heldJournal(),order:string[]=[];
+  let finish!:()=>void;const unfinished=new Promise<void>(resolve=>{finish=resolve;});
+  const waiting=j.operation('prepare',async id=>{order.push('waiting');await unfinished;j.propose(id,[]);j.committed(id);},{ms:2000});
+  await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed or busy');
+  release();await holder;expect(order).toEqual(['waiting']);
+  // The holder has finished and the next in line has started before this call returns.
+  await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed or busy');
+  finish();await waiting;
+  await expect(j.operation('member-remove',async id=>{j.propose(id,[]);j.committed(id);})).resolves.toBeUndefined();
+});
+it('gives up when the wait runs out, without doing work or writing a record, and keeps the next in line',async()=>{
+  const {f,j,release,holder}=heldJournal(),before=f.records().length;let shortRan=false,longRan=false;
+  const short=j.operation('prepare',async()=>{shortRan=true;},{ms:10});
+  const long=j.operation('settle',async id=>{longRan=true;j.propose(id,[]);j.committed(id);},{ms:2000,first:true});
+  await expect(short).rejects.toBeInstanceOf(FinancialJournalBusy);
+  expect(f.records().length).toBe(before);expect(j.isFrozen).toBe(false);
+  release();await holder;await long;expect(shortRan).toBe(false);expect(longRan).toBe(true);
+});
+it('refuses waiters at once when the keeper stops or custody freezes',async()=>{
+  for(const stop of ['shutdown','restore'] as const){
+    const {j,release,holder}=heldJournal();let ran=false;
+    const waiting=j.operation('settle',async()=>{ran=true;},{ms:5000,first:true});
+    const stopped=stop==='shutdown'?j.drainForShutdown():j.freezeForRestore();
+    const refusal=await waiting.catch(error=>error);expect(refusal.message).toBe('Financial journal is closed or busy');expect(refusal).not.toBeInstanceOf(FinancialJournalBusy);
+    release();await holder;await stopped;expect(ran).toBe(false);
+  }
+  const f=fixture(),j=open(f);let fail!:()=>void;const paused=new Promise<void>(resolve=>{fail=resolve;});let ran=false;
+  const holder=j.operation('admit',async()=>{await paused;throw new Error('synthetic crash');});
+  const waiting=j.operation('settle',async()=>{ran=true;},{ms:5000,first:true});
+  fail();await expect(holder).rejects.toThrow('synthetic crash');await expect(waiting).rejects.toThrow('closed or busy');
+  expect(ran).toBe(false);expect(j.isFrozen).toBe(true);
+});
+it('passes the turn on when a waiter finds no room, so the line never sticks',async()=>{
+  const f=fixture(),j=open(f);let release!:()=>void;const paused=new Promise<void>(resolve=>{release=resolve;});
+  const holder=j.operation('provision',async id=>{await paused;j.propose(id,[]);j.committed(id);});
+  let refused=false;const room=vi.spyOn(j as unknown as {requireCapacity(records:number,bytes:number):void},'requireCapacity').mockImplementation(records=>{if(records>1&&!refused){refused=true;throw new Error('Financial journal capacity unavailable');}});
+  const full=j.operation('prepare',async()=>undefined,{ms:2000}),next=j.operation('prepare',async id=>{j.propose(id,[]);j.committed(id);return 'ran';},{ms:2000});
+  release();await holder;await expect(full).rejects.toThrow('capacity');await expect(next).resolves.toBe('ran');room.mockRestore();
+});
+it('lets the gateway read committed recovery state during an operation, and never a proposal',async()=>{
+  const j=preparedJournal(),id=randomUUID(),windowId=randomUUID(),account=recoveryAccount(id,{activeWindowId:windowId}),window=recoveryWindow(account);
+  await commitRecoveryProjection(j,[account,window]);
+  const expected={installationAccountId:id,epoch:recoveryEpoch,endpointGeneration:'2',state:'reconciled'};
+  let release!:()=>void;const paused=new Promise<void>(resolve=>{release=resolve;});
+  let proposed!:()=>void;const proposalWritten=new Promise<void>(resolve=>{proposed=resolve;});
+  const holder=j.operation('provision',async op=>{j.propose(op,[{...account,endpointGeneration:'3'}]);proposed();await paused;j.committed(op);});
+  await proposalWritten;
+  // The immediate check still answers nothing while busy; this one sees only what is committed.
+  expect(j.observeGatewayRecoveryReference(recoveryInput(id))).toBeUndefined();
+  expect(j.observeCommittedGatewayRecoveryReference(recoveryInput(id))).toEqual(expected);
+  expect(j.observeCommittedGatewayRecoveryReference(recoveryInput(id,{endpointGeneration:'3'}))).toBeUndefined();
+  release();await holder;
+  expect(j.observeCommittedGatewayRecoveryReference(recoveryInput(id))).toBeUndefined();
+  expect(j.observeCommittedGatewayRecoveryReference(recoveryInput(id,{endpointGeneration:'3'}))).toEqual({...expected,endpointGeneration:'3'});
+  j.freeze();expect(j.observeCommittedGatewayRecoveryReference(recoveryInput(id,{endpointGeneration:'3'}))).toBeUndefined();
+  const stopping=preparedJournal(),otherId=randomUUID(),otherWindow=randomUUID(),other=recoveryAccount(otherId,{activeWindowId:otherWindow});
+  await commitRecoveryProjection(stopping,[other,recoveryWindow(other)]);await stopping.drainForShutdown();
+  expect(stopping.observeCommittedGatewayRecoveryReference(recoveryInput(otherId))).toBeUndefined();
+});
 it('does not release an active barrier or rearm it after a callback failure',async()=>{
   const f=fixture(),j=open(f);let resume!:()=>void;const paused=new Promise<void>(resolve=>{resume=resolve;});
   const running=j.operation('admit',async()=>{await paused;throw new Error('synthetic crash');});

@@ -167,6 +167,42 @@ destroys the borrowed connection, freezes custody and exposes no financial resul
 Failure of journal/control durability after financial COMMIT retains database
 liability/checkpoint and returns no permit or ticket.
 
+### Overlapping operations
+
+The journal runs one operation at a time, and a model call needs four: prepare, admit,
+grant and settle. So two people or agents calling at the same moment overlap often.
+A step that finds the journal busy waits in line rather than failing the person's turn:
+
+| Step | Waits up to | Place in line |
+| --- | --- | --- |
+| Prepare | 1 second | Arrival order |
+| Admit | 1 second | Arrival order |
+| Grant | 1.5 seconds | Ahead of the steps above |
+| Settle | 2 seconds | Ahead of the steps above |
+
+Grant and settle go first because the gateway never resends them: a lost grant or
+settlement holds that call's whole reservation for good. Prepare and admit have
+spent nothing yet, so they can still be refused safely.
+
+The turn passes on when an operation ends and is taken in the same moment, so nothing
+overtakes the line. There is no lock stealing and no way to displace a running
+operation. A wait that runs out does no work and writes nothing, and the step is refused
+as before. A refused prepare or admit has reserved nothing; a refused grant or settle
+leaves its reservation held. Stopping the keeper, a restore freeze or any other freeze
+refuses everyone in line at once. Every other operation, such as provisioning or member
+removal, still refuses straight away if the journal is busy.
+
+The gateway's recovery check before admit does not wait. It reads only committed journal
+state, never a pending proposal, while another operation runs. Admit then verifies the
+database against the journal in its own turn and compares the check's answer with the
+current row under lock, so an answer overtaken by a later change is refused.
+
+A step leaves the line while its caller still has time, so it never starts after the
+caller has given up. Prepare's wait ends well inside the broker's 2 seconds. Admit, grant
+and settle share the gateway's 3 seconds: admit leaves the line with a second to spare for
+its own work and the grant, and grant and settle with 0.3 seconds. Sustained overload still
+refuses. A refused prepare ends that turn, and a refused admit ends the conversation.
+
 ## Closed account and monthly-window provisioning
 
 ### Initial monthly limit in Console
@@ -218,8 +254,8 @@ an older Keeper can still read the journal after a rollback:
   member's monthly limit on record at that moment.
 - Unused budget does not carry over. Old windows and attempts stay as they were.
 - A call admitted before midnight settles against the month it started in. Grants
-  and settlements wait up to a second for a busy journal, because the gateway never
-  resends them. A later refusal leaves the reservation held.
+  and settlements wait for a busy journal (see "Overlapping operations"), because the
+  gateway never resends them. A later refusal leaves the reservation held.
 - An attempt with no settlement stays charged, at its full reservation, to the month
   it began in, and does not count against later months. No money is released and no
   provider's cost is assumed: a call that was cancelled, reported no usage, or lost its

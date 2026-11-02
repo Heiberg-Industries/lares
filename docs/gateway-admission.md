@@ -68,7 +68,9 @@ An allow response contains exactly `version`, `state: "allowed"`, `nonce`,
 `attemptId`, `bindingId` and integer `validForMs` between 1 and 3000. All echoed
 fields must match. IDs are UUIDs. Local validity ends at the earlier of the
 request's five-second monotonic deadline and RPC-start plus `validForMs`; server
-wall clocks are not used to extend it.
+wall clocks are not used to extend it. The authority reports its whole RPC window in
+`validForMs`, not what is left of it: the gateway already counts from RPC-start, so
+time spent inside the RPC must not be subtracted twice.
 
 The authority must derive member, agent, incarnation, credential generation,
 current authority and recovery state from the persisted ticket and binding. None
