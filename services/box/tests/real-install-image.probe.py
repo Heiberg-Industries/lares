@@ -73,6 +73,7 @@ LIMITS = [
     "The sync-jobs image is named but never started on a fresh install, so it is not built or pulled here.",
     "Backups go to the same machine, and the uptime address is a stand-in: a real restore onto a new server is not covered.",
     "The approval step answers one card as the member who started the conversation; refusing other people's answers is covered by the private chat proof, not here.",
+    "A later lares update on top of a Vault write is not covered: this run installs once.",
     "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
     "A real agent answer is not covered: the stand-in decides what the model says.",
