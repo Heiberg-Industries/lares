@@ -4,6 +4,8 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
+- Two people or agents calling a model at the same moment no longer lose out to each other. Spending steps now wait briefly in line, for two seconds at most, instead of being refused. Before this, an overlap could stop a reply or end a conversation with a message about the gateway setup. Sustained overload is still refused.
+
 - Budgets now carry on into a new month. At 00:00 UTC on the first, Keeper opens the month by itself for the installation and everyone on it: the limit on record, counted from zero. Unused money does not carry over, and calls whose cost is still unknown keep counting until resolved. Before this, every agent stopped spending at the first month change and nothing could reopen it.
 
 - Every console page now sits on one grid: the same left edge and title position everywhere, wide for tables and lists, narrow for forms, settings and chat. The agent page's Agent access section no longer runs wider than the rest of the page, and now lives on that page's Access tab. Dropdowns, text boxes, checkboxes and field groups are now design-system parts, and every page uses them. A test fails when a page leaves the grid or adds a hand-built control.

@@ -66,6 +66,8 @@ export type BudgetAdmission = {state:'allowed';permit:BudgetDispatchPermit;attem
 export type BudgetFinancialOperation='prepare'|'provision'|'native-activation'|'admit'|'grant'|'unknown'|'settle'|'member-remove'|'erase-person'|'native-cleanup-recovery';
 export interface BudgetFinancialWriter {
   run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<T>;
+  /** The same writer for one caller with a monotonic deadline (performance.now). */
+  until?(deadline:number):BudgetFinancialWriter;
 }
 type Ref=BudgetAuthorityReference;
 const permits=new WeakMap<object,{attemptId:string;bindingId:string;requestHash:string}>();
