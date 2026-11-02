@@ -50,7 +50,8 @@ proves them once. Refuses, changing nothing, when an answer is unsafe.
                        /etc/lares/restic-password; generated if it does not exist)
   --password-saved     with --yes: you confirm a generated password is saved somewhere else
   --age-recipient      the PUBLIC age key (age1...); the private key stays off this server
-  --hc-url             the https address of your uptime check (healthchecks.io style)
+  --hc-url             required: the https address of your uptime check (healthchecks.io style).
+                       Backups are not reported as working without something that can alert you.
   --s3-credentials-file  root-only file with AWS_ACCESS_KEY_ID= and AWS_SECRET_ACCESS_KEY=
                        lines (s3: repositories only; never pass keys on the command line)
   --accept-same-machine  allow a local-path repository on this server's own disk (not a real backup)

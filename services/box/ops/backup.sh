@@ -238,7 +238,8 @@ if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
   for p in /srv/lares/*; do
     [ -e "$p" ] || continue
     case "$p" in
-      /srv/lares/agents|/srv/lares/retired|/srv/lares/installation|/srv/lares/backup|/srv/lares/egress|/srv/lares/secrets|/srv/lares/compose.lares-agents.yaml) ;;
+      # run holds only live sockets, which mean nothing in a backup.
+      /srv/lares/agents|/srv/lares/retired|/srv/lares/installation|/srv/lares/backup|/srv/lares/egress|/srv/lares/secrets|/srv/lares/run|/srv/lares/compose.lares-agents.yaml) ;;
       *) echo "backup: unclassified Lares store: $p" >&2; exit 1 ;;
     esac
   done

@@ -250,8 +250,11 @@ organisation id, sign you in, or link the account.
 3. Recreate only Console so it reads the changed settings. This keeps the installed image:
 
    ```bash
-   sudo docker compose -f /opt/lares/compose.yaml up -d --no-deps --force-recreate console
+   sudo COMPOSE_IGNORE_ORPHANS=1 docker compose -f /opt/lares/compose.yaml up -d --no-deps --force-recreate console
    ```
+
+   If Docker ever suggests `--remove-orphans`, do not use it. The keeper and the egress proxy are
+   in a second Compose file, so Docker calls them orphans and that flag would delete them.
 
 Return to the sign-in page and sign in again with the same provider account. Only this new,
 successfully verified callback links the identity to the existing owner and creates the normal

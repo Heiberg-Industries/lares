@@ -149,12 +149,20 @@ cmd_doctor() {
   [ -f "$database_password_file" ] && read_only_files+=(--ro "$database_password_file")
   [ -f "$installation_env_file" ] && read_only_files+=(--ro "$installation_env_file")
   [ -f "$console_session_secret_file" ] && read_only_files+=(--ro "$console_session_secret_file")
+  # The application login may not read the migration ledger. Update reads it with this same
+  # root-only login, and only when run as root; without it the doctor says to use sudo.
+  local operator_password_file="$PREFIX/etc/lares/operator/database-password"
+  local -a ledger_args=()
+  if [ -r "$operator_password_file" ]; then
+    read_only_files+=(--ro "$operator_password_file")
+    ledger_args=(--ledger-password-file "$operator_password_file")
+  fi
   engine_run "${read_only_files[@]}" \
     --env "DATABASE_PASSWORD_FILE=$database_password_file" \
     --env "CONSOLE_SESSION_SECRET_FILE=$console_session_secret_file" \
     --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
     --env "PGDATABASE=${PGDATABASE:-lares_state}" --env "PGUSER=lares_app" \
-    bin/doctor.ts --installed-settings-file "$installation_env_file" "$@"
+    bin/doctor.ts --installed-settings-file "$installation_env_file" "${ledger_args[@]}" "$@"
 }
 
 cmd_import_preview() {
