@@ -406,6 +406,8 @@ def main(argv: list[str]) -> int:
         start_registry(work, tls)
         write_hosts(bridge_address("proof-fake"))
         wait_for_registry(tls)
+        # Docker keeps its copy of the hosts file for five seconds after any lookup, and it just pulled.
+        time.sleep(10)
         release_file = write_release(work, {
             "lares-keeper": publish_locally(keeper, "heiberg-industries/lares-engine-keeper"),
             "lares-egress-proxy": publish_locally(egress, "heiberg-industries/lares-engine-egress-proxy"),
