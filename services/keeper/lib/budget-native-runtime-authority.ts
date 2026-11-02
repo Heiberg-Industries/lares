@@ -145,9 +145,11 @@ export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptio
           for(const [account,windowId,cap] of [[installation,intent.installationWindowId,intent.installationCap],[member,intent.memberWindowId,intent.memberWindowCap]] as const){
             const windows=(await db.query(`SELECT *,${FINANCIAL_UTC_TIMESTAMP('starts_at')} AS starts_utc,${FINANCIAL_UTC_TIMESTAMP('ends_at')} AS ends_utc
               FROM budget_windows WHERE account_id=$1 AND starts_at<$3::timestamptz AND ends_at>$2::timestamptz ORDER BY id LIMIT 2 FOR SHARE`,[account.id,now.starts_at,now.ends_at])).rows;
-            if(intent.monthStartsAt!==now.starts_at||intent.monthEndsAt!==now.ends_at||windows.length!==1||windows[0]!.id!==account.active_window_id||windows[0]!.id!==windowId||
+            // Activation proves its own month. Later months need the current window the monthly opening recorded.
+            const activationMonth=intent.monthStartsAt===now.starts_at&&intent.monthEndsAt===now.ends_at;
+            if(windows.length!==1||windows[0]!.id!==account.active_window_id||activationMonth&&windows[0]!.id!==windowId||
               !(await db.query('SELECT 1 WHERE $1::timestamptz=$2::timestamptz AND $3::timestamptz=$4::timestamptz',[windows[0]!.starts_at,now.starts_at,windows[0]!.ends_at,now.ends_at])).rows.length)throw refuse();
-            const actual=financialAtomFromRow('window',windows[0]!),recorded=expected('window',windowId);
+            const actual=financialAtomFromRow('window',windows[0]!),recorded=expected('window',windows[0]!.id);
             if(actual.kind!=='window'||!matchesCurrentFinancialAtom(recorded,actual)||actual.openingCap!==cap)throw refuse();
           }
           const actualInstall=financialAtomFromRow('account',installation),actualMember=financialAtomFromRow('account',member);

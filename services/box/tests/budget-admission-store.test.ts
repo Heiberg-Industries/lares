@@ -36,6 +36,7 @@ import {JournalBudgetFinancialWriter} from '../../keeper/lib/budget-financial-wr
 import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
 import {serveModelPurposeBroker,modelPurposeDigest,modelPurposeMac,signModelPurposeRequest,type ModelPurposeRequest} from '../../keeper/lib/model-purpose-broker.js';
 import {MODEL_PURPOSE_EMPTY_DIGEST,modelPurposeAckFields,modelPurposeEqualMac,modelPurposeRuntimeRequestFields,parseModelPurposeAdmissionResponse} from '../../../packages/agent-kit/src/model-purpose-protocol.js';
+import {openBudgetMonth} from '../../keeper/lib/budget-account-provisioning.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
 import {observeFinancialDatabase} from '../../keeper/lib/financial-continuity.js';
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
@@ -342,6 +343,64 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const evidence={...echoes,kind:'terminal-usage',format:'openai',usage:{inputTokens:100,outputTokens,cacheReadTokens:40,cacheWriteTokens:0},...changes};
     return {...evidence,receiptHash:gatewayHash(gatewayCanonical(evidence))};
   }
+  it('charges calls across a month change to the right month and keeps enforcing the limit afterwards',async()=>{
+    const status=async()=>[(await store.readStatus(context())).liability,(await store.readStatus(context(),'installation')).liability];
+    const admittedHere=async()=>{
+      const p=await prepared(),a=await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery());
+      expect(a.state).toBe('allowed');if(a.state!=='allowed')throw new Error('Not admitted');return {...p,...a};
+    };
+    // Production SQL calls clock_timestamp() by its bare name, so a same-named function earlier on
+    // the search path moves this one connection's clock with the code under test untouched.
+    const setClock=async(target:string)=>{
+      const shift=(await db.query(`SELECT (${target}-pg_catalog.clock_timestamp())::text AS shift`)).rows[0].shift;
+      await db.query(`CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE AS 'SELECT pg_catalog.clock_timestamp()+interval ''${shift}'''`);
+    };
+    const monthEnd=`(date_trunc('month',pg_catalog.clock_timestamp() AT TIME ZONE 'UTC'+interval '2 months') AT TIME ZONE 'UTC')`;
+    const inFlight=await admittedHere(),unresolved=await admittedHere();
+    await gatewayPreparedStore!.markUnknown(unresolved.attemptId);
+    expect(await status()).toEqual(['0.2','0.2']);
+    await setClock("pg_catalog.clock_timestamp()+interval '1 month'");
+    await db.query('SET search_path=public,pg_catalog');
+    try{
+      await expect(prepared()).rejects.toThrow();
+      expect(await openBudgetMonth(db as unknown as SourcePool,files.journal)).toEqual({opened:3,skipped:0,blocked:0,failed:0});
+      // Nothing is forgiven by the new month: calls with no settlement still count against it.
+      expect(await status()).toEqual(['0.2','0.2']);
+      // A call admitted before midnight settles against the month it started in.
+      const oldWindow=(await db.query('SELECT member_window_id FROM budget_attempts WHERE id=$1',[inFlight.attemptId])).rows[0].member_window_id;
+      expect(await gatewayPreparedStore!.settle(receipt(inFlight,'0.05'))).toBe('settled');
+      expect((await db.query('SELECT member_window_id FROM budget_attempts WHERE id=$1',[inFlight.attemptId])).rows[0].member_window_id).toBe(oldWindow);
+      expect(oldWindow).not.toBe((await store.readStatus(context())).windowId);
+      expect(await status()).toEqual(['0.1','0.1']);
+      // Calls cleared seconds before the next midnight, with their 30 seconds still running.
+      await setClock(`${monthEnd}-interval '5 seconds'`);
+      const beforeOpening=await prepared(),afterOpening=await prepared(),straddling=await admittedHere();
+      await setClock(`${monthEnd}+interval '1 second'`);
+      expect((await gatewayPreparedStore!.admit(beforeOpening.ticket,beforeOpening.observation,recovery())).state).toBe('denied');
+      expect(await openBudgetMonth(db as unknown as SourcePool,files.journal)).toEqual({opened:3,skipped:0,blocked:0,failed:0});
+      expect((await gatewayPreparedStore!.admit(afterOpening.ticket,afterOpening.observation,recovery())).state).toBe('denied');
+      expect((await db.query("SELECT count(*)::int AS n FROM budget_attempts WHERE ticket_hash=ANY($1::text[]) AND state='retired'",[[h(beforeOpening.ticket),h(afterOpening.ticket)]])).rows[0].n).toBe(2);
+      // A settlement finishing while the journal is busy waits its turn instead of being lost.
+      let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});
+      const holder=files.writer.run('provision',boundary=>consoleSourceTransaction(db as unknown as SourcePool,()=>held,boundary));
+      const waiting=gatewayPreparedStore!.settle(receipt(straddling,'0.05'));
+      await new Promise(resolve=>setTimeout(resolve,50));release();await holder;
+      expect(await waiting).toBe('settled');
+      expect(await status()).toEqual(['0.1','0.1']);
+      // The next step runs against the new month, and the same $1 limit still holds.
+      const next=await admittedHere();
+      expect(await gatewayPreparedStore!.settle(receipt(next,'0.05'))).toBe('settled');
+      expect(await status()).toEqual(['0.15','0.15']);
+      expect(await gatewayPreparedStore!.settle(receipt(unresolved,'0.05'))).toBe('settled');
+      expect(await status()).toEqual(['0.05','0.05']);
+      for(let call=0;call<9;call++)await admittedHere();
+      expect(await status()).toEqual(['0.95','0.95']);
+      const over=await prepared();
+      expect((await gatewayPreparedStore!.admit(over.ticket,over.observation,recovery())).state).toBe('denied');
+    }finally{
+      await db.query('RESET search_path;DROP FUNCTION public.clock_timestamp()');
+    }
+  });
   it('consumes a signed Console human step through the real Keeper socket and prepared journal',async()=>{
     const definitionHash=h('model-purpose-definition'),selected=await selectPurposeModel(definitionHash),{sessionId,admissionNonce}=selected;
     const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());

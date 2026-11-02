@@ -5,6 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PgGrantStore } from "@lares/agent-kit/grant-store";
+import { authorityTransaction } from "@lares/agent-kit/console-turn-authority";
 import { captureWebContinuityFence, putInbox } from "../lib/web-inbox.js";
 import { privateWebInboxContinuity } from "../lib/conversation-continuity.js";
 import { quiet } from "./helpers/quiet-pool.js";
@@ -26,7 +27,8 @@ beforeAll(async () => {
 afterAll(async () => { await pool?.end(); await container?.stop(); });
 
 beforeEach(async () => {
-  await pool.query("DELETE FROM web_inbox; DELETE FROM connected_accounts; DELETE FROM resource_grants; DELETE FROM agent_access; DELETE FROM agent_definitions; DELETE FROM org_member_policy; DELETE FROM users; DELETE FROM orgs;");
+  // TRUNCATE, because the guard on users refuses to delete the last active owner row by row.
+  await pool.query("TRUNCATE web_inbox, connected_accounts, resource_grants, agent_access, agent_definitions, org_member_policy, users, orgs CASCADE");
   await pool.query(`INSERT INTO orgs(id,display_name) VALUES('org-a','Fixture');
     INSERT INTO users(id,display_name,org_id,org_role,status) VALUES
       ('member-a','Owner','org-a','owner','active'),('member-b','Member','org-a','member','active');
@@ -71,5 +73,32 @@ describe("web inbox continuity authority fence", () => {
     expect((await privateWebInboxContinuity("member-b", "helper", now, pool)).some(line => line.includes("current body"))).toBe(true);
     await pool.query("UPDATE connected_accounts SET generation=generation+1,lifecycle_revision=lifecycle_revision+1 WHERE id='account-b'");
     expect(await privateWebInboxContinuity("member-b", "helper", now, pool)).toEqual([]);
+  });
+
+  it("reads inside the caller's transaction on its checked-out client, shows only that member's posts and keeps the locks until the caller commits", async () => {
+    const fenceB = await captureWebContinuityFence(pool, "member-b", "helper");
+    const fenceA = await captureWebContinuityFence(pool, "member-a", "helper");
+    await putInbox(pool, { owner: "member-b", agent: "helper", kind: "brief", title: "Mine", body: "member b post", itemKey: "b", continuityFence: fenceB });
+    await putInbox(pool, { owner: "member-a", agent: "helper", kind: "brief", title: "Theirs", body: "member a post", itemKey: "a", continuityFence: fenceA });
+    const lockAccount = "SELECT 1 FROM connected_accounts WHERE id='account-b' FOR UPDATE NOWAIT";
+    const continuity = await authorityTransaction(pool, async client => {
+      const lines = await privateWebInboxContinuity("member-b", "helper", new Date(), client);
+      await expect(pool.query(lockAccount)).rejects.toMatchObject({ code: "55P03" });
+      return lines;
+    });
+    expect(continuity.some(line => line.includes("member b post"))).toBe(true);
+    expect(continuity.some(line => line.includes("member a post"))).toBe(false);
+    await expect(pool.query(lockAccount)).resolves.toMatchObject({ rowCount: 1 });
+  });
+
+  it("publishes on a checked-out client without opening its own transaction", async () => {
+    const fence = await captureWebContinuityFence(pool, "member-b", "helper");
+    const published = "SELECT 1 FROM web_inbox WHERE item_key='in-transaction'";
+    await authorityTransaction(pool, async client => {
+      await putInbox(client as never, { owner: "member-b", agent: "helper", kind: "brief", title: "Post", body: "post", itemKey: "in-transaction", continuityFence: fence });
+      expect((await client.query(published)).rows).toHaveLength(1);
+      expect((await pool.query(published)).rows).toHaveLength(0);
+    });
+    expect((await pool.query(published)).rows).toHaveLength(1);
   });
 });

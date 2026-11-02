@@ -57,6 +57,8 @@ export const FINANCIAL_JOURNAL_RECORD_SCHEMA=z.discriminatedUnion('kind',[
 ]);
 type JournalRecord=z.infer<typeof FINANCIAL_JOURNAL_RECORD_SCHEMA>;
 const frameSchema=z.object({record:FINANCIAL_JOURNAL_RECORD_SCHEMA,digest:hash}).strict();
+/** Thrown before any record or database work, so the same operation can safely be tried again. */
+export class FinancialJournalBusy extends Error {constructor(){super('Financial journal is closed or busy');}}
 export const JOURNAL_MAX_RECORD_BYTES=65_536,JOURNAL_MAX_BYTES=8*1024*1024,JOURNAL_MAX_RECORDS=8192;
 const CONTROL_RECORD_BYTES=1024;
 const digest=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -367,7 +369,8 @@ export class HostFinancialJournal {
   /** The in-process barrier precedes pool checkout. Kernel ownership spans this object's
    * entire life; contention refuses rather than queueing another spending operation. */
   async operation<T>(kind:BudgetFinancialOperation,work:(operationId:string)=>Promise<T>):Promise<T> {
-    if(this.closed||this.frozen||this.stopping||this.busy||!this.writerLease)throw new Error('Financial journal is closed or busy');
+    if(this.closed||this.frozen||this.stopping||!this.writerLease)throw new Error('Financial journal is closed or busy');
+    if(this.busy)throw new FinancialJournalBusy();
     // Reserve begin, maximum proposal, terminal and writer-close BEFORE any database
     // work. Capacity exhaustion leaves this writer able to close cleanly.
     this.requireCapacity(this.control?6:4,JOURNAL_MAX_RECORD_BYTES+5*CONTROL_RECORD_BYTES);
