@@ -367,6 +367,9 @@ def diagnostics(fixture: pathlib.Path | None) -> None:
     print("\n=== diagnostics ===", flush=True)
     run("docker", "info", "--format", "{{.ServerVersion}} {{.Driver}} {{.DriverStatus}}", check=False)
     run("docker", "ps", "-a", "--format", "table {{.Names}}\t{{.Status}}\t{{.Image}}", check=False)
+    # Who owns the installation's folders and files, for a refusal that names no path.
+    run("stat", "-c", "%u %g %a %n", "/", "/etc", "/opt", "/srv", "/var", "/var/lib", check=False)
+    run("find", "/etc/lares", "/opt/lares", "/srv/lares", "/var/lib/lares-maintenance", "/var/lib/lares-budget-setup", "-maxdepth", "2", "-printf", "%U %G %m %y %p\n", check=False)
     names = run("docker", "ps", "-a", "--format", "{{.Names}}", check=False, show=False).stdout.split()
     for name in names:
         if "buildkit" in name:
