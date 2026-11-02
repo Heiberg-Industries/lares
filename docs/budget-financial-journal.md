@@ -256,11 +256,21 @@ an older Keeper can still read the journal after a rollback:
 - A call admitted before midnight settles against the month it started in. Grants
   and settlements wait for a busy journal (see "Overlapping operations"), because the
   gateway never resends them. A later refusal leaves the reservation held.
-- Attempts with no settlement or with a conflict keep counting against every new
-  month. **Nothing resolves them yet**: a call that was cancelled, reported no usage,
-  or lost its settlement holds its full reservation for good, so that person's
-  usable limit stays lower in every later month. This errs towards spending too
-  little, never too much. A reviewed way to resolve them is still needed.
+- An attempt with no settlement stays charged, at its full reservation, to the month
+  it began in, and does not count against later months. No money is released and no
+  provider's cost is assumed: a call that was cancelled, reported no usage, or lost its
+  settlement simply never gets a lower figure than its reservation. **Within its month
+  nothing resolves it**, so many unfinished calls can use up that person's limit or the
+  installation limit for the month, and whoever is affected waits for the next month. A
+  settlement that arrives later corrects the month the call began in. A prompt larger
+  than the reviewed token bound can still cost more than its reservation, and an
+  unfinished call never reveals that.
+- Each ledger month stays within its limit, but calls still running at midnight belong
+  to the old month while the new one has its whole limit. A provider's calendar-month
+  invoice can therefore exceed the limit by what those calls cost.
+- An attempt with a conflict keeps counting against every later month. It freezes the
+  installation account, which stops all spending and all new months. There is no
+  command to reconcile it yet.
 - A prepared attempt not yet admitted at midnight is retired and never runs. Its
   conversation step does not rearm; the agent's next step is a new attempt.
 

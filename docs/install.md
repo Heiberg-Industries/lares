@@ -310,9 +310,10 @@ These limits apply today:
   the same limits counted from zero; unused money does not carry over. A model step in progress
   right at that moment can fail once, and the agent's next step works. If the month cannot open,
   agents stop spending and the keeper's log says how many accounts are affected.
-- A model call that was cancelled or never reported its usage keeps holding its reservation against
-  that person's limit and the installation limit, in every month. There is no command to release it
-  yet.
+- A model call that failed, was cancelled or never reported its usage keeps holding its full
+  reservation against that person's limit and the installation limit until the month ends. Many of
+  these, for example during a provider outage, can use up a limit for the rest of the month. There is
+  no command to release one; the next month starts clear of them.
 - If `lares agent start` stops while creating a person's key and cannot tell whether the key was
   made, it does not retry. That key stays blocked and cannot spend, but there is no clean-up command
   yet.

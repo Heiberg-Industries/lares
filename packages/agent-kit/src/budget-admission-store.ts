@@ -133,7 +133,9 @@ export class PgBudgetAdmissionStore {
     const window=(await db.query('SELECT * FROM budget_windows WHERE id=$1 AND account_id=$2',[account.active_window_id,account.id])).rows[0];
     if(!window)return null;
     const scope=account.kind==='installation'?'installation':'member';
-    const rows=(await db.query(`SELECT state,reserved_amount,actual_amount,highest_observed_liability,${scope}_window_id AS window_id FROM budget_attempts WHERE ${scope}_account_id=$1 AND (state IN ('admitted','unknown','conflict') OR(state='settled' AND ${scope}_window_id=$2))`,[account.id,window.id])).rows;
+    // A call with no final cost stays charged in full to the month it began in, and only that month;
+    // an account has one window per month. A conflict counts in every month: it freezes the installation.
+    const rows=(await db.query(`SELECT state,reserved_amount,actual_amount,highest_observed_liability,${scope}_window_id AS window_id FROM budget_attempts WHERE ${scope}_account_id=$1 AND (state='conflict' OR(state IN ('admitted','unknown','settled') AND ${scope}_window_id=$2))`,[account.id,window.id])).rows;
     let total=units(window.opening_liability);
     for(const r of rows){
       if(r.state==='admitted'||r.state==='unknown')total+=units(r.reserved_amount);
