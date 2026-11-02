@@ -137,8 +137,10 @@ The witness observation interface alone does not provide a write-ahead financial
 journal. A real recovery implementation must participate before financial commits
 and integrate provisioning, member removal/erasure and the explicit restore path.
 It must freeze independently before database replacement and refuse missing or
-ambiguous external evidence on a replacement host. No restoration, epoch update,
-window change or rotation may silently open fresh caps or discard unknown use.
+ambiguous external evidence on a replacement host. No restoration, epoch update or
+rotation may silently open fresh caps or discard unknown use. The only window change
+is the opening of a new UTC month, described in `budget-financial-journal.md`: it
+starts at zero, and attempts with no final cost stay charged to the month they began in.
 
 Focused protocol, pricing, relay/socket and real PostgreSQL tests exercise this
 integration. The manual keeper/neutral-image workflow must also prove SQL024 in
