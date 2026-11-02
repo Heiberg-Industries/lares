@@ -288,7 +288,7 @@ const sequence = () => (existsSync(sequenceLog) ? readFileSync(sequenceLog, "utf
 describe("backup-verify.sh", () => {
   it("verifies current-layout portable stores without requiring the plaintext secrets parent", () => {
     rmSync(srvSubdir, { recursive: true });
-    for (const path of ["lares/agents", "lares/retired", "lares/secrets", "lares/backup", "lares/egress", "taste"])
+    for (const path of ["lares/agents", "lares/retired", "lares/secrets", "lares/backup", "lares/egress", "lares/run", "taste"])
       mkdirSync(join(srvRoot, path), { recursive: true });
     stageSnapshot({ paths: ["/var/backups/pg", join(srvRoot, "lares/agents"), join(srvRoot, "lares/retired"), join(srvRoot, "taste")] });
     stageDatabases(["app", "postgres"]);

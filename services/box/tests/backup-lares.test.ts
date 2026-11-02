@@ -130,6 +130,12 @@ it('classifies the installation folder and backs it up when it exists',()=>{
  const args=JSON.parse(readFileSync(join(f.root,'restic-args.json'),'utf8'));
  expect(args).toContain(join(f.root,'srv/lares/installation'));
 });
+it('does not refuse the folder of live sockets a fresh install creates, and does not back it up',()=>{
+ const f=fixture(true);mkdirSync(join(f.root,'srv/lares/run'));
+ const result=spawnSync('bash',[f.file],{env:{...f.env,LARES_CURRENT_LAYOUT:'1'},encoding:'utf8'});
+ expect(result.stderr).not.toContain('unclassified Lares store');
+ expect(readFileSync(join(f.root,'restic-args.json'),'utf8')).not.toContain('lares/run');
+});
 it('refuses an unclassified current-layout store before taking a snapshot',()=>{
  const f=fixture(true);mkdirSync(join(f.root,'srv/lares/new-store'));
  const result=spawnSync('bash',[f.file],{env:{...f.env,LARES_CURRENT_LAYOUT:'1'},encoding:'utf8'});

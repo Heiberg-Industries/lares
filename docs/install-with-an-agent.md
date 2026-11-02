@@ -276,8 +276,11 @@ A successful installer run or email match alone does not prove sign-in worked.
 
 Stop here. These are the person's to do, in the console and with their own keys:
 
-- **The first agent.** After confirming this host and completing model budget setup, they create
-  it on `https://example.com/agents/new`.
+- **Model budget setup.** After confirming this host, they run `sudo lares budget setup` on the
+  server (install.md, the section on switching model spending on). It asks for their spending limits
+  and prices, so it is theirs to answer. Do not choose those figures for them.
+- **The first agent.** After that they create it on `https://example.com/agents/new`, adopt it on its
+  Access tab, and run `sudo lares agent start <name>` on the server.
   [Using the console](how-to/using-the-console.md) is a tour of the pages.
 - **Backups.** The install does not switch them on. Tell the person, plainly, not to rely on the
   installation for anything they need to keep until backups are on. They run

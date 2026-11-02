@@ -16,13 +16,13 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import type { Pool } from "pg";
-import { poolFromEnv } from "../lib/db.js";
+import { operatorPoolFromFile, poolFromEnv } from "../lib/db.js";
 import { runDoctor, doctorReport, doctorExitCode, testModel as probeModel, type ModelTestDeps } from "../lib/doctor.js";
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "sql");
 
 const HELP_TEXT = [
-  "pnpm -C services/box doctor [--help] [--test-model --gateway <url> --alias <name> --key-file <path>]",
+  "lares doctor [--help] [--test-model --gateway <url> --alias <name> --key-file <path>]",
   "",
   "Reads this installation's settings and database and says, in plain sentences, what is wrong",
   "and what to type to fix it. It changes nothing: no setting, no file and no database row.",
@@ -47,12 +47,13 @@ export interface ParsedDoctorArgs {
   testModel: boolean;
   modelOnly: boolean;
   installedSettingsFile: string | undefined;
+  ledgerPasswordFile: string | undefined;
   gatewayUrl: string | undefined;
   alias: string | undefined;
   keyFile: string | undefined;
 }
 
-const VALUE_FLAGS = new Set(["--gateway", "--alias", "--key-file", "--installed-settings-file"]);
+const VALUE_FLAGS = new Set(["--gateway", "--alias", "--key-file", "--installed-settings-file", "--ledger-password-file"]);
 
 /** Refuses an unknown flag rather than silently ignoring it. `--gateway`/`--alias`/`--key-file`
  *  each consume the argument that follows them. */
@@ -61,6 +62,7 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   let testModel = false;
   let modelOnly = false;
   let installedSettingsFile: string | undefined;
+  let ledgerPasswordFile: string | undefined;
   let gatewayUrl: string | undefined;
   let alias: string | undefined;
   let keyFile: string | undefined;
@@ -78,6 +80,7 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
       if (arg === "--gateway") gatewayUrl = value;
       else if (arg === "--alias") alias = value;
       else if (arg === "--key-file") keyFile = value;
+      else if (arg === "--ledger-password-file") ledgerPasswordFile = value;
       else installedSettingsFile = value;
       i++;
     } else {
@@ -88,7 +91,7 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   }
 
   if (modelOnly && !testModel) throw new Error("doctor: --model-only requires --test-model.");
-  return { help, testModel, modelOnly, installedSettingsFile, gatewayUrl, alias, keyFile };
+  return { help, testModel, modelOnly, installedSettingsFile, ledgerPasswordFile, gatewayUrl, alias, keyFile };
 }
 
 /** Read one value from install.sh's data-only installation.env format. Never evaluate it as
@@ -136,6 +139,7 @@ export async function main(
     env?: NodeJS.ProcessEnv;
     readKeyFile?: (path: string) => string;
     fetch?: typeof globalThis.fetch;
+    openLedger?: (passwordFile: string) => Promise<Pick<Pool, "query" | "end">>;
   },
 ): Promise<number> {
   let args: ParsedDoctorArgs;
@@ -175,8 +179,13 @@ export async function main(
     return result.verdict === "ok" ? 0 : 1;
   }
 
+  // Unreadable or refused: the migrations check says so; every other check still runs.
+  const ledger = args.ledgerPasswordFile === undefined || !deps.openLedger ? undefined
+    : await deps.openLedger(args.ledgerPasswordFile).catch(() => undefined);
   const results = await runDoctor({
     db: deps.db,
+    ledgerDb: ledger,
+    installed: args.installedSettingsFile !== undefined,
     env: (() => {
       const env = { ...(deps.env ?? process.env) };
       if (args.installedSettingsFile !== undefined) {
@@ -189,7 +198,7 @@ export async function main(
     sqlDir: SQL_DIR,
     now: new Date(),
     testModel,
-  });
+  }).finally(() => ledger?.end());
   deps.out(doctorReport(results));
   return doctorExitCode(results);
 }
@@ -197,7 +206,10 @@ export async function main(
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const pool = poolFromEnv();
-  main(process.argv.slice(2), { db: pool, out: (s) => process.stdout.write(`${s}\n`) })
+  const openLedger = (passwordFile: string) => operatorPoolFromFile(passwordFile, {
+    host: process.env.PGHOST ?? "db", port: Number(process.env.PGPORT ?? 5432), database: process.env.PGDATABASE ?? "lares_state",
+  });
+  main(process.argv.slice(2), { db: pool, openLedger, out: (s) => process.stdout.write(`${s}\n`) })
     .then((code) => {
       process.exitCode = code;
     })

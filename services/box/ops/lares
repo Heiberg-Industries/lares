@@ -15,6 +15,9 @@
 #                                                       the remaining blocked inventory work
 #   lares owner-bootstrap                               pin a verified first-owner identity
 #   lares backups  [setup-backups.sh options]           switch on or check backups (setup-backups.sh)
+#   lares budget setup [options]                        ask for the monthly limits and switch model
+#                                                       spending on for this installation
+#   lares agent start <name> [--member <email>]         connect a person to an agent and start it
 #
 # Image mode only: nothing here needs Node, pnpm or a checkout. Layout (set by get-lares.sh):
 #   $PREFIX/opt/lares/releases/<name>/   unpacked engine files, one folder per release
@@ -47,6 +50,8 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares import-preview <archive.tar>
        lares owner-bootstrap
        lares backups [--dry-run] [--yes] [setup-backups.sh options]
+       lares budget setup [--installation-limit <usd>] [--person-limit <usd>] [--prices <in,out,cache-read,cache-write>] [--yes]
+       lares agent start <name> [--member <email>]
 
 <name> is the full release name from the repository's releases folder, for example
 2026-10-19-rc.11. Run as root.
@@ -57,7 +62,7 @@ EOF
 cmd="$1"
 shift
 case "$cmd" in
-  update|rollback|restore|doctor|import-preview|owner-bootstrap|backups) ;;
+  update|rollback|restore|doctor|import-preview|owner-bootstrap|backups|budget|agent) ;;
   -h|--help) usage; exit "$EX_USAGE" ;;
   *) printf 'lares: I do not know the command %s.\n' "'$cmd'" >&2; usage; exit "$EX_USAGE" ;;
 esac
@@ -149,12 +154,20 @@ cmd_doctor() {
   [ -f "$database_password_file" ] && read_only_files+=(--ro "$database_password_file")
   [ -f "$installation_env_file" ] && read_only_files+=(--ro "$installation_env_file")
   [ -f "$console_session_secret_file" ] && read_only_files+=(--ro "$console_session_secret_file")
+  # The application login may not read the migration ledger. Update reads it with this same
+  # root-only login, and only when run as root; without it the doctor says to use sudo.
+  local operator_password_file="$PREFIX/etc/lares/operator/database-password"
+  local -a ledger_args=()
+  if [ -r "$operator_password_file" ]; then
+    read_only_files+=(--ro "$operator_password_file")
+    ledger_args=(--ledger-password-file "$operator_password_file")
+  fi
   engine_run "${read_only_files[@]}" \
     --env "DATABASE_PASSWORD_FILE=$database_password_file" \
     --env "CONSOLE_SESSION_SECRET_FILE=$console_session_secret_file" \
     --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
     --env "PGDATABASE=${PGDATABASE:-lares_state}" --env "PGUSER=lares_app" \
-    bin/doctor.ts --installed-settings-file "$installation_env_file" "$@"
+    bin/doctor.ts --installed-settings-file "$installation_env_file" "${ledger_args[@]}" "$@"
 }
 
 cmd_import_preview() {
@@ -245,6 +258,28 @@ cmd_owner_bootstrap() {
   python3 "$OPS/owner-bootstrap.py" --prefix "${PREFIX:-/}"
 }
 
+# The commands that need the engine image pass it along; everything else about the two commands
+# lives in budget-commands.py.
+budget_commands() {
+  # shellcheck source=engine-run.sh
+  . "$OPS/engine-run.sh"
+  BOX_DIR="$CUR/services/box"
+  engine_resolve_image "$CUR/release.json" || die "this release has no engine image recorded ($BOX_DIR/engine-image). Run get-lares.sh again. Nothing was changed." "$EX_USAGE"
+  exec python3 "$OPS/budget-commands.py" --prefix "${PREFIX:-/}" --image "$ENGINE_IMAGE" --release "$CUR/release.json" "$@"
+}
+
+cmd_budget() {
+  [ "${1:-}" = setup ] || { printf 'lares: the budget command is: lares budget setup\n' >&2; usage; exit "$EX_USAGE"; }
+  shift
+  budget_commands setup "$@"
+}
+
+cmd_agent() {
+  [ "${1:-}" = start ] && [ "$#" -ge 2 ] || { printf 'lares: the agent command is: lares agent start <name>\n' >&2; usage; exit "$EX_USAGE"; }
+  shift
+  budget_commands agent-start "$@"
+}
+
 case "$cmd" in
   update) cmd_update "$@" ;;
   rollback) cmd_rollback "$@" ;;
@@ -253,4 +288,6 @@ case "$cmd" in
   import-preview) cmd_import_preview "$@" ;;
   backups) exec bash "$OPS/setup-backups.sh" "$@" ;;
   doctor) cmd_doctor "$@" ;;
+  budget) cmd_budget "$@" ;;
+  agent) cmd_agent "$@" ;;
 esac

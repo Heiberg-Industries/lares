@@ -3,6 +3,11 @@ import { AvatarEditor } from "./AvatarEditor";
 import { DoorSetup } from "./DoorSetup";
 import React, { useEffect, useRef, useState } from "react";
 import { Button } from "@lares/ui/primitives/button";
+import { Input } from "@lares/ui/primitives/input";
+import { Select } from "@lares/ui/primitives/select";
+import { Textarea } from "@lares/ui/primitives/textarea";
+import { Checkbox, Radio } from "@lares/ui/primitives/checkbox";
+import { Choice, Field, FieldGroup, Notice } from "@lares/ui/patterns";
 import {
   Dialog,
   DialogContent,
@@ -287,17 +292,16 @@ export function DefinitionForm(p: DefinitionFormProps) {
           });
         }}
       >
-        <fieldset
+        <FieldGroup
+          legend={<span className="sr-only">Agent definition</span>}
           disabled={busy || uncertain || !active}
-          style={{ border: 0, padding: 0 }}
         >
           {!editing && (
             <section hidden={step !== 0}>
               <h2 className="sr-only">Choose a purpose</h2>
               {p.startingPoints.map((s) => (
                 <label key={s.id} className="lares-purpose">
-                  <input
-                    type="radio"
+                  <Radio
                     name="startingPoint"
                     checked={point.id === s.id}
                     onChange={() =>
@@ -321,18 +325,16 @@ export function DefinitionForm(p: DefinitionFormProps) {
             <h2>Identity</h2>
             {!editing && (
               <>
-                <label>
-                  Name (permanent slug)
-                  <input
+                <Field label="Name (permanent slug)">
+                  <Input
                     required
                     pattern="[a-z][a-z0-9-]{1,30}"
                     minLength={2}
                     maxLength={31}
-                    className="lares-editor-field"
                     value={definition.name}
                     onChange={(e) => patch({ name: e.target.value })}
                   />
-                </label>
+                </Field>
                 <p>
                   Lowercase letters, digits and hyphens, starting with a letter.
                   The name cannot change later.
@@ -345,19 +347,15 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 Permanent name: <strong>{definition.name}</strong>
               </p>
             )}
-            <label>
-              Display name
-              <input
+            <Field label="Display name">
+              <Input
                 maxLength={80}
-                className="lares-editor-field"
                 value={definition.display ?? ""}
                 onChange={(e) => patch({ display: e.target.value })}
               />
-            </label>
-            <label>
-              Gender
-              <select
-                className="lares-editor-field"
+            </Field>
+            <Field label="Gender">
+              <Select
                 value={definition.gender ?? "agent"}
                 onChange={(e) =>
                   patch({ gender: e.target.value as AgentDefinition["gender"] })
@@ -366,16 +364,14 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 <option value="agent">Agent</option>
                 <option value="female">Female</option>
                 <option value="male">Male</option>
-              </select>
-            </label>
-            <label>
-              Description
-              <input
-                className="lares-editor-field"
+              </Select>
+            </Field>
+            <Field label="Description">
+              <Input
                 value={definition.description ?? ""}
                 onChange={(e) => patch({ description: e.target.value })}
               />
-            </label>
+            </Field>
             {timing("description")}
             <details className="lares-disclosure" open={editing}>
               <summary>Instructions and language</summary>
@@ -387,50 +383,36 @@ export function DefinitionForm(p: DefinitionFormProps) {
               {point.roleMd && (
                 <details className="lares-inset-disclosure">
                   <summary>Show the built-in default</summary>
-                  <pre
-                    className="lares-muted"
-                    style={{
-                      whiteSpace: "pre-wrap",
-                      maxHeight: 240,
-                      overflow: "auto",
-                    }}
-                  >
+                  <pre className="lares-muted lares-editor-default">
                     {point.roleMd}
                   </pre>
                 </details>
               )}
-              <label>
-                What is this agent for? Write it the way you would tell a
-                person.
-                <textarea
+              <Field
+                label="What is this agent for? Write it the way you would tell a person."
+              >
+                <Textarea
                   rows={5}
-                  className="lares-editor-field"
                   value={duties}
                   onChange={(e) => setDuties(e.target.value)}
                 />
-              </label>
-              <label>
-                Personality
-                <span className="lares-muted" style={{ display: "block" }}>
-                  How the agent sounds and writes. Added after the built-in
-                  role, not instead of it.
-                </span>
-                <textarea
+              </Field>
+              <Field
+                label="Personality"
+                hint="How the agent sounds and writes. Added after the built-in role, not instead of it."
+              >
+                <Textarea
                   rows={4}
-                  className="lares-editor-field"
                   value={voice}
                   onChange={(e) => setVoice(e.target.value)}
                 />
-              </label>
-              <label>
-                Language
-                <span className="lares-muted" style={{ display: "block" }}>
-                  The agent’s default language. It switches to another one only
-                  when someone asks it to, and only for that conversation.
-                </span>
-                <select
+              </Field>
+              <Field
+                label="Language"
+                hint="The agent’s default language. It switches to another one only when someone asks it to, and only for that conversation."
+              >
+                <Select
                   required
-                  className="lares-editor-field"
                   value={definition.language ?? ""}
                   onChange={(e) => patch({ language: e.target.value })}
                 >
@@ -445,17 +427,15 @@ export function DefinitionForm(p: DefinitionFormProps) {
                   ].map((l) => (
                     <option key={l}>{l}</option>
                   ))}
-                </select>
-              </label>
+                </Select>
+              </Field>
               {timing("language")}
             </details>
             <details className="lares-disclosure" open={!validModel}>
               <summary>Model</summary>
-              <label>
-                Purpose
-                <select
+              <Field label="Purpose">
+                <Select
                   required
-                  className="lares-editor-field"
                   value={definition.model}
                   onChange={(e) => patch({ model: e.target.value })}
                 >
@@ -467,8 +447,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
                       {a.label} — {a.alias}
                     </option>
                   ))}
-                </select>
-              </label>
+                </Select>
+              </Field>
               {p.aliases.map((a) => (
                 <p key={a.alias}>
                   <strong>{a.label}:</strong> {a.when}
@@ -486,7 +466,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                     key={g.capability}
                     role="status"
                     data-retired-grant={g.capability}
-                    style={{ display: "block", marginBottom: 8 }}
+                    className="lares-editor-item"
                   >
                     <strong>{g.capability}</strong> ({g.scope}): no longer
                     available in this version. Saving is refused while it stays.
@@ -499,8 +479,10 @@ export function DefinitionForm(p: DefinitionFormProps) {
                         need{dependents.length > 1 ? "" : "s"} it.
                       </>
                     )}{" "}
-                    <button
+                    <Button
                       type="button"
+                      variant="outline"
+                      size="sm"
                       onClick={() =>
                         patch({
                           grants: definition.grants.filter(
@@ -518,7 +500,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                       }
                     >
                       Remove {g.capability}
-                    </button>
+                    </Button>
                   </div>
                 );
               })}
@@ -534,12 +516,14 @@ export function DefinitionForm(p: DefinitionFormProps) {
                     key={k.name}
                     role="status"
                     data-retired-skill={k.name}
-                    style={{ display: "block", marginBottom: 8 }}
+                    className="lares-editor-item"
                   >
                     Skill <strong>{k.name}</strong>: no longer available in this
                     version. Saving is refused while it stays.{" "}
-                    <button
+                    <Button
                       type="button"
+                      variant="outline"
+                      size="sm"
                       onClick={() =>
                         patch({
                           skills: definition.skills.filter(
@@ -549,16 +533,13 @@ export function DefinitionForm(p: DefinitionFormProps) {
                       }
                     >
                       Remove skill {k.name}
-                    </button>
+                    </Button>
                   </div>
                 ))}
+              <div className="lares-choice-list">
               {point.definition.grants.map((g) => (
-                <label
-                  key={g.capability}
-                  style={{ display: "block", marginBottom: 8 }}
-                >
-                  <input
-                    type="checkbox"
+                <Choice key={g.capability}>
+                  <Checkbox
                     checked={definition.grants.some(
                       (x) => x.capability === g.capability,
                     )}
@@ -576,18 +557,16 @@ export function DefinitionForm(p: DefinitionFormProps) {
                       );
                       patch({ grants, autonomy });
                     }}
-                  />{" "}
+                  />
                   {g.capability} ({g.scope})
-                </label>
+                </Choice>
               ))}
+              </div>
               <h2>Skills</h2>
+              <div className="lares-choice-list">
               {point.definition.skills?.map((s) => (
-                <label
-                  key={s.name}
-                  style={{ display: "block", marginBottom: 8 }}
-                >
-                  <input
-                    type="checkbox"
+                <Choice key={s.name}>
+                  <Checkbox
                     checked={definition.skills.some((x) => x.name === s.name)}
                     onChange={(e) =>
                       patch({
@@ -596,19 +575,16 @@ export function DefinitionForm(p: DefinitionFormProps) {
                           : definition.skills.filter((x) => x.name !== s.name),
                       })
                     }
-                  />{" "}
+                  />
                   {s.name} — needs{" "}
                   {s.requires
                     .map((r) => `${r.capability}: ${r.scope}`)
                     .join(", ")}
-                </label>
+                </Choice>
               ))}
+              </div>
               {timing("skills")}
-              {validation && (
-                <p role="alert" style={{ color: "var(--bad)" }}>
-                  {validation}
-                </p>
-              )}
+              {validation && <Notice error>{validation}</Notice>}
               <h2>Permission levels</h2>
               <p>
                 <a href="/integrations">Open the permissions board</a> for
@@ -630,7 +606,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                     .map((row) => (
                       <div
                         key={`${row.capability}:${row.action}`}
-                        style={{ marginBottom: 12 }}
+                        className="lares-editor-row"
                       >
                         <strong>
                           {row.capability}
@@ -667,10 +643,10 @@ export function DefinitionForm(p: DefinitionFormProps) {
             </details>
             <details className="lares-disclosure">
               <summary>Schedules · {Object.values(definition.schedules).filter((s) => s.on).length} enabled</summary>
+              <div className="lares-choice-list">
               {Object.entries(definition.schedules).map(([name, s]) => (
-                <label key={name} style={{ display: "block", marginBottom: 8 }}>
-                  <input
-                    type="checkbox"
+                <Choice key={name}>
+                  <Checkbox
                     checked={s.on}
                     onChange={(e) =>
                       patch({
@@ -680,15 +656,18 @@ export function DefinitionForm(p: DefinitionFormProps) {
                         },
                       })
                     }
-                  />{" "}
-                  {scheduleLabel(name)}
-                  {scheduleExplanation(name) && (
-                    <span className="lares-muted" style={{ display: "block" }}>
-                      {scheduleExplanation(name)}
-                    </span>
-                  )}
-                </label>
+                  />
+                  <span>
+                    {scheduleLabel(name)}
+                    {scheduleExplanation(name) && (
+                      <span className="lares-muted lares-choice-detail">
+                        {scheduleExplanation(name)}
+                      </span>
+                    )}
+                  </span>
+                </Choice>
               ))}
+              </div>
               {timing("schedules")}
             </details>
             {editing && (
@@ -791,7 +770,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
               </Button>
             )}
           </div>
-        </fieldset>
+        </FieldGroup>
       </form>
       {editing && active && <AvatarEditor name={definition.name} role={definition.role ?? ""} initialVersion={p.initial?.avatarVersion} />}
       {editing && active && p.initial && (
@@ -852,8 +831,9 @@ export function DefinitionForm(p: DefinitionFormProps) {
             (active &&
               runtime?.running === false &&
               p.initial?.status === "valid")) && (
-            <button
+            <Button
               type="button"
+              variant="outline"
               disabled={busy || uncertain || !hash || !active}
               onClick={() =>
                 void run(async () => {
@@ -873,7 +853,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
               {runtime?.pending
                 ? "Apply connection changes (restarts agent)"
                 : "Start agent (applies saved definition)"}
-            </button>
+            </Button>
           )}
           {active && <ConversationControl name={definition.name} />}
           <h2>Agent lifecycle</h2>
@@ -926,14 +906,13 @@ export function DefinitionForm(p: DefinitionFormProps) {
                   : "This stops the agent and preserves its workflow data."}
               </DialogDescription>
               {deleteConfirm && (
-                <label>
-                  Type {definition.name} to confirm
-                  <input
+                <Field label={<>Type {definition.name} to confirm</>}>
+                  <Input
                     value={confirmationName}
                     onChange={(e) => setConfirmationName(e.target.value)}
                     autoComplete="off"
                   />
-                </label>
+                </Field>
               )}
               <div className="lares-actions">
                 <Button

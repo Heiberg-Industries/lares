@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AgentAvatar, PageHeader } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
+import { Textarea } from "@lares/ui/primitives/textarea";
 import * as Menu from "@lares/ui/primitives/dropdown-menu";
 type ChatIdentity = {
   avatarVersion?: string;
@@ -395,25 +396,18 @@ function ChatSession({
         </Button>
       )}
       {answerError ? (
-        <p
-          role="alert"
-          className="mono"
-          style={{ fontSize: 12, color: "var(--bad)", marginBottom: 8 }}
-        >
+        <p role="alert" className="mono lares-chat-note lares-status-error">
           {answerError}
         </p>
       ) : null}
 
       {composer.say ? (
-        <p
-          className="mono"
-          style={{ fontSize: 12, color: "var(--mist)", marginBottom: 8 }}
-        >
+        <p className="mono lares-chat-note lares-status-muted">
           {composer.say}
         </p>
       ) : null}
       {preparingFirstSession ? (
-        <p role="status" className="mono" style={{ fontSize: 12, color: "var(--mist)", marginBottom: 8 }}>
+        <p role="status" className="mono lares-chat-note lares-status-muted">
           Preparing your conversation. Your draft is saved.
         </p>
       ) : null}
@@ -462,7 +456,7 @@ function ChatSession({
         }}
         className="lares-composer"
       >
-        <textarea
+        <Textarea
           value={text}
           onChange={(event) => setText(event.currentTarget.value)}
           disabled={composer.disabled}

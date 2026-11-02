@@ -264,13 +264,17 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
   if (gatewayAuthority && (config.gatewayBudget?.serviceKeyFile !== gatewayAuthority.serviceKeyFile ||
       config.budgetNative?.reviewedPolicyFile !== gatewayAuthority.policyFile))
     throw new Error("Prepared gateway authority does not match keeper.json; nothing was written");
+  // Budget setup has bound the keeper to its service key and policy. A re-render (a re-run of the
+  // installer, `lares update`) keeps those lines, or the keeper would lose both mounts.
+  const keptAuthority = gatewayAuthority ?? (config.gatewayBudget && config.budgetNative?.reviewedPolicyFile
+    ? { serviceKeyFile: config.gatewayBudget.serviceKeyFile, policyFile: config.budgetNative.reviewedPolicyFile } : undefined);
 
   // Compute both complete outputs before the first byte is written.
   const env = renderKeeperComposeEnvironment(manifest, {
     root: at("root"), keeperConfig: at("keeperConfig"), socketDir: at("socketDir"),
     hostSocketDir: at("hostSocketDir"), egressDir: at("egressDir"), secretsDir: at("secretsDir"),
     privateStateHostDir: join(at("maintenancePrefix"), "var/lib/lares"),
-    proxyAddress: at("proxyAddress"), network: at("network"), gatewayAuthority,
+    proxyAddress: at("proxyAddress"), network: at("network"), gatewayAuthority: keptAuthority,
     maintenanceAdmission,
   }, config);
 
