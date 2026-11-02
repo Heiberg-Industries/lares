@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { PageHeader, Page } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
 import { memberAuditAddress, requireConsolePage, members } from "../../lib/auth";
 import { InviteMember } from "../../components/InviteMember";
 import { removeMember, revokeInvitation, signOutMember } from "../actions/members";
@@ -28,14 +29,16 @@ export default async function MembersPage() {
     <section className="lares-surface"><h2 className="lares-section-title">Member records</h2>
       <ul className="lares-data-list">{directory.map(({ member, displayName, email }) => <li key={member.id}>
         <strong>{displayName}</strong> · {email} · {member.role} · {member.status}
-        {member.status === "active" && <form action={signOutMember}><input type="hidden" name="memberId" value={member.id} /><button type="submit">Sign out all sessions</button></form>}
-        {member.status !== "removed" && member.id !== actor.id && <form action={removeMember}><input type="hidden" name="memberId" value={member.id} /><button type="submit">Remove member access</button></form>}
+        <div className="lares-actions lares-row-actions">
+          {member.status === "active" && <form action={signOutMember}><input type="hidden" name="memberId" value={member.id} /><Button type="submit" variant="outline">Sign out all sessions</Button></form>}
+          {member.status !== "removed" && member.id !== actor.id && <form action={removeMember}><input type="hidden" name="memberId" value={member.id} /><Button type="submit" variant="destructive">Remove member access</Button></form>}
+        </div>
       </li>)}</ul>
     </section>
     <section className="lares-surface"><h2 className="lares-section-title">Open invitations</h2>
       {invitations.length ? <ul className="lares-data-list">{invitations.map(invite => <li key={invite.id}>
         {directory.find(entry => entry.member.id === invite.memberId)?.displayName} · Expires {invite.expiresAt}
-        <form action={revokeInvitation}><input type="hidden" name="id" value={invite.id} /><button type="submit">Revoke invitation</button></form>
+        <form action={revokeInvitation} className="lares-row-actions"><input type="hidden" name="id" value={invite.id} /><Button type="submit" variant="outline">Revoke invitation</Button></form>
       </li>)}</ul> : <p>No open invitations.</p>}
     </section>
   </Page>;

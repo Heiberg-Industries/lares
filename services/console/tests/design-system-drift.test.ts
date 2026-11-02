@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { countRaw, cssWidthLimits, read, routeRoots, sourceFiles, type RawCounts } from "./helpers/design-system-scan";
-import { CSS_WIDTH_LIMITS, PAGE_CLASS_LEFT, RAW_LEFT } from "./design-system-baseline";
+import { CSS_WIDTH_LIMITS, RAW_LEFT } from "./design-system-baseline";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tsx = [...sourceFiles(root, "app", ".tsx"), ...sourceFiles(root, "components", ".tsx")];
@@ -23,7 +23,7 @@ describe("every page sits on the one grid", () => {
 
   it("the page class is only ever written by Page", () => {
     const wrong = tsx.filter((file) => /["'` ]lares-page["'` ]/.test(read(root, file)));
-    expect(wrong, "Use <Page> instead of the lares-page class.").toEqual([...PAGE_CLASS_LEFT]);
+    expect(wrong, "Use <Page> instead of the lares-page class.").toEqual([]);
   });
 
   it("sections set no page-sized width of their own", () => {

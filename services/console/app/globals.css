@@ -352,6 +352,8 @@ th {
 .lares-deadline-submit { align-self: end; }
 .lares-inset-disclosure { margin-top: var(--space-4); }
 .lares-inset-disclosure > summary { cursor: pointer; font: var(--text-label); }
+.lares-copy-value { overflow-wrap: anywhere; user-select: all; }
+.lares-row-actions { margin-top: var(--space-2); }
 .lares-form-success { color: var(--lares-status-success); font: var(--text-body-sm); }
 .lares-form-error { color: var(--destructive); font: var(--text-body-sm); }
 

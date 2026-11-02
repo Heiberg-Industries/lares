@@ -1,4 +1,9 @@
 "use client";
+import { Choice, Field } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
+import { Checkbox } from "@lares/ui/primitives/checkbox";
+import { Input } from "@lares/ui/primitives/input";
+import { Select } from "@lares/ui/primitives/select";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { acceptOutsideDescriptorReview,discoverOutsideTools,inspectOutsideDiscovery,listOutsideDiscoveryTargets,previewOutsideDescriptorReview,
   previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate,applyOutsideCredentialCandidate,
@@ -272,17 +277,17 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
   }
 
   return <section className="lares-stack" aria-label="Private outside-tool discovery">
-    <h2>Discover available tools</h2>
+    <h2 className="lares-section-title">Discover available tools</h2>
     <p>Review a saved connection and, if you choose, share its bearer credential for one bounded description lookup. This does not enable or run tools.</p>
-    {targets.length>0&&<label className="lares-field-label">Agent connection
-      <select value={selected} disabled={busy||unresolved} onChange={event=>{pendingApplyVersion.current++;credentialMutationVersion.current++;if(!applyUncertain)setStaged(undefined);selectionRef.current=event.target.value;reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
+    {targets.length>0&&<Field label="Agent connection">
+      <Select value={selected} disabled={busy||unresolved} onChange={event=>{pendingApplyVersion.current++;credentialMutationVersion.current++;if(!applyUncertain)setStaged(undefined);selectionRef.current=event.target.value;reviewPreviewVersion.current++;activeRecoveryRef.current=undefined;
         setSelected(event.target.value);setPreview(undefined);setConsent(false);setCredential("");setInspected(false);setDocument(undefined);
         setDescriptorReview(undefined);setPublication(undefined);setAcceptance(undefined);setStaged(undefined);
         const target=targets.find(item=>`${item.agentName}\0${item.connectionName}`===event.target.value);
         if(target?.credentialStatus.applyPending)void restorePendingApply(target,event.target.value);}}>
         {targets.map(target=><option key={`${target.agentName}:${target.connectionName}`} value={`${target.agentName}\0${target.connectionName}`}>{target.agentName} · {target.connectionName}</option>)}
-      </select>
-    </label>}
+      </Select>
+    </Field>}
     {selectedTarget&&<p role="status">{removalUncertain?"The last credential-removal result is uncertain. Do not repeat it until the exact current custody state is confirmed.":applyUncertain?"The last Apply result is uncertain. No candidate is ready to Apply until the exact current custody state and evidence are recovered.":selectedTarget.credentialStatus.reviewPending&&selectedTarget.credentialStatus.applyPending
       ?selectedTarget.credentialStatus.state==='active-pending'
         ?"A completed discovery is pending review and a staged credential revision is pending Apply. The active saved revision remains in place."
@@ -303,29 +308,29 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
           ?"An active saved credential revision exists. This status does not confirm that the outside server is reachable."
           :"Credential status is unavailable under your current account and connection access."}</p>}
     <div className="lares-inline-form">
-      <button type="button" disabled={busy||unresolved} onClick={()=>void loadTargets()}>Refresh connections</button>
-      <button type="button" disabled={busy||unresolved||applyUncertain||!selectedTarget} onClick={()=>void review()}>Review connection</button>
+      <Button type="button" variant="outline" disabled={busy||unresolved} onClick={()=>void loadTargets()}>Refresh connections</Button>
+      <Button type="button" variant="outline" disabled={busy||unresolved||applyUncertain||!selectedTarget} onClick={()=>void review()}>Review connection</Button>
     </div>
     {selectedTarget?.credentialStatus.hasCredentialMaterial&&<div className="lares-surface lares-stack">
       <strong>Credential custodian controls</strong>
       <p>This action immediately stops Lares use, invalidates pending work and approval revisions, removes held credential material from live Keeper rows, and keeps non-secret audit receipts. It does not revoke the key at its provider; backups may retain encrypted database snapshots.</p>
-      <button type="button" disabled={busy||unresolved||applyUncertain||!!removalUncertain||!selectedTarget.credentialStatus.accountId||
-        selectedTarget.credentialStatus.generation===null} onClick={()=>void removeHeldCredential()}>Stop use and remove held credential</button>
+      <Button type="button" variant="destructive" disabled={busy||unresolved||applyUncertain||!!removalUncertain||!selectedTarget.credentialStatus.accountId||
+        selectedTarget.credentialStatus.generation===null} onClick={()=>void removeHeldCredential()}>Stop use and remove held credential</Button>
     </div>}
     {removalUncertain&&<div className="lares-surface lares-stack" role="status">
       <p>Removal is unconfirmed for {removalUncertain.agentName} · {removalUncertain.connectionName} at generation {removalUncertain.generation}. Do not repeat the request; another account’s status cannot resolve it.</p>
-      <button type="button" disabled={busy} onClick={()=>void loadTargets()}>Refresh uncertain removal status</button>
+      <Button type="button" variant="outline" disabled={busy} onClick={()=>void loadTargets()}>Refresh uncertain removal status</Button>
     </div>}
     {preview&&<div className="lares-surface lares-stack">
       <strong>Exact destination</strong><code>{preview.endpoint}</code>
       <p>Purpose: read the tool descriptions once, using the current reviewed network route.</p>
-      <label className="lares-field-label">Bearer credential
-        <input type="password" autoComplete="off" value={credential} disabled={busy||unresolved||inspected} onChange={event=>setCredential(event.target.value)} />
-      </label>
-      <label><input type="checkbox" checked={consent} disabled={busy||unresolved||inspected} onChange={event=>enableConsent(event.target.checked)} /> I consent to this one discovery request for the destination and purpose shown above.</label>
-      <button type="button" disabled={busy||unresolved||inspected||!consent||credential.length===0} onClick={()=>void consentAndDiscover()}>
+      <Field label="Bearer credential">
+        <Input type="password" autoComplete="off" value={credential} disabled={busy||unresolved||inspected} onChange={event=>setCredential(event.target.value)} />
+      </Field>
+      <Choice><Checkbox checked={consent} disabled={busy||unresolved||inspected} onChange={event=>enableConsent(event.target.checked)} /> I consent to this one discovery request for the destination and purpose shown above.</Choice>
+      <Button type="button" disabled={busy||unresolved||inspected||!consent||credential.length===0} onClick={()=>void consentAndDiscover()}>
         Send one discovery request
-      </button>
+      </Button>
       <p>The credential is not saved in browser storage. If the result is uncertain, this page checks the saved request and never sends it again.</p>
     </div>}
     {busy&&<p role="status">Working…</p>}{message&&<p role="status">{message}</p>}{error&&<p role="alert">{error}</p>}
@@ -335,7 +340,7 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       {document.tools.map(tool=><div className="lares-surface lares-stack" key={tool.name}><strong>{tool.name}</strong>{tool.description&&<span>{tool.description}</span>}</div>)}
     </div>}
     {descriptorReview&&<div className="lares-surface lares-stack" aria-label="Exact tool description review">
-      <h3>Exact descriptions covered by this review</h3>
+      <h3 className="lares-section-title">Exact descriptions covered by this review</h3>
       <p>Connection: {descriptorReview.descriptor.connectionName} · Scope: {descriptorReview.descriptor.scope}</p>
       <p>Allowed tools: {descriptorReview.descriptor.allow.length?descriptorReview.descriptor.allow.join(", "):"none"}</p>
       <p>Read tools: {descriptorReview.descriptor.read.length?descriptorReview.descriptor.read.join(", "):"none"}</p>
@@ -343,15 +348,15 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
         <strong>{tool.name}</strong>{tool.description&&<span>{tool.description}</span>}
         <pre>{JSON.stringify(tool.inputSchema,null,2)}</pre>
       </div>)}
-      {!publication&&<button type="button" disabled={busy} onClick={()=>void publishReviewedDescriptions()}>Record these exact descriptions for acceptance</button>}
-      {publication&&!acceptance&&<button type="button" disabled={busy} onClick={()=>void acceptReviewedDescriptions()}>Accept these exact descriptions</button>}
-      {acceptance&&!staged&&<button type="button" disabled={busy} onClick={()=>void stageReviewedCandidate()}>Stage credential candidate</button>}
+      {!publication&&<Button type="button" disabled={busy} onClick={()=>void publishReviewedDescriptions()}>Record these exact descriptions for acceptance</Button>}
+      {publication&&!acceptance&&<Button type="button" disabled={busy} onClick={()=>void acceptReviewedDescriptions()}>Accept these exact descriptions</Button>}
+      {acceptance&&!staged&&<Button type="button" disabled={busy} onClick={()=>void stageReviewedCandidate()}>Stage credential candidate</Button>}
     </div>}
     {staged&&!applyUncertain&&<div className="lares-surface lares-stack" aria-label="Pending credential revision">
       <p role="status">Credential revision {staged.candidateRevision} is pending Apply and is not active.</p>
-      <button type="button" disabled={busy||applyUncertain||selectedTarget?.agentName!==staged.agentName||selectedTarget.connectionName!==staged.connectionName||
+      <Button type="button" disabled={busy||applyUncertain||selectedTarget?.agentName!==staged.agentName||selectedTarget.connectionName!==staged.connectionName||
         !selectedTarget.credentialStatus.applyPending||selectedTarget.credentialStatus.candidateRevision!==staged.candidateRevision}
-        onClick={()=>void applyCandidate()}>{busy?"Applying credential…":"Apply credential revision"}</button>
+        onClick={()=>void applyCandidate()}>{busy?"Applying credential…":"Apply credential revision"}</Button>
       <p>Apply activates this exact credential revision in Keeper custody. It does not apply agent declarations or confirm runtime availability.</p>
     </div>}
   </section>;
