@@ -4,13 +4,70 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { gatewayServiceKeyMetadataIsSafe, parseConfirmedBootstrapSelection, parseInstallationSettings } from "../lib/gateway-authority.js";
+import { gatewayServiceKeyMetadataIsSafe, parseConfirmedBootstrapSelection, parseInstallationSettings, preparedGatewayBinding } from "../lib/gateway-authority.js";
 import { assertExistingRenderedAuthorityText, GATEWAY_AUTHORITY_STAGE_FILES, parseStageEnvironment, stageGatewayAuthority } from "../bin/render-gateway-authority-stage.js";
 import { gatewayAdmissionProfile } from "../lib/gateway-config.js";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
 import { renderKeeperComposeEnvironment } from "../bin/render-keeper-config.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+describe("what the installer writes into keeper.env", () => {
+  it("accepts the double-quoted lines install.sh appends, unquoted", () => {
+    expect(parseStageEnvironment([
+      "LARES_ROOT=/srv/lares",
+      'LARES_VAULT_WORKING_ROOT="/srv/vault"',
+      'LARES_VAULT_BARE_ROOT="/var/lib/lares-vault-git"',
+      'COMPOSE_FILE="/opt/lares/compose.lares-keeper.yaml:/opt/lares/compose.lares-keeper-vault.yaml"',
+      "",
+    ].join("\n"))).toEqual({
+      LARES_ROOT: "/srv/lares",
+      LARES_VAULT_WORKING_ROOT: "/srv/vault",
+      LARES_VAULT_BARE_ROOT: "/var/lib/lares-vault-git",
+      COMPOSE_FILE: "/opt/lares/compose.lares-keeper.yaml:/opt/lares/compose.lares-keeper-vault.yaml",
+    });
+  });
+
+  it("still refuses quoting anywhere else, and anything unsafe inside those lines", () => {
+    for (const line of ['LARES_ROOT="/srv/lares"', 'COMPOSE_FILE="/a b"', 'COMPOSE_FILE="$HOME"', 'COMPOSE_FILE=""', 'COMPOSE_FILE="/a', "COMPOSE_FILE='/a'"]) {
+      expect(() => parseStageEnvironment(`${line}\n`), line).toThrow(/noncanonical/);
+    }
+  });
+});
+
+describe("keeping the gateway binding on a re-render", () => {
+  const withKeeper = (contents: string | null, check: (path: string) => void) => {
+    const directory = mkdtempSync(join(tmpdir(), "lares-binding-"));
+    try {
+      const path = join(directory, "keeper.json");
+      if (contents !== null) writeFileSync(path, contents);
+      check(path);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  };
+  const serviceKeyFile = "/etc/lares/secrets/gateway-budget-service-key", policyFile = "/etc/lares/native-policy.json";
+  const readPolicy = (path: string) => { expect(path).toBe(policyFile); return { endpointHash: "e".repeat(64) }; };
+
+  it("finds nothing before budget setup has run", () => {
+    withKeeper(null, path => expect(preparedGatewayBinding(path, "example.test", readPolicy)).toBeUndefined());
+    withKeeper('{"budgetNative":{"directory":"/var/lib/lares/budget-native"}}', path =>
+      expect(preparedGatewayBinding(path, "example.test", readPolicy)).toBeUndefined());
+  });
+
+  it("returns the existing binding once budget setup has run", () => {
+    withKeeper(JSON.stringify({ gatewayBudget: { serviceKeyFile }, budgetNative: { directory: "/var/lib/lares/budget-native", reviewedPolicyFile: policyFile } }), path =>
+      expect(preparedGatewayBinding(path, "example.test", readPolicy)).toEqual({
+        origin: "https://example.test", endpointHash: "e".repeat(64), serviceKeyFile, policyFile,
+      }));
+  });
+
+  it("refuses rather than dropping a binding it cannot read", () => {
+    withKeeper("not json", path => expect(() => preparedGatewayBinding(path, "example.test", readPolicy)).toThrow(/not valid JSON/));
+    withKeeper(JSON.stringify({ gatewayBudget: { serviceKeyFile } }), path =>
+      expect(() => preparedGatewayBinding(path, "example.test", readPolicy)).toThrow(/reviewed policy/));
+    withKeeper(JSON.stringify({ gatewayBudget: { serviceKeyFile }, budgetNative: { directory: "/var/lib/lares/budget-native", reviewedPolicyFile: policyFile } }), path =>
+      expect(() => preparedGatewayBinding(path, "example.test", () => { throw new Error("Native budget policy is unavailable or invalid"); })).toThrow(/unavailable or invalid/));
+  });
+});
 
 describe("staged gateway authority source parsing", () => {
   it("matches the root bootstrap writer digest and decodes only Compose dollar escapes", () => {

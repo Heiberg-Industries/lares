@@ -367,7 +367,9 @@ describe('optional prepared financial custody',()=>{
     writeFileSync(live,JSON.stringify(first));
     expect(renderConfigCommand(args,()=>{})).toBe(0);
     expect(JSON.parse(readFileSync(out,'utf8'))).toMatchObject({budgetFinancial:binding,budgetNative:native,gatewayBudget:gateway});
-    expect(readFileSync(env,'utf8')).not.toContain(gateway.serviceKeyFile);
+    // Budget setup bound the keeper to these files. A re-render keeps the four lines.
+    expect(readFileSync(env,'utf8')).toContain(`LARES_GATEWAY_BUDGET_SERVICE_KEY_FILE=${gateway.serviceKeyFile}`);
+    expect(readFileSync(env,'utf8')).toContain(`LARES_NATIVE_POLICY_TARGET=${native.reviewedPolicyFile}`);
     const beforeOut=readFileSync(out),beforeEnv=readFileSync(env);
     const invalids=[
       {...first,budgetNative:null},

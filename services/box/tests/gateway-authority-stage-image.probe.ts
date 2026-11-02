@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gatewayCanonical, gatewayHash } from "@lares/agent-kit/gateway-admission-protocol";
@@ -148,13 +148,29 @@ const run = () => {
   writeProtected(activePaths.profile, profileText, 0o600);
   writeProtected(activePaths.stack, stack, 0o640);
   writeProtected(activePaths.keeperCompose, readFileSync(join(repo, "services", "box", "compose.lares-keeper.yaml")), 0o640);
-  writeProtected(activePaths.keeperEnv, activeKeeperEnv, 0o640);
+  // Exactly what a real install leaves: the installer appends these quoted lines, and it gives
+  // the secrets directory the runtime group.
+  writeProtected(activePaths.keeperEnv, `${activeKeeperEnv}LARES_VAULT_WORKING_ROOT="${join(prefix, "srv", "vault")}"\nLARES_VAULT_BARE_ROOT="${join(prefix, "var", "lib", "lares-vault-git")}"\nCOMPOSE_FILE="${activePaths.keeperCompose}"\n`, 0o640);
+  chownSync(secrets, 0, 10001);
+  chmodSync(secrets, 0o750);
 
   const beforeActive = activeSnapshot();
   const renderedStackPath = join(root, "rendered-stack.yaml");
   const renderedStack = runStackCli(renderedStackPath);
   assert.equal(renderedStack.status, 0, "actual render-stack CLI must accept the prepared normal custody");
   const renderedStackText = readFileSync(renderedStackPath, "utf8");
+  // After budget setup, a re-render (installer re-run, lares update) keeps the gateway binding.
+  // The CLI looks for keeper.json beside its gateway config, which is the root folder here.
+  assert(!renderedStackText.includes("LARES_GATEWAY_ADMISSION_URL"), "no binding before keeper.json names one");
+  writeProtected(join(root, "keeper.json"), readFileSync(keeperConfig), 0o600);
+  const keptStackPath = join(root, "kept-stack.yaml");
+  const keptStack = runStackCli(keptStackPath);
+  assert.equal(keptStack.status, 0, "render-stack must keep an existing gateway binding");
+  const keptStackText = readFileSync(keptStackPath, "utf8");
+  assert(keptStackText.includes(`LARES_GATEWAY_ENDPOINT_HASH: ${endpointHash}`), "a re-render keeps the gateway binding");
+  assert(keptStackText.includes("/run/secrets/gateway-budget-service-key"), "a re-render keeps the service-key mount");
+  rmSync(join(root, "keeper.json"));
+  rmSync(keptStackPath);
   assert(renderedStackText.includes(databaseAuthDir));
   assert(renderedStackText.includes("/run/lares-auth"));
   assert(renderedStackText.includes("hba_file=/run/lares-auth/pg_hba.conf"));

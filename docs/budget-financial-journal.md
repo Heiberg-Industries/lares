@@ -41,14 +41,12 @@ rows. Do not run the fresh ceremony after restoration, host loss or an interrupt
 earlier ceremony. Those cases require owner-directed recovery, which is not
 implemented here. There is no force, reset or automatic adoption command.
 
-Before configuring financial custody, run as root in the keeper container:
+`sudo lares budget setup` runs this ceremony on an installed server, with the keeper stopped. It
+runs the following command in a throwaway container of the keeper image:
 
 ```sh
-docker compose --env-file /etc/lares/keeper.env \
-  -f /opt/lares/compose.lares-keeper.yaml exec -T lares-keeper \
-  /app/services/keeper/node_modules/.bin/tsx \
-  /app/services/keeper/bin/budget-financial.ts \
-  prepare-fresh --confirm-fresh-installation
+budget-financial.ts prepare-fresh --confirm-fresh-installation \
+  --operator-password-file /etc/lares/operator/database-password
 ```
 
 The command takes one database client and exclusive transaction locks on all six

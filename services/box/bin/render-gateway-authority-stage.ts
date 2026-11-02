@@ -116,6 +116,9 @@ function readExistingRenderedOutput(path: string): string {
   }
 }
 
+/** The only lines install.sh appends after the renderer, always in double quotes. */
+const INSTALLER_QUOTED_NAMES = new Set(["COMPOSE_FILE", "LARES_VAULT_WORKING_ROOT", "LARES_VAULT_BARE_ROOT"]);
+
 export function parseStageEnvironment(text: string): Record<string, string> {
   const values: Record<string, string> = {};
   for (const line of text.split(/\r?\n/)) {
@@ -124,7 +127,8 @@ export function parseStageEnvironment(text: string): Record<string, string> {
     if (separator < 1) throw new Error("existing Keeper environment is ambiguous");
     const name = line.slice(0, separator);
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || Object.hasOwn(values, name)) throw new Error("existing Keeper environment is ambiguous");
-    const value = line.slice(separator + 1);
+    const raw = line.slice(separator + 1);
+    const value = INSTALLER_QUOTED_NAMES.has(name) && raw.length > 2 && raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
     // The renderer writes plain, unquoted, whitespace-free assignments. Reject dotenv
     // quoting, comments, escapes and interpolation instead of trying to emulate its parser.
     if (!value || /[\s"'#$\\]/u.test(value)) throw new Error("existing Keeper environment is noncanonical");

@@ -1840,6 +1840,7 @@ run_finish() {
     say "infrastructure and Console are ready. No agent is running, and no conversation has been tested."
     say "Sign in to Console to confirm this host and finish the explicit model budget setup before creating an agent:"
     say "https://$domain/sign-in"
+    say "Then run sudo lares budget setup on this server. It asks for your monthly spending limits and starts the gateway."
     say 'Backups are not switched on yet. Do not rely on this installation for data you need to keep: run lares backups to switch them on and prove them once.'
     say "No chat app is connected yet; after the first agent is running, web chat is the first door and Slack or Telegram can be connected later."
   fi

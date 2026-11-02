@@ -1107,6 +1107,19 @@ it('refuses configured native custody that is missing before stopping services o
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
   const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('native custody');expect(changes()).toEqual([]);
 });
+it('accepts native custody with the reviewed policy that budget setup writes, and refuses when that file is missing',()=>{
+  const policy={directory:'/var/lib/lares/budget-native',reviewedPolicyFile:'/etc/lares/native-policy.json'};
+  write('etc/lares/keeper.json',keeperConfig({budgetFinancial:financialBinding(),budgetNative:policy}));
+  mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});mkdirSync(join(prefix,'var/lib/lares/budget-native'),{recursive:true});
+  const missing=run([...base(),'--dry-run']);expect(missing.code).toBe(78);expect(missing.all).toContain('native custody');expect(changes()).toEqual([]);
+  write('etc/lares/native-policy.json','{}');
+  const present=run([...base(),'--dry-run']);expect(present.all).not.toContain('native custody is missing');expect(present.all).toContain('prepared native custody is recorded');
+});
+it('refuses a native policy anywhere but its fixed place',()=>{
+  write('etc/lares/keeper.json',keeperConfig({budgetFinancial:financialBinding(),budgetNative:{directory:'/var/lib/lares/budget-native',reviewedPolicyFile:'/tmp/native-policy.json'}}));
+  mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});mkdirSync(join(prefix,'var/lib/lares/budget-native'),{recursive:true});
+  const result=run([...base(),'--dry-run']);expect(result.code).toBe(78);expect(result.all).toContain('native custody');expect(changes()).toEqual([]);
+});
 it('refuses an unbound native custody directory before restoring',()=>{
   mkdirSync(join(prefix,'var/lib/lares/budget-native'),{recursive:true});
   const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('native custody');expect(changes()).toEqual([]);
