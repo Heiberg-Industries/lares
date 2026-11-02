@@ -282,7 +282,7 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState, role: E
     return (
       <div key={key}>
         <p className="whitespace-pre-wrap break-words">{question.prompt}</p>
-        {question.choices.length > 0 ? <p className="mono break-words">You can reply: {question.choices.join(", ")}</p> : null}
+        {question.choices.length > 0 ? <p className="mono lares-tool-line break-words">You can reply: {question.choices.join(", ")}</p> : null}
       </div>
     );
   }

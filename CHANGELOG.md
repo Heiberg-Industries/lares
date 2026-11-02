@@ -4,11 +4,9 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
-- Every console page now sits on one grid: the same left edge and title position everywhere, wide for tables and lists, narrow for forms, settings and chat. The agent page's Agent access section no longer runs wider than the rest of the page, and now lives on that page's Access tab. Dropdowns, text boxes, checkboxes and field groups are now design-system parts, and every page uses them. A test fails when a page leaves the grid or adds a hand-built control.
-
 - Approval cards other than personal mail, such as creating a track, can now be answered in private chat. Who may answer has not changed: only the member who started the conversation, for that exact card, and edit rights are checked again when the change is written. Tracks in a Twenty CRM still cannot be approved from private chat. A question from an agent now shows as its text instead of "is running…".
 
-- Every console page now sits on one grid: the same left edge and title position everywhere, wide for tables and lists, narrow for forms, settings and chat. The agent page's Agent access section no longer runs wider than the rest of the page, and now lives on that page's Access tab. Dropdowns, text boxes, checkboxes and field groups are now design-system parts, and pages are being moved onto them. A test fails when a page leaves the grid or adds a hand-built control.
+- Every console page now sits on one grid: the same left edge and title position everywhere, wide for tables and lists, narrow for forms, settings and chat. The agent page's Agent access section no longer runs wider than the rest of the page, and now lives on that page's Access tab. Dropdowns, text boxes, checkboxes and field groups are now design-system parts, and every page uses them. A test fails when a page leaves the grid or adds a hand-built control.
 
 - Restore cleanup now keeps its evidence when a temporary client identity or removal cannot be verified. In that case, stop and have an operator review the server before taking another recovery action.
 
