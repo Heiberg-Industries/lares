@@ -100,8 +100,14 @@ function serve(fixture) {
     const blocks = Array.isArray(last?.content) ? last.content : [];
     const toolNames = (body.tools ?? []).map((tool) => tool.name);
     const everything = messages.map(textOf).join("\n");
-    if (blocks.some((block) => block.type === "tool_result")) return { text: settings.toolReply };
+    if (blocks.some((block) => block.type === "tool_result")) {
+      const called = messages.flatMap((message) => Array.isArray(message.content) ? message.content.filter((block) => block.type === "tool_use") : []).at(-1);
+      return { text: called?.name === settings.approvalTool ? settings.approvalReply : settings.toolReply };
+    }
     const asked = textOf(last);
+    if (asked.includes(settings.approvalPrompt)) {
+      return toolNames.includes(settings.approvalTool) ? { tool: settings.approvalTool, input: settings.approvalInput } : { text: "PROOF_NO_USABLE_TOOL" };
+    }
     if (asked.includes(settings.toolPrompt)) {
       const tool = settings.toolPreference.find((name) => toolNames.includes(name));
       if (tool) return { tool };
@@ -127,7 +133,7 @@ function serve(fixture) {
     const id = `msg_01${randomBytes(11).toString("hex")}`;
     const usage = { input_tokens: 120, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 18, service_tier: "standard" };
     const headers = { "request-id": `req_01${randomBytes(11).toString("hex")}`, "anthropic-organization-id": "00000000-0000-4000-8000-000000000000" };
-    const toolBlock = answer.tool ? { type: "tool_use", id: `toolu_01${randomBytes(11).toString("hex")}`, name: answer.tool, input: {}, caller: { type: "direct" } } : null;
+    const toolBlock = answer.tool ? { type: "tool_use", id: `toolu_01${randomBytes(11).toString("hex")}`, name: answer.tool, input: answer.input ?? {}, caller: { type: "direct" } } : null;
     const stopReason = toolBlock ? "tool_use" : "end_turn";
     if (!parsed.stream) {
       const raw = Buffer.from(JSON.stringify({ id, type: "message", role: "assistant", model: parsed.model, content: toolBlock ? [toolBlock] : [{ type: "text", text: answer.text, citations: null }],

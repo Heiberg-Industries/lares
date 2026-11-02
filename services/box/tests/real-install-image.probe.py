@@ -4,9 +4,10 @@
 Earlier proofs seed the database and start pieces by hand, so bugs on the real installed path never
 reached them. This one runs get-lares.sh and install.sh from an ordinary folder, then signs in,
 runs `lares owner-bootstrap`, `lares budget setup`, creates and adopts an agent on the console's
-real pages, sets the member limit there, runs `lares agent start`, holds a chat where a tool runs
-and the conversation carries on, and finishes with `lares backups` and `lares doctor`. Nothing here
-writes to the database or edits an installation file the installer owns.
+real pages, sets the member limit there, runs `lares agent start`, holds a chat where a tool runs,
+an approval card is answered and the conversation carries on, and finishes with `lares backups`
+and `lares doctor`. Nothing here writes to the database or edits an installation file the installer
+owns.
 
 WHAT IS NOT REAL, AND WHY. A CI server has no public address and cannot sign in to Google or spend
 on a model. So, outside the installation:
@@ -54,6 +55,12 @@ ROUTE_ADDRESS = "172.30.0.241"
 FAKE_HOSTS = ("api.anthropic.com", "accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com", f"uptime.{DOMAIN}")
 TOOL_PROMPT = "PROOF_USE_A_TOOL please look at the tracks."
 FOLLOW_UP_PROMPT = "PROOF_CARRY_ON and what did you find?"
+APPROVAL_PROMPT = "PROOF_ASK_APPROVAL please make the track."
+APPROVAL_TOOL = "track_create"
+APPROVAL_TRACK = "proof-track"
+APPROVAL_INPUT = {"trackId": APPROVAL_TRACK, "name": "Proof track", "purpose": "Shows an approval answer reaches the tool.",
+                  "steps": ["First"], "closingSteps": ["Done"]}
+APPROVAL_REPLY = "PROOF_APPROVED_TOOL_RAN"
 TOOL_REPLY = "PROOF_TOOL_RESULT_RECEIVED"
 FOLLOW_UP_REPLY = "PROOF_CONVERSATION_KEPT"
 MEMBER_LIMIT = "15"
@@ -65,6 +72,8 @@ LIMITS = [
     "The certificate is issued by Caddy's own authority, so getting a public certificate is not covered.",
     "The sync-jobs image is named but never started on a fresh install, so it is not built or pulled here.",
     "Backups go to the same machine, and the uptime address is a stand-in: a real restore onto a new server is not covered.",
+    "The approval step answers one card as the member who started the conversation; refusing other people's answers is covered by the private chat proof, not here.",
+    "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
     "A real agent answer is not covered: the stand-in decides what the model says.",
 ]
@@ -240,6 +249,7 @@ def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixtur
         "providerKey": key_value, "uptimeHost": f"uptime.{DOMAIN}",
         "toolPrompt": "PROOF_USE_A_TOOL", "followUpPrompt": "PROOF_CARRY_ON", "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
         "toolPreference": ["tracks_list", "vault_list"],
+        "approvalPrompt": "PROOF_ASK_APPROVAL", "approvalTool": APPROVAL_TOOL, "approvalInput": APPROVAL_INPUT, "approvalReply": APPROVAL_REPLY,
     }))
     run("docker", "run", "-d", "--name", "proof-fake", "--restart", "unless-stopped", "--user", "0:0", "--entrypoint", "node",
         "-v", f"{fixture}:/fixture", fixture_image, "/fixture/fake-internet.mjs", "serve", "/fixture")
@@ -510,7 +520,7 @@ def main(argv: list[str]) -> int:
         settings_file = work / "browser.json"
         settings_file.write_text(json.dumps({
             "domain": DOMAIN, "agent": AGENT, "memberLimit": MEMBER_LIMIT, "toolPrompt": TOOL_PROMPT, "followUpPrompt": FOLLOW_UP_PROMPT,
-            "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY, "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
+            "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY, "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
             "screenshotDir": str(shots),
         }))
         browser("discover-owner", settings_file, tls)
@@ -544,6 +554,11 @@ def main(argv: list[str]) -> int:
         if not any({"type": "direct"} in call["returnedCallers"] for call in follow_up):
             raise RuntimeError("no later request carried the tool call back with its caller")
         passed("tool-call-came-back-to-the-provider-with-its-caller")
+        proof["modelCalls"] = [{"tool": call["answer"].get("tool"), "messages": call["messages"], "returnedCallers": call["returnedCallers"]} for call in models]
+        written = list(pathlib.Path("/srv/vault").rglob(f"tracks/{APPROVAL_TRACK}/track.md"))
+        if len(written) != 1:
+            raise RuntimeError(f"the approved tool did not write its one file: {written}")
+        passed("approval-answer-ran-the-tool-and-wrote-the-file")
         deadline = time.monotonic() + 60
         while True:
             attempts = read_only_query("SELECT state, count(*) FROM budget_attempts GROUP BY state ORDER BY state", release)

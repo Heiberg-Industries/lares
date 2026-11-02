@@ -50,7 +50,8 @@ const steps = {
     await page.getByRole("button", { name: "Save initial limit" }).click();
     await page.getByText("Initial monthly limit saved.").waitFor({ timeout: 60_000 });
   },
-  // One message that makes the model call a tool, then one more in the same conversation.
+  // A tool that just runs, a tool that needs the owner's answer on its card, then one more message
+  // in the same conversation.
   async chat(page) {
     await page.goto(`${origin}/chat/${settings.agent}`);
     const send = async (text) => {
@@ -61,6 +62,10 @@ const steps = {
     await send(settings.toolPrompt);
     await page.locator(".lares-tool-line", { hasText: "completed" }).first().waitFor({ timeout: STEP_MS });
     await page.locator(".lares-message-agent", { hasText: settings.toolReply }).first().waitFor({ timeout: STEP_MS });
+    await send(settings.approvalPrompt);
+    await page.locator(".lares-actions button", { hasText: /approve/i }).first().click({ timeout: STEP_MS });
+    await page.getByText("You approved this, and it ran.").waitFor({ timeout: STEP_MS });
+    await page.locator(".lares-message-agent", { hasText: settings.approvalReply }).first().waitFor({ timeout: STEP_MS });
     await send(settings.followUpPrompt);
     await page.locator(".lares-message-agent", { hasText: settings.followUpReply }).first().waitFor({ timeout: STEP_MS });
     if (await page.getByText("This conversation is unavailable").count()) throw new Error("The conversation became unavailable");
