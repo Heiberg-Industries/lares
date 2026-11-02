@@ -304,15 +304,20 @@ async function proveTracksCards(app,sa,sb,vault){
  await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,session_id,asked_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()-interval '25 hours')`,[row.call_id,row.request_id,row.agent,row.tool,row.payload_hash,row.original_authority,row.acting_member_id,row.session_id]);
  assert.equal((await post(a,sa,stale,'approve')).ok,false,'An expired card was approved');await answer(a,sa,stale,'cancel');assert.equal(existsSync(file('stale-one')),false);
 
- // Edit rights are rechecked at write, even though the card was raised while they held.
- const revokedEdit=await create(app,a,'Before edit is withdrawn');await stream(app,a,revokedEdit);
- const noEdit=await card(a,revokedEdit,track('no-edit-one'));
+ console.log('chief-of-staff: Tracks card approve/cancel/replay/cold-restart, two members, changed content, expiry and no new reads PASS (real Keeper broker and Git Vault)');
+}
+/** Last, because changing an area's access retires every conversation that holds it as a source. */
+async function proveTrackEditWithdrawn(app,vault){
+ const trackId='no-edit-one',file=join(vault.path,`tracks/${trackId}/track.md`);
+ const session=await create(app,a,'Before edit is withdrawn');await stream(app,a,session);
+ await send(app,a,session,'TRACK '+JSON.stringify({trackId,name:'No edit',purpose:'Open work',steps:['Open','Done'],closingSteps:['Done']}));
+ const row=(await db.query("SELECT request_id,call_id FROM approval_asks WHERE session_id=$1 AND tool='track_create'",[session.id])).rows[0];assert.ok(row?.request_id);
  await vault.configure([{id:a,permissions:['use']},{id:b,permissions:['use','edit']}]);
- const refused=await post(a,revokedEdit,noEdit,'approve');
- if(refused.ok)await stream(app,a,revokedEdit);
- assert.equal(existsSync(file('no-edit-one')),false,'A member without edit changed a track');assert.equal((await ask(noEdit)).use_count,0);
+ const before=models(app).length,response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId:row.request_id,optionId:'approve'}]},session.cookie);
+ assert.equal(response.ok,false,'A card raised under edit rights was still answered after they were withdrawn');assert.equal(models(app).length,before);
+ assert.equal(existsSync(file),false);assert.equal((await db.query('SELECT use_count FROM approval_asks WHERE call_id=$1',[row.call_id])).rows[0].use_count,0);
  await vault.configure([{id:a,permissions:['use','edit']},{id:b,permissions:['use','edit']}]);
- console.log('chief-of-staff: Tracks card approve/cancel/replay/cold-restart, two members, changed content, expiry, edit recheck and no new reads PASS (real Keeper broker and Git Vault)');
+ console.log('chief-of-staff: withdrawn edit refuses the pending card before the runtime PASS (Keeper rechecks at write: its own suite)');
 }
 function assertGatewayScopes(app){
   gateway.assertHealthy();
@@ -450,6 +455,7 @@ try{
 
   if(gatewayLane)await proveGatewayInvocation(app);
   if(withBudget)await proveDurableBudget(app);
+  if(withTracks)await proveTrackEditWithdrawn(app,trackVault);
   const current=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:current.accessRevision,grants:[{principal:{kind:'member',id:b},permission:'use',expiresAt:null}]});await denyOld(app,a,sa);
   const revoked=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:revoked.accessRevision,grants:[a,b].map(id=>({principal:{kind:'member',id},permission:'use',expiresAt:null}))});await denyOld(app,a,sa);await denyOld(app,b,sb);
   const fresh=await create(app,a,'New empty private context');await stream(app,a,fresh);assert.ok(!JSON.stringify(models(app).at(-1)).includes(canaries.a));
