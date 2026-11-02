@@ -55,6 +55,10 @@ const steps = {
   async chat(page) {
     await page.goto(`${origin}/chat/${settings.agent}`);
     const send = async (text) => {
+      // Wait as a person would until the answer has finished. Sending during an answer is a
+      // different path, which this proof does not cover.
+      await page.waitForTimeout(2000);
+      await page.getByText("The agent is still answering").waitFor({ state: "hidden", timeout: STEP_MS });
       const box = page.getByPlaceholder(/^Message /);
       await box.fill(text, { timeout: 60_000 });
       await page.getByRole("button", { name: "Send message" }).click();
@@ -92,7 +96,11 @@ const page = await context.newPage();
 page.setDefaultTimeout(30_000);
 page.on("pageerror", (error) => console.log(`page error: ${error.message}`));
 page.on("requestfailed", (request) => console.log(`request failed: ${request.url().split("?")[0]} ${request.failure()?.errorText}`));
-page.on("response", (response) => { if (response.status() >= 300) console.log(`${response.status()} ${response.url().split("?")[0]}`); });
+page.on("response", async (response) => {
+  if (response.status() < 300) return;
+  console.log(`${response.status()} ${response.url().split("?")[0]}`);
+  if (response.status() >= 400) console.log(`  sent ${response.request().postData()?.slice(0, 300)}\n  answered ${(await response.text().catch(() => "")).slice(0, 300)}`);
+});
 let failed = null;
 try {
   await steps[step](page, context);
