@@ -1,9 +1,6 @@
 // What is left to move onto the design system. The drift test fails if a number rises, and if one
 // falls without being lowered here, so this list can only shrink. Add nothing to it.
 
-/** Files that still write the page class by hand. */
-export const PAGE_CLASS_LEFT: string[] = ["app/invite/page.tsx"];
-
 /** Width limits in the console's own stylesheets, as "file selector: value". */
 export const CSS_WIDTH_LIMITS: string[] = [
   "app/globals.css .lares-chat-selector select: 240px",
@@ -34,12 +31,9 @@ export const CSS_WIDTH_LIMITS: string[] = [
 export const RAW_LEFT: Record<string, Record<string, number>> = {
   "app/deadlines/page.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 0, style: 12, inlineMaxWidth: 0 },
   "app/integrations/page.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 0, style: 16, inlineMaxWidth: 0 },
-  "app/members/page.tsx": { button: 3, select: 0, textarea: 0, fieldset: 0, input: 0, style: 0, inlineMaxWidth: 0 },
-  "app/membership/page.tsx": { button: 4, select: 0, textarea: 0, fieldset: 0, input: 0, style: 0, inlineMaxWidth: 0 },
   "app/sign-in/page.tsx": { button: 2, select: 0, textarea: 0, fieldset: 1, input: 2, style: 0, inlineMaxWidth: 0 },
   "app/signals/page.tsx": { button: 0, select: 3, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },
   "app/taste/page.tsx": { button: 0, select: 2, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },
-  "components/AddAccountForm.tsx": { button: 0, select: 1, textarea: 0, fieldset: 0, input: 0, style: 0, inlineMaxWidth: 0 },
   "components/AgentChip.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 0, style: 2, inlineMaxWidth: 0 },
   "components/AgentLimitControl.tsx": { button: 1, select: 0, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },
   "components/AvatarEditor.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },
@@ -55,22 +49,16 @@ export const RAW_LEFT: Record<string, Record<string, number>> = {
   "components/DoorSetup.tsx": { button: 0, select: 0, textarea: 0, fieldset: 1, input: 3, style: 0, inlineMaxWidth: 0 },
   "components/ExampleToggle.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },
   "components/InboxPanel.tsx": { button: 2, select: 0, textarea: 0, fieldset: 0, input: 0, style: 2, inlineMaxWidth: 0 },
-  "components/InitialMemberBudgetSetup.tsx": { button: 1, select: 0, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },
-  "components/InviteMember.tsx": { button: 1, select: 1, textarea: 0, fieldset: 0, input: 3, style: 0, inlineMaxWidth: 0 },
   "components/JsonEditor.tsx": { button: 1, select: 0, textarea: 1, fieldset: 0, input: 0, style: 5, inlineMaxWidth: 0 },
   "components/MeetingSeriesRow.tsx": { button: 1, select: 0, textarea: 0, fieldset: 0, input: 0, style: 5, inlineMaxWidth: 0 },
   "components/Nav.tsx": { button: 1, select: 0, textarea: 0, fieldset: 0, input: 0, style: 0, inlineMaxWidth: 0 },
   "components/NotionCredential.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 1, style: 0, inlineMaxWidth: 0 },
   "components/NotionProposalsCard.tsx": { button: 2, select: 0, textarea: 0, fieldset: 0, input: 0, style: 20, inlineMaxWidth: 0 },
-  "components/OutsideConnectionsEditor.tsx": { button: 6, select: 0, textarea: 1, fieldset: 0, input: 7, style: 0, inlineMaxWidth: 0 },
-  "components/OutsideDiscoverySection.tsx": { button: 9, select: 1, textarea: 0, fieldset: 0, input: 2, style: 0, inlineMaxWidth: 0 },
   "components/PermissionsBoard.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 0, style: 6, inlineMaxWidth: 0 },
   "components/PinAudit.tsx": { button: 2, select: 0, textarea: 0, fieldset: 0, input: 0, style: 12, inlineMaxWidth: 0 },
-  "components/PrivateMetadataDeviceSection.tsx": { button: 3, select: 0, textarea: 0, fieldset: 0, input: 2, style: 1, inlineMaxWidth: 0 },
   "components/ProactivityControls.tsx": { button: 2, select: 0, textarea: 0, fieldset: 0, input: 4, style: 19, inlineMaxWidth: 2 },
   "components/ProposedCard.tsx": { button: 2, select: 0, textarea: 0, fieldset: 0, input: 0, style: 6, inlineMaxWidth: 0 },
   "components/RelearnButton.tsx": { button: 1, select: 0, textarea: 0, fieldset: 0, input: 0, style: 4, inlineMaxWidth: 0 },
-  "components/RemoveAccountButton.tsx": { button: 1, select: 0, textarea: 0, fieldset: 0, input: 0, style: 3, inlineMaxWidth: 0 },
   "components/SafeMarkdown.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 0, style: 8, inlineMaxWidth: 0 },
   "components/ScheduleHoursControl.tsx": { button: 1, select: 0, textarea: 0, fieldset: 0, input: 1, style: 10, inlineMaxWidth: 0 },
   "components/StatePill.tsx": { button: 0, select: 0, textarea: 0, fieldset: 0, input: 0, style: 2, inlineMaxWidth: 0 },

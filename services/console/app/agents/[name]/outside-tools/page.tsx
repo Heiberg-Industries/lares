@@ -1,4 +1,4 @@
-import { Page } from "@lares/ui/patterns";
+import { Notice, Page, PageHeader } from "@lares/ui/patterns";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireMember } from "../../../../lib/auth";
@@ -12,8 +12,8 @@ export default async function OutsideConnectionsPage({ params }: { params: Promi
   const result = await getOutsideConnections(name);
   if (!result.ok) return <Page width="narrow" className="lares-stack">
     <Link href="/chat">← Your agents</Link>
-    <h1>Connection settings unavailable</h1>
-    <p role="status">{result.message}</p>
+    <PageHeader title="Connection settings unavailable" />
+    <Notice>{result.message}</Notice>
   </Page>;
   return <Page width="narrow" className="lares-stack">
     <Link href={`/agents/${encodeURIComponent(name)}`}>← Agent details</Link>

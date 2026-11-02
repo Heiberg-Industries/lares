@@ -1,13 +1,17 @@
 "use client";
 import { useState, useTransition } from "react";
+import { Button } from "@lares/ui/primitives/button";
 import { removeAccount } from "../app/actions/accounts";
 
 export function RemoveAccountButton(p: { email: string; accountId?: string; generation?: number }) {
   const [pending, start] = useTransition();
   const [err, setErr] = useState("");
   return (
-    <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-      <button
+    <span className="lares-actions">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
         disabled={pending}
         title={`Disconnect ${p.email}`}
         onClick={() =>
@@ -21,15 +25,10 @@ export function RemoveAccountButton(p: { email: string; accountId?: string; gene
             }
           })
         }
-        style={{
-          border: "1px solid var(--rule)", borderRadius: 4, padding: "2px 8px",
-          cursor: pending ? "default" : "pointer", background: "var(--card)",
-          color: "var(--bad)", fontSize: 12,
-        }}
       >
         {pending ? "…" : "Remove"}
-      </button>
-      {err && <span title={err} style={{ color: "var(--bad)" }}>!</span>}
+      </Button>
+      {err && <span title={err} className="lares-form-error">!</span>}
     </span>
   );
 }
