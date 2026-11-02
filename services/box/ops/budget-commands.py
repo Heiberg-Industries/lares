@@ -263,7 +263,10 @@ class Installation:
             client.settimeout(timeout)
             client.connect(str(self.at("/run/lares-host/keeper.sock")))
             client.sendall((json.dumps({"action": action, "input": payload}) + "\n").encode())
-            client.shutdown(socket.SHUT_WR)
+            try:
+                client.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass  # The keeper may already have answered and closed; its answer is still readable.
             while True:
                 client.settimeout(max(0.001, deadline - time.monotonic()))
                 chunk = client.recv(65536)
