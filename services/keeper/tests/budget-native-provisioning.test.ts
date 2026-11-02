@@ -8,7 +8,7 @@ import {afterAll,beforeAll,expect,it,vi} from 'vitest';
 import {quiet} from './helpers/quiet-pool.js';
 import {HostFinancialJournal} from '../lib/financial-journal.js';
 import {prepareFinancialCustody} from '../lib/financial-continuity.js';
-import {provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
+import {openBudgetMonth,provisionBudgetAccounts,startBudgetMonthOpening} from '../lib/budget-account-provisioning.js';
 import {registerInitialMemberBudgetActions} from '../lib/initial-member-budget.js';
 import {resetActions,runAction} from '../lib/actions.js';
 import {provisionEngineDatabasePrivileges} from '../../box/lib/database-privileges.js';
@@ -34,6 +34,7 @@ const lock=platformTestJournalLock;
 const journalOptions={ownershipUid:testJournalUid,lock};
 const id=()=>randomUUID();
 let addressCounter=1;
+let moveFinancialClock:(next:string)=>Promise<void>=async()=>{throw new Error('Financial clock is not installed');};
 const financialPassword=Buffer.from('native-later-financial-role-test-password');
 const applicationPassword=Buffer.from('native-later-application-role-test-password');
 const outsideCustodyPassword=Buffer.from('native-later-outside-custody-role-test-password');
@@ -141,12 +142,25 @@ async function seed(memberId:string,agents:string[],incarnation:string,existingO
   return {org,member};
 }
 
-async function useFinancialRole():Promise<Pool>{
+/** Moves only what the financial role sees as "now". Production SQL calls clock_timestamp() by its
+ * bare name, so a same-named function earlier on that role's search path turns the clock without
+ * touching the code under test. */
+async function installFinancialClock(operator:Pool,offset:string):Promise<(next:string)=>Promise<void>>{
+  await operator.query(`CREATE TABLE public.test_financial_clock(shift interval NOT NULL);INSERT INTO public.test_financial_clock VALUES($$${offset}$$::interval);
+    CREATE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog
+      AS 'SELECT pg_catalog.clock_timestamp()+shift FROM public.test_financial_clock';
+    GRANT EXECUTE ON FUNCTION public.clock_timestamp() TO lares_financial;
+    ALTER ROLE lares_financial SET search_path=public,pg_catalog;`);
+  return async next=>{await operator.query('UPDATE public.test_financial_clock SET shift=$1::interval',[next]);};
+}
+
+async function useFinancialRole(clockOffset?:string):Promise<Pool>{
   const operator=pool,socket=process.env.LARES_TEST_PG_SOCKET,config=socket?privateTestSocket():undefined;
   const database=config?.database??container?.getDatabase();if(!database)throw new Error('Private Keeper role fixture has no database');
   const client=await operator.connect();
   try{await provisionEngineDatabasePrivileges(client,{expectedDatabase:database,passwords:{application:applicationPassword,financial:financialPassword,outsideCustody:outsideCustodyPassword}});}
   finally{client.release();}
+  if(clockOffset)moveFinancialClock=await installFinancialClock(operator,clockOffset);
   const financial=quiet(config?new Pool({host:config.socket,port:config.port,user:'lares_financial',password:financialPassword.toString('ascii'),database:config.database,max:8,options:'-c timezone=UTC'}):(()=>{
     const uri=new URL(container!.getConnectionUri());uri.pathname=`/${database}`;uri.username='lares_financial';uri.password=financialPassword.toString('ascii');
     return new Pool({connectionString:uri.toString(),max:8,options:'-c timezone=UTC'});
@@ -163,7 +177,7 @@ async function setCapThroughRegisteredAction(ownerId:string,targetMemberId:strin
   await runAction('member.set-initial-budget',{sessionToken,targetMemberId,monthlyLimit},{actor:'native test owner',audit:async()=>{}});
 }
 
-async function startActiveOwnerFixture():Promise<{operator:Pool;financial:Pool;owner:string;org:string;incarnation:string;ownerAgent:string;ownerBinding:string;
+async function startActiveOwnerFixture(clockOffset?:string):Promise<{operator:Pool;financial:Pool;owner:string;org:string;incarnation:string;ownerAgent:string;ownerBinding:string;
   ownerAccountId:string;installationId:string;ownerNativeUserId:string;sessionToken:string;root:string;journal:HostFinancialJournal;
   custody:BudgetNativeCustodyStore;fake:ReturnType<typeof nativeFake>;provisioner:BudgetNativeProvisioner}>{
   await resetDatabase();
@@ -176,7 +190,7 @@ async function startActiveOwnerFixture():Promise<{operator:Pool;financial:Pool;o
   const directory=join(root,'financial'),db=await operator.connect();
   try{await prepareFinancialCustody(directory,db,journalOptions);}finally{db.release();}
   const journal=HostFinancialJournal.openExisting(directory,{...journalOptions,requirePrepared:true});journals.push(journal);
-  const financial=await useFinancialRole();
+  const financial=await useFinancialRole(clockOffset);
   await setCapThroughRegisteredAction(owner,owner,sessionToken,'45');
   await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[owner]})).resolves.toMatchObject({state:'closed',reason:'unreconciled',members:1});
   const ownerAccountId=(await financial.query("SELECT id FROM budget_accounts WHERE kind='member' AND live_member_id=$1",[owner])).rows[0]?.id;
@@ -955,3 +969,81 @@ it('keeps native runtime eligibility read-only across source, custody, journal, 
 
   }finally{custody.close();}
 },60_000);
+
+const coverage=(financial:Pool)=>financial.query(`SELECT a.kind,a.state,w.opening_cap::text AS cap,w.opening_liability::text AS opening,
+    w.starts_at<=clock_timestamp() AND w.ends_at>clock_timestamp() AS covers_now
+  FROM budget_accounts a JOIN budget_windows w ON w.id=a.active_window_id ORDER BY a.kind,a.id`).then(result=>result.rows);
+const activeOwnerReader=async(fixture:Awaited<ReturnType<typeof startActiveOwnerFixture>>)=>{
+  const definitionHash=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash as string;
+  const reader=createNativeRuntimeAuthority({custody:fixture.custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:policy,designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
+  return ()=>reader.current({agent:fixture.ownerAgent,incarnation:fixture.incarnation,definitionHash,purposeAlias:'lares-brain'});
+};
+const journalRecords=(root:string)=>readFileSync(join(root,'financial','journal.jsonl'),'utf8').trimEnd().split('\n').length;
+
+it('keeps an installation running after the UTC month changes, and lets setup finish in the new month',async()=>{
+  const fixture=await startActiveOwnerFixture('-1 month');
+  const {financial,journal,custody,fake,owner,incarnation,org,operator,root}=fixture;
+  const later=await addLaterAccount(fixture);
+  await grantLaterAgentUse(fixture,later);
+  const laterBinding=id();
+  await expect(fixture.provisioner.provision({bindingId:laterBinding,credentialGeneration:'0',memberId:later.member,agent:later.agent,incarnation,purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'bound-closed'});
+  const current=await activeOwnerReader(fixture);
+  await expect(current()).resolves.toEqual({state:'active'});
+  const untouched=journalRecords(root);
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:0,skipped:0,blocked:0,failed:0});
+  expect(journalRecords(root)).toBe(untouched);
+
+  await moveFinancialClock('0');
+  await expect(current()).resolves.toMatchObject({state:'held'});
+  expect((await coverage(financial)).every(row=>row.covers_now===false)).toBe(true);
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[later.member]})).rejects.toThrow();
+
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:3,skipped:0,blocked:0,failed:0});
+  expect(await coverage(financial)).toEqual(expect.arrayContaining([
+    {kind:'installation',state:'open',cap:'100',opening:'0',covers_now:true},
+    {kind:'member',state:'open',cap:'45',opening:'0',covers_now:true},
+    {kind:'member',state:'closed',cap:'40',opening:'0',covers_now:true},
+  ]));
+  expect((await financial.query('SELECT count(*)::int AS n FROM budget_windows')).rows[0].n).toBe(6);
+  expect((await financial.query(`SELECT count(*)::int AS n FROM budget_accounts a JOIN budget_windows w ON w.id=a.active_window_id WHERE w.policy_revision<>a.policy_generation`)).rows[0].n).toBe(0);
+  await expect(current()).resolves.toEqual({state:'active'});
+
+  const settled=journalRecords(root);
+  expect(await openBudgetMonth(financial,journal)).toEqual({opened:0,skipped:0,blocked:0,failed:0});
+  expect(journalRecords(root)).toBe(settled);
+  await verifyFinancialContinuity(journal,financial as never);
+
+  // Someone part way through setup across the change can finish it, and new people can join.
+  await expect(new BudgetNativeActivator(financial,journal,custody,fake.native).activate({bindingId:laterBinding,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
+  await expect(current()).resolves.toEqual({state:'active'});
+  const newcomer=id();await seed(newcomer,[],incarnation,org,{},operator,'member',owner);
+  await setCapThroughRegisteredAction(owner,newcomer,fixture.sessionToken,'30');
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[newcomer]})).resolves.toMatchObject({accountsCreated:1,windowsCreated:1});
+  await verifyFinancialContinuity(journal,financial as never);
+},120_000);
+
+it('opens the month by itself as the clock crosses it, and catches up after being down',async()=>{
+  const fixture=await startActiveOwnerFixture('-1 month');
+  const {financial,journal,operator}=fixture,logs:string[]=[];
+  const current=await activeOwnerReader(fixture);
+  // Put the financial clock four seconds before the end of the month the fixture opened in.
+  const row=(await operator.query(`SELECT ((date_trunc('month',pg_catalog.clock_timestamp() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')-pg_catalog.clock_timestamp()-interval '4 seconds')::text AS shift`)).rows[0];
+  await moveFinancialClock(row.shift as string);
+  const stop=startBudgetMonthOpening(financial,journal,line=>logs.push(line));
+  try{
+    await expect(current()).resolves.toEqual({state:'active'});
+    expect(logs).toEqual([]);
+    await vi.waitFor(async()=>expect((await coverage(financial)).filter(row=>row.covers_now).length).toBe(2),{timeout:15_000,interval:100});
+    await vi.waitFor(()=>expect(logs).toContain('keeper: budget month opened for 2 accounts'),{timeout:5000,interval:50});
+    await expect(current()).resolves.toEqual({state:'active'});
+  }finally{await stop();}
+  await verifyFinancialContinuity(journal,financial as never);
+  // A keeper that was down across the next change catches up when it starts.
+  await moveFinancialClock('1 month');
+  expect((await coverage(financial)).some(row=>row.covers_now)).toBe(false);
+  const restarted=startBudgetMonthOpening(financial,journal,line=>logs.push(line));
+  try{await vi.waitFor(async()=>expect((await coverage(financial)).filter(row=>row.covers_now).length).toBe(2),{timeout:15_000,interval:100});}
+  finally{await restarted();}
+  expect((await financial.query('SELECT count(*)::int AS n FROM budget_windows')).rows[0].n).toBe(6);
+  await verifyFinancialContinuity(journal,financial as never);
+},120_000);

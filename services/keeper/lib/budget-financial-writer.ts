@@ -1,9 +1,11 @@
 import {type BudgetFinancialOperation,type BudgetFinancialWriter} from '@lares/agent-kit/budget-admission-store';
 import {sourceTransactionBoundary,type SourceDatabase,type BudgetFinancialChange,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
-import {HostFinancialJournal,markJournaledAbort,type FinancialAtom,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt} from './financial-journal.js';
+import {FinancialJournalBusy,HostFinancialJournal,markJournaledAbort,type FinancialAtom,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt} from './financial-journal.js';
 import {observeCommittedFinancialProjection,verifyFinancialContinuity} from './financial-continuity.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
+import {performance} from 'node:perf_hooks';
 import type {Pool} from 'pg';
+const AFTER_ADMISSION:ReadonlySet<BudgetFinancialOperation>=new Set(['grant','settle']),BUSY_WAIT_MS=1000;
 /** Keeper-owned adapter. The production gateway authority receives this prepared journal;
  * no runtime or configuration switch can supply an alternate writer. It never checks out a
  * second pool client. */
@@ -11,7 +13,19 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
   constructor(private journal:HostFinancialJournal){}
   get journalId():string{return this.journal.id;}
   run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<T> {
-    return this.execute(operation,work).then(result=>result.value);
+    return (AFTER_ADMISSION.has(operation)?this.waitForTurn(operation,work):this.execute(operation,work)).then(result=>result.value);
+  }
+  /** The gateway never resends a grant or receipt, so losing one to a momentary busy journal would
+   * hold that call's whole reservation for good. Everything else refuses on contention as before. */
+  private async waitForTurn<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<{value:T;receipt?:CommittedFinancialReceipt}> {
+    const giveUp=performance.now()+BUSY_WAIT_MS;
+    for(;;){
+      try{return await this.execute(operation,work);}
+      catch(error){
+        if(!(error instanceof FinancialJournalBusy)||performance.now()>=giveUp)throw error;
+        await new Promise(resolve=>setTimeout(resolve,10));
+      }
+    }
   }
   runWithReceipt<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>,publish?:(receipt:CommittedFinancialReceipt,value:T)=>undefined):Promise<{value:T;receipt:CommittedFinancialReceipt}> {
     if(!this.journal.prepared)return Promise.reject(new Error('Prepared financial journal receipt unavailable'));
