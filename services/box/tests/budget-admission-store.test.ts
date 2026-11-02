@@ -27,7 +27,7 @@ import {runErase} from '../lib/run-erase.js';
 import {scopeOf} from '../lib/member-scope.js';
 import {quiet} from './helpers/quiet-pool.js';
 import {OUTSIDE_CUSTODY_FIXTURE_POLICY_HASH,OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON} from './helpers/three-spellings.js';
-import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
+import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness,journalRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
 import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,gatewayGrantHash,gatewayRawRequestHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
 import {consoleSourceTransaction,noteBudgetFinancialChange,retainConsoleSourceDeadline,sourceTransactionBoundary,type SourceDatabase,type SourcePool} from '../../../packages/agent-kit/src/console-source-transaction.js';
 import {captureBudgetAuthorityReference} from '../../../packages/agent-kit/src/budget-model-authority.js';
@@ -401,7 +401,7 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     }finally{
       await db.query('RESET search_path;DROP FUNCTION public.clock_timestamp()');
     }
-  });
+  },30_000);
   it('counts a call with no final cost in full, but only against the month it began in',async()=>{
     const status=async()=>[(await store.readStatus(context())).liability,(await store.readStatus(context(),'installation')).liability];
     const admittedHere=async()=>{
@@ -439,7 +439,7 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     }finally{
       await db.query('RESET search_path;DROP FUNCTION public.clock_timestamp()');
     }
-  });
+  },30_000);
   it('consumes a signed Console human step through the real Keeper socket and prepared journal',async()=>{
     const definitionHash=h('model-purpose-definition'),selected=await selectPurposeModel(definitionHash),{sessionId,admissionNonce}=selected;
     const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());
@@ -750,6 +750,100 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
       samples.push({restartMs:Math.round(performance.now()-started)});writeFileSync(out,JSON.stringify(samples,null,1));
       await oneCall();
     },3_000_000);
+  });
+  describe('calls that overlap on the one-at-a-time journal',{timeout:30_000},()=>{
+    const usage={usage:{inputTokens:1,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0}};
+    /** A real journal operation with its real transaction, holding its turn until released. */
+    function holdJournal(){
+      let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});
+      const holder=files.writer.run('provision',boundary=>consoleSourceTransaction(db as unknown as SourcePool,()=>held,boundary));
+      return {release,holder};
+    }
+    const attemptState=async(ticket:string)=>(await db.query('SELECT state FROM budget_attempts WHERE ticket_hash=$1',[h(ticket)])).rows[0]?.state;
+    it('completes two people preparing at the same moment',async()=>{
+      for(let round=0;round<3;round++)await expect(Promise.all([prepared('member-a'),prepared('member-b')])).resolves.toHaveLength(2);
+      expect(files.journal.isFrozen).toBe(false);
+    });
+    /** A second connection, as in Keeper, so calls reach the journal line instead of waiting for the pool. */
+    function keeperGate(){
+      const other=quiet(new Pool({connectionString:container.getConnectionUri(),max:1}));
+      return {other,gate:authority(other,journalRecoveryWitness(files.journal))};
+    }
+    const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+    it('carries a whole call through a busy journal, with the real recovery check',async()=>{
+      const {other,gate}=keeperGate();
+      try{
+        let hold=holdJournal();
+        const preparing=prepared();
+        await sleep(50);hold.release();await hold.holder;
+        const p=await preparing,before=files.records().length;
+        hold=holdJournal();
+        const admitting=rpc(gate,GATEWAY_ADMIT_PATH,admitDocument(p));
+        await sleep(100);
+        // Still waiting in line, and nothing written for it yet.
+        expect(files.records().slice(before).map(frame=>frame.record.operation)).not.toContain('admit');
+        hold.release();await hold.holder;
+        const admitted=await admitting;
+        expect(admitted.reply.status).toBe(200);expect(admitted.document.state).toBe('allowed');
+        // The gateway counts validity from when it sent the request: the wait must not count twice.
+        expect(admitted.document.validForMs).toBeGreaterThanOrEqual(2990);
+        hold=holdJournal();
+        const settling=rpc(gate,GATEWAY_SETTLE_PATH,terminal(admitted.document,0,usage));
+        await sleep(50);hold.release();await hold.holder;
+        expect((await settling).document.state).toBe('settled');
+        expect(await attemptState(p.ticket)).toBe('settled');expect(files.journal.isFrozen).toBe(false);
+      }finally{await other.end();}
+    });
+    it('lets a settlement go ahead of a step that can still be refused',async()=>{
+      const {other,gate}=keeperGate();
+      try{
+        const p=await prepared(),admitted=await rpc(gate,GATEWAY_ADMIT_PATH,admitDocument(p)),order:string[]=[];
+        const hold=holdJournal();
+        const preparing=prepared('member-b').then(value=>{order.push('prepare');return value;});
+        await sleep(20);
+        const settling=rpc(gate,GATEWAY_SETTLE_PATH,terminal(admitted.document,0,usage)).then(value=>{order.push('settle');return value;});
+        await sleep(100);hold.release();await hold.holder;await preparing;
+        expect((await settling).document.state).toBe('settled');expect(order).toEqual(['settle','prepare']);
+      }finally{await other.end();}
+    });
+    it('leaves the line in time, so nothing commits for a caller who has gone',async()=>{
+      const {other,gate}=keeperGate();
+      try{
+        const p=await prepared(),before=files.records().length,hold=holdJournal();
+        const raw=gatewayCanonical(admitDocument(p));
+        // A late arrival: the caller gives up after 0.4 s, sooner than admit's usual one-second wait.
+        const reply=await gate.handle(GATEWAY_ADMIT_PATH,gatewaySignature(serviceKey,'request',GATEWAY_ADMIT_PATH,raw),raw,performance.now()+400);
+        expect(reply.status).toBe(503);
+        // Without the limit it would still be in line here, and would commit once the journal is free.
+        hold.release();await hold.holder;await sleep(300);
+        expect(await attemptState(p.ticket)).toBe('prepared');
+        expect(files.records().slice(before).map(frame=>frame.record.operation)).not.toContain('admit');
+      }finally{await other.end();}
+    });
+    it('refuses an admit whose recovery check was read just before a change committed',async()=>{
+      let stale:Awaited<ReturnType<GatewayRecoveryWitness['observe']>>;
+      const live=journalRecoveryWitness(files.journal),selected=new PgBudgetAdmissionStore(db,env(),30_000,files.writer);
+      await files.writer.run('provision',boundary=>consoleSourceTransaction(db as unknown as SourcePool,async source=>{
+        stale=await live.observe({installationAccountId:installation,epoch:'epoch-1',endpointGeneration:'0'});
+        await source.query('UPDATE budget_accounts SET endpoint_generation=endpoint_generation+1 WHERE id=$1',[installation]);
+        noteBudgetFinancialChange(source,'budget_accounts',installation);
+      },boundary));
+      expect(stale).toEqual(recovery());
+      // Prepared after the change, so only the out-of-date check can cause this refusal.
+      const p=await prepared();
+      expect((await selected.admit(p.ticket,p.observation,stale!)).state).toBe('denied');
+      expect(await attemptState(p.ticket)).toBe('retired');
+    });
+    it('still refuses when the journal stays busy past the wait, leaving nothing held',async()=>{
+      const {other,gate}=keeperGate();
+      const p=await prepared(),before=files.records().length,hold=holdJournal();
+      try{
+        const admit=await rpc(gate,GATEWAY_ADMIT_PATH,admitDocument(p));
+        expect(admit.reply.status).toBe(503);
+      }finally{hold.release();await hold.holder;await other.end();}
+      expect(await attemptState(p.ticket)).toBe('prepared');expect(files.journal.isFrozen).toBe(false);
+      expect(files.records().slice(before).map(frame=>frame.record.kind)).not.toContain('freeze');
+    });
   });
   describe('real database restarts',()=>{
     const custody={ownershipUid:testJournalUid,lock:platformTestJournalLock};

@@ -214,7 +214,12 @@ it('holds operations out during the whole-ledger check and releases them afterwa
   let release!:()=>void;const held=j.withFullCheckBarrier(()=>new Promise<void>(resolve=>{release=resolve;}));
   await expect(operation(j,'settle',[])).rejects.toThrow('busy');
   await expect(j.withFullCheckBarrier(async()=>undefined)).rejects.toThrow('busy');
-  release();await held;
+  // An operation waiting in line runs as soon as the check lets go, and nothing overtakes it.
+  let waiterRan=false;
+  const waiting=j.operation('settle',async id=>{j.propose(id,[attempt(uuid(1001),'settled','0.05')]);j.committed(id);waiterRan=true;},{ms:5000});
+  await expect(j.withFullCheckBarrier(async()=>undefined)).rejects.toThrow('busy');
+  release();await held;await waiting;
+  expect(waiterRan).toBe(true);
   await operation(j,'settle',[attempt(uuid(1000),'settled','0.05')]);
 });
 

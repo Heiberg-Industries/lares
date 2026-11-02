@@ -45,6 +45,7 @@ export class GatewayBudgetAuthority {
     });
   }
   private async execute(path:string,signature:string|undefined,raw:Buffer,deadline:number):Promise<GatewayRpcReply> {
+    const received=performance.now();
     const fresh=()=>{if(performance.now()>=deadline)throw new Error('Gateway deadline elapsed');};
     // Without a writer this authority is read-only and closed. In particular, terminal
     // receipts must not settle liability outside prepared Keeper custody.
@@ -54,7 +55,8 @@ export class GatewayBudgetAuthority {
       if(!verifyGatewaySignature(this.key,signature,'request',path,raw))return refused();
       const document=parseGatewayDocument(raw);
       let result:unknown;
-      const store=new PgBudgetAdmissionStore(this.pool,process.env,30_000,this.financialWriter);
+      const writer=this.financialWriter.until?.(deadline)??this.financialWriter;
+      const store=new PgBudgetAdmissionStore(this.pool,process.env,30_000,writer);
       if(path===GATEWAY_ADMIT_PATH){
         const request=gatewayAdmitSchema.parse(document);
         // The journal observation is discovery only; the owned store still decides whether
@@ -68,7 +70,7 @@ export class GatewayBudgetAuthority {
         if(!recovery)return refused();
         // Exact managed identity is derived only from persisted data. admit rechecks the
         // current reference, policy, generation, endpoint, authority and recovery under lock.
-        const selected=new PgBudgetAdmissionStore(this.pool,{LARES_AGENT_NAME:ticket.agent,LARES_AGENT_INCARNATION:ticket.incarnation},30_000,this.financialWriter);
+        const selected=new PgBudgetAdmissionStore(this.pool,{LARES_AGENT_NAME:ticket.agent,LARES_AGENT_INCARNATION:ticket.incarnation},30_000,writer);
         const admitted=await selected.admit(request.ticket,{...request,agent:ticket.agent,incarnation:ticket.incarnation,credentialGeneration:ticket.credentialGeneration},recovery);
         if(admitted.state!=='allowed')return refused();
         // Burn before any further await, including grant persistence. Lost/unknown ACKs
@@ -79,7 +81,8 @@ export class GatewayBudgetAuthority {
         const grant=gatewayGrantSchema.parse({version:1,nonce:request.nonce,requestHash:request.requestHash,profileHash:request.profileHash,endpointHash:request.endpointHash,keyFingerprint:request.keyFingerprint,purposeAlias:request.purposeAlias,attemptId:consumed.attemptId,bindingId:consumed.bindingId});
         if(!await selected.recordGatewayGrant(consumed,gatewayGrantHash(grant)))return refused();
         fresh();
-        result={...grant,state:'allowed',validForMs:Math.max(1,Math.floor(deadline-performance.now()))};
+        // The gateway counts this from when it sent the request, so time spent here is not taken off again.
+        result={...grant,state:'allowed',validForMs:Math.max(1,Math.floor(deadline-received))};
       }else{
         const receipt=gatewaySettleSchema.parse(document);
         const {receiptHash,...evidence}=receipt;
@@ -100,12 +103,16 @@ export class GatewayBudgetAuthority {
   }
 }
 
+export function journalRecoveryWitness(journal:HostFinancialJournal):GatewayRecoveryWitness {
+  return {observe:async reference=>journal.observeCommittedGatewayRecoveryReference(reference)};
+}
+
 /** Bind the recovery observation to the exact protected journal that owns admission writes.
  * Never derive reconciled state from the restored database or expose a runtime witness
  * setting. The witness is discovery only; the owned transaction repeats full continuity. */
 export function productionGatewayBudgetAuthority(pool:Pool,keyFile?:string,journal?:HostFinancialJournal):GatewayBudgetAuthority {
   const prepared=journal?.prepared===true;
   const writer=prepared&&journal?new JournalBudgetFinancialWriter(journal):undefined;
-  const recovery:GatewayRecoveryWitness|undefined=prepared&&journal?{observe:async reference=>journal.observeGatewayRecoveryReference(reference)}:undefined;
+  const recovery=prepared&&journal?journalRecoveryWitness(journal):undefined;
   return new GatewayBudgetAuthority(pool,readGatewayServiceKey(keyFile),writer,recovery);
 }
