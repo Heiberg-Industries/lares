@@ -5,7 +5,6 @@ import {randomUUID} from 'node:crypto';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
 import {afterAll,beforeAll,expect,it} from 'vitest';
-import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {quiet} from './helpers/quiet-pool.js';
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import {resetActions,runAction} from '../lib/actions.js';
@@ -46,9 +45,11 @@ beforeAll(async()=>{
   for(const [id,role,email] of [[owner,'owner','owner@example.test'],[person,'member','Person@example.test'],[stranger,'member','stranger@example.test']]){
     await selected.query("INSERT INTO users(id,display_name,org_id,org_role,status,primary_email) VALUES($1,$1,$2,$3,'active',$4)",[id,org,role,email]);
   }
+  // The installer gives the owner a policy row with no limit; an invited person starts without a row.
+  await selected.query('INSERT INTO org_member_policy(user_id) VALUES($1)',[owner]);
   for(const id of [owner,person])
     await selected.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$1,'tenant')",[id]);
-  const definition={name:agent,role:'chief-of-staff',model:'lares-brain'},hash='a'.repeat(64);
+  const definition={name:agent,role:'chief-of-staff',model:'lares-brain',grants:[]},hash='a'.repeat(64);
   await selected.query("INSERT INTO agent_definitions(name,definition,hash,status) VALUES($1,$2::jsonb,$3,'valid')",[agent,JSON.stringify(definition),hash]);
   await selected.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending) VALUES($1,'172.30.0.9','wf','owned',$2,$2,'ready',false)",[agent,incarnation]);
 
@@ -107,7 +108,8 @@ it('refuses an amount the ledger would not store as written',async()=>{
 });
 
 it('sees access, the account and the binding once they exist',async()=>{
-  await new PgGrantStore(selected).adoptAgent(owner,{agentName:agent,expectedDefinitionHash:'a'.repeat(64)},{designatedOwnerMemberId:owner});
+  // Adoption's own rules are the grant store's tests; this is the row it leaves.
+  await selected.query('INSERT INTO agent_access(agent_name,owner_member_id,organisation_id) VALUES($1,$2,$3)',[agent,owner,org]);
   expect((await status()).member?.canUse).toBe(true);
   expect((await status(person)).member?.canUse).toBe(false);
   await runAction('budget.apply-default-member-limit',{memberId:owner,monthlyLimit:'15'},context(),{host:true});
