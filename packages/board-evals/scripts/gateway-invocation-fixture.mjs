@@ -89,6 +89,10 @@ export async function startGatewayFixture(root, lane) {
       if(message.startsWith('SEND ')&&!currentResults)toolCalls=[{name:'personal_mailbox_send',input:JSON.parse(message.slice(5))}];
       if(message.startsWith('SEND_ATTACK ')&&!currentResults)toolCalls=[{name:'personal_mailbox_send',input:JSON.parse(message.slice(12))}];
       if(message.startsWith('SEND_ATTACK ')&&currentResults&&!attacked.has(message)){attacked.add(message);const input=JSON.parse(message.slice(12));toolCalls=[{name:'personal_mailbox_send',input},{name:'personal_mailbox_read',input:{selection:input.selection,id:'proof-message'}}];}
+      if(message.startsWith('TRACK ')&&!currentResults)toolCalls=[{name:'track_create',input:JSON.parse(message.slice(6))}];
+      if(message.startsWith('TRACK_COMPANY ')&&!currentResults)toolCalls=[{name:'track_add_item',input:JSON.parse(message.slice(14))}];
+      if(message.startsWith('TRACK_ATTACK ')&&!currentResults)toolCalls=[{name:'track_create',input:JSON.parse(message.slice(13))}];
+      if(message.startsWith('TRACK_ATTACK ')&&currentResults&&!attacked.has(message)){attacked.add(message);const input=JSON.parse(message.slice(13));toolCalls=[{name:'track_create',input:{...input,trackId:input.trackId+'-second'}},{name:'tracks_list',input:{}}];}
       if(message.startsWith('MAIL ')&&!currentResults)toolCalls=[{name:'gmail_read',input:{id:'proof-message',selection:JSON.parse(message.slice(5))}}];
       if(message.startsWith('SKILL ')&&!currentResults)toolCalls=[{name:'load_skill',input:{skill:message.slice(6)}}];
       toolCalls=toolCalls.map((t,i)=>({...t,id:`fixture-call-${count}-${i}`}));

@@ -9,17 +9,13 @@ import { consoleAdmission, hasConsoleTurnAuthorityTag, requireConsoleTurnAuthori
   type AuthorityDatabase, type ConsoleAuthorityContext } from './console-turn-authority.js';
 import { managedIdentity } from './door-authority.js';
 import { parseDefinition } from './definition.js';
+import { exactReservationSchema as reservationSchema, exactTargetSchema as targetSchema } from './exact-approval-request.js';
 import { autonomyOf, grantFor, scopeAtLeast } from './manifest.js';
+import { exactResolverAdmission } from './private-console-resume.js';
 
 export const EXACT_APPROVAL_REFUSED = 'Exact approval authority is unavailable or has changed';
 const refuse = (): never => { throw new Error(EXACT_APPROVAL_REFUSED); };
-const targetSchema = z.strictObject({ kind: z.enum(['deadline','deadline-candidate','track','track-item','track-create','outside-call']), id: z.string().min(1),
-  ownerMemberId: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-  approvedOrigin: z.enum(['agent','synced','third_party']).optional() });
 export type ExactApprovalTarget = z.infer<typeof targetSchema>;
-const reservationSchema = z.strictObject({ version: z.literal(1), original: turnAuthoritySchema,
-  incarnation: z.string().uuid(), admissionHash: z.string(), target: targetSchema,
-  policyHash: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.iso.datetime() });
 type Reservation = z.infer<typeof reservationSchema>;
 export interface ExactApprovalAdapter {
   /** Tool names this purpose-built adapter can authorize. */
@@ -141,8 +137,9 @@ export async function approveExactResponse(ctx: ExactResponseContext, o: ExactAp
   supported(ctx.request.toolName,o);
   const db = database(o), row = await rowForCall(db,ctx.request.callId);
   const r = exact(row,ctx.request.toolName,ctx.request.toolInput,o);
-  const responder = consoleAdmission(ctx.responder), initial = consoleAdmission(ctx.session.initiator);
+  const responder = consoleAdmission(ctx.responder), initial = consoleAdmission(ctx.session.initiator), answered = exactResolverAdmission(ctx.responder);
   if (!row.request_id || row.request_id !== ctx.request.requestId || !responder || responder.purpose !== 'resolver' ||
+      answered?.requestId !== row.request_id || answered.optionId !== 'approve' ||
       !initial || initial.purpose !== 'human' || initial.memberId !== responder.memberId || initial.admissionNonce !== responder.admissionNonce ||
       (row.outcome !== null && row.outcome !== 'approved')) refuse();
   await current(r,responder!.memberId,responder!.admissionNonce,ctx.session.id,ctx.request.toolName,ctx.request.toolInput,o,
@@ -158,7 +155,10 @@ export async function requireApprovedExecution(ctx: ConsoleAuthorityContext, too
   supported(tool,o);
   const row = await rowForCall(database(o),callIdFrom(ctx) ?? ''), r = exact(row,tool,input,o);
   const responder = consoleAdmission(ctx.session?.auth?.current), initial = consoleAdmission(ctx.session?.auth?.initiator);
+  // Cards raised in one step settle together under the last answer, so this answer may name a
+  // sibling card. Each call still needs its own approved row. A cancel never runs anything.
   if (!row.request_id || row.outcome !== 'approved' || !responder || responder.purpose !== 'resolver' ||
+      exactResolverAdmission(ctx.session?.auth?.current)?.optionId !== 'approve' ||
       row.resolved_by_member_id !== responder.memberId || !initial || initial.purpose !== 'human' ||
       initial.memberId !== responder.memberId || initial.admissionNonce !== responder.admissionNonce) refuse();
   await current(r,responder!.memberId,responder!.admissionNonce,ctx.session?.id ?? '',tool,input,o,ctx);

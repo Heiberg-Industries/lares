@@ -6,6 +6,7 @@ import {
   approvalCardFields,
   composerState,
   expiredRequestIds,
+  questionOf,
   settledSay,
 } from "../components/ChatTranscript";
 import type { EveMessage } from "eve/react";
@@ -164,6 +165,31 @@ const card = (over: Record<string, unknown> = {}): EveMessage =>
       },
     ],
   }) as unknown as EveMessage;
+
+describe("a question from the agent", () => {
+  const request = { kind: "question", prompt: "Which <b>topic</b>?", requestId: "q1", options: [{ id: "a", label: "Sales" }, { id: "b", label: "Hiring" }] };
+  const part = (state: string, inputRequest?: unknown, input: unknown = { prompt: "Which <b>topic</b>?" }) =>
+    ({ type: "dynamic-tool", toolName: "ask_question", state, input, toolMetadata: { eve: { inputRequest } } });
+  const html = (p: unknown) => renderToStaticMarkup(<ChatTranscript status="ready" messages={[{ id: "1", role: "assistant", parts: [p] } as unknown as EveMessage]} />);
+
+  it("shows the question and its choices as plain text, never as a running tool", () => {
+    const out = html(part("input-available", request));
+    expect(out).toContain("Which &lt;b&gt;topic&lt;/b&gt;?");
+    expect(out).toContain("You can reply: Sales, Hiring");
+    expect(out).not.toContain("is running");
+    expect(out).not.toContain("<button");
+  });
+  it("keeps the question once answered, without inviting another reply", () => {
+    const out = html(part("output-available"));
+    expect(out).toContain("Which &lt;b&gt;topic&lt;/b&gt;?");
+    expect(out).not.toContain("You can reply");
+    expect(out).not.toContain("completed");
+  });
+  it("leaves every other tool line alone", () => {
+    expect(questionOf({ toolName: "gmail_search", input: { prompt: "not a question" }, state: "input-available" } as never, undefined)).toBeUndefined();
+    expect(html({ type: "dynamic-tool", toolName: "gmail_search", state: "input-available", input: {} })).toContain("gmail_search is running");
+  });
+});
 
 describe("the approval card in web chat", () => {
   it("shows what is being asked, and what answering it would do", () => {
