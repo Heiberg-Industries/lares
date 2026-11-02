@@ -101,8 +101,9 @@ it.each([
   const directory=prepared(),j=open(directory);
   await operation(j,'provision',accounts);await fillTo(directory,j,3);j.close();
   damage(directory);
-  // Removing the newest book leaves a sealed last book: nothing can carry on, and it freezes.
-  if(name==='the newest book removed'){const frozen=open(directory);expect(frozen.isFrozen).toBe(true);await expect(operation(frozen,'settle',[])).rejects.toThrow();return;}
+  // Removing the newest book looks like a crash while changing book: no work runs, and only the
+  // complete comparison at the next keeper start can carry on, or freeze if money is missing.
+  if(name==='the newest book removed'){const left=open(directory);expect(left.isFrozen).toBe(false);expect(left.awaitingSettlement).toBe(true);await expect(operation(left,'settle',[])).rejects.toThrow();left.close();return;}
   expect(()=>open(directory)).toThrow('explicit recovery');
 });
 
@@ -120,7 +121,7 @@ it('refuses new work without freezing when the disk is too full for a new book, 
   expect(books(directory)).toEqual(['journal.jsonl','journal-000002.jsonl']);
 });
 
-it.each(['partial','next'])('freezes rather than guesses after a crash while changing book (%s)',async stage=>{
+it.each(['partial','next'])('refuses work rather than guesses after a crash while changing book (%s)',async stage=>{
   const directory=prepared();let armed=false;
   const j=open(directory,{sync:fd=>{if(armed&&stage==='partial'&&existsSync(join(directory,'journal-000002.partial')))throw new Error('synthetic crash');void fd;}});
   await operation(j,'provision',accounts);
@@ -131,11 +132,11 @@ it.each(['partial','next'])('freezes rather than guesses after a crash while cha
     j.close();
     const name='journal-000002.jsonl',kept=readFileSync(join(directory,name));void kept;
     unlinkSync(join(directory,name));
-    const reopened=open(directory);expect(reopened.isFrozen).toBe(true);
-    expect(records(directory,'journal.jsonl').at(-1).record.kind).toBe('freeze');
+    const reopened=open(directory);expect(reopened.isFrozen).toBe(false);expect(reopened.awaitingSettlement).toBe(true);
+    expect(records(directory,'journal.jsonl').at(-1).record.kind).toBe('book-seal');
     reopened.close();
-    const again=open(directory);expect(again.isFrozen).toBe(true);
-    expect(records(directory,'journal.jsonl').filter(frame=>frame.record.kind==='freeze')).toHaveLength(1);
+    const again=open(directory);expect(again.isFrozen).toBe(false);expect(again.awaitingSettlement).toBe(true);
+    expect(records(directory,'journal.jsonl').filter(frame=>frame.record.kind==='freeze')).toHaveLength(0);
     return;
   }
   await expect(fillTo(directory,j,2)).rejects.toThrow('recovery');
@@ -157,8 +158,8 @@ it('never adds to a sealed book when the next book exists but could not be finis
   j.close();
   expect(readFileSync(join(directory,'journal.jsonl'))).toEqual(sealed);
   const reopened=open(directory);
-  expect(reopened.isFrozen).toBe(true);
-  expect(records(directory,'journal-000002.jsonl').map(frame=>frame.record.kind)).toEqual(['book-open','freeze']);
+  expect(reopened.isFrozen).toBe(false);expect(reopened.awaitingSettlement).toBe(true);
+  expect(records(directory,'journal-000002.jsonl').map(frame=>frame.record.kind)).toEqual(['book-open']);
 });
 
 it('summarises finished attempts out of each step, and brings one back if it changes again',async()=>{

@@ -16,6 +16,9 @@ from pathlib import Path
 
 BOOK_BYTES = 8 * 1024 * 1024
 LOW_DISK_BYTES = 256 * 1024 * 1024
+FREEZE_REASONS = {"restore": "a restore froze it before replacing the database",
+                  "continuity": "the database and the ledger disagree",
+                  "uncertain": "an interrupted step could not be settled"}
 BOOK_NAME = re.compile(r"^journal(-[0-9]{6})?\.jsonl$")
 
 
@@ -29,6 +32,7 @@ def main() -> int:
     custody = Path(parser.parse_args().prefix) / "var/lib/lares/budget-financial"
     if not os.path.lexists(custody):
         return 0
+    lines: list[str] = []
     try:
         books = sorted(path for path in custody.iterdir() if BOOK_NAME.match(path.name))
         if not books:
@@ -36,8 +40,19 @@ def main() -> int:
             return 1
         # Book 1 is journal.jsonl, which sorts after journal-000002.jsonl, so order by name length first.
         current = max(books, key=lambda path: (len(path.name), path.name))
-        lines = current.read_text(encoding="utf-8").splitlines()
-        frozen = any(json.loads(line)["record"]["kind"] == "freeze" for line in lines)
+        ordered = sorted(books, key=lambda path: (len(path.name), path.name))
+        reason = None
+        # Two books: settling can change book after a freeze, before it records the lift.
+        for book in ordered[-2:]:
+            text = book.read_text(encoding="utf-8")
+            # A power cut can tear the last line. The keeper sets it aside at its next start.
+            lines.extend(text[:text.rfind("\n") + 1].splitlines())
+        for line in lines:
+            record = json.loads(line)["record"]
+            if record["kind"] == "freeze":
+                reason = record.get("reason", "uncertain")
+            elif record["kind"] == "recovered" and record.get("by") == "owner":
+                reason = None
         used = sum(path.stat().st_size for path in books)
         full = current.stat().st_size * 100 // BOOK_BYTES
         disk = os.statvfs(custody)
@@ -48,8 +63,9 @@ def main() -> int:
         print("ledger: PROBLEM. The ledger could not be read. Do not change its files; see docs/budget-financial-journal.md.")
         return 1
     free = disk.f_bavail * disk.f_frsize
-    if frozen:
-        print("ledger: PROBLEM. The ledger has frozen itself, so model spending is stopped. Recovery is required; see docs/budget-financial-journal.md.")
+    if reason is not None:
+        why = FREEZE_REASONS.get(reason, "it could not be sure of its records")
+        print(f"ledger: PROBLEM. The ledger has frozen itself because {why}, so model spending is stopped. Run: sudo lares budget recover --check")
         return 1
     if free < LOW_DISK_BYTES:
         print(f"ledger: PROBLEM. Only {size(free)} of disk is free. Spending stops when the current book fills up unless more space is freed.")

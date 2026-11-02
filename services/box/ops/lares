@@ -15,6 +15,7 @@
 #                                                       the remaining blocked inventory work
 #   lares owner-bootstrap                               pin a verified first-owner identity
 #   lares backups  [setup-backups.sh options]           switch on or check backups (setup-backups.sh)
+#   lares budget recover [--check]                      prove the ledger against the database and lift a freeze
 #   lares budget setup [options]                        ask for the monthly limits and switch model
 #                                                       spending on for this installation
 #   lares agent start <name> [--member <email>]         connect a person to an agent and start it
@@ -50,6 +51,7 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares import-preview <archive.tar>
        lares owner-bootstrap
        lares backups [--dry-run] [--yes] [setup-backups.sh options]
+       lares budget recover [--check]
        lares budget setup [--installation-limit <usd>] [--person-limit <usd>] [--prices <in,out,cache-read,cache-write>] [--yes]
        lares agent start <name> [--member <email>]
 
@@ -277,7 +279,11 @@ budget_commands() {
 }
 
 cmd_budget() {
-  [ "${1:-}" = setup ] || { printf 'lares: the budget command is: lares budget setup\n' >&2; usage; exit "$EX_USAGE"; }
+  case "${1:-}" in
+    setup) ;;
+    recover) shift; budget_commands recover "$@"; return ;;
+    *) printf 'lares: the budget commands are: lares budget setup, lares budget recover\n' >&2; usage; exit "$EX_USAGE" ;;
+  esac
   shift
   budget_commands setup "$@"
 }

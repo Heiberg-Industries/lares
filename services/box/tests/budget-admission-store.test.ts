@@ -4,17 +4,17 @@ import {beforeAll,beforeEach,afterAll,afterEach,describe,it,expect,vi} from 'vit
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
 import {performance} from 'node:perf_hooks';
-import {execFile} from 'node:child_process';
+import {execFile,spawn} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {captureModelInvocation,runModelInvocation} from '../../../packages/agent-kit/src/model-invocation.js';
 import type {ConsoleAuthorityContext} from '../../../packages/agent-kit/src/console-turn-authority.js';
 import type {BudgetRequestReference,BudgetFinancialWriter} from '../../../packages/agent-kit/src/budget-admission-store.js';
-import {readFileSync,readdirSync,mkdtempSync,rmSync,fsyncSync,realpathSync,mkdirSync,writeFileSync,chmodSync} from 'node:fs';
+import {appendFileSync,existsSync,statSync,readFileSync,readdirSync,mkdtempSync,rmSync,fsyncSync,realpathSync,mkdirSync,writeFileSync,chmodSync} from 'node:fs';
 import {randomUUID,randomBytes,createHash} from 'node:crypto';
 import {createConnection} from 'node:net';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname,join} from 'node:path';
 import {PgBudgetAdmissionStore,consumeDispatchPermit,budgetIdentitySuppression,type BudgetGatewayObservation,type BudgetTerminalReceipt} from '../../../packages/agent-kit/src/budget-admission-store.js';
 import {PgGrantStore} from '../../../packages/agent-kit/src/grant-store.js';
 import {bindConsoleSession,captureConsoleVaultSources} from '../../../packages/agent-kit/src/console-turn-authority.js';
@@ -38,7 +38,7 @@ import {serveModelPurposeBroker,modelPurposeDigest,modelPurposeMac,signModelPurp
 import {MODEL_PURPOSE_EMPTY_DIGEST,modelPurposeAckFields,modelPurposeEqualMac,modelPurposeRuntimeRequestFields,parseModelPurposeAdmissionResponse} from '../../../packages/agent-kit/src/model-purpose-protocol.js';
 import {openBudgetMonth} from '../../keeper/lib/budget-account-provisioning.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
-import {observeFinancialDatabase,openFinancialJournalForKeeper,runScheduledLedgerCheck,verifyFullFinancialContinuity} from '../../keeper/lib/financial-continuity.js';
+import {FinancialObservationUnavailable,inspectFinancialJournal,observeFinancialDatabase,openFinancialJournalForKeeper,runScheduledLedgerCheck,settleFinancialJournal,startFinancialSettlement,verifyFinancialContinuity,verifyFullFinancialContinuity} from '../../keeper/lib/financial-continuity.js';
 import {execFileSync} from 'node:child_process';
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
 const pricing={version:1,capabilityHash:profile,format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'10',output:'90',cacheRead:'5',cacheWrite:'0'}};
@@ -894,6 +894,188 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
       expect(journal.isFrozen).toBe(true);expect(freezes()).toHaveLength(1);
     },180_000);
   });
+  describe('after a crash, a stall or a freeze',()=>{
+    const keeperOptions={ownershipUid:testJournalUid,lock:platformTestJournalLock};
+    const keeperShapedPool=(options='-c statement_timeout=1500 -c lock_timeout=750 -c idle_in_transaction_session_timeout=2500')=>{
+      const pool=new Pool({connectionString:container.getConnectionUri(),max:2,connectionTimeoutMillis:500,query_timeout:1750,options});
+      pool.on('error',()=>{});pool.on('connect',client=>client.on('error',()=>{}));return pool;
+    };
+    const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+    const attemptState=async(id:string)=>(await db.query('SELECT state FROM budget_attempts WHERE id=$1',[id])).rows[0].state;
+    const kinds=()=>files.records().map((frame:any)=>frame.record.kind);
+    async function adopt(journal:HostFinancialJournal){
+      files={...files,journal,writer:new JournalBudgetFinancialWriter(journal)};
+      gatewayPreparedStore=new PgBudgetAdmissionStore(db,env(),30_000,files.writer);
+    }
+    async function preparedAttempt(){
+      const p=await prepared();
+      return (await db.query('SELECT id FROM budget_attempts WHERE ticket_hash=$1',[h(p.ticket)])).rows[0].id as string;
+    }
+    /** A real process, really killed, then a real keeper start on the same files and database. */
+    async function killWriter(attempt:string,kill:number|'commit-sent'|'after-publish-starts',publishes=false){
+      files.journal.close();
+      const helper=fileURLToPath(new URL('../../keeper/tests/helpers/crashing-financial-writer.mts',import.meta.url));
+      const died=await new Promise<string|null>((resolve,reject)=>{
+        const child=spawn(process.execPath,['--import','tsx',helper,files.directory,container.getConnectionUri(),attempt,String(kill),...(publishes?['publishes']:[])],{cwd:dirname(helper),stdio:'ignore'});
+        child.once('error',reject);child.once('close',(_code,signal)=>resolve(signal));
+      });
+      expect(died).toBe('SIGKILL');
+    }
+    const startKeeper=async()=>{const journal=await openFinancialJournalForKeeper(files.directory,db,keeperOptions);await adopt(journal);return journal;};
+    // Writer-open, begin, proposal, commit, control, observation: every durable step of one operation.
+    it.each([
+      [1,'prepared',['writer-close','recovered','writer-open']],
+      [2,'prepared',['abort','writer-close','recovered','writer-open']],
+      [3,'prepared',['abort','writer-close','recovered','writer-open']],
+      [4,'admitted',['control','writer-close','recovered','writer-open']],
+      [5,'admitted',['writer-close','recovered','writer-open']],
+      [6,'admitted',['writer-close','recovered','writer-open']],
+      ['commit-sent','admitted',['commit','control','writer-close','recovered','writer-open']],
+    ] as const)('settles a process killed at step %s without a freeze',async(kill,state,tail)=>{
+      const attempt=await preparedAttempt();
+      await killWriter(attempt,kill);
+      const before=kinds().length,journal=await startKeeper();
+      expect(journal.isFrozen).toBe(false);expect(kinds().includes('freeze')).toBe(false);
+      expect(kinds().slice(before)).toEqual(tail);
+      if(tail[0]==='abort')expect(files.records().at(before).record.reason).toBe('proven-not-committed');
+      expect(await attemptState(attempt)).toBe(state);
+      // Spending really carries on, and the next clean close and start stay clean.
+      const p=await prepared();expect((await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
+      journal.close();const next=await startKeeper();expect(next.isFrozen).toBe(false);expect(kinds().at(-1)).toBe('writer-open');
+    },60_000);
+    it('finishes a torn last line from a power cut by the same comparison, keeping the torn bytes',async()=>{
+      const attempt=await preparedAttempt();
+      await killWriter(attempt,3);
+      const path=join(files.directory,'journal.jsonl');appendFileSync(path,'{"digest":"abc","record":{"kind":"comm');
+      const check=HostFinancialJournal.openExistingForStartupVerification(files.directory,{...keeperOptions,lock:()=>{},tornTail:'ignore'}),bytes=readFileSync(path);
+      await expect(inspectFinancialJournal(check,db as never)).resolves.toMatchObject({result:'not-committed'});
+      expect(check.tornTailPresent).toBe(true);check.close();expect(readFileSync(path).equals(bytes)).toBe(true);
+      const journal=await startKeeper();expect(journal.isFrozen).toBe(false);
+      expect(readdirSync(files.directory).find(name=>name.startsWith('torn-line-'))).toBeTruthy();
+      expect(kinds()).toContain('abort');expect(await attemptState(attempt)).toBe('prepared');
+      // The kept copy must not stop any later start.
+      journal.close();const next=await startKeeper();expect(next.isFrozen).toBe(false);
+    },60_000);
+    it('keeps the freeze for the key store when a crash lands just before it is written',async()=>{
+      const attempt=await preparedAttempt();await killWriter(attempt,'after-publish-starts',true);
+      // Exactly what a crash between settling the money and freezing leaves: no freeze on file yet.
+      expect(kinds()).not.toContain('freeze');expect(kinds().at(-1)).not.toBe('published');
+      const journal=await startKeeper();expect(journal.isFrozen).toBe(true);expect(journal.publicationUnfinished).toBe(true);
+    },60_000);
+    it('finishes changing book after a crash between sealing one book and opening the next',async()=>{
+      const attempt=await preparedAttempt();files.journal.close();
+      const first=join(files.directory,'journal.jsonl'),tight=HostFinancialJournal.openExisting(files.directory,{...keeperOptions,requirePrepared:true,bookBytes:statSync(first).size+1024});
+      tight.close();
+      const next=join(files.directory,'journal-000002.jsonl');expect(existsSync(next)).toBe(true);
+      expect(JSON.parse(readFileSync(first,'utf8').trimEnd().split('\n').at(-1)!).record.kind).toBe('book-seal');
+      rmSync(next);
+      const journal=await startKeeper();expect(journal.isFrozen).toBe(false);
+      expect(readFileSync(next,'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record.kind)).toEqual(['book-open','recovered','writer-open']);
+      expect(await attemptState(attempt)).toBe('prepared');
+      journal.close();const again=await startKeeper();expect(again.isFrozen).toBe(false);
+    },60_000);
+    it('freezes a killed writer when the money rows match neither result',async()=>{
+      const attempt=await preparedAttempt();await killWriter(attempt,3);
+      await db.query("UPDATE budget_attempts SET highest_observed_liability=highest_observed_liability+1 WHERE id=$1",[attempt]);
+      const journal=await startKeeper();expect(journal.isFrozen).toBe(true);
+      expect(files.records().at(-1).record).toMatchObject({kind:'freeze',reason:'continuity'});
+    },60_000);
+    it('leaves a commit whose key store step never ran for the owner, then the owner clears it',async()=>{
+      const attempt=await preparedAttempt();await killWriter(attempt,'after-publish-starts',true);
+      const journal=await startKeeper();expect(journal.isFrozen).toBe(true);expect(journal.publicationUnfinished).toBe(true);
+      expect(files.records().at(-1).record).toMatchObject({kind:'freeze',reason:'uncertain'});expect(await attemptState(attempt)).toBe('admitted');
+      // Spending must not resume on any later start, and each start adds nothing.
+      const count=kinds().length;journal.close();const again=await startKeeper();expect(again.isFrozen).toBe(true);expect(kinds().length).toBe(count);
+      await expect(settleFinancialJournal(again,db as never,'owner')).resolves.toBe('nothing-interrupted');
+      again.close();const next=await startKeeper();expect(next.isFrozen).toBe(false);
+    },60_000);
+    it('lets only the owner lift a freeze, and only on a full match, changing no money row',async()=>{
+      const attempt=await preparedAttempt(),before=(await db.query('SELECT * FROM budget_attempts ORDER BY id')).rows;
+      files.journal.freeze();files.journal.close();
+      const frozen=await startKeeper();expect(frozen.isFrozen).toBe(true);
+      await expect(settleFinancialJournal(frozen,db as never)).rejects.toThrow();expect(frozen.isFrozen).toBe(true);
+      await db.query("UPDATE budget_attempts SET highest_observed_liability=highest_observed_liability+1 WHERE id=$1",[attempt]);
+      const length=kinds().length;
+      await expect(settleFinancialJournal(frozen,db as never,'owner')).rejects.toThrow('recovery');expect(kinds().length).toBe(length);expect(frozen.isFrozen).toBe(true);
+      const report=await inspectFinancialJournal(frozen,db as never);
+      expect(report).toMatchObject({result:'different'});expect(report.difference?.tables.find(table=>table.table==='attempts')?.changed).toBe(1);
+      await db.query('ALTER TABLE budget_attempts DISABLE TRIGGER USER');
+      await db.query("UPDATE budget_attempts SET highest_observed_liability=highest_observed_liability-1 WHERE id=$1",[attempt]);
+      await db.query('ALTER TABLE budget_attempts ENABLE TRIGGER USER');
+      await expect(settleFinancialJournal(frozen,db as never,'owner')).resolves.toBe('nothing-interrupted');
+      expect(files.records().at(-1).record).toMatchObject({kind:'recovered',by:'owner'});expect(kinds()).toContain('freeze');
+      expect((await db.query('SELECT * FROM budget_attempts ORDER BY id')).rows).toEqual(before);
+      frozen.close();const next=await startKeeper();expect(next.isFrozen).toBe(false);
+      const p=await prepared();expect((await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
+    },60_000);
+    it('refuses to clear when the database is a different one',async()=>{
+      await preparedAttempt();files.journal.freeze();files.journal.close();
+      const frozen=await startKeeper(),other={connect:async()=>{const client=await db.connect();return {release:(broken?:boolean)=>client.release(broken),query:async(text:string,values?:unknown[])=>{
+        const result=await client.query(text,values as never[]);return text.includes('pg_control_system')?{...result,rows:[{...result.rows[0],systemIdentifier:'1'}]}:result;}};}};
+      await expect(inspectFinancialJournal(frozen,other as never)).resolves.toMatchObject({result:'different',difference:{database:true}});
+      await expect(settleFinancialJournal(frozen,other as never,'owner')).rejects.toThrow('recovery');expect(frozen.isFrozen).toBe(true);
+    },60_000);
+    it('will not settle while an earlier transaction could still commit',async()=>{
+      files.journal.freeze();
+      const holder=await db.connect();
+      try{
+        await holder.query('BEGIN');await holder.query("SELECT pg_advisory_xact_lock(hashtextextended('lares-financial-writer',0))");
+        await expect(inspectFinancialJournal(files.journal,db as never)).rejects.toBeInstanceOf(FinancialObservationUnavailable);
+      }finally{await holder.query('ROLLBACK');holder.release();}
+      await expect(inspectFinancialJournal(files.journal,db as never)).resolves.toMatchObject({result:'nothing-interrupted'});
+    },60_000);
+    // Keeper's idle limit ends the abandoned session while paused, so its COMMIT may never run. Without
+    // that limit the COMMIT is still in the socket and lands after the pause. Both must settle correctly.
+    it.each([
+      ['with an idle limit','-c statement_timeout=1500 -c lock_timeout=750 -c idle_in_transaction_session_timeout=2500',undefined],
+      ['with the COMMIT landing after the pause','-c statement_timeout=1500 -c lock_timeout=750','admitted'],
+    ] as const)('a real database pause with COMMIT on its way pauses spending, then settles by itself, %s',async(_name,options,expected)=>{
+      const keeperLike=keeperShapedPool(options);
+      const attempt=await preparedAttempt(),id=container.getId();let paused=false;
+      const source={query:keeperLike.query.bind(keeperLike),connect:async()=>{const client=await keeperLike.connect();return {release:(broken?:boolean)=>client.release(broken),query:(text:string,values?:unknown[])=>{
+        if(text==='COMMIT'&&!paused){paused=true;execFileSync('docker',['pause',id]);}
+        return client.query(text,values as never[]);}};}};
+      const stop=startFinancialSettlement(keeperLike as never,files.journal);
+      try{
+        await expect(files.writer.run('admit',boundary=>consoleSourceTransaction(source as never,async client=>{
+          await client.query("UPDATE budget_attempts SET state='admitted',admitted_at=clock_timestamp() WHERE id=$1",[attempt]);noteBudgetFinancialChange(client,'budget_attempts',attempt);
+        },boundary))).rejects.toThrow();
+        expect(paused).toBe(true);expect(files.journal.awaitingSettlement).toBe(true);expect(files.journal.isFrozen).toBe(false);
+        await sleep(3000);expect(files.journal.awaitingSettlement).toBe(true);
+      }finally{execFileSync('docker',['unpause',id]);}
+      for(let i=0;i<300&&files.journal.awaitingSettlement;i++)await sleep(100);
+      await stop();await keeperLike.end();
+      expect(files.journal.awaitingSettlement).toBe(false);expect(files.journal.isFrozen).toBe(false);expect(kinds()).not.toContain('freeze');
+      const state=await attemptState(attempt);if(expected)expect(state).toBe(expected);
+      expect(kinds().slice(state==='admitted'?-3:-2)).toEqual(state==='admitted'?['commit','control','recovered']:['abort','recovered']);
+      await verifyFinancialContinuity(files.journal,db as never);
+      // The records it wrote must replay: the next start is the real test of a live settlement.
+      files.journal.close();const next=await startKeeper();expect(next.isFrozen).toBe(false);
+      files.journal.close();const killedAfter=await startKeeper();expect(killedAfter.isFrozen).toBe(false);
+    },60_000);
+    it('a 5 second database pause during overlapping calls does not freeze',async()=>{
+      const keeperLike=keeperShapedPool();
+      const gate=authority(keeperLike,journalRecoveryWitness(files.journal));
+      const actors=[['member-a','helper'],['member-b','helper']] as const,stores=new Map(actors.map(([member,agent])=>[`${member}:${agent}`,new PgBudgetAdmissionStore(keeperLike,env(agent),30_000,files.writer)]));
+      const stopSettling=startFinancialSettlement(keeperLike as never,files.journal);let stop=false,settled=0;
+      const usage={usage:{inputTokens:1,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0}};
+      const runners=actors.map(async([member,agent])=>{while(!stop&&!files.journal.isFrozen){
+        let p;try{p=await prepared(member,agent,stores.get(`${member}:${agent}`));}catch{await sleep(50);continue;}
+        const a=await rpc(gate,GATEWAY_ADMIT_PATH,admitDocument(p));if(a.reply.status!==200){await sleep(50);continue;}
+        await sleep(100+Math.random()*200);
+        if((await rpc(gate,GATEWAY_SETTLE_PATH,terminal(a.document,0,usage))).reply.status===200)settled++;
+      }});
+      await sleep(2000+Math.random()*700);
+      const id=container.getId();execFileSync('docker',['pause',id]);await sleep(5000);execFileSync('docker',['unpause',id]);
+      const before=settled;await sleep(4000);stop=true;await Promise.allSettled(runners);
+      for(let i=0;i<300&&files.journal.awaitingSettlement;i++)await sleep(100);
+      await stopSettling();await keeperLike.end();
+      expect(files.journal.isFrozen).toBe(false);expect(kinds()).not.toContain('freeze');expect(files.journal.awaitingSettlement).toBe(false);
+      await verifyFinancialContinuity(files.journal,db as never);
+      expect(settled).toBeGreaterThan(before);
+      files.journal.close();const next=await startKeeper();expect(next.isFrozen).toBe(false);
+    },120_000);
+  });
   it('refuses settlement without a writer and leaves the admitted liability unchanged',async()=>{
     const a=await allowed(),before=(await db.query('SELECT state,actual_amount FROM budget_attempts')).rows[0];
     const closed=new GatewayBudgetAuthority(db,serviceKey,undefined,witness);
@@ -1010,15 +1192,19 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     expect((await store.readStatus(context())).liability).toBe('0.1');
     expect((await rpc(authority(),GATEWAY_ADMIT_PATH,request)).reply.status).toBe(503);
   });
-  it('freezes financial custody after a lost settlement acknowledgement',async()=>{
+  it('settles a lost settlement acknowledgement from the database, without a freeze',async()=>{
     const selected=authority(lostCommit(3)),a=await allowed(selected),receipt=terminal(a.grant);
     expect((await rpc(selected,GATEWAY_SETTLE_PATH,receipt)).reply.status).toBe(503);
     expect((await db.query('SELECT state,actual_amount FROM budget_attempts')).rows[0]).toMatchObject({state:'settled',actual_amount:'0.0098'});
     expect(files.records().filter(frame=>frame.record.kind==='commit')).toHaveLength(4);
-    expect(files.records().at(-1).record.kind).toBe('freeze');
+    expect(files.records().at(-1).record.kind).toBe('proposal');expect(files.journal.isFrozen).toBe(false);
+    // While it is unsettled, nothing else runs.
     expect((await rpc(authority(),GATEWAY_SETTLE_PATH,receipt)).reply.status).toBe(503);
-    expect((await rpc(authority(),GATEWAY_SETTLE_PATH,terminal(a.grant,200))).reply.status).toBe(503);
+    await expect(settleFinancialJournal(files.journal,db as never)).resolves.toBe('committed');
+    expect(files.records().filter(frame=>frame.record.kind==='commit')).toHaveLength(5);
+    expect(files.records().at(-1).record).toMatchObject({kind:'recovered',by:'keeper'});expect(files.journal.isFrozen).toBe(false);
     expect((await db.query('SELECT state FROM budget_accounts WHERE id=$1',[installation])).rows[0].state).toBe('open');
+    await verifyFinancialContinuity(files.journal,db as never);
   });
   it('preserves valid financial overages above reviewed bounds and freezes the installation',async()=>{
     const a=await allowed();expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,terminal(a.grant,2000))).document.state).toBe('conflict');
@@ -1163,7 +1349,7 @@ describe('inactive journal-owned financial transactions on real PostgreSQL',()=>
     expect(files.records().at(-1).record).toMatchObject({kind:'abort',reason:'source-retirement-acknowledged',proposalDigest:expect.stringMatching(/^[a-f0-9]{64}$/)});
     expect(files.records().some(f=>f.record.kind==='commit')).toBe(false);
   });
-  it('keeps an unacknowledged financial COMMIT frozen, never returning a permit',async()=>{
+  it('keeps an unacknowledged financial COMMIT frozen on a journal with no database binding, never returning a permit',async()=>{
     const p=await prepared(),broken=loseAck('COMMIT');
     expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');expect(broken()).toBeTruthy();
     expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('admitted');expect((await db.query('SELECT * FROM budget_financial_checkpoints')).rows).toHaveLength(1);
@@ -1171,11 +1357,11 @@ describe('inactive journal-owned financial transactions on real PostgreSQL',()=>
     await expect(selected.markUnknown((await db.query('SELECT id FROM budget_attempts')).rows[0].id)).rejects.toThrow('closed');
     journal.close();expect(()=>files.open()).toThrow('unavailable');
   });
-  it('does not turn an uncertain BEGIN into a known abort after cleanup',async()=>{
+  it('aborts after an unanswered BEGIN, because COMMIT was never sent',async()=>{
     const p=await prepared(),broken=loseAck('BEGIN');expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');
     expect(broken()).toBeTruthy();expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
-    expectUncertainHistory('begin');expect(files.records().some(f=>f.record.kind==='proposal')).toBe(false);
-    journal.close();expect(()=>files.open()).toThrow('unavailable');
+    expect(files.records().at(-1).record).toMatchObject({kind:'abort',reason:'commit-never-sent',proposalDigest:null});expect(files.records().some(f=>f.record.kind==='proposal')).toBe(false);
+    expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
   });
   it('records a known not-started abort when the actual pool refuses checkout',async()=>{
     const p=await prepared(),closedPool=quiet(new Pool({connectionString:container.getConnectionUri(),max:1}));await closedPool.end();
@@ -1183,14 +1369,14 @@ describe('inactive journal-owned financial transactions on real PostgreSQL',()=>
     expect(files.records().at(-1).record).toMatchObject({kind:'abort',reason:'not-started',proposalDigest:null});
     expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
   });
-  it('does not call a later cleanup ROLLBACK proof that the earlier lost rollback was acknowledged',async()=>{
+  it('aborts after an unanswered ROLLBACK, and never calls it acknowledged',async()=>{
     const p=await prepared(),attempt=(await db.query('SELECT id FROM budget_attempts')).rows[0].id,broken=loseAck('ROLLBACK');
     await expect(writer.run('admit',boundary=>consoleSourceTransaction(db,async client=>{
       await client.query("UPDATE budget_attempts SET state='admitted',admitted_at=clock_timestamp() WHERE id=$1",[attempt]);noteBudgetFinancialChange(client,'budget_attempts',attempt);throw new Error('work failure');
     },boundary))).rejects.toThrow();
     expect(broken()).toBeTruthy();expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
-    expectUncertainHistory('begin');expect(files.records().some(f=>f.record.kind==='proposal')).toBe(false);
-    expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');
+    expect(files.records().at(-1).record).toMatchObject({kind:'abort',reason:'commit-never-sent',proposalDigest:null});
+    expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
   });
   it('a lost revoke-only COMMIT never finishes the financial proposal',async()=>{
     // expiringFinancialWrite first prepares outside the adapted transaction. Arm the
@@ -1199,8 +1385,7 @@ describe('inactive journal-owned financial transactions on real PostgreSQL',()=>
     writer.run=(async(operation,work)=>{loseAck('COMMIT');return originalRun(operation,work);}) as typeof writer.run;
     await expect(expiringFinancialWrite()).rejects.toThrow('could not be confirmed');
     expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');expect((await db.query('SELECT * FROM budget_financial_checkpoints')).rows).toEqual([]);
-    expectUncertainHistory('proposal');
-    journal.close();expect(()=>files.open()).toThrow('unavailable');
+    expect(files.records().at(-1).record).toMatchObject({kind:'abort',reason:'commit-never-sent',proposalDigest:expect.stringMatching(/^[a-f0-9]{64}$/)});
   });
   it.each(['proposal','commit'] as const)('exposes no result after %s fsync failure',async phase=>{
     const p=await prepared();faultKind=phase;

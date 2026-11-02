@@ -739,6 +739,21 @@ describe('protected native custody foundation',()=>{
     expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});expect(bytes(directory)).toEqual(before);
   });
 
+  it('keeper reopens a store whose last owner died, and leaves a deliberate stop for the owner',()=>{
+    const {directory,store}=fixture();store.close();
+    const controlPath=join(directory,'control.json'),setState=(state:string)=>{const control=JSON.parse(readFileSync(controlPath,'utf8'));control.state=state;writeFileSync(controlPath,gatewayCanonical(control),{mode:0o600});chmodSync(controlPath,0o600);};
+    setState('open');
+    expect(()=>BudgetNativeCustodyStore.openExisting(directory,options)).toThrow();
+    const reopened=BudgetNativeCustodyStore.openAfterInterruption(directory,options);stores.push(reopened);reopened.close();
+    expect(JSON.parse(readFileSync(controlPath,'utf8')).state).toBe('closed');
+    setState('uncertain');
+    expect(()=>BudgetNativeCustodyStore.openAfterInterruption(directory,options)).toThrow();
+    expect(()=>BudgetNativeCustodyStore.closeUncertainForOwner(join(directory,'missing'),options)).toThrow();
+    expect(()=>BudgetNativeCustodyStore.openAfterInterruption(join(directory,'missing'),options)).toThrow('Native custody unavailable');
+    BudgetNativeCustodyStore.closeUncertainForOwner(directory,options);
+    expect(BudgetNativeCustodyStore.controlStateForOwner(directory)).toBe('closed');
+    const next=BudgetNativeCustodyStore.openAfterInterruption(directory,options);stores.push(next);next.close();
+  });
   it('reports an unchanged open store with no intent without making it runtime-ready',()=>{
     const {directory,store}=fixture();store.close();const control=JSON.parse(readFileSync(join(directory,'control.json'),'utf8'));control.state='open';writeFileSync(join(directory,'control.json'),gatewayCanonical(control),{mode:0o600});const before=bytes(directory);
     expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'no-intent',runtimeReady:false});expect(bytes(directory)).toEqual(before);

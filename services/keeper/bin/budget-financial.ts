@@ -4,9 +4,9 @@ import {lstatSync,mkdirSync} from 'node:fs';
 import {dirname,isAbsolute,relative,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import type {PoolClient} from 'pg';
-import {loadKeeperConfig,keeperPool} from '../lib/config.js';
+import {loadKeeperConfig,keeperFinancialPool,keeperPool} from '../lib/config.js';
 import {HostFinancialJournal} from '../lib/financial-journal.js';
-import {prepareFinancialCustody} from '../lib/financial-continuity.js';
+import {FinancialObservationUnavailable,inspectFinancialJournal,prepareFinancialCustody,settleFinancialJournal} from '../lib/financial-continuity.js';
 import {JournalBudgetFinancialWriter} from '../lib/budget-financial-writer.js';
 import {consoleSourceTransaction,type SourcePool} from '@lares/agent-kit/console-source-transaction';
 import {BudgetNativeCustodyStore,NATIVE_CUSTODY_DIRECTORY} from '../lib/budget-native-custody.js';
@@ -104,6 +104,48 @@ export async function requestNativeActivation(socket:string,raw:unknown,deadline
   const input=budgetNativeActivationRequestSchema.parse(raw);
   return requestNativeHostAction(socket,'budget.activate-native',input,'active',deadlineMs);
 }
+/** `lares budget recover`. `--check` takes no writer lock and writes nothing, so it can read a ledger a
+ * running keeper holds. `--apply` runs with the keeper stopped, holds the writer lock and repeats the whole
+ * proof. It only appends ledger records: no database row, reservation, key or tombstone changes. */
+async function recover(config:ReturnType<typeof loadKeeperConfig>,mode:string|undefined):Promise<void>{
+  if(mode!=='--check'&&mode!=='--apply')throw new Error('usage: budget-financial recover --check|--apply');
+  if(!config.budgetFinancial)throw new Error('Financial custody is not configured');
+  const apply=mode==='--apply',pool=keeperFinancialPool(config,{max:1,connectionTimeoutMillis:2000,query_timeout:10_000,options:'-c statement_timeout=9000 -c lock_timeout=2000'})!;
+  pool.on('error',()=>{});
+  const directory=config.budgetFinancial.directory,open=(extra:Parameters<typeof HostFinancialJournal.openExistingForStartupVerification>[1])=>HostFinancialJournal.openExistingForStartupVerification(directory,{requirePrepared:true,...extra});
+  // The writer lock tells a running keeper from a dead one. A check beside a running keeper holds no lock.
+  let keeperRunning=false,journal:HostFinancialJournal;
+  if(apply)journal=open({});
+  else try{journal=open({tornTail:'ignore'});}catch{keeperRunning=true;journal=open({tornTail:'ignore',lock:()=>{}});}
+  const keyStore=config.budgetNative?BudgetNativeCustodyStore.controlStateForOwner(config.budgetNative.directory):null;
+  const say=(report:Record<string,unknown>)=>{
+    process.stdout.write(JSON.stringify({frozen:journal.isFrozen,freezeReasons:journal.freezeReasons,tornLine:journal.tornTailPresent,keyStore,...report})+'\n');
+  };
+  try{
+    // A healthy running keeper is mid-work and settles for itself. Comparing would only take its lock.
+    if(keeperRunning&&!journal.isFrozen){say({interrupted:null,publicationUnfinished:false,result:'nothing-interrupted',held:null,applied:false});return;}
+    const interrupted=journal.interruptedOperation;
+    const base=()=>({interrupted:interrupted?.operation??null});
+    let comparison;
+    try{comparison=await inspectFinancialJournal(journal,pool);}
+    catch(error){
+      if(!(error instanceof FinancialObservationUnavailable))throw error;
+      say({...base(),publicationUnfinished:journal.publicationUnfinished,result:'database-silent',applied:false});process.exitCode=1;return;
+    }
+    const provable=comparison.result!=='different';
+    const publicationUnfinished=journal.publicationUnfinished||comparison.result==='committed'&&interrupted?.publishes===true;
+    let applied=false,result:string=comparison.result;
+    if(apply&&provable){
+      try{
+        if(journal.isFrozen||journal.awaitingSettlement)await settleFinancialJournal(journal,pool,'owner');
+        if(keyStore==='uncertain')BudgetNativeCustodyStore.closeUncertainForOwner(config.budgetNative!.directory);
+        applied=true;
+      }catch{result='could-not-apply';process.exitCode=1;}
+    }
+    say({...base(),publicationUnfinished,result,difference:comparison.difference??null,held:comparison.held,applied});
+    if(!provable)process.exitCode=1;
+  }finally{try{journal.close();}finally{await pool.end();}}
+}
 async function readPlan():Promise<unknown>{
   const chunks:Buffer[]=[];let size=0;
   for await(const chunk of process.stdin){const value=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);size+=value.length;if(size>4096)throw new Error('Provision plan is too large');chunks.push(value);}
@@ -147,7 +189,7 @@ export async function main(argv:string[]):Promise<void>{
     if(argv[1]!==confirm||argv[2]!=='--operator-password-file'||!argv[3]||argv.length>5)throw new Error(`usage: budget-financial ${command} ${confirm} --operator-password-file <path> [config]`);
     operatorPath=argv[3];if(argv[4])configPath=argv[4];
   }else{
-    if(argv.length>3||!['freeze','cleanup-native','provision-accounts','provision-native','activate-native'].includes(command))throw new Error('usage: budget-financial prepare-fresh --confirm-fresh-installation --operator-password-file <path> [config] | prepare-native --confirm-fresh-native-custody --operator-password-file <path> [config] | freeze --host [config] | cleanup-native --host [config] | provision-accounts --host [config] < plan.json | provision-native --host [config] < request.json | activate-native --host [config] < request.json');
+    if(argv.length>3||!['freeze','cleanup-native','provision-accounts','provision-native','activate-native','recover'].includes(command))throw new Error('usage: budget-financial prepare-fresh --confirm-fresh-installation --operator-password-file <path> [config] | prepare-native --confirm-fresh-native-custody --operator-password-file <path> [config] | freeze --host [config] | cleanup-native --host [config] | provision-accounts --host [config] < plan.json | provision-native --host [config] < request.json | activate-native --host [config] < request.json');
     if(argv[2])configPath=argv[2];
   }
   const config=loadKeeperConfig(configPath);
@@ -197,6 +239,7 @@ export async function main(argv:string[]):Promise<void>{
     if(result.status!=='complete')process.exitCode=1;
     return;
   }
+  if(command==='recover'){await recover(config,argv[1]);return;}
   if(argv[1]!=='--host')throw new Error('Root host action required');
   if(command==='provision-native'){
     if(!config.budgetFinancial||!config.budgetNative?.reviewedPolicyFile||!config.lifecycle?.runtime.gatewayUrl||!config.lifecycle.runtime.gatewayMasterKeyFile)throw new Error('Prepared native custody, reviewed policy and a trusted gateway are required');

@@ -86,6 +86,10 @@ class Stop(Exception):
 class KeeperRefused(Exception):
     """The keeper answered and said no."""
 
+    def __init__(self, message: str = "", stdout: str = "") -> None:
+        super().__init__(message)
+        self.stdout = stdout
+
 
 class KeeperUnclear(Exception):
     """The keeper could not be reached, or the outcome of the action is not known."""
@@ -230,7 +234,7 @@ class Installation:
                    "node", "--import", "tsx/esm", KEEPER_CLI, *arguments]
         result = subprocess.run(command, capture_output=True, text=True, timeout=PREPARE_TIMEOUT_SECONDS, check=False)
         if result.returncode != 0:
-            raise KeeperRefused(result.stderr.strip())
+            raise KeeperRefused(result.stderr.strip(), result.stdout)
         return result.stdout
 
     def run_box_program(self, script: str, stdin: str, *arguments: str, mounts: list[str] | None = None) -> str:
@@ -670,6 +674,97 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
     return 0
 
 
+FREEZE_WORDS = {"restore": "a restore froze it before replacing the database",
+                "continuity": "the database and the ledger disagreed",
+                "uncertain": "an interrupted step could not be settled"}
+
+
+def recovery_report(installation: Installation, mode: str) -> tuple[dict[str, Any], bool]:
+    """What the proof found, read back from the keeper image. True when every money record matched."""
+    try:
+        report = json.loads(installation.run_keeper_cli("recover", mode))
+    except KeeperRefused as error:
+        # A failed proof exits non-zero but still prints its report.
+        try:
+            report = json.loads(error.stdout)
+        except (json.JSONDecodeError, TypeError):
+            report = None
+        if report is None:
+            raise Stop("The ledger could not be opened: its files are missing, damaged or owned by another process. "
+                       "Nothing was changed. Do not edit its files; see docs/budget-financial-journal.md.") from None
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        if mode == "--apply":
+            raise Stop("The recovery did not finish, so whether it wrote anything is not known. Run this command again: "
+                       "it checks what happened first.") from None
+        raise Stop("The check did not finish. Nothing was changed. Run this command again.") from None
+    say(f"Spending is {'frozen' if report['frozen'] else 'not frozen'}.")
+    for reason in report.get("freezeReasons", []):
+        say(f"  Why: {FREEZE_WORDS.get(reason, reason)}.")
+    if report.get("interrupted"):
+        say(f"  One step was interrupted: {report['interrupted']}.")
+    if report.get("tornLine"):
+        say("  A power cut tore the last ledger line. It was never confirmed; a copy is kept beside the ledger.")
+    held = report.get("held")
+    if held:
+        say(f"  {held['attempts']} calls have no final cost, holding ${held['amount']}. This command leaves them counted.")
+    if report.get("publicationUnfinished"):
+        say("  A member removal, erasure or key step stopped after its money step, so the key store's half may not have run. "
+            "Recovering settles the money only. That key needs checking by hand; no command finishes it yet.")
+    if report.get("keyStore") == "uncertain":
+        say("  The key store stopped itself. Recovering checks its files and lets the keeper open it, keeping every key as it is.")
+    result = report.get("result")
+    if result == "could-not-apply":
+        raise Stop("The money records matched, but the recovery could not be finished: the ledger could not be written, or the "
+                   "key store's files did not verify. Run this command again. If it repeats, do not edit those files.")
+    if result == "database-silent":
+        raise Stop("The database did not answer, so nothing could be proved and nothing was changed. Run this command again once it is up.")
+    if result == "different":
+        say("The money records do not match the ledger, so this command will not clear anything:")
+        difference = report.get("difference") or {}
+        if difference.get("database"):
+            say("  This is a different database from the one the ledger belongs to. A restore does this.")
+        for table in difference.get("tables", []):
+            if table["changed"] or table["expected"] != table["found"]:
+                say(f"  {table['table']}: the ledger expects {table['expected']}, the database has {table['found']}, {table['changed']} differ.")
+        say("If this followed a restore from an older backup, money spent since that backup is missing from the database. "
+            "There is no command for that yet. Spending stays off; everything else keeps working.")
+    return report, result != "different"
+
+
+def budget_recover(installation: Installation, options: argparse.Namespace) -> int:
+    if not os.path.lexists(installation.at(FINANCIAL_DIRECTORY)):
+        say("Spending has not been set up, so there is nothing to recover.")
+        return 0
+    report, provable = recovery_report(installation, "--check")
+    if options.check or not provable:
+        if options.check and provable and report["frozen"]:
+            say("The money records match. `sudo lares budget recover` would clear this.")
+        return 0 if provable else EX_REFUSED
+    if not report["frozen"] and not report.get("interrupted") and report.get("keyStore") != "uncertain":
+        say("Nothing to recover.")
+        return 0
+    if ask("The money records match. This stops the keeper for a moment, adds lines to the ledger, changes no money "
+           "record, then starts the keeper. Type recover to go on: ") != "recover":
+        say("Nothing was changed.")
+        return 0
+    stopped = installation.keeper_compose("stop", "lares-keeper")
+    if stopped.returncode != 0:
+        raise Stop(f"The keeper could not be stopped: {stopped.stderr.strip()} Nothing was changed.")
+    try:
+        final, provable = recovery_report(installation, "--apply")
+    finally:
+        restarted = installation.keeper_compose("up", "-d", "lares-keeper")
+        if restarted.returncode != 0:
+            say(f"The keeper could not be restarted: {restarted.stderr.strip()} Start it with: docker compose up -d lares-keeper")
+    if restarted.returncode != 0:
+        raise Stop("The keeper is stopped. Start it, then run `lares doctor`.")
+    if not provable or not final.get("applied"):
+        raise Stop("The second check did not pass, so nothing was cleared.")
+    wait_for_keeper(installation)
+    say("Recovered. Spending is open again.")
+    return 0
+
+
 def parse_arguments(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="lares", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--prefix", required=True)
@@ -681,6 +776,8 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     setup.add_argument("--person-limit")
     setup.add_argument("--prices", help="input,output,cacheRead,cacheWrite in US dollars per million tokens")
     setup.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    recover = commands.add_parser("recover")
+    recover.add_argument("--check", action="store_true", help="report only; changes nothing")
     start = commands.add_parser("agent-start")
     start.add_argument("name")
     start.add_argument("--member", help="the person's sign-in email or member id; the owner when left out")
@@ -699,6 +796,8 @@ def main(argv: list[str]) -> int:
     try:
         lock = installation.lock()
         try:
+            if options.command == "recover":
+                return budget_recover(installation, options)
             return budget_setup(installation, options) if options.command == "setup" else agent_start(installation, options)
         finally:
             os.close(lock)

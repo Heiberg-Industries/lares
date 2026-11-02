@@ -2,7 +2,7 @@
 import {querySourceBounded,sourceObservationCommit,type SourceDatabase,type SourceObservationCommit,type SourcePool} from '@lares/agent-kit/console-source-transaction';
 import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
-import {FINANCIAL_DATABASE_SCHEMA,FINANCIAL_CHECKPOINT_SCHEMA,FinancialJournalBusy,HostFinancialJournal,financialAtomKey,financialCheckpointRolling,type FinancialAtom,type FinancialCheckpoint,type FinancialCounts,type FinancialProjection,type FinancialObservation,type JournalOptions} from './financial-journal.js';
+import {FINANCIAL_DATABASE_SCHEMA,FINANCIAL_CHECKPOINT_SCHEMA,FinancialJournalBusy,HostFinancialJournal,financialAtomKey,financialCheckpointRolling,type FinancialDatabase,type FinancialAtom,type FinancialCheckpoint,type FinancialCounts,type FinancialProjection,type FinancialObservation,type JournalOptions} from './financial-journal.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
 declare const financialObservationHandleBrand:unique symbol;
 export interface FinancialObservationHandle {readonly [financialObservationHandleBrand]:true}
@@ -140,8 +140,8 @@ export async function verifyFullFinancialContinuity(journal:HostFinancialJournal
     await asked.query('COMMIT');open=false;
   }catch(error){
     if(open)await db.query('ROLLBACK').catch(()=>{});
-    if(error instanceof FinancialObservationUnavailable&&journal.awaitingStartupVerification)throw error;
-    if(!journal.isFrozen)journal.freeze();
+    if(error instanceof FinancialObservationUnavailable)throw error;
+    if(!journal.isFrozen)journal.freezeForContinuity();
     throw new Error('Financial continuity requires recovery');
   }
   if(!matched){if(!journal.isFrozen)journal.freezeForContinuity();throw new Error('Financial continuity requires recovery');}
@@ -221,10 +221,106 @@ export async function verifyFinancialContinuity(journal:HostFinancialJournal,db:
     journal.verifyContinuity(database,observed.checkpoints,observed.atoms,proposed);
   }
   catch(error){
-    // At startup no operation has run, so a silent database proves nothing about money.
-    if(error instanceof FinancialObservationUnavailable&&journal.awaitingStartupVerification)throw error;
-    if(!journal.isFrozen)journal.freeze();throw new Error('Financial continuity requires recovery');
+    // A silent database proves nothing about money. No financial COMMIT follows a failed check.
+    if(error instanceof FinancialObservationUnavailable)throw error;
+    if(!journal.isFrozen)journal.freezeForContinuity();throw new Error('Financial continuity requires recovery');
   }
+}
+/** Held for the whole of every financial transaction, so whoever else gets it knows that transaction
+ * has ended. It is the only proof a COMMIT already on its way cannot still land. */
+const FINANCIAL_WRITER_LOCK="hashtextextended('lares-financial-writer',0)";
+export async function holdFinancialWriterLock(db:SourceDatabase):Promise<void>{
+  // Waits at most the transaction's lock timeout, for a dead connection's transaction to end.
+  await answering(db).query(`SELECT pg_advisory_xact_lock(${FINANCIAL_WRITER_LOCK})`);
+}
+export interface FinancialDifference {database:boolean;tables:Array<{table:string;expected:number;found:number;changed:number}>}
+export interface FinancialComparison {
+  result:'committed'|'not-committed'|'nothing-interrupted'|'different';
+  database?:FinancialDatabase;projectionDigest?:string;difference?:FinancialDifference|null;
+  /** Calls with no final cost yet. They stay counted against limits; nothing here releases them. */
+  held:{attempts:number;amount:string}|null;
+}
+async function describeFinancialDifference(rows:LedgerRows,asked:SourceDatabase,expected:WholeLedgerExpectation,database:boolean):Promise<FinancialDifference|null>{
+  try{
+    const changed=new Map<string,number>();
+    await eachLedgerRow(rows,(table,row)=>{if(!rowMatches(expected,table,row))changed.set(table.kind,(changed.get(table.kind)??0)+1);return true;});
+    const found=(await asked.query(`SELECT (SELECT count(*)::int FROM budget_accounts) AS accounts,(SELECT count(*)::int FROM budget_windows) AS windows,(SELECT count(*)::int FROM budget_gateway_bindings) AS bindings,(SELECT count(*)::int FROM budget_attempts) AS attempts,(SELECT count(*)::int FROM budget_gateway_grants) AS grants,(SELECT count(*)::int FROM budget_financial_checkpoints) AS checkpoints`)).rows[0];
+    const tables=FINANCIAL_TABLES.map(table=>{const name=`${table.kind}s` as keyof FinancialCounts;return {table:name as string,expected:expected.counts[name],found:Number(found[name]),changed:changed.get(table.kind)??0};});
+    const checkpointsMatch=await recordedCheckpointsMatch(rows,expected).catch(()=>false);
+    tables.push({table:'checkpoints',expected:expected.counts.checkpoints,found:Number(found.checkpoints),changed:checkpointsMatch?0:1});
+    return {database,tables};
+  }catch{return null;}
+}
+/** Takes the lock, then reads the database against both results the interrupted operation can have.
+ * Silence throws FinancialObservationUnavailable; a real difference is a result. Writes nothing. */
+async function compareForSettlement(journal:HostFinancialJournal,db:SourceDatabase):Promise<FinancialComparison>{
+  const asked=answering(db);
+  // Before the snapshot, and at session level: a snapshot taken first would predate the wait and miss a late COMMIT.
+  if((await asked.query(`SELECT pg_try_advisory_lock(${FINANCIAL_WRITER_LOCK}) AS held`)).rows[0]?.held!==true)throw new FinancialObservationUnavailable('Financial writer lock unavailable');
+  await asked.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  const interrupted=journal.interruptedOperation;
+  try{
+    const database=await observeFinancialDatabase(asked);
+    const committed=interrupted?.proposed===true&&(await asked.query('SELECT 1 FROM budget_financial_checkpoints WHERE operation_id=$1',[interrupted.operationId])).rows.length>0;
+    const expected=journal.settlementExpectation(committed),rows:LedgerRows=async(sql,values)=>(await asked.query(sql,values)).rows;
+    const heldRow=(await asked.query(`SELECT count(*)::int AS attempts,COALESCE(sum(reserved_amount),0)::text AS amount FROM budget_attempts WHERE state IN ('admitted','unknown','conflict')`)).rows[0];
+    const held=heldRow?{attempts:Number(heldRow.attempts),amount:String(heldRow.amount)}:null;
+    const same=journal.databaseMatches(database);
+    if(!(same&&await financialCountsMatch(asked,expected.counts)&&await eachLedgerRow(rows,(table,row)=>rowMatches(expected,table,row))&&await recordedCheckpointsMatch(rows,expected)))
+      return {result:'different',database,difference:await describeFinancialDifference(rows,asked,expected,!same),held};
+    return {result:interrupted?(committed?'committed':'not-committed'):'nothing-interrupted',database,projectionDigest:gatewayHash(gatewayCanonical({checkpointDigest:expected.checkpointDigest,counts:expected.counts})),held};
+  }finally{try{await asked.query('ROLLBACK');}catch{/* The connection is destroyed by the caller. */}}
+}
+/** The read-only half, for `lares budget recover --check` and the owner's command. */
+export async function inspectFinancialJournal(journal:HostFinancialJournal,pool:Pick<SourcePool,'connect'>):Promise<FinancialComparison>{
+  const db=await pool.connect().catch(()=>{throw new FinancialObservationUnavailable('Financial observation unavailable');});
+  // A destroyed connection's session lock outlives this call briefly, so give it back first.
+  try{return await compareForSettlement(journal,db);}
+  finally{try{await db.query(`SELECT pg_advisory_unlock(${FINANCIAL_WRITER_LOCK})`);}catch{/* Destroyed below. */}db.release(true);}
+}
+/** Settles what a crash or a lost answer left, only if the database matches one of the two possible
+ * results exactly. Otherwise freezes. Silence writes nothing and throws, so the caller tries again. */
+export async function settleFinancialJournal(journal:HostFinancialJournal,pool:Pick<SourcePool,'connect'>,by:'keeper'|'owner'='keeper'):Promise<FinancialComparison['result']>{
+  return journal.withSettlementBarrier(async()=>{
+    const db=await pool.connect().catch(()=>{throw new FinancialObservationUnavailable('Financial observation unavailable');});
+    try{
+      const comparison=await compareForSettlement(journal,db);
+      if(comparison.result==='different'){
+        if(by==='keeper'&&!journal.isFrozen)journal.freezeForContinuity();
+        throw new Error('Financial continuity requires recovery');
+      }
+      journal.settle(comparison.result==='committed',by,comparison.database!,comparison.projectionDigest!);
+      return comparison.result;
+    }catch(error){
+      // Anything but silence is not going to pass by retrying, so spending must not stay paused unseen.
+      if(by==='keeper'&&!journal.isFrozen&&!(error instanceof FinancialObservationUnavailable)&&!(error instanceof FinancialJournalBusy)){try{journal.freeze();}catch{/* Marked frozen in memory. */}}
+      throw error;
+    }finally{db.release(true);}
+  });
+}
+const SETTLE_FIRST_RETRY_MS=250,SETTLE_MAX_RETRY_MS=30_000;
+/** While Keeper runs: settles an unanswered COMMIT as soon as the database can prove which way it went. */
+export function startFinancialSettlement(pool:Pick<SourcePool,'connect'>,journal:HostFinancialJournal):()=>Promise<void>{
+  let timer:ReturnType<typeof setTimeout>|undefined,running:Promise<void>|undefined,stopped=false,delay=SETTLE_FIRST_RETRY_MS;
+  const attempt=async():Promise<void>=>{
+    timer=undefined;
+    if(stopped||journal.isFrozen||!journal.awaitingSettlement)return;
+    try{
+      const outcome=await settleFinancialJournal(journal,pool);delay=SETTLE_FIRST_RETRY_MS;
+      console.error(`keeper: the spending ledger settled an interrupted step (${outcome})`);
+    }catch(error){
+      if((error instanceof FinancialObservationUnavailable||error instanceof FinancialJournalBusy)&&!stopped){
+        timer=setTimeout(run,delay);delay=Math.min(delay*2,SETTLE_MAX_RETRY_MS);
+      }
+    }
+  };
+  const run=()=>{running=attempt().finally(()=>{running=undefined;});};
+  journal.whenInDoubt(()=>{
+    if(stopped||timer||running)return;
+    console.error('keeper: the spending ledger is waiting for the database to confirm an interrupted step; spending is paused');
+    timer=setTimeout(run,0);
+  });
+  return async()=>{stopped=true;if(timer)clearTimeout(timer);await running;};
 }
 /** Keeper startup. Returns a journal that either holds the writer lease or is durably frozen,
  * in which case spending stays closed and the rest of Keeper runs. A database that cannot
@@ -234,6 +330,11 @@ export async function openFinancialJournalForKeeper(directory:string,pool:Pick<S
   try{
     // Keep protected ownership through the full check, then publish writer ownership
     // before any host action or listener can reach the journal.
+    if(!journal.isFrozen&&journal.awaitingSettlement){
+      // A silent database stops this start, below. A real difference has already frozen the journal.
+      const outcome=await settleFinancialJournal(journal,pool).catch(error=>{if(error instanceof FinancialObservationUnavailable)throw error;return undefined;});
+      if(outcome)console.error(`keeper: the spending ledger settled an interrupted step at startup (${outcome})`);
+    }
     if(!journal.isFrozen){
       const db=await pool.connect().catch(()=>{throw new FinancialObservationUnavailable('Financial observation unavailable');});
       try{await verifyFullFinancialContinuity(journal,db);}
