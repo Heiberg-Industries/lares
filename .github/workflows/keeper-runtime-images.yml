@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      PUBLIC_DOCS_RELEASE: candidate
+      PUBLIC_DOCS_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.docs_release || 'candidate' }}
     steps:
       - uses: actions/checkout@v4
       - name: Enable corepack and prepare pnpm 9.15.0
@@ -38,14 +38,17 @@ jobs:
           cache: "pnpm"
       - name: Install the docs exporter
         run: pnpm install --frozen-lockfile --filter lares
-      - name: Stage the public docs corpus the role images bake in
+      - name: Export and stage the verified public docs corpus
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           export_dir="$RUNNER_TEMP/public-docs-corpus"
           node --import tsx scripts/public-docs.ts export --root "$GITHUB_WORKSPACE" --release "$PUBLIC_DOCS_RELEASE" --out "$export_dir" > "$RUNNER_TEMP/public-docs-identity.json"
           mkdir -p .public-docs-bake
           cp -R "$export_dir" .public-docs-bake/snapshot
           cp "$RUNNER_TEMP/public-docs-identity.json" .public-docs-bake/identity.json
+          expected_hash="$(node -e 'const i=JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if(i.sourceCommit!==process.argv[2]||i.release!==process.argv[3]) process.exit(1); process.stdout.write(i.corpusSha256)' "$RUNNER_TEMP/public-docs-identity.json" "$GITHUB_SHA" "$PUBLIC_DOCS_RELEASE")"
+          node --import tsx scripts/public-docs.ts verify --snapshot "$GITHUB_WORKSPACE/.public-docs-bake/snapshot" --expected-corpus "$expected_hash"
       - name: Install the browser that plays the owner
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
