@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { PageHeader } from "@lares/ui/patterns";
-import { requireConsolePage, members } from "../../lib/auth";
+import { memberAuditAddress, requireConsolePage, members } from "../../lib/auth";
 import { InviteMember } from "../../components/InviteMember";
 import { removeMember, revokeInvitation, signOutMember } from "../actions/members";
 import { listInitialMemberBudgetStatus } from "../../lib/initial-member-budget";
@@ -10,9 +10,10 @@ export const dynamic = "force-dynamic";
 export default async function MembersPage() {
   const actor = await requireConsolePage();
   const sessionToken=(await cookies()).get("lares_session")?.value??"";
+  const auditActor=await memberAuditAddress(actor.id);
   const [directory, invitations, budgetStatus] = await Promise.all([
     members.listMembers(actor.id),members.listInvitations(actor.id),
-    listInitialMemberBudgetStatus(sessionToken,actor.id),
+    auditActor?listInitialMemberBudgetStatus(sessionToken,auditActor):{available:false as const,members:[] as []},
   ]);
   const budgetByMember=new Map(budgetStatus.members.map(status=>[status.memberId,status]));
   return <div className="lares-page lares-stack">

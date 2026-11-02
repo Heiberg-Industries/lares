@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-vi.mock("pg", () => ({ Pool: class { constructor(_config: unknown) {} } }));
+vi.mock("pg", () => ({ Pool: class { constructor(_config: unknown) {} connect() {} } }));
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -25,6 +25,18 @@ it("requires the explicit console app password file and ignores ambient PGPASSWO
     database: "lares_state",
     password: "explicit-app-password",
   });
+});
+
+it("looks like a pool, not a client, to the source transaction owner", async () => {
+  vi.resetModules();
+  const directory = mkdtempSync(join(tmpdir(), "console-db-secret-"));
+  dirs.push(directory);
+  const passwordFile = join(directory, "database-password");
+  writeFileSync(passwordFile, "explicit-app-password\n");
+  vi.stubEnv("PGPASSWORD_FILE", passwordFile);
+  const { pool } = await import("../lib/db.js");
+  expect("connect" in pool).toBe(true);
+  expect("release" in pool).toBe(false);
 });
 
 it("rejects a blank console app password file", async () => {

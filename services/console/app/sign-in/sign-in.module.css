@@ -117,6 +117,13 @@
 .error {
   border-color: var(--destructive);
 }
+.ownerSetup {
+  min-width: 0;
+}
+.ownerSetupDetails {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 .button {
   display: flex;

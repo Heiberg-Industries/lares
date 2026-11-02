@@ -51,10 +51,10 @@ export default async function SignIn({ searchParams }: { searchParams: Promise<R
           <h1 className={styles.title}>Sign in to Lares</h1>
           {error && <p className={`${styles.notice} ${styles.error}`} role="alert">{error}</p>}
           {signedOut && <p className={styles.notice} role="status">You&apos;re signed out.</p>}
-          {showOwnerSetup && receipt && <section aria-labelledby="owner-setup-title">
+          {showOwnerSetup && receipt && <section className={styles.ownerSetup} aria-labelledby="owner-setup-title">
             <h2 id="owner-setup-title">Confirm this first-owner sign-in</h2>
             <p>This verified provider account can be linked to the first owner on this fresh installation. Confirm that the installation origin below is yours. On the installing server, run <code>sudo lares owner-bootstrap</code> and paste the JSON below at its protected prompt. Then recreate only Console and sign in again with this same account. This display expires in five minutes.</p>
-            <pre aria-label="Owner setup JSON">{JSON.stringify(receipt)}</pre>
+            <pre className={styles.ownerSetupDetails} aria-label="Owner setup JSON">{JSON.stringify(receipt)}</pre>
             <p>The setup details do not sign you in. A new provider check is required after the server confirms them.</p>
           </section>}
           <a className={`${styles.button} ${styles.primary}`} href={loginHref}>
