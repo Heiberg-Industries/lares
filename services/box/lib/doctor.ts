@@ -54,6 +54,11 @@ export interface DoctorDeps {
   readonly env: NodeJS.ProcessEnv;
   readonly sqlDir: string;
   readonly now: Date;
+  /** True on an installed server, where there is no pnpm: advice names `lares` commands instead. */
+  readonly installed?: boolean;
+  /** The login that may read the migration ledger. The application login is deliberately denied
+   *  it, so `lares doctor` opens this from the root-only operator file when it can. */
+  readonly ledgerDb?: Queryable;
   /** How to learn what is true of a `*_FILE` setting's file, without reading its bytes. Defaults
    *  to a real filesystem probe; a test injects its own. */
   readonly probeFile?: ProbeFile;
@@ -77,6 +82,13 @@ function messageOf(err: unknown): string {
 }
 
 /** Postgres's `undefined_table` code: the table a check wants has not been migrated yet. */
+function isPermissionDenied(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "42501";
+}
+
+const MIGRATE_ON_SERVER = "Finish the update with `sudo lares update --release <name>`, then run `lares doctor` again.";
+const ASK_FOR_HELP_ON_SERVER = "Do not change anything yet. No `lares` command can fix this safely, so ask for help or restore from a backup.";
+
 function isMissingTable(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "42P01";
 }
@@ -187,7 +199,7 @@ function checkSettingsCheck(env: NodeJS.ProcessEnv, probeFile: ProbeFile): Check
   };
 }
 
-async function checkMigrations(db: Queryable, sqlDir: string): Promise<CheckResult> {
+async function checkMigrations(db: Queryable, sqlDir: string, installed: boolean): Promise<CheckResult> {
   try {
     const files = readMigrations(sqlDir);
     let applied: AppliedMigration[];
@@ -208,7 +220,7 @@ async function checkMigrations(db: Queryable, sqlDir: string): Promise<CheckResu
         id: "migrations",
         state: "fail",
         say: "This database already has tables but no migration ledger — it looks like it was set up by hand before the runner existed, not by this installer.",
-        fix: "pnpm -C services/box migrate --adopt-through <the last filename you know was applied> --dry-run",
+        fix: installed ? ASK_FOR_HELP_ON_SERVER : "pnpm -C services/box migrate --adopt-through <the last filename you know was applied> --dry-run",
       };
     }
 
@@ -220,7 +232,7 @@ async function checkMigrations(db: Queryable, sqlDir: string): Promise<CheckResu
         id: "migrations",
         state: "fail",
         say: `A migration cannot be applied safely: ${first.reason}`,
-        fix: "Resolve that file by hand, then run `pnpm -C services/box migrate --dry-run` to see the plan again.",
+        fix: installed ? ASK_FOR_HELP_ON_SERVER : "Resolve that file by hand, then run `pnpm -C services/box migrate --dry-run` to see the plan again.",
       };
     }
 
@@ -232,19 +244,27 @@ async function checkMigrations(db: Queryable, sqlDir: string): Promise<CheckResu
       id: "migrations",
       state: "warn",
       say: `${toApply} migration${toApply === 1 ? "" : "s"} on disk ${toApply === 1 ? "has" : "have"} not been applied yet.`,
-      fix: "pnpm -C services/box migrate",
+      fix: installed ? MIGRATE_ON_SERVER : "pnpm -C services/box migrate",
     };
   } catch (err) {
+    if (isPermissionDenied(err)) {
+      return {
+        id: "migrations",
+        state: "unknown",
+        say: "The migration record can only be read with the root-only database login.",
+        fix: "Run `sudo lares doctor`.",
+      };
+    }
     return {
       id: "migrations",
       state: "unknown",
       say: `The migrations could not be checked: ${messageOf(err)}`,
-      fix: "Apply `pnpm -C services/box migrate` first, then run `lares doctor` again.",
+      fix: installed ? MIGRATE_ON_SERVER : "Apply `pnpm -C services/box migrate` first, then run `lares doctor` again.",
     };
   }
 }
 
-async function checkOwner(db: Queryable, sqlDir: string): Promise<CheckResult> {
+async function checkOwner(db: Queryable, sqlDir: string, installed: boolean): Promise<CheckResult> {
   try {
     const { rows } = await db.query<{ id: string; display_name: string; primary_email: string | null }>(
       "SELECT id, display_name, primary_email FROM users",
@@ -286,7 +306,7 @@ async function checkOwner(db: Queryable, sqlDir: string): Promise<CheckResult> {
       say: isMissingTable(err)
         ? "The identity register has not been created yet."
         : `The identity register could not be checked: ${messageOf(err)}`,
-      fix: "pnpm -C services/box migrate",
+      fix: installed ? MIGRATE_ON_SERVER : "pnpm -C services/box migrate",
     };
   }
 }
@@ -298,7 +318,7 @@ function isStale(checkedAt: string | Date | null, now: Date): boolean {
   return now.getTime() - at.getTime() > BACKUP_STALE_AFTER_MS;
 }
 
-async function checkBackup(db: Queryable, now: Date): Promise<CheckResult> {
+async function checkBackup(db: Queryable, now: Date, installed: boolean): Promise<CheckResult> {
   try {
     const { rows } = await db.query<{
       check_name: string;
@@ -342,12 +362,12 @@ async function checkBackup(db: Queryable, now: Date): Promise<CheckResult> {
       say: isMissingTable(err)
         ? "The backup status table has not been created yet."
         : `The backup status could not be checked: ${messageOf(err)}`,
-      fix: "pnpm -C services/box migrate",
+      fix: installed ? MIGRATE_ON_SERVER : "pnpm -C services/box migrate",
     };
   }
 }
 
-async function checkRepairs(db: Queryable): Promise<CheckResult> {
+async function checkRepairs(db: Queryable, installed: boolean): Promise<CheckResult> {
   try {
     const { rows } = await db.query<{
       kind: string;
@@ -376,7 +396,7 @@ async function checkRepairs(db: Queryable): Promise<CheckResult> {
       say: isMissingTable(err)
         ? "The repairs table has not been created yet."
         : `Open repairs could not be checked: ${messageOf(err)}`,
-      fix: "pnpm -C services/box migrate",
+      fix: installed ? MIGRATE_ON_SERVER : "pnpm -C services/box migrate",
     };
   }
 }
@@ -653,10 +673,11 @@ export async function runDoctor(deps: DoctorDeps): Promise<CheckResult[]> {
 
   const settings = checkSettingsCheck(deps.env, probeFile);
   const database = await checkDatabase(db);
-  const migrations = db ? await checkMigrations(db, deps.sqlDir) : unknownBecauseNoDatabase("migrations");
-  const owner = db ? await checkOwner(db, deps.sqlDir) : unknownBecauseNoDatabase("owner");
-  const backup = db ? await checkBackup(db, deps.now) : unknownBecauseNoDatabase("backup");
-  const repairs = db ? await checkRepairs(db) : unknownBecauseNoDatabase("repairs");
+  const installed = deps.installed === true;
+  const migrations = db ? await checkMigrations(deps.ledgerDb ?? db, deps.sqlDir, installed) : unknownBecauseNoDatabase("migrations");
+  const owner = db ? await checkOwner(db, deps.sqlDir, installed) : unknownBecauseNoDatabase("owner");
+  const backup = db ? await checkBackup(db, deps.now, installed) : unknownBecauseNoDatabase("backup");
+  const repairs = db ? await checkRepairs(db, installed) : unknownBecauseNoDatabase("repairs");
   const gateway = await checkGateway(deps.testModel);
 
   return [settings, database, migrations, owner, backup, repairs, gateway];

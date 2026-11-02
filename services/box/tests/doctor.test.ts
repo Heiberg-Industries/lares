@@ -81,6 +81,33 @@ describe("lares doctor", () => {
     expect(m.fix).toBe("pnpm -C services/box migrate");
   });
 
+  it("names a lares command on an installed server, because a server has no pnpm", async () => {
+    const rs = await runDoctor({
+      db: fakeDb({ "FROM schema_migrations": [], "information_schema.tables": [] }),
+      env: {}, sqlDir: SQL_DIR, now: new Date(), installed: true,
+    });
+    const m = find(rs, "migrations");
+    expect(m.state).toBe("warn");
+    expect(m.fix).toMatch(/sudo lares update --release/);
+    expect(rs.map((r) => r.fix ?? "").join("\n")).not.toContain("pnpm");
+  });
+
+  it("reads the migration ledger with the login allowed to, and says plainly when it has none", async () => {
+    const denied = Object.assign(new Error("permission denied for table schema_migrations"), { code: "42501" });
+    const app = { query: async (sql: string, ...rest: unknown[]) => {
+      if (sql.includes("schema_migrations")) throw denied;
+      return (fakeDb({ "information_schema.tables": [] }) as { query: (s: string, ...r: unknown[]) => Promise<unknown> }).query(sql, ...rest);
+    } } as Parameters<typeof runDoctor>[0]["db"];
+    const withoutLogin = find(await runDoctor({ db: app, env: {}, sqlDir: SQL_DIR, now: new Date(), installed: true }), "migrations");
+    expect(withoutLogin.state).toBe("unknown");
+    expect(withoutLogin.fix).toBe("Run `sudo lares doctor`.");
+    const withLogin = find(await runDoctor({
+      db: app, ledgerDb: fakeDb({ "FROM schema_migrations": [], "information_schema.tables": [] }),
+      env: {}, sqlDir: SQL_DIR, now: new Date(), installed: true,
+    }), "migrations");
+    expect(withLogin.state).toBe("warn");
+  });
+
   it("says the backup is unproven when nothing has ever recorded a verdict", async () => {
     const rs = await runDoctor({
       db: fakeDb({ "FROM backup_status": [{ check_name: "verify", ok: null, checked_at: null, last_pass_at: null, detail: null, target: null }] }),

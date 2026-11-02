@@ -316,7 +316,7 @@ if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
   for d in "$SRV_ROOT"/lares/*; do
     [ -d "$d" ] || continue
     case "$d" in
-      "$SRV_ROOT"/lares/agents|"$SRV_ROOT"/lares/retired|"$SRV_ROOT"/lares/installation|"$SRV_ROOT"/lares/backup|"$SRV_ROOT"/lares/egress|"$SRV_ROOT"/lares/secrets) ;;
+      "$SRV_ROOT"/lares/agents|"$SRV_ROOT"/lares/retired|"$SRV_ROOT"/lares/installation|"$SRV_ROOT"/lares/backup|"$SRV_ROOT"/lares/egress|"$SRV_ROOT"/lares/secrets|"$SRV_ROOT"/lares/run) ;;
       *) fail "unclassified Lares store: $d" ;;
     esac
   done
