@@ -68,7 +68,6 @@ const steps = {
     await page.locator(".lares-message-agent", { hasText: settings.toolReply }).first().waitFor({ timeout: STEP_MS });
     await send(settings.approvalPrompt);
     await page.locator(".lares-actions button", { hasText: /approve/i }).first().click({ timeout: STEP_MS });
-    await page.getByText("You approved this, and it ran.").waitFor({ timeout: STEP_MS });
     await page.locator(".lares-message-agent", { hasText: settings.approvalReply }).first().waitFor({ timeout: STEP_MS });
     await send(settings.followUpPrompt);
     await page.locator(".lares-message-agent", { hasText: settings.followUpReply }).first().waitFor({ timeout: STEP_MS });

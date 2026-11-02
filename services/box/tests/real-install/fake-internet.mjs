@@ -127,7 +127,8 @@ function serve(fixture) {
       return json(response, 401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
     const answer = decide(parsed);
     const toolCalls = (parsed.messages ?? []).flatMap((message) => Array.isArray(message.content) ? message.content.filter((block) => block.type === "tool_use") : []);
-    record({ kind: "model", model: parsed.model, stream: Boolean(parsed.stream), messages: (parsed.messages ?? []).length,
+    const toolResults = (Array.isArray(parsed.messages?.at(-1)?.content) ? parsed.messages.at(-1).content : []).filter((block) => block.type === "tool_result");
+    record({ kind: "model", model: parsed.model, toolResults: toolResults.map((block) => ({ isError: Boolean(block.is_error), content: JSON.stringify(block.content).slice(0, 300) })), stream: Boolean(parsed.stream), messages: (parsed.messages ?? []).length,
       lastText: textOf(parsed.messages?.at(-1)).slice(-200), tools: (parsed.tools ?? []).map((tool) => tool.name),
       returnedCallers: toolCalls.map((block) => block.caller ?? null), answer });
     const id = `msg_01${randomBytes(11).toString("hex")}`;

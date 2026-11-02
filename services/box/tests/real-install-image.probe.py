@@ -554,7 +554,11 @@ def main(argv: list[str]) -> int:
         if not any({"type": "direct"} in call["returnedCallers"] for call in follow_up):
             raise RuntimeError("no later request carried the tool call back with its caller")
         passed("tool-call-came-back-to-the-provider-with-its-caller")
-        proof["modelCalls"] = [{"tool": call["answer"].get("tool"), "messages": call["messages"], "returnedCallers": call["returnedCallers"]} for call in models]
+        proof["modelCalls"] = [{"tool": call["answer"].get("tool"), "messages": call["messages"], "returnedCallers": call["returnedCallers"], "toolResults": call["toolResults"]} for call in models]
+        save_proof()
+        failed_tools = [result for call in models for result in call["toolResults"] if result["isError"]]
+        if failed_tools:
+            raise RuntimeError(f"a tool call came back as failed: {failed_tools}")
         written = list(pathlib.Path("/srv/vault").rglob(f"tracks/{APPROVAL_TRACK}/track.md"))
         if len(written) != 1:
             raise RuntimeError(f"the approved tool did not write its one file: {written}")
