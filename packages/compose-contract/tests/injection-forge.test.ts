@@ -1,11 +1,14 @@
 // The injection test suite, part one: the contract itself.
 //  - a body line that starts with "## " cannot forge a block heading or a note;
 //  - the corpus every builder test walks is well formed.
+// Part two is services/chief-of-staff/tests/injection-corpus.test.ts (prompt assembly); part three
+// is services/chief-of-staff/tests/injection-authority.test.ts (the seven authority families
+// against the real authorisation code).
 import { describe, it, expect } from "vitest";
 import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { labeledContext, neutraliseHeadings, THIRD_PARTY_NOTICE } from "../src/index.js";
-import { loadInjectionCorpus } from "./injection-corpus.js";
+import { AUTHORITY_FAMILIES, loadInjectionCorpus } from "./injection-corpus.js";
 
 const headingLines = (s: string): string[] => s.split("\n").filter((l) => l.startsWith("## "));
 
@@ -47,12 +50,23 @@ describe("labeledContext — a body cannot forge a heading", () => {
 describe("the injection corpus", () => {
   const corpus = loadInjectionCorpus();
 
-  it("has about thirty cases in the five families, English and Norwegian", () => {
+  it("has the five prompt families and the seven authority families, English and Norwegian", () => {
     expect(corpus.length).toBeGreaterThanOrEqual(30);
     expect(new Set(corpus.map((c) => c.family))).toEqual(
-      new Set(["tool-invocation", "gate-bypass", "exfiltration", "persona-hijack", "benign-lookalike"]),
+      new Set(["tool-invocation", "gate-bypass", "exfiltration", "persona-hijack", "benign-lookalike", ...AUTHORITY_FAMILIES]),
     );
     expect(new Set(corpus.map((c) => c.lang))).toEqual(new Set(["en", "no"]));
+  });
+
+  it("every authority family has an English and a Norwegian attack and a benign look-alike in each language", () => {
+    for (const family of AUTHORITY_FAMILIES) {
+      expect(new Set(corpus.filter((c) => c.family === family).map((c) => c.lang)), family).toEqual(new Set(["en", "no"]));
+      expect(new Set(corpus.filter((c) => c.lookalikeOf === family).map((c) => c.lang)), family).toEqual(new Set(["en", "no"]));
+    }
+  });
+
+  it("only a benign look-alike names the family it resembles", () => {
+    for (const c of corpus) if (c.lookalikeOf !== undefined) expect(c.family).toBe("benign-lookalike");
   });
 
   it("every case has a unique id and a unique marker that sits inside its own text", () => {
