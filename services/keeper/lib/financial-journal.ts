@@ -1,5 +1,5 @@
 /** Protected host custody. Continuity and preparation never open spending authority. */
-import {constants,openSync,closeSync,fstatSync,lstatSync,readFileSync,readSync,writeSync,fsyncSync,mkdirSync,readdirSync,renameSync} from 'node:fs';
+import {constants,openSync,closeSync,fstatSync,lstatSync,readFileSync,readSync,writeSync,fsyncSync,mkdirSync,readdirSync,renameSync,existsSync,statfsSync} from 'node:fs';
 import {isAbsolute,join,normalize,parse,dirname} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {createHash,randomUUID,randomBytes} from 'node:crypto';
@@ -9,6 +9,7 @@ import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
 import {gatewayPricingSchema} from '@lares/agent-kit/gateway-pricing';
 import {consumeSourceObservationCommit,type SourceObservationCommit} from '@lares/agent-kit/console-source-transaction';
 import {consumeFinancialObservationHandle,type FinancialObservationHandle} from './financial-continuity.js';
+const digest=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const hash=z.string().regex(/^[a-f0-9]{64}$/),id=z.string().uuid(),uint=z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
 const money=z.string().refine(v=>{try{return canonicalBudgetMoney(v)===v;}catch{return false;}});
 const instant=z.iso.datetime({precision:6}),zero='0'.repeat(64);
@@ -27,7 +28,12 @@ const controlSchema=z.object({journalId:id,database:FINANCIAL_DATABASE_SCHEMA,ch
 export type FinancialControl=z.infer<typeof controlSchema>;
 export type FinancialDatabase=z.infer<typeof FINANCIAL_DATABASE_SCHEMA>;
 export type FinancialCheckpoint=z.infer<typeof FINANCIAL_CHECKPOINT_SCHEMA>;
-export interface FinancialProjection {checkpoints:FinancialCheckpoint[];atoms:FinancialAtom[]}
+export interface FinancialCounts {accounts:number;windows:number;bindings:number;attempts:number;grants:number;checkpoints:number}
+export interface FinancialWindowTotal {windowId:string;state:string;count:number;reserved:string;actual:string;high:string}
+/** What each step compares: every row that can still change money, the newest checkpoints and
+ * every table's count. Finished attempts leave `atoms` after they are summarised; `windowTotals`
+ * then covers the current months' money, and the whole-ledger check covers each summarised row. */
+export interface FinancialProjection {checkpoints:FinancialCheckpoint[];atoms:FinancialAtom[];counts:FinancialCounts;windowTotals?:{accountIds:string[];windowIds:string[];totals:FinancialWindowTotal[]}}
 const observationCounts=z.object({accounts:z.number().int().nonnegative().safe(),windows:z.number().int().nonnegative().safe(),bindings:z.number().int().nonnegative().safe(),attempts:z.number().int().nonnegative().safe(),grants:z.number().int().nonnegative().safe(),checkpoints:z.number().int().positive().safe()}).strict();
 export const FINANCIAL_OBSERVATION_SCHEMA=z.object({operationId:id,checkpoint:FINANCIAL_CHECKPOINT_SCHEMA,database:FINANCIAL_DATABASE_SCHEMA,projectionDigest:hash,checkpointDigest:hash,counts:observationCounts}).strict();
 export type FinancialObservation=z.infer<typeof FINANCIAL_OBSERVATION_SCHEMA>;
@@ -44,11 +50,13 @@ function assertUniqueFinancialAtoms(atoms:readonly FinancialAtom[]):void {
 }
 const receiptSchema=z.object({version:z.literal(1),journalId:id,suppressionKeyFingerprint:hash}).strict();
 const gatewayRecoveryReferenceSchema=z.object({installationAccountId:id,epoch:z.string().min(1).max(200),endpointGeneration:uint}).strict();
-export interface JournalOptions {ownershipUid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void;requirePrepared?:boolean}
+export interface JournalOptions {ownershipUid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void;requirePrepared?:boolean;bookBytes?:number;freeBytes?:(directory:string)=>number}
 const operation=z.enum(['prepare','provision','native-activation','admit','grant','unknown','settle','member-remove','erase-person','native-cleanup-recovery']);
 const base={version:z.literal(1),sequence:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),operationId:id,previousDigest:hash};
 export const FINANCIAL_JOURNAL_RECORD_SCHEMA=z.discriminatedUnion('kind',[
   z.object({...base,kind:z.literal('genesis'),journalId:id,suppressionKeyFingerprint:hash}).strict(),
+  z.object({...base,kind:z.literal('book-open'),journalId:id,book:z.number().int().min(2).safe(),sealedBookDigest:hash,sealedBookBytes:z.number().int().positive().safe()}).strict(),
+  z.object({...base,kind:z.literal('book-seal'),book:z.number().int().positive().safe()}).strict(),
   z.object({...base,kind:z.literal('writer-open')}).strict(),
   z.object({...base,kind:z.literal('preparation-complete')}).strict(),
   z.object({...base,kind:z.literal('control'),control:controlSchema}).strict(),
@@ -70,7 +78,25 @@ export interface FinancialTurnWait {ms:number;first?:boolean}
 interface WaitingTurn {first:boolean;start:()=>void;refuse:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}
 export const JOURNAL_MAX_RECORD_BYTES=65_536,JOURNAL_MAX_BYTES=8*1024*1024,JOURNAL_MAX_RECORDS=8192;
 const CONTROL_RECORD_BYTES=1024;
-const digest=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex');
+// A seal or freeze may pass a book's limits by this much, so a full book can always be closed.
+const BOOK_CLOSING_RECORDS=2;
+// Finished attempts are summarised once this many are waiting. Only these newest checkpoints
+// stay in each step's comparison, along with every checkpoint of a non-gateway operation.
+const FOLD_SUMMARISE_AT=64,FOLD_CHECKPOINT_TAIL=64;
+const GATEWAY_OPERATIONS:ReadonlySet<string>=new Set(['prepare','admit','grant','settle','unknown']);
+const BOOK_NAME=/^journal-[0-9]{6}\.jsonl$/,BOOK_PARTIAL=/^journal-[0-9]{6}\.partial$/;
+const bookName=(book:number)=>book===1?'journal.jsonl':`journal-${String(book).padStart(6,'0')}.jsonl`;
+const MONEY_SCALE=10n**18n;
+const moneyUnits=(value:string)=>{const [whole,fraction='']=value.split('.');return BigInt(whole!)*MONEY_SCALE+BigInt(fraction.padEnd(18,'0'));};
+const moneyText=(value:bigint)=>{const fraction=(value%MONEY_SCALE).toString().padStart(18,'0').replace(/0+$/,'');return (value/MONEY_SCALE).toString()+(fraction?'.'+fraction:'');};
+type AttemptAtom=Extract<FinancialAtom,{kind:'attempt'}>;
+type AttemptMoney=Pick<AttemptAtom,'installationWindowId'|'memberWindowId'|'state'|'reservedAmount'|'actualAmount'|'highestObservedLiability'>;
+/** Keeps only what later checks need from a finished row: its fingerprint and its money. */
+type SummarisedAtom={digest:string;money?:AttemptMoney};
+/** Adds one checkpoint to the running fingerprint of the whole list, oldest first. */
+export function financialCheckpointRolling(previous:string,checkpoint:FinancialCheckpoint):string {
+  return digest(Buffer.concat([Buffer.from(previous),gatewayCanonical(checkpoint)]));
+}
 export function financialJournalFrame(record:JournalRecord):{bytes:Buffer;digest:string} {
   const checked=FINANCIAL_JOURNAL_RECORD_SCHEMA.parse(record),sum=digest(gatewayCanonical(checked));
   const bytes=Buffer.concat([gatewayCanonical({record:checked,digest:sum}),Buffer.from('\n')]);
@@ -241,8 +267,19 @@ export function committedFinancialEvidence(receipt:CommittedFinancialReceipt,req
   }
   return covered?{...evidence}:undefined;
 }
+/** The ordered book files. Book 1 keeps its original name; a gap or unknown name is refused. */
+function journalBooks(directory:string):string[] {
+  const names=readdirSync(directory).filter(name=>name.startsWith('journal'));
+  for(const name of names)if(name!=='journal.jsonl'&&!BOOK_NAME.test(name)&&!BOOK_PARTIAL.test(name))throw new Error('Unexpected journal file');
+  const numbered=names.filter(name=>BOOK_NAME.test(name)).sort();
+  numbered.forEach((name,index)=>{if(name!==bookName(index+2))throw new Error('Missing journal book');});
+  return ['journal.jsonl',...numbered];
+}
 export class HostFinancialJournal {
   #key:Buffer;
+  private book=1;private bookRecords=0;private sealedAway=false;private maxBookBytes=JOURNAL_MAX_BYTES;private freeBytes:(directory:string)=>number=directory=>{const stat=statfsSync(directory);return Number(stat.bavail)*Number(stat.bsize);};
+  private summarised=new Map<string,SummarisedAtom>();private summarisedAttempts=0;private summarisedGrants=0;private finishedWaiting=0;private windowTotals=new Map<string,Map<string,{count:number;reserved:bigint;actual:bigint;high:bigint}>>();
+  private checkpointCount=0;private checkpointDigest=zero;private retainedCheckpoints=new Set<number>();
   private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private writerLease=false;private startupLeasePending=false;private startupContinuityVerified=false;private pending?:{id:string;proposal?:string;operation?:BudgetFinancialOperation;atoms?:FinancialAtom[]};private activeOperationId?:string;private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private checkpoints:FinancialCheckpoint[]=[];private projection=new Map<string,FinancialAtom>();private idle=new Set<()=>void>();private preparationComplete=false;private line:WaitingTurn[]=[];
   private pendingAbortReceipt?:DurableFinancialAbortReceipt;
   private constructor(private directory:string,private journalFd:number,private lockFd:number,private directoryFd:number,private keyFd:number,key:Buffer,private uid:number,private sync:(fd:number)=>void){this.#key=key;}
@@ -262,10 +299,12 @@ export class HostFinancialJournal {
       lockFd=protectedFile(join(directory,'writer.lock'),uid,constants.O_RDWR);(options.lock??linuxInheritedJournalLock)(lockFd);
       keyFd=protectedFile(join(directory,'suppression.key'),uid,constants.O_RDONLY);
       if(fstatSync(keyFd).size!==32)throw new Error('Financial custody unavailable');key=readFileSync(keyFd);if(key.length!==32)throw new Error('Financial custody unavailable');
-      journalFd=protectedFile(join(directory,'journal.jsonl'),uid,constants.O_RDWR|constants.O_APPEND);
+      const books=journalBooks(directory);
+      journalFd=protectedFile(join(directory,books.at(-1)!),uid,constants.O_RDWR|constants.O_APPEND);
       const journal=new HostFinancialJournal(directory,journalFd,lockFd,directoryFd,keyFd,key,uid,options.sync??fsyncSync);
-      journal.startupLeasePending=!acquireLease;
-      journal.load(options.requirePrepared===true);
+      journal.startupLeasePending=!acquireLease;journal.book=books.length;
+      if(options.bookBytes)journal.maxBookBytes=options.bookBytes;if(options.freeBytes)journal.freeBytes=options.freeBytes;
+      journal.load(options.requirePrepared===true,books);
       if(acquireLease&&!journal.frozen)journal.acquireWriterLease();
       return journal;
     }catch{
@@ -277,7 +316,7 @@ export class HostFinancialJournal {
    * while this same object still owns the protected lock before it can become a writer. */
   acquireWriterLease():void {
     if(this.closed||this.frozen||this.stopping||this.busy||this.writerLease||this.startupLeasePending&&!this.startupContinuityVerified)throw new Error('Financial writer lease unavailable');
-    this.requireCapacity(this.control?3:2,(this.control?3:2)*CONTROL_RECORD_BYTES);this.busy=true;
+    this.ensureRoom(this.control?3:2,(this.control?3:2)*CONTROL_RECORD_BYTES);this.busy=true;
     try{this.append({kind:'writer-open'},this.writerId);this.writerLease=true;this.startupLeasePending=false;}
     finally{this.busy=false;}
   }
@@ -327,37 +366,69 @@ export class HostFinancialJournal {
       };
     }finally{key.fill(0);if(!retained){if(lockFd!==undefined)closeSync(lockFd);closeSync(directoryFd);}}
   }
-  private load(requirePrepared=false):void {
-    const stat=fstatSync(this.journalFd);if(stat.size<1||stat.size>JOURNAL_MAX_BYTES)throw new Error('Invalid journal size');
-    const raw=readFileSync(this.journalFd);if(raw.length!==stat.size||raw[raw.length-1]!==10)throw new Error('Partial journal');
-    const lines=raw.subarray(0,-1).toString('utf8').split('\n');if(lines.length>JOURNAL_MAX_RECORDS)throw new Error('Journal limit');
-    const operations=new Set<string>();let genesis=false,writer:string|undefined;
-    for(const line of lines){
-      if(Buffer.byteLength(line)+1>JOURNAL_MAX_RECORD_BYTES)throw new Error('Journal record limit');
-      const frame=frameSchema.parse(JSON.parse(line)),expected=financialJournalFrame(frame.record);
-      if(!expected.bytes.equals(Buffer.from(line+'\n'))||frame.digest!==expected.digest)throw new Error('Journal integrity');
-      const r=frame.record;
-      if(r.sequence!==this.sequence||r.previousDigest!==this.head)throw new Error('Journal sequence');
-      if(!genesis){if(r.kind!=='genesis'||r.sequence!==0||r.suppressionKeyFingerprint!==digest(this.#key))throw new Error('Journal custody mismatch');this.journalId=r.journalId;genesis=true;}
-      else if(r.kind==='freeze'){this.frozen=true;}
-      else if(r.kind==='preparation-complete'){if(r.sequence!==2||!this.control||this.preparationComplete||writer||this.pending)throw new Error('Preparation completion mismatch');this.preparationComplete=true;}
-      else if(r.kind==='control'){if(this.pending||r.control.journalId!==this.journalId||JSON.stringify(r.control.checkpoint)!==JSON.stringify(this.lastCheckpoint))throw new Error('Journal control mismatch');if(this.control&&JSON.stringify(this.control.database)!==JSON.stringify(r.control.database))throw new Error('Journal database changed');this.control=r.control;}
-      else if(r.kind==='writer-open'){if(writer||this.pending)throw new Error('Journal writer overlap');writer=r.operationId;}
-      else if(r.kind==='writer-close'){if(writer!==r.operationId||this.pending)throw new Error('Journal writer mismatch');writer=undefined;}
-      else if(r.kind==='begin'){if(!writer||this.pending||operations.has(r.operationId))throw new Error('Journal operation replay');operations.add(r.operationId);this.pending={id:r.operationId};}
-      else if(r.kind==='proposal'){if(!this.pending||this.pending.id!==r.operationId||this.pending.proposal)throw new Error('Journal proposal mismatch');assertUniqueFinancialAtoms(r.atoms);this.pending.proposal=frame.digest;this.pending.atoms=structuredClone(r.atoms);}
-      else if(r.kind==='commit'){
-        if(!this.pending?.proposal||this.pending.id!==r.operationId||this.pending.proposal!==r.proposalDigest||!this.pending.atoms)throw new Error('Journal commit mismatch');
-        this.lastCheckpoint={operationId:r.operationId,journalId:this.journalId,sequence:r.sequence-1,digest:r.proposalDigest};this.checkpoints.push(this.lastCheckpoint);this.applyAtoms(this.pending.atoms);this.pending=undefined;
+  private load(requirePrepared:boolean,books:readonly string[]):void {
+    const limit=this.maxBookBytes+BOOK_CLOSING_RECORDS*CONTROL_RECORD_BYTES,hasPartial=readdirSync(this.directory).some(name=>BOOK_PARTIAL.test(name));
+    const readBook=(index:number)=>{
+      const last=index===books.length-1,fd=last?this.journalFd:protectedFile(join(this.directory,books[index]!),this.uid,constants.O_RDONLY);
+      try{
+        const stat=fstatSync(fd);if(stat.size<1||stat.size>limit)throw new Error('Invalid journal size');
+        const raw=readFileSync(fd);if(raw.length!==stat.size||raw[raw.length-1]!==10)throw new Error('Partial journal');return raw;
+      }finally{if(!last)closeSync(fd);}
+    };
+    const operations=new Set<string>();let genesis=false,writer:string|undefined,sealedTail=false,raw:Buffer|undefined=readBook(0);
+    for(let index=0;index<books.length&&raw;index++){
+      const last=index===books.length-1,next=last?undefined:readBook(index+1);
+      // The next book's first record holds this book's whole-file fingerprint. Once it matches,
+      // every byte here is what was sealed, so the slower record-by-record checks are skipped.
+      if(next){
+        const first=frameSchema.parse(JSON.parse(next.subarray(0,next.indexOf(10)).toString('utf8'))).record;
+        if(first.kind!=='book-open'||first.book!==index+2||first.sealedBookDigest!==digest(raw)||first.sealedBookBytes!==raw.length)throw new Error('Journal book mismatch');
       }
-      else if(r.kind==='observation'){
-        if(this.pending||!this.control||!this.lastCheckpoint||r.operationId!==r.observation.operationId||JSON.stringify(r.observation.checkpoint)!==JSON.stringify(this.lastCheckpoint)||!sameFinancialDatabase(r.observation.database,this.control.database))throw new Error('Financial observation mismatch');
+      const trusted=next!==undefined,lines=raw.subarray(0,-1).toString('utf8').split('\n');
+      if(lines.length>JOURNAL_MAX_RECORDS+BOOK_CLOSING_RECORDS)throw new Error('Journal limit');
+      let sealed=false;
+      for(const [position,line] of lines.entries()){
+        let frame:z.infer<typeof frameSchema>;
+        // A proposal is most of a book's bytes and its atoms are only ever compared in canonical form.
+        if(trusted){frame=JSON.parse(line);if(frame.record.kind!=='proposal')frame=frameSchema.parse(frame);}
+        else{
+          if(Buffer.byteLength(line)+1>JOURNAL_MAX_RECORD_BYTES)throw new Error('Journal record limit');
+          frame=frameSchema.parse(JSON.parse(line));const expected=financialJournalFrame(frame.record);
+          if(!expected.bytes.equals(Buffer.from(line+'\n'))||frame.digest!==expected.digest)throw new Error('Journal integrity');
+        }
+        const r=frame.record;
+        if(r.sequence!==this.sequence||r.previousDigest!==this.head)throw new Error('Journal sequence');
+        if(sealed&&!(last&&r.kind==='freeze'))throw new Error('Journal record after seal');
+        if(index>0&&position===0&&(r.kind!=='book-open'||r.book!==index+1||r.journalId!==this.journalId))throw new Error('Journal book mismatch');
+        if(!genesis){if(r.kind!=='genesis'||r.sequence!==0||r.suppressionKeyFingerprint!==digest(this.#key))throw new Error('Journal custody mismatch');this.journalId=r.journalId;genesis=true;}
+        else if(r.kind==='book-open'){if(position!==0)throw new Error('Journal book mismatch');}
+        else if(r.kind==='book-seal'){if(this.pending||r.book!==index+1)throw new Error('Journal seal mismatch');sealed=true;}
+        else if(r.kind==='freeze'){this.frozen=true;}
+        else if(r.kind==='preparation-complete'){if(r.sequence!==2||!this.control||this.preparationComplete||writer||this.pending)throw new Error('Preparation completion mismatch');this.preparationComplete=true;}
+        else if(r.kind==='control'){if(this.pending||r.control.journalId!==this.journalId||JSON.stringify(r.control.checkpoint)!==JSON.stringify(this.lastCheckpoint))throw new Error('Journal control mismatch');if(this.control&&JSON.stringify(this.control.database)!==JSON.stringify(r.control.database))throw new Error('Journal database changed');this.control=r.control;}
+        else if(r.kind==='writer-open'){if(writer||this.pending)throw new Error('Journal writer overlap');writer=r.operationId;}
+        else if(r.kind==='writer-close'){if(writer!==r.operationId||this.pending)throw new Error('Journal writer mismatch');writer=undefined;}
+        else if(r.kind==='begin'){if(!writer||this.pending||!trusted&&operations.has(r.operationId))throw new Error('Journal operation replay');if(!trusted)operations.add(r.operationId);this.pending={id:r.operationId,operation:r.operation};}
+        else if(r.kind==='proposal'){if(!this.pending||this.pending.id!==r.operationId||this.pending.proposal)throw new Error('Journal proposal mismatch');if(!trusted)assertUniqueFinancialAtoms(r.atoms);this.pending.proposal=frame.digest;this.pending.atoms=r.atoms;}
+        else if(r.kind==='commit'){
+          if(!this.pending?.proposal||this.pending.id!==r.operationId||this.pending.proposal!==r.proposalDigest||!this.pending.atoms)throw new Error('Journal commit mismatch');
+          this.lastCheckpoint={operationId:r.operationId,journalId:this.journalId,sequence:r.sequence-1,digest:r.proposalDigest};this.addCheckpoint(this.lastCheckpoint,this.pending.operation);this.applyAtoms(this.pending.atoms);this.pending=undefined;
+        }
+        else if(r.kind==='observation'){
+          if(this.pending||!this.control||!this.lastCheckpoint||r.operationId!==r.observation.operationId||JSON.stringify(r.observation.checkpoint)!==JSON.stringify(this.lastCheckpoint)||!sameFinancialDatabase(r.observation.database,this.control.database))throw new Error('Financial observation mismatch');
+        }
+        else if(r.kind==='abort'){if(!this.pending||this.pending.id!==r.operationId||(this.pending.proposal??null)!==r.proposalDigest)throw new Error('Journal abort mismatch');this.pending=undefined;}
+        else throw new Error('Repeated journal genesis');
+        this.sequence++;this.head=frame.digest;
       }
-      else if(r.kind==='abort'){if(!this.pending||this.pending.id!==r.operationId||(this.pending.proposal??null)!==r.proposalDigest)throw new Error('Journal abort mismatch');this.pending=undefined;}
-      else throw new Error('Repeated journal genesis');
-      this.sequence++;this.head=frame.digest;
+      if(next&&!sealed)throw new Error('Journal book not sealed');
+      if(last){sealedTail=sealed;this.size=raw.length;this.bookRecords=lines.length;}
+      raw=next;
     }
-    if(!genesis)throw new Error('Missing genesis');this.size=raw.length;
+    if(!genesis)throw new Error('Missing genesis');
+    // A partial next book is only ever left by a crash between sealing and opening it.
+    if(hasPartial&&!sealedTail)throw new Error('Unexpected journal file');
+    this.summariseFinished(Date.now());
     // A control record intrinsically declares prepared custody. No caller option may
     // downgrade its receipt/completion requirements to the genesis-only foundation.
     const prepared=requirePrepared||this.control!==undefined;
@@ -370,7 +441,7 @@ export class HostFinancialJournal {
       }finally{closeSync(receiptFd);}
     }
     // Validate custody before writing a freeze or opening/adopting any writer history.
-    if(prepared&&!this.preparationComplete||this.pending||writer||this.control&&JSON.stringify(this.control.checkpoint)!==JSON.stringify(this.lastCheckpoint)){
+    if(prepared&&!this.preparationComplete||this.pending||writer||sealedTail||this.control&&JSON.stringify(this.control.checkpoint)!==JSON.stringify(this.lastCheckpoint)){
       if(!prepared)throw new Error('Uncompleted financial operation or writer');
       // A keeper keeps starting with a frozen journal, so each start must not add a record.
       if(!this.frozen)this.persistFreeze('uncertain');
@@ -406,7 +477,7 @@ export class HostFinancialJournal {
   private async startOperation<T>(kind:BudgetFinancialOperation,work:(operationId:string)=>Promise<T>):Promise<T> {
     // Reserve begin, maximum proposal, terminal and writer-close BEFORE any database
     // work. Capacity exhaustion leaves this writer able to close cleanly.
-    this.requireCapacity(this.control?6:4,JOURNAL_MAX_RECORD_BYTES+5*CONTROL_RECORD_BYTES);
+    this.ensureRoom(this.control?6:4,JOURNAL_MAX_RECORD_BYTES+5*CONTROL_RECORD_BYTES);
     this.busy=true;this.pendingAbortReceipt=undefined;const operationId=randomUUID();this.activeOperationId=operationId;
     try{
       this.append({kind:'begin',operation:operation.parse(kind)},operationId);this.pending={id:operationId,operation:kind};
@@ -444,7 +515,7 @@ export class HostFinancialJournal {
     if(this.pending?.id!==operationId||!this.pending.proposal||!this.pending.operation||!this.pending.atoms)throw new Error('Financial proposal unavailable');
     const proposal=this.pending.proposal,sequence=this.sequence-1,kind=this.pending.operation,atoms=this.pending.atoms;
     this.append({kind:'commit',proposalDigest:proposal},operationId);this.pending=undefined;
-    this.lastCheckpoint={operationId,journalId:this.journalId,sequence,digest:proposal};this.checkpoints.push(this.lastCheckpoint);this.applyAtoms(atoms);
+    this.lastCheckpoint={operationId,journalId:this.journalId,sequence,digest:proposal};this.addCheckpoint(this.lastCheckpoint,kind);this.applyAtoms(atoms);
     if(this.control){this.control={...this.control,checkpoint:this.lastCheckpoint};this.append({kind:'control',control:this.control},this.writerId);}
     // Generic unprepared histories retain their existing commit behavior, but have no
     // database-bound control and cannot mint authority for native custody cleanup.
@@ -461,11 +532,8 @@ export class HostFinancialJournal {
       observation.checkpoint.journalId!==this.journalId||observation.checkpoint.sequence!==this.sequence-1||observation.checkpoint.digest!==pending.proposal||
       !sameFinancialDatabase(observation.database,this.control.database))throw new Error('Financial observation unavailable');
     const priorProjection=pending.operation==='provision'?freezeFinancialAtoms(this.expectedProjection(false).atoms):undefined;
-    const projection=this.expectedProjection(true),atoms=projection.atoms.filter(atom=>atom.kind!=='tombstone');
-    const counts={accounts:atoms.filter(atom=>atom.kind==='account').length,windows:atoms.filter(atom=>atom.kind==='window').length,
-      bindings:atoms.filter(atom=>atom.kind==='binding').length,attempts:atoms.filter(atom=>atom.kind==='attempt').length,
-      grants:atoms.filter(atom=>atom.kind==='grant').length,checkpoints:projection.checkpoints.length};
-    if(JSON.stringify(counts)!==JSON.stringify(observation.counts)||observation.checkpointDigest!==digest(gatewayCanonical(projection.checkpoints))||
+    const projection=this.expectedProjection(true);
+    if(JSON.stringify(projection.counts)!==JSON.stringify(observation.counts)||observation.checkpointDigest!==digest(gatewayCanonical(projection.checkpoints))||
       observation.projectionDigest!==digest(gatewayCanonical({checkpoints:projection.checkpoints,atoms:projection.atoms})))throw new Error('Financial observation unavailable');
     const receipt=this.committed(operationId);if(!receipt)return undefined;
     this.append({kind:'observation',observation},operationId);
@@ -506,21 +574,99 @@ export class HostFinancialJournal {
   }
   freeze():void {this.persistFreeze('uncertain');}
   private applyAtoms(atoms:readonly FinancialAtom[]):void {
-    for(const atom of atoms)this.projection.set(financialAtomKey(atom),structuredClone(atom));
+    for(const atom of atoms){
+      const key=financialAtomKey(atom),summary=this.summarised.get(key);
+      if(summary){this.summarised.delete(key);if(atom.kind==='attempt')this.summarisedAttempts--;else if(atom.kind==='grant')this.summarisedGrants--;}
+      if(atom.kind==='attempt'){
+        const before=summary?.money??this.projection.get(key) as AttemptAtom|undefined;
+        if(before)this.adjustWindowTotals(before,-1);
+        this.adjustWindowTotals(atom,1);
+        if(atom.state==='settled'||atom.state==='retired')this.finishedWaiting++;
+      }
+      this.projection.set(key,atom);
+    }
+    if(this.finishedWaiting>=FOLD_SUMMARISE_AT)this.summariseFinished();
+  }
+  private adjustWindowTotals(attempt:AttemptMoney,sign:1|-1):void {
+    for(const window of [attempt.installationWindowId,attempt.memberWindowId]){
+      const states=this.windowTotals.get(window)??new Map(),total=states.get(attempt.state)??{count:0,reserved:0n,actual:0n,high:0n},units=BigInt(sign);
+      total.count+=sign;total.reserved+=units*moneyUnits(attempt.reservedAmount);total.actual+=units*moneyUnits(attempt.actualAmount??'0');total.high+=units*moneyUnits(attempt.highestObservedLiability);
+      if(total.count===0)states.delete(attempt.state);else states.set(attempt.state,total);
+      if(states.size)this.windowTotals.set(window,states);else this.windowTotals.delete(window);
+    }
+  }
+  /** Settled and retired attempts cannot usually change again, so each step stops re-reading them.
+   * With `now`, prepared attempts past their expiry follow. If one is proposed again it simply
+   * returns to the compared rows; the whole-ledger check still covers every summarised row. */
+  private summariseFinished(now?:number):void {
+    for(const [key,atom] of this.projection){
+      if(atom.kind!=='attempt')continue;
+      if(!(atom.state==='settled'||atom.state==='retired'||now!==undefined&&atom.state==='prepared'&&Date.parse(atom.expiresAt)<now))continue;
+      this.summarised.set(key,{digest:digest(gatewayCanonical(atom)),money:{installationWindowId:atom.installationWindowId,memberWindowId:atom.memberWindowId,state:atom.state,reservedAmount:atom.reservedAmount,actualAmount:atom.actualAmount,highestObservedLiability:atom.highestObservedLiability}});
+      this.projection.delete(key);this.summarisedAttempts++;
+      const grantKey=`grant:${atom.id}`,grant=this.projection.get(grantKey);
+      if(grant){this.summarised.set(grantKey,{digest:digest(gatewayCanonical(grant))});this.projection.delete(grantKey);this.summarisedGrants++;}
+    }
+    this.finishedWaiting=0;
+  }
+  private addCheckpoint(checkpoint:FinancialCheckpoint,operation:BudgetFinancialOperation|undefined):void {
+    this.checkpoints.push(checkpoint);this.checkpointCount++;this.checkpointDigest=financialCheckpointRolling(this.checkpointDigest,checkpoint);
+    if(!operation||!GATEWAY_OPERATIONS.has(operation))this.retainedCheckpoints.add(checkpoint.sequence);
+    if(this.checkpoints.length>this.retainedCheckpoints.size+2*FOLD_CHECKPOINT_TAIL){
+      const oldestTail=this.checkpoints[this.checkpoints.length-FOLD_CHECKPOINT_TAIL]!.sequence;
+      this.checkpoints=this.checkpoints.filter(row=>row.sequence>=oldestTail||this.retainedCheckpoints.has(row.sequence));
+    }
   }
   /** Snapshot only the committed fold, with the exact active proposal optionally overlaid
    * for the writer's pre-COMMIT observation. Callers cannot select a pending operation. */
   expectedProjection(proposed=false):FinancialProjection {
     if(this.closed||this.frozen||!this.control)throw new Error('Financial continuity requires recovery');
-    const checkpoints=this.checkpoints.map(checkpoint=>({...checkpoint})),atoms=[...this.projection.values()].map(atom=>structuredClone(atom));
+    const checkpoints=this.checkpoints.map(checkpoint=>({...checkpoint})),live=[...this.projection.values()].map(atom=>structuredClone(atom));
+    let atoms=live,resurfaced={attempts:0,grants:0},checkpointCount=this.checkpointCount;
     if(proposed){
       if(!this.busy||!this.pending?.proposal||!this.pending.atoms)throw new Error('Financial proposal unavailable');
-      checkpoints.push({operationId:this.pending.id,journalId:this.journalId,sequence:this.sequence-1,digest:this.pending.proposal});
-      const overlay=new Map(atoms.map(atom=>[financialAtomKey(atom),atom]));
-      for(const atom of this.pending.atoms)overlay.set(financialAtomKey(atom),structuredClone(atom));
-      return {checkpoints,atoms:[...overlay.values()].sort((left,right)=>financialAtomKey(left).localeCompare(financialAtomKey(right)))};
+      checkpoints.push({operationId:this.pending.id,journalId:this.journalId,sequence:this.sequence-1,digest:this.pending.proposal});checkpointCount++;
+      const overlay=new Map(live.map(atom=>[financialAtomKey(atom),atom]));
+      for(const atom of this.pending.atoms){
+        const key=financialAtomKey(atom);overlay.set(key,structuredClone(atom));
+        if(this.summarised.has(key)){if(atom.kind==='attempt')resurfaced.attempts++;else if(atom.kind==='grant')resurfaced.grants++;}
+      }
+      atoms=[...overlay.values()];
     }
-    return {checkpoints,atoms:atoms.sort((left,right)=>financialAtomKey(left).localeCompare(financialAtomKey(right)))};
+    const sorted=atoms.sort((left,right)=>financialAtomKey(left).localeCompare(financialAtomKey(right))),count=(kind:FinancialAtom['kind'])=>sorted.filter(atom=>atom.kind===kind).length;
+    const counts:FinancialCounts={accounts:count('account'),windows:count('window'),bindings:count('binding'),attempts:count('attempt')+this.summarisedAttempts-resurfaced.attempts,grants:count('grant')+this.summarisedGrants-resurfaced.grants,checkpoints:checkpointCount};
+    return {checkpoints,atoms:sorted,counts,...(!proposed&&this.summarisedAttempts?{windowTotals:this.currentWindowTotals(sorted)}:{})};
+  }
+  private currentWindowTotals(atoms:readonly FinancialAtom[]):NonNullable<FinancialProjection['windowTotals']> {
+    const accounts=atoms.filter((atom):atom is Extract<FinancialAtom,{kind:'account'}>=>atom.kind==='account'&&atom.activeWindowId!==null);
+    const windowIds=[...new Set(accounts.map(account=>account.activeWindowId!))].sort(),totals:FinancialWindowTotal[]=[];
+    for(const windowId of windowIds)for(const [state,total] of [...(this.windowTotals.get(windowId)??new Map<string,{count:number;reserved:bigint;actual:bigint;high:bigint}>())].sort(([left],[right])=>left.localeCompare(right)))
+      totals.push({windowId,state,count:total.count,reserved:moneyText(total.reserved),actual:moneyText(total.actual),high:moneyText(total.high)});
+    return {accountIds:accounts.map(account=>account.id),windowIds,totals};
+  }
+  /** The whole-ledger check, at keeper start and overnight. Each row is compared to what was
+   * recorded for it, without keeping finished rows in memory. */
+  fullLedgerExpectation():{counts:FinancialCounts;checkpointDigest:string;matches:(atom:FinancialAtom)=>boolean} {
+    const {counts}=this.expectedProjection(false);
+    return {counts,checkpointDigest:this.checkpointDigest,matches:atom=>{
+      const key=financialAtomKey(atom),live=this.projection.get(key),bytes=gatewayCanonical(atom);
+      return live?gatewayCanonical(live).equals(bytes):this.summarised.get(key)?.digest===digest(bytes);
+    }};
+  }
+  databaseMatches(database:FinancialDatabase):boolean {
+    return !!this.control&&sameFinancialDatabase(FINANCIAL_DATABASE_SCHEMA.parse(database),this.control.database);
+  }
+  /** A passed whole-ledger check at startup is what allows this writer to take its lease. */
+  acceptFullContinuity():void {if(this.startupLeasePending)this.startupContinuityVerified=true;}
+  freezeForContinuity():void {this.persistFreeze('continuity');}
+  /** Holds the same barrier as a financial operation, so no row can change during the check. It
+   * never overtakes operations waiting in line, and passes the turn on when it ends. */
+  async withFullCheckBarrier<T>(work:()=>Promise<T>):Promise<T> {
+    if(this.unavailable)throw new Error('Financial journal is closed or busy');
+    if(this.busy||this.line.length)throw new FinancialJournalBusy();
+    this.busy=true;
+    try{return await work();}
+    finally{this.busy=false;for(const resolve of this.idle)resolve();this.idle.clear();this.nextInLine();}
   }
   /** Observe a persisted ticket against this prepared journal's committed installation
    * fold. This is discovery only: the owned admission transaction still rechecks the
@@ -587,6 +733,9 @@ export class HostFinancialJournal {
   }
   private persistFreeze(reason:'restore'|'continuity'|'uncertain'):void {
     if(this.closed)throw new Error('Financial custody unavailable');
+    // The open book is sealed and its successor is unusable. Nothing more may be written, and
+    // the writer lease left open makes the next start freeze durably.
+    if(this.sealedAway){this.frozen=true;return;}
     const busy=this.busy;this.busy=true;
     try{this.append({kind:'freeze',reason},this.writerId,true);this.frozen=true;}
     finally{this.busy=busy;this.frozen=true;}
@@ -599,21 +748,60 @@ export class HostFinancialJournal {
     try{if(this.writerLease&&!this.frozen){this.busy=true;this.append({kind:'writer-close'},this.writerId);}}
     finally{this.busy=false;this.closed=true;this.#key.fill(0);closeSync(this.journalFd);closeSync(this.lockFd);closeSync(this.directoryFd);closeSync(this.keyFd);}
   }
+  private hasCapacity(records:number,bytes:number):boolean {
+    return this.bookRecords+records<=JOURNAL_MAX_RECORDS&&this.size+bytes<=this.maxBookBytes;
+  }
   private requireCapacity(records:number,bytes:number):void {
-    if(this.sequence+records>JOURNAL_MAX_RECORDS||this.size+bytes>JOURNAL_MAX_BYTES)throw new Error('Financial journal capacity unavailable');
+    if(!this.hasCapacity(records,bytes))throw new Error('Financial journal capacity unavailable');
+  }
+  /** Runs only with no operation in progress. Prepared custody moves to its next book; an
+   * unprepared foundation has no database binding to carry and keeps its fixed capacity. */
+  private ensureRoom(records:number,bytes:number):void {
+    if(!this.hasCapacity(records,bytes)&&this.control&&this.preparationComplete&&!this.pending){
+      const busy=this.busy;this.busy=true;
+      try{this.openNextBook();}finally{this.busy=busy;}
+    }
+    this.requireCapacity(records,bytes);
+  }
+  /** Seals this book and opens the next one with its whole-file fingerprint in the first record,
+   * continuing the same chain and sequence. Nothing is rewritten or removed. */
+  private openNextBook():void {
+    // Refused before the first byte, without a freeze: freeing disk space is enough to carry on.
+    if(this.freeBytes(this.directory)<2*this.maxBookBytes)throw new Error('Financial journal capacity unavailable');
+    const next=this.book+1,name=bookName(next),partial=name.replace(/\.jsonl$/,'.partial');let renamed=false;
+    try{
+      if(existsSync(join(this.directory,name))||existsSync(join(this.directory,partial)))throw new Error('Financial custody changed');
+      this.append({kind:'book-seal',book:this.book},this.writerId);
+      const sealed=Buffer.alloc(this.size);let read=0;while(read<sealed.length){const n=readSync(this.journalFd,sealed,read,sealed.length-read,read);if(n<1)throw new Error('Financial journal changed');read+=n;}
+      const frame=financialJournalFrame({version:1,sequence:this.sequence,operationId:this.writerId,previousDigest:this.head,kind:'book-open',journalId:this.journalId,book:next,sealedBookDigest:digest(sealed),sealedBookBytes:sealed.length});
+      const created=openSync(join(this.directory,partial),constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+      try{let offset=0;while(offset<frame.bytes.length){const n=writeSync(created,frame.bytes,offset,frame.bytes.length-offset);if(n<1)throw new Error('Incomplete financial append');offset+=n;}this.sync(created);}finally{closeSync(created);}
+      renameSync(join(this.directory,partial),join(this.directory,name));renamed=true;this.sync(this.directoryFd);
+      const fd=protectedFile(join(this.directory,name),this.uid,constants.O_RDWR|constants.O_APPEND);
+      closeSync(this.journalFd);this.journalFd=fd;this.book=next;this.size=frame.bytes.length;this.bookRecords=1;this.sequence++;this.head=frame.digest;
+    }catch{
+      // Once the next book exists the sealed one can take no more bytes, or its fingerprint would
+      // stop matching. This writer's lease is still open there, so the next start freezes durably.
+      if(renamed){this.frozen=true;this.sealedAway=true;}
+      else try{this.persistFreeze('uncertain');}catch{/* Already marked frozen in memory. */}
+      throw new Error('Financial journal write unavailable; recovery is required');
+    }
+    this.summariseFinished(Date.now());
   }
   private append(body:Record<string,unknown>,operationId:string,allowFrozen=false):{sequence:number;digest:string} {
     try{
       if(this.closed||this.frozen&&!allowFrozen||!this.busy)throw new Error('Financial journal unavailable');
       verifyDirectory(this.directory,this.uid);
-      for(const [name,fd] of [['journal.jsonl',this.journalFd],['writer.lock',this.lockFd],['suppression.key',this.keyFd]] as const){const a=fstatSync(fd),b=lstatSync(join(this.directory,name));if(a.ino!==b.ino||a.dev!==b.dev||!b.isFile()||b.nlink!==1||b.uid!==this.uid||(b.mode&0o777)!==0o600)throw new Error('Financial custody changed');}
+      for(const [name,fd] of [[bookName(this.book),this.journalFd],['writer.lock',this.lockFd],['suppression.key',this.keyFd]] as const){const a=fstatSync(fd),b=lstatSync(join(this.directory,name));if(a.ino!==b.ino||a.dev!==b.dev||!b.isFile()||b.nlink!==1||b.uid!==this.uid||(b.mode&0o777)!==0o600)throw new Error('Financial custody changed');}
       const currentKey=Buffer.alloc(32);if(fstatSync(this.keyFd).size!==32||readSync(this.keyFd,currentKey,0,32,0)!==32||digest(currentKey)!==digest(this.#key))throw new Error('Financial key custody changed');currentKey.fill(0);
       if(fstatSync(this.journalFd).size!==this.size)throw new Error('Financial journal changed');
       const sequence=this.sequence,record=FINANCIAL_JOURNAL_RECORD_SCHEMA.parse({version:1,sequence,operationId,previousDigest:this.head,...body}),frame=financialJournalFrame(record);
       if(record.kind!=='proposal'&&frame.bytes.length>CONTROL_RECORD_BYTES)throw new Error('Financial control record limit');
-      this.requireCapacity(1,frame.bytes.length);
+      if(record.kind==='book-seal'||record.kind==='freeze'){
+        if(this.size+frame.bytes.length>this.maxBookBytes+BOOK_CLOSING_RECORDS*CONTROL_RECORD_BYTES||this.bookRecords+1>JOURNAL_MAX_RECORDS+BOOK_CLOSING_RECORDS)throw new Error('Financial journal capacity unavailable');
+      }else this.requireCapacity(1,frame.bytes.length);
       let offset=0;while(offset<frame.bytes.length){const written=writeSync(this.journalFd,frame.bytes,offset,frame.bytes.length-offset);if(written<1)throw new Error('Incomplete financial append');offset+=written;}
-      this.sync(this.journalFd);this.size+=frame.bytes.length;this.sequence++;this.head=frame.digest;return {sequence,digest:frame.digest};
+      this.sync(this.journalFd);this.size+=frame.bytes.length;this.bookRecords++;this.sequence++;this.head=frame.digest;return {sequence,digest:frame.digest};
     }catch{this.frozen=true;throw new Error('Financial journal write unavailable; recovery is required');}
   }
 }
