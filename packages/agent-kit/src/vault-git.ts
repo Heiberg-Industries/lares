@@ -135,10 +135,18 @@ function gitShortHead(vaultRoot: string, guard?: VaultGitGuard): string {
   return (guard ? runGuardedVaultGit(vaultRoot, guard.localOrigin, ["rev-parse", "--short", "HEAD"]) : runGit(vaultRoot, ["rev-parse", "--short", "HEAD"])).toString().trim();
 }
 
+/** Git drops `-c` settings when it starts the receiving side of a local push, so the exact
+ *  safe.directory entry has to travel with that command. Keeper runs as root and the installer's
+ *  repositories belong to the runtime user, so without it every guarded push is refused. */
+export function guardedVaultPushArguments(localOrigin: string): string[] {
+  const quoted = `'${localOrigin.replaceAll("'", `'\\''`)}'`;
+  return ["push", "-q", `--receive-pack=git -c safe.directory=${quoted} receive-pack`, "origin", "HEAD"];
+}
+
 /** Push HEAD to origin, or throw `VaultPushFailedError` carrying the local commit hash. */
 function gitPushOrThrow(vaultRoot: string, commit: string, guard?: VaultGitGuard): void {
   try {
-    if (guard) runGuardedVaultGit(vaultRoot, guard.localOrigin, ["push", "-q", "origin", "HEAD"]);
+    if (guard) runGuardedVaultGit(vaultRoot, guard.localOrigin, guardedVaultPushArguments(guard.localOrigin));
     else runGit(vaultRoot, ["push", "-q", "origin", "HEAD"]);
   } catch (err) {
     throw new VaultPushFailedError(commit, err);

@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { commitNote, moveNote, removeNote, VaultPushFailedError } from "../src/vault-git.js";
+import { commitNote, guardedVaultPushArguments, moveNote, removeNote, VaultPushFailedError } from "../src/vault-git.js";
 import { NotePathEscapesStoreError } from "../src/notes-store.js";
 
 /**
@@ -314,5 +314,36 @@ describe("removeNote", () => {
       removeNote({ vaultRoot: workDir, path: "../../etc/passwd", message: "x" }),
     ).rejects.toThrow(NotePathEscapesStoreError);
     expect(commitCount(bareDir)).toBe(before);
+  });
+});
+
+// Git's own switch for "these repositories belong to someone else", which is the installed server:
+// Keeper is root and the repositories belong to the runtime user. It needs no root to run here.
+describe("guarded push to a repository owned by another user", () => {
+  let root: string;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), "vault-owner-it's-")); });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+  function pushWith(pushArguments: string[]): void {
+    const work = join(root, "work"), bare = join(root, "bare.git");
+    execFileSync("git", ["init", "-q", "--bare", "--initial-branch=main", bare]);
+    execFileSync("git", ["init", "-q", "--initial-branch=main", work]);
+    const inWork = (args: string[], env: NodeJS.ProcessEnv = process.env) => execFileSync("git",
+      ["-c", `safe.directory=${work}`, "-c", `safe.directory=${bare}`, "-c", "user.name=t", "-c", "user.email=t@t", "-C", work, ...args],
+      { env, stdio: "pipe" });
+    inWork(["remote", "add", "origin", bare]);
+    writeFileSync(join(work, "note.md"), "note\n");
+    inWork(["add", "note.md"]);
+    inWork(["commit", "-q", "-m", "note"]);
+    inWork(pushArguments, { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" });
+  }
+
+  it("is refused by Git when the receiving side has no entry of its own", () => {
+    expect(() => pushWith(["push", "-q", "origin", "HEAD"])).toThrow(/dubious ownership/);
+  });
+
+  it("reaches the repository with the guarded arguments, even with a quote in the path", () => {
+    pushWith(guardedVaultPushArguments(join(root, "bare.git")));
+    expect(execFileSync("git", ["-C", join(root, "bare.git"), "rev-list", "--count", "main"], { encoding: "utf8" }).trim()).toBe("1");
   });
 });
