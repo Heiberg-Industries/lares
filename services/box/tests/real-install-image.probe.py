@@ -181,6 +181,19 @@ def start_registry(work: pathlib.Path, tls: dict[str, pathlib.Path]) -> None:
     run("iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-d", REGISTRY_ADDRESS, "--dport", "443", "-j", "REDIRECT", "--to-ports", "5000")
 
 
+def wait_for_registry(tls: dict[str, pathlib.Path]) -> None:
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        answer = run("curl", "-sS", "--cacert", str(tls["ca_cert"]), "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "5", "https://ghcr.io/v2/", check=False, show=False)
+        if answer.stdout == "200":
+            return
+        time.sleep(1)
+    run("curl", "-v", "--cacert", str(tls["ca_cert"]), "--max-time", "5", "https://ghcr.io/v2/", check=False)
+    run("iptables", "-t", "nat", "-S", "OUTPUT", check=False)
+    run("ss", "-ltnp", check=False)
+    raise RuntimeError("the throwaway registry does not answer as ghcr.io")
+
+
 def publish_locally(local: str, name: str) -> str:
     """Into the throwaway registry; the digest is the reference the release file names."""
     target = f"ghcr.io/{name}:proof"
@@ -392,6 +405,7 @@ def main(argv: list[str]) -> int:
         fixture = start_fake_internet(work, tls, console, model_key)
         start_registry(work, tls)
         write_hosts(bridge_address("proof-fake"))
+        wait_for_registry(tls)
         release_file = write_release(work, {
             "lares-keeper": publish_locally(keeper, "heiberg-industries/lares-engine-keeper"),
             "lares-egress-proxy": publish_locally(egress, "heiberg-industries/lares-engine-egress-proxy"),
