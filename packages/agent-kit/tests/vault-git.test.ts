@@ -335,7 +335,8 @@ describe("guarded push to a repository owned by another user", () => {
     writeFileSync(join(work, "note.md"), "note\n");
     inWork(["add", "note.md"]);
     inWork(["commit", "-q", "-m", "note"]);
-    inWork(pushArguments, { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" });
+    // A machine-wide `safe.directory=*`, as CI runners have, would hide the refusal.
+    inWork(pushArguments, { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" });
   }
 
   it("is refused by Git when the receiving side has no entry of its own", () => {
