@@ -599,7 +599,7 @@ async function proveSignedExecution(c:{main:Pool;outside:Pool;proof:Pool;store:O
   await reserveExactApproval(ctx,toolName,{db:main,adapter});
   await attachExactApproval({requestId,callId:call.callId,tool:toolName,input:call.input},main);
   await vaultBrokerRequest('turn.close',{turnCapability:point.turnCapability,turnId:point.turnId,sequence:point.sequence});
-  await approveExactResponse({request:{requestId,callId:call.callId,toolName,toolInput:call.input},responder:auth('resolver'),
+  await approveExactResponse({request:{requestId,callId:call.callId,toolName,toolInput:call.input},responder:{authenticator:'lares-console',attributes:{...auth('resolver').attributes,lares_resume_request_id:requestId,lares_resume_option:'approve'}},
    session:{id:point.sessionId,initiator:auth('human'),turn:{id:'answer_'+randomUUID(),sequence:point.sequence+1}}},{db:main,adapter});
   const approved=await vaultBrokerRequest<{outsideCapability:string}>('outside.approve',{
    sessionId:point.sessionId,memberId:point.memberId,admissionNonce:point.admissionNonce,call});
