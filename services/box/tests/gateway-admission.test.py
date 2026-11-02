@@ -174,6 +174,21 @@ console.log(JSON.stringify(targets.map((options) => ({
         openai_body = {"model":"lares-brain","max_tokens":10,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","eager_input_streaming":True}]}
         with self.assertRaises(Refused): profile.check_body("/v1/chat/completions", json.dumps(openai_body).encode())
 
+    def test_profile_accepts_a_direct_provider_tool_call_coming_back(self):
+        profile = Profile({"version":1,"provider":"anthropic","model":"claude-sonnet-4-5","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":123})
+        def follow_up(block):
+            return {"model":"lares-brain","max_tokens":123,"messages":[{"role":"user","content":"Use the tool."},{"role":"assistant","content":[block]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}]}
+        call = {"type":"tool_use","id":"toolu_1","name":"tracks_list","input":{}}
+        for accepted in (call, {**call,"caller":{"type":"direct"}}):
+            body = follow_up(accepted)
+            with self.subTest(block=accepted): self.assertEqual(profile.check_body("/v1/messages", json.dumps(body).encode()), body)
+        for caller in (None, "direct", {}, {"type":"code_execution_20260120"}, {"type":"direct","tool_id":"srvtoolu_1"}):
+            with self.subTest(caller=caller), self.assertRaises(Refused):
+                profile.check_body("/v1/messages", json.dumps(follow_up({**call,"caller":caller})).encode())
+        # caller belongs to the tool call alone.
+        with self.assertRaises(Refused):
+            profile.check_body("/v1/messages", json.dumps(follow_up({"type":"text","text":"hello","caller":{"type":"direct"}})).encode())
+
     def test_profile_accepts_only_hashed_anthropic_safety_metadata(self):
         profile = Profile({"version":1,"provider":"anthropic","model":"claude-sonnet-4-5","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":16384})
         body = {"model":"lares-brain","max_tokens":32,"messages":[{"role":"user","content":"Local serialization check"}],"metadata":{"user_id":"a" * 64}}
@@ -528,6 +543,28 @@ class EmbeddedFixtureTests(unittest.TestCase):
         invalid=subprocess.run([sys.executable,"-B",str(path),*arguments,"--provider","private-invalid-value"],env=environment,text=True,capture_output=True)
         self.assertEqual(invalid.returncode,2)
         self.assertNotIn("private-invalid-value",invalid.stderr)
+
+    def test_live_usage_tool_follow_up_checks_the_real_reply_before_sending_it_back(self):
+        path=ROOT / "services/keeper/tests/live/gateway-provider-usage.live.py"
+        spec=importlib.util.spec_from_file_location("live_usage_probe",path)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        profile=Profile({"version":1,"provider":"anthropic","model":"claude-sonnet-4-5","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":256})
+        usage={"inputTokens":1,"outputTokens":1,"cacheReadTokens":0,"cacheWriteTokens":0}
+        def run(caller):
+            sent=[]
+            def exchange(document,streaming):
+                sent.append(document)
+                reply={"id":"msg_1","type":"message","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_1","name":module.PROBE_TOOL["name"],"input":{},"caller":caller}]}
+                return usage,json.dumps(reply).encode()
+            return module.tool_follow_up(profile,"claude-sonnet-4-5",128,exchange),sent
+        result,sent=run({"type":"direct"})
+        self.assertEqual(result,usage)
+        self.assertEqual(len(sent),2)
+        self.assertEqual(sent[1]["model"],"claude-sonnet-4-5")
+        self.assertEqual(sent[1]["messages"][1]["content"][0]["caller"],{"type":"direct"})
+        self.assertEqual(sent[1]["messages"][2]["content"][0]["tool_use_id"],"toolu_1")
+        # A reply the gateway would refuse never goes back to the provider, so it costs nothing more.
+        with self.assertRaises(Refused): run({"type":"code_execution_20260120"})
 
     def test_live_usage_worker_has_an_absolute_process_deadline(self):
         path=ROOT / "services/keeper/tests/live/gateway-provider-usage.live.py"

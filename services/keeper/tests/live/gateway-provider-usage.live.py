@@ -10,6 +10,11 @@ This reads the adapter's actual WireEvidence parser, makes exactly one tiny synt
 request, and prints only fixed labels and the validated terminal-counts digest. It does
 not exercise gateway authentication, admission, native policy, prices or recovery. No
 automatic run, administration, account creation, redirects, retries or SDK synthesis.
+
+Mode tool-follow-up (anthropic only; --max-output-tokens up to 512, run sheet as above)
+makes two requests. The first asks for one tool call. Its real reply goes through the
+same request check the gateway applies, then back to the provider with a tool result.
+This is what a chat does after a tool runs, and what a synthetic provider cannot show.
 """
 import argparse
 import hashlib
@@ -31,8 +36,10 @@ from admission_contract import (
 )
 
 MAX_PROBE_OUTPUT_TOKENS = 32
+MAX_TOOL_PROBE_OUTPUT_TOKENS = 512
+PROBE_TOOL = {"name": "lares_probe_ping", "description": "Call this once with no arguments.", "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}}
 MAX_KEY_BYTES = 4096
-WORKER_DEADLINE_SECONDS = PHYSICAL_HEADER_SECONDS + PHYSICAL_BODY_SECONDS + 2
+WORKER_DEADLINE_SECONDS = 2 * (PHYSICAL_HEADER_SECONDS + PHYSICAL_BODY_SECONDS) + 2
 
 
 class Arguments(argparse.ArgumentParser):
@@ -42,13 +49,13 @@ class Arguments(argparse.ArgumentParser):
 
 
 def arguments(argv):
-    parser = Arguments(description="Manual billed provider usage evidence; one request, no response content output.")
+    parser = Arguments(description="Manual billed provider usage evidence; no response content output.")
     parser.add_argument("--profile", required=True, help="Existing reviewed adapter profile file")
     parser.add_argument("--key-file", required=True, help="Existing protected provider key file (not a gateway/master/service key)")
     parser.add_argument("--provider", required=True, choices=("openai", "anthropic"))
     parser.add_argument("--model", required=True, help="Exact model from the reviewed profile")
-    parser.add_argument("--mode", required=True, choices=("stream", "nonstream"))
-    parser.add_argument("--max-output-tokens", required=True, type=int, help="Explicit integer from 1 to 32, within profile cap")
+    parser.add_argument("--mode", required=True, choices=("stream", "nonstream", "tool-follow-up"))
+    parser.add_argument("--max-output-tokens", required=True, type=int, help="Explicit integer from 1 to 32 (512 for tool-follow-up), within profile cap")
     return parser.parse_args(argv)
 
 
@@ -64,6 +71,23 @@ def provider_key(path):
     return value
 
 
+def tool_follow_up(profile, model, max_tokens, exchange):
+    question = {"role": "user", "content": "Call lares_probe_ping now."}
+    document = {"model": model, "max_tokens": max_tokens, "stream": False, "tools": [PROBE_TOOL], "messages": [question]}
+    _, raw = exchange(document, False)
+    reply = parse_json(raw)
+    content = reply.get("content")
+    if reply.get("stop_reason") != "tool_use" or not isinstance(content, list): raise Refused()
+    calls = [block for block in content if isinstance(block, dict) and block.get("type") == "tool_use"]
+    if len(calls) != 1: raise Refused()
+    result = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": calls[0]["id"], "content": "ok"}]}
+    follow_up = {**document, "messages": [question, {"role": "assistant", "content": content}, result]}
+    # The agent sends the gateway an alias; the gateway sends the provider this model.
+    profile.check_body("/v1/messages", canonical({**follow_up, "model": profile.document["aliases"][0]}))
+    usage, _ = exchange(follow_up, False)
+    return usage
+
+
 def probe(args):
     # Guard before files, credentials, TLS setup or any connection can be accessed.
     if os.environ.get("I_UNDERSTAND_THIS_SPENDS_MONEY") != "1": raise Refused()
@@ -73,48 +97,60 @@ def probe(args):
     profile = Profile(parse_json(raw_profile))
     p = profile.document
     if args.provider != p["provider"] or args.model != p["model"]: raise Refused()
-    if not 1 <= args.max_output_tokens <= min(MAX_PROBE_OUTPUT_TOKENS, p["maxOutputTokens"]): raise Refused()
+    tool_mode = args.mode == "tool-follow-up"
+    if tool_mode and args.provider != "anthropic": raise Refused()
+    if not 1 <= args.max_output_tokens <= min(MAX_TOOL_PROBE_OUTPUT_TOKENS if tool_mode else MAX_PROBE_OUTPUT_TOKENS, p["maxOutputTokens"]): raise Refused()
     key = provider_key(args.key_file)
-    streaming = args.mode == "stream"
-    document = {"model": args.model, "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": args.max_output_tokens, "stream": streaming}
     headers = {"content-type": "application/json", "accept-encoding": "identity"}
     if args.provider == "anthropic":
         headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
         suffix = "/v1/messages"
     else:
         headers["authorization"] = "Bearer " + key
-        if streaming: document["stream_options"] = {"include_usage": True}
         suffix = "/chat/completions"
     url = urlsplit(p["providerBaseUrl"])
     path = url.path.rstrip("/") + suffix
-    # http.client follows no redirects and implements no request retry loop.
-    connection = http.client.HTTPSConnection(url.hostname, port=url.port, context=ssl.create_default_context(), timeout=PHYSICAL_HEADER_SECONDS)
-    try:
-        header_deadline = time.monotonic() + PHYSICAL_HEADER_SECONDS
-        connection.connect()
-        sock = connection.sock
-        sock.settimeout(max(.001, header_deadline - time.monotonic()))
-        connection.request("POST", path, body=canonical(document), headers=headers)
-        sock.settimeout(max(.001, header_deadline - time.monotonic()))
-        response = connection.getresponse()
-        if time.monotonic() >= header_deadline or response.getheader("content-encoding", "identity").lower() != "identity": raise Refused()
-        evidence = WireEvidence(args.provider, response.getheader("content-type", ""), response.status)
-        if evidence.poisoned or evidence.sse != streaming: raise Refused()
-        deadline = time.monotonic() + PHYSICAL_BODY_SECONDS
-        # Keep the connected socket reference even if HTTPResponse detaches it.
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0: raise Refused()
-            sock.settimeout(remaining)
-            chunk = response.read1(min(8192, MAX_RESPONSE_BYTES + 1 - evidence.total))
-            if not chunk: break
-            evidence.feed(chunk)
-            if evidence.poisoned: raise Refused()
-        usage = evidence.finish()
-        if usage is None: raise Refused()
-        return {"format": args.provider, "mode": args.mode, "success": True, "terminalCountsDigest": hashlib.sha256(canonical(usage)).hexdigest()}
-    finally:
-        connection.close()
+
+    def exchange(document, streaming):
+        # http.client follows no redirects and implements no request retry loop.
+        connection = http.client.HTTPSConnection(url.hostname, port=url.port, context=ssl.create_default_context(), timeout=PHYSICAL_HEADER_SECONDS)
+        try:
+            header_deadline = time.monotonic() + PHYSICAL_HEADER_SECONDS
+            connection.connect()
+            sock = connection.sock
+            sock.settimeout(max(.001, header_deadline - time.monotonic()))
+            connection.request("POST", path, body=canonical(document), headers=headers)
+            sock.settimeout(max(.001, header_deadline - time.monotonic()))
+            response = connection.getresponse()
+            if time.monotonic() >= header_deadline or response.getheader("content-encoding", "identity").lower() != "identity": raise Refused()
+            evidence = WireEvidence(args.provider, response.getheader("content-type", ""), response.status)
+            if evidence.poisoned or evidence.sse != streaming: raise Refused()
+            deadline = time.monotonic() + PHYSICAL_BODY_SECONDS
+            body = bytearray()
+            # Keep the connected socket reference even if HTTPResponse detaches it.
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0: raise Refused()
+                sock.settimeout(remaining)
+                chunk = response.read1(min(8192, MAX_RESPONSE_BYTES + 1 - evidence.total))
+                if not chunk: break
+                evidence.feed(chunk)
+                if evidence.poisoned: raise Refused()
+                body += chunk
+            usage = evidence.finish()
+            if usage is None: raise Refused()
+            return usage, bytes(body)
+        finally:
+            connection.close()
+
+    if tool_mode:
+        usage = tool_follow_up(profile, args.model, args.max_output_tokens, exchange)
+    else:
+        streaming = args.mode == "stream"
+        document = {"model": args.model, "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": args.max_output_tokens, "stream": streaming}
+        if streaming and args.provider == "openai": document["stream_options"] = {"include_usage": True}
+        usage, _ = exchange(document, streaming)
+    return {"format": args.provider, "mode": args.mode, "success": True, "terminalCountsDigest": hashlib.sha256(canonical(usage)).hexdigest()}
 
 
 def worker_main(argv=None):

@@ -171,3 +171,10 @@ seconds, including DNS, trickled HTTP framing and cleanup. Errors, compressed or
 URLs, credentials, prompts or response bodies. This is the live counterpart to the
 provider response fixtures; it does not prove gateway enforcement or replace the
 pinned-image integration proof. It is never run automatically or as part of CI.
+
+Mode `tool-follow-up` (Anthropic format, output limit of at most 512 tokens) makes two
+requests under the same guards. The first asks for one tool call. The provider's real
+reply goes through the gateway's own request check and then back to the provider with a
+tool result. A synthetic provider cannot show this, because the fields of a real tool
+call are the provider's to add. Run it after a provider or model change; a refusal here
+means any chat turn that uses a tool would fail on its next model call.
