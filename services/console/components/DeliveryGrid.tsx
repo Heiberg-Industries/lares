@@ -10,6 +10,8 @@
  *
  * CLIENT component: imports only the database-free `lib/delivery.ts`, never the server modules.
  */
+import { Button } from "@lares/ui/primitives/button";
+import { Select } from "@lares/ui/primitives/select";
 import { useState, useTransition } from "react";
 import { saveDelivery } from "../app/actions/delivery";
 import {
@@ -25,15 +27,6 @@ export interface DeliveryGridProps {
   /** The last message of a kind that did not go where asked, e.g. "Morning brief went to web chat: Telegram is not connected". */
   notes?: Partial<Record<DeliveryKind, string>>;
 }
-
-const sel = {
-  border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 8px",
-  fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--card)", color: "var(--ink)",
-} as const;
-const btn = {
-  border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 12px",
-  background: "var(--signal)", color: "#fff", cursor: "pointer", fontSize: 12,
-} as const;
 
 export function DeliveryGrid({ agent, delivery, connected, notes = {} }: DeliveryGridProps) {
   const initial = gridFrom(delivery);
@@ -71,7 +64,7 @@ export function DeliveryGrid({ agent, delivery, connected, notes = {} }: Deliver
         message tries the next one, and web chat is always the last resort - so nothing is dropped.
         {!saved && " Rows marked “today” show where the message goes now; saving makes the choice explicit."}
       </p>
-      <table className="card" style={{ marginTop: 8 }} aria-label="Where messages go">
+      <div className="lares-table-scroll"><table className="card lares-operational-table" aria-label="Where messages go">
         <thead>
           <tr>
             <th>Message</th>
@@ -83,15 +76,14 @@ export function DeliveryGrid({ agent, delivery, connected, notes = {} }: Deliver
         <tbody>
           {initial.map((row) => (
             <tr key={row.kind}>
-              <td className="mono" style={{ fontSize: 12 }}>
+              <td className="mono lares-small">
                 {row.label}
-                {row.fromToday && !saved && <span style={{ color: "var(--mist)" }}> · today</span>}
-                {notes[row.kind] && <div style={{ color: "var(--mist)" }}>{notes[row.kind]}</div>}
+                {row.fromToday && !saved && <span className="lares-status-muted"> · today</span>}
+                {notes[row.kind] && <div className="lares-status-muted">{notes[row.kind]}</div>}
               </td>
               {DELIVERY_DOORS.map((door) => (
                 <td key={door}>
-                  <select
-                    style={sel}
+                  <Select
                     value={ranks[row.kind]![door]}
                     disabled={pending}
                     aria-label={`${row.label} via ${DOOR_LABEL[door]}`}
@@ -103,17 +95,17 @@ export function DeliveryGrid({ agent, delivery, connected, notes = {} }: Deliver
                   >
                     <option value={0}>not used</option>
                     {[1, 2, 3].map((n) => <option key={n} value={n}>{ordinal(n)}</option>)}
-                  </select>
+                  </Select>
                 </td>
               ))}
             </tr>
           ))}
         </tbody>
-      </table>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
-        <button style={btn} disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</button>
+      </table></div>
+      <div className="lares-actions lares-row-actions">
+        <Button type="button" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</Button>
         {msg && (
-          <span role={msg.ok ? "status" : "alert"} className="mono" style={{ fontSize: 12, color: msg.ok ? "var(--ok)" : "var(--bad)" }}>
+          <span role={msg.ok ? "status" : "alert"} className={msg.ok ? "lares-form-success" : "lares-form-error"}>
             {msg.text}
           </span>
         )}

@@ -360,8 +360,10 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             }
         }
         const held = !rollbackTarget ? await o.compose.liveStatus?.(name).catch(() => null) as { reason?: string; running?: boolean | null; pending?: boolean } | null : null;
-        const firstHeldActivation = hasFirstActivation(path) && held?.reason === 'Native budget activation required' && held.running === false;
-        if (!rollbackTarget && !firstHeldActivation)
+        // The marker proves this definition has never started, so there is nothing to roll back
+        // to. That holds before native activation, after it, and after a first start that failed.
+        const firstActivation = hasFirstActivation(path) && typeof held?.running === 'boolean';
+        if (!rollbackTarget && !firstActivation)
             refused('The previous complete applied definition is unknown; runtime was not stopped. Restore an owner-verified baseline before applying.');
         try {
             const result = await o.compose.reconcile!(name, d);
@@ -370,7 +372,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 clearUnknownApplyBaseline(path);
                 return result;
             }
-            if (!rollbackTarget && firstHeldActivation && nativeHeld(result)) return result;
+            if (!rollbackTarget && firstActivation && nativeHeld(result)) return result;
             throw new Error('Runtime did not start healthy');
         } catch (applyError) {
             await beforeRecovery?.();

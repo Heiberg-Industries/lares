@@ -16,6 +16,9 @@
 import { useState, useTransition } from "react";
 import { Button } from "@lares/ui/primitives/button";
 import { Input } from "@lares/ui/primitives/input";
+import { Select } from "@lares/ui/primitives/select";
+import { Checkbox } from "@lares/ui/primitives/checkbox";
+import { Field } from "@lares/ui/patterns";
 import {
   addDeadline, addFromCandidate, dismiss, ignoreCandidate, markDone, mintStatutoryYear, resetRung,
   saveLadderEnabled,
@@ -48,7 +51,7 @@ export function LadderSwitch({ enabled }: { enabled: boolean }) {
   return (
     <div className="card lares-control-card">
       <label className="lares-checkbox-row">
-        <input type="checkbox" checked={on} disabled={pending} onChange={(e) => toggle(e.target.checked)} />
+        <Checkbox checked={on} disabled={pending} onChange={(e) => toggle(e.target.checked)} />
         {/* Both states are STATED: a bare "Escalation ladder" beside an unchecked box
             reads as a label whose value failed to render, not as a switch that is off. */}
         <span>Escalation ladder — {on ? "ON" : "OFF"}</span>
@@ -87,10 +90,10 @@ function vendorAmountLabel(row: OpenDeadlineRow): string {
   return parts.length > 0 ? parts.join(", ") : "—";
 }
 
-function colorFor(token: "bad" | "warn" | null): string | undefined {
-  if (token === "bad") return "var(--bad)";
-  if (token === "warn") return "var(--warn)";
-  return undefined;
+function toneFor(token: "bad" | "warn" | null): string {
+  if (token === "bad") return "lares-status-error";
+  if (token === "warn") return "lares-status-warning";
+  return "";
 }
 
 export function OpenRow({ row }: { row: OpenDeadlineRow }) {
@@ -103,7 +106,7 @@ export function OpenRow({ row }: { row: OpenDeadlineRow }) {
   const [pending, start] = useTransition();
 
   if (gone) return null;
-  const color = colorFor(row.colorToken);
+  const tone = toneFor(row.colorToken);
 
   function submitDone() {
     setMsg(null);
@@ -133,30 +136,30 @@ export function OpenRow({ row }: { row: OpenDeadlineRow }) {
 
   return (
     <tr>
-      <td className="mono" style={{ fontSize: 12 }}>{row.entity}</td>
-      <td style={{ fontSize: 13 }}>{row.title}</td>
-      <td className="mono" style={{ fontSize: 12, color }}>{row.dueDate}</td>
-      <td className="mono" style={{ fontSize: 12, color }}>{row.days}</td>
-      <td className="mono" style={{ fontSize: 12, color: "var(--mist)" }}>{row.source}</td>
-      <td className="mono" style={{ fontSize: 12 }}>{row.rung}</td>
-      <td style={{ fontSize: 12, color: "var(--mist)" }}>{row.consequence ?? "—"}</td>
-      <td className="mono" style={{ fontSize: 12, color: "var(--mist)" }}>{vendorAmountLabel(row)}</td>
+      <td className="mono lares-small">{row.entity}</td>
+      <td className="lares-small">{row.title}</td>
+      <td className={`mono lares-small ${tone}`}>{row.dueDate}</td>
+      <td className={`mono lares-small ${tone}`}>{row.days}</td>
+      <td className="mono lares-small lares-status-muted">{row.source}</td>
+      <td className="mono lares-small">{row.rung}</td>
+      <td className="lares-small lares-status-muted">{row.consequence ?? "—"}</td>
+      <td className="mono lares-small lares-status-muted">{vendorAmountLabel(row)}</td>
       <td>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 220 }}>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <div className="lares-row-controls">
+          <div className="lares-actions">
             <Button variant="outline" disabled={pending} onClick={() => { setShowDone((v) => !v); setShowDismiss(false); }}>Done</Button>
             <Button variant="outline" disabled={pending} onClick={() => { setShowDismiss((v) => !v); setShowDone(false); }}>Dismiss</Button>
             {row.rung > 0 && <Button variant="outline" disabled={pending} onClick={bringBack}>Bring back</Button>}
           </div>
           {showDone && (
-            <div style={{ display: "flex", gap: 6 }}>
-              <Input className="lares-field" placeholder="Evidence (required)" value={evidence} onChange={(e) => setEvidence(e.target.value)} aria-label={`Evidence for ${row.title}`} />
+            <div className="lares-actions">
+              <Input placeholder="Evidence (required)" value={evidence} onChange={(e) => setEvidence(e.target.value)} aria-label={`Evidence for ${row.title}`} />
               <Button  disabled={pending} onClick={submitDone}>Confirm done</Button>
             </div>
           )}
           {showDismiss && (
-            <div style={{ display: "flex", gap: 6 }}>
-              <Input className="lares-field" placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} aria-label={`Dismiss reason for ${row.title}`} />
+            <div className="lares-actions">
+              <Input placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} aria-label={`Dismiss reason for ${row.title}`} />
               <Button  disabled={pending} onClick={submitDismiss}>Confirm dismiss</Button>
             </div>
           )}
@@ -211,12 +214,12 @@ export function AddForm() {
       <label className="lares-field-label">Entity<Input placeholder="Company or person" value={entity} onChange={(e) => setEntity(e.target.value)} /></label>
       <label className="lares-field-label">Title<Input placeholder="What is due" value={title} onChange={(e) => setTitle(e.target.value)} /></label>
       <label className="lares-field-label">Due date<Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></label>
-      <label className="lares-field-label">Source<select className="lares-field" value={source} onChange={(e) => setSource(e.target.value as (typeof SOURCES)[number])}>
+      <Field label="Source"><Select value={source} onChange={(e) => setSource(e.target.value as (typeof SOURCES)[number])}>
         {SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
-      </select></label>
-      <label className="lares-field-label">Repeats<select className="lares-field" value={recurrence} onChange={(e) => setRecurrence(e.target.value as (typeof RECURRENCES)[number])}>
+      </Select></Field>
+      <Field label="Repeats"><Select value={recurrence} onChange={(e) => setRecurrence(e.target.value as (typeof RECURRENCES)[number])}>
         {RECURRENCES.map((r) => <option key={r} value={r}>{r}</option>)}
-      </select></label>
+      </Select></Field>
       <label className="lares-field-label">Consequence (optional)<Input placeholder="What happens if missed" value={consequence} onChange={(e) => setConsequence(e.target.value)} /></label>
       {isRenewal && (
         <>
@@ -283,16 +286,16 @@ export function MintForm({
   }
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8, maxWidth: 900 }}>
-      <p style={{ color: "var(--warn)", fontSize: 12, marginTop: 0 }}>
+    <div className="card lares-control-card lares-stack">
+      <p className="lares-small lares-status-warning">
         Confirm each date against the authority before minting — these are the standing dates, not a feed.
       </p>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
-        <Input className="lares-field" placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label="Entity" />
+      <div className="lares-actions">
+        <Input className="lares-entity-input" placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label="Entity" />
         <Input className="lares-short-input" type="number" value={fiscalYear} onChange={(e) => setFiscalYear(Number(e.target.value))} aria-label="Fiscal year" />
-        <span style={{ color: "var(--mist)", fontSize: 12 }}>Jurisdiction: {jurisdiction}</span>
+        <span className="lares-small lares-status-muted">Jurisdiction: {jurisdiction}</span>
       </div>
-      <table>
+      <div className="lares-table-scroll"><table>
         <thead><tr><th></th><th>Rule</th><th>Date</th><th>Recurrence</th><th>Consequence</th></tr></thead>
         <tbody>
           {rules.map((r) => {
@@ -301,21 +304,21 @@ export function MintForm({
             // hand. The mint skips it either way — the checkbox has no say in that.
             const past = ruleDueDate(r, fiscalYear) < today;
             return (
-              <tr key={r.key} style={past ? { opacity: 0.45 } : undefined}>
-                <td><input type="checkbox" checked={included[r.key] ?? true} disabled={past} onChange={() => toggle(r.key)} aria-label={`Include ${r.title}`} /></td>
-                <td style={{ fontSize: 12 }}>
+              <tr key={r.key} className={past ? "lares-dim-row" : undefined}>
+                <td><Checkbox checked={included[r.key] ?? true} disabled={past} onChange={() => toggle(r.key)} aria-label={`Include ${r.title}`} /></td>
+                <td className="lares-small">
                   {r.title}
-                  {past && <span style={{ color: "var(--mist)" }}> — already past — add by hand if you still want it</span>}
+                  {past && <span className="lares-status-muted"> — already past — add by hand if you still want it</span>}
                 </td>
-                <td className="mono" style={{ fontSize: 12 }}>{r.standingDate}</td>
-                <td className="mono" style={{ fontSize: 12, color: "var(--mist)" }}>{r.recurrence}</td>
-                <td style={{ fontSize: 12, color: "var(--mist)" }}>{r.consequence}</td>
+                <td className="mono lares-small">{r.standingDate}</td>
+                <td className="mono lares-small lares-status-muted">{r.recurrence}</td>
+                <td className="lares-small lares-status-muted">{r.consequence}</td>
               </tr>
             );
           })}
         </tbody>
-      </table>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+      </table></div>
+      <div className="lares-actions">
         <Button  disabled={pending} onClick={submit}>{pending ? "Minting…" : "Mint this year"}</Button>
         <Msg msg={msg} />
       </div>
@@ -366,23 +369,23 @@ export function CandidateRow({ candidate }: { candidate: CandidateDTO }) {
 
   return (
     <tr>
-      <td style={{ fontSize: 13 }}>{candidate.subject}</td>
-      <td className="mono" style={{ fontSize: 12, color: "var(--mist)" }}>{candidate.sender}</td>
-      <td className="mono" style={{ fontSize: 12, color: "var(--mist)" }}>{candidate.seenAtLabel}</td>
-      <td className="mono" style={{ fontSize: 12, color: candidate.surfaced ? "var(--mist)" : "var(--warn)" }}>
+      <td className="lares-small">{candidate.subject}</td>
+      <td className="mono lares-small lares-status-muted">{candidate.sender}</td>
+      <td className="mono lares-small lares-status-muted">{candidate.seenAtLabel}</td>
+      <td className={`mono lares-small ${candidate.surfaced ? "lares-status-muted" : "lares-status-warning"}`}>
         {candidate.surfaced ? "surfaced" : "not yet surfaced"}
       </td>
       <td>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 260 }}>
-          <div style={{ display: "flex", gap: 6 }}>
+        <div className="lares-row-controls">
+          <div className="lares-actions">
             <Button variant="outline" disabled={pending} onClick={() => setAdding((v) => !v)}>Add</Button>
             <Button variant="outline" disabled={pending} onClick={submitIgnore}>Ignore</Button>
           </div>
           {adding && (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              <Input className="lares-field" placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label={`Entity for ${candidate.subject}`} />
-              <Input className="lares-field" placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} aria-label={`Title for ${candidate.subject}`} />
-              <Input className="lares-field" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} aria-label={`Due date for ${candidate.subject}`} />
+            <div className="lares-actions">
+              <Input placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label={`Entity for ${candidate.subject}`} />
+              <Input placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} aria-label={`Title for ${candidate.subject}`} />
+              <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} aria-label={`Due date for ${candidate.subject}`} />
               <Button  disabled={pending} onClick={submitAdd}>Confirm add</Button>
             </div>
           )}

@@ -58,6 +58,32 @@ export async function listAgents(options: { strict?: boolean } = {}): Promise<Ag
   }));
 }
 
+/** A saved definition that has not registered yet. It has no running state to show, but the owner
+ *  must reach its page: adopting it is what lets it start, so it cannot wait for the registry. */
+export function savedAgentFolder(name: string, definition: unknown): AgentFolder {
+  const d = (definition && typeof definition === "object" ? definition : {}) as Record<string, unknown>;
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+  const role = typeof d.role === "string" ? d.role : null;
+  return {
+    name,
+    displayName: typeof d.display === "string" ? d.display : name,
+    role: (role && ROLE_LABELS[role]) ?? role ?? "Agent",
+    grants: list(d.grants) as AgentFolder["grants"],
+    autonomy: (d.autonomy && typeof d.autonomy === "object" ? d.autonomy : {}) as AgentFolder["autonomy"],
+    skills: list(d.skills).map((s) => (typeof s === "string" ? s : String((s as { name?: string }).name ?? ""))),
+    doors: list(d.doors).filter((door) => door && typeof door === "object") as AgentFolder["doors"],
+    tools: null,
+    startedAt: "",
+  };
+}
+
+/** Valid definitions with no registry row yet. An unreadable table hides nothing it can show. */
+export async function listSavedAgentsNotStarted(): Promise<AgentFolder[]> {
+  const { rows } = await pool.query<{ name: string; definition: unknown }>(`SELECT d.name,d.definition FROM agent_definitions d
+    LEFT JOIN agent_registry g ON g.name=d.name WHERE g.name IS NULL AND d.status='valid' ORDER BY d.name`).catch(() => ({ rows: [] }));
+  return rows.map((row) => savedAgentFolder(row.name, row.definition));
+}
+
 /** Private chat exposes only authorised agent identity, never the owner console's configuration. */
 export interface PrivateChatAgent { name: string; displayName: string; role: string }
 export async function listPrivateChatAgents(member: Member): Promise<PrivateChatAgent[]> {

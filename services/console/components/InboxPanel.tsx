@@ -7,6 +7,7 @@
  * (server-rendered, passed in as `initial`) and re-read every half minute while the page is visible,
  * and straight away when the tab becomes visible again.
  */
+import { Button } from "@lares/ui/primitives/button";
 import Link from "next/link";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { markRead } from "../app/actions/inbox";
@@ -55,14 +56,14 @@ export function InboxPanel({ agent, initial, earlier = [] }: { agent: string; in
               <li key={m.id}>
                 <strong>{m.title}</strong>{" "}
                 <time className="lares-muted" dateTime={m.createdAt}>{m.createdAt.replace("T", " ").slice(0, 16)} UTC</time>
-                <p style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{m.body}</p>
+                <p className="lares-pre lares-row-actions">{m.body}</p>
                 <Link href={`/chat/${encodeURIComponent(agent)}?reply=${m.id}`}>Reply</Link>{" · "}
-                <button type="button" disabled={pending} onClick={() => read(m.id)}>Mark as read</button>
+                <Button type="button" variant="outline" disabled={pending} onClick={() => read(m.id)}>Mark as read</Button>
               </li>
             ))}
           </ul>
           {messages.length > 1 && (
-            <button type="button" disabled={pending} onClick={() => read()}>Mark all as read</button>
+            <Button type="button" variant="outline" disabled={pending} onClick={() => read()}>Mark all as read</Button>
           )}
         </>
       )}
@@ -74,7 +75,7 @@ export function InboxPanel({ agent, initial, earlier = [] }: { agent: string; in
               <li key={m.id}>
                 <strong>{m.title}</strong>{" "}
                 <time className="lares-muted" dateTime={m.createdAt}>{m.createdAt.replace("T", " ").slice(0, 16)} UTC</time>
-                <p style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{m.body}</p>
+                <p className="lares-pre lares-row-actions">{m.body}</p>
                 <Link href={`/chat/${encodeURIComponent(agent)}?reply=${m.id}`}>Reply</Link>
               </li>
             ))}

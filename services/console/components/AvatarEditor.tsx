@@ -1,4 +1,6 @@
 "use client";
+import { Field } from "@lares/ui/patterns";
+import { Input } from "@lares/ui/primitives/input";
 import React, { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@lares/ui/primitives/button";
@@ -47,16 +49,15 @@ export function AvatarEditor({ name, role, initialVersion }: { name: string; rol
         <figcaption>{previewVersion ? "Current image" : "Default symbol"}</figcaption>
       </figure>
       <form action={save}>
-        <label>
-          Choose an image
-          <input
+        <Field label="Choose an image">
+          <Input
             type="file"
             name="image"
             accept="image/png,image/jpeg,image/webp"
             required
             disabled={busy}
           />
-        </label>
+        </Field>
         <div className="lares-actions">
           <Button type="submit" disabled={busy}>
             Save image

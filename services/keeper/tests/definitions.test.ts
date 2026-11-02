@@ -347,6 +347,35 @@ it('allows a new definition explicitly held before its first runtime start witho
     const legacy: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'legacy held candidate' } }), ctx());
     await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: legacy.hash }, ctx())).rejects.toThrow('previous applied definition cannot be verified');
 });
+it('starts a new definition after native activation, and again after a first start that failed', async () => {
+    await create();
+    const path = join(agentsDir, 'bookkeeper');
+    let health = false;
+    const reconcile = vi.fn(async () => ({ pending: false, reason: null, running: true, healthy: health }));
+    Object.assign(compose, {
+        // Activated: no longer held, and never started.
+        liveStatus: vi.fn(async () => ({ pending: false, reason: null, running: false, healthy: null })),
+        reconcile,
+    });
+    register();
+    const saved: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'first candidate' } }), ctx());
+    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: saved.hash }, ctx())).rejects.toThrow('keeper: action failed');
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect((await pool.query("SELECT pending,pending_reason FROM agent_resources WHERE name='bookkeeper'")).rows).toEqual([]);
+    expect(existsSync(join(path, '.first-activation'))).toBe(true);
+    health = true;
+    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: saved.hash }, ctx())).resolves.toMatchObject({ running: true, healthy: true });
+    expect(reconcile).toHaveBeenCalledTimes(2);
+});
+it('does not start a new definition when it cannot tell whether a runtime is there', async () => {
+    await create();
+    const reconcile = vi.fn();
+    Object.assign(compose, { liveStatus: vi.fn(async () => ({ pending: false, reason: null, running: null, healthy: null })), reconcile });
+    register();
+    const saved: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'unknown runtime' } }), ctx());
+    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: saved.hash }, ctx())).rejects.toThrow('previous complete applied definition is unknown');
+    expect(reconcile).not.toHaveBeenCalled();
+});
 it('marks recovery required when current authority blocks restoration after candidate startup fails', async () => {
     await create();
     const path = join(agentsDir, 'bookkeeper');

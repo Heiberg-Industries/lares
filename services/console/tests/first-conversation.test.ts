@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { creationNotices, firstChatPath } from "../lib/first-conversation";
+import { afterCreationPath, creationNotices, firstChatPath } from "../lib/first-conversation";
 
 it("sends a healthy new agent straight to its first conversation", () => {
   expect(firstChatPath("my-helper", "saved")).toBe("/chat/my-helper?created=1");
@@ -20,4 +20,9 @@ it("keeps an optional backup failure visible without blocking the healthy local 
 it("reports an intentionally disabled Git backup accurately", () => {
   expect(firstChatPath("my-helper", "disabled")).toBe("/chat/my-helper?created=1&backup=disabled");
   expect(creationNotices({ created: "1", backup: "disabled" }).backup).toMatch(/not enabled/);
+});
+
+it("sends a new agent held for budget activation to its page, not to a chat it does not have yet", () => {
+  expect(afterCreationPath("my-helper", "saved", "Native budget activation required")).toBe("/agents/my-helper");
+  expect(afterCreationPath("my-helper", "saved", null)).toBe("/chat/my-helper?created=1");
 });
