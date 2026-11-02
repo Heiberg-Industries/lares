@@ -6,6 +6,7 @@ import { parseDefinition } from '@lares/agent-kit/definition';
 import { tracksHome } from './tracks.js';
 import { TwentyTracksHome } from './twenty-tracks.js';
 import { stampFor, turnKeyFrom } from '@lares/agent-kit/origin-taint';
+import { currentMember } from '@lares/agent-kit/member-store';
 
 const TRACK_TOOLS = ['track_add_item','track_move_item','track_create','track_set_steps'] as const;
 function trackPathFor(input: unknown): string {
@@ -37,7 +38,9 @@ export const tracksApprovalAdapter: ExactApprovalAdapter = {
     if (neutralWrite && (typeof suppliedHome !== 'string' || !/^vault:[A-Za-z0-9_-]{1,128}$/.test(suppliedHome) ||
         typeof raw.trackId !== 'string' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(raw.trackId)))
       throw new Error('Exact Tracks home or track is unavailable');
-    const home = tracksHome(ctx as never, typeof suppliedHome === 'string' ? suppliedHome : undefined);
+    // An approval answer carries no human turn and gains no read: it checks the reserved target
+    // only. Keeper compares the target's current bytes with the reserved fingerprint at write.
+    const home = reservedTarget ? undefined : tracksHome(ctx as never, typeof suppliedHome === 'string' ? suppliedHome : undefined);
     const path = tool === 'track_move_item'
       ? (reservedTarget?.id ?? await home?.findItemPath(String((input as {itemId?:unknown}).itemId)))
       : trackPathFor(input);
@@ -60,6 +63,15 @@ export const tracksApprovalAdapter: ExactApprovalAdapter = {
   },
 };
 
+/** A Twenty track writes to the company's CRM with the installation's own credentials, so only
+ *  the installation's designated owner may approve one (ADR-0023 rule 7), checked as of now. */
+export async function canApproveCompanyTrack(db: AuthorityDatabase, memberId: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const owner = env.AGENT_OWNER_USER_ID?.trim();
+  if (!owner || memberId !== owner) return false;
+  const member = await currentMember(db as never, memberId, { lock: 'share' });
+  return member?.role === 'owner';
+}
+
 /** Exact private-Console authorization for the neutral tools' Twenty home. Vault retains its
  *  existing adapter and Keeper writer; this adapter only fingerprints current Twenty metadata. */
 export const twentyTracksApprovalAdapter: ExactApprovalAdapter = {
@@ -77,9 +89,11 @@ export const twentyTracksApprovalAdapter: ExactApprovalAdapter = {
     if (level === 'never' || !['gated','autonomous'].includes(level)) throw new Error('Exact Twenty track policy is unavailable');
     return payloadFingerprint('tracks-twenty-write-policy-v1', { definition, hash: rows[0].hash, board: board[0] ?? null, level });
   },
-  async readTarget(_db, input, memberId, tool, ctx, reservedTarget) {
+  async readTarget(db, input, memberId, tool, ctx, reservedTarget) {
     if ((tool !== 'track_add_item' && tool !== 'track_move_item') || !input || typeof input !== 'object' || Array.isArray(input))
       throw new Error('Exact Twenty track target is unavailable');
+    // Before any provider read: this runs at the card, the answer and the execution.
+    if (!await canApproveCompanyTrack(db, memberId)) throw new Error('Exact Twenty track target is unavailable');
     const raw = input as Record<string, unknown>;
     if (raw.home !== 'twenty' || typeof raw.trackId !== 'string' || raw.trackId.length < 1 || raw.trackId.length > 128)
       throw new Error('Exact Twenty track target is unavailable');

@@ -1079,7 +1079,7 @@ keeper_dc up -d </dev/null || midway "Could not start the keeper."
 if [ "$FINANCIAL_PREPARED" = 1 ];then
   CHANGED="$CHANGED; keeper start requested (financial recovery required)"
   say "restored snapshot $SNAPSHOT: ${#DUMPS[@]} database(s), ${#AGENT_NAMES[@]} agent folder(s)."
-  say 'Financial recovery is required. Protected custody remains permanently frozen; keeper startup refuses that custody.'
+  say 'Financial recovery is required. Protected custody remains permanently frozen; the keeper starts with spending closed.'
   say 'A detached compose start does not prove keeper, runtime or spending readiness. Keep agents stopped.'
   say 'Owner-directed reconciliation must preserve unknown liabilities and suppression, then invalidate restored console, resume and job authority before any fresh caps, keys or profiles.'
   say 'This release does not implement that reconciliation. Do not remove custody files, rerun fresh preparation or apply agents to bypass recovery.'

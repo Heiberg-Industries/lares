@@ -216,7 +216,9 @@ beforeEach(async () => {
 });
 
 const memberAuth = (purpose: 'human'|'resolver') => ({ authenticator: 'lares-console', principalId: ids.member, principalType: 'user',
-  attributes: { user_id: ids.member, lares_member_id: ids.member, lares_admission_nonce: admissionNonce, lares_purpose: purpose } });
+  attributes: { user_id: ids.member, lares_member_id: ids.member, lares_admission_nonce: admissionNonce, lares_purpose: purpose,
+    ...(purpose === 'resolver' ? { lares_resume_request_id: 'track-request-1', lares_resume_option: 'approve' } : {}) } });
+const answeredAuth = (requestId: string) => { const auth = memberAuth('resolver'); return { ...auth, attributes: { ...auth.attributes, lares_resume_request_id: requestId } }; };
 const trackInput = { trackId: 'follow-up', name: 'Follow up', purpose: 'Open work', steps: ['Open', 'Done'], closingSteps: ['Done'] };
 const trackAdapter = {
   toolNames: ['track_create'],
@@ -293,7 +295,7 @@ async function approvedExactTrack(operation: string, input: unknown, adapter: an
   await reserveExactApproval(human, operation, { adapter, db: pool as never, env });
   await attachExactApproval({ requestId: 'track-request-1', callId: 'track-call-1', tool: operation, input }, pool as never);
   await approveExactResponse({ request: { requestId: 'track-request-1', callId: 'track-call-1', toolName: operation, toolInput: input },
-    responder: memberAuth('resolver'), session: { id: session, initiator: memberAuth('human'), turn: { id: 'turn-track-resolver', sequence: 31 } } },
+    responder: answeredAuth('track-request-1'), session: { id: session, initiator: memberAuth('human'), turn: { id: 'turn-track-resolver', sequence: 31 } } },
     { adapter, db: pool as never, env });
   return requireApprovedExecution(approvalContext('resolver', input, operation), operation, input, { adapter, db: pool as never, env });
 }
@@ -544,7 +546,7 @@ async function exactOutsideFixture(options:{answer?:boolean;receipts?:Pool}={}){
   approval:(connection,tool)=>({request:ctx=>requestOutsideApproval(connection,tool,ctx),response:ctx=>respondOutsideApproval(connection,tool,ctx)}),
   executor:(connection,tool)=>(input,ctx)=>runOutsideTool(connection,tool,input,ctx)});
  const tool=tools!['registry__lookup']! as any,input={company:'Example'},call={callId:randomUUID(),connectionName:'registry',toolName:'lookup',input};
- const toolName='registry__lookup',requestId=randomUUID(),human=memberAuth('human'),resolver=memberAuth('resolver');
+ const toolName='registry__lookup',requestId=randomUUID(),human=memberAuth('human'),resolver=answeredAuth(requestId);
  const {turnId,opened}=await openTurn(80);
  const context={callId:call.callId,toolName,toolInput:input,session:{id:session,turn:{id:turnId,sequence:80},auth:{current:human,initiator:human}}};
  expect(await tool.approval.request(context)).toBe('user-approval');
@@ -585,7 +587,7 @@ it('resumes the real outside tool after original turn closure exactly once under
 it.each(['rejection','different-responder','changed-payload','changed-member','changed-session','revocation','expiry','human-resume'])(
  'outside tool refuses %s before custody/provider',async(kind)=>{
  const f=await exactOutsideFixture({answer:kind!=='rejection'&&kind!=='different-responder'});
- let ctx=f.resumed,input=f.input;
+ let ctx:any=f.resumed,input=f.input;
  if(kind==='rejection')await makeApprovalRecord()['input.resolved']({data:{resolutions:[{kind:'tool-approval',requestId:f.response.request.requestId,outcome:'denied'}]}},f.resumed as never);
  if(kind==='different-responder'){
   await expect(f.tool.approval.response({...f.response,responder:{...memberAuth('resolver'),attributes:{...memberAuth('resolver').attributes,lares_member_id:'member-backup'}}})).rejects.toThrow();

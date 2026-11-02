@@ -37,6 +37,11 @@ export interface FinancialProjection {checkpoints:FinancialCheckpoint[];atoms:Fi
 const observationCounts=z.object({accounts:z.number().int().nonnegative().safe(),windows:z.number().int().nonnegative().safe(),bindings:z.number().int().nonnegative().safe(),attempts:z.number().int().nonnegative().safe(),grants:z.number().int().nonnegative().safe(),checkpoints:z.number().int().positive().safe()}).strict();
 export const FINANCIAL_OBSERVATION_SCHEMA=z.object({operationId:id,checkpoint:FINANCIAL_CHECKPOINT_SCHEMA,database:FINANCIAL_DATABASE_SCHEMA,projectionDigest:hash,checkpointDigest:hash,counts:observationCounts}).strict();
 export type FinancialObservation=z.infer<typeof FINANCIAL_OBSERVATION_SCHEMA>;
+/** Which database this is. Its start time is recorded evidence, not identity: an ordinary
+ * restart changes it, and the full ledger comparison decides whether the data still matches. */
+function sameFinancialDatabase(left:FinancialDatabase,right:FinancialDatabase):boolean {
+  return left.systemIdentifier===right.systemIdentifier&&left.databaseOid===right.databaseOid;
+}
 export function financialAtomKey(atom:FinancialAtom):string {
   return atom.kind==='grant'?`${atom.kind}:${atom.attemptId}`:atom.kind==='tombstone'?`${atom.kind}:${atom.accountId}`:`${atom.kind}:${atom.id}`;
 }
@@ -366,7 +371,7 @@ export class HostFinancialJournal {
         const raw=readFileSync(fd);if(raw.length!==stat.size||raw[raw.length-1]!==10)throw new Error('Partial journal');return raw;
       }finally{if(!last)closeSync(fd);}
     };
-    const operations=new Set<string>();let genesis=false,writer:string|undefined,sealedTail=false,lastKind:string|undefined,raw:Buffer|undefined=readBook(0);
+    const operations=new Set<string>();let genesis=false,writer:string|undefined,sealedTail=false,raw:Buffer|undefined=readBook(0);
     for(let index=0;index<books.length&&raw;index++){
       const last=index===books.length-1,next=last?undefined:readBook(index+1);
       // The next book's first record holds this book's whole-file fingerprint. Once it matches,
@@ -406,11 +411,11 @@ export class HostFinancialJournal {
           this.lastCheckpoint={operationId:r.operationId,journalId:this.journalId,sequence:r.sequence-1,digest:r.proposalDigest};this.addCheckpoint(this.lastCheckpoint,this.pending.operation);this.applyAtoms(this.pending.atoms);this.pending=undefined;
         }
         else if(r.kind==='observation'){
-          if(this.pending||!this.control||!this.lastCheckpoint||r.operationId!==r.observation.operationId||JSON.stringify(r.observation.checkpoint)!==JSON.stringify(this.lastCheckpoint)||JSON.stringify(r.observation.database)!==JSON.stringify(this.control.database))throw new Error('Financial observation mismatch');
+          if(this.pending||!this.control||!this.lastCheckpoint||r.operationId!==r.observation.operationId||JSON.stringify(r.observation.checkpoint)!==JSON.stringify(this.lastCheckpoint)||!sameFinancialDatabase(r.observation.database,this.control.database))throw new Error('Financial observation mismatch');
         }
         else if(r.kind==='abort'){if(!this.pending||this.pending.id!==r.operationId||(this.pending.proposal??null)!==r.proposalDigest)throw new Error('Journal abort mismatch');this.pending=undefined;}
         else throw new Error('Repeated journal genesis');
-        this.sequence++;this.head=frame.digest;lastKind=r.kind;
+        this.sequence++;this.head=frame.digest;
       }
       if(next&&!sealed)throw new Error('Journal book not sealed');
       if(last){sealedTail=sealed;this.size=raw.length;this.bookRecords=lines.length;}
@@ -434,8 +439,8 @@ export class HostFinancialJournal {
     // Validate custody before writing a freeze or opening/adopting any writer history.
     if(prepared&&!this.preparationComplete||this.pending||writer||sealedTail||this.control&&JSON.stringify(this.control.checkpoint)!==JSON.stringify(this.lastCheckpoint)){
       if(!prepared)throw new Error('Uncompleted financial operation or writer');
-      // One freeze is enough: repeated failed starts must not add a record each time.
-      if(lastKind!=='freeze')this.persistFreeze('uncertain');else this.frozen=true;
+      // A keeper keeps starting with a frozen journal, so each start must not add a record.
+      if(!this.frozen)this.persistFreeze('uncertain');
     }
   }
   /** The in-process barrier precedes pool checkout. Kernel ownership spans this object's
@@ -498,7 +503,7 @@ export class HostFinancialJournal {
     const observation=FINANCIAL_OBSERVATION_SCHEMA.parse(raw),pending=this.pending;
     if(!pending?.proposal||pending.id!==operationId||!this.control||observation.operationId!==operationId||observation.checkpoint.operationId!==operationId||
       observation.checkpoint.journalId!==this.journalId||observation.checkpoint.sequence!==this.sequence-1||observation.checkpoint.digest!==pending.proposal||
-      JSON.stringify(observation.database)!==JSON.stringify(this.control.database))throw new Error('Financial observation unavailable');
+      !sameFinancialDatabase(observation.database,this.control.database))throw new Error('Financial observation unavailable');
     const priorProjection=pending.operation==='provision'?freezeFinancialAtoms(this.expectedProjection(false).atoms):undefined;
     const projection=this.expectedProjection(true);
     if(JSON.stringify(projection.counts)!==JSON.stringify(observation.counts)||observation.checkpointDigest!==digest(gatewayCanonical(projection.checkpoints))||
@@ -622,7 +627,7 @@ export class HostFinancialJournal {
     }};
   }
   databaseMatches(database:FinancialDatabase):boolean {
-    return !!this.control&&JSON.stringify(FINANCIAL_DATABASE_SCHEMA.parse(database))===JSON.stringify(this.control.database);
+    return !!this.control&&sameFinancialDatabase(FINANCIAL_DATABASE_SCHEMA.parse(database),this.control.database);
   }
   /** A passed whole-ledger check at startup is what allows this writer to take its lease. */
   acceptFullContinuity():void {if(this.startupLeasePending)this.startupContinuityVerified=true;}
@@ -662,20 +667,23 @@ export class HostFinancialJournal {
       actualAtoms=atoms.map(atom=>FINANCIAL_ATOM_SCHEMA.parse(atom));
     }catch{this.persistFreeze('continuity');throw new Error('Financial continuity requires recovery');}
     const expectedSqlAtoms=expected.atoms.filter(atom=>atom.kind!=='tombstone');
-    if(this.closed||this.frozen||!this.control||JSON.stringify(FINANCIAL_DATABASE_SCHEMA.parse(database))!==JSON.stringify(this.control.database)||!gatewayCanonical(actualCheckpoints).equals(gatewayCanonical(expected.checkpoints))||!gatewayCanonical(actualAtoms).equals(gatewayCanonical(expectedSqlAtoms))){
+    if(this.closed||this.frozen||!this.control||!sameFinancialDatabase(FINANCIAL_DATABASE_SCHEMA.parse(database),this.control.database)||!gatewayCanonical(actualCheckpoints).equals(gatewayCanonical(expected.checkpoints))||!gatewayCanonical(actualAtoms).equals(gatewayCanonical(expectedSqlAtoms))){
       this.persistFreeze('continuity');throw new Error('Financial continuity requires recovery');
     }
     if(this.startupLeasePending)this.startupContinuityVerified=true;
   }
   get prepared():boolean{return this.control!==undefined;}
   get isFrozen():boolean{return this.frozen;}
+  /** True from a startup open until the writer lease is published. Nothing has run yet. */
+  get awaitingStartupVerification():boolean{return this.startupLeasePending;}
   get id():string{return this.journalId;}
   async drainForShutdown():Promise<void>{
     this.stopping=true;
     if(this.busy)await new Promise<void>(resolve=>{this.idle.add(resolve);});
   }
   async freezeForRestore(timeoutMs=2000):Promise<void>{
-    if(this.startupLeasePending)throw new Error('Financial writer lease unavailable');
+    // A keeper running with a journal frozen at startup never takes a lease; restore still needs this.
+    if(this.startupLeasePending&&!this.frozen)throw new Error('Financial writer lease unavailable');
     if(!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>5000)throw new Error('Invalid freeze deadline');
     this.stopping=true; // synchronous: no new operation can cross the barrier
     if(this.busy){let timer:ReturnType<typeof setTimeout>|undefined;

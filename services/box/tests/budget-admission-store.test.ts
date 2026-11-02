@@ -38,7 +38,8 @@ import {serveModelPurposeBroker,modelPurposeDigest,modelPurposeMac,signModelPurp
 import {MODEL_PURPOSE_EMPTY_DIGEST,modelPurposeAckFields,modelPurposeEqualMac,modelPurposeRuntimeRequestFields,parseModelPurposeAdmissionResponse} from '../../../packages/agent-kit/src/model-purpose-protocol.js';
 import {openBudgetMonth} from '../../keeper/lib/budget-account-provisioning.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
-import {observeFinancialDatabase,runScheduledLedgerCheck,verifyFullFinancialContinuity} from '../../keeper/lib/financial-continuity.js';
+import {observeFinancialDatabase,openFinancialJournalForKeeper,runScheduledLedgerCheck,verifyFullFinancialContinuity} from '../../keeper/lib/financial-continuity.js';
+import {execFileSync} from 'node:child_process';
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
 const pricing={version:1,capabilityHash:profile,format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'10',output:'90',cacheRead:'5',cacheWrite:'0'}};
 let sessionGeneration=0;
@@ -711,6 +712,55 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
       samples.push({restartMs:Math.round(performance.now()-started)});writeFileSync(out,JSON.stringify(samples,null,1));
       await oneCall();
     },3_000_000);
+  });
+  describe('real database restarts',()=>{
+    const custody={ownershipUid:testJournalUid,lock:platformTestJournalLock};
+    const reconnect=()=>{db=quiet(new Pool({connectionString:container.getConnectionUri(),max:1,connectionTimeoutMillis:5000}));};
+    const restartDatabase=async()=>{await db.end();await container.restart();reconnect();};
+    const useJournal=(journal:HostFinancialJournal)=>{files.journal=journal;files.writer=new JournalBudgetFinancialWriter(journal);gatewayPreparedStore=new PgBudgetAdmissionStore(db,env(),30_000,files.writer);};
+    const spend=async()=>{const a=await allowed();expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,terminal(a.grant))).document.state).toBe('settled');};
+    const freezes=()=>files.records().filter(frame=>frame.record.kind==='freeze');
+    // A file-level copy keeps the system identifier and database id, so only the ledger can tell.
+    const dataDirectory=(command:string)=>execFileSync('docker',['run','--rm','--volumes-from',container.getId(),'--entrypoint','sh','pgvector/pgvector:pg16','-c',`cd /var/lib/postgresql/data && ${command}`],{stdio:'ignore'});
+    const stopDatabase=async()=>{await db.end();execFileSync('docker',['stop',container.getId()],{stdio:'ignore'});};
+    it('resumes spending after the keeper and the database both restart with a clean ledger',async()=>{
+      await spend();const before=await observeFinancialDatabase(db);files.journal.close();
+      await restartDatabase();
+      const after=await observeFinancialDatabase(db);
+      expect(after.postmasterStartedAt).not.toBe(before.postmasterStartedAt);expect({...after,postmasterStartedAt:''}).toEqual({...before,postmasterStartedAt:''});
+      const journal=await openFinancialJournalForKeeper(files.directory,db,custody);useJournal(journal);
+      expect(journal.isFrozen).toBe(false);await spend();
+      journal.close();const again=await openFinancialJournalForKeeper(files.directory,db,custody);useJournal(again);
+      expect(again.isFrozen).toBe(false);await spend();expect(freezes()).toEqual([]);
+    },180_000);
+    it('keeps spending when only the database restarts while the keeper runs',async()=>{
+      await spend();await restartDatabase();useJournal(files.journal);
+      await spend();expect(files.journal.isFrozen).toBe(false);expect(freezes()).toEqual([]);
+    },180_000);
+    it('refuses an older backup of the same database, with spending closed and the journal kept for restore',async()=>{
+      await spend();await stopDatabase();
+      dataDirectory('mkdir .older && find . -mindepth 1 -maxdepth 1 ! -name .older -exec cp -a -t .older {} +');
+      await container.restart();reconnect();useJournal(files.journal);
+      const before=await observeFinancialDatabase(db);
+      await spend();await stopDatabase();files.journal.close();
+      dataDirectory('find . -mindepth 1 -maxdepth 1 ! -name .older -exec rm -rf {} + && cp -a .older/. . && rm -rf .older');
+      await container.restart();reconnect();
+      const after=await observeFinancialDatabase(db);
+      expect({...after,postmasterStartedAt:''}).toEqual({...before,postmasterStartedAt:''});
+      const journal=await openFinancialJournalForKeeper(files.directory,db,custody);useJournal(journal);
+      expect(journal.isFrozen).toBe(true);
+      expect(files.records().at(-1).record.kind).toBe('freeze');
+      await expect(prepared()).rejects.toThrow();
+      await expect(journal.freezeForRestore()).resolves.toBeUndefined();expect(freezes().at(-1).record.reason).toBe('restore');
+    },180_000);
+    it('refuses a database whose money rows were changed behind the ledger across a restart',async()=>{
+      await spend();files.journal.close();await restartDatabase();
+      await db.query('ALTER TABLE budget_financial_checkpoints DISABLE TRIGGER USER');
+      await db.query('DELETE FROM budget_financial_checkpoints WHERE proposal_sequence=(SELECT max(proposal_sequence) FROM budget_financial_checkpoints)');
+      await db.query('ALTER TABLE budget_financial_checkpoints ENABLE TRIGGER USER');
+      const journal=await openFinancialJournalForKeeper(files.directory,db,custody);useJournal(journal);
+      expect(journal.isFrozen).toBe(true);expect(freezes()).toHaveLength(1);
+    },180_000);
   });
   it('refuses settlement without a writer and leaves the admitted liability unchanged',async()=>{
     const a=await allowed(),before=(await db.query('SELECT state,actual_amount FROM budget_attempts')).rows[0];

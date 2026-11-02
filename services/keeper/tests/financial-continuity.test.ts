@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {HostFinancialJournal,type FinancialAtom,type FinancialCheckpoint,type FinancialDatabase} from '../lib/financial-journal.js';
-import {prepareFinancialCustody,verifyFinancialContinuity} from '../lib/financial-continuity.js';
+import {FinancialObservationUnavailable,openFinancialJournalForKeeper,prepareFinancialCustody,verifyFinancialContinuity} from '../lib/financial-continuity.js';
 import {financialAtomFromRow} from '../lib/financial-projection.js';
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 const database:FinancialDatabase={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'};
@@ -20,10 +20,11 @@ function verifyJournal(journal:HostFinancialJournal,databaseValue:FinancialDatab
 const zeroHash='0'.repeat(64),uuid=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 function account(id:string,suppression=zeroHash):Extract<FinancialAtom,{kind:'account'}>{return {kind:'account',id,installationAccountId:id,accountKind:'installation',state:'closed',reason:'unreconciled',activeWindowId:null,installationCap:null,policyGeneration:'0',selectedEndpointHash:null,endpointGeneration:'0',recoveryEpochHash:null,canonicalSuppressionHash:suppression,providerSuppressionHashes:[]};}
 function accountRow(atom:Extract<FinancialAtom,{kind:'account'}>){return {id:atom.id,installation_account_id:atom.installationAccountId,kind:atom.accountKind,state:atom.state,reason:atom.reason,active_window_id:atom.activeWindowId,installation_cap:atom.installationCap,policy_generation:atom.policyGeneration,selected_endpoint:atom.selectedEndpointHash,endpoint_generation:atom.endpointGeneration,recovery_epoch:null,canonical_suppression_hash:atom.canonicalSuppressionHash,provider_suppression_hashes:atom.providerSuppressionHashes};}
-function projectionDb(state:{accounts?:ReturnType<typeof accountRow>[];checkpoints?:FinancialCheckpoint[];grants?:{attempt_id:string;grant_hash:string}[]}={}){
+const restarted:FinancialDatabase={...database,postmasterStartedAt:'2026-10-23T08:00:00.654321Z'};
+function projectionDb(state:{accounts?:ReturnType<typeof accountRow>[];checkpoints?:FinancialCheckpoint[];grants?:{attempt_id:string;grant_hash:string}[];database?:FinancialDatabase}={}){
   const accounts=state.accounts??[],checkpoints=state.checkpoints??[],grants=state.grants??[];
   return {query:async(sql:string,values?:any[])=>{
-    if(sql.includes('pg_control_system'))return {rows:[database]};
+    if(sql.includes('pg_control_system'))return {rows:[state.database??database]};
     if(sql.includes('(SELECT count(*)::text FROM budget_accounts)'))return {rows:[{accounts:String(accounts.length),windows:'0',bindings:'0',attempts:'0',grants:String(grants.length),checkpoints:String(checkpoints.length)}]};
     if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))return {rows:checkpoints.filter(row=>(values?.[0] as string[]).includes(String(row.sequence))).map(row=>({...row,sequence:String(row.sequence)}))};
     if(sql.includes('FROM budget_accounts WHERE id=ANY'))return {rows:accounts.filter(row=>(values?.[0] as string[]).includes(row.id))};
@@ -81,19 +82,109 @@ it.each(['before','after'] as const)('does not publish a writer lease when start
   expect(()=>j.acquireWriterLease()).toThrow('lease');j.close();
   expect(records(directory)).toEqual(before);
 });
-it.each(['postmasterStartedAt','systemIdentifier','databaseOid'])('durably freezes changed database identity %s before publishing a writer lease',field=>{
-  const directory=prepared(),j=startupOpen(directory),before=records(directory),changed={...database,[field]:field==='postmasterStartedAt'?'2026-10-22T00:00:00.123457Z':'16385'};
+it.each(['systemIdentifier','databaseOid'])('durably freezes changed database identity %s before publishing a writer lease',field=>{
+  const directory=prepared(),j=startupOpen(directory),before=records(directory),changed={...database,[field]:'16385'};
   expect(()=>verifyJournal(j,changed)).toThrow('recovery');expect(()=>j.acquireWriterLease()).toThrow('lease');j.close();
   const appended=records(directory).slice(before.length);
   expect(appended.map(record=>record.kind)).toEqual(['freeze']);expect(appended[0]).toMatchObject({reason:'continuity'});
   const next=open(directory);expect(()=>verifyJournal(next)).toThrow('recovery');expect(records(directory).some(r=>r.kind==='freeze')).toBe(true);
 });
-it('classifies an unavailable startup observation as uncertain and never opens a writer',async()=>{
+it('a database that cannot answer at startup writes nothing, opens no writer and can be retried',async()=>{
   const directory=prepared(),j=startupOpen(directory),before=records(directory);
-  await expect(verifyFinancialContinuity(j,{query:async()=>{throw new Error('source unavailable');}})).rejects.toThrow('recovery');
-  expect(()=>j.acquireWriterLease()).toThrow('lease');j.close();
-  const appended=records(directory).slice(before.length);
-  expect(appended.map(record=>record.kind)).toEqual(['freeze']);expect(appended[0]).toMatchObject({reason:'uncertain'});
+  await expect(verifyFinancialContinuity(j,{query:async()=>{throw new Error('source unavailable');}})).rejects.toBeInstanceOf(FinancialObservationUnavailable);
+  expect(j.isFrozen).toBe(false);expect(()=>j.acquireWriterLease()).toThrow('lease');j.close();
+  expect(records(directory)).toEqual(before);
+  const next=startupOpen(directory);await expect(verifyFinancialContinuity(next,projectionDb())).resolves.toBeUndefined();next.acquireWriterLease();
+});
+it('a malformed answer at startup still freezes: only silence is retried',async()=>{
+  const directory=prepared(),j=startupOpen(directory);
+  await expect(verifyFinancialContinuity(j,{query:async()=>({rows:[]})})).rejects.toThrow('recovery');
+  expect(j.isFrozen).toBe(true);expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'uncertain'});
+});
+it('a missing ledger table at startup is an answer, not silence',async()=>{
+  const directory=prepared(),j=startupOpen(directory);
+  await expect(verifyFinancialContinuity(j,{query:async()=>{throw Object.assign(new Error('relation does not exist'),{code:'42P01'});}})).rejects.toThrow('recovery');
+  expect(j.isFrozen).toBe(true);expect(records(directory).at(-1)?.kind).toBe('freeze');
+});
+it('resumes after a database restart when identity and the complete ledger match, adding no record of its own',async()=>{
+  const directory=prepared(),j=open(directory),checkpoints:FinancialCheckpoint[]=[],rows=[accountRow(account(uuid(41)))];
+  await commitProjection(j,[account(uuid(41))],checkpoints);j.close();
+  const before=records(directory),next=startupOpen(directory);
+  await expect(verifyFinancialContinuity(next,projectionDb({accounts:rows,checkpoints,database:restarted}))).resolves.toBeUndefined();
+  expect(records(directory)).toEqual(before);next.acquireWriterLease();
+  expect(records(directory).slice(before.length).map(record=>record.kind)).toEqual(['writer-open']);
+});
+it('a running writer continues after a database restart between operations',async()=>{
+  const directory=prepared(),j=open(directory),checkpoints:FinancialCheckpoint[]=[],atom=account(uuid(42));
+  await commitProjection(j,[atom],checkpoints);
+  await j.operation('admit',async operationId=>{await verifyFinancialContinuity(j,projectionDb({accounts:[accountRow(atom)],checkpoints,database:restarted}));j.aborted(operationId,'not-started');});
+  expect(j.isFrozen).toBe(false);expect(records(directory).some(record=>record.kind==='freeze')).toBe(false);
+});
+it.each(['missing','extra','changed','missing-checkpoint'])('a restart does not excuse a ledger that differs: %s row',async change=>{
+  const directory=prepared(),j=open(directory),checkpoints:FinancialCheckpoint[]=[],first=accountRow(account(uuid(43))),second=accountRow(account(uuid(44)));
+  await commitProjection(j,[account(uuid(43))],checkpoints);await commitProjection(j,[account(uuid(44))],checkpoints);j.close();
+  const accounts=change==='missing'?[second]:change==='extra'?[first,second,accountRow(account(uuid(45)))]:change==='changed'?[{...first,canonical_suppression_hash:'1'.repeat(64)},second]:[first,second];
+  const next=startupOpen(directory);
+  await expect(verifyFinancialContinuity(next,projectionDb({accounts,checkpoints:change==='missing-checkpoint'?checkpoints.slice(1):checkpoints,database:restarted}))).rejects.toThrow('recovery');
+  expect(records(directory).at(-1)?.kind).toBe('freeze');expect(()=>next.acquireWriterLease()).toThrow('lease');
+});
+it('a restart does not excuse a journal that did not close cleanly',async()=>{
+  const directory=prepared(),path=join(directory,'journal.jsonl'),j=open(directory),unclean=readFileSync(path);j.close();writeFileSync(path,unclean);
+  const next=startupOpen(directory);expect(next.isFrozen).toBe(true);expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'uncertain'});
+  await expect(verifyFinancialContinuity(next,projectionDb({database:restarted}))).rejects.toThrow('recovery');expect(()=>next.acquireWriterLease()).toThrow('lease');
+});
+it('an already frozen journal gains no record each time it is opened',()=>{
+  const directory=prepared(),path=join(directory,'journal.jsonl'),j=open(directory),unclean=readFileSync(path);j.close();writeFileSync(path,unclean);
+  startupOpen(directory).close();const frozen=records(directory);expect(frozen.filter(record=>record.kind==='freeze')).toHaveLength(1);
+  startupOpen(directory).close();startupOpen(directory).close();expect(records(directory)).toEqual(frozen);
+});
+it('replays observations recorded on both sides of a database restart',async()=>{
+  const {JournalBudgetFinancialWriter}=await import('../lib/budget-financial-writer.js');
+  const {consoleSourceTransaction}=await import('@lares/agent-kit/console-source-transaction');
+  const directory=prepared(),checkpoints:{operationId:string;journalId:string;sequence:string;digest:string}[]=[];
+  const pool=(current:FinancialDatabase)=>{
+    const db={release:()=>{},query:async(input:string|{text:string;values?:any[]},supplied?:any[])=>{
+      const sql=typeof input==='string'?input:input.text,values=typeof input==='string'?supplied:input.values;
+      if(sql.includes('pg_control_system'))return {rows:[current]};
+      if(sql.includes('(SELECT count(*)::text FROM budget_accounts)'))return {rows:[{accounts:'0',windows:'0',bindings:'0',attempts:'0',grants:'0',checkpoints:String(checkpoints.length)}]};
+      if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))return {rows:checkpoints};
+      if(sql.startsWith('INSERT INTO budget_financial_checkpoints'))checkpoints.push({operationId:values![0],journalId:values![1],sequence:String(values![2]),digest:values![3]});
+      return {rows:[],command:/^\s*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase()};
+    }};
+    return {query:db.query,connect:async()=>db};
+  };
+  const run=async(journal:HostFinancialJournal,current:FinancialDatabase)=>{const selected=pool(current);await new JournalBudgetFinancialWriter(journal).run('prepare',boundary=>consoleSourceTransaction(selected,async()=>'done',boundary));};
+  const first=open(directory);await run(first,database);first.close();
+  const second=await openFinancialJournalForKeeper(directory,pool(restarted),options);journals.push(second);
+  expect(second.isFrozen).toBe(false);await run(second,restarted);second.close();
+  const observed=records(directory).filter(record=>record.kind==='observation').map(record=>record.observation.database.postmasterStartedAt);
+  expect(observed).toEqual([database.postmasterStartedAt,restarted.postmasterStartedAt]);
+  const third=await openFinancialJournalForKeeper(directory,pool(restarted),options);journals.push(third);expect(third.isFrozen).toBe(false);
+});
+it('keeper startup returns a frozen journal instead of failing, with spending closed and restore still possible',async()=>{
+  const directory=prepared(),releases:number[]=[],wrong={...database,databaseOid:'16385'};
+  const db=()=>({...projectionDb({database:wrong}),release:()=>{releases.push(1);}});
+  const j=await openFinancialJournalForKeeper(directory,{connect:async()=>db()},options);journals.push(j);
+  expect(j.isFrozen).toBe(true);expect(releases).toHaveLength(1);expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'continuity'});
+  expect(records(directory).some(record=>record.kind==='writer-open')).toBe(false);
+  let ran=false;await expect(j.operation('admit',async()=>{ran=true;})).rejects.toThrow('closed');expect(ran).toBe(false);
+  expect(()=>j.suppression({} as never)).toThrow('unavailable');expect(()=>j.expectedProjection()).toThrow('recovery');
+  await expect(j.freezeForRestore()).resolves.toBeUndefined();expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'restore'});
+  j.close();const count=records(directory).length;
+  const later=await openFinancialJournalForKeeper(directory,{connect:async()=>{throw new Error('a frozen journal never asks the database');}},options);journals.push(later);
+  expect(later.isFrozen).toBe(true);later.close();expect(records(directory)).toHaveLength(count);
+});
+it.each(['connect','query'])('keeper startup waits when the database cannot answer (%s), writes nothing and releases custody',async failure=>{
+  const directory=prepared(),before=records(directory);
+  const pool={connect:async()=>{if(failure==='connect')throw new Error('starting up');return {release:()=>{},query:async()=>{throw new Error('statement timeout');}};}};
+  await expect(openFinancialJournalForKeeper(directory,pool,options)).rejects.toBeInstanceOf(FinancialObservationUnavailable);
+  expect(records(directory)).toEqual(before);
+  const next=await openFinancialJournalForKeeper(directory,{connect:async()=>({...projectionDb(),release:()=>{}})},options);journals.push(next);
+  expect(next.isFrozen).toBe(false);expect(records(directory).at(-1)?.kind).toBe('writer-open');
+});
+it('keeper startup still fails when custody itself cannot be opened',async()=>{
+  const directory=prepared();unlinkSync(join(directory,'suppression.key'));
+  await expect(openFinancialJournalForKeeper(directory,{connect:async()=>({...projectionDb(),release:()=>{}})},options)).rejects.toThrow('recovery');
 });
 function child(code:string):{process:ChildProcessWithoutNullStreams;ready:Promise<void>;done:Promise<number|null>}{
   const process=spawn(globalThis.process.execPath,['--import','tsx','--input-type=module','-e',code],{stdio:'pipe'});

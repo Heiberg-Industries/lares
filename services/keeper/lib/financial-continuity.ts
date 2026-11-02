@@ -1,8 +1,8 @@
 /** Server-only observation on the caller's actual owned PostgreSQL connection. */
-import {querySourceBounded,sourceObservationCommit,type SourceDatabase,type SourceObservationCommit} from '@lares/agent-kit/console-source-transaction';
+import {querySourceBounded,sourceObservationCommit,type SourceDatabase,type SourceObservationCommit,type SourcePool} from '@lares/agent-kit/console-source-transaction';
 import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
-import {FINANCIAL_DATABASE_SCHEMA,FINANCIAL_CHECKPOINT_SCHEMA,FinancialJournalBusy,HostFinancialJournal,financialAtomKey,financialCheckpointRolling,type FinancialAtom,type FinancialCheckpoint,type FinancialCounts,type FinancialProjection,type FinancialObservation} from './financial-journal.js';
+import {FINANCIAL_DATABASE_SCHEMA,FINANCIAL_CHECKPOINT_SCHEMA,FinancialJournalBusy,HostFinancialJournal,financialAtomKey,financialCheckpointRolling,type FinancialAtom,type FinancialCheckpoint,type FinancialCounts,type FinancialProjection,type FinancialObservation,type JournalOptions} from './financial-journal.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
 declare const financialObservationHandleBrand:unique symbol;
 export interface FinancialObservationHandle {readonly [financialObservationHandleBrand]:true}
@@ -71,6 +71,20 @@ async function observeFinancialProjection(db:SourceDatabase,projection:Financial
   atoms.sort((left,right)=>financialAtomKey(left).localeCompare(financialAtomKey(right)));
   return {checkpoints,atoms};
 }
+/** The database did not answer, which is a different fact from answering wrongly. */
+export class FinancialObservationUnavailable extends Error {}
+/** A missing ledger table or column is an answer: this database cannot hold the ledger.
+ * A freeze cannot be undone, so every other failure counts as silence and is retried. */
+function answering(db:SourceDatabase):SourceDatabase {
+  return {query:async(sql,values)=>{
+    try{return await db.query(sql,values);}
+    catch(error){
+      const code=error&&typeof error==='object'?(error as {code?:unknown}).code:undefined;
+      if(code==='42P01'||code==='42703')throw error;
+      throw new FinancialObservationUnavailable('Financial observation unavailable');
+    }
+  }};
+}
 /** The money that decides admission, for the current months only, including finished rows that
  * each step no longer compares one by one. Runs once per operation, before its changes. Naming
  * every state lets the index go straight to this month's rows instead of all of history. */
@@ -114,16 +128,19 @@ const rowMatches=(expected:WholeLedgerExpectation,table:FinancialTable,row:Recor
   try{return expected.matches(financialAtomFromRow(table.kind,row));}catch{return false;}
 };
 /** Keeper startup: the whole ledger must match before this writer can take its lease. No other
- * writer exists yet, and the stable read covers the counts and every row together. */
+ * writer exists yet, and the stable read covers the counts and every row together. A database
+ * that does not answer proves nothing about money, so that alone writes no freeze. */
 export async function verifyFullFinancialContinuity(journal:HostFinancialJournal,db:SourceDatabase):Promise<void>{
   let matched=false,open=false;
+  const asked=answering(db);
   try{
-    await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');open=true;
-    const database=await observeFinancialDatabase(db),expected=journal.fullLedgerExpectation(),rows:LedgerRows=async(sql,values)=>(await db.query(sql,values)).rows;
-    matched=journal.databaseMatches(database)&&await financialCountsMatch(db,expected.counts)&&await eachLedgerRow(rows,(table,row)=>rowMatches(expected,table,row))&&await recordedCheckpointsMatch(rows,expected);
-    await db.query('COMMIT');open=false;
-  }catch{
+    await asked.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');open=true;
+    const database=await observeFinancialDatabase(asked),expected=journal.fullLedgerExpectation(),rows:LedgerRows=async(sql,values)=>(await asked.query(sql,values)).rows;
+    matched=journal.databaseMatches(database)&&await financialCountsMatch(asked,expected.counts)&&await eachLedgerRow(rows,(table,row)=>rowMatches(expected,table,row))&&await recordedCheckpointsMatch(rows,expected);
+    await asked.query('COMMIT');open=false;
+  }catch(error){
     if(open)await db.query('ROLLBACK').catch(()=>{});
+    if(error instanceof FinancialObservationUnavailable&&journal.awaitingStartupVerification)throw error;
     if(!journal.isFrozen)journal.freeze();
     throw new Error('Financial continuity requires recovery');
   }
@@ -185,6 +202,8 @@ export function scheduleNightlyLedgerCheck(journal:HostFinancialJournal,pool:Par
   const arm=(delay:number,work:()=>Promise<void>)=>{timer=setTimeout(()=>{running=work().finally(()=>{running=undefined;});},delay);timer.unref?.();};
   const nightly=()=>arm(msUntilNightlyLedgerCheck(Date.now()),()=>attempt(1));
   const attempt=async(tries:number):Promise<void>=>{
+    // A keeper can keep running with a frozen ledger. There is nothing to compare until recovery.
+    if(journal.isFrozen){nightly();return;}
     const result=await runScheduledLedgerCheck(journal,pool);
     if(stopped)return;
     if(result==='busy'&&tries<30){arm(60_000,()=>attempt(tries+1));return;}
@@ -197,11 +216,33 @@ export function scheduleNightlyLedgerCheck(journal:HostFinancialJournal,pool:Par
 }
 export async function verifyFinancialContinuity(journal:HostFinancialJournal,db:SourceDatabase,proposed=false):Promise<void>{
   try{
-    const projection=journal.expectedProjection(proposed),database=await observeFinancialDatabase(db),observed=await observeFinancialProjection(db,projection);
-    if(projection.windowTotals&&!await currentMonthTotalsMatch(db,projection.windowTotals))throw new Error('Financial projection mismatch');
+    const asked=answering(db),projection=journal.expectedProjection(proposed),database=await observeFinancialDatabase(asked),observed=await observeFinancialProjection(asked,projection);
+    if(projection.windowTotals&&!await currentMonthTotalsMatch(asked,projection.windowTotals))throw new Error('Financial projection mismatch');
     journal.verifyContinuity(database,observed.checkpoints,observed.atoms,proposed);
   }
-  catch{if(!journal.isFrozen)journal.freeze();throw new Error('Financial continuity requires recovery');}
+  catch(error){
+    // At startup no operation has run, so a silent database proves nothing about money.
+    if(error instanceof FinancialObservationUnavailable&&journal.awaitingStartupVerification)throw error;
+    if(!journal.isFrozen)journal.freeze();throw new Error('Financial continuity requires recovery');
+  }
+}
+/** Keeper startup. Returns a journal that either holds the writer lease or is durably frozen,
+ * in which case spending stays closed and the rest of Keeper runs. A database that cannot
+ * answer yet throws and writes nothing, so the restart policy simply tries again. */
+export async function openFinancialJournalForKeeper(directory:string,pool:Pick<SourcePool,'connect'>,options:JournalOptions={}):Promise<HostFinancialJournal>{
+  const journal=HostFinancialJournal.openExistingForStartupVerification(directory,{...options,requirePrepared:true});
+  try{
+    // Keep protected ownership through the full check, then publish writer ownership
+    // before any host action or listener can reach the journal.
+    if(!journal.isFrozen){
+      const db=await pool.connect().catch(()=>{throw new FinancialObservationUnavailable('Financial observation unavailable');});
+      try{await verifyFullFinancialContinuity(journal,db);}
+      catch(error){if(error instanceof FinancialObservationUnavailable)throw error;}
+      finally{db.release();}
+    }
+    if(!journal.isFrozen)journal.acquireWriterLease();
+    return journal;
+  }catch(error){journal.close();throw error;}
 }
 /** Fresh, same-client read-only observation after the source mutation COMMIT. The caller
  * keeps this exact checked-out client owned until the observer COMMIT is acknowledged. */
