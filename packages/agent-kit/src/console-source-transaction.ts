@@ -16,7 +16,9 @@ export class SourceAuthorityDenied extends Error {constructor(){super(REFUSED);}
 export class SourceAuthorityUnavailable extends Error {constructor(){super('Conversation authority could not be confirmed');}}
 export class SourceTransactionDeadlineExpired extends Error {constructor(){super(REFUSED);}}
 interface Owner {organisationId?:string;lockedBindings:Set<string>;retire:Map<string,SourceBinding>;deadlines:Map<string,{binding:SourceBinding;deadline:string}>;genericDeadlines:Set<string>;deadlineAtMs?:number;observationPhase?:boolean;observationOperationId?:string;observerBegan?:boolean;observerCommit?:SourceObservationCommit;boundedQuery?:(sql:string,values:unknown[]|undefined,timeoutMs:number)=>Promise<{rows:any[];command?:string}>}
-export type SourceTransactionOutcome='not-started'|'rollback-acknowledged'|'source-retirement-acknowledged'|'source-retirement-rolled-back'|'commit-acknowledged'|'unknown';
+/** `commit-never-sent`: no acknowledgement of BEGIN or ROLLBACK, but the financial COMMIT never left
+ * this client and the connection is destroyed, so nothing can commit. `unknown`: COMMIT was sent and not answered. */
+export type SourceTransactionOutcome='not-started'|'rollback-acknowledged'|'source-retirement-acknowledged'|'source-retirement-rolled-back'|'commit-acknowledged'|'commit-never-sent'|'unknown';
 export type BudgetFinancialTable='budget_accounts'|'budget_windows'|'budget_gateway_bindings'|'budget_attempts'|'budget_gateway_grants';
 export interface BudgetFinancialChange {table:BudgetFinancialTable;id:string}
 export interface SourceTransactionBoundary {readonly kind:'source-transaction-boundary'}
@@ -151,7 +153,7 @@ export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db
   if(selected)selected.used=true;
   let db:(SourceDatabase&{release(error?:boolean):void})|undefined;
   const state:Owner={lockedBindings:new Set(),retire:new Map(),deadlines:new Map(),genericDeadlines:new Set(),...(options.deadlineAtMs===undefined?{}:{deadlineAtMs:options.deadlineAtMs})};
-  let result:T|undefined,error:unknown,failed=false,broken=false,outcome:SourceTransactionOutcome='not-started',originalOpen=false,compensationOpen=false,txOpen=false,observation:unknown;
+  let result:T|undefined,error:unknown,failed=false,broken=false,outcome:SourceTransactionOutcome='not-started',originalOpen=false,compensationOpen=false,txOpen=false,commitSent=false,observation:unknown;
   let originalQuery:((sql:any,values?:any[])=>Promise<{rows:any[];command?:string}>)|undefined,boundedUnderlyingQuery:((sql:any,values?:any[])=>Promise<{rows:any[];command?:string}>)|undefined,queryDescriptor:PropertyDescriptor|undefined;
   const remaining=()=>state.deadlineAtMs===undefined?undefined:Math.max(0,state.deadlineAtMs-Date.now());
   const boundedQueryTimeout=()=>{const left=remaining();if(left===undefined)return undefined;if(left<=0)throw new Error(REFUSED);return Math.max(1,Math.min(MAX_OWNED_QUERY_TIMEOUT_MS,Math.ceil(left)));};
@@ -230,6 +232,7 @@ export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db
       throw new SourceAuthorityDenied();
     }
     if(failed){await rollback();throw error;}
+    commitSent=true;
     try{if((await db.query('COMMIT')).command!=='COMMIT')throw new SourceAuthorityUnavailable();originalOpen=false;outcome='commit-acknowledged';}
     catch{broken=true;outcome='unknown';throw new SourceAuthorityUnavailable();}
     options.afterCommit?.();
@@ -254,6 +257,6 @@ export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db
     throw e;
   }finally{
     if(db){try{restoreQueryBound();}catch{broken=true;}finally{owners.delete(db);financialChanges.delete(db);try{db.release(broken);}catch{broken=true;}}}
-    if(selected){try{await selected.hooks.settled(outcome,observation);}catch{throw new SourceAuthorityUnavailable();}}
+    if(selected){try{await selected.hooks.settled(outcome==='unknown'&&!commitSent?'commit-never-sent':outcome,observation);}catch{throw new SourceAuthorityUnavailable();}}
   }
 }

@@ -2,7 +2,7 @@
  * spending authority. Production wiring must first cover pending operations in removal,
  * erasure and explicit recovery. Never expose ownership/lock test seams in configuration. */
 import {createHash,randomUUID,randomBytes} from 'node:crypto';
-import {closeSync,constants,fchmodSync,fchownSync,fstatSync,fsyncSync,lstatSync,mkdirSync,opendirSync,openSync,readSync,renameSync,unlinkSync,writeSync,type BigIntStats} from 'node:fs';
+import {closeSync,constants,fchmodSync,fchownSync,fstatSync,fsyncSync,lstatSync,mkdirSync,opendirSync,openSync,readSync,renameSync,unlinkSync,writeSync,type BigIntStats,readFileSync} from 'node:fs';
 import {dirname,isAbsolute,join,normalize,parse} from 'node:path';
 import {z} from 'zod';
 import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
@@ -162,14 +162,46 @@ export class BudgetNativeCustodyStore {
   }
   /** No mkdir, file creation, key regeneration, adoption or partial-tail repair. */
   static openExisting(directory:string,options:Options={}):BudgetNativeCustodyStore {
+    return this.openOwned(directory,options,false);
+  }
+  /** Keeper's way in. An `open` control means the last owner died without closing: the kernel lock proves
+   * it is gone. An unfinished file publication gets only the existing fully evidenced repair. `uncertain`
+   * was a deliberate stop and stays for the owner. Every operation's own phase is kept as it is. */
+  static openAfterInterruption(directory:string,options:Options={}):BudgetNativeCustodyStore {
+    let state:string;
+    try{state=this.controlStateForOwner(directory);}catch{throw unavailable();}
+    if(state==='open'){
+      const repaired=this.runPublicationRecovery(directory,options,true);
+      if(repaired.status!=='no-intent'&&repaired.status!=='repaired-locally')throw unavailable();
+    }
+    return this.openOwned(directory,options,true);
+  }
+  private static openOwned(directory:string,options:Options,interruptedOwnerGone:boolean):BudgetNativeCustodyStore {
     const owner=new BudgetNativeCustodyStore(directory,options);
     try{
       owner.openRoot();owner.lock=owner.openFile('writer.lock',0);if(owner.lock.bytes.length!==0)throw unavailable();(options.lock??linuxInheritedJournalLock)(owner.lock.fd);
       owner.controlFile=owner.openFile('control.json',CONTROL_BYTES);owner.control=owner.decode(controlSchema,owner.controlFile.bytes);
-      if(owner.control.state!=='closed')throw unavailable();
+      if(owner.control.state!=='closed'&&!(interruptedOwnerGone&&owner.control.state==='open'))throw unavailable();
       owner.snapshotFile=owner.openFile('snapshot.json',NATIVE_CUSTODY_MAX_BYTES);owner.snapshot=owner.decode(snapshotSchema,owner.snapshotFile.bytes);
       owner.verify();owner.publishControl({...owner.control,state:'open'});return owner;
     }catch{owner.release();throw unavailable();}
+  }
+  /** Owner-run, after `lares budget recover` has proved the ledger: lifts a store's deliberate stop if
+   * every file still verifies. Keeps every operation, including any marked uncertain, exactly as it is. */
+  static closeUncertainForOwner(directory:string,options:Options={}):void {
+    const owner=new BudgetNativeCustodyStore(directory,options);
+    try{
+      owner.openRoot();owner.lock=owner.openFile('writer.lock',0);if(owner.lock.bytes.length!==0)throw unavailable();(options.lock??linuxInheritedJournalLock)(owner.lock.fd);
+      owner.controlFile=owner.openFile('control.json',CONTROL_BYTES);owner.control=owner.decode(controlSchema,owner.controlFile.bytes);
+      if(owner.control.state!=='uncertain')throw unavailable();
+      owner.snapshotFile=owner.openFile('snapshot.json',NATIVE_CUSTODY_MAX_BYTES);owner.snapshot=owner.decode(snapshotSchema,owner.snapshotFile.bytes);
+      // verify() refuses an uncertain control, so it checks the files against the state being written.
+      owner.control={...owner.control,state:'closed'};owner.verify();owner.publishControl(owner.control);
+    }catch{throw unavailable();}finally{owner.release();}
+  }
+  /** Read-only: `closed`, `open` or `uncertain` for the owner's check. Unreadable throws. */
+  static controlStateForOwner(directory:string):'closed'|'open'|'uncertain' {
+    return JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state;
   }
   /** Acquires a cleanup-only owner for an exact open store. It exposes no runtime gate,
    * key reader, or ordinary store handle, and never closes the persisted open control. */

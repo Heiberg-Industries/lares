@@ -1,7 +1,7 @@
 import {type BudgetFinancialOperation,type BudgetFinancialWriter} from '@lares/agent-kit/budget-admission-store';
 import {sourceTransactionBoundary,type SourceDatabase,type BudgetFinancialChange,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {HostFinancialJournal,markJournaledAbort,type FinancialAtom,type FinancialTurnWait,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt} from './financial-journal.js';
-import {observeCommittedFinancialProjection,verifyFinancialContinuity} from './financial-continuity.js';
+import {holdFinancialWriterLock,observeCommittedFinancialProjection,verifyFinancialContinuity} from './financial-continuity.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
 import {performance} from 'node:perf_hooks';
 import type {Pool} from 'pg';
@@ -39,7 +39,7 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
     return this.journal.operation(operation,async operationId=>{
       let settled=false,proposed=false,receipt:CommittedFinancialReceipt|undefined;
       const boundary=sourceTransactionBoundary({
-        started:async db=>{if(this.journal.prepared)await verifyFinancialContinuity(this.journal,db);},
+        started:async db=>{if(this.journal.prepared){await holdFinancialWriterLock(db);await verifyFinancialContinuity(this.journal,db);}},
         readyToCommit:async db=>{if(this.journal.prepared)await verifyFinancialContinuity(this.journal,db,true);},
         beforeCommit:async(db,changes)=>{
           const atoms=await collectFinancialAtoms(db,changes);
@@ -52,9 +52,9 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
         settled:async (outcome,observation)=>{
           if(outcome==='commit-acknowledged'){
             if(!proposed){this.journal.freeze();throw new Error('Financial checkpoint missing');}
-            if(this.journal.prepared){if(!observation){this.journal.freeze();throw new Error('Financial commit observation unavailable');}receipt=this.journal.committedObserved(operationId,observation as Awaited<ReturnType<typeof observeCommittedFinancialProjection>>);}
+            if(this.journal.prepared){if(!observation){this.journal.markInDoubt(operationId);throw new Error('Financial commit observation unavailable');}receipt=this.journal.committedObserved(operationId,observation as Awaited<ReturnType<typeof observeCommittedFinancialProjection>>);}
             else receipt=this.journal.committed(operationId);
-          }else if(outcome==='unknown'){this.journal.freeze();throw new Error('Financial commit could not be confirmed');}
+          }else if(outcome==='unknown'){if(this.journal.prepared)this.journal.markInDoubt(operationId);else this.journal.freeze();throw new Error('Financial commit could not be confirmed');}
           else abortReceipt=this.journal.aborted(operationId,outcome);
           settled=true;
         },
@@ -74,8 +74,8 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
           this.journal.withPublicationProof(receipt,()=>publish(receipt!,result));
         }
         return {value:result,receipt};
-      }finally{if(!settled){try{this.journal.freeze();}catch{/* Preserve the owner failure; the writer remains closed. */}}}
-    },wait).catch(error=>{markJournaledAbort(error,abortReceipt);throw error;});
+      }finally{if(!settled&&!this.journal.awaitingSettlement){try{this.journal.freeze();}catch{/* Preserve the owner failure; the writer remains closed. */}}}
+    },wait,{publishes:publish!==undefined}).catch(error=>{markJournaledAbort(error,abortReceipt);throw error;});
   }
 }
 /** The model-purpose broker can prepare tickets only when Keeper startup has both the

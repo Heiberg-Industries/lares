@@ -24,6 +24,7 @@ const restarted:FinancialDatabase={...database,postmasterStartedAt:'2026-10-23T0
 function projectionDb(state:{accounts?:ReturnType<typeof accountRow>[];checkpoints?:FinancialCheckpoint[];grants?:{attempt_id:string;grant_hash:string}[];database?:FinancialDatabase}={}){
   const accounts=state.accounts??[],checkpoints=state.checkpoints??[],grants=state.grants??[];
   return {query:async(sql:string,values?:any[])=>{
+    if(sql.includes('pg_try_advisory'))return {rows:[{held:true}]};
     if(sql.includes('pg_control_system'))return {rows:[state.database??database]};
     if(sql.includes('(SELECT count(*)::text FROM budget_accounts)'))return {rows:[{accounts:String(accounts.length),windows:'0',bindings:'0',attempts:'0',grants:String(grants.length),checkpoints:String(checkpoints.length)}]};
     if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))return {rows:checkpoints.filter(row=>(values?.[0] as string[]).includes(String(row.sequence))).map(row=>({...row,sequence:String(row.sequence)}))};
@@ -33,6 +34,7 @@ function projectionDb(state:{accounts?:ReturnType<typeof accountRow>[];checkpoin
     return {rows:[],command:sql};
   }};
 }
+const keeperPool=(db:{query:(sql:string,values?:any[])=>Promise<any>})=>({connect:async()=>({query:db.query,release:()=>{}})}) as never;
 async function commitProjection(journal:HostFinancialJournal,atoms:FinancialAtom[],checkpoints:FinancialCheckpoint[]){
   await journal.operation('admit',async operationId=>{const proposal=journal.propose(operationId,atoms);checkpoints.push({operationId,journalId:proposal.journalId,sequence:proposal.sequence,digest:proposal.digest});journal.committed(operationId);});
 }
@@ -99,7 +101,7 @@ it('a database that cannot answer at startup writes nothing, opens no writer and
 it('a malformed answer at startup still freezes: only silence is retried',async()=>{
   const directory=prepared(),j=startupOpen(directory);
   await expect(verifyFinancialContinuity(j,{query:async()=>({rows:[]})})).rejects.toThrow('recovery');
-  expect(j.isFrozen).toBe(true);expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'uncertain'});
+  expect(j.isFrozen).toBe(true);expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'continuity'});
 });
 it('a missing ledger table at startup is an answer, not silence',async()=>{
   const directory=prepared(),j=startupOpen(directory);
@@ -128,13 +130,28 @@ it.each(['missing','extra','changed','missing-checkpoint'])('a restart does not 
   await expect(verifyFinancialContinuity(next,projectionDb({accounts,checkpoints:change==='missing-checkpoint'?checkpoints.slice(1):checkpoints,database:restarted}))).rejects.toThrow('recovery');
   expect(records(directory).at(-1)?.kind).toBe('freeze');expect(()=>next.acquireWriterLease()).toThrow('lease');
 });
-it('a restart does not excuse a journal that did not close cleanly',async()=>{
+it('a journal that did not close cleanly writes nothing until the comparison settles it',async()=>{
   const directory=prepared(),path=join(directory,'journal.jsonl'),j=open(directory),unclean=readFileSync(path);j.close();writeFileSync(path,unclean);
-  const next=startupOpen(directory);expect(next.isFrozen).toBe(true);expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'uncertain'});
-  await expect(verifyFinancialContinuity(next,projectionDb({database:restarted}))).rejects.toThrow('recovery');expect(()=>next.acquireWriterLease()).toThrow('lease');
+  const before=records(directory),next=startupOpen(directory);
+  expect(next.isFrozen).toBe(false);expect(next.awaitingSettlement).toBe(true);expect(records(directory)).toEqual(before);
+  expect(()=>next.acquireWriterLease()).toThrow('lease');next.close();expect(records(directory)).toEqual(before);
+  const settled=await openFinancialJournalForKeeper(directory,keeperPool(projectionDb({database:restarted})),options);journals.push(settled);
+  expect(settled.isFrozen).toBe(false);expect(records(directory).map(r=>r.kind).slice(before.length)).toEqual(['writer-close','recovered','writer-open']);
+  await expect(settled.operation('admit',async id=>{settled.aborted(id,'not-started');})).resolves.toBeUndefined();
+});
+it('a journal that did not close cleanly freezes when the database does not match it',async()=>{
+  const directory=prepared(),path=join(directory,'journal.jsonl'),j=open(directory),unclean=readFileSync(path);j.close();writeFileSync(path,unclean);
+  const settled=await openFinancialJournalForKeeper(directory,keeperPool(projectionDb({accounts:[accountRow(account(uuid(7)))]})),options);journals.push(settled);
+  expect(settled.isFrozen).toBe(true);expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'continuity'});
+});
+it('a silent database at startup settles nothing and writes nothing',async()=>{
+  const directory=prepared(),path=join(directory,'journal.jsonl'),j=open(directory),unclean=readFileSync(path);j.close();writeFileSync(path,unclean);
+  const before=records(directory),silent={query:async()=>{throw Object.assign(new Error('gone'),{code:'57P01'});}};
+  await expect(openFinancialJournalForKeeper(directory,keeperPool(silent),options)).rejects.toBeInstanceOf(FinancialObservationUnavailable);
+  expect(records(directory)).toEqual(before);
 });
 it('an already frozen journal gains no record each time it is opened',()=>{
-  const directory=prepared(),path=join(directory,'journal.jsonl'),j=open(directory),unclean=readFileSync(path);j.close();writeFileSync(path,unclean);
+  const directory=prepared(),j=open(directory);j.freeze();j.close();
   startupOpen(directory).close();const frozen=records(directory);expect(frozen.filter(record=>record.kind==='freeze')).toHaveLength(1);
   startupOpen(directory).close();startupOpen(directory).close();expect(records(directory)).toEqual(frozen);
 });
@@ -145,6 +162,7 @@ it('replays observations recorded on both sides of a database restart',async()=>
   const pool=(current:FinancialDatabase)=>{
     const db={release:()=>{},query:async(input:string|{text:string;values?:any[]},supplied?:any[])=>{
       const sql=typeof input==='string'?input:input.text,values=typeof input==='string'?supplied:input.values;
+      if(sql.includes('pg_try_advisory'))return {rows:[{held:true}]};
       if(sql.includes('pg_control_system'))return {rows:[current]};
       if(sql.includes('(SELECT count(*)::text FROM budget_accounts)'))return {rows:[{accounts:'0',windows:'0',bindings:'0',attempts:'0',grants:'0',checkpoints:String(checkpoints.length)}]};
       if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))return {rows:checkpoints};
@@ -210,11 +228,12 @@ it('permanently freezes an abandoned prepared writer after actual process termin
     await holder.ready;expect(()=>open(directory)).toThrow('unavailable');
     expect(records(directory).at(-1)?.kind).toBe('writer-open');expect(records(directory).some(r=>r.kind==='freeze')).toBe(false);
     holder.process.kill('SIGKILL');await holder.done;
-    const next=open(directory); // persists freeze while acquiring ownership, before any observation/work
-    expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'uncertain'});
-    expect(()=>verifyJournal(next)).toThrow('recovery');
+    const next=open(directory); // refuses work and writes nothing until the comparison settles it
+    expect(records(directory).at(-1)?.kind).toBe('writer-open');
     let called=false;await expect(next.operation('admit',async()=>{called=true;})).rejects.toThrow('closed');expect(called).toBe(false);next.close();
-    expect(()=>verifyJournal(open(directory))).toThrow('recovery');
+    expect(records(directory).at(-1)?.kind).toBe('writer-open');
+    const settled=await openFinancialJournalForKeeper(directory,keeperPool(projectionDb()),options);journals.push(settled);
+    expect(settled.isFrozen).toBe(false);expect(records(directory).some(r=>r.kind==='freeze')).toBe(false);
   }finally{holder.process.kill('SIGKILL');}
 },10_000);
 it('orders checkpoint control fsync after commit before exposing success and verifies it on restart',async()=>{
@@ -275,10 +294,18 @@ it('projects bounded histories larger than the per-operation atom limit and keep
   const redacted=financialAtomFromRow('account',{...accountRow(account(uuid(999))),member_id:'private',ticket_reference:'private',native_user_id:'private'});
   expect(redacted).toEqual(account(uuid(999)));expect(Object.keys(redacted)).not.toContain('member_id');
 });
-it('unknown observation durably freezes; a later matching database never clears it',async()=>{
+it('a silent database refuses without a freeze, at any time',async()=>{
   const directory=prepared(),j=open(directory);
-  await expect(verifyFinancialContinuity(j,{query:async()=>{throw new Error('unknown');}})).rejects.toThrow('recovery');
-  expect(()=>verifyJournal(j)).toThrow('recovery');expect(records(directory).at(-1)?.kind).toBe('freeze');
+  await expect(verifyFinancialContinuity(j,{query:async()=>{throw new Error('unknown');}})).rejects.toBeInstanceOf(FinancialObservationUnavailable);
+  expect(j.isFrozen).toBe(false);expect(records(directory).some(r=>r.kind==='freeze')).toBe(false);
+  await expect(verifyFinancialContinuity(j,projectionDb())).resolves.toBeUndefined();
+});
+it('a wrong answer freezes durably and a later matching database never clears it',async()=>{
+  const directory=prepared(),j=open(directory);
+  await expect(verifyFinancialContinuity(j,projectionDb({accounts:[accountRow(account(uuid(7)))]}))).rejects.toThrow('recovery');
+  expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'continuity'});
+  await expect(verifyFinancialContinuity(j,projectionDb())).rejects.toThrow('recovery');j.close();
+  const next=await openFinancialJournalForKeeper(directory,keeperPool(projectionDb()),options);journals.push(next);expect(next.isFrozen).toBe(true);
 });
 it('stops new operations synchronously while draining an active operation before freeze acknowledgement',async()=>{
   const directory=prepared(),j=open(directory);let resume!:()=>void;
@@ -317,6 +344,7 @@ it('observes continuity on the owned single client before mutation and after che
   const db={release:()=>{releases++;},query:async(input:string|{text:string;values?:any[]},suppliedValues?:any[])=>{
     const sql=typeof input==='string'?input:input.text,values=typeof input==='string'?suppliedValues:input.values;
     queries.push(sql);
+    if(sql.includes('pg_try_advisory'))return {rows:[{held:true}]};
     if(sql.includes('pg_control_system'))return {rows:[database]};
     if(sql.includes('(SELECT count(*)::text FROM budget_accounts)'))return {rows:[{accounts:'0',windows:'0',bindings:'0',attempts:'0',grants:'0',checkpoints:checkpoint?'1':'0'}]};
     if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))return {rows:checkpoint?[{...checkpoint,sequence:checkpoint.sequence}]:[]};
@@ -361,6 +389,7 @@ it.each(['commit-throw','commit-unknown','completion-fsync'])('a preparation fau
   const directory=location();let completion=false;
   const db={query:async(sql:string)=>{
     if(sql.startsWith('SELECT EXISTS'))return {rows:[{populated:false}]};
+    if(sql.includes('pg_try_advisory'))return {rows:[{held:true}]};
     if(sql.includes('pg_control_system'))return {rows:[database]};
     if(sql==='COMMIT'){
       expect(records(directory).map(r=>r.kind)).toEqual(['genesis','control']);
@@ -386,6 +415,7 @@ it('a refused preparation-completion write leaves missing completion recovery-on
   const directory=location();
   const db={query:async(sql:string)=>{
     if(sql.startsWith('SELECT EXISTS'))return {rows:[{populated:false}]};
+    if(sql.includes('pg_try_advisory'))return {rows:[{held:true}]};
     if(sql.includes('pg_control_system'))return {rows:[database]};
     if(sql==='COMMIT')chmodSync(join(directory,'journal.jsonl'),0o400);
     return {rows:[],command:sql};
@@ -410,6 +440,7 @@ it.each(['missing-completion','missing-receipt','mismatched-receipt-journal','mi
   }
   const before=readFileSync(path);let connected=false,mutated=false,checkpoint:any=null;
   const db={release:()=>{},query:async(sql:string,values?:any[])=>{
+    if(sql.includes('pg_try_advisory'))return {rows:[{held:true}]};
     if(sql.includes('pg_control_system'))return {rows:[database]};
     if(sql.startsWith('SELECT operation_id'))return {rows:checkpoint?[checkpoint]:[]};
     if(sql.startsWith('INSERT INTO budget_financial_checkpoints'))checkpoint={operationId:values![0],journalId:values![1],sequence:String(values![2]),digest:values![3]};

@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 
 SCRIPT = Path(__file__).parents[1] / "ops" / "budget-commands.py"
@@ -46,6 +47,10 @@ if "render-native-policy.ts" in text:
     print(json.dumps({"policy": {"endpointHash": "e" * 64, "policies": []}, "maximumLiability": "1.0346",
                       "model": request["providerModel"], "installationLimit": request["installationLimit"],
                       "personLimit": request["personLimit"], "prices": request["prices"]}))
+elif "recover" in args:
+    report = os.environ["FAKE_RECOVER_" + ("APPLY" if "--apply" in args else "CHECK")]
+    print(report)
+    sys.exit(1 if json.loads(report)["result"] == "different" else 0)
 elif "prepare-fresh" in args:
     (prefix / "var/lib/lares/budget-financial").mkdir(parents=True)
     print("Fresh financial custody prepared.")
@@ -450,6 +455,58 @@ class BudgetCommandTests(unittest.TestCase):
         code, output = self.run_command("agent-start", "../bad")
         self.assertEqual(code, budget.EX_REFUSED)
         self.assertEqual(self.keeper.actions(), [])
+
+    def recover_flow(self, check: dict, applied: dict | None = None, answer: str = "recover") -> tuple[int, str]:
+        (self.prefix / "var/lib/lares/budget-financial").mkdir(exist_ok=True)
+        os.environ["FAKE_RECOVER_CHECK"] = json.dumps(check)
+        os.environ["FAKE_RECOVER_APPLY"] = json.dumps(applied or check)
+        with mock.patch.object(budget, "ask", return_value=answer):
+            return self.run_command("recover")
+
+    FROZEN_MATCH = {"frozen": True, "freezeReasons": ["uncertain"], "interrupted": "settle", "publicationUnfinished": False, "tornLine": False,
+                    "keyStore": None, "result": "not-committed", "difference": None, "held": {"attempts": 2, "amount": "0.8"}, "applied": False}
+
+    def test_recover_proves_stops_the_keeper_applies_and_starts_it_again_in_that_order(self) -> None:
+        code, output = self.recover_flow(self.FROZEN_MATCH, {**self.FROZEN_MATCH, "applied": True})
+        self.assertEqual(code, 0, output)
+        calls = [" ".join(call) for call in self.docker_calls()]
+        order = [next(i for i, call in enumerate(calls) if text in call) for text in ("recover --check", "stop lares-keeper", "recover --apply", "up -d lares-keeper")]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("2 calls have no final cost, holding $0.8", output)
+
+    def test_recover_changes_nothing_unless_the_owner_types_the_word(self) -> None:
+        code, output = self.recover_flow(self.FROZEN_MATCH, answer="yes")
+        self.assertEqual(code, 0, output)
+        self.assertFalse(self.called("--apply"))
+        self.assertFalse(self.called("stop lares-keeper"))
+
+    def test_recover_refuses_a_real_difference_and_names_only_counts(self) -> None:
+        different = {**self.FROZEN_MATCH, "result": "different", "difference": {"database": False, "tables": [{"table": "attempts", "expected": 3, "found": 2, "changed": 1}]}}
+        code, output = self.recover_flow(different)
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("attempts: the ledger expects 3, the database has 2, 1 differ", output)
+        self.assertFalse(self.called("--apply"))
+        self.assertFalse(self.called("stop lares-keeper"))
+
+    def test_recover_lifts_a_stopped_key_store_when_spending_itself_is_not_frozen(self) -> None:
+        clean = {**self.FROZEN_MATCH, "frozen": False, "freezeReasons": [], "interrupted": None, "keyStore": "uncertain", "result": "nothing-interrupted"}
+        code, output = self.recover_flow(clean, {**clean, "applied": True})
+        self.assertEqual(code, 0, output)
+        self.assertTrue(self.called("recover --apply"))
+
+    def test_recover_says_so_when_it_could_not_finish(self) -> None:
+        code, output = self.recover_flow(self.FROZEN_MATCH, {**self.FROZEN_MATCH, "result": "could-not-apply"})
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("could not be finished", output)
+        self.assertTrue(self.called("up -d lares-keeper"))
+
+    def test_recover_check_never_stops_the_keeper(self) -> None:
+        (self.prefix / "var/lib/lares/budget-financial").mkdir(exist_ok=True)
+        os.environ["FAKE_RECOVER_CHECK"] = json.dumps(self.FROZEN_MATCH)
+        code, output = self.run_command("recover", "--check")
+        self.assertEqual(code, 0, output)
+        self.assertIn("would clear this", output)
+        self.assertFalse(self.called("stop lares-keeper"))
 
     def test_two_copies_cannot_run_together(self) -> None:
         installation = budget.Installation(str(self.prefix), IMAGE, str(self.release))

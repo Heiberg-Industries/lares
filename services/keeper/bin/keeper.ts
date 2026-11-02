@@ -1,7 +1,7 @@
 import {z} from 'zod';
 import {registerAction} from '../lib/actions.js';
 import {HostFinancialJournal} from '../lib/financial-journal.js';
-import {FinancialObservationUnavailable,openFinancialJournalForKeeper,scheduleNightlyLedgerCheck} from '../lib/financial-continuity.js';
+import {FinancialObservationUnavailable,openFinancialJournalForKeeper,scheduleNightlyLedgerCheck,startFinancialSettlement} from '../lib/financial-continuity.js';
 import {budgetAccountProvisionPlanSchema,provisionBudgetAccounts,startBudgetMonthOpening} from '../lib/budget-account-provisioning.js';
 import { Credentials, registerCredentialActions } from "../lib/credentials.js";
 import { CredentialFiles } from "../lib/credential-files.js";
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
                 if(error instanceof FinancialObservationUnavailable)console.error("keeper: the database is not answering yet; this start stops and will be retried");
                 throw error;
             });
-            if(financialJournal.isFrozen)console.error("keeper: the spending ledger is frozen; model calls that need a budget are refused until recovery, everything else keeps running");
+            if(financialJournal.isFrozen)console.error("keeper: the spending ledger is frozen; model calls that need a budget are refused, everything else keeps running. See: sudo lares budget recover --check");
         }
         registerInitialMemberBudgetActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
         if(financialPool)registerBudgetAgentStartActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
@@ -202,6 +202,7 @@ async function main(): Promise<void> {
         stops.push(await serve({ socket: "/run/lares-host/keeper.sock", host: true, context }));
         if(financialPool&&financialJournal?.prepared)stops.push(scheduleNightlyLedgerCheck(financialJournal,financialPool));
         if(financialPool)stops.push(await serveGatewayBudget({socket:'/run/lares/gateway-budget.sock',authority:productionGatewayBudgetAuthority(financialPool,config.gatewayBudget?.serviceKeyFile,financialJournal)}));
+        if(financialPool&&financialJournal?.prepared)stops.push(startFinancialSettlement(financialPool,financialJournal));
         if(financialPool&&financialJournal?.prepared)stops.push(startBudgetMonthOpening(financialPool,financialJournal));
         // Vault is optional for older installations: missing custody removes only its dedicated
         // reader sockets and never prevents unrelated conversations or Keeper actions.
@@ -239,9 +240,10 @@ async function main(): Promise<void> {
         try{outsideCustody?.close();}catch{}
         try{await nativeCustody?.drainForShutdown();}catch{}
         try{await financialJournal?.drainForShutdown();}catch{}
-        await Promise.allSettled([pool?.end(),vaultPool?.end(),modelPurposePool?.end(),financialPool?.end(),outsidePool?.end(),admin?.end()].filter(Boolean) as Promise<void>[]);
+        // As at shutdown: closing custody needs no database, so a stuck pool cannot cost it a clean close.
         try{nativeCustody?.close();}catch{}
         try{financialJournal?.close();}catch{}
+        await Promise.allSettled([pool?.end(),vaultPool?.end(),modelPurposePool?.end(),financialPool?.end(),outsidePool?.end(),admin?.end()].filter(Boolean) as Promise<void>[]);
         throw new Error("keeper: startup failed");
     }
     let stopping = false;

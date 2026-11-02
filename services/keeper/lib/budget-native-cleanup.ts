@@ -11,7 +11,7 @@ const pendingRows=(gate:NativeCustodyGate):PendingRow[]=>gate.inventory().operat
 
 /** Opens configured native custody or proves the legacy path has no unbound store. */
 export function openConfiguredNativeCustody(directory:string|undefined):BudgetNativeCustodyStore|undefined {
-  if(directory)return BudgetNativeCustodyStore.openExisting(directory);
+  if(directory)return BudgetNativeCustodyStore.openAfterInterruption(directory);
   try{lstatSync(NATIVE_CUSTODY_DIRECTORY);throw new Error('Unbound native custody requires recovery');}
   catch(error){if(error instanceof Error&&error.message==='Unbound native custody requires recovery')throw error;if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('Native custody unavailable; explicit recovery is required');}
   return undefined;

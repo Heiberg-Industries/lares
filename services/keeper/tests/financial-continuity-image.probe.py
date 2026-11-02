@@ -189,7 +189,7 @@ def run_native_provisioning(code):
 def run(code, database='proof', host='proof-db'):
     prefix = f"""import{{Pool}}from'pg';
 import{{HostFinancialJournal}}from'{base}financial-journal.ts';
-import{{verifyFinancialContinuity,observeFinancialDatabase}}from'{base}financial-continuity.ts';
+import{{verifyFinancialContinuity,observeFinancialDatabase,openFinancialJournalForKeeper}}from'{base}financial-continuity.ts';
 import{{JournalBudgetFinancialWriter}}from'{base}budget-financial-writer.ts';
 import{{provisionBudgetAccounts}}from'{base}budget-account-provisioning.ts';
 import{{consoleSourceTransaction,noteBudgetFinancialChange}}from'/app/packages/agent-kit/src/console-source-transaction.ts';
@@ -206,10 +206,12 @@ import{{chmodSync,readFileSync,writeFileSync}}from'node:fs';
 import{{createHash,randomUUID}}from'node:crypto';
 const pool=new Pool({{host:{json.dumps(host)},database:{json.dumps(database)},user:'lares_financial',password:readFileSync('/db-fixture/financial-password','utf8'),max:1,connectionTimeoutMillis:1500}});
 async function main(){{try{{{code}}}finally{{await pool.end();}}}}void main().catch(e=>{{console.error(e);process.exitCode=1;}});"""
-    return command('docker', 'run', '--rm', '--network', name, '--mount',
+    output = command('docker', 'run', '--rm', '--network', name, '--mount',
                    'type=volume,src=' + volume + ',dst=/proof', '--mount',
                    f'type=bind,src={db_fixture},dst=/db-fixture,readonly', '-w',
-                   '/app/services/keeper', '--entrypoint', tsx, image, '-e', prefix).stdout.strip()
+                   '/app/services/keeper', '--entrypoint', tsx, image, '-e', prefix).stdout
+    # command() folds stderr in, and the ledger logs what it settles and freezes there.
+    return '\n'.join(line for line in output.splitlines() if not line.startswith('keeper: ')).strip()
 
 
 def setup_managed_cluster(label, host, journal_directory):
@@ -288,7 +290,7 @@ try:
         raise RuntimeError('Prepared custody holder did not acquire ownership')
     assert run("let denied=false;try{HostFinancialJournal.openExisting('/proof/crash',{requirePrepared:true});}catch{denied=true;}if(!denied)throw Error('competing prepared owner acquired lock');console.log('excluded');", 'crashproof') == 'excluded'
     command('docker', 'rm', '--force', name + '-holder')
-    assert run("const records=()=>readFileSync('/proof/crash/journal.jsonl','utf8').trimEnd().split('\\n').map(line=>JSON.parse(line).record);if(records().at(-1).kind!=='writer-open'||records().some(r=>r.kind==='freeze'))throw Error('writer was not abandoned');const j=HostFinancialJournal.openExisting('/proof/crash',{requirePrepared:true});if(records().at(-1).kind!=='freeze')throw Error('abandoned writer was not durably frozen');const db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();j.close();}if(!denied)throw Error('abandoned writer resumed');console.log('frozen');", 'crashproof') == 'frozen'
+    assert run("const records=()=>readFileSync('/proof/crash/journal.jsonl','utf8').trimEnd().split('\\n').map(line=>JSON.parse(line).record);if(records().at(-1).kind!=='writer-open'||records().some(r=>r.kind==='freeze'))throw Error('writer was not abandoned');const j=HostFinancialJournal.openExisting('/proof/crash',{requirePrepared:true});let refused=false;try{await j.operation('admit',async()=>{});}catch{refused=true;}j.close();if(!refused||records().at(-1).kind!=='writer-open')throw Error('a command line settled or used an abandoned writer');const k=await openFinancialJournalForKeeper('/proof/crash',pool);if(k.isFrozen||records().some(r=>r.kind==='freeze')||records().at(-1).kind!=='writer-open'||!records().some(r=>r.kind==='recovered'))throw Error('matching abandoned writer did not settle');k.close();console.log('settled');", 'crashproof') == 'settled'
     # Real PostgreSQL provisioning at pool max=1 covers closed state, durable projection,
     # exact retries, explicit cap changes and UTC month rollover.
     setup_managed_cluster('provision', 'provision-proof-db', 'provision')
@@ -545,7 +547,7 @@ await j.drainForShutdown();j.close();console.log('clean');"""
     assert run("const j=HostFinancialJournal.openExisting('/proof/restore',{requirePrepared:true});const db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();j.close();}if(!denied)throw Error('restore cleared freeze');console.log('closed');", 'restoreproof') == 'closed'
     # Ambiguous observation is permanently frozen even after a fresh matching connection.
     assert run("const j=HostFinancialJournal.openExisting('/proof/unknown',{requirePrepared:true});try{await verifyFinancialContinuity(j,{query:async()=>{throw Error('unobserved');}});}catch{}j.close();console.log('unknown');", 'unknownproof') == 'unknown'
-    assert run("const j=HostFinancialJournal.openExisting('/proof/unknown',{requirePrepared:true});const db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();j.close();}if(!denied)throw Error('unknown cleared');console.log('closed');", 'unknownproof') == 'closed'
+    assert run("const j=HostFinancialJournal.openExisting('/proof/unknown',{requirePrepared:true});const db=await pool.connect();try{await verifyFinancialContinuity(j,db);}finally{db.release();j.close();}console.log('resumed');", 'unknownproof') == 'resumed'
     # Restart PostgreSQL retaining its data: the start time changed, but the identity and the
     # complete ledger match, so the same custody resumes and the next operation commits.
     before_restart = sql('SELECT pg_postmaster_start_time()::text;')
@@ -607,7 +609,55 @@ await j.drainForShutdown();j.close();console.log('clean');"""
     keeper_serving()
     assert journal_records()[-1]['kind'] == 'writer-open', 'Keeper did not resume after a reboot'
     assert not [r for r in journal_records() if r['kind'] == 'freeze'], 'Reboot froze the journal'
+    # A killed keeper leaves its socket file behind, so a socket says nothing about this start.
+    def kinds():
+        return [r['kind'] for r in journal_records()]
+    def wait_for_settled_start(recovered_before, message):
+        for _ in range(150):
+            current = kinds()
+            if current.count('recovered') > recovered_before and current[-1] == 'writer-open':
+                return
+            time.sleep(.2)
+        raise RuntimeError(message + '\n' + command('docker', 'logs', '--tail', '20', keeper).stdout)
+    # A real crash: the keeper killed outright settles at its next start, with its own database login.
+    command('docker', 'kill', '--signal', 'KILL', keeper)
+    command('docker', 'wait', keeper)
+    assert journal_records()[-1]['kind'] == 'writer-open', 'Killed keeper closed its journal'
+    recovered_before = kinds().count('recovered')
+    command('docker', 'start', keeper)
+    wait_for_settled_start(recovered_before, 'Killed keeper was not settled')
+    assert kinds()[-3:] == ['writer-close', 'recovered', 'writer-open'], 'Killed keeper was not settled'
+    assert not [r for r in journal_records() if r['kind'] == 'freeze'], 'A killed keeper froze the journal'
+    assert 'settled an interrupted step' in command('docker', 'logs', '--tail', '20', keeper).stdout
+    # With the key store in use: an ordinary restart, then a kill, which leaves its control file open.
     command('docker', 'stop', keeper)
+    command('docker', 'run', '--rm', '--user', '0:0', '--mount', f'type=volume,src={volume},dst=/var/lib/lares', '--entrypoint', tsx, image, '-e',
+            f"import{{BudgetNativeCustodyStore}}from'{base}budget-native-custody.ts';BudgetNativeCustodyStore.createNew('/var/lib/lares/budget-native').close();")
+    keeper_config.write_text(json.dumps({**json.loads(keeper_config.read_text()),'budgetNative':{'directory':'/var/lib/lares/budget-native'}}))
+    def native_control():
+        return json.loads(command('docker', 'run', '--rm', '--mount', f'type=volume,src={volume},dst=/var/lib/lares', '--entrypoint', 'cat', image,
+                                  '/var/lib/lares/budget-native/control.json').stdout)['state']
+    keeper_serving()
+    assert native_control() == 'open', 'Keeper did not open the key store'
+    opened_before = kinds().count('writer-open')
+    command('docker', 'restart', keeper)
+    for _ in range(150):
+        if kinds().count('writer-open') > opened_before:
+            break
+        time.sleep(.2)
+    else:
+        raise RuntimeError('Keeper did not come back from an ordinary restart with the key store in use\n' + command('docker', 'logs', '--tail', '20', keeper).stdout)
+    assert kinds()[-2:] == ['writer-close', 'writer-open'], 'An ordinary restart did not close the journal cleanly'
+    assert not [r for r in journal_records() if r['kind'] == 'freeze'], 'An ordinary restart froze the journal'
+    command('docker', 'kill', '--signal', 'KILL', keeper)
+    command('docker', 'wait', keeper)
+    assert native_control() == 'open', 'Killed keeper closed the key store'
+    recovered_before = kinds().count('recovered')
+    command('docker', 'start', keeper)
+    wait_for_settled_start(recovered_before, 'A killed keeper could not start again with the key store in use')
+    assert keeper_running(), 'A killed keeper could not start again with the key store in use'
+    command('docker', 'stop', keeper)
+    assert native_control() == 'closed', 'Keeper did not close the key store cleanly'
     # A database that cannot answer yet fails this start and writes nothing, so a later start succeeds.
     settled = journal_records()
     command('docker', 'stop', name + '-db')

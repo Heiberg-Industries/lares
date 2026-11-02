@@ -93,14 +93,17 @@ stops new financial operations, drains the current owner and appends/fsyncs a cl
 writer-close before releasing custody. It does this before closing its database pools,
 so a database that has already gone cannot delay it. Those pools tolerate dropped
 connections, so a database restart does not end the process. A crash leaves an unclean
-writer; a subsequent prepared open durably freezes it before any result can resume.
+writer; the next Keeper start settles it, as described under "Settling a crash or a stall".
 
 Each canonical JSON line has a version, sequence, operation UUID, previous digest,
 strict record body and SHA256 integrity digest. Records are at most 65,536 bytes;
 a book is at most 8 MiB and 8192 records. Proposals contain at most 128 atoms.
 Prepared operations reserve space for begin, maximum proposal, terminal,
 checkpoint control, writer-close and a freeze before database checkout. There is no
-compaction, truncation or tail repair, and no book is ever removed.
+compaction and no book is ever removed. The one truncation is a torn last line after a power
+cut: a final fragment with no newline, smaller than a record, behind a chain that verifies. Its
+fsync never returned, so nothing acted on it. Its bytes are kept in `torn-line-<n>` before it
+is removed, and the comparison under "Settling a crash or a stall" then decides what happened.
 Short writes are handled; fsync precedes advancement of operation state.
 
 ## Ledger books
@@ -115,10 +118,11 @@ stop work while the disk has room, and a keeper restart can record its writer le
 
 Startup verifies every sealed book against the fingerprint in the next book, and checks the
 newest book record by record. A changed, shortened, missing, renamed or unknown book file
-stops startup. Removing the newest book leaves a sealed last book, which freezes. A crash while
-changing book also leaves a sealed last book and freezes, like any other unclean writer. If the next
-book exists but cannot be finished, the writer stops in memory and adds nothing to the sealed book,
-including for `budget.freeze`; the writer lease left open makes the next start freeze durably.
+stops startup. A crash while changing book leaves a sealed last book, and so does removing the newest
+book. Both are settled like any other unclean writer: the complete comparison must match, so a removed
+book that held money freezes, and then the next book is opened. If the next book exists but cannot be
+finished, the writer stops in memory and adds nothing to the sealed book, including for `budget.freeze`;
+the writer lease left open is settled at the next start.
 
 Before sealing, Keeper requires free disk for two more books. If that is missing it refuses
 new work and writes nothing, without a freeze, so freeing disk space is enough to carry on.
@@ -151,12 +155,11 @@ A keeper restart, a PostgreSQL restart under a running keeper and a full server
 reboot therefore all resume when that comparison holds and the journal has nothing
 unfinished.
 
-A fresh cluster, changed database, mismatched row or checkpoint, or unclean journal
-durably freezes custody. So does a missing or ambiguous observation, except during
-Keeper startup: no operation has run then, so a database that does not answer proves
-nothing and the start simply fails without a record. An answer that is wrong, or a
-database with no ledger tables, still freezes. Matching later database state never clears a freeze. No database epoch is
-used as a recovery witness.
+A fresh cluster, changed database, or mismatched row or checkpoint durably freezes custody.
+A database that does not answer never does: it proves nothing about money, so the operation is
+refused, or a Keeper start fails, and nothing is recorded. An answer that is wrong, or a database
+with no ledger tables, still freezes. Matching later database state never clears a freeze by itself.
+No database epoch is used as a recovery witness.
 
 An older copy of the same database lacks later checkpoints and rows, so it is refused
 even though its identity matches. The one exception is a copy swapped in by hand with
@@ -164,8 +167,69 @@ no financial change since it was taken: its money rows are correct, but non-fina
 data such as a spending limit saved afterwards may be older, and nothing detects that.
 `restore.sh` is not affected, because it freezes custody before replacing anything.
 
-A process crash, a power cut, or a restart that lands inside a running operation
-still leaves an unclean journal or an unknown outcome, and still freezes custody.
+### Settling a crash or a stall
+
+A financial COMMIT only follows a durable proposal and acknowledged statements, one at a time on
+one connection. Every financial transaction, including person erasure, also holds one advisory lock
+from its first statement. That gives each case below its proof.
+
+| What is left | Proof | Result |
+| --- | --- | --- |
+| BEGIN or ROLLBACK unanswered, COMMIT never sent | The client never sent it and destroys the connection | Durable abort, `commit-never-sent`. Spending carries on |
+| COMMIT sent and unanswered, or acknowledged with no observation | Comparison below | Spending pauses, in memory only, and Keeper retries until it can settle |
+| Killed process or power cut, at any point | Comparison below, at the next Keeper start | Settled before the writer lease |
+
+The comparison takes the lock at session level, before opening its snapshot, so it cannot begin
+until any earlier transaction has really ended: a COMMIT still in the database's socket lands first.
+Taken after a snapshot, the wait would hide that COMMIT. It then reads the complete fold under
+REPEATABLE READ. If this operation's checkpoint is present, every row must equal the fold with the
+proposal, and the journal records `commit` and `control`. If it is absent, every row must equal the
+fold without it, and the journal records `abort`, `proven-not-committed`. Then come `writer-close`
+for the dead writer and a `recovered` record holding the database identity and projection digest.
+Anything else durably freezes with reason `continuity`. Silence writes nothing and is retried.
+
+Person erasure runs from its own command, with no retry loop to settle it, so an unanswered COMMIT or a
+missing observation there still freezes durably. The owner's command then settles it by the same proof.
+
+A reservation an interrupted call left is never released: settling records what happened and spends
+nothing. An admission that committed with no reply holds its reservation like any lost reply.
+
+The native key store has its own half. An operation that publishes to it marks its `begin` and writes
+`published` afterwards. A committed operation with no `published` record may not have updated the
+store, and its receipt lived only in memory, so Keeper settles the money and then freezes with reason
+`uncertain` for the owner, and `recover` names it. **Nothing finishes that key work yet**: it needs checking by hand.
+
+Native custody marks its control file `open` while in use. A kill leaves it `open`. Keeper's
+`openAfterInterruption` treats that as a dead owner, since the kernel lock proves no owner remains, and
+runs only the existing fully evidenced publication repair. Each operation's phase stays as it was. A
+store that stopped itself is `uncertain` and stays stopped until the owner's command.
+
+An orphan from a Keeper version older than this lock holds no lock. That only matters if such a Keeper
+is killed in the instant before an update replaces it.
+
+A rollback to a Keeper older than these records cannot read a journal that contains them, so it stops
+at startup until it is updated again.
+
+### Lifting a freeze: `sudo lares budget recover`
+
+`--check` reports and writes nothing. Beside a running Keeper that is not frozen it reports only that:
+Keeper settles for itself, and a comparison would take its lock. Without it the
+command checks, asks the owner to type `recover`, stops Keeper, repeats the proof under the writer lock,
+appends the records and starts Keeper. It must find intact files, chain, key and receipt; the same
+system identifier and database OID; no earlier transaction still holding the lock; and every row and
+checkpoint equal to one possible fold.
+
+It only appends to the journal. It changes no database row, releases no reservation, and leaves the
+suppression key, tombstones and earlier freeze records as they were. It prints the calls still holding
+money. `recovered` with `by: owner` is the only record that lifts a freeze, and replay refuses one from
+Keeper on a frozen journal. It also lifts a native store's `uncertain` stop if every file verifies,
+leaving every operation's phase as it is, even when spending itself is not frozen, because Keeper cannot
+start on such a store.
+
+A real difference refuses and prints counts per table, never identities. **There is no way out yet after
+restoring an older backup when spending happened since it**: `restore.sh` also replaces the database, so
+its OID differs, and the missing rows cannot be rebuilt because the journal deliberately omits private
+columns. Spending stays off and everything else keeps working.
 
 ### What is compared, and when
 
@@ -218,11 +282,11 @@ The optional `JournalBudgetFinancialWriter` follows this order:
 
 Acknowledged original rollback permits durable abort. Source expiry rolls back
 financial mutations and checkpoint first; exact revoke-only compensation runs on
-the same client. Its COMMIT never completes the financial proposal. Lost
-BEGIN/COMMIT/ROLLBACK acknowledgement remains unknown despite later cleanup,
-destroys the borrowed connection, freezes custody and exposes no financial result.
-Failure of journal/control durability after financial COMMIT retains database
-liability/checkpoint and returns no permit or ticket.
+the same client. Its COMMIT never completes the financial proposal. A lost
+acknowledgement destroys the borrowed connection, exposes no financial result and is never turned
+into a known outcome by later cleanup. It is settled as described below.
+A failed journal or control write after financial COMMIT retains database liability and checkpoint
+and returns no permit or ticket.
 
 ### Overlapping operations
 
@@ -431,7 +495,7 @@ limit, including trickled replies. Action refusal, malformed reply or uncertain
 socket outcome is not success. An absent/dead listener permits fallback only
 after acquiring the same kernel writer lock; active ownership, unsafe custody or
 missing prepared files stops restore. No unlocked marker or side file is written.
-There is no unfreeze or reconciliation shortcut.
+There is no reconciliation shortcut; `lares budget recover` lifts this freeze only if the database was never replaced.
 
 ## Remaining activation boundaries and verification
 

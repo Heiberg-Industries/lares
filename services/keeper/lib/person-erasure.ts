@@ -2,7 +2,7 @@ import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
 import {consoleSourceTransaction,sourceTransactionBoundary,type BudgetFinancialChange,type SourceDatabase,type SourcePool,type SourceTransactionOutcome} from '@lares/agent-kit/console-source-transaction';
 import {HostFinancialJournal,markJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAtom} from './financial-journal.js';
 import {collectFinancialAtoms} from './budget-financial-writer.js';
-import {observeCommittedFinancialProjection,verifyFinancialContinuity} from './financial-continuity.js';
+import {holdFinancialWriterLock,observeCommittedFinancialProjection,verifyFinancialContinuity} from './financial-continuity.js';
 
 const uuid=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 const same=(left:readonly FinancialAtom[],right:readonly FinancialAtom[])=>Buffer.from(gatewayCanonical([...left])).equals(Buffer.from(gatewayCanonical([...right])));
@@ -151,7 +151,7 @@ export async function runJournaledPersonErasure<T>(pool:SourcePool,journal:HostF
     };
     let settled=false,proposed=false;
     const boundary=sourceTransactionBoundary({
-      started:async db=>verifyFinancialContinuity(journal,db),
+      started:async db=>{await holdFinancialWriterLock(db);await verifyFinancialContinuity(journal,db);},
       readyToCommit:async db=>verifyFinancialContinuity(journal,db,true),
       beforeCommit:async(db)=>{
         if(!proposal)throw refusal();
@@ -181,7 +181,7 @@ export async function runJournaledPersonErasure<T>(pool:SourcePool,journal:HostF
       if(publish&&receipt)journal.withPublicationProof(receipt,()=>publish(receipt!,result));
       return result;
     }finally{journalOwners.delete(owner);for(const closure of pendingClosures)closures.delete(closure);pendingClosures.clear();if(!settled){try{journal.freeze();}catch{/* Preserve the original failure; custody remains recovery-only. */}}}
-  });
+  },undefined,{publishes:publish!==undefined});
   return receipt?{value,outcome,receipt}:{value,outcome};
   }catch(error){markJournaledAbort(error,abortReceipt);if(error&&typeof error==='object')Object.defineProperty(error,'outcome',{value:outcome,configurable:true});throw error;}
 }

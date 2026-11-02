@@ -295,7 +295,7 @@ it.each([
   expect(run.observerBegins).toBe(observerBeginCount);expect(run.queries.filter(query=>query.command==='COMMIT')).toHaveLength(1+observerCommitCount);
   expect(run.queries.filter(query=>query.command==='ROLLBACK')).toHaveLength(rollbackCount);expect(run.released).toEqual([true]);
   const records=readFileSync(join(f.directory,'prepared','journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record.kind);
-  expect(records.at(-1)).toBe('freeze');await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+  expect(records).not.toContain('freeze');expect(j.isFrozen).toBe(false);expect(j.awaitingSettlement).toBe(true);await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
   j.close();const reopened=HostFinancialJournal.openExisting(join(f.directory,'prepared'),{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});journals.push(reopened);
   await expect(reopened.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
 });
@@ -304,7 +304,7 @@ it('does not start observation after a post-COMMIT synchronous guard refuses pub
   expect('error' in run.result).toBe(true);expect(run.published).toBe(false);expect(run.outcomes).toEqual(['commit-acknowledged']);
   expect(run.observerBegins).toBe(0);expect(run.queries.filter(query=>query.command==='COMMIT')).toHaveLength(1);expect(run.released).toEqual([false]);
   const records=readFileSync(join(f.directory,'prepared','journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record.kind);
-  expect(records.at(-1)).toBe('freeze');await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+  expect(records).not.toContain('freeze');expect(j.awaitingSettlement).toBe(true);await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
 });
 it.each(['commit','control','observation'] as const)('withholds publication and leaves the reopened journal recovery-only after committedObserved %s fsync failure',async kind=>{
   const {journal,directory,arm}=journalFailingAfterObserverCommit(kind),run=await runObservedWriter(journal,{onObserverCommit:arm});

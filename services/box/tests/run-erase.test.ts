@@ -188,6 +188,9 @@ describe("runErase — the order of operations", () => {
     const result=await runErase({db:db.pool,person:FIXTURE_OWNER,vaults:[],apply:true,journal,nativeCustody});
     expect(result.dbReport.refusals).toEqual([]);
     expect(result.nativeCleanup).toEqual({status:'pending',remaining:1});
+    // The erase's records must replay: a mismatch here would stop the next keeper start.
+    journal.close();journal=HostFinancialJournal.openExisting(custodyRoot,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});
+    expect(journal.isFrozen).toBe(false);expect(journal.awaitingSettlement).toBe(false);
     await nativeCustody.withGate(async gate=>{
       const inventory=gate.inventory();
       expect(inventory.users.some(user=>user.kind==='user')).toBe(false);
