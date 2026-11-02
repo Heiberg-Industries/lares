@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { dirname, isAbsolute, join, normalize, parse } from "node:path";
 import { providerIdentitySchema } from "@lares/agent-kit/authority-contract";
@@ -96,7 +96,10 @@ function safeAncestors(file: string): void {
   let current = dirname(file);
   for (;;) {
     const info = lstatSync(current);
-    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== 0 || info.gid !== 0 || (info.mode & 0o022) !== 0)
+    // The group does not matter while nobody but root can write: install.sh gives the secrets
+    // directory the runtime group (0:10001, mode 0750) so services can reach their own files.
+    // The files protected here are checked separately and stay root-only.
+    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022) !== 0)
       throw new Error("gateway service-key custody path is unsafe");
     const parent = dirname(current);
     if (parent === current || current === parse(current).root) break;
@@ -344,6 +347,37 @@ export function resolveGatewayAuthority(sources: GatewayAuthoritySources): Resol
     gatewayUrl: installation.GATEWAY_URL!,
     previousKeeperConfig: keeper,
     sourceCommitment,
+  };
+}
+
+/** What a re-render needs to keep an existing gateway binding. Once budget setup has written
+ *  gatewayBudget into keeper.json, the installer and `lares update` must render the same binding
+ *  again, or the gateway loses its admission settings. Absent means budget setup has not run; a
+ *  keeper.json or policy that cannot be read refuses, so a binding is never dropped silently. */
+export function preparedGatewayBinding(
+  keeperConfigFile: string,
+  domain: string,
+  readPolicy: (path: string) => { endpointHash: string } = readBudgetNativePolicyDocument,
+): { origin: string; endpointHash: string; serviceKeyFile: string; policyFile: string } | undefined {
+  let text: string;
+  try { text = readFileSync(keeperConfigFile, "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error("existing keeper.json could not be read, so the gateway binding cannot be kept");
+  }
+  let keeper: Record<string, unknown>;
+  try { keeper = JSON.parse(text) as Record<string, unknown>; }
+  catch { throw new Error("existing keeper.json is not valid JSON, so the gateway binding cannot be kept"); }
+  if (keeper.gatewayBudget === undefined) return undefined;
+  const gateway = gatewayBudgetConfigSchema.safeParse(keeper.gatewayBudget);
+  const native = nativeCustodyConfigSchema.safeParse(keeper.budgetNative);
+  if (!gateway.success || !native.success || !native.data.reviewedPolicyFile)
+    throw new Error("existing keeper.json names a gateway binding without its reviewed policy");
+  return {
+    origin: `https://${domain}`,
+    endpointHash: readPolicy(native.data.reviewedPolicyFile).endpointHash,
+    serviceKeyFile: gateway.data.serviceKeyFile,
+    policyFile: native.data.reviewedPolicyFile,
   };
 }
 

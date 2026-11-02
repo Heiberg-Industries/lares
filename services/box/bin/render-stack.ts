@@ -23,6 +23,7 @@ import { parseReleaseManifest } from "../lib/release-manifest.js";
 import { assertDatabaseAuthDirectory, renderStackCompose } from "../lib/stack-compose.js";
 import { validateMaintenanceAdmissionIdentity } from "./render-keeper-config.js";
 import { renderGatewayConfig, gatewayAdmissionProfile } from "../lib/gateway-config.js";
+import { preparedGatewayBinding } from "../lib/gateway-authority.js";
 
 /** The arguments, in order. Positional on purpose: install.sh passes paths it built itself, and
  *  a flag parser here would be one more place for the two to disagree about a name. `alias` and
@@ -135,6 +136,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     );
   }
   const calendarFile = join(at("installationDir"), "deadline-calendar.json");
+  const gatewayBinding = preparedGatewayBinding(join(dirname(at("gatewayConfigFile")), "keeper.json"), at("domain"));
   const text = renderStackCompose(manifest, {
     secretsDir: at("secretsDir"),
     consoleVaultSigningKeyFile: optionalRegularFile(join(at("secretsDir"), "console-vault-signing-key")),
@@ -159,6 +161,8 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     // The calendar is mounted only when it is already there, so a stranger without one gets no
     // mount and an installation that added one keeps it on every re-run of the installer.
     deadlineCalendarFile: existsSync(calendarFile) ? calendarFile : null,
+    // Budget setup has bound the gateway: keep that binding on every re-run and update.
+    ...(gatewayBinding ? { gatewayAuthority: gatewayBinding } : {}),
   });
   // THE DEFECT THIS SLICE CLOSES: nothing used to write this file, so Docker created a
   // DIRECTORY at the compose file's mount source and the gateway could never read a config.

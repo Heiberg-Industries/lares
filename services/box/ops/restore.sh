@@ -810,13 +810,18 @@ PYFINANCIAL
 if [ "$FINANCIAL_PREPARED" = 0 ];then
   say 'financial custody is not configured (legacy inactive path)'
 fi
-NATIVE_PREPARED=$(python3 - "$KEEPER_JSON" "$(P /var/lib/lares/budget-native)" <<'PYNATIVE'
+NATIVE_PREPARED=$(python3 - "$KEEPER_JSON" "$(P /var/lib/lares/budget-native)" "$(P /etc/lares/native-policy.json)" <<'PYNATIVE'
 import json, os, sys
 try:
     config = json.load(open(sys.argv[1]))
     if 'budgetNative' in config:
-        if config['budgetNative'] != {'directory': '/var/lib/lares/budget-native'} or 'budgetFinancial' not in config:
+        native = config['budgetNative']
+        policy = '/etc/lares/native-policy.json'
+        if native not in ({'directory': '/var/lib/lares/budget-native'}, {'directory': '/var/lib/lares/budget-native', 'reviewedPolicyFile': policy}) or 'budgetFinancial' not in config:
             raise ValueError('invalid native binding')
+        # lares budget setup writes this file; it travels in the encrypted /etc/lares bundle.
+        if 'reviewedPolicyFile' in native and (not os.path.isfile(sys.argv[3]) or os.path.islink(sys.argv[3])):
+            raise ValueError('reviewed policy is missing')
         if not os.path.isdir(sys.argv[2]) or os.path.islink(sys.argv[2]):
             raise ValueError('prepared native custody is missing')
         print('1')
