@@ -34,6 +34,7 @@ import type { Member } from "@lares/agent-kit/authority-contract";
 import { isIP } from "node:net";
 import { chatSessionCapabilityCookie, hasChatSessionCapability, validChatSessionId } from "./chat-session-capability";
 import { createHash } from "node:crypto";
+import { AGENT_STATE_HEADER, AGENT_NOT_RUNNING } from "./agent-reachability";
 import { signPrivateVaultRequest, PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER } from "./vault-capsule";
 import { signPrivateModelPurposeRequest, modelPurposeRawBodyHash, modelPurposeSigningConfigured } from "./model-purpose-capsule";
 import { PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER } from "@lares/agent-kit/private-console-envelope";
@@ -120,8 +121,11 @@ export interface ChatDeps {
   signedInMember(): Promise<Member | null>;
 }
 
-function refuse(status: number, message: string): Response {
-  return new Response(message, { status, headers: { "content-type": "text/plain", "cache-control": "no-store" } });
+function refuse(status: number, message: string, notRunning = false): Response {
+  return new Response(message, { status, headers: {
+    "content-type": "text/plain", "cache-control": "no-store",
+    ...(notRunning ? { [AGENT_STATE_HEADER]: AGENT_NOT_RUNNING } : {}),
+  } });
 }
 
 /** Reads a body up to `limit` bytes, or throws (`RangeError` when it is larger). Exported for
@@ -212,7 +216,8 @@ export async function forwardChat(request: Request, name: string, path: string, 
       [name],
     );
     const address = vouchedAddress(rows[0]);
-    if (!address) return refuse(404, "Not found");
+    // Not registered as ready: the agent is not running. Marked, so the page can say so.
+    if (!address) return refuse(404, "Not found", true);
 
     // Eve authenticates the route password, not the person who owns a session. A browser may
     // continue a session only with the cookie this proxy issued when that session was created.
@@ -325,13 +330,20 @@ export async function forwardChat(request: Request, name: string, path: string, 
     }
     const query = search.size > 0 ? `?${search.toString()}` : "";
 
-    const upstream = await deps.fetch(`http://${address}:3000/${path}${query}`, {
-      method: request.method,
-      headers,
-      ...(body === undefined ? {} : { body: body as BodyInit }),
-      signal,
-      redirect: "error",
-    });
+    let upstream: Response;
+    try {
+      upstream = await deps.fetch(`http://${address}:3000/${path}${query}`, {
+        method: request.method,
+        headers,
+        ...(body === undefined ? {} : { body: body as BodyInit }),
+        signal,
+        redirect: "error",
+      });
+    } catch {
+      // The registry says ready but the door did not answer (a stopped container). Reported in our
+      // own words, and marked so the page can say the agent is not running.
+      return refuse(502, "The agent did not answer.", !request.signal.aborted);
+    }
 
     const out = new Headers({ "cache-control": "no-store" });
     for (const key of RESPONSE_HEADERS) {

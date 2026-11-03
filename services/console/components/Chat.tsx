@@ -22,6 +22,7 @@ import {
   composerState,
   expiredRequestIds,
 } from "./ChatTranscript";
+import { agentNotRunning, notRunningSay } from "../lib/agent-reachability";
 import {
   chatSessionKey,
   readChatSession,
@@ -209,7 +210,18 @@ function ChatSession({
   }, [agent.data.messages, agent.status, storageKey]);
   const isBusy = agent.status === "submitted" || agent.status === "streaming";
   const unavailable = failed.current || agent.status === "error";
-  const composer = unavailable ? { disabled: true, say: "Start a new conversation to continue." } : composerState(agent.status);
+  // Asked once when a conversation fails, never on a timer: is the agent itself down?
+  const [notRunning, setNotRunning] = useState(false);
+  useEffect(() => {
+    if (!unavailable) return;
+    let current = true;
+    void agentNotRunning(name).then((down) => { if (current) setNotRunning(down); });
+    return () => { current = false; };
+  }, [unavailable, name]);
+  const notRunningText = unavailable && notRunning ? notRunningSay(identity.displayName, name) : null;
+  const composer = unavailable
+    ? { disabled: true, say: notRunningText ?? "Start a new conversation to continue." }
+    : composerState(agent.status);
   const expired = expiredRequestIds(agent.events, Date.now());
 
   const answer = (requestId: string, optionId: string) => {
@@ -373,7 +385,8 @@ function ChatSession({
           <ChatTranscript
             status={agent.status}
             messages={agent.data.messages}
-            error={unavailable ? "This conversation is unavailable. Start a new conversation." : null}
+            error={unavailable ? notRunningText ?? "This conversation is unavailable. Start a new conversation." : null}
+            notRunning={notRunningText}
             expired={expired}
             answering={answering}
             onAnswer={answer}

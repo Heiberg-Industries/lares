@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { makeFollowupTick, type FollowupDeps } from "../agent/schedules/meeting-followup.js";
+import { makeFollowupTick, skipWithoutMeetingsDatabase, type FollowupDeps } from "../agent/schedules/meeting-followup.js";
 import { hashSummaryBlock } from "../lib/meeting-followup.js";
 
 const NOW = new Date("2026-08-24T11:00:00.000Z");
@@ -340,5 +340,22 @@ describe("priorCorrespondenceText", () => {
   it("no prior mail means empty, never an invented sample", async () => {
     const gmail = { search: async () => [], read: async () => null };
     await expect(priorCorrespondenceText(gmail, ["new@person.com"])).resolves.toBe("");
+  });
+});
+
+describe("skipWithoutMeetingsDatabase", () => {
+  // An install with no meetings database is a normal install: one plain line, never a stack each tick.
+  it("says no meetings database is set once, and skips every tick until one is", () => {
+    const state = { toldNoMeetingsDatabase: false }, log = vi.fn();
+    expect(skipWithoutMeetingsDatabase(undefined, state, log)).toBe(true);
+    expect(skipWithoutMeetingsDatabase("", state, log)).toBe(true);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0]).toEqual([expect.stringContaining("no meetings database set")]);
+  });
+
+  it("runs, and says nothing, once a meetings database is set", () => {
+    const state = { toldNoMeetingsDatabase: false }, log = vi.fn();
+    expect(skipWithoutMeetingsDatabase("source-1", state, log)).toBe(false);
+    expect(log).not.toHaveBeenCalled();
   });
 });

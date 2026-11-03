@@ -43,6 +43,9 @@ export interface ChatTranscriptProps {
   /** The agent's display name, shown above its replies. Falls back to "Agent" when absent. */
   readonly agentName?: string;
   readonly personalSendCards?:Readonly<Record<string,PersonalSendCard|null>>;
+  /** Set when the agent itself cannot be reached (it is not running): these words replace the
+   *  "could not be reopened / unavailable" lines, which would wrongly suggest a new chat helps. */
+  readonly notRunning?: string | null;
 }
 
 const UNSUPPORTED_PART = "— something this page cannot show yet —";
@@ -287,7 +290,10 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState, role: E
     );
   }
   if (part.type === "dynamic-tool") {
+    // "output-denied" is a call that was refused (by the owner or by the agent's own checks): it is
+    // finished, and nothing ran.
     const outcome = part.state === "output-error" ? " failed"
+      : part.state === "output-denied" ? " was refused"
       : part.state === "output-available" ? " completed" : " is running…";
     return (
       <p key={key} className="mono lares-tool-line">
@@ -314,7 +320,7 @@ function TranscriptMessage({ message, cards, agentName }: { message: EveMessage;
 
 const NONE: ReadonlySet<string> = new Set();
 
-export function ChatTranscript({ messages, status, error, expired = NONE, answering = null, onAnswer, agentName,personalSendCards }: ChatTranscriptProps) {
+export function ChatTranscript({ messages, status, error, expired = NONE, answering = null, onAnswer, agentName,personalSendCards, notRunning = null }: ChatTranscriptProps) {
   const cards: CardState = { expired, answering,personalSendCards, ...(onAnswer === undefined ? {} : { onAnswer }) };
   return (
     <div>
@@ -323,13 +329,13 @@ export function ChatTranscript({ messages, status, error, expired = NONE, answer
           {status === "resuming"
             ? "Reconnecting to this conversation…"
             : status === "error"
-              ? "This conversation could not be reopened. Start a new chat to continue."
+              ? notRunning ?? "This conversation could not be reopened. Start a new chat to continue."
               : "Say something to start."}
         </p>
       ) : (
         messages.map((message) => <TranscriptMessage key={message.id} message={message} cards={cards} {...(agentName === undefined ? {} : { agentName })} />)
       )}
-      {status === "error" && error ? (
+      {status === "error" && error && !(messages.length === 0 && notRunning) ? (
         <p role="alert" className="lares-status-error">
           {error}
         </p>
