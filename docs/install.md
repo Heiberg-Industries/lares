@@ -480,12 +480,19 @@ Approve and Reject buttons on proposals stay Telegram-only; Slack and web chat g
 ### Meeting follow-ups and Notion
 
 The meeting follow-up schedule reads your meeting notes from a Notion database and has no built-in
-default. It needs the `NOTION_MEETINGS_DATA_SOURCE_ID` setting (the id of your Meetings data
-source) and a Notion key (Connections page, Notion key). Set it in `/etc/lares/keeper.json` under
-`defaultBindings["chief-of-staff"].environment` (or under `bindings.<agent-name>.environment` for one
-named agent), then let the keeper re-apply its configuration. Until it is set, the follow-up
-schedule stops with "NOTION_MEETINGS_DATA_SOURCE_ID is not set" each time it runs, and nothing else
-is affected.
+default. It needs the id of your Meetings data source and a Notion key (Connections page, Notion
+key). Set the id in the console under Settings, Notion, Meetings database: paste the id (with or
+without dashes) and Save. Only the installation's owner can change it. Saving restarts the agents
+that read it, so a conversation in progress is interrupted for a moment; an agent with other
+changes waiting is left alone and picks the id up when you apply them. Leave the field empty and
+Save to clear it. Until it is set, the follow-up schedule stops with "NOTION_MEETINGS_DATA_SOURCE_ID is not set"
+each time it runs, and nothing else is affected.
+
+The id is stored in the installation's database, so running the installer again keeps it. An older
+installation may still carry it in `/etc/lares/keeper.json` under
+`defaultBindings["chief-of-staff"].environment.NOTION_MEETINGS_DATA_SOURCE_ID`; that value is used
+until you save one in the console, but the installer rewrites that file on every run, so set it in
+the console instead.
 
 ### Outside tools
 

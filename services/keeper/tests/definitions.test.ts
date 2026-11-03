@@ -683,3 +683,71 @@ it('reports server memory, a suggested maximum and whether the caller can change
     registerLimit({ memory: () => 0 });
     expect(await runAction('definition.capacity', {}, asOwner())).toMatchObject({ serverMemoryBytes: null, suggestedMax: null });
 });
+
+const SOURCE = '0123abcd-4567-4ef0-8123-456789abcdef';
+const meetingsNow = async () => (await pool.query("SELECT value FROM settings WHERE key='notion.meetings_data_source'")).rows[0]?.value;
+async function chiefRows(...names: string[]) {
+    await pool.query("TRUNCATE settings, settings_audit");
+    for (const name of names)
+        await pool.query("INSERT INTO agent_definitions(name,hash,definition,valid_at,status) VALUES($1,'h',$2::jsonb,now(),'valid')", [name, JSON.stringify({ role: name.startsWith('writer') ? 'creative' : 'chief-of-staff' })]);
+    await pool.query("INSERT INTO agent_definitions(name,hash,definition,valid_at,status) VALUES('gone','h','{\"role\":\"chief-of-staff\"}'::jsonb,now(),'retired')");
+}
+function registerMeetings(applied: AnyMock, opts: { administrator?: string | undefined; fallback?: string } = {}) {
+    resetActions();
+    registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, backup, ceiling: async () => 2,
+        compose: { ...compose, applyInstallationSettings: applied, meetingsSourceFallback: () => opts.fallback } as any,
+        administrator: 'administrator' in opts ? opts.administrator : OWNER,
+        roleInfo: (r) => ({ roleMd: readFileSync(join(repo, 'packages/agent-kit/templates', r, 'role.md'), 'utf8'), deployedTools: deployedToolsFor(join(repo, 'services', r)) }) });
+}
+it('the administrator sets the Notion meetings source in either spelling, stored dashed and lowercase, and every chief of staff is restarted', async () => {
+    await chiefRows('chief-a', 'chief-b', 'writer-a');
+    const applied = vi.fn(async (name: string) => name === 'chief-b' ? 'waiting' : 'restarted');
+    registerMeetings(applied);
+    const result: any = await runAction('settings.notion_meetings_set', { dataSource: ` ${SOURCE.replaceAll('-', '').toUpperCase()} ` }, asOwner());
+    expect(await meetingsNow()).toBe(SOURCE);
+    expect(applied.mock.calls.map(c => c[0]).sort()).toEqual(['chief-a', 'chief-b']);
+    expect(result).toMatchObject({ value: SOURCE, restarted: ['chief-a'], waiting: ['chief-b'], stopped: [] });
+    expect((await pool.query("SELECT changed_by FROM settings_audit WHERE key='notion.meetings_data_source' ORDER BY id DESC LIMIT 1")).rows[0].changed_by).toBe(OWNER);
+});
+it('refuses a value that is not a Notion id, changing nothing and restarting nothing', async () => {
+    await chiefRows('chief-a');
+    const applied = vi.fn(async () => 'restarted');
+    registerMeetings(applied);
+    for (const dataSource of ['my meetings', 'https://www.notion.so/x?v=1', SOURCE.slice(1), 'g'.repeat(32)])
+        await expect(runAction('settings.notion_meetings_set', { dataSource }, asOwner())).rejects.toThrow('Notion data source id');
+    expect(await meetingsNow()).toBeUndefined();
+    expect(applied).not.toHaveBeenCalled();
+});
+it('refuses anyone but the administrator, and an installation with no administrator', async () => {
+    await chiefRows('chief-a');
+    await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('notion.meetings_data_source',$1::jsonb,'seed')", [JSON.stringify(SOURCE)]);
+    const applied = vi.fn(async () => 'restarted');
+    registerMeetings(applied);
+    await expect(runAction('settings.notion_meetings_set', { dataSource: '' }, asOwner('member@example.com'))).rejects.toThrow("Only the installation's owner can change the meetings source.");
+    registerMeetings(applied, { administrator: undefined });
+    await expect(runAction('settings.notion_meetings_set', { dataSource: '' }, asOwner())).rejects.toThrow("Only the installation's owner");
+    expect(await meetingsNow()).toBe(SOURCE);
+    expect(applied).not.toHaveBeenCalled();
+});
+it('an empty value clears the source on purpose, and the host shell may change it too', async () => {
+    await chiefRows('chief-a');
+    registerMeetings(vi.fn(async () => 'restarted'));
+    await runAction('settings.notion_meetings_set', { dataSource: SOURCE }, asOwner('host'), { host: true });
+    expect(await meetingsNow()).toBe(SOURCE);
+    const cleared: any = await runAction('settings.notion_meetings_set', { dataSource: '  ' }, asOwner());
+    expect(await meetingsNow()).toBe('');
+    expect(cleared.value).toBeNull();
+});
+it('reports the stored value, the installation-file fallback and whether the caller may change it', async () => {
+    await chiefRows('chief-a');
+    registerMeetings(vi.fn(), { fallback: SOURCE });
+    expect(await runAction('settings.notion_meetings_get', {}, asOwner())).toEqual({ value: SOURCE, from: 'installation file', canChange: true, chiefCount: 1 });
+    expect(await runAction('settings.notion_meetings_get', {}, asOwner('member@example.com'))).toMatchObject({ canChange: false });
+    await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('notion.meetings_data_source',$1::jsonb,'seed')", [JSON.stringify(SOURCE.replace('0123', '9999'))]);
+    expect(await runAction('settings.notion_meetings_get', {}, asOwner())).toMatchObject({ value: SOURCE.replace('0123', '9999'), from: 'console' });
+    await pool.query("UPDATE settings SET value='\"\"' WHERE key='notion.meetings_data_source'");
+    expect(await runAction('settings.notion_meetings_get', {}, asOwner())).toMatchObject({ value: null, from: 'console' });
+    await pool.query("DELETE FROM settings WHERE key='notion.meetings_data_source'");
+    registerMeetings(vi.fn());
+    expect(await runAction('settings.notion_meetings_get', {}, asOwner())).toMatchObject({ value: null, from: 'none' });
+});
