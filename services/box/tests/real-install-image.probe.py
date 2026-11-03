@@ -5,9 +5,9 @@ Earlier proofs seed the database and start pieces by hand, so bugs on the real i
 reached them. This one runs get-lares.sh and install.sh from an ordinary folder, then signs in,
 runs `lares owner-bootstrap`, `lares budget setup`, creates and adopts an agent on the console's
 real pages, sets the member limit there, runs `lares agent start`, holds a chat where a tool runs,
-an approval card is answered and the conversation carries on, and finishes with `lares backups`
-and `lares doctor`. Nothing here writes to the database or edits an installation file the installer
-owns.
+an approval card is answered and the conversation carries on, sets up `lares backups`, then runs a
+real `lares update` to a second build and finishes with `lares doctor`. Nothing here writes to the
+database or edits an installation file the installer owns.
 
 WHAT IS NOT REAL, AND WHY. A CI server has no public address and cannot sign in to Google or spend
 on a model. So, outside the installation:
@@ -77,7 +77,8 @@ LIMITS = [
     "The sync-jobs image is named but never started on a fresh install, so it is not built or pulled here.",
     "Backups go to the same machine, and the uptime address is a stand-in: a real restore onto a new server is not covered.",
     "The approval step answers one card as the member who started the conversation; refusing other people's answers is covered by the private chat proof, not here.",
-    "A later lares update on top of a Vault write is not covered: this run installs once.",
+    "The update goes to a second build of the same code (a new label, so new digests): a release that changes code or adds migrations is not covered.",
+    "Whether a running agent moves to the second build's image is written into the proof file, not checked.",
     "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
     "A real agent answer is not covered: the stand-in decides what the model says.",
@@ -220,20 +221,39 @@ def publish_locally(local: str, name: str) -> str:
     return match[0]
 
 
-def write_release(work: pathlib.Path, images: dict[str, str], tls: dict[str, pathlib.Path]) -> pathlib.Path:
+def write_release(work: pathlib.Path, images: dict[str, str], tls: dict[str, pathlib.Path], name: str = "real.install.proof") -> pathlib.Path:
     releases = sorted((REPO / "releases").glob("*.json"))
     newest = json.loads(releases[-1].read_text())
     box_sql = sorted(path.name for path in (REPO / "services/box/sql").glob("*.sql"))[-1]
     release = {
-        "release": f"{date.today().isoformat()}-real.install.proof",
+        "release": f"{date.today().isoformat()}-{name}",
         "images": {**newest["images"], **images},
         "migrations": {**newest["migrations"], "box": box_sql},
         "breaking": [],
     }
-    path = work / "release.json"
+    path = work / f"{name}.json"
     path.write_text(json.dumps(release, indent=2) + "\n")
     print(json.dumps(release["images"], indent=2), flush=True)
     return path
+
+
+def second_build(work: pathlib.Path, local: str, tag: str) -> None:
+    """The same image with one more label: the code is unchanged and the digest is new, as an update needs."""
+    context = work / f"second-{tag.replace('/', '-').replace(':', '-')}"
+    context.mkdir()
+    (context / "Dockerfile").write_text(f"FROM {local}\nLABEL org.lares.proof.build=second\n")
+    run("docker", "build", "-q", "-t", tag, str(context), timeout=300)
+
+
+def running_images() -> set[str]:
+    ids = output("docker", "ps", "-q").split()
+    return set(output("docker", "inspect", "--format", "{{.Config.Image}}", *ids).split()) if ids else set()
+
+
+def agent_image() -> str | None:
+    """The image the proof agent's running container was started from; None when it is not running."""
+    ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    return output("docker", "inspect", "--format", "{{.Config.Image}}", ids[0]) if ids else None
 
 
 def host_address() -> str:
@@ -469,13 +489,18 @@ def main(argv: list[str]) -> int:
         wait_for_registry(tls)
         # Docker keeps its copy of the hosts file for five seconds after any lookup, and it just pulled.
         time.sleep(10)
+        # Release key -> (the local image, its name in the registry). The gateway is not rebuilt for
+        # the update, so the update also proves it leaves an unchanged image alone.
+        engine_images = {
+            "lares-keeper": (keeper, "heiberg-industries/lares-engine-keeper"),
+            "lares-egress-proxy": (egress, "heiberg-industries/lares-engine-egress-proxy"),
+            "lares-firewall-helper": (firewall, "heiberg-industries/lares-engine-firewall-helper"),
+            "console": (console_trusting, "heiberg-industries/lares-engine-console"),
+            "chief-of-staff": (chief, "heiberg-industries/lares-engine-chief-of-staff-runtime"),
+            "creative": (creative, "heiberg-industries/lares-engine-creative-runtime"),
+        }
         release_file = write_release(work, {
-            "lares-keeper": publish_locally(keeper, "heiberg-industries/lares-engine-keeper"),
-            "lares-egress-proxy": publish_locally(egress, "heiberg-industries/lares-engine-egress-proxy"),
-            "lares-firewall-helper": publish_locally(firewall, "heiberg-industries/lares-engine-firewall-helper"),
-            "console": publish_locally(console_trusting, "heiberg-industries/lares-engine-console"),
-            "chief-of-staff": publish_locally(chief, "heiberg-industries/lares-engine-chief-of-staff-runtime"),
-            "creative": publish_locally(creative, "heiberg-industries/lares-engine-creative-runtime"),
+            **{key: publish_locally(local, name) for key, (local, name) in engine_images.items()},
             "lares-gateway": publish_locally(gateway_trusting, "berriai/litellm"),
         }, tls)
         release = json.loads(release_file.read_text())
@@ -597,6 +622,46 @@ def main(argv: list[str]) -> int:
         run("lares", "backups", "--yes", "--password-saved", "--accept-same-machine", "--repository", "/var/backups/lares-proof",
             "--age-recipient", recipient.group(1), "--hc-url", f"https://uptime.{DOMAIN}/ping", timeout=900)
         passed("backup-restore-rehearsal-and-check-ran")
+
+        stage("a second build, and sudo lares update to it")
+        second_images = {}
+        for key, (local, name) in engine_images.items():
+            second = f"proof/second-{key}:local"
+            second_build(work, local, second)
+            second_images[key] = publish_locally(second, name)
+        second_images["lares-gateway"] = release["images"]["lares-gateway"]
+        update_file = write_release(work, second_images, tls, name="real.install.proof.update")
+        update = json.loads(update_file.read_text())
+        shutil.copy(update_file, home / "update-release.json")
+        agent_image_before = agent_image()
+        # No --even-though-the-backup-is-unproven: the backup set up above is proven, and the update must see that.
+        updated = run("lares", "update", "--release-file", str(home / "update-release.json"), "--yes", timeout=1500, check=False, cwd=str(home))
+        said = updated.stdout + updated.stderr
+        if updated.returncode != 0:
+            raise RuntimeError(f"lares update exited {updated.returncode}")
+        if "unproven backup" in said:
+            raise RuntimeError("lares update did not see the proven backup")
+        if not re.search(r"snapshot [0-9a-f]+ saved", said):
+            raise RuntimeError("lares update did not take its own backup first")
+        passed("update-saw-the-proven-backup-and-took-its-own")
+        if os.readlink("/opt/lares/current") != f"releases/{update['release']}":
+            raise RuntimeError(f"current points at {os.readlink('/opt/lares/current')} after the update")
+        running = running_images()
+        for key in ("console", "lares-keeper", "lares-egress-proxy"):
+            if update["images"][key] not in running or release["images"][key] in running:
+                raise RuntimeError(f"{key} is not running the second build after the update: {sorted(running)}")
+        if release["images"]["lares-gateway"] not in running:
+            raise RuntimeError(f"the unchanged gateway is not running after the update: {sorted(running)}")
+        passed("update-runs-the-second-build")
+        wait_for_sign_in_offer()
+        kept = (len(list(pathlib.Path("/srv/vault").rglob(f"tracks/{APPROVAL_TRACK}/track.md"))) == len(written) and
+                len(list(pathlib.Path("/srv/vault").rglob("private/*/_inbox/proof-note.md"))) == len(notes))
+        settled_after = read_only_query("SELECT count(*) FROM budget_attempts WHERE state = 'settled'", update)
+        if not kept or int(settled_after or 0) < int(states.get("settled", 0)):
+            raise RuntimeError(f"the update lost data: Vault files kept {kept}, settled calls {settled_after}")
+        passed("update-kept-the-data-and-sign-in")
+        proof["agentImage"] = {"beforeUpdate": agent_image_before, "afterUpdate": agent_image(), "secondBuild": update["images"]["chief-of-staff"]}
+        save_proof()
 
         stage("sudo lares doctor")
         doctor = run("lares", "doctor", timeout=180, check=False)

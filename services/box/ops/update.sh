@@ -411,10 +411,17 @@ fi
 # --- 4. has a backup been taken AND verified? ----------------------------------------------
 # backup-verify.sh is the single owner of that verdict (sql/001_baseline.sql). An
 # unreadable check counts as failing, never as passing — the same rule backup-verify.sh
-# applies to every check it makes.
+# applies to every check it makes. It reads the row the way backup-verify.sh writes it: as the
+# operator, from a short-lived client. The database refuses the app role on its own local
+# socket, so `compose exec db psql` can never read it on an installed server.
 STATUS_SQL="SELECT ok, extract(epoch from now() - checked_at)::bigint FROM backup_status WHERE check_name = 'verify';"
-STATUS_ROW=$(docker compose ${COMPOSE_ARGS[@]+"${COMPOSE_ARGS[@]}"} exec -T db \
-  psql -U "$PG_USER" -d "$PG_DATABASE" -tAc "$STATUS_SQL" 2>/dev/null) || STATUS_ROW=""
+# Bounded to 20s where `timeout` exists, as backup-verify.sh bounds it: a hung database must not
+# hang the update.
+STATUS_TIMEOUT=""
+command -v timeout >/dev/null 2>&1 && STATUS_TIMEOUT=20
+STATUS_ROW=$(LARES_OPERATOR_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" PGPORT="$UPDATE_PGPORT" OPERATOR_DB_TIMEOUT="$STATUS_TIMEOUT" \
+  operator_db_run ${COMPOSE_ARGS[@]+"${COMPOSE_ARGS[@]}"} -- \
+  psql -U lares_operator -d "$PG_DATABASE" -tAc "$STATUS_SQL" 2>/dev/null) || STATUS_ROW=""
 STATUS_ROW=$(printf '%s' "$STATUS_ROW" | tr -d '\r' | sed '/^$/d' | head -1)
 
 BACKUP_REFUSAL=""

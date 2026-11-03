@@ -47,6 +47,12 @@ fi
 DEFAULT_BACKUP_ENV=/etc/agent-box/backup.env
 [ -f /etc/lares/backup.env ] && DEFAULT_BACKUP_ENV=/etc/lares/backup.env
 ENV_FILE="${AGENT_BOX_BACKUP_ENV:-$DEFAULT_BACKUP_ENV}"
+# `lares backups` writes this file. Without it there is nowhere to back up to, and sourcing it
+# would only print a shell error naming a path the owner never chose.
+if [ ! -f "$ENV_FILE" ]; then
+  echo "backup: backups are not set up on this server yet ($ENV_FILE does not exist), so no backup was taken. Set them up first with: sudo lares backups" >&2
+  exit 78
+fi
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 export RESTIC_PASSWORD_FILE
