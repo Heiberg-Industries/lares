@@ -4,6 +4,8 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
+- A chat no longer hangs on "is running…" when an action is refused while its approval card is being prepared, for example a private note whose title is already in use. The agent now gets the reason and can say it, and nothing is changed.
+
 - `lares update` now moves running agents onto the new release: each one restarts once, at the end of the update. An agent with changes waiting to be applied is left alone and named, and so is one the keeper cannot read. `sudo lares agent refresh` does the same step on its own. The update also downloads the agents' and the keeper's helper images before it switches, so the first save or start afterwards no longer times out in the console while the action goes through. The keeper's log now says which step held an agent back ("is held: …").
 
 - `lares update` now sees a backup that `lares backups` has verified, so it no longer asks for `--even-though-the-backup-is-unproven` on an installed server. On a server where backups were never set up, the update now stops with "backups are not set up on this server yet … run sudo lares backups" instead of a shell error. `lares update --release-file <path>` updates from a release file already on the server.

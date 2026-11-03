@@ -4,7 +4,7 @@
 // area is in Keeper custody, so the card is reserved here against the note's current bytes and
 // Keeper writes the file, rechecking the card, the grant and those bytes, and using the card once.
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
-import type { ApprovedExecution, ExactApprovalAdapter } from '@lares/agent-kit/approval-execution';
+import { ApprovalRefusal, type ApprovedExecution, type ExactApprovalAdapter } from '@lares/agent-kit/approval-execution';
 import type { AuthorityDatabase } from '@lares/agent-kit/console-turn-authority';
 import { consoleAdmission } from '@lares/agent-kit/console-turn-authority';
 import { parseDefinition } from '@lares/agent-kit/definition';
@@ -59,7 +59,7 @@ export const vaultNoteApprovalAdapter: ExactApprovalAdapter = {
     // New notes only: a second note with the same title would replace the first without the
     // card saying so. Keeper refuses the same at write time.
     if (await currentPrivateNote(ctx as NoteContext, path) !== null)
-      throw new Error('A private note with this title already exists. Choose another title: this tool saves new notes only.');
+      throw new ApprovalRefusal('A private note with this title already exists. Choose another title: this tool saves new notes only.');
     const turnKey = turnKeyFrom(ctx);
     const approvedOrigin = (turnKey ? stampFor('agent', turnKey) : 'third_party') as 'agent'|'synced'|'third_party';
     return { kind: 'vault-note', id: path, ownerMemberId: memberId, fingerprint: vaultNoteTargetFingerprint(null), approvedOrigin };

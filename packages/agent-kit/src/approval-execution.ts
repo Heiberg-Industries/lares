@@ -15,6 +15,9 @@ import { exactResolverAdmission } from './private-console-resume.js';
 
 export const EXACT_APPROVAL_REFUSED = 'Exact approval authority is unavailable or has changed';
 const refuse = (): never => { throw new Error(EXACT_APPROVAL_REFUSED); };
+/** A refusal an adapter writes for the model to read, such as a note title already in use. */
+export class ApprovalRefusal extends Error {}
+const NOT_PREPARED = 'This action could not be prepared for approval, so nothing was changed. Tell the person it is not available right now.';
 export type ExactApprovalTarget = z.infer<typeof targetSchema>;
 type Reservation = z.infer<typeof reservationSchema>;
 export interface ExactApprovalAdapter {
@@ -119,6 +122,14 @@ export async function reserveExactApproval(ctx: ConsoleAuthorityContext & {callI
   const existing = exact(row,tool,ctx.toolInput,o);
   // Expiry belongs to the FIRST reservation and is never extended by a retry.
   if (!same({...existing,expiresAt:r.expiresAt},r) || row.outcome !== null) refuse();
+}
+/** reserveExactApproval for an approval policy. eve parks a conversation whose policy throws,
+ * leaving it on "is running…", so a refusal here becomes a denial with a reason the model reads:
+ * an ApprovalRefusal's own words, anything else a plain "could not be prepared". Null: reserved. */
+export async function reserveExactApprovalOrDeny(ctx: ConsoleAuthorityContext & {callId?:string;toolInput?:unknown}, tool: string,
+  o: ExactApprovalOptions = {}): Promise<{type:'denied';reason:string} | null> {
+  try { await reserveExactApproval(ctx,tool,o); return null; }
+  catch (error) { return { type: 'denied', reason: error instanceof ApprovalRefusal ? error.message : NOT_PREPARED }; }
 }
 /** input.requested is the first framework event that contains requestId. Strict failures throw. */
 export async function attachExactApproval(a: {requestId:string;callId:string;tool:string;input:unknown}, db: AuthorityDatabase = getPool()): Promise<void> {

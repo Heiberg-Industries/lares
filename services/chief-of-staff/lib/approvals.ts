@@ -1,6 +1,6 @@
 import {personalSendApprovalRequest,personalSendApprovalResponse,requirePersonalSendCall} from './personal-send-approval.js';
 import { assertPrivateConsoleTool } from "@lares/agent-kit/private-console-surface";
-import { isExactApprovalContext, isExactApprovalResponse, reserveExactApproval, approveExactResponse,
+import { isExactApprovalContext, isExactApprovalResponse, reserveExactApprovalOrDeny, approveExactResponse,
   requireApprovedExecution, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
 import { deadlineApprovalAdapter } from "./deadlines-store.js";
 import { canApproveCompanyTrack, tracksApprovalAdapter, twentyTracksApprovalAdapter } from "./tracks-approval.js";
@@ -248,7 +248,8 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
     catch { return 'denied'; }
     return 'user-approval';
   }
-  await reserveExactApproval(c,name,{adapter:adapterFor(name,c.toolInput)});
+  const refused = await reserveExactApprovalOrDeny(c,name,{adapter:adapterFor(name,c.toolInput)});
+  if (refused) return refused;
   const decision = await (authored as (ctx:unknown)=>unknown)(ctx);
   if (decision === 'denied' || (typeof decision === 'object' && decision !== null && 'type' in decision && decision.type === 'denied')) return decision;
   return 'user-approval';

@@ -2,7 +2,7 @@ import { consoleAdmission } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { executeApprovedOutsideCall, vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
 import type { AcceptedOutsideTool } from '@lares/agent-kit/outside-connections';
-import { reserveExactApproval, approveExactResponse, requireApprovedExecution, type ExactResponseContext } from '@lares/agent-kit/approval-execution';
+import { reserveExactApprovalOrDeny, approveExactResponse, requireApprovedExecution, type ExactResponseContext } from '@lares/agent-kit/approval-execution';
 import { outsideApprovalAdapter } from '@lares/agent-kit/outside-approval';
 
 type Context={callId?:string;toolName?:string;session?:{id?:string;turn?:{id?:string;sequence?:number};auth?:{current?:unknown;initiator?:unknown}|null}};
@@ -23,7 +23,7 @@ export async function requestOutsideApproval(connectionName:string,toolName:stri
  const options={adapter:outsideApprovalAdapter(connectionName,toolName)};
  if(consoleAdmission(c.session?.auth?.current)?.purpose==='resolver'){
   try{await requireApprovedExecution(c,name,c.toolInput,options);}catch{return 'denied' as const;}
- }else await reserveExactApproval(c,name,options);
+ }else{const refused=await reserveExactApprovalOrDeny(c,name,options);if(refused)return refused;}
  return 'user-approval' as const;
 }
 export async function respondOutsideApproval(connectionName:string,toolName:string,ctx:unknown){

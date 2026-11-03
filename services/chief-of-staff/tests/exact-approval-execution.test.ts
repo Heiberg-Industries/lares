@@ -11,11 +11,12 @@ import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { bindConsoleSession, consoleAdmission, consoleRouteAdmission, requireConsoleTurnAuthority } from '@lares/agent-kit/console-turn-authority';
 import { assertPrivateConsoleRequest } from '@lares/agent-kit/private-console-envelope';
 import { exactResolverAdmission, privateResolverAdmission, requireConsoleResume, requirePrivateConsoleResume } from '@lares/agent-kit/private-console-resume';
-import { reserveExactApproval, attachExactApproval, approveExactResponse, requireApprovedExecution, settleExactInput } from '@lares/agent-kit/approval-execution';
+import { ApprovalRefusal, reserveExactApproval, attachExactApproval, approveExactResponse, requireApprovedExecution, settleExactInput } from '@lares/agent-kit/approval-execution';
 import { recordAsk, recordAnswer, assertApprovedCall, approvalLedger, payloadFingerprint, APPROVAL_TTL_MS } from '@lares/agent-kit/approval-ledger';
 import { readApprovalCounts } from '@lares/agent-kit/approval-stats';
 import { makeApprovalRecord } from '@lares/agent-kit/approval-record-hook';
 import { deadlineApprovalAdapter, dismissExactDeadline } from '../lib/deadlines-store.js';
+import { twentyTracksApprovalAdapter } from '../lib/tracks-approval.js';
 import resolver from '../agent/tools/catalogue.js';
 import { assertApproval, catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution, humanTurnRefusal, runApprovedTwentyTrackOnce } from '../lib/approvals.js';
 import { TwentyTracksHome } from '../lib/twenty-tracks.js';
@@ -417,6 +418,20 @@ describe('answering an exact card through the private route',()=>{
    await expect(runApprovedTwentyTrackOnce(approved,write)).resolves.toBe('written');
    await expect(runApprovedTwentyTrackOnce(approved,write)).rejects.toThrow();
    expect(write).toHaveBeenCalledOnce();
+  });
+  it('answers a refusal while the card is built as a reason the model reads, never a failed turn',async()=>{
+   // A target that cannot be read (here: a track the CRM does not have) used to throw out of the
+   // approval policy, and a thrown policy parks the conversation on "is running…".
+   const missing={...crm(),toolInput:{...twenty,trackId:'no-such-track'}};
+   await expect(catalogueApprovalRequest('track_add_item',missing,()=>'user-approval'))
+    .resolves.toEqual({type:'denied',reason:expect.stringMatching(/could not be prepared for approval.*nothing was changed/i)});
+   // A refusal written for the model, such as a note title already in use, reaches it word for word.
+   const said='A private note with this title already exists. Choose another title: this tool saves new notes only.';
+   const target=vi.spyOn(twentyTracksApprovalAdapter,'readTarget').mockRejectedValueOnce(new ApprovalRefusal(said));
+   try{
+    await expect(catalogueApprovalRequest('track_add_item',crm(),()=>'user-approval')).resolves.toEqual({type:'denied',reason:said});
+   }finally{target.mockRestore();}
+   expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(0);
   });
   it('refuses every other member before a card or a CRM read, including another with the owner role',async()=>{
    await bindConsoleSession({agent:'helper',incarnation:inc,sessionId:'wrun_b',memberId:'member-b',admissionNonce:'b'.repeat(43)}).catch(()=>undefined);
