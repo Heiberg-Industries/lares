@@ -1,0 +1,24 @@
+{
+  "release": "2026-11-03-rc.13.test.5",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:cdfbf555f7773774b1ac051096bf78437f3e34f3578ec9408935a01ac68bcf65",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:fbfb2be0964be36bf518065d51a1cc2eec5aa931ba9623c5b74973561ab6246b",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:4bf4ddf25a2e87767cb7cc200ba8b4b1f2b665f8c2a93d65a0d5f84405b79b9f",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:cb5f4bdd286a9b87dbb242bb7e97c9ebf1e909c4d753c61b8215ddc6b3684cd3",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:ce2658604244239db841faac05f5535fc8e7da300a45b1b6a6c7689f2ef75fee",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:3601d7cd13cde7d3a5c239d807e9c17e161890c4e09bd460641cb6a30781a9aa",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:76fcd93b9e4099543cbf595ed77cbfc366916220f218d692cd21e051c7333fa6"
+  },
+  "migrations": {
+    "box": "034_private_metadata_devices.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "This is a test release, not a finished rc.13. Use it only to test it on a test server; see docs/releases/rc.13.test.5-notes.md for what is unfinished.",
+    "A server on rc.12 or earlier cannot update to this release in place. Database access now uses separate accounts with protected passwords, and lares update refuses an older server before changing anything. There is no upgrade path from rc.12 in this release.",
+    "Selective import from an older installation can only preview; it cannot write anything yet."
+  ]
+}
