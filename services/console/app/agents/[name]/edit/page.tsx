@@ -14,16 +14,14 @@ export default async function EditAgentPage({
     const data = await builderData(name);
     const outside = await editedOutsideTheConsole(name);
     return (
-      <Page width="narrow" className="lares-settings">
+      <Page>
         <PageHeader
           title={`Edit ${name}`}
           description="Identity, instructions, access and schedules."
+          actions={<a href={`/agents/${encodeURIComponent(name)}`}>Agent overview</a>}
         />
-        <p>
-          <a href={`/agents/${encodeURIComponent(name)}`}>Agent overview</a>
-        </p>
         {outside && (
-          <p>
+          <p className="lares-muted">
             Changed outside the console,{" "}
             {new Date(outside.at).toLocaleDateString("en-GB", {
               day: "numeric",
