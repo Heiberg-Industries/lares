@@ -144,8 +144,22 @@ export interface EmailTriageDeps {
   prune(): Promise<void>;
 }
 
-export interface EmailTriageState { running: boolean }
+export interface EmailTriageState { running: boolean; toldNoMailbox?: boolean }
 export function freshState(): EmailTriageState { return { running: false }; }
+
+/** No mailbox connected (the keeper sets `GOOGLE_PRINCIPAL_ID` only with one) is a normal install,
+ *  not a fault: say so once and skip, instead of a stack trace every minute. No heartbeat either,
+ *  so the freshness check still says triage is not running. */
+export function skipWithoutMailbox(
+  principal: string | undefined, state: EmailTriageState, log: (line: string) => void = console.log,
+): boolean {
+  if (principal) return false;
+  if (!state.toldNoMailbox) {
+    state.toldNoMailbox = true;
+    log("email-triage: no mailbox connected; skipping until one is");
+  }
+  return true;
+}
 
 /** `tick` resolves `true` for a completed pass — including zero mailboxes, zero candidates,
  *  or a per-item failure caught inside the loop (one bad message must not cost the whole tick
@@ -253,9 +267,11 @@ export default defineSchedule({
       return;
     }
 
+    const principal = process.env["GOOGLE_PRINCIPAL_ID"];
+    if (skipWithoutMailbox(principal, liveState)) return;
+
     try {
       const pool = getPool();
-      const principal = process.env["GOOGLE_PRINCIPAL_ID"];
       const query = `in:inbox -from:me newer_than:${SCAN_WINDOW_DAYS}d`;
 
       // `calendarClient` below resolves NO explicit
