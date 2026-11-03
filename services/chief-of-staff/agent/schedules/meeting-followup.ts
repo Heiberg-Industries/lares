@@ -1339,6 +1339,21 @@ let running = false;
 /** — the row input-freshness.sh reads; pinned to this filename by the conformance test. */
 export const HEARTBEAT_KEY = "chief-of-staff/meeting-followup";
 
+/** No meetings database set is a normal install, not a fault: say so once and skip, instead of a
+ *  stack trace every tick. No heartbeat either, so the freshness check still says it is not running. */
+export interface MeetingsDatabaseState { toldNoMeetingsDatabase: boolean }
+const meetingsDatabaseState: MeetingsDatabaseState = { toldNoMeetingsDatabase: false };
+export function skipWithoutMeetingsDatabase(
+  dataSourceId: string | undefined, state: MeetingsDatabaseState, log: (line: string) => void = console.log,
+): boolean {
+  if (dataSourceId) return false;
+  if (!state.toldNoMeetingsDatabase) {
+    state.toldNoMeetingsDatabase = true;
+    log("meeting-followup: no meetings database set; skipping until one is");
+  }
+  return true;
+}
+
 export default defineSchedule({
   cron: "*/5 * * * *",
   async run({ to, waitUntil, appAuth }) {
@@ -1352,6 +1367,8 @@ export default defineSchedule({
       logSlackNotConnected("meeting-followup");
       return;
     }
+
+    if (skipWithoutMeetingsDatabase(process.env["NOTION_MEETINGS_DATA_SOURCE_ID"], meetingsDatabaseState)) return;
 
     running = true;
     try {
