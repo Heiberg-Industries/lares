@@ -18,7 +18,14 @@ export type AgentStartStatus={
   installation:{state:string}|null;
   account:{state:string}|null;
   binding:{id:string;credentialGeneration:string}|null;
+  /** Every key of this person for this agent, one per model name, the agent's own first. `active` says whether the key
+   * has been opened for spending (true), is made but still closed (false), or the keeper cannot tell (null). */
+  bindings:{id:string;credentialGeneration:string;alias:string;active:boolean|null}[];
+  /** Whether this person is the installation's configured owner, the only one who may hold extra keys. */
+  owner:boolean;
 };
+/** How far each key has got, by binding id, read from the keeper's own custody records; undefined when they cannot be read. */
+export type NativeKeyPhases=(bindingIds:readonly string[])=>Promise<ReadonlyMap<string,string>|undefined>;
 type Row=Record<string,any>;
 const rows=async(db:SourceDatabase,sql:string,values:unknown[]):Promise<Row[]>=>(await db.query(sql,values)).rows;
 const positive=(value:unknown):string|null=>{
@@ -35,8 +42,8 @@ async function findMember(db:SourceDatabase,member:string|undefined,ownerId:stri
   return found.length===1?found[0]:undefined;
 }
 
-export async function readAgentStartStatus(pool:Pool,input:z.infer<typeof agentStartStatusInput>,designatedOwnerId:string):Promise<AgentStartStatus>{
-  return consoleSourceTransaction(pool as unknown as SourcePool,async db=>{
+export async function readAgentStartStatus(pool:Pool,input:z.infer<typeof agentStartStatusInput>,designatedOwnerId:string,keyPhases?:NativeKeyPhases):Promise<AgentStartStatus>{
+  const status=await consoleSourceTransaction(pool as unknown as SourcePool,async db=>{
     const agentRow=(await rows(db,`SELECT d.status,d.definition->>'model' AS model,r.ownership,r.ownership_token,r.runtime_control_token,r.state,r.pending,r.pending_reason
       FROM agent_definitions d LEFT JOIN agent_resources r ON r.name=d.name WHERE d.name=$1`,[input.agent]))[0];
     const agent=agentRow?{status:String(agentRow.status),model:agentRow.model??null,
@@ -46,21 +53,31 @@ export async function readAgentStartStatus(pool:Pool,input:z.infer<typeof agentS
     const installationRow=(await rows(db,`SELECT state FROM budget_accounts WHERE kind='installation' ORDER BY id LIMIT 2`,[]));
     if(installationRow.length>1)throw unavailable();
     const installation=installationRow[0]?{state:String(installationRow[0].state)}:null;
-    if(!user)return {agent,member:null,installation,account:null,binding:null};
+    if(!user)return {agent,member:null,installation,account:null,binding:null,bindings:[],owner:false};
     const verified=(await rows(db,'SELECT 1 FROM member_provider_identities WHERE member_id=$1 LIMIT 1',[user.id])).length===1;
     const policy=(await rows(db,'SELECT spend_cap_usd_month FROM org_member_policy WHERE user_id=$1',[user.id]))[0];
     const canUse=agent?!!await new PgGrantStore().captureUseWithExpiry(user.id,input.agent,{db:db as unknown as import('pg').PoolClient}):false;
     const accountRows=await rows(db,`SELECT id,state FROM budget_accounts WHERE kind='member' AND live_member_id=$1 ORDER BY id LIMIT 2`,[user.id]);
     if(accountRows.length>1)throw unavailable();
     const account=accountRows[0];
-    const binding=account&&agent?.incarnation?(await rows(db,`SELECT id,credential_generation::text AS credential_generation FROM budget_gateway_bindings
-      WHERE member_account_id=$1 AND agent=$2 AND incarnation=$3 AND state='active' ORDER BY id LIMIT 1`,[account.id,input.agent,agent.incarnation]))[0]:undefined;
+    const found=account&&agent?.incarnation?await rows(db,`SELECT id,credential_generation::text AS credential_generation,purpose_alias FROM budget_gateway_bindings
+      WHERE member_account_id=$1 AND agent=$2 AND incarnation=$3 AND state='active' ORDER BY id LIMIT 6`,[account.id,input.agent,agent.incarnation]):[];
+    // The agent's own model name has the main key; the others are extra keys, listed after it.
+    const bindings=found.map(row=>({id:String(row.id),credentialGeneration:String(row.credential_generation),alias:String(row.purpose_alias),active:null as boolean|null}))
+      .sort((a,b)=>Number(b.alias===agent?.model)-Number(a.alias===agent?.model)||a.alias.localeCompare(b.alias));
+    const binding=bindings.find(row=>row.alias===agent?.model);
     return {agent,
       member:{id:String(user.id),active:user.status==='active',verified,limit:positive(policy?.spend_cap_usd_month),canUse},
       installation,
       account:account?{state:String(account.state)}:null,
-      binding:binding?{id:String(binding.id),credentialGeneration:String(binding.credential_generation)}:null};
+      binding:binding?{id:binding.id,credentialGeneration:binding.credentialGeneration}:null,bindings,owner:String(user.id)===designatedOwnerId};
   },undefined,{deadlineAtMs:Date.now()+5_000});
+  if(status.bindings.length){
+    let phases:ReadonlyMap<string,string>|undefined;
+    try{phases=await keyPhases?.(status.bindings.map(row=>row.id));}catch{phases=undefined;}
+    if(phases)for(const row of status.bindings)row.active=phases.has(row.id)?phases.get(row.id)==='active':null;
+  }
+  return status;
 }
 
 /** Give a person the installation's default limit only when they have none yet. It never replaces
@@ -82,10 +99,10 @@ export async function applyDefaultMemberLimit(pool:Pool,input:z.infer<typeof def
   },undefined,{deadlineAtMs:Date.now()+5_000});
 }
 
-export function registerBudgetAgentStartActions(options:{pool:Pool;designatedOwnerId:string|undefined}):void{
+export function registerBudgetAgentStartActions(options:{pool:Pool;designatedOwnerId:string|undefined;keyPhases?:NativeKeyPhases}):void{
   registerAction({name:'budget.agent-start-status',hostOnly:true,input:agentStartStatusInput,secretFields:['member'],run:async input=>{
     if(!options.designatedOwnerId)throw unavailable();
-    return readAgentStartStatus(options.pool,input,options.designatedOwnerId);
+    return readAgentStartStatus(options.pool,input,options.designatedOwnerId,options.keyPhases);
   },successDetail:()=> 'agent start status read'});
   registerAction({name:'budget.apply-default-member-limit',hostOnly:true,input:defaultMemberLimitInput,secretFields:['memberId'],run:input=>applyDefaultMemberLimit(options.pool,input),
     successDetail:result=>result.saved?'default member limit applied':'existing member limit kept'});

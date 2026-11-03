@@ -8,6 +8,10 @@ export function nativeTestPolicy():BudgetNativeReviewedPolicy {
   const capability={version:1 as const,provider:'openai' as const,model:'synthetic-model',providerBaseUrl:'https://provider.invalid/v1',aliases:['lares-brain','lares-writer','lares-utility','lares-gate'],maxBodyBytes:1_048_576,maxOutputTokens:1000};
   return {capability,pricing:{version:1,capabilityHash:gatewayHash(gatewayCanonical(capability)),format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'1',output:'2',cacheRead:'0',cacheWrite:'0'}},maximumLiability:'0.003',team:{maxBudget:'100',models:capability.aliases,budgetDuration:'1d'},user:{maxBudget:'30',userRole:'internal_user',autoCreateKey:false},membership:{maxBudget:'20',allowedModels:capability.aliases,budgetDuration:'1d',role:'user'},key:{maxBudget:'10',models:['lares-brain'],budgetDuration:'1d',keyType:'llm_api',blocked:true}};
 }
+/** The reviewed policy for one more served model name: everything the main policy says, with its own key. */
+export function nativeTestPolicyFor(alias:string,source:BudgetNativeReviewedPolicy=nativeTestPolicy()):BudgetNativeReviewedPolicy {
+  return {...source,key:{...source.key,models:[alias]}};
+}
 export function createNativeTestCustody(directory:string):BudgetNativeCustodyStore {
   return BudgetNativeCustodyStore.createNew(directory,{ownershipUid:testJournalUid,ownershipGid:process.getgid!(),lock:platformTestJournalLock});
 }

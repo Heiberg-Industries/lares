@@ -10,7 +10,7 @@ import {platformTestJournalLock,testJournalUid} from './helpers/financial-journa
 import {resetActions,runAction} from '../lib/actions.js';
 import {auditor} from '../lib/audit.js';
 import {provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
-import {registerBudgetAgentStartActions,type AgentStartStatus} from '../lib/budget-agent-start.js';
+import {readAgentStartStatus,registerBudgetAgentStartActions,type AgentStartStatus} from '../lib/budget-agent-start.js';
 import {HostFinancialJournal} from '../lib/financial-journal.js';
 import {prepareFinancialCustody} from '../lib/financial-continuity.js';
 import {provisionEngineDatabasePrivileges} from '../../box/lib/database-privileges.js';
@@ -76,7 +76,7 @@ it('reads a not-yet-started agent and the owner by default',async()=>{
   expect(await status()).toEqual({
     agent:{status:'valid',model:'lares-brain',incarnation,state:'ready',pending:false,pendingReason:null,owned:true},
     member:{id:owner,active:true,verified:true,limit:null,canUse:false},
-    installation:null,account:null,binding:null,
+    installation:null,account:null,binding:null,bindings:[],owner:true,
   });
 });
 
@@ -128,6 +128,26 @@ it('sees access, the account and the binding once they exist',async()=>{
       VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,'team','user','lares-brain',$5,1,'active')`,[bindingId,accounts.installation_account_id,accounts.id,owner,'c'.repeat(64),fingerprint,agent,incarnation]);
   }finally{await connection.query("SET session_replication_role=DEFAULT");connection.release();}
   expect((await status()).binding).toEqual({id:bindingId,credentialGeneration:'0'});
+  expect((await status()).bindings).toEqual([{id:bindingId,credentialGeneration:'0',alias:'lares-brain',active:null}]);
+  // More keys on the same agent: all are listed, the agent's own model name first, and "binding" stays that one.
+  const writerId=randomUUID(),gateId=randomUUID(),second=await selected.connect();
+  try{
+    await second.query("SET session_replication_role=replica");
+    for(const [id,alias,print] of [[writerId,'lares-writer','d'.repeat(64)],[gateId,'lares-gate','e'.repeat(64)]])
+      await second.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,native_team,native_user,purpose_alias,profile_hash,maximum_liability,state)
+        VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,'team','user',$9,$5,1,'active')`,[id,accounts.installation_account_id,accounts.id,owner,'c'.repeat(64),print,agent,incarnation,alias]);
+  }finally{await second.query("SET session_replication_role=DEFAULT");second.release();}
+  const several=await status();
+  expect(several.binding).toEqual({id:bindingId,credentialGeneration:'0'});
+  expect(several.bindings.map(row=>row.alias)).toEqual(['lares-brain','lares-gate','lares-writer']);
+  expect(several.owner).toBe(true);
+  expect((await status(person)).owner).toBe(false);
+  // With the keeper's own records, each key says whether it has been opened for spending.
+  const read=(phases:Map<string,string>|undefined)=>readAgentStartStatus(financial,{agent},owner,async()=>phases);
+  expect((await read(new Map([[bindingId,'active'],[writerId,'bound-closed']]))).bindings.map(row=>[row.alias,row.active]))
+    .toEqual([['lares-brain',true],['lares-gate',null],['lares-writer',false]]);
+  expect((await read(undefined)).bindings.map(row=>row.active)).toEqual([null,null,null]);
+  expect((await readAgentStartStatus(financial,{agent},owner,async()=>{throw new Error('custody unavailable');})).bindings.map(row=>row.active)).toEqual([null,null,null]);
   // A limit is part of the account once it exists: the default must not touch it.
   await expect(runAction('budget.apply-default-member-limit',{memberId:owner,monthlyLimit:'99'},context(),{host:true})).resolves.toEqual({saved:false});
   expect(await limitOf(owner)).toBe('15');

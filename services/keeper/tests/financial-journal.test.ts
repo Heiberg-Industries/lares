@@ -145,6 +145,15 @@ it('keeps the original closed-installation provision evidence path intact',async
   let receipt:CommittedFinancialReceipt|undefined;await j.operation('provision',async id=>{j.propose(id,[closed(installationId,'installation'),closed(memberId,'member'),binding]);receipt=j.committed(id);});
   expect(committedFinancialEvidence(receipt!,{kind:'bound-closed',binding})).toMatchObject({operation:'provision'});
 });
+it('accepts an extra key on an already open account only beside that account\'s own active key',async()=>{
+  const j=preparedJournal(),rawEpoch=recoveryEpoch;rawEpochs.set(rawEpoch,createHash('sha256').update(rawEpoch).digest('hex'));
+  const projection=activeProvisionProjection({member:{state:'open',reason:'approved'}});
+  const own:FinancialAtom={...(projection.binding as Extract<FinancialAtom,{kind:'binding'}>),id:randomUUID(),credentialGeneration:'0'};
+  const before=[...projection.before,own],proposal=[...before,projection.binding];
+  await commitRecoveryProjection(j,before);
+  const result=await observeProvisionReceipt(j,proposal,projection.binding);
+  expect(result.accepted).toMatchObject({operation:'provision'});
+});
 it.each([
   ['member already open',{member:{state:'open' as const,reason:'approved' as const}}],
   ['installation frozen',{installation:{state:'frozen' as const}}],
