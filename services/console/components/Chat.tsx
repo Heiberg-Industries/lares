@@ -23,6 +23,7 @@ import {
   expiredRequestIds,
 } from "./ChatTranscript";
 import { agentNotRunning, notRunningSay } from "../lib/agent-reachability";
+import { limitReplyOf } from "../lib/limit-reply";
 import {
   chatSessionKey,
   readChatSession,
@@ -135,13 +136,16 @@ function ChatSession({
       if (storage && !failed.current) saveChatSession(storage, storageKey, session);
     },
   });
+  // A model call refused for a spending limit is not a broken conversation: the sentence is shown,
+  // the session and the draft stay, and the member can write again (a new month resets the limit).
+  const limitReply = agent.status === "error" ? limitReplyOf(agent.events) : null;
   useEffect(() => {
-    if (agent.status === 'error') failed.current = true;
+    if (agent.status === 'error' && limitReply === null) failed.current = true;
     if (failed.current) for (const key of [storageKey, `${storageKey}:draft`, `${storageKey}:scroll`]) {
       if (preserveFailedDraft.current && key === `${storageKey}:draft`) continue;
       try { tabStorage()?.removeItem(key); } catch {}
     }
-  }, [agent.status, storageKey]);
+  }, [agent.status, storageKey, limitReply]);
   const [personalSendCards,setPersonalSendCards]=useState<Record<string,PersonalSendCard|null>>({});
   const fetchingCards=useRef(new Set<string>());
   useEffect(()=>{
@@ -209,7 +213,7 @@ function ChatSession({
     if (follow.current) element.scrollTop = element.scrollHeight;
   }, [agent.data.messages, agent.status, storageKey]);
   const isBusy = agent.status === "submitted" || agent.status === "streaming";
-  const unavailable = failed.current || agent.status === "error";
+  const unavailable = failed.current || (agent.status === "error" && limitReply === null);
   // Asked once when a conversation fails, never on a timer: is the agent itself down?
   const [notRunning, setNotRunning] = useState(false);
   useEffect(() => {
@@ -385,7 +389,7 @@ function ChatSession({
           <ChatTranscript
             status={agent.status}
             messages={agent.data.messages}
-            error={unavailable ? notRunningText ?? "This conversation is unavailable. Start a new conversation." : null}
+            error={limitReply ?? (unavailable ? notRunningText ?? "This conversation is unavailable. Start a new conversation." : null)}
             notRunning={notRunningText}
             expired={expired}
             answering={answering}

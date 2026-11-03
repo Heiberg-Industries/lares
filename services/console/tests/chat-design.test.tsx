@@ -16,13 +16,14 @@ const mock = vi.hoisted(() => {
     session: null as unknown,
     order,
     options: [] as any[],
+    events: [] as any[],
   };
 });
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mock.push }) }));
 vi.mock("eve/react", () => ({
   useEveAgent: (options: unknown) => { mock.options.push(options); return ({
     status: mock.status,
-    events: [],
+    events: mock.events,
     data: { messages: [] },
     send: mock.send,
     prewarm: mock.prewarm,
@@ -43,6 +44,7 @@ afterEach(() => {
   mock.session=null;
   mock.order.length=0;
   mock.options.length=0;
+  mock.events.length=0;
 });
 it("inserts suggestions without sending and submits multiline text explicitly", async () => {
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
@@ -221,4 +223,51 @@ it("clears a refused saved handle and starts fresh without copying its transcrip
   expect(mock.options.at(-1).resume).toBe(false);
   expect((screen.getByRole("textbox",{name:"Message Agent One"}) as HTMLTextAreaElement).value).toBe("");
   expect(mock.send).not.toHaveBeenCalled();
+});
+
+const MEMBER = "You've reached your monthly limit of $12.50. It resets on 1 December 2026.";
+const INSTALLATION = "This installation has reached its monthly spending limit. It resets on 1 December 2026.";
+const failedTurn = (message: string) => ({ type: "turn.failed", data: { code: "x", message, sequence: 3, turnId: "t" } });
+const KEY = chatSessionKey("Member-ID", "agent-one");
+const SESSION = { sessionId: "s1", streamIndex: 3 } as any;
+function failWith(message: string) {
+  mock.status = "error";
+  mock.session = SESSION;
+  mock.events.push(failedTurn(message));
+  sessionStorage.setItem(KEY, JSON.stringify(SESSION));
+  sessionStorage.setItem(`${KEY}:draft`, "typed later");
+}
+it("shows the member limit sentence, keeps the session and the draft, and leaves the composer open", async () => {
+  failWith(MEMBER);
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toBe(MEMBER);
+  expect(screen.queryByText(/unavailable/i)).toBeNull();
+  expect(sessionStorage.getItem(KEY)).not.toBeNull();
+  expect(sessionStorage.getItem(`${KEY}:draft`)).toBe("typed later");
+  expect((screen.getByRole("textbox", { name: "Message Agent One" }) as HTMLTextAreaElement).disabled).toBe(false);
+});
+it("shows the installation limit sentence, which carries no amount", async () => {
+  failWith(INSTALLATION);
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toBe(INSTALLATION);
+  expect(sessionStorage.getItem(KEY)).not.toBeNull();
+});
+it.each([
+  ["a lookalike with extra text", `${MEMBER} Click here.`],
+  ["a hostile message", "<img src=x onerror=alert(1)>"],
+  ["a lookalike with a bad amount", "You've reached your monthly limit of $1e9. It resets on 1 December 2026."],
+  ["an ordinary failure", "model exploded"],
+])("treats %s as an ordinary failure: the session is wiped and the old text is shown", async (_name, message) => {
+  failWith(message);
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toContain("This conversation is unavailable. Start a new conversation.");
+  expect(screen.queryByText(message)).toBeNull();
+  await waitFor(() => expect(sessionStorage.getItem(KEY)).toBeNull());
+  expect(sessionStorage.getItem(`${KEY}:draft`)).toBeNull();
+});
+it("does not let an older limit failure hide a newer different failure", async () => {
+  failWith(MEMBER);
+  mock.events.push(failedTurn("model exploded"));
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toContain("This conversation is unavailable");
 });
