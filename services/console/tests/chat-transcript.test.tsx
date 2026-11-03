@@ -60,6 +60,18 @@ describe("the chat transcript", () => {
     expect(html).not.toContain("something this page cannot show yet");
   });
 
+  it("says the agent is not running, not that a new chat would help, when it cannot be reached", () => {
+    const say = "Helper is not running right now. On the server, run: sudo lares agent start helper";
+    const empty = renderToStaticMarkup(<ChatTranscript status="error" messages={[]} error="This conversation is unavailable." notRunning={say} />);
+    expect(empty).toContain(say);
+    expect(empty).not.toContain("could not be reopened");
+    expect(empty).not.toContain("unavailable");
+    const withMessages = renderToStaticMarkup(<ChatTranscript status="error" messages={[message("user", "hi", "1")]} error={say} notRunning={say} />);
+    expect(withMessages).toContain(say);
+    // Without the marker the old wording stays (a conversation that really is gone).
+    expect(renderToStaticMarkup(<ChatTranscript status="error" messages={[]} />)).toContain("could not be reopened");
+  });
+
   it("settles a refused tool call instead of leaving it running", () => {
     const assistant = { id: "denied", role: "assistant", parts: [
       { type: "dynamic-tool", toolName: "vault_write", state: "output-denied", input: {} },

@@ -208,6 +208,18 @@ describe("the console's chat proxy", () => {
     for (const [, value] of response.headers) expect(value).not.toContain(PASSWORD);
   });
 
+  it("marks an unreachable or not-ready agent as not running, and nothing else", async () => {
+    const down = deps();
+    down.fetch.mockRejectedValue(new Error("connect EHOSTUNREACH"));
+    expect((await forwardChat(post(), "helper", "eve/v1/session", down)).headers.get("x-lares-agent-state")).toBe("not-running");
+    const stopped = deps({ ...row, state: "retired" });
+    const gone = await forwardChat(post(), "helper", "eve/v1/session", stopped);
+    expect(gone.status).toBe(404);
+    expect(gone.headers.get("x-lares-agent-state")).toBe("not-running");
+    // A bad path is not "not running".
+    expect((await forwardChat(post(), "helper", "eve/v1/slack", deps())).headers.has("x-lares-agent-state")).toBe(false);
+  });
+
   it("streams the agent's answer instead of waiting for all of it", async () => {
     const d = deps();
     const chunks = ['{"type":"a"}\n', '{"type":"b"}\n'];
