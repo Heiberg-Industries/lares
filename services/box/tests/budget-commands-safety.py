@@ -447,6 +447,38 @@ class BudgetCommandTests(unittest.TestCase):
             self.assertIn(expected, output)
             self.assertEqual(self.keeper.actions(), ["budget.agent-start-status"], expected)
 
+    # agent refresh, which lares update runs after switching releases
+
+    def test_agent_refresh_moves_each_valid_agent_and_names_what_it_left(self) -> None:
+        self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64},
+                                                     {"name": "second", "status": "valid", "hash": "b" * 64},
+                                                     {"name": "broken", "status": "invalid", "hash": None}])
+        answers = {"first": ok({"moved": True, "running": True, "healthy": True}),
+                   "second": ok({"moved": False, "state": "pending", "reason": "has changes waiting to be applied"})}
+        self.keeper.answers["definition.refresh-image"] = lambda request: answers[request["input"]["name"]]
+        code, output = self.run_command("agent-refresh")
+        self.assertNotEqual(code, 0, output)
+        self.assertEqual([r["input"]["name"] for r in self.keeper.requests if r["action"] == "definition.refresh-image"], ["first", "second"])
+        self.assertIn("first restarted on this release", output)
+        self.assertIn("second stays on the previous software: has changes waiting to be applied", output)
+        self.assertNotIn("broken", output)
+
+    def test_agent_refresh_succeeds_when_every_agent_is_current_or_stopped(self) -> None:
+        self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64},
+                                                     {"name": "second", "status": "valid", "hash": "b" * 64}])
+        answers = {"first": ok({"moved": False, "state": "current", "reason": "already on this release"}),
+                   "second": ok({"moved": False, "state": "stopped", "reason": "not running"})}
+        self.keeper.answers["definition.refresh-image"] = lambda request: answers[request["input"]["name"]]
+        code, output = self.run_command("agent-refresh")
+        self.assertEqual(code, 0, output)
+
+    def test_agent_refresh_says_how_to_check_an_unconfirmed_restart(self) -> None:
+        self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64}])
+        self.keeper.answers["definition.refresh-image"] = {"ok": False, "outcome": "unknown", "error": "timeout"}
+        code, output = self.run_command("agent-refresh")
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("sudo lares agent start first", output)
+
     def test_agent_start_needs_a_finished_setup_and_a_real_name(self) -> None:
         code, output = self.run_command("agent-start", "my-agent")
         self.assertEqual(code, budget.EX_REFUSED)

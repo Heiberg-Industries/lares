@@ -31,6 +31,23 @@ describe('Keeper native lifecycle reader composition',()=>{
   expect(trustedNativeGatewayOrigin).not.toHaveBeenCalled();
  });
 
+ it('logs which prerequisite held an agent, once per change, and never a value',async()=>{
+  const log=vi.spyOn(console,'error').mockImplementation(()=>{});
+  try{
+   let ready=false;
+   const reader=createKeeperNativeRuntimeReader({...sources,runtimeTransportReady:()=>ready});
+   await reader.current(identity);await reader.current(identity);
+   expect(log.mock.calls.map(call=>call.join(' '))).toEqual(['keeper: bookkeeper is held: the model-purpose transport is not ready yet']);
+   ready=true;authority.current.mockResolvedValueOnce({state:'held',reason:'Native budget activation required'});
+   await reader.current(identity);
+   expect(log.mock.calls.at(-1)!.join(' ')).toBe('keeper: bookkeeper is held: the budget authority check refused');
+   await reader.current(identity);
+   expect(log.mock.calls.at(-1)!.join(' ')).toBe('keeper: bookkeeper is no longer held');
+   const all=log.mock.calls.flat().join(' ');
+   for(const secret of [identity.incarnation,identity.definitionHash,'owner-id','/protected/reviewed-policy.json'])expect(all).not.toContain(secret);
+  }finally{log.mockRestore();}
+ });
+
  it('fails closed when protected policy, owner, pool or trusted gateway configuration is missing',async()=>{
   const incomplete=[
    {...sources,policyFile:undefined},

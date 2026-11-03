@@ -447,6 +447,19 @@ it('reports stopped when the container is down and null when Docker cannot be as
  expect(await lifecycleWith(absent).liveStatus('bookkeeper')).toEqual({pending:false,reason:null,running:false,healthy:null});
  expect(await lifecycle().liveStatus('bookkeeper')).toEqual({pending:false,reason:null,running:null,healthy:null});
 });
+it('tells a running agent on an older image from one on the image this keeper renders',async()=>{
+ const l=lifecycle();await l.create('bookkeeper',definition);
+ const older='example/image@sha256:'+'b'.repeat(64);
+ const on=(found:string,running=true)=>lifecycleWith({...docker,inspect:async()=>({id:'abc',running,incarnation:null,notionRevision:null,image:found,mounts:[],addresses:[]})});
+ expect(await on(image).imageState('bookkeeper')).toBe('current');
+ expect(await on(older).imageState('bookkeeper')).toBe('older');
+ expect(await on(older,false).imageState('bookkeeper')).toBe('stopped');
+ expect(await lifecycleWith({...docker,inspect:async()=>{throw new NoOwnedContainerError();}}).imageState('bookkeeper')).toBe('stopped');
+ expect(await lifecycleWith({...docker,inspect:async()=>{throw new Error('docker unreachable');}}).imageState('bookkeeper')).toBe('unknown');
+ expect(await lifecycle().imageState('nobody')).toBe('unknown');
+ await pool.query("UPDATE agent_resources SET pending=true,pending_reason='Apply connection changes (restarts agent)' WHERE name='bookkeeper'");
+ expect(await on(older).imageState('bookkeeper')).toBe('pending');
+});
 it('leaves a failed compose start applied (the console shows it as stopped) and keeps the error',async()=>{
  const l=lifecycle();fail='start:bookkeeper';await expect(l.create('bookkeeper',definition)).rejects.toThrow('injected');
  expect(events).toContain('apply-nft');expect(events.at(-1)).toBe('start:bookkeeper');

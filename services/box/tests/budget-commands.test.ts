@@ -43,6 +43,10 @@ describe("lares budget commands", () => {
       const start = lares("agent", "start", "my-agent", "--member", "person@example.test");
       expect(start.status).toBe(0);
       expect(start.stdout.trim().endsWith("agent-start my-agent --member person@example.test")).toBe(true);
+      const refresh = lares("agent", "refresh");
+      expect(refresh.status).toBe(0);
+      expect(refresh.stdout.trim().endsWith("agent-refresh")).toBe(true);
+      expect(lares("agent", "refresh", "my-agent").status).toBe(64);
       expect(lares("budget").status).toBe(64);
       expect(lares("agent", "stop", "my-agent").status).toBe(64);
       expect(lares("agent", "start").status).toBe(64);

@@ -25,6 +25,7 @@ let backup: {
     stop: AnyMock;
     create: AnyMock;
     reconcile?: AnyMock;
+    imageState?: AnyMock;
     prepareSecretChange?:AnyMock;secretChanged?:AnyMock;
     ownedSecrets?:AnyMock;
 };
@@ -305,6 +306,25 @@ it('keeps the new definition after a successful Apply and clears its rollback ma
     await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: saved.hash }, ctx())).resolves.toMatchObject({ running: true });
     expect(existsSync(join(path, '.apply-rollback'))).toBe(false);
     expect((await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: path } })).definition.description).toBe('candidate');
+});
+it('moves a running agent onto this release\'s image only when it runs an older one, from the host only', async () => {
+    await create();
+    await recordApplied();
+    let state = 'older';
+    const reconcile: AnyMock = vi.fn(async (_name: string, _definition: unknown) => ({ pending: false, reason: null, running: true, healthy: true }));
+    Object.assign(compose, { imageState: vi.fn(async () => state), liveStatus: vi.fn(async () => ({ pending: false, running: true, healthy: true })), reconcile });
+    register();
+    const refresh = (host = true) => runAction('definition.refresh-image', { name: 'bookkeeper' }, ctx(), { host });
+    await expect(refresh(false)).rejects.toThrow(/host command/);
+    expect(reconcile).not.toHaveBeenCalled();
+    await expect(refresh()).resolves.toMatchObject({ moved: true, running: true, healthy: true });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(reconcile.mock.calls[0]![1]).toMatchObject({ name: 'bookkeeper', role });
+    for (const [found, reason] of [['current', /already/], ['stopped', /not running/], ['pending', /changes waiting/], ['unknown', /cannot tell/]] as const) {
+        state = found;
+        await expect(refresh()).resolves.toMatchObject({ moved: false, reason: expect.stringMatching(reason) });
+    }
+    expect(reconcile).toHaveBeenCalledTimes(1);
 });
 it('replaces an interrupted stale rollback marker with the latest recorded applied generation on the next save', async () => {
     await create();

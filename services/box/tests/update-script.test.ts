@@ -164,6 +164,9 @@ beforeEach(() => {
       '    [ -z "${STUB_STATUS_FAIL:-}" ] || exit 1',
       '    printf "%s\\n" "${STUB_BACKUP_STATUS-t|3600}"',
       "    ;;",
+      '  "pull "*)',
+      '    [ -z "${STUB_ROLE_PULL_FAIL:-}" ] || { echo "docker: manifest unknown" >&2; exit 1; }',
+      "    ;;",
       '  *" pull"*|*" pull "*)',
       '    [ -z "${STUB_PULL_FAIL:-}" ] || { echo "docker: manifest unknown" >&2; exit 1; }',
       "    ;;",
@@ -346,6 +349,7 @@ describe("updating this installation", () => {
         if (/config --format json/.test(line)) return "";
         if (/psql/.test(line)) return "read backup status";
         if (PULL.test(line)) return "docker compose pull";
+        if (/^docker pull /.test(line)) return "docker pull";
         if (UP.test(line)) return "docker compose up -d";
         if (/ps --services/.test(line)) return "docker compose ps";
         if (MIGRATE.test(line)) return "migrate";
@@ -358,6 +362,7 @@ describe("updating this installation", () => {
       "record previous-release",
       "record begin",
       "docker compose pull",
+      "docker pull",
       "migrate",
       "docker compose up -d",
       "docker compose ps",
@@ -495,6 +500,22 @@ describe("updating this installation", () => {
     expect(r.stderr).toMatch(/could not be pulled/);
     expect(calls()).not.toMatch(MIGRATE);
     expect(calls()).not.toMatch(UP);
+    expect(compose()).toBe(composeYaml());
+    expect(calls()).toMatch(/record finish 41 failed/);
+  });
+
+  it("downloads the agents' role images before the switch, so an agent restart never waits on a download", () => {
+    const r = run(["--release", release, "--yes"]);
+    expect(r.code).toBe(0);
+    expect(calls()).toContain(`docker pull ${ROLE_NEW}`);
+    expect(calls().indexOf(`docker pull ${ROLE_NEW}`)).toBeLessThan(at(UP));
+  });
+
+  it("leaves the old images running when a role image cannot be downloaded", () => {
+    const r = run(["--release", release, "--yes"], { STUB_ROLE_PULL_FAIL: "1" });
+    expect(r.code).toBe(70);
+    expect(calls()).not.toMatch(UP);
+    expect(calls()).not.toMatch(MIGRATE);
     expect(compose()).toBe(composeYaml());
     expect(calls()).toMatch(/record finish 41 failed/);
   });
