@@ -20,3 +20,14 @@ it('checks current use before reading any agent metadata',async()=>{
  fake.use.mockRejectedValue(new Error('denied'));
  await expect(ChatAgentPage({params:Promise.resolve({name:'hidden'})})).rejects.toThrow('Not found');expect(fake.agents).not.toHaveBeenCalled();expect(fake.chat).not.toHaveBeenCalled();
 });
+it('says a created agent is not started yet, with the start command, instead of page not found',async()=>{
+ fake.agents.mockResolvedValue([]);
+ render(await ChatAgentPage({params:Promise.resolve({name:'helper'})}));
+ expect(screen.getByRole('heading',{name:'helper is not started yet'})).toBeDefined();
+ expect(screen.getByText('sudo lares agent start helper')).toBeDefined();
+ expect(fake.chat).not.toHaveBeenCalled();
+});
+it('shows the chat with no outside connection settings link above it',async()=>{
+ render(await ChatAgentPage({params:Promise.resolve({name:'helper'})}));
+ expect(screen.queryByText(/Outside connection settings/)).toBeNull();
+});
