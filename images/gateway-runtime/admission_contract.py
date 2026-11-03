@@ -19,6 +19,12 @@ from urllib.parse import urlsplit
 VERSION = 1
 ADMISSION_REFUSED_TYPE = "budget_admission_refused"
 ADMISSION_REFUSED_TEXT = "I could not verify permission to spend. Please check the gateway setup."
+# A spending-limit refusal carries one of exactly two sentences, written by the keeper. The gateway repeats one only
+# when it matches these shapes; the installation sentence has no digits except the date and never an amount.
+_LIMIT_DATE = r"[1-9][0-9]? (?:January|February|March|April|May|June|July|August|September|October|November|December) [0-9]{4}"
+MEMBER_LIMIT_TEXT = re.compile(r"You've reached your monthly limit of \$[0-9]{1,18}(?:\.[0-9]{2,18})?\. It resets on " + _LIMIT_DATE + r"\.")
+INSTALLATION_LIMIT_TEXT = re.compile(r"This installation has reached its monthly spending limit\. It resets on " + _LIMIT_DATE + r"\.")
+DENIED_REASONS = {"member-limit": MEMBER_LIMIT_TEXT, "installation-limit": INSTALLATION_LIMIT_TEXT}
 ADMIT_PATH = "/v1/gateway-budget/admit"
 SETTLE_PATH = "/v1/gateway-budget/settle"
 REQUEST_LIFETIME = 5.0
@@ -352,6 +358,12 @@ class RequestState:
         self.closed = False
         self.cancelled = False
         self.wire_usage = None
+        self.denial_text = None
+
+    @property
+    def refusal_message(self):
+        """What a refused model call says: the keeper's validated limit sentence, else the fixed text."""
+        return self.denial_text or ADMISSION_REFUSED_TEXT
 
     def fresh(self, now=None):
         if self.closed or self.terminal or (time.monotonic() if now is None else now) >= self.deadline: raise Refused()
@@ -375,6 +387,9 @@ class RequestState:
         return {"version": VERSION, "nonce": self.nonce, "ticket": ticket, "requestHash": self.request_hash, "profileHash": profile.digest, "endpointHash": self.endpoint_hash, "keyFingerprint": self.key_fingerprint, "purposeAlias": alias}
 
     def accept(self, request, reply, rpc_started):
+        if isinstance(reply, dict) and reply.get("state") == "denied":
+            self.deny(request, reply)
+            raise Refused()
         keys = {"version", "state", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias", "attemptId", "bindingId", "validForMs"}
         if set(reply) != keys or reply["state"] != "allowed": raise Refused()
         if type(reply["version"]) is not int: raise Refused()
@@ -386,6 +401,18 @@ class RequestState:
         self.allow = reply
         self.arm(rpc_started + reply["validForMs"] / 1000)
         self.fresh()
+
+
+    def deny(self, request, reply):
+        """Remember a signed limit sentence. Anything not exactly that shape leaves the fixed refusal text."""
+        keys = {"version", "state", "reason", "message", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias"}
+        if set(reply) != keys or type(reply["version"]) is not int: return
+        for name in ("version", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias"):
+            if reply[name] != request[name]: return
+        grammar = DENIED_REASONS.get(reply["reason"]) if isinstance(reply["reason"], str) else None
+        message = reply["message"]
+        if grammar is None or not isinstance(message, str) or grammar.fullmatch(message) is None: return
+        self.denial_text = message
 
 
 class TerminalEvidence:

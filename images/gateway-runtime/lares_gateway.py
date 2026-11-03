@@ -261,14 +261,17 @@ def callback_startup_checks(proxy_server):
 
 def refusal():
     # Native handlers render the same terminal error shape for both model lanes.
-    return ProxyException(message=ADMISSION_REFUSED_TEXT, type=ADMISSION_REFUSED_TYPE, param=None, code=400, openai_code=ADMISSION_REFUSED_TYPE)
+    request = current_request.get()
+    return ProxyException(message=request.refusal_message if request is not None else ADMISSION_REFUSED_TEXT, type=ADMISSION_REFUSED_TYPE, param=None, code=400, openai_code=ADMISSION_REFUSED_TYPE)
 
 
 class AdmissionHTTPRefusal(HTTPException):
     type = ADMISSION_REFUSED_TYPE
     param = None
 
-    def __init__(self): super().__init__(status_code=400, detail=ADMISSION_REFUSED_TEXT)
+    def __init__(self):
+        request = current_request.get()
+        super().__init__(status_code=400, detail=request.refusal_message if request is not None else ADMISSION_REFUSED_TEXT)
 
 
 def state():
@@ -984,7 +987,7 @@ class GatewayApp:
                         replaced_refusal = True
                         native_response_started = True
                         await outward_send({"type": "http.response.start", "status": 400, "headers": [(b"content-type", b"application/json")]})
-                        await outward_send({"type": "http.response.body", "body": canonical({"error": {"type": ADMISSION_REFUSED_TYPE, "code": ADMISSION_REFUSED_TYPE, "message": ADMISSION_REFUSED_TEXT}})})
+                        await outward_send({"type": "http.response.body", "body": canonical({"error": {"type": ADMISSION_REFUSED_TYPE, "code": ADMISSION_REFUSED_TYPE, "message": request.refusal_message}})})
                         return
                     native_response_started = True
                 if replaced_refusal: return
@@ -998,7 +1001,7 @@ class GatewayApp:
             update_model_request_diagnostic(diagnostic, diagnostic.get("stage", "runtime-check") if diagnostic else "runtime-check",
                 status_code=400)
             await outward_send({"type": "http.response.start", "status": 400, "headers": [(b"content-type", b"application/json")]})
-            await outward_send({"type": "http.response.body", "body": canonical({"error": {"type": ADMISSION_REFUSED_TYPE, "code": ADMISSION_REFUSED_TYPE, "message": ADMISSION_REFUSED_TEXT}})})
+            await outward_send({"type": "http.response.body", "body": canonical({"error": {"type": ADMISSION_REFUSED_TYPE, "code": ADMISSION_REFUSED_TYPE, "message": request.refusal_message if request is not None else ADMISSION_REFUSED_TEXT}})})
         finally:
             if request is not None:
                 request.close()  # Child task contexts share this irreversible stop.

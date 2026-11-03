@@ -101,6 +101,8 @@
  * test's header for the smallest follow-up.
  */
 
+import { MEMBER_LIMIT_SENTENCE, INSTALLATION_LIMIT_SENTENCE } from "./gateway-admission-protocol.js";
+
 /** LiteLLM's `error.type` on a budget refusal. Measured 2026-09-01 (see this file's header). */
 export const LITELLM_BUDGET_EXCEEDED_TYPE = "budget_exceeded";
 
@@ -296,6 +298,16 @@ export function isBudgetExceeded(err: unknown): boolean {
  * The adapter authors a terminal 400; keep native budget_exceeded recognition separate. */
 export const BUDGET_ADMISSION_REFUSED_TYPE = "budget_admission_refused";
 export const BUDGET_ADMISSION_REFUSED_TEXT = "I could not verify permission to spend. Please check the gateway setup.";
+/**
+ * The sentence for a refusal because a monthly spending limit is reached, when the gateway's own message is exactly one
+ * of the two shapes the keeper writes; otherwise the fixed text. Nothing else a message might say is ever repeated.
+ */
+export function admissionRefusalText(err: unknown): string {
+  for (const message of collectSignals(err).messages) {
+    if (MEMBER_LIMIT_SENTENCE.test(message) || INSTALLATION_LIMIT_SENTENCE.test(message)) return message;
+  }
+  return BUDGET_ADMISSION_REFUSED_TEXT;
+}
 export function isBudgetAdmissionRefused(err: unknown): boolean {
   const signals = collectSignals(err);
   return signals.types.includes(BUDGET_ADMISSION_REFUSED_TYPE) && signals.statuses.every(status => status === 400);
@@ -409,7 +421,7 @@ export function respondToTurnFailed(
   data: FailureEventData,
   options: FailureResponseOptions,
 ): FailureResponse {
-  if (isBudgetAdmissionRefused(data)) return { kind: "budget-refusal", text: BUDGET_ADMISSION_REFUSED_TEXT };
+  if (isBudgetAdmissionRefused(data)) return { kind: "budget-refusal", text: admissionRefusalText(data) };
   if (isBudgetExceeded(data)) return { kind: "budget-refusal", text: options.refusalText };
   return { kind: "default", text: defaultTurnFailedText(data, options.dialect) };
 }
