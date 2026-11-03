@@ -548,6 +548,20 @@ if ! docker compose ${COMPOSE_ARGS[@]+"${COMPOSE_ARGS[@]}"} pull; then
   echo "update: the new images could not be pulled, so nothing was switched. The images that were running before are still running." >&2
   exit "$EX_FAILED"
 fi
+# The keeper runs these outside any compose file this script pulls: the agents from a compose file
+# it renders from the role images (`lares agent refresh` restarts them onto it after the switch),
+# and its firewall and proxy checks as short-lived containers on every save, start and reseal.
+# Download them now, so none of those waits on a download inside its own time limit.
+for role in chief-of-staff creative lares-firewall-helper lares-egress-proxy; do
+  role_image=$(awk -F'\t' -v key="$role" '$1 == key { print $2 }' "$WORK/release-images.tsv" | head -1)
+  [ -n "$role_image" ] || continue
+  if ! docker pull "$role_image" >/dev/null; then
+    restore_compose_files
+    close_record failed "the $role image could not be pulled"
+    echo "update: the $role image could not be pulled, so nothing was switched. The images that were running before are still running." >&2
+    exit "$EX_FAILED"
+  fi
+done
 
 # --- 9. migrations, after the backup and before the switch ----------------------------------
 # Through the ledger runner, never by applying a file by hand. There is no way back from a

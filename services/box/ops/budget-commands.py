@@ -674,6 +674,40 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
     return 0
 
 
+def agent_refresh(installation: Installation, options: argparse.Namespace) -> int:
+    """After an update: restart each running agent onto the software this release names. An agent with
+    changes waiting, or one the keeper cannot read, is left alone and named."""
+    wait_for_keeper(installation)
+    left = 0
+    for entry in installation.host_action("definition.list", {}):
+        name = entry.get("name")
+        if entry.get("status") != "valid" or not isinstance(name, str):
+            continue
+        try:
+            result = installation.host_action("definition.refresh-image", {"name": name}, RECONCILE_TIMEOUT_SECONDS) or {}
+        except KeeperRefused as error:
+            say(f"{name} stays on the previous software: the keeper refused ({error}).")
+            left += 1
+            continue
+        except (KeeperUnclear, subprocess.TimeoutExpired):
+            say(f"{name}: the keeper could not confirm the restart in time. Check it with: sudo lares agent start {name}")
+            left += 1
+            continue
+        if result.get("moved"):
+            if result.get("running") is True:
+                say(f"{name} restarted on this release.")
+            else:
+                say(f"{name} did not come back up: {result.get('reason') or 'it did not report healthy in time'}. "
+                    f"Start it with: sudo lares agent start {name}")
+                left += 1
+        elif result.get("state") in ("current", "stopped"):
+            say(f"{name}: {result.get('reason')}.")
+        else:
+            say(f"{name} stays on the previous software: {result.get('reason') or 'the keeper did not say why'}.")
+            left += 1
+    return 0 if left == 0 else EX_REFUSED
+
+
 FREEZE_WORDS = {"restore": "a restore froze it before replacing the database",
                 "continuity": "the database and the ledger disagreed",
                 "uncertain": "an interrupted step could not be settled"}
@@ -781,6 +815,7 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     start = commands.add_parser("agent-start")
     start.add_argument("name")
     start.add_argument("--member", help="the person's sign-in email or member id; the owner when left out")
+    commands.add_parser("agent-refresh", help="restart running agents onto this release's software (lares update runs this)")
     return parser.parse_args(argv)
 
 
@@ -798,6 +833,8 @@ def main(argv: list[str]) -> int:
         try:
             if options.command == "recover":
                 return budget_recover(installation, options)
+            if options.command == "agent-refresh":
+                return agent_refresh(installation, options)
             return budget_setup(installation, options) if options.command == "setup" else agent_start(installation, options)
         finally:
             os.close(lock)
