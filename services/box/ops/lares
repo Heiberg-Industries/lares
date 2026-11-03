@@ -21,7 +21,8 @@
 #   lares budget recover [--check]                      prove the ledger against the database and lift a freeze
 #   lares budget setup [options]                        ask for the monthly limits and switch model
 #                                                       spending on for this installation
-#   lares agent start <name> [--member <email>]         connect a person to an agent and start it
+#   lares agent start <name> [--member <email>] [--yes]
+#                                                       connect a person to an agent and start it
 #   lares agent refresh                                 restart running agents onto this release's
 #                                                       software (lares update runs it last)
 #
@@ -59,7 +60,7 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares backups [--dry-run] [--yes] [setup-backups.sh options]
        lares budget recover [--check]
        lares budget setup [--installation-limit <usd>] [--person-limit <usd>] [--prices <in,out,cache-read,cache-write>] [--yes]
-       lares agent start <name> [--member <email>]
+       lares agent start <name> [--member <email>] [--yes]
        lares agent refresh
 
 <name> is the full release name from the repository's releases folder, for example

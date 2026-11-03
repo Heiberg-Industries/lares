@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { main, renderNativePolicy, REVIEWED_INPUT_TOKENS } from "../bin/render-native-policy.js";
-import { parseBudgetNativePolicyDocument } from "../../keeper/lib/budget-native-host.js";
+import { parseBudgetNativePolicyDocument, selectBudgetNativeReviewedPolicy } from "../../keeper/lib/budget-native-host.js";
+import { NATIVE_CUSTODY_POLICY_BYTES } from "../../keeper/lib/budget-native-custody.js";
 import { createHash } from "node:crypto";
 import { gatewayAdmissionProfile } from "../lib/gateway-config.js";
 
@@ -94,47 +95,102 @@ describe("the reviewed budget policy", () => {
     expect(() => renderNativePolicy({ ...request, providerModel: "local/some-model" })).toThrow(/OpenAI or Anthropic/);
   });
 
-  it("reviews the exact profile the gateway runs when a purpose has a model of its own, and says which aliases are not priced", () => {
+
+  // Captured from the renderer before the other aliases were priced: the brain's policy must stay byte for byte what it was.
+  const BRAIN_POLICY_BYTES = '{"capability":{"version":1,"provider":"anthropic","model":"claude-opus-5","providerBaseUrl":"https://api.anthropic.com","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":1048576,"maxOutputTokens":16384},"pricing":{"version":1,"capabilityHash":"584dce29dbec5a7a5809f13d3aa0ba6bf76fd09c1463146dd2dca6e560c2ffda","format":"anthropic","limits":{"inputTokens":100000,"outputTokens":16384},"usdPerMillionTokens":{"input":"5","output":"25","cacheRead":"0.5","cacheWrite":"6.25"}},"maximumLiability":"1.0346","team":{"maxBudget":"100","models":["lares-brain","lares-writer","lares-utility","lares-gate"],"budgetDuration":"1d"},"user":{"maxBudget":"15","userRole":"internal_user","autoCreateKey":false},"membership":{"maxBudget":"15","allowedModels":["lares-brain","lares-writer","lares-utility","lares-gate"],"budgetDuration":"1d","role":"user"},"key":{"maxBudget":"15","models":["lares-brain"],"budgetDuration":"1d","keyType":"llm_api","blocked":true}}';
+  const sonnet = { input: "3", output: "15", cacheRead: "0.3", cacheWrite: "3.75" };
+  const haiku = { input: "1", output: "5", cacheRead: "0.1", cacheWrite: "1.25" };
+  const embedding = { model: "mistral-embed", baseUrl: "https://api.mistral.ai/v1" };
+
+  it("keeps the brain's policy first and byte for byte what it was, and prices the other served aliases with the brain's rates", () => {
     const plain = renderNativePolicy(request);
-    expect(plain.unpricedAliases).toEqual([]);
-    const result = renderNativePolicy({ ...request, purposeModels: { writer: "anthropic/claude-sonnet-4-5", gate: "anthropic/claude-haiku-4-5" } });
-    expect(result.unpricedAliases).toEqual(["lares-writer", "lares-gate"]);
-    const [policy] = result.policy.policies;
-    expect(policy!.capability).toEqual(gatewayAdmissionProfile({
-      alias: request.alias, providerModel: request.providerModel,
-      purposeModels: { writer: "anthropic/claude-sonnet-4-5", gate: "anthropic/claude-haiku-4-5" },
-    }));
-    expect(policy!.pricing.capabilityHash).not.toBe(plain.policy.policies[0]!.pricing.capabilityHash);
+    expect(JSON.stringify(plain.policy.policies[0])).toBe(BRAIN_POLICY_BYTES);
+    expect(plain.policy.policies.map(policy => policy.key.models[0])).toEqual(["lares-brain", "lares-writer", "lares-utility", "lares-gate"]);
+    for (const policy of plain.policy.policies) {
+      expect(policy.pricing).toEqual(plain.policy.policies[0]!.pricing);
+      expect(policy.team).toEqual(plain.policy.policies[0]!.team);
+      expect(policy.user).toEqual(plain.policy.policies[0]!.user);
+      expect(policy.membership).toEqual(plain.policy.policies[0]!.membership);
+      expect(policy.key.blocked).toBe(true);
+    }
+    expect(plain.pricedAliases.map(entry => [entry.alias, entry.model])).toEqual([
+      ["lares-brain", "anthropic/claude-opus-5"], ["lares-writer", "anthropic/claude-opus-5"],
+      ["lares-utility", "anthropic/claude-opus-5"], ["lares-gate", "anthropic/claude-opus-5"],
+    ]);
+  });
+
+  it("reviews the exact profile the gateway runs and prices a purpose that has a model of its own from that model's rates", () => {
+    const plain = renderNativePolicy(request);
+    const purposeModels = { writer: "anthropic/claude-sonnet-4-5", gate: "anthropic/claude-haiku-4-5" };
+    const result = renderNativePolicy({ ...request, purposeModels, aliasPrices: { "lares-writer": sonnet, "lares-gate": haiku } });
+    const [brain, writer, utility, gate] = result.policy.policies;
+    expect(brain!.capability).toEqual(gatewayAdmissionProfile({ alias: request.alias, providerModel: request.providerModel, purposeModels }));
+    expect(brain!.pricing.usdPerMillionTokens).toEqual(request.prices);
+    expect(writer!.pricing.usdPerMillionTokens).toEqual(sonnet);
+    expect(utility!.pricing.usdPerMillionTokens).toEqual(request.prices);
+    expect(gate!.pricing.usdPerMillionTokens).toEqual(haiku);
+    expect(gate!.key.models).toEqual(["lares-gate"]);
+    expect(writer!.maximumLiability).toBe("0.62076");
+    expect(brain!.pricing.capabilityHash).not.toBe(plain.policy.policies[0]!.pricing.capabilityHash);
+    expect(result.pricedAliases.map(entry => [entry.alias, entry.model])).toEqual([
+      ["lares-brain", "anthropic/claude-opus-5"], ["lares-writer", "anthropic/claude-sonnet-4-5"],
+      ["lares-utility", "anthropic/claude-opus-5"], ["lares-gate", "anthropic/claude-haiku-4-5"],
+    ]);
     expect(parseBudgetNativePolicyDocument(JSON.stringify(result.policy))).toEqual(result.policy);
     expect(result.model).toBe("anthropic/claude-opus-5");
-    // A purpose model equal to the brain model is the default, so nothing changes and nothing is unpriced.
+    // A purpose model equal to the brain model is the default, so nothing changes and no prices are needed.
     const same = renderNativePolicy({ ...request, purposeModels: { writer: request.providerModel } });
-    expect(same.unpricedAliases).toEqual([]);
     expect(same.policy).toEqual(plain.policy);
+    expect(() => renderNativePolicy({ ...request, purposeModels })).toThrow(/lares-writer.*needs its prices/);
+    expect(() => renderNativePolicy({ ...request, purposeModels: { writer: "anthropic/claude-sonnet-4-5" }, aliasPrices: { "lares-writer": { ...sonnet, input: "cheap" } } })).toThrow(/input price/);
+    expect(() => renderNativePolicy({ ...request, aliasPrices: { "lares-embed": { input: "0.1" } } })).toThrow(/does not serve/);
+    expect(() => renderNativePolicy({ ...request, aliasPrices: { "lares-brain": sonnet } })).toThrow(/does not serve/);
     expect(() => renderNativePolicy({ ...request, purposeModels: { writer: "openai/gpt-4o-mini" } })).toThrow(/same provider/);
     expect(() => renderNativePolicy({ ...request, purposeModels: { brain: "anthropic/x" } as never })).toThrow(/Only the writer, utility and gate/);
   });
 
-  it("reviews the embedding model inside the capability and prices only the chat model", () => {
-    const embedding = { model: "mistral-embed", baseUrl: "https://api.mistral.ai/v1" };
+  it("prices the embedding alias on input tokens alone, held at the most one call may carry", () => {
     const plain = renderNativePolicy(request);
-    const result = renderNativePolicy({ ...request, embedding });
-    expect(result.unpricedAliases).toEqual(["lares-embed"]);
-    const [policy] = result.policy.policies;
-    expect(policy!.capability).toEqual(gatewayAdmissionProfile({ alias: request.alias, providerModel: request.providerModel, embedding }));
-    expect(policy!.capability.aliases).toHaveLength(5);
-    // Priced as the chat model it has always been: nothing about the embedding changes the price or the key's reach.
-    expect(policy!.pricing.format).toBe("anthropic");
-    expect(policy!.key.models).toEqual([request.alias]);
+    const result = renderNativePolicy({ ...request, embedding, aliasPrices: { "lares-embed": { input: "0.1" } } });
+    expect(result.policy.policies).toHaveLength(5);
+    const embed = result.policy.policies[4]!;
+    expect(embed.capability).toEqual(gatewayAdmissionProfile({ alias: request.alias, providerModel: request.providerModel, embedding }));
+    expect(embed.pricing.format).toBe("embedding");
+    expect(embed.pricing.limits).toEqual({ inputTokens: 32 * 8192, outputTokens: 1 });
+    expect(embed.pricing.usdPerMillionTokens).toEqual({ input: "0.1", output: "0", cacheRead: "0", cacheWrite: "0" });
+    expect(embed.maximumLiability).toBe("0.0262144");
+    expect(embed.key.models).toEqual(["lares-embed"]);
+    expect(result.policy.policies[0]!.pricing.format).toBe("anthropic");
     expect(result.maximumLiability).toBe(plain.maximumLiability);
-    expect(policy!.pricing.capabilityHash).not.toBe(plain.policy.policies[0]!.pricing.capabilityHash);
+    expect(result.pricedAliases[4]).toEqual({ alias: "lares-embed", model: "mistral-embed", prices: { input: "0.1", output: "0", cacheRead: "0", cacheWrite: "0" } });
+    const small = renderNativePolicy({ ...request, embedding: { ...embedding, maxInputTokens: "2048" }, aliasPrices: { "lares-embed": { input: "0.1" } } });
+    expect(small.policy.policies[4]!.pricing.limits.inputTokens).toBe(32 * 2048);
     expect(parseBudgetNativePolicyDocument(JSON.stringify(result.policy))).toEqual(result.policy);
-    // Beside a purpose model, both are listed, in a stable order.
-    expect(renderNativePolicy({ ...request, purposeModels: { gate: "anthropic/claude-haiku-4-5" }, embedding: { ...embedding, maxInputTokens: "2048" } }).unpricedAliases)
-      .toEqual(["lares-gate", "lares-embed"]);
-    expect(() => renderNativePolicy({ ...request, embedding: { ...embedding, baseUrl: "http://api.mistral.ai/v1" } })).toThrow(/HTTPS/);
-    expect(() => renderNativePolicy({ ...request, embedding: { ...embedding, maxInputTokens: "many" } })).toThrow(/MAX_INPUT_TOKENS/);
+    expect(() => renderNativePolicy({ ...request, embedding })).toThrow(/needs an input price/);
+    expect(() => renderNativePolicy({ ...request, embedding, aliasPrices: { "lares-embed": { input: "0" } } })).toThrow(/must not all be zero/);
+    expect(() => renderNativePolicy({ ...request, embedding: { ...embedding, baseUrl: "http://api.mistral.ai/v1" }, aliasPrices: { "lares-embed": { input: "0.1" } } })).toThrow(/HTTPS/);
+    expect(() => renderNativePolicy({ ...request, embedding: { ...embedding, maxInputTokens: "many" }, aliasPrices: { "lares-embed": { input: "0.1" } } })).toThrow(/MAX_INPUT_TOKENS/);
   });
+
+  it("checks the per-person limit against every alias, and keeps five policies under the custody size limit", () => {
+    const purposeModels = { writer: "anthropic/claude-sonnet-4-5", utility: "anthropic/claude-haiku-4-5", gate: "anthropic/claude-haiku-4-5" };
+    const aliasPrices = { "lares-writer": sonnet, "lares-utility": haiku, "lares-gate": haiku, "lares-embed": { input: "0.1" } };
+    const five = renderNativePolicy({ ...request, purposeModels, embedding, aliasPrices });
+    expect(five.policy.policies).toHaveLength(5);
+    expect(Buffer.byteLength(JSON.stringify(five.policy), "utf8")).toBeLessThan(NATIVE_CUSTODY_POLICY_BYTES);
+    // A pricier writer than the brain: the limit that suits the brain is too low for it.
+    expect(() => renderNativePolicy({ ...request, personLimit: "1.0346", purposeModels: { writer: "anthropic/claude-opus-5-5" }, aliasPrices: { "lares-writer": { input: "50", output: "250", cacheRead: "5", cacheWrite: "62.5" } } }))
+      .toThrow(/call to lares-writer can cost up to/);
+  });
+
+  it("selects each served alias from the document by its key, as the keeper does", () => {
+    const five = renderNativePolicy({ ...request, purposeModels: { writer: "anthropic/claude-sonnet-4-5" }, embedding, aliasPrices: { "lares-writer": sonnet, "lares-embed": { input: "0.1" } } });
+    const document = parseBudgetNativePolicyDocument(JSON.stringify(five.policy));
+    for (const [index, alias] of ["lares-brain", "lares-writer", "lares-utility", "lares-gate", "lares-embed"].entries())
+      expect(selectBudgetNativeReviewedPolicy(document, alias)).toEqual(five.policy.policies[index]);
+    expect(() => selectBudgetNativeReviewedPolicy(document, "lares-other")).toThrow();
+  });
+
 
   it("refuses a request with a repeated field", () => {
     expect(() => main('{"alias":"a","alias":"b"}', () => {})).toThrow();

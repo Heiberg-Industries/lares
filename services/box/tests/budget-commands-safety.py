@@ -44,10 +44,30 @@ if fail and fail in text:
     sys.exit(1)
 if "render-native-policy.ts" in text:
     request = json.load(sys.stdin)
+    with open(prefix / "policy-requests.log", "a") as requests_log:
+        requests_log.write(json.dumps(request) + "\n")
     (prefix / "last-policy-request.json").write_text(json.dumps(request))
-    print(json.dumps({"policy": {"endpointHash": "e" * 64, "policies": []}, "maximumLiability": "1.0346",
-                      "model": request["providerModel"], "unpricedAliases": ["lares-" + name for name in request.get("purposeModels", {})] + (["lares-embed"] if request.get("embedding") else []), "installationLimit": request["installationLimit"],
-                      "personLimit": request["personLimit"], "prices": request["prices"]}))
+    stem = request["alias"][:-len("-brain")]
+    served = [(stem + "-brain", request["providerModel"], request["prices"])]
+    for purpose in ("writer", "utility", "gate"):
+        own = request.get("purposeModels", {}).get(purpose)
+        if own and own != request["providerModel"]:
+            if stem + "-" + purpose not in request.get("aliasPrices", {}):
+                print("needs its prices", file=sys.stderr)
+                sys.exit(1)
+            served.append((stem + "-" + purpose, own, request["aliasPrices"][stem + "-" + purpose]))
+        else:
+            served.append((stem + "-" + purpose, request["providerModel"], request["prices"]))
+    if request.get("embedding"):
+        if stem + "-embed" not in request.get("aliasPrices", {}):
+            print("needs an input price", file=sys.stderr)
+            sys.exit(1)
+        served.append((stem + "-embed", request["embedding"]["model"], request["aliasPrices"][stem + "-embed"]))
+    brain_policy = {"key": {"models": [stem + "-brain"]}, "model": os.environ.get("FAKE_BRAIN_MODEL", request["providerModel"])}
+    print(json.dumps({"policy": {"endpointHash": "e" * 64, "policies": [brain_policy] + [{"key": {"models": [alias]}, "model": model} for alias, model, _ in served[1:]]},
+                      "maximumLiability": "1.0346", "model": request["providerModel"],
+                      "pricedAliases": [{"alias": alias, "model": model, "prices": prices} for alias, model, prices in served],
+                      "installationLimit": request["installationLimit"], "personLimit": request["personLimit"], "prices": request["prices"]}))
 elif "recover" in args:
     report = os.environ["FAKE_RECOVER_" + ("APPLY" if "--apply" in args else "CHECK")]
     print(report)
@@ -208,39 +228,78 @@ class BudgetCommandTests(unittest.TestCase):
 
     # budget setup
 
-    def test_setup_without_purpose_models_prices_everything_and_says_nothing_about_them(self) -> None:
+    def last_request(self) -> dict:
+        return json.loads((self.prefix / "last-policy-request.json").read_text())
+
+    def test_setup_without_purpose_models_lists_every_alias_at_the_brains_prices_and_asks_for_nothing_more(self) -> None:
         code, output = self.run_command(*self.setup_answers())
         self.assertEqual(code, 0, output)
         self.assertNotIn("Not priced yet", output)
-        self.assertNotIn("purposeModels", json.loads((self.prefix / "last-policy-request.json").read_text()))
+        self.assertNotIn("purposeModels", self.last_request())
+        self.assertNotIn("aliasPrices", self.last_request())
+        self.assertIn("lares-brain (anthropic/claude-opus-5): input $5, output $25, cache read $0.5, cache write $6.25", output)
+        self.assertIn("lares-gate (anthropic/claude-opus-5): input $5", output)
 
-    def test_setup_passes_purpose_models_on_and_says_plainly_which_aliases_are_not_priced(self) -> None:
+    def test_setup_prices_a_purpose_model_of_its_own_from_the_table_and_lists_it(self) -> None:
         env = self.prefix / "etc/lares/installation.env"
         env.write_text(env.read_text() + "LARES_MODEL_WRITER=anthropic/claude-sonnet-4-5\nLARES_MODEL_GATE=anthropic/claude-haiku-4-5\n")
         code, output = self.run_command(*self.setup_answers())
         self.assertEqual(code, 0, output)
-        self.assertEqual(json.loads((self.prefix / "last-policy-request.json").read_text())["purposeModels"],
-                         {"writer": "anthropic/claude-sonnet-4-5", "gate": "anthropic/claude-haiku-4-5"})
-        self.assertIn("Not priced yet: lares-writer, lares-gate.", output)
-        self.assertIn("calls to them are refused", output)
+        sent = self.last_request()
+        self.assertEqual(sent["purposeModels"], {"writer": "anthropic/claude-sonnet-4-5", "gate": "anthropic/claude-haiku-4-5"})
+        self.assertEqual(sent["aliasPrices"], {"lares-writer": budget.SUGGESTED_PRICES["anthropic/claude-sonnet-4-5"],
+                                               "lares-gate": budget.SUGGESTED_PRICES["anthropic/claude-haiku-4-5"]})
+        self.assertNotIn("lares-utility", sent["aliasPrices"])
+        self.assertNotIn("Not priced yet", output)
+        self.assertIn("lares-writer (anthropic/claude-sonnet-4-5): input $3, output $15, cache read $0.3, cache write $3.75", output)
+        self.assertIn("lares-utility (anthropic/claude-opus-5)", output)
+        self.assertEqual(json.loads((self.prefix / "etc/lares/budget-setup.json").read_text())["aliasPrices"], sent["aliasPrices"])
 
-    def test_setup_passes_the_embedding_model_on_and_says_it_is_not_priced_yet(self) -> None:
+    def test_setup_asks_for_the_prices_of_a_model_the_table_does_not_know(self) -> None:
         env = self.prefix / "etc/lares/installation.env"
-        env.write_text(env.read_text() + "LARES_EMBED_MODEL=embed-model\nLARES_EMBED_BASE_URL=https://embed.example.com/v1\nLARES_EMBED_MAX_INPUT_TOKENS=4096\n")
+        env.write_text(env.read_text() + "LARES_MODEL_UTILITY=anthropic/some-new-model\n")
+        with mock.patch("builtins.input", side_effect=["1", "2", "0.1", "1.5"]):
+            code, output = self.run_command(*self.setup_answers())
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.last_request()["aliasPrices"], {"lares-utility": {"input": "1", "output": "2", "cacheRead": "0.1", "cacheWrite": "1.5"}})
+        self.assertIn("lares-utility runs anthropic/some-new-model", output)
+        self.assertIn("Type this model's prices", output)
+
+    def test_setup_without_a_terminal_stops_rather_than_guess_an_unknown_models_price(self) -> None:
+        env = self.prefix / "etc/lares/installation.env"
+        env.write_text(env.read_text() + "LARES_MODEL_UTILITY=anthropic/some-new-model\n")
+        with mock.patch("builtins.input", side_effect=EOFError):
+            code, output = self.run_command(*self.setup_answers())
+        self.assertEqual(code, budget.EX_REFUSED, output)
+        self.assertFalse(self.called("prepare-fresh"))
+
+    def test_setup_prices_the_embedding_model_on_input_alone_and_passes_it_on(self) -> None:
+        env = self.prefix / "etc/lares/installation.env"
+        env.write_text(env.read_text() + "LARES_EMBED_MODEL=mistral-embed\nLARES_EMBED_BASE_URL=https://embed.example.com/v1\nLARES_EMBED_MAX_INPUT_TOKENS=4096\n")
         code, output = self.run_command(*self.setup_answers())
         self.assertEqual(code, 0, output)
-        sent = json.loads((self.prefix / "last-policy-request.json").read_text())
-        self.assertEqual(sent["embedding"], {"model": "embed-model", "baseUrl": "https://embed.example.com/v1", "maxInputTokens": "4096"})
-        self.assertIn("Not priced yet: lares-embed.", output)
-        self.assertIn("calls to them are refused", output)
+        sent = self.last_request()
+        self.assertEqual(sent["embedding"], {"model": "mistral-embed", "baseUrl": "https://embed.example.com/v1", "maxInputTokens": "4096"})
+        self.assertEqual(sent["aliasPrices"], {"lares-embed": {"input": "0.1"}})
+        self.assertIn("lares-embed (mistral-embed): input $0.1", output)
+        self.assertNotIn("Not priced yet", output)
+
+    def test_every_table_entry_has_the_rates_its_kind_of_model_is_charged_on(self) -> None:
+        for key, prices in budget.SUGGESTED_PRICES.items():
+            if key.startswith(("anthropic/", "openai/")):
+                self.assertEqual(set(prices), {"input", "output", "cacheRead", "cacheWrite"}, key)
+            else:
+                self.assertEqual(set(prices), {"input"}, key)
+            if key.startswith("openai/"):
+                self.assertEqual(prices["cacheWrite"], "0", key)
 
     def test_setup_does_not_guess_the_other_half_of_an_embedding_model(self) -> None:
         env = self.prefix / "etc/lares/installation.env"
         env.write_text(env.read_text() + "LARES_EMBED_MODEL=embed-model\n")
         code, output = self.run_command(*self.setup_answers())
         self.assertEqual(code, 0, output)
-        self.assertNotIn("embedding", json.loads((self.prefix / "last-policy-request.json").read_text()))
-        self.assertNotIn("Not priced yet", output)
+        self.assertNotIn("embedding", self.last_request())
+        self.assertNotIn("aliasPrices", self.last_request())
 
     def test_setup_runs_the_sheet_in_order_and_applies_only_the_agreed_files(self) -> None:
         code, output = self.run_command(*self.setup_answers())
@@ -483,6 +542,83 @@ class BudgetCommandTests(unittest.TestCase):
             self.assertEqual(self.keeper.actions(), ["budget.agent-start-status"], expected)
 
     # agent refresh, which lares update runs after switching releases
+
+    # an installation set up before every model name was priced
+
+    def saved_old_setup(self, models: dict | None = None) -> None:
+        """A finished setup whose policy file holds the brain's policy alone."""
+        self.mark_setup_done()
+        path = self.prefix / "etc/lares/budget-setup.json"
+        state = json.loads(path.read_text())
+        state.update(model="anthropic/claude-opus-5", prices={"input": "5", "output": "25", "cacheRead": "0.5", "cacheWrite": "6.25"},
+                     policy={"endpointHash": "e" * 64, "policies": [{"key": {"models": ["lares-brain"]}, "model": "anthropic/claude-opus-5"}]})
+        path.write_text(json.dumps(state))
+        (self.prefix / "etc/lares").joinpath("native-policy.json").write_text(json.dumps(state["policy"], separators=(",", ":")))
+        (self.prefix / "etc/lares/native-policy.json").chmod(0o600)
+
+    def run_agent_start_for_top_up(self, *extra: str) -> tuple[int, str]:
+        bound = status(account={"state": "closed"}, binding={"id": "b1", "credentialGeneration": "0"})
+        self.start_flow(status(), bound)
+        return self.run_command("agent-start", "my-agent", *extra)
+
+    def test_agent_start_adds_the_other_model_names_to_an_old_policy_without_making_keys(self) -> None:
+        self.saved_old_setup()
+        env = self.prefix / "etc/lares/installation.env"
+        env.write_text(env.read_text() + "LARES_MODEL_GATE=anthropic/claude-haiku-4-5\n")
+        code, output = self.run_agent_start_for_top_up("--yes")
+        self.assertEqual(code, 0, output)
+        written = json.loads((self.prefix / "etc/lares/native-policy.json").read_text())
+        self.assertEqual([policy["key"]["models"][0] for policy in written["policies"]], ["lares-brain", "lares-writer", "lares-utility", "lares-gate"])
+        self.assertEqual(written["policies"][0], {"key": {"models": ["lares-brain"]}, "model": "anthropic/claude-opus-5"})
+        state = json.loads((self.prefix / "etc/lares/budget-setup.json").read_text())
+        self.assertEqual(state["policy"], written)
+        self.assertEqual(state["aliasPrices"], {"lares-gate": budget.SUGGESTED_PRICES["anthropic/claude-haiku-4-5"]})
+        self.assertIn("lares-gate (anthropic/claude-haiku-4-5): input $1", output)
+        # The one key made is still the brain's.
+        native = next(request["input"] for request in self.keeper.requests if request["action"] == "budget.provision-native")
+        self.assertEqual(native["purposeAlias"], "lares-brain")
+        self.assertEqual(self.keeper.actions().count("budget.provision-native"), 1)
+
+    def test_agent_start_changes_nothing_when_the_gateways_models_changed_after_setup(self) -> None:
+        self.saved_old_setup()
+        os.environ["FAKE_BRAIN_MODEL"] = "anthropic/another-model"
+        before = (self.prefix / "etc/lares/native-policy.json").read_bytes()
+        code, output = self.run_agent_start_for_top_up("--yes")
+        self.assertEqual(code, 0, output)
+        self.assertEqual((self.prefix / "etc/lares/native-policy.json").read_bytes(), before)
+        self.assertIn("model budget setup has to be redone on a fresh install", output)
+        self.assertEqual(len(json.loads((self.prefix / "etc/lares/budget-setup.json").read_text())["policy"]["policies"]), 1)
+
+    def test_agent_start_asks_no_prices_when_the_models_changed(self) -> None:
+        self.saved_old_setup()
+        env = self.prefix / "etc/lares/installation.env"
+        env.write_text(env.read_text() + "LARES_MODEL_GATE=anthropic/some-new-model\n")
+        os.environ["FAKE_BRAIN_MODEL"] = "anthropic/another-model"
+        with mock.patch("builtins.input", side_effect=AssertionError("no price should be asked")):
+            code, output = self.run_agent_start_for_top_up()
+        self.assertEqual(code, 0, output)
+        self.assertIn("has to be redone on a fresh install", output)
+
+    def test_agent_start_leaves_a_complete_policy_alone(self) -> None:
+        self.saved_old_setup()
+        path = self.prefix / "etc/lares/budget-setup.json"
+        state = json.loads(path.read_text())
+        state["policy"]["policies"] += [{"key": {"models": [name]}} for name in ("lares-writer", "lares-utility", "lares-gate")]
+        path.write_text(json.dumps(state))
+        code, output = self.run_agent_start_for_top_up("--yes")
+        self.assertEqual(code, 0, output)
+        self.assertFalse((self.prefix / "policy-requests.log").exists())
+
+    def test_agent_start_without_a_terminal_starts_anyway_and_says_the_names_stay_unpriced(self) -> None:
+        self.saved_old_setup()
+        env = self.prefix / "etc/lares/installation.env"
+        env.write_text(env.read_text() + "LARES_MODEL_GATE=anthropic/some-new-model\n")
+        with mock.patch("builtins.input", side_effect=EOFError):
+            code, output = self.run_agent_start_for_top_up()
+        self.assertEqual(code, 0, output)
+        self.assertIn("stay unpriced until you run this command again", output)
+        self.assertEqual(len(json.loads((self.prefix / "etc/lares/native-policy.json").read_text())["policies"]), 1)
+        self.assertIn("budget.provision-native", self.keeper.actions())
 
     def test_agent_refresh_moves_each_valid_agent_and_names_what_it_left(self) -> None:
         self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64},
