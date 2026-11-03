@@ -59,7 +59,7 @@ export function AvatarEditor({ name, role, initialVersion }: { name: string; rol
           />
         </Field>
         <div className="lares-actions">
-          <Button type="submit" disabled={busy}>
+          <Button variant="outline" type="submit" disabled={busy}>
             Save image
           </Button>
           <Button

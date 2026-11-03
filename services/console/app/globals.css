@@ -478,6 +478,20 @@ th {
 .lares-door-setup .lares-door-connect p { margin:0 0 var(--space-2); color:var(--foreground); }
 .lares-door-setup .lares-door-tap { display:inline-block; padding:var(--space-3) var(--space-5); border-radius:var(--lares-control-radius); background:var(--primary); color:var(--primary-foreground); font:var(--text-lead); text-decoration:none; }
 .lares-editor-actions { display:flex; justify-content:flex-end; gap:12px; padding-top:24px; border-top:1px solid var(--border); }
+/* The agent edit page: status, then two cards side by side (a half-page card is no wider than one field), and a
+   save bar that stays in view while there are unsaved changes. */
+.lares-agent-edit { display:grid; gap:var(--space-5); }
+.lares-agent-edit .lares-surface > h2:first-child { margin-top:0; }
+.lares-agent-edit .lares-grid { align-items:start; }
+.lares-agent-edit .lares-surface > h2 + .lares-edit-group { margin-top:0; padding-top:0; border-top:0; }
+.lares-agent-edit .lares-notice { margin-block:0; }
+.lares-agent-edit .lares-notice > p { color:var(--foreground); margin:0 0 var(--space-3); }
+.lares-agent-edit section > .lares-button { margin-right:var(--space-2); }
+.lares-edit-group { margin-top:var(--space-5); padding-top:var(--space-5); border-top:1px solid var(--border); }
+.lares-editor h3 { font:var(--text-label); margin:var(--space-4) 0 var(--space-2); }
+.lares-edit-group > h3:first-child { margin-top:0; }
+.lares-save-bar { justify-content:space-between; align-items:center; }
+.lares-save-bar[data-dirty] { position:sticky; bottom:0; z-index:1; background:var(--background); padding-bottom:var(--space-4); }
 .lares-steps { list-style:none; display:flex; justify-content:space-between; gap:12px; padding:0 0 16px; margin:0 0 24px; border-bottom:1px solid var(--border); font:var(--text-mono-sm); color:var(--muted-foreground); }
 .lares-steps [aria-current=step] { color:var(--foreground); }
 .lares-review { display:grid; grid-template-columns:140px 1fr; gap:14px; }

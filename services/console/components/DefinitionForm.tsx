@@ -117,7 +117,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
   const dirty = snapshot !== savedSnapshot;
   const running = useRef(false);
   useEffect(() => {
-    if (!dirty) return;
+    // Once a write's outcome is unknown the page asks for a reload, so it must not also block one.
+    if (!dirty || uncertain) return;
     const before = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
@@ -155,7 +156,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
       window.removeEventListener("beforeunload", before);
       document.removeEventListener("click", navigate, true);
     };
-  }, [dirty]);
+  }, [dirty, uncertain]);
   const point = p.startingPoints.find((s) => s.id === definition.role) ?? first;
   const active = !p.initial || p.initial.status !== "retired";
   const timing = (field: string) =>
@@ -191,6 +192,20 @@ export function DefinitionForm(p: DefinitionFormProps) {
   const validModel = p.aliases.some((a) => a.alias === definition.model);
   const patch = (value: Partial<AgentDefinition>) =>
     setDefinition((d) => ({ ...d, ...value }));
+  // The edit page shows every part at once, in two cards; the create dialog folds the longer parts away.
+  const Sub = editing ? "h3" : "h2";
+  const group = (summary: React.ReactNode, title: string | null, open: boolean, children: React.ReactNode) =>
+    editing ? (
+      <div className="lares-edit-group">
+        {title && <h3>{title}</h3>}
+        {children}
+      </div>
+    ) : (
+      <details className="lares-disclosure" open={open}>
+        <summary>{summary}</summary>
+        {children}
+      </details>
+    );
   async function run(work: () => Promise<void>) {
     if (running.current) return;
     running.current = true;
@@ -224,8 +239,14 @@ export function DefinitionForm(p: DefinitionFormProps) {
       `Definition saved.${result.backup.ok ? "" : ` ${result.backup.message ?? "Git backup failed; the definition remains saved."}`}`,
     );
   }
+  const feedback = (
+    <>
+      {message && <p role="status">{message}</p>}
+      {error && !(editing && uncertain) && <p role="alert">{error}</p>}
+    </>
+  );
   const content = (
-    <div className="lares-editor">
+    <div className={editing ? "lares-editor lares-agent-edit" : "lares-editor"}>
       {!editing && (
         <ol className="lares-steps" aria-label="Create agent progress">
           {["Purpose", "Identity & access", "Review"].map((label, index) => (
@@ -240,6 +261,69 @@ export function DefinitionForm(p: DefinitionFormProps) {
           This agent is retired and stopped. Its definition is read-only;
           permanent deletion remains available below.
         </p>
+      )}
+      {editing && uncertain && (
+        <Notice error={Boolean(error)}>
+          <p>
+            {error
+              ? `This change could not be confirmed. ${error}`
+              : "This agent changed. Reload to see its current state before editing it again."}
+          </p>
+          <Button type="button" onClick={() => window.location.reload()}>
+            Reload this agent’s current state
+          </Button>
+        </Notice>
+      )}
+      {editing && (
+        <section className="lares-surface">
+          <h2>Status</h2>
+          <p>
+            {!active
+              ? "Agent stopped."
+              : nativeHeld
+                ? "Native budget activation is required before this agent can start."
+                : runtime?.pending
+                ? `Connection changes are pending. ${runtime.reason ?? ""}`
+                : runtime?.running === false
+                  ? "Agent stopped."
+                  : runtime?.running && runtime.healthy === false
+                    ? "Started, not answering yet. A first start after an upgrade can take several minutes; reload to check. If it stays like this, its log says why."
+                    : runtime?.running && runtime.healthy
+                      ? "Running. Saved connections are applied."
+                      : runtime
+                        ? "Saved connections are applied."
+                        : "Runtime connection status is unavailable."}
+          </p>
+          {!nativeHeld && (runtime?.pending ||
+            (active &&
+              runtime?.running === false &&
+              p.initial?.status === "valid")) && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy || uncertain || !hash || !active}
+              onClick={() =>
+                void run(async () => {
+                  const response = await applyConnections({
+                    name: definition.name,
+                    hash,
+                  });
+                  if (!response.ok) throw new Error(response.error.message);
+                  setMessage(
+                    "Connection changes applied. Reload to inspect runtime state.",
+                  );
+                  router.refresh();
+                  setUncertain(true);
+                })
+              }
+            >
+              {runtime?.pending
+                ? "Apply connection changes (restarts agent)"
+                : "Start agent (applies saved definition)"}
+            </Button>
+          )}
+          {active && <ConversationControl name={definition.name} />}
+        </section>
       )}
       <form
         onSubmit={(event) => {
@@ -321,8 +405,9 @@ export function DefinitionForm(p: DefinitionFormProps) {
               {timing("startingPoint")}
             </section>
           )}
-          <section hidden={!editing && step !== 1}>
-            <h2>Identity</h2>
+          <section hidden={!editing && step !== 1} className={editing ? "lares-grid" : undefined}>
+          <div className={editing ? "lares-surface" : undefined}>
+            <h2>{editing ? "Who it is" : "Identity"}</h2>
             {!editing && (
               <>
                 <Field label="Name (permanent slug)">
@@ -373,8 +458,11 @@ export function DefinitionForm(p: DefinitionFormProps) {
               />
             </Field>
             {timing("description")}
-            <details className="lares-disclosure" open={editing}>
-              <summary>Instructions and language</summary>
+            {group(
+              <>Instructions and language</>,
+              "Instructions and language",
+              editing,
+              <>
               <p className="lares-muted">
                 Every agent starts from a built-in description of its role,
                 with its safety rules. What you write here is added after it.
@@ -430,9 +518,13 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 </Select>
               </Field>
               {timing("language")}
-            </details>
-            <details className="lares-disclosure" open={!validModel}>
-              <summary>Model</summary>
+                          </>,
+            )}
+            {group(
+              <>Model</>,
+              "Model",
+              !validModel,
+              <>
               <Field label="Purpose">
                 <Select
                   required
@@ -455,10 +547,17 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 </p>
               ))}
               {timing("model")}
-            </details>
-            <details className="lares-disclosure" open={!editing}>
-              <summary>Access and skills · {definition.grants.length} integrations</summary>
-              <h2>Integrations</h2>
+                          </>,
+            )}
+          </div>
+          <div className={editing ? "lares-surface" : undefined}>
+            {editing && <h2>What it can do</h2>}
+            {group(
+              <>Access and skills · {definition.grants.length} integrations</>,
+              null,
+              !editing,
+              <>
+              <Sub>Integrations</Sub>
               {retiredGrants.map((g) => {
                 const dependents = skillsNeeding(g.capability);
                 return (
@@ -562,7 +661,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 </Choice>
               ))}
               </div>
-              <h2>Skills</h2>
+              <Sub>Skills</Sub>
               <div className="lares-choice-list">
               {point.definition.skills?.map((s) => (
                 <Choice key={s.name}>
@@ -585,7 +684,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
               </div>
               {timing("skills")}
               {validation && <Notice error>{validation}</Notice>}
-              <h2>Permission levels</h2>
+              <Sub>Permission levels</Sub>
               <p>
                 <a href="/integrations">Open the permissions board</a> for
                 evidence and always-ask actions.
@@ -640,9 +739,13 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 </>
               )}
               {timing("autonomy")}
-            </details>
-            <details className="lares-disclosure">
-              <summary>Schedules · {Object.values(definition.schedules).filter((s) => s.on).length} enabled</summary>
+                          </>,
+            )}
+            {group(
+              <>Schedules · {Object.values(definition.schedules).filter((s) => s.on).length} enabled</>,
+              "Schedules",
+              false,
+              <>
               <div className="lares-choice-list">
               {Object.entries(definition.schedules).map(([name, s]) => (
                 <Choice key={name}>
@@ -669,10 +772,11 @@ export function DefinitionForm(p: DefinitionFormProps) {
               ))}
               </div>
               {timing("schedules")}
-            </details>
+                          </>,
+            )}
             {editing && (
               <>
-                <h2>Doors</h2>
+                <Sub>Doors</Sub>
                 {(
                   definition.doors ??
                   definition.channels.map((kind) => ({ kind, enabled: true }))
@@ -690,6 +794,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 {timing("doors")}
               </>
             )}
+          </div>
           </section>
           {!editing && step === 2 && (
             <section className="lares-surface">
@@ -726,7 +831,16 @@ export function DefinitionForm(p: DefinitionFormProps) {
             </section>
           )}
           <CeilingNotice capacity={p.capacity} />
-          <div className="lares-editor-actions">
+          {!(editing && uncertain) && (
+          <div
+            className={editing ? "lares-editor-actions lares-save-bar" : "lares-editor-actions"}
+            data-dirty={(editing && dirty) || undefined}
+          >
+            {editing && (
+              <span className="lares-muted">
+                {dirty ? "Unsaved changes" : "No unsaved changes"}
+              </span>
+            )}
             {!editing && step > 0 && (
               <Button
                 variant="outline"
@@ -770,8 +884,10 @@ export function DefinitionForm(p: DefinitionFormProps) {
               </Button>
             )}
           </div>
+          )}
         </FieldGroup>
       </form>
+      {editing && feedback}
       {editing && active && <AvatarEditor name={definition.name} role={definition.role ?? ""} initialVersion={p.initial?.avatarVersion} />}
       {editing && active && p.initial && (
         <DoorSetup
@@ -798,9 +914,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
           {creating === "failed" && <p>{CREATE_FAILED}</p>}
         </div>
       )}
-      {message && <p role="status">{message}</p>}
-      {error && <p role="alert">{error}</p>}
-      {uncertain && (
+      {!editing && feedback}
+      {!editing && uncertain && (
         <p>
           <a href={`/agents/${encodeURIComponent(definition.name)}/edit`}>
             Reload this agent’s current state
@@ -808,54 +923,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
         </p>
       )}
       {editing && (
-        <section>
-          <h2>Runtime</h2>
-          <p>
-            {!active
-              ? "Agent stopped."
-              : nativeHeld
-                ? "Native budget activation is required before this agent can start."
-                : runtime?.pending
-                ? `Connection changes are pending. ${runtime.reason ?? ""}`
-                : runtime?.running === false
-                  ? "Agent stopped."
-                  : runtime?.running && runtime.healthy === false
-                    ? "Started, not answering yet. A first start after an upgrade can take several minutes; reload to check. If it stays like this, its log says why."
-                    : runtime?.running && runtime.healthy
-                      ? "Running. Saved connections are applied."
-                      : runtime
-                        ? "Saved connections are applied."
-                        : "Runtime connection status is unavailable."}
-          </p>
-          {!nativeHeld && (runtime?.pending ||
-            (active &&
-              runtime?.running === false &&
-              p.initial?.status === "valid")) && (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy || uncertain || !hash || !active}
-              onClick={() =>
-                void run(async () => {
-                  const response = await applyConnections({
-                    name: definition.name,
-                    hash,
-                  });
-                  if (!response.ok) throw new Error(response.error.message);
-                  setMessage(
-                    "Connection changes applied. Reload to inspect runtime state.",
-                  );
-                  router.refresh();
-                  setUncertain(true);
-                })
-              }
-            >
-              {runtime?.pending
-                ? "Apply connection changes (restarts agent)"
-                : "Start agent (applies saved definition)"}
-            </Button>
-          )}
-          {active && <ConversationControl name={definition.name} />}
+        <section className="lares-surface">
           <h2>Agent lifecycle</h2>
           <p>
             Retiring preserves its workflow data. Deleting removes its owned
