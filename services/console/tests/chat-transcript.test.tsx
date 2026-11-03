@@ -60,6 +60,15 @@ describe("the chat transcript", () => {
     expect(html).not.toContain("something this page cannot show yet");
   });
 
+  it("settles a refused tool call instead of leaving it running", () => {
+    const assistant = { id: "denied", role: "assistant", parts: [
+      { type: "dynamic-tool", toolName: "vault_write", state: "output-denied", input: {} },
+    ] } as unknown as EveMessage;
+    const html = renderToStaticMarkup(<ChatTranscript status="ready" messages={[assistant]} />);
+    expect(html).toContain("vault_write was refused");
+    expect(html).not.toContain("is running");
+  });
+
   it("names ordinary tool calls without exposing tool results or a generic placeholder", () => {
     const assistant = { id: "tools", role: "assistant", parts: [
       { type: "dynamic-tool", toolName: "calendar_list_events", state: "output-available", output: { title: "Private event" } },

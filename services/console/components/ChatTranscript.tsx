@@ -287,7 +287,10 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState, role: E
     );
   }
   if (part.type === "dynamic-tool") {
+    // "output-denied" is a call that was refused (by the owner or by the agent's own checks): it is
+    // finished, and nothing ran.
     const outcome = part.state === "output-error" ? " failed"
+      : part.state === "output-denied" ? " was refused"
       : part.state === "output-available" ? " completed" : " is running…";
     return (
       <p key={key} className="mono lares-tool-line">
