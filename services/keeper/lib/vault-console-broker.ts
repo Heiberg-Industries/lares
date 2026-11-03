@@ -391,8 +391,8 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    assertNotAborted();return {result,origin:target.approvedOrigin};
   }
   if(op==='vault.write'){
-   // One new note in the member's own private area, from one exact approved card. The card's
-   // target is the note's bytes when it was shown; a note changed since then is refused.
+   // One new note in the member's own private area, from one exact approved card. New notes
+   // only: a note already at that path is refused, never replaced, and the card stays unused.
    const rawInput=input.input,approval=object(input.approval),note=parseVaultNoteInput(rawInput);
    const proof={sessionId:input.sessionId,memberId:input.memberId,admissionNonce:input.admissionNonce,approval};
    const target=object(approval.target),path=vaultNotePath(note.title);
@@ -405,10 +405,10 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    const before=await context(false,false,async(files,ctx)=>{
     try{return await files.read(ctx,path);}catch(error){if(error instanceof NoteNotFoundError)return undefined;throw error;}
    });
-   if(vaultNoteTargetFingerprint(before?.content??null)!==target.fingerprint)throw new Error('note target changed');
+   if(before!==undefined||vaultNoteTargetFingerprint(null)!==target.fingerprint)throw new Error('note exists');
    await context(false,true,async()=>undefined); // Durable one-use claim. A failed commit needs a new approval.
    const written=await context(true,false,async(files,ctx)=>{
-    const binding=vaultWriteBindingSchema.parse({areaId:ctx.areaId,relativePath:path,expectedContentRevision:before?.contentRevision??null,
+    const binding=vaultWriteBindingSchema.parse({areaId:ctx.areaId,relativePath:path,expectedContentRevision:null,
      accessRevision:ctx.expectedRevision,approvedOrigin:target.approvedOrigin,authority:(approval.authority as Record<string,unknown>)});
     return await files.write(ctx,{binding,frontmatter:vaultNoteFrontmatter(note),body:note.body});
    });

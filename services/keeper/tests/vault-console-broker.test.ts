@@ -384,7 +384,18 @@ it('writes one approved private note through Keeper and the real writer, once', 
   await expect(runtime('vault.write', { sessionId: session, memberId: ids.member, admissionNonce, approval: proof, input: noteInput })).rejects.toThrow('Vault reader unavailable');
 });
 
-it('refuses a note that changed after its card, without using the card', async () => {
+it('raises no card for a title that already has a note, and leaves that note alone', async () => {
+  const { notePath } = await realAreasAndTurn();
+  mkdirSync(dirname(notePath), { recursive: true }); writeFileSync(notePath, 'the first Oslo note');
+  const repo = join(root, 'vault-files', `vault/private/${ids.area}`);
+  execFileSync('git', ['-C', repo, 'add', '.'], { stdio: 'ignore' }); execFileSync('git', ['-C', repo, 'commit', '-m', 'first'], { stdio: 'ignore' });
+  await expect(reserveExactApproval(approvalContext('human', noteInput, 'agent-kit__vault_write'), 'agent-kit__vault_write',
+    { adapter: vaultNoteApprovalAdapter, db: pool as never, env })).rejects.toThrow('already exists');
+  expect((await pool.query('SELECT count(*)::int AS n FROM approval_asks')).rows[0].n).toBe(0);
+  expect(readFileSync(notePath, 'utf8')).toBe('the first Oslo note');
+});
+
+it('refuses a note that appeared after its card, without using the card or replacing it', async () => {
   const { notePath } = await realAreasAndTurn();
   const approved = await approvedExactTrack('agent-kit__vault_write', noteInput, vaultNoteApprovalAdapter);
   mkdirSync(dirname(notePath), { recursive: true }); writeFileSync(notePath, 'written meanwhile');

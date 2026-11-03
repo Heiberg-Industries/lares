@@ -56,10 +56,13 @@ export const vaultNoteApprovalAdapter: ExactApprovalAdapter = {
         throw new Error('Exact Vault note target changed');
       return reservedTarget;
     }
-    const content = await currentPrivateNote(ctx as NoteContext, path);
+    // New notes only: a second note with the same title would replace the first without the
+    // card saying so. Keeper refuses the same at write time.
+    if (await currentPrivateNote(ctx as NoteContext, path) !== null)
+      throw new Error('A private note with this title already exists. Choose another title: this tool saves new notes only.');
     const turnKey = turnKeyFrom(ctx);
     const approvedOrigin = (turnKey ? stampFor('agent', turnKey) : 'third_party') as 'agent'|'synced'|'third_party';
-    return { kind: 'vault-note', id: path, ownerMemberId: memberId, fingerprint: vaultNoteTargetFingerprint(content), approvedOrigin };
+    return { kind: 'vault-note', id: path, ownerMemberId: memberId, fingerprint: vaultNoteTargetFingerprint(null), approvedOrigin };
   },
 };
 
