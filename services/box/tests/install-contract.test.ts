@@ -26,6 +26,7 @@ describe("what the installer promises", () => {
     ["127.0.0.1", "this machine, reaching the database the stack published a port for"],
     ["localhost", "the same, by name"],
     ["lares-gateway", "the model gateway's compose service name on the fleet's OWN docker network — not a public host, and not reachable from outside this installation"],
+    ["api.mistral.ai", "the default embedding provider's address, written into installation.env only when an embedding key is given; the gateway calls it, the installer never does"],
   ]);
 
   // Nothing here is an outside host a person is told to fetch from, either: when docker is
