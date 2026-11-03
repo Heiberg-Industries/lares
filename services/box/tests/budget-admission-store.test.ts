@@ -943,6 +943,17 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
       const p=await prepared();expect((await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
       journal.close();const next=await startKeeper();expect(next.isFrozen).toBe(false);expect(kinds().at(-1)).toBe('writer-open');
     },60_000);
+    it('waits at start for the writer lock a killed writer\'s connection still holds',async()=>{
+      const attempt=await preparedAttempt();
+      await killWriter(attempt,3);
+      // What the killed writer's connection does until the database notices it is gone.
+      const other=quiet(new Pool({connectionString:container.getConnectionUri(),max:1})),lingering=await other.connect();
+      await lingering.query("SELECT pg_advisory_lock(hashtextextended('lares-financial-writer',0))");
+      const gone=sleep(1000).then(()=>{lingering.release(true);return other.end();});
+      const before=kinds().length,journal=await startKeeper();await gone;
+      expect(journal.isFrozen).toBe(false);expect(kinds().slice(before)).toEqual(['abort','writer-close','recovered','writer-open']);
+      expect(await attemptState(attempt)).toBe('prepared');
+    },60_000);
     it('finishes a torn last line from a power cut by the same comparison, keeping the torn bytes',async()=>{
       const attempt=await preparedAttempt();
       await killWriter(attempt,3);
