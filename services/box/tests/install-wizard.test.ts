@@ -125,10 +125,12 @@ describe("what the installer asks", () => {
     expect(env).not.toContain("sk-disposable-fixture-only");
   });
 
-  it("writes a model for a purpose only when one was given, on the main model's provider", () => {
+  it("writes no model for a purpose when none was given", () => {
     okRun(runWithStdin(["--yes"], answers));
     expect(readFileSync(installEnv, "utf8")).not.toMatch(/LARES_MODEL_(WRITER|UTILITY|GATE)/);
-    rmSync(join(prefix, "etc"), { recursive: true, force: true });
+  });
+
+  it("writes a model for a purpose when one was given, on the main model's provider", () => {
     okRun(runWithStdin(["--yes", "--writer-model", "anthropic/claude-sonnet-4-5", "--gate-model", "anthropic/claude-haiku-4-5"], answers));
     const env = readFileSync(installEnv, "utf8");
     expect(env).toContain("LARES_MODEL=anthropic/claude-opus-5\n");
