@@ -62,7 +62,9 @@ BOX_DIR="${LARES_BOX_DIR:-$(cd "$HERE/.." && pwd)}"
 # The same variable name ops/backup-verify.sh and ops/restore-drill.sh already use, but
 # defaulting to the installer's own path (F1: $PREFIX/opt/lares/compose.yaml — one file, no
 # override, since this engine now renders exactly one).
-if [ "${LARES_PREFIX+x}" = x ]; then ADMISSION_PREFIX="$LARES_PREFIX"; else ADMISSION_PREFIX=/; fi
+# Empty is the real server: `lares` exports LARES_PREFIX="" there, and the custody check
+# accepts only a canonical directory, so it must read as `/`.
+if [ -n "${LARES_PREFIX:-}" ]; then ADMISSION_PREFIX="$LARES_PREFIX"; else ADMISSION_PREFIX=/; fi
 if [ "${DB_COMPOSE_DIR+x}" = x ]; then COMPOSE_DIR="$DB_COMPOSE_DIR"
 elif [ "$ADMISSION_PREFIX" != / ]; then COMPOSE_DIR=""
 else COMPOSE_DIR="${ADMISSION_PREFIX%/}/opt/lares"; fi
