@@ -342,11 +342,16 @@ def ask_for_answers(installation: Installation, options: argparse.Namespace, set
     # A model of its own for a purpose, if installation.env names one. The reviewed policy has to describe the gateway as it runs.
     purpose_models = {purpose: settings[f"LARES_MODEL_{purpose.upper()}"] for purpose in ("writer", "utility", "gate")
                       if settings.get(f"LARES_MODEL_{purpose.upper()}")}
+    # The embedding model, if installation.env names one, for the same reason.
+    embedding = ({"model": settings["LARES_EMBED_MODEL"], "baseUrl": settings["LARES_EMBED_BASE_URL"],
+                  **({"maxInputTokens": settings["LARES_EMBED_MAX_INPUT_TOKENS"]} if settings.get("LARES_EMBED_MAX_INPUT_TOKENS") else {})}
+                 if settings.get("LARES_EMBED_MODEL") and settings.get("LARES_EMBED_BASE_URL") else None)
     try:
         rendered = json.loads(installation.run_box_program("bin/render-native-policy.ts", json.dumps({
             "alias": alias, "providerModel": model, "gatewayUrl": gateway_url,
             "installationLimit": installation_limit, "personLimit": person_limit, "prices": prices,
             **({"purposeModels": purpose_models} if purpose_models else {}),
+            **({"embedding": embedding} if embedding else {}),
         })))
     except KeeperRefused as error:
         raise Stop(f"{error} Nothing was changed.") from None
@@ -360,7 +365,7 @@ def ask_for_answers(installation: Installation, options: argparse.Namespace, set
     say(f"Each model call holds up to ${rendered['maximumLiability']} of those limits until it finishes.")
     unpriced = rendered.get("unpricedAliases") or []
     if unpriced:
-        say(f"Not priced yet: {', '.join(unpriced)}. Each of these runs a model of its own, and this setup prices only {model}.")
+        say(f"Not priced yet: {', '.join(unpriced)}. Each of these runs a model of its own (or embeds), and this setup prices only {model}.")
         say("Until they are priced, calls to them are refused. Prices for them are a later step.")
     say("")
     if not options.yes and ask("Switch model spending on with these settings? [y/N] ").lower() not in ("y", "yes"):

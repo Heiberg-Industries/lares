@@ -366,6 +366,20 @@ describe("the generated stack compose file", () => {
     expect(doc.services["lares-gateway"].depends_on).toContain("db");
   });
 
+  it("hands the gateway an embedding key only when the embedding model is on, and is otherwise byte-identical", () => {
+    const plain = renderStackCompose(MANIFEST, OPTS);
+    expect(renderStackCompose(MANIFEST, { ...OPTS, embeddingKey: false })).toBe(plain);
+    expect(plain).not.toContain("embed-provider-key");
+    const doc = parse(renderStackCompose(MANIFEST, { ...OPTS, embeddingKey: true })) as any;
+    const gateway = doc.services["lares-gateway"];
+    expect(gateway.environment.EMBED_PROVIDER_KEY_FILE).toBe("/run/secrets/embed-provider-key");
+    expect(gateway.secrets).toContain("embed-provider-key");
+    expect(doc.secrets["embed-provider-key"]).toEqual({ file: `${OPTS.secretsDir}/embed-provider-key` });
+    // No other service sees it.
+    for (const [name, service] of Object.entries<any>(doc.services))
+      if (name !== "lares-gateway") expect(JSON.stringify(service)).not.toContain("embed-provider-key");
+  });
+
   it("renders a database-only bootstrap with the host-only operator file and no application services", () => {
     const doc = parse(renderDatabaseBootstrapCompose(MANIFEST, {
       operatorPasswordFile: "/etc/lares/operator/database-password",

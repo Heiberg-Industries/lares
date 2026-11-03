@@ -25,6 +25,16 @@ if [ ! -r "$DATABASE_PASSWORD_FILE" ]; then
 fi
 LARES_MODEL_PROVIDER_KEY=$(cat "$MODEL_PROVIDER_KEY_FILE")
 export LARES_MODEL_PROVIDER_KEY
+# The embedding model has its own provider key. Set means an embedding alias is served and the file must be readable;
+# unset means there is none, and nothing here changes.
+if [ -n "${EMBED_PROVIDER_KEY_FILE:-}" ]; then
+  if [ ! -r "$EMBED_PROVIDER_KEY_FILE" ]; then
+    echo "lares: EMBED_PROVIDER_KEY_FILE ($EMBED_PROVIDER_KEY_FILE) is not readable." >&2
+    exit 78
+  fi
+  LARES_EMBED_PROVIDER_KEY=$(cat "$EMBED_PROVIDER_KEY_FILE")
+  export LARES_EMBED_PROVIDER_KEY
+fi
 LARES_GATEWAY_MASTER_KEY=$(cat "$GATEWAY_MASTER_KEY_FILE")
 export LARES_GATEWAY_MASTER_KEY
 # install.sh generates this password as base64url: it contains no URL delimiters, whitespace or

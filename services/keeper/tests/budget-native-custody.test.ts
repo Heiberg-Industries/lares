@@ -4,6 +4,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
+import {gatewayMaximumLiability} from '@lares/agent-kit/gateway-pricing';
 import {BudgetNativeCustodyStore,NATIVE_CUSTODY_MAX_BYTES,NATIVE_CUSTODY_MAX_RECORDS,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from '../lib/budget-native-custody.js';
 import {HostFinancialJournal,committedFinancialEvidence,type CommittedFinancialReceipt,type FinancialAtom} from '../lib/financial-journal.js';
 import {consoleSourceTransaction,sourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
@@ -922,6 +923,29 @@ describe('protected native custody foundation',()=>{
     expect(budgetNativeReviewedPolicySchema.parse(good)).toEqual(good);
     for(const bad of [{},{'lares-brain':'writer-model'},{'lares-other':'writer-model'},{'lares-writer':'synthetic-model'},{'lares-writer':'bad model'},{'lares-writer':7}])
       expect(()=>budgetNativeReviewedPolicySchema.parse(withModels(bad))).toThrow();
+  });
+
+  it('accepts a reviewed policy whose capability serves an embedding alias, and refuses malformed or mispriced ones',()=>{
+    const embedding={alias:'lares-embed',provider:'openai',model:'embed-model',providerBaseUrl:'https://embed.invalid/v1',maxInputs:32,maxInputTokens:8192};
+    const withEmbedding=(block:unknown,aliases:string[]=['lares-brain','lares-writer','lares-utility','lares-gate','lares-embed'])=>{
+      const base:any=reviewed(),capability={...base.capability,aliases,...(block===undefined?{}:{embedding:block})};
+      return {...base,capability,team:{...base.team,models:aliases},membership:{...base.membership,allowedModels:aliases},pricing:{...base.pricing,capabilityHash:gatewayHash(gatewayCanonical(capability))}};
+    };
+    const good=withEmbedding(embedding);
+    expect(budgetNativeReviewedPolicySchema.parse(good)).toEqual(good);
+    // The brain-only key is priced in the chat provider's format; the embedding alias is priced as an embedding.
+    const keyed=(models:string[],pricing:unknown)=>({...good,key:{...good.key,models},pricing:{...good.pricing,...(pricing as object)}});
+    const embeddingPricing={format:'embedding',limits:{inputTokens:32*8192,outputTokens:1},usdPerMillionTokens:{input:'0.1',output:'0',cacheRead:'0',cacheWrite:'0'}};
+    expect(()=>budgetNativeReviewedPolicySchema.parse(keyed(['lares-brain'],embeddingPricing))).toThrow();
+    const embedKeyed:any=keyed(['lares-embed'],embeddingPricing);
+    embedKeyed.maximumLiability=gatewayMaximumLiability(embedKeyed.pricing);
+    expect(budgetNativeReviewedPolicySchema.parse(embedKeyed).pricing.format).toBe('embedding');
+    expect(()=>budgetNativeReviewedPolicySchema.parse({...embedKeyed,pricing:{...embedKeyed.pricing,format:'openai'}})).toThrow();
+    for(const bad of [{...embedding,alias:'lares-other'},{...embedding,provider:'anthropic'},{...embedding,maxInputs:33},{...embedding,maxInputTokens:0},{...embedding,providerBaseUrl:'http://embed.invalid/v1'},{...embedding,providerBaseUrl:'https://embed.invalid/v1/'},{...embedding,model:'bad model'},{...embedding,extra:1}])
+      expect(()=>budgetNativeReviewedPolicySchema.parse(withEmbedding(bad))).toThrow();
+    // A fifth alias with no embedding block, or the block with only four aliases, is not a capability.
+    expect(()=>budgetNativeReviewedPolicySchema.parse(withEmbedding(undefined))).toThrow();
+    expect(()=>budgetNativeReviewedPolicySchema.parse(withEmbedding(embedding,['lares-brain','lares-writer','lares-utility','lares-gate']))).toThrow();
   });
 
   it('enforces monotonic phases, immutable financial linkage and exact acknowledged binding',async()=>{

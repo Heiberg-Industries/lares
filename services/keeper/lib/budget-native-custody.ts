@@ -21,7 +21,7 @@ const instant=z.iso.datetime({precision:6});
 const generation=z.string().regex(/^(0|[1-9][0-9]{0,18})$/).refine(value=>BigInt(value)<=9_223_372_036_854_775_807n);
 const nativeId=z.string().regex(/^[A-Za-z0-9-]{1,80}$/),alias=z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
 const money=z.string().max(37).refine(value=>{try{return canonicalBudgetMoney(value)===value&&value!=='0';}catch{return false;}});
-const models=z.array(alias).min(1).max(4).refine(values=>new Set(values).size===values.length);
+const models=z.array(alias).min(1).max(5).refine(values=>new Set(values).size===values.length);
 const origin=z.string().max(512).refine(value=>{try{const url=new URL(value);return ['http:','https:'].includes(url.protocol)&&url.origin===value&&!url.username&&!url.password;}catch{return false;}});
 const endpoint=z.object({origin,hash}).strict();
 const teamPolicy=z.object({maxBudget:money,models,budgetDuration:z.literal('1d')}).strict();
@@ -31,13 +31,19 @@ const keyPolicy=z.object({maxBudget:money,models,budgetDuration:z.literal('1d'),
 const writeAttempt=z.enum(['not-attempted','attempted','verified']);
 // Same bounded capability document and canonical hash as the gateway's Profile. Prices
 // and native caps remain explicit reviewed inputs; neither this schema nor the store defaults them.
-const capability=z.object({version:z.literal(1),provider:z.enum(['openai','anthropic']),model:z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),providerBaseUrl:z.string().max(512).refine(value=>{try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&!u.search&&!u.hash&&!value.endsWith('/');}catch{return false;}}),aliases:models.refine(values=>values.length===4),maxBodyBytes:z.number().int().min(1).max(1_048_576),maxOutputTokens:z.number().int().min(1).max(1_000_000),
+const capability=z.object({version:z.literal(1),provider:z.enum(['openai','anthropic']),model:z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),providerBaseUrl:z.string().max(512).refine(value=>{try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&!u.search&&!u.hash&&!value.endsWith('/');}catch{return false;}}),aliases:models.refine(values=>values.length===4||values.length===5),maxBodyBytes:z.number().int().min(1).max(1_048_576),maxOutputTokens:z.number().int().min(1).max(1_000_000),
   // Optional: a model of its own for the writer, utility or gate alias. Absent means the brain's model serves all four, and the document hashes as it always did.
-  purposeModels:z.record(alias,z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/)).refine(value=>Object.keys(value).length>0).optional()}).strict().superRefine((c,ctx)=>{
+  purposeModels:z.record(alias,z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/)).refine(value=>Object.keys(value).length>0).optional(),
+  // Optional: an embedding model served as a fifth alias on the OpenAI-compatible embeddings wire, with its own address.
+  embedding:z.object({alias,provider:z.literal('openai'),model:z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),providerBaseUrl:z.string().max(512).refine(value=>{try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&!u.search&&!u.hash&&!value.endsWith('/');}catch{return false;}}),maxInputs:z.literal(32),maxInputTokens:z.number().int().min(1).max(1_000_000)}).strict().optional()}).strict().superRefine((c,ctx)=>{
   if(c.purposeModels&&Object.entries(c.purposeModels).some(([a,m])=>!c.aliases.slice(1,4).includes(a)||m===c.model))ctx.addIssue({code:'custom',message:'Purpose model mismatch'});
+  // The fifth alias exists exactly when the embedding block does, and is that block's alias.
+  if((c.aliases.length===5)!==(c.embedding!==undefined)||(c.embedding&&c.embedding.alias!==c.aliases[4]))ctx.addIssue({code:'custom',message:'Embedding alias mismatch'});
 });
+/** Which wire format a served alias speaks: its pricing must be of the same kind. */
+const routeFormat=(c:z.infer<typeof capability>,aliasName:string|undefined)=>c.embedding&&aliasName===c.embedding.alias?'embedding':c.provider;
 export const budgetNativeReviewedPolicySchema=z.object({capability,pricing:gatewayPricingSchema,maximumLiability:money,team:teamPolicy,user:userPolicy,membership:membershipPolicy,key:keyPolicy}).strict().superRefine((p,ctx)=>{
-  if(gatewayHash(gatewayCanonical(p.capability))!==p.pricing.capabilityHash||p.pricing.format!==p.capability.provider||p.pricing.limits.outputTokens>p.capability.maxOutputTokens||gatewayMaximumLiability(p.pricing)!==p.maximumLiability||[...p.team.models,...p.membership.allowedModels,...p.key.models].some(a=>!p.capability.aliases.includes(a)))ctx.addIssue({code:'custom',message:'Reviewed policy mismatch'});
+  if(gatewayHash(gatewayCanonical(p.capability))!==p.pricing.capabilityHash||p.pricing.format!==routeFormat(p.capability,p.key.models[0])||p.pricing.limits.outputTokens>p.capability.maxOutputTokens||gatewayMaximumLiability(p.pricing)!==p.maximumLiability||[...p.team.models,...p.membership.allowedModels,...p.key.models].some(a=>!p.capability.aliases.includes(a)))ctx.addIssue({code:'custom',message:'Reviewed policy mismatch'});
 });
 export type BudgetNativeReviewedPolicy=z.infer<typeof budgetNativeReviewedPolicySchema>;
 const receipt=z.object({journalId:uuid,operationId:uuid,operation:z.enum(['prepare','provision','native-activation','admit','grant','unknown','settle','member-remove','erase-person','native-cleanup-recovery']),proposalSequence:z.number().int().positive().safe(),proposalDigest:hash}).strict();

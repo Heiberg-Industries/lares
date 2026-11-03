@@ -25,6 +25,8 @@ export interface NativePolicyRequest {
   /** A model of its own for the writer, utility or gate purpose, as in installation.env. Only the brain is priced here, but
    *  the reviewed capability must be the exact profile the gateway runs, so these are carried into it. */
   readonly purposeModels?: Readonly<Partial<Record<PurposeModelPurpose, string>>>;
+  /** The embedding model, as in installation.env. Like the purpose models it is carried into the capability only: this policy does not price it. */
+  readonly embedding?: { readonly model: string; readonly baseUrl: string; readonly maxInputTokens?: number | string };
   readonly gatewayUrl: string;
   readonly installationLimit: string;
   readonly personLimit: string;
@@ -35,7 +37,7 @@ export interface NativePolicyResult {
   readonly policy: BudgetNativePolicyDocument;
   readonly maximumLiability: string;
   readonly model: string;
-  /** Served aliases that run a model of their own and are NOT priced by this policy yet. */
+  /** Served aliases that run a model of their own, or embed, and are NOT priced by this policy yet. */
   readonly unpricedAliases: readonly string[];
   readonly installationLimit: string;
   readonly personLimit: string;
@@ -75,6 +77,10 @@ export function renderNativePolicy(request: NativePolicyRequest): NativePolicyRe
   const capability = gatewayAdmissionProfile(gatewayOptionsFromSettings({
     LARES_MODEL_ALIAS: request.alias, LARES_MODEL: request.providerModel,
     LARES_MODEL_WRITER: requested.writer, LARES_MODEL_UTILITY: requested.utility, LARES_MODEL_GATE: requested.gate,
+    ...(request.embedding ? {
+      LARES_EMBED_MODEL: request.embedding.model, LARES_EMBED_BASE_URL: request.embedding.baseUrl,
+      ...(request.embedding.maxInputTokens === undefined ? {} : { LARES_EMBED_MAX_INPUT_TOKENS: String(request.embedding.maxInputTokens) }),
+    } : {}),
   }));
   const prices = {
     input: price(request.prices.input, "input"),
@@ -110,7 +116,7 @@ export function renderNativePolicy(request: NativePolicyRequest): NativePolicyRe
       key: { maxBudget: personLimit, models: [request.alias], budgetDuration: "1d", keyType: "llm_api", blocked: true },
     }],
   }));
-  return { policy, maximumLiability, model: `${capability.provider}/${capability.model}`, unpricedAliases: Object.keys(capability.purposeModels ?? {}), installationLimit, personLimit, prices };
+  return { policy, maximumLiability, model: `${capability.provider}/${capability.model}`, unpricedAliases: [...Object.keys(capability.purposeModels ?? {}), ...(capability.embedding ? [capability.embedding.alias] : [])], installationLimit, personLimit, prices };
 }
 
 export function main(input: string, out: (value: string) => void): number {

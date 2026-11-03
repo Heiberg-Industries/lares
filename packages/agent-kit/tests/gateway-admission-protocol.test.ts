@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {execFileSync} from 'node:child_process';
-import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewayRawRequestHash,gatewaySignature,verifyGatewaySignature,parseGatewayDocument,gatewayAdmitSchema,gatewayGrantHash} from '../src/gateway-admission-protocol.js';
+import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,GATEWAY_EMBEDDINGS_MODEL_PATH,gatewayModelPath,gatewaySettleSchema,gatewayCanonical,gatewayRawRequestHash,gatewaySignature,verifyGatewaySignature,parseGatewayDocument,gatewayAdmitSchema,gatewayGrantHash} from '../src/gateway-admission-protocol.js';
 import {gatewayPricingSchema,gatewayMaximumLiability,gatewayActualAmount} from '../src/gateway-pricing.js';
 const request={version:1 as const,nonce:'1'.repeat(64),requestHash:'2'.repeat(64),profileHash:'3'.repeat(64),endpointHash:'4'.repeat(64),keyFingerprint:'5'.repeat(64),purposeAlias:'example-brain',ticket:'a'.repeat(43)};
 const key=Buffer.alloc(32,7);
@@ -12,6 +12,24 @@ print(hashlib.sha256(b'lares.gateway.raw-request.v1\\0POST\\0/v1/messages\\0'+sy
     expect(gatewayRawRequestHash('POST',path,body)).toBe(expected);
     expect(()=>gatewayRawRequestHash('GET',path,body)).toThrow();
     expect(()=>gatewayRawRequestHash('POST','/v1/messages?x=1',body)).toThrow();
+  });
+  it('hashes and names the embeddings route, and no other unreviewed path',()=>{
+    const body=Buffer.from('{"model":"example-embed","input":["a"],"encoding_format":"float"}');
+    const expected=execFileSync('python3',['-c',`import hashlib,sys
+print(hashlib.sha256(b'lares.gateway.raw-request.v1\\0POST\\0/v1/embeddings\\0'+sys.stdin.buffer.read()).hexdigest())`],{input:body,encoding:'utf8'}).trim();
+    expect(GATEWAY_EMBEDDINGS_MODEL_PATH).toBe('/v1/embeddings');
+    expect(gatewayRawRequestHash('POST','/v1/embeddings',body)).toBe(expected);
+    expect(()=>gatewayRawRequestHash('POST','/v1/embeddings?x=1',body)).toThrow();
+    expect(()=>gatewayRawRequestHash('POST','/v1/responses',body)).toThrow();
+    expect([gatewayModelPath('anthropic'),gatewayModelPath('openai'),gatewayModelPath('embedding'),gatewayModelPath('other')])
+      .toEqual(['/v1/messages','/v1/chat/completions','/v1/embeddings',undefined]);
+  });
+  it('accepts an embedding receipt and nothing else new',()=>{
+    const receipt={version:1 as const,nonce:'1'.repeat(64),requestHash:'2'.repeat(64),profileHash:'3'.repeat(64),endpointHash:'4'.repeat(64),keyFingerprint:'5'.repeat(64),purposeAlias:'example-embed',
+      attemptId:'11111111-1111-4111-8111-111111111111',bindingId:'22222222-2222-4222-8222-222222222222',kind:'terminal-usage' as const,format:'embedding' as const,
+      usage:{inputTokens:9,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0},receiptHash:'6'.repeat(64)};
+    expect(gatewaySettleSchema.parse(receipt).format).toBe('embedding');
+    expect(()=>gatewaySettleSchema.parse({...receipt,format:'other'})).toThrow();
   });
   it('matches independent Python JSON/HMAC bytes including ASCII escaping',()=>{
     const document={...request,nested:['\u007f','\u00e6','\ud83d\ude00']};
@@ -40,6 +58,26 @@ print(json.dumps({'body':raw.decode(),'signature':hmac.new(bytes([7])*32,envelop
     const {ticket,...base}=request,grant={...base,attemptId:'11111111-1111-4111-8111-111111111111',bindingId:'22222222-2222-4222-8222-222222222222'};
     expect(gatewayGrantHash(grant)).not.toBe(gatewayGrantHash({...grant,purposeAlias:'example-writer'}));
     expect(gatewayGrantHash(grant)).not.toBe(gatewayGrantHash({...grant,nonce:'6'.repeat(64)}));
+  });
+});
+describe('embedding pricing',()=>{
+  // 32 inputs of up to 8192 tokens, charged on input tokens only.
+  const embedding=gatewayPricingSchema.parse({version:1,capabilityHash:'f'.repeat(64),format:'embedding',limits:{inputTokens:32*8192,outputTokens:1},usdPerMillionTokens:{input:'0.1',output:'0',cacheRead:'0',cacheWrite:'0'}});
+  it('reserves the input bound at the input rate, and nothing for output or cache',()=>{
+    expect(gatewayMaximumLiability(embedding)).toBe('0.0262144');
+    // Only the input rate counts: at one million input tokens the hold is exactly one million tokens of it.
+    expect(gatewayMaximumLiability({...embedding,limits:{...embedding.limits,inputTokens:1_000_000}})).toBe('0.1');
+  });
+  it('charges input tokens at the input rate',()=>{
+    expect(gatewayActualAmount(embedding,{inputTokens:9,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0})).toBe('0.0000009');
+    expect(gatewayActualAmount(embedding,{inputTokens:0,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0})).toBe('0');
+  });
+  it('refuses any rate but input on the schema, and any output or cache usage',()=>{
+    for(const rates of [{output:'1'},{cacheRead:'1'},{cacheWrite:'1'}])
+      expect(()=>gatewayPricingSchema.parse({...embedding,usdPerMillionTokens:{...embedding.usdPerMillionTokens,...rates}})).toThrow(/input tokens only/);
+    for(const usage of [{outputTokens:1},{cacheReadTokens:1},{cacheWriteTokens:1}])
+      expect(()=>gatewayActualAmount(embedding,{inputTokens:9,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,...usage})).toThrow(/embedding usage/);
+    expect(()=>gatewayMaximumLiability({...embedding,usdPerMillionTokens:{...embedding.usdPerMillionTokens,input:'0'}})).toThrow();
   });
 });
 describe('fixed reviewed pricing arithmetic',()=>{

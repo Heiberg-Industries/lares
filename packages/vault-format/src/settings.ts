@@ -1788,6 +1788,16 @@ export const SETTINGS: readonly SettingDef[] = [
     readAt: ["images/gateway-runtime/start.sh"],
   },
   {
+    name: "EMBED_PROVIDER_KEY_FILE",
+    readers: ["gateway"],
+    source: "installer",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "Nothing, unless the gateway serves an embedding model; then it refuses to start, because that model has no key.",
+    readAt: ["images/gateway-runtime/start.sh"],
+  },
+  {
     name: "GATEWAY_MASTER_KEY_FILE",
     readers: ["gateway"],
     source: "installer",

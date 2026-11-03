@@ -52,6 +52,9 @@ const targets = [
   { alias: 'fixture-brain', providerModel: 'anthropic/claude-sonnet-4-5', providerBaseUrl: 'https://provider.example.invalid' },
   { alias: 'fixture-brain', providerModel: 'anthropic/claude-sonnet-4-5', providerBaseUrl: 'https://provider.example.invalid',
     purposeModels: { writer: 'anthropic/claude-opus-4-5', gate: 'anthropic/claude-haiku-4-5' } },
+  { alias: 'fixture-brain', providerModel: 'anthropic/claude-sonnet-4-5', providerBaseUrl: 'https://provider.example.invalid',
+    purposeModels: { writer: 'anthropic/claude-opus-4-5' },
+    embedding: { model: 'embed-model', baseUrl: 'https://embed.example.invalid/v1', maxInputTokens: 2048 } },
 ];
 console.log(JSON.stringify(targets.map((options) => ({
   config: parse(renderGatewayConfig(options)),
@@ -63,7 +66,11 @@ console.log(JSON.stringify(targets.map((options) => ({
             cwd=ROOT, check=True, capture_output=True, text=True, timeout=30,
         )
         cases = json.loads(rendered.stdout)
-        self.assertEqual([case["profile"]["provider"] for case in cases], ["openai", "anthropic", "anthropic"])
+        self.assertEqual([case["profile"]["provider"] for case in cases], ["openai", "anthropic", "anthropic", "anthropic"])
+        self.assertEqual(cases[3]["profile"]["embedding"], {"alias":"fixture-embed","provider":"openai","model":"embed-model","providerBaseUrl":"https://embed.example.invalid/v1","maxInputs":32,"maxInputTokens":2048})
+        self.assertEqual(cases[3]["profile"]["aliases"][4], "fixture-embed")
+        self.assertEqual(cases[3]["config"]["model_list"][4]["litellm_params"], {"model":"openai/embed-model","api_key":"os.environ/LARES_EMBED_PROVIDER_KEY","api_base":"https://embed.example.invalid/v1","max_retries":0,"num_retries":0})
+        for plain in cases[:3]: self.assertNotIn("embedding", plain["profile"])
         self.assertEqual(cases[2]["profile"]["purposeModels"], {"fixture-writer": "claude-opus-4-5", "fixture-gate": "claude-haiku-4-5"})
         self.assertNotIn("purposeModels", cases[1]["profile"])
         for case in cases:
@@ -196,6 +203,134 @@ console.log(JSON.stringify(targets.map((options) => ({
             with self.subTest(bad=bad), self.assertRaises(Refused): Profile(self.extended_document(purposeModels=bad))
         with self.assertRaises(Refused): Profile(self.extended_document(aliases=["lares-brain","lares-writer","lares-utility","lares-gate","lares-embed"]))
         with self.assertRaises(Refused): Profile(self.extended_document(embedding={"alias":"lares-embed"}))
+
+    EMBEDDING = {"alias":"lares-embed","provider":"openai","model":"embed-model","providerBaseUrl":"https://embed.example.invalid/v1","maxInputs":32,"maxInputTokens":8192}
+
+    def embedding_document(self, **changes):
+        document = self.extended_document()
+        document["aliases"] = [*document["aliases"], "lares-embed"]
+        document["embedding"] = dict(self.EMBEDDING)
+        document.update(changes)
+        return document
+
+    def test_embedding_profile_adds_a_fifth_alias_with_its_own_address_and_key(self):
+        plain = Profile({key: value for key, value in self.embedding_document().items() if key not in ("embedding", "aliases")} | {"aliases":["lares-brain","lares-writer","lares-utility","lares-gate"]})
+        profile = Profile(self.embedding_document())
+        self.assertNotEqual(profile.digest, plain.digest)
+        route = profile.route("lares-embed")
+        self.assertEqual((route.model, route.litellm_model, route.base, route.key_env, route.path, route.format, route.kind),
+                         ("embed-model","openai/embed-model","https://embed.example.invalid/v1","LARES_EMBED_PROVIDER_KEY","/embeddings","embedding","embedding"))
+        # The chat aliases keep the chat provider, address and key.
+        chat = profile.route("lares-writer")
+        self.assertEqual((chat.base, chat.key_env, chat.path, chat.kind), ("https://provider.example.invalid","LARES_MODEL_PROVIDER_KEY","/v1/messages","chat"))
+        self.assertEqual(profile.chat_aliases(), ["lares-brain","lares-writer","lares-utility","lares-gate"])
+        self.assertEqual(plain.chat_aliases(), list(plain.document["aliases"]))
+        expected = profile.expected_config()
+        self.assertEqual(expected["model_list"][4], {"model_name":"lares-embed","litellm_params":{"model":"openai/embed-model","api_key":"os.environ/LARES_EMBED_PROVIDER_KEY","api_base":"https://embed.example.invalid/v1","max_retries":0,"num_retries":0}})
+        profile.validate_config(expected)
+        wrong = json.loads(json.dumps(expected))
+        wrong["model_list"][4]["litellm_params"]["api_key"] = "os.environ/LARES_MODEL_PROVIDER_KEY"
+        with self.assertRaises(Refused): profile.validate_config(wrong)
+        with self.assertRaises(TypeError): profile.document["embedding"]["model"] = "changed"
+
+    def test_embedding_profile_refuses_every_malformed_block(self):
+        cases = [
+            {**self.EMBEDDING, "alias":"lares-other"}, {**self.EMBEDDING, "provider":"anthropic"}, {**self.EMBEDDING, "model":"bad model"},
+            {**self.EMBEDDING, "providerBaseUrl":"http://embed.example.invalid/v1"}, {**self.EMBEDDING, "providerBaseUrl":"https://embed.example.invalid/v1/"},
+            {**self.EMBEDDING, "maxInputs":33}, {**self.EMBEDDING, "maxInputs":True}, {**self.EMBEDDING, "maxInputTokens":0}, {**self.EMBEDDING, "maxInputTokens":True},
+            {**self.EMBEDDING, "maxInputTokens":1_000_001}, {**self.EMBEDDING, "extra":1},
+            {key: value for key, value in self.EMBEDDING.items() if key != "maxInputs"}, [], None, "lares-embed",
+        ]
+        for bad in cases:
+            with self.subTest(bad=bad), self.assertRaises(Refused): Profile(self.embedding_document(embedding=bad))
+        # The alias count and the block must agree both ways.
+        with self.assertRaises(Refused): Profile(self.embedding_document(aliases=["lares-brain","lares-writer","lares-utility","lares-gate"]))
+        document = self.embedding_document(); del document["embedding"]
+        with self.assertRaises(Refused): Profile(document)
+
+    def embedding_body(self, **changes):
+        return json.dumps({"model":"lares-embed","input":["one","two"],"encoding_format":"float",**changes}).encode()
+
+    def test_the_embeddings_route_admits_only_float_string_inputs_within_the_bounds(self):
+        profile = Profile(self.embedding_document(maxBodyBytes=4096))
+        body = {"model":"lares-embed","input":["one","two"],"encoding_format":"float"}
+        self.assertEqual(profile.check_body("/v1/embeddings", self.embedding_body()), body)
+        self.assertEqual(profile.check_body("/v1/embeddings", self.embedding_body(input=["x"] * 32))["input"], ["x"] * 32)
+        bad_bodies = [
+            self.embedding_body(input=["x"] * 33), self.embedding_body(input=[]), self.embedding_body(input=""), self.embedding_body(input="one"),
+            self.embedding_body(input=[""]), self.embedding_body(input=["one", 2]), self.embedding_body(input=[[1, 2, 3]]), self.embedding_body(input=[1, 2]),
+            self.embedding_body(input=[None]), self.embedding_body(input={"a":"b"}),
+            self.embedding_body(encoding_format="base64"), self.embedding_body(encoding_format=None), self.embedding_body(encoding_format="Float"),
+            self.embedding_body(model="lares-brain"), self.embedding_body(model="lares-writer"), self.embedding_body(model="embed-model"), self.embedding_body(model=7),
+            self.embedding_body(dimensions=256), self.embedding_body(user="someone"), self.embedding_body(api_base="https://elsewhere.invalid"), self.embedding_body(extra_body={}),
+            json.dumps({"model":"lares-embed","input":["one"]}).encode(), json.dumps({"input":["one"],"encoding_format":"float"}).encode(),
+            b'{"model":"lares-embed","model":"lares-embed","input":["one"],"encoding_format":"float"}', b'[]', b'not json',
+            json.dumps({"model":"lares-embed","input":["x" * 5000],"encoding_format":"float"}).encode(),  # over maxBodyBytes
+        ]
+        for raw in bad_bodies:
+            with self.subTest(body=raw[:80]), self.assertRaises(Refused): profile.check_body("/v1/embeddings", raw)
+        # A profile without an embedding model has no embeddings route at all.
+        plain = Profile({key: value for key, value in self.extended_document(maxBodyBytes=4096).items()})
+        with self.assertRaises(Refused): plain.check_body("/v1/embeddings", self.embedding_body())
+
+    def test_chat_routes_refuse_the_embedding_alias_and_the_embeddings_route_refuses_chat_aliases(self):
+        profile = Profile(self.embedding_document(maxBodyBytes=4096))
+        chat = {"model":"lares-embed","messages":[{"role":"user","content":"hello"}],"max_tokens":123}
+        for path in ("/v1/messages", "/v1/chat/completions"):
+            with self.subTest(path=path), self.assertRaises(Refused): profile.check_body(path, json.dumps(chat).encode())
+            ok = {**chat, "model":"lares-writer"}
+            self.assertEqual(profile.check_body(path, json.dumps(ok).encode()), ok)
+        for alias in profile.chat_aliases():
+            with self.subTest(alias=alias), self.assertRaises(Refused): profile.check_body("/v1/embeddings", self.embedding_body(model=alias))
+        with self.assertRaises(Refused): profile.check_body("/v1/embeddings", json.dumps(chat).encode())
+        self.assertIn("/v1/embeddings", MODEL_ROUTES)
+        self.assertTrue(native_route_allowed(["/v1/embeddings"], "/v1/embeddings"))
+        self.assertTrue(native_route_allowed(["llm_api_routes"], "/v1/embeddings"))
+        self.assertFalse(native_route_allowed(["/v1/messages"], "/v1/embeddings"))
+
+    def embedding_reply(self, **changes):
+        reply = {"id":"emb-1","object":"list","model":"embed-model","data":[{"object":"embedding","index":0,"embedding":[0.5, -0.25]},{"object":"embedding","index":1,"embedding":[0.125, 1.0]}],
+                 "usage":{"prompt_tokens":9,"total_tokens":9,"completion_tokens":0}}
+        reply.update(changes)
+        return reply
+
+    def test_embedding_usage_is_input_tokens_only_and_anything_else_is_not_a_receipt(self):
+        evidence = TerminalEvidence("/v1/embeddings")
+        self.assertEqual(evidence.nonstream(self.embedding_reply()), {"inputTokens":9,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0})
+        # A provider that sends no completion_tokens, or no id, is still exact.
+        without = self.embedding_reply(usage={"prompt_tokens":9,"total_tokens":9}); del without["id"]
+        self.assertEqual(evidence.nonstream(without)["inputTokens"], 9)
+        bad_usages = [{"prompt_tokens":9,"total_tokens":10}, {"prompt_tokens":9,"total_tokens":9,"completion_tokens":1}, {"prompt_tokens":9,"total_tokens":10,"completion_tokens":1},
+                      {"prompt_tokens":-1,"total_tokens":-1}, {"prompt_tokens":"9","total_tokens":"9"}, {"prompt_tokens":9.0,"total_tokens":9}, {"prompt_tokens":True,"total_tokens":True},
+                      {"total_tokens":9}, {}, None, [], {"prompt_tokens":2**53,"total_tokens":2**53}]
+        for usage in bad_usages:
+            with self.subTest(usage=usage): self.assertIsNone(evidence.nonstream(self.embedding_reply(usage=usage)))
+        bad_replies = [self.embedding_reply(object="embedding"), self.embedding_reply(data=[]), self.embedding_reply(data="x"),
+                       self.embedding_reply(data=[{"object":"embedding","index":1}]), self.embedding_reply(data=[{"object":"embedding","index":True}]),
+                       self.embedding_reply(data=[{"object":"embedding","index":0},{"object":"embedding","index":0}]),
+                       self.embedding_reply(data=[{"object":"other","index":0}]), self.embedding_reply(data=[7]), [], None]
+        for reply in bad_replies:
+            with self.subTest(reply=str(reply)[:60]): self.assertIsNone(evidence.nonstream(reply))
+
+    def test_embedding_wire_evidence_reads_the_raw_bytes_with_a_four_mebibyte_cap(self):
+        from admission_contract import MAX_EMBEDDING_RESPONSE_BYTES
+        self.assertEqual(MAX_EMBEDDING_RESPONSE_BYTES, 4 * 1024 * 1024)
+        raw = json.dumps(self.embedding_reply()).encode()
+        evidence = WireEvidence("embedding", "application/json; charset=utf-8", 200)
+        for start in range(0, len(raw), 11): evidence.feed(raw[start:start + 11])
+        self.assertEqual(evidence.finish(), {"inputTokens":9,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0})
+        # A reply bigger than a chat reply may be is still fine, up to the embedding cap, and no further.
+        padded = json.dumps(self.embedding_reply(padding="x" * (MAX_RESPONSE_BYTES + 1000))).encode()
+        evidence = WireEvidence("embedding", "application/json", 200); evidence.feed(padded)
+        self.assertEqual(evidence.finish()["inputTokens"], 9)
+        chat_sized = WireEvidence("openai", "application/json", 200); chat_sized.feed(padded)
+        self.assertIsNone(chat_sized.finish())
+        too_big = WireEvidence("embedding", "application/json", 200); too_big.feed(b" " * (MAX_EMBEDDING_RESPONSE_BYTES + 1))
+        self.assertIsNone(too_big.finish()); self.assertEqual(too_big.buffer, b"")
+        # No streaming, no other status, no other content type.
+        for content_type, status in (("text/event-stream", 200), ("application/json", 400), ("text/plain", 200)):
+            refused = WireEvidence("embedding", content_type, status); refused.feed(raw)
+            self.assertIsNone(refused.finish(), (content_type, status))
 
     def test_profile_accepts_only_bounded_anthropic_eager_tool_streaming(self):
         profile = Profile({"version":1,"provider":"anthropic","model":"claude-sonnet-4-5","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":16384})
@@ -1172,7 +1307,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         runtime_class=next(node for node in source.body if isinstance(node,ast.ClassDef) and node.name=="Runtime")
         method=next(node for node in runtime_class.body if isinstance(node,ast.AsyncFunctionDef) and node.name=="before_http")
         exec(compile(ast.Module(body=[method],type_ignores=[]),"gateway-before-http","exec"),self.namespace)
-        runtime=types.SimpleNamespace(check_destination=lambda outgoing:None,check_runtime=lambda:None)
+        runtime=types.SimpleNamespace(check_destination=lambda outgoing,request=None:None,check_runtime=lambda:None)
         runtime.before_http=types.MethodType(self.namespace["before_http"],runtime)
         request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture")
         token=self.request_context.set(request)
@@ -1183,6 +1318,167 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(Refused): await runtime.before_http(types.SimpleNamespace(extensions={}))
             self.assertFalse(request._authored_refusal)
         finally: self.request_context.reset(token)
+
+    # The embeddings route through the same hooks as chat (the harness above is shared).
+    def embedding_profile(self):
+        return Profile({"version":1,"provider":"anthropic","model":"brain-model","providerBaseUrl":"https://provider.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate","lares-embed"],
+            "maxBodyBytes":4096,"maxOutputTokens":123,"embedding":{"alias":"lares-embed","provider":"openai","model":"embed-model","providerBaseUrl":"https://embed.invalid/v1","maxInputs":32,"maxInputTokens":8192}})
+
+    def test_the_litellm_call_types_are_pinned_per_route(self):
+        # Read from LiteLLM 1.101.6 (the pinned image): the proxy's embeddings endpoint dispatches with route type "aembedding"
+        # (proxy_server.py, base_process_llm_request(route_type="aembedding")), which is the pre-call hook's call_type; the
+        # deployment hook is given the wrapped function's own name, litellm.aembedding, through utils.client's wrapper_async.
+        hook = self.namespace["AdmissionHook"]
+        self.assertEqual(hook.PROXY_CALL_TYPES, {"/v1/messages":"anthropic_messages","/v1/chat/completions":"acompletion","/v1/embeddings":"aembedding"})
+        self.assertEqual(hook.EMBEDDING_DEPLOYMENT_CALL_TYPES, ("aembedding",))
+
+    async def test_embedding_deployment_call_is_one_aembedding_with_the_embedding_clients_route(self):
+        hook = self.namespace["AdmissionHook"]()
+        profile = self.embedding_profile()
+        self.runtime.profile.document.update(profile.document)
+        self.runtime.profile.route = profile.route
+        reached = []
+        async def client(request, provider): reached.append(provider); return "client"
+        self.runtime.client = client
+        kwargs = lambda **changes: {"model":"openai/embed-model","api_base":"https://embed.invalid/v1", **changes}
+        def fresh():
+            request = RequestState("POST","/v1/embeddings",b"{}","a"*64,"fixture"); request.pre_seen = True; request.allow = {}; request.alias = "lares-embed"
+            return request
+        request = fresh(); token = self.request_context.set(request)
+        try:
+            call = kwargs()
+            self.assertIs(await hook.async_pre_call_deployment_hook(call, "aembedding"), call)
+            self.assertEqual(reached, ["embedding"]); self.assertEqual(call["client"], "client")
+            self.assertEqual((call["num_retries"], call["max_retries"], call["rust"]), (0, 0, False))
+            # One call only: a second deployment call on the same request is refused.
+            with self.assertRaises(ValueError): await hook.async_pre_call_deployment_hook(kwargs(), "aembedding")
+        finally: self.request_context.reset(token)
+        for wrong_type in ("acompletion", "embedding", "anthropic_messages", None):
+            for changes in ({}, ):
+                request = fresh(); token = self.request_context.set(request); reached.clear()
+                try:
+                    with self.subTest(call_type=wrong_type), self.assertRaises(ValueError): await hook.async_pre_call_deployment_hook(kwargs(**changes), wrong_type)
+                    self.assertEqual(reached, []); self.assertTrue(request._authored_refusal)
+                finally: self.request_context.reset(token)
+        # Its own model and address, and no other alias's.
+        for bad in (kwargs(model="openai/brain-model"), kwargs(model="anthropic/brain-model"), kwargs(api_base="https://provider.invalid"), kwargs(api_base="https://embed.invalid/v1/")):
+            request = fresh(); token = self.request_context.set(request); reached.clear()
+            try:
+                with self.subTest(bad=bad), self.assertRaises(ValueError): await hook.async_pre_call_deployment_hook(bad, "aembedding")
+                self.assertEqual(reached, [])
+            finally: self.request_context.reset(token)
+
+    async def test_a_chat_call_type_is_refused_on_the_embeddings_route_and_the_other_way_round(self):
+        hook = self.namespace["AdmissionHook"]()
+        profile = self.embedding_profile()
+        self.runtime.profile.document.update(profile.document)
+        self.runtime.profile.route = profile.route
+        self.runtime.profile.digest = profile.digest
+        user = lambda request: types.SimpleNamespace(user_id="member", team_id="team", api_key=request.key_fingerprint, token=None)
+        for path, call_type in (("/v1/embeddings", "acompletion"), ("/v1/embeddings", "anthropic_messages"), ("/v1/embeddings", "embedding"),
+                                ("/v1/chat/completions", "aembedding"), ("/v1/messages", "aembedding")):
+            request = RequestState("POST", path, b"{}", "a"*64, "fixture"); request.ticket = "t"*43
+            rpc_calls = []
+            async def rpc(*args): rpc_calls.append(args); raise Refused()
+            self.runtime.rpc = rpc
+            token = self.request_context.set(request)
+            try:
+                with self.subTest(path=path, call_type=call_type), self.assertRaises(ValueError): await hook.async_pre_call_hook(user(request), None, {}, call_type)
+                self.assertEqual(rpc_calls, [])  # refused before the gate was even asked
+                self.assertTrue(request._authored_refusal)
+            finally: self.request_context.reset(token)
+
+    async def test_a_refused_admission_means_no_provider_client_and_no_provider_call(self):
+        hook = self.namespace["AdmissionHook"]()
+        profile = self.embedding_profile()
+        self.runtime.profile.document.update(profile.document)
+        self.runtime.profile.route = profile.route
+        self.runtime.profile.digest = profile.digest
+        self.runtime.profile.check_body = lambda path, raw: {"model":"lares-embed"}
+        providers = []
+        async def client(request, provider): providers.append(provider); return "client"
+        self.runtime.client = client
+        async def refusing_gate(*args): raise Refused()
+        self.runtime.rpc = refusing_gate
+        self.namespace["ADMIT_PATH"] = "/v1/gateway-budget/admit"
+        request = RequestState("POST", "/v1/embeddings", b"{}", "a"*64, "fixture"); request.ticket = "t"*43
+        token = self.request_context.set(request)
+        try:
+            user = types.SimpleNamespace(user_id="member", team_id="team", api_key=request.key_fingerprint, token=None)
+            with self.assertRaises(ValueError): await hook.async_pre_call_hook(user, None, {}, "aembedding")
+            self.assertTrue(request._authored_refusal); self.assertIsNone(request.allow)
+            # Even if LiteLLM went on to the deployment hook, there is no grant, so no provider client is ever built.
+            with self.assertRaises(ValueError): await hook.async_pre_call_deployment_hook({"model":"openai/embed-model","api_base":"https://embed.invalid/v1"}, "aembedding")
+            self.assertEqual(providers, [])
+            self.assertFalse(request.dispatched)
+        finally: self.request_context.reset(token)
+
+    async def test_settlement_names_the_embedding_format_and_charges_input_tokens_only(self):
+        source = ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
+        runtime_class = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "Runtime")
+        settle = next(node for node in runtime_class.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "settle")
+        namespace = {"hashlib": hashlib, "canonical": canonical, "SETTLE_PATH": "/v1/gateway-budget/settle", "Refused": Refused}
+        exec(compile(ast.Module(body=[settle], type_ignores=[]), "gateway-settle", "exec"), namespace)
+        sent = []
+        async def rpc(path, receipt): sent.append((path, receipt))
+        profile = self.embedding_profile()
+        runtime = types.SimpleNamespace(profile=profile, rpc=rpc)
+        runtime.settle = types.MethodType(namespace["settle"], runtime)
+        request = RequestState("POST", "/v1/embeddings", b"{}", "a"*64, "fixture"); request.alias = "lares-embed"
+        request.allow = {name: "x" for name in ("version", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias", "attemptId", "bindingId")}
+        request.dispatched = True
+        request.wire_usage = {"inputTokens":9,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0}
+        await runtime.settle(request, None)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual((sent[0][1]["format"], sent[0][1]["usage"]), ("embedding", request.wire_usage))
+        # The brain alias of the same profile still settles in the chat provider's own format.
+        again = RequestState("POST", "/v1/messages", b"{}", "a"*64, "fixture"); again.alias = "lares-brain"; again.allow = request.allow; again.dispatched = True
+        again.wire_usage = request.wire_usage
+        await runtime.settle(again, None)
+        self.assertEqual(sent[1][1]["format"], "anthropic")
+
+    def test_the_destination_is_each_aliass_own_address_and_path(self):
+        source = ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
+        runtime_class = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "Runtime")
+        method = next(node for node in runtime_class.body if isinstance(node, ast.FunctionDef) and node.name == "check_destination")
+        namespace = {"Refused": Refused}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "gateway-destination", "exec"), namespace)
+        runtime = types.SimpleNamespace(profile=self.embedding_profile())
+        runtime.check_destination = types.MethodType(namespace["check_destination"], runtime)
+        outgoing = lambda url, method="POST": types.SimpleNamespace(method=method, url=url)
+        embed, chat = types.SimpleNamespace(alias="lares-embed"), types.SimpleNamespace(alias="lares-writer")
+        runtime.check_destination(outgoing("https://embed.invalid/v1/embeddings"), embed)
+        runtime.check_destination(outgoing("https://provider.invalid/v1/messages"), chat)
+        for url, request, method in (("https://provider.invalid/v1/messages", embed, "POST"), ("https://embed.invalid/v1/embeddings", chat, "POST"),
+                                      ("https://embed.invalid/v1/chat/completions", embed, "POST"), ("https://embed.invalid/v1/embeddings?x=1", embed, "POST"),
+                                      ("https://embed.invalid/v1/embeddings", embed, "GET"), ("https://other.invalid/v1/embeddings", embed, "POST")):
+            with self.subTest(url=url, alias=request.alias, method=method), self.assertRaises(Refused): runtime.check_destination(outgoing(url, method), request)
+
+    def test_the_embedding_alias_and_its_key_come_and_go_together(self):
+        source = ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
+        function = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == "load_files")
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        base = pathlib.Path(directory.name)
+        service_key = base / "service-key"; service_key.write_bytes(bytes(range(32))); service_key.chmod(0o440)
+        def prepare(profile):
+            (base / "profile.json").write_text(json.dumps(profile.document if hasattr(profile.document, "keys") and False else dict(profile.document), default=lambda v: list(v) if isinstance(v, tuple) else dict(v)))
+            (base / "config.yaml").write_text(json.dumps(profile.expected_config()))
+        namespace = {"importlib": types.SimpleNamespace(metadata=types.SimpleNamespace(version=lambda name: "1.101.6")), "Profile": Profile, "parse_json": parse_json,
+                     "pathlib": pathlib, "os": os, "yaml": types.SimpleNamespace(safe_load=lambda raw: json.loads(raw), YAMLError=ValueError), "HASH": __import__("re").compile(r"[0-9a-f]{64}\Z"),
+                     "https_url": __import__("admission_contract").https_url, "urlsplit": __import__("urllib.parse").parse.urlsplit, "protected_key": __import__("admission_contract").protected_key, "Refused": Refused}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "gateway-load", "exec"), namespace)
+        environment = {"LARES_GATEWAY_PROFILE_FILE": str(base / "profile.json"), "CONFIG_FILE_PATH": str(base / "config.yaml"), "LARES_GATEWAY_ENDPOINT_HASH": "a" * 64,
+                       "LARES_GATEWAY_ADMISSION_URL": "https://admission.example.invalid", "LARES_GATEWAY_SERVICE_KEY_FILE": str(service_key)}
+        with_embedding, without = self.embedding_profile(), Profile({key: value for key, value in self.embedding_profile().document.items() if key != "embedding"} | {"aliases":["lares-brain","lares-writer","lares-utility","lares-gate"]})
+        for profile, key, loads in ((with_embedding, "sk-embed-fixture", True), (with_embedding, "", False), (with_embedding, None, False), (without, "sk-embed-fixture", False), (without, None, True)):
+            prepare(profile)
+            variables = {**environment, **({"LARES_EMBED_PROVIDER_KEY": key} if key is not None else {})}
+            with self.subTest(embedding="embedding" in profile.document, key=bool(key)), mock.patch.dict(os.environ, variables, clear=True):
+                if loads: self.assertEqual(namespace["load_files"]()[0].digest, profile.digest)
+                else:
+                    with self.assertRaises(Refused): namespace["load_files"]()
+
+
 
 
 class ModelRequestDiagnosticTests(unittest.TestCase):

@@ -162,7 +162,7 @@ def model_request_shape_checks(raw, profile, headers, path):
     """Return fixed request-shape metadata; malformed input never affects enforcement."""
     try:
         parsed = parse_json(raw)
-        allowed = {"model", "messages", "max_tokens", "max_completion_tokens", "stream", "stream_options", "temperature", "top_p", "stop", "stop_sequences", "system", "tools", "tool_choice", "parallel_tool_calls", "thinking", "metadata"}
+        allowed = {"model", "input", "encoding_format"} if path == "/v1/embeddings" else {"model", "messages", "max_tokens", "max_completion_tokens", "stream", "stream_options", "temperature", "top_p", "stop", "stop_sequences", "system", "tools", "tool_choice", "parallel_tool_calls", "thinking", "metadata"}
         unknown_fields = min(31, sum(name not in allowed for name in parsed) if type(parsed) is dict else 0)
         maximum = parsed.get("max_tokens", parsed.get("max_completion_tokens")) if type(parsed) is dict else None
         checks = {"anthropicBetaPresent": b"anthropic-beta" in headers,
@@ -283,6 +283,8 @@ def load_files():
         profile = Profile(parse_json(pathlib.Path(os.environ["LARES_GATEWAY_PROFILE_FILE"]).read_bytes()))
         config = yaml.safe_load(pathlib.Path(os.environ["CONFIG_FILE_PATH"]).read_bytes())
         profile.validate_config(config)
+        # The embedding alias and its provider key come and go together. A profile that names one without the other never starts.
+        if ("embedding" in profile.document) != bool(os.environ.get("LARES_EMBED_PROVIDER_KEY")): raise Refused()
         endpoint = os.environ["LARES_GATEWAY_ENDPOINT_HASH"]
         if not HASH.fullmatch(endpoint): raise Refused()
         gate_url = https_url(os.environ["LARES_GATEWAY_ADMISSION_URL"])
@@ -371,7 +373,7 @@ class OneShotTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, outgoing):
         request = self.request
         runtime.check_runtime()
-        runtime.check_destination(outgoing)
+        runtime.check_destination(outgoing, request)
         if request.policy is None or request.policy.context is None: raise Refused()
         # No await between consuming the right and invoking the physical transport.
         request.burn()
@@ -380,7 +382,7 @@ class OneShotTransport(httpx.AsyncBaseTransport):
             # independent of those extensions and shorter than native lock lifetime.
             async with asyncio.timeout(PHYSICAL_HEADER_SECONDS):
                 response = await self.inner.handle_async_request(outgoing)
-                evidence = WireEvidence(runtime.profile.document["provider"], response.headers.get("content-type", ""), response.status_code)
+                evidence = WireEvidence(runtime.profile.route(request.alias).format, response.headers.get("content-type", ""), response.status_code)
                 if response.headers.get("content-encoding", "identity").lower() != "identity": evidence.poisoned = True
                 response.stream = EvidenceStream(response.stream, evidence, request)
                 return response
@@ -629,11 +631,10 @@ class Runtime:
         if proxy_server.store_model_in_db or proxy_server.user_custom_auth is not None: raise Refused()
         self.validation_stage = "complete"
 
-    def check_destination(self, outgoing):
-        p = self.profile.document
-        base = p["providerBaseUrl"]
-        path = "/chat/completions" if p["provider"] == "openai" else "/v1/messages"
-        if outgoing.method != "POST" or str(outgoing.url) != base + path: raise Refused()
+    def check_destination(self, outgoing, request):
+        # The one address THIS alias is routed to: its own base and upstream path, never another alias's.
+        route = self.profile.route(request.alias)
+        if outgoing.method != "POST" or str(outgoing.url) != route.base + route.path: raise Refused()
 
     async def before_http(self, outgoing):
         request = current_request.get()
@@ -642,7 +643,7 @@ class Runtime:
             request = state()
             update_native_request_progress(request, "http-guard")
             if outgoing.extensions.get("lares.gateway.request") is not request: raise Refused()
-            self.check_destination(outgoing)
+            self.check_destination(outgoing, request)
             try: self.check_runtime()
             finally: update_native_request_progress(request, "http-guard", runtime_stage=runtime.validation_stage)
             request.fresh()
@@ -677,8 +678,10 @@ class Runtime:
             auth=GuardedClientAuth(request),
             event_hooks={"request": [self.before_http]})
         request.clients.append(client)
-        if provider == "openai":
-            return AsyncOpenAI(api_key=os.environ["LARES_MODEL_PROVIDER_KEY"], base_url=self.profile.document["providerBaseUrl"], max_retries=0, http_client=client)
+        if provider in ("openai", "embedding"):
+            # Chat and embeddings both speak the OpenAI wire; the key and the address come from this alias's route.
+            route = self.profile.route(request.alias)
+            return AsyncOpenAI(api_key=os.environ[route.key_env], base_url=route.base, max_retries=0, http_client=client)
         handler = AsyncHTTPHandler(timeout=PHYSICAL_HEADER_SECONDS, event_hooks={"request": [self.before_http]})
         original = handler.client
         handler.client = client
@@ -689,7 +692,7 @@ class Runtime:
         if request.terminal or request.closed or request.cancelled or request.allow is None or not request.dispatched: return
         receipt = {name: request.allow[name] for name in ("version", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias", "attemptId", "bindingId")}
         if request.wire_usage is None: return
-        receipt.update({"kind": "terminal-usage", "format": self.profile.document["provider"], "usage": request.wire_usage})
+        receipt.update({"kind": "terminal-usage", "format": self.profile.route(request.alias).format, "usage": request.wire_usage})
         receipt["receiptHash"] = hashlib.sha256(canonical(receipt)).hexdigest()
         request.terminal = True  # A lost reply is not permission to retry or release liability.
         try: await self.rpc(SETTLE_PATH, receipt)
@@ -708,6 +711,13 @@ def response_document(response):
 
 
 class AdmissionHook(CustomLogger):
+    # The call type the proxy hands the pre-call hook for each model route, read from the pinned LiteLLM (1.101.6):
+    # the proxy passes the route type it dispatches with. A route missing from this table is refused.
+    PROXY_CALL_TYPES = {"/v1/messages": "anthropic_messages", "/v1/chat/completions": "acompletion", "/v1/embeddings": "aembedding"}
+    # The call type of the one deployment call each route makes. The embeddings call is litellm.aembedding itself; it has no
+    # translation envelope, so it makes exactly one.
+    EMBEDDING_DEPLOYMENT_CALL_TYPES = ("aembedding",)
+
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict, traceback_str=None):
         request = current_request.get()
         update_native_request_progress(request, "failure-hook", nativeFailureHookEntered=True,
@@ -730,8 +740,7 @@ class AdmissionHook(CustomLogger):
             finally: update_native_request_progress(request, "runtime-check", runtime_stage=runtime.validation_stage)
             update_native_request_progress(request, "runtime-check", nativeRuntimeCheckPassed=True)
             update_native_request_progress(request, "call-type")
-            expected = "anthropic_messages" if request.path == "/v1/messages" else "acompletion"
-            if call_type != expected: raise Refused()
+            if call_type != self.PROXY_CALL_TYPES.get(request.path): raise Refused()
             update_native_request_progress(request, "call-type", nativeCallTypeMatched=True)
             update_native_request_progress(request, "identity")
             if not user_api_key_dict.user_id or not user_api_key_dict.team_id: raise Refused()
@@ -775,13 +784,15 @@ class AdmissionHook(CustomLogger):
             if target not in (route.model, route.litellm_model): raise Refused()
             if kwargs.get("api_base") != route.base: raise Refused()
             phases = request.deployment_phases
-            expected = ["anthropic_messages"] if request.path == "/v1/messages" else ["acompletion"]
-            if request.path == "/v1/messages" and p["provider"] == "openai": expected.append("acompletion")
+            if request.path == "/v1/embeddings": expected = list(self.EMBEDDING_DEPLOYMENT_CALL_TYPES)
+            else:
+                expected = ["anthropic_messages"] if request.path == "/v1/messages" else ["acompletion"]
+                if request.path == "/v1/messages" and p["provider"] == "openai": expected.append("acompletion")
             if phases != expected[:len(phases)] or len(phases) >= len(expected) or kind != expected[len(phases)]: raise Refused()
             phases.append(kind)
             # An approved translation envelope does not dispatch. Its one leaf gets
             # the target-specific client and shares exactly the same request state.
-            if len(phases) == len(expected): kwargs["client"] = await runtime.client(request, p["provider"])
+            if len(phases) == len(expected): kwargs["client"] = await runtime.client(request, route.format)
             kwargs.update({"num_retries": 0, "max_retries": 0, "rust": False})
             return kwargs
         except Refused:
@@ -793,7 +804,8 @@ class AdmissionHook(CustomLogger):
 
     async def async_post_call_success_hook(self, data, user_api_key_dict, response):
         request = state()
-        usage = TerminalEvidence(request.path).nonstream(response_document(response))
+        # An embeddings reply is settled only from the provider's own bytes (the transport's evidence), never the SDK's rebuilt object.
+        usage = request.wire_usage if request.path == "/v1/embeddings" else TerminalEvidence(request.path).nonstream(response_document(response))
         if request.dispatched and usage is not None:
             await runtime.settle(request, usage)
         return response
