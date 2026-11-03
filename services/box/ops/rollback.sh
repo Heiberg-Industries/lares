@@ -58,7 +58,8 @@ OPS_DIR="${LARES_OPS_DIR:-$HERE}"
 BOX_DIR="${LARES_BOX_DIR:-$(cd "$HERE/.." && pwd)}"
 # The same names ops/update.sh uses, so a rollback reads exactly the files the update wrote —
 # the installer's own path (F1: $PREFIX/opt/lares/compose.yaml — one file, no override).
-if [ "${LARES_PREFIX+x}" = x ]; then ADMISSION_PREFIX="$LARES_PREFIX"; else ADMISSION_PREFIX=/; fi
+# Empty is the real server (see ops/update.sh): it must read as `/`.
+if [ -n "${LARES_PREFIX:-}" ]; then ADMISSION_PREFIX="$LARES_PREFIX"; else ADMISSION_PREFIX=/; fi
 if [ "${DB_COMPOSE_DIR+x}" = x ]; then COMPOSE_DIR="$DB_COMPOSE_DIR"
 elif [ "$ADMISSION_PREFIX" != / ]; then COMPOSE_DIR=""
 else COMPOSE_DIR="${ADMISSION_PREFIX%/}/opt/lares"; fi

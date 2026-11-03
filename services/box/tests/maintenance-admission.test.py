@@ -181,6 +181,31 @@ class MaintenanceAdmissionTests(unittest.TestCase):
             self.assertEqual(custody.main([*args, "--test-owner"]), 0)
             validate.assert_called_once_with(*args[2:], test_owner=True)
 
+    def test_update_and_rollback_read_the_empty_prefix_of_a_real_server_as_root(self) -> None:
+        # `lares` exports LARES_PREFIX="" on a real server. Read as an empty prefix, the target
+        # check refused every update and rollback there.
+        seen = self.root / "prefixes"
+        bindir = self.root / "prefix-bin"
+        bindir.mkdir()
+        stub = bindir / "python3"
+        stub.write_text(f"#!/bin/sh\n[ \"$2\" = validate-update-target ] && "
+                        f"{{ printf '[%s]\\n' \"$3\" >> '{seen}'; exit 1; }}\nexec {sys.executable} \"$@\"\n",
+                        encoding="utf8")
+        stub.chmod(0o755)
+        (self.root / "release.json").write_text("{}\n", encoding="ascii")
+        cases = [("update.sh", ("--release", str(self.root / "release.json"), "--dry-run")),
+                 ("rollback.sh", ("--dry-run",))]
+        for script, args in cases:
+            for prefix, expected in (("", "[/]"), (str(self.root), f"[{self.root}]")):
+                with self.subTest(script=script, prefix=prefix):
+                    seen.unlink(missing_ok=True)
+                    env = {"PATH": f"{bindir}:/usr/bin:/bin", "LARES_PREFIX": prefix,
+                           "DB_COMPOSE_DIR": str(self.root / "opt/lares")}
+                    result = subprocess.run(["/bin/bash", str(OPS / script), *args], env=env,
+                                            text=True, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+                    self.assertEqual(seen.read_text(encoding="utf8").splitlines()[:1], [expected])
+
     def _run_installed(self, prefix: Path, installed: Path, script: str,
                        *args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         env = self._test_env(prefix, **(extra_env or {}))
