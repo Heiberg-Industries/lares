@@ -18,6 +18,7 @@ import {
 } from "./notion-reader.js";
 import { linkOrigin, mapPageToClip, type ClipSource } from "./record.js";
 import { clippingPass, type ClippingStepDeps } from "./step.js";
+import type { InboxPort } from "./sync.js";
 import {
   findDuplicate, getItem, loadNotionSources, readClippingChoice, type Queryable,
 } from "./store.js";
@@ -105,7 +106,7 @@ const NO_KEY = new ClippingFailure(
   "Add the Notion key and switch clipping on first.",
 );
 
-function keyFor(deps: ClippingStepDeps): string {
+function keyFor(deps: RequestDeps): string {
   const key = deps.token();
   if (key.kind === "none") throw NO_KEY;
   if (key.kind === "unreadable") {
@@ -175,7 +176,7 @@ function mappingFromParams(params: Record<string, unknown>): ClipSource | null {
 }
 
 async function runTest(
-  deps: ClippingStepDeps, client: NotionLike, params: Record<string, unknown>,
+  deps: RequestDeps, client: NotionLike, params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const saved = (await loadNotionSources(deps.db))[0] ?? null;
   const proposed = mappingFromParams(params);
@@ -245,14 +246,24 @@ async function recentLinkOrigins(
 
 // --- import ----------------------------------------------------------------------------------
 
-async function runImport(deps: ClippingStepDeps): Promise<RequestOutcome> {
+/** The requests share the step's deps, except that the Vault inbox may be missing: an engine-image
+ *  install gives the agent no Vault folder, and only an import writes there. */
+export type RequestDeps = Omit<ClippingStepDeps, "inbox"> & { inbox: InboxPort | null };
+
+async function runImport(deps: RequestDeps): Promise<RequestOutcome> {
+  if (!deps.inbox) {
+    throw new ClippingFailure(
+      "not-configured", "This install cannot save clippings to the Vault yet, so nothing was imported.",
+      "Reading a database, testing the columns and adding columns still work.",
+    );
+  }
   if ((await readClippingChoice(deps.db)) === "karakeep") {
     throw new ClippingFailure(
       "not-configured", "Clipping is set to Karakeep only, so Notion was not read.",
       "Change the source to Notion or Both, then import.",
     );
   }
-  const r = await clippingPass(deps);
+  const r = await clippingPass({ ...deps, inbox: deps.inbox });
   if (r.outcome === "ok") {
     return { status: "done", outcome: "ok", detail: r.detail, result: { imported: r.imported, ...(r.counts ?? {}) } };
   }
@@ -301,7 +312,7 @@ export async function addMissingProperties(client: NotionLike, dataSourceId: str
 }
 
 async function runAddProperties(
-  deps: ClippingStepDeps, client: NotionLike, params: Record<string, unknown>,
+  deps: RequestDeps, client: NotionLike, params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const dataSourceId = str(params["dataSourceId"]) ?? (await loadNotionSources(deps.db))[0]?.dataSourceId ?? null;
   if (!dataSourceId) {
@@ -315,7 +326,7 @@ async function runAddProperties(
 // --- one request, and the drain --------------------------------------------------------------
 
 /** Run one claimed request to an outcome. Never throws: every failure is an outcome. */
-export async function runRequest(deps: ClippingStepDeps, req: ClippingRequest): Promise<RequestOutcome> {
+export async function runRequest(deps: RequestDeps, req: ClippingRequest): Promise<RequestOutcome> {
   try {
     if (req.kind === "import") return await runImport(deps);
     const result = await withBudget(deps.budgetMs ?? STEP_BUDGET_MS, async () => {
@@ -335,7 +346,7 @@ export async function runRequest(deps: ClippingStepDeps, req: ClippingRequest): 
 }
 
 /** Answer up to `max` pending requests, oldest first. Returns how many were answered. */
-export async function drainRequests(deps: ClippingStepDeps, max = MAX_PER_TICK): Promise<number> {
+export async function drainRequests(deps: RequestDeps, max = MAX_PER_TICK): Promise<number> {
   await failStaleClaims(deps.db);
   let handled = 0;
   while (handled < max) {
