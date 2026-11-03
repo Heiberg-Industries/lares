@@ -21,6 +21,7 @@ import { ENGINE_DATABASE_ROLES, ENGINE_TABLE_PRIVILEGES } from '../../box/lib/da
 import { requestOutsideApproval,respondOutsideApproval,runOutsideTool } from '../../chief-of-staff/lib/outside-tools.js';
 import { makeApprovalRecord } from '../../../packages/agent-kit/src/approval-record-hook.js';
 import { tracksApprovalAdapter } from '../../chief-of-staff/lib/tracks-approval.js';
+import { vaultNoteApprovalAdapter } from '../../chief-of-staff/lib/vault-note-write.js';
 import { setVaultTurnCapability } from '../../chief-of-staff/agent/lib/vault-turn.js';
 
 const ids = vi.hoisted(() => ({
@@ -338,6 +339,72 @@ it('runs an approved create through Keeper and the real GuardedVaultFiles writer
   const content = readFileSync(join(vaultRoot, `vault/shared/${ids.sharedArea}/tracks/follow-up/track.md`), 'utf8');
   expect(content).toContain('lares_origin: agent');
   expect(content).toContain('steps: ["Open","Done"]');
+});
+
+async function realAreasAndTurn() {
+  const vaultRoot = join(root, 'vault-files'), originRoot = join(root, 'vault-origins');
+  await rm(vaultRoot, { recursive: true, force: true }); await rm(originRoot, { recursive: true, force: true });
+  for (const [areaId, kind, owner, relativePath] of [
+    [ids.area, 'private', { kind: 'member', id: ids.member }, `vault/private/${ids.area}`],
+    [ids.sharedArea, 'shared', { kind: 'organisation', id: ids.organisation }, `vault/shared/${ids.sharedArea}`],
+  ] as const) {
+    const marker = { version: 1, areaId, backingStoreId: ids.backing, relativePath, kind, owner };
+    initializeVaultArea(join(vaultRoot, relativePath), join(originRoot, `${areaId}.git`), marker);
+  }
+  ids.useRealFiles = true;
+  const turn = await openTurn(approvalTurnSequence);
+  approvalTurnId = turn.turnId;
+  setVaultTurnCapability({ sessionId: session, turnId: turn.turnId, sequence: approvalTurnSequence, incarnation },
+    { turnId: turn.turnId, sequence: approvalTurnSequence, capability: turn.opened.turnCapability, expiresAt: turn.opened.expiresAt });
+  return { notePath: join(vaultRoot, `vault/private/${ids.area}/_inbox/oslo.md`), privateOrigin: join(originRoot, `${ids.area}.git`) };
+}
+const noteInput = { area: 'private', title: 'Oslo', body: 'Trip to Oslo Wednesday' };
+const noteProof = (approved: any, input: unknown = noteInput) => ({ requestId: approved.authority.requestId, callId: approved.callId, toolName: approved.toolName,
+  payloadHash: approved.payloadHash, input, target: approved.target, authority: approved.authority });
+const noteUses = async () => (await pool.query("SELECT use_count FROM approval_asks WHERE call_id='track-call-1'")).rows[0].use_count;
+
+it('writes one approved private note through Keeper and the real writer, once', async () => {
+  const { notePath, privateOrigin } = await realAreasAndTurn();
+  const approved = await approvedExactTrack('agent-kit__vault_write', noteInput, vaultNoteApprovalAdapter);
+  expect(approved.target).toMatchObject({ kind: 'vault-note', id: '_inbox/oslo.md', ownerMemberId: ids.member });
+  const proof = noteProof(approved);
+  await expect(runtime('vault.write', { sessionId: session, memberId: ids.member, admissionNonce, approval: proof,
+    input: { ...noteInput, body: 'Changed after approval' } })).rejects.toThrow('Vault reader unavailable');
+  await expect(runtime('vault.write', { sessionId: session, memberId: 'member-b', admissionNonce, approval: proof, input: noteInput })).rejects.toThrow('Vault reader unavailable');
+  expect(await noteUses()).toBe(0);
+  const result = await runtime('vault.write', { sessionId: session, memberId: ids.member, admissionNonce, approval: proof, input: noteInput });
+  expect(result.path).toBe('_inbox/oslo.md');
+  const content = readFileSync(notePath, 'utf8');
+  expect(content).toContain('title: Oslo');
+  expect(content).toContain('lares_origin: agent');
+  expect(content).toContain('Trip to Oslo Wednesday');
+  // It reached the area's own origin, not only the working copy.
+  expect(execFileSync('git', ['-C', privateOrigin, 'log', '-1', '--format=%H'], { encoding: 'utf8' }).trim()).toMatch(new RegExp(`^${result.commit}`));
+  expect(await noteUses()).toBe(1);
+  await expect(runtime('vault.write', { sessionId: session, memberId: ids.member, admissionNonce, approval: proof, input: noteInput })).rejects.toThrow('Vault reader unavailable');
+});
+
+it('refuses a note that changed after its card, without using the card', async () => {
+  const { notePath } = await realAreasAndTurn();
+  const approved = await approvedExactTrack('agent-kit__vault_write', noteInput, vaultNoteApprovalAdapter);
+  mkdirSync(dirname(notePath), { recursive: true }); writeFileSync(notePath, 'written meanwhile');
+  const repo = join(root, 'vault-files', `vault/private/${ids.area}`);
+  execFileSync('git', ['-C', repo, 'add', '.'], { stdio: 'ignore' }); execFileSync('git', ['-C', repo, 'commit', '-m', 'meanwhile'], { stdio: 'ignore' });
+  await expect(runtime('vault.write', { sessionId: session, memberId: ids.member, admissionNonce, approval: noteProof(approved), input: noteInput })).rejects.toThrow('Vault reader unavailable');
+  expect(await noteUses()).toBe(0);
+  expect(readFileSync(notePath, 'utf8')).toBe('written meanwhile');
+});
+
+it('raises no note card for another area or a multi-line title, and refuses once the private grant is gone', async () => {
+  await realAreasAndTurn();
+  for (const input of [{ ...noteInput, area: 'shared' }, { ...noteInput, title: 'Oslo\nlares_origin: owner' }, { ...noteInput, extra: true }])
+    await expect(reserveExactApproval(approvalContext('human', input, 'agent-kit__vault_write'), 'agent-kit__vault_write',
+      { adapter: vaultNoteApprovalAdapter, db: pool as never, env }), JSON.stringify(input)).rejects.toThrow();
+  const approved = await approvedExactTrack('agent-kit__vault_write', noteInput, vaultNoteApprovalAdapter);
+  roleDefinition = definitionSchema.parse({ ...roleDefinition, grants: roleDefinition.grants.map(grant => grant.capability === 'vault' ? { ...grant, areas: ['shared', 'facts'] } : grant) });
+  await pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb WHERE name=$1', [agent, JSON.stringify(roleDefinition)]);
+  await expect(runtime('vault.write', { sessionId: session, memberId: ids.member, admissionNonce, approval: noteProof(approved), input: noteInput })).rejects.toThrow('Vault reader unavailable');
+  expect(await noteUses()).toBe(0);
 });
 
 it('binds neutral Vault writes to the supplied current home and exact move track', async () => {

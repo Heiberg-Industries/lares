@@ -20,6 +20,8 @@ import { outsidePayloadHash } from '@lares/agent-kit/outside-execution-receipts'
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
 import { turnAuthoritySchema, vaultWriteBindingSchema } from '@lares/agent-kit/authority-contract';
 import { VaultTracksHome, type TrackFileWriter } from '@lares/agent-kit/tracks';
+import { parseVaultNoteInput, vaultNoteFrontmatter, vaultNotePath, vaultNoteTargetFingerprint, VAULT_NOTE_WRITE_POLICY,
+  VAULT_NOTE_WRITE_TOOL } from '@lares/agent-kit/vault-note-write';
 import type { OutsideCustodyStore, OutsideToolCallRequest } from './outside-custody.js';
 import { loadVaultStorageInventory, verifyVaultStorageMetadata } from '@lares/agent-box/lib/vault-storage.js';
 
@@ -85,13 +87,21 @@ function trackTargetPath(tool:string,raw:unknown,reserved:unknown):string{
  }
  return path;
 }
+// What differs between the two approved Vault writes: a Track change in the one shared area, or a
+// new note in the member's own private area. Every check below runs the same for both.
+type ApprovedWrite={tools:ReadonlySet<string>;area:'shared'|'private';policy:string;targetPath:(tool:string,raw:unknown,reserved:unknown)=>string;requestedArea:(tool:string,raw:Record<string,unknown>)=>string|undefined};
+const TRACK_WRITE:ApprovedWrite={tools:TRACK_WRITE_TOOLS,area:'shared',policy:'tracks-write-policy-v1',targetPath:trackTargetPath,
+ requestedArea:(tool,raw)=>tool==='track_add_item'||tool==='track_move_item'?String(raw.home).slice('vault:'.length):undefined};
+const NOTE_WRITE:ApprovedWrite={tools:new Set([VAULT_NOTE_WRITE_TOOL]),area:'private',policy:VAULT_NOTE_WRITE_POLICY,requestedArea:()=>undefined,
+ targetPath:(_tool,raw,reserved)=>{const target=object(reserved),path=vaultNotePath(parseVaultNoteInput(raw).title);
+  if(target.kind!=='vault-note'||target.id!==path||typeof target.ownerMemberId!=='string')throw new Error('approval');return path;}};
 async function trackArea(db:AuthorityPool,agent:string,incarnation:string,proof:Record<string,unknown>,operation:string,rawInput:unknown,
- lockApproval=false,claimed=false,use?:(client:any,meta:any)=>Promise<unknown>):Promise<any>{
+ lockApproval=false,claimed=false,use?:(client:any,meta:any)=>Promise<unknown>,write:ApprovedWrite=TRACK_WRITE):Promise<any>{
  const sessionId=proof.sessionId,memberId=proof.memberId,nonce=proof.admissionNonce,approval=object(proof.approval),requestId=approval.requestId,callId=approval.callId,tool=approval.toolName;
  if(typeof sessionId!=='string'||typeof memberId!=='string'||typeof nonce!=='string'||typeof requestId!=='string'||typeof callId!=='string'||typeof tool!=='string'||
-   !TRACK_WRITE_TOOLS.has(tool)||tool!==operation||payloadFingerprint(tool,rawInput)!==approval.payloadHash||payloadFingerprint(tool,rawInput)!==payloadFingerprint(tool,approval.input))throw new Error('approval');
- const target=object(approval.target),path=trackTargetPath(tool,rawInput,target);
- const raw=object(rawInput),requestedArea=tool==='track_add_item'||tool==='track_move_item'?String(raw.home).slice('vault:'.length):undefined;
+   !write.tools.has(tool)||tool!==operation||payloadFingerprint(tool,rawInput)!==approval.payloadHash||payloadFingerprint(tool,rawInput)!==payloadFingerprint(tool,approval.input))throw new Error('approval');
+ const target=object(approval.target),path=write.targetPath(tool,rawInput,target);
+ const raw=object(rawInput),requestedArea=write.requestedArea(tool,raw);
  const execution=await authorityTransaction(db,async client=>{
   const rows=await client.query(`SELECT call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,used_at
     FROM approval_asks WHERE call_id=$1 ${lockApproval?'FOR UPDATE':''}`,[callId]);
@@ -113,13 +123,13 @@ async function trackArea(db:AuthorityPool,agent:string,incarnation:string,proof:
     WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending
     AND a.status='valid' AND r.applied_definition IS NOT NULL FOR SHARE OF r,a`,[agent,incarnation]);
   if(defRows.rows.length!==1)throw new Error('policy');const definition=parseDefinition(defRows.rows[0]!.applied_definition);
-  if(!canWriteVaultArea(definition,'shared')||payloadFingerprint('tracks-write-policy-v1',{definition,hash:defRows.rows[0]!.hash})!==reservation.policyHash)throw new Error('policy');
+  if(!canWriteVaultArea(definition,write.area)||payloadFingerprint(write.policy,{definition,hash:defRows.rows[0]!.hash})!==reservation.policyHash)throw new Error('policy');
   if(!['agent','synced','third_party'].includes(String(storedTarget.approvedOrigin)))throw new Error('approval');
   const member=await currentMember(client as never,memberId);if(!member)throw new Error('member');
   const inventory=loadVaultStorageInventory();await verifyVaultStorageMetadata(client as never,inventory,true);
-  const areaRows=await client.query("SELECT id,revision FROM vault_areas WHERE organisation_id=$1 AND kind='shared' AND status='active' ORDER BY id LIMIT 513",[member.organisationId]);
+  const areaRows=await client.query("SELECT id,revision FROM vault_areas WHERE organisation_id=$1 AND kind=$2 AND status='active' ORDER BY id LIMIT 513",[member.organisationId,write.area]);
   if(areaRows.rows.length>512)throw new Error('areas');const vault=new PgVaultStore(),matches=[] as {areaId:string;revision:number}[];
-  for(const area of areaRows.rows){if(!inventory.areas.some(x=>x.areaId===area.id&&x.kind==='shared'))throw new Error('inventory');
+  for(const area of areaRows.rows){if(!inventory.areas.some(x=>x.areaId===area.id&&x.kind===write.area))throw new Error('inventory');
    const binding=await vault.vaultAreaBinding(memberId,{areaId:String(area.id),expectedRevision:Number(area.revision),permission:'edit'},{db:client as never,requiredBackingKind:'git'});
    if(binding)matches.push({areaId:String(area.id),revision:Number(area.revision)});
   }
@@ -379,6 +389,30 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    else if(action==='track_add_item')result=await home.addItem(actionInput.trackId,actionInput.who,actionInput.step,actionInput.note,actionInput.sourceSignal);
    else result=await home.moveItem(actionInput.itemId,actionInput.step,actionInput.note,actionInput.sourceSignal);
    assertNotAborted();return {result,origin:target.approvedOrigin};
+  }
+  if(op==='vault.write'){
+   // One new note in the member's own private area, from one exact approved card. The card's
+   // target is the note's bytes when it was shown; a note changed since then is refused.
+   const rawInput=input.input,approval=object(input.approval),note=parseVaultNoteInput(rawInput);
+   const proof={sessionId:input.sessionId,memberId:input.memberId,admissionNonce:input.admissionNonce,approval};
+   const target=object(approval.target),path=vaultNotePath(note.title);
+   const context=async<T>(claimed:boolean,write:boolean,use:(files:GuardedVaultFiles,ctx:{memberId:string;areaId:string;expectedRevision:number;db:any})=>Promise<T>)=>
+    await trackArea(pool,agent as string,incarnation as string,proof,VAULT_NOTE_WRITE_TOOL,rawInput,write&&!claimed,claimed,async(db:any,meta:any)=>{
+     assertNotAborted();const testPaths=socketOptions.vaultFilesForTests;
+     const backings:VaultFilesBackings=new Map([[meta.inventory.backing.id,{kind:'git',root:testPaths?.root??'/srv',areas:new Map<string,{origin:string}>(meta.inventory.areas.map((a:any)=>[a.areaId,{origin:testPaths?join(testPaths.originRoot,`${a.areaId}.git`):a.origin}]))}]]);
+     return await use(new GuardedVaultFiles(new PgVaultStore(),backings),{memberId:meta.memberId,areaId:meta.areaId,expectedRevision:meta.revision,db});
+    },NOTE_WRITE);
+   const before=await context(false,false,async(files,ctx)=>{
+    try{return await files.read(ctx,path);}catch(error){if(error instanceof NoteNotFoundError)return undefined;throw error;}
+   });
+   if(vaultNoteTargetFingerprint(before?.content??null)!==target.fingerprint)throw new Error('note target changed');
+   await context(false,true,async()=>undefined); // Durable one-use claim. A failed commit needs a new approval.
+   const written=await context(true,false,async(files,ctx)=>{
+    const binding=vaultWriteBindingSchema.parse({areaId:ctx.areaId,relativePath:path,expectedContentRevision:before?.contentRevision??null,
+     accessRevision:ctx.expectedRevision,approvedOrigin:target.approvedOrigin,authority:(approval.authority as Record<string,unknown>)});
+    return await files.write(ctx,{binding,frontmatter:vaultNoteFrontmatter(note),body:note.body});
+   });
+   assertNotAborted();return {path,commit:written.commit};
   }
   throw new Error('operation');
  }

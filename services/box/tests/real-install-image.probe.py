@@ -61,6 +61,10 @@ APPROVAL_TRACK = "proof-track"
 APPROVAL_INPUT = {"trackId": APPROVAL_TRACK, "name": "Proof track", "purpose": "Shows an approval answer reaches the tool.",
                   "steps": ["Open", "Done"], "closingSteps": ["Done"]}
 APPROVAL_REPLY = "PROOF_APPROVED_TOOL_RAN"
+NOTE_PROMPT = "PROOF_ASK_NOTE please save the note."
+NOTE_TOOL = "agent-kit__vault_write"
+NOTE_INPUT = {"area": "private", "title": "Proof note", "body": "PROOF_NOTE_BODY saved from an approved card."}
+NOTE_REPLY = "PROOF_APPROVED_NOTE_SAVED"
 TOOL_REPLY = "PROOF_TOOL_RESULT_RECEIVED"
 FOLLOW_UP_REPLY = "PROOF_CONVERSATION_KEPT"
 MEMBER_LIMIT = "15"
@@ -251,6 +255,7 @@ def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixtur
         "toolPrompt": "PROOF_USE_A_TOOL", "followUpPrompt": "PROOF_CARRY_ON", "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
         "toolPreference": ["tracks_list", "vault_list"],
         "approvalPrompt": "PROOF_ASK_APPROVAL", "approvalTool": APPROVAL_TOOL, "approvalInput": APPROVAL_INPUT, "approvalReply": APPROVAL_REPLY,
+        "notePrompt": "PROOF_ASK_NOTE", "noteTool": NOTE_TOOL, "noteInput": NOTE_INPUT, "noteReply": NOTE_REPLY,
     }))
     run("docker", "run", "-d", "--name", "proof-fake", "--restart", "unless-stopped", "--user", "0:0", "--entrypoint", "node",
         "-v", f"{fixture}:/fixture", fixture_image, "/fixture/fake-internet.mjs", "serve", "/fixture")
@@ -521,7 +526,7 @@ def main(argv: list[str]) -> int:
         settings_file = work / "browser.json"
         settings_file.write_text(json.dumps({
             "domain": DOMAIN, "agent": AGENT, "memberLimit": MEMBER_LIMIT, "toolPrompt": TOOL_PROMPT, "followUpPrompt": FOLLOW_UP_PROMPT,
-            "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY, "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
+            "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "notePrompt": NOTE_PROMPT, "noteReply": NOTE_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY, "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
             "screenshotDir": str(shots),
         }))
         browser("discover-owner", settings_file, tls)
@@ -567,6 +572,11 @@ def main(argv: list[str]) -> int:
             passed("approval-answer-ran-the-tool-and-wrote-the-file")
         else:
             deferred.append(f"the approved tool did not write its one file: {written}")
+        notes = list(pathlib.Path("/srv/vault").rglob("private/*/_inbox/proof-note.md"))
+        if len(notes) == 1 and "PROOF_NOTE_BODY" in notes[0].read_text():
+            passed("approved-vault-note-was-written-to-the-private-area")
+        else:
+            deferred.append(f"the approved Vault note did not write its one private file: {notes}")
         deadline = time.monotonic() + 60
         while True:
             attempts = read_only_query("SELECT state, count(*) FROM budget_attempts GROUP BY state ORDER BY state", release)

@@ -50,8 +50,8 @@ const steps = {
     await page.getByRole("button", { name: "Save initial limit" }).click();
     await page.getByText("Initial monthly limit saved.").waitFor({ timeout: 60_000 });
   },
-  // A tool that just runs, a tool that needs the owner's answer on its card, then one more message
-  // in the same conversation.
+  // A tool that just runs, a Track change and a Vault note that each need the owner's answer on
+  // their card, then one more message in the same conversation.
   async chat(page) {
     await page.goto(`${origin}/chat/${settings.agent}`);
     const send = async (text) => {
@@ -70,6 +70,10 @@ const steps = {
     await page.locator(".lares-actions button", { hasText: /approve/i }).first().click({ timeout: STEP_MS });
     await page.locator(".lares-message-agent", { hasText: settings.approvalReply }).first().waitFor({ timeout: STEP_MS });
     console.log(`the answered card says: ${await page.locator(".lares-approval-note").first().innerText().catch(() => "(nothing)")}`);
+    await send(settings.notePrompt);
+    await page.locator(".lares-actions button", { hasText: /approve/i }).last().click({ timeout: STEP_MS });
+    await page.locator(".lares-message-agent", { hasText: settings.noteReply }).first().waitFor({ timeout: STEP_MS });
+    console.log(`the answered note card says: ${await page.locator(".lares-approval-note").last().innerText().catch(() => "(nothing)")}`);
     await send(settings.followUpPrompt);
     await page.locator(".lares-message-agent", { hasText: settings.followUpReply }).first().waitFor({ timeout: STEP_MS });
     if (await page.getByText("This conversation is unavailable").count()) throw new Error("The conversation became unavailable");

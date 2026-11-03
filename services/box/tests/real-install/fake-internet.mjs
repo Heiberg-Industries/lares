@@ -102,11 +102,15 @@ function serve(fixture) {
     const everything = messages.map(textOf).join("\n");
     if (blocks.some((block) => block.type === "tool_result")) {
       const called = messages.flatMap((message) => Array.isArray(message.content) ? message.content.filter((block) => block.type === "tool_use") : []).at(-1);
-      return { text: called?.name === settings.approvalTool ? settings.approvalReply : settings.toolReply };
+      return { text: called?.name === settings.approvalTool ? settings.approvalReply
+        : called?.name === settings.noteTool ? settings.noteReply : settings.toolReply };
     }
     const asked = textOf(last);
     if (asked.includes(settings.approvalPrompt)) {
       return toolNames.includes(settings.approvalTool) ? { tool: settings.approvalTool, input: settings.approvalInput } : { text: "PROOF_NO_USABLE_TOOL" };
+    }
+    if (asked.includes(settings.notePrompt)) {
+      return toolNames.includes(settings.noteTool) ? { tool: settings.noteTool, input: settings.noteInput } : { text: "PROOF_NO_USABLE_TOOL" };
     }
     if (asked.includes(settings.toolPrompt)) {
       const tool = settings.toolPreference.find((name) => toolNames.includes(name));

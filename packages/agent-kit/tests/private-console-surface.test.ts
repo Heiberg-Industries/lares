@@ -9,7 +9,7 @@ const keys=await import(`${dist}context/keys.js`);
 const {dispatchDynamicToolEvent}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
 const {buildDynamicTools,replayDynamicTools}=await import(`${dist}context/build-dynamic-tools.js`);
 const {clearDurableDynamicCallbacks}=await import(`${dist}tools/durable-callbacks.js`);
-import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateRoleInstructions,privateConsoleTracePolicy} from '../src/private-console-surface.js';
+import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateRoleInstructions,privateConsoleTracePolicy} from '../src/private-console-surface.js';
 import {definitionModel} from '../src/definition-model.js';
 import {defineDurableCallback,defineDurableSchema,defineDynamic,defineTool} from 'eve/tools';
 import {z} from 'zod';
@@ -39,6 +39,15 @@ it('private tools are an intersection and native/source-free controls keep their
  expect(privateConsoleTracePolicy({channel:{kind:'http'}})).toEqual({emit:false});
  expect(privateConsoleTracePolicy({channel:{kind:'channel:http'}})).toEqual({emit:false});
  expect(privateConsoleTracePolicy({channel:{kind:'telegram'}})).toEqual({emit:true,recordInputs:true,recordOutputs:true});
+});
+it('a chief of staff may propose a new private note in a private conversation; nothing else changes notes',()=>{
+ expect(privateToolAllowed('chief-of-staff','agent-kit__vault_write')).toBe(true);
+ for(const name of ['agent-kit__vault_file','agent-kit__vault_drop','vault_write','remember','forget','save_note'])expect(privateToolAllowed('chief-of-staff',name),name).toBe(false);
+ expect(privateToolAllowed('creative','agent-kit__vault_write')).toBe(false);
+ // Native channels keep offering it under their own grant.
+ expect(privateOnlyTool('agent-kit__vault_write')).toBe(false);
+ expect(privateRoleInstructions('chief-of-staff')).not.toContain('general note writes are unavailable');
+ expect(privateRoleInstructions('chief-of-staff')).toContain('new private note');
 });
 for(const method of ['doGenerate','doStream'] as const){
  it(`${method}: checks selection and real provider boundary, even after cached selection and resolver failure`,async()=>{

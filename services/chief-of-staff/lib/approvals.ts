@@ -4,6 +4,7 @@ import { isExactApprovalContext, isExactApprovalResponse, reserveExactApproval, 
   requireApprovedExecution, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
 import { deadlineApprovalAdapter } from "./deadlines-store.js";
 import { canApproveCompanyTrack, tracksApprovalAdapter, twentyTracksApprovalAdapter } from "./tracks-approval.js";
+import { vaultNoteApprovalAdapter } from "./vault-note-write.js";
 import { consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
 /**
  * The approver re-check every gated write calls, on both channels.
@@ -21,7 +22,8 @@ const companyHome = (input: unknown) => !!input && typeof input === 'object' && 
 const adapterFor = (tool: string, input?: unknown) => {
   return companyHome(input) && twentyTracksApprovalAdapter.toolNames.includes(tool)
     ? twentyTracksApprovalAdapter
-    : tracksApprovalAdapter.toolNames.includes(tool) ? tracksApprovalAdapter : deadlineApprovalAdapter;
+    : tracksApprovalAdapter.toolNames.includes(tool) ? tracksApprovalAdapter
+    : vaultNoteApprovalAdapter.toolNames.includes(tool) ? vaultNoteApprovalAdapter : deadlineApprovalAdapter;
 };
 
 /**
