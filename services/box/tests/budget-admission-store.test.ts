@@ -1179,7 +1179,9 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     });
     const p=await prepared(),q=await prepared('member-b');
     const results=await Promise.all([rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p)),rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(q))]);
-    expect(results.map(r=>r.reply.status).sort()).toEqual([200,503]);
+    // One ticket is allowed; the other is refused with the signed installation-limit reply, not an unsigned 503.
+    expect(results.map(r=>r.reply.status).sort()).toEqual([200,200]);
+    expect(results.map(r=>r.document.state).sort()).toEqual(['allowed','denied']);
   });
   it('freshly denies revoked authority rather than trusting ticket discovery',async()=>{
     const p=await prepared();await db.query("UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE member_id='member-a'");
@@ -1796,14 +1798,15 @@ describe('inactive budget admission on real PostgreSQL',()=>{
   it.each(['action','approval'] as const)('preserves model cancellation continuation after %s expiry',async deadline=>{
     const p=await resumeFixture(deadline,'cancel');expect((await store.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
   });
-  it('gives the same generic denial for member and installation cap exhaustion',async()=>{
+  it('gives the same generic reason for member and installation cap exhaustion, naming only which limit',async()=>{
     await db.query("UPDATE users SET org_role='member' WHERE id='member-b'");await freshConsoleSessions();
     await db.query('UPDATE budget_accounts SET installation_cap=0.1 WHERE id=$1',[installation]);
     await admitted('member-a');const p=await prepared('member-b');
     const denied={state:'denied',reason:'Budget authority is unavailable or changed'};
-    expect(await store.admit(p.ticket,p.observation,recovery())).toEqual(denied);
+    // Only the installation limit is named, and with no amount.
+    expect(await store.admit(p.ticket,p.observation,recovery())).toEqual({...denied,limit:{scope:'installation',resetsAt:expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)}});
     await expect(store.readStatus(context('member-b'),'installation')).rejects.toThrow('scope denied');
-    await cap('member-b','0');const q=await prepared('member-b');expect(await store.admit(q.ticket,q.observation,recovery())).toEqual(denied);
+    await cap('member-b','0');const q=await prepared('member-b');expect(await store.admit(q.ticket,q.observation,recovery())).toEqual({...denied,limit:{scope:'member',cap:'0',resetsAt:expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)}});
   });
   it('never mints a permit when commit succeeded but its acknowledgement was lost',async()=>{
     const p=await prepared();
