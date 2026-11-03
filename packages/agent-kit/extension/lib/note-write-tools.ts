@@ -92,6 +92,7 @@ import { storeRootForArea } from "../../src/notes-store.js";
 import { DESCRIBE_AREA, NOTE_AREAS, type NoteToolDeps } from "../../src/note-tools.js";
 import { ORIGIN_FRONTMATTER_KEY } from "../../src/origin.js";
 import { stampFor, turnKeyFrom } from "../../src/origin-taint.js";
+import { vaultNotePath } from "../../src/vault-note-write.js";
 import type { VaultArea } from "../../src/skill-grants.js";
 import { approverFrom, assertApprover } from "./approval-gate.js";
 
@@ -190,10 +191,6 @@ async function writableRoot(
   return storeRootForArea(area);
 }
 
-function slug(title: string): string {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "note";
-}
-
 /**
  * Propose a new note for the vault. GATED WRITE — requires the owner's 👍 on every call.
  *
@@ -230,7 +227,7 @@ export function writeTool(deps?: NoteWriteDeps) {
       const key = turnKeyFrom(ctx);
       const origin = key ? stampFor("agent", key) : "third_party";
 
-      const path = `_inbox/${slug(title)}.md`;
+      const path = vaultNotePath(title);
       return commitNote({
         vaultRoot,
         path,

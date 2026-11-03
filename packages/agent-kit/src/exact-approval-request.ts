@@ -8,7 +8,7 @@ import { PERSONAL_MAIL_SEND_TOOL } from './personal-action-store.js';
 
 export const EXACT_CARD_REFUSED = 'Exact approval card is unavailable or changed';
 const refuse = (): never => { throw new Error(EXACT_CARD_REFUSED); };
-export const exactTargetSchema = z.strictObject({ kind: z.enum(['deadline','deadline-candidate','track','track-item','track-create','outside-call']), id: z.string().min(1),
+export const exactTargetSchema = z.strictObject({ kind: z.enum(['deadline','deadline-candidate','track','track-item','track-create','vault-note','outside-call']), id: z.string().min(1),
   ownerMemberId: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   approvedOrigin: z.enum(['agent','synced','third_party']).optional() });
 export const exactReservationSchema = z.strictObject({ version: z.literal(1), original: turnAuthoritySchema,

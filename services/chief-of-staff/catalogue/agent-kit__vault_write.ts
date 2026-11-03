@@ -34,15 +34,35 @@
 // underneath it, into code `eve build` loads with no database (see `note-write-tools.ts`'s own
 // header). This agent already imports the ledger directly for its other gated tools, so it
 // supplies the check the same way here.
+//
+// A PRIVATE CONSOLE CONVERSATION TAKES THE OTHER ROAD. There the member's private area is in
+// Keeper custody, not this runtime's store, so the call runs only from its exact approved card
+// and Keeper writes the file (`../lib/vault-note-write.ts`). Same description, input and approval.
 import { approvalLedger, assertApprovedCall, callIdFrom } from "@lares/agent-kit/approval-ledger";
+import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
 import { writeTool } from "@lares/agent-kit/note-write-tools";
+import { defineTool } from "eve/tools";
 
+import { assertApproval } from "../lib/approvals.js";
 import { approvalFor } from "../lib/board.js";
 import { vaultWriteAreasForTurn } from "../lib/vault-areas.js";
+import { writeApprovedConsoleNote } from "../lib/vault-note-write.js";
 
-export default writeTool({
+const native = writeTool({
   areas: vaultWriteAreasForTurn,
   approval: approvalFor("agent-kit__vault_write"),
   assertApprovedCall: (ctx: unknown, input: unknown) =>
     assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName: "agent-kit__vault_write", input }),
 });
+
+export default defineTool({
+  description: native.description,
+  inputSchema: native.inputSchema,
+  approval: native.approval,
+  async execute(input: unknown, ctx: unknown) {
+    if (!isExactApprovalContext(ctx)) return native.execute(input as never, ctx as never);
+    const approved = await assertApproval(ctx as never, "agent-kit__vault_write", input);
+    if (!approved) throw new Error("A Vault note needs the exact private Console approval");
+    return writeApprovedConsoleNote(ctx as never, approved, input);
+  },
+} as never);

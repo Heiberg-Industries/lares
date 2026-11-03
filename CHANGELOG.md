@@ -4,6 +4,8 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
+- A chief of staff can now save a new private Vault note from Console chat. Each note needs its own approval card, and Keeper writes it into the member's own private area only once that card is approved, and only if the note has not changed since. Before this, an agent created in the Console had no way to save a note and said its Vault access was read-only. Moving or deleting notes, and memory, are still not available in Console chat.
+
 - The money ledger no longer stops after about 340 model calls. When a ledger book fills up, Keeper seals it and starts the next one, and nothing is ever deleted. Each step now compares what can still change money, and the whole ledger is compared at every Keeper start and once a night at 03:00 UTC. `lares doctor` shows the ledger's state.
 
 - Two people or agents calling a model at the same moment no longer lose out to each other. Spending steps now wait briefly in line, for two seconds at most, instead of being refused. Before this, an overlap could stop a reply or end a conversation with a message about the gateway setup. Sustained overload is still refused.
