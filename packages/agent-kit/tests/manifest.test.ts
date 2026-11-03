@@ -7,7 +7,7 @@ import { defineTool, isDisabledToolSentinel } from "eve/tools";
 import { always, type Approval, type ApprovalPolicy } from "eve/tools/approval";
 import { z } from "zod";
 
-import { clearBoardCache, setBoardDeps } from "../src/board-approval.js";
+import { setBoardDeps } from "../src/board-approval.js";
 import {
   KNOWN_CAPABILITIES,
   assertClassMatchesScope,
@@ -333,7 +333,6 @@ describe("resolveExtensionTool — autonomy only bites on the confirm class", ()
     const toolWithApproval = resolved as unknown as { approval?: (ctx?: { toolInput?: unknown }) => Promise<unknown> };
     expect(typeof toolWithApproval.approval).toBe("function");
     expect(await toolWithApproval.approval?.()).toBe("user-approval"); // gated → ask
-    clearBoardCache();
     setBoardDeps(null);
   });
 
@@ -408,7 +407,6 @@ describe("resolveExtensionTool — autonomy only bites on the confirm class", ()
     expect(Reflect.get(resolved, Symbol.for("eve.definition-source-key"))).toBe(
       Reflect.get(tool, Symbol.for("eve.definition-source-key")),
     );
-    clearBoardCache();
     setBoardDeps(null);
   });
 

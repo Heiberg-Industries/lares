@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { boardApproval, type BoardDeps, clearBoardCache, setBoardDeps } from "../src/board-approval.js";
+import { boardApproval, type BoardDeps, setBoardDeps } from "../src/board-approval.js";
 import type { AutonomyLevel } from "../src/manifest.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -56,7 +56,6 @@ function board(levels: Record<string, AutonomyLevel> = {}) {
 const settle = () => new Promise((r) => setImmediate(r));
 
 afterEach(() => {
-  clearBoardCache();
   setBoardDeps(null);
   vi.restoreAllMocks();
 });
@@ -74,7 +73,7 @@ describe("a board-approved vault tool looks its level up under its AREA", () => 
     setBoardDeps(f.deps);
     await boardApproval(template("chief-of-staff"), "forget")();
     await boardApproval(template("chief-of-staff"), "memory_resolve_proposal")();
-    expect(f.reads).toEqual(["chief-of-staff/vault/facts"]); // one read, then the 30 s cache
+    expect(f.reads).toEqual(["chief-of-staff/vault/facts", "chief-of-staff/vault/facts"]); // one fresh read per call
     expect(f.explicitLevel).toHaveBeenCalledWith("chief-of-staff", "vault", "facts");
   });
 
@@ -155,7 +154,6 @@ describe("a vault tool the area table does not know fails closed", () => {
       expect(f.reads).toEqual([]);
       expect(f.events).toEqual([expect.objectContaining({ tool: "vault_read", decision: "failed-closed" })]);
       fresh.setBoardDeps(null);
-      fresh.clearBoardCache();
     } finally {
       vi.doUnmock("../src/always-ask.js");
       vi.resetModules();

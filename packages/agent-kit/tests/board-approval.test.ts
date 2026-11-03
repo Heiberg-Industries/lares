@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  APPROVAL_CACHE_MS, BOARD_READ_TIMEOUT_MS, boardApproval, type BoardDeps, type ContactHistory, CONTACT_HISTORY_TIMEOUT_MS,
-  clearBoardCache, decideApproval, setBoardDeps,
+  BOARD_READ_TIMEOUT_MS, boardApproval, type BoardDeps, type ContactHistory, CONTACT_HISTORY_TIMEOUT_MS,
+  decideApproval, setBoardDeps,
 } from "../src/board-approval.js";
 import type { AutonomyLevel } from "../src/manifest.js";
 
@@ -29,7 +29,6 @@ function fakeDeps(levels: Record<string, AutonomyLevel | null | "throw" | "hang"
 const input = (tool: string, capability: string, startingLevel: AutonomyLevel = "gated") => ({ agent: "creator", tool, capability, startingLevel });
 
 afterEach(() => {
-  clearBoardCache();
   setBoardDeps(null);
 });
 
@@ -280,13 +279,17 @@ describe("decideApproval", () => {
       status: "user-approval", decision: "failed-closed", reason: "the permissions table could not be read — asking first",
     });
   });
-  it("caches a level for 30 seconds per agent and capability, then reads again", async () => {
+  it("a switch to 'never' is refused on the very next decision, with no waiting", async () => {
+    const levels: Record<string, AutonomyLevel | null> = { "creator/vault": "autonomous" };
+    const f = fakeDeps(levels);
+    expect((await decideApproval(input("vault_write", "vault"), f.deps)).decision).toBe("autonomous");
+    levels["creator/vault"] = "never";
+    f.advance(1);
+    expect((await decideApproval(input("vault_write", "vault"), f.deps)).decision).toBe("denied");
+  });
+  it("every decision reads the board, so a stale level can never grant more than the board says", async () => {
     const f = fakeDeps({ "creator/vault": "autonomous" });
     await decideApproval(input("vault_write", "vault"), f.deps);
-    f.advance(APPROVAL_CACHE_MS - 1);
-    await decideApproval(input("vault_write", "vault"), f.deps);
-    expect(f.reads).toHaveLength(1);
-    f.advance(2);
     await decideApproval(input("vault_write", "vault"), f.deps);
     expect(f.reads).toHaveLength(2);
   });
