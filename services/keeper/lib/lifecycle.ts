@@ -749,6 +749,24 @@ export class AgentLifecycle {
         if (this.nativeGuarded && (await this.currentNative(name)).state !== 'active') return { pending: row.pending, reason: NATIVE_HELD };
         return { pending: row.pending, reason: row.pending_reason };
     }
+    /** Whether a running agent still runs an older image than this keeper renders for its role, as
+     * after an update. 'pending' is an agent with changes waiting: moving it would apply them too.
+     * Never throws because of Docker: anything it cannot tell is 'unknown'. */
+    async imageState(name: string): Promise<'current' | 'older' | 'stopped' | 'pending' | 'unknown'> {
+        const row = await this.storage.row(name).catch(() => undefined);
+        if (!row || !runtimeControlled(row) || row.state !== 'ready' || !row.applied_definition || !this.docker.inspect) return 'unknown';
+        if (row.pending) return 'pending';
+        const wanted = this.config.imageByRole[row.applied_definition.role as keyof LifecycleConfig['imageByRole']];
+        if (!wanted) return 'unknown';
+        try {
+            const found = await this.docker.inspect(name);
+            if (!found.running) return 'stopped';
+            return found.image === wanted ? 'current' : 'older';
+        }
+        catch (error) {
+            return error instanceof NoOwnedContainerError ? 'stopped' : 'unknown';
+        }
+    }
     /** status plus what the container is doing now. Never throws because of Docker: unknown is null. */
     async liveStatus(name: string) {
         const base = await this.status(name);

@@ -30,6 +30,8 @@ export interface DefinitionCompose {
     status?(name:string):Promise<unknown>;
     /** status plus the live container state; used where the console shows one agent. */
     liveStatus?(name:string):Promise<unknown>;
+    /** Whether a running agent runs an older image than the one rendered for its role now. */
+    imageState?(name:string):Promise<'current'|'older'|'stopped'|'pending'|'unknown'>;
     prepareSecretChange?(name:string):Promise<void>;
     secretChanged?(name:string):Promise<void>;
     deleted?(name:string):Promise<void>;
@@ -491,6 +493,23 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         if(row.rows[0]?.hash!==hash||row.rows[0]?.status!=='valid') refused('Save a valid definition before reconciliation');
         validate({name,definition:loaded.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd});
         return applyWithRecovery(name, loaded.definition);
+    }) });
+    // After an update the keeper renders the new release's role image, but a running agent keeps
+    // the image it was started from. This restarts it onto the new one, as Apply would, and only
+    // when nothing else would change: an agent with changes waiting is left for its owner.
+    registerAction({ name:'definition.refresh-image', hostOnly:true, input:nameInput, run:({name})=>locked(async()=>{
+        if(!o.compose.imageState||!o.compose.reconcile) refused('Runtime reconciliation is not configured');
+        const state=await o.compose.imageState(name);
+        const left={current:'already on this release',stopped:'not running, so it starts on this release next time',
+            pending:'has changes waiting to be applied, so it was left alone; apply them in the console',
+            unknown:'the keeper cannot tell which software it runs, so it was left alone'} as const;
+        if(state!=='older') return { moved:false, state, reason:left[state] };
+        const loaded=await loadDefinition({serviceDir:'unused',env:{LARES_DEFINITION_DIR:active(name)}});
+        const row=await db().query("SELECT hash,status FROM agent_definitions WHERE name=$1",[name]);
+        if(row.rows[0]?.hash!==loaded.hash||row.rows[0]?.status!=='valid') return { moved:false, state:'pending', reason:left.pending };
+        validate({name,definition:loaded.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd});
+        const result=await applyWithRecovery(name, loaded.definition) as Record<string,unknown>;
+        return { moved:true, ...result };
     }) });
     registerAction({ name: 'definition.retire', input: nameInput, run: ({ name }, ctx) => locked(async () => {
             const path = active(name);

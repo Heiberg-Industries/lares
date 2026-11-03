@@ -78,7 +78,7 @@ LIMITS = [
     "Backups go to the same machine, and the uptime address is a stand-in: a real restore onto a new server is not covered.",
     "The approval step answers one card as the member who started the conversation; refusing other people's answers is covered by the private chat proof, not here.",
     "The update goes to a second build of the same code (a new label, so new digests): a release that changes code or adds migrations is not covered.",
-    "Whether a running agent moves to the second build's image is written into the proof file, not checked.",
+    "Saving a definition in the console after the update is not exercised; agent start and the agent's restart are.",
     "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
     "A real agent answer is not covered: the stand-in decides what the model says.",
@@ -254,6 +254,15 @@ def agent_image() -> str | None:
     """The image the proof agent's running container was started from; None when it is not running."""
     ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
     return output("docker", "inspect", "--format", "{{.Config.Image}}", ids[0]) if ids else None
+
+
+def keeper_held_lines() -> list[str]:
+    """What the keeper logged about held agents: fixed phrases, no values."""
+    ids = output("docker", "ps", "-q", "--filter", "label=com.docker.compose.service=lares-keeper").split()
+    if not ids:
+        return ["the keeper is not running"]
+    logs = run("docker", "logs", ids[0], check=False, show=False)
+    return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line]
 
 
 def host_address() -> str:
@@ -661,7 +670,18 @@ def main(argv: list[str]) -> int:
             raise RuntimeError(f"the update lost data: Vault files kept {kept}, settled calls {settled_after}")
         passed("update-kept-the-data-and-sign-in")
         proof["agentImage"] = {"beforeUpdate": agent_image_before, "afterUpdate": agent_image(), "secondBuild": update["images"]["chief-of-staff"]}
+        proof["keeperHeldAfterUpdate"] = keeper_held_lines()
         save_proof()
+        if f"{AGENT} restarted on this release" not in said or proof["agentImage"]["afterUpdate"] != update["images"]["chief-of-staff"]:
+            raise RuntimeError(f"the running agent did not move to the second build: {proof['agentImage']}")
+        passed("update-moved-the-running-agent-to-the-second-build")
+        # What the owner ran on a real server after an update: it must find the agent running, not held.
+        again = run("lares", "agent", "start", AGENT, timeout=300, check=False)
+        if again.returncode != 0 or f"{AGENT} is already running" not in again.stdout + again.stderr:
+            proof["keeperHeldAfterUpdate"] = keeper_held_lines()
+            save_proof()
+            raise RuntimeError("lares agent start after the update did not find the agent running")
+        passed("agent-start-after-the-update-finds-it-running")
 
         stage("sudo lares doctor")
         doctor = run("lares", "doctor", timeout=180, check=False)

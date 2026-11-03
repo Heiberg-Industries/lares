@@ -52,6 +52,7 @@ beforeEach(() => {
   script(join(fake, "rollback.sh"), 'if [ -n "${FAIL_ROLLBACK:-}" ]; then exit 3; fi');
   script(join(fake, "restore.sh"), "exit 0");
   script(join(fake, "setup-backups.sh"), "exit 0");
+  writeFileSync(join(fake, "budget-commands.py"), "import os, sys\nopen(os.environ['STUB_LOG'], 'a').write('budget-commands.py ' + ' '.join(sys.argv[1:]) + '\\n')\nsys.exit(78 if os.environ.get('FAIL_REFRESH') else 0)\n");
   writeFileSync(join(fake, "backup.sh"), "# new backup script\n");
   for(const name of ["export.sh","backup-verify.sh","restore-drill.sh","vault-storage.sh","refresh-recovery.sh","maintenance-custody.py","lares-backup.service","lares-backup.timer","lares-backup-verify.service","lares-backup-verify.timer","lares-restore-drill.service","lares-restore-drill.timer"])copyFileSync(join(OPS,name),join(fake,name));
 
@@ -220,6 +221,18 @@ describe("lares", () => {
     expect(c[i]).toBe(`install.sh --yes --release ${rel}/release.json`);
     expect(c).toContain(`docker pull ${KEEPER12}`);
     expect(current()).toBe(`releases/${RC12}`);
+    // Last, from the new release: running agents move onto its software.
+    const refreshed = c.findIndex((l) => l.startsWith("budget-commands.py "));
+    expect(refreshed).toBeGreaterThan(i);
+    expect(c[refreshed]).toContain(`--release ${root()}/current/release.json agent-refresh`);
+    expect(r.stdout).toMatch(/restarts each running agent/);
+  });
+
+  it("update says which agents stayed behind, after the release is already current", () => {
+    const r = lares(["update", "--release", RC12, "--yes"], { FAIL_REFRESH: "1" });
+    expect(r.code).toBe(78);
+    expect(current()).toBe(`releases/${RC12}`);
+    expect(r.stderr).toMatch(/now on 2026-10-20-rc\.12, but not every agent moved/);
   });
 
   it("update --release-file updates from a release file already on the server, downloading nothing", () => {
