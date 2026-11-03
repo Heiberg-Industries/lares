@@ -125,6 +125,42 @@ describe("what the installer asks", () => {
     expect(env).not.toContain("sk-disposable-fixture-only");
   });
 
+  it("writes a model for a purpose only when one was given, on the main model's provider", () => {
+    okRun(runWithStdin(["--yes"], answers));
+    expect(readFileSync(installEnv, "utf8")).not.toMatch(/LARES_MODEL_(WRITER|UTILITY|GATE)/);
+    rmSync(join(prefix, "etc"), { recursive: true, force: true });
+    okRun(runWithStdin(["--yes", "--writer-model", "anthropic/claude-sonnet-4-5", "--gate-model", "anthropic/claude-haiku-4-5"], answers));
+    const env = readFileSync(installEnv, "utf8");
+    expect(env).toContain("LARES_MODEL=anthropic/claude-opus-5\n");
+    expect(env).toContain("LARES_MODEL_WRITER=anthropic/claude-sonnet-4-5\n");
+    expect(env).toContain("LARES_MODEL_GATE=anthropic/claude-haiku-4-5\n");
+    expect(env).not.toContain("LARES_MODEL_UTILITY");
+    expect(env).not.toContain("sk-disposable-fixture-only");
+  });
+
+  it("refuses a purpose model on another provider or written wrongly, before anything is written", () => {
+    for (const [flag, value, message] of [
+      ["--writer-model", "openai/gpt-4o-mini", /same provider as the main model \(anthropic\)/],
+      ["--gate-model", "claude-haiku-4-5", /<provider>\/<model>/],
+      ["--utility-model", "anthropic/claude haiku", /character a model name never has/],
+    ] as const) {
+      const r = runWithStdin(["--yes", flag, value], answers);
+      expect(r.code, `${flag} ${value}`).toBe(64);
+      expect(r.stderr).toMatch(message);
+      expect(existsSync(installEnv)).toBe(false);
+    }
+    const missing = runWithStdin(["--yes", "--writer-model"], answers);
+    expect(missing.code).toBe(64);
+    expect(missing.stderr).toMatch(/--writer-model needs a model/);
+  });
+
+  it("says plainly that a purpose model is ignored once the answers were already written", () => {
+    okRun(runWithStdin(["--yes"], answers));
+    const again = okRun(runWithStdin(["--yes", "--writer-model", "anthropic/claude-sonnet-4-5"], ""));
+    expect(again.stdout).toMatch(/only apply to a first install, so they were ignored/);
+    expect(readFileSync(installEnv, "utf8")).not.toContain("LARES_MODEL_WRITER");
+  });
+
   it("keeps the model key out of the settings file and out of every log", () => {
     const r = runWithStdin(["--yes"], answers);
     expect(readFileSync(join(secretsDir, "model-provider-key"), "utf8").trim())

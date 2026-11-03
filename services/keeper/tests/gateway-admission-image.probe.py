@@ -97,13 +97,16 @@ def parse_roster_observations(lines):
         seen.add(record["state"]);records.append(record)
     return records,valid and seen==set(ROSTER_STATES)
 
+# A model of its own for the writer alias, per provider, in the extended-profile gateway start.
+PURPOSE_WRITER_MODEL={"anthropic":"claude-opus-4-5","openai":"gpt-4o"}
+
 FIXTURE = r'''
 import http.server,ssl,threading,json,time,pathlib,hashlib,uuid,sys,gzip
 sys.path.insert(0,'/adapter')
 from admission_contract import sign,verify,canonical,ADMIT_PATH,SETTLE_PATH
 key=pathlib.Path('/fixture/service-key').read_bytes()
 lock=threading.Lock(); release=threading.Event(); release.set()
-data={'mode':'normal','upstream':0,'routes':{'chat':0,'messages':0,'other':0},'traps':0,'gates':0,'receipts':[],'observations':[],'allows':[],'seen':set()}
+data={'mode':'normal','upstream':0,'models':[],'routes':{'chat':0,'messages':0,'other':0},'traps':0,'gates':0,'receipts':[],'observations':[],'allows':[],'seen':set()}
 class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*a): pass
  def respond(self,status,document,signed=False,compress=False):
@@ -145,6 +148,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
   with lock:
    data['upstream']+=1
    data['routes']['chat' if self.path=='/v1/chat/completions' else 'messages' if self.path=='/v1/messages' else 'other']+=1
+   if self.path in ('/v1/chat/completions','/v1/messages'):data['models'].append(body.get('model'))
   if self.path=='/trap':
    with lock:data['traps']+=1
    self.respond(500,{});return
@@ -206,8 +210,8 @@ else if(x.kind==='sdk'){
  const{classifyModelCallError}=await import(pathToFileURL(require.resolve('eve').split('/dist/')[0]+'/dist/src/harness/model-call-error.js').href);
  process.env.GATEWAY_LANE=x.lane;process.env.GATEWAY_URL=x.url;process.env.GATEWAY_KEY_FILE='/tmp/key-'+process.pid;writeFileSync(process.env.GATEWAY_KEY_FILE,x.key,{mode:0o600});
  const{gatewayModel}=createGatewayProvider({defaultKeyFile:process.env.GATEWAY_KEY_FILE});
- const id=randomUUID();const invocation=captureModelInvocation({type:'step.started',data:{turnId:id,sequence:0,stepIndex:0}},{id,auth:{initiator:null,current:null}},'lares-brain');
- try{await runModelInvocation(invocation,async()=>{const args={model:gatewayModel('lares-brain'),system:'stable fixture instructions\n'+PROMPT_CACHE_BOUNDARY+'\nmoving fixture context',prompt:'fixture',maxOutputTokens:8,maxRetries:0,abortSignal:AbortSignal.timeout(x.timeout??10000)};if(x.stream){const result=streamText(args);let text='';for await(const part of result.textStream)text+=part;if(!text.includes('FIXTURE_OK'))throw Error('fixture text missing');}else{const result=await generateText(args);if(!result.text.includes('FIXTURE_OK'))throw Error('fixture text missing');}});console.log(JSON.stringify({ok:true,requests,hash}));}
+ const alias=x.alias??'lares-brain';const id=randomUUID();const invocation=captureModelInvocation({type:'step.started',data:{turnId:id,sequence:0,stepIndex:0}},{id,auth:{initiator:null,current:null}},alias);
+ try{await runModelInvocation(invocation,async()=>{const args={model:gatewayModel(alias),system:'stable fixture instructions\n'+PROMPT_CACHE_BOUNDARY+'\nmoving fixture context',prompt:'fixture',maxOutputTokens:8,maxRetries:0,abortSignal:AbortSignal.timeout(x.timeout??10000)};if(x.stream){const result=streamText(args);let text='';for await(const part of result.textStream)text+=part;if(!text.includes('FIXTURE_OK'))throw Error('fixture text missing');}else{const result=await generateText(args);if(!result.text.includes('FIXTURE_OK'))throw Error('fixture text missing');}});console.log(JSON.stringify({ok:true,requests,hash}));}
  catch(error){const options={refusalText:'CAP_EXHAUSTED',dialect:'telegram'};console.log(JSON.stringify({ok:false,requests,hash,admission:isBudgetAdmissionRefused(error),budget:isBudgetExceeded(error),classification:classifyModelCallError(error),turn:respondToTurnFailed(error,options),session:respondToSessionFailed(error,options)}));}
 }else{
  const abort=new AbortController();const method=x.method??'POST';const headers=new Headers(method==='GET'?{}:{'content-type':'application/json'});if(x.key)headers.set('authorization','Bearer '+x.key);if(x.ticket)headers.set('x-lares-budget-intent',x.ticket);if(Array.isArray(x.headers)){for(const [name,value] of x.headers)headers.append(name,value);}else for(const [name,value] of Object.entries(x.headers??{}))headers.set(name,value);const response=await original(x.url+x.path,{method,signal:abort.signal,headers,...(method==='GET'?{}:{body:typeof x.raw==='string'?x.raw:JSON.stringify(x.body)})});if(x.cancel){await response.body.getReader().read();abort.abort();console.log(JSON.stringify({status:response.status,cancelled:true}));}else{const raw=await response.text();let body;try{body=JSON.parse(raw)}catch{body={stream:raw.includes('FIXTURE_OK')}}console.log(JSON.stringify({status:response.status,body}));}
@@ -526,9 +530,12 @@ print('ok')
             "refused":mode in ("fake-descriptor","inherited-write"),
             "exclusiveStillHeld":mode=="inherited-write","sharedStillHeld":mode in ("inherited-shared","current-unlocked")}
 
-    def config(self, provider):
+    def config(self, provider, purpose=False):
         # Render with actual committed TypeScript, using the built role's dependencies.
-        script = "import{renderGatewayConfig,gatewayAdmissionProfile}from'/app/services/box/lib/gateway-config.ts';import{createRequire}from'node:module';const{parse}=createRequire('/app/services/box/package.json')('yaml');const o="+json.dumps({"alias":"lares-brain","providerModel":provider+"/"+("gpt-4o-mini" if provider=="openai" else "claude-sonnet-4-5"),"providerBaseUrl":"https://fixture:8443"+("/v1" if provider=="openai" else "")})+";console.log(JSON.stringify({config:parse(renderGatewayConfig(o)),profile:gatewayAdmissionProfile(o)}));"
+        options={"alias":"lares-brain","providerModel":provider+"/"+("gpt-4o-mini" if provider=="openai" else "claude-sonnet-4-5"),"providerBaseUrl":"https://fixture:8443"+("/v1" if provider=="openai" else "")}
+        # The writer purpose gets a model of its own; the other purposes keep the brain's model.
+        if purpose:options["purposeModels"]={"writer":provider+"/"+PURPOSE_WRITER_MODEL[provider]}
+        script = "import{renderGatewayConfig,gatewayAdmissionProfile}from'/app/services/box/lib/gateway-config.ts';import{createRequire}from'node:module';const{parse}=createRequire('/app/services/box/package.json')('yaml');const o="+json.dumps(options)+";console.log(JSON.stringify({config:parse(renderGatewayConfig(o)),profile:gatewayAdmissionProfile(o)}));"
         return json.loads(command("docker", "exec", self.name+"-client", "/app/services/chief-of-staff/node_modules/.bin/tsx", "-e", script))
 
     def gateway_service(self, folder, secret_dir):
@@ -669,10 +676,11 @@ print('ok')
         self.run("client",self.image,client_mounts,["-e","setInterval(()=>{},60000)"])
         self.wait(lambda:self.control().get("mode")=="normal","HTTPS fixture failed")
 
-    def start_gateway(self, provider, broken=None):
-        suffix="gateway-"+provider+("-"+broken if broken else "")
+    def start_gateway(self, provider, broken=None, purpose=False):
+        label=provider+("-purpose" if purpose else "")
+        suffix="gateway-"+label+("-"+broken if broken else "")
         folder=self.root/suffix;folder.mkdir()
-        document=self.config(provider)
+        document=self.config(provider,purpose)
         if broken=="hook":document["config"]["litellm_settings"]["callbacks"]=[]
         if broken=="callback":document["config"]["litellm_settings"]["callbacks"].append("prometheus")
         if broken=="duplicate":document["config"]["litellm_settings"]["callbacks"].append("lares_gateway.gateway_hook")
@@ -723,9 +731,9 @@ print('ok')
         except Exception:
             self.startup_diagnostic(name,suffix)
             raise
-        self.prove_guarded_server(name, provider)
+        self.prove_guarded_server(name, label)
         meta=json.loads(command("docker","exec",name,"python","-c","import importlib.metadata,json,hashlib,pathlib;from litellm.constants import DEFAULT_COOLDOWN_TIME_SECONDS;print(json.dumps({'versions':{p:importlib.metadata.version(p) for p in ['litellm','openai','httpx','prisma']},'adapterSha256':hashlib.sha256(pathlib.Path('/opt/lares-gateway/lares_gateway.py').read_bytes()).hexdigest(),'cooldownSeconds':DEFAULT_COOLDOWN_TIME_SECONDS}))"))
-        self.artifact.setdefault("images",{})[provider]={"upstreamDigest":self.manifest["images"]["lares-gateway"],**meta}
+        self.artifact.setdefault("images",{})[label]={"upstreamDigest":self.manifest["images"]["lares-gateway"],**meta}
         require(meta["versions"]["litellm"]=="1.101.6","Wrong LiteLLM version")
         require(type(meta["cooldownSeconds"]) is int and meta["cooldownSeconds"]==5,"Unexpected pinned gateway cooldown default")
         self.cooldown_idle_seconds=meta["cooldownSeconds"]+1
@@ -1144,14 +1152,14 @@ exec litellm --config "$CONFIG_FILE_PATH"
         require(result["status"]==200,"Native fixture provisioning refused")
         return result["body"]
 
-    def provision(self,url,exact=False):
+    def provision(self,url,exact=False,models=("lares-brain",)):
         team="team-"+uuid.uuid4().hex;member="member-"+uuid.uuid4().hex
-        self.admin(url,"/team/new",{"team_id":team,"max_budget":100,"models":["lares-brain"],"budget_duration":"1d"})
+        self.admin(url,"/team/new",{"team_id":team,"max_budget":100,"models":list(models),"budget_duration":"1d"})
         user={"user_id":member,"max_budget":100,"auto_create_key":False}
         if exact:user["user_role"]="internal_user"
         self.admin(url,"/user/new",user)
         self.admin(url,"/team/member_add",{"team_id":team,"max_budget_in_team":100,"member":{"role":"user","user_id":member}})
-        key_request={"team_id":team,"user_id":member,"max_budget":100,"models":["lares-brain"],"budget_duration":"1d","key_type":"llm_api"}
+        key_request={"team_id":team,"user_id":member,"max_budget":100,"models":list(models),"budget_duration":"1d","key_type":"llm_api"}
         if exact:key_request.update({"blocked":False})
         result=self.admin(url,"/key/generate",key_request)
         self.disposable_secrets.append(result["key"].encode())
@@ -1264,6 +1272,25 @@ exec litellm --config "$CONFIG_FILE_PATH"
         if type(started) in (int,float):
             evidence["elapsedMs"]=min(120_000,max(0,int((time.monotonic()-started)*1000)))
         self.current_case["diagnostics"]=evidence
+
+    def purpose_models(self):
+        """A gateway whose writer alias runs its own model: that alias reaches the provider with that model, the others with the brain's."""
+        url=self.start_gateway("anthropic",purpose=True)
+        key,team,member=self.provision(url,models=("lares-brain","lares-writer","lares-utility"))
+        for alias,expected in (("lares-writer",PURPOSE_WRITER_MODEL["anthropic"]),("lares-utility","claude-sonnet-4-5"),("lares-brain","claude-sonnet-4-5")):
+            def reaches(alias=alias,expected=expected):
+                self.control(mode="normal")
+                before=self.control();result=self.sdk(url,key,"anthropic",alias=alias);after=self.control()
+                require(result["ok"] and result["requests"]==1,"Purpose alias request did not complete")
+                require(after["upstream"]-before["upstream"]==1,"Purpose alias produced more than one upstream request")
+                require(after["models"][len(before["models"]):]==[expected],"Purpose alias reached the provider with the wrong model")
+                require(after["observations"][-1]["purposeAlias"]==alias and after["allows"][-1]["purposeAlias"]==alias,"Purpose alias differs from the admitted alias")
+                self.receipt(before,after,result,key,"anthropic")
+            self.case("anthropic-purpose-"+alias+"-reaches-its-own-model",reaches)
+            self.idle_after_one_shot()
+        name=self.name+"-gateway-anthropic-purpose"
+        command("docker","stop",name)
+        require(self.exclusive_gate_available(),"Purpose gateway stop did not release its maintenance lock")
 
     def exercise(self,provider,url,key,team,member):
         for lane in ("anthropic","openai-compatible"):
@@ -1608,6 +1635,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 command("docker","stop",name)
                 require(self.exclusive_gate_available(),"Gateway stop did not release its maintenance lock")
                 self.artifact["guardedGateway"][provider]["maintenanceAvailableAfterStop"]=True
+            self.purpose_models()
             self.artifact["passed"]=self.artifact["nativeCredentialContract"].get("passed") is True and all(case.get("passed") is True for case in self.artifact["cases"])
             if not self.artifact["passed"]:raise RuntimeError("Pinned image proof did not pass")
         except Exception as error:
