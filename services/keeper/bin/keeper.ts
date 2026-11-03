@@ -231,6 +231,8 @@ async function main(): Promise<void> {
         // After a reboot the kernel holds no firewall. Not awaited: the sockets serve meanwhile,
         // and any seal an action starts waits for this one. It logs its own outcome and never throws.
         void lifecycle?.resealAtStart();
+        // Then bring back the agents that were running before the reboot: their runtime folders exist now.
+        void lifecycle?.startAgentsAtBoot();
     }
     catch {
         // Cleanup is best-effort but keeps the ownership order: stop listeners, drain

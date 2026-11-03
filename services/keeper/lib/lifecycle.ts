@@ -511,6 +511,50 @@ export class AgentLifecycle {
         });
         return this.resealing;
     }
+    /** Startup, after a reboot: Docker restarts every container at once, and an agent whose folder from
+     * this keeper (the model-purpose socket folder under /run, empty after every boot) does not exist yet
+     * fails to create and is never retried. Once the keeper has made its folders, bring each agent that
+     * already had a container back through the same start step `lares agent start` ends with. An agent
+     * that is running, never started, retired, waiting for changes or held for budget activation is left
+     * alone. One failure never blocks the others, and nothing here throws. Runs once; it does not loop. */
+    async startAgentsAtBoot(): Promise<void> {
+        await this.resealing;
+        try {
+            const record = await this.credentialState?.();
+            if (record?.activationIntent) {
+                console.error('keeper: agents were not started at startup because a credential change is waiting to be finished; finish it, then run: sudo lares agent start <name>');
+                return;
+            }
+            if (!this.docker.inspect) return;
+            const rows = (await this.pool.query(`SELECT r.name FROM agent_resources r JOIN agent_definitions d ON d.name=r.name
+                WHERE r.state='ready' AND d.status='valid' ORDER BY r.name`)).rows;
+            for (const { name } of rows) {
+                try {
+                    const outcome = await withDefinitionNamespace(this.pool, async () => {
+                        const row = await this.storage.row(name);
+                        if (!runtimeControlled(row) || row.state !== 'ready' || !row.applied_definition || isRetiredRole(row.applied_definition.role)) return 'skip';
+                        if (row.pending) return 'pending';
+                        let found;
+                        try { found = await this.docker.inspect!(name); }
+                        catch (error) { if (error instanceof NoOwnedContainerError) return 'never-started'; throw error; }
+                        if (found.running) return 'running';
+                        const result = await this.startWithCurrentAuthority(name, String(row.address).split('/')[0]);
+                        return result.running ? (result.healthy ? 'started' : 'started-unhealthy') : `held: ${result.reason}`;
+                    });
+                    if (outcome === 'started') console.log(`keeper: started agent ${name} after the server came up`);
+                    else if (outcome === 'started-unhealthy') console.error(`keeper: agent ${name} was started after the server came up but did not report healthy in time; check it with: sudo lares agent start ${name}`);
+                    else if (outcome === 'pending') console.error(`keeper: agent ${name} was not started at startup because it has changes waiting to be applied; apply them in the console`);
+                    else if (outcome.startsWith('held')) console.error(`keeper: agent ${name} was not started at startup (${outcome.slice(6)})`);
+                }
+                catch (error) {
+                    console.error(`keeper: could not start agent ${name} after the server came up (${(error as Error).message}); start it with: sudo lares agent start ${name}`);
+                }
+            }
+        }
+        catch (error) {
+            console.error(`keeper: could not check which agents to start at startup (${(error as Error).message}); start them with: sudo lares agent start <name>`);
+        }
+    }
     private async connections(a: AgentContainer, apply: boolean): Promise<AgentContainer> {
         const result=await this.pool.query(`SELECT kind,principal,revision,owner_email,org,mailbox,applied_connection FROM agent_door_connections
           WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL

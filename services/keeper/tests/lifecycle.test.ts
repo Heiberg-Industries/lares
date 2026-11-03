@@ -845,6 +845,78 @@ it('holds an agent change\'s seal until the startup re-apply is done, so an olde
  }finally{firewall.mockRestore();log.mockRestore();}
 });
 
+// After a reboot Docker leaves agents whose runtime folder was missing at that moment off for good.
+async function bootServer(names:string[]){
+ config.runtime.gatewayKeys=Object.fromEntries(names.map(n=>[n,join(root,'secrets','key-'+n)]));
+ const l=lifecycle();
+ // The suite's setup already stored bookkeeper, so it is registered first; the rest join one by one.
+ for(const n of ['bookkeeper',...names.filter(x=>x!=='bookkeeper')]){
+  await pool.query("INSERT INTO agent_definitions(name,hash,definition,valid_at,status) VALUES($1,'test',$2::jsonb,now(),'valid') ON CONFLICT(name) DO NOTHING",[n,JSON.stringify({...definition,name:n})]);
+  await l.create(n,{...definition,name:n});
+ }
+ events=[];started=[];
+ return l;
+}
+const withInspect=async(states:Record<string,'running'|'stopped'|'absent'>,body:()=>Promise<void>)=>{
+ (docker as any).inspect=async(n:string)=>{
+  if(states[n]==='absent')throw new NoOwnedContainerError();
+  return {id:'a'.repeat(12),running:states[n]==='running',incarnation:null,notionRevision:null,image,mounts:[],addresses:[]};
+ };
+ try{await body();}finally{delete (docker as any).inspect;}
+};
+it('starts every agent that has a stopped container after a reboot, leaves running ones alone, and one failure blocks no one',async()=>{
+ const l=await bootServer(['archive','bookkeeper','ledger','scribe']);
+ const log=vi.spyOn(console,'log').mockImplementation(()=>{}),error=vi.spyOn(console,'error').mockImplementation(()=>{});
+ try{
+  await withInspect({archive:'running',bookkeeper:'stopped',ledger:'stopped',scribe:'stopped'},async()=>{
+   fail='start:ledger';
+   await expect(l.startAgentsAtBoot()).resolves.toBeUndefined();
+  });
+  expect(events).toEqual(['start:bookkeeper','start:ledger','start:scribe']);
+  expect(log).toHaveBeenCalledWith('keeper: started agent bookkeeper after the server came up');
+  expect(log).toHaveBeenCalledWith('keeper: started agent scribe after the server came up');
+  expect(error).toHaveBeenCalledTimes(1);
+  expect(String(error.mock.calls[0]![0])).toContain('could not start agent ledger after the server came up (injected start:ledger)');
+  expect(String(error.mock.calls[0]![0])).toContain('sudo lares agent start ledger');
+  // Nothing else changed: no stop, no firewall, no compose rewrite.
+  expect(events).not.toContain('stop:ledger');expect(events).not.toContain('apply-nft');
+ }finally{log.mockRestore();error.mockRestore();fail=undefined;}
+});
+it('does not start a retired agent, one never started, or one with changes waiting, and says why for the last',async()=>{
+ const l=await bootServer(['archive','bookkeeper','ledger','scribe']);
+ const error=vi.spyOn(console,'error').mockImplementation(()=>{});
+ try{
+  await pool.query("UPDATE agent_resources SET state='retired' WHERE name='archive'");
+  await pool.query("UPDATE agent_resources SET pending=true WHERE name='ledger'");
+  await withInspect({archive:'stopped',bookkeeper:'absent',ledger:'stopped',scribe:'stopped'},()=>l.startAgentsAtBoot());
+  expect(events).toEqual(['start:scribe']);
+  expect(error).toHaveBeenCalledTimes(1);
+  expect(String(error.mock.calls[0]![0])).toContain('agent ledger was not started at startup because it has changes waiting');
+ }finally{error.mockRestore();}
+});
+it('starts nothing at startup while a credential change is waiting to be finished, and says so once',async()=>{
+ const l=await bootServer(['bookkeeper']);
+ const error=vi.spyOn(console,'error').mockImplementation(()=>{});
+ try{
+  l.setCredentialState(async()=>({...initialCredentialRecord(),activationIntent:{targetRevision:null}}) as any);
+  await withInspect({bookkeeper:'stopped'},()=>l.startAgentsAtBoot());
+  expect(events).toEqual([]);expect(error).toHaveBeenCalledTimes(1);
+  expect(String(error.mock.calls[0]![0])).toContain('credential change is waiting');
+ }finally{error.mockRestore();}
+});
+it('leaves an agent held for budget activation off at startup and starts nothing when Docker cannot be asked',async()=>{
+ const l=await bootServer(['bookkeeper']);
+ const error=vi.spyOn(console,'error').mockImplementation(()=>{});
+ try{
+  const held=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,{current:async()=>({state:'held' as const,reason:'Native budget activation required' as const})});
+  await withInspect({bookkeeper:'stopped'},()=>held.startAgentsAtBoot());
+  expect(events).toEqual([]);expect(String(error.mock.calls[0]![0])).toContain('Native budget activation required');
+  error.mockClear();
+  await l.startAgentsAtBoot();   // no inspect on the boundary
+  expect(events).toEqual([]);expect(error).not.toHaveBeenCalled();
+ }finally{error.mockRestore();}
+});
+
 function personalGoogleFixture() {
  const tokenKeyFile=join(root,'secrets/personal-google-key');writeFileSync(tokenKeyFile,'fixture-key');
  const clients=Object.fromEntries(['acme','second'].map(org=>{

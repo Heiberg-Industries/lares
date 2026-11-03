@@ -6,7 +6,7 @@ reached them. This one runs get-lares.sh and install.sh from an ordinary folder,
 runs `lares owner-bootstrap`, `lares budget setup`, creates and adopts an agent on the console's
 real pages, sets the member limit there, runs `lares agent start`, holds a chat where a tool runs,
 an approval card is answered and the conversation carries on, sets up `lares backups`, then runs a
-real `lares update` to a second build and finishes with `lares doctor`. Nothing here writes to the
+real `lares update` to a second build, runs `lares doctor`, and finishes by simulating a reboot and waiting for the agent to come back by itself. Nothing here writes to the
 database or edits an installation file the installer owns.
 
 WHAT IS NOT REAL, AND WHY. A CI server has no public address and cannot sign in to Google or spend
@@ -82,6 +82,7 @@ LIMITS = [
     "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
     "A real agent answer is not covered: the stand-in decides what the model says.",
+    "A reboot is simulated by stopping Docker, deleting the keeper's folders under /run and starting Docker again; the kernel, the firewall tables and systemd units are not restarted, and the agent is only asked for its health answer.",
 ]
 
 proof: dict = {"format": 1, "status": "running", "stage": "start", "checks": {}, "limits": LIMITS, "commit": None}
@@ -263,6 +264,28 @@ def keeper_held_lines() -> list[str]:
         return ["the keeper is not running"]
     logs = run("docker", "logs", ids[0], check=False, show=False)
     return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line]
+
+
+def agent_answers() -> bool:
+    """The proof agent's container is running and its health address says ok."""
+    ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    if not ids:
+        return False
+    for address in output("docker", "inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", ids[0]).split():
+        answer = run("curl", "-sS", "--max-time", "3", f"http://{address}:3000/eve/v1/health", check=False, show=False)
+        if answer.returncode == 0 and re.search(r'"ok"\s*:\s*true', answer.stdout):
+            return True
+    return False
+
+
+def simulate_reboot() -> None:
+    """What a boot does to this server: every container goes down, /run starts empty, and Docker then
+    starts all containers with a restart policy at the same moment. The keeper's own folders under
+    /run (its sockets, and the model-purpose folder the agent mounts) are gone until the keeper makes
+    them again, which is exactly the race a real reboot runs."""
+    run("systemctl", "stop", "docker.socket", "docker", timeout=300)
+    run("rm", "-rf", "/run/lares", "/run/lares-host")
+    run("systemctl", "start", "docker", timeout=300)
 
 
 def host_address() -> str:
@@ -691,6 +714,16 @@ def main(argv: list[str]) -> int:
         if "Every migration on disk has already been applied." not in said:
             raise RuntimeError("lares doctor gave no real answer on migrations")
         passed("doctor-answers-on-migrations")
+
+        stage("a reboot: the agent comes back with no one running a command")
+        simulate_reboot()
+        deadline = time.monotonic() + 420
+        while not agent_answers():
+            if time.monotonic() > deadline:
+                listing = run("docker", "ps", "-a", "--format", "{{.Names}}: {{.Status}}", check=False, show=False).stdout
+                raise RuntimeError(f"after the simulated reboot the agent was not running and answering within 7 minutes. Containers:\n{listing}")
+            time.sleep(5)
+        passed("agent-comes-back-after-a-reboot-without-agent-start")
 
         stage("faults recorded along the way")
         if deferred:
