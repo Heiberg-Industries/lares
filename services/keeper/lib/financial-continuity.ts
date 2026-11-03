@@ -251,12 +251,22 @@ async function describeFinancialDifference(rows:LedgerRows,asked:SourceDatabase,
     return {database,tables};
   }catch{return null;}
 }
+/** A crashed writer's connection keeps the lock until the database notices it is gone: at most the
+ * financial pool's 2.5 second idle limit, longer only behind a slow network. Past this, it is silence. */
+const WRITER_LOCK_WAIT_MS=5_000,WRITER_LOCK_POLL_MS=100;
+async function takeWriterLockForSettlement(asked:SourceDatabase):Promise<void>{
+  const until=Date.now()+WRITER_LOCK_WAIT_MS;
+  while((await asked.query(`SELECT pg_try_advisory_lock(${FINANCIAL_WRITER_LOCK}) AS held`)).rows[0]?.held!==true){
+    if(Date.now()>=until)throw new FinancialObservationUnavailable('Financial writer lock unavailable');
+    await new Promise(resolve=>setTimeout(resolve,WRITER_LOCK_POLL_MS));
+  }
+}
 /** Takes the lock, then reads the database against both results the interrupted operation can have.
  * Silence throws FinancialObservationUnavailable; a real difference is a result. Writes nothing. */
 async function compareForSettlement(journal:HostFinancialJournal,db:SourceDatabase):Promise<FinancialComparison>{
   const asked=answering(db);
   // Before the snapshot, and at session level: a snapshot taken first would predate the wait and miss a late COMMIT.
-  if((await asked.query(`SELECT pg_try_advisory_lock(${FINANCIAL_WRITER_LOCK}) AS held`)).rows[0]?.held!==true)throw new FinancialObservationUnavailable('Financial writer lock unavailable');
+  await takeWriterLockForSettlement(asked);
   await asked.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
   const interrupted=journal.interruptedOperation;
   try{
