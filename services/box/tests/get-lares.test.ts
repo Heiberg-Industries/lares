@@ -222,6 +222,29 @@ describe("lares", () => {
     expect(current()).toBe(`releases/${RC12}`);
   });
 
+  it("update --release-file updates from a release file already on the server, downloading nothing", () => {
+    const file = join(dir, "offline-release.json");
+    writeFileSync(file, releaseJson(RC12, KEEPER12));
+    const r = lares(["update", "--release-file", file, "--yes"], { FAIL_CURL: "1" });
+    expect(r.code, r.stderr).toBe(0);
+    const rel = join(root(), "releases", RC12);
+    const c = calls();
+    expect(names()).not.toContain("curl");
+    expect(c).toContain(`update.sh --release ${rel}/release.json --yes`);
+    expect(c).toContain(`install.sh --yes --release ${rel}/release.json`);
+    expect(current()).toBe(`releases/${RC12}`);
+  });
+
+  it("update refuses --release and --release-file together, and a release file it cannot name", () => {
+    const file = join(dir, "offline-release.json");
+    writeFileSync(file, releaseJson(RC12, KEEPER12));
+    expect(lares(["update", "--release", RC12, "--release-file", file]).code).toBe(64);
+    writeFileSync(file, "{}");
+    const unnamed = lares(["update", "--release-file", file]);
+    expect(unnamed.code).not.toBe(0);
+    expect(current()).toBe(`releases/${RC11}`);
+  });
+
   it("update --dry-run asks update.sh for a dry run and stops there: no install.sh, current unchanged", () => {
     const r = lares(["update", "--release", RC12, "--dry-run"]);
     expect(r.code, r.stderr).toBe(0);

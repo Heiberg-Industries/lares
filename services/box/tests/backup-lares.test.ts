@@ -77,6 +77,15 @@ it('backs up Lares definitions and encrypts new keeper configuration/secrets wit
  expect(entries.split('\n').some((entry:string)=>entry.includes('lares-maintenance'))).toBe(false);
  expect(execFileSync('tar',['-xOf','-','etc/lares/secrets/key'],{input:archive,encoding:'utf8'})).toBe('NEW_TEST_SECRET');
 });
+it('says backups are not set up, in plain words, when no backup settings file exists',()=>{
+ const f=fixture(true);const env:Record<string,string|undefined>={...f.env};delete env.AGENT_BOX_BACKUP_ENV;
+ const result=spawnSync('bash',[f.file],{env,encoding:'utf8'});
+ expect(result.status).toBe(78);
+ expect(result.stderr).toContain('backups are not set up on this server yet');
+ expect(result.stderr).toContain('sudo lares backups');
+ expect(result.stderr).not.toMatch(/No such file or directory/);
+ expect(()=>readFileSync(join(f.root,'restic-args.json'))).toThrow();
+});
 it('refuses an incomplete backup when a required workflow file volume is unavailable',()=>{
  const f=fixture(true);const result=spawnSync('bash',[f.file],{env:{...f.env,MISSING_WORKFLOW:'1'},encoding:'utf8'});
  expect(result.status).not.toBe(0);expect(()=>readFileSync(join(f.root,'restic-args.json'))).toThrow();

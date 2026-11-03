@@ -142,7 +142,9 @@ beforeEach(() => {
   stub("stat", "echo 0:600");
 
   // docker: dispatches on shape the way the real CLI answers different subcommands.
-  //  - `... psql ... -tAc ...`  -> the backup_status row the test staged
+  //  - `compose ... config`     -> the database image operator_db_run reads
+  //  - `compose ... exec ... db` -> refused, as pg_hba refuses the app's local socket on a server
+  //  - `run ... psql ... -tAc`   -> the backup_status row the test staged, read as the operator
   //  - `... pull`               -> succeeds unless STUB_PULL_FAIL
   //  - `... up -d`              -> succeeds unless STUB_UP_FAIL
   //  - `... ps --services ...`  -> the services the test says are running
@@ -152,7 +154,13 @@ beforeEach(() => {
       logLine,
       'args="$*"',
       'case "$args" in',
-      '  *psql*-tAc*)',
+      '  *"config --format json"*)',
+      '    printf \'{"services":{"db":{"image":"postgres:16"}}}\\n\'',
+      "    ;;",
+      '  *"exec -T db"*)',
+      '    echo "psql: error: FATAL:  pg_hba.conf rejects connection for host \\"[local]\\"" >&2; exit 2',
+      "    ;;",
+      '  *"run --rm"*PGUSER=lares_operator*psql*-tAc*)',
       '    [ -z "${STUB_STATUS_FAIL:-}" ] || exit 1',
       '    printf "%s\\n" "${STUB_BACKUP_STATUS-t|3600}"',
       "    ;;",
@@ -335,13 +343,15 @@ describe("updating this installation", () => {
       .split("\n")
       .map((line) => {
         if (/^record /.test(line)) return line.split(" ").slice(0, 2).join(" ");
+        if (/config --format json/.test(line)) return "";
         if (/psql/.test(line)) return "read backup status";
         if (PULL.test(line)) return "docker compose pull";
         if (UP.test(line)) return "docker compose up -d";
         if (/ps --services/.test(line)) return "docker compose ps";
         if (MIGRATE.test(line)) return "migrate";
         return line.split(" ")[0]!;
-      });
+      })
+      .filter(Boolean);
     expect(sequence).toEqual([
       "read backup status",
       "backup.sh",
@@ -353,6 +363,15 @@ describe("updating this installation", () => {
       "docker compose ps",
       "record finish",
     ]);
+  });
+
+  it("reads the backup check as the operator, never over the database's local socket", () => {
+    const r = run(["--release", release, "--yes"]);
+    expect(r.code).toBe(0);
+    expect(calls()).not.toMatch(/exec -T db/);
+    expect(calls()).toMatch(/^docker run --rm .*PGUSER=lares_operator .*psql .*-tAc .*backup_status/m);
+    // The operator's password goes in as a mounted file, never as a value on the command line.
+    expect(calls()).not.toContain("test-only-operator-password");
   });
 
   it("stops when the backup fails, and changes nothing at all", () => {
@@ -650,6 +669,8 @@ describe("updating a box whose engine is an image", () => {
         'if [ "$1" = stop ]; then printf "docker %s\\n" "$*" >> "$STUB_LOG"; exit 0; fi',
         'if [ "$1" = rm ]; then printf "docker %s\\n" "$*" >> "$STUB_LOG"; rm -f "$STUB_LOG.identity"; exit 0; fi',
         'if [ "$1" = ps ]; then printf "docker %s\\n" "$*" >> "$STUB_LOG"; case "$*" in *"name="*) if [ "${STUB_PARTIAL_NAME_UNKNOWN:-}" != 1 ] && [ "${STUB_REPLACE_CLIENT_NAME:-}" = 1 ]; then echo replacement-id; fi ;; *"id="*) [ "${STUB_INSPECT_FAIL:-}" != 1 ] || echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef ;; esac; exit 0; fi',
+        // The backup check is read by the shared stub, as the operator.
+        `case "$*" in *psql*-tAc*) exec "${base}" "$@" ;; esac`,
         'if [ "$1" = run ]; then',
         '  printf "docker %s\\n" "$*" >> "$STUB_LOG"',
         '  args=("$@"); at=-1',

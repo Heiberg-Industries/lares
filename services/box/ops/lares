@@ -7,6 +7,9 @@
 #                                                       its install.sh --yes (repair mode, so the
 #                                                       keeper and its settings update too), and
 #                                                       only then make it the current release
+#   lares update --release-file <path> [...]            the same, from a release file already on
+#                                                       this server (offline; downloads nothing but
+#                                                       the images it names)
 #   lares rollback [rollback.sh options]                ops/rollback.sh of the current release
 #   lares restore  [restore.sh options]                 ops/restore.sh of the current release
 #   lares doctor   [doctor options]                     what is wrong with this installation, run
@@ -45,6 +48,7 @@ die() { printf 'lares: %s\n' "$1" >&2; exit "$2"; }
 usage() {
   cat <<'EOF' >&2
 Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-backup-is-unproven]
+       lares update --release-file <path> [--dry-run] [--yes] [--even-though-the-backup-is-unproven]
        lares rollback [--dry-run] [--yes]
        lares restore --snapshot <id|latest> [--old-server-stopped] [--dry-run] [--yes]
        lares doctor [--help]
@@ -78,23 +82,32 @@ export LARES_PREFIX="$PREFIX"
 export DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-$ROOT}"
 
 cmd_update() {
-  local name="" extra=() new on code dry=0
+  local name="" file="" extra=() fetch=() new on code dry=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --release)
         [ "$#" -ge 2 ] || die "--release needs a release name. Nothing was changed." "$EX_USAGE"
         name="$2"; shift 2 ;;
+      --release-file)
+        [ "$#" -ge 2 ] || die "--release-file needs the path of a release file. Nothing was changed." "$EX_USAGE"
+        file="$2"; shift 2 ;;
       --dry-run) dry=1; extra+=("$1"); shift ;;
       *) extra+=("$1"); shift ;;
     esac
   done
-  [ -n "$name" ] || die "tell me which release to update to: lares update --release <name>, for example 2026-10-19-rc.11. Nothing was changed." "$EX_USAGE"
+  [ -z "$name" ] || [ -z "$file" ] || die "name the release once: --release <name> or --release-file <path>, not both. Nothing was changed." "$EX_USAGE"
+  [ -n "$name" ] || [ -n "$file" ] || die "tell me which release to update to: lares update --release <name>, for example 2026-10-19-rc.11. Nothing was changed." "$EX_USAGE"
+  if [ -n "$file" ]; then fetch=(--release-file "$file"); else fetch=(--release "$name"); fi
   on=$(readlink "$CUR" 2>/dev/null || true)
   on="${on##*/}"
 
   code=0
-  bash "$OPS/get-lares.sh" --release "$name" --fetch-only || code=$?
+  bash "$OPS/get-lares.sh" "${fetch[@]}" --fetch-only || code=$?
   [ "$code" -eq 0 ] || exit "$code"
+  # get-lares.sh has already refused a file without a usable release name; this reads the same field.
+  if [ -n "$file" ]; then
+    name=$(grep -o '"release"[[:space:]]*:[[:space:]]*"[^"]*"' "$file" | head -n 1 | sed -e 's/^[^:]*:[[:space:]]*"//' -e 's/"$//')
+  fi
   new="$ROOT/releases/$name"
 
   code=0
