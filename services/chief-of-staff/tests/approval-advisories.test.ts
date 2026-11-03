@@ -32,7 +32,7 @@ import {
   APPROVAL_TTL_MS,
 } from "@lares/agent-kit/approval-ledger";
 import { mustAlwaysAsk } from "@lares/agent-kit/always-ask";
-import { clearBoardCache, decideApproval, type BoardDeps } from "@lares/agent-kit/board-approval";
+import { decideApproval, type BoardDeps } from "@lares/agent-kit/board-approval";
 import { DETAILS_MAX_LENGTH, detailsForApproval } from "@lares/agent-kit/approval-summary";
 
 import { approverFrom } from "../lib/approvals.js";
@@ -197,14 +197,12 @@ describe("(4) an approval lives longer or wider than what was reviewed", () => {
     };
 
     // A 🚫 refuses it outright, even though it is already an always-ask tool.
-    clearBoardCache();
     const never = await decideApproval(call, deps("never"));
     expect(never.decision).toBe("denied");
 
     // "act on its own" does NOT loosen an always-ask lock — it still asks. Cache cleared again:
     // decideApproval caches the board's level per (agent, capability, action) for 30s, and the
     // first call above would otherwise still answer for this one.
-    clearBoardCache();
     const autonomous = await decideApproval(call, deps("autonomous"));
     expect(autonomous.decision).toBe("locked");
   });

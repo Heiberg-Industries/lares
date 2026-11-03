@@ -165,7 +165,8 @@ If you skip this, the installer does everything else and stops at the end, telli
 the file and run it again. Nothing is lost.
 
 Running the installer again is always safe. A re-run keeps the Google mail and calendar settings
-you connected earlier, and it restarts the keeper only when its settings file
+you connected earlier and any agent environment values you set by hand in `keeper.json` (a value
+that no longer passes the keeper's checks is dropped, with a line saying which), and it restarts the keeper only when its settings file
 (`/etc/lares/keeper.json`) actually changed. If that file has been damaged by hand and cannot be
 read, the installer stops and says so, without touching it.
 

@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {boardApproval, clearBoardCache, setBoardDeps, type BoardDeps} from '../src/board-approval.js';
+import {boardApproval, setBoardDeps, type BoardDeps} from '../src/board-approval.js';
 
 const database = vi.hoisted(() => ({query: vi.fn()}));
 vi.mock('../src/db.js', () => ({getPool: () => database}));
@@ -18,7 +18,7 @@ function template(name: string) {
   return {name, model: 'installation-brain', persona: 'agent/instructions.md',
     grants: [{capability: 'vault', scope: 'write-with-confirm', areas: ['shared']}], autonomy: {vault: 'gated'}};
 }
-afterEach(() => {vi.unstubAllEnvs(); vi.clearAllMocks(); clearBoardCache(); setBoardDeps(null);});
+afterEach(() => {vi.unstubAllEnvs(); vi.clearAllMocks(); setBoardDeps(null);});
 
 describe('neutral runtime permissions use the managed instance identity', () => {
   it.each(['chief-of-staff', 'creative'])('honors the instance denial and audit identity for %s', async role => {

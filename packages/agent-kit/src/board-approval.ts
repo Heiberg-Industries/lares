@@ -6,7 +6,8 @@ import {assertManagedRuntimeCurrent, managedIdentity, NO_OWNER_CONNECTION} from 
 //      (🚫 only tightens; no setting loosens always-ask);
 //   3. always-ask by engine policy (money, delete, first contact, publish, changing its own autonomy) → ask;
 //   4. autonomous → run, gated → ask.
-// The read is cached for 30 s per (agent, capability) and times out after 5 s. An unreadable table, an
+// Every decision reads the board fresh (one primary-key lookup) and times out after 5 s, so a switch to
+// "never" takes effect on the very next decision — a cache would let a revoked level run for its lifetime. An unreadable table, an
 // unknown tool or a missing agent name → ask. An outage costs a click, never an unapproved write.
 // eve evaluates this module at `eve build` with no database: nothing here touches the pool until a call.
 import type { ApprovalStatus } from "eve/tools/approval";
@@ -14,8 +15,6 @@ import { areaOfTool, capabilityOfTool, FIRST_CONTACT_REASON, mustAlwaysAsk, must
 import { getPool } from "./db.js";
 import { type AutonomyLevel, autonomyOf, parseManifest } from "./manifest.js";
 import { type ApprovalDecision, KitRatchet, recordApprovalEvent } from "./ratchet.js";
-
-export const APPROVAL_CACHE_MS = 30_000;
 
 /** true = this recipient has been in touch with the owner before; throwing = could not tell
  *  (the caller asks rather than treating a failed lookup as "unknown"/"known" either way). */
@@ -63,9 +62,6 @@ const productionDeps: BoardDeps = {
 let depsOverride: BoardDeps | null = null;
 export const setBoardDeps = (deps: BoardDeps | null) => { depsOverride = deps; };
 
-const cache = new Map<string, { level: AutonomyLevel | null; at: number }>();
-export const clearBoardCache = () => cache.clear();
-
 export async function decideApproval(
   input: {
     agent: string; tool: string; capability: string; startingLevel: AutonomyLevel;
@@ -90,18 +86,12 @@ export async function decideApproval(
   // A locked tool still reads the level, but only so that 🚫
   // can refuse it. Nothing below can loosen the lock: an unreadable table asks with the lock's
   // own reason (as before), and any other level asks.
-  const key = `${input.agent}/${input.capability}/${input.action ?? ""}`;
   let explicit: AutonomyLevel | null;
-  const hit = cache.get(key);
-  if (hit && deps.now() - hit.at < APPROVAL_CACHE_MS) explicit = hit.level;
-  else {
-    try {
-      explicit = await withTimeout(deps.explicitLevel(input.agent, input.capability, input.action), BOARD_READ_TIMEOUT_MS, "permissions table read");
-      cache.set(key, { level: explicit, at: deps.now() });
-    } catch {
-      if (forced.ask) return { status: "user-approval", decision: "locked", reason: forced.reason };
-      return { status: "user-approval", decision: "failed-closed", reason: "the permissions table could not be read — asking first" };
-    }
+  try {
+    explicit = await withTimeout(deps.explicitLevel(input.agent, input.capability, input.action), BOARD_READ_TIMEOUT_MS, "permissions table read");
+  } catch {
+    if (forced.ask) return { status: "user-approval", decision: "locked", reason: forced.reason };
+    return { status: "user-approval", decision: "failed-closed", reason: "the permissions table could not be read — asking first" };
   }
   const level = explicit ?? input.startingLevel;
   if (level === "never") {

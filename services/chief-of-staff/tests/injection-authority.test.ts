@@ -43,7 +43,7 @@ import {
   reserveExactApproval, attachExactApproval, approveExactResponse, requireApprovedExecution, requireBoundExactApproval,
 } from '@lares/agent-kit/approval-execution';
 import { APPROVAL_TTL_MS } from '@lares/agent-kit/approval-ledger';
-import { decideApproval, clearBoardCache, APPROVAL_CACHE_MS, type BoardDeps } from '@lares/agent-kit/board-approval';
+import { decideApproval, type BoardDeps } from '@lares/agent-kit/board-approval';
 import { KitRatchet } from '@lares/agent-kit/ratchet';
 import { audienceWidens, audienceWithinReaders, type Audience } from '@lares/agent-kit/authority-contract';
 import { taintTurn, stampFor, clearTurn, resetTaintForTests } from '@lares/agent-kit/origin-taint';
@@ -176,7 +176,6 @@ beforeEach(async () => {
     ($2,'member-a','Fixture','Second filing','manual','2026-12-02','member-a'),
     ($3,'member-b','Fixture','Their filing','manual','2026-12-03','member-b')`, [DEADLINE_A, DEADLINE_A2, DEADLINE_B]);
   await share([]); // nobody but the owner; binds the owner's session
-  clearBoardCache();
   resetTaintForTests();
 });
 
@@ -225,7 +224,6 @@ describe('1. outside or quoted text claiming the user approved something', () =>
     const decide = () => decideApproval({ agent: 'helper', tool: 'deadline_add', capability: 'deadline', startingLevel: 'gated', toolInput: { title: c.text } }, deps);
     expect((await decide()).status).toBe('user-approval');
     await getPool().query("INSERT INTO ratchet(agent,capability,level,updated_by) VALUES('helper','deadline','autonomous','fixture')");
-    clock += APPROVAL_CACHE_MS + 1;
     expect((await decide()).status).toBe('not-applicable');
   });
 });
@@ -424,7 +422,7 @@ describe('5. a delayed action after the permission was revoked', () => {
   });
 
   // The native approval path (every tool without an exact adapter) asks the board again when an
-  // answered card resumes, through a read cached for APPROVAL_CACHE_MS per agent and capability.
+  // answered card resumes, reading the board fresh each time.
   const nativeResume = async (afterMs: number) => {
     let clock = 0;
     const deps: BoardDeps = { explicitLevel: (a, cap, act) => new KitRatchet(getPool()).explicitLevel(a, cap, act), record: async () => {}, now: () => clock };
@@ -436,11 +434,7 @@ describe('5. a delayed action after the permission was revoked', () => {
     return decide();
   };
 
-  it('the native path refuses a resumed call once the board read is past its cache window', async () => {
-    expect((await nativeResume(APPROVAL_CACHE_MS + 1)).decision).toBe('denied');
-  });
-
-  it.skip('GAP: the native path refuses a resumed call immediately after the board is switched off (today the cached level is used for up to 30 s)', async () => {
+  it('the native path refuses a resumed call immediately after the board is switched off', async () => {
     expect((await nativeResume(1_000)).decision).toBe('denied');
   });
 

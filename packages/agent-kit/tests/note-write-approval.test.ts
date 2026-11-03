@@ -26,7 +26,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { boardApproval, type BoardDeps, clearBoardCache, setBoardDeps } from "../src/board-approval.js";
+import { boardApproval, type BoardDeps, setBoardDeps } from "../src/board-approval.js";
 import type { AutonomyLevel } from "../src/manifest.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -64,7 +64,6 @@ function board(levels: Record<string, AutonomyLevel> = {}) {
 const settle = () => new Promise((r) => setImmediate(r));
 
 afterEach(() => {
-  clearBoardCache();
   setBoardDeps(null);
   vi.restoreAllMocks();
 });
@@ -180,14 +179,13 @@ describe("nothing is easier than it was until the owner moves the dial", () => {
     for (const name of THREE) {
       expect(await boardApproval(DECLARATION, name)(), name).toBe("user-approval");
     }
-    // One read, then the 30 s cache: all three sit on the SAME row, the one the console already
+    // One fresh read per call: all three sit on the SAME row, the one the console already
     // renders as "Private notes".
-    expect(f.reads).toEqual(["chief-of-staff/vault/private"]);
+    expect(f.reads).toEqual(THREE.map(() => "chief-of-staff/vault/private"));
   });
 
   it("every one of the three is keyed on (agent, vault, private) — the Private notes row", async () => {
     for (const name of THREE) {
-      clearBoardCache();
       const f = board();
       setBoardDeps(f.deps);
       await boardApproval(DECLARATION, name)();
@@ -199,7 +197,6 @@ describe("nothing is easier than it was until the owner moves the dial", () => {
 describe("🚫 on Private notes refuses all three, and the refusal is evidence", () => {
   it("each one is denied in a sentence the model can relay, and recorded", async () => {
     for (const name of THREE) {
-      clearBoardCache();
       const f = board({ "chief-of-staff/vault/private": "never" });
       setBoardDeps(f.deps);
       expect(await boardApproval(DECLARATION, name)(), name).toEqual({
