@@ -49,7 +49,7 @@ const custody={withGate:async<T>(work:(value:NativeCustodyGate)=>Promise<T>):Pro
 function send(path='/v1/messages',body=Buffer.from('{"model":"fixture-brain"}'),nonce=randomBytes(32).toString('base64url'),headersOnly=false,
   extraHeaders:Record<string,string>={},omitHeader?:string){
   const signedPath=path.split('?',1)[0]??path;
-  const safePath=(signedPath==='/v1/messages'||signedPath==='/v1/chat/completions'?signedPath:'/v1/messages') as '/v1/messages'|'/v1/chat/completions';
+  const safePath=(signedPath==='/v1/messages'||signedPath==='/v1/chat/completions'||signedPath==='/v1/embeddings'?signedPath:'/v1/messages') as '/v1/messages'|'/v1/chat/completions'|'/v1/embeddings';
   const deadline=Date.now()+10_000,requestHash=gatewayRawRequestHash('POST',safePath,body);
   const fields:ModelPurposeDispatchFields={method:'POST',path:safePath,requestHash,ticket,agent,incarnation,nonce,deadline};
   const headers:Record<string,string>={'content-type':'application/json','content-length':String(body.length),
@@ -95,6 +95,33 @@ beforeEach(async()=>{
 afterEach(async()=>{if(stop)await stop();stop=undefined;vi.unstubAllGlobals();vi.unstubAllEnvs();vi.restoreAllMocks();await rm(root,{recursive:true,force:true});});
 
 describe('Keeper model-purpose dispatch transport',()=>{
+  it('sends an embeddings request with a bearer key to the embeddings route, only for a key priced as an embedding',async()=>{
+    const body=Buffer.from('{"model":"fixture-embed","input":["a"],"encoding_format":"float"}');
+    const poolFor=(format:string)=>({query:vi.fn(async()=>({rows:[{agent,incarnation,credential_generation:'4',installation_account_id:installationAccountId,
+      recovery_epoch:'epoch-1',endpoint_generation:'2',binding_id:bindingId,request_hash:gatewayRawRequestHash('POST','/v1/embeddings',body),
+      profile_hash:profileHash,endpoint_hash:endpointHash,key_fingerprint:keyFingerprint,purpose_alias:'fixture-embed',expires_at_ms:String(Date.now()+20_000),
+      maximum_liability:'3',pricing_profile:{format,capabilityHash:profileHash}}]}))} as unknown as Pool);
+    const restart=async(format:string)=>{await stop!();stop=await serveModelPurposeTransport({socket:socketPath,runtimeSecretsDir:root,custody,ticketPool:poolFor(format),rootUid:uid,socketUid:uid,socketGid:gid});};
+    const embedOperation=operation as unknown as {association:{purposeAlias:string};reviewedPolicy:{pricing:{format:string};capability:{aliases:string[]}}};
+    const original={alias:operation.association.purposeAlias,format:operation.reviewedPolicy.pricing.format,aliases:operation.reviewedPolicy.capability.aliases};
+    try{
+      embedOperation.association.purposeAlias='fixture-embed';embedOperation.reviewedPolicy.pricing.format='embedding';embedOperation.reviewedPolicy.capability.aliases=['fixture-embed'];
+      await restart('embedding');
+      const ok=await send('/v1/embeddings',body);
+      expect(ok.status).toBe(200);
+      expect(calls.at(-1)!.url).toBe('https://gateway.fixture.invalid/v1/embeddings');
+      expect(calls.at(-1)!.headers.get('authorization')).toBe(`Bearer ${nativeKey}`);
+      expect(calls.at(-1)!.headers.get('x-api-key')).toBeNull();
+      // A ticket priced as a chat key can never reach the embeddings route.
+      await restart('openai');
+      const before=calls.length;
+      expect((await send('/v1/embeddings',body,randomBytes(32).toString('base64url'))).status).toBe(403);
+      expect(calls.length).toBe(before);
+    }finally{
+      operation.association.purposeAlias=original.alias;embedOperation.reviewedPolicy.pricing.format=original.format;embedOperation.reviewedPolicy.capability.aliases=original.aliases;
+    }
+  });
+
   it('records only the first local-socket refusal stage and starts at zero requests',async()=>{
     const marker=join(root,'lares-model-purpose-transport.json');
     const before=JSON.parse(await readFile(marker,'utf8'));

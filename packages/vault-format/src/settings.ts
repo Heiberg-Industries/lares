@@ -996,7 +996,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "Nothing breaks — voice-learning embeddings fall back to one installation's own embedding-model alias baked into the code.",
-    readAt: ["services/chief-of-staff/agent/schedules/voice-learn.ts:146", "services/chief-of-staff/lib/voice-store.ts:96"],
+    readAt: ["services/chief-of-staff/agent/schedules/voice-learn.ts:146", "services/chief-of-staff/lib/voice-store.ts:95"],
   },
   {
     name: "OBLIGATION_TIMEOUT_MS",

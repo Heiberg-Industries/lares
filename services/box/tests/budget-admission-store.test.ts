@@ -108,11 +108,11 @@ function purposeBrokerFiles(){
   chmodSync(consolePath,0o440);chmodSync(join(secrets,'helper-runtime-control'),0o440);chmodSync(secrets,0o700);
   return {root,secrets,consoleKey,runtimeKey,consolePath,consoleSocket:join(root,'console.sock'),runtimeSocket:join(root,'runtime.sock')};
 }
-async function startPurposeBroker(files:ReturnType<typeof purposeBrokerFiles>,writer:BudgetFinancialWriter,consumerPool:Pool=db){
+async function startPurposeBroker(files:ReturnType<typeof purposeBrokerFiles>,writer:BudgetFinancialWriter,consumerPool:Pool=db,designatedOwnerId?:string){
   const uid=process.getuid?.()??0,gid=process.getgid?.()??0;
   return serveModelPurposeBroker(db as unknown as SourcePool,{consoleSigningKeyFile:files.consolePath,runtimeSecretsDir:files.secrets,
     consoleSocket:files.consoleSocket,runtimeSocket:files.runtimeSocket,rootUid:uid,consoleKeyUid:uid,consoleKeyGid:gid,
-    runtimeKeyUid:uid,runtimeKeyGid:gid,socketUid:uid,socketGid:gid},{pool:consumerPool,writer});
+    runtimeKeyUid:uid,runtimeKeyGid:gid,socketUid:uid,socketGid:gid,...(designatedOwnerId?{designatedOwnerId}:{})},{pool:consumerPool,writer});
 }
 async function selectPurposeModel(definitionHash:string){
   const sessionId=`${context().session.id}-model-purpose-${randomBytes(8).toString('hex')}`;
@@ -512,6 +512,98 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
       expect(files.records().filter(frame=>frame.record.kind==='commit'&&preparedOperationIds.includes(frame.record.operationId))).toHaveLength(2);
       }finally{await stop?.();stop=undefined;rmSync(restartedFiles.root,{recursive:true,force:true});}
     }finally{await stop?.();rmSync(purposeFiles.root,{recursive:true,force:true});}
+  });
+  describe('owner jobs: calls outside any conversation, paid by the installation owner',{timeout:30_000},()=>{
+    const embedPricing={...pricing,format:'embedding',limits:{inputTokens:3200,outputTokens:1},usdPerMillionTokens:{input:'1',output:'0',cacheRead:'0',cacheWrite:'0'}};
+    async function addKey(member:string,alias:string,format:object){
+      await journalGatewayFixture(files.writer,async source=>{
+        const id=randomUUID();
+        await source.query("INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,pricing_profile,state) VALUES($1,$2,$3,$4,$5,0,$6,'helper',$7,$8,$9,0.1,$10::jsonb,'active')",[id,installation,accounts[member],member,endpoint,fingerprint,incarnation,alias,profile,JSON.stringify(format)]);
+        noteBudgetFinancialChange(source,'budget_gateway_bindings',id);
+      });
+    }
+    const jobBody=(path:'/v1/chat/completions'|'/v1/embeddings',tag='x')=>{const body=Buffer.from(JSON.stringify({model:'x',tag}));return {body,request:{method:'POST',path,requestHash:gatewayRawRequestHash('POST',path,body)}};};
+    async function consume(f:ReturnType<typeof purposeBrokerFiles>,alias:string,request:object){
+      return purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('job.consume',{alias,request},f.runtimeKey),f.runtimeKey);
+    }
+    it('gives the owner a ticket per request, charged to the owner, for chat and embeddings; refuses the rest',async()=>{
+      await addKey('member-a','utility',pricing);await addKey('member-a','embed',embedPricing);
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        const chat=jobBody('/v1/chat/completions');
+        const first=await consume(f,'utility',chat.request);
+        expect(first).toMatchObject({ok:true,ticket:expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),expiresAt:expect.any(Number)});
+        const attempt=(await db.query('SELECT state,member_account_id,request_hash,authority_reference FROM budget_attempts')).rows[0];
+        expect(attempt).toMatchObject({state:'prepared',member_account_id:accounts['member-a'],request_hash:chat.request.requestHash});
+        expect(attempt.authority_reference).toMatchObject({kind:'owner-job',binding:{memberId:'member-a',agent:'helper',incarnation}});
+        // The ticket is admitted later by the gateway, against the owner's own limit.
+        const admitted=await new PgBudgetAdmissionStore(db,env(),30_000,files.writer).admit(String(first.ticket),{requestHash:chat.request.requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'utility'},recovery());
+        expect(admitted.state).toBe('allowed');
+        expect((await db.query("SELECT state FROM budget_attempts")).rows[0].state).toBe('admitted');
+        const embed=jobBody('/v1/embeddings');
+        expect(await consume(f,'embed',embed.request)).toMatchObject({ok:true,ticket:expect.any(String)});
+        // The wrong route for a key, a model name with no key, and a malformed request are all refused.
+        expect((await consume(f,'utility',embed.request)).ok).toBe(false);
+        expect((await consume(f,'embed',chat.request)).ok).toBe(false);
+        expect((await consume(f,'writer',chat.request)).ok).toBe(false);
+        expect((await consume(f,'utility',{...chat.request,extra:1})).ok).toBe(false);
+        expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(2);
+        // A replay of the very same signed frame never makes a second ticket.
+        const frame=purposeRuntimeEnvelope('job.consume',{alias:'utility',request:jobBody('/v1/chat/completions','replay').request},f.runtimeKey);
+        expect((await purposeSocketRequest(f.runtimeSocket,frame,f.runtimeKey)).ok).toBe(true);
+        expect((await purposeSocketRequest(f.runtimeSocket,frame,f.runtimeKey)).ok).toBe(false);
+        expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(3);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+    it('allows at most 8 outstanding owner-job tickets per agent and frees a slot when one is retired',async()=>{
+      await addKey('member-a','utility',pricing);
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        const tickets:string[]=[];
+        for(let i=0;i<8;i++){const reply=await consume(f,'utility',jobBody('/v1/chat/completions',`n${i}`).request);expect(reply.ok).toBe(true);tickets.push(String(reply.ticket));}
+        expect((await consume(f,'utility',jobBody('/v1/chat/completions','ninth').request)).ok).toBe(false);
+        expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(8);
+        // Admitting a ticket keeps it outstanding; only its final cost frees the slot.
+        const writerStore=new PgBudgetAdmissionStore(db,env(),30_000,files.writer),firstRequest=jobBody('/v1/chat/completions','n0').request;
+        const admitted=await writerStore.admit(tickets[0]!,{requestHash:firstRequest.requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'utility'},recovery());
+        expect(admitted.state).toBe('allowed');
+        expect((await consume(f,'utility',jobBody('/v1/chat/completions','tenth').request)).ok).toBe(false);
+        if(admitted.state!=='allowed')throw new Error('fixture');
+        expect(await writerStore.settle({attemptId:admitted.attemptId,bindingId:(await db.query('SELECT binding_id FROM budget_attempts WHERE id=$1',[admitted.attemptId])).rows[0].binding_id,requestHash:firstRequest.requestHash,endpointHash:endpoint,credentialGeneration:'0',profileHash:profile,receiptHash:h('owner-job-receipt'),actualAmount:'0.01',kind:'terminal-usage'})).toBe('settled');
+        expect((await consume(f,'utility',jobBody('/v1/chat/completions','eleventh').request)).ok).toBe(true);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    },30_000);
+    it('refuses everything when the Keeper has no owner on record, and for an owner who holds no key for that model name',async()=>{
+      await addKey('member-a','utility',pricing);
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db);
+        expect((await consume(f,'utility',jobBody('/v1/chat/completions').request)).ok).toBe(false);
+        await stopBroker();stopBroker=undefined;
+        const g=purposeBrokerFiles();
+        try{
+          stopBroker=await startPurposeBroker(g,files.writer,db,'member-b');
+          expect((await consume(g,'utility',jobBody('/v1/chat/completions').request)).ok).toBe(false);
+          expect((await consume(g,'standard',jobBody('/v1/chat/completions').request)).ok).toBe(true);
+        }finally{await stopBroker?.();stopBroker=undefined;rmSync(g.root,{recursive:true,force:true});}
+        expect((await db.query('SELECT member_account_id FROM budget_attempts')).rows.map(r=>r.member_account_id)).toEqual([accounts['member-b']]);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+    it('refuses when the owner is no longer an active owner or the agent is not running',async()=>{
+      await addKey('member-a','utility',pricing);
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        await db.query("UPDATE users SET org_role='member' WHERE id='member-a'");
+        expect((await consume(f,'utility',jobBody('/v1/chat/completions','a').request)).ok).toBe(false);
+        await db.query("UPDATE users SET org_role='owner' WHERE id='member-a'");
+        expect((await consume(f,'utility',jobBody('/v1/chat/completions','b').request)).ok).toBe(true);
+        await db.query("UPDATE agent_resources SET pending=true WHERE name='helper'");
+        expect((await consume(f,'utility',jobBody('/v1/chat/completions','c').request)).ok).toBe(false);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
   });
   it('consumes the real empty approval-resume step with resolver and human initiator preserved',async()=>{
     const definitionHash=h('model-purpose-definition'),requestId=randomBytes(32).toString('base64url'),key='1'.repeat(64),selected=await selectPurposeModel(definitionHash),{sessionId,admissionNonce}=selected;

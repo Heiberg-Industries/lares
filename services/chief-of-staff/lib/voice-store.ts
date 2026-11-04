@@ -18,7 +18,6 @@
 import type { Pool } from "pg";
 import { purposeModel } from "@lares/agent-kit/gateway-status";
 import { pickCard } from "./voice.js";
-import { gatewayUrl, gatewayKey } from "./gateway-provider.js";
 import { makeGatewayEmbedder, makeVoiceStore, type VoiceExemplar } from "./embeddings-gateway.js";
 import type { Lang, VoiceProfile } from "./voice.js";
 
@@ -93,7 +92,7 @@ export function makeDbVoiceAccess(deps: {
 }): VoiceAccess {
   const embedder = deps.embedder ?? {
     embed: (texts: string[]) => makeGatewayEmbedder({
-      gatewayUrl: gatewayUrl(), apiKey: gatewayKey(), model: deps.embedModel ?? process.env["EMBED_MODEL"] ?? purposeModel("embed"),
+      model: deps.embedModel ?? process.env["EMBED_MODEL"] ?? purposeModel("embed"),
     }).embed(texts),
   };
   return {

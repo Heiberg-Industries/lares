@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ModelPurposeBrokerState, modelPurposeDigest, modelPurposeMac, signModelPurposeRequest, type ModelPurposeRequest, type ModelPurposeStepInput } from '../lib/model-purpose-broker.js';
-import type { BudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
+import type { ConversationBudgetAuthorityReference as BudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
 import { createHash } from 'node:crypto';
 import { preparedModelPurposeConsumer } from '../lib/budget-financial-writer.js';
 import { parseModelPurposeAdmissionResponse } from '@lares/agent-kit/model-purpose-protocol';

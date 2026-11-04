@@ -116,6 +116,39 @@ describe("createGatewayProvider", () => {
     }finally{vi.unstubAllGlobals();}
   });
 
+  it("sends a call outside any conversation as an owner job, with no step claim, no dispatch burn and no legacy key", async () => {
+    const { withOwnerJob } = await import("../src/owner-job.js");
+    const { gatewayModel } = createGatewayProvider({ defaultKeyFile: join(dir, "missing-gateway-key") });
+    const model = gatewayModel("fixture-utility") as unknown as { config: { headers: () => Record<string, string>; fetch?: typeof globalThis.fetch } };
+    const legacyFetch = vi.fn(async () => new Response("legacy"));
+    vi.stubGlobal("fetch", legacyFetch);
+    try {
+      const response = await withOwnerJob("fixture-utility", async () => {
+        expect(model.config.headers()["x-api-key"]).toBe("lares-managed-purpose");
+        return model.config.fetch!("https://gateway.example.test/v1/messages", { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "fixture-utility", messages: [] }) });
+      });
+      expect(response.status).toBe(200);
+      expect(purposeTransport.request).toHaveBeenCalledTimes(1);
+      expect(purposeTransport.request).toHaveBeenCalledWith("job.consume", expect.objectContaining({ alias: "fixture-utility", request: expect.objectContaining({ method: "POST", path: "/v1/messages" }) }));
+      expect(purposeTransport.dispatch).toHaveBeenCalledTimes(1);
+      expect(purposeTransport.dispatch.mock.calls[0]![0]).toMatchObject({ ticket: "T".repeat(43), path: "/v1/messages" });
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("still refuses a call outside any conversation and outside an owner job", async () => {
+    const { gatewayModel } = createGatewayProvider({ defaultKeyFile: keyPath });
+    const model = gatewayModel("fixture-utility") as unknown as { config: { fetch?: typeof globalThis.fetch } };
+    const legacyFetch = vi.fn(async () => new Response("legacy"));
+    vi.stubGlobal("fetch", legacyFetch);
+    try {
+      await expect(model.config.fetch!("https://gateway.example.test/v1/messages", { method: "POST", body: "{}" })).rejects.toThrow();
+      expect(legacyFetch).not.toHaveBeenCalled();
+      expect(purposeTransport.request).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it("the fetch seam sets no Authorization header — the SDK's own x-api-key carries the key", async () => {
     const { gatewayModel } = createGatewayProvider({ defaultKeyFile: keyPath });
     const model = gatewayModel("claude-opus-4-8") as unknown as {

@@ -26,7 +26,7 @@ const REQUEST_TIMEOUT_MS = 2_000;
 const REQUEST_TOMBSTONE_MS = 60_000;
 const MAX_REQUEST_TOMBSTONES = 2_048;
 const denied = () => new Error('Model purpose authority is not available');
-type Operation = 'request.admit' | 'turn.open' | 'step.claim' | 'step.consume' | 'turn.close';
+type Operation = 'request.admit' | 'turn.open' | 'step.claim' | 'step.consume' | 'job.consume' | 'turn.close';
 interface RuntimeIdentity { agent: string; incarnation: string; key: Buffer }
 
 // IDs are burned before connecting, so timeout, refusal, or late ACK cannot retry a request.
@@ -157,7 +157,7 @@ export async function modelPurposeRequest<T extends Record<string, unknown>>(
 export async function modelPurposeDispatchRequest(input: {
   ticket: string;
   method: 'POST';
-  path: '/v1/messages' | '/v1/chat/completions';
+  path: '/v1/messages' | '/v1/chat/completions' | '/v1/embeddings';
   rawBody: Uint8Array;
   deadline: number;
   headers?: HeadersInit;

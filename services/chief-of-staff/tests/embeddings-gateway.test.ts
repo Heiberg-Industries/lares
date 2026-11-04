@@ -1,28 +1,61 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+const { dispatch } = vi.hoisted(() => ({ dispatch: vi.fn() }));
+vi.mock("@lares/agent-kit/owner-job", () => ({ dispatchOwnerJob: dispatch }));
 import { makeGatewayEmbedder, makeVoiceStore } from "../lib/embeddings-gateway.js";
 
+import { cutToFit } from "../lib/embeddings-gateway.js";
+
+const reply = (data: unknown, ok = true, status = 200) => async () => ({ ok, status, json: async () => data, text: async () => String(data) }) as any;
+const vec = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+
 describe("makeGatewayEmbedder", () => {
-  it("POSTs to <gateway>/v1/embeddings with the model + input, and forces identity encoding", async () => {
-    let url = ""; let init: any;
-    const fakeFetch = (async (u: any, i: any) => {
-      url = String(u); init = i;
-      return { ok: true, json: async () => ({ data: [{ embedding: [1, 2, 3] }] }) } as any;
-    }) as any;
-    const embedder = makeGatewayEmbedder({
-      gatewayUrl: "https://gateway.example.com", apiKey: "k", model: "jina-embeddings-v3", fetchImpl: fakeFetch,
-    });
-    const vectors = await embedder.embed(["hello"]);
-    expect(vectors).toEqual([[1, 2, 3]]);
-    expect(url).toBe("https://gateway.example.com/v1/embeddings");
-    expect(init.headers["Authorization"]).toBe("Bearer k");
-    expect(init.headers["Accept-Encoding"]).toBe("identity");
-    expect(JSON.parse(init.body)).toEqual({ model: "jina-embeddings-v3", input: ["hello"] });
+  it("sends model, input and encoding_format float, and returns vectors in input order", async () => {
+    let body: any;
+    const embedder = makeGatewayEmbedder({ model: "lares-embed", post: async (b) => { body = JSON.parse(b); return reply({ data: [{ index: 1, embedding: [3, 4] }, { index: 0, embedding: [1, 2] }] })(); } });
+    expect(await embedder.embed(["a", "b"])).toEqual([[1, 2], [3, 4]]);
+    expect(body).toEqual({ model: "lares-embed", input: ["a", "b"], encoding_format: "float" });
   });
 
-  it("throws with the status + a snippet of the body on a non-ok response", async () => {
-    const fakeFetch = (async () => ({ ok: false, status: 500, text: async () => "boom" }) as any) as any;
-    const embedder = makeGatewayEmbedder({ gatewayUrl: "https://g", apiKey: "k", model: "m", fetchImpl: fakeFetch });
+  it("refuses zero inputs, more than 32, and empty inputs before any request", async () => {
+    const post = vi.fn();
+    const embedder = makeGatewayEmbedder({ model: "m", post });
+    await expect(embedder.embed([])).rejects.toThrow(/1 to 32/);
+    await expect(embedder.embed(Array(33).fill("x"))).rejects.toThrow(/1 to 32/);
+    await expect(embedder.embed(["ok", "   "])).rejects.toThrow(/empty/);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("cuts an over-long text to the model's limit instead of failing", async () => {
+    let body: any;
+    const embedder = makeGatewayEmbedder({ model: "m", maxInputTokens: 5, post: async (b) => { body = JSON.parse(b); return reply({ data: [{ index: 0, embedding: [1] }] })(); } });
+    await embedder.embed(["abcdefghij"]);
+    expect(body.input).toEqual(["abcde"]);
+    expect(cutToFit("a😀b😀c", 3)).toBe("a😀b");
+  });
+
+  it("throws with the status and a snippet of the body on a non-ok response", async () => {
+    const embedder = makeGatewayEmbedder({ model: "m", post: async () => ({ ok: false, status: 500, text: async () => "boom" }) as any });
     await expect(embedder.embed(["x"])).rejects.toThrow(/500.*boom/);
+  });
+
+  it.each([
+    ["wrong count", { data: [] }],
+    ["duplicate index", { data: [{ index: 0, embedding: [1] }, { index: 0, embedding: [1] }] }],
+    ["index out of range", { data: [{ index: 0, embedding: [1] }, { index: 5, embedding: [1] }] }],
+    ["different lengths", { data: [{ index: 0, embedding: vec(2) }, { index: 1, embedding: vec(3) }] }],
+    ["non-number value", { data: [{ index: 0, embedding: ["x"] }, { index: 1, embedding: [1] }] }],
+  ])("refuses a malformed answer: %s", async (_name, answer) => {
+    const embedder = makeGatewayEmbedder({ model: "m", post: reply(answer) });
+    await expect(embedder.embed(["a", "b"])).rejects.toThrow(/gateway embeddings/);
+  });
+
+  it("by default asks the Keeper for an owner-job ticket on the embeddings route", async () => {
+    dispatch.mockResolvedValue(new Response(JSON.stringify({ data: [{ index: 0, embedding: [9] }] }), { status: 200 }));
+    expect(await makeGatewayEmbedder({ model: "lares-embed" }).embed(["hi"])).toEqual([[9]]);
+    const sent = dispatch.mock.calls[0]![0];
+    expect(sent).toMatchObject({ alias: "lares-embed", path: "/v1/embeddings" });
+    expect(JSON.parse(Buffer.from(sent.rawBody).toString())).toMatchObject({ model: "lares-embed", encoding_format: "float" });
   });
 });
 

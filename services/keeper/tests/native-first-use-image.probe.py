@@ -1469,6 +1469,35 @@ try{const db=await p.connect();try{await db.query('BEGIN');try{const grant=await
         raise RuntimeError('Opening an extra key changed which accounts are open')
     if upstream_calls()!=3:raise RuntimeError('Making an extra key caused an upstream dispatch')
     cases['ownerExtraKeyMadeAndOpenedOnOpenAccountWithoutUsage']=True
+    # A call outside any conversation (a schedule, or a tool) is charged to the configured owner through the extra key. It goes
+    # through the same generated request the agent's own model client builds, with no conversation step. A model name the owner
+    # holds no key for is refused before anything is dispatched.
+    stage = 'owner-job'
+    before_job=native_snapshot()
+    def run_owner_job(name):
+        code=("(async()=>{const {createGatewayProvider}=await import('@lares/agent-kit/gateway-provider');"
+              "const {withOwnerJob}=await import('@lares/agent-kit/owner-job');const {generateText}=await import('ai');"
+              "const model=createGatewayProvider({defaultKeyFile:'/nonexistent'}).gatewayModel(process.env.OWNER_JOB_ALIAS);"
+              "const out=await withOwnerJob(process.env.OWNER_JOB_ALIAS,()=>generateText({model,prompt:'Return exactly OWNER_JOB_OK',maxOutputTokens:64,maxRetries:0}));"
+              "console.log(JSON.stringify({length:String(out.text).length}));})().catch(()=>{process.exitCode=1});")
+        return run('docker','exec','-e','OWNER_JOB_ALIAS='+name,'-w','/app/services/chief-of-staff',chief_name,
+          '/app/services/chief-of-staff/node_modules/.bin/tsx','--eval',code,check=False,timeout=90)
+    refused_job=run_owner_job(unpriced_alias)
+    if refused_job.returncode==0:raise RuntimeError('An owner job for a model name the owner holds no key for was accepted')
+    if native_snapshot()!=before_job or upstream_calls()!=3:raise RuntimeError('A refused owner job changed usage or dispatched')
+    cases['ownerJobRefusedForModelNameWithoutOwnerKey']=True
+    made_job=run_owner_job(extra_alias)
+    if made_job.returncode!=0:raise RuntimeError('The owner job through the extra key failed')
+    job_deadline=time.monotonic()+30
+    job_state=native_snapshot()
+    while (job_state['attempts']!=before_job['attempts']+1 or job_state['grants']!=before_job['grants']+1 or job_state['settled']!=before_job['settled']+1):
+        if time.monotonic()>=job_deadline:break
+        time.sleep(.25);job_state=native_snapshot()
+    if (job_state['attempts']!=before_job['attempts']+1 or job_state['grants']!=before_job['grants']+1 or
+        job_state['settled']!=before_job['settled']+1 or float(job_state['liability'])<=float(before_job['liability'])):
+        raise RuntimeError('The owner job did not produce one settled charge')
+    if upstream_calls()!=4:raise RuntimeError('The owner job did not cause exactly one upstream dispatch')
+    cases['ownerJobThroughExtraKeyAdmittedAndSettledOnce']=True
     proof['combinedLaterMemberContinuity']={'firstOwnerSettlement':1,'laterMemberSettlement':1,
       'ownerRepeatSettlement':1,'upstreamDispatches':3,'exactPriorFinancialRowsPreserved':True,
       'ownerAndLaterMemberOpen':True}

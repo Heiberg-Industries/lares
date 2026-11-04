@@ -8,7 +8,7 @@ import { type ConsoleAuthorityContext } from './console-turn-authority.js';
 import { PgGrantStore } from './grant-store.js';
 import { payloadFingerprint } from './approval-ledger.js';
 import { currentModelInvocation, MODEL_INVOCATION_REFUSED } from './model-invocation.js';
-import { captureBudgetAuthorityReference, validateBudgetAuthorityReference, type BudgetAuthorityReference } from './budget-model-authority.js';
+import { captureBudgetAuthorityReference, captureOwnerJobAuthorityReference, validateBudgetAuthorityReference, type BudgetAuthorityReference, type ConversationBudgetAuthorityReference } from './budget-model-authority.js';
 import {gatewayModelPath} from './gateway-admission-protocol.js';
 
 const SCALE=10n**18n;
@@ -40,7 +40,7 @@ export interface GatewayModelRequestIdentity {method:'POST';path:string;requestH
 /** Internal source returned only by the constructor-bound Keeper claim resolver. The
  * object shape is not authority; callers must not accept or construct it from remote JSON. */
 export interface ModelPurposeClaimSource {
-  agent:string;incarnation:string;reference:BudgetAuthorityReference;definitionHash:string;purposeAlias:string;
+  agent:string;incarnation:string;reference:ConversationBudgetAuthorityReference;definitionHash:string;purposeAlias:string;
   event:{turnId:string;sequence:number;stepIndex:number};expiresAt:number;isActive:()=>boolean;
 }
 export type ModelPurposeClaimResolver=(handle:object)=>ModelPurposeClaimSource|undefined;
@@ -70,6 +70,9 @@ export interface BudgetFinancialWriter {
   until?(deadline:number):BudgetFinancialWriter;
 }
 type Ref=BudgetAuthorityReference;
+/** Owner-job tickets one agent may have outstanding (prepared and unexpired, admitted, or unknown) at once. */
+export const OWNER_JOB_OUTSTANDING_MAX=8;
+const MODEL_PATHS:readonly string[]=['/v1/messages','/v1/chat/completions','/v1/embeddings'];
 const permits=new WeakMap<object,{attemptId:string;bindingId:string;requestHash:string}>();
 /** Burn synchronously BEFORE the first await/transport call; a thrown transport consumes it. */
 export function consumeDispatchPermit(permit:BudgetDispatchPermit):{attemptId:string;bindingId:string;requestHash:string}|undefined {
@@ -242,6 +245,66 @@ export class PgBudgetAdmissionStore {
     // The financial writer's observer and durable journal settlement have completed here.
     // A post-commit lifecycle refusal leaves a truthful unreachable attempt and no ACK.
     if(!active()||result.expiresAt<=Date.now())throw new Error('Budget authority is unavailable or changed');
+    return result;
+  }
+  /** A call made outside any conversation, charged to the installation owner the Keeper has on record.
+   * `ownerId` comes only from Keeper configuration; `alias` is the model name the call asks for and
+   * must have an active key of the owner for this very agent. At most OWNER_JOB_OUTSTANDING_MAX
+   * such tickets may be outstanding per agent. Runs inside the financial writer like every ticket. */
+  async prepareOwnerJobIntent(input:{agent:string;incarnation:string;ownerId:string;alias:string;jobId:string;request:GatewayModelRequestIdentity},signal:AbortSignal):Promise<{ticket:string;expiresAt:number}> {
+    const {agent,incarnation,ownerId,alias,jobId,request}=input;
+    const unavailable=()=>new Error('Budget authority is unavailable or changed');
+    if(!this.financialWriter||signal.aborted||request.method!=='POST'||!validHash(request.requestHash)||!MODEL_PATHS.includes(request.path)||
+      !/^[a-z][a-z0-9-]{1,30}$/.test(agent)||!uuid(incarnation)||!/^[a-z][a-z0-9-]{1,63}$/.test(alias)||!/^[A-Za-z0-9_-]{32,64}$/.test(jobId)||
+      typeof ownerId!=='string'||!ownerId)throw unavailable();
+    const env={...this.env,LARES_AGENT_NAME:agent,LARES_AGENT_INCARNATION:incarnation};
+    const raw=randomBytes(32).toString('base64url');
+    let authorityDeadlineMs:number|null=null;
+    const active=()=>!signal.aborted;
+    const result=await this.transaction(async db=>{
+      const reference=await captureOwnerJobAuthorityReference(db,ownerId,env); // Authority locks always precede budget locks.
+      const validUntil=await validateBudgetAuthorityReference(db,reference,env);
+      const current=await db.query("SELECT d.hash FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid' FOR SHARE OF r,d",[agent,incarnation]);
+      if(current.rows.length!==1)throw new Error('Budget policy unavailable');
+      if(validUntil){
+        retainSourceTransactionDeadline(db,validUntil);
+        await checkConsoleSourceDeadlines(db);
+        authorityDeadlineMs=Number((await db.query('SELECT floor(extract(epoch from $1::timestamptz)*1000)::bigint AS ms',[validUntil])).rows[0]?.ms);
+        if(!Number.isSafeInteger(authorityDeadlineMs))throw unavailable();
+      }
+      // Exactly one active key of the owner for this agent and this model name. An agent the owner holds
+      // no key for (any other member's agent, or a model name never set up) simply has no row.
+      const found=await db.query(`SELECT id,installation_account_id,member_account_id FROM budget_gateway_bindings
+        WHERE live_member_id=$1 AND agent=$2 AND incarnation=$3::uuid AND purpose_alias=$4 AND state='active' LIMIT 2`,[ownerId,agent,incarnation,alias]);
+      if(found.rows.length!==1)throw new Error('Budget policy unavailable');
+      const discovered=found.rows[0]!;
+      await db.query('SELECT user_id FROM org_member_policy WHERE user_id=$1 FOR SHARE',[ownerId]);
+      const {installation,member,binding:b}=await this.locks(db,discovered.installation_account_id,discovered.member_account_id,discovered.id);
+      const iCap=await this.cap(db,installation),mCap=await this.cap(db,member);
+      const format=(b?.pricing_profile as {format?:unknown}|null)?.format;
+      if(!b||b.state!=='active'||member.live_member_id!==ownerId||b.live_member_id!==member.live_member_id||
+        b.agent!==agent||b.incarnation!==incarnation||b.purpose_alias!==alias||
+        gatewayModelPath(format)!==request.path||b.endpoint_hash!==installation.selected_endpoint||!b.profile_hash||!b.key_fingerprint||
+        !installation.recovery_epoch||!iCap||!mCap||!await this.ready(db,installation)||!await this.ready(db,member))throw new Error('Budget policy unavailable');
+      // The member account is locked above, so this count and the insert below cannot interleave with another job.
+      const outstanding=(await db.query(`SELECT count(*)::int AS n FROM budget_attempts a JOIN budget_gateway_bindings x ON x.id=a.binding_id
+        WHERE a.member_account_id=$1 AND x.agent=$2 AND x.incarnation=$3::uuid AND a.authority_reference->>'kind'='owner-job'
+        AND (a.state IN ('admitted','unknown') OR (a.state='prepared' AND a.expires_at>clock_timestamp()))`,[member.id,agent,incarnation])).rows[0]?.n;
+      if(!Number.isSafeInteger(outstanding)||outstanding>=OWNER_JOB_OUTSTANDING_MAX)throw new Error('Owner job limit reached');
+      // The signed request id of this call is the job identity, so a replayed frame meets the unique key.
+      const invocationHash=createHmac('sha256',Buffer.from(member.canonical_suppression_hash,'hex')).update(JSON.stringify([
+        'lares.budget.invocation.v1','owner-job',installation.id,member.id,ownerId,agent,incarnation,jobId,
+      ])).digest('hex');
+      const requestedExpiry=Math.min(Date.now()+this.intentLifetimeMs,authorityDeadlineMs===null?Number.POSITIVE_INFINITY:authorityDeadlineMs);
+      if(requestedExpiry<=Date.now())throw unavailable();
+      const inserted=await db.query(`INSERT INTO budget_attempts(invocation_hash,id,ticket_hash,installation_account_id,member_account_id,binding_id,live_member_id,installation_window_id,member_window_id,endpoint_hash,credential_generation,installation_policy_generation,member_policy_generation,endpoint_generation,recovery_epoch,request_hash,authority_hash,authority_reference,profile_hash,reserved_amount,installation_cap_snapshot,member_cap_snapshot,created_at,expires_at)
+        SELECT $23,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19,$20,$21,t,LEAST(t+($22::int*interval '1 millisecond'),$24::timestamptz) FROM(SELECT clock_timestamp() AS t) c ON CONFLICT(invocation_hash) DO NOTHING RETURNING id,expires_at`,
+        [randomUUID(),hash(raw),installation.id,member.id,b.id,member.live_member_id,installation.active_window_id,member.active_window_id,b.endpoint_hash,b.credential_generation,installation.policy_generation,member.policy_generation,installation.endpoint_generation,installation.recovery_epoch,request.requestHash,payloadFingerprint('budget-authority',reference),JSON.stringify(reference),b.profile_hash,b.maximum_liability,iCap,mCap,Math.max(1,Math.min(this.intentLifetimeMs,requestedExpiry-Date.now())),invocationHash,new Date(requestedExpiry).toISOString()]);
+      if(inserted.rows.length!==1)throw unavailable();
+      noteBudgetFinancialChange(db,'budget_attempts',inserted.rows[0]!.id);
+      return {ticket:raw,expiresAt:new Date(inserted.rows[0]!.expires_at).getTime()};
+    },'prepare',{beforeCommit:()=>{if(!active())throw unavailable();}});
+    if(!active()||result.expiresAt<=Date.now())throw unavailable();
     return result;
   }
   async admit(ticket:string,observation:BudgetGatewayObservation,recovery:BudgetRecoveryReference):Promise<BudgetAdmission> {

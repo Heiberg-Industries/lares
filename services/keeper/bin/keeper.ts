@@ -220,6 +220,7 @@ async function main(): Promise<void> {
             const brokerStop=await serveModelPurposeBroker(modelPurposePool,{
                 consoleSigningKeyFile:modelPurposeKeyPath,runtimeSecretsDir:config.secretsDir,
                 consoleSocket:"/run/lares/model-purpose-console.sock",runtimeSocket:"/run/lares/model-purpose/model-purpose.sock",
+                designatedOwnerId:config.designatedOwnerId,
             },consumer);
             if(nativeCustody&&consumer&&modelPurposeRuntimeDir){
                 try{
