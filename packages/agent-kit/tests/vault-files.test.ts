@@ -332,6 +332,12 @@ describe('importBatch',()=>{
     expect(failure).toBeInstanceOf(VaultPushFailedError);expect((failure as VaultPushFailedError).commit).toBe(git(root,'rev-parse','--short','HEAD').trim());
     expect(git(root,'show','HEAD:bulk/n1.md')).toContain('body 1');expect(git(root,'diff','--cached')).toBe('');
   });
+  it('narrows wider stamps to the approved origin and reports the paths',async()=>{
+    const files=[{path:'a.md',content:'---\nlares_origin: owner\n---\nA'},{path:'b.md',content:'---\nlares_origin: third_party\n---\nB'},{path:'c.md',content:'---\nlares_origin: synced\n---\nC'},{path:'d.md',content:'D'}];
+    const result=await api.importBatch(ctx,{binding:importBinding,files});
+    expect(result.narrowed).toEqual(['a.md']);
+    expect(git(origin,'show','HEAD:a.md')).toBe('---\nlares_origin: synced\n---\nA');expect(git(origin,'show','HEAD:b.md')).toBe(files[1]!.content);expect(git(origin,'show','HEAD:c.md')).toBe(files[2]!.content);
+  });
   it('rejects an invalid chunk size',async()=>{
     await expect(api.importBatch(ctx,{binding:importBinding,files:[note(1)],chunkSize:0})).rejects.toThrow(VaultFilesDeniedError);
   });
@@ -342,8 +348,11 @@ describe('stampImportedNote',()=>{
     expect(stampImportedNote('a.md','---\r\ntype: x\r\n# c\r\n---\r\nbody\r\n','synced')).toBe('---\r\ntype: x\r\nlares_origin: synced\r\n# c\r\n---\r\nbody\r\n');
     expect(stampImportedNote('a.md','plain\n','owner')).toBe('---\nlares_origin: owner\n---\n\nplain\n');
   });
-  it('keeps a valid existing stamp, replaces an invalid one, and leaves non-markdown alone',()=>{
-    const owned='---\nlares_origin: owner\n---\nx';expect(stampImportedNote('a.md',owned,'synced')).toBe(owned);
+  it('keeps an equal or narrower stamp, narrows a wider one, replaces an invalid one, and leaves non-markdown alone',()=>{
+    const owned='---\nlares_origin: owner\n---\nx';expect(stampImportedNote('a.md',owned,'owner')).toBe(owned);
+    expect(stampImportedNote('a.md','---\r\nlares_origin: owner\r\nx: 1\r\n---\r\n','synced')).toBe('---\r\nlares_origin: synced\r\nx: 1\r\n---\r\n');
+    const third='---\nlares_origin: third_party\n---\nx';expect(stampImportedNote('a.md',third,'synced')).toBe(third);
+    const same='---\nlares_origin: synced\n---\nx';expect(stampImportedNote('a.md',same,'synced')).toBe(same);
     expect(stampImportedNote('a.md','---\nlares_origin: bogus\n---\nx','synced')).toBe('---\nlares_origin: synced\n---\nx');
     expect(stampImportedNote('a.pdf','%PDF','synced')).toBe('%PDF');
   });

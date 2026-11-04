@@ -14,7 +14,7 @@ import { findBacklinks, listNotes, NoteNotFoundError, NotePathEscapesStoreError,
 import { withGuardedVaultRepositoryLock } from './note-lock.js';
 import { commitNote, commitNotes, moveNote, removeNote, runGuardedVaultGit, vaultCompanionOf, vaultContentRevision, VaultContentChangedError, VaultPushFailedError, VaultStagedChangesError, type VaultBatchFileResult, type VaultGitGuard } from './vault-git.js';
 import { articleCompanionPath } from '@lares/vault-format/article';
-import { readOriginFrontmatter, upsertOriginFrontmatter, type Origin } from '@lares/vault-format/origin';
+import { narrowest, readOriginFrontmatter, upsertOriginFrontmatter, type Origin } from '@lares/vault-format/origin';
 
 export const VAULT_AREA_MARKER = '.lares-vault-area.json';
 /** Provisioning must explicitly initialize an EMPTY area with this marker and its own Git repository.
@@ -62,11 +62,14 @@ function regular(path:string):void {
 }
 
 export const IMPORT_CHUNK_FILES = 500;
-export interface VaultImportResult {results:VaultBatchFileResult[]; commits:string[]}
-/** Byte-preserving stamp for an imported markdown note: an existing VALID `lares_origin` stays
- * (never widened), anything else gets `origin` through the one shared parser. Other files pass through. */
+export interface VaultImportResult {results:VaultBatchFileResult[]; commits:string[]; /** paths whose wider existing stamp was replaced by the approved origin */ narrowed:string[]}
+/** Byte-preserving stamp for an imported markdown note: an existing VALID `lares_origin` stays only
+ * when it is the approved origin or narrower (the import never widens trust); a wider or invalid one,
+ * or none, becomes `origin` through the one shared parser. Other files pass through. */
 export function stampImportedNote(path:string,content:string,origin:Origin):string {
-  if(!/\.md$/i.test(path)||readOriginFrontmatter(content)!==undefined)return content;
+  if(!/\.md$/i.test(path))return content;
+  const existing=readOriginFrontmatter(content);
+  if(existing!==undefined&&narrowest([existing,origin])===existing)return content;
   return upsertOriginFrontmatter(content,origin);
 }
 const importBindingSchema=vaultWriteBindingSchema.omit({relativePath:true,expectedContentRevision:true});
@@ -205,13 +208,17 @@ export class GuardedVaultFiles {
     if(!Number.isInteger(chunk)||chunk<1||chunk>5000)throw new VaultFilesDeniedError();
     const binding=importBindingSchema.parse(input.binding);
     const {root,guard}=await this.writeArea(ctx,{...binding,relativePath:'import.md',expectedContentRevision:null},{},null);
-    const results:VaultBatchFileResult[]=[],commits:string[]=[],chunks=Math.ceil(input.files.length/chunk);
+    const results:VaultBatchFileResult[]=[],commits:string[]=[],narrowed:string[]=[],chunks=Math.ceil(input.files.length/chunk);
     for(let i=0;i<chunks;i++){
-      const files=input.files.slice(i*chunk,(i+1)*chunk).map(f=>({path:f.path,content:stampImportedNote(f.path,f.content,binding.approvedOrigin)}));
+      const files=input.files.slice(i*chunk,(i+1)*chunk).map(f=>{
+        const content=stampImportedNote(f.path,f.content,binding.approvedOrigin),before=/\.md$/i.test(f.path)?readOriginFrontmatter(f.content):undefined;
+        if(before!==undefined&&before!==readOriginFrontmatter(content))narrowed.push(f.path);
+        return {path:f.path,content};
+      });
       const base=input.message??`import: ${input.files.length} files`;
       const done=await commitNotes({vaultRoot:root,files,message:chunks>1?`${base} (${i+1}/${chunks})`:base,guard}).catch(safeFailure);
       results.push(...done.results);if(done.commit)commits.push(done.commit);
     }
-    return {results,commits};
+    return {results,commits,narrowed};
   }
 }
