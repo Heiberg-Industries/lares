@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 describe("clipping-requests without a vault", () => {
-  it("says once that clippings cannot be saved, and still answers the card's other requests", async () => {
+  it("hands the card's requests a keeper-backed inbox (not a missing one) and stays quiet", async () => {
     delete process.env["VAULT_PATH"];
     const drained: unknown[] = [];
     vi.doMock("../lib/clipping/requests.js", () => ({ drainRequests: async (deps: { inbox: unknown }) => { drained.push(deps.inbox); return 0; } }));
@@ -37,8 +37,9 @@ describe("clipping-requests without a vault", () => {
     await schedule.run!({} as never);
     await schedule.run!({} as never);
     expect(error).not.toHaveBeenCalled();
-    expect(drained).toEqual([null, null, null]);
-    expect(log.mock.calls.filter((c) => String(c[0]).includes("cannot save clippings to the Vault yet"))).toHaveLength(1);
+    expect(drained).toHaveLength(3);
+    for (const inbox of drained) expect(inbox).toMatchObject({ exists: expect.any(Function), write: expect.any(Function), remove: expect.any(Function) });
+    expect(log.mock.calls.filter((c) => String(c[0]).includes("cannot save clippings"))).toHaveLength(0);
   });
 });
 
