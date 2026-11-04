@@ -76,6 +76,16 @@ export const SCHEDULED_VAULT_POLICY: Readonly<Record<string, readonly ScheduledV
     remove: new RegExp(`^${DIGEST_INBOX_NOTE}$`),
     verbatim: new RegExp(`^${DIGEST_ARTICLE_FILE}$`),
     verbatimOrigin: "third_party",
+  }, {
+    // The shared area: ONLY a filed article and its text companion, which the digest's standing approval for
+    // `articles/` covers (ADR-0017, amendment 2026-10-09). No other write, no removal, no listing of the whole area.
+    area: "shared",
+    listPrefixes: ["articles/"],
+    read: new RegExp(`^${DIGEST_ARTICLE_STEM}\\.md$`),
+    write: NEVER,
+    remove: NEVER,
+    verbatim: new RegExp(`^${DIGEST_ARTICLE_FILE}$`),
+    verbatimOrigin: "third_party",
   }],
 };
 

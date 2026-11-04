@@ -12,9 +12,9 @@
  * If the name is taken, the note takes the next free `-2`, `-3` ... name, because a move never
  * replaces a note that is already there.
  *
- * WHAT STAYS IN THE INBOX. Saved links (they are filed as articles, which need a text companion that
- * `vault.scheduled` cannot carry) and attachments (binary files it cannot read). Both wait; one line
- * in the log says how many, and says it again only when the count changes.
+ * WHAT STAYS IN THE INBOX. Attachments (binary files `vault.scheduled` cannot read). They wait; one line
+ * in the log says how many, and says it again only when the count changes. Saved links are filed as
+ * articles (`article-file-keeper.ts`).
  */
 import { Buffer } from "node:buffer";
 import { basename, extname } from "node:path";
@@ -22,21 +22,18 @@ import { basename, extname } from "node:path";
 import type { InboxPort } from "../clipping/sync.js";
 import { makeKeeperInbox } from "../clipping/step.js";
 import { ScheduledVaultError, type ScheduledVault } from "../scheduled-vault.js";
-import { classifyInbound } from "./detect.js";
-import { parseFrontmatter, stripFrontmatter } from "./extract.js";
+import { parseFrontmatter } from "./extract.js";
 import { projectsFromPaths, type FileNoteFn } from "./filer.js";
 
-export const ARTICLES_NOT_YET = "articles cannot be filed yet on this install";
+export const ATTACHMENTS_NOT_YET = "attachments cannot be filed yet on this install";
 
 const ATTACHMENT_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".docx"]);
 const FREE_NAME_TRIES = 20;
 
-/** What the inbox note is, if it is one the keeper-backed digest must leave where it is. */
-export function heldInboxKind(body: string): "attachment" | "link" | null {
+/** Whether the inbox note is one the keeper-backed digest must leave where it is. */
+export function heldInboxKind(body: string): "attachment" | null {
   const fm = parseFrontmatter(body);
-  if (fm["attachment"] && ATTACHMENT_EXTS.has(extname(fm["attachment"]).toLowerCase())) return "attachment";
-  if (fm["url"]) return "link";
-  return classifyInbound(stripFrontmatter(body)).kind === "link" ? "link" : null;
+  return fm["attachment"] && ATTACHMENT_EXTS.has(extname(fm["attachment"]).toLowerCase()) ? "attachment" : null;
 }
 
 /** Oldest save first: by the note's own `saved` time, undated ones after, ties by path. */
@@ -75,17 +72,15 @@ export function makeKeeperDigestPorts(vault: ScheduledVault, log: (m: string) =>
       // Flat only, like the folder listing it replaces: a note in a sub-folder is not the digest's.
       const paths = (await vault.list("_inbox/")).filter((p) => /^_inbox\/[^/]+\.md$/.test(p));
       const found: { path: string; body: string; at: number }[] = [];
-      let links = 0, attachments = 0;
+      let attachments = 0;
       for (const path of paths) {
         const body = await vault.read(path);
         if (body === undefined) continue; // filed or removed since the listing
         const held = heldInboxKind(body);
-        if (held === "link") { links += 1; continue; }
         if (held === "attachment") { attachments += 1; continue; }
         found.push({ path, body, at: savedMs(body) });
       }
-      const line = links + attachments === 0 ? "" :
-        `${ARTICLES_NOT_YET}: ${links} saved link(s) and ${attachments} attachment(s) stay in the inbox`;
+      const line = attachments === 0 ? "" : `${ATTACHMENTS_NOT_YET}: ${attachments} attachment(s) stay in the inbox`;
       if (line !== lastHeldLine) { lastHeldLine = line; if (line) log(line); }
       found.sort((a, b) => (a.at === b.at ? (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) : a.at - b.at));
       return found.map(({ path, body }) => ({ path, body }));
