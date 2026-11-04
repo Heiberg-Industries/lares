@@ -18,6 +18,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { ceilingFor, HEADROOM_BYTES, STACK_ESTIMATE_BYTES, PER_AGENT_ESTIMATE_BYTES, AGENT_LIMIT_MAX } from './ceiling.js';
 import { writeSetting } from './settings.js';
 import { withDefinitionNamespace } from './definition-namespace.js';
+import { isRetiredRole } from './runtime-bindings.js';
 const NAME_RE = /^[a-z][a-z0-9-]{1,30}$/;
 const ROLES = ['chief-of-staff', 'creative'] as const;
 export type DefinitionRole = typeof ROLES[number];
@@ -440,6 +441,18 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 role?: unknown;
             } | null)?.role !== input.startingPoint)
                 refused('starting point and definition role must match');
+            return save(input, ctx, true);
+        }) });
+    // Bringing an existing agent folder onto this installation. Host command only (root on the
+    // server), so only the installation's owner can reach it. It is the console's create with a
+    // plainer refusal for a retired role: the same validation, never-widen check, name clash,
+    // agent limit, role list, publication, record and provisioning. Door tokens are never read
+    // from the folder; a door that needs one is refused by the same secret check until it is in
+    // the secrets folder.
+    registerAction({ name: 'definition.import', hostOnly: true, input: writeInput, successDetail, run: (input, ctx) => locked(() => {
+            const role = (input.definition as { role?: unknown } | null)?.role;
+            if (isRetiredRole(role))
+                refused(`"${role}" is a role this version of Lares no longer runs, so ${input.name} was not imported`);
             return save(input, ctx, true);
         }) });
     const countActive = () => readdirSync(o.agentsDir, { withFileTypes: true }).filter(e => !e.name.startsWith('.') && (e.isDirectory() || e.isSymbolicLink())).length;
