@@ -126,6 +126,16 @@ describe("keeper.json", () => {
     expect(checkParity(input({ keeperConfig: config })).state).toBe("ok");
   });
 
+  it("flags keys only a documented hand step writes", () => {
+    const config = JSON.parse(JSON.stringify(installerOutput()));
+    config.outsideCustody = { keyFile: "/x" };
+    config.lifecycle.runtime.microsoft = { clientIdFile: "/y" };
+    const r = checkParity(input({ keeperConfig: config }));
+    expect(r.state).toBe("fail");
+    expect(text(r)).toContain("outsideCustody");
+    expect(text(r)).toContain("lifecycle.runtime.microsoft");
+  });
+
   it("warns, rather than guessing, when the installer's record is missing", () => {
     const r = checkParity(input({ rendered: null }));
     expect(r.state).toBe("warn");

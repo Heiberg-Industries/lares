@@ -35,17 +35,18 @@ export interface ParityInput {
   readonly rendered: ProvenanceRecord | null;
 }
 
-/** keeper.json parts that a Lares command (not the installer's render) writes later, on purpose:
- *  `lares budget setup` and the outside-tools and Google/Microsoft configuration commands. They
- *  are never differences. Everything else must be exactly what the installer rendered. */
+/** keeper.json parts that a shipped Lares command (not the installer's render) writes later, on
+ *  purpose. Each key is listed ONLY because a command we ship writes it; a key that only a
+ *  documented hand step writes is not listed, so parity flags it.
+ *    budgetFinancial, budgetNative, gatewayBudget  ops/budget-commands.py (`lares budget setup`)
+ *    lifecycle.runtime.google                      ops/configure-google-keeper.py
+ *  No shipped command writes `outsideCustody`, `lifecycle.egress.legacyConsumers` or
+ *  `lifecycle.runtime.microsoft` (they are set by an operator by hand), so they are not listed. */
 export const TOOL_MANAGED_PREFIXES: readonly string[] = [
   "budgetFinancial",
   "budgetNative",
   "gatewayBudget",
-  "outsideCustody",
   "lifecycle.runtime.google",
-  "lifecycle.runtime.microsoft",
-  "lifecycle.egress.legacyConsumers",
 ];
 
 /** The services the installer stack and the keeper's own compose file define, and the release
