@@ -33,13 +33,19 @@ import {
 } from "./article.js";
 import type { ArticleFiled, FileArticleFn } from "./article-file.js";
 
-/** The stem of an article already filed in this vault for the link, whatever its name was then. */
-async function findFiledArticle(vault: ScheduledVault, urlKey: string): Promise<string | null> {
-  const names = (await vault.list(`${ARTICLES_DIR}/`)).filter((p) => /^articles\/[^/]+\.md$/.test(p)).sort();
-  for (const path of names) {
+/** Every filed article note of one area, by path: one listing and one read per note. */
+async function readArticleIndex(vault: ScheduledVault): Promise<Map<string, string>> {
+  const index = new Map<string, string>();
+  for (const path of (await vault.list(`${ARTICLES_DIR}/`)).filter((p) => /^articles\/[^/]+\.md$/.test(p)).sort()) {
     const raw = await vault.read(path);
-    if (raw !== undefined && filedLinkMatches(raw, urlKey)) return path.slice(ARTICLES_DIR.length + 1, -3);
+    if (raw !== undefined) index.set(path, raw);
   }
+  return index;
+}
+
+/** The stem of an article in the index that was filed for this link, whatever its name was then. */
+function findFiled(index: Map<string, string>, urlKey: string): string | null {
+  for (const [path, raw] of index) if (filedLinkMatches(raw, urlKey)) return path.slice(ARTICLES_DIR.length + 1, -3);
   return null;
 }
 
@@ -55,6 +61,17 @@ export function makeKeeperArticleFiler(opts: {
 }): FileArticleFn {
   const setting: ArticleArea = opts.articleArea ?? "shared";
   const nowFn = opts.now ?? (() => new Date());
+  // One index per area for the life of this filer (one digest pass), built on first use. A failed build
+  // is not kept, so the next link tries again.
+  const indexes = new Map<ArticleArea, Promise<Map<string, string>>>();
+  const indexOf = (area: ArticleArea, vault: ScheduledVault): Promise<Map<string, string>> => {
+    let p = indexes.get(area);
+    if (!p) {
+      p = readArticleIndex(vault).catch((e) => { indexes.delete(area); throw e; });
+      indexes.set(area, p);
+    }
+    return p;
+  };
 
   return async (input): Promise<ArticleFiled> => {
     const clip = parseInboxClip(input.inboxBody, input.article.url);
@@ -72,25 +89,25 @@ export function makeKeeperArticleFiler(opts: {
     const wanted = chooseArea(clip, setting);
     let area: ArticleArea = "private";
     let vault = opts.privateVault;
-    let existing: string | null = null;
+    let index: Map<string, string> | undefined;
     if (wanted === "shared" && opts.sharedVault) {
       try {
         // The first look at the shared area doubles as the test that it can be used at all.
-        existing = await findFiledArticle(opts.sharedVault, urlKey);
+        index = await indexOf("shared", opts.sharedVault);
         area = "shared";
         vault = opts.sharedVault;
       } catch {
-        existing = null; // refused or unreachable: file privately, and say so
+        index = undefined; // refused or unreachable: file privately, and say so
       }
     }
     const fellBack = wanted === "shared" && area === "private";
-    if (area === "private") existing = await findFiledArticle(opts.privateVault, urlKey);
+    if (index === undefined) index = await indexOf("private", opts.privateVault);
 
     const stem = articleBase({ readabilityTitle: input.article.title, clipTitle: clip.title, url: link });
-    let base: string | undefined = existing ?? undefined;
+    let base: string | undefined = findFiled(index, urlKey) ?? undefined;
     let duplicate = base !== undefined;
     for (const candidate of base !== undefined ? [] : [stem, suffixedBase(stem, urlKey)]) {
-      const raw = await vault.read(`${ARTICLES_DIR}/${candidate}.md`);
+      const raw = index.get(`${ARTICLES_DIR}/${candidate}.md`);
       if (raw === undefined) { base = candidate; break; }
       if (filedLinkMatches(raw, urlKey)) { base = candidate; duplicate = true; break; }
     }
@@ -114,6 +131,7 @@ export function makeKeeperArticleFiler(opts: {
     // Companion first, then the note, then the inbox note: see the header.
     await vault.writeVerbatim(built.companionPath, built.companionText, built.message);
     await vault.writeVerbatim(built.notePath, built.noteRaw, built.message);
+    index.set(built.notePath, built.noteRaw);
     await opts.privateVault.remove(input.inboxPath);
     return { title: built.title, area, destPath: built.notePath, duplicate: false, fellBack };
   };

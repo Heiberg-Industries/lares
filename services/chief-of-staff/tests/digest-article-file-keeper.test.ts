@@ -19,6 +19,7 @@ type Log = string[];
 
 function fakeVault(area: "private" | "shared", log: Log, opts: { granted?: boolean; failOn?: (op: string, path: string) => boolean } = {}) {
   const files = new Map<string, string>();
+  const calls = { list: 0, read: 0 };
   const rule = scheduledVaultRule("digest", area)!;
   const gate = (op: string, path: string) => {
     if (opts.granted === false) throw new ScheduledVaultError(`the Vault refused the digest schedule (${op})`);
@@ -26,11 +27,13 @@ function fakeVault(area: "private" | "shared", log: Log, opts: { granted?: boole
   };
   const vault: ScheduledVault = {
     async list(prefix) {
+      calls.list += 1;
       gate("list", prefix);
       if (!scheduledPrefixAllowed(rule, prefix)) throw new ScheduledVaultError("prefix refused");
       return [...files.keys()].filter((p) => p.startsWith(prefix) && p.endsWith(".md")).sort();
     },
     async read(path) {
+      calls.read += 1;
       gate("read", path);
       if (!scheduledPathAllowed(rule, "read", path)) throw new ScheduledVaultError(`read refused: ${path}`);
       return files.get(path);
@@ -56,7 +59,7 @@ function fakeVault(area: "private" | "shared", log: Log, opts: { granted?: boole
     },
     async move() { throw new ScheduledVaultError("not used by the article filer"); },
   };
-  return { vault, files };
+  return { vault, files, calls };
 }
 
 const clip = (over: Partial<ClipRecord> = {}): ClipRecord => ({
@@ -239,6 +242,44 @@ describe("a crash between two keeper operations never files the same link twice"
     await s.run(item);
     expect([...s.priv.files.keys()].filter((p) => p.startsWith("articles/") && p.endsWith(".md"))).toEqual([NOTE]);
     expect(s.priv.files.has(item.path)).toBe(false);
+  });
+});
+
+describe("the index of filed articles", () => {
+  const seedNote = (s: ReturnType<typeof setup>, stem: string, url: string) =>
+    s.shared.files.set(`articles/${stem}.md`, `---\ntype: article\nsources:\n  - resource: "${url}"\nlares_origin: third_party\n---\n\nx\n`);
+
+  it("three links in one pass cost one listing and one read per existing note, per area", async () => {
+    const s = setup();
+    seedNote(s, "old-one", "https://example.com/old-1");
+    seedNote(s, "old-two", "https://example.com/old-2");
+    for (const n of [1, 2, 3]) {
+      const url = `https://example.com/new-${n}`;
+      await s.run(s.addInbox(`clip-${n}`, clip({ url, urlKey: url })), { url, title: `New page ${n}` });
+    }
+    expect(s.shared.calls).toEqual({ list: 1, read: 2 });
+    expect(s.priv.calls).toEqual({ list: 0, read: 0 });
+    expect([...s.shared.files.keys()].filter((p) => p.endsWith(".md"))).toHaveLength(5);
+  });
+
+  it("a link filed earlier in the same pass is a duplicate for a later link with the same URL", async () => {
+    const s = setup();
+    await s.run(s.addInbox("clip-a", clip()));
+    const before = s.calls();
+    const again = s.addInbox("clip-b", clip());
+    expect(await s.run(again, { title: "Another title" })).toMatchObject({ duplicate: true, destPath: NOTE });
+    expect(s.calls()).toBe(before);
+    expect(s.shared.calls.list).toBe(1);
+  });
+
+  it("a failed build is not kept: the next link builds it again", async () => {
+    let fail = true;
+    const s = setup({ failShared: (op) => fail && op === "list" });
+    const first = s.addInbox("clip-a", clip());
+    expect(await s.run(first)).toMatchObject({ area: "private", fellBack: true });
+    fail = false;
+    const second = s.addInbox("clip-b", clip({ url: "https://example.org/x", urlKey: "https://example.org/x" }));
+    expect(await s.run(second, { url: "https://example.org/x", title: "Other" })).toMatchObject({ area: "shared", fellBack: false });
   });
 });
 
