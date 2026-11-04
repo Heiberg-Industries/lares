@@ -10,7 +10,7 @@ vi.mock("../app/actions/definition", () => ({ setAgentSetting: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 const row = (over: Partial<AgentSettingView> = {}): AgentSettingView => ({
-  key: "OWNER_HOME_TZ", section: "Owner time zone", label: "Home time zone", description: "The zone the agents use for your day.",
+  key: "TELEGRAM_BOT_USERNAME", section: "Telegram", label: "Telegram bot username", description: "The bot the agent answers as.",
   value: null, from: "none", agentCount: 1, ...over,
 });
 
@@ -20,9 +20,9 @@ it("shows one block per section with the label, help text and where the value co
     row({ key: "LARES_ARTICLE_AREA", section: "Digest", label: "Where saved articles are filed", value: "shared", from: "installation file" }),
     row({ key: "DIGEST_SLACK_TARGET", section: "Digest", label: "Slack target for the digest", value: "U0123ABCD", from: "console" }),
   ]} />);
-  expect(screen.getAllByRole("heading").map(h => h.textContent)).toEqual(["Owner time zone", "Digest"]);
+  expect(screen.getAllByRole("heading").map(h => h.textContent)).toEqual(["Telegram", "Digest"]);
   const text = document.body.textContent ?? "";
-  expect(text).toContain("The zone the agents use for your day.");
+  expect(text).toContain("The bot the agent answers as.");
   expect(text).toContain("Not set.");
   expect(text).toContain("Still comes from the installation file");
   expect(text).toContain("Saved in the console.");
@@ -31,11 +31,11 @@ it("shows one block per section with the label, help text and where the value co
 });
 
 it("saves the typed value under its key and says which agents were restarted and which are waiting", async () => {
-  vi.mocked(setAgentSetting).mockResolvedValue({ ok: true, result: { key: "OWNER_HOME_TZ", value: "Europe/Berlin", restarted: ["assistant"], waiting: ["second"], stopped: [] } } as any);
+  vi.mocked(setAgentSetting).mockResolvedValue({ ok: true, result: { key: "TELEGRAM_BOT_USERNAME", value: "example_bot", restarted: ["assistant"], waiting: ["second"], stopped: [] } } as any);
   render(<AgentSettingsSections canChange settings={[row()]} />);
-  await userEvent.type(screen.getByLabelText(/Home time zone/), "Europe/Berlin");
+  await userEvent.type(screen.getByLabelText(/Telegram bot username/), "example_bot");
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(setAgentSetting).toHaveBeenCalledWith({ key: "OWNER_HOME_TZ", value: "Europe/Berlin" }));
+  await waitFor(() => expect(setAgentSetting).toHaveBeenCalledWith({ key: "TELEGRAM_BOT_USERNAME", value: "example_bot" }));
   await waitFor(() => expect(document.body.textContent).toContain("Saved."));
   expect(document.body.textContent).toContain("assistant restarted");
   expect(document.body.textContent).toContain("second has other changes waiting");
@@ -43,28 +43,28 @@ it("saves the typed value under its key and says which agents were restarted and
 });
 
 it("clears the setting when the field is emptied", async () => {
-  vi.mocked(setAgentSetting).mockResolvedValue({ ok: true, result: { key: "OWNER_HOME_TZ", value: null, restarted: [], waiting: [], stopped: [] } } as any);
-  render(<AgentSettingsSections canChange settings={[row({ value: "Europe/Berlin", from: "console" })]} />);
-  await userEvent.clear(screen.getByLabelText(/Home time zone/));
+  vi.mocked(setAgentSetting).mockResolvedValue({ ok: true, result: { key: "TELEGRAM_BOT_USERNAME", value: null, restarted: [], waiting: [], stopped: [] } } as any);
+  render(<AgentSettingsSections canChange settings={[row({ value: "example_bot", from: "console" })]} />);
+  await userEvent.clear(screen.getByLabelText(/Telegram bot username/));
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(setAgentSetting).toHaveBeenCalledWith({ key: "OWNER_HOME_TZ", value: "" }));
+  await waitFor(() => expect(setAgentSetting).toHaveBeenCalledWith({ key: "TELEGRAM_BOT_USERNAME", value: "" }));
   await waitFor(() => expect(document.body.textContent).toContain("cleared"));
 });
 
 it("shows the keeper's refusal word for word", async () => {
-  const sentence = "Home time zone: That is not a time zone name. Use one like Europe/Berlin or America/New_York.";
+  const sentence = "Telegram bot username: That is not a bot username.";
   vi.mocked(setAgentSetting).mockResolvedValue({ ok: false, error: { message: sentence, outcomeMayBeUnknown: false } } as any);
   render(<AgentSettingsSections canChange settings={[row()]} />);
-  await userEvent.type(screen.getByLabelText(/Home time zone/), "Mars");
+  await userEvent.type(screen.getByLabelText(/Telegram bot username/), "x");
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(sentence));
 });
 
 it("is read-only for anyone but the owner", () => {
-  render(<AgentSettingsSections canChange={false} settings={[row({ value: "Europe/Berlin", from: "console" })]} />);
+  render(<AgentSettingsSections canChange={false} settings={[row({ value: "example_bot", from: "console" })]} />);
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-  expect(screen.queryByLabelText(/Home time zone/)).toBeNull();
-  expect(screen.getByTestId("setting-OWNER_HOME_TZ").textContent).toBe("Europe/Berlin");
+  expect(screen.queryByLabelText(/Telegram bot username/)).toBeNull();
+  expect(screen.getByTestId("setting-TELEGRAM_BOT_USERNAME").textContent).toBe("example_bot");
   expect(document.body.textContent).toContain("Ask the installation owner");
 });
 

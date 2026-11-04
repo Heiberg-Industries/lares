@@ -1096,15 +1096,15 @@ it('restarts a ready chief for a changed installation setting, and leaves one wi
 });
 
 it('hands a chief of staff the agent settings chosen in the console, which win over the installation file; an empty one removes it',async()=>{
- const chief=await chiefFixture({OWNER_HOME_TZ:'Europe/Oslo',LARES_ARTICLE_AREA:'shared',DIGEST_SLACK_TARGET:'U0123ABCD'});
+ const chief=await chiefFixture({TWENTY_ORG_NUMBER_FIELD:'orgOslo',LARES_ARTICLE_AREA:'shared',DIGEST_SLACK_TARGET:'U0123ABCD'});
  await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
  const l=lifecycle();await l.create('bookkeeper',chief);
- expect(composeEnv().OWNER_HOME_TZ).toBe('Europe/Oslo'); // no console value yet: the file's value stays
- expect(l.environmentFallback('bookkeeper','OWNER_HOME_TZ')).toBe('Europe/Oslo');
- await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agent_env.owner_home_tz','\"Europe/Berlin\"'::jsonb,'test'),('agent_env.article_area','\"\"'::jsonb,'test'),('agent_env.console_url','\"https://console.example.com\"'::jsonb,'test')");
+ expect(composeEnv().TWENTY_ORG_NUMBER_FIELD).toBe('orgOslo'); // no console value yet: the file's value stays
+ expect(l.environmentFallback('bookkeeper','TWENTY_ORG_NUMBER_FIELD')).toBe('orgOslo');
+ await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agent_env.twenty_org_number_field','\"orgBerlin\"'::jsonb,'test'),('agent_env.article_area','\"\"'::jsonb,'test'),('agent_env.console_url','\"https://console.example.com\"'::jsonb,'test')");
  await l.reconcile('bookkeeper',chief);
  const env=composeEnv();
- expect(env.OWNER_HOME_TZ).toBe('Europe/Berlin');
+ expect(env.TWENTY_ORG_NUMBER_FIELD).toBe('orgBerlin');
  expect(env.LARES_ARTICLE_AREA).toBeUndefined();
  expect(env.LARES_CONSOLE_URL).toBe('https://console.example.com');
  expect(env.DIGEST_SLACK_TARGET).toBe('U0123ABCD'); // untouched keys keep the file's value

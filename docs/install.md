@@ -507,7 +507,6 @@ editing `/etc/lares/keeper.json`:
 | Digest | Whether saved articles are filed `shared` or `private`, and the Slack user or channel the digest goes to |
 | Telegram | Your Telegram bot's username |
 | Console address | The https address where you open the console |
-| Owner time zone | The time zone the agents use for your day (the console itself keeps following the installation setting) |
 
 Only the installation's owner can change them. A value that does not fit is refused with a sentence
 saying why. Saving restarts the agents that read it, as for the meetings database above; an empty

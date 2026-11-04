@@ -192,7 +192,7 @@ style and Alert routing.
 Below those are the chief-of-staff settings that used to be typed into the server's configuration
 file, one block per area: **Business data** (CRM tracks, commercial brands, authority sender
 domains), **CRM** (organisation number field), **Digest** (where saved articles are filed, Slack
-target), **Telegram** (bot username), **Console address** and **Owner time zone**, and **Notion**
+target), **Telegram** (bot username), **Console address** and **Notion**
 (the meetings database). Only the installation owner can change them; saving restarts the agents
 that read the value, and each setting says whether it was saved here or still comes from the
 installation file. See the install guide, "Business data and other agent settings".

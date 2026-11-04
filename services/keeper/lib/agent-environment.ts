@@ -1,5 +1,3 @@
-import { isValidTimeZone } from '@lares/agent-kit/owner-clock';
-
 /** The agent environment settings an owner can set in the console instead of typing them into the
  * installation file. A fixed list on purpose: a key that is not here cannot be set from the console.
  * Each entry names the stored setting, the roles that read it, what is accepted and a plain sentence
@@ -83,9 +81,6 @@ function consoleUrl(raw: string): EnvironmentCheck {
         return fits(raw);
     } catch { return bad('That must be an https address with no password, query or fragment, for example https://console.example.com.'); }
 }
-function homeZone(raw: string): EnvironmentCheck {
-    return isValidTimeZone(raw) ? { value: raw } : bad('That is not a time zone name. Use one like Europe/Berlin or America/New_York.');
-}
 const CHIEF = ['chief-of-staff'] as const;
 export const CONSOLE_ENVIRONMENT: readonly ConsoleEnvironmentSetting[] = [
     { key: 'CRM_BRANDS', setting: 'agent_env.crm_brands', roles: CHIEF, section: 'Business data', check: crmBrands,
@@ -104,7 +99,5 @@ export const CONSOLE_ENVIRONMENT: readonly ConsoleEnvironmentSetting[] = [
         label: 'Telegram bot username', description: 'The username of your Telegram bot, so the agent can tell when it is mentioned in a group.' },
     { key: 'LARES_CONSOLE_URL', setting: 'agent_env.console_url', roles: CHIEF, section: 'Console address', check: consoleUrl,
         label: 'Console address', description: 'Where you open the console, for example https://console.example.com. A Telegram approval card too long for one message links to it.' },
-    { key: 'OWNER_HOME_TZ', setting: 'agent_env.owner_home_tz', roles: CHIEF, section: 'Owner time zone', check: homeZone,
-        label: 'Home time zone', description: 'The time zone the agents use for your day, for example Europe/Berlin. The console itself keeps following the installation setting.' },
 ];
 export const CONSOLE_ENVIRONMENT_BY_KEY: ReadonlyMap<string, ConsoleEnvironmentSetting> = new Map(CONSOLE_ENVIRONMENT.map(s => [s.key, s]));
