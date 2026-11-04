@@ -339,10 +339,14 @@ def ask_for_answers(installation: Installation, options: argparse.Namespace, set
         if not prices:
             say("Type this model's prices in US dollars per million tokens.")
             prices = {name: ask(f"  {label}: ") for name, label in PRICE_NAMES}
+    # A model of its own for a purpose, if installation.env names one. The reviewed policy has to describe the gateway as it runs.
+    purpose_models = {purpose: settings[f"LARES_MODEL_{purpose.upper()}"] for purpose in ("writer", "utility", "gate")
+                      if settings.get(f"LARES_MODEL_{purpose.upper()}")}
     try:
         rendered = json.loads(installation.run_box_program("bin/render-native-policy.ts", json.dumps({
             "alias": alias, "providerModel": model, "gatewayUrl": gateway_url,
             "installationLimit": installation_limit, "personLimit": person_limit, "prices": prices,
+            **({"purposeModels": purpose_models} if purpose_models else {}),
         })))
     except KeeperRefused as error:
         raise Stop(f"{error} Nothing was changed.") from None
@@ -354,6 +358,10 @@ def ask_for_answers(installation: Installation, options: argparse.Namespace, set
     say(f"Installation limit: ${rendered['installationLimit']} a month. It cannot be changed after the first agent starts.")
     say(f"Per-person limit: ${rendered['personLimit']} a month, for anyone without a limit of their own.")
     say(f"Each model call holds up to ${rendered['maximumLiability']} of those limits until it finishes.")
+    unpriced = rendered.get("unpricedAliases") or []
+    if unpriced:
+        say(f"Not priced yet: {', '.join(unpriced)}. Each of these runs a model of its own, and this setup prices only {model}.")
+        say("Until they are priced, calls to them are refused. Prices for them are a later step.")
     say("")
     if not options.yes and ask("Switch model spending on with these settings? [y/N] ").lower() not in ("y", "yes"):
         raise Stop("Nothing was changed.")

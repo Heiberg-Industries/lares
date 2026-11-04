@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { gatewayServiceKeyMetadataIsSafe, parseConfirmedBootstrapSelection, parseInstallationSettings, preparedGatewayBinding } from "../lib/gateway-authority.js";
+import { assertReviewedPolicyMatchesProfile, gatewayServiceKeyMetadataIsSafe, parseConfirmedBootstrapSelection, parseGatewayModelSettings, parseInstallationSettings, preparedGatewayBinding } from "../lib/gateway-authority.js";
+import { gatewayOptionsFor } from "../bin/render-stack.js";
 import { assertExistingRenderedAuthorityText, GATEWAY_AUTHORITY_STAGE_FILES, parseStageEnvironment, stageGatewayAuthority } from "../bin/render-gateway-authority-stage.js";
 import { gatewayAdmissionProfile } from "../lib/gateway-config.js";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
@@ -66,6 +67,54 @@ describe("keeping the gateway binding on a re-render", () => {
       expect(() => preparedGatewayBinding(path, "example.test", readPolicy)).toThrow(/reviewed policy/));
     withKeeper(JSON.stringify({ gatewayBudget: { serviceKeyFile }, budgetNative: { directory: "/var/lib/lares/budget-native", reviewedPolicyFile: policyFile } }), path =>
       expect(() => preparedGatewayBinding(path, "example.test", () => { throw new Error("Native budget policy is unavailable or invalid"); })).toThrow(/unavailable or invalid/));
+  });
+});
+
+describe("a model per purpose in the gateway's own settings", () => {
+  const required = ["LARES_OWNER_ID=owner", "LARES_OWNER_EMAIL=owner@example.test", "LARES_DOMAIN=example.test", "LARES_MODEL_ALIAS=lares-brain",
+    "LARES_MODEL=anthropic/claude-sonnet-4-5", "CONSOLE_ALLOWED_EMAILS=owner@example.test", "GATEWAY_URL=http://lares-gateway:4000"];
+  const base = { alias: "lares-brain", providerModel: "anthropic/claude-sonnet-4-5" };
+
+  it("reads the three optional purpose models as data, and keeps LARES_MODEL separate from LARES_MODEL_WRITER", () => {
+    const settings = parseInstallationSettings([...required, "LARES_MODEL_WRITER=anthropic/claude-opus-4-5", "LARES_MODEL_GATE='anthropic/claude-haiku-4-5'"].join("\n"));
+    expect(settings.LARES_MODEL).toBe("anthropic/claude-sonnet-4-5");
+    expect(settings.LARES_MODEL_WRITER).toBe("anthropic/claude-opus-4-5");
+    expect(settings.LARES_MODEL_GATE).toBe("anthropic/claude-haiku-4-5");
+    expect(settings.LARES_MODEL_UTILITY).toBeUndefined();
+    expect(() => parseInstallationSettings([...required, "LARES_MODEL_WRITER=a/b", "LARES_MODEL_WRITER=a/c"].join("\n"))).toThrow();
+    expect(() => parseInstallationSettings([...required, "LARES_MODEL_UTILITY="].join("\n"))).toThrow();
+    expect(() => parseInstallationSettings([...required, " LARES_MODEL_GATE=a/b"].join("\n"))).toThrow();
+  });
+
+  it("reads only the model settings for the stack renderer, with the same strict rules", () => {
+    expect(parseGatewayModelSettings("LARES_DOMAIN=example.test\nLARES_MODEL=a/b\nLARES_MODEL_UTILITY=a/c\n")).toEqual({ LARES_MODEL: "a/b", LARES_MODEL_UTILITY: "a/c" });
+    expect(() => parseGatewayModelSettings("LARES_MODEL=a/b\nLARES_MODEL=a/c\n")).toThrow(/unavailable or invalid/);
+  });
+
+  it("refuses to render when the models differ from the reviewed spending policy, and lets an unchanged gateway through", () => {
+    const profile = gatewayAdmissionProfile({ ...base, purposeModels: { writer: "anthropic/claude-opus-4-5" } });
+    const reviewedFor = (capability: unknown) => () => ({ policies: [{ capability }] });
+    expect(() => assertReviewedPolicyMatchesProfile("/policy", profile, reviewedFor(profile))).not.toThrow();
+    // The policy was reviewed before any purpose model was set; now the installation names one.
+    expect(() => assertReviewedPolicyMatchesProfile("/policy", profile, reviewedFor(gatewayAdmissionProfile(base)))).toThrow(/models changed after model budget setup/);
+    // The other way round: reviewed with a writer model, then the writer model was removed.
+    expect(() => assertReviewedPolicyMatchesProfile("/policy", gatewayAdmissionProfile(base), reviewedFor(profile))).toThrow(/models changed after model budget setup/);
+    expect(() => assertReviewedPolicyMatchesProfile("/policy", profile, reviewedFor(gatewayAdmissionProfile({ ...base, purposeModels: { writer: "anthropic/claude-haiku-4-5" } })))).toThrow(/models changed/);
+  });
+
+  it("builds the stack renderer's gateway from the sibling installation.env and refuses a mismatched brain model", () => {
+    const directory = mkdtempSync(join(tmpdir(), "lares-render-stack-env-"));
+    try {
+      const config = join(directory, "litellm-config.yaml");
+      // No installation.env beside the config: no purpose models, exactly the default.
+      expect(gatewayOptionsFor(config, base.alias, base.providerModel)).toEqual(base);
+      writeFileSync(join(directory, "installation.env"), [...required, "LARES_MODEL_WRITER=anthropic/claude-opus-4-5", "LARES_MODEL_UTILITY=anthropic/claude-sonnet-4-5"].join("\n") + "\n");
+      expect(gatewayOptionsFor(config, base.alias, base.providerModel)).toEqual({ ...base, purposeModels: { writer: "anthropic/claude-opus-4-5" } });
+      expect(() => gatewayOptionsFor(config, base.alias, "anthropic/claude-haiku-4-5")).toThrow(/do not match installation.env/);
+      expect(() => gatewayOptionsFor(config, "other-brain", base.providerModel)).toThrow(/do not match installation.env/);
+      writeFileSync(join(directory, "installation.env"), [...required, "LARES_MODEL_WRITER=openai/gpt-4o-mini"].join("\n") + "\n");
+      expect(() => gatewayAdmissionProfile(gatewayOptionsFor(config, base.alias, base.providerModel))).toThrow(/LARES_MODEL_WRITER.*same provider/);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 });
 
