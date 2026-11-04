@@ -2562,7 +2562,7 @@ export interface SyncPass {
  * failures: the --once entrypoint turns that into a non-zero exit, while the
  * daemon logs it and waits for the next tick to retry whatever is left.
  */
-export async function runPassesContained(passes: SyncPass[]): Promise<boolean> {
+export async function runPassesContained(passes: SyncPass[], afterTick?: () => Promise<void>): Promise<boolean> {
   let clean = true;
   for (const pass of passes) {
     try {
@@ -2572,7 +2572,17 @@ export async function runPassesContained(passes: SyncPass[]): Promise<boolean> {
       console.error(`notion-sync: ${pass.name} pass failed`, err);
     }
   }
+  // Whichever passes ran, a live tick happened: record it (a failure to record never makes the tick unclean).
+  if (afterTick) {
+    try { await afterTick(); } catch (err) { console.error("notion-sync: could not record the tick time", err); }
+  }
   return clean;
+}
+
+/** Records that a live tick just finished, for the "last run" the console shows. */
+export async function recordTickRun(): Promise<void> {
+  const pool = poolFromEnv();
+  try { await setLastRunAt(pool, new Date()); } finally { await pool.end(); }
 }
 
 /** The passes one tick runs, in the one order they may run in. */

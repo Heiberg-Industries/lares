@@ -85,7 +85,7 @@ if (ONE_SHOT_MODE === undefined && !ONCE && process.env["NOTION_SYNC_LIVE"] !== 
 import {
   syncAttendeesOnce, syncWikiOnce, syncDeskPushOnce, syncPullOnce, syncApplyOnce,
   syncTranscriptsOnce, syncNotionBornOnce, syncPeopleOnce,
-  runPassesContained, tickPasses, parseOneShotArgs,
+  runPassesContained, recordTickRun, tickPasses, parseOneShotArgs,
   runReconcile, runEnableTwoWay, runAutoTwoWayOnce, runFidelityOnce, syncDirPrefixes, resolveFrozenDoc,
   syncArchiveExcludedOnce, archiveExcludedDryRun,
   runAdoptionReportOnce, printAdoptionReport,
@@ -314,7 +314,7 @@ const runTick = (): Promise<boolean> => runPassesContained(selectPasses(tickPass
 // The config's `passes` list, when it has one, is the whole truth about what may run (a managed
 // install lists only the passes that need no vault). A config that cannot be read throws here and
 // runs nothing, rather than falling back to "every pass".
-}), loadNotionSyncConfig().passes));
+}), loadNotionSyncConfig().passes), DRY_RUN ? undefined : recordTickRun);
 
 /**
  * The one-shot operator modes. Deliberately mutually exclusive and checked before

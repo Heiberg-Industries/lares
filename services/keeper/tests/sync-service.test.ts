@@ -48,6 +48,24 @@ describe('planNotionSync', () => {
     expect(planNotionSync(settings({ meetings: '33333333-3333-4333-8333-333333333333' }), input()).hash).not.toBe(base);
     expect(planNotionSync(settings(), input({ installationId: 'another-server' })).hash).not.toBe(base);
   });
+  it('also changes its hash with the contacts address and the calendar owner, but not with key file locations', () => {
+    const base = planNotionSync(settings(), input()).hash;
+    expect(planNotionSync(settings(), input({ crm: { baseUrl: 'https://other.example.org', keyFile: '/srv/secrets/crm-key' } })).hash).not.toBe(base);
+    expect(planNotionSync(settings(), input({ google: { ...input().google!, principal: 'someone-else' } })).hash).not.toBe(base);
+    expect(planNotionSync(settings(), input({ crm: { baseUrl: 'https://crm.example.org', keyFile: '/elsewhere' } })).hash).toBe(base);
+  });
+  it('treats a stored empty meetings value as none, not as the installation file', () => {
+    expect(planNotionSync(settings({ meetings: '' }), input({ meetingsFallback: MEETINGS })).hash).toBeNull();
+    expect(planNotionSync(settings({ meetings: '' }), input({ meetingsFallback: MEETINGS })).problems.join(' ')).toMatch(/meetings database/);
+  });
+  it('refuses plainly, and contributes nothing, while an older hand-run sync or an agent of the same name exists', () => {
+    const old = planNotionSync(settings(), input({ legacySync: true }));
+    expect(old).toMatchObject({ hash: null, config: null, passes: [], hosts: [], endpoints: [] });
+    expect(old.problems[0]).toMatch(/older hand-run Notion sync is still set up on this server; remove it first/);
+    const agent = planNotionSync(settings(), input({ agentNamedSync: true }));
+    expect(agent.hash).toBeNull();
+    expect(agent.problems[0]).toMatch(/agent named notion-sync/);
+  });
   it('is in effect only when switched on AND the accepted hash is the current one', () => {
     const plan = planNotionSync(settings(), input());
     expect(syncInEffect(settings(), plan)).toBe(false);
@@ -92,31 +110,33 @@ describe('egress as a managed service', () => {
 // ---- the running service, against an in-memory settings table and a recording Docker ------------
 function fakePool() {
   const rows = new Map<string, unknown>();
+  const agentNamed = new Set<string>();
   const pool = { query: vi.fn(async (sql: string, params: unknown[] = []) => {
     if (/FROM settings WHERE key/.test(sql)) return { rows: rows.has(String(params[0])) ? [{ value: rows.get(String(params[0])) }] : [] };
     if (/INSERT INTO settings/.test(sql)) { rows.set(String(params[0]), JSON.parse(String(params[1]))); return { rows: [] }; }
+    if (/FROM agent_definitions/.test(sql)) return { rows: agentNamed.has(String(params[0])) ? [{ one: 1 }] : [] };
     if (/notion_sync_run/.test(sql)) return { rows: [{ last_run_at: new Date('2026-01-02T03:04:05Z') }] };
     throw new Error(`unexpected query ${sql}`);
   }) } as unknown as Pool;
-  return { pool, rows };
+  return { pool, rows, agentNamed };
 }
 
 describe('NotionSyncService', () => {
-  let dir: string, calls: string[], revision: string | null, previewOutput: string;
+  let dir: string, calls: string[], revision: string | null, previewOutput: string, runningImage: string, removed: boolean, onRun: () => void;
   let state: ReturnType<typeof fakePool>;
   const docker = (): DockerBoundary => ({
     serviceUp: async (_f, s) => { calls.push(`up:${s}`); }, serviceRemove: async s => { calls.push(`remove:${s}`); },
-    serviceInspect: async () => (calls.includes('up:lares-notion-sync') && !calls.at(-1)?.startsWith('remove') ? { running: true, image: IMAGE, notionRevision: revision, mounts: [{ source: '/srv/lares/secrets/notion-token', destination: '/run/secrets/notion-token' }] } : null),
-    serviceRunOnce: async (_f, _s, command) => { calls.push(`once:${command.at(-1)}`); return `some log line\n${previewOutput}\n`; },
+    serviceInspect: async () => (!removed && calls.includes('up:lares-notion-sync') && !calls.at(-1)?.startsWith('remove') ? { running: true, image: runningImage, notionRevision: revision, mounts: [{ source: '/srv/lares/secrets/notion-token', destination: '/run/secrets/notion-token' }] } : null),
+    serviceRunOnce: async (_f, _s, command) => { calls.push(`once:${command.at(-1)}`); onRun(); return `some log line\n${previewOutput}\n`; },
   } satisfies Pick<DockerBoundary, 'serviceUp' | 'serviceRemove' | 'serviceInspect' | 'serviceRunOnce'> as unknown as DockerBoundary);
-  const make = () => new NotionSyncService({
+  const make = (variant?: 'legacy') => new NotionSyncService({
     pool: state.pool, docker: docker(), credentialRevision: async () => revision, reseal: async () => { calls.push('reseal'); }, takenAddresses: async () => ['172.30.0.1', '172.30.0.2'],
     config: { secretsDir: '/srv/lares/secrets', credentials: { administrator: 'owner@example.com' } as never, lifecycle: {
       network: 'lares-fleet', subnet: '172.30.0.0/24', composeFile: join(dir, 'compose.lares-agents.yaml'), services: { composeFile: join(dir, 'compose.lares-services.yaml'), notionSyncImage: IMAGE },
       maintenanceAdmission: { hostDirectory: '/x', installationId: 'inst-1', epoch: 1 },
       runtime: { databaseUrl: 'postgres://lares_app@db:5432/lares_state', passwordFile: '/srv/secrets/db', proxyUrl: 'http://lares-egress-proxy:8888',
         google: { principal: 'owner', tokenKeyFile: '/srv/secrets/token-key', clients: { acme: { clientIdFile: '/srv/secrets/gid', clientSecretFile: '/srv/secrets/gsecret' } } } },
-      egress: { endpoints: { TWENTY_BASE_URL: 'https://crm.example.org' }, legacyConsumers: [], internalNetworks: [], directDestinations: [], infrastructureHosts: [] },
+      egress: { endpoints: { TWENTY_BASE_URL: 'https://crm.example.org' }, legacyConsumers: variant === 'legacy' ? [{ name: 'notion-sync', address: '172.30.0.7', hosts: ['api.notion.com'] }] : [], internalNetworks: [], directDestinations: [], infrastructureHosts: [] },
       defaultBindings: { 'chief-of-staff': { role: 'chief-of-staff', environment: {}, mounts: [], secrets: { TWENTY_KEY_FILE: '/srv/secrets/crm-key' } } },
     } as never },
   });
@@ -126,7 +146,7 @@ describe('NotionSyncService', () => {
     crm: { baseUrl: 'https://crm.example.org', keyFile: '/srv/secrets/crm-key' } }).hash!;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'sync-'));
-    calls = []; revision = '99999999-9999-4999-8999-999999999999'; state = fakePool();
+    calls = []; runningImage = IMAGE; removed = false; onRun = () => {}; revision = '99999999-9999-4999-8999-999999999999'; state = fakePool();
     previewOutput = JSON.stringify({ version: 1, passes: { attendees: { create: 0, adoptPatch: 2, skip: 5, conflict: 0 }, people: { create: 1, adoptPatch: 0, skip: 3, conflict: 0 } } });
     set('notion.meetings_data_source', MEETINGS); set('sync.notion.people_data_source', PEOPLE);
   });
@@ -221,5 +241,69 @@ describe('NotionSyncService', () => {
     await expect(service.verify('00000000-0000-4000-8000-000000000000')).rejects.toThrow(/key binding changed/);
     await service.quiesce();
     await expect(service.verify(null)).resolves.toBeUndefined();
+  });
+  it('refuses the sync, takes no firewall rule and plans no egress when an older hand-run sync is configured', async () => {
+    const service = make('legacy');
+    set('sync.notion.enabled', true);
+    expect(await service.egress()).toEqual([]);
+    await expect(service.preview('owner')).rejects.toThrow(/older hand-run Notion sync/);
+    expect((await service.view(true)).phase).toBe('needs-setup');
+  });
+  it('reads a stored empty meetings value as none for the sync, not as the installation file\'s value', async () => {
+    set('notion.meetings_data_source', '');
+    const read = await readNotionSyncSettings(state.pool);
+    expect(planNotionSync({ ...read, enabled: true }, input({ meetingsFallback: MEETINGS })).hash).toBeNull();
+    state.rows.delete('notion.meetings_data_source');
+    expect(planNotionSync({ ...(await readNotionSyncSettings(state.pool)), enabled: true }, input({ meetingsFallback: MEETINGS })).hash).not.toBeNull();
+  });
+  it('refuses the sync while an agent named like the service exists', async () => {
+    set('sync.notion.enabled', true);
+    state.agentNamed.add('notion-sync');
+    await expect(make().preview('owner')).rejects.toThrow(/agent named notion-sync/);
+    expect(await make().egress()).toEqual([]);
+  });
+  it('forgets a stale acceptance on the stop-only path too, so going back to the old settings needs a new preview', async () => {
+    const service = make();
+    set('sync.notion.enabled', true);
+    await service.preview('owner'); await service.accept('owner', await currentHash());
+    set('sync.notion.people_data_source', '');
+    expect(await make().apply('keeper', { start: false })).toBe('off');
+    expect(state.rows.get('sync.notion.preview_ack')).toBe('');
+    set('sync.notion.people_data_source', PEOPLE);
+    calls.length = 0;
+    expect(await make().apply('keeper', { start: true })).toBe('off');
+    expect(calls).not.toContain('up:lares-notion-sync');
+  });
+  it('moves a running, accepted sync to a new image at keeper startup, and starts nothing that is not there', async () => {
+    const service = make();
+    set('sync.notion.enabled', true);
+    await service.preview('owner'); await service.accept('owner', await currentHash());
+    const since = () => calls.slice(calls.lastIndexOf('up:lares-notion-sync') + 1);
+    expect(await make().apply('keeper', { start: false })).toBe('running');
+    expect(since()).toEqual([]);
+    const ups = () => calls.filter(c => c === 'up:lares-notion-sync').length;
+    const before = ups();
+    runningImage = `ghcr.io/example/sync-jobs@sha256:${'b'.repeat(64)}`;
+    expect(await make().apply('keeper', { start: false })).toBe('running');
+    expect(ups()).toBe(before + 1);
+    expect(parse(readFileSync(join(dir, 'compose.lares-services.yaml'), 'utf8')).services['lares-notion-sync'].image).toBe(IMAGE);
+    // Never created (or removed): startup does not create it.
+    removed = true;
+    expect(await make().apply('keeper', { start: false })).toBe('running');
+    expect(ups()).toBe(before + 1);
+  });
+  it('runs the slow preview outside the lock, and stores nothing when the settings changed meanwhile', async () => {
+    const service = make();
+    set('sync.notion.enabled', true);
+    let held = false, heldDuringRun: boolean | null = null, changeDuringRun = false;
+    const guard = async <T>(work: () => Promise<T>): Promise<T> => { held = true; try { return await work(); } finally { held = false; } };
+    onRun = () => { heldDuringRun = held; if (changeDuringRun) set('sync.notion.people_data_source', ''); };
+    await service.preview('owner', guard);
+    expect(heldDuringRun).toBe(false);
+    expect(state.rows.has('sync.notion.preview')).toBe(true);
+    state.rows.delete('sync.notion.preview');
+    changeDuringRun = true;
+    await expect(service.preview('owner', guard)).rejects.toThrow(/changed while the preview ran/);
+    expect(state.rows.has('sync.notion.preview')).toBe(false);
   });
 });

@@ -53,7 +53,8 @@ export async function readNotionSyncSettings(pool: Pool): Promise<NotionSyncSett
         ['sync.notion.enabled', 'notion.meetings_data_source', 'sync.notion.people_data_source', 'sync.notion.preview_ack', 'sync.notion.address', 'sync.notion.preview']
             .map(key => readSetting(pool, key)));
     const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
-    return { enabled: enabled === true, meetings: text(meetings), people: text(people), ack: text(ack), address: text(address),
+    // A stored empty meetings value means "none on purpose" (as for the chief of staff); only a missing one falls back to the file.
+    return { enabled: enabled === true, meetings: typeof meetings === 'string' ? meetings : null, people: text(people), ack: text(ack), address: text(address),
         preview: preview && typeof preview === 'object' ? preview as StoredPreview : null };
 }
 
@@ -67,6 +68,10 @@ export interface SyncPlanInput {
     meetingsFallback?: string;
     google?: { principal?: string; tokenKeyFile?: string; clients: Record<string, { clientIdFile: string; clientSecretFile: string }> };
     crm?: { baseUrl?: string; keyFile?: string };
+    /** An older hand-run sync is listed under the installation's own egress consumers with this service's name. */
+    legacySync?: boolean;
+    /** A live agent already has this service's name. */
+    agentNamedSync?: boolean;
 }
 
 type SyncConfigInput = Pick<KeeperConfig, 'credentials'> & { lifecycle?: {
@@ -83,7 +88,14 @@ export function syncPlanInput(config: SyncConfigInput): SyncPlanInput {
         meetingsFallback: chief?.environment.NOTION_MEETINGS_DATA_SOURCE_ID,
         google: l?.runtime?.google,
         crm: { baseUrl: l?.egress?.endpoints?.TWENTY_BASE_URL, keyFile: chief?.secrets.TWENTY_KEY_FILE },
+        legacySync: (l?.egress as { legacyConsumers?: { name: string }[] } | undefined)?.legacyConsumers?.some(c => c.name === NOTION_SYNC_NAME) === true,
     };
+}
+
+/** The plan input plus the one fact that lives in the database: whether a live agent has the service's name. */
+async function planInputFor(pool: Pool, config: SyncConfigInput): Promise<SyncPlanInput> {
+    const named = await pool.query("SELECT 1 FROM agent_definitions WHERE name=$1 AND status<>'retired'", [NOTION_SYNC_NAME]);
+    return { ...syncPlanInput(config), agentNamedSync: named.rows.length > 0 };
 }
 
 export interface NotionSyncPlan {
@@ -105,9 +117,13 @@ const canonical = (v: unknown): string => JSON.stringify((function sort(x: unkno
 })(v));
 
 export function planNotionSync(s: NotionSyncSettings, input: SyncPlanInput): NotionSyncPlan {
-    const meetings = s.meetings ?? input.meetingsFallback ?? null;
+    const meetings = (s.meetings === null ? input.meetingsFallback : s.meetings) || null;
     const problems: string[] = [];
     const passes: SyncPass[] = [];
+    // Name clashes: the sync contributes nothing (no hash, so no firewall rule) until they are cleared.
+    if (input.legacySync) problems.push('An older hand-run Notion sync is still set up on this server; remove it first.');
+    if (input.agentNamedSync) problems.push(`An agent named ${NOTION_SYNC_NAME} exists on this server; rename or retire it first, because the sync uses that name.`);
+    if (problems.length > 0) return { passes, problems, config: null, hash: null, hosts: [], endpoints: [], orgs: [] };
     const orgs = Object.keys(input.google?.clients ?? {}).filter(org => /^[a-z0-9]{1,32}$/.test(org)).sort();
     if (!meetings) problems.push('Choose the Notion meetings database first (under Notion, above).');
     if (!input.ownerEmail) problems.push("The installation does not record the owner's address, which the sync needs.");
@@ -127,7 +143,8 @@ export function planNotionSync(s: NotionSyncSettings, input: SyncPlanInput): Not
         notionVersion: NOTION_VERSION, meetingsDataSourceId: meetings, selfEmail: input.ownerEmail, passes,
         ...(passes.includes('people') ? { people: { dataSourceId: s.people } } : {}),
     };
-    const hash = createHash('sha256').update(canonical({ config, installation: input.installationId ?? '', orgs: passes.includes('attendees') ? orgs : [] })).digest('hex');
+    const hash = createHash('sha256').update(canonical({ config, installation: input.installationId ?? '', orgs: passes.includes('attendees') ? orgs : [],
+        principal: passes.includes('attendees') ? input.google?.principal ?? '' : '', crm: passes.includes('people') ? input.crm?.baseUrl ?? '' : '' })).digest('hex');
     return { passes, problems, config, hash, orgs,
         hosts: ['api.notion.com', ...(passes.includes('attendees') ? ['.googleapis.com'] : [])],
         endpoints: passes.includes('people') && input.crm?.baseUrl ? [input.crm.baseUrl] : [] };
@@ -141,7 +158,7 @@ export function syncInEffect(s: NotionSyncSettings, plan: NotionSyncPlan): boole
 /** True when the credential inventory has to list the service as a consumer of the shared key. */
 export async function notionSyncRequested(pool: Pool, config: SyncConfigInput): Promise<boolean> {
     const settings = await readNotionSyncSettings(pool);
-    return syncInEffect(settings, planNotionSync(settings, syncPlanInput(config)));
+    return syncInEffect(settings, planNotionSync(settings, await planInputFor(pool, config)));
 }
 
 // ---- running it ---------------------------------------------------------------------------------
@@ -200,7 +217,7 @@ export class NotionSyncService implements ManagedServices {
     private get servicesFile(): string | undefined { return this.lifecycle?.services?.composeFile; }
     private async current() {
         const settings = await readNotionSyncSettings(this.o.pool);
-        const plan = planNotionSync(settings, syncPlanInput(this.o.config));
+        const plan = planNotionSync(settings, await planInputFor(this.o.pool, this.o.config));
         return { settings, plan, inEffect: syncInEffect(settings, plan) };
     }
     async egress(): Promise<ManagedEgress[]> {
@@ -275,7 +292,7 @@ export class NotionSyncService implements ManagedServices {
         const revision = await this.o.credentialRevision();
         // An acceptance for settings that are no longer the current ones is forgotten, not parked: changing a
         // setting and changing it back must not quietly bring an old acceptance to life.
-        if (opts.start && settings.ack !== null && settings.ack !== plan.hash) await writeSetting(this.o.pool, 'sync.notion.preview_ack', '', actor);
+        if (settings.ack !== null && settings.ack !== plan.hash) await writeSetting(this.o.pool, 'sync.notion.preview_ack', '', actor);
         const want = inEffect && typeof revision === 'string';
         if (!want) {
             const touched = settings.enabled || settings.address !== null;
@@ -283,7 +300,16 @@ export class NotionSyncService implements ManagedServices {
             if (touched && opts.start) await this.o.reseal();
             return 'off';
         }
-        if (!opts.start) return 'running';
+        if (!opts.start) {
+            // An update changed the image: move the already accepted sync onto it. This never starts a sync that is not there.
+            const image = this.lifecycle?.services?.notionSyncImage;
+            const found = await this.o.docker.serviceInspect?.(NOTION_SYNC_SERVICE).catch(() => null);
+            if (found && image && found.image !== image && settings.address) {
+                this.writeFiles(plan, settings.address, revision);
+                await this.o.docker.serviceUp(this.servicesFile, NOTION_SYNC_SERVICE);
+            }
+            return 'running';
+        }
         const address = await this.ensureAddress(actor);
         this.writeFiles(plan, address, revision);
         await this.o.reseal();
@@ -308,25 +334,35 @@ export class NotionSyncService implements ManagedServices {
     }
 
     // ---- the preview ---------------------------------------------------------------------------
-    async preview(actor: string): Promise<void> {
-        const { settings, plan, inEffect } = await this.current();
-        const revision = await this.o.credentialRevision();
-        if (!settings.enabled) throw new KeeperRefusedError('Switch the Notion sync on before running a preview.');
-        if (inEffect) throw new KeeperRefusedError('The Notion sync is running with these settings. Switch it off to run a new preview.');
-        if (!plan.hash) throw new KeeperRefusedError(plan.problems[0] ?? 'The sync is not fully set up yet.');
-        if (typeof revision !== 'string') throw new KeeperRefusedError('Connect the Notion key first: a preview reads Notion.');
-        if (!this.o.docker.serviceRunOnce || !this.servicesFile) throw new KeeperRefusedError('The Notion sync is not available on this installation.');
-        const address = await this.ensureAddress(actor);
-        this.writeFiles(plan, address, revision);
-        await this.o.reseal();
+    /** `guard` is the definition-namespace lock. It is held only to prepare and to store: the slow read in between
+     * runs outside it, so other changes are not kept waiting for minutes. */
+    async preview(actor: string, guard: <T>(work: () => Promise<T>) => Promise<T> = work => work()): Promise<void> {
+        const prepared = await guard(async () => {
+            const { settings, plan, inEffect } = await this.current();
+            const revision = await this.o.credentialRevision();
+            if (!settings.enabled) throw new KeeperRefusedError('Switch the Notion sync on before running a preview.');
+            if (inEffect) throw new KeeperRefusedError('The Notion sync is running with these settings. Switch it off to run a new preview.');
+            if (!plan.hash) throw new KeeperRefusedError(plan.problems[0] ?? 'The sync is not fully set up yet.');
+            if (typeof revision !== 'string') throw new KeeperRefusedError('Connect the Notion key first: a preview reads Notion.');
+            if (!this.o.docker.serviceRunOnce || !this.servicesFile) throw new KeeperRefusedError('The Notion sync is not available on this installation.');
+            const address = await this.ensureAddress(actor);
+            this.writeFiles(plan, address, revision);
+            await this.o.reseal();
+            return { hash: plan.hash, passes: plan.passes, file: this.servicesFile, run: this.o.docker.serviceRunOnce.bind(this.o.docker) };
+        });
         // A preview makes no write anywhere; the engine runs every pass with its dry-run switch on.
-        const out = (await this.o.docker.serviceRunOnce(this.servicesFile, NOTION_SYNC_SERVICE, [...COMMAND, '--preview'])).trim().split('\n').filter(Boolean).pop();
+        const out = (await prepared.run(prepared.file, NOTION_SYNC_SERVICE, [...COMMAND, '--preview'])).trim().split('\n').filter(Boolean).pop();
         let parsed: z.infer<typeof previewOutput>;
         try { parsed = previewOutput.parse(JSON.parse(out ?? '')); }
         catch { throw new KeeperRefusedError('The preview did not finish. Check the Notion key and the connections, then try again.'); }
-        if (canonical(Object.keys(parsed.passes).sort()) !== canonical([...plan.passes].sort()))
+        if (canonical(Object.keys(parsed.passes).sort()) !== canonical([...prepared.passes].sort()))
             throw new KeeperRefusedError('The preview did not cover every part of the sync. Try again.');
-        await writeSetting(this.o.pool, 'sync.notion.preview', { hash: plan.hash, at: (this.o.now?.() ?? new Date()).toISOString(), passes: parsed.passes }, actor);
+        await guard(async () => {
+            const { settings, plan, inEffect } = await this.current();
+            if (!settings.enabled || inEffect || plan.hash !== prepared.hash)
+                throw new KeeperRefusedError('The sync settings changed while the preview ran, so it was not kept. Run the preview again.');
+            await writeSetting(this.o.pool, 'sync.notion.preview', { hash: prepared.hash, at: (this.o.now?.() ?? new Date()).toISOString(), passes: parsed.passes }, actor);
+        });
     }
 
     /** The owner accepts the stored preview of exactly this configuration, and the service starts. */
@@ -350,7 +386,7 @@ export class NotionSyncService implements ManagedServices {
         const keyApplied = typeof revision === 'string';
         const phase: NotionSyncView['phase'] = !settings.enabled ? 'off' : !plan.hash ? 'needs-setup' : !keyApplied ? 'needs-key'
             : inEffect ? 'on' : previewCurrent ? 'ready-to-accept' : 'needs-preview';
-        return { canChange, enabled: settings.enabled, meetingsDataSource: settings.meetings ?? null, peopleDataSource: settings.people,
+        return { canChange, enabled: settings.enabled, meetingsDataSource: settings.meetings || null, peopleDataSource: settings.people,
             passes: plan.passes, problems: plan.problems, keyApplied, hash: plan.hash,
             preview: settings.preview ? { at: settings.preview.at, passes: settings.preview.passes, current: previewCurrent } : null,
             accepted: inEffect, running: !found ? 'not-created' : found.running ? 'running' : 'stopped', lastRun, phase };
@@ -388,7 +424,7 @@ export function registerSyncActions(o: SyncActionOptions): void {
         }) });
     registerAction({ name: 'sync.notion_preview', input: z.strictObject({}),
         successDetail: () => JSON.stringify({ notionSyncPreview: 'stored' }),
-        run: (_input, ctx) => guarded(async () => { owner(ctx); await o.service.preview(ctx.actor); return o.service.view(true); }) });
+        run: async (_input, ctx) => { owner(ctx); await o.service.preview(ctx.actor, guarded); return o.service.view(true); } });
     registerAction({ name: 'sync.notion_accept', input: z.strictObject({ hash: z.string().regex(/^[a-f0-9]{64}$/) }),
         successDetail: () => JSON.stringify({ notionSyncAccepted: true }),
         run: ({ hash }, ctx) => guarded(async () => {

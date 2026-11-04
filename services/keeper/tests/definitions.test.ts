@@ -439,6 +439,10 @@ it('refuses all findings before writes, enforces matching slug, and save cannot 
     await expect(create('bookkeeper', { definition: { ...GOOD, duties: '../secret' } })).rejects.toThrow('duties');
     await expect(create('bookkeeper', { definition: { ...GOOD, doors: [{ kind: 'telegram', enabled: false }] } })).resolves.toBeTruthy();
 });
+it('keeps the name of the Notion sync service for itself', async () => {
+    await expect(create('notion-sync')).rejects.toThrow(/name of the Notion sync service/);
+    expect(existsSync(join(agentsDir, 'notion-sync'))).toBe(false);
+});
 it('serializes ceiling races across separate registration instances and refuses host overrides', async () => {
     register(1);
     const first = create('first');

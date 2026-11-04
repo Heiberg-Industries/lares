@@ -36,9 +36,10 @@ export async function setMeetingsSource(input: {dataSource: string}): Promise<De
 export async function setNotionSync(input: {enabled: boolean; peopleDataSource: string}): Promise<DefinitionActionResult<NotionSyncView>> {
   return call('sync.notion_set', {enabled: input.enabled, peopleDataSource: input.peopleDataSource}, await actor(), 90_000);
 }
-/** Reads Notion and the calendar once, writes nothing; can take a few minutes. */
+/** Reads Notion and the calendar once, writes nothing; can take a few minutes. The wait is longer than the keeper's
+ * own 10-minute limit for the one-shot run, so a slow preview that is stored is never reported as unknown. */
 export async function runNotionSyncPreview(): Promise<DefinitionActionResult<NotionSyncView>> {
-  return call('sync.notion_preview', {}, await actor(), 600_000);
+  return call('sync.notion_preview', {}, await actor(), 660_000);
 }
 export async function acceptNotionSyncPreview(input: {hash: string}): Promise<DefinitionActionResult<NotionSyncView>> {
   return call('sync.notion_accept', {hash: input.hash}, await actor(), 90_000);
