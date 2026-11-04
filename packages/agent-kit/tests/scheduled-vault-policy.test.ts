@@ -40,6 +40,10 @@ describe("what a verbatim file must say", () => {
     expect(why("articles/a.md", md.replace("lares_origin: third_party", "lares_origin: third_party\nlares_origin: third_party"))).toMatch(/exactly one/);
     expect(why("articles/a.md", md.replaceAll("\n", "\r\n"))).toMatch(/front-matter block/);
     expect(why("articles/a.md", md.replace("title: A page", "title: A page\r"))).toMatch(/plain line endings/);
+    const junk = "---\ntitle: x\n---junk\nlares_origin: third_party\n---\n";
+    expect(why("articles/a.md", junk)).toMatch(/only ---/);
+    expect(why("articles/a.md", "---\nlares_origin: third_party\n---x\nbody")).toMatch(/only ---/);
+    expect(why("articles/a.md", "---\nlares_origin: third_party\n---  \nbody")).toMatch(/only ---/);
     expect(why("articles/a.txt", "---\nlares_origin: third_party\n---\n")).toMatch(/must not start with front matter/);
     expect(why("articles/a.txt", "a\u0000b")).toMatch(/NUL/);
     expect(why("articles/a.txt", "lone \ud800")).toMatch(/UTF-8/);

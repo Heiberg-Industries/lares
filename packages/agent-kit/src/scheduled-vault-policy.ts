@@ -9,6 +9,8 @@
 
 import { Buffer } from "node:buffer";
 
+import { readOriginFrontmatter } from "@lares/vault-format/origin";
+
 export type ScheduledVaultArea = "private" | "shared";
 export type ScheduledVaultOperation = "list" | "read" | "write" | "write-verbatim" | "move" | "remove";
 
@@ -116,14 +118,17 @@ export function scheduledVerbatimRefusal(rule: ScheduledVaultRule, path: unknown
     return /^---[ \t]*(?:\r?\n|$)/.test(content) ? "A plain-text companion file must not start with front matter." : null;
   }
   if (!rule.verbatimOrigin) return "This schedule has no origin to stamp on a file saved as it is.";
-  const open = content.match(/^---\n/);
-  const close = open ? content.indexOf("\n---\n", 3) : -1;
-  const end = close === -1 && open && content.endsWith("\n---") ? content.length - 4 : close;
-  if (!open || end === -1) return "A note must start with a front-matter block.";
-  const block = content.slice(4, end + 1);
+  // The block is found exactly as the readers find it (`readOriginFrontmatter`, `noteScope`).
+  if (!content.startsWith("---\n")) return "A note must start with a front-matter block.";
+  const end = content.indexOf("\n---", 4);
+  if (end === -1) return "A note must start with a front-matter block.";
+  const after = content.slice(end + 4, end + 5);
+  if (after !== "" && after !== "\n") return "The front matter must end with a line that is only ---.";
+  const block = content.slice(4, end);
   if (block.includes("\r")) return "The front matter must use plain line endings.";
   const originLines = block.split("\n").filter((line) => /^["']?lares_origin["']?[ \t]*:/.test(line));
   if (originLines.length !== 1) return "The front matter must have exactly one lares_origin line.";
   if (originLines[0] !== `lares_origin: ${rule.verbatimOrigin}`) return `The lares_origin of this file must be ${rule.verbatimOrigin}.`;
+  if (readOriginFrontmatter(content) !== rule.verbatimOrigin) return `The lares_origin of this file must be ${rule.verbatimOrigin}.`;
   return null;
 }
