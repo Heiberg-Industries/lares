@@ -14,7 +14,7 @@ import { gatewayCanonical, gatewayHash } from "@lares/agent-kit/gateway-admissio
 import { gatewayMaximumLiability, gatewayPricingSchema } from "@lares/agent-kit/gateway-pricing";
 import { rejectDuplicateJsonKeys } from "../../keeper/lib/budget-native-client.js";
 import { parseBudgetNativePolicyDocument, type BudgetNativePolicyDocument } from "../../keeper/lib/budget-native-host.js";
-import { gatewayAdmissionProfile } from "../lib/gateway-config.js";
+import { gatewayAdmissionProfile, gatewayOptionsFromSettings, PURPOSE_MODEL_PURPOSES, type PurposeModelPurpose } from "../lib/gateway-config.js";
 
 /** Largest prompt, in tokens, one model call may carry. It sets the amount held per call. */
 export const REVIEWED_INPUT_TOKENS = 100_000;
@@ -22,6 +22,9 @@ export const REVIEWED_INPUT_TOKENS = 100_000;
 export interface NativePolicyRequest {
   readonly alias: string;
   readonly providerModel: string;
+  /** A model of its own for the writer, utility or gate purpose, as in installation.env. Only the brain is priced here, but
+   *  the reviewed capability must be the exact profile the gateway runs, so these are carried into it. */
+  readonly purposeModels?: Readonly<Partial<Record<PurposeModelPurpose, string>>>;
   readonly gatewayUrl: string;
   readonly installationLimit: string;
   readonly personLimit: string;
@@ -32,6 +35,8 @@ export interface NativePolicyResult {
   readonly policy: BudgetNativePolicyDocument;
   readonly maximumLiability: string;
   readonly model: string;
+  /** Served aliases that run a model of their own and are NOT priced by this policy yet. */
+  readonly unpricedAliases: readonly string[];
   readonly installationLimit: string;
   readonly personLimit: string;
   readonly prices: NativePolicyRequest["prices"];
@@ -64,7 +69,13 @@ export function renderNativePolicy(request: NativePolicyRequest): NativePolicyRe
   const personLimit = positiveMoney(request.personLimit, "The per-person limit");
   if (units(personLimit) > units(installationLimit))
     throw new Error(`The per-person limit ($${personLimit}) is above the installation limit ($${installationLimit}).`);
-  const capability = gatewayAdmissionProfile({ alias: request.alias, providerModel: request.providerModel });
+  const requested = request.purposeModels ?? {};
+  if (typeof requested !== "object" || Object.keys(requested).some(name => !(PURPOSE_MODEL_PURPOSES as readonly string[]).includes(name)))
+    throw new Error("Only the writer, utility and gate purposes can name a model of their own.");
+  const capability = gatewayAdmissionProfile(gatewayOptionsFromSettings({
+    LARES_MODEL_ALIAS: request.alias, LARES_MODEL: request.providerModel,
+    LARES_MODEL_WRITER: requested.writer, LARES_MODEL_UTILITY: requested.utility, LARES_MODEL_GATE: requested.gate,
+  }));
   const prices = {
     input: price(request.prices.input, "input"),
     output: price(request.prices.output, "output"),
@@ -99,7 +110,7 @@ export function renderNativePolicy(request: NativePolicyRequest): NativePolicyRe
       key: { maxBudget: personLimit, models: [request.alias], budgetDuration: "1d", keyType: "llm_api", blocked: true },
     }],
   }));
-  return { policy, maximumLiability, model: `${capability.provider}/${capability.model}`, installationLimit, personLimit, prices };
+  return { policy, maximumLiability, model: `${capability.provider}/${capability.model}`, unpricedAliases: Object.keys(capability.purposeModels ?? {}), installationLimit, personLimit, prices };
 }
 
 export function main(input: string, out: (value: string) => void): number {

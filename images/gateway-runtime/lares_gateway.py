@@ -620,9 +620,9 @@ class Runtime:
             deployments = router.get_model_list(model_name=alias) or []
             if len(deployments) != 1: raise Refused()
             params = deployments[0]["litellm_params"]
-            p = self.profile.document
+            route = self.profile.route(alias)
             self.validation_stage = "router-target"
-            if params.get("model") != p["provider"] + "/" + p["model"] or params.get("api_base") != p["providerBaseUrl"]: raise Refused()
+            if params.get("model") != route.litellm_model or params.get("api_base") != route.base: raise Refused()
             self.validation_stage = "router-retries"
             if params.get("num_retries") != 0 or params.get("max_retries") != 0: raise Refused()
         self.validation_stage = "native-auth"
@@ -770,8 +770,10 @@ class AdmissionHook(CustomLogger):
             kind = getattr(call_type, "value", call_type)
             p = runtime.profile.document
             target = kwargs.get("model")
-            if target not in (p["model"], p["provider"] + "/" + p["model"]): raise Refused()
-            if kwargs.get("api_base") != p["providerBaseUrl"]: raise Refused()
+            # The model is the one THIS alias is routed to, not the brain's.
+            route = runtime.profile.route(request.alias)
+            if target not in (route.model, route.litellm_model): raise Refused()
+            if kwargs.get("api_base") != route.base: raise Refused()
             phases = request.deployment_phases
             expected = ["anthropic_messages"] if request.path == "/v1/messages" else ["acompletion"]
             if request.path == "/v1/messages" and p["provider"] == "openai": expected.append("acompletion")

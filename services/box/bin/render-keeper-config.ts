@@ -9,7 +9,10 @@
 // cannot resolve to the `.ts` file next to it — so this goes through the box's own tsx, exactly
 // as `migrate`, `first-owner`, `doctor` and `render-stack` already do.
 //
-// IT WRITES TWO FILES, NOT STDOUT, so nothing a wrapper prints can end up inside either.
+// IT WRITES THREE FILES, NOT STDOUT, so nothing a wrapper prints can end up inside any of them.
+//   0. <outFile>.rendered — a hash per setting the installer itself rendered, taken BEFORE the
+//      hand-set agent settings of an earlier keeper.json are carried over. `lares doctor` diffs
+//      keeper.json against it to find settings nobody but a person wrote. Hashes only, no values.
 //   1. keeper.json — read by the keeper container at startup (loadKeeperConfig).
 //   2. a compose env file — every `${…:?}` variable compose.lares-keeper.yaml names. Two of
 //      them (the keeper's and the squid's images) can only come from the release file, which is
@@ -28,6 +31,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest, imageFor } from "../lib/release-manifest.js";
 import { renderKeeperConfig } from "../lib/keeper-config.js";
+import { provenanceRecord } from "../lib/doctor-parity.js";
 import { DEADLINE_CALENDAR_IN_CONTAINER } from "../lib/stack-compose.js";
 import { runtimeBindingsSchema } from "../../keeper/lib/runtime-bindings.js";
 import type { KeeperConfig } from "../../keeper/lib/config.js";
@@ -261,6 +265,8 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
     ...(previous.schedulesLive !== undefined ? { previousSchedulesLive: previous.schedulesLive } : {}),
     ...(deadlineCalendarFile ? { deadlineCalendarFile } : {}),
   });
+  // What the installer itself decided, recorded before anything carried from the old file is added.
+  const rendered = provenanceRecord(config);
   carryHandSetBindings(config, previous.defaultBindings);
   if (previous.microsoft !== undefined) config.lifecycle!.runtime.microsoft = previous.microsoft;
   if (previous.google !== undefined) config.lifecycle!.runtime.google = previous.google;
@@ -285,6 +291,8 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
   // install.sh sets `umask 077`, so a wider mode asked for here would silently not happen. This file names every path this installation keeps a secret at, and
   // the only process that reads it is the keeper container, which compose.lares-keeper.yaml
   // runs as `user: '0:0'`. Nothing but root has any use for it, so nothing but root gets it.
+  writeFileSync(`${at("outFile")}.rendered`, `${JSON.stringify(rendered, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(`${at("outFile")}.rendered`, 0o600);
   writeFileSync(at("outFile"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   chmodSync(at("outFile"), 0o600);
 

@@ -735,6 +735,31 @@ def main(argv: list[str]) -> int:
         if "Every migration on disk has already been applied." not in said:
             raise RuntimeError("lares doctor gave no real answer on migrations")
         passed("doctor-answers-on-migrations")
+        parity = [line for line in said.splitlines() if "Matches the release" in line]
+        if len(parity) != 1 or not parity[0].startswith("PASS"):
+            raise RuntimeError(f"the parity check did not read ok on this install: {parity or 'no such line'}")
+        passed("doctor-parity-reads-ok-on-a-fresh-install")
+
+        # One harmless hand-set key in keeper.json must be named by path and fail the doctor; the
+        # file is put back byte for byte afterwards (the keeper only reads it when it starts).
+        keeper_json = pathlib.Path("/etc/lares/keeper.json")
+        keeper_record = pathlib.Path("/etc/lares/keeper.json.rendered")
+        json_before, record_before, json_mode = keeper_json.read_bytes(), keeper_record.read_bytes(), keeper_json.stat().st_mode & 0o777
+        try:
+            edited = json.loads(json_before)
+            edited["handSetProbeKey"] = True
+            keeper_json.write_text(json.dumps(edited, indent=2) + "\n")
+            os.chmod(keeper_json, json_mode)
+            tampered = run("lares", "doctor", timeout=180, check=False)
+            tampered_said = tampered.stdout + tampered.stderr
+        finally:
+            keeper_json.write_bytes(json_before)
+            os.chmod(keeper_json, json_mode)
+        if keeper_json.read_bytes() != json_before or keeper_record.read_bytes() != record_before:
+            raise RuntimeError("keeper.json or its installer record was not restored exactly")
+        if tampered.returncode == 0 or "handSetProbeKey" not in tampered_said:
+            raise RuntimeError("the parity check did not name a hand-set keeper.json key and fail")
+        passed("doctor-parity-names-a-hand-set-key-and-fails")
 
         stage("the Notion sync is off, and stays off without an accepted preview")
         services_file = pathlib.Path(json.loads(pathlib.Path("/etc/lares/keeper.json").read_text())["lifecycle"]["services"]["composeFile"])

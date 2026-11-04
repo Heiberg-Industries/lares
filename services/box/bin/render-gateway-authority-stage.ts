@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
 import { assertDatabaseAuthDirectory, renderStackCompose } from "../lib/stack-compose.js";
-import { gatewayAdmissionProfile, renderGatewayConfig } from "../lib/gateway-config.js";
+import { gatewayAdmissionProfile, gatewayOptionsFromSettings, renderGatewayConfig } from "../lib/gateway-config.js";
 import { renderKeeperConfig } from "../lib/keeper-config.js";
 import { renderKeeperComposeEnvironment, validateMaintenanceAdmissionIdentity } from "./render-keeper-config.js";
 import { assertSafeAuthorityAncestors, readProtectedInstallationSettings, resolveGatewayAuthority, recheckGatewayAuthoritySources } from "../lib/gateway-authority.js";
@@ -390,16 +390,11 @@ function stageOutput(request: GatewayAuthorityStageRequest): StageBuild {
   const consoleOauthEnvFile = join(etc, "console-oauth.env");
   const gatewayConfigFile = join(etc, "litellm-config.yaml");
   const gatewayStartScript = join(etc, "gateway-start.sh");
-  const gateway = {
-    alias: "",
-    providerModel: "",
-  };
 
   // Resolve first from protected files, including the real reviewed policy and the fixed key
   // inode. Values returned here are configuration paths/identity only; key bytes are discarded.
   const settings = readProtectedInstallationSettings(installationEnvFile);
-  gateway.alias = settings.LARES_MODEL_ALIAS!;
-  gateway.providerModel = settings.LARES_MODEL!;
+  const gateway = gatewayOptionsFromSettings(settings);
   const authority = resolveGatewayAuthority({
     installationEnvFile,
     consoleOauthEnvFile,

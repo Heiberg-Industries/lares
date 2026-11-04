@@ -82,6 +82,7 @@ Usage: install.sh --backups [options]   (switch on backups: see setup-backups.sh
        install.sh [--dry-run] [--yes] [--restore <archive>] [--release <file>] [--prefix <dir>]
                    [--domain <domain>] [--email <address>] [--name <name>]
                    [--model-key-file <path>] [--owner-id <id>]
+                   [--writer-model <model>] [--utility-model <model>] [--gate-model <model>]
 
 Checks this box against the tested install path
 (docs/decisions/0022-the-tested-install-path.md) and refuses, in one pass, before
@@ -104,6 +105,11 @@ writing anything, if something here is wrong. Fix what it prints and run it agai
                        leak into the process list and shell history)
   --owner-id <id>      the owner's id in the identity register (default: derived from the
                        answered e-mail address's own local part)
+  --writer-model <model>, --utility-model <model>, --gate-model <model>
+                       give one purpose a model of its own, written <provider>/<model> and on the
+                       same provider as the main model (example: anthropic/claude-haiku-4-5). Left
+                       out, that purpose uses the main model. Only on a first install: the answer
+                       is written to installation.env, which later runs keep as it is
   -h, --help           show this message
 EOF
 }
@@ -119,6 +125,9 @@ NAME_FLAG=""
 MODEL_KEY_FILE_FLAG=""
 OWNER_ID_FLAG=""
 OWNER_ID_GIVEN=0
+WRITER_MODEL_FLAG=""
+UTILITY_MODEL_FLAG=""
+GATE_MODEL_FLAG=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -193,6 +202,26 @@ while [ $# -gt 0 ]; do
       # quietly fall back to the derived default.
       OWNER_ID_FLAG="$2"
       OWNER_ID_GIVEN=1
+      shift 2
+      ;;
+    --writer-model|--utility-model|--gate-model)
+      if [ $# -lt 2 ]; then
+        echo "install: $1 needs a model, written <provider>/<model>" >&2
+        exit "$EX_USAGE"
+      fi
+      # Checked here, before anything is written, so a typo never leaves a half-answered install.
+      case "$2" in
+        */*) ;;
+        *) echo "install: $1 must be written <provider>/<model> (example: anthropic/claude-haiku-4-5), not '$2'. Nothing was changed." >&2; exit "$EX_USAGE" ;;
+      esac
+      case "$2" in
+        *[!A-Za-z0-9._:/-]*) echo "install: $1 holds a character a model name never has ('$2'). Nothing was changed." >&2; exit "$EX_USAGE" ;;
+      esac
+      case "$1" in
+        --writer-model) WRITER_MODEL_FLAG="$2" ;;
+        --utility-model) UTILITY_MODEL_FLAG="$2" ;;
+        --gate-model) GATE_MODEL_FLAG="$2" ;;
+      esac
       shift 2
       ;;
     -h|--help) usage; exit "$EX_USAGE" ;;
@@ -1055,6 +1084,14 @@ wizard_already_done() {
   return 0
 }
 
+# check_purpose_model_provider <flag> <value> — a purpose model given on the command line (empty: none was given)
+# must name the same provider as the main model. The renderer checks this too; refusing here
+# means it is said before anything is written.
+check_purpose_model_provider() {
+  [ -n "$2" ] || return 0
+  [ "${2%%/*}" = "${LARES_MODEL_DEFAULT%%/*}" ] || die "$1 must use the same provider as the main model (${LARES_MODEL_DEFAULT%%/*}), written ${LARES_MODEL_DEFAULT%%/*}/<model>. Nothing was changed." "$EX_USAGE"
+}
+
 # write_installation_env — rewritten atomically (a neighbouring .partial, then mv), the same
 # discipline lares_secret uses above, so an interrupted run never leaves a half-written file a
 # later run would mistake for a finished one.
@@ -1068,6 +1105,10 @@ write_installation_env() {
     owner_id=$(derive_owner_id "$LARES_OWNER_EMAIL")
     [ -n "$owner_id" ] || die "could not derive an owner id from '$LARES_OWNER_EMAIL'; use --owner-id. Nothing else was changed." "$EX_USAGE"
   fi
+  # A purpose's own model must be on the main model's provider: the gateway holds one provider key.
+  check_purpose_model_provider --writer-model "$WRITER_MODEL_FLAG"
+  check_purpose_model_provider --utility-model "$UTILITY_MODEL_FLAG"
+  check_purpose_model_provider --gate-model "$GATE_MODEL_FLAG"
   do_or_say mkdir -p "$(dirname "$INSTALL_ENV")"
   rm -f "$tmp"
   {
@@ -1087,6 +1128,10 @@ write_installation_env() {
     env_line GATEWAY_URL "$GATEWAY_URL_DEFAULT"
     env_line LARES_MODEL_ALIAS "$LARES_MODEL_ALIAS_DEFAULT"
     env_line LARES_MODEL "$LARES_MODEL_DEFAULT"
+    # Only when given: absent, every purpose uses the main model and nothing here changes.
+    [ -z "$WRITER_MODEL_FLAG" ] || env_line LARES_MODEL_WRITER "$WRITER_MODEL_FLAG"
+    [ -z "$UTILITY_MODEL_FLAG" ] || env_line LARES_MODEL_UTILITY "$UTILITY_MODEL_FLAG"
+    [ -z "$GATE_MODEL_FLAG" ] || env_line LARES_MODEL_GATE "$GATE_MODEL_FLAG"
   } > "$tmp"
   do_or_say chmod 0640 "$tmp"
   if ! do_or_say chown "0:$LARES_RUNTIME_GID" "$tmp"; then
@@ -1163,6 +1208,9 @@ capture_model_key() {
 run_wizard() {
   if wizard_already_done; then
     say "the domain, e-mail address and name are already written down in $INSTALL_ENV — nothing was asked again."
+    if [ -n "$WRITER_MODEL_FLAG$UTILITY_MODEL_FLAG$GATE_MODEL_FLAG" ]; then
+      say "  --writer-model, --utility-model and --gate-model only apply to a first install, so they were ignored. To change a purpose's model, edit LARES_MODEL_WRITER, LARES_MODEL_UTILITY or LARES_MODEL_GATE in $INSTALL_ENV, before model budget setup."
+    fi
   else
     say "four questions, asked once. Sign in to the console to confirm this host and finish explicit model budget setup before creating an agent."
 
@@ -1705,7 +1753,7 @@ run_keeper() {
   # a half-written configuration the keeper would boot from.
   tmp="$keeper_config.partial"
   env_tmp="$keeper_env.partial"
-  rm -f "$tmp" "$env_tmp"
+  rm -f "$tmp" "$env_tmp" "$tmp.rendered"
   [ ! -f "$keeper_config" ] || before_sum=$(sha256_of "$keeper_config")
   # The renderer reads the release file, the keeper.json already on this box and the installation's
   # deadline calendar, and writes its two outputs next to keeper.json. All of that lives under two
@@ -1722,11 +1770,11 @@ run_keeper() {
       "$LARES_NETWORK" "$LARES_SUBNET" "$LARES_PROXY_ADDRESS" "$gateway_url" \
       "$db_name" "$OWNER_ID" "$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")" \
       "$(read_setting LARES_DOMAIN "$INSTALL_ENV")" "$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")" "${PREFIX:-/}"; then
-    rm -f "$tmp" "$env_tmp"
+    rm -f "$tmp" "$env_tmp" "$tmp.rendered"
     die "the keeper's configuration could not be rendered from '$RELEASE_FILE' and the keeper.json already on this box (the reason is printed above; $keeper_config itself is untouched). The keeper has not been configured or started, and everything written before this — every secret, $INSTALL_ENV, the stack and its containers, the database, the owner — is left exactly as it is." "$EX_REFUSED"
   fi
   if [ ! -s "$tmp" ]; then
-    rm -f "$tmp" "$env_tmp"
+    rm -f "$tmp" "$env_tmp" "$tmp.rendered"
     die "rendering the keeper's configuration from '$RELEASE_FILE' produced nothing, so $keeper_config has not been written. The keeper has not been started, and everything written before this is left exactly as it is." "$EX_REFUSED"
   fi
   # 0600, set HERE as well as by the program that wrote it: `umask 077` at the top of this file
@@ -1734,6 +1782,13 @@ run_keeper() {
   # names every path this installation keeps a secret at, and the one process that reads it is
   # the keeper container, which compose.lares-keeper.yaml runs as `user: '0:0'`.
   do_or_say chmod 0600 "$tmp"
+  # The renderer's record of what the installer itself wrote (hashes, no values), which
+  # `lares doctor` compares keeper.json with. Moved first: a record without its file is harmless,
+  # a file without its record would look hand-made.
+  if [ -f "$tmp.rendered" ]; then
+    do_or_say chmod 0600 "$tmp.rendered"
+    do_or_say mv "$tmp.rendered" "$keeper_config.rendered"
+  fi
   do_or_say mv "$tmp" "$keeper_config"
   # 0640 for the env file: `docker compose` reads it on this host, as root, and it holds only
   # image digests and paths — no secret value, here or anywhere else in this script.
