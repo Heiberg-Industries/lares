@@ -126,6 +126,18 @@ export class GuardedVaultFiles {
   async list(ctx:VaultFilesContext):Promise<{paths:string[];files:number}> {
     return this.readArea(ctx,root=>{const paths=listNotes(root,{allowEmpty:true,rejectNestedRepositories:true});return {paths,files:paths.length};});
   }
+  /** Notes under one folder, folder-relative paths made store-relative. Unlike `list`, this does not
+   * skip `_meta/` (listing skips it so search never surfaces conversation logs); a caller that
+   * needs it names the folder, and its own policy decides which folders it may name. */
+  async listUnder(ctx:VaultFilesContext,dir:string):Promise<{paths:string[];files:number}> {
+    return this.readArea(ctx,root=>{
+      const clean=dir.replace(/\/+$/,''),abs=resolveInStore(clean,root,{rejectNestedRepositories:true});
+      try{const st=lstatSync(abs);if(!st.isDirectory()||st.isSymbolicLink())throw new VaultFilesUnavailableError();}
+      catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return {paths:[],files:0};throw error;}
+      const paths=listNotes(abs,{allowEmpty:true,rejectNestedRepositories:true}).map(path=>`${clean}/${path}`);
+      return {paths,files:paths.length};
+    });
+  }
   async count(ctx:VaultFilesContext):Promise<number> {return (await this.list(ctx)).files;}
   async search(ctx:VaultFilesContext,query:string) {
     return this.readArea(ctx,root=>searchNotes(query,root,undefined,{allowEmpty:true,fresh:true,rejectNestedRepositories:true}));

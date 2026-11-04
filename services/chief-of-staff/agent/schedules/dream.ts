@@ -64,6 +64,7 @@ import {
 import type { Observation } from "../../lib/dream/reflect.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
+import { makeScheduledVault, scheduledVaultMounted, type ScheduledVault } from "../../lib/scheduled-vault.js";
 import { makeConversationRecord } from "@lares/agent-kit/conversation-record";
 
 export function dreamGate(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -99,6 +100,24 @@ export function makeDreamBrain(root: string) {
     read: async (path: string) => readFileSync(resolveInStore(path, root), "utf8"),
     commitNote: async (o: { path: string; frontmatter: Record<string, unknown>; body: string; message?: string }) =>
       commitNote({ vaultRoot: root, path: o.path, frontmatter: o.frontmatter, body: o.body, message: o.message }),
+  };
+}
+
+/**
+ * The same brain for an install with no Vault folder: every call goes to keeper's scheduled-Vault
+ * operation. `list` takes the two folders the cycle reads by name, because the ordinary listing
+ * hides `_meta/`. A note identical to the one already saved is not an error (a re-run).
+ */
+export function makeKeeperDreamBrain(vault: ScheduledVault) {
+  return {
+    list: async () => [...(await vault.list("_meta/dream/")), ...(await vault.list("_meta/conversations/"))],
+    read: async (path: string) => {
+      const text = await vault.read(path);
+      if (text === undefined) throw new Error(`note not found: ${path}`);
+      return text;
+    },
+    commitNote: async (o: { path: string; frontmatter: Record<string, unknown>; body: string; message?: string }) =>
+      ({ commit: (await vault.write(o.path, o)).commit ?? "unchanged" }),
   };
 }
 
@@ -154,7 +173,6 @@ export async function runDreamCycle(): Promise<{ notePath: string; counts: Recor
   const db = getPool();
   await ensureDreamTables(db);
 
-  const root = storeRoot("brain");
   // Explicit, not guessed inside the store. `ownerId` is the fail-soft
   // owner key (env override, else this installation's one literal fallback) — acceptable for a
   // single-member installation's own writes; a multi-user caller only has to change this line.
@@ -162,7 +180,7 @@ export async function runDreamCycle(): Promise<{ notePath: string; counts: Recor
 
   // The dated note IS committed (unlike the conversation logs) — one commit a night, and it
   // carries the cursor the next pass reads.
-  const brain = makeDreamBrain(root);
+  const brain = scheduledVaultMounted() ? makeDreamBrain(storeRoot("brain")) : makeKeeperDreamBrain(makeScheduledVault("dream"));
 
   // The label a legacy markdown file's reply line carries, for the reader's markdown gap-fill
   // Resolved the same way every other "who am I" read in this service is, never a

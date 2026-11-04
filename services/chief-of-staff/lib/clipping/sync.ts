@@ -26,7 +26,7 @@ import {
 
 /** The slice of the vault's `_inbox` the sync touches. */
 export interface InboxPort {
-  exists(relPath: string): boolean;
+  exists(relPath: string): boolean | Promise<boolean>;
   write(relPath: string, body: string): Promise<void>;
   remove(relPath: string): Promise<void>;
 }
@@ -91,7 +91,7 @@ async function applyMapped(deps: SyncDeps, m: MappedPage, counts: Counts): Promi
 
   if (existing?.state === "imported") {
     if (!newer) return;
-    if (inbox.exists(path)) {
+    if (await inbox.exists(path)) {
       await inbox.write(path, renderClipNote(clip));
       await putItem(db, {
         sourceId: source.id, sourceItemId: clip.sourceItemId, container: clip.sourceContainer,
@@ -147,7 +147,7 @@ async function applyMapped(deps: SyncDeps, m: MappedPage, counts: Counts): Promi
 async function trashWaiting(deps: SyncDeps, itemId: string, inboxPath: string | null, counts: Counts): Promise<void> {
   const path = inboxPath ?? clipInboxPath(deps.source.id, itemId);
   // Still unfiled? Then the note goes. If it is already gone it was filed: leave the vault alone.
-  if (deps.inbox.exists(path)) {
+  if (await deps.inbox.exists(path)) {
     await deps.inbox.remove(path);
     await setItemState(deps.db, deps.source.id, itemId, "trashed");
     counts.trashed++;
@@ -198,7 +198,7 @@ export async function runClippingSync(deps: SyncDeps): Promise<SyncResult> {
   let checks = 0;
   for (const item of await listWaiting(db, source.id)) {
     const path = item.inboxPath ?? clipInboxPath(source.id, item.sourceItemId);
-    if (!inbox.exists(path)) {
+    if (!(await inbox.exists(path))) {
       await setItemState(db, source.id, item.sourceItemId, "filed-unknown");
       continue;
     }
