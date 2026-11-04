@@ -6,7 +6,7 @@ Markdown on disk stays the substrate agents read and write.
 > **Not part of the tested install path.** The installer does not start this job; it ships in the
 > `sync-jobs` image ([`services/sync-jobs`](../sync-jobs/README.md)) for an operator who runs it
 > themselves. Meeting follow-ups in the chief of staff do not need it; they need the
-> `NOTION_MEETINGS_DATA_SOURCE_ID` setting (see the install guide).
+> meetings database setting (Settings, Notion in the console; see the install guide).
 
 The first job it ships fills Notion meeting `Attendees` from Google Calendar. The config, Notion
 adapter and state tables it introduces are the foundation the later jobs reuse; `vaultPath` and

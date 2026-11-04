@@ -6,7 +6,7 @@ import { gatewayCanonical } from "@lares/agent-kit/gateway-admission-protocol";
 import { rejectDuplicateJsonKeys } from "../../keeper/lib/budget-native-client.js";
 import { readBudgetNativePolicyDocument } from "../../keeper/lib/budget-native-host.js";
 import { financialCustodyConfigSchema, gatewayBudgetConfigSchema, nativeCustodyConfigSchema } from "../../keeper/lib/config.js";
-import { gatewayAdmissionProfile, type GatewayConfigOptions } from "./gateway-config.js";
+import { gatewayAdmissionProfile, gatewayOptionsFromSettings, PURPOSE_MODEL_PURPOSES, type GatewayConfigOptions } from "./gateway-config.js";
 
 const BOOTSTRAP_KEY = "CONSOLE_BOOTSTRAP_IDENTITY";
 const SERVICE_KEY_NAME = "gateway-budget-service-key";
@@ -147,24 +147,38 @@ function decodeShellValue(raw: string): string {
   return value;
 }
 
+const GATEWAY_MODEL_SETTINGS = ["LARES_MODEL_ALIAS", "LARES_MODEL", "LARES_MODEL_WRITER", "LARES_MODEL_UTILITY", "LARES_MODEL_GATE"] as const;
+
+function selectSettings(text: string, wanted: ReadonlySet<string>): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const candidate = line.trimStart();
+    if (!candidate || candidate.startsWith("#")) continue;
+    const selected = [...wanted].find(name => new RegExp(`^${name}(?=\\s|=|$)`).test(candidate));
+    if (!selected) continue;
+    if (candidate !== line) throw new Error("installation setting is malformed");
+    const at = line.indexOf("=");
+    if (at < 1 || line.slice(0, at) !== selected) throw new Error("installation setting is malformed");
+    const key = selected;
+    if (Object.hasOwn(values, key)) throw new Error("installation settings are duplicated");
+    const raw = line.slice(at + 1);
+    if (!raw) throw new Error("installation setting is malformed");
+    values[key] = decodeShellValue(raw);
+  }
+  return values;
+}
+
+/** Only the settings that say which models the gateway serves, for a caller (the stack renderer) that must not
+ *  demand the rest of installation.env. The same strict line rules as the full parse apply. */
+export function parseGatewayModelSettings(text: string): Record<string, string> {
+  try { return selectSettings(text, new Set(GATEWAY_MODEL_SETTINGS)); }
+  catch { throw new Error("installation settings are unavailable or invalid"); }
+}
+
 export function parseInstallationSettings(text: string): Record<string, string> {
   try {
-    const wanted = new Set(["LARES_OWNER_ID", "LARES_OWNER_EMAIL", "LARES_DOMAIN", "LARES_MODEL_ALIAS", "LARES_MODEL", "CONSOLE_ALLOWED_EMAILS", "OWNER_HOME_TZ", "GATEWAY_URL"]);
-    const values: Record<string, string> = {};
-    for (const line of text.split(/\r?\n/)) {
-      const candidate = line.trimStart();
-      if (!candidate || candidate.startsWith("#")) continue;
-      const selected = [...wanted].find(name => new RegExp(`^${name}(?=\\s|=|$)`).test(candidate));
-      if (!selected) continue;
-      if (candidate !== line) throw new Error("installation setting is malformed");
-      const at = line.indexOf("=");
-      if (at < 1 || line.slice(0, at) !== selected) throw new Error("installation setting is malformed");
-      const key = selected;
-      if (Object.hasOwn(values, key)) throw new Error("installation settings are duplicated");
-      const raw = line.slice(at + 1);
-      if (!raw) throw new Error("installation setting is malformed");
-      values[key] = decodeShellValue(raw);
-    }
+    const wanted = new Set(["LARES_OWNER_ID", "LARES_OWNER_EMAIL", "LARES_DOMAIN", "CONSOLE_ALLOWED_EMAILS", "OWNER_HOME_TZ", "GATEWAY_URL", ...GATEWAY_MODEL_SETTINGS]);
+    const values = selectSettings(text, wanted);
     for (const key of ["LARES_OWNER_ID", "LARES_OWNER_EMAIL", "LARES_DOMAIN", "LARES_MODEL_ALIAS", "LARES_MODEL", "CONSOLE_ALLOWED_EMAILS", "GATEWAY_URL"])
       if (!values[key]?.trim()) throw new Error("installation settings are incomplete");
     if (!/^[a-z0-9.-]+$/.test(values.LARES_DOMAIN!) || !values.LARES_DOMAIN!.includes(".")) throw new Error("installation domain is invalid");
@@ -300,6 +314,15 @@ function captureSourceCommitment(sources: GatewayAuthoritySources): string {
   }
 }
 
+/** The gateway the caller rendered from must be exactly the one installation.env describes, down to each purpose's model. */
+function sameGatewayOptions(a: GatewayConfigOptions, b: GatewayConfigOptions): boolean {
+  const own = (o: GatewayConfigOptions) => PURPOSE_MODEL_PURPOSES.map(purpose => {
+    const value = o.purposeModels?.[purpose];
+    return value === undefined || value === o.providerModel ? "" : value;
+  }).join("\0");
+  return a.alias === b.alias && a.providerModel === b.providerModel && own(a) === own(b);
+}
+
 export function resolveGatewayAuthority(sources: GatewayAuthoritySources): ResolvedGatewayAuthority {
   const sourceCommitment = captureSourceCommitment(sources);
   const installation = readProtectedInstallationSettings(sources.installationEnvFile);
@@ -310,7 +333,7 @@ export function resolveGatewayAuthority(sources: GatewayAuthoritySources): Resol
   const gateway = gatewayBudgetConfigSchema.safeParse(keeper.gatewayBudget);
   if (!financial.success || !native.success || !gateway.success ||
       keeper.designatedOwnerId !== installation.LARES_OWNER_ID || keeper.publicDoorOrigin !== `https://${installation.LARES_DOMAIN}` ||
-      sources.gateway.alias !== installation.LARES_MODEL_ALIAS || sources.gateway.providerModel !== installation.LARES_MODEL ||
+      !sameGatewayOptions(sources.gateway, gatewayOptionsFromSettings(installation)) ||
       selection.ownerId !== installation.LARES_OWNER_ID || selection.organisationId !== installation.LARES_DOMAIN ||
       selection.installationOrigin !== `https://${installation.LARES_DOMAIN}` ||
       gateway.data.serviceKeyFile !== sources.expectedServiceKeyFile ||
@@ -379,6 +402,18 @@ export function preparedGatewayBinding(
     serviceKeyFile: gateway.data.serviceKeyFile,
     policyFile: native.data.reviewedPolicyFile,
   };
+}
+
+/** The reviewed spending policy names the exact gateway profile it was priced for. A gateway whose models changed
+ *  since is refused here, in plain words, instead of silently refusing every model call later. */
+export function assertReviewedPolicyMatchesProfile(
+  policyFile: string,
+  profile: ReturnType<typeof gatewayAdmissionProfile>,
+  readPolicy: (path: string) => { policies: ReadonlyArray<{ capability: unknown }> } = readBudgetNativePolicyDocument,
+): void {
+  for (const reviewed of readPolicy(policyFile).policies)
+    if (!gatewayCanonical(reviewed.capability).equals(gatewayCanonical(profile)))
+      throw new Error("The gateway's models changed after model budget setup, so the reviewed spending policy no longer matches them and every model call would be refused. Nothing was rendered. Put the model settings in installation.env back as they were.");
 }
 
 export function recheckGatewayAuthoritySources(sources: GatewayAuthoritySources, expected: string): void {

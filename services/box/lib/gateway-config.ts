@@ -1,11 +1,16 @@
 /**
- * The neutral stack's model gateway (LiteLLM): the four chat purposes on one model, no telemetry, the local cost map. The
- * provider key and the proxy's own master key are NEVER literal here — both are `os.environ/…`
+ * The neutral stack's model gateway (LiteLLM): the four chat purposes, no telemetry, the local cost map. By default all
+ * four serve the one model; an installation may name its own model for the writer, utility or gate purpose. The provider
+ * key and the proxy's own master key are NEVER literal here — both are `os.environ/…`
  * references LiteLLM itself resolves at container start, per LiteLLM's documented config format.
  * The actual secret files reach those environment variables via `images/gateway-runtime/start.sh`.
  */
 import { stringify } from "yaml";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "@lares/agent-kit/definition-model";
+
+/** The chat purposes that may name a model of their own. The brain's model is `providerModel`. */
+export const PURPOSE_MODEL_PURPOSES = ["writer", "utility", "gate"] as const;
+export type PurposeModelPurpose = (typeof PURPOSE_MODEL_PURPOSES)[number];
 
 export interface GatewayConfigOptions {
   /** The brain alias — LARES_MODEL_ALIAS's value, "lares-brain" by install.sh's own default.
@@ -17,10 +22,48 @@ export interface GatewayConfigOptions {
   readonly providerModel: string;
   /** Explicit HTTPS upstream for a reviewed profile (including isolated CI providers). */
   readonly providerBaseUrl?: string;
+  /** A model of its own for a purpose, as "<provider>/<model>" on the SAME provider as `providerModel`.
+   *  A purpose that is absent, or names the brain's model, is served by the brain's model. */
+  readonly purposeModels?: Readonly<Partial<Record<PurposeModelPurpose, string>>>;
 }
 
-/** The purposes this gateway serves. No `embed`: one chat model cannot embed. */
-const SERVED_PURPOSES = ["brain", "writer", "utility", "gate"] as const;
+/** The purposes this gateway serves. No `embed`: a chat model cannot embed. */
+const SERVED_PURPOSES = ["brain", ...PURPOSE_MODEL_PURPOSES] as const;
+
+const MODEL_NAME = /^[A-Za-z0-9_.:-]{1,160}$/;
+
+const settingName = (purpose: PurposeModelPurpose) => `LARES_MODEL_${purpose.toUpperCase()}`;
+
+/** The one place the optional per-purpose settings are read from installation.env. `settings` holds the file's
+ *  values by name. A value equal to the brain's model is dropped: it is the default, and
+ *  keeping it out keeps the rendered config and profile byte-identical to an installation that never set it. */
+export function gatewayOptionsFromSettings(settings: Readonly<Record<string, string | undefined>>): GatewayConfigOptions {
+  const alias = settings.LARES_MODEL_ALIAS, providerModel = settings.LARES_MODEL;
+  if (!alias || !providerModel) throw new Error("LARES_MODEL_ALIAS and LARES_MODEL must both be set to describe the gateway.");
+  const purposeModels: Partial<Record<PurposeModelPurpose, string>> = {};
+  for (const purpose of PURPOSE_MODEL_PURPOSES) {
+    const value = settings[settingName(purpose)];
+    if (value === undefined || value === providerModel) continue;
+    purposeModels[purpose] = value;
+  }
+  return { alias, providerModel, ...(Object.keys(purposeModels).length ? { purposeModels } : {}) };
+}
+
+/** Each purpose that really differs from the brain, as a bare model name on the brain's provider. */
+function ownPurposeModels(opts: GatewayConfigOptions, provider: string): Partial<Record<PurposeModelPurpose, string>> {
+  const own: Partial<Record<PurposeModelPurpose, string>> = {};
+  for (const purpose of PURPOSE_MODEL_PURPOSES) {
+    const value = opts.purposeModels?.[purpose];
+    if (value === undefined || value === opts.providerModel) continue;
+    const slash = value.indexOf("/");
+    if (slash < 1 || value.slice(0, slash) !== provider)
+      throw new Error(`${settingName(purpose)} must use the same provider as LARES_MODEL (${provider}), written as ${provider}/<model>.`);
+    const model = value.slice(slash + 1);
+    if (!MODEL_NAME.test(model)) throw new Error(`${settingName(purpose)} is not a usable model name.`);
+    own[purpose] = model;
+  }
+  return own;
+}
 
 /** Bounds capabilities, not prices. Admission authority/pricing/recovery is separate. */
 export function gatewayAdmissionProfile(opts: GatewayConfigOptions) {
@@ -28,17 +71,23 @@ export function gatewayAdmissionProfile(opts: GatewayConfigOptions) {
     throw new Error("The model alias must end in -brain (for example lares-brain).");
   const slash = opts.providerModel.indexOf("/");
   const provider = opts.providerModel.slice(0, slash), model = opts.providerModel.slice(slash + 1);
-  if (!["openai", "anthropic"].includes(provider) || !/^[A-Za-z0-9_.:-]{1,160}$/.test(model))
+  if (!["openai", "anthropic"].includes(provider) || !MODEL_NAME.test(model))
     throw new Error("This gateway admission profile requires a reviewed OpenAI or Anthropic target.");
   const providerBaseUrl = opts.providerBaseUrl ?? (provider === "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com");
   const url = new URL(providerBaseUrl);
   if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || providerBaseUrl.endsWith("/"))
     throw new Error("The gateway provider must use an explicit HTTPS base URL.");
+  const prefix = opts.alias.slice(0, -"-brain".length);
+  const own = ownPurposeModels(opts, provider);
+  const purposeModels = Object.fromEntries(PURPOSE_MODEL_PURPOSES.flatMap(purpose =>
+    own[purpose] === undefined ? [] : [[`${prefix}-${purpose}`, own[purpose]]]));
   return {
     version: 1, provider, model, providerBaseUrl,
-    aliases: SERVED_PURPOSES.map(purpose => `${opts.alias.slice(0, -"-brain".length)}-${purpose}`),
+    aliases: SERVED_PURPOSES.map(purpose => `${prefix}-${purpose}`),
     maxBodyBytes: 1_048_576,
     maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    // Only present when a purpose has a model of its own, so every other installation keeps its reviewed profile unchanged.
+    ...(Object.keys(purposeModels).length ? { purposeModels } : {}),
   };
 }
 
@@ -50,11 +99,14 @@ export function renderGatewayConfig(opts: GatewayConfigOptions): string {
     );
   const prefix = opts.alias.slice(0, -"-brain".length);
   const profile = gatewayAdmissionProfile(opts);
+  const purposeModels = profile.purposeModels as Record<string, string> | undefined;
+  /** The one routing decision: which provider model serves an alias. */
+  const route = (alias: string) => purposeModels?.[alias] === undefined ? opts.providerModel : `${profile.provider}/${purposeModels[alias]}`;
   const config = {
     model_list: SERVED_PURPOSES.map((purpose) => ({
       model_name: `${prefix}-${purpose}`,
       litellm_params: {
-        model: opts.providerModel,
+        model: route(`${prefix}-${purpose}`),
         api_key: "os.environ/LARES_MODEL_PROVIDER_KEY",
         api_base: profile.providerBaseUrl,
         max_retries: 0,

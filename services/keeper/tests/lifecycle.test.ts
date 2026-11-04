@@ -1049,3 +1049,48 @@ it('preflights Microsoft-only sources before save and ignores unavailable ungran
  await expect(l.prepare('bookkeeper',chief,false)).rejects.toThrow('Personal-read runtime files');expect(events).toEqual([]);expect(readFileSync(config.composeFile,'utf8')).toBe(before);
  await expect(l.prepare('bookkeeper',{...chief,autonomy:{personal_calendar:'never'}},false)).resolves.toBeUndefined();
 });
+const SOURCE_A='11111111-2222-4333-8444-555555555555',SOURCE_B='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+async function chiefFixture(env:Record<string,string>={}){
+ const chief:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/chief-of-staff/agent.json'),'utf8')),name:'bookkeeper',role:'chief-of-staff',doors:[],grants:[]};
+ writeFileSync(config.runtime.passwordFile,'synthetic-db');writeFileSync(config.runtime.gatewayKeys.bookkeeper!,'synthetic-gateway');
+ config.bindings={bookkeeper:{role:'chief-of-staff',environment:env,mounts:[],secrets:{}}};
+ await pool.query('UPDATE agent_definitions SET definition=$1::jsonb WHERE name=$2',[JSON.stringify(chief),'bookkeeper']);
+ await pool.query("DELETE FROM settings WHERE key='notion.meetings_data_source'");
+ return chief;
+}
+const composeEnv=()=>parse(readFileSync(config.composeFile,'utf8')).services['lares-bookkeeper'].environment;
+it('hands a chief of staff the meetings source set in the console, which wins over the installation file; a cleared one removes it',async()=>{
+ const chief=await chiefFixture({NOTION_MEETINGS_DATA_SOURCE_ID:SOURCE_A});
+ const l=lifecycle();await l.create('bookkeeper',chief);
+ expect(composeEnv().NOTION_MEETINGS_DATA_SOURCE_ID).toBe(SOURCE_A); // fallback: no console value yet
+ expect(l.meetingsSourceFallback('bookkeeper')).toBe(SOURCE_A);
+ await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('notion.meetings_data_source',$1::jsonb,'test')",[JSON.stringify(SOURCE_B)]);
+ await l.reconcile('bookkeeper',chief);
+ expect(composeEnv().NOTION_MEETINGS_DATA_SOURCE_ID).toBe(SOURCE_B);
+ await pool.query("UPDATE settings SET value='\"\"' WHERE key='notion.meetings_data_source'");
+ await l.reconcile('bookkeeper',chief);
+ expect(composeEnv().NOTION_MEETINGS_DATA_SOURCE_ID).toBeUndefined();
+ await pool.query("DELETE FROM settings WHERE key='notion.meetings_data_source'");
+});
+it('gives a chief with no installation binding the console meetings source, and never gives it to another role',async()=>{
+ const chief=await chiefFixture();config.bindings={};
+ config.defaultBindings={};
+ await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('notion.meetings_data_source',$1::jsonb,'test')",[JSON.stringify(SOURCE_B)]);
+ const l=lifecycle();await l.create('bookkeeper',chief);
+ expect(composeEnv().NOTION_MEETINGS_DATA_SOURCE_ID).toBe(SOURCE_B);
+ await pool.query("DELETE FROM settings WHERE key='notion.meetings_data_source'");
+});
+it('restarts a ready chief for a changed installation setting, and leaves one with changes waiting alone',async()=>{
+ const chief=await chiefFixture();
+ const l=lifecycle();await l.create('bookkeeper',chief);
+ await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('notion.meetings_data_source',$1::jsonb,'test')",[JSON.stringify(SOURCE_B)]);
+ events=[];
+ expect(await l.applyInstallationSettings('bookkeeper')).toBe('restarted');
+ expect(events).toEqual(expect.arrayContaining(['stop:bookkeeper','start:bookkeeper']));
+ expect(composeEnv().NOTION_MEETINGS_DATA_SOURCE_ID).toBe(SOURCE_B);
+ await pool.query("UPDATE agent_resources SET pending=true,pending_reason='changes' WHERE name='bookkeeper'");
+ events=[];
+ expect(await l.applyInstallationSettings('bookkeeper')).toBe('waiting');
+ expect(events).toEqual([]);
+ await pool.query("DELETE FROM settings WHERE key='notion.meetings_data_source'");
+});
