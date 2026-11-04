@@ -15,9 +15,6 @@
  * "Import now" runs the same `clippingPass` the digest runs, behind the same in-process lock
  * (lib/clipping/step.ts), so the two never overlap. No model call anywhere in here.
  *
- * With no Vault folder (an engine-image install), imports are refused with a plain sentence and the
- * other requests are still answered (see `vaultInbox`).
- *
  * A box that has not applied migration 092 yet has no queue: this logs that once and returns,
  * stamping nothing (the freshness alarm then says what is true: the drain is not running).
  */
@@ -27,11 +24,12 @@ import { getPool } from "@lares/agent-kit/db";
 import { scheduleGate } from "@lares/agent-kit/schedule-gate";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { recordSchedulePass } from "@lares/agent-kit/schedule-heartbeat";
-import { StorePathNotConfiguredError, storeRoot } from "@lares/agent-kit/notes-store";
+import { storeRoot } from "@lares/agent-kit/notes-store";
 import { thisAgent } from "../../lib/definition.js";
 import { makeNotionClient, readNotionToken } from "../../lib/clipping/notion-reader.js";
 import { drainRequests } from "../../lib/clipping/requests.js";
-import { makeVaultInbox } from "../../lib/clipping/step.js";
+import { makeKeeperInbox, makeVaultInbox } from "../../lib/clipping/step.js";
+import { makeScheduledVault, scheduledVaultMounted } from "../../lib/scheduled-vault.js";
 import type { InboxPort } from "../../lib/clipping/sync.js";
 
 /** The row input-freshness.sh reads; pinned to this filename by the conformance test. */
@@ -39,22 +37,10 @@ export const HEARTBEAT_KEY = "chief-of-staff/clipping-requests";
 
 let running = false;
 let warnedMissingTable = false;
-let warnedNoVault = false;
 
-/** An engine-image install gives this agent no Vault folder: the Vault is reached only through the
- *  keeper, which has no unattended write yet. Imports then answer that they cannot be saved; every
- *  other request on the card still works. Said once, not every minute. */
-function vaultInbox(): InboxPort | null {
-  try {
-    return makeVaultInbox(storeRoot("brain"));
-  } catch (e) {
-    if (!(e instanceof StorePathNotConfiguredError)) throw e;
-    if (!warnedNoVault) {
-      warnedNoVault = true;
-      console.log("clipping-requests: this install cannot save clippings to the Vault yet; imports are refused, other requests are still answered");
-    }
-    return null;
-  }
+/** An install with a Vault folder writes it directly; an engine-image install goes through keeper. */
+function vaultInbox(): InboxPort {
+  return scheduledVaultMounted() ? makeVaultInbox(storeRoot("brain")) : makeKeeperInbox(makeScheduledVault("clipping-requests"));
 }
 
 export default defineSchedule({

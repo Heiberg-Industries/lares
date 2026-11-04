@@ -28,6 +28,10 @@ export async function saveDefinition(input: DefinitionInput): Promise<Definition
 export async function setAgentLimit(input: {ceiling: number}): Promise<DefinitionActionResult<Capacity>> {
   return call('definition.capacity_set', {ceiling: input.ceiling}, await actor());
 }
+export interface MeetingsSourceResult { value: string | null; restarted: string[]; waiting: string[]; stopped: string[] }
+export async function setMeetingsSource(input: {dataSource: string}): Promise<DefinitionActionResult<MeetingsSourceResult>> {
+  return call('settings.notion_meetings_set', {dataSource: input.dataSource}, await actor(), 90_000);
+}
 export async function retireAgent(input: {name: string}): Promise<DefinitionActionResult<RetirementResult>> {
   return call('definition.retire', input, await actor());
 }

@@ -1848,7 +1848,7 @@ run_keeper() {
   # a half-written configuration the keeper would boot from.
   tmp="$keeper_config.partial"
   env_tmp="$keeper_env.partial"
-  rm -f "$tmp" "$env_tmp"
+  rm -f "$tmp" "$env_tmp" "$tmp.rendered"
   [ ! -f "$keeper_config" ] || before_sum=$(sha256_of "$keeper_config")
   # The renderer reads the release file, the keeper.json already on this box and the installation's
   # deadline calendar, and writes its two outputs next to keeper.json. All of that lives under two
@@ -1865,11 +1865,11 @@ run_keeper() {
       "$LARES_NETWORK" "$LARES_SUBNET" "$LARES_PROXY_ADDRESS" "$gateway_url" \
       "$db_name" "$OWNER_ID" "$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")" \
       "$(read_setting LARES_DOMAIN "$INSTALL_ENV")" "$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")" "${PREFIX:-/}"; then
-    rm -f "$tmp" "$env_tmp"
+    rm -f "$tmp" "$env_tmp" "$tmp.rendered"
     die "the keeper's configuration could not be rendered from '$RELEASE_FILE' and the keeper.json already on this box (the reason is printed above; $keeper_config itself is untouched). The keeper has not been configured or started, and everything written before this — every secret, $INSTALL_ENV, the stack and its containers, the database, the owner — is left exactly as it is." "$EX_REFUSED"
   fi
   if [ ! -s "$tmp" ]; then
-    rm -f "$tmp" "$env_tmp"
+    rm -f "$tmp" "$env_tmp" "$tmp.rendered"
     die "rendering the keeper's configuration from '$RELEASE_FILE' produced nothing, so $keeper_config has not been written. The keeper has not been started, and everything written before this is left exactly as it is." "$EX_REFUSED"
   fi
   # 0600, set HERE as well as by the program that wrote it: `umask 077` at the top of this file
@@ -1877,6 +1877,13 @@ run_keeper() {
   # names every path this installation keeps a secret at, and the one process that reads it is
   # the keeper container, which compose.lares-keeper.yaml runs as `user: '0:0'`.
   do_or_say chmod 0600 "$tmp"
+  # The renderer's record of what the installer itself wrote (hashes, no values), which
+  # `lares doctor` compares keeper.json with. Moved first: a record without its file is harmless,
+  # a file without its record would look hand-made.
+  if [ -f "$tmp.rendered" ]; then
+    do_or_say chmod 0600 "$tmp.rendered"
+    do_or_say mv "$tmp.rendered" "$keeper_config.rendered"
+  fi
   do_or_say mv "$tmp" "$keeper_config"
   # 0640 for the env file: `docker compose` reads it on this host, as root, and it holds only
   # image digests and paths — no secret value, here or anywhere else in this script.
