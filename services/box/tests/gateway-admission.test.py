@@ -50,6 +50,8 @@ const { parse } = createRequire(new URL('./services/box/package.json', import.me
 const targets = [
   { alias: 'fixture-brain', providerModel: 'openai/gpt-4o-mini', providerBaseUrl: 'https://provider.example.invalid/v1' },
   { alias: 'fixture-brain', providerModel: 'anthropic/claude-sonnet-4-5', providerBaseUrl: 'https://provider.example.invalid' },
+  { alias: 'fixture-brain', providerModel: 'anthropic/claude-sonnet-4-5', providerBaseUrl: 'https://provider.example.invalid',
+    purposeModels: { writer: 'anthropic/claude-opus-4-5', gate: 'anthropic/claude-haiku-4-5' } },
 ];
 console.log(JSON.stringify(targets.map((options) => ({
   config: parse(renderGatewayConfig(options)),
@@ -61,7 +63,9 @@ console.log(JSON.stringify(targets.map((options) => ({
             cwd=ROOT, check=True, capture_output=True, text=True, timeout=30,
         )
         cases = json.loads(rendered.stdout)
-        self.assertEqual([case["profile"]["provider"] for case in cases], ["openai", "anthropic"])
+        self.assertEqual([case["profile"]["provider"] for case in cases], ["openai", "anthropic", "anthropic"])
+        self.assertEqual(cases[2]["profile"]["purposeModels"], {"fixture-writer": "claude-opus-4-5", "fixture-gate": "claude-haiku-4-5"})
+        self.assertNotIn("purposeModels", cases[1]["profile"])
         for case in cases:
             with self.subTest(provider=case["profile"]["provider"]):
                 expected = Profile(case["profile"]).expected_config()
@@ -156,6 +160,42 @@ console.log(JSON.stringify(targets.map((options) => ({
             with self.assertRaises(Refused): profile.check_body("/v1/messages", json.dumps({**body,"messages":[{"role":"user","content":content}]}).encode())
         with self.assertRaises(TypeError): profile.document["maxOutputTokens"] = 999
         with self.assertRaises(TypeError): profile.document["aliases"][0] = "changed"
+
+    def extended_document(self, **changes):
+        document = {"version":1,"provider":"anthropic","model":"brain-model","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":123,"purposeModels":{"lares-writer":"writer-model","lares-gate":"gate-model"}}
+        document.update(changes)
+        return document
+
+    def test_extended_profile_routes_each_alias_to_its_own_model_and_changes_the_digest(self):
+        plain = {key: value for key, value in self.extended_document().items() if key != "purposeModels"}
+        profile, base = Profile(self.extended_document()), Profile(plain)
+        self.assertNotEqual(profile.digest, base.digest)
+        self.assertEqual([profile.route(alias).model for alias in profile.document["aliases"]], ["brain-model","writer-model","brain-model","gate-model"])
+        self.assertEqual([base.route(alias).model for alias in base.document["aliases"]], ["brain-model"] * 4)
+        route = profile.route("lares-writer")
+        self.assertEqual((route.litellm_model, route.base, route.key_env, route.path, route.format),
+                         ("anthropic/writer-model","https://provider.example.invalid","LARES_MODEL_PROVIDER_KEY","/v1/messages","anthropic"))
+        openai = Profile(self.extended_document(provider="openai", providerBaseUrl="https://provider.example.invalid/v1")).route("lares-gate")
+        self.assertEqual((openai.litellm_model, openai.path, openai.format), ("openai/gate-model","/chat/completions","openai"))
+        with self.assertRaises(Refused): profile.route("lares-other")
+        with self.assertRaises(TypeError): profile.document["purposeModels"]["lares-writer"] = "changed"
+        for alias, model in (("lares-writer","writer-model"),("lares-utility","brain-model"),("lares-gate","gate-model")):
+            body = {"model":alias,"messages":[{"role":"user","content":"hello"}],"max_tokens":123}
+            self.assertEqual(profile.check_body("/v1/messages", json.dumps(body).encode()), body)
+        expected = profile.expected_config()
+        self.assertEqual([(entry["model_name"], entry["litellm_params"]["model"]) for entry in expected["model_list"]],
+            [("lares-brain","anthropic/brain-model"),("lares-writer","anthropic/writer-model"),("lares-utility","anthropic/brain-model"),("lares-gate","anthropic/gate-model")])
+        profile.validate_config(expected)
+        wrong = json.loads(json.dumps(expected))
+        wrong["model_list"][1]["litellm_params"]["model"] = "anthropic/brain-model"
+        with self.assertRaises(Refused): profile.validate_config(wrong)
+
+    def test_extended_profile_refuses_every_malformed_purpose_model(self):
+        for bad in ({}, [], "writer-model", {"lares-brain":"writer-model"}, {"lares-other":"writer-model"}, {"lares-writer":"brain-model"},
+                    {"lares-writer":7}, {"lares-writer":"bad model"}, {"lares-writer":"openai/other"}, {"lares-writer":""}, None):
+            with self.subTest(bad=bad), self.assertRaises(Refused): Profile(self.extended_document(purposeModels=bad))
+        with self.assertRaises(Refused): Profile(self.extended_document(aliases=["lares-brain","lares-writer","lares-utility","lares-gate","lares-embed"]))
+        with self.assertRaises(Refused): Profile(self.extended_document(embedding={"alias":"lares-embed"}))
 
     def test_profile_accepts_only_bounded_anthropic_eager_tool_streaming(self):
         profile = Profile({"version":1,"provider":"anthropic","model":"claude-sonnet-4-5","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":16384})
@@ -288,7 +328,8 @@ class NativeCallbackTests(unittest.TestCase):
         self.callback_checks = namespace["callback_startup_checks"]
         self.runtime = namespace["Runtime"].__new__(namespace["Runtime"])
         self.runtime.callback_ids = self.runtime.secondary_callback_ids = self.runtime.callback_references = None
-        self.runtime.profile = types.SimpleNamespace(document={"aliases": ["lares-brain"], "provider": "openai", "model": "fixture", "providerBaseUrl": "https://provider.example.invalid/v1"})
+        self.runtime.profile = types.SimpleNamespace(document={"aliases": ["lares-brain"], "provider": "openai", "model": "fixture", "providerBaseUrl": "https://provider.example.invalid/v1"},
+            route=lambda alias: types.SimpleNamespace(litellm_model="openai/fixture", base="https://provider.example.invalid/v1"))
         self.router.model_names, self.router.default_deployment = ["lares-brain"], None
         self.router.get_model_list = lambda **kwargs: [{"litellm_params": {"model": "openai/fixture", "api_base": "https://provider.example.invalid/v1", "num_retries": 0, "max_retries": 0}}]
         self.litellm.callbacks[:] = [self.budget, self.gateway, self.db, self.hook, self.service, self.skills_singleton]
@@ -298,6 +339,18 @@ class NativeCallbackTests(unittest.TestCase):
         self.litellm._async_failure_callback[:] = [self.router.async_deployment_callback_on_failure]
 
     def check(self, startup=False): self.runtime.check_callbacks(self.proxy, startup)
+
+    def test_runtime_check_holds_each_alias_to_its_own_model(self):
+        models = {"lares-brain": "openai/brain-model", "lares-writer": "openai/writer-model"}
+        base = "https://provider.example.invalid/v1"
+        self.runtime.profile = types.SimpleNamespace(document={"aliases": list(models)},
+            route=lambda alias: types.SimpleNamespace(litellm_model=models[alias], base=base))
+        self.router.model_names = list(models)
+        served = dict(models)
+        self.router.get_model_list = lambda model_name: [{"litellm_params": {"model": served[model_name], "api_base": base, "num_retries": 0, "max_retries": 0}}]
+        self.runtime.check_runtime(startup=True)
+        served["lares-writer"] = models["lares-brain"]  # the writer alias quietly routed to the brain's model
+        with self.assertRaises(Refused): self.runtime.check_runtime(startup=True)
 
     def test_pinned_native_objects_and_lazy_primary_promotions_remain_valid(self):
         self.runtime.check_runtime(startup=True)
@@ -1074,7 +1127,8 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
     async def test_deployment_hook_programming_errors_are_not_authored_refusals(self):
         hook=self.namespace["AdmissionHook"]()
         self.runtime.profile.document.update(provider="anthropic",model="fixture",providerBaseUrl="https://provider.invalid/v1")
-        request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture");request.pre_seen=True;request.allow={}
+        self.runtime.profile.route=Profile({"version":1,"provider":"anthropic","model":"fixture","providerBaseUrl":"https://provider.invalid/v1","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":123}).route
+        request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture");request.pre_seen=True;request.allow={};request.alias="lares-brain"
         token=self.request_context.set(request)
         async def broken_client(*args): raise ValueError("fixture")
         async def refused_client(*args): raise Refused()
@@ -1087,6 +1141,31 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError): await hook.async_pre_call_deployment_hook({"model":"fixture","api_base":"https://provider.invalid/v1"},"anthropic_messages")
             self.assertTrue(request._authored_refusal)
         finally: self.request_context.reset(token)
+
+    async def test_deployment_hook_lets_an_alias_reach_only_its_own_model(self):
+        hook=self.namespace["AdmissionHook"]()
+        profile=Profile({"version":1,"provider":"anthropic","model":"brain-model","providerBaseUrl":"https://provider.invalid/v1","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":123,"purposeModels":{"lares-writer":"writer-model"}})
+        self.runtime.profile.document.update(provider="anthropic",model="brain-model",providerBaseUrl="https://provider.invalid/v1")
+        self.runtime.profile.route=profile.route
+        reached=[]
+        async def client(request, provider): reached.append(provider); return "client"
+        self.runtime.client=client
+        for alias,allowed,refused in (("lares-writer","writer-model","brain-model"),("lares-utility","brain-model","writer-model"),("lares-brain","anthropic/brain-model","anthropic/writer-model")):
+            for target,ok in ((allowed,True),(refused,False)):
+                with self.subTest(alias=alias,target=target):
+                    request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture");request.pre_seen=True;request.allow={};request.alias=alias
+                    token=self.request_context.set(request)
+                    reached.clear()
+                    try:
+                        kwargs={"model":target,"api_base":"https://provider.invalid/v1"}
+                        if ok:
+                            self.assertIs(await hook.async_pre_call_deployment_hook(kwargs,"anthropic_messages"),kwargs)
+                            self.assertEqual(reached,["anthropic"])
+                        else:
+                            with self.assertRaises(ValueError): await hook.async_pre_call_deployment_hook(kwargs,"anthropic_messages")
+                            self.assertTrue(request._authored_refusal)
+                            self.assertEqual(reached,[])
+                    finally: self.request_context.reset(token)
 
     async def test_before_http_local_guard_marks_refusal_before_dispatch(self):
         source=ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())

@@ -31,7 +31,11 @@ const keyPolicy=z.object({maxBudget:money,models,budgetDuration:z.literal('1d'),
 const writeAttempt=z.enum(['not-attempted','attempted','verified']);
 // Same bounded capability document and canonical hash as the gateway's Profile. Prices
 // and native caps remain explicit reviewed inputs; neither this schema nor the store defaults them.
-const capability=z.object({version:z.literal(1),provider:z.enum(['openai','anthropic']),model:z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),providerBaseUrl:z.string().max(512).refine(value=>{try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&!u.search&&!u.hash&&!value.endsWith('/');}catch{return false;}}),aliases:models.refine(values=>values.length===4),maxBodyBytes:z.number().int().min(1).max(1_048_576),maxOutputTokens:z.number().int().min(1).max(1_000_000)}).strict();
+const capability=z.object({version:z.literal(1),provider:z.enum(['openai','anthropic']),model:z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),providerBaseUrl:z.string().max(512).refine(value=>{try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&!u.search&&!u.hash&&!value.endsWith('/');}catch{return false;}}),aliases:models.refine(values=>values.length===4),maxBodyBytes:z.number().int().min(1).max(1_048_576),maxOutputTokens:z.number().int().min(1).max(1_000_000),
+  // Optional: a model of its own for the writer, utility or gate alias. Absent means the brain's model serves all four, and the document hashes as it always did.
+  purposeModels:z.record(alias,z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/)).refine(value=>Object.keys(value).length>0).optional()}).strict().superRefine((c,ctx)=>{
+  if(c.purposeModels&&Object.entries(c.purposeModels).some(([a,m])=>!c.aliases.slice(1,4).includes(a)||m===c.model))ctx.addIssue({code:'custom',message:'Purpose model mismatch'});
+});
 export const budgetNativeReviewedPolicySchema=z.object({capability,pricing:gatewayPricingSchema,maximumLiability:money,team:teamPolicy,user:userPolicy,membership:membershipPolicy,key:keyPolicy}).strict().superRefine((p,ctx)=>{
   if(gatewayHash(gatewayCanonical(p.capability))!==p.pricing.capabilityHash||p.pricing.format!==p.capability.provider||p.pricing.limits.outputTokens>p.capability.maxOutputTokens||gatewayMaximumLiability(p.pricing)!==p.maximumLiability||[...p.team.models,...p.membership.allowedModels,...p.key.models].some(a=>!p.capability.aliases.includes(a)))ctx.addIssue({code:'custom',message:'Reviewed policy mismatch'});
 });

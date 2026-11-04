@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { loadKeeperConfig } from "../../keeper/lib/config.js";
 import { main as renderConfigCommand } from "../bin/render-keeper-config.js";
 import { renderKeeperConfig, AGENTS_COMPOSE_FILE } from "../lib/keeper-config.js";
+import { keeperConfigDifferences, parseProvenanceRecord } from "../lib/doctor-parity.js";
 import type { KeeperConfigOptions } from "../lib/keeper-config.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
 
@@ -406,7 +407,7 @@ describe("an installer re-run keeps agent settings set by hand in keeper.json", 
       return { config: JSON.parse(readFileSync(out, "utf8")), stderr: lines.join("") };
     };
     const install = (c: unknown) => writeFileSync(live, JSON.stringify(c));
-    return { render, install, root };
+    return { render, install, root, sidecar: `${out}.rendered` };
   }
   const chief = (c: any) => c.lifecycle.defaultBindings["chief-of-staff"];
 
@@ -476,6 +477,25 @@ describe("an installer re-run keeps agent settings set by hand in keeper.json", 
     expect(chief(config).mounts).toEqual([]);
     r.install(config);
     expect(r.render().config).toEqual(config);
+  });
+
+  it("records what the installer itself rendered, apart from what a re-run carried over, for lares doctor", () => {
+    const r = runner();
+    const first = r.render().config;
+    const record = () => parseProvenanceRecord(readFileSync(r.sidecar, "utf8"))!;
+    expect(record()).not.toBeNull();
+    expect(keeperConfigDifferences(first, record())).toEqual([]);
+    chief(first).environment.VAULT_PATH = "/srv/vault/secret-looking-path";
+    chief(first).mounts.push({ source: "/srv/vault-host", target: "/srv/vault", readOnly: false });
+    r.install(first);
+    const { config: again, stderr } = r.render();
+    expect(stderr).toBe("");
+    expect(chief(again).environment.VAULT_PATH).toBe("/srv/vault/secret-looking-path");
+    expect(keeperConfigDifferences(again, record())).toEqual([
+      "lifecycle.defaultBindings.chief-of-staff.environment.VAULT_PATH",
+      "lifecycle.defaultBindings.chief-of-staff.mounts[0]",
+    ]);
+    expect(readFileSync(r.sidecar, "utf8")).not.toContain("secret-looking-path");
   });
 
   it("does not carry a per-agent bindings group today (reported, not fixed in this change)", () => {

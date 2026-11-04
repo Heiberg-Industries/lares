@@ -162,6 +162,25 @@ def protected_key(path):
     except (OSError, TypeError): raise Refused() from None
 
 
+PROFILE_REQUIRED_KEYS = frozenset(("version", "provider", "model", "aliases", "providerBaseUrl", "maxBodyBytes", "maxOutputTokens"))
+MODEL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,160}\Z")
+# The upstream path and the shape of the provider's usage, per provider. Every chat alias of one
+# profile shares the provider, its address and its key; only the model can differ by alias.
+CHAT_UPSTREAM = {"openai": ("/chat/completions", "openai"), "anthropic": ("/v1/messages", "anthropic")}
+
+
+@dataclass(frozen=True)
+class Route:
+    """Where one served alias really goes. Nothing here is read from a request."""
+    alias: str
+    model: str
+    litellm_model: str
+    base: str
+    key_env: str
+    path: str
+    format: str
+
+
 @dataclass(frozen=True)
 class Profile:
     document: dict
@@ -169,7 +188,8 @@ class Profile:
 
     def __post_init__(self):
         p = self.document
-        if set(p) != {"version", "provider", "model", "aliases", "providerBaseUrl", "maxBodyBytes", "maxOutputTokens"}: raise Refused()
+        # purposeModels is the only optional key: a model of its own for the writer, utility or gate alias.
+        if not PROFILE_REQUIRED_KEYS <= set(p) <= PROFILE_REQUIRED_KEYS | {"purposeModels"}: raise Refused()
         if type(p["version"]) is not int or p["version"] != VERSION or p["provider"] not in ("openai", "anthropic"): raise Refused()
         if not isinstance(p["model"], str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", p["model"]): raise Refused()
         aliases = p["aliases"]
@@ -177,8 +197,23 @@ class Profile:
         for name, maximum in (("maxBodyBytes", 1048576), ("maxOutputTokens", 1000000)):
             if type(p[name]) is not int or not 1 <= p[name] <= maximum: raise Refused()
         https_url(p["providerBaseUrl"])
+        purpose_models = p.get("purposeModels")
+        if "purposeModels" in p:
+            # Absent is the default. Present means at least one alias really differs from the brain model.
+            if type(purpose_models) is not dict or not purpose_models: raise Refused()
+            for alias, own in purpose_models.items():
+                if alias not in aliases[1:4] or type(own) is not str or not MODEL_NAME.fullmatch(own) or own == p["model"]: raise Refused()
         object.__setattr__(self, "digest", hashlib.sha256(canonical(p)).hexdigest())
-        object.__setattr__(self, "document", MappingProxyType({**p, "aliases": tuple(aliases)}))
+        document = {**p, "aliases": tuple(aliases)}
+        if purpose_models is not None: document["purposeModels"] = MappingProxyType(dict(purpose_models))
+        object.__setattr__(self, "document", MappingProxyType(document))
+
+    def route(self, alias):
+        p = self.document
+        if alias not in p["aliases"]: raise Refused()
+        model = p.get("purposeModels", {}).get(alias, p["model"])
+        path, wire = CHAT_UPSTREAM[p["provider"]]
+        return Route(alias, model, p["provider"] + "/" + model, p["providerBaseUrl"], "LARES_MODEL_PROVIDER_KEY", path, wire)
 
     def check_body(self, path, raw):
         p = self.document
@@ -245,7 +280,7 @@ class Profile:
     def expected_config(self):
         p = self.document
         return {
-            "model_list": [{"model_name": alias, "litellm_params": {"model": p["provider"] + "/" + p["model"], "api_key": "os.environ/LARES_MODEL_PROVIDER_KEY", "api_base": p["providerBaseUrl"], "max_retries": 0, "num_retries": 0}} for alias in p["aliases"]],
+            "model_list": [{"model_name": route.alias, "litellm_params": {"model": route.litellm_model, "api_key": "os.environ/" + route.key_env, "api_base": route.base, "max_retries": 0, "num_retries": 0}} for route in map(self.route, p["aliases"])],
             "litellm_settings": {"telemetry": False, "callbacks": ["lares_gateway.gateway_hook"], "disable_aiohttp_transport": True, "drop_params": False, "use_chat_completions_url_for_anthropic_messages": True},
             "router_settings": {"num_retries": 0, "fallbacks": [], "context_window_fallbacks": [], "content_policy_fallbacks": []},
             "general_settings": {"master_key": "os.environ/LARES_GATEWAY_MASTER_KEY", "background_health_checks": False, "disable_auto_add_proxy_admin_to_teams": True},
