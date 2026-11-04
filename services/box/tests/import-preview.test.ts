@@ -548,7 +548,10 @@ describe("PR1a export archive inspection", () => {
       } else {
         const output = String(failure.stdout ?? "");
         const status = typeof failure.status === "number" ? failure.status : 0;
-        script = `#!/bin/bash\nprintf '%s' '${output}'\nexit ${status}\n`;
+        // Read all of stdin first, as the real parser does. A stub that exits without reading lets the
+        // write to its closed pipe fail (EPIPE) while still reporting status 0, a different failure path.
+        // Only bash builtins: PATH holds nothing but this directory.
+        script = `#!/bin/bash\nwhile IFS= read -r line || [ -n "$line" ]; do :; done\nprintf '%s' '${output}'\nexit ${status}\n`;
       }
       if (script) {
         writeFileSync(python, script);
