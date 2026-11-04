@@ -281,8 +281,8 @@ describe("the digest line", () => {
 describe("wiring in the digest pass", () => {
   const src = readFileSync(join(here, "..", "agent", "schedules", "digest.ts"), "utf8");
   it("runs after the Karakeep pull and before the digest, and its notices reach the summary", () => {
-    const karakeep = src.indexOf("await karakeepPass(log)");
-    const clipping = src.indexOf("await clippingStep(log)");
+    const karakeep = src.indexOf("await karakeepPass(log, ports)");
+    const clipping = src.indexOf("await clippingStep(log, ports)");
     const digest = src.indexOf("await runDigest({");
     expect(karakeep).toBeGreaterThan(0);
     expect(clipping).toBeGreaterThan(karakeep);
