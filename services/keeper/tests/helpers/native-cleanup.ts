@@ -18,12 +18,14 @@ export function createNativeTestCustody(directory:string):BudgetNativeCustodySto
 export function openNativeTestCustody(directory:string):BudgetNativeCustodyStore {
   return BudgetNativeCustodyStore.openExisting(directory,{ownershipUid:testJournalUid,ownershipGid:process.getgid!(),lock:platformTestJournalLock});
 }
-export async function addUnboundNativeCredential(store:BudgetNativeCustodyStore,accountId:string,installationAccountId=randomUUID()):Promise<string>{
+/** Prepares one more local credential for an account. A second call for the same account and installation adds a further key for that person. */
+export async function addUnboundNativeCredential(store:BudgetNativeCustodyStore,accountId:string,installationAccountId=randomUUID(),extra:{alias?:string;secret?:string;bindingId?:string}={}):Promise<string>{
   let operationId='';
+  const alias=extra.alias??'lares-brain';
   await store.withGate(async(gate:NativeCustodyGate)=>{
-    const policy=nativeTestPolicy(),team=gate.reserveTeam(installationAccountId,nativeTestTarget,policy),user=gate.reserveUser(accountId,team.ownershipId,policy);
-    const operation=gate.prepareOperation({bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,
-      association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:policy},`sk-${'x'.repeat(43)}`);
+    const policy=alias==='lares-brain'?nativeTestPolicy():nativeTestPolicyFor(alias),team=gate.reserveTeam(installationAccountId,nativeTestTarget,policy),user=gate.reserveUser(accountId,team.ownershipId,policy);
+    const operation=gate.prepareOperation({bindingId:extra.bindingId??randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,
+      association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:alias},reviewedPolicy:policy},extra.secret??`sk-${'x'.repeat(43)}`);
     operationId=operation.operationId;
   });
   return operationId;
