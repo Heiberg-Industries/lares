@@ -495,6 +495,27 @@ installation may still carry it in `/etc/lares/keeper.json` under
 until you save one in the console, but the installer rewrites that file on every run, so set it in
 the console instead.
 
+### Business data and other agent settings
+
+A few chief-of-staff settings are set in the console under **Settings**, one block per area, not by
+editing `/etc/lares/keeper.json`:
+
+| Settings block | What you set |
+| --- | --- |
+| Business data | CRM tracks, commercial brands, authority sender domains (each a short list; the form shows the shape) |
+| CRM | The name of the company field that holds the organisation number |
+| Digest | Whether saved articles are filed `shared` or `private`, and the Slack user or channel the digest goes to |
+| Telegram | Your Telegram bot's username |
+| Console address | The https address where you open the console |
+| Owner time zone | The time zone the agents use for your day (the console itself keeps following the installation setting) |
+
+Only the installation's owner can change them. A value that does not fit is refused with a sentence
+saying why. Saving restarts the agents that read it, as for the meetings database above; an empty
+value cleared on purpose stays cleared. Each value is stored in the installation's database, so
+running the installer again keeps it. A value an older installation carries in `keeper.json`
+(`defaultBindings["chief-of-staff"].environment`) is used until you save one in the console, and
+the page says which of the two you are looking at.
+
 ### Outside tools
 
 Tools the engine does not ship come in as outside tool servers listed in the agent's definition

@@ -1,8 +1,11 @@
 import type { Pool } from "pg";
 import { z } from "zod";
+import { CONSOLE_ENVIRONMENT } from "./agent-environment.js";
 export const SETTING_KEYS = { "models.alias_prefix": z.string().regex(/^[a-z0-9]+$/), "agents.ceiling": z.number().int().nonnegative(), "agents.backup_remote": z.string(), "house.name": z.string(),
   // The Notion database the meeting follow-up schedule reads. "" means "none, on purpose".
-  "notion.meetings_data_source": z.union([z.literal(""), z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)]) } as const;
+  "notion.meetings_data_source": z.union([z.literal(""), z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)]),
+  // The console-settable agent environment values (agent-environment.ts). "" means "none, on purpose".
+  ...Object.fromEntries(CONSOLE_ENVIRONMENT.map(s => [s.setting, z.string().max(2048)])) as Record<string, z.ZodString> } as const;
 function schema(key: string) {
   if (!Object.hasOwn(SETTING_KEYS, key))
     throw new Error("keeper: unknown setting");

@@ -751,3 +751,83 @@ it('reports the stored value, the installation-file fallback and whether the cal
     registerMeetings(vi.fn());
     expect(await runAction('settings.notion_meetings_get', {}, asOwner())).toMatchObject({ value: null, from: 'none' });
 });
+
+const envNow = async (setting: string) => (await pool.query('SELECT value FROM settings WHERE key=$1', [setting])).rows[0]?.value;
+it('the administrator sets a console agent setting, stored in its normal form, and the chiefs of staff are restarted', async () => {
+    await chiefRows('chief-a', 'chief-b', 'writer-a');
+    const applied = vi.fn(async (name: string) => name === 'chief-b' ? 'waiting' : 'restarted');
+    registerMeetings(applied);
+    const result: any = await runAction('settings.agent_environment_set', { key: 'INSTITUTIONAL_SENDER_DOMAINS', value: ' ["@Authority.Example", " ", "register.example"] ' }, asOwner());
+    expect(await envNow('agent_env.institutional_sender_domains')).toBe('["authority.example","register.example"]');
+    expect(applied.mock.calls.map(c => c[0]).sort()).toEqual(['chief-a', 'chief-b']);
+    expect(result).toMatchObject({ key: 'INSTITUTIONAL_SENDER_DOMAINS', restarted: ['chief-a'], waiting: ['chief-b'], stopped: [] });
+    expect((await pool.query("SELECT changed_by FROM settings_audit WHERE key='agent_env.institutional_sender_domains' ORDER BY id DESC LIMIT 1")).rows[0].changed_by).toBe(OWNER);
+    await runAction('settings.agent_environment_set', { key: 'TELEGRAM_BOT_USERNAME', value: '@example_bot' }, asOwner());
+    expect(await envNow('agent_env.telegram_bot_username')).toBe('example_bot');
+    await runAction('settings.agent_environment_set', { key: 'LARES_ARTICLE_AREA', value: 'Private' }, asOwner());
+    expect(await envNow('agent_env.article_area')).toBe('private');
+});
+it.each([
+    ['CRM_BRANDS', 'not json'], ['CRM_BRANDS', '{"id":"X"}'], ['CRM_BRANDS', '[{"description":"no id"}]'], ['CRM_BRANDS', '[{"id":"A"},{"id":"A"}]'], ['CRM_BRANDS', '[{"id":"A","closingSteps":[1]}]'],
+    ['COMMERCIAL_BRANDS', '[]'], ['COMMERCIAL_BRANDS', '[1]'], ['INSTITUTIONAL_SENDER_DOMAINS', '"authority.example"'],
+    ['TWENTY_ORG_NUMBER_FIELD', 'org number'], ['LARES_ARTICLE_AREA', 'everyone'], ['DIGEST_SLACK_TARGET', 'a b'], ['TELEGRAM_BOT_USERNAME', 'bot'],
+    ['LARES_CONSOLE_URL', 'http://console.example.com'], ['LARES_CONSOLE_URL', 'https://u:p@console.example.com'], ['LARES_CONSOLE_URL', 'https://console.example.com/?a=1'], ['OWNER_HOME_TZ', 'Mars/Olympus'],
+    ['CRM_BRANDS', '[{"id":"A","description":"costs $5"}]'],
+])('refuses %s = %s with a sentence, changing and restarting nothing', async (key, value) => {
+    await chiefRows('chief-a');
+    const applied = vi.fn(async () => 'restarted');
+    registerMeetings(applied);
+    await expect(runAction('settings.agent_environment_set', { key, value }, asOwner())).rejects.toThrow(/\.$/);
+    expect((await pool.query("SELECT 1 FROM settings WHERE key LIKE 'agent_env.%'")).rowCount).toBe(0);
+    expect(applied).not.toHaveBeenCalled();
+});
+it('accepts the shapes the agent itself accepts', async () => {
+    await chiefRows('chief-a');
+    registerMeetings(vi.fn(async () => 'restarted'));
+    for (const [key, value, setting, stored] of [
+        ['CRM_BRANDS', '[{"id":"EXAMPLE_BRAND","description":" one line ","closingSteps":["WON"],"extra":1}]', 'agent_env.crm_brands', '[{"id":"EXAMPLE_BRAND","description":"one line","closingSteps":["WON"]}]'],
+        ['COMMERCIAL_BRANDS', '["EXAMPLE_BRAND"]', 'agent_env.commercial_brands', '["EXAMPLE_BRAND"]'],
+        ['TWENTY_ORG_NUMBER_FIELD', 'orgNumber', 'agent_env.twenty_org_number_field', 'orgNumber'],
+        ['DIGEST_SLACK_TARGET', 'U0123ABCD', 'agent_env.digest_slack_target', 'U0123ABCD'],
+        ['LARES_CONSOLE_URL', 'https://console.example.com', 'agent_env.console_url', 'https://console.example.com'],
+        ['OWNER_HOME_TZ', 'Europe/Berlin', 'agent_env.owner_home_tz', 'Europe/Berlin'],
+    ])
+        { await runAction('settings.agent_environment_set', { key, value }, asOwner()); expect(await envNow(setting)).toBe(stored); }
+});
+it('refuses a key that is not on the list, and anyone but the administrator', async () => {
+    await chiefRows('chief-a');
+    const applied = vi.fn(async () => 'restarted');
+    registerMeetings(applied);
+    for (const key of ['KARAKEEP_URL', 'VAULT_PATH', 'GOOGLE_ORG', 'NOTION_MEETINGS_DATA_SOURCE_ID'])
+        await expect(runAction('settings.agent_environment_set', { key, value: 'x' }, asOwner())).rejects.toThrow('cannot be changed in the console');
+    await expect(runAction('settings.agent_environment_set', { key: 'OWNER_HOME_TZ', value: 'Europe/Berlin' }, asOwner('member@example.com'))).rejects.toThrow("Only the installation's owner can change agent settings.");
+    registerMeetings(applied, { administrator: undefined });
+    await expect(runAction('settings.agent_environment_set', { key: 'OWNER_HOME_TZ', value: 'Europe/Berlin' }, asOwner())).rejects.toThrow("Only the installation's owner");
+    expect((await pool.query("SELECT 1 FROM settings WHERE key LIKE 'agent_env.%'")).rowCount).toBe(0);
+    expect(applied).not.toHaveBeenCalled();
+});
+it('an empty value clears a console agent setting on purpose', async () => {
+    await chiefRows('chief-a');
+    registerMeetings(vi.fn(async () => 'restarted'));
+    await runAction('settings.agent_environment_set', { key: 'LARES_ARTICLE_AREA', value: 'shared' }, asOwner());
+    const cleared: any = await runAction('settings.agent_environment_set', { key: 'LARES_ARTICLE_AREA', value: '  ' }, asOwner());
+    expect(await envNow('agent_env.article_area')).toBe('');
+    expect(cleared.value).toBeNull();
+});
+it('lists every console agent setting with its value and where it comes from', async () => {
+    await chiefRows('chief-a');
+    resetActions();
+    registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, backup, ceiling: async () => 2, administrator: OWNER,
+        compose: { ...compose, environmentFallback: (_n: string, key: string) => key === 'OWNER_HOME_TZ' ? 'Europe/Oslo' : undefined } as any,
+        roleInfo: (r) => ({ roleMd: readFileSync(join(repo, 'packages/agent-kit/templates', r, 'role.md'), 'utf8'), deployedTools: deployedToolsFor(join(repo, 'services', r)) }) });
+    await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agent_env.article_area','\"private\"'::jsonb,'seed'),('agent_env.telegram_bot_username','\"\"'::jsonb,'seed')");
+    const view: any = await runAction('settings.agent_environment_get', {}, asOwner());
+    const by = Object.fromEntries(view.settings.map((s: any) => [s.key, s]));
+    expect(view.canChange).toBe(true);
+    expect(Object.keys(by).sort()).toEqual(['COMMERCIAL_BRANDS', 'CRM_BRANDS', 'DIGEST_SLACK_TARGET', 'INSTITUTIONAL_SENDER_DOMAINS', 'LARES_ARTICLE_AREA', 'LARES_CONSOLE_URL', 'OWNER_HOME_TZ', 'TELEGRAM_BOT_USERNAME', 'TWENTY_ORG_NUMBER_FIELD']);
+    expect(by.LARES_ARTICLE_AREA).toMatchObject({ value: 'private', from: 'console', agentCount: 1 });
+    expect(by.TELEGRAM_BOT_USERNAME).toMatchObject({ value: null, from: 'console' });
+    expect(by.OWNER_HOME_TZ).toMatchObject({ value: 'Europe/Oslo', from: 'installation file' });
+    expect(by.CRM_BRANDS).toMatchObject({ value: null, from: 'none' });
+    expect(await runAction('settings.agent_environment_get', {}, asOwner('member@example.com'))).toMatchObject({ canChange: false });
+});

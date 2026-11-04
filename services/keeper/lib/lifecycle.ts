@@ -23,6 +23,7 @@ import { personalGoogleConfig, personalGoogleEnabled } from './personal-google.j
 import { bindingsFor, verifyBindingSources, INTEGRATION_SECRET_FILES, isRetiredRole } from './runtime-bindings.js';
 import { LiteLLMGatewayKeys, gatewayModels, type GatewayKeyProvisioner } from './gateway-keys.js';
 import { readSetting } from './settings.js';
+import { CONSOLE_ENVIRONMENT } from './agent-environment.js';
 import { effectiveGrantedAgents, type CredentialRecord } from './credential-state.js';
 import { requireDefinitionNamespace, withDefinitionNamespace } from './definition-namespace.js';
 import { clearFirstActivation, clearUnknownApplyBaseline, recordAppliedDefinition } from './definition-files.js';
@@ -566,6 +567,25 @@ export class AgentLifecycle {
         else environment.NOTION_MEETINGS_DATA_SOURCE_ID = stored;
         a.bindings = { role: 'chief-of-staff', ...a.bindings, environment, mounts: a.bindings?.mounts ?? [], secrets: a.bindings?.secrets ?? {} };
     }
+    /** The agent settings chosen in the console (agent-environment.ts). Same rule as the meetings
+     * source: a stored value, even an empty one, wins over the installation file. */
+    private async applyConsoleEnvironment(a: AgentContainer): Promise<void> {
+        const environment = { ...(a.bindings?.environment ?? {}) } as Record<string, string>;
+        let changed = false;
+        for (const entry of CONSOLE_ENVIRONMENT) {
+            if (!entry.roles.includes(a.role)) continue;
+            const stored = await readSetting(this.pool, entry.setting);
+            if (typeof stored !== 'string') continue;
+            if (stored === '') delete environment[entry.key];
+            else environment[entry.key] = stored;
+            changed = true;
+        }
+        if (changed) a.bindings = { role: 'chief-of-staff', ...a.bindings, environment, mounts: a.bindings?.mounts ?? [], secrets: a.bindings?.secrets ?? {} };
+    }
+    /** What the installation file alone gives this agent for one console-settable environment key. */
+    environmentFallback(name: string, key: string): string | undefined {
+        return (this.config.bindings?.[name] ?? this.config.defaultBindings?.['chief-of-staff'])?.environment[key as 'TZ'];
+    }
     /** What the installation file alone says about the meetings database (the older way to set it). */
     meetingsSourceFallback(name: string): string | undefined {
         return (this.config.bindings?.[name] ?? this.config.defaultBindings?.['chief-of-staff'])?.environment.NOTION_MEETINGS_DATA_SOURCE_ID;
@@ -589,6 +609,7 @@ export class AgentLifecycle {
     }
     private async connections(a: AgentContainer, apply: boolean): Promise<AgentContainer> {
         await this.applyMeetingsSource(a);
+        await this.applyConsoleEnvironment(a);
         const result=await this.pool.query(`SELECT kind,principal,revision,owner_email,org,mailbox,applied_connection FROM agent_door_connections
           WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL
           ORDER BY claimed_at NULLS LAST,kind`,[a.name,a.incarnation]);

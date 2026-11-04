@@ -7,6 +7,8 @@ import { AgentLimitControl } from "../../components/AgentLimitControl";
 import { getAgentLimitView } from "../../lib/agent-limit";
 import { MeetingsSourceControl } from "../../components/MeetingsSourceControl";
 import { getMeetingsSourceView } from "../../lib/meetings-source";
+import { AgentSettingsSections } from "../../components/AgentSettingsControl";
+import { getAgentSettingsView } from "../../lib/agent-settings";
 import { getGatewayStatusView } from "../../lib/gateway-status";
 import {
   getProactivityView,
@@ -16,7 +18,7 @@ import {
 export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   await requireConsolePage();
-  const [view, gateway, limit, meetings] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView(), getAgentLimitView(), getMeetingsSourceView()]);
+  const [view, gateway, limit, meetings, agentSettings] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView(), getAgentLimitView(), getMeetingsSourceView(), getAgentSettingsView()]);
   const quiet =
     view && !view.errors.length
       ? (rowFor(view.settings, "*", "*")?.effective.quiet ??
@@ -58,6 +60,12 @@ export default async function SettingsPage() {
           <h2 className="lares-section-title">Notion</h2>
           {meetings ? <MeetingsSourceControl view={meetings} /> : <p className="lares-muted">The meetings database setting could not be loaded.</p>}
         </section>
+        {agentSettings ? <AgentSettingsSections settings={agentSettings.settings} canChange={agentSettings.canChange} /> : (
+          <section className="lares-surface">
+            <h2 className="lares-section-title">Agent settings</h2>
+            <p className="lares-muted">The agent settings could not be loaded.</p>
+          </section>
+        )}
         <section className="lares-surface">
           <h2 className="lares-section-title">Appearance</h2>
           <div className="lares-setting-row">

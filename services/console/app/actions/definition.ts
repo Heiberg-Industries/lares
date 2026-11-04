@@ -32,6 +32,10 @@ export interface MeetingsSourceResult { value: string | null; restarted: string[
 export async function setMeetingsSource(input: {dataSource: string}): Promise<DefinitionActionResult<MeetingsSourceResult>> {
   return call('settings.notion_meetings_set', {dataSource: input.dataSource}, await actor(), 90_000);
 }
+export interface AgentSettingsResult { key: string; value: string | null; restarted: string[]; waiting: string[]; stopped: string[] }
+export async function setAgentSetting(input: {key: string; value: string}): Promise<DefinitionActionResult<AgentSettingsResult>> {
+  return call('settings.agent_environment_set', {key: input.key, value: input.value}, await actor(), 90_000);
+}
 export async function retireAgent(input: {name: string}): Promise<DefinitionActionResult<RetirementResult>> {
   return call('definition.retire', input, await actor());
 }
