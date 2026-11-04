@@ -3,7 +3,7 @@ import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, 
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { GuardedVaultFiles, VAULT_AREA_MARKER, VaultFilesDeniedError, VaultFilesUnavailableError, type VaultFilesBackings, type VaultFilesContext } from '../src/vault-files.js';
+import { GuardedVaultFiles, VAULT_AREA_MARKER, stampImportedNote, VaultFilesDeniedError, VaultFilesUnavailableError, type VaultFilesBackings, type VaultFilesContext } from '../src/vault-files.js';
 import { vaultContentRevision, VaultContentChangedError, VaultPushFailedError } from '../src/vault-git.js';
 import { readOriginFrontmatter } from '../src/origin.js';
 import { VaultTracksHome } from '../src/tracks.js';
@@ -259,4 +259,92 @@ describe('exact content mutations and local durability',()=>{
     await Promise.all([child('one.md'),child('two.md')]);
     const commits=git(root,'rev-list','-2','HEAD').trim().split('\n');const changed=commits.map(commit=>git(root,'show','--format=','--name-only',commit).trim());expect(changed.sort()).toEqual(['one.md','two.md']);expect(git(root,'rev-parse','HEAD')).toBe(git(origin,'rev-parse','HEAD'));expect(git(root,'status','--porcelain')).toBe('');
   },15000);
+});
+
+describe('importBatch',()=>{
+  const { areaId, accessRevision, approvedOrigin, authority:auth } = writeBinding('x.md');
+  const importBinding={areaId,accessRevision,approvedOrigin,authority:auth};
+  const note=(i:number)=>({path:`bulk/n${i}.md`,content:`---\ntitle: n${i}\n---\nbody ${i}\n`});
+  const outcomes=(r:{results:{outcome:string}[]})=>r.results.map(x=>x.outcome);
+  it('writes stamped notes in one commit, pushed, tree clean, searchable',async()=>{
+    const result=await api.importBatch(ctx,{binding:importBinding,files:[note(1),note(2)],message:'import: test'});
+    expect(outcomes(result)).toEqual(['written','written']);expect(result.commits).toHaveLength(1);
+    expect(git(origin,'show','HEAD:bulk/n1.md')).toBe('---\nlares_origin: synced\ntitle: n1\n---\nbody 1\n');
+    expect(git(root,'rev-parse','HEAD')).toBe(git(origin,'rev-parse','HEAD'));expect(git(root,'status','--porcelain')).toBe('');
+    expect(git(root,'log','-1','--format=%s').trim()).toBe('import: test');
+    expect((await api.search(ctx,'n2')).hits).toEqual(['bulk/n2.md']);
+  });
+  it('never overwrites an existing file, and a re-run adds nothing',async()=>{
+    seed('bulk/n1.md','owner edited');
+    const first=await api.importBatch(ctx,{binding:importBinding,files:[note(1),note(2)]});
+    expect(outcomes(first)).toEqual(['exists','written']);expect(readFileSync(join(root,'bulk/n1.md'),'utf8')).toBe('owner edited');
+    const head=git(root,'rev-parse','HEAD');const again=await api.importBatch(ctx,{binding:importBinding,files:[note(1),note(2)]});
+    expect(outcomes(again)).toEqual(['exists','exists']);expect(again.commits).toEqual([]);expect(git(root,'rev-parse','HEAD')).toBe(head);
+  });
+  it('commits 600 files as two commits of 500 and 100',async()=>{
+    const files=Array.from({length:600},(_,i)=>note(i));const before=git(root,'rev-list','--count','HEAD').trim();
+    const result=await api.importBatch(ctx,{binding:importBinding,files});
+    expect(result.commits).toHaveLength(2);expect(result.results.filter(r=>r.outcome==='written')).toHaveLength(600);
+    expect(Number(git(root,'rev-list','--count','HEAD').trim())-Number(before)).toBe(2);
+    expect(git(root,'show','--pretty=','--name-only','HEAD').trim().split('\n')).toHaveLength(100);
+    expect(git(root,'rev-parse','HEAD')).toBe(git(origin,'rev-parse','HEAD'));expect(git(root,'status','--porcelain')).toBe('');
+  },60000);
+  it('after a failure in a later chunk, keeps the finished chunks and a re-run completes the rest',async()=>{
+    const counter=join(tmp,'count'),hook=join(root,'.git','hooks','pre-commit');
+    writeFileSync(hook,`#!/bin/sh\nn=$(cat "${counter}" 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > "${counter}"\n[ $n -ge 2 ] && exit 1\nexit 0\n`);chmodSync(hook,0o755);
+    const files=Array.from({length:7},(_,i)=>note(i));
+    await expect(api.importBatch(ctx,{binding:importBinding,files,chunkSize:3})).rejects.toThrow(VaultFilesUnavailableError);
+    expect(git(root,'status','--porcelain')).toBe('');expect(existsSync(join(root,'bulk/n2.md'))).toBe(true);expect(existsSync(join(root,'bulk/n3.md'))).toBe(false);
+    rmSync(hook);const rerun=await api.importBatch(ctx,{binding:importBinding,files,chunkSize:3});
+    expect(outcomes(rerun)).toEqual(['exists','exists','exists','written','written','written','written']);expect(rerun.commits).toHaveLength(2);
+    expect(Number(git(root,'rev-list','--count','HEAD').trim())).toBe(1+1+2);expect(git(root,'status','--porcelain')).toBe('');
+  });
+  it('commits an untracked leftover with identical bytes and refuses a different one',async()=>{
+    const same=note(1),stamped=stampImportedNote(same.path,same.content,'synced');
+    mkdirSync(join(root,'bulk'));writeFileSync(join(root,same.path),stamped);writeFileSync(join(root,'bulk/n2.md'),'someone else');
+    const result=await api.importBatch(ctx,{binding:importBinding,files:[same,note(2)]});
+    expect(outcomes(result)).toEqual(['written','refused']);expect(git(origin,'show','HEAD:bulk/n1.md')).toBe(stamped);
+    expect(readFileSync(join(root,'bulk/n2.md'),'utf8')).toBe('someone else');
+  });
+  it('refuses without a current edit grant or with a stale revision, writing nothing',async()=>{
+    enabled=false;await expect(api.importBatch(ctx,{binding:importBinding,files:[note(1)]})).rejects.toThrow(VaultFilesDeniedError);
+    enabled=true;await expect(api.importBatch({...ctx,expectedRevision:2},{binding:{...importBinding,accessRevision:2},files:[note(1)]})).rejects.toThrow(VaultFilesDeniedError);
+    await expect(api.importBatch(ctx,{binding:{...importBinding,accessRevision:2},files:[note(1)]})).rejects.toThrow(VaultFilesDeniedError);
+    expect(existsSync(join(root,'bulk'))).toBe(false);
+  });
+  it('refuses when other changes are staged',async()=>{
+    writeFileSync(join(root,'other.md'),'someone else');git(root,'add','--','other.md');const head=git(root,'rev-parse','HEAD');
+    await expect(api.importBatch(ctx,{binding:importBinding,files:[note(1)]})).rejects.toThrow(/staged changes/);
+    expect(git(root,'rev-parse','HEAD')).toBe(head);expect(existsSync(join(root,'bulk'))).toBe(false);
+  });
+  it('refuses unsafe paths per file and still imports the rest',async()=>{
+    const outside=join(tmp,'outside');mkdirSync(outside);symlinkSync(outside,join(root,'link'));symlinkSync(join(outside,'x.md'),join(root,'ln.md'));
+    const nested=join(root,'nested-history');execFileSync('git',['init','--quiet',nested]);
+    const result=await api.importBatch(ctx,{binding:importBinding,files:[{path:'link/a.md',content:'a'},{path:'ln.md',content:'a'},{path:'nested-history/a.md',content:'a'},
+      {path:'../up.md',content:'a'},{path:'.hidden/a.md',content:'a'},note(1),note(1)]});
+    expect(outcomes(result)).toEqual(['refused','refused','refused','refused','refused','written','refused']);
+    expect(result.results[1]?.reason).toBe('path not allowed');expect(existsSync(join(outside,'a.md'))).toBe(false);expect(existsSync(join(nested,'a.md'))).toBe(false);
+    expect(git(root,'ls-files').trim().split('\n')).toEqual(['.lares-vault-area.json','bulk/n1.md']);
+  });
+  it('reports a failed push with the durable local commit',async()=>{
+    writeFileSync(join(origin,'hooks','pre-receive'),'#!/bin/sh\nexit 1\n');chmodSync(join(origin,'hooks','pre-receive'),0o755);
+    let failure:unknown;try{await api.importBatch(ctx,{binding:importBinding,files:[note(1)]});}catch(error){failure=error;}
+    expect(failure).toBeInstanceOf(VaultPushFailedError);expect((failure as VaultPushFailedError).commit).toBe(git(root,'rev-parse','--short','HEAD').trim());
+    expect(git(root,'show','HEAD:bulk/n1.md')).toContain('body 1');expect(git(root,'diff','--cached')).toBe('');
+  });
+  it('rejects an invalid chunk size',async()=>{
+    await expect(api.importBatch(ctx,{binding:importBinding,files:[note(1)],chunkSize:0})).rejects.toThrow(VaultFilesDeniedError);
+  });
+});
+
+describe('stampImportedNote',()=>{
+  it('inserts only the stamp line, preserving CRLF, and wraps notes with no front matter',()=>{
+    expect(stampImportedNote('a.md','---\r\ntype: x\r\n# c\r\n---\r\nbody\r\n','synced')).toBe('---\r\ntype: x\r\nlares_origin: synced\r\n# c\r\n---\r\nbody\r\n');
+    expect(stampImportedNote('a.md','plain\n','owner')).toBe('---\nlares_origin: owner\n---\n\nplain\n');
+  });
+  it('keeps a valid existing stamp, replaces an invalid one, and leaves non-markdown alone',()=>{
+    const owned='---\nlares_origin: owner\n---\nx';expect(stampImportedNote('a.md',owned,'synced')).toBe(owned);
+    expect(stampImportedNote('a.md','---\nlares_origin: bogus\n---\nx','synced')).toBe('---\nlares_origin: synced\n---\nx');
+    expect(stampImportedNote('a.pdf','%PDF','synced')).toBe('%PDF');
+  });
 });
