@@ -23,6 +23,7 @@ import { VaultTracksHome, type TrackFileWriter } from '@lares/agent-kit/tracks';
 import { parseVaultNoteInput, vaultNoteFrontmatter, vaultNotePath, vaultNoteTargetFingerprint, VAULT_NOTE_WRITE_POLICY,
   VAULT_NOTE_WRITE_TOOL } from '@lares/agent-kit/vault-note-write';
 import type { OutsideCustodyStore, OutsideToolCallRequest } from './outside-custody.js';
+import { scheduledVault, SCHEDULED_VAULT_DEADLINE_MS } from './scheduled-vault.js';
 import { loadVaultStorageInventory, verifyVaultStorageMetadata } from '@lares/agent-box/lib/vault-storage.js';
 
 const SOCKET='/run/lares/vault-console.sock', CONSOLE_LIMIT=16_384, RUNTIME_LIMIT=256*1024, CHALLENGE_MS=10_000, PENDING_MS=30_000, MAX_LIVE=4096;
@@ -161,7 +162,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
  }
  async function runtimeHandle(line:string,signal:AbortSignal):Promise<Record<string,unknown>>{
   const operation=object(JSON.parse(line)).op;
-  const requestDeadline=Date.now()+(operation==='outside.execute'?8000:1700),transactionDeadline={deadlineAtMs:requestDeadline};
+  const requestDeadline=Date.now()+(operation==='outside.execute'?8000:operation==='vault.scheduled'?SCHEDULED_VAULT_DEADLINE_MS:1700),transactionDeadline={deadlineAtMs:requestDeadline};
   const assertNotAborted=()=>{if(signal.aborted||Date.now()>=requestDeadline)throw new Error('deadline')};assertNotAborted();
   const req=object(JSON.parse(line)),agent=req.agent,incarnation=req.incarnation,requestId=req.requestId,timestamp=req.timestamp,op=req.op,input=object(req.input);
   if(typeof agent!=='string'||!/^[a-z][a-z0-9-]{1,30}$/.test(agent)||typeof incarnation!=='string'||!/^[a-f0-9-]{36}$/.test(incarnation)||typeof requestId!=='string'||!/^[A-Za-z0-9_-]{32,64}$/.test(requestId)||!Number.isSafeInteger(timestamp)||Math.abs(Date.now()-Number(timestamp))>30_000||typeof op!=='string'||typeof req.mac!=='string')throw new Error('identity');
@@ -286,6 +287,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
     assertNotAborted();return {ownerMemberId:ownerId,homes};
    },transactionDeadline);
   }
+  if(op==='vault.scheduled')return await scheduledVault({pool,agent,incarnation,input,deadlineAtMs:requestDeadline,assertNotAborted,testPaths:socketOptions.vaultFilesForTests});
   if(op==='request.admit'){
    const capsule=input.capsule,receipt=object(input.receipt);if(typeof capsule!=='string'||typeof receipt.method!=='string'||typeof receipt.path!=='string'||typeof receipt.rawBodyHash!=='string')throw new Error('receipt');
    const parts=capsule.split('.');if(parts.length!==2||!/^[-_A-Za-z0-9]+$/.test(parts[0]!)||!/^[-_A-Za-z0-9]+$/.test(parts[1]!))throw new Error('capsule');

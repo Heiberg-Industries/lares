@@ -162,9 +162,9 @@ Two further pages are reached from the buttons at the top.
 [Connections, Meetings] Recurring meeting series an agent may send the follow-up e-mail for without
 asking first. Revoking a series does not delete its history; it goes back to needing your approval.
 You switch a series on by asking the agent. Meeting follow-ups read your meeting notes from Notion,
-so they need the `NOTION_MEETINGS_DATA_SOURCE_ID` setting (the id of your Meetings database); with
-it unset the schedule says so each time it runs. It is set in the server's keeper configuration,
-not in the console; see the install guide, "Meeting follow-ups and Notion".
+so they need the id of your Meetings database; with it unset the schedule says so each time it runs. Set it under
+Settings, Notion, Meetings database (owner only; saving restarts the agents that read it); see the
+install guide, "Meeting follow-ups and Notion".
 
 ### Voice (Email writing style)
 
