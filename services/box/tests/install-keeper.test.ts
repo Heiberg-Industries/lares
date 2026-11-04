@@ -14,6 +14,7 @@
 // files written by the REAL lib/keeper-config.ts, and every write lands in a temp --prefix. No
 // Docker, no network, no server.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { keeperConfigDifferences, parseProvenanceRecord } from "../lib/doctor-parity.js";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync, realpathSync,
@@ -191,6 +192,16 @@ describe("the keeper the installer configures and starts", () => {
     expect(config.secretsDir).toBe(join(prefix, "srv", "lares", "secrets"));
     expect(existsSync(join(config.secretsDir, "notion-token"))).toBe(false);
     expect(config.agentsDir).toBe(join(prefix, "srv", "lares", "agents"));
+  });
+
+  it("records next to keeper.json what the installer rendered, for lares doctor, and no leftover", () => {
+    expect(install().code).toBe(0);
+    const record = `${keeperConfigPath()}.rendered`;
+    expect(existsSync(record)).toBe(true);
+    expect(statSync(record).mode & 0o777).toBe(0o600);
+    expect(existsSync(`${keeperConfigPath()}.partial.rendered`)).toBe(false);
+    expect(parseProvenanceRecord(readFileSync(record, "utf8"))).not.toBeNull();
+    expect(keeperConfigDifferences(readKeeperConfig(), parseProvenanceRecord(readFileSync(record, "utf8"))!)).toEqual([]);
   });
 
   it("leaves the keeper's configuration readable by root alone", () => {
