@@ -22,8 +22,8 @@ import { fileURLToPath } from "node:url";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
 import { assertDatabaseAuthDirectory, renderStackCompose } from "../lib/stack-compose.js";
 import { validateMaintenanceAdmissionIdentity } from "./render-keeper-config.js";
-import { renderGatewayConfig, gatewayAdmissionProfile } from "../lib/gateway-config.js";
-import { preparedGatewayBinding } from "../lib/gateway-authority.js";
+import { renderGatewayConfig, gatewayAdmissionProfile, gatewayOptionsFromSettings, type GatewayConfigOptions } from "../lib/gateway-config.js";
+import { assertReviewedPolicyMatchesProfile, parseGatewayModelSettings, preparedGatewayBinding } from "../lib/gateway-authority.js";
 
 /** The arguments, in order. Positional on purpose: install.sh passes paths it built itself, and
  *  a flag parser here would be one more place for the two to disagree about a name. `alias` and
@@ -86,6 +86,25 @@ function optionalConfiguredRegularFile(path: string): string | null {
   }
 }
 
+/** The gateway this render is for: the alias and model it was given, plus any model of its own that
+ *  installation.env names for the writer, utility or gate purpose. installation.env sits beside the
+ *  gateway config file (the same pattern keeper.json is found by). It is optional here, and absent means
+ *  no purpose models. When it names the alias or model, they must be the ones this call was given, so
+ *  a purpose model can never be paired with a different brain model than the installer read. */
+export function gatewayOptionsFor(gatewayConfigFile: string, alias: string, providerModel: string): GatewayConfigOptions {
+  const file = join(dirname(gatewayConfigFile), "installation.env");
+  let text: string;
+  try { text = readFileSync(file, "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return gatewayOptionsFromSettings({ LARES_MODEL_ALIAS: alias, LARES_MODEL: providerModel });
+    throw new Error("installation.env could not be read, so the gateway's models cannot be checked.");
+  }
+  const settings = parseGatewayModelSettings(text);
+  if ((settings.LARES_MODEL_ALIAS ?? alias) !== alias || (settings.LARES_MODEL ?? providerModel) !== providerModel)
+    throw new Error("The model and alias given to render-stack do not match installation.env, so nothing was rendered.");
+  return gatewayOptionsFromSettings({ ...settings, LARES_MODEL_ALIAS: alias, LARES_MODEL: providerModel });
+}
+
 const HELP_TEXT = [
   `pnpm -C services/box render-stack ${ARGUMENTS.map((a) => `<${a}>`).join(" ")}`,
   "",
@@ -137,6 +156,11 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   }
   const calendarFile = join(at("installationDir"), "deadline-calendar.json");
   const gatewayBinding = preparedGatewayBinding(join(dirname(at("gatewayConfigFile")), "keeper.json"), at("domain"));
+  const gatewayOptions = gatewayOptionsFor(at("gatewayConfigFile"), at("alias"), at("providerModel"));
+  const gatewayProfile = gatewayAdmissionProfile(gatewayOptions);
+  // Once budget setup has priced the gateway, the spending policy was reviewed against one exact profile.
+  // A render that changes the gateway's models would leave every model call refused with no explanation.
+  if (gatewayBinding) assertReviewedPolicyMatchesProfile(gatewayBinding.policyFile, gatewayProfile);
   const text = renderStackCompose(manifest, {
     secretsDir: at("secretsDir"),
     consoleVaultSigningKeyFile: optionalRegularFile(join(at("secretsDir"), "console-vault-signing-key")),
@@ -180,10 +204,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   // provider key is an `os.environ/…` REFERENCE, never a value (see lib/gateway-config.ts).
   const gatewayConfigFile = at("gatewayConfigFile");
   const gatewayConfigTmp = `${gatewayConfigFile}.partial`;
-  const gatewayConfigText = renderGatewayConfig({
-    alias: at("alias"),
-    providerModel: at("providerModel"),
-  });
+  const gatewayConfigText = renderGatewayConfig(gatewayOptions);
   rmSync(gatewayConfigTmp, { force: true });
   writeFileSync(gatewayConfigTmp, gatewayConfigText, { mode: 0o644 });
   renameSync(gatewayConfigTmp, gatewayConfigFile);
@@ -193,7 +214,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   // is the one that should guarantee its mode — this one is also runnable by hand.
   chmodSync(gatewayConfigFile, 0o644);
   const profilePath = `${gatewayConfigFile}.profile.json`;
-  writeFileSync(`${profilePath}.partial`, JSON.stringify(gatewayAdmissionProfile({alias: at("alias"), providerModel: at("providerModel")})), {mode: 0o644});
+  writeFileSync(`${profilePath}.partial`, JSON.stringify(gatewayProfile), {mode: 0o644});
   renameSync(`${profilePath}.partial`, profilePath);
   chmodSync(profilePath, 0o644);
 
