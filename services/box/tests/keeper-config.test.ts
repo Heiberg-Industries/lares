@@ -98,6 +98,19 @@ function loadAsKeeperWould(config: unknown) {
   return loadKeeperConfig(file);
 }
 
+describe("the optional Notion sync service", () => {
+  it("takes its image from the release's sync-jobs digest and its own compose file, and loads as the keeper would", () => {
+    const withSync: ReleaseManifest = { ...MANIFEST, images: { ...MANIFEST.images, "sync-jobs": D("sync-jobs") } };
+    const config = renderKeeperConfig(withSync, OPTS);
+    expect(config.lifecycle!.services).toEqual({ composeFile: "/srv/lares/compose.lares-services.yaml", notionSyncImage: D("sync-jobs") });
+    expect(loadAsKeeperWould(config).lifecycle!.services!.notionSyncImage).toBe(D("sync-jobs"));
+    expect(config.files).toEqual([AGENTS_COMPOSE_FILE]);
+  });
+  it("offers nothing when the release names no sync-jobs image, and never invents one", () => {
+    expect(renderKeeperConfig(MANIFEST, OPTS).lifecycle!.services).toBeUndefined();
+  });
+});
+
 describe("fresh install settings", () => {
   it("writes the public door origin the keeper reads", () => {
     const config = renderKeeperConfig(MANIFEST, OPTS);

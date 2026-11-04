@@ -24,7 +24,7 @@ class Store implements CredentialStore {
 }
 const actor = { actor: 'admin@example.invalid', audit: async () => {} };
 const host = { ...actor, host: true };
-const consumers = [{ name: 'example-one', category: 'owned-agent' as const, incarnation: randomUUID() }, { name: 'example-two', category: 'owned-agent' as const, incarnation: randomUUID() }];
+const consumers: CredentialRecord['consumers'] = [{ name: 'example-one', category: 'owned-agent' as const, incarnation: randomUUID() }, { name: 'example-two', category: 'owned-agent' as const, incarnation: randomUUID() }];
 const inventoryRevision = 'a'.repeat(64);
 let dir: string, files: CredentialFiles, store: Store, credentials: Credentials, runtime: CredentialRuntime;
 let running: Map<string, string | null>, events: string[], oldRevision: string;
@@ -300,4 +300,33 @@ it('a deleted agent does not block Disconnect, and revoke of a stale grant still
   await expect(runAction('credential.revoke', grantInput({ agent: 'deleted-one', expectedActiveRevision: randomUUID() }), actor)).rejects.toThrow('revision changed');
   expect(store.record.grants).toEqual(staleGrant);
   expect(await runAction('credential.disconnect', input(), actor)).toMatchObject({ state: 'disconnected' });
+});
+it('stops, restarts and verifies a managed service together with the agents, and leaves it off when the key is disconnected', async () => {
+  const managed = { name: 'notion-sync', category: 'managed-service' as const, incarnation: null };
+  consumers.push(managed);
+  try {
+    store.record = { ...store.record, consumers: [...consumers] };
+    const steps: string[] = [];
+    runtime.quiesceService = vi.fn(async name => { steps.push(`stop:${name}`); });
+    runtime.reconcileService = vi.fn(async (_name, revision) => { steps.push(`start:${revision}`); expect(store.record.effectiveRevision).toBe(revision); });
+    runtime.verifyService = vi.fn(async (_name, revision) => { steps.push(`verify:${revision}`); });
+    await stage(); const candidate = store.record.candidateRevision;
+    expect(await runAction('credential.apply', input(), actor)).toMatchObject({ state: 'applied', activeRevision: candidate, activation: [{ state: 'complete' }, { state: 'complete' }, { state: 'complete' }] });
+    expect(steps[0]).toBe('stop:notion-sync');
+    expect(steps).toContain(`start:${candidate}`);
+    expect(steps.filter(s => s.startsWith('verify:')).every(s => s === `verify:${candidate}`)).toBe(true);
+    steps.length = 0;
+    expect(await runAction('credential.disconnect', input(), actor)).toMatchObject({ state: 'disconnected' });
+    expect(steps).toContain('start:null');
+    expect(steps.filter(s => s.startsWith('verify:')).every(s => s === 'verify:null')).toBe(true);
+  } finally { consumers.pop(); }
+});
+it('refuses a managed service when the runtime has no way to restart it', async () => {
+  consumers.push({ name: 'notion-sync', category: 'managed-service' as const, incarnation: null });
+  try {
+    store.record = { ...store.record, consumers: [...consumers] };
+    await stage();
+    await expect(runAction('credential.apply', input(), actor)).rejects.toThrow();
+    expect(files.readActive()).toBe('old-synthetic');
+  } finally { consumers.pop(); }
 });

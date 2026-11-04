@@ -54,6 +54,8 @@ export interface DefinitionStorage {
 }
 export interface DefinitionOptions {
     namespaceGuard?(): Promise<void>;
+    /** Called after the meetings source changes: the Notion sync's configuration (and so its accepted preview) depends on it. */
+    syncChanged?(actor: string): Promise<void>;
     pool: Pool;
     agentsDir: string;
     retiredDir: string;
@@ -488,6 +490,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             if (value === null)
                 refused('That is not a Notion data source id. It is 32 letters and digits, with or without dashes.');
             await writeSetting(o.pool, MEETINGS_KEY, value, ctx.actor);
+            await o.syncChanged?.(ctx.actor);
             const restarted: string[] = [], waiting: string[] = [], stopped: string[] = [];
             for (const name of await chiefNames()) {
                 const outcome = await o.compose.applyInstallationSettings?.(name) ?? 'waiting';

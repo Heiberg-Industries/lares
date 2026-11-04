@@ -2341,7 +2341,7 @@ function formatAge(ms: number): string {
  */
 export type OneShotMode =
   | "reconcile" | "fidelity-record" | "enable-two-way" | "resolve" | "archive-excluded"
-  | "adoption-report" | "transcripts" | "notion-born" | "people" | "auto-two-way" | "approve" | "reject";
+  | "adoption-report" | "transcripts" | "notion-born" | "people" | "auto-two-way" | "approve" | "reject" | "preview";
 
 export interface OneShotArgs {
   /** `--once`: run a single tick. Mutually exclusive with every mode below. */
@@ -2455,11 +2455,12 @@ export function parseOneShotArgs(argv: string[]): OneShotArgs {
   const knownBooleanFlags = new Set([
     "--once", "--dry-run", "--no-dry-run", "--reconcile", "--fidelity-record",
     "--archive-excluded", "--adoption-report", "--transcripts", "--notion-born", "--people", "--auto-two-way",
+    "--preview",
   ]);
   const validOneShots =
     "--approve <path>, --reject <path>, --resolve <path> --keep md|notion, --enable-two-way <dir>, " +
     "--reconcile, --fidelity-record, --archive-excluded, --adoption-report, --transcripts, " +
-    "--notion-born, --people, --auto-two-way, or --once";
+    "--notion-born, --people, --auto-two-way, --preview, or --once";
   for (let i = 0; i < argv.length; i++) {
     if (consumed.has(i) || knownBooleanFlags.has(argv[i])) continue;
     const token = argv[i];
@@ -2491,6 +2492,7 @@ export function parseOneShotArgs(argv: string[]): OneShotArgs {
     ...(argv.includes("--notion-born") ? [["notion-born", "--notion-born"] as [OneShotMode, string]] : []),
     ...(argv.includes("--people") ? [["people", "--people"] as [OneShotMode, string]] : []),
     ...(argv.includes("--auto-two-way") ? [["auto-two-way", "--auto-two-way"] as [OneShotMode, string]] : []),
+    ...(argv.includes("--preview") ? [["preview", "--preview"] as [OneShotMode, string]] : []),
     ...(enableAt === -1 ? [] : [["enable-two-way", "--enable-two-way"] as [OneShotMode, string]]),
     ...(resolveAt === -1 ? [] : [["resolve", "--resolve"] as [OneShotMode, string]]),
     ...(approveAt === -1 ? [] : [["approve", "--approve"] as [OneShotMode, string]]),
