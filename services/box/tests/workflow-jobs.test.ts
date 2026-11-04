@@ -9,23 +9,31 @@ let db: Pool;
 beforeAll(async () => { tdb = await startTestDb(); db = tdb.pool; }, 120_000);
 afterAll(async () => { await tdb?.stop(); });
 
+// createJob stamps due_at with the database clock, so "due now" must be asked with the database
+// clock too. The test process's new Date() can sit behind it and call a fresh job "not due yet".
+async function dbNow(): Promise<Date> {
+  const { rows: [row] } = await db.query<{ now: Date }>("SELECT clock_timestamp() AS now");
+  return new Date(row!.now.getTime() + 1);
+}
+
 describe("workflow-jobs: create/get/due/claim", () => {
   it("creates a job that is immediately due and pending", async () => {
     const job = await createJob(db, { agent: "agent-d", workflowType: "two-step", state: { a: 0 } });
     expect(job.status).toBe("pending");
     expect(job.stepIndex).toBe(0);
     expect(job.state).toEqual({ a: 0 });
-    const due = await dueJobs(db, new Date(), "agent-d");
+    const due = await dueJobs(db, await dbNow(), "agent-d");
     expect(due.map((j) => j.id)).toContain(job.id);
   });
 
   it("dueJobs only returns the given agent's jobs (no cross-agent claiming)", async () => {
     const mine = await createJob(db, { agent: "agent-e", workflowType: "market-survey" });
     const theirs = await createJob(db, { agent: "agent-d", workflowType: "agent-d-outreach" });
-    const otherAgentDue = (await dueJobs(db, new Date(), "agent-e")).map((j) => j.id);
+    const now = await dbNow();
+    const otherAgentDue = (await dueJobs(db, now, "agent-e")).map((j) => j.id);
     expect(otherAgentDue).toContain(mine.id);
     expect(otherAgentDue).not.toContain(theirs.id);
-    const ownAgentDue = (await dueJobs(db, new Date(), "agent-d")).map((j) => j.id);
+    const ownAgentDue = (await dueJobs(db, now, "agent-d")).map((j) => j.id);
     expect(ownAgentDue).toContain(theirs.id);
     expect(ownAgentDue).not.toContain(mine.id);
   });

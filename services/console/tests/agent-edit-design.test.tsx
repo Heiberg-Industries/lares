@@ -46,8 +46,8 @@ it('after a save that could not be confirmed, offers a reload at the top and sto
  const reload=await screen.findByRole('button',{name:'Reload this agent’s current state'});
  expect(order(reload,screen.getByRole('heading',{name:'Who it is'}))).toBe(true);
  expect(screen.getByRole('alert').textContent).toMatch(/could not be confirmed/);
- const leaving=new Event('beforeunload',{cancelable:true});window.dispatchEvent(leaving);
- expect(leaving.defaultPrevented).toBe(false);
+ // The listener is detached by a passive effect that can run just after the reload button appears.
+ await waitFor(()=>{const leaving=new Event('beforeunload',{cancelable:true});window.dispatchEvent(leaving);expect(leaving.defaultPrevented).toBe(false);});
  fireEvent.click(screen.getByText('Open the permissions board'));
  await waitFor(()=>expect(screen.queryByText('Leave unsaved changes?')).toBeNull());
 });
