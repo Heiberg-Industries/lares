@@ -27,7 +27,7 @@ import { vaultWriteBindingSchema } from '@lares/agent-kit/authority-contract';
 import { serializeFrontmatter } from '@lares/agent-kit/vault-git';
 import {
   SCHEDULED_VAULT_LIST_DEFAULT, SCHEDULED_VAULT_LIST_MAX, SCHEDULED_VAULT_MAX_BODY_BYTES, isScheduledVaultSchedule,
-  scheduledMessageOk, scheduledPathAllowed, scheduledPrefixAllowed, scheduledVaultRule, type ScheduledVaultOperation,
+  scheduledMessageOk, scheduledPathAllowed, scheduledPrefixAllowed, scheduledVaultRule, scheduledVerbatimRefusal, type ScheduledVaultOperation,
 } from '@lares/agent-kit/scheduled-vault-policy';
 import { loadVaultStorageInventory, verifyVaultStorageMetadata } from '@lares/agent-box/lib/vault-storage.js';
 
@@ -40,7 +40,7 @@ import { loadVaultStorageInventory, verifyVaultStorageMetadata } from '@lares/ag
  */
 export const SCHEDULED_VAULT_DEADLINE_MS = 8000;
 
-const OPERATIONS: readonly string[] = ['list', 'read', 'write', 'move', 'remove'];
+const OPERATIONS: readonly string[] = ['list', 'read', 'write', 'write-verbatim', 'move', 'remove'];
 const refuse = (reason: string): never => { throw new Error(reason); };
 const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
 
@@ -74,11 +74,16 @@ export async function scheduledVault(c: ScheduledVaultContext): Promise<Record<s
           x === null || x === undefined || typeof x === "boolean" || typeof x === "number" || (typeof x === "string" && !/[\r\n\x00-\x1f\x7f\u0085\u2028\u2029]/.test(x)))) ||
         typeof input.body !== 'string' || bytes(input.body) > SCHEDULED_VAULT_MAX_BODY_BYTES ||
         (input.message !== undefined && !scheduledMessageOk(input.message))) refuse('write');
+  } else if (op === 'write-verbatim') {
+    // The keeper judges the file itself (path, text, size, and the one origin it may carry); nothing is trusted from the caller.
+    const why = scheduledVerbatimRefusal(rule, path, input.content);
+    if (why) refuse(why);
+    if (input.message !== undefined && !scheduledMessageOk(input.message)) refuse('The commit message must be one short line.');
   } else if (op === 'move') {
     if (!scheduledPathAllowed(rule, 'read', path) || !scheduledPathAllowed(rule, 'remove', path) ||
         !scheduledPathAllowed(rule, 'write', destination) || destination === path) refuse('move');
   } else if (!scheduledPathAllowed(rule, 'remove', path)) refuse('path');
-  const mutating = op === 'write' || op === 'move' || op === 'remove';
+  const mutating = op === 'write' || op === 'write-verbatim' || op === 'move' || op === 'remove';
 
   return await authorityTransaction(c.pool, async (db) => {
     await db.query("SELECT set_config('statement_timeout','1000ms',true)");
@@ -139,6 +144,15 @@ export async function scheduledVault(c: ScheduledVaultContext): Promise<Record<s
       if (before && before.content === `${serializeFrontmatter({ ...frontmatter, lares_origin: 'agent' })}\n\n${body}`) return { path, unchanged: true };
       assertNotAborted();
       const written = await files.write(ctx, { binding: bind(path as string, before?.contentRevision ?? null), frontmatter, body, message: input.message as string | undefined });
+      assertNotAborted(); return { path, commit: written.commit };
+    }
+    if (op === 'write-verbatim') {
+      const before = await current(path as string), content = input.content as string;
+      // The same file again is a no-op, not an empty commit.
+      if (before && before.content === content) return { path, unchanged: true };
+      assertNotAborted();
+      const binding = vaultWriteBindingSchema.parse({ ...bind(path as string, before?.contentRevision ?? null), approvedOrigin: rule.verbatimOrigin });
+      const written = await files.writeVerbatim(ctx, { binding, content, message: input.message as string | undefined });
       assertNotAborted(); return { path, commit: written.commit };
     }
     if (op === 'move') {
