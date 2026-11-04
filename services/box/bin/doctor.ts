@@ -17,6 +17,8 @@ import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import type { Pool } from "pg";
 import { operatorPoolFromFile, poolFromEnv } from "../lib/db.js";
+import { parseReleaseManifest } from "../lib/release-manifest.js";
+import { parseProvenanceRecord, type ContainerRow, type ParityInput } from "../lib/doctor-parity.js";
 import { runDoctor, doctorReport, doctorExitCode, testModel as probeModel, type ModelTestDeps } from "../lib/doctor.js";
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "sql");
@@ -51,9 +53,17 @@ export interface ParsedDoctorArgs {
   gatewayUrl: string | undefined;
   alias: string | undefined;
   keyFile: string | undefined;
+  releaseFile: string | undefined;
+  containersFile: string | undefined;
+  keeperConfigFile: string | undefined;
+  keeperRenderedFile: string | undefined;
+  laresProjects: string[];
 }
 
-const VALUE_FLAGS = new Set(["--gateway", "--alias", "--key-file", "--installed-settings-file", "--ledger-password-file"]);
+const VALUE_FLAGS = new Set([
+  "--gateway", "--alias", "--key-file", "--installed-settings-file", "--ledger-password-file",
+  "--release-file", "--containers-file", "--keeper-config-file", "--keeper-rendered-file", "--lares-project",
+]);
 
 /** Refuses an unknown flag rather than silently ignoring it. `--gateway`/`--alias`/`--key-file`
  *  each consume the argument that follows them. */
@@ -66,6 +76,11 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   let gatewayUrl: string | undefined;
   let alias: string | undefined;
   let keyFile: string | undefined;
+  let releaseFile: string | undefined;
+  let containersFile: string | undefined;
+  let keeperConfigFile: string | undefined;
+  let keeperRenderedFile: string | undefined;
+  const laresProjects: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -81,6 +96,11 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
       else if (arg === "--alias") alias = value;
       else if (arg === "--key-file") keyFile = value;
       else if (arg === "--ledger-password-file") ledgerPasswordFile = value;
+      else if (arg === "--release-file") releaseFile = value;
+      else if (arg === "--containers-file") containersFile = value;
+      else if (arg === "--keeper-config-file") keeperConfigFile = value;
+      else if (arg === "--keeper-rendered-file") keeperRenderedFile = value;
+      else if (arg === "--lares-project") laresProjects.push(value);
       else installedSettingsFile = value;
       i++;
     } else {
@@ -91,7 +111,68 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   }
 
   if (modelOnly && !testModel) throw new Error("doctor: --model-only requires --test-model.");
-  return { help, testModel, modelOnly, installedSettingsFile, ledgerPasswordFile, gatewayUrl, alias, keyFile };
+  return {
+    help, testModel, modelOnly, installedSettingsFile, ledgerPasswordFile, gatewayUrl, alias, keyFile,
+    releaseFile, containersFile, keeperConfigFile, keeperRenderedFile, laresProjects,
+  };
+}
+
+function readJson(path: string | undefined): unknown | undefined {
+  if (path === undefined) return undefined;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reads the files the host side of `lares doctor` handed over. A part that is missing or
+ *  unreadable becomes null, and the parity check says it could not look. Runs only on an
+ *  installed server, which is the one that passes `--release-file`. */
+export function readParityInput(args: ParsedDoctorArgs): ParityInput | undefined {
+  if (args.releaseFile === undefined) return undefined;
+  let release: ParityInput["release"] = null;
+  try {
+    release = parseReleaseManifest(readFileSync(args.releaseFile, "utf8"));
+  } catch {
+    release = null;
+  }
+  let containers: ContainerRow[] | null = null;
+  if (args.containersFile !== undefined) {
+    try {
+      const rows: ContainerRow[] = [];
+      for (const line of readFileSync(args.containersFile, "utf8").split(/\r?\n/)) {
+        if (line.trim() === "") continue;
+        const row = JSON.parse(line) as Partial<ContainerRow>;
+        rows.push({
+          name: String(row.name ?? "").replace(/^\//, ""),
+          project: String(row.project ?? ""),
+          service: String(row.service ?? ""),
+          image: String(row.image ?? ""),
+        });
+      }
+      containers = rows;
+    } catch {
+      containers = null;
+    }
+  }
+  const keeperConfig = readJson(args.keeperConfigFile);
+  let rendered: ParityInput["rendered"] = null;
+  if (args.keeperRenderedFile !== undefined) {
+    try {
+      rendered = parseProvenanceRecord(readFileSync(args.keeperRenderedFile, "utf8"));
+    } catch {
+      rendered = null;
+    }
+  }
+  return {
+    release,
+    containers,
+    projects: args.laresProjects,
+    keeperConfig,
+    keeperConfigPresent: keeperConfig !== undefined,
+    rendered,
+  };
 }
 
 /** Read one value from install.sh's data-only installation.env format. Never evaluate it as
@@ -198,6 +279,7 @@ export async function main(
     sqlDir: SQL_DIR,
     now: new Date(),
     testModel,
+    parity: readParityInput(args),
   }).finally(() => ledger?.end());
   deps.out(doctorReport(results));
   return doctorExitCode(results);

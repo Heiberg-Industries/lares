@@ -25,8 +25,11 @@ async function request<T>(op:string,input:unknown,timeoutMs:number):Promise<T>{
  });
 }
 
-export async function vaultBrokerRequest<T>(op:string,input:unknown):Promise<T>{return request<T>(op,input,2000)}
-/** Trusted server caller only. Coordinates come from the authenticated session, never tool input.
+/** `timeoutMs` defaults to the 2 s every read and approved write is held to. Only an operation that
+ * makes a commit with nobody waiting (a scheduled Vault write) asks for more. Keeper's own deadline
+ * for it is shorter than this, so keeper answers or refuses before the client gives up. */
+export async function vaultBrokerRequest<T>(op:string,input:unknown,timeoutMs=2000):Promise<T>{return request<T>(op,input,timeoutMs)}
+export const SCHEDULED_VAULT_TIMEOUT_MS=10_000;/** Trusted server caller only. Coordinates come from the authenticated session, never tool input.
  * Keeper issues a dedicated one-use capability from the exact approved ask and rechecks it at execution.
  * This is an explicit execution seam, not an Eve MCP execution override. */
 export async function executeApprovedOutsideCall<T>(turn:{outsideCapability:string;sessionId:string;memberId:string;admissionNonce:string},

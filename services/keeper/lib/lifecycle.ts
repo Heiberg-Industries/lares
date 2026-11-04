@@ -555,7 +555,40 @@ export class AgentLifecycle {
             console.error(`keeper: could not check which agents to start at startup (${(error as Error).message}); start them with: sudo lares agent start <name>`);
         }
     }
+    /** The Notion meetings database chosen in the console. A stored value (even an empty one, "none on
+     * purpose") wins over the installation file; with no stored value the file's value stays. */
+    private async applyMeetingsSource(a: AgentContainer): Promise<void> {
+        if (a.role !== 'chief-of-staff') return;
+        const stored = await readSetting(this.pool, 'notion.meetings_data_source');
+        if (typeof stored !== 'string') return;
+        const environment = { ...(a.bindings?.environment ?? {}) };
+        if (stored === '') delete environment.NOTION_MEETINGS_DATA_SOURCE_ID;
+        else environment.NOTION_MEETINGS_DATA_SOURCE_ID = stored;
+        a.bindings = { role: 'chief-of-staff', ...a.bindings, environment, mounts: a.bindings?.mounts ?? [], secrets: a.bindings?.secrets ?? {} };
+    }
+    /** What the installation file alone says about the meetings database (the older way to set it). */
+    meetingsSourceFallback(name: string): string | undefined {
+        return (this.config.bindings?.[name] ?? this.config.defaultBindings?.['chief-of-staff'])?.environment.NOTION_MEETINGS_DATA_SOURCE_ID;
+    }
+    /** Restarts one ready, fully applied agent so that a changed installation-wide setting reaches it.
+     * An agent with other changes waiting is left alone (restarting it would apply those too); a
+     * stopped one just picks the setting up on its next start. */
+    async applyInstallationSettings(name: string): Promise<'restarted' | 'waiting' | 'stopped'> {
+        const row = await this.storage.row(name);
+        if (!runtimeControlled(row) || row.state !== 'ready' || row.pending || !row.applied_definition) return 'waiting';
+        if (this.nativeGuarded && (await this.currentNative(name)).state !== 'active') return 'waiting';
+        const plan = await this.plan();
+        const definitionFiles = await this.definitionFiles(name);
+        await this.publishCompose();
+        if ((await this.imageState(name)) === 'stopped') return 'stopped';
+        await this.docker.stop(name);
+        await this.apply(plan);
+        const result = await this.startWithCurrentAuthority(name, String(row.address).split('/')[0]);
+        await this.recordSuccessfulDefinitionStart(name, definitionFiles, result);
+        return 'restarted';
+    }
     private async connections(a: AgentContainer, apply: boolean): Promise<AgentContainer> {
+        await this.applyMeetingsSource(a);
         const result=await this.pool.query(`SELECT kind,principal,revision,owner_email,org,mailbox,applied_connection FROM agent_door_connections
           WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL
           ORDER BY claimed_at NULLS LAST,kind`,[a.name,a.incarnation]);

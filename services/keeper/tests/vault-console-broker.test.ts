@@ -28,7 +28,7 @@ const ids = vi.hoisted(() => ({
   organisation: 'broker-org', member: 'broker-owner', area: '11111111-1111-4111-8111-111111111111',
   sharedArea: '44444444-4444-4444-8444-444444444444',
   backing: '22222222-2222-4222-8222-222222222222', readGate: undefined as (() => Promise<void>) | undefined, reads: 0, clock: Date.now(),
-  inventory: undefined as any, trackFiles: new Map<string, { content: string; contentRevision: string }>(), writes: 0, useRealFiles: false, outsideDispatch: vi.fn(), outsideTools: vi.fn(), outsideApprove:vi.fn(),
+  inventory: undefined as any, trackFiles: new Map<string, { content: string; contentRevision: string }>(), writes: 0, lastBinding: undefined as any, useRealFiles: false, outsideDispatch: vi.fn(), outsideTools: vi.fn(), outsideApprove:vi.fn(),
 }));
 vi.mock('@lares/agent-box/lib/vault-storage.js', () => ({
   loadVaultStorageInventory: () => ids.inventory,
@@ -44,15 +44,19 @@ vi.mock('@lares/agent-kit/vault-files', async (importOriginal) => {
     async list(...args: Parameters<InstanceType<typeof actual.GuardedVaultFiles>['list']>) { if (this.delegate) return this.delegate.list(...args); return { paths: ['owner.md', ...ids.trackFiles.keys()], files: 1 + ids.trackFiles.size }; }
     async read(_ctx: unknown, path = 'owner.md', ...rest: unknown[]) { if (this.delegate) return (this.delegate as any).read(_ctx, path, ...rest); ids.reads++; await ids.readGate?.();
       const track = ids.trackFiles.get(path); if (track) return { path, content: track.content, lines: track.content.split('\n').length, contentRevision: track.contentRevision, companion: null };
-      if (path.startsWith('tracks/')) throw new NoteNotFoundError(path);
+      if (/^(tracks|_meta|_inbox)\//.test(path)) throw new NoteNotFoundError(path);
       return { path, content: 'private note content', lines: 1, contentRevision: 'fixture', companion: null };
     }
+    async listUnder(ctx: unknown, dir: string) { if (this.delegate) return (this.delegate as any).listUnder(ctx, dir); const prefix = dir.replace(/\/+$/, '') + '/'; const paths = [...ids.trackFiles.keys()].filter(p => p.startsWith(prefix)); return { paths, files: paths.length }; }
+    async remove(ctx: unknown, input: { binding: { relativePath: string } }, ...rest: unknown[]) { if (this.delegate) return (this.delegate as any).remove(ctx, input, ...rest); ids.lastBinding = input.binding; ids.trackFiles.delete(input.binding.relativePath); return { commit: 'removed' }; }
     async write(_ctx: unknown, input: { binding: { relativePath: string; expectedContentRevision: string | null }; frontmatter: Record<string, unknown>; body: string }, ...rest: unknown[]) {
       if (this.delegate) return (this.delegate as any).write(_ctx, input, ...rest);
       const prior = ids.trackFiles.get(input.binding.relativePath);
       if ((prior?.contentRevision ?? null) !== input.binding.expectedContentRevision) throw new Error('stale fixture content');
+      ids.lastBinding = input.binding;
       const fields = Object.entries(input.frontmatter).map(([key, value]) => `${key}: ${Array.isArray(value) ? `[${value.join(', ')}]` : value}`).join('\n');
       ids.trackFiles.set(input.binding.relativePath, { content: `---\n${fields}\n---\n${input.body}`, contentRevision: `revision-${++ids.writes}` });
+      return { commit: `commit-${ids.writes}` };
     }
   } };
 });
@@ -777,4 +781,155 @@ it.each(['pending','issued'])('does not revive an %s approval after absent -> ne
  else await expect(runtime('outside.execute',{...f.binding,...approved,call:f.call})).rejects.toThrow();
  expect(ids.outsideDispatch).not.toHaveBeenCalled();
  if(stage==='pending')expect(ids.outsideApprove).not.toHaveBeenCalled();
+});
+
+// ── vault.scheduled: scheduled jobs reading and saving notes without a person or a card ──
+const rev = (c: string) => c.repeat(64);
+const sched = (schedule: string, operation: string, extra: Record<string, unknown> = {}) =>
+  runtime('vault.scheduled', { schedule, operation, area: 'private', ...extra });
+const dreamNote = { path: '_meta/dream/2026-11-01.md', frontmatter: { at: '2026-11-01T03:00:00.000Z', cursor: '2026-11-01T03:00:00.000Z', promoted: 2, added: ['a', 'b'], all_rejected: false }, body: 'Nothing to learn.', message: 'learning: 2026-11-01' };
+const setVaultGrant = async (change: Record<string, unknown>, autonomy?: string) => {
+  roleDefinition = definitionSchema.parse({ ...roleDefinition, ...(autonomy ? { autonomy: { ...roleDefinition.autonomy, vault: autonomy } } : {}),
+    grants: roleDefinition.grants.map(grant => grant.capability === 'vault' ? { ...grant, ...change } : grant) });
+  await pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb WHERE name=$1', [agent, JSON.stringify(roleDefinition)]);
+};
+function signedFrame(op: string, input: unknown) {
+  const body = { agent, incarnation, requestId: randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '').slice(0, 8), timestamp: Date.now(), op, input };
+  return JSON.stringify({ ...body, mac: createHmac('sha256', Buffer.from(runtimeKey, 'hex')).update(JSON.stringify(body)).digest('base64url') }) + '\n';
+}
+const sendFrame = (frame: string) => new Promise<any>((resolve, reject) => {
+  const socket = createConnection(process.env.LARES_VAULT_RUNTIME_SOCKET!); let data = '';
+  socket.once('error', reject); socket.once('connect', () => socket.write(frame));
+  socket.on('data', chunk => { data += chunk.toString(); if (data.includes('\n')) { socket.destroy(); resolve(JSON.parse(data)); } });
+});
+
+it('a scheduled write saves a dated note as an agent-origin note under a job authority, and does not touch the approval ledger', async () => {
+  const saved = await sched('dream', 'write', dreamNote);
+  expect(saved.commit).toMatch(/^commit-/);
+  expect(ids.lastBinding).toMatchObject({ relativePath: '_meta/dream/2026-11-01.md', expectedContentRevision: null, approvedOrigin: 'agent',
+    authority: { origin: 'job', jobId: 'dream', actingMemberId: ids.member, spokenByMemberId: null, agentId: agent } });
+  expect(ids.lastBinding.authority.runId).toMatch(/^[0-9a-f-]{36}$/);
+  expect(ids.trackFiles.get('_meta/dream/2026-11-01.md')?.content).toContain('cursor: 2026-11-01T03:00:00.000Z');
+  expect((await pool.query('SELECT count(*)::int AS n FROM approval_asks')).rows[0].n).toBe(0);
+  // The owner comes from the agent's access record: a request naming someone else changes nothing.
+  await sched('dream', 'write', { ...dreamNote, ownerMemberId: 'someone-else', path: '_meta/dream/2026-11-02.md' });
+  expect(ids.lastBinding.authority.actingMemberId).toBe(ids.member);
+});
+
+it('a scheduled list pages in order, with a cursor, and a read returns the note', async () => {
+  for (const n of ['a', 'b', 'c']) ids.trackFiles.set(`_inbox/clip-${n}.md`, { content: `---\nurl: https://example.com/${n}\n---\n\nbody ${n}`, contentRevision: rev(n) });
+  ids.trackFiles.set('_inbox/clip-x.md', { content: 'x', contentRevision: rev('x') });
+  const first = await sched('clipping-requests', 'list', { prefix: '_inbox/', limit: 2 });
+  expect(first).toMatchObject({ paths: ['_inbox/clip-a.md', '_inbox/clip-b.md'], nextCursor: '_inbox/clip-b.md' });
+  const second = await sched('clipping-requests', 'list', { prefix: '_inbox/', limit: 2, cursor: first.nextCursor });
+  expect(second.paths).toEqual(['_inbox/clip-c.md', '_inbox/clip-x.md']);
+  expect(second.nextCursor).toBeUndefined();
+  expect(await sched('clipping-requests', 'read', { path: '_inbox/clip-a.md' })).toMatchObject({ found: true, content: expect.stringContaining('body a'), contentRevision: rev('a') });
+  expect(await sched('clipping-requests', 'read', { path: '_inbox/clip-a.md', probe: true })).toEqual({ ok: true, found: true, contentRevision: rev('a') });
+  expect(await sched('clipping-requests', 'read', { path: '_inbox/clip-missing.md' })).toEqual({ ok: true, found: false });
+});
+
+it('a scheduled remove deletes one clip under the current revision, and a missing clip is not an error; a move needs a free destination', async () => {
+  ids.trackFiles.set('_inbox/clip-a.md', { content: 'a', contentRevision: rev('a') });
+  expect(await sched('clipping-requests', 'remove', { path: '_inbox/clip-a.md' })).toMatchObject({ removed: true });
+  expect(ids.lastBinding).toMatchObject({ relativePath: '_inbox/clip-a.md', expectedContentRevision: rev('a'), authority: { origin: 'job', jobId: 'clipping-requests' } });
+  expect(ids.trackFiles.has('_inbox/clip-a.md')).toBe(false);
+  expect(await sched('clipping-requests', 'remove', { path: '_inbox/clip-a.md' })).toMatchObject({ removed: false });
+  ids.trackFiles.set('_inbox/clip-b.md', { content: 'b', contentRevision: rev('b') });
+  await expect(sched('clipping-requests', 'move', { path: '_inbox/clip-b.md', destination: '_inbox/clip-b.md' })).rejects.toThrow('Vault reader unavailable');
+  ids.trackFiles.set('_inbox/clip-c.md', { content: 'c', contentRevision: rev('c') });
+  await expect(sched('clipping-requests', 'move', { path: '_inbox/clip-b.md', destination: '_inbox/clip-c.md' })).rejects.toThrow('Vault reader unavailable');
+});
+
+it('a scheduled operation is refused outside the schedule policy, and nothing is written', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  await refused(sched('digest', 'list', { prefix: '_inbox/' }));                                                // not on the allowlist
+  await refused(sched('weekly-summary', 'write', dreamNote));                                                   // unknown schedule
+  await refused(sched('dream', 'write', { ...dreamNote, path: 'notes/loose.md' }));                             // path outside the schedule
+  await refused(sched('dream', 'write', { ...dreamNote, path: '_meta/dream/../../secret.md' }));               // traversal
+  await refused(sched('dream', 'write', { ...dreamNote, path: '_meta/dream/.hidden.md' }));
+  await refused(sched('dream', 'remove', { path: '_meta/dream/2026-11-01.md' }));                               // dream never removes
+  await refused(sched('dream', 'list', { prefix: '_inbox/' }));                                                  // a prefix of another schedule
+  await refused(sched('dream', 'list', { prefix: '' }));
+  await refused(sched('clipping-requests', 'write', { ...dreamNote, path: '_inbox/sub/x.md' }));
+  await refused(sched('clipping-requests', 'read', { path: '_meta/dream/2026-11-01.md' }));
+  await refused(sched('clipping-requests', 'write', { path: '_inbox/clip-a.md', frontmatter: { 'bad key': 'x' }, body: 'x' }));
+  await refused(sched('clipping-requests', 'write', { path: '_inbox/clip-a.md', frontmatter: { a: { nested: true } }, body: 'x' }));
+  await refused(sched('clipping-requests', 'write', { path: '_inbox/clip-a.md', frontmatter: {}, body: 'x', message: 'two\nlines' }));
+  await refused(sched('clipping-requests', 'write', { path: '_inbox/clip-a.md', frontmatter: {}, body: 'x'.repeat(193 * 1024) }));  // over one frame
+  await refused(runtime('vault.scheduled', { schedule: 'dream', operation: 'write', area: 'shared', ...dreamNote }));      // wrong area
+  await refused(runtime('vault.scheduled', { schedule: 'dream', operation: 'write', area: 'place', ...dreamNote }));
+  await refused(sched('dream', 'copy', dreamNote));
+  expect(ids.writes).toBe(0);
+});
+
+it('a scheduled write needs the agent\'s own write grant on the area: read-only, never, another area, none or no vault grant all refuse', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  await setVaultGrant({ scope: 'read' });
+  await refused(sched('dream', 'write', dreamNote));
+  await refused(sched('clipping-requests', 'remove', { path: '_inbox/clip-a.md' }));
+  ids.trackFiles.set('_inbox/clip-a.md', { content: 'a', contentRevision: rev('a') });
+  expect(await sched('clipping-requests', 'read', { path: '_inbox/clip-a.md' })).toMatchObject({ found: true });   // a read grant still reads
+  await setVaultGrant({ scope: 'write' }, 'never');
+  await refused(sched('dream', 'write', dreamNote));
+  await refused(sched('clipping-requests', 'read', { path: '_inbox/clip-a.md' }));
+  await setVaultGrant({ scope: 'write', areas: ['shared', 'facts'] }, 'gated');
+  await refused(sched('dream', 'write', dreamNote));
+  await setVaultGrant({ scope: 'none', areas: ['private'] });
+  await refused(sched('dream', 'write', dreamNote));
+  roleDefinition = definitionSchema.parse({ ...roleDefinition, grants: roleDefinition.grants.filter(grant => grant.capability !== 'vault') });
+  await pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb WHERE name=$1', [agent, JSON.stringify(roleDefinition)]);
+  await refused(sched('dream', 'write', dreamNote));
+  expect(ids.writes).toBe(0);
+});
+
+it('a scheduled operation is refused for a stale incarnation, a removed owner, an invalid definition and a member policy that withdrew the capability', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  await pool.query("UPDATE agent_resources SET ownership_token='55555555-5555-4555-8555-555555555555' WHERE name=$1", [agent]);
+  await refused(sched('dream', 'write', dreamNote));
+  await pool.query('UPDATE agent_resources SET ownership_token=$2::uuid WHERE name=$1', [agent, incarnation]);
+  await pool.query("UPDATE users SET status='removed' WHERE id=$1", [ids.member]);
+  await refused(sched('dream', 'write', dreamNote));
+  await pool.query("UPDATE users SET status='active' WHERE id=$1", [ids.member]);
+  await pool.query("UPDATE agent_definitions SET status='invalid' WHERE name=$1", [agent]);
+  await refused(sched('dream', 'write', dreamNote));
+  await pool.query("UPDATE agent_definitions SET status='valid' WHERE name=$1", [agent]);
+  // The owner's member policy no longer allows the capability: nothing can be written.
+  await pool.query("UPDATE org_member_policy SET allowed_capabilities=ARRAY[]::text[] WHERE user_id=$1", [ids.member]);
+  await refused(sched('dream', 'write', dreamNote));
+  expect(ids.writes).toBe(0);
+});
+
+it('a replayed scheduled request is refused the second time and writes once', async () => {
+  const frame = signedFrame('vault.scheduled', { schedule: 'dream', operation: 'write', area: 'private', ...dreamNote });
+  expect(await sendFrame(frame)).toMatchObject({ ok: true, commit: expect.any(String) });
+  expect(await sendFrame(frame)).toEqual({ ok: false });
+  expect(ids.writes).toBe(1);
+});
+
+it('with the real writer a scheduled note reaches the private area under _meta/, is listed there, is not repeated, and a commit fits the deadline (measured)', async () => {
+  await realAreasAndTurn();
+  const privateRoot = join(root, 'vault-files', `vault/private/${ids.area}`), origin = join(root, 'vault-origins', `${ids.area}.git`);
+  const started = performance.now();
+  const saved = await sched('dream', 'write', dreamNote);
+  const writeMs = performance.now() - started;
+  console.log(`vault.scheduled real commit + push to the bare origin: ${writeMs.toFixed(0)} ms (keeper deadline 8000 ms)`);
+  expect(writeMs).toBeLessThan(4000);
+  const content = readFileSync(join(privateRoot, '_meta/dream/2026-11-01.md'), 'utf8');
+  expect(content).toContain('lares_origin: agent'); expect(content).toContain('added: ["a","b"]'); expect(content).toContain('Nothing to learn.');
+  expect(execFileSync('git', ['-C', origin, 'log', '-1', '--format=%H%n%s'], { encoding: 'utf8' })).toMatch(new RegExp(`^${saved.commit}[0-9a-f]*\nlearning: 2026-11-01`));
+  // The normal listing hides _meta/; naming the folder finds it, so the cursor can be resolved.
+  expect(await sched('dream', 'list', { prefix: '_meta/dream/' })).toMatchObject({ paths: ['_meta/dream/2026-11-01.md'] });
+  expect(await sched('dream', 'list', { prefix: '_meta/conversations/' })).toMatchObject({ paths: [] });
+  expect(await sched('dream', 'read', { path: '_meta/dream/2026-11-01.md' })).toMatchObject({ found: true, content });
+  expect(await sched('dream', 'write', dreamNote)).toMatchObject({ path: '_meta/dream/2026-11-01.md', unchanged: true });
+  // A clip is replaced under its current revision, then removed.
+  const clip = { path: '_inbox/clip-s1-p1.md', frontmatter: { url: 'https://example.com/a', title: 'A' }, body: 'one' };
+  await sched('clipping-requests', 'write', clip);
+  await sched('clipping-requests', 'write', { ...clip, body: 'two' });
+  expect(readFileSync(join(privateRoot, clip.path), 'utf8')).toContain('two');
+  const removeStarted = performance.now();
+  expect(await sched('clipping-requests', 'remove', { path: clip.path })).toMatchObject({ removed: true });
+  console.log(`vault.scheduled real remove: ${(performance.now() - removeStarted).toFixed(0)} ms`);
+  expect(() => readFileSync(join(privateRoot, clip.path))).toThrow();
 });

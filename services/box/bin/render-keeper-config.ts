@@ -9,7 +9,10 @@
 // cannot resolve to the `.ts` file next to it — so this goes through the box's own tsx, exactly
 // as `migrate`, `first-owner`, `doctor` and `render-stack` already do.
 //
-// IT WRITES TWO FILES, NOT STDOUT, so nothing a wrapper prints can end up inside either.
+// IT WRITES THREE FILES, NOT STDOUT, so nothing a wrapper prints can end up inside any of them.
+//   0. <outFile>.rendered — a hash per setting the installer itself rendered, taken BEFORE the
+//      hand-set agent settings of an earlier keeper.json are carried over. `lares doctor` diffs
+//      keeper.json against it to find settings nobody but a person wrote. Hashes only, no values.
 //   1. keeper.json — read by the keeper container at startup (loadKeeperConfig).
 //   2. a compose env file — every `${…:?}` variable compose.lares-keeper.yaml names. Two of
 //      them (the keeper's and the squid's images) can only come from the release file, which is
@@ -28,6 +31,9 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest, imageFor } from "../lib/release-manifest.js";
 import { renderKeeperConfig } from "../lib/keeper-config.js";
+import { provenanceRecord } from "../lib/doctor-parity.js";
+import { DEADLINE_CALENDAR_IN_CONTAINER } from "../lib/stack-compose.js";
+import { runtimeBindingsSchema } from "../../keeper/lib/runtime-bindings.js";
 import type { KeeperConfig } from "../../keeper/lib/config.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
 
@@ -259,6 +265,9 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
     ...(previous.schedulesLive !== undefined ? { previousSchedulesLive: previous.schedulesLive } : {}),
     ...(deadlineCalendarFile ? { deadlineCalendarFile } : {}),
   });
+  // What the installer itself decided, recorded before anything carried from the old file is added.
+  const rendered = provenanceRecord(config);
+  carryHandSetBindings(config, previous.defaultBindings);
   if (previous.microsoft !== undefined) config.lifecycle!.runtime.microsoft = previous.microsoft;
   if (previous.google !== undefined) config.lifecycle!.runtime.google = previous.google;
   if (gatewayAuthority && (config.gatewayBudget?.serviceKeyFile !== gatewayAuthority.serviceKeyFile ||
@@ -282,6 +291,8 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
   // install.sh sets `umask 077`, so a wider mode asked for here would silently not happen. This file names every path this installation keeps a secret at, and
   // the only process that reads it is the keeper container, which compose.lares-keeper.yaml
   // runs as `user: '0:0'`. Nothing but root has any use for it, so nothing but root gets it.
+  writeFileSync(`${at("outFile")}.rendered`, `${JSON.stringify(rendered, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(`${at("outFile")}.rendered`, 0o600);
   writeFileSync(at("outFile"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   chmodSync(at("outFile"), 0o600);
 
@@ -292,6 +303,42 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
   writeFileSync(at("envOutFile"), env, { mode: 0o640 });
   chmodSync(at("envOutFile"), 0o640);
   return 0;
+}
+
+/** Environment keys and mount targets the installer decides on every run. A previous value for
+ *  one of these is never carried: the installer's new value (or its absence) wins. */
+const INSTALLER_ENVIRONMENT_KEYS = new Set(["OWNER_HOME_TZ", "DEADLINE_CALENDAR_FILE"]);
+const INSTALLER_MOUNT_TARGETS = new Set([DEADLINE_CALENDAR_IN_CONTAINER]);
+
+/** Keeps the environment values and mounts an owner set by hand in the previous keeper.json's
+ *  default bindings, so a re-run does not wipe them. Only what still passes the keeper's own
+ *  binding check is kept; anything else is dropped with one line naming the key (never the
+ *  value). Secrets, owner and role are never read from the previous file. */
+function carryHandSetBindings(config: KeeperConfig, previous: PreviousBindings | undefined): void {
+  const defaults = config.lifecycle?.defaultBindings;
+  if (!defaults || !previous) return;
+  for (const role of Object.keys(defaults) as (keyof typeof defaults)[]) {
+    const target = defaults[role];
+    const old = previous[role];
+    if (!target || !old) continue;
+    const accepts = (candidate: typeof target) => runtimeBindingsSchema.safeParse(candidate).success;
+    const mounts = [...target.mounts];
+    for (const mount of Array.isArray(old.mounts) ? old.mounts : []) {
+      const mountTarget = (mount as { target?: unknown } | null)?.target;
+      if (typeof mountTarget === "string" && INSTALLER_MOUNT_TARGETS.has(mountTarget)) continue;
+      const candidate = { ...target, mounts: [...mounts, mount as (typeof mounts)[number]] };
+      if (accepts(candidate)) mounts.push(mount as (typeof mounts)[number]);
+      else process.stderr.write(`Dropped a previous ${role} mount (${typeof mountTarget === "string" ? mountTarget : "unreadable"}) from keeper.json: it no longer passes the keeper's checks.\n`);
+    }
+    target.mounts = mounts;
+    for (const [key, value] of Object.entries(old.environment ?? {})) {
+      if (INSTALLER_ENVIRONMENT_KEYS.has(key)) continue;
+      const candidate = { ...target, environment: { ...target.environment, [key]: value as string } };
+      const parsed = typeof value === "string" ? runtimeBindingsSchema.safeParse(candidate) : undefined;
+      if (parsed?.success && key in parsed.data.environment) target.environment = candidate.environment;
+      else process.stderr.write(`Dropped the previous ${role} setting ${key} from keeper.json: it no longer passes the keeper's checks.\n`);
+    }
+  }
 }
 
 function isLink(path: string): boolean {
@@ -316,7 +363,9 @@ function optionalModelPurposeKey(path: string): string | null {
 
 /** What the keeper.json already on this host holds that the installer does not decide: the
  *  provider blocks (configured separately) and the schedules switch (the owner may have chosen). */
-function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean; budgetFinancial?:KeeperConfig["budgetFinancial"]; budgetNative?:KeeperConfig["budgetNative"]; gatewayBudget?:KeeperConfig["gatewayBudget"]; outsideCustody?:KeeperConfig['outsideCustody']; outsideRouteConsumer?:NonNullable<KeeperConfig['lifecycle']>['egress']['legacyConsumers'][number] } {
+type PreviousBindings = Record<string, { environment?: Record<string, unknown>; mounts?: unknown[] } | undefined>;
+
+function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean; budgetFinancial?:KeeperConfig["budgetFinancial"]; budgetNative?:KeeperConfig["budgetNative"]; gatewayBudget?:KeeperConfig["gatewayBudget"]; outsideCustody?:KeeperConfig['outsideCustody']; outsideRouteConsumer?:NonNullable<KeeperConfig['lifecycle']>['egress']['legacyConsumers'][number]; defaultBindings?: PreviousBindings } {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -349,6 +398,8 @@ function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: Keeper
     throw new Error(`${path} has native custody without a financial custody binding. Nothing was written; restore the matching binding or use operator recovery before running the installer again.`);
   const runtime = (parsed as { lifecycle?: { runtime?: { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: unknown } } } | null)
     ?.lifecycle?.runtime;
+  const rawBindings = (parsed as { lifecycle?: { defaultBindings?: unknown } } | null)?.lifecycle?.defaultBindings;
+  const previousBindings = rawBindings && typeof rawBindings === "object" && !Array.isArray(rawBindings) ? rawBindings as PreviousBindings : undefined;
   return {
     ...(budgetFinancial?{budgetFinancial}:{}),
     ...(budgetNative?{budgetNative}:{}),
@@ -356,6 +407,7 @@ function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: Keeper
     ...(outsideCustody?{outsideCustody,outsideRouteConsumer:outsideMatches[0]}:{}),
     ...(runtime?.microsoft ? { microsoft: runtime.microsoft } : {}),
     ...(runtime?.google ? { google: runtime.google } : {}),
+    ...(previousBindings ? { defaultBindings: previousBindings } : {}),
     ...(typeof runtime?.schedulesLive === "boolean" ? { schedulesLive: runtime.schedulesLive } : {}),
   };
 }

@@ -20,6 +20,7 @@ import {
   ClippingFailure, STEP_BUDGET_MS, classifyNotionError, withBudget,
   type ClippingOutcome, type KeyState, type NotionLike,
 } from "./notion-reader.js";
+import type { ScheduledVault } from "../scheduled-vault.js";
 import { loadNotionSources, recordSourceState, type Counts, type Queryable, type SourceRow } from "./store.js";
 import { runClippingSync, type InboxPort } from "./sync.js";
 
@@ -56,6 +57,29 @@ export function makeVaultInbox(vaultRoot: string): InboxPort {
     exists: (rel) => existsSync(resolveInStore(rel, vaultRoot)),
     write: (rel, body) => writeRawNote({ vaultRoot, relPath: rel, bytes: Buffer.from(body, "utf8") }),
     remove: async (rel) => { rmSync(resolveInStore(rel, vaultRoot), { force: true }); },
+  };
+}
+
+/**
+ * The same inbox for an install with no Vault folder: each call goes through keeper (one commit per
+ * write). A keeper refusal or outage becomes the pass's plain "could not save" failure, never a
+ * quiet "not there" that would mark a waiting clip as filed.
+ */
+export function makeKeeperInbox(vault: ScheduledVault): InboxPort {
+  const guard = async <T>(run: () => Promise<T>): Promise<T> => {
+    try { return await run(); }
+    catch (e) {
+      if (e instanceof ClippingFailure) throw e;
+      throw new ClippingFailure(
+        "local-error", "Lares could not reach its Vault to save clippings.",
+        "Check that the agent may write to its private notes, and that the keeper is running.", e,
+      );
+    }
+  };
+  return {
+    exists: (rel) => guard(() => vault.exists(rel)),
+    write: async (rel, body) => { await guard(() => vault.writeRaw(rel, body, `clip: ${rel}`)); },
+    remove: async (rel) => { await guard(() => vault.remove(rel)); },
   };
 }
 
