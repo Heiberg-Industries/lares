@@ -44,18 +44,25 @@ vi.mock('@lares/agent-kit/vault-files', async (importOriginal) => {
     async list(...args: Parameters<InstanceType<typeof actual.GuardedVaultFiles>['list']>) { if (this.delegate) return this.delegate.list(...args); return { paths: ['owner.md', ...ids.trackFiles.keys()], files: 1 + ids.trackFiles.size }; }
     async read(_ctx: unknown, path = 'owner.md', ...rest: unknown[]) { if (this.delegate) return (this.delegate as any).read(_ctx, path, ...rest); ids.reads++; await ids.readGate?.();
       const track = ids.trackFiles.get(path); if (track) return { path, content: track.content, lines: track.content.split('\n').length, contentRevision: track.contentRevision, companion: null };
-      if (/^(tracks|_meta|_inbox)\//.test(path)) throw new NoteNotFoundError(path);
+      if (/^(tracks|_meta|_inbox|reads|inspiration|writing-seeds)\/|\/transcripts\//.test(path)) throw new NoteNotFoundError(path);
       return { path, content: 'private note content', lines: 1, contentRevision: 'fixture', companion: null };
     }
     async listUnder(ctx: unknown, dir: string) { if (this.delegate) return (this.delegate as any).listUnder(ctx, dir); const prefix = dir.replace(/\/+$/, '') + '/'; const paths = [...ids.trackFiles.keys()].filter(p => p.startsWith(prefix)); return { paths, files: paths.length }; }
     async remove(ctx: unknown, input: { binding: { relativePath: string } }, ...rest: unknown[]) { if (this.delegate) return (this.delegate as any).remove(ctx, input, ...rest); ids.lastBinding = input.binding; ids.trackFiles.delete(input.binding.relativePath); return { commit: 'removed' }; }
+    async move(ctx: unknown, input: { binding: { relativePath: string }; destination: string }, ...rest: unknown[]) {
+      if (this.delegate) return (this.delegate as any).move(ctx, input, ...rest);
+      const from = ids.trackFiles.get(input.binding.relativePath); if (!from) throw new NoteNotFoundError(input.binding.relativePath);
+      ids.lastBinding = input.binding; ids.trackFiles.delete(input.binding.relativePath);
+      ids.trackFiles.set(input.destination, { content: from.content, contentRevision: String(++ids.writes).padStart(64, '0') });
+      return { commit: `moved-${ids.writes}` };
+    }
     async write(_ctx: unknown, input: { binding: { relativePath: string; expectedContentRevision: string | null }; frontmatter: Record<string, unknown>; body: string }, ...rest: unknown[]) {
       if (this.delegate) return (this.delegate as any).write(_ctx, input, ...rest);
       const prior = ids.trackFiles.get(input.binding.relativePath);
       if ((prior?.contentRevision ?? null) !== input.binding.expectedContentRevision) throw new Error('stale fixture content');
       ids.lastBinding = input.binding;
       const fields = Object.entries(input.frontmatter).map(([key, value]) => `${key}: ${Array.isArray(value) ? `[${value.join(', ')}]` : value}`).join('\n');
-      ids.trackFiles.set(input.binding.relativePath, { content: `---\n${fields}\n---\n${input.body}`, contentRevision: `revision-${++ids.writes}` });
+      ids.trackFiles.set(input.binding.relativePath, { content: `---\n${fields}\n---\n${input.body}`, contentRevision: String(++ids.writes).padStart(64, '0') });
       return { commit: `commit-${ids.writes}` };
     }
   } };
@@ -843,14 +850,15 @@ it('a scheduled remove deletes one clip under the current revision, and a missin
 
 it('a scheduled operation is refused outside the schedule policy, and nothing is written', async () => {
   const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
-  await refused(sched('digest', 'list', { prefix: '_inbox/' }));                                                // not on the allowlist
+  await refused(sched('briefing', 'list', { prefix: '_inbox/' }));                                              // not on the allowlist
   await refused(sched('weekly-summary', 'write', dreamNote));                                                   // unknown schedule
   await refused(sched('dream', 'write', { ...dreamNote, path: 'notes/loose.md' }));                             // path outside the schedule
   await refused(sched('dream', 'write', { ...dreamNote, path: '_meta/dream/../../secret.md' }));               // traversal
   await refused(sched('dream', 'write', { ...dreamNote, path: '_meta/dream/.hidden.md' }));
   await refused(sched('dream', 'remove', { path: '_meta/dream/2026-11-01.md' }));                               // dream never removes
   await refused(sched('dream', 'list', { prefix: '_inbox/' }));                                                  // a prefix of another schedule
-  await refused(sched('dream', 'list', { prefix: '' }));
+  await refused(sched('dream', 'list', { prefix: '' }));                                                         // only the digest may name the whole area
+  await refused(sched('clipping-requests', 'list', { prefix: '' }));
   await refused(sched('clipping-requests', 'write', { ...dreamNote, path: '_inbox/sub/x.md' }));
   await refused(sched('clipping-requests', 'read', { path: '_meta/dream/2026-11-01.md' }));
   await refused(sched('clipping-requests', 'write', { path: '_inbox/clip-a.md', frontmatter: { 'bad key': 'x' }, body: 'x' }));
@@ -898,6 +906,93 @@ it('a scheduled operation is refused for a stale incarnation, a removed owner, a
   await pool.query("UPDATE org_member_policy SET allowed_capabilities=ARRAY[]::text[] WHERE user_id=$1", [ids.member]);
   await refused(sched('dream', 'write', dreamNote));
   expect(ids.writes).toBe(0);
+});
+
+const digestClip = { path: '_inbox/karakeep-b1.md', frontmatter: { url: 'https://example.com/a', source: 'karakeep' }, body: 'saved' };
+const digestFiled = { path: 'reads/a-note.md', frontmatter: { title: 'A note', type: 'reference', filed_by: 'digest' }, body: 'Summary.', message: 'digest: file A note' };
+
+it('the digest may pull, read, list, move out of the inbox and rewrite into its folders, as a job with the agent origin', async () => {
+  await sched('digest', 'write', digestClip);
+  expect(ids.lastBinding).toMatchObject({ relativePath: '_inbox/karakeep-b1.md', approvedOrigin: 'agent', authority: { origin: 'job', jobId: 'digest', actingMemberId: ids.member } });
+  ids.trackFiles.set('inspiration/old.md', { content: 'old', contentRevision: rev('c') });
+  ids.trackFiles.set('Project A/transcripts/call.md', { content: 'call', contentRevision: rev('d') });
+  // The whole area is listed for note names (fixture's list also answers its own owner note).
+  const all = await sched('digest', 'list', { prefix: '' });
+  expect(all.paths).toEqual(expect.arrayContaining(['_inbox/karakeep-b1.md', 'inspiration/old.md', 'Project A/transcripts/call.md']));
+  expect((await sched('digest', 'list', { prefix: '_inbox/' })).paths).toEqual(['_inbox/karakeep-b1.md']);
+  expect(await sched('digest', 'read', { path: '_inbox/karakeep-b1.md' })).toMatchObject({ found: true });
+  expect(await sched('digest', 'read', { path: 'reads/a-note.md', probe: true })).toEqual({ ok: true, found: false });
+  // Move first (the inbox note is gone), then rewrite at the new place.
+  await sched('digest', 'move', { path: '_inbox/karakeep-b1.md', destination: 'reads/a-note.md' });
+  expect(ids.trackFiles.has('_inbox/karakeep-b1.md')).toBe(false);
+  expect(ids.lastBinding).toMatchObject({ relativePath: '_inbox/karakeep-b1.md', authority: { origin: 'job', jobId: 'digest' } });
+  await sched('digest', 'write', digestFiled);
+  expect(ids.trackFiles.get('reads/a-note.md')?.content).toContain('Summary.');
+  await sched('digest', 'write', { ...digestFiled, path: 'Project A/transcripts/call-two.md' });
+  expect(ids.trackFiles.has('Project A/transcripts/call-two.md')).toBe(true);
+  await sched('digest', 'write', { ...digestFiled, path: 'writing-seeds/idea.md' });
+  ids.trackFiles.set('_inbox/other.md', { content: 'x', contentRevision: rev('e') });
+  expect(await sched('digest', 'remove', { path: '_inbox/other.md' })).toMatchObject({ removed: true });
+  expect((await pool.query('SELECT count(*)::int AS n FROM approval_asks')).rows[0].n).toBe(0);
+});
+
+it('the digest is refused outside its own paths, areas and operations, and nothing is written', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  ids.trackFiles.set('_inbox/a.md', { content: 'a', contentRevision: rev('a') });
+  ids.trackFiles.set('reads/keep.md', { content: 'k', contentRevision: rev('b') });
+  await refused(sched('digest', 'write', { ...digestFiled, path: 'notes/loose.md' }));                           // a folder the classifier cannot name
+  await refused(sched('digest', 'write', { ...digestFiled, path: 'reads/sub/deep.md' }));
+  await refused(sched('digest', 'write', { ...digestFiled, path: 'reads/Not-A-Slug.md' }));
+  await refused(sched('digest', 'write', { ...digestFiled, path: '_inbox/loose.md' }));                           // the digest pulls only clip-* and karakeep-* into the inbox
+  await refused(sched('digest', 'write', { ...digestFiled, path: '_meta/dream/2026-11-01.md' }));
+  await refused(sched('digest', 'write', { ...digestFiled, path: '_inbox/../reads/x.md' }));
+  await refused(sched('digest', 'write', { ...digestFiled, path: '_templates/transcripts/x.md' }));               // a project folder never starts with _ or .
+  await refused(sched('digest', 'write', { ...digestFiled, path: '.git/transcripts/x.md' }));
+  await refused(sched('digest', 'write', { ...digestFiled, path: 'articles/x.md' }));                             // articles are not filed through this yet
+  await refused(sched('digest', 'read', { path: '_meta/dream/2026-11-01.md' }));
+  await refused(sched('digest', 'read', { path: 'notes/loose.md' }));
+  await refused(sched('digest', 'remove', { path: 'reads/keep.md' }));                                            // only inbox notes are ever removed
+  await refused(sched('digest', 'remove', { path: '_inbox/sub/x.md' }));
+  await refused(sched('digest', 'move', { path: 'reads/keep.md', destination: 'inspiration/keep.md' }));         // the source must be in the inbox
+  await refused(sched('digest', 'move', { path: '_inbox/a.md', destination: 'notes/loose.md' }));
+  await refused(sched('digest', 'move', { path: '_inbox/a.md', destination: 'reads/keep.md' }));                 // a note that is already there is never replaced by a move
+  await refused(sched('digest', 'list', { prefix: 'reads/' }));
+  await refused(sched('digest', 'list', { prefix: '_meta/' }));
+  await refused(runtime('vault.scheduled', { schedule: 'digest', operation: 'write', area: 'shared', ...digestFiled }));   // no shared rule
+  await refused(runtime('vault.scheduled', { schedule: 'digest', operation: 'list', area: 'shared', prefix: '' }));
+  expect(ids.writes).toBe(0);
+  expect(ids.trackFiles.get('reads/keep.md')?.content).toBe('k');
+});
+
+it('the digest needs the agent\'s own write grant on the private area to write, and only a read grant to list', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  ids.trackFiles.set('_inbox/a.md', { content: 'a', contentRevision: rev('a') });
+  await setVaultGrant({ scope: 'read' });
+  expect((await sched('digest', 'list', { prefix: '_inbox/' })).paths).toEqual(['_inbox/a.md']);
+  await refused(sched('digest', 'write', digestFiled));
+  await refused(sched('digest', 'move', { path: '_inbox/a.md', destination: 'reads/a.md' }));
+  await refused(sched('digest', 'remove', { path: '_inbox/a.md' }));
+  await setVaultGrant({ scope: 'write' }, 'never');
+  await refused(sched('digest', 'write', digestFiled));
+  expect(ids.writes).toBe(0);
+});
+
+it('with the real writer the digest moves a pulled clip out of the inbox into reads/, rewrites it there, and lists note names across the area', async () => {
+  await realAreasAndTurn();
+  const privateRoot = join(root, 'vault-files', `vault/private/${ids.area}`);
+  await sched('digest', 'write', digestClip);
+  expect(readFileSync(join(privateRoot, digestClip.path), 'utf8')).toContain('lares_origin: agent');
+  await sched('digest', 'move', { path: digestClip.path, destination: 'reads/a-note.md' });
+  expect(() => readFileSync(join(privateRoot, digestClip.path))).toThrow();
+  expect(readFileSync(join(privateRoot, 'reads/a-note.md'), 'utf8')).toContain('saved');
+  await sched('digest', 'write', digestFiled);
+  const filed = readFileSync(join(privateRoot, 'reads/a-note.md'), 'utf8');
+  expect(filed).toContain('Summary.'); expect(filed).toContain('filed_by: digest'); expect(filed).not.toContain('karakeep');
+  // The destination now exists, so a second move onto it is refused and the note is left as it is.
+  await sched('digest', 'write', digestClip);
+  await expect(sched('digest', 'move', { path: digestClip.path, destination: 'reads/a-note.md' })).rejects.toThrow('Vault reader unavailable');
+  expect(readFileSync(join(privateRoot, 'reads/a-note.md'), 'utf8')).toBe(filed);
+  expect((await sched('digest', 'list', { prefix: '' })).paths).toEqual(expect.arrayContaining(['_inbox/karakeep-b1.md', 'reads/a-note.md']));
 });
 
 it('a replayed scheduled request is refused the second time and writes once', async () => {

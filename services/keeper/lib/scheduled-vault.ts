@@ -121,7 +121,7 @@ export async function scheduledVault(c: ScheduledVaultContext): Promise<Record<s
 
     if (op === 'list') {
       const prefix = input.prefix as string, cursor = typeof input.cursor === 'string' ? input.cursor : '', limit = Number(input.limit ?? SCHEDULED_VAULT_LIST_DEFAULT);
-      const all = (await files.listUnder(ctx, prefix)).paths.sort(), after = all.filter((p) => p > cursor), page = after.slice(0, limit);
+      const all = (prefix === '' ? await files.list(ctx) : await files.listUnder(ctx, prefix)).paths.sort(), after = all.filter((p) => p > cursor), page = after.slice(0, limit);
       assertNotAborted();
       return { paths: page, ...(after.length > limit ? { nextCursor: page[page.length - 1] } : {}) };
     }
