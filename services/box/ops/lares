@@ -190,6 +190,45 @@ cmd_doctor() {
     read_only_files+=(--ro "$operator_password_file")
     ledger_args=(--ledger-password-file "$operator_password_file")
   fi
+  # The parity check compares this server with the installed release. The engine container has no
+  # container runtime (and gets none), so the running containers are listed here, on the host, into
+  # a plain file that is handed in read-only. The check never prints a value.
+  local parity_dir="" containers_file="" keeper_config="$PREFIX/etc/lares/keeper.json" ids=""
+  local -a parity_args=()
+  if [ -f "$CUR/release.json" ]; then
+    parity_dir=$(mktemp -d "${TMPDIR:-/var/tmp}/lares-doctor.XXXXXX") || parity_dir=""
+  fi
+  if [ -n "$parity_dir" ]; then
+    trap 'rm -rf -- "$parity_dir"' RETURN
+    chmod 0700 "$parity_dir"
+    containers_file="$parity_dir/containers.jsonl"
+    # One JSON line per running container: name, compose project, compose service, image as started.
+    if ids=$(docker ps -q 2>/dev/null); then
+      : > "$containers_file"
+      if [ -n "$ids" ]; then
+        # shellcheck disable=SC2086
+        docker inspect --format '{"name":{{json .Name}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"image":{{json .Config.Image}}}' $ids > "$containers_file" 2>/dev/null || containers_file=""
+      fi
+    else
+      containers_file=""
+    fi
+    parity_args=(--release-file "$CUR/release.json")
+    read_only_files+=(--ro "$CUR/release.json")
+    if [ -n "$containers_file" ]; then
+      read_only_files+=(--ro "$containers_file")
+      parity_args+=(--containers-file "$containers_file")
+    fi
+    if [ -f "$keeper_config" ]; then
+      read_only_files+=(--ro "$keeper_config")
+      parity_args+=(--keeper-config-file "$keeper_config")
+    fi
+    if [ -f "$keeper_config.rendered" ]; then
+      read_only_files+=(--ro "$keeper_config.rendered")
+      parity_args+=(--keeper-rendered-file "$keeper_config.rendered")
+    fi
+    parity_args+=(--lares-project "${LARES_PROJECT:-lares}")
+    [ "${ROOT##*/}" = "${LARES_PROJECT:-lares}" ] || parity_args+=(--lares-project "${ROOT##*/}")
+  fi
   # The ledger lives on the host, out of the engine container's reach, so this line is read here.
   local ledger_status=0 doctor_status=0
   case " $* " in
@@ -201,7 +240,7 @@ cmd_doctor() {
     --env "CONSOLE_SESSION_SECRET_FILE=$console_session_secret_file" \
     --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
     --env "PGDATABASE=${PGDATABASE:-lares_state}" --env "PGUSER=lares_app" \
-    bin/doctor.ts --installed-settings-file "$installation_env_file" "${ledger_args[@]}" "$@" || doctor_status=$?
+    bin/doctor.ts --installed-settings-file "$installation_env_file" ${ledger_args[@]+"${ledger_args[@]}"} ${parity_args[@]+"${parity_args[@]}"} "$@" || doctor_status=$?
   [ "$doctor_status" -ne 0 ] && return "$doctor_status"
   return "$ledger_status"
 }

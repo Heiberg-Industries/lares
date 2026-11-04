@@ -10,7 +10,7 @@
 // to a real file and hands it to `loadKeeperConfig`, the function the keeper container itself
 // calls at startup. Nothing here runs Docker, reaches a network, or names a real registry,
 // domain or person.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { loadKeeperConfig } from "../../keeper/lib/config.js";
 import { main as renderConfigCommand } from "../bin/render-keeper-config.js";
 import { renderKeeperConfig, AGENTS_COMPOSE_FILE } from "../lib/keeper-config.js";
+import { keeperConfigDifferences, parseProvenanceRecord } from "../lib/doctor-parity.js";
 import type { KeeperConfigOptions } from "../lib/keeper-config.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
 
@@ -386,5 +387,122 @@ describe('optional prepared financial custody',()=>{
       expect(readFileSync(out)).toEqual(beforeOut);
       expect(readFileSync(env)).toEqual(beforeEnv);
     }
+  });
+});
+
+describe("an installer re-run keeps agent settings set by hand in keeper.json", () => {
+  function runner() {
+    const f = mkdtempSync(join(tmpdir(), "keeper-hand-set-")); dirs.push(f);
+    const prefix = createPreparedPrefix(f);
+    const release = join(f, "release.json");
+    writeFileSync(release, JSON.stringify(MANIFEST));
+    const out = join(f, "keeper.json.partial"), env = join(f, "keeper.env"), live = join(f, "keeper.json");
+    // A root that exists on this machine so the deadline calendar can be a plain file.
+    const root = join(f, "srv"); mkdirSync(join(root, "installation"), { recursive: true });
+    const args = (tz: string) => [release, out, env, live, "lares", root, "/srv/lares/agents", "/srv/lares/retired", "/srv/lares/backup", "/srv/lares/egress", "/etc/lares/secrets", "/run/lares", "/run/lares-host", "lares-network", "172.30.0.0/24", "172.30.0.2", "http://lares-gateway:4000", "lares_state", "fixture-owner", "owner@example.invalid", "lares.example.com", tz, prefix];
+    const render = (tz = "Europe/Berlin") => {
+      const lines: string[] = [];
+      const spy = vi.spyOn(process.stderr, "write").mockImplementation((s: string | Uint8Array) => { lines.push(String(s)); return true; });
+      try { expect(renderConfigCommand(args(tz), () => {})).toBe(0); } finally { spy.mockRestore(); }
+      return { config: JSON.parse(readFileSync(out, "utf8")), stderr: lines.join("") };
+    };
+    const install = (c: unknown) => writeFileSync(live, JSON.stringify(c));
+    return { render, install, root, sidecar: `${out}.rendered` };
+  }
+  const chief = (c: any) => c.lifecycle.defaultBindings["chief-of-staff"];
+
+  it("carries a hand-set key and the mount it depends on, and the installer's own keys take the new value", () => {
+    const r = runner();
+    const first = r.render("Europe/Berlin").config;
+    chief(first).environment.CRM_BRANDS = '[{"id":"EXAMPLE_BRAND","description":"x"}]';
+    chief(first).environment.VAULT_PATH = "/srv/vault";
+    chief(first).environment.OWNER_HOME_TZ = "Asia/Tokyo";
+    chief(first).mounts.push({ source: "/srv/vault-host", target: "/srv/vault", readOnly: false });
+    first.lifecycle.defaultBindings.creative.environment.STUDIO_MODEL = "studio-x";
+    r.install(first);
+    const again = r.render("Europe/Berlin").config;
+    expect(chief(again).environment).toEqual({ OWNER_HOME_TZ: "Europe/Berlin", CRM_BRANDS: '[{"id":"EXAMPLE_BRAND","description":"x"}]', VAULT_PATH: "/srv/vault" });
+    expect(chief(again).mounts).toEqual([{ source: "/srv/vault-host", target: "/srv/vault", readOnly: false }]);
+    expect(again.lifecycle.defaultBindings.creative.environment).toEqual({ OWNER_HOME_TZ: "Europe/Berlin", STUDIO_MODEL: "studio-x" });
+    expect(() => loadAsKeeperWould(again)).not.toThrow();
+  });
+
+  it("removes the deadline calendar key and mount when the installer no longer sets it", () => {
+    const r = runner();
+    const calendarPath = join(r.root, "installation", "deadline-calendar.json");
+    writeFileSync(calendarPath, "{}");
+    const first = r.render().config;
+    expect(chief(first).environment.DEADLINE_CALENDAR_FILE).toBeDefined();
+    expect(chief(first).mounts).toHaveLength(1);
+    r.install(first);
+    rmSync(calendarPath);
+    const again = r.render().config;
+    expect(chief(again).environment.DEADLINE_CALENDAR_FILE).toBeUndefined();
+    expect(chief(again).mounts).toEqual([]);
+  });
+
+  it("drops an invalid previous value with one line naming the key and never the value", () => {
+    const r = runner();
+    const first = r.render().config;
+    chief(first).environment.LARES_ARTICLE_AREA = "sideways-secretish";
+    chief(first).environment.KARAKEEP_URL = "http://not-https.example.com";
+    chief(first).environment.ATLAS_PATH = "/srv/no-mount-covers-this";
+    chief(first).environment.TASTE_ROOT = "/srv/old";
+    chief(first).environment.COMMERCIAL_BRANDS = '["EXAMPLE_BRAND"]';
+    r.install(first);
+    const { config, stderr } = r.render();
+    expect(chief(config).environment).toEqual({ OWNER_HOME_TZ: "Europe/Berlin", COMMERCIAL_BRANDS: '["EXAMPLE_BRAND"]' });
+    for (const key of ["LARES_ARTICLE_AREA", "KARAKEEP_URL", "ATLAS_PATH"]) expect(stderr).toContain(key);
+    expect(stderr).not.toContain("sideways-secretish");
+    expect(stderr).not.toContain("not-https");
+    expect(stderr).not.toContain("no-mount-covers-this");
+  });
+
+  it("never takes secrets, ownerId or role from the previous file", () => {
+    const r = runner();
+    const first = r.render().config;
+    chief(first).secrets = { EVE_ROUTE_PASSWORD_FILE: "/elsewhere/pw" };
+    chief(first).ownerId = "someone-else";
+    r.install(first);
+    const again = chief(r.render().config);
+    expect(again.secrets).toEqual({ EVE_ROUTE_PASSWORD_FILE: "/etc/lares/secrets/eve-route-password" });
+    expect(again.ownerId).toBe("fixture-owner");
+    expect(again.role).toBe("chief-of-staff");
+  });
+
+  it("a first install has nothing extra, and re-running with nothing hand-set changes nothing", () => {
+    const r = runner();
+    const { config } = r.render();
+    expect(chief(config).environment).toEqual({ OWNER_HOME_TZ: "Europe/Berlin" });
+    expect(chief(config).mounts).toEqual([]);
+    r.install(config);
+    expect(r.render().config).toEqual(config);
+  });
+
+  it("records what the installer itself rendered, apart from what a re-run carried over, for lares doctor", () => {
+    const r = runner();
+    const first = r.render().config;
+    const record = () => parseProvenanceRecord(readFileSync(r.sidecar, "utf8"))!;
+    expect(record()).not.toBeNull();
+    expect(keeperConfigDifferences(first, record())).toEqual([]);
+    chief(first).environment.VAULT_PATH = "/srv/vault/secret-looking-path";
+    chief(first).mounts.push({ source: "/srv/vault-host", target: "/srv/vault", readOnly: false });
+    r.install(first);
+    const { config: again, stderr } = r.render();
+    expect(stderr).toBe("");
+    expect(chief(again).environment.VAULT_PATH).toBe("/srv/vault/secret-looking-path");
+    expect(keeperConfigDifferences(again, record())).toEqual([
+      "lifecycle.defaultBindings.chief-of-staff.environment.VAULT_PATH",
+      "lifecycle.defaultBindings.chief-of-staff.mounts[0]",
+    ]);
+    expect(readFileSync(r.sidecar, "utf8")).not.toContain("secret-looking-path");
+  });
+
+  it("does not carry a per-agent bindings group today (reported, not fixed in this change)", () => {
+    const r = runner();
+    const first = r.render().config;
+    first.lifecycle.bindings = { assistant: { role: "chief-of-staff", environment: { STUDIO_MODEL: "m" }, mounts: [], secrets: {} } };
+    r.install(first);
+    expect(r.render().config.lifecycle.bindings).toBeUndefined();
   });
 });

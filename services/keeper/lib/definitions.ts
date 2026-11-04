@@ -16,7 +16,7 @@ import type { Backup } from './git-backup.js';
 import { totalmem } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { ceilingFor, HEADROOM_BYTES, STACK_ESTIMATE_BYTES, PER_AGENT_ESTIMATE_BYTES, AGENT_LIMIT_MAX } from './ceiling.js';
-import { writeSetting } from './settings.js';
+import { normaliseNotionId, readSetting, writeSetting } from './settings.js';
 import { withDefinitionNamespace } from './definition-namespace.js';
 const NAME_RE = /^[a-z][a-z0-9-]{1,30}$/;
 const ROLES = ['chief-of-staff', 'creative'] as const;
@@ -37,6 +37,10 @@ export interface DefinitionCompose {
     deleted?(name:string):Promise<void>;
     /** Names below secretsDir that this lifecycle created and may remove with the agent. */
     ownedSecrets?(name:string):string[];
+    /** Restarts one agent so an installation-wide setting reaches it (see settings.notion_meetings_set). */
+    applyInstallationSettings?(name: string): Promise<'restarted' | 'waiting' | 'stopped'>;
+    /** What the installation file alone gives this agent for the Notion meetings source. */
+    meetingsSourceFallback?(name: string): string | undefined;
     /** The lifecycle owns provisioning, compose generation and start. Absent = refuse create BEFORE writes. */
     create?(name: string, definition: AgentDefinition): Promise<unknown>;
 }
@@ -464,6 +468,32 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 refused(`You have ${count} ${count === 1 ? 'agent' : 'agents'}. Retire one before lowering the limit below ${count}.`);
             await (o.setCeiling ?? ((v, actor) => writeSetting(o.pool, 'agents.ceiling', v, actor)))(ceiling, ctx.actor);
             return capacity(ctx);
+        }) });
+    const MEETINGS_KEY = 'notion.meetings_data_source';
+    const chiefNames = async () => (await db().query("SELECT name FROM agent_definitions WHERE status<>'retired' AND definition->>'role'='chief-of-staff' ORDER BY name")).rows.map(r => String(r.name));
+    registerAction({ name: 'settings.notion_meetings_get', input: z.strictObject({}), run: async (_input, ctx) => {
+            const stored = await readSetting(o.pool, MEETINGS_KEY);
+            const names = await chiefNames();
+            const fallback = names.map(n => o.compose.meetingsSourceFallback?.(n)).find(v => !!v);
+            const value = typeof stored === 'string' ? (stored || null) : (fallback ?? null);
+            return { value, from: typeof stored === 'string' ? 'console' : fallback ? 'installation file' : 'none', canChange: mayChange(ctx), chiefCount: names.length };
+        } });
+    registerAction({ name: 'settings.notion_meetings_set', input: z.strictObject({ dataSource: z.string().max(200) }),
+        successDetail: (r: { value: string | null }) => JSON.stringify({ meetingsSource: r.value ? 'set' : 'cleared' }),
+        run: ({ dataSource }, ctx) => locked(async () => {
+            if (!mayChange(ctx))
+                refused("Only the installation's owner can change the meetings source.");
+            const trimmed = dataSource.trim();
+            const value = trimmed === '' ? '' : normaliseNotionId(trimmed);
+            if (value === null)
+                refused('That is not a Notion data source id. It is 32 letters and digits, with or without dashes.');
+            await writeSetting(o.pool, MEETINGS_KEY, value, ctx.actor);
+            const restarted: string[] = [], waiting: string[] = [], stopped: string[] = [];
+            for (const name of await chiefNames()) {
+                const outcome = await o.compose.applyInstallationSettings?.(name) ?? 'waiting';
+                (outcome === 'restarted' ? restarted : outcome === 'stopped' ? stopped : waiting).push(name);
+            }
+            return { value: value || null, restarted, waiting, stopped };
         }) });
     registerAction({ name: 'definition.get', input: nameInput, run: async ({ name }) => {
             roots();
