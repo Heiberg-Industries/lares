@@ -366,6 +366,23 @@ describe("lares", () => {
     expect(d).not.toMatch(/PGPASSWORD/);
   });
 
+  it("doctor lists the containers on the host and hands the engine files, never the container runtime", () => {
+    mkdirSync(join(prefix, "etc/lares"), { recursive: true });
+    writeFileSync(join(prefix, "etc/lares/keeper.json"), "{}");
+    writeFileSync(join(prefix, "etc/lares/keeper.json.rendered"), "{}");
+    const r = lares(["doctor"]);
+    expect(r.code, r.stderr).toBe(0);
+    const c = calls();
+    expect(c).toContain("docker ps -q");
+    const d = c.find((l) => l.startsWith("docker run "))!;
+    expect(d).toContain(`--release-file ${root()}/current/release.json`);
+    expect(d).toContain(`--keeper-config-file ${prefix}/etc/lares/keeper.json`);
+    expect(d).toContain(`--keeper-rendered-file ${prefix}/etc/lares/keeper.json.rendered`);
+    expect(d).toContain("--lares-project lares");
+    expect(d).toContain(`${prefix}/etc/lares/keeper.json:${prefix}/etc/lares/keeper.json:ro`);
+    expect(d).not.toContain("docker.sock");
+  });
+
   describe("previous and rollback", () => {
     const prev = () => readlinkSync(join(root(), "previous"));
     beforeEach(() => { expect(lares(["update", "--release", RC12]).code).toBe(0); writeFileSync(log, ""); });

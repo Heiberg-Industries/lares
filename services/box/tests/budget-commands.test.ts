@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { main, renderNativePolicy, REVIEWED_INPUT_TOKENS } from "../bin/render-native-policy.js";
 import { parseBudgetNativePolicyDocument } from "../../keeper/lib/budget-native-host.js";
 import { createHash } from "node:crypto";
+import { gatewayAdmissionProfile } from "../lib/gateway-config.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const request = {
@@ -91,6 +92,27 @@ describe("the reviewed budget policy", () => {
     }
     expect(() => renderNativePolicy({ ...request, prices: { ...request.prices, input: "cheap" } })).toThrow(/input price/);
     expect(() => renderNativePolicy({ ...request, providerModel: "local/some-model" })).toThrow(/OpenAI or Anthropic/);
+  });
+
+  it("reviews the exact profile the gateway runs when a purpose has a model of its own, and says which aliases are not priced", () => {
+    const plain = renderNativePolicy(request);
+    expect(plain.unpricedAliases).toEqual([]);
+    const result = renderNativePolicy({ ...request, purposeModels: { writer: "anthropic/claude-sonnet-4-5", gate: "anthropic/claude-haiku-4-5" } });
+    expect(result.unpricedAliases).toEqual(["lares-writer", "lares-gate"]);
+    const [policy] = result.policy.policies;
+    expect(policy!.capability).toEqual(gatewayAdmissionProfile({
+      alias: request.alias, providerModel: request.providerModel,
+      purposeModels: { writer: "anthropic/claude-sonnet-4-5", gate: "anthropic/claude-haiku-4-5" },
+    }));
+    expect(policy!.pricing.capabilityHash).not.toBe(plain.policy.policies[0]!.pricing.capabilityHash);
+    expect(parseBudgetNativePolicyDocument(JSON.stringify(result.policy))).toEqual(result.policy);
+    expect(result.model).toBe("anthropic/claude-opus-5");
+    // A purpose model equal to the brain model is the default, so nothing changes and nothing is unpriced.
+    const same = renderNativePolicy({ ...request, purposeModels: { writer: request.providerModel } });
+    expect(same.unpricedAliases).toEqual([]);
+    expect(same.policy).toEqual(plain.policy);
+    expect(() => renderNativePolicy({ ...request, purposeModels: { writer: "openai/gpt-4o-mini" } })).toThrow(/same provider/);
+    expect(() => renderNativePolicy({ ...request, purposeModels: { brain: "anthropic/x" } as never })).toThrow(/Only the writer, utility and gate/);
   });
 
   it("refuses a request with a repeated field", () => {

@@ -913,6 +913,17 @@ describe('protected native custody foundation',()=>{
     });
   });
 
+  it('accepts a reviewed policy whose capability gives the writer or gate its own model, and refuses malformed ones',()=>{
+    const withModels=(purposeModels:unknown)=>{
+      const base:any=reviewed(),capability={...base.capability,purposeModels};
+      return {...base,capability,pricing:{...base.pricing,capabilityHash:gatewayHash(gatewayCanonical(capability))}};
+    };
+    const good=withModels({'lares-writer':'writer-model','lares-gate':'gate-model'});
+    expect(budgetNativeReviewedPolicySchema.parse(good)).toEqual(good);
+    for(const bad of [{},{'lares-brain':'writer-model'},{'lares-other':'writer-model'},{'lares-writer':'synthetic-model'},{'lares-writer':'bad model'},{'lares-writer':7}])
+      expect(()=>budgetNativeReviewedPolicySchema.parse(withModels(bad))).toThrow();
+  });
+
   it('enforces monotonic phases, immutable financial linkage and exact acknowledged binding',async()=>{
     const {store}=fixture();await store.withGate(async gate=>{
       const p=prepare(gate),id=p.operation.operationId,unrelated=await receipt();

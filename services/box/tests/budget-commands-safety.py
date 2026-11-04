@@ -44,8 +44,9 @@ if fail and fail in text:
     sys.exit(1)
 if "render-native-policy.ts" in text:
     request = json.load(sys.stdin)
+    (prefix / "last-policy-request.json").write_text(json.dumps(request))
     print(json.dumps({"policy": {"endpointHash": "e" * 64, "policies": []}, "maximumLiability": "1.0346",
-                      "model": request["providerModel"], "installationLimit": request["installationLimit"],
+                      "model": request["providerModel"], "unpricedAliases": ["lares-" + name for name in request.get("purposeModels", {})], "installationLimit": request["installationLimit"],
                       "personLimit": request["personLimit"], "prices": request["prices"]}))
 elif "recover" in args:
     report = os.environ["FAKE_RECOVER_" + ("APPLY" if "--apply" in args else "CHECK")]
@@ -206,6 +207,22 @@ class BudgetCommandTests(unittest.TestCase):
         }))
 
     # budget setup
+
+    def test_setup_without_purpose_models_prices_everything_and_says_nothing_about_them(self) -> None:
+        code, output = self.run_command(*self.setup_answers())
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("Not priced yet", output)
+        self.assertNotIn("purposeModels", json.loads((self.prefix / "last-policy-request.json").read_text()))
+
+    def test_setup_passes_purpose_models_on_and_says_plainly_which_aliases_are_not_priced(self) -> None:
+        env = self.prefix / "etc/lares/installation.env"
+        env.write_text(env.read_text() + "LARES_MODEL_WRITER=anthropic/claude-sonnet-4-5\nLARES_MODEL_GATE=anthropic/claude-haiku-4-5\n")
+        code, output = self.run_command(*self.setup_answers())
+        self.assertEqual(code, 0, output)
+        self.assertEqual(json.loads((self.prefix / "last-policy-request.json").read_text())["purposeModels"],
+                         {"writer": "anthropic/claude-sonnet-4-5", "gate": "anthropic/claude-haiku-4-5"})
+        self.assertIn("Not priced yet: lares-writer, lares-gate.", output)
+        self.assertIn("calls to them are refused", output)
 
     def test_setup_runs_the_sheet_in_order_and_applies_only_the_agreed_files(self) -> None:
         code, output = self.run_command(*self.setup_answers())

@@ -38,6 +38,7 @@ import { listApplied, type AppliedMigration } from "./migration-ledger.js";
 import { readEngineSeed } from "./first-owner.js";
 import type { SettingReader } from "@lares/vault-format/settings";
 import { settingByName } from "@lares/vault-format/settings";
+import { checkParity, type ParityInput } from "./doctor-parity.js";
 import { checkSettings, type FileProbe, type ProbeFile } from "@lares/vault-format/settings-check";
 
 export type CheckState = "ok" | "warn" | "fail" | "unknown";
@@ -68,6 +69,9 @@ export interface DoctorDeps {
    *  as it is without the flag, and this module makes no network call. `bin/doctor.ts` is the only place
    *  that ever constructs one, and only after `--gateway`/`--alias`/`--key-file` are all given. */
   readonly testModel?: ModelTestDeps;
+  /** Present only on an installed server, where `lares doctor` has listed the running containers
+   *  and found the release record. When absent (a checkout), the parity check is not run. */
+  readonly parity?: ParityInput;
 }
 
 /** The readers whose settings a database-owning installation needs — the three role readers each
@@ -665,7 +669,8 @@ function unknownBecauseNoDatabase(id: string): CheckResult {
   };
 }
 
-/** Runs every check and returns all seven, in a fixed order. Never throws: every check catches
+/** Runs every check and returns all seven (eight on an installed server, which adds the parity
+ *  check), in a fixed order. Never throws: every check catches
  *  its own failure and reports it as a finding. */
 export async function runDoctor(deps: DoctorDeps): Promise<CheckResult[]> {
   const probeFile = deps.probeFile ?? realProbeFile;
@@ -680,7 +685,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<CheckResult[]> {
   const repairs = db ? await checkRepairs(db, installed) : unknownBecauseNoDatabase("repairs");
   const gateway = await checkGateway(deps.testModel);
 
-  return [settings, database, migrations, owner, backup, repairs, gateway];
+  return [settings, database, migrations, owner, backup, repairs, gateway, ...(deps.parity ? [checkParity(deps.parity)] : [])];
 }
 
 const CHECK_NAME: Record<string, string> = {
@@ -691,6 +696,7 @@ const CHECK_NAME: Record<string, string> = {
   backup: "Backups",
   repairs: "Known issues",
   gateway: "Model connection",
+  parity: "Matches the release",
 };
 
 const STATE_LABEL: Record<CheckState, string> = {
