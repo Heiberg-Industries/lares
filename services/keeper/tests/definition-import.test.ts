@@ -115,3 +115,24 @@ it('reads no door token from the folder: a door that needs one is refused until 
     writeFileSync(join(secretsDir, 'bookkeeper-telegram-webhook-secret'), 'hook', { mode: 0o600 });
     await expect(hostImport('bookkeeper', { definition })).resolves.toBeTruthy();
 });
+it('converts the old routing keys exactly as a save of the converted definition would, and refuses a conflicting pair', async () => {
+    const old = { ...GOOD, schedules: { ...GOOD.schedules, 'crm-routing': { on: false } }, delivery: { 'crm-routing': ['web'] } };
+    const converted = { ...GOOD, schedules: { ...GOOD.schedules, 'track-routing': { on: false } }, delivery: { 'track-routing': ['web'] } };
+    const viaImport: any = await hostImport('bookkeeper', { definition: old });
+    const importedFiles = filesOf(), importedRow = await rowOf();
+    expect(importedRow.definition.schedules).toHaveProperty('track-routing');
+    expect(importedRow.definition.schedules).not.toHaveProperty('crm-routing');
+    expect(importedRow.definition.delivery).toEqual({ 'track-routing': ['web'] });
+    rmSync(join(agentsDir, 'bookkeeper'), { recursive: true });
+    await pool.query("DELETE FROM agent_doors WHERE agent='bookkeeper'; DELETE FROM agent_definitions WHERE name='bookkeeper'");
+    const viaConsole: any = await create('bookkeeper', { definition: converted });
+    expect(viaConsole.hash).toBe(viaImport.hash);
+    expect(filesOf()).toEqual(importedFiles);
+    expect(await rowOf()).toEqual(importedRow);
+    rmSync(join(agentsDir, 'bookkeeper'), { recursive: true });
+    await pool.query("DELETE FROM agent_doors WHERE agent='bookkeeper'; DELETE FROM agent_definitions WHERE name='bookkeeper'");
+    compose.create.mockClear();
+    const both = { ...GOOD, schedules: { ...GOOD.schedules, 'crm-routing': { on: false }, 'track-routing': { on: true } } };
+    await expect(hostImport('bookkeeper', { definition: both })).rejects.toThrow('both schedules.crm-routing and schedules.track-routing');
+    nothingWritten();
+});

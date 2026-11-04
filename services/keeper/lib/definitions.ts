@@ -453,7 +453,8 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             const role = (input.definition as { role?: unknown } | null)?.role;
             if (isRetiredRole(role))
                 refused(`"${role}" is a role this version of Lares no longer runs, so ${input.name} was not imported`);
-            return save(input, ctx, true);
+            // A folder from an older release gets the same conversion a stored definition gets on save.
+            return save({ ...input, definition: migrateTrackRoutingDefinition(input.definition) }, ctx, true);
         }) });
     const countActive = () => readdirSync(o.agentsDir, { withFileTypes: true }).filter(e => !e.name.startsWith('.') && (e.isDirectory() || e.isSymbolicLink())).length;
     const mayChange = (ctx: ActionContext) => ctx.host === true || (o.administrator !== undefined && ctx.actor === o.administrator);
