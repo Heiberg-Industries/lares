@@ -270,24 +270,25 @@ export class NotionSyncService implements ManagedServices {
     /** Brings the service in line with the gate. `start: false` (the keeper's own startup) only ever STOPS: a
      * keeper that has just come up, perhaps after a restore, never starts the sync by itself. */
     async apply(actor: string, opts: { start: boolean }): Promise<'running' | 'off'> {
-        {
-            if (!this.o.docker.serviceUp || !this.servicesFile) return 'off';
-            const { settings, plan, inEffect } = await this.current();
-            const revision = await this.o.credentialRevision();
-            const want = inEffect && typeof revision === 'string';
-            if (!want) {
-                const touched = settings.enabled || settings.address !== null;
-                await this.stopService();
-                if (touched && opts.start) await this.o.reseal();
-                return 'off';
-            }
-            if (!opts.start) return 'running';
-            const address = await this.ensureAddress(actor);
-            this.writeFiles(plan, address, revision);
-            await this.o.reseal();
-            await this.o.docker.serviceUp(this.servicesFile, NOTION_SYNC_SERVICE);
-            return 'running';
+        if (!this.o.docker.serviceUp || !this.servicesFile) return 'off';
+        const { settings, plan, inEffect } = await this.current();
+        const revision = await this.o.credentialRevision();
+        // An acceptance for settings that are no longer the current ones is forgotten, not parked: changing a
+        // setting and changing it back must not quietly bring an old acceptance to life.
+        if (opts.start && settings.ack !== null && settings.ack !== plan.hash) await writeSetting(this.o.pool, 'sync.notion.preview_ack', '', actor);
+        const want = inEffect && typeof revision === 'string';
+        if (!want) {
+            const touched = settings.enabled || settings.address !== null;
+            await this.stopService();
+            if (touched && opts.start) await this.o.reseal();
+            return 'off';
         }
+        if (!opts.start) return 'running';
+        const address = await this.ensureAddress(actor);
+        this.writeFiles(plan, address, revision);
+        await this.o.reseal();
+        await this.o.docker.serviceUp(this.servicesFile, NOTION_SYNC_SERVICE);
+        return 'running';
     }
     /** Credential activation: stop before the key file moves. */
     async quiesce(): Promise<void> { await this.stopService(); }
@@ -308,36 +309,33 @@ export class NotionSyncService implements ManagedServices {
 
     // ---- the preview ---------------------------------------------------------------------------
     async preview(actor: string): Promise<void> {
-        {
-            const { settings, plan } = await this.current();
-            const revision = await this.o.credentialRevision();
-            if (!settings.enabled) throw new KeeperRefusedError('Switch the Notion sync on before running a preview.');
-            if (!plan.hash) throw new KeeperRefusedError(plan.problems[0] ?? 'The sync is not fully set up yet.');
-            if (typeof revision !== 'string') throw new KeeperRefusedError('Connect the Notion key first: a preview reads Notion.');
-            if (!this.o.docker.serviceRunOnce || !this.servicesFile) throw new KeeperRefusedError('The Notion sync is not available on this installation.');
-            const address = await this.ensureAddress(actor);
-            this.writeFiles(plan, address, revision);
-            await this.o.reseal();
-            // A preview makes no write anywhere; the engine runs every pass with its dry-run switch on.
-            const out = (await this.o.docker.serviceRunOnce(this.servicesFile, NOTION_SYNC_SERVICE, [...COMMAND, '--preview'])).trim().split('\n').filter(Boolean).pop();
-            let parsed: z.infer<typeof previewOutput>;
-            try { parsed = previewOutput.parse(JSON.parse(out ?? '')); }
-            catch { throw new KeeperRefusedError('The preview did not finish. Check the Notion key and the connections, then try again.'); }
-            if (canonical(Object.keys(parsed.passes).sort()) !== canonical([...plan.passes].sort()))
-                throw new KeeperRefusedError('The preview did not cover every part of the sync. Try again.');
-            await writeSetting(this.o.pool, 'sync.notion.preview', { hash: plan.hash, at: (this.o.now?.() ?? new Date()).toISOString(), passes: parsed.passes }, actor);
-        }
+        const { settings, plan, inEffect } = await this.current();
+        const revision = await this.o.credentialRevision();
+        if (!settings.enabled) throw new KeeperRefusedError('Switch the Notion sync on before running a preview.');
+        if (inEffect) throw new KeeperRefusedError('The Notion sync is running with these settings. Switch it off to run a new preview.');
+        if (!plan.hash) throw new KeeperRefusedError(plan.problems[0] ?? 'The sync is not fully set up yet.');
+        if (typeof revision !== 'string') throw new KeeperRefusedError('Connect the Notion key first: a preview reads Notion.');
+        if (!this.o.docker.serviceRunOnce || !this.servicesFile) throw new KeeperRefusedError('The Notion sync is not available on this installation.');
+        const address = await this.ensureAddress(actor);
+        this.writeFiles(plan, address, revision);
+        await this.o.reseal();
+        // A preview makes no write anywhere; the engine runs every pass with its dry-run switch on.
+        const out = (await this.o.docker.serviceRunOnce(this.servicesFile, NOTION_SYNC_SERVICE, [...COMMAND, '--preview'])).trim().split('\n').filter(Boolean).pop();
+        let parsed: z.infer<typeof previewOutput>;
+        try { parsed = previewOutput.parse(JSON.parse(out ?? '')); }
+        catch { throw new KeeperRefusedError('The preview did not finish. Check the Notion key and the connections, then try again.'); }
+        if (canonical(Object.keys(parsed.passes).sort()) !== canonical([...plan.passes].sort()))
+            throw new KeeperRefusedError('The preview did not cover every part of the sync. Try again.');
+        await writeSetting(this.o.pool, 'sync.notion.preview', { hash: plan.hash, at: (this.o.now?.() ?? new Date()).toISOString(), passes: parsed.passes }, actor);
     }
 
     /** The owner accepts the stored preview of exactly this configuration, and the service starts. */
     async accept(actor: string, hash: string): Promise<void> {
-        {
-            const { settings, plan } = await this.current();
-            if (!settings.enabled || !plan.hash || settings.preview?.hash !== plan.hash || hash !== plan.hash)
-                throw new KeeperRefusedError('The preview is out of date. Run the preview again, then accept it.');
-            await writeSetting(this.o.pool, 'sync.notion.preview_ack', plan.hash, actor);
-            await this.apply(actor, { start: true });
-        }
+        const { settings, plan } = await this.current();
+        if (!settings.enabled || !plan.hash || settings.preview?.hash !== plan.hash || hash !== plan.hash)
+            throw new KeeperRefusedError('The preview is out of date. Run the preview again, then accept it.');
+        await writeSetting(this.o.pool, 'sync.notion.preview_ack', plan.hash, actor);
+        await this.apply(actor, { start: true });
     }
 
     // ---- what the console shows ---------------------------------------------------------------------

@@ -495,6 +495,33 @@ installation may still carry it in `/etc/lares/keeper.json` under
 until you save one in the console, but the installer rewrites that file on every run, so set it in
 the console instead.
 
+### The Notion sync (optional)
+
+The Notion sync keeps two things in Notion up to date once an hour: the **Attendees** of your
+meetings (read from the Google calendar) and your **People** records (read from the contacts
+connection). It is off on every new installation and it needs no file edits. You set it up in the
+console under Settings, Notion, Notion sync:
+
+1. Set the Meetings database (above) and connect the Notion key (Connections page). Meeting
+   attendees also need a connected Google calendar; People records need the contacts connection and
+   a People database id, which you paste into the field there and Save. The card lists, in plain
+   words, whatever is still missing.
+2. Choose **Switch on**. Nothing runs yet.
+3. Choose **Run preview**. The server reads Notion and your calendar once and writes nothing; it
+   then shows, for each part, how many entries it would add, update, leave alone, or leave for you
+   to look at. A preview can take a few minutes.
+4. Read it. **Accept and start** starts the sync. Only the installation's owner can do any of this.
+
+The acceptance belongs to the exact settings you previewed. If you change the Meetings database or
+the People database, or the installation changes, the sync stops until you run and accept a new
+preview. **Switch off** stops it and forgets the acceptance. The card shows when it last ran.
+
+Changing the Notion key (apply, replace or disconnect it on the Connections page) stops the sync,
+moves the key and starts it again, the same way it restarts agents. A restored installation never
+starts syncing by itself: a restore removes the sync, switches it off and forgets the acceptance, so
+you run and accept a new preview. This release syncs only attendees and People records; pages and
+transcripts between your Vault and Notion are not part of it yet.
+
 ### Outside tools
 
 Tools the engine does not ship come in as outside tool servers listed in the agent's definition

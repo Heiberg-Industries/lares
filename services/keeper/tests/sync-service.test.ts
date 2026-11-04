@@ -181,6 +181,18 @@ describe('NotionSyncService', () => {
     expect(await service.apply('owner', { start: true })).toBe('off');
     expect(calls).toEqual(['remove:lares-notion-sync', 'reseal']);
     expect((await service.view(true)).phase).toBe('needs-preview');
+    // Changing it back must not bring the old acceptance to life: it was forgotten.
+    expect(state.rows.get('sync.notion.preview_ack')).toBe('');
+    set('sync.notion.people_data_source', PEOPLE);
+    calls.length = 0;
+    expect(await service.apply('owner', { start: true })).toBe('off');
+    expect(calls).not.toContain('up:lares-notion-sync');
+  });
+  it('refuses a new preview while the service is running with the current settings', async () => {
+    const service = make();
+    set('sync.notion.enabled', true);
+    await service.preview('owner'); await service.accept('owner', await currentHash());
+    await expect(service.preview('owner')).rejects.toThrow(/Switch it off/);
   });
   it('a keeper that has just started only ever stops the service, never starts it', async () => {
     set('sync.notion.enabled', true); set('sync.notion.preview_ack', await currentHash());

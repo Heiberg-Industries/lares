@@ -614,6 +614,14 @@ describe("restore.sh: a good restore", () => {
     expect(firstDrop).toBeGreaterThan(stopRest);
     expect(migrate).toBeGreaterThan(lastRestore);
     expect(baseUp, logLines().join("\n")).toBeGreaterThan(migrate);
+    // The Notion sync is off after every restore: its container is looked for before any database is
+    // replaced, and its switch and accepted preview are cleared after the migration, before anything starts.
+    const findSync = idx(/^docker ps -a -q .*service=lares-notion-sync/);
+    const clearSync = idx(/^docker .*psql .*DELETE FROM settings WHERE key IN \('sync\.notion\.enabled','sync\.notion\.preview_ack','sync\.notion\.preview'\)/);
+    expect(findSync, logLines().join("\n")).toBeGreaterThan(stopRest);
+    expect(findSync).toBeLessThan(firstDrop);
+    expect(clearSync, logLines().join("\n")).toBeGreaterThan(migrate);
+    expect(clearSync).toBeLessThan(baseUp);
     expect(keeperUp).toBeGreaterThan(baseUp);
     expect(logLines().length - 1).toBe(keeperUp); // the keeper is the very last command
     expect(readFileSync(join(prefix, "etc/lares/keeper.env"), "utf8")).toContain(`COMPOSE_FILE="${join(prefix, "opt/lares/compose.lares-keeper.yaml")}"`);

@@ -74,7 +74,7 @@ LIMITS = [
     "Images come from a throwaway registry, so pulling from the real registry is not covered.",
     "The console and gateway images carry one extra test certificate authority; a real server uses a public certificate.",
     "The certificate is issued by Caddy's own authority, so getting a public certificate is not covered.",
-    "The sync-jobs image is named but never started on a fresh install, so it is not built or pulled here.",
+    "The sync-jobs image is named but never started on a fresh install, so it is not built or pulled here. The Notion sync is only checked up to its gate (nothing starts without an accepted preview); reaching Notion is not covered.",
     "Backups go to the same machine, and the uptime address is a stand-in: a real restore onto a new server is not covered.",
     "The approval step answers one card as the member who started the conversation; refusing other people's answers is covered by the private chat proof, not here.",
     "The update goes to a second build of the same code (a new label, so new digests): a release that changes code or adds migrations is not covered.",
@@ -453,6 +453,27 @@ def read_only_query(sql: str, release: dict) -> str:
                "--entrypoint", "psql", release["images"]["db"], "-h", "127.0.0.1", "-U", "lares_financial", "-d", "lares_state", "-Atc", sql, show=False).stdout.strip()
 
 
+def keeper_host_action(action: str, payload: dict) -> dict:
+    """One action over the keeper's host socket, the way the lares commands reach it. Returns the reply as sent."""
+    import socket
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(180)
+        connection.connect("/run/lares-host/keeper.sock")
+        connection.sendall((json.dumps({"action": action, "input": payload, "actor": "host"}) + "\n").encode())
+        connection.shutdown(socket.SHUT_WR)
+        data = b""
+        while True:
+            chunk = connection.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    return json.loads(data)
+
+
+def notion_sync_containers() -> str:
+    return output("docker", "ps", "-a", "-q", "--filter", "label=com.docker.compose.service=lares-notion-sync")
+
+
 def diagnostics(fixture: pathlib.Path | None) -> None:
     print("\n=== diagnostics ===", flush=True)
     run("docker", "info", "--format", "{{.ServerVersion}} {{.Driver}} {{.DriverStatus}}", check=False)
@@ -714,6 +735,27 @@ def main(argv: list[str]) -> int:
         if "Every migration on disk has already been applied." not in said:
             raise RuntimeError("lares doctor gave no real answer on migrations")
         passed("doctor-answers-on-migrations")
+
+        stage("the Notion sync is off, and stays off without an accepted preview")
+        services_file = pathlib.Path(json.loads(pathlib.Path("/etc/lares/keeper.json").read_text())["lifecycle"]["services"]["composeFile"])
+        if notion_sync_containers() or services_file.exists():
+            raise RuntimeError("a fresh install has a Notion sync container or a rendered services file")
+        passed("no-sync-container-on-a-fresh-install")
+        reply = keeper_host_action("sync.notion_get", {})
+        if reply.get("ok") is not True or reply["result"]["phase"] != "off":
+            raise RuntimeError(f"the Notion sync did not report itself off: {reply}")
+        # Switched on, with no preview ever accepted: still nothing may start or be written for it.
+        reply = keeper_host_action("sync.notion_set", {"enabled": True, "peopleDataSource": ""})
+        if reply.get("ok") is not True or reply["result"]["phase"] == "on":
+            raise RuntimeError(f"switching the Notion sync on without a preview put it on: {reply}")
+        if notion_sync_containers() or services_file.exists():
+            raise RuntimeError("the Notion sync started, or its files were rendered, without an accepted preview")
+        refused = keeper_host_action("sync.notion_accept", {"hash": "0" * 64})
+        if refused.get("ok") is not False:
+            raise RuntimeError(f"accepting a preview that was never run was not refused: {refused}")
+        if keeper_host_action("sync.notion_set", {"enabled": False, "peopleDataSource": ""}).get("ok") is not True:
+            raise RuntimeError("switching the Notion sync off again failed")
+        passed("notion-sync-starts-nothing-without-an-accepted-preview")
 
         stage("a reboot: the agent comes back with no one running a command")
         simulate_reboot()
