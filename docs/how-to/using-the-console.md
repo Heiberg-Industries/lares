@@ -164,7 +164,9 @@ asking first. Revoking a series does not delete its history; it goes back to nee
 You switch a series on by asking the agent. Meeting follow-ups read your meeting notes from Notion,
 so they need the id of your Meetings database; with it unset the schedule says so each time it runs. Set it under
 Settings, Notion, Meetings database (owner only; saving restarts the agents that read it); see the
-install guide, "Meeting follow-ups and Notion".
+install guide, "Meeting follow-ups and Notion". Just below it, the optional **Notion sync** (meeting
+attendees and People records, once an hour) is off until you switch it on, run a preview that shows
+what it would do, and accept it; see "The Notion sync (optional)" in the install guide.
 
 ### Voice (Email writing style)
 

@@ -72,3 +72,21 @@ it('deletedAgents names only agents with neither a definition nor a resource row
   expect(await deletedAgents(pool([{ name: 'chief' }]), ['chief', 'ghost'])).toEqual(new Set(['ghost']));
   expect(await deletedAgents(pool([]), [])).toEqual(new Set());
 });
+it('lists the Notion sync as a managed service exactly while it is allowed to run, and never while it is not', async () => {
+  const { planNotionSync, syncPlanInput } = await import('../lib/sync-service.js');
+  const MEETINGS = '11111111-1111-4111-8111-111111111111';
+  const c = config();
+  c.credentials = { ...c.credentials!, administrator: 'owner@example.com' };
+  c.lifecycle = { ...c.lifecycle!, maintenanceAdmission: { hostDirectory: '/x', installationId: 'inst-1', epoch: 1 },
+    runtime: { google: { principal: 'owner', tokenKeyFile: '/s/key', clients: { acme: { clientIdFile: '/s/id', clientSecretFile: '/s/secret' } } } } as never };
+  const hash = planNotionSync({ enabled: true, meetings: MEETINGS, people: null, ack: null, address: null, preview: null }, syncPlanInput(c)).hash!;
+  const withSettings = (values: Record<string, unknown>) => ({ query: vi.fn(async (sql: string, params?: unknown[]) =>
+    /FROM settings WHERE key/.test(sql) ? { rows: params && String(params[0]) in values ? [{ value: values[String(params[0])] }] : [] } : { rows: [] }) } as unknown as Pool);
+  const on = { 'sync.notion.enabled': true, 'notion.meetings_data_source': MEETINGS, 'sync.notion.preview_ack': hash };
+  expect(await credentialConsumers(withSettings(on), c)).toEqual([{ name: 'notion-sync', category: 'managed-service', incarnation: null }]);
+  // Off, never previewed, or previewed for a different configuration: not a consumer.
+  expect(await credentialConsumers(withSettings({}), c)).toEqual([]);
+  expect(await credentialConsumers(withSettings({ ...on, 'sync.notion.preview_ack': '' }), c)).toEqual([]);
+  expect(await credentialConsumers(withSettings({ ...on, 'sync.notion.preview_ack': 'b'.repeat(64) }), c)).toEqual([]);
+  expect(await credentialConsumers(withSettings({ ...on, 'sync.notion.enabled': false }), c)).toEqual([]);
+});

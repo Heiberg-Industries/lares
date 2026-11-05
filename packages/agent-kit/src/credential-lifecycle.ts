@@ -6,9 +6,12 @@ const revision = z.uuid().nullable();
 const name = z.string().regex(/^[a-z][a-z0-9-]{1,63}$/);
 export const credentialPhaseSchema = z.enum(['not-configured', 'staging', 'testing', 'pending-test', 'test-failed', 'pending-apply', 'discarding', 'applying', 'disconnecting', 'applied', 'disconnected', 'rolling-back', 'recovery-required']);
 export const credentialConsumerSchema = z.object({
-  name, category: z.enum(['owned-agent', 'unmanaged-service', 'external-binding', 'runtime-not-ready']),
+  // managed-service: a service of the engine itself (the Notion sync) that the keeper restarts with the key, like an agent.
+  name, category: z.enum(['owned-agent', 'managed-service', 'unmanaged-service', 'external-binding', 'runtime-not-ready']),
   incarnation: revision,
 }).strict();
+/** Consumers the keeper can quiesce, restart with a new key and verify: agents it owns and its own managed services. */
+export const activatableConsumer = (c: { category: string }): boolean => c.category === 'owned-agent' || c.category === 'managed-service';
 export const credentialProgressSchema = z.object({ name, revision, state: z.enum(['pending', 'complete', 'failed']) }).strict();
 export const credentialTestSchema = z.object({
   revision: z.uuid(), outcome: z.enum(['passed', 'refused', 'rate-limited', 'unavailable', 'unexpected']),

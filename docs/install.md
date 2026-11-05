@@ -111,7 +111,9 @@ folder in section 7.
 
 An agent is a definition, not a build ([ADR-0015](decisions/0015-agents-are-definitions-resolved-at-runtime.md)).
 You do not write `agent.json`, `duties.md` or `voice.md` by hand to install. The console's
-"new agent" page creates them from a role template and the keeper saves them.
+"new agent" page creates them from a role template and the keeper saves them. If you already
+have agents on another server, bring them across as folders instead: see "Bring your existing
+agents" in section 6.
 
 ## 4. Settings and secrets
 
@@ -336,6 +338,46 @@ file must be inside `/etc/lares/secrets/`, the only folder the check can see. Ex
 nothing failed; 1 means at least one check did. More in
 [`services/box/README.md`](../services/box/README.md#lares-doctor).
 
+### Bring your existing agents
+
+If you ran Lares before, each of your agents is a folder with three files: `agent.json`,
+`duties.md` and `voice.md`. Copy those folders to this server (for example into
+`/root/old-agents/`, one folder per agent), then run:
+
+```bash
+sudo lares agent import /root/old-agents
+```
+
+The folder you name can be one agent's folder, or a folder of agent folders. Do not copy
+them into `/srv/lares/agents` yourself; the keeper writes that folder.
+
+The command lists what it will create (each agent's name, role and model) and asks for a yes.
+Add `--yes` to skip the question. Each agent is created the same way as in the console's
+"new agent" page, with the same checks, and each is handled separately: one that is refused does
+not stop the others, and the summary at the end says which were created and why any were refused.
+
+What to know first:
+
+- **The agent limit.** Before importing, raise the agent limit in Settings → Agents to the
+  number of agents you will import (plus any this server already has). The command checks the
+  limit for the whole batch before it creates anything; if the limit is too low it says which
+  number to set and imports nothing.
+- **Keys are new.** Each agent gets a fresh key on this server. Nothing secret is read from the
+  folders.
+- **Sign-ins for chat doors and outside tools are not in the folders.** A door that needs one
+  (Slack, Telegram) is refused until its token is in `/srv/lares/secrets`. Bring those across
+  with the secrets bundle (see "Restoring onto a new server" in section 9), then run the
+  import again.
+- **Roles.** An agent's role must be `chief-of-staff` or `creative`. A definition whose role
+  is no longer part of the engine (for example `travel`) is refused by name. Keep its folder
+  as data; it is not imported and does not run.
+- **Names.** A name that already exists on this server is refused. Rename the folder's agent
+  in its `agent.json` first, or retire the existing one.
+- **The Vault is separate.** Notes and memory are not part of an agent folder.
+
+When an agent is created, adopt it on its Access tab in the console, then start it with
+`sudo lares agent start <name>`. Importing needs no restore and no backup.
+
 ## 7. The console and the deadline calendar file
 
 The console is the web page at your domain. Use it to create and edit agents, grant what they
@@ -494,6 +536,33 @@ installation may still carry it in `/etc/lares/keeper.json` under
 `defaultBindings["chief-of-staff"].environment.NOTION_MEETINGS_DATA_SOURCE_ID`; that value is used
 until you save one in the console, but the installer rewrites that file on every run, so set it in
 the console instead.
+
+### The Notion sync (optional)
+
+The Notion sync keeps two things in Notion up to date once an hour: the **Attendees** of your
+meetings (read from the Google calendar) and your **People** records (read from the contacts
+connection). It is off on every new installation and it needs no file edits. You set it up in the
+console under Settings, Notion, Notion sync:
+
+1. Set the Meetings database (above) and connect the Notion key (Connections page). Meeting
+   attendees also need a connected Google calendar; People records need the contacts connection and
+   a People database id, which you paste into the field there and Save. The card lists, in plain
+   words, whatever is still missing.
+2. Choose **Switch on**. Nothing runs yet.
+3. Choose **Run preview**. The server reads Notion and your calendar once and writes nothing; it
+   then shows, for each part, how many entries it would add, update, leave alone, or leave for you
+   to look at. A preview can take a few minutes.
+4. Read it. **Accept and start** starts the sync. Only the installation's owner can do any of this.
+
+The acceptance belongs to the exact settings you previewed. If you change the Meetings database or
+the People database, or the installation changes, the sync stops until you run and accept a new
+preview. **Switch off** stops it and forgets the acceptance. The card shows when it last ran.
+
+Changing the Notion key (apply, replace or disconnect it on the Connections page) stops the sync,
+moves the key and starts it again, the same way it restarts agents. A restored installation never
+starts syncing by itself: a restore removes the sync, switches it off and forgets the acceptance, so
+you run and accept a new preview. This release syncs only attendees and People records; pages and
+transcripts between your Vault and Notion are not part of it yet.
 
 ### Business data and other agent settings
 
@@ -718,6 +787,11 @@ that evidence by hand; have an operator review the server before choosing a reco
 
 This path has been tested with stand-ins only. Treat the first real restore as a rehearsal:
 do it on a spare server before you need it.
+
+If you have no backup, or only want your agents and not the whole installation, copy the agent
+folders across and use `lares agent import` instead (section 6, "Bring your existing agents").
+A restore replaces everything and refuses a server that already has an agent; the import adds
+agents to a server that is already running.
 
 To take everything with you, `/opt/lares/current/services/box/ops/export.sh` writes one archive; the runbook explains
 how to check it before relying on it.

@@ -439,6 +439,10 @@ it('refuses all findings before writes, enforces matching slug, and save cannot 
     await expect(create('bookkeeper', { definition: { ...GOOD, duties: '../secret' } })).rejects.toThrow('duties');
     await expect(create('bookkeeper', { definition: { ...GOOD, doors: [{ kind: 'telegram', enabled: false }] } })).resolves.toBeTruthy();
 });
+it('keeps the name of the Notion sync service for itself', async () => {
+    await expect(create('notion-sync')).rejects.toThrow(/name of the Notion sync service/);
+    expect(existsSync(join(agentsDir, 'notion-sync'))).toBe(false);
+});
 it('serializes ceiling races across separate registration instances and refuses host overrides', async () => {
     register(1);
     const first = create('first');
@@ -708,6 +712,18 @@ it('the administrator sets the Notion meetings source in either spelling, stored
     expect(applied.mock.calls.map(c => c[0]).sort()).toEqual(['chief-a', 'chief-b']);
     expect(result).toMatchObject({ value: SOURCE, restarted: ['chief-a'], waiting: ['chief-b'], stopped: [] });
     expect((await pool.query("SELECT changed_by FROM settings_audit WHERE key='notion.meetings_data_source' ORDER BY id DESC LIMIT 1")).rows[0].changed_by).toBe(OWNER);
+});
+it('tells the Notion sync when the meetings source changes, because its accepted preview depends on it', async () => {
+    await chiefRows('chief-a');
+    const synced = vi.fn(async (_actor: string) => {});
+    resetActions();
+    registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, backup, ceiling: async () => 2, syncChanged: synced,
+        compose: { ...compose, applyInstallationSettings: vi.fn(async () => 'restarted'), meetingsSourceFallback: () => undefined } as any,
+        administrator: OWNER,
+        roleInfo: (r) => ({ roleMd: readFileSync(join(repo, 'packages/agent-kit/templates', r, 'role.md'), 'utf8'), deployedTools: deployedToolsFor(join(repo, 'services', r)) }) });
+    await runAction('settings.notion_meetings_set', { dataSource: SOURCE }, asOwner());
+    expect(synced).toHaveBeenCalledWith(OWNER);
+    expect(await meetingsNow()).toBe(SOURCE);
 });
 it('refuses a value that is not a Notion id, changing nothing and restarting nothing', async () => {
     await chiefRows('chief-a');

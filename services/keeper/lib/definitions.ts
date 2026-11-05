@@ -11,6 +11,7 @@ import { validateDefinition, doorSecretName } from '@lares/agent-kit/definition-
 import { rememberValid } from '@lares/agent-kit/definition-cache';
 import { KeeperRefusedError, registerAction, type ActionContext } from './actions.js';
 import { DOOR_FILES } from './compose-agents.js';
+import { NOTION_SYNC_NAME } from './sync-service.js';
 import { appliedDefinitionGeneration, clearUnknownApplyBaseline, forgetDefinitionGeneration, hasFirstActivation, hasUnknownApplyBaseline, markFirstActivation, markUnknownApplyBaseline, preserveDefinitionGeneration, publishDefinition, plainDirectory, preservedDefinitionGeneration, restoreDefinitionGeneration, syncDefinitionDirectory } from './definition-files.js';
 import type { Backup } from './git-backup.js';
 import { totalmem } from 'node:os';
@@ -19,6 +20,7 @@ import { ceilingFor, HEADROOM_BYTES, STACK_ESTIMATE_BYTES, PER_AGENT_ESTIMATE_BY
 import { normaliseNotionId, readSetting, writeSetting } from './settings.js';
 import { CONSOLE_ENVIRONMENT, CONSOLE_ENVIRONMENT_BY_KEY } from './agent-environment.js';
 import { withDefinitionNamespace } from './definition-namespace.js';
+import { isRetiredRole } from './runtime-bindings.js';
 const NAME_RE = /^[a-z][a-z0-9-]{1,30}$/;
 const ROLES = ['chief-of-staff', 'creative'] as const;
 export type DefinitionRole = typeof ROLES[number];
@@ -57,6 +59,8 @@ export interface DefinitionStorage {
 }
 export interface DefinitionOptions {
     namespaceGuard?(): Promise<void>;
+    /** Called after the meetings source changes: the Notion sync's configuration (and so its accepted preview) depends on it. */
+    syncChanged?(actor: string): Promise<void>;
     pool: Pool;
     agentsDir: string;
     retiredDir: string;
@@ -193,6 +197,8 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         if (create) {
             if (!o.compose.create)
                 refused('agent creation is unavailable until lifecycle provisioning is configured');
+            if (input.name === NOTION_SYNC_NAME)
+                refused(`${NOTION_SYNC_NAME} is the name of the Notion sync service; choose another name for the agent`);
             if (hasPath(path) || previous)
                 refused('name already exists; delete its retired definition before reusing it');
             const ceiling = await o.ceiling();
@@ -449,6 +455,19 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 refused('starting point and definition role must match');
             return save(input, ctx, true);
         }) });
+    // Bringing an existing agent folder onto this installation. Host command only (root on the
+    // server), so only the installation's owner can reach it. It is the console's create with a
+    // plainer refusal for a retired role: the same validation, never-widen check, name clash,
+    // agent limit, role list, publication, record and provisioning. Door tokens are never read
+    // from the folder; a door that needs one is refused by the same secret check until it is in
+    // the secrets folder.
+    registerAction({ name: 'definition.import', hostOnly: true, input: writeInput, successDetail, run: (input, ctx) => locked(() => {
+            const role = (input.definition as { role?: unknown } | null)?.role;
+            if (isRetiredRole(role))
+                refused(`"${role}" is a role this version of Lares no longer runs, so ${input.name} was not imported`);
+            // A folder from an older release gets the same conversion a stored definition gets on save.
+            return save({ ...input, definition: migrateTrackRoutingDefinition(input.definition) }, ctx, true);
+        }) });
     const countActive = () => readdirSync(o.agentsDir, { withFileTypes: true }).filter(e => !e.name.startsWith('.') && (e.isDirectory() || e.isSymbolicLink())).length;
     const mayChange = (ctx: ActionContext) => ctx.host === true || (o.administrator !== undefined && ctx.actor === o.administrator);
     async function capacity(ctx: ActionContext) {
@@ -491,6 +510,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             if (value === null)
                 refused('That is not a Notion data source id. It is 32 letters and digits, with or without dashes.');
             await writeSetting(o.pool, MEETINGS_KEY, value, ctx.actor);
+            await o.syncChanged?.(ctx.actor);
             const restarted: string[] = [], waiting: string[] = [], stopped: string[] = [];
             for (const name of await chiefNames()) {
                 const outcome = await o.compose.applyInstallationSettings?.(name) ?? 'waiting';

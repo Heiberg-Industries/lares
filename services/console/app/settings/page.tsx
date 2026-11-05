@@ -9,6 +9,8 @@ import { MeetingsSourceControl } from "../../components/MeetingsSourceControl";
 import { getMeetingsSourceView } from "../../lib/meetings-source";
 import { AgentSettingsSections } from "../../components/AgentSettingsControl";
 import { getAgentSettingsView } from "../../lib/agent-settings";
+import { NotionSyncControl } from "../../components/NotionSyncControl";
+import { getNotionSyncView } from "../../lib/notion-sync";
 import { getGatewayStatusView } from "../../lib/gateway-status";
 import {
   getProactivityView,
@@ -18,7 +20,7 @@ import {
 export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   await requireConsolePage();
-  const [view, gateway, limit, meetings, agentSettings] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView(), getAgentLimitView(), getMeetingsSourceView(), getAgentSettingsView()]);
+  const [view, gateway, limit, meetings, sync, agentSettings] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView(), getAgentLimitView(), getMeetingsSourceView(), getNotionSyncView(), getAgentSettingsView()]);
   const quiet =
     view && !view.errors.length
       ? (rowFor(view.settings, "*", "*")?.effective.quiet ??
@@ -59,6 +61,7 @@ export default async function SettingsPage() {
         <section className="lares-surface">
           <h2 className="lares-section-title">Notion</h2>
           {meetings ? <MeetingsSourceControl view={meetings} /> : <p className="lares-muted">The meetings database setting could not be loaded.</p>}
+          {sync && <NotionSyncControl initial={sync} />}
         </section>
         {agentSettings ? <AgentSettingsSections settings={agentSettings.settings} canChange={agentSettings.canChange} /> : (
           <section className="lares-surface">

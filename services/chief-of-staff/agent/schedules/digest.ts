@@ -5,6 +5,10 @@
  * gateway, file the confident ones (write + retire the source in ONE commit), record a skip and
  * ask about the rest, then post ONE Slack summary with any error detail as a thread reply.
  *
+ * NO VAULT FOLDER (an engine-image install): the Vault is reached through keeper
+ * (`lib/digest/keeper-ports.ts`). Saved links and attachments then stay in the inbox, because
+ * articles cannot be filed through keeper yet.
+ *
  * ARTICLES: a saved link the reader can open is filed as an article note with a text companion
  * (`lib/digest/article-file.ts`), at most 20 model calls per pass, oldest saves first. Where it
  * goes is the installation's `LARES_ARTICLE_AREA` setting (`lib/digest/article-area.ts`), and the
@@ -76,6 +80,9 @@ import { makeEnrich } from "../../lib/digest/enrich.js";
 import { digestReadability } from "../../lib/digest/readability.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { agentName } from "../../lib/agent-name.js";
+import { makeScheduledVault, scheduledVaultMounted } from "../../lib/scheduled-vault.js";
+import { makeKeeperDigestPorts, type KeeperDigestPorts } from "../../lib/digest/keeper-ports.js";
+import { DEFAULT_MAX_CLASSIFY } from "../../lib/digest/runner.js";
 
 /** Must match the producer's own constant (`agent/tools/digest_run.ts`), which polls on agent. */
 
@@ -132,6 +139,29 @@ export function listInboxFiles(root: string = vaultRoot()): { path: string; body
   return found.map((e) => ({ path: e.rel, body: readFileSync(e.abs, "utf8") }));
 }
 
+/** The ports plus, on a mounted Vault folder only, its root (the article filer works on folders). */
+type DigestPorts = KeeperDigestPorts & { root?: string };
+
+/**
+ * The Vault ports one pass uses. With a Vault folder mounted they are the file ports; without one
+ * (an engine-image install) they go through keeper (`lib/digest/keeper-ports.ts`), and articles are
+ * not filed yet.
+ */
+function digestPorts(log: (m: string) => void): DigestPorts {
+  if (!scheduledVaultMounted()) return makeKeeperDigestPorts(makeScheduledVault("digest"), log);
+  const root = vaultRoot();
+  return {
+    root,
+    inbox: makeVaultInbox(root),
+    listInbox: async () => listInboxFiles(root),
+    writeRawNote: (relPath: string, body: string) => writeRawNote({ vaultRoot: root, relPath, bytes: Buffer.from(body, "utf8") }),
+    noteNames: async () => listNotes(root).map((p) => basename(p, ".md")),
+    projects: async () => listTranscriptProjects(root),
+    fileNote: makeDigestFileNote(root),
+    readFile: (rel: string) => fsPromises.readFile(join(root, rel)),
+  };
+}
+
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -157,7 +187,7 @@ async function postToSlack(channel: string, text: string, threadTs?: string): Pr
  * Writes RAW and uncommitted (`writeRawNote`), — a commit per imported bookmark would be noise, and the digest's own filing step commits the
  * note properly a moment later anyway. Unconfigured (no URL or key) is a silent no-op, by design.
  */
-async function karakeepPass(log: (m: string) => void): Promise<void> {
+async function karakeepPass(log: (m: string) => void, ports: DigestPorts): Promise<void> {
   const base = process.env["KARAKEEP_URL"] ?? "";
   let token = "";
   try {
@@ -170,12 +200,11 @@ async function karakeepPass(log: (m: string) => void): Promise<void> {
   const db = getPool();
   const seen = makePgSeenStore(db);
   await seen.ensure();
-  const root = vaultRoot();
   const written = await syncKarakeep({
     client: makeKarakeepClient({ baseUrl: base, token }),
     seen,
     writeNote: async (o) => {
-      await writeRawNote({ vaultRoot: root, relPath: o.relPath, bytes: Buffer.from(o.body, "utf8") });
+      await ports.writeRawNote(o.relPath, o.body);
       // remember the link in the clipping ledger so a Notion clip of the same link in the
       // same inbox is not brought in twice. Best effort: Karakeep's own seen table stays the truth.
       try {
@@ -195,11 +224,11 @@ async function karakeepPass(log: (m: string) => void): Promise<void> {
  * enriches and files what it brings in. A failure is NOT swallowed: `clippingPass` records it,
  * opens a repair and hands back a line for this pass's digest summary. No model call here.
  */
-async function clippingStep(log: (m: string) => void): Promise<string[]> {
+async function clippingStep(log: (m: string) => void, ports: DigestPorts): Promise<string[]> {
   try {
     const result = await clippingPass({
       db: getPool(),
-      inbox: makeVaultInbox(vaultRoot()),
+      inbox: ports.inbox,
       token: () => readNotionToken(),
       makeClient: (token) => makeNotionClient({ token, proxyUrl: process.env["EGRESS_PROXY_URL"] }),
       log,
@@ -229,7 +258,8 @@ export async function runDigestPass(
 ): Promise<void> {
   const db = getPool();
   const log = (m: string) => console.log(`digest: ${m}`);
-  const root = vaultRoot();
+  const ports = digestPorts(log);
+  const keeperBacked = ports.root === undefined;
 
   // Owner's choice of source (Clipping card). No row, or a box without migration 092,
   // is today's behaviour: each source runs if it is set up. `notion` skips Karakeep; `karakeep`
@@ -242,19 +272,20 @@ export async function runDigestPass(
   // Best-effort: a Karakeep hiccup must never block the digest itself.
   if (choice === "notion") log("karakeep: skipped (clipping is set to Notion)");
   else {
-    try { await karakeepPass(log); }
+    try { await karakeepPass(log, ports); }
     catch (e) { console.error("digest: karakeep sync failed (continuing):", e); }
   }
 
   // Best-effort for the digest, never silent for the owner: a failure becomes a notice below.
   let notices: string[] = [];
   if (choice === "karakeep") log("clipping: skipped (clipping is set to Karakeep)");
-  else notices = await clippingStep(log);
+  else notices = await clippingStep(log, ports);
 
   // Articles child 1b. Where articles go is the installation's setting (LARES_ARTICLE_AREA,
   // default shared), and the shared area is offered to the filer only when THIS agent's own
   // definition grants it write there. Read once, so the whole pass agrees with itself.
-  const targets = await articleTargets({
+  // On an install with no Vault folder articles are not filed yet; the filer is not built there.
+  const targets = keeperBacked ? undefined : await articleTargets({
     readDefinition: async () => (await thisAgent(undefined)).loaded.definition,
     resolveShared: () => resolveSharedRoot(),
     log,
@@ -264,19 +295,21 @@ export async function runDigestPass(
     agent: agentName(),
     mode,
     notices,
-    listInbox: async () => listInboxFiles(root),
+    listInbox: () => ports.listInbox(),
     alreadySkipped: () => listSkippedPaths(db, agentName()),
-    noteNames: async () => listNotes(root).map((p) => basename(p, ".md")),
+    noteNames: () => ports.noteNames(),
     // Read from the private store each pass: the folders that hold a transcripts/ folder.
-    projects: async () => listTranscriptProjects(root),
+    projects: () => ports.projects(),
     llm: (prompt: string) => gatewayComplete(prompt, DIGEST_LLM_OPTIONS),
-    fileNote: makeDigestFileNote(root),
-    fileArticle: makeArticleFiler({
-      privateRoot: root,
-      sharedRoot: targets.sharedRoot,
-      articleArea: targets.articleArea,
-      mayWritePrivate: targets.mayWritePrivate,
-    }),
+    fileNote: ports.fileNote,
+    ...(targets && ports.root !== undefined ? {
+      fileArticle: makeArticleFiler({
+        privateRoot: ports.root,
+        sharedRoot: targets.sharedRoot,
+        articleArea: targets.articleArea,
+        mayWritePrivate: targets.mayWritePrivate,
+      }),
+    } : { maxClassify: DEFAULT_MAX_CLASSIFY }),
     // The clipping ledger keeps where each article went. Best effort: filing never waits on it.
     onFiled: makeLedgerOnFiled(db, log),
     recordSkip: (path, reason) => recordDigestSkip(db, { agent: agentName(), path, reason }),
@@ -343,7 +376,7 @@ export async function runDigestPass(
     log,
     enrich: makeEnrich({
       readability: digestReadability(),
-      readFile: (rel: string) => fsPromises.readFile(join(root, rel)),
+      readFile: (rel: string) => ports.readFile(rel),
     }),
   });
 

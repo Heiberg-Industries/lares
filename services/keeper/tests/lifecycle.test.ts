@@ -329,6 +329,15 @@ it('clones an owned workflow database, seals before starting and reserves the wh
  expect((await pool.query('SELECT datname FROM pg_database WHERE datname=$1',[row.workflow_database])).rows).toEqual([]);
  expect((await pool.query('SELECT * FROM standing_facts')).rows).toEqual([{value:'shared-owner'}]);
 });
+it('puts a managed service in the same firewall rules and never hands its address to a new agent',async()=>{
+ const l=lifecycle();
+ l.setManagedServices({egress:async()=>[{name:'notion-sync',address:'172.18.0.60',hosts:['api.notion.com'],endpoints:[]}],reservedAddresses:async()=>['172.18.0.24']});
+ await l.create('bookkeeper',definition);
+ expect((await l.storage.row('bookkeeper')).address).not.toBe('172.18.0.24');
+ const squid=readFileSync(join(config.egressDir,'squid.conf'),'utf8');
+ expect(squid).toContain('acl src_notion-sync src 172.18.0.60');
+ expect(squid).toContain('api.notion.com');
+});
 it('preserves installation bindings on repeated reconciles and refuses missing data before stopping a runtime',async()=>{
  const atlas=join(root,'atlas');mkdirSync(atlas);writeFileSync(join(atlas,'note.md'),'existing data');
  const integrationKey=join(root,'secrets','notion');writeFileSync(integrationKey,'test-only');

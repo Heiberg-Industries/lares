@@ -1,9 +1,22 @@
 import type { Pool } from "pg";
 import { z } from "zod";
 import { CONSOLE_ENVIRONMENT } from "./agent-environment.js";
+const NOTION_ID = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+const previewCounts = z.object({ create: z.number().int().nonnegative(), adoptPatch: z.number().int().nonnegative(), skip: z.number().int().nonnegative(), conflict: z.number().int().nonnegative() }).strict();
 export const SETTING_KEYS = { "models.alias_prefix": z.string().regex(/^[a-z0-9]+$/), "agents.ceiling": z.number().int().nonnegative(), "agents.backup_remote": z.string(), "house.name": z.string(),
   // The Notion database the meeting follow-up schedule reads. "" means "none, on purpose".
-  "notion.meetings_data_source": z.union([z.literal(""), z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)]),
+  "notion.meetings_data_source": z.union([z.literal(""), NOTION_ID]),
+  // The Notion sync (an optional managed service, off until configured). The people database the
+  // people pass writes to; "" means that pass is off.
+  "sync.notion.enabled": z.boolean(),
+  "sync.notion.people_data_source": z.union([z.literal(""), NOTION_ID]),
+  // The owner's accepted preview: the hash of the sync configuration that was previewed. Only a preview
+  // whose hash equals the CURRENT configuration's hash lets the service start; "" means none accepted.
+  "sync.notion.preview_ack": z.union([z.literal(""), z.string().regex(/^[a-f0-9]{64}$/)]),
+  // The last preview the keeper ran, with the hash of the configuration it ran against.
+  "sync.notion.preview": z.object({ hash: z.string().regex(/^[a-f0-9]{64}$/), at: z.iso.datetime(), passes: z.record(z.string(), previewCounts) }).strict().nullable(),
+  // The fleet-network address the service holds (egress is scoped by source address). Keeper-owned.
+  "sync.notion.address": z.ipv4(),
   // The console-settable agent environment values (agent-environment.ts). "" means "none, on purpose".
   ...Object.fromEntries(CONSOLE_ENVIRONMENT.map(s => [s.setting, z.string().max(2048)])) as Record<string, z.ZodString> } as const;
 function schema(key: string) {
