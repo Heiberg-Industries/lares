@@ -18,6 +18,7 @@ import { totalmem } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { ceilingFor, HEADROOM_BYTES, STACK_ESTIMATE_BYTES, PER_AGENT_ESTIMATE_BYTES, AGENT_LIMIT_MAX } from './ceiling.js';
 import { normaliseNotionId, readSetting, writeSetting } from './settings.js';
+import { CONSOLE_ENVIRONMENT, CONSOLE_ENVIRONMENT_BY_KEY } from './agent-environment.js';
 import { withDefinitionNamespace } from './definition-namespace.js';
 import { isRetiredRole } from './runtime-bindings.js';
 const NAME_RE = /^[a-z][a-z0-9-]{1,30}$/;
@@ -43,6 +44,8 @@ export interface DefinitionCompose {
     applyInstallationSettings?(name: string): Promise<'restarted' | 'waiting' | 'stopped'>;
     /** What the installation file alone gives this agent for the Notion meetings source. */
     meetingsSourceFallback?(name: string): string | undefined;
+    /** What the installation file alone gives this agent for one console-settable environment key. */
+    environmentFallback?(name: string, key: string): string | undefined;
     /** The lifecycle owns provisioning, compose generation and start. Absent = refuse create BEFORE writes. */
     create?(name: string, definition: AgentDefinition): Promise<unknown>;
 }
@@ -514,6 +517,44 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 (outcome === 'restarted' ? restarted : outcome === 'stopped' ? stopped : waiting).push(name);
             }
             return { value: value || null, restarted, waiting, stopped };
+        }) });
+    const rolesOf = async (roles: readonly string[]) => (await db().query("SELECT name FROM agent_definitions WHERE status<>'retired' AND definition->>'role'=ANY($1::text[]) ORDER BY name", [roles])).rows.map(r => String(r.name));
+    registerAction({ name: 'settings.agent_environment_get', input: z.strictObject({}), run: async (_input, ctx) => {
+            const settings = [];
+            for (const entry of CONSOLE_ENVIRONMENT) {
+                const stored = await readSetting(o.pool, entry.setting);
+                const names = await rolesOf(entry.roles);
+                const fallback = names.map(n => o.compose.environmentFallback?.(n, entry.key)).find(v => !!v);
+                settings.push({ key: entry.key, section: entry.section, label: entry.label, description: entry.description,
+                    value: typeof stored === 'string' ? (stored || null) : (fallback ?? null),
+                    from: typeof stored === 'string' ? 'console' : fallback ? 'installation file' : 'none', agentCount: names.length });
+            }
+            return { settings, canChange: mayChange(ctx) };
+        } });
+    registerAction({ name: 'settings.agent_environment_set', input: z.strictObject({ key: z.string().max(80), value: z.string().max(4096) }),
+        successDetail: (r: { key: string; value: string | null }) => JSON.stringify({ environmentKey: r.key, value: r.value ? 'set' : 'cleared' }),
+        run: ({ key, value }, ctx) => locked(async () => {
+            if (!mayChange(ctx))
+                refused("Only the installation's owner can change agent settings.");
+            const entry = CONSOLE_ENVIRONMENT_BY_KEY.get(key);
+            if (!entry)
+                refused(`${key} cannot be changed in the console.`);
+            const trimmed = value.trim();
+            let stored = '';
+            if (trimmed !== '') {
+                const checked = entry!.check(trimmed);
+                if ('error' in checked)
+                    refused(`${entry!.label}: ${checked.error}`);
+                else
+                    stored = checked.value;
+            }
+            await writeSetting(o.pool, entry!.setting, stored, ctx.actor);
+            const restarted: string[] = [], waiting: string[] = [], stopped: string[] = [];
+            for (const name of await rolesOf(entry!.roles)) {
+                const outcome = await o.compose.applyInstallationSettings?.(name) ?? 'waiting';
+                (outcome === 'restarted' ? restarted : outcome === 'stopped' ? stopped : waiting).push(name);
+            }
+            return { key, value: stored || null, restarted, waiting, stopped };
         }) });
     registerAction({ name: 'definition.get', input: nameInput, run: async ({ name }) => {
             roots();
