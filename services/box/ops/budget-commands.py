@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""`lares budget setup` and `lares agent start`: switch model spending on for an installation.
+"""`lares budget setup`, `lares agent start` and `lares agent import`: switch model spending on for an
+installation, start its agents, and bring existing agent folders across.
 
 Runs as root on the host, with no Node on the host. Anything that holds money rules runs in a
 throwaway container of the pinned engine image, or inside the keeper over its host-only socket:
@@ -13,6 +14,10 @@ render (outside tools, credentials).
 Running either command again continues from what is actually on disk and in the database. The
 one step that cannot be repeated is creating the two ledgers; the journal has no reset, so a
 leftover from an interrupted creation stops the command and says so.
+
+`lares agent import <dir>` reads the three files of each agent folder here on the host and sends their
+text to the keeper, which creates the agent exactly as a console save does. Nothing is copied into
+/srv/lares/agents by hand.
 
 Exit codes: 0 ok · 64 bad usage · 77 not root · 78 refused or stopped; the reason is printed.
 """
@@ -66,6 +71,12 @@ QUERY_TIMEOUT_SECONDS = 10
 NATIVE_TIMEOUT_SECONDS = 25
 RECONCILE_TIMEOUT_SECONDS = 90
 MAX_REPLY_BYTES = 1_048_576
+
+# Largest request the keeper's socket takes is 256 KiB; leave room for the envelope.
+MAX_IMPORT_BYTES = 240_000
+# Roles an older release ran that this one does not. The keeper makes the real decision and says
+# so; this only keeps such a folder out of the count that the agent limit is checked against.
+RETIRED_ROLES = ("travel",)
 
 # USD per million tokens from the provider's pricing page, checked 2 November 2026. The owner
 # confirms them; any other model means typing prices in. A model whose price changes with prompt
@@ -850,6 +861,131 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
     return code
 
 
+class Folder:
+    """One agent folder read from disk, or the plain reason it cannot be imported."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.name = path.name
+        self.role = ""
+        self.model = ""
+        self.payload: dict[str, Any] | None = None
+        self.problem: str | None = None
+
+
+def read_agent_folder(path: Path) -> Folder:
+    folder = Folder(path)
+    texts: dict[str, str] = {}
+    for file in ("agent.json", "duties.md", "voice.md"):
+        target = path / file
+        try:
+            info = target.lstat()
+        except OSError:
+            folder.problem = f"{file} is missing"
+            return folder
+        if not stat.S_ISREG(info.st_mode):
+            folder.problem = f"{file} is not a plain file"
+            return folder
+        if info.st_size > MAX_IMPORT_BYTES // 3:
+            folder.problem = f"{file} is too large to send to the keeper"
+            return folder
+        try:
+            texts[file] = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            folder.problem = f"{file} could not be read as text"
+            return folder
+    try:
+        definition = json.loads(texts["agent.json"])
+    except ValueError:
+        folder.problem = "agent.json is not valid JSON"
+        return folder
+    if not isinstance(definition, dict) or not isinstance(definition.get("name"), str) or not definition["name"]:
+        folder.problem = "agent.json does not name the agent"
+        return folder
+    folder.name = definition["name"]
+    folder.role = str(definition.get("role") or "")
+    folder.model = str(definition.get("model") or "")
+    if folder.role in RETIRED_ROLES:
+        folder.problem = f'"{folder.role}" is a role this version of Lares no longer runs'
+        return folder
+    folder.payload = {"name": folder.name, "definition": definition, "duties": texts["duties.md"], "voice": texts["voice.md"]}
+    if len(json.dumps(folder.payload)) > MAX_IMPORT_BYTES:
+        folder.problem = "its files are too large to send to the keeper together"
+        folder.payload = None
+    return folder
+
+
+def find_agent_folders(directory: Path) -> list[Path]:
+    """<dir> is one agent folder, or a folder of agent folders."""
+    if not directory.is_dir():
+        raise Stop(f"{directory} is not a folder. Nothing was imported.")
+    if (directory / "agent.json").exists():
+        return [directory]
+    found = sorted(entry for entry in directory.iterdir() if entry.is_dir() and not entry.name.startswith("."))
+    if not found:
+        raise Stop(f"{directory} holds no agent folders. An agent folder has agent.json, duties.md and voice.md. Nothing was imported.")
+    return found
+
+
+def agent_import(installation: Installation, options: argparse.Namespace) -> int:
+    folders = [read_agent_folder(path) for path in find_agent_folders(Path(options.directory))]
+    taken = {entry.get("name") for entry in installation.host_action("definition.list", {}) or []}
+    seen: set[str] = set()
+    for folder in folders:
+        if folder.problem:
+            continue
+        if folder.name in taken:
+            folder.problem = "an agent with that name already exists on this server"
+        elif folder.name in seen:
+            folder.problem = "another folder in this batch has the same name"
+        seen.add(folder.name)
+    ready = [folder for folder in folders if not folder.problem]
+    # The limit is checked once, for the whole batch, before anything is created.
+    if ready:
+        capacity = installation.host_action("definition.capacity", {})
+        limit, active = capacity.get("ceiling"), capacity.get("activeCount", 0)
+        if limit is None:
+            raise Stop("This server's agent limit has not been set yet. Set it in Settings > Agents in the console, then run this again. Nothing was imported.")
+        needed = active + len(ready)
+        if needed > limit:
+            raise Stop(f"This server's agent limit is {limit} and it already has {active}. To import {len(ready)} more, "
+                       f"raise the agent limit to {needed} in Settings > Agents in the console, then run this again. Nothing was imported.")
+    say(f"Found {len(folders)} agent folder{'s' if len(folders) != 1 else ''} in {options.directory}.")
+    for folder in ready:
+        say(f"  will create  {folder.name}  ({folder.role or 'no role'}, model {folder.model or 'none'})")
+    for folder in folders:
+        if folder.problem:
+            say(f"  will skip    {folder.name}: {folder.problem}")
+    if not ready:
+        raise Stop("There is nothing to import. Nothing was changed.")
+    if not options.yes:
+        say("Each agent gets a fresh key. Door tokens are not read from these folders; add them with your secrets bundle.")
+        answer = ask(f"Create {len(ready)} agent{'s' if len(ready) != 1 else ''} now? [y/N] ")
+        if answer.lower() not in ("y", "yes"):
+            say("Nothing was imported.")
+            return 0
+    created: list[str] = []
+    refused: list[tuple[str, str]] = [(folder.name, folder.problem) for folder in folders if folder.problem]
+    for folder in ready:
+        say(f"Importing {folder.name}.")
+        try:
+            installation.host_action("definition.import", folder.payload, RECONCILE_TIMEOUT_SECONDS)
+            created.append(folder.name)
+        except KeeperRefused as error:
+            refused.append((folder.name, str(error).removeprefix("keeper: ")))
+        except (KeeperUnclear, subprocess.TimeoutExpired):
+            refused.append((folder.name, "the keeper could not confirm it in time; check the console before importing it again"))
+    say("")
+    for name in created:
+        say(f"  created  {name}")
+    for name, reason in refused:
+        say(f"  refused  {name}: {reason}")
+    if created:
+        say("Next: open the console, adopt each new agent on its Access tab, then start it with:")
+        say("  sudo lares agent start <name>")
+    return 0 if not refused else EX_REFUSED
+
+
 def agent_refresh(installation: Installation, options: argparse.Namespace) -> int:
     """After an update: restart each running agent onto the software this release names. An agent with
     changes waiting, or one the keeper cannot read, is left alone and named."""
@@ -992,6 +1128,9 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     start.add_argument("name")
     start.add_argument("--member", help="the person's sign-in email or member id; the owner when left out")
     start.add_argument("--yes", action="store_true", help="use the suggested prices for model names not priced yet, without asking")
+    import_ = commands.add_parser("agent-import")
+    import_.add_argument("directory", help="one agent folder, or a folder of agent folders")
+    import_.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     commands.add_parser("agent-refresh", help="restart running agents onto this release's software (lares update runs this)")
     return parser.parse_args(argv)
 
@@ -1012,6 +1151,8 @@ def main(argv: list[str]) -> int:
                 return budget_recover(installation, options)
             if options.command == "agent-refresh":
                 return agent_refresh(installation, options)
+            if options.command == "agent-import":
+                return agent_import(installation, options)
             return budget_setup(installation, options) if options.command == "setup" else agent_start(installation, options)
         finally:
             os.close(lock)
