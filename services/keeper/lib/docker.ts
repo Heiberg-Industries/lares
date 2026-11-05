@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createConnection, type Socket } from 'node:net';
 import { promisify } from "node:util";
 import { isIP } from "node:net";
+import { isAbsolute } from "node:path";
 import type { KeeperConfig } from "./config.js";
 const execute = promisify(execFile);
 /** Internal helper, never itself registered as a keeper action. */
@@ -26,6 +27,14 @@ export interface DockerBoundary {
     healthy?(address: string): Promise<boolean>;
     stop(name: string): Promise<void>;
     remove(name: string): Promise<void>;
+    /** A managed (non-agent) service from the keeper's separate services compose file. Fixed operations only. */
+    serviceUp?(file: string, service: string): Promise<void>;
+    /** Stops and removes every container of the service; none left is fine. */
+    serviceRemove?(service: string): Promise<void>;
+    /** Null when no container of the service exists. */
+    serviceInspect?(service: string): Promise<{ running: boolean; image: string; notionRevision: string | null; mounts: { source: string; destination: string }[] } | null>;
+    /** One throw-away container of the service with the given command; resolves with its standard output. */
+    serviceRunOnce?(file: string, service: string, command: readonly string[]): Promise<string>;
     validateSquid(stage: string): Promise<void>;
     reloadSquid(): Promise<void>;
     acknowledgeOutsideStage?(stage: string, sourceAddress: string, proxyUrl: string, deadlineAtMs: number): Promise<void>;
@@ -260,6 +269,13 @@ export function ownedDocker(c: OwnedDockerConfig, request: typeof fetch = global
         throw new Error('keeper: fixed Docker operation failed; reconciliation required');
     } };
     const compose = (args: string[]) => run(['compose', '--project-name', c.project, '--project-directory', c.dir, '-f', c.composeFile, ...args]);
+    const managedService = (service: string) => { if (!/^lares-[a-z][a-z0-9-]{1,30}$/.test(service)) throw new Error('Invalid service'); return service; };
+    const managedFile = (file: string) => { if (!isAbsolute(file) || /[\n\r\0]/.test(file)) throw new Error('Invalid services file'); return file; };
+    const serviceIds = async (service: string) => {
+        const ids = (await run(['ps', '--all', '--quiet', '--filter', `label=com.docker.compose.project=${c.project}`, '--filter', `label=com.docker.compose.service=${managedService(service)}`])).trim().split(/\s+/).filter(Boolean);
+        if (ids.some(id => !/^[a-f0-9]{12,64}$/.test(id))) throw new Error('Invalid owned container inventory');
+        return ids;
+    };
     const stageFile = (stage: string) => { if (!/^[a-f0-9-]{36}$/.test(stage))
         throw new Error('Invalid stage'); return stage; };
     return {
@@ -324,6 +340,30 @@ export function ownedDocker(c: OwnedDockerConfig, request: typeof fetch = global
                 throw new Error('Invalid owned container inventory');
             if (ids.length)
                 await run(['rm', '--force', ...ids]);
+        },
+        serviceUp: async (file, service) => {
+            await run(['compose', '--project-name', c.project, '--project-directory', c.dir, '-f', managedFile(file), 'up', '-d', '--no-deps', '--force-recreate', managedService(service)]);
+        },
+        serviceRemove: async service => {
+            const ids = await serviceIds(service);
+            if (ids.length) await run(['rm', '--force', ...ids]);
+        },
+        serviceInspect: async service => {
+            const ids = await serviceIds(service);
+            if (ids.length === 0) return null;
+            if (ids.length !== 1) throw new Error('Owned service inventory unavailable');
+            const format = '{{json .State.Running}}|{{json .Config.Labels}}|{{json .Config.Image}}|{{json .Mounts}}';
+            const [running, labels, image, mounts] = (await run(['inspect', '--format', format, ids[0]!])).trim().split('|').map(v => JSON.parse(v));
+            return { running: running === true, image, notionRevision: labels?.['lares.notion-revision'] ?? null,
+                mounts: (mounts as any[]).map(m => ({ source: m.Source, destination: m.Destination })) };
+        },
+        serviceRunOnce: async (file, service, command) => {
+            try {
+                const { stdout } = await execute('docker', ['compose', '--project-name', c.project, '--project-directory', c.dir, '-f', managedFile(file), 'run', '--rm', '--no-deps', '--no-TTY', managedService(service), ...command],
+                    { timeout: 600000, maxBuffer: 4 * 1024 * 1024 });
+                return stdout;
+            }
+            catch { throw new Error('keeper: fixed Docker operation failed; reconciliation required'); }
         },
         validateSquid: async (stage) => { await run(['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'SETUID', '--cap-add', 'SETGID', '--security-opt', 'no-new-privileges:true', '--mount', `type=bind,src=${c.egressDir},dst=/config,readonly`, '--entrypoint', 'squid', c.squidImage, '-k', 'parse', '-f', `/config/${stageFile(stage)}.squid`]); },
         reloadSquid: async () => { await run(['exec', c.proxyContainer, 'squid', '-k', 'reconfigure', '-f', '/config/squid.conf']); },

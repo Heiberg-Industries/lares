@@ -88,6 +88,16 @@ describe("runPassesContained — the tick's pass isolation", () => {
     }
   });
 
+  it("records the tick time after the passes, whichever ran, and a failure to record does not make the tick unclean", async () => {
+    const order: string[] = [];
+    expect(await runPassesContained([{ name: "people", run: async () => { order.push("people"); return 0; } }], async () => { order.push("recorded"); })).toBe(true);
+    expect(order).toEqual(["people", "recorded"]);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await runPassesContained([{ name: "people", run: async () => 0 }], async () => { throw new Error("db down"); })).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
+
   it("reports unclean when a pass completes but left bookkeeping failures", async () => {
     expect(await runPassesContained([{ name: "wiki", run: async () => 2 }])).toBe(false);
   });

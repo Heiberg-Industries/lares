@@ -915,6 +915,13 @@ keeper_dc stop </dev/null || midway "Could not stop the keeper."
 CHANGED="the keeper is stopped"
 dc stop console caddy lares-gateway </dev/null || midway "Could not stop console, caddy and the gateway."
 CHANGED="the keeper, console, caddy and gateway are stopped"
+# A restored installation never starts syncing by itself. The Notion sync container, if this server has one,
+# goes now: it writes to the databases that are about to be replaced. Its settings are cleared further down.
+SYNC_CONTAINERS=$(docker ps -a -q --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=lares-notion-sync" </dev/null) \
+  || midway "Could not look for the Notion sync container."
+# shellcheck disable=SC2086 # container ids, one word each
+[ -z "$SYNC_CONTAINERS" ] || docker rm -f $SYNC_CONTAINERS </dev/null >/dev/null || midway "Could not remove the Notion sync container."
+CHANGED="$CHANGED; the Notion sync is stopped"
 if [ "$VAULT_TARGET_PRESENT" = 1 ];then
   PRESERVE_SCRATCH=1
   vault_storage_stage_empty "${PREFIX%/}" "$SCRATCH" || midway 'Could not stage the exact empty target Vault stores.'
@@ -985,6 +992,13 @@ else
     --outside-custody-password-file "$ENGINE_OUTSIDE_CUSTODY_PASSWORD_FILE" \
     || midway 'Restored engine ownership or database grants do not match the required role boundary.'
 fi
+
+# The Notion sync is off after every restore, whatever the snapshot said: switched off, and the owner's
+# accepted preview forgotten, so it needs a new preview before it can start again.
+db_run psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -qc \
+  "DELETE FROM settings WHERE key IN ('sync.notion.enabled','sync.notion.preview_ack','sync.notion.preview')" </dev/null \
+  || midway 'Could not switch the restored Notion sync off.'
+CHANGED="$CHANGED; the Notion sync is switched off"
 
 # Prove every restored per-agent database still has its recorded owner marker and the exact
 # restricted runtime ACL before any Keeper or agent service is restarted.
