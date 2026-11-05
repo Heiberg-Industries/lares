@@ -1,4 +1,4 @@
-import { credentialSlotInput, credentialRevisionInput, credentialActivationInput, credentialGrantInput, credentialGrantPreviewInput, credentialGrantPreviewSchema, credentialTokenInput as token, type CredentialGrantPreview } from '@lares/agent-kit/credential-lifecycle';
+import { activatableConsumer, credentialSlotInput, credentialRevisionInput, credentialActivationInput, credentialGrantInput, credentialGrantPreviewInput, credentialGrantPreviewSchema, credentialTokenInput as token, type CredentialGrantPreview } from '@lares/agent-kit/credential-lifecycle';
 import { KeeperRefusedError, KeeperOutcomeUncertainError, registerAction, type ActionContext } from './actions.js';
 import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, interruptedCredential, inventoryGrants, type CredentialConfig, type CredentialConsumer, type CredentialGrant, type CredentialRecord, type CredentialStatus } from './credential-state.js';
 import type { CredentialJournal, CredentialStore } from './credential-store.js';
@@ -43,7 +43,7 @@ export class Credentials {
     let consumers: CredentialConsumer[];
     try { consumers = await this.consumers(inventoryGrants(r)); }
     catch { return this.dto(r, 'unavailable', 'status-unavailable'); }
-    if (!this.config.inventoryComplete || consumers.some(c => c.category !== 'owned-agent'))
+    if (!this.config.inventoryComplete || consumers.some(c => !activatableConsumer(c)))
       return this.dto(r, 'host-administration-required', 'review-consumers', consumers);
     const status = this.dto(r, r.phase as CredentialStatus['state'], null, consumers);
     if (this.activation) {
@@ -119,7 +119,7 @@ export class Credentials {
       throw new KeeperOutcomeUncertainError();
     const consumers = await this.consumers(inventoryGrants(intent));
     const inventory = (items: CredentialConsumer[]) => JSON.stringify([...items].sort((a, b) => a.name.localeCompare(b.name) || a.category.localeCompare(b.category)));
-    if (!this.config?.inventoryComplete || consumers.some(c => c.category !== 'owned-agent') || inventory(consumers) !== inventory(intent.consumers))
+    if (!this.config?.inventoryComplete || consumers.some(c => !activatableConsumer(c)) || inventory(consumers) !== inventory(intent.consumers))
       throw new KeeperOutcomeUncertainError();
     const next: CredentialRecord = credentialRecordSchema.parse({ ...intent, version: intent.version + 1,
       phase: intent.candidateRevision ? evidence.outcome === 'passed' ? 'pending-apply' : 'test-failed' : 'applied',
