@@ -46,7 +46,7 @@ if "render-native-policy.ts" in text:
     request = json.load(sys.stdin)
     (prefix / "last-policy-request.json").write_text(json.dumps(request))
     print(json.dumps({"policy": {"endpointHash": "e" * 64, "policies": []}, "maximumLiability": "1.0346",
-                      "model": request["providerModel"], "unpricedAliases": ["lares-" + name for name in request.get("purposeModels", {})], "installationLimit": request["installationLimit"],
+                      "model": request["providerModel"], "unpricedAliases": ["lares-" + name for name in request.get("purposeModels", {})] + (["lares-embed"] if request.get("embedding") else []), "installationLimit": request["installationLimit"],
                       "personLimit": request["personLimit"], "prices": request["prices"]}))
 elif "recover" in args:
     report = os.environ["FAKE_RECOVER_" + ("APPLY" if "--apply" in args else "CHECK")]
@@ -223,6 +223,24 @@ class BudgetCommandTests(unittest.TestCase):
                          {"writer": "anthropic/claude-sonnet-4-5", "gate": "anthropic/claude-haiku-4-5"})
         self.assertIn("Not priced yet: lares-writer, lares-gate.", output)
         self.assertIn("calls to them are refused", output)
+
+    def test_setup_passes_the_embedding_model_on_and_says_it_is_not_priced_yet(self) -> None:
+        env = self.prefix / "etc/lares/installation.env"
+        env.write_text(env.read_text() + "LARES_EMBED_MODEL=embed-model\nLARES_EMBED_BASE_URL=https://embed.example.com/v1\nLARES_EMBED_MAX_INPUT_TOKENS=4096\n")
+        code, output = self.run_command(*self.setup_answers())
+        self.assertEqual(code, 0, output)
+        sent = json.loads((self.prefix / "last-policy-request.json").read_text())
+        self.assertEqual(sent["embedding"], {"model": "embed-model", "baseUrl": "https://embed.example.com/v1", "maxInputTokens": "4096"})
+        self.assertIn("Not priced yet: lares-embed.", output)
+        self.assertIn("calls to them are refused", output)
+
+    def test_setup_does_not_guess_the_other_half_of_an_embedding_model(self) -> None:
+        env = self.prefix / "etc/lares/installation.env"
+        env.write_text(env.read_text() + "LARES_EMBED_MODEL=embed-model\n")
+        code, output = self.run_command(*self.setup_answers())
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("embedding", json.loads((self.prefix / "last-policy-request.json").read_text()))
+        self.assertNotIn("Not priced yet", output)
 
     def test_setup_runs_the_sheet_in_order_and_applies_only_the_agreed_files(self) -> None:
         code, output = self.run_command(*self.setup_answers())

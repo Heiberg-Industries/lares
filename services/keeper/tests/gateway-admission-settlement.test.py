@@ -63,13 +63,14 @@ def install_import_stubs():
 
 install_import_stubs()
 import lares_gateway as gateway
-from admission_contract import RequestState, WireEvidence
+from admission_contract import Profile, RequestState, WireEvidence
 
 
 class GatewaySettlementTests(unittest.IsolatedAsyncioTestCase):
     def make_request(self, wire_state="complete"):
         request = RequestState("POST", "/v1/chat/completions", b"{}", "a" * 64, "sk-test")
         request.dispatched = True
+        request.alias = "chat"
         request.allow = {
             "version": 1,
             "nonce": request.nonce,
@@ -102,10 +103,10 @@ class GatewaySettlementTests(unittest.IsolatedAsyncioTestCase):
             request.wire_usage = evidence.finish()
         return request
 
-    def set_runtime(self):
+    def set_runtime(self, profile=None):
         receipts = []
         runtime = object.__new__(gateway.Runtime)
-        runtime.profile = SimpleNamespace(document={"provider": "openai"})
+        runtime.profile = profile or SimpleNamespace(document={"provider": "openai"}, route=lambda alias: SimpleNamespace(format="openai"))
 
         async def rpc(path, body):
             self.assertEqual(path, gateway.SETTLE_PATH)
@@ -139,6 +140,50 @@ class GatewaySettlementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(receipts), 1)
         self.assertEqual(receipts[0]["usage"], request.wire_usage)
         self.assertEqual(receipts[0]["kind"], "terminal-usage")
+
+    def embedding_profile(self):
+        return Profile({"version": 1, "provider": "anthropic", "model": "brain-model", "providerBaseUrl": "https://provider.example.invalid",
+            "aliases": ["lares-brain", "lares-writer", "lares-utility", "lares-gate", "lares-embed"], "maxBodyBytes": 4096, "maxOutputTokens": 123,
+            "embedding": {"alias": "lares-embed", "provider": "openai", "model": "embed-model", "providerBaseUrl": "https://embed.example.invalid/v1",
+                          "maxInputs": 32, "maxInputTokens": 8192}})
+
+    def make_embedding_request(self, reply=None):
+        request = self.make_request("none")
+        request.path, request.alias = "/v1/embeddings", "lares-embed"
+        request.allow["purposeAlias"] = "lares-embed"
+        if reply is not None:
+            evidence = WireEvidence("embedding", "application/json", 200)
+            evidence.feed(json.dumps(reply).encode())
+            request.wire_usage = evidence.finish()
+        return request
+
+    async def test_an_embeddings_reply_settles_from_the_providers_bytes_in_the_embedding_format(self):
+        receipts = self.set_runtime(self.embedding_profile())
+        reply = {"object": "list", "data": [{"object": "embedding", "index": 0, "embedding": [0.5]}], "usage": {"prompt_tokens": 7, "total_tokens": 7}}
+        request = self.make_embedding_request(reply)
+        self.assertEqual(request.wire_usage, {"inputTokens": 7, "outputTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0})
+        # The SDK's rebuilt object is shaped however LiteLLM likes; only the raw bytes are evidence.
+        rebuilt = SimpleNamespace(model_dump=lambda: {"object": "list", "data": [], "usage": {"prompt_tokens": 999}})
+        token = gateway.current_request.set(request)
+        try:
+            self.assertIs(await gateway.gateway_hook.async_post_call_success_hook({}, None, rebuilt), rebuilt)
+        finally:
+            gateway.current_request.reset(token)
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual((receipts[0]["format"], receipts[0]["usage"], receipts[0]["purposeAlias"]), ("embedding", request.wire_usage, "lares-embed"))
+
+    async def test_an_embeddings_reply_without_exact_wire_usage_never_settles(self):
+        receipts = self.set_runtime(self.embedding_profile())
+        for reply in (None, {"object": "list", "data": [{"object": "embedding", "index": 0}], "usage": {"prompt_tokens": 7, "total_tokens": 8}},
+                      {"object": "list", "data": [{"object": "embedding", "index": 0}], "usage": {"prompt_tokens": 7, "total_tokens": 7, "completion_tokens": 3}}):
+            request = self.make_embedding_request(reply)
+            self.assertIsNone(request.wire_usage)
+            token = gateway.current_request.set(request)
+            try:
+                await gateway.gateway_hook.async_post_call_success_hook({}, None, SimpleNamespace(model_dump=lambda: {}))
+            finally:
+                gateway.current_request.reset(token)
+        self.assertEqual(receipts, [])
 
     async def test_early_close_and_stream_exception_do_not_settle(self):
         for failure in ("close", "cancel", "exception"):

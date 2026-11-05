@@ -87,7 +87,7 @@ function optionalConfiguredRegularFile(path: string): string | null {
 }
 
 /** The gateway this render is for: the alias and model it was given, plus any model of its own that
- *  installation.env names for the writer, utility or gate purpose. installation.env sits beside the
+ *  installation.env names for the writer, utility or gate purpose, and the embedding model when it names one. installation.env sits beside the
  *  gateway config file (the same pattern keeper.json is found by). It is optional here, and absent means
  *  no purpose models. When it names the alias or model, they must be the ones this call was given, so
  *  a purpose model can never be paired with a different brain model than the installer read. */
@@ -103,6 +103,15 @@ export function gatewayOptionsFor(gatewayConfigFile: string, alias: string, prov
   if ((settings.LARES_MODEL_ALIAS ?? alias) !== alias || (settings.LARES_MODEL ?? providerModel) !== providerModel)
     throw new Error("The model and alias given to render-stack do not match installation.env, so nothing was rendered.");
   return gatewayOptionsFromSettings({ ...settings, LARES_MODEL_ALIAS: alias, LARES_MODEL: providerModel });
+}
+
+/** True when the gateway serves an embedding model. That model needs its own provider key: refuse here, by name, rather than
+ *  start a gateway that cannot serve it. False needs no key, and the key file, if one is lying about, is ignored. */
+export function requireEmbeddingKey(gatewayOptions: GatewayConfigOptions, secretsDir: string): boolean {
+  if (gatewayOptions.embedding === undefined) return false;
+  if (optionalRegularFile(join(secretsDir, "embed-provider-key")) === null)
+    throw new Error("installation.env names an embedding model, but the embedding provider key (secrets/embed-provider-key) is missing or empty, so nothing was rendered.");
+  return true;
 }
 
 const HELP_TEXT = [
@@ -158,6 +167,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   const gatewayBinding = preparedGatewayBinding(join(dirname(at("gatewayConfigFile")), "keeper.json"), at("domain"));
   const gatewayOptions = gatewayOptionsFor(at("gatewayConfigFile"), at("alias"), at("providerModel"));
   const gatewayProfile = gatewayAdmissionProfile(gatewayOptions);
+  const embeddingKey = requireEmbeddingKey(gatewayOptions, at("secretsDir"));
   // Once budget setup has priced the gateway, the spending policy was reviewed against one exact profile.
   // A render that changes the gateway's models would leave every model call refused with no explanation.
   if (gatewayBinding) assertReviewedPolicyMatchesProfile(gatewayBinding.policyFile, gatewayProfile);
@@ -185,6 +195,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     // The calendar is mounted only when it is already there, so a stranger without one gets no
     // mount and an installation that added one keeps it on every re-run of the installer.
     deadlineCalendarFile: existsSync(calendarFile) ? calendarFile : null,
+    ...(embeddingKey ? { embeddingKey } : {}),
     // Budget setup has bound the gateway: keep that binding on every re-run and update.
     ...(gatewayBinding ? { gatewayAuthority: gatewayBinding } : {}),
   });

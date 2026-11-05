@@ -64,6 +64,63 @@ describe("the generated LiteLLM config", () => {
     expect(sha(gatewayCanonical(gatewayAdmissionProfile(openai)))).toBe("4530a4e272d490b1c183f65fe97b797ebe9090fddb9edb491539017491baaa6b");
   });
 
+  describe("an embedding model", () => {
+    const base = { alias: "lares-brain", providerModel: "anthropic/claude-sonnet-4-5" };
+    const embedding = { model: "mistral-embed", baseUrl: "https://api.mistral.ai/v1" };
+
+    it("adds a fifth alias with its own address and its own key reference, and leaves the chat entries as they were", () => {
+      const doc = parse(renderGatewayConfig({ ...base, embedding })) as any;
+      const plain = parse(renderGatewayConfig(base)) as any;
+      expect(doc.model_list.slice(0, 4)).toEqual(plain.model_list);
+      expect(doc.model_list[4]).toEqual({
+        model_name: "lares-embed",
+        litellm_params: { model: "openai/mistral-embed", api_key: "os.environ/LARES_EMBED_PROVIDER_KEY", api_base: "https://api.mistral.ai/v1", max_retries: 0, num_retries: 0 },
+      });
+      expect({ ...doc, model_list: undefined }).toEqual({ ...plain, model_list: undefined });
+      expect(JSON.stringify(doc)).not.toMatch(/sk-[A-Za-z0-9]/);
+    });
+
+    it("puts the embedding block in the profile only when configured, with the reviewed bounds", () => {
+      expect(gatewayAdmissionProfile({ ...base, embedding })).toMatchObject({
+        aliases: ["lares-brain", "lares-writer", "lares-utility", "lares-gate", "lares-embed"],
+        embedding: { alias: "lares-embed", provider: "openai", model: "mistral-embed", providerBaseUrl: "https://api.mistral.ai/v1", maxInputs: 32, maxInputTokens: 8192 },
+      });
+      expect(gatewayAdmissionProfile({ ...base, embedding: { ...embedding, maxInputTokens: 512 } }).embedding?.maxInputTokens).toBe(512);
+      expect("embedding" in gatewayAdmissionProfile(base)).toBe(false);
+    });
+
+    it("works beside a purpose model, and the embedding provider need not be the chat provider", () => {
+      const options = { ...base, purposeModels: { writer: "anthropic/claude-opus-4-5" }, embedding };
+      const profile = gatewayAdmissionProfile(options);
+      expect(profile.purposeModels).toEqual({ "lares-writer": "claude-opus-4-5" });
+      expect(profile.aliases).toHaveLength(5);
+      expect(profile.embedding?.provider).toBe("openai");
+      expect(profile.provider).toBe("anthropic");
+    });
+
+    it("refuses an unusable model, address or token bound, saying which", () => {
+      expect(() => gatewayAdmissionProfile({ ...base, embedding: { ...embedding, baseUrl: "http://api.mistral.ai/v1" } })).toThrow(/HTTPS/);
+      expect(() => gatewayAdmissionProfile({ ...base, embedding: { ...embedding, baseUrl: "https://api.mistral.ai/v1/" } })).toThrow(/HTTPS/);
+      expect(() => gatewayAdmissionProfile({ ...base, embedding: { ...embedding, baseUrl: "not a url" } })).toThrow(/HTTPS/);
+      expect(() => gatewayAdmissionProfile({ ...base, embedding: { ...embedding, model: "bad model" } })).toThrow(/LARES_EMBED_MODEL/);
+      expect(() => gatewayAdmissionProfile({ ...base, embedding: { ...embedding, maxInputTokens: 0 } })).toThrow(/LARES_EMBED_MAX_INPUT_TOKENS/);
+    });
+
+    it("reads the optional settings in one place and refuses half an answer", () => {
+      const settings = { LARES_MODEL_ALIAS: "lares-brain", LARES_MODEL: "anthropic/claude-sonnet-4-5" };
+      expect(gatewayOptionsFromSettings({ ...settings, LARES_EMBED_MODEL: "mistral-embed", LARES_EMBED_BASE_URL: "https://api.mistral.ai/v1" }))
+        .toEqual({ alias: "lares-brain", providerModel: "anthropic/claude-sonnet-4-5", embedding });
+      expect(gatewayOptionsFromSettings({ ...settings, LARES_EMBED_MODEL: "mistral-embed", LARES_EMBED_BASE_URL: "https://api.mistral.ai/v1", LARES_EMBED_MAX_INPUT_TOKENS: "4096" }).embedding)
+        .toEqual({ ...embedding, maxInputTokens: 4096 });
+      expect(() => gatewayOptionsFromSettings({ ...settings, LARES_EMBED_MODEL: "mistral-embed" })).toThrow(/together/);
+      expect(() => gatewayOptionsFromSettings({ ...settings, LARES_EMBED_BASE_URL: "https://api.mistral.ai/v1" })).toThrow(/together/);
+      expect(() => gatewayOptionsFromSettings({ ...settings, ...embeddingSettings(), LARES_EMBED_MAX_INPUT_TOKENS: "many" })).toThrow(/MAX_INPUT_TOKENS/);
+      expect("embedding" in gatewayOptionsFromSettings(settings)).toBe(false);
+    });
+
+    function embeddingSettings() { return { LARES_EMBED_MODEL: "mistral-embed", LARES_EMBED_BASE_URL: "https://api.mistral.ai/v1" }; }
+  });
+
   describe("a model per purpose", () => {
     const base = { alias: "lares-brain", providerModel: "anthropic/claude-sonnet-4-5" };
 

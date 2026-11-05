@@ -6,7 +6,7 @@ import { gatewayCanonical } from "@lares/agent-kit/gateway-admission-protocol";
 import { rejectDuplicateJsonKeys } from "../../keeper/lib/budget-native-client.js";
 import { readBudgetNativePolicyDocument } from "../../keeper/lib/budget-native-host.js";
 import { financialCustodyConfigSchema, gatewayBudgetConfigSchema, nativeCustodyConfigSchema } from "../../keeper/lib/config.js";
-import { gatewayAdmissionProfile, gatewayOptionsFromSettings, PURPOSE_MODEL_PURPOSES, type GatewayConfigOptions } from "./gateway-config.js";
+import { gatewayAdmissionProfile, gatewayOptionsFromSettings, DEFAULT_EMBED_MAX_INPUT_TOKENS, PURPOSE_MODEL_PURPOSES, type GatewayConfigOptions } from "./gateway-config.js";
 
 const BOOTSTRAP_KEY = "CONSOLE_BOOTSTRAP_IDENTITY";
 const SERVICE_KEY_NAME = "gateway-budget-service-key";
@@ -147,7 +147,10 @@ function decodeShellValue(raw: string): string {
   return value;
 }
 
-const GATEWAY_MODEL_SETTINGS = ["LARES_MODEL_ALIAS", "LARES_MODEL", "LARES_MODEL_WRITER", "LARES_MODEL_UTILITY", "LARES_MODEL_GATE"] as const;
+const GATEWAY_MODEL_SETTINGS = [
+  "LARES_MODEL_ALIAS", "LARES_MODEL", "LARES_MODEL_WRITER", "LARES_MODEL_UTILITY", "LARES_MODEL_GATE",
+  "LARES_EMBED_MODEL", "LARES_EMBED_BASE_URL", "LARES_EMBED_MAX_INPUT_TOKENS",
+] as const;
 
 function selectSettings(text: string, wanted: ReadonlySet<string>): Record<string, string> {
   const values: Record<string, string> = {};
@@ -314,13 +317,16 @@ function captureSourceCommitment(sources: GatewayAuthoritySources): string {
   }
 }
 
-/** The gateway the caller rendered from must be exactly the one installation.env describes, down to each purpose's model. */
+/** The gateway the caller rendered from must be exactly the one installation.env describes, down to each purpose's model
+ *  and the embedding model. */
 function sameGatewayOptions(a: GatewayConfigOptions, b: GatewayConfigOptions): boolean {
   const own = (o: GatewayConfigOptions) => PURPOSE_MODEL_PURPOSES.map(purpose => {
     const value = o.purposeModels?.[purpose];
     return value === undefined || value === o.providerModel ? "" : value;
   }).join("\0");
-  return a.alias === b.alias && a.providerModel === b.providerModel && own(a) === own(b);
+  const embedding = (o: GatewayConfigOptions) => o.embedding
+    ? [o.embedding.model, o.embedding.baseUrl, String(o.embedding.maxInputTokens ?? DEFAULT_EMBED_MAX_INPUT_TOKENS)].join("\0") : "";
+  return a.alias === b.alias && a.providerModel === b.providerModel && own(a) === own(b) && embedding(a) === embedding(b);
 }
 
 export function resolveGatewayAuthority(sources: GatewayAuthoritySources): ResolvedGatewayAuthority {

@@ -196,6 +196,7 @@ export const READ_INDIRECTLY: Readonly<Record<string, string>> = {
   // The neutral stack's own containers (gateway, caddy) are shell/Caddyfile-only,
   // the same shape as DATABASE_PASSWORD_FILE above — no TypeScript in this repo reads them.
   MODEL_PROVIDER_KEY_FILE: "the gateway container's own ${VAR:?...} guard in images/gateway-runtime/start.sh",
+  EMBED_PROVIDER_KEY_FILE: "the optional embedding-key branch of images/gateway-runtime/start.sh (set means the file must be readable; unset means no embedding model)",
   GATEWAY_MASTER_KEY_FILE: "the gateway container's own ${VAR:?...} guard in images/gateway-runtime/start.sh",
   LARES_DOMAIN: "Caddy's own {$LARES_DOMAIN} substitution in services/box/ops/Caddyfile, and written (never read back) by services/box/ops/install.sh",
   // Consumed by something other than this repository's TypeScript.

@@ -93,7 +93,10 @@ describe("the settings list and the code agree", () => {
     // RAISED 48 -> 50: WORKFLOW_POSTGRES_PASSWORD_FILE is read by start.sh's Node bootstrap,
     // while PGPASSWORD is exported by start.sh for the role process. Both are shell/process
     // handoffs the TypeScript-only walk cannot see, and each points to that exact reader.
-    expect(Object.keys(READ_INDIRECTLY).length).toBeLessThanOrEqual(50);
+    //
+    // RAISED 50 -> 51: EMBED_PROVIDER_KEY_FILE is read only by the gateway's start.sh (an optional
+    // branch, so it has no `${VAR:?...}` guard), the same shell-only shape as MODEL_PROVIDER_KEY_FILE.
+    expect(Object.keys(READ_INDIRECTLY).length).toBeLessThanOrEqual(51);
     for (const [name, how] of Object.entries(READ_INDIRECTLY)) {
       expect(SETTING_NAMES.has(name), name).toBe(true);
       expect(how.length, name).toBeGreaterThan(10);

@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { assertReviewedPolicyMatchesProfile, gatewayServiceKeyMetadataIsSafe, parseConfirmedBootstrapSelection, parseGatewayModelSettings, parseInstallationSettings, preparedGatewayBinding } from "../lib/gateway-authority.js";
-import { gatewayOptionsFor } from "../bin/render-stack.js";
+import { gatewayOptionsFor, requireEmbeddingKey } from "../bin/render-stack.js";
 import { assertExistingRenderedAuthorityText, GATEWAY_AUTHORITY_STAGE_FILES, parseStageEnvironment, stageGatewayAuthority } from "../bin/render-gateway-authority-stage.js";
 import { gatewayAdmissionProfile } from "../lib/gateway-config.js";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
@@ -115,6 +115,58 @@ describe("a model per purpose in the gateway's own settings", () => {
       writeFileSync(join(directory, "installation.env"), [...required, "LARES_MODEL_WRITER=openai/gpt-4o-mini"].join("\n") + "\n");
       expect(() => gatewayAdmissionProfile(gatewayOptionsFor(config, base.alias, base.providerModel))).toThrow(/LARES_MODEL_WRITER.*same provider/);
     } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+});
+
+describe("an embedding model in the gateway's own settings", () => {
+  const required = ["LARES_OWNER_ID=owner", "LARES_OWNER_EMAIL=owner@example.test", "LARES_DOMAIN=example.test", "LARES_MODEL_ALIAS=lares-brain",
+    "LARES_MODEL=anthropic/claude-sonnet-4-5", "CONSOLE_ALLOWED_EMAILS=owner@example.test", "GATEWAY_URL=http://lares-gateway:4000"];
+  const base = { alias: "lares-brain", providerModel: "anthropic/claude-sonnet-4-5" };
+  const embed = ["LARES_EMBED_MODEL=mistral-embed", "LARES_EMBED_BASE_URL=https://api.mistral.ai/v1"];
+
+  it("reads the three embedding settings as data, with the same strict line rules", () => {
+    const settings = parseInstallationSettings([...required, ...embed, "LARES_EMBED_MAX_INPUT_TOKENS=4096"].join("\n"));
+    expect(settings).toMatchObject({ LARES_EMBED_MODEL: "mistral-embed", LARES_EMBED_BASE_URL: "https://api.mistral.ai/v1", LARES_EMBED_MAX_INPUT_TOKENS: "4096" });
+    expect(() => parseInstallationSettings([...required, ...embed, "LARES_EMBED_MODEL=other"].join("\n"))).toThrow();
+    expect(() => parseInstallationSettings([...required, "LARES_EMBED_BASE_URL="].join("\n"))).toThrow();
+    expect(parseGatewayModelSettings(["LARES_DOMAIN=example.test", ...embed].join("\n"))).toEqual({
+      LARES_EMBED_MODEL: "mistral-embed", LARES_EMBED_BASE_URL: "https://api.mistral.ai/v1" });
+  });
+
+  it("builds the stack renderer's gateway with the embedding model, and refuses the half-answer", () => {
+    const directory = mkdtempSync(join(tmpdir(), "lares-render-stack-embed-"));
+    try {
+      const config = join(directory, "litellm-config.yaml");
+      writeFileSync(join(directory, "installation.env"), [...required, ...embed].join("\n") + "\n");
+      expect(gatewayOptionsFor(config, base.alias, base.providerModel)).toEqual({
+        ...base, embedding: { model: "mistral-embed", baseUrl: "https://api.mistral.ai/v1" } });
+      writeFileSync(join(directory, "installation.env"), [...required, embed[0]].join("\n") + "\n");
+      expect(() => gatewayOptionsFor(config, base.alias, base.providerModel)).toThrow(/together/);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("refuses to render an embedding model without its provider key, and asks for no key without one", () => {
+    const directory = mkdtempSync(join(tmpdir(), "lares-render-stack-key-"));
+    try {
+      const options = { ...base, embedding: { model: "mistral-embed", baseUrl: "https://api.mistral.ai/v1" } };
+      expect(requireEmbeddingKey(base, directory)).toBe(false);
+      expect(() => requireEmbeddingKey(options, directory)).toThrow(/embedding provider key.*missing or empty/);
+      writeFileSync(join(directory, "embed-provider-key"), "");
+      expect(() => requireEmbeddingKey(options, directory)).toThrow(/missing or empty/);
+      writeFileSync(join(directory, "embed-provider-key"), "fixture-embed-key\n");
+      expect(requireEmbeddingKey(options, directory)).toBe(true);
+      expect(requireEmbeddingKey(base, directory)).toBe(false);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("refuses to render when the embedding model differs from the reviewed spending policy", () => {
+    const reviewedFor = (capability: unknown) => () => ({ policies: [{ capability }] });
+    const embedding = { model: "mistral-embed", baseUrl: "https://api.mistral.ai/v1" };
+    const profile = gatewayAdmissionProfile({ ...base, embedding });
+    expect(() => assertReviewedPolicyMatchesProfile("/policy", profile, reviewedFor(profile))).not.toThrow();
+    expect(() => assertReviewedPolicyMatchesProfile("/policy", profile, reviewedFor(gatewayAdmissionProfile(base)))).toThrow(/models changed after model budget setup/);
+    expect(() => assertReviewedPolicyMatchesProfile("/policy", gatewayAdmissionProfile(base), reviewedFor(profile))).toThrow(/models changed/);
+    expect(() => assertReviewedPolicyMatchesProfile("/policy", profile, reviewedFor(gatewayAdmissionProfile({ ...base, embedding: { ...embedding, maxInputTokens: 1024 } })))).toThrow(/models changed/);
   });
 });
 

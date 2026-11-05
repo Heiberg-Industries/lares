@@ -163,6 +163,60 @@ describe("what the installer asks", () => {
     expect(readFileSync(installEnv, "utf8")).not.toContain("LARES_MODEL_WRITER");
   });
 
+  describe("the included gateway's embedding model", () => {
+    const embedKeyFile = () => { const f = join(dir, "embed-key"); writeFileSync(f, "sk-embed-disposable-fixture\n"); return f; };
+
+    it("writes nothing and stores no key unless --embed-key-file is given", () => {
+      okRun(runWithStdin(["--yes"], answers));
+      expect(readFileSync(installEnv, "utf8")).not.toMatch(/LARES_EMBED/);
+      expect(existsSync(join(secretsDir, "embed-provider-key"))).toBe(false);
+    });
+
+    it("turns the model on with the release-pinned defaults, keeping the key out of installation.env", () => {
+      const r = okRun(runWithStdin(["--yes", "--embed-key-file", embedKeyFile()], answers));
+      const env = readFileSync(installEnv, "utf8");
+      expect(env).toContain("LARES_EMBED_MODEL=mistral-embed\n");
+      expect(env).toContain("LARES_EMBED_BASE_URL=https://api.mistral.ai/v1\n");
+      expect(env).not.toContain("sk-embed-disposable-fixture");
+      expect(readFileSync(join(secretsDir, "embed-provider-key"), "utf8").trim()).toBe("sk-embed-disposable-fixture");
+      expect(r.stdout + r.stderr).not.toContain("sk-embed-disposable-fixture");
+    });
+
+    it("takes another model and address from its flags", () => {
+      okRun(runWithStdin(["--yes", "--embed-key-file", embedKeyFile(), "--embed-model", "other-embed", "--embed-base-url", "https://embed.example.com/v1"], answers));
+      const env = readFileSync(installEnv, "utf8");
+      expect(env).toContain("LARES_EMBED_MODEL=other-embed\n");
+      expect(env).toContain("LARES_EMBED_BASE_URL=https://embed.example.com/v1\n");
+    });
+
+    it("refuses a model or address without its key, an address that is not https, and an unreadable key file, writing nothing", () => {
+      for (const [args, message] of [
+        [["--embed-model", "other-embed"], /need --embed-key-file/],
+        [["--embed-base-url", "https://embed.example.com/v1"], /need --embed-key-file/],
+        [["--embed-key-file", embedKeyFile(), "--embed-base-url", "http://embed.example.com/v1"], /must be an https address/],
+        [["--embed-key-file", embedKeyFile(), "--embed-base-url", "https://embed.example.com/v1/"], /ends in a slash/],
+        [["--embed-key-file", embedKeyFile(), "--embed-model", "bad model"], /must be a model name/],
+        [["--embed-key-file"], /needs a value/],
+      ] as const) {
+        const r = runWithStdin(["--yes", ...args], answers);
+        expect(r.code, args.join(" ")).toBe(64);
+        expect(r.stderr).toMatch(message);
+        expect(existsSync(join(secretsDir, "embed-provider-key"))).toBe(false);
+      }
+      const unreadable = runWithStdin(["--yes", "--embed-key-file", join(dir, "nope")], answers);
+      expect(unreadable.code).toBe(64);
+      expect(unreadable.stderr).toMatch(/cannot read the file given with --embed-key-file/);
+    });
+
+    it("says plainly that the embedding flags are ignored once the answers were already written", () => {
+      okRun(runWithStdin(["--yes"], answers));
+      const again = okRun(runWithStdin(["--yes", "--embed-key-file", embedKeyFile()], ""));
+      expect(again.stdout).toMatch(/--embed-key-file.*only apply to a first install, so they were ignored/);
+      expect(readFileSync(installEnv, "utf8")).not.toContain("LARES_EMBED");
+      expect(existsSync(join(secretsDir, "embed-provider-key"))).toBe(false);
+    });
+  });
+
   it("keeps the model key out of the settings file and out of every log", () => {
     const r = runWithStdin(["--yes"], answers);
     expect(readFileSync(join(secretsDir, "model-provider-key"), "utf8").trim())
