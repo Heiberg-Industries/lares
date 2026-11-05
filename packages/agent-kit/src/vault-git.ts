@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, dirname, isAbsolute } from "node:path";
 import { execFileSync } from "node:child_process";
 
@@ -219,6 +219,94 @@ export async function commitNote(opts: {
     const commit = gitShortHead(vaultRoot, opts.guard);
     gitPushOrThrow(vaultRoot, commit, opts.guard);
     return { commit };
+  });
+}
+
+export type VaultBatchOutcome = "written" | "exists" | "refused";
+export interface VaultBatchFileResult { path: string; outcome: VaultBatchOutcome; reason?: string }
+
+/** Create many files in ONE commit and ONE push, under one repository lock. CREATE-ONLY: a path
+ *  that already exists is reported `exists` and never touched; an unsafe path (outside the store,
+ *  inside a nested repository, behind or at a symlink, duplicated in the batch, or an unknown
+ *  untracked file in the way) is `refused` and the rest still go in. The whole call throws, writing
+ *  nothing, when the repository-level guards fail (revalidation, staged changes, unexpected
+ *  origin). `guard.expectedContents` is ignored here: every written path is expected absent, which
+ *  is checked under the lock. A push failure throws `VaultPushFailedError` as in `commitNote`.
+ *  Callers keep batches modest (the paths travel on the command line); the guarded
+ *  `importBatch` chunks at 500. A file left untracked by a crash between write and commit is
+ *  committed on re-run when its bytes equal the incoming bytes, and refused otherwise.
+ *  `commit` is null when nothing needed committing. */
+export async function commitNotes(opts: {
+  vaultRoot: string;
+  files: ReadonlyArray<{ path: string; content: string }>;
+  message: string;
+  guard?: VaultGitGuard;
+}): Promise<{ commit: string | null; results: VaultBatchFileResult[] }> {
+  const { vaultRoot, files, message } = opts;
+  const nested = !!opts.guard;
+  return withGitLock(vaultRoot, opts.guard, async () => {
+    if (opts.guard) await opts.guard.revalidate();
+    const results: VaultBatchFileResult[] = [];
+    const todo: { path: string; abs: string; content: string; adopt: boolean }[] = [];
+    const seen = new Set<string>();
+    let untracked: Set<string> | null = null;
+    const untrackedPaths = (): Set<string> => untracked ??=
+      new Set(git(vaultRoot, ["ls-files", "-z", "--others", "--exclude-standard"], opts.guard).split("\0").filter(Boolean));
+    for (const file of files) {
+      const refuse = (reason: string): void => { results.push({ path: file.path, outcome: "refused", reason }); };
+      if (seen.has(file.path)) { refuse("duplicate path in batch"); continue; }
+      seen.add(file.path);
+      let abs: string;
+      try { abs = resolveInStore(file.path, vaultRoot, { rejectNestedRepositories: nested }); }
+      catch { refuse("path not allowed"); continue; }
+      let st;
+      try { st = lstatSync(abs); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") { refuse("path not allowed"); continue; }
+        results.push({ path: file.path, outcome: "written" });
+        todo.push({ path: file.path, abs, content: file.content, adopt: false });
+        continue;
+      }
+      if (st.isSymbolicLink()) { refuse("symlink"); continue; }
+      if (!st.isFile()) { refuse("not a regular file"); continue; }
+      if (untrackedPaths().has(file.path)) {
+        if (st.nlink === 1 && readFileSync(abs, "utf8") === file.content) {
+          results.push({ path: file.path, outcome: "written" });
+          todo.push({ path: file.path, abs, content: file.content, adopt: true });
+        } else refuse("untracked file in the way");
+        continue;
+      }
+      results.push({ path: file.path, outcome: "exists" });
+    }
+    const paths = todo.map((f) => f.path);
+    await prepare(vaultRoot, opts.guard && { ...opts.guard, expectedContents: Object.fromEntries(todo.map((f) => [f.path, f.adopt ? vaultContentRevision(Buffer.from(f.content, "utf8")) : null])) }, paths, null);
+    if (todo.length === 0) return { commit: null, results };
+    const created: string[] = [];
+    try {
+      for (const f of todo) {
+        if (f.adopt) continue;
+        resolveInStore(f.path, vaultRoot, { rejectNestedRepositories: nested });
+        mkdirSync(dirname(f.abs), { recursive: true });
+        resolveInStore(f.path, vaultRoot, { rejectNestedRepositories: nested });
+        writeFileSync(f.abs, f.content, { encoding: "utf8", flag: "wx" });
+        created.push(f.abs);
+      }
+    } catch (error) {
+      for (const abs of created) { try { unlinkSync(abs); } catch { /* best-effort rollback of files this call made */ } }
+      throw error;
+    }
+    try {
+      git(vaultRoot, ["add", "--", ...paths], opts.guard);
+      git(vaultRoot, ["commit", "-q", "-m", message, "--", ...paths], opts.guard);
+    } catch (error) {
+      // A failed add/commit must not leave staged paths: the next run would refuse as "mixed".
+      try { git(vaultRoot, ["reset", "-q", "--", ...paths], opts.guard); } catch { /* best effort */ }
+      for (const abs of created) { try { unlinkSync(abs); } catch { /* best effort */ } }
+      throw error;
+    }
+    const commit = gitShortHead(vaultRoot, opts.guard);
+    gitPushOrThrow(vaultRoot, commit, opts.guard);
+    return { commit, results };
   });
 }
 
