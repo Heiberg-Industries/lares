@@ -2,7 +2,7 @@ import {closeSync,constants,fstatSync,openSync,readFileSync} from 'node:fs';
 import {performance} from 'node:perf_hooks';
 import type {Pool} from 'pg';
 import {PgBudgetAdmissionStore,consumeDispatchPermit,canonicalBudgetMoney,type BudgetFinancialWriter,type BudgetRecoveryReference,type BudgetGatewayTicket} from '@lares/agent-kit/budget-admission-store';
-import {GATEWAY_ADMIT_PATH,GATEWAY_RPC_MS,gatewayRpcPath,gatewayAdmitSchema,gatewayGrantSchema,gatewaySettleSchema,gatewayCanonical,gatewayGrantHash,gatewayHash,gatewaySignature,verifyGatewaySignature,parseGatewayDocument} from '@lares/agent-kit/gateway-admission-protocol';
+import {GATEWAY_ADMIT_PATH,GATEWAY_RPC_MS,gatewayRpcPath,gatewayAdmitSchema,gatewayGrantSchema,gatewayDeniedSchema,limitSentence,gatewaySettleSchema,gatewayCanonical,gatewayGrantHash,gatewayHash,gatewaySignature,verifyGatewaySignature,parseGatewayDocument} from '@lares/agent-kit/gateway-admission-protocol';
 import {gatewayPricingSchema,gatewayMaximumLiability,gatewayActualAmount} from '@lares/agent-kit/gateway-pricing';
 import {HostFinancialJournal} from './financial-journal.js';
 import {JournalBudgetFinancialWriter} from './budget-financial-writer.js';
@@ -72,6 +72,15 @@ export class GatewayBudgetAuthority {
         // current reference, policy, generation, endpoint, authority and recovery under lock.
         const selected=new PgBudgetAdmissionStore(this.pool,{LARES_AGENT_NAME:ticket.agent,LARES_AGENT_INCARNATION:ticket.incarnation},30_000,writer);
         const admitted=await selected.admit(request.ticket,{...request,agent:ticket.agent,incarnation:ticket.incarnation,credentialGeneration:ticket.credentialGeneration},recovery);
+        if(admitted.state==='denied'&&admitted.limit){
+          // A spending limit is the one refusal worth explaining. It is signed and echoes the request, so the gateway can trust the sentence.
+          // Every other refusal stays the unsigned 503 below.
+          fresh();
+          const denied=gatewayDeniedSchema.parse({version:1,state:'denied',nonce:request.nonce,requestHash:request.requestHash,profileHash:request.profileHash,endpointHash:request.endpointHash,keyFingerprint:request.keyFingerprint,purposeAlias:request.purposeAlias,
+            reason:admitted.limit.scope==='member'?'member-limit':'installation-limit',message:limitSentence(admitted.limit)});
+          const body=gatewayCanonical(denied);
+          return {status:200,headers:{'content-type':'application/json','cache-control':'no-store','x-lares-signature':gatewaySignature(this.key,'response',path,body)},body};
+        }
         if(admitted.state!=='allowed')return refused();
         // Burn before any further await, including grant persistence. Lost/unknown ACKs
         // leave admitted liability behind and never reconstruct the process-local permit.

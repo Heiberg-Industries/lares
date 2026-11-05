@@ -33,6 +33,10 @@ export interface MeetingsSourceResult { value: string | null; restarted: string[
 export async function setMeetingsSource(input: {dataSource: string}): Promise<DefinitionActionResult<MeetingsSourceResult>> {
   return call('settings.notion_meetings_set', {dataSource: input.dataSource}, await actor(), 90_000);
 }
+export interface AgentSettingsResult { key: string; value: string | null; restarted: string[]; waiting: string[]; stopped: string[] }
+export async function setAgentSetting(input: {key: string; value: string}): Promise<DefinitionActionResult<AgentSettingsResult>> {
+  return call('settings.agent_environment_set', {key: input.key, value: input.value}, await actor(), 90_000);
+}
 export async function setNotionSync(input: {enabled: boolean; peopleDataSource: string}): Promise<DefinitionActionResult<NotionSyncView>> {
   return call('sync.notion_set', {enabled: input.enabled, peopleDataSource: input.peopleDataSource}, await actor(), 90_000);
 }

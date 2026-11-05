@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { commitNote, commitNotes, guardedVaultPushArguments, moveNote, removeNote, VaultPushFailedError } from "../src/vault-git.js";
+import { commitFile, commitNote, commitNotes, guardedVaultPushArguments, moveNote, removeNote, VaultPushFailedError } from "../src/vault-git.js";
 import { NotePathEscapesStoreError } from "../src/notes-store.js";
 
 /**
@@ -147,6 +147,40 @@ describe("commitNote", () => {
       const secondHash = git(workDir, "rev-parse", "--short", "HEAD").trim();
       expect((err as VaultPushFailedError).commit).toBe(secondHash);
     }
+  });
+});
+
+describe("commitFile", () => {
+  it("writes the exact bytes it is given, commits them and pushes to the bare remote", async () => {
+    const content = "---\ntitle: x\nsources:\n  - resource: https://example.com/a\nlares_origin: third_party\n---\n\nBody \u00e6\u00f8\u00e5\r\nno trailing newline";
+    const result = await commitFile({ vaultRoot: workDir, path: "articles/a.md", content, message: "file: a" });
+    expect(result.commit).toMatch(/^[0-9a-f]{7,}$/);
+    expect(readFileSync(join(workDir, "articles/a.md"), "utf8")).toBe(content);
+    expect(git(bareDir, "show", "HEAD:articles/a.md")).toBe(content);
+    expect(git(bareDir, "log", "-1", "--pretty=%s").trim()).toBe("file: a");
+    expect(commitCount(bareDir)).toBe(2);
+  });
+
+  it("serialises two writes at once under the repository lock", async () => {
+    await Promise.all([
+      commitFile({ vaultRoot: workDir, path: "articles/one.txt", content: "one" }),
+      commitFile({ vaultRoot: workDir, path: "articles/two.txt", content: "two" }),
+    ]);
+    expect(commitCount(bareDir)).toBe(3);
+    expect(git(bareDir, "show", "HEAD:articles/one.txt")).toBe("one");
+    expect(git(bareDir, "show", "HEAD:articles/two.txt")).toBe("two");
+  });
+
+  it("refuses a path escaping the vault root before any git command runs", async () => {
+    const before = commitCount(bareDir);
+    await expect(commitFile({ vaultRoot: workDir, path: "../../etc/passwd", content: "x" })).rejects.toThrow(NotePathEscapesStoreError);
+    expect(commitCount(bareDir)).toBe(before);
+  });
+
+  it("throws VaultPushFailedError when the push fails, keeping the local commit", async () => {
+    git(workDir, "remote", "set-url", "origin", join(tmp, "does-not-exist"));
+    await expect(commitFile({ vaultRoot: workDir, path: "articles/orphan.txt", content: "kept" })).rejects.toThrow(VaultPushFailedError);
+    expect(git(workDir, "show", "HEAD:articles/orphan.txt")).toBe("kept");
   });
 });
 

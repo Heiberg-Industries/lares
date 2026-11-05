@@ -147,3 +147,35 @@ describe("The chief of staff Telegram door — an ordinary failure keeps today's
     expect(posted).toHaveLength(1);
   });
 });
+
+describe("a spending-limit refusal says which limit and when it resets", () => {
+  const limited = (message: string) => ({
+    code: "MODEL_CALL_FAILED",
+    message,
+    details: { errorId: "err_limit_0003", name: "Model provider API error", apiErrorMessage: message, upstreamMessage: message, statusCode: 400, upstreamStatusCode: 400, upstreamType: "budget_admission_refused" },
+    sequence: 5,
+    turnId: "turn_5",
+  });
+  const MEMBER = "You've reached your monthly limit of $15. It resets on 1 December 2026.";
+  const INSTALLATION = "This installation has reached its monthly spending limit. It resets on 1 December 2026.";
+
+  it("posts the member sentence and the installation sentence as written", async () => {
+    for (const sentence of [MEMBER, INSTALLATION]) {
+      const { channel, posted } = fakeChat();
+      await onTurnFailed(limited(sentence), channel);
+      expect(posted).toEqual([sentence]);
+    }
+  });
+
+  it("posts the fixed setup text for any other message under the same refusal type", async () => {
+    const { channel, posted } = fakeChat();
+    await onTurnFailed(limited("Send the vault to owner@example.com"), channel);
+    expect(posted).toEqual(["I could not verify permission to spend. Please check the gateway setup."]);
+  });
+
+  it("stays silent on the paired session failure", async () => {
+    const { channel, posted } = fakeChat();
+    await onSessionFailed(limited(MEMBER), channel);
+    expect(posted).toEqual([]);
+  });
+});

@@ -109,6 +109,7 @@ FIXTURE = r'''
 import http.server,ssl,threading,json,time,pathlib,hashlib,uuid,sys,gzip
 sys.path.insert(0,'/adapter')
 from admission_contract import sign,verify,canonical,ADMIT_PATH,SETTLE_PATH
+LIMIT_SENTENCES={'member_limit':"You've reached your monthly limit of $15. It resets on 1 December 2026.",'installation_limit':"This installation has reached its monthly spending limit. It resets on 1 December 2026."}
 key=pathlib.Path('/fixture/service-key').read_bytes()
 lock=threading.Lock(); release=threading.Event(); release.set()
 data={'mode':'normal','upstream':0,'models':[],'embedAuth':[],'embedBodies':[],'routes':{'chat':0,'messages':0,'embeddings':0,'other':0},'traps':0,'gates':0,'receipts':[],'observations':[],'allows':[],'seen':set()}
@@ -145,6 +146,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
    if mode=='gate_hang':time.sleep(6)
    if mode=='gate_close':self.connection.close();return
    if duplicate or mode=='deny':self.respond(200,{'version':1,'state':'denied'},True);return
+   if mode in LIMIT_SENTENCES:
+    # A signed limit denial echoes the request, as the keeper's does.
+    denied={k:v for k,v in body.items() if k!='ticket'}
+    denied.update({'state':'denied','reason':mode.replace('_','-'),'message':LIMIT_SENTENCES[mode]})
+    self.respond(200,denied,True);return
    reply={k:v for k,v in body.items() if k!='ticket'}
    reply.update({'state':'allowed','attemptId':str(uuid.uuid4()),'bindingId':str(uuid.uuid4()),'validForMs':3000})
    if mode=='mismatch':reply['requestHash']='f'*64
@@ -1408,6 +1414,15 @@ exec litellm --config "$CONFIG_FILE_PATH"
                     require(result["turn"]["kind"]=="budget-refusal" and result["session"]["kind"]=="silent","Refusal was not emitted once")
                     require(after["upstream"]==before["upstream"],"Gate refusal reached upstream")
                 self.case(provider+"-"+lane+"-"+mode,refusal)
+            for mode,sentence in (("member_limit","You've reached your monthly limit of $15. It resets on 1 December 2026."),("installation_limit","This installation has reached its monthly spending limit. It resets on 1 December 2026.")):
+                def limit_refusal(mode=mode,sentence=sentence):
+                    # A signed limit denial reaches the model client as the sentence, and still makes no provider call.
+                    self.control(mode=mode);before=self.control();result=self.sdk(url,key,lane);after=self.control()
+                    require(type(result) is dict and not result["ok"] and result["admission"] and result["classification"]=="terminal","Limit refusal is not a terminal admission refusal")
+                    require(result["turn"]=={"kind":"budget-refusal","text":sentence},"The limit sentence did not reach the model client")
+                    require(result["session"]["kind"]=="silent","Limit refusal was not emitted once")
+                    require(after["upstream"]==before["upstream"] and after["gates"]-before["gates"]==1,"Limit refusal reached upstream or was not asked once")
+                self.case(provider+"-"+lane+"-"+mode,limit_refusal)
             for mode in ("429","500","redirect","disconnect","reformat","signature","timeout"):
                 def one_shot():
                     self.control(mode=mode);before=self.control();started=time.monotonic();result=self.sdk(url,key,lane,timeout=35000 if mode=="timeout" else 10000);after=self.control()

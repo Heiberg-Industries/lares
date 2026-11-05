@@ -62,7 +62,10 @@ export interface BudgetGatewaySettlement {
   attemptId:string;bindingId:string;requestHash:string;profileHash:string;endpointHash:string;
   credentialGeneration:string;grantHash:string;pricingProfile:unknown;
 }
-export type BudgetAdmission = {state:'allowed';permit:BudgetDispatchPermit;attemptId:string}|{state:'denied'|'unavailable';reason:string};
+/** Why a call was refused, only when a monthly limit is what refused it. `cap` is the member's own cap (never the installation's);
+ * `resetsAt` is the UTC calendar date (YYYY-MM-DD) the active window ends. */
+export type BudgetLimitDenial={scope:'member';cap:string;resetsAt:string}|{scope:'installation';resetsAt:string};
+export type BudgetAdmission = {state:'allowed';permit:BudgetDispatchPermit;attemptId:string}|{state:'denied';reason:string;limit?:BudgetLimitDenial}|{state:'unavailable';reason:string};
 export type BudgetFinancialOperation='prepare'|'provision'|'native-activation'|'admit'|'grant'|'unknown'|'settle'|'member-remove'|'erase-person'|'native-cleanup-recovery';
 export interface BudgetFinancialWriter {
   run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<T>;
@@ -333,8 +336,16 @@ export class PgBudgetAdmissionStore {
           observation.agent!==b.agent||observation.incarnation!==b.incarnation||observation.purposeAlias!==b.purpose_alias||b.profile_hash!==a.profile_hash||b.endpoint_hash!==a.endpoint_hash||b.credential_generation!==a.credential_generation)return deny();
         const iCap=await this.cap(db,i),mCap=await this.cap(db,m),iLiability=await this.liability(db,i),mLiability=await this.liability(db,m);
         if(iCap===null||mCap===null||iLiability===null||mLiability===null)return deny();
-        if(totalUnits(mLiability)+units(a.reserved_amount)>units(mCap))return deny();
-        if(totalUnits(iLiability)+units(a.reserved_amount)>units(iCap))return deny();
+        // The member is checked first, so a member over their own cap hears the member sentence even when the installation is also full.
+        const overMember=totalUnits(mLiability)+units(a.reserved_amount)>units(mCap),overInstallation=totalUnits(iLiability)+units(a.reserved_amount)>units(iCap);
+        if(overMember||overInstallation){
+          // Read on this same financial client: budget tables are readable by the financial role only.
+          const account=overMember?m:i;
+          const window=(await db.query(`SELECT to_char(ends_at AT TIME ZONE 'UTC','YYYY-MM-DD') AS resets_at FROM budget_windows WHERE id=$1 AND account_id=$2`,[account.active_window_id,account.id])).rows[0];
+          await deny();
+          if(!window||typeof window.resets_at!=='string')return undefined;
+          return {limit:(overMember?{scope:'member',cap:mCap,resetsAt:window.resets_at}:{scope:'installation',resetsAt:window.resets_at}) as BudgetLimitDenial};
+        }
         await checkConsoleSourceDeadlines(db);
         const admitted=await db.query(`UPDATE budget_attempts SET state='admitted',admitted_at=clock_timestamp() WHERE id=$1 AND expires_at>clock_timestamp()
           AND ($4::timestamptz IS NULL OR $4::timestamptz>clock_timestamp())
@@ -345,6 +356,7 @@ export class PgBudgetAdmissionStore {
         return {attemptId:a.id as string,bindingId:b.id as string,requestHash:a.request_hash as string};
       },'admit');
       if(!admitted)return DENIED;
+      if('limit' in admitted)return {...DENIED,limit:admitted.limit};
       // Denial carries no account/aggregate metadata. The caller may separately ask
       // readStatus using its current authenticated context and authorised scope.
       // Only acknowledged COMMIT reaches this statement. An admitted retry NEVER mints again.

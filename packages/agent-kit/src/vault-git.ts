@@ -201,7 +201,22 @@ export async function commitNote(opts: {
   message?: string;
   guard?: VaultGitGuard;
 }): Promise<VaultWriteResult> {
-  const { vaultRoot, path, frontmatter, body } = opts;
+  return commitFile({
+    vaultRoot: opts.vaultRoot, path: opts.path, content: `${serializeFrontmatter(opts.frontmatter)}\n\n${opts.body}`,
+    message: opts.message, guard: opts.guard,
+  });
+}
+
+/** Writes `content` to `path` EXACTLY as given (UTF-8, no front matter added or rewritten), then commits and pushes it
+ *  under the same lock, revalidation and push rules as `commitNote`. The caller is responsible for what the bytes say. */
+export async function commitFile(opts: {
+  vaultRoot: string;
+  path: string;
+  content: string;
+  message?: string;
+  guard?: VaultGitGuard;
+}): Promise<VaultWriteResult> {
+  const { vaultRoot, path, content } = opts;
   resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard});
   return withGitLock(vaultRoot,opts.guard,async () => {
     if (opts.guard) await opts.guard.revalidate();
@@ -211,7 +226,6 @@ export async function commitNote(opts: {
     mkdirSync(dirname(abs), { recursive: true });
     resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard});
 
-    const content = `${serializeFrontmatter(frontmatter)}\n\n${body}`;
     writeFileSync(abs, content, "utf8");
 
     git(vaultRoot,["add", "--", path],opts.guard);

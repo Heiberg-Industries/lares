@@ -24,7 +24,7 @@ import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { defaultSessionFailedText, defaultTurnFailedText } from "../src/gateway-budget.js";
+import { defaultSessionFailedText, defaultTurnFailedText, respondToTurnFailed } from "../src/gateway-budget.js";
 
 const require = createRequire(import.meta.url);
 
@@ -87,5 +87,21 @@ describe("our reproduction of eve's default failure text still matches the insta
       expect(readDefaults(dialect)).toContain('"turn.failed"');
       expect(readDefaults(dialect)).toContain('"session.failed"');
     }
+  });
+});
+
+describe("the installed eve carries the gateway's limit sentence into turn.failed", () => {
+  it("puts the message from a refused model call into the event's message and details", async () => {
+    const file = path.join(eveRoot(), "dist", "src", "harness", "model-call-error.js");
+    const { extractUpstreamRejectionMessage, extractModelCallErrorDetails } = (await import(file)) as {
+      extractUpstreamRejectionMessage(e: unknown): { message: string } | null;
+      extractModelCallErrorDetails(e: unknown): Record<string, unknown>;
+    };
+    const sentence = "You've reached your monthly limit of $15. It resets on 1 December 2026.";
+    const body = { error: { type: "budget_admission_refused", code: "budget_admission_refused", message: sentence } };
+    const error = Object.assign(new Error("Bad Request"), { name: "AI_APICallError", statusCode: 400, responseBody: JSON.stringify(body), data: body });
+    const event = { code: "MODEL_CALL_FAILED", message: extractUpstreamRejectionMessage(error)?.message, details: extractModelCallErrorDetails(error) };
+    expect(event.message).toBe(sentence);
+    expect(respondToTurnFailed(event, { refusalText: "exhausted", dialect: "slack" })).toEqual({ kind: "budget-refusal", text: sentence });
   });
 });

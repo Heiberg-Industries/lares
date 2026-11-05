@@ -72,6 +72,33 @@ wall clocks are not used to extend it. The authority reports its whole RPC windo
 `validForMs`, not what is left of it: the gateway already counts from RPC-start, so
 time spent inside the RPC must not be subtracted twice.
 
+A refusal because a monthly spending limit is reached is the one refusal that is
+explained. The authority answers HTTP 200, signed like an allow, with exactly `version`,
+`state: "denied"`, `reason`, `message` and the same seven echoed fields as an allow
+(`nonce`, `requestHash`, `profileHash`, `endpointHash`, `keyFingerprint`,
+`purposeAlias`). `reason` is `member-limit` or `installation-limit`, and `message` is
+the finished sentence, written in one place (`limitSentence` in
+`gateway-admission-protocol.ts`, using the UTC calendar date of the active window's
+end, English only):
+
+```text
+member-limit:        You've reached your monthly limit of $15. It resets on 1 December 2026.
+installation-limit:  This installation has reached its monthly spending limit. It resets on 1 December 2026.
+```
+
+The amount is the member's own cap (`$15`, or `$12.50` when it has a fractional part).
+The installation sentence carries no amount, anywhere on the wire or in any layer. If
+the member and the installation are both over, the member sentence is sent. The reason
+is computed inside the admission transaction on the financial connection; no other path
+reads the budget tables for it. The gateway repeats `message` only when it matches
+exactly one of those two shapes and every echoed field matches; anything else, and every
+other refusal (stale policy, missing caps, endpoint mismatch, unsigned or non-200 replies),
+stays the fixed text `I could not verify permission to spend. Please check the gateway
+setup.` The gateway returns the sentence as the `message` of its HTTP 400
+`budget_admission_refused` error, and the agent doors (Slack, Telegram, and the
+scheduled jobs that send through them) print it only if it again matches one of the two
+shapes.
+
 The authority must derive member, agent, incarnation, credential generation,
 current authority and recovery state from the persisted ticket and binding. None
 is established by caller billing metadata. It must commit admission and consume

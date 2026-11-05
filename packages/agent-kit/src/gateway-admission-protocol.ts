@@ -26,6 +26,30 @@ const hash=z.string().regex(/^[a-f0-9]{64}$/),id=z.string().regex(/^[a-f0-9]{8}-
 const echoed={version:z.literal(1),nonce:hash,requestHash:hash,profileHash:hash,endpointHash:hash,keyFingerprint:hash,purposeAlias:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)};
 export const gatewayAdmitSchema=z.object({...echoed,ticket:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).strict();
 export const gatewayGrantSchema=z.object({...echoed,attemptId:id,bindingId:id}).strict();
+const LIMIT_DATE='[1-9][0-9]? (?:January|February|March|April|May|June|July|August|September|October|November|December) [0-9]{4}';
+/** The only two sentences a spending-limit refusal may carry. The installation one has no digits but the date. */
+export const MEMBER_LIMIT_SENTENCE=new RegExp(`^You've reached your monthly limit of \\$[0-9]{1,18}(?:\\.[0-9]{2,18})?\\. It resets on ${LIMIT_DATE}\\.$`);
+export const INSTALLATION_LIMIT_SENTENCE=new RegExp(`^This installation has reached its monthly spending limit\\. It resets on ${LIMIT_DATE}\\.$`);
+/** The ONE place an amount and a reset date become words. `resetsAt` is a UTC calendar date (YYYY-MM-DD);
+ * `cap` is a canonical budget amount. The installation sentence never takes an amount. */
+export function limitSentence(limit:{scope:'member';cap:string;resetsAt:string}|{scope:'installation';resetsAt:string}):string {
+  const date=/^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/.exec(limit.resetsAt);
+  if(!date)throw new Error('Invalid reset date');
+  const months=['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const when=`${Number(date[3])} ${months[Number(date[2])-1]} ${date[1]}`;
+  if(limit.scope==='installation')return `This installation has reached its monthly spending limit. It resets on ${when}.`;
+  const cap=/^(0|[1-9][0-9]{0,17})(?:\.([0-9]{1,18}))?$/.exec(limit.cap);
+  if(!cap)throw new Error('Invalid limit amount');
+  const fraction=cap[2]?cap[2].replace(/0+$/,''):'';
+  return `You've reached your monthly limit of $${cap[1]}${fraction?'.'+fraction.padEnd(2,'0'):''}. It resets on ${when}.`;
+}
+const sentence=(re:RegExp)=>z.string().max(200).refine(v=>re.test(v));
+/** A signed refusal because a spending limit is reached. Strict per variant; the installation one has no amount field. */
+export const gatewayDeniedSchema=z.union([
+  z.object({...echoed,state:z.literal('denied'),reason:z.literal('member-limit'),message:sentence(MEMBER_LIMIT_SENTENCE)}).strict(),
+  z.object({...echoed,state:z.literal('denied'),reason:z.literal('installation-limit'),message:sentence(INSTALLATION_LIMIT_SENTENCE)}).strict(),
+]);
+export type GatewayDenied=z.infer<typeof gatewayDeniedSchema>;
 export const gatewayUsageSchema=z.object({inputTokens:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),outputTokens:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),cacheReadTokens:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),cacheWriteTokens:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)}).strict();
 export const gatewaySettleSchema=gatewayGrantSchema.extend({kind:z.literal('terminal-usage'),format:z.enum(['openai','anthropic','embedding']),usage:gatewayUsageSchema,receiptHash:hash}).strict();
 export type GatewayGrant=z.infer<typeof gatewayGrantSchema>;
