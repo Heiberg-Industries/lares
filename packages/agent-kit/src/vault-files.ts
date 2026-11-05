@@ -12,7 +12,7 @@ import type { GrantDatabase } from './grant-store.js';
 import type { PgVaultStore } from './vault-area-store.js';
 import { findBacklinks, listNotes, NoteNotFoundError, NotePathEscapesStoreError, resolveInStore, searchNotes } from './notes-store.js';
 import { withGuardedVaultRepositoryLock } from './note-lock.js';
-import { commitNote, commitNotes, moveNote, removeNote, runGuardedVaultGit, vaultCompanionOf, vaultContentRevision, VaultContentChangedError, VaultPushFailedError, VaultStagedChangesError, type VaultBatchFileResult, type VaultGitGuard } from './vault-git.js';
+import { commitFile, commitNote, commitNotes, moveNote, removeNote, runGuardedVaultGit, vaultCompanionOf, vaultContentRevision, VaultContentChangedError, VaultPushFailedError, VaultStagedChangesError, type VaultBatchFileResult, type VaultGitGuard } from './vault-git.js';
 import { articleCompanionPath } from '@lares/vault-format/article';
 import { narrowest, readOriginFrontmatter, upsertOriginFrontmatter, type Origin } from '@lares/vault-format/origin';
 
@@ -192,6 +192,11 @@ export class GuardedVaultFiles {
     const {root,guard}=await this.writeArea(ctx,input.binding,{[input.binding.relativePath]:input.binding.expectedContentRevision,
       ...(input.expectedRelatedContentRevisions ?? {})},null);
     return commitNote({vaultRoot:root,path:input.binding.relativePath,frontmatter:{...input.frontmatter,lares_origin:input.binding.approvedOrigin},body:input.body,message:input.message,guard}).catch(safeFailure);
+  }
+  /** Saves `content` byte for byte (no front matter added or changed), through the same grant, lock, revalidation and push as `write`. */
+  async writeVerbatim(ctx:VaultFilesContext,input:{binding:VaultWriteBinding;content:string;message?:string}) {
+    const {root,guard}=await this.writeArea(ctx,input.binding,{[input.binding.relativePath]:input.binding.expectedContentRevision},null);
+    return commitFile({vaultRoot:root,path:input.binding.relativePath,content:input.content,message:input.message,guard}).catch(safeFailure);
   }
   async move(ctx:VaultFilesContext,input:{binding:VaultWriteBinding;destination:string;expectedDestinationRevision:string|null;companion:VaultFileCompanion|null;expectedCompanionDestinationRevision:string|null}) {
     if(input.binding.expectedContentRevision===null)throw new VaultFilesDeniedError();

@@ -30,6 +30,11 @@ function fakeKeeper(opts: { refuse?: boolean; pageSize?: number } = {}) {
       files.set(input.path, `---\n${Object.entries(input.frontmatter).map(([k, v]) => `${k}: ${v}`).join("\n")}\n---\n\n${input.body}`);
       return { ok: true, commit: "abc1234" };
     }
+    if (input.operation === "write-verbatim") {
+      const same = files.get(input.path) === input.content;
+      files.set(input.path, input.content);
+      return same ? { ok: true, path: input.path, unchanged: true } : { ok: true, path: input.path, commit: "abc1234" };
+    }
     if (input.operation === "remove") return { ok: true, removed: files.delete(input.path) };
     throw new Error("unexpected");
   };
@@ -102,6 +107,25 @@ describe("the dream cycle's brain through keeper", () => {
     const out = await brain.commitNote({ path: "_meta/dream/2026-11-01.md", frontmatter: { cursor: "n", promoted: 1 }, body: "b", message: "learning: 2026-11-01" });
     expect(out).toEqual({ commit: "abc1234" });
     expect(k.calls.at(-1)!.input).toMatchObject({ operation: "write", message: "learning: 2026-11-01", frontmatter: { cursor: "n", promoted: 1 } });
+  });
+});
+
+describe("a verbatim write through keeper", () => {
+  it("sends the whole file as it is and reports a commit, then 'unchanged' for the same file", async () => {
+    const k = fakeKeeper();
+    const vault = makeScheduledVault("digest", { request: k.request });
+    const content = "---\nlares_origin: third_party\nsources:\n  - resource: https://example.com/a\n---\n\nBody\n";
+    expect(await vault.writeVerbatim("articles/a.md", content, "digest: file a")).toEqual({ commit: "abc1234", unchanged: false });
+    expect(k.calls.at(-1)).toMatchObject({ op: "vault.scheduled", input: { schedule: "digest", operation: "write-verbatim", area: "private", path: "articles/a.md", content, message: "digest: file a" } });
+    expect(k.files.get("articles/a.md")).toBe(content);
+    expect(await vault.writeVerbatim("articles/a.md", content)).toEqual({ commit: null, unchanged: true });
+  });
+
+  it("refuses an oversize file before sending, and turns a keeper refusal into a failure", async () => {
+    const k = fakeKeeper();
+    await expect(makeScheduledVault("digest", { request: k.request }).writeVerbatim("articles/a.txt", "x".repeat(193 * 1024))).rejects.toBeInstanceOf(ScheduledVaultTooLargeError);
+    expect(k.calls).toHaveLength(0);
+    await expect(makeScheduledVault("digest", { request: fakeKeeper({ refuse: true }).request }).writeVerbatim("articles/a.txt", "t")).rejects.toBeInstanceOf(ScheduledVaultError);
   });
 });
 
