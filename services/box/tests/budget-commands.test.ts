@@ -48,6 +48,10 @@ describe("lares budget commands", () => {
       const refresh = lares("agent", "refresh");
       expect(refresh.status).toBe(0);
       expect(refresh.stdout.trim().endsWith("agent-refresh")).toBe(true);
+      const bringAcross = lares("agent", "import", "/srv/old-agents", "--yes");
+      expect(bringAcross.status).toBe(0);
+      expect(bringAcross.stdout.trim().endsWith("agent-import /srv/old-agents --yes")).toBe(true);
+      expect(lares("agent", "import").status).toBe(64);
       expect(lares("agent", "refresh", "my-agent").status).toBe(64);
       expect(lares("budget").status).toBe(64);
       expect(lares("agent", "stop", "my-agent").status).toBe(64);
