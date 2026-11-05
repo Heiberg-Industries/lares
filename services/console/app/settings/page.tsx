@@ -7,6 +7,8 @@ import { AgentLimitControl } from "../../components/AgentLimitControl";
 import { getAgentLimitView } from "../../lib/agent-limit";
 import { MeetingsSourceControl } from "../../components/MeetingsSourceControl";
 import { getMeetingsSourceView } from "../../lib/meetings-source";
+import { AgentSettingsSections } from "../../components/AgentSettingsControl";
+import { getAgentSettingsView } from "../../lib/agent-settings";
 import { NotionSyncControl } from "../../components/NotionSyncControl";
 import { getNotionSyncView } from "../../lib/notion-sync";
 import { getGatewayStatusView } from "../../lib/gateway-status";
@@ -18,7 +20,7 @@ import {
 export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   await requireConsolePage();
-  const [view, gateway, limit, meetings, sync] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView(), getAgentLimitView(), getMeetingsSourceView(), getNotionSyncView()]);
+  const [view, gateway, limit, meetings, sync, agentSettings] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView(), getAgentLimitView(), getMeetingsSourceView(), getNotionSyncView(), getAgentSettingsView()]);
   const quiet =
     view && !view.errors.length
       ? (rowFor(view.settings, "*", "*")?.effective.quiet ??
@@ -61,6 +63,12 @@ export default async function SettingsPage() {
           {meetings ? <MeetingsSourceControl view={meetings} /> : <p className="lares-muted">The meetings database setting could not be loaded.</p>}
           {sync && <NotionSyncControl initial={sync} />}
         </section>
+        {agentSettings ? <AgentSettingsSections settings={agentSettings.settings} canChange={agentSettings.canChange} /> : (
+          <section className="lares-surface">
+            <h2 className="lares-section-title">Agent settings</h2>
+            <p className="lares-muted">The agent settings could not be loaded.</p>
+          </section>
+        )}
         <section className="lares-surface">
           <h2 className="lares-section-title">Appearance</h2>
           <div className="lares-setting-row">

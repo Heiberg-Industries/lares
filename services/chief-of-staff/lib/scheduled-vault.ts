@@ -62,6 +62,8 @@ export interface ScheduledVault {
   write(path: string, note: { frontmatter: Record<string, unknown>; body: string; message?: string }): Promise<{ commit: string | null }>;
   /** Saves note text that carries its own `---` front matter lines. */
   writeRaw(path: string, raw: string, message?: string): Promise<{ commit: string | null }>;
+  /** Saves the whole file exactly as given (nothing added or rewritten); keeper checks the path and the origin the file carries. */
+  writeVerbatim(path: string, content: string, message?: string): Promise<{ commit: string | null; unchanged: boolean }>;
   /** Drops the note; true when there was one. */
   remove(path: string): Promise<boolean>;
   move(path: string, destination: string): Promise<void>;
@@ -114,6 +116,11 @@ export function makeScheduledVault(
     async writeRaw(path, raw, message) {
       const { frontmatter, body } = splitRawNote(raw);
       return vault.write(path, { frontmatter, body, message });
+    },
+    async writeVerbatim(path, content, message) {
+      tooLarge(content, path);
+      const r = await call("write-verbatim", { path, content, ...(message ? { message } : {}) });
+      return { commit: typeof r.commit === "string" ? r.commit : null, unchanged: r.unchanged === true };
     },
     async remove(path) {
       const r = await call("remove", { path });

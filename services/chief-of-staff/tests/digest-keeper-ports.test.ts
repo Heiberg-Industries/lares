@@ -47,7 +47,7 @@ const ports = (k: ReturnType<typeof fakeKeeper>, log: (m: string) => void = () =
 beforeEach(() => resetHeldLogForTests());
 
 describe("digest ports through keeper", () => {
-  it("lists the inbox flat, oldest save first, and leaves links and attachments where they are, saying so once per change", async () => {
+  it("lists the inbox flat, oldest save first, lists saved links, and leaves attachments where they are, saying so once per change", async () => {
     const k = fakeKeeper();
     k.files.set("_inbox/b.md", note("saved: 2026-11-02T00:00:00Z", "later thought"));
     k.files.set("_inbox/a.md", note("saved: 2026-11-01T00:00:00Z", "earlier thought"));
@@ -55,14 +55,15 @@ describe("digest ports through keeper", () => {
     k.files.set("_inbox/link.md", note("url: https://example.com/x"));
     k.files.set("_inbox/bare.md", "https://example.com/y");
     k.files.set("_inbox/scan.md", note("attachment: files/scan.pdf"));
+    k.files.set("_inbox/scan2.md", note("attachment: files/scan2.png"));
     k.files.set("_inbox/sub/deep.md", "not the digest's");
     const lines: string[] = [];
     const p = ports(k, (m) => lines.push(m));
-    expect((await p.listInbox()).map((i) => i.path)).toEqual(["_inbox/a.md", "_inbox/b.md", "_inbox/undated.md"]);
+    expect((await p.listInbox()).map((i) => i.path)).toEqual(["_inbox/a.md", "_inbox/b.md", "_inbox/bare.md", "_inbox/link.md", "_inbox/undated.md"]);
     await p.listInbox();
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/articles cannot be filed yet on this install: 2 saved link\(s\) and 1 attachment\(s\)/);
-    k.files.delete("_inbox/bare.md");
+    expect(lines[0]).toMatch(/attachments cannot be filed yet on this install: 2 attachment\(s\) stay in the inbox/);
+    k.files.delete("_inbox/scan.md");
     await p.listInbox();
     expect(lines).toHaveLength(2);
   });

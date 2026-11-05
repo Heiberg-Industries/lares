@@ -440,6 +440,69 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
       await db.query('RESET search_path;DROP FUNCTION public.clock_timestamp()');
     }
   },30_000);
+  describe('says which limit refused a call',()=>{
+    const admitOne=async(member='member-a')=>{const p=await prepared(member);return gatewayPreparedStore!.admit(p.ticket,p.observation,recovery());};
+    it('names the member limit, with the cap and the UTC end of the window, when both limits are full',async()=>{
+      await db.query("SET TIME ZONE 'Pacific/Auckland'");
+      for(let call=0;call<10;call++)expect((await admitOne()).state).toBe('allowed');
+      const refused=await admitOne();
+      // The date is the UTC calendar date of the window's end, whatever zone the connection is in.
+      const utcDate=(await db.query("SELECT to_char(w.ends_at AT TIME ZONE 'UTC','YYYY-MM-DD') AS d FROM budget_windows w JOIN budget_accounts a ON a.active_window_id=w.id WHERE a.kind='member' AND a.live_member_id='member-a'")).rows[0].d;
+      expect(refused).toMatchObject({state:'denied',limit:{scope:'member',cap:'1',resetsAt:utcDate}});
+      await db.query('RESET TIME ZONE');
+      expect((await db.query("SELECT count(*)::int AS n FROM budget_attempts WHERE state='retired'")).rows[0].n).toBe(1);
+    },30_000);
+    it('names the installation limit, with no amount, when only the installation is full',async()=>{
+      await journalGatewayFixture(files.writer,async source=>{
+        await source.query('UPDATE budget_accounts SET installation_cap=0.1 WHERE id=$1',[installation]);
+        noteBudgetFinancialChange(source,'budget_accounts',installation);
+      });
+      expect((await admitOne('member-b')).state).toBe('allowed');
+      const refused=await admitOne('member-a');
+      expect(refused.state).toBe('denied');
+      if(refused.state!=='denied')throw new Error('Not denied');
+      expect(refused.limit?.scope).toBe('installation');
+      expect(Object.keys(refused.limit!).sort()).toEqual(['resetsAt','scope']);
+      expect(refused.limit!.resetsAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    },30_000);
+    it('replies with a signed denied document for a member limit, echoing the request',async()=>{
+      for(let call=0;call<10;call++)expect((await admitOne()).state).toBe('allowed');
+      const p=await prepared(),request=admitDocument(p),result=await rpc(authority(),GATEWAY_ADMIT_PATH,request);
+      expect(result.reply.status).toBe(200);
+      const {message,...rest}=result.document;
+      expect(rest).toEqual({version:1,state:'denied',reason:'member-limit',nonce:request.nonce,requestHash:request.requestHash,profileHash:request.profileHash,endpointHash:request.endpointHash,keyFingerprint:request.keyFingerprint,purposeAlias:request.purposeAlias});
+      expect(message).toMatch(/^You've reached your monthly limit of \$1\. It resets on \d{1,2} [A-Z][a-z]+ \d{4}\.$/);
+      expect((await db.query("SELECT state FROM budget_attempts WHERE ticket_hash IS NOT NULL ORDER BY created_at DESC LIMIT 1")).rows[0].state).toBe('retired');
+    },30_000);
+    it('replies for an installation limit with no amount anywhere in the bytes',async()=>{
+      await journalGatewayFixture(files.writer,async source=>{
+        await source.query('UPDATE budget_accounts SET installation_cap=0.1 WHERE id=$1',[installation]);
+        noteBudgetFinancialChange(source,'budget_accounts',installation);
+      });
+      expect((await admitOne('member-b')).state).toBe('allowed');
+      const p=await prepared('member-a'),result=await rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p));
+      expect(result.reply.status).toBe(200);
+      expect(result.document.reason).toBe('installation-limit');
+      expect(result.document.message).toMatch(/^This installation has reached its monthly spending limit\. It resets on \d{1,2} [A-Z][a-z]+ \d{4}\.$/);
+      expect(result.document.limit).toBeUndefined();
+      expect(result.reply.body.toString().replace(/[0-9]{4}\b/g,'').replace(/[a-f0-9]{64}/g,'')).not.toMatch(/\$|0\.1|"cap"/);
+    },30_000);
+    it('keeps every other refusal the unsigned 503',async()=>{
+      const p=await prepared();await db.query("UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE member_id='member-a'");
+      const result=await rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p));
+      expect(result.reply.status).toBe(503);expect(result.reply.headers['x-lares-signature']).toBeUndefined();
+    });
+    it('gives no reason when a cap is missing',async()=>{
+      const p=await prepared();
+      await journalGatewayFixture(files.writer,async source=>{
+        await source.query('UPDATE budget_accounts SET installation_cap=NULL WHERE id=$1',[installation]);
+        noteBudgetFinancialChange(source,'budget_accounts',installation);
+      });
+      const refused=await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery());
+      expect(refused.state).toBe('denied');
+      expect((refused as {limit?:unknown}).limit).toBeUndefined();
+    },30_000);
+  });
   it('consumes a signed Console human step through the real Keeper socket and prepared journal',async()=>{
     const definitionHash=h('model-purpose-definition'),selected=await selectPurposeModel(definitionHash),{sessionId,admissionNonce}=selected;
     const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());
@@ -1116,7 +1179,9 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     });
     const p=await prepared(),q=await prepared('member-b');
     const results=await Promise.all([rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p)),rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(q))]);
-    expect(results.map(r=>r.reply.status).sort()).toEqual([200,503]);
+    // One ticket is allowed; the other is refused with the signed installation-limit reply, not an unsigned 503.
+    expect(results.map(r=>r.reply.status).sort()).toEqual([200,200]);
+    expect(results.map(r=>r.document.state).sort()).toEqual(['allowed','denied']);
   });
   it('freshly denies revoked authority rather than trusting ticket discovery',async()=>{
     const p=await prepared();await db.query("UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE member_id='member-a'");
@@ -1733,14 +1798,15 @@ describe('inactive budget admission on real PostgreSQL',()=>{
   it.each(['action','approval'] as const)('preserves model cancellation continuation after %s expiry',async deadline=>{
     const p=await resumeFixture(deadline,'cancel');expect((await store.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
   });
-  it('gives the same generic denial for member and installation cap exhaustion',async()=>{
+  it('gives the same generic reason for member and installation cap exhaustion, naming only which limit',async()=>{
     await db.query("UPDATE users SET org_role='member' WHERE id='member-b'");await freshConsoleSessions();
     await db.query('UPDATE budget_accounts SET installation_cap=0.1 WHERE id=$1',[installation]);
     await admitted('member-a');const p=await prepared('member-b');
     const denied={state:'denied',reason:'Budget authority is unavailable or changed'};
-    expect(await store.admit(p.ticket,p.observation,recovery())).toEqual(denied);
+    // Only the installation limit is named, and with no amount.
+    expect(await store.admit(p.ticket,p.observation,recovery())).toEqual({...denied,limit:{scope:'installation',resetsAt:expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)}});
     await expect(store.readStatus(context('member-b'),'installation')).rejects.toThrow('scope denied');
-    await cap('member-b','0');const q=await prepared('member-b');expect(await store.admit(q.ticket,q.observation,recovery())).toEqual(denied);
+    await cap('member-b','0');const q=await prepared('member-b');expect(await store.admit(q.ticket,q.observation,recovery())).toEqual({...denied,limit:{scope:'member',cap:'0',resetsAt:expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)}});
   });
   it('never mints a permit when commit succeeded but its acknowledgement was lost',async()=>{
     const p=await prepared();

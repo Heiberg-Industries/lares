@@ -160,6 +160,11 @@ fact is an assertion nobody can check" ("Where the line should sit"). Other memo
   per rule 2 and link, never duplicate.
 - Don't: let a schedule or background job write to any Vault area, or to taste, without going
   through the same capability grant and origin stamp a model-called tool would use — the raw dream-cycle append (gap 2) is the example this rule closes.
+- Do: when a schedule must save a file exactly as it was built (a filed article with nested front matter and
+  its plain-text companion, or a synced note), use the keeper's verbatim write. It goes through the same
+  grant, path policy and write path as any scheduled write, on paths the schedule's rule names for it and
+  nowhere else, and the keeper enforces the origin: a `.md` file must carry exactly one `lares_origin` line
+  equal to the origin that rule allows, whatever the caller says, and a companion file carries no front matter.
 
 ## Open questions
 
