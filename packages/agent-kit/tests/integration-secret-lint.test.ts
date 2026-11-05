@@ -49,6 +49,13 @@ describe("undeclared secrets", () => {
     expect(lintUndeclaredSecrets([root]).map((f) => f.secret)).toEqual(["stripe-key"]);
   });
 
+  it("accepts a declared per-organisation prefix, and still fails an undeclared one", () => {
+    const root = scratch({
+      "lib/p.ts": "const a = `/run/secrets/google-client-id-${org}`;\nconst b = `/run/secrets/google-client-secret-${org}`;\nconst c = `/run/secrets/stripe-key-${org}`;",
+    });
+    expect(lintUndeclaredSecrets([root]).map((f) => f.secret)).toEqual(["stripe-key-"]);
+  });
+
   it("never reports a secret's VALUE, only its file name", () => {
     const root = scratch({ "lib/q.ts": `const k = "sk-live-abcdef";` });
     expect(lintUndeclaredSecrets([root])).toEqual([]);

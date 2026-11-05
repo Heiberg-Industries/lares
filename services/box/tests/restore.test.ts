@@ -344,6 +344,10 @@ fi
 if [ "$1" = rm ]; then
   id="\${@: -1}"; client_save "$id" "$(client_field "$id" 1)" "$(client_field "$id" 2)" "$(client_field "$id" 3)" false "$(client_field "$id" 5)" true; exit 0
 fi
+if [ "$1" = ps ] && case "$*" in *service=lares-notion-sync*) true ;; *) false ;; esac; then
+  [ -z "\${RESTORE_SYNC_CONTAINER:-}" ] || printf '%s\\n' "$RESTORE_SYNC_CONTAINER"
+  exit 0
+fi
 if [ "$1" = ps ]; then
   filter=""; for arg in "$@"; do case "$arg" in id=*) filter="\${arg#id=}" ;; name=*) filter="name:\${arg#name=}" ;; esac; done
   for state in "$RESTORE_CLIENT_STATE_DIR"/*; do [ -f "$state" ] || continue; id="\${state##*/}"; removed=$(client_field "$id" 6); [ "$removed" = true ] && continue
@@ -599,7 +603,7 @@ describe("restore.sh: a good restore", () => {
   });
 
   it("does the steps in order: stop, drop and restore, migrate, copy folders, start the keeper last", () => {
-    const r = run(base(), { env: { COMPOSE_FILE: "/untrusted/override.yaml" } });
+    const r = run(base(), { env: { COMPOSE_FILE: "/untrusted/override.yaml", RESTORE_SYNC_CONTAINER: "abc123def456" } });
     expect(r.code, r.all).toBe(0);
 
     const stopKeeper = idx(/compose --env-file \S+keeper\.env stop$/);
@@ -614,6 +618,17 @@ describe("restore.sh: a good restore", () => {
     expect(firstDrop).toBeGreaterThan(stopRest);
     expect(migrate).toBeGreaterThan(lastRestore);
     expect(baseUp, logLines().join("\n")).toBeGreaterThan(migrate);
+    // The Notion sync is off after every restore: its container is looked for before any database is
+    // replaced, and its switch and accepted preview are cleared after the migration, before anything starts.
+    const findSync = idx(/^docker ps -a -q .*service=lares-notion-sync/);
+    const clearSync = idx(/^docker .*psql .*DELETE FROM settings WHERE key IN \('sync\.notion\.enabled','sync\.notion\.preview_ack','sync\.notion\.preview'\)/);
+    expect(findSync, logLines().join("\n")).toBeGreaterThan(stopRest);
+    expect(findSync).toBeLessThan(firstDrop);
+    const removeSync = idx(/^docker rm -f abc123def456$/);
+    expect(removeSync, logLines().join("\n")).toBeGreaterThan(findSync);
+    expect(removeSync).toBeLessThan(firstDrop);
+    expect(clearSync, logLines().join("\n")).toBeGreaterThan(migrate);
+    expect(clearSync).toBeLessThan(baseUp);
     expect(keeperUp).toBeGreaterThan(baseUp);
     expect(logLines().length - 1).toBe(keeperUp); // the keeper is the very last command
     expect(readFileSync(join(prefix, "etc/lares/keeper.env"), "utf8")).toContain(`COMPOSE_FILE="${join(prefix, "opt/lares/compose.lares-keeper.yaml")}"`);

@@ -182,6 +182,8 @@ describe("the keeper the installer configures and starts", () => {
     expect(config.lifecycle.imageByRole["chief-of-staff"]).toBe(D("chief-of-staff"));
     expect(config.lifecycle.squidImage).toBe(D("egress-proxy"));
     expect(config.lifecycle.firewallImage).toBe(D("firewall-helper"));
+    // A release that names no sync-jobs image offers no Notion sync; nothing is invented.
+    expect(config.lifecycle.services).toBeUndefined();
     // The same database, network and secrets this installation actually has.
     expect(config.db.database).toBe("lares_state");
     expect(config.lifecycle.network).toBe("lares-network");

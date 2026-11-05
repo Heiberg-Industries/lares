@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from '../../lib/keeper-client';
 import { verify } from '../../lib/auth';
 import type { Capacity, DefinitionResult, RetirementResult, Role, RuntimeState } from '../../lib/builder';
+import type { NotionSyncView } from '../../lib/notion-sync';
 async function actor(): Promise<string> {
   const email = await verify((await cookies()).get('lares_session')?.value);
   if (!email) throw new Error('unauthenticated');
@@ -31,6 +32,17 @@ export async function setAgentLimit(input: {ceiling: number}): Promise<Definitio
 export interface MeetingsSourceResult { value: string | null; restarted: string[]; waiting: string[]; stopped: string[] }
 export async function setMeetingsSource(input: {dataSource: string}): Promise<DefinitionActionResult<MeetingsSourceResult>> {
   return call('settings.notion_meetings_set', {dataSource: input.dataSource}, await actor(), 90_000);
+}
+export async function setNotionSync(input: {enabled: boolean; peopleDataSource: string}): Promise<DefinitionActionResult<NotionSyncView>> {
+  return call('sync.notion_set', {enabled: input.enabled, peopleDataSource: input.peopleDataSource}, await actor(), 90_000);
+}
+/** Reads Notion and the calendar once, writes nothing; can take a few minutes. The wait is longer than the keeper's
+ * own 10-minute limit for the one-shot run, so a slow preview that is stored is never reported as unknown. */
+export async function runNotionSyncPreview(): Promise<DefinitionActionResult<NotionSyncView>> {
+  return call('sync.notion_preview', {}, await actor(), 660_000);
+}
+export async function acceptNotionSyncPreview(input: {hash: string}): Promise<DefinitionActionResult<NotionSyncView>> {
+  return call('sync.notion_accept', {hash: input.hash}, await actor(), 90_000);
 }
 export async function retireAgent(input: {name: string}): Promise<DefinitionActionResult<RetirementResult>> {
   return call('definition.retire', input, await actor());
