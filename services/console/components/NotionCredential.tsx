@@ -81,7 +81,7 @@ export function NotionCredential({ initial }: { initial: CredentialView }) {
     void submit({ operation: confirm, slot: CREDENTIAL_SLOT, expectedRevision: status.revision,
       expectedActiveRevision: status.activeRevision, inventoryRevision: status.inventoryRevision, confirmRestart: true });
   };
-  const canActivate = editable && !!status?.inventoryRevision && status.consumers.every(c => c.category === 'owned-agent' && c.incarnation);
+  const canActivate = editable && !!status?.inventoryRevision && status.consumers.every(c => (c.category === 'owned-agent' && c.incarnation) || c.category === 'managed-service');
   return <section className="lares-surface lares-surface-compact lares-stack" aria-labelledby="notion-credential-heading">
     <h2 id="notion-credential-heading" className="lares-section-title">Notion key</h2>
     <p className="lares-muted">One installation key for a Notion internal connection. Testing reads its identity; it does not prove access to pages or content.</p>
@@ -96,7 +96,7 @@ export function NotionCredential({ initial }: { initial: CredentialView }) {
       {status.guidance && <p role="status">{guidance[status.guidance]}</p>}
       <details><summary>Affected consumers ({status.consumers.length})</summary>
         <p className="lares-muted">Keeper evidence of configured consumers, separate from the connection catalogue and agent permissions.</p>
-        <ul>{status.consumers.map(c => <li key={`${c.name}:${c.category}`}>{c.name} · {c.category.replaceAll('-', ' ')}</li>)}</ul>
+        <ul>{status.consumers.map(c => <li key={`${c.name}:${c.category}`}>{c.name} · {c.category === 'managed-service' ? 'Notion sync, restarted with the key' : c.category.replaceAll('-', ' ')}</li>)}</ul>
       </details>
       {editable && <>
         {!status.candidateRevision && <form onSubmit={save} className="lares-stack" autoComplete="off">
