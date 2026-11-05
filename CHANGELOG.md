@@ -4,6 +4,8 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
+- The Notion sync can now run on the server as an optional service. It keeps meeting attendees and People records in Notion up to date once an hour. It is off on every installation until the owner switches it on in the console (Settings, Notion, Notion sync), runs a preview that shows what it would add, update or leave alone (writing nothing), and accepts that preview. The acceptance belongs to the exact settings previewed, so changing the Meetings or People database means a new preview. The service restarts or stops with the shared Notion key, and a restore always leaves it off. Pages and transcripts between the Vault and Notion are not part of it yet.
+
 - A chat no longer hangs on "is running…" when an action is refused while its approval card is being prepared, for example a private note whose title is already in use. The agent now gets the reason and can say it, and nothing is changed.
 
 - `lares update` now moves running agents onto the new release: each one restarts once, at the end of the update. An agent with changes waiting to be applied is left alone and named, and so is one the keeper cannot read. `sudo lares agent refresh` does the same step on its own. The update also downloads the agents' and the keeper's helper images before it switches, so the first save or start afterwards no longer times out in the console while the action goes through. The keeper's log now says which step held an agent back ("is held: …").

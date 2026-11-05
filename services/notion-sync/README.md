@@ -25,6 +25,7 @@ this package is usable by any installation. Copy
 | `meetingsDataSourceId` | Data source (collection) id of the Meetings database. |
 | `vaultPath` | Vault root, e.g. `/srv/vault`. Validated at load time; not read by the attendee job — used by the vault-translation passes. |
 | `selfEmail` | The owner's own address, or a **list** of them. Sorted last in the generated attendee string. A principal with enrolled mailboxes in more than one org owns more than one address; the job additionally unions this with every mailbox the calendar resolver actually resolves, so this key only has to name aliases the resolver cannot see. |
+| `passes[]` | Optional. The only passes a tick may run, from `attendees`, `transcripts`, `notion-born`, `pull`, `apply`, `wiki`, `desk`, `auto-two-way`, `people`. Absent means all of them. A list naming only `attendees` and/or `people` (the passes that need no vault) makes `vaultPath` and `projects` optional. This is how the keeper-managed service (console: Settings, Notion, Notion sync) keeps the vault passes from running; it renders this file itself, so an installation using the managed service never edits it. `people` in the list requires the `people` group. |
 | `calendarWindowDays` | How many days back from now to search for a matching calendar event (the search window always also extends one day forward, to catch same-day meetings). Optional — defaults to `400`. Must be a positive, finite number. |
 | `projects[]` | `{ notionProject, vaultFolder }` pairs — the Notion `Project` select value mapped to a vault folder. Must be non-empty with unique `notionProject` values. Validated today but not read by the attendee job — used by the later passes. |
 | `deskDirs[]` | `{ dir, project, exclude? }` — the human-editable folders, each pushed by the same engine as the wiki with its own Notion `Project`. Presence of this key is what turns the desk passes on; `docsDataSourceId` is required alongside it (desk rows live in the same Docs database). Dirs are bare vault-relative paths and may not overlap `wikiDir` or each other. `exclude[]` names sub-folders (relative to `dir`) that this dir's passes must leave alone — the carve-out that hands `<dir>/transcripts/` to the transcript pass. |
@@ -91,6 +92,11 @@ pnpm lares notion-sync attendees --dry-run               # show the plan, write 
 pnpm lares notion-sync attendees                         # apply
 pnpm lares notion-sync attendees --tolerance 30          # widen the match window (minutes, default 15)
 ```
+
+`tsx services/notion-sync/bin/notion-sync.ts --preview` runs every pass the config's `passes` list names
+with its dry-run on and prints one JSON line on standard output, `{"version":1,"passes":{"<pass>":{"create":N,"adoptPatch":N,"skip":N,"conflict":N}}}`
+(everything else the passes print goes to standard error). It writes nothing, and it needs `passes`
+in the config. The keeper runs it once before the managed service may start, and shows the result to the owner.
 
 The per-pass commands (the daemon runs all of them, in this order, every tick):
 

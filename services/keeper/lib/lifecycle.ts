@@ -12,6 +12,7 @@ import { renderAgentsCompose, nextAddress, DOOR_FILES, ROLE_DOORS, type AgentCon
 import { AgentNotHealthyError, NoOwnedContainerError, type DockerBoundary } from './docker.js';
 import type { LifecycleConfig } from './lifecycle-config.js';
 import type { KeeperConfig } from './config.js';
+import type { ManagedServices } from './sync-service.js';
 import { WorkflowStorage } from './workflow-storage.js';
 import type { WorkflowDatabaseConnections, WorkflowPrivilegeContract } from './workflow-storage.js';
 import { keeperPool } from './config.js';
@@ -56,6 +57,18 @@ export class AgentLifecycle {
     private credentialState?: () => Promise<CredentialRecord>;
     private get nativeGuarded(): boolean { return this.paths.mode === 'rendered' || this.nativeAuthority !== undefined; }
     setCredentialState(read: () => Promise<CredentialRecord>): void { this.credentialState = read; }
+    private managedServices?: ManagedServices;
+    /** Engine services that are not agents (the Notion sync): their sources join the firewall and proxy rules. */
+    setManagedServices(services: ManagedServices): void { this.managedServices = services; }
+    /** Every address that is not free on the fleet network: what Docker reports, what is reserved, every retained
+     * consumer, every agent, and every managed service (a stopped one keeps its address). */
+    async takenAddresses(): Promise<string[]> {
+        const c = this.config;
+        return [...await this.docker.inventory(c.network), ...c.reservedAddresses, ...c.egress.legacyConsumers.map(x => x.address),
+            ...(await this.rows()).map(r => String(r.address).split('/')[0]), ...await this.managedServices?.reservedAddresses() ?? []];
+    }
+    /** Re-installs the firewall and proxy rules from the current inventory. */
+    async resealNow(): Promise<void> { await this.seal(); }
     private async notionRevision(): Promise<string | null | undefined> {
         const credential = await this.credentialState?.();
         return credential ? credential.effectiveRevision === undefined ? credential.activeRevision : credential.effectiveRevision : undefined;
@@ -335,7 +348,7 @@ export class AgentLifecycle {
                 kind: 'slack' | 'telegram';
                 enabled: boolean;
             }[], infrastructureHosts: c.egress.infrastructureHosts, outsideHosts: outsideHttpsHosts(outsideToolsInEffect(defs.get(a.name)!)) })),
-            { ...c.egress, tolerateUnknownGrantsFor: new Set(agents.map(a => a.name).filter(n => n !== override?.name)) });
+            { ...c.egress, managedServices: await this.managedServices?.egress(), tolerateUnknownGrantsFor: new Set(agents.map(a => a.name).filter(n => n !== override?.name)) });
         for (const s of e.skipped)
             console.warn(`keeper: agent ${s.agent} still grants ${s.capability}; it opens no network hosts until the agent is saved in the new style`);
         return e;
@@ -681,9 +694,7 @@ export class AgentLifecycle {
             throw new KeeperRefusedError(d.role !== 'chief-of-staff'
                 ? 'Native budget activation is supported only for the chief of staff runtime'
                 : 'Managed model-purpose transport is not configured');
-        const c = this.config, rows = await this.rows();
-        const taken = [...await this.docker.inventory(c.network), ...c.reservedAddresses, ...c.egress.legacyConsumers.map(x => x.address), ...rows.map(r => String(r.address).split('/')[0])];
-        await this.storage.provision(name, nextAddress(taken, c.subnet));
+        await this.storage.provision(name, nextAddress(await this.takenAddresses(), this.config.subnet));
         return this.reconcile(name, d);
     }
     async saved(name: string, d: AgentDefinition) {

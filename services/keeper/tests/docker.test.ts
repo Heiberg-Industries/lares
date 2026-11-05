@@ -201,6 +201,19 @@ it('tells an absent container apart from other inspect failures',async()=>{
  const d=ownedDocker({project:'test',dir:'/owned',composeFile:'/owned/compose.lares-agents.yaml',egressDir:'/owned/egress',proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image},vi.fn() as unknown as typeof fetch,async()=>{});
  await expect(d.inspect!('bookkeeper')).rejects.toBeInstanceOf(NoOwnedContainerError);
 });
+it('starts, inspects and removes a managed service only through its own fixed file and name',async()=>{
+ const d=ownedDocker({project:'test',dir:'/owned',composeFile:'/owned/compose.lares-agents.yaml',egressDir:'/owned/egress',proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image},vi.fn() as unknown as typeof fetch,async()=>{});
+ calls.length=0;
+ await d.serviceUp!('/owned/compose.lares-services.yaml','lares-notion-sync');
+ expect(calls.at(-1)).toEqual(['compose','--project-name','test','--project-directory','/owned','-f','/owned/compose.lares-services.yaml','up','-d','--no-deps','--force-recreate','lares-notion-sync']);
+ await expect(d.serviceUp!('relative.yaml','lares-notion-sync')).rejects.toThrow();
+ await expect(d.serviceUp!('/owned/compose.lares-services.yaml','not a service; rm -rf')).rejects.toThrow();
+ await expect(d.serviceInspect!('lares-notion-sync')).resolves.toBeNull();
+ await expect(d.serviceRemove!('lares-notion-sync')).resolves.toBeUndefined();
+ const filters=calls.filter(c=>c[0]==='ps').flat().filter(a=>a.startsWith('label='));
+ expect(filters).toContain('label=com.docker.compose.service=lares-notion-sync');
+ expect(filters).toContain('label=com.docker.compose.project=test');
+});
 it('honours a smaller probe count',async()=>{
  const health=vi.fn(async(_input:string|URL|Request,_init?:RequestInit)=>new Response('{}',{status:503}));
  const d=ownedDocker({project:'test',dir:'/owned',composeFile:'/owned/compose.lares-agents.yaml',egressDir:'/owned/egress',proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image},health as typeof fetch,async()=>{});

@@ -22,6 +22,11 @@ export const PLATFORM_FIXED_SECRET_FILES = [
   'personal-microsoft-client-secret', 'personal-microsoft-token-key',
 ] as const;
 
+/** Per-organisation mounts: one file per Google organisation, named `<prefix><organisation>`.
+ *  The keeper mounts them for the sync service; the source only ever spells the prefix, so the
+ *  secret lint accepts a name that starts with one of these. */
+export const PLATFORM_SECRET_PREFIXES = ['google-client-id-', 'google-client-secret-'] as const;
+
 /** Per door kind: the environment variable that points at the secret file, and the file-name
  *  suffix the keeper mounts it under (`<agent>-<suffix>`). */
 export const DOOR_SECRET_FILES = {

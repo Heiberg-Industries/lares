@@ -11,6 +11,7 @@ import type { KeeperConfig } from './config.js';
 import type { DockerBoundary } from './docker.js';
 import type { AgentLifecycle } from './lifecycle.js';
 import { z } from 'zod';
+import type { NotionSyncService } from './sync-service.js';
 
 function canonical(value: unknown): string {
   const sorted = (v: any): any => Array.isArray(v) ? v.map(sorted) : v && typeof v === 'object'
@@ -21,7 +22,7 @@ function canonical(value: unknown): string {
  * before effects rather than queueing a later restart. Never acts on unowned Docker services.
  */
 export class OwnedCredentialRuntime implements CredentialRuntime {
-  constructor(private pool: Pool, private config: KeeperConfig, private lifecycle: AgentLifecycle, private docker: DockerBoundary) {}
+  constructor(private pool: Pool, private config: KeeperConfig, private lifecycle: AgentLifecycle, private docker: DockerBoundary, private sync?: NotionSyncService) {}
   async locked<T>(work: () => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     let acquired = false, broken = false;
@@ -58,7 +59,7 @@ export class OwnedCredentialRuntime implements CredentialRuntime {
   }
   async snapshot(record: CredentialRecord, recovery = false) {
     const consumers = await credentialConsumers(this.pool, this.config, inventoryGrants(record));
-    if (consumers.some(c => c.category !== 'owned-agent' || !c.incarnation)) throw new KeeperRefusedError('Review unsupported credential consumers on the host');
+    if (consumers.some(c => c.category === 'managed-service' ? !this.sync : c.category !== 'owned-agent' || !c.incarnation)) throw new KeeperRefusedError('Review unsupported credential consumers on the host');
     if (!this.docker.credentialMounts) throw new KeeperRefusedError('Actual credential mount inventory unavailable');
     const mounts = await this.docker.credentialMounts(join(this.config.secretsDir, 'notion-token'));
     if (mounts.some(m => !m.owned || !consumers.some(c => c.name === m.name && c.incarnation === m.incarnation)))
@@ -66,7 +67,8 @@ export class OwnedCredentialRuntime implements CredentialRuntime {
     const rows = (await this.pool.query(`SELECT d.name,d.definition,d.duties,d.voice,d.hash,d.status,r.address,r.workflow_database,r.ownership_token,r.runtime_control_token,r.applied_definition,r.state,r.pending
       FROM agent_definitions d FULL JOIN agent_resources r ON r.name=d.name ORDER BY d.name`)).rows;
     const doors = (await this.pool.query('SELECT agent,kind,incarnation,revision,applied_revision,applied_connection FROM agent_door_connections ORDER BY agent,kind')).rows;
-    for (const c of consumers) {
+    const agents = consumers.filter(c => c.category === 'owned-agent');
+    for (const c of agents) {
       const row = rows.find(r => r.name === c.name);
       const dir = join(this.config.agentsDir, c.name);
       const loaded = await loadDefinition({ serviceDir: dir, env: { LARES_DEFINITION_DIR: dir } });
@@ -76,7 +78,7 @@ export class OwnedCredentialRuntime implements CredentialRuntime {
         throw new KeeperRefusedError('Saved definition, grants or applied connections changed');
       await this.owned(c.name, c.incarnation!, recovery ? undefined : record.activeRevision, !recovery);
     }
-    await this.lifecycle.credentialPreflight(consumers.map(c => c.name));
+    await this.lifecycle.credentialPreflight(agents.map(c => c.name));
     // Not a key fingerprint: only configuration/definition/ownership facts enter this digest.
     const revision = createHash('sha256').update(canonical({ consumers, rows, doors, lifecycle: this.config.lifecycle, inventory: this.config.credentials })).digest('hex');
     return { revision, consumers };
@@ -86,6 +88,11 @@ export class OwnedCredentialRuntime implements CredentialRuntime {
     await this.docker.stop(name);
     if ((await this.owned(name, incarnation)).running) throw new KeeperRefusedError('Credential consumer did not stop');
   }
+  // The Notion sync is a consumer like an agent, but it has no incarnation or definition: the keeper stops it
+  // before the key file moves, starts it against the new revision (or leaves it off) and then checks the real container.
+  async quiesceService() { await this.sync!.quiesce(); }
+  async reconcileService(_name: string, _revision: string | null) { await this.sync!.reconcile('keeper'); }
+  async verifyService(_name: string, revision: string | null) { await this.sync!.verify(revision); }
   installationBound(name: string) { return this.lifecycle.installationBindsNotion(name); }
   reconcile(name: string, revision: string | null) { return this.lifecycle.reconcileCredential(name, revision); }
   async verify(name: string, incarnation: string, revision: string | null) { await this.owned(name, incarnation, revision, true); }

@@ -151,4 +151,18 @@ export interface NotionSyncConfig {
   transcripts?: TranscriptsConfig;
   /** The People projection. Absent ⇒ the pass logs a skip and does nothing. */
   people?: PeopleConfig;
+  /**
+   * The passes one tick may run. Absent ⇒ all of them (the older installations). Present ⇒ only
+   * these: a managed install names just the ones that do not touch the vault, so the rest can never
+   * start by accident. See SYNC_PASS_NAMES.
+   */
+  passes?: SyncPassName[];
 }
+
+/** Every pass a tick can run, in tick order. */
+export const SYNC_PASS_NAMES = [
+  "attendees", "transcripts", "notion-born", "pull", "apply", "wiki", "desk", "auto-two-way", "people",
+] as const;
+export type SyncPassName = (typeof SYNC_PASS_NAMES)[number];
+/** The passes that need no vault at all: they read Google Calendar / the CRM and write only Notion. */
+export const VAULT_FREE_PASSES: readonly SyncPassName[] = ["attendees", "people"];

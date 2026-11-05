@@ -22,6 +22,7 @@ import { GitBackup } from "../lib/git-backup.js";
 import { readSetting } from "../lib/settings.js";
 import { ownedDocker } from "../lib/docker.js";
 import { AgentLifecycle } from "../lib/lifecycle.js";
+import { NotionSyncService, registerSyncActions } from "../lib/sync-service.js";
 import { keeperFinancialPool, keeperOutsideCustodyPool, keeperPool, loadKeeperConfig } from "../lib/config.js";
 import { loadBoundOutsideCustodyKey, OutsideCustodyStore } from "../lib/outside-custody.js";
 import { registerHumanOutsideDiscoveryActions } from "../lib/outside-discovery-actions.js";
@@ -127,6 +128,12 @@ async function main(): Promise<void> {
         if (managed && (await credentialStore.read()).activationIntent)
             throw new KeeperRefusedError('Credential recovery required before changing agents or connections');
     };
+    // The Notion sync: an optional managed service. Its source joins the firewall rules, and it is a consumer
+    // of the shared Notion key while it is allowed to run. Never started here: see NotionSyncService.apply.
+    const sync = lifecycle && docker && config.lifecycle?.services ? new NotionSyncService({ pool, config, docker,
+        credentialRevision: async () => { if (!managed) return null; const record = await credentialStore.read(); return record.effectiveRevision === undefined ? record.activeRevision : record.effectiveRevision; },
+        reseal: () => lifecycle.resealNow(), takenAddresses: () => lifecycle.takenAddresses() }) : undefined;
+    if (sync) lifecycle!.setManagedServices(sync);
     const context = { actor: "host", audit: auditor(pool) };
         // Native custody is opened and verified before the journal or any action can mutate
         // source rows or files. An unbound leftover is recovery, never an empty legacy store.
@@ -172,6 +179,7 @@ async function main(): Promise<void> {
         if(financialPool)registerMemberRemovalAction({pool:financialPool,journal:financialJournal,designatedOwnerId:config.designatedOwnerId,nativeCustody});
         registerDefinitionActions({
             namespaceGuard, administrator: config.credentials?.administrator,
+            syncChanged: sync ? async actor => { await sync.apply(actor, { start: true }); } : undefined,
             pool, agentsDir: config.agentsDir, retiredDir: config.retiredDir, secretsDir: config.secretsDir,
             ceiling: async () => { const value = await readSetting(pool, "agents.ceiling"); return typeof value === "number" ? value : NaN; },
             compose: lifecycle ?? {stop:async()=>{throw new Error("Lifecycle configuration required");}},
@@ -192,8 +200,9 @@ async function main(): Promise<void> {
             }),
         });
         registerCredentialActions(new Credentials(config.credentials, credentialStore, credentialFiles, grants => credentialConsumers(pool, config, grants), notionCredentialTester(config.lifecycle?.runtime.proxyUrl),
-            managed && lifecycle && docker ? new CredentialActivation(credentialFiles, new OwnedCredentialRuntime(pool, config, lifecycle, docker)) : undefined,
+            managed && lifecycle && docker ? new CredentialActivation(credentialFiles, new OwnedCredentialRuntime(pool, config, lifecycle, docker, sync)) : undefined,
             names => deletedAgents(pool, names)));
+        if (sync) registerSyncActions({ pool, service: sync, administrator: config.credentials?.administrator, namespaceGuard });
         const gatewayUrl = config.lifecycle?.runtime.gatewayUrl;
         registerGatewayStatusAction(new GatewayStatusReader({ gatewayUrl, masterKeyFile: config.lifecycle?.runtime.gatewayMasterKeyFile,
             aliasPrefix: () => readSetting(pool, "models.alias_prefix"), admin: new GatewayAdmin(gatewayUrl ?? "http://unconfigured.invalid") }));
@@ -236,6 +245,9 @@ async function main(): Promise<void> {
         void lifecycle?.resealAtStart();
         // Then bring back the agents that were running before the reboot: their runtime folders exist now.
         void lifecycle?.startAgentsAtBoot();
+        // The sync is only ever STOPPED here, never started: a keeper that has just come up (perhaps on a restored
+        // copy) must not begin syncing by itself. A service still allowed to run is left as the host's Docker keeps it.
+        void sync?.apply("keeper", { start: false }).catch(() => console.error("keeper: could not check the Notion sync at startup; check it in the console"));
     }
     catch {
         // Cleanup is best-effort but keeps the ownership order: stop listeners, drain
