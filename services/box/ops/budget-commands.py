@@ -72,22 +72,44 @@ NATIVE_TIMEOUT_SECONDS = 25
 RECONCILE_TIMEOUT_SECONDS = 90
 MAX_REPLY_BYTES = 1_048_576
 
-# USD per million tokens from the provider's pricing page, checked 2 November 2026. The owner
-# confirms them; any other model means typing prices in. A model whose price changes with prompt
-# length is left out, because the budget system has no way to express that.
 # Largest request the keeper's socket takes is 256 KiB; leave room for the envelope.
 MAX_IMPORT_BYTES = 240_000
 # Roles an older release ran that this one does not. The keeper makes the real decision and says
 # so; this only keeps such a folder out of the count that the agent limit is checked against.
 RETIRED_ROLES = ("travel",)
 
-PRICES_CHECKED ="2 November 2026"
+# USD per million tokens from the provider's pricing page, checked 2 November 2026. The owner
+# confirms them; any other model means typing prices in. A model whose price changes with prompt
+# length is left out, because the budget system has no way to express that.
+PRICES_CHECKED = "3 November 2026"
+# Sources: Anthropic https://platform.claude.com/docs/en/about-claude/pricing (every Anthropic entry below);
+# OpenAI https://developers.openai.com/api/docs/pricing (standard tier, every OpenAI entry);
+# Mistral https://docs.mistral.ai/models/model-cards/mistral-embed-23-12 (the embedding entry).
+# OpenAI models have no cache-write charge, so theirs is 0. Models whose price changes with prompt length (for example
+# Claude Haiku 5.5 and the GPT-5.5/5.6/6 families) are left out on purpose.
 SUGGESTED_PRICES = {
     "anthropic/claude-opus-5": {"input": "5", "output": "25", "cacheRead": "0.5", "cacheWrite": "6.25"},
     "anthropic/claude-opus-5-5": {"input": "4", "output": "20", "cacheRead": "0.2", "cacheWrite": "5"},
+    "anthropic/claude-opus-4-5": {"input": "5", "output": "25", "cacheRead": "0.5", "cacheWrite": "6.25"},
     "anthropic/claude-sonnet-5-5": {"input": "2", "output": "10", "cacheRead": "0.1", "cacheWrite": "2.5"},
+    "anthropic/claude-sonnet-5": {"input": "2", "output": "10", "cacheRead": "0.2", "cacheWrite": "2.5"},
+    "anthropic/claude-sonnet-4-6": {"input": "3", "output": "15", "cacheRead": "0.3", "cacheWrite": "3.75"},
+    "anthropic/claude-sonnet-4-5": {"input": "3", "output": "15", "cacheRead": "0.3", "cacheWrite": "3.75"},
+    "anthropic/claude-haiku-4-5": {"input": "1", "output": "5", "cacheRead": "0.1", "cacheWrite": "1.25"},
+    "openai/gpt-5": {"input": "1.25", "output": "10", "cacheRead": "0.125", "cacheWrite": "0"},
+    "openai/gpt-5-mini": {"input": "0.25", "output": "2", "cacheRead": "0.025", "cacheWrite": "0"},
+    "openai/gpt-5-nano": {"input": "0.05", "output": "0.4", "cacheRead": "0.005", "cacheWrite": "0"},
+    "openai/gpt-5.4-mini": {"input": "0.75", "output": "4.5", "cacheRead": "0.075", "cacheWrite": "0"},
+    "openai/gpt-5.4-nano": {"input": "0.2", "output": "1.25", "cacheRead": "0.02", "cacheWrite": "0"},
+    "openai/gpt-4.1": {"input": "2", "output": "8", "cacheRead": "0.5", "cacheWrite": "0"},
+    "openai/gpt-4.1-mini": {"input": "0.4", "output": "1.6", "cacheRead": "0.1", "cacheWrite": "0"},
+    "openai/gpt-4o-mini": {"input": "0.15", "output": "0.6", "cacheRead": "0.075", "cacheWrite": "0"},
+    # An embedding model is charged on input tokens alone; it is looked up by its bare model name.
+    "mistral-embed": {"input": "0.1"},
 }
 PRICE_NAMES = (("input", "input"), ("output", "output"), ("cacheRead", "cache read"), ("cacheWrite", "cache write"))
+EMBED_PRICE_NAMES = (("input", "input"),)
+PURPOSES = ("writer", "utility", "gate")
 
 
 class Stop(Exception):
@@ -322,6 +344,74 @@ def ask(question: str) -> str:
         raise Stop("No answer was given, so nothing was changed. Run this in a terminal, or pass the answers as options.") from None
 
 
+def own_model_aliases(settings: dict[str, str]) -> list[dict[str, Any]]:
+    """The served aliases that run a model of their own and so need their own prices, in policy order.
+    `key` is what the price table is looked up by; `names` are the rates that model is charged on."""
+    alias, model = settings.get("LARES_MODEL_ALIAS", ""), settings.get("LARES_MODEL", "")
+    prefix = alias[:-len("-brain")] if alias.endswith("-brain") else alias
+    found = [{"alias": f"{prefix}-{purpose}", "key": settings[f"LARES_MODEL_{purpose.upper()}"], "names": PRICE_NAMES}
+             for purpose in PURPOSES if settings.get(f"LARES_MODEL_{purpose.upper()}") and settings[f"LARES_MODEL_{purpose.upper()}"] != model]
+    if settings.get("LARES_EMBED_MODEL") and settings.get("LARES_EMBED_BASE_URL"):
+        found.append({"alias": f"{prefix}-embed", "key": settings["LARES_EMBED_MODEL"], "names": EMBED_PRICE_NAMES})
+    return found
+
+
+def gateway_fields(settings: dict[str, str]) -> dict[str, Any]:
+    """The parts of the policy request that describe the gateway as installation.env sets it up."""
+    # A model of its own for a purpose, if installation.env names one. The reviewed policy has to describe the gateway as it runs.
+    purpose_models = {purpose: settings[f"LARES_MODEL_{purpose.upper()}"] for purpose in PURPOSES
+                      if settings.get(f"LARES_MODEL_{purpose.upper()}")}
+    # The embedding model, if installation.env names one, for the same reason.
+    embedding = ({"model": settings["LARES_EMBED_MODEL"], "baseUrl": settings["LARES_EMBED_BASE_URL"],
+                  **({"maxInputTokens": settings["LARES_EMBED_MAX_INPUT_TOKENS"]} if settings.get("LARES_EMBED_MAX_INPUT_TOKENS") else {})}
+                 if settings.get("LARES_EMBED_MODEL") and settings.get("LARES_EMBED_BASE_URL") else None)
+    return {**({"purposeModels": purpose_models} if purpose_models else {}), **({"embedding": embedding} if embedding else {})}
+
+
+def choose_prices(key: str, names: tuple[tuple[str, str], ...], options: argparse.Namespace, given: str | None = None) -> dict[str, str]:
+    """The prices for one model: typed on the command line, the table's suggestion, or typed in by the owner."""
+    suggested = SUGGESTED_PRICES.get(key)
+    if suggested is not None and set(suggested) != {name for name, _ in names}:
+        suggested = None
+    if given:
+        parts = given.split(",")
+        if len(parts) != len(names):
+            raise Stop("--prices needs four numbers: input,output,cacheRead,cacheWrite. Nothing was changed.")
+        return {name: part.strip() for (name, _), part in zip(names, parts)}
+    if suggested and options.yes:
+        return dict(suggested)
+    if suggested:
+        say(f"Prices for this model, checked {PRICES_CHECKED}. Check them against your provider's current page.")
+        say("US dollars per million tokens: " + ", ".join(f"{label} ${suggested[name]}" for name, label in names))
+        if ask("Use these prices? [Y/n] ").lower() in ("", "y", "yes"):
+            return dict(suggested)
+    say("Type this model's prices in US dollars per million tokens.")
+    return {name: ask(f"  {label}: ") for name, label in names}
+
+
+def render_policy(installation: Installation, settings: dict[str, str], answers: dict[str, Any], alias_prices: dict[str, dict[str, str]]) -> dict[str, Any]:
+    """The reviewed policy for the gateway as installation.env describes it, built inside the engine image."""
+    try:
+        return json.loads(installation.run_box_program("bin/render-native-policy.ts", json.dumps({
+            "alias": settings.get("LARES_MODEL_ALIAS", ""), "providerModel": settings.get("LARES_MODEL", ""),
+            "gatewayUrl": settings.get("GATEWAY_URL", ""),
+            "installationLimit": answers["installationLimit"], "personLimit": answers["personLimit"], "prices": answers["prices"],
+            **({"aliasPrices": alias_prices} if alias_prices else {}),
+            **gateway_fields(settings),
+        })))
+    except ValueError:
+        raise Stop("The budget policy could not be read back. Nothing was changed.") from None
+
+
+def say_prices(rendered: dict[str, Any]) -> None:
+    """One line per served alias: the model it runs and what it is charged."""
+    labels = dict(PRICE_NAMES)
+    say("Prices per million tokens, for each model name the gateway serves:")
+    for entry in rendered["pricedAliases"]:
+        charged = ", ".join(f"{labels[name]} ${value}" for name, value in entry["prices"].items() if value != "0" or name == "input")
+        say(f"  {entry['alias']} ({entry['model']}): {charged}")
+
+
 def ask_for_answers(installation: Installation, options: argparse.Namespace, settings: dict[str, str]) -> dict[str, Any]:
     """Everything the owner decides, before anything on the server changes."""
     model = settings.get("LARES_MODEL", "")
@@ -332,58 +422,30 @@ def ask_for_answers(installation: Installation, options: argparse.Namespace, set
     say(f"This installation's model is {model}.")
     installation_limit = options.installation_limit or ask("Most the whole installation may spend per month, in US dollars: ")
     person_limit = options.person_limit or ask("Most one person may spend per month, in US dollars: ")
-    suggested = SUGGESTED_PRICES.get(model)
-    if options.prices:
-        parts = options.prices.split(",")
-        if len(parts) != 4:
-            raise Stop("--prices needs four numbers: input,output,cacheRead,cacheWrite. Nothing was changed.")
-        prices = {name: part.strip() for (name, _), part in zip(PRICE_NAMES, parts)}
-    elif suggested and options.yes:
-        prices = dict(suggested)
-    else:
-        prices = {}
-        if suggested:
-            say(f"Prices for this model, checked {PRICES_CHECKED}. Check them against your provider's current page.")
-            say("US dollars per million tokens: " + ", ".join(f"{label} ${suggested[name]}" for name, label in PRICE_NAMES))
-            if ask("Use these prices? [Y/n] ").lower() in ("", "y", "yes"):
-                prices = dict(suggested)
-        if not prices:
-            say("Type this model's prices in US dollars per million tokens.")
-            prices = {name: ask(f"  {label}: ") for name, label in PRICE_NAMES}
-    # A model of its own for a purpose, if installation.env names one. The reviewed policy has to describe the gateway as it runs.
-    purpose_models = {purpose: settings[f"LARES_MODEL_{purpose.upper()}"] for purpose in ("writer", "utility", "gate")
-                      if settings.get(f"LARES_MODEL_{purpose.upper()}")}
-    # The embedding model, if installation.env names one, for the same reason.
-    embedding = ({"model": settings["LARES_EMBED_MODEL"], "baseUrl": settings["LARES_EMBED_BASE_URL"],
-                  **({"maxInputTokens": settings["LARES_EMBED_MAX_INPUT_TOKENS"]} if settings.get("LARES_EMBED_MAX_INPUT_TOKENS") else {})}
-                 if settings.get("LARES_EMBED_MODEL") and settings.get("LARES_EMBED_BASE_URL") else None)
+    prices = choose_prices(model, PRICE_NAMES, options, options.prices)
+    # Each model name that runs a model of its own is priced on its own; the others run the brain's model.
+    alias_prices: dict[str, dict[str, str]] = {}
+    for own in own_model_aliases(settings):
+        say("")
+        say(f"{own['alias']} runs {own['key']}.")
+        alias_prices[own["alias"]] = choose_prices(own["key"], own["names"], options)
+    answers = {"installationLimit": installation_limit, "personLimit": person_limit, "prices": prices}
     try:
-        rendered = json.loads(installation.run_box_program("bin/render-native-policy.ts", json.dumps({
-            "alias": alias, "providerModel": model, "gatewayUrl": gateway_url,
-            "installationLimit": installation_limit, "personLimit": person_limit, "prices": prices,
-            **({"purposeModels": purpose_models} if purpose_models else {}),
-            **({"embedding": embedding} if embedding else {}),
-        })))
+        rendered = render_policy(installation, settings, answers, alias_prices)
     except KeeperRefused as error:
         raise Stop(f"{error} Nothing was changed.") from None
-    except ValueError:
-        raise Stop("The budget policy could not be read back. Nothing was changed.") from None
     say("")
     say(f"Model: {rendered['model']}")
-    say("Prices per million tokens: " + ", ".join(f"{label} ${rendered['prices'][name]}" for name, label in PRICE_NAMES))
+    say_prices(rendered)
     say(f"Installation limit: ${rendered['installationLimit']} a month. It cannot be changed after the first agent starts.")
     say(f"Per-person limit: ${rendered['personLimit']} a month, for anyone without a limit of their own.")
     say(f"Each model call holds up to ${rendered['maximumLiability']} of those limits until it finishes.")
-    unpriced = rendered.get("unpricedAliases") or []
-    if unpriced:
-        say(f"Not priced yet: {', '.join(unpriced)}. Each of these runs a model of its own (or embeds), and this setup prices only {model}.")
-        say("Until they are priced, calls to them are refused. Prices for them are a later step.")
     say("")
     if not options.yes and ask("Switch model spending on with these settings? [y/N] ").lower() not in ("y", "yes"):
         raise Stop("Nothing was changed.")
     return {"version": 1, "complete": False, "model": rendered["model"], "alias": alias,
             "installationLimit": rendered["installationLimit"], "personLimit": rendered["personLimit"],
-            "prices": rendered["prices"], "maximumLiability": rendered["maximumLiability"],
+            "prices": rendered["prices"], "aliasPrices": alias_prices, "maximumLiability": rendered["maximumLiability"],
             "policy": rendered["policy"], "stageDirectory": None, "bindings": {}}
 
 
@@ -630,6 +692,54 @@ def describe_blocker(name: str, status: dict[str, Any], owner_asked: bool, alias
     return None
 
 
+def top_up_policy(installation: Installation, options: argparse.Namespace, state: dict[str, Any]) -> None:
+    """An installation set up before every model name was priced has only the brain's policy on file. Add the others,
+    but only when the gateway's models are still the ones the brain's policy was reviewed for. This changes the
+    reviewed file and the saved answers and nothing else: no key is made for the new names."""
+    saved = state.get("policy")
+    saved_policies = saved.get("policies") if isinstance(saved, dict) else None
+    if not isinstance(saved_policies, list) or not saved_policies:
+        return
+    settings = installation.read_settings("/etc/lares/installation.env")
+    own = own_model_aliases(settings)
+    # The brain's model name, three more, and the embedding one when it is set up.
+    if len(saved_policies) >= 4 + (1 if any(entry["names"] is EMBED_PRICE_NAMES for entry in own) else 0):
+        return
+    changed = ("The gateway's models are not the ones model budget setup was done for, so the other model names cannot be priced here: "
+               "model budget setup has to be redone on a fresh install.")
+    answers = {"installationLimit": state["installationLimit"], "personLimit": state["personLimit"], "prices": state["prices"]}
+    same_as_saved = lambda rendered: json.dumps(rendered["policy"]["policies"][0], separators=(",", ":")) == json.dumps(saved_policies[0], separators=(",", ":"))
+    try:
+        # The brain's policy does not depend on the other names' prices, so check it before asking for any.
+        stand_ins = {entry["alias"]: ({"input": "0.01"} if entry["names"] is EMBED_PRICE_NAMES else dict(state["prices"])) for entry in own}
+        if not same_as_saved(render_policy(installation, settings, answers, stand_ins)):
+            say(changed)
+            return
+        alias_prices = dict(state.get("aliasPrices") or {})
+        if own:
+            say("Some of this installation's model names run models of their own, and are not priced yet.")
+        for entry in own:
+            if entry["alias"] not in alias_prices:
+                say(f"{entry['alias']} runs {entry['key']}.")
+                alias_prices[entry["alias"]] = choose_prices(entry["key"], entry["names"], options)
+        rendered = render_policy(installation, settings, answers, alias_prices)
+    except KeeperRefused:
+        say(changed)
+        return
+    except Stop as stop:
+        say(f"{stop} The other model names stay unpriced until you run this command again.")
+        return
+    if not same_as_saved(rendered):
+        say(changed)
+        return
+    say_prices(rendered)
+    write_policy(installation, json.dumps(rendered["policy"], separators=(",", ":")).encode())
+    state["policy"] = rendered["policy"]
+    state["aliasPrices"] = alias_prices
+    installation.save_state(state)
+    say("The prices are saved. Nothing else changes now.")
+
+
 def agent_start(installation: Installation, options: argparse.Namespace) -> int:
     state = installation.load_state()
     if not state or not state.get("complete"):
@@ -644,6 +754,7 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
     blocker = describe_blocker(name, status, not options.member, state["alias"])
     if blocker:
         raise Stop(f"{blocker} Nothing was changed.")
+    top_up_policy(installation, options, state)
     member_id = status["member"]["id"]
     if not status["member"]["limit"]:
         installation.host_action("budget.apply-default-member-limit", {"memberId": member_id, "monthlyLimit": state["personLimit"]})
@@ -964,6 +1075,7 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     start = commands.add_parser("agent-start")
     start.add_argument("name")
     start.add_argument("--member", help="the person's sign-in email or member id; the owner when left out")
+    start.add_argument("--yes", action="store_true", help="use the suggested prices for model names not priced yet, without asking")
     import_ = commands.add_parser("agent-import")
     import_.add_argument("directory", help="one agent folder, or a folder of agent folders")
     import_.add_argument("--yes", action="store_true", help="do not ask for confirmation")
