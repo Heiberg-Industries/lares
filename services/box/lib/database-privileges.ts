@@ -50,6 +50,8 @@ export const ENGINE_TABLE_PRIVILEGES = {
     "vault_backing_stores", "voice_exemplar", "voice_profile", "web_inbox", "workflow_jobs",
   ],
   financial: FINANCIAL_TABLES,
+  // Written by the application role only; the financial role reads three named columns of it.
+  applicationOnly: ["agent_provider_keys"],
   outsideCustody: ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations", "outside_execution_approvals", "private_metadata_devices"],
   ledger: LEDGER_TABLES,
 } as const;
@@ -163,6 +165,10 @@ const FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS: Readonly<Record<string, readonly
   outside_custody_operations: ["owner_member_id"],
   private_metadata_devices: ["owner_member_id"],
 };
+// The financial role chooses a provider key for an agent; it reads which one and never writes.
+const FINANCIAL_APPLICATION_SELECT_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  agent_provider_keys: ["agent", "revision", "state"],
+};
 const FINANCIAL_OUTSIDE_CUSTODY_DELETE_TABLES = ["private_metadata_devices"] as const;
 const OUTSIDE_CUSTODY_UPDATE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   orgs: ["created_at"],
@@ -198,7 +204,7 @@ const safeFailure = (): Error => new Error("Database privilege setup could not b
 const qid = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const qname = (name: string): string => `${qid(SCHEMA)}.${qid(name)}`;
 const engineTables = (includeCustody = true): string[] => [
-  ...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial,
+  ...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.applicationOnly,
   ...(includeCustody ? ENGINE_TABLE_PRIVILEGES.outsideCustody : []), ...ENGINE_TABLE_PRIVILEGES.ledger,
 ];
 
@@ -218,7 +224,7 @@ function sorted(values: readonly string[]): string[] {
 }
 
 async function requireInventory(client: PoolClient): Promise<void> {
-  const expectedTables = [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.outsideCustody, ...ENGINE_TABLE_PRIVILEGES.ledger];
+  const expectedTables = [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.applicationOnly, ...ENGINE_TABLE_PRIVILEGES.outsideCustody, ...ENGINE_TABLE_PRIVILEGES.ledger];
   if (new Set(expectedTables).size !== expectedTables.length || expectedTables.some((name) => !/^[a-z][a-z0-9_]*$/.test(name))) throw safeFailure();
 
   const relations = await queryRows<{ name: string; kind: string }>(client, `
@@ -472,7 +478,7 @@ async function requireManagedState(client: PoolClient, database: string, custody
            ))
          )
        ) LIMIT 1
-  `,[[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],database,SCHEMA,[...ENGINE_TABLE_PRIVILEGES.ordinary,...ENGINE_TABLE_PRIVILEGES.financial,...ENGINE_TABLE_PRIVILEGES.outsideCustody,...ENGINE_TABLE_PRIVILEGES.ledger,...ENGINE_SEQUENCES],ENGINE_FUNCTIONS]);
+  `,[[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],database,SCHEMA,[...ENGINE_TABLE_PRIVILEGES.ordinary,...ENGINE_TABLE_PRIVILEGES.financial,...ENGINE_TABLE_PRIVILEGES.applicationOnly,...ENGINE_TABLE_PRIVILEGES.outsideCustody,...ENGINE_TABLE_PRIVILEGES.ledger,...ENGINE_SEQUENCES],ENGINE_FUNCTIONS]);
   if (unexpectedAclAuthority.length) throw safeFailure();
   await requireManagedAcls(client,database,custody);
 }
@@ -488,11 +494,12 @@ async function requireManagedAcls(client: PoolClient, database: string, custody 
     LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE n.nspname=$1 AND a.grantee<>n.nspowner`;
   await requireAcl(client, schemaAcl, [SCHEMA], [expectedAclKey(APPLICATION,"USAGE"),expectedAclKey(FINANCIAL,"USAGE"),...(custody?[expectedAclKey(OUTSIDE_CUSTODY,"USAGE")]:[])]);
 
-  for (const table of [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...(custody?ENGINE_TABLE_PRIVILEGES.outsideCustody:[]), ...ENGINE_TABLE_PRIVILEGES.ledger]) {
+  for (const table of [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.applicationOnly, ...(custody?ENGINE_TABLE_PRIVILEGES.outsideCustody:[]), ...ENGINE_TABLE_PRIVILEGES.ledger]) {
     const ordinary = (ENGINE_TABLE_PRIVILEGES.ordinary as readonly string[]).includes(table);
     const expected: string[] = [];
     if (ordinary) for (const role of [APPLICATION, FINANCIAL]) for (const privilege of ["SELECT","INSERT","UPDATE","DELETE"]) expected.push(expectedAclKey(role,privilege));
     else if ((FINANCIAL_TABLES as readonly string[]).includes(table)) for (const privilege of ["SELECT","INSERT"]) expected.push(expectedAclKey(FINANCIAL,privilege));
+    else if ((ENGINE_TABLE_PRIVILEGES.applicationOnly as readonly string[]).includes(table)) for (const privilege of ["SELECT","INSERT","UPDATE","DELETE"]) expected.push(expectedAclKey(APPLICATION,privilege));
     if (custody && (OUTSIDE_CUSTODY_AUTHORITY_TABLES as readonly string[]).includes(table)) expected.push(expectedAclKey(OUTSIDE_CUSTODY,"SELECT"));
     if (custody && (FINANCIAL_OUTSIDE_CUSTODY_DELETE_TABLES as readonly string[]).includes(table)) expected.push(expectedAclKey(FINANCIAL,"DELETE"));
     if (custody && (ENGINE_TABLE_PRIVILEGES.outsideCustody as readonly string[]).includes(table)) {
@@ -506,7 +513,7 @@ async function requireManagedAcls(client: PoolClient, database: string, custody 
     const columnNames = await queryRows<{ name: string }>(client, `SELECT a.attname AS name FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2 AND a.attnum>0 AND NOT a.attisdropped`, [SCHEMA,table]);
     for (const column of columnNames) {
       const allowed = (APP_FINANCIAL_COLUMNS[table] ?? []).includes(column.name);
-      const financialCustodySelect = custody && (FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS[table] ?? []).includes(column.name);
+      const financialCustodySelect = custody && (FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS[table] ?? []).includes(column.name) || (FINANCIAL_APPLICATION_SELECT_COLUMNS[table] ?? []).includes(column.name);
       const custodySelect = custody && (OUTSIDE_CUSTODY_SELECT_COLUMNS[table] ?? []).includes(column.name);
       const custodyUpdate = custody && (OUTSIDE_CUSTODY_UPDATE_COLUMNS[table] ?? []).includes(column.name);
       const columnAcl = `SELECT COALESCE(r.rolname,'PUBLIC') AS grantee, x.privilege_type AS privilege, x.is_grantable AS grantable
@@ -577,6 +584,12 @@ async function applyGrants(client: PoolClient): Promise<void> {
     await client.query(`GRANT SELECT, INSERT ON TABLE ${qname(table)} TO ${qid(FINANCIAL)}`);
     const columns = APP_FINANCIAL_COLUMNS[table];
     if (columns?.length) await client.query(`GRANT UPDATE (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(FINANCIAL)}`);
+  }
+  for (const table of ENGINE_TABLE_PRIVILEGES.applicationOnly) {
+    await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ${qname(table)} TO ${qid(APPLICATION)}`);
+  }
+  for (const [table, columns] of Object.entries(FINANCIAL_APPLICATION_SELECT_COLUMNS)) {
+    await client.query(`GRANT SELECT (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(FINANCIAL)}`);
   }
   for (const table of ENGINE_TABLE_PRIVILEGES.outsideCustody) {
     const privileges=table==="outside_custody_revisions"?"SELECT, INSERT, DELETE":"SELECT, INSERT";

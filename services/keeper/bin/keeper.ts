@@ -14,6 +14,7 @@ import { KeeperRefusedError } from '../lib/actions.js';
 import {registerDoorActions} from '../lib/doors.js';
 import {registerConversationActions,runtimeReset} from "../lib/conversations.js";
 import { registerOutsideToolActions } from "../lib/outside-tools.js";
+import { ProviderKeyFiles, registerProviderKeyActions } from "../lib/provider-keys.js";
 import { readFileSync, existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { deployedToolsFor } from "@lares/agent-kit/persona";
@@ -209,6 +210,7 @@ async function main(): Promise<void> {
         registerDoorActions({pool,secretsDir:config.secretsDir,publicOrigin:config.publicDoorOrigin,emailPrincipal:config.lifecycle?.runtime.google?.principal,googleOrgs:Object.keys(config.lifecycle?.runtime.google?.clients??{}),namespaceGuard});
         registerConversationActions(pool,(name,incarnation,id)=>runtimeReset(config.project,name,incarnation,id));
         registerOutsideToolActions({ pool, agentsDir: config.agentsDir, secretsDir: config.secretsDir });
+        registerProviderKeyActions({ pool, files: new ProviderKeyFiles(config.secretsDir) });
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));
         stops.push(await serve({ socket: "/run/lares-host/keeper.sock", host: true, context }));
         if(financialPool&&financialJournal?.prepared)stops.push(scheduleNightlyLedgerCheck(financialJournal,financialPool));

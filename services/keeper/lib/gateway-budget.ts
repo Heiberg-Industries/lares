@@ -87,7 +87,7 @@ export class GatewayBudgetAuthority {
         const consumed=consumeDispatchPermit(admitted.permit);
         if(!consumed||consumed.attemptId!==admitted.attemptId||consumed.bindingId!==ticket.bindingId||consumed.requestHash!==request.requestHash)return refused();
         fresh();
-        const grant=gatewayGrantSchema.parse({version:1,nonce:request.nonce,requestHash:request.requestHash,profileHash:request.profileHash,endpointHash:request.endpointHash,keyFingerprint:request.keyFingerprint,purposeAlias:request.purposeAlias,attemptId:consumed.attemptId,bindingId:consumed.bindingId});
+        const grant=gatewayGrantSchema.parse({version:1,nonce:request.nonce,requestHash:request.requestHash,profileHash:request.profileHash,endpointHash:request.endpointHash,keyFingerprint:request.keyFingerprint,purposeAlias:request.purposeAlias,attemptId:consumed.attemptId,bindingId:consumed.bindingId,providerKey:consumed.providerKey});
         if(!await selected.recordGatewayGrant(consumed,gatewayGrantHash(grant)))return refused();
         fresh();
         // The gateway counts this from when it sent the request, so time spent here is not taken off again.

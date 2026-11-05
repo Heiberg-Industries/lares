@@ -981,7 +981,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
             "MODEL_ROUTES":frozenset(("/v1/messages",)),"TICKET":__import__("re").compile(r"[A-Za-z0-9_-]{43}\Z"),
             "Refused":Refused,"RequestState":RequestState,"canonical":lambda value:json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode(),
             "ADMISSION_REFUSED_TYPE":"budget_admission_refused","ADMISSION_REFUSED_TEXT":"I could not verify permission to spend. Please check the gateway setup.",
-            "CustomLogger":object,"AdmissionHTTPRefusal":type("AdmissionHTTPRefusal",(Exception,),{}),
+            "CustomLogger":object,"INSTALLATION_KEY":"installation","AdmissionHTTPRefusal":type("AdmissionHTTPRefusal",(Exception,),{}),
             "state":lambda: self.request_context.get(),"refusal":lambda: ValueError("authored refusal")}
         diagnostic_names={"MODEL_REQUEST_DIAGNOSTIC_FILE","MODEL_REQUEST_STAGES","MODEL_REQUEST_PRE_CALL_STAGES","STARTUP_STAGES",
             "MODEL_REQUEST_RPC_STAGES","MODEL_REQUEST_RPC_STATUS_CLASSES",
@@ -1512,6 +1512,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         runtime.settle = types.MethodType(namespace["settle"], runtime)
         request = RequestState("POST", "/v1/embeddings", b"{}", "a"*64, "fixture"); request.alias = "lares-embed"
         request.allow = {name: "x" for name in ("version", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias", "attemptId", "bindingId")}
+        request.allow["providerKey"] = "installation"
         request.dispatched = True
         request.wire_usage = {"inputTokens":9,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0}
         await runtime.settle(request, None)
@@ -1940,6 +1941,7 @@ class GatewayRuntimeAdmissionTests(unittest.TestCase):
             proof.name="gateway-offline-network"
             proof.manifest={"images":{"lares-gateway":image}}
             proof.secret_dir=secret_dir
+            proof.keys_dir=root/"provider-keys"
             proof.artifact={}
             proof.config=mock.Mock(return_value={
                 "config":{"litellm_settings":{"callbacks":["lares_gateway.gateway_hook"]}},
@@ -1965,6 +1967,7 @@ class GatewayRuntimeAdmissionTests(unittest.TestCase):
                 "restart":"unless-stopped",
             }
             captured=[]
+            rendered_options=[]
             class StopBeforeDocker(Exception): pass
             def stop_before_docker(suffix, rendered_image, arguments, command_args):
                 captured.append((suffix,rendered_image,arguments,command_args))
@@ -1973,6 +1976,7 @@ class GatewayRuntimeAdmissionTests(unittest.TestCase):
 
             def renderer_boundary(*args,**kwargs):
                 options=json.loads(kwargs["input"])["options"]
+                rendered_options.append(options)
                 folder=pathlib.Path(options["gatewayConfigFile"]).parent
                 rendered_service=json.loads(json.dumps(service).replace(
                     "__FOLDER__",str(folder)))
@@ -1988,6 +1992,8 @@ class GatewayRuntimeAdmissionTests(unittest.TestCase):
                     proof.start_gateway("openai")
 
             self.assertEqual(len(captured),1)
+            # The renderer is told where agents' own provider keys live, so the gateway can mount that directory read-only.
+            self.assertEqual(rendered_options[0]["providerKeysDir"],str(root/"provider-keys"))
             _,captured_image,arguments,command_args=captured[0]
             self.assertEqual(captured_image,image)
             self.assertTrue(secret_path.is_file())
@@ -2212,6 +2218,140 @@ raise SystemExit(92)
                     os.close(filler)
                 if source >= 0:
                     os.close(source)
+
+
+
+class AgentProviderKeyTests(unittest.TestCase):
+    """An agent can pay with its own provider key. The keeper names the file; the gateway reads it once, per request."""
+    AGENT = "33333333-3333-4333-8333-333333333333"
+    SECRET = "sk-agent-fixture-key"
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="lares-provider-keys-")
+        self.addCleanup(self.directory.cleanup)
+        self.mine = os.getuid()
+
+    def write(self, name=None, content=None, mode=0o400):
+        path = pathlib.Path(self.directory.name) / (name or self.AGENT)
+        if path.exists(): path.unlink()
+        path.write_bytes((self.SECRET + "\n").encode() if content is None else content)
+        os.chmod(path, mode)
+        return path
+
+    def read(self, selector=None, owner=None):
+        from admission_contract import read_provider_key
+        return read_provider_key(selector or self.AGENT, self.directory.name, self.mine if owner is None else owner)
+
+    def reply(self, request, selector="installation", **changes):
+        reply = {"version": 1, "state": "allowed", "nonce": request.nonce, "requestHash": request.request_hash, "profileHash": "b" * 64,
+                 "endpointHash": request.endpoint_hash, "keyFingerprint": request.key_fingerprint, "purposeAlias": "standard",
+                 "attemptId": "11111111-1111-4111-8111-111111111111", "bindingId": "22222222-2222-4222-8222-222222222222",
+                 "providerKey": selector, "validForMs": 2000}
+        reply.update(changes)
+        return reply
+
+    def accepted(self, selector="installation", path="/v1/chat/completions"):
+        request = RequestState("POST", path, b"{}", "a" * 64, "sk-fixture")
+        observation = {"version": 1, "nonce": request.nonce, "requestHash": request.request_hash, "profileHash": "b" * 64,
+                       "endpointHash": request.endpoint_hash, "keyFingerprint": request.key_fingerprint, "purposeAlias": "standard"}
+        request.accept(observation, self.reply(request, selector), time.monotonic())
+        return request
+
+    def test_the_reply_must_name_the_installation_or_a_key_revision(self):
+        self.assertEqual(self.accepted().selector, "installation")
+        self.assertEqual(self.accepted(self.AGENT).selector, self.AGENT)
+        for bad in ("", "Installation", "sk-fixture", "../" + self.AGENT, "3333333A-3333-4333-8333-333333333333", self.AGENT + "x", None, 7):
+            with self.subTest(selector=bad), self.assertRaises(Refused): self.accepted(bad)
+        request = RequestState("POST", "/v1/chat/completions", b"{}", "a" * 64, "sk-fixture")
+        observation = {"version": 1, "nonce": request.nonce, "requestHash": request.request_hash, "profileHash": "b" * 64,
+                       "endpointHash": request.endpoint_hash, "keyFingerprint": request.key_fingerprint, "purposeAlias": "standard"}
+        missing = self.reply(request); del missing["providerKey"]
+        with self.assertRaises(Refused): request.accept(observation, missing, time.monotonic())
+        with self.assertRaises(Refused): request.accept(observation, self.reply(request, extra="x"), time.monotonic())
+
+    def test_embeddings_never_take_an_agent_key(self):
+        self.assertEqual(self.accepted("installation", "/v1/embeddings").selector, "installation")
+        with self.assertRaises(Refused): self.accepted(self.AGENT, "/v1/embeddings")
+
+    def test_a_safe_key_file_is_read_and_held_only_on_the_request(self):
+        self.write()
+        request = self.accepted(self.AGENT)
+        self.assertIsNone(request.provider_key)
+        from admission_contract import read_provider_key
+        with mock.patch("admission_contract.read_provider_key", lambda selector, directory=None, owner=0: read_provider_key(selector, self.directory.name, self.mine)):
+            self.assertTrue(request.load_provider_key())
+        self.assertEqual(request.provider_key, self.SECRET)
+        self.assertEqual(request.credential("sk-installation"), self.SECRET)
+        request.close()
+        self.assertIsNone(request.provider_key)
+        with self.assertRaises(Refused): request.credential("sk-installation")  # never falls back once an agent key was chosen
+
+    def test_the_installation_key_is_used_when_nothing_is_selected(self):
+        request = self.accepted()
+        self.assertFalse(request.load_provider_key())
+        self.assertIsNone(request.provider_key)
+        self.assertEqual(request.credential("sk-installation"), "sk-installation")
+        request.check_credential("openai", [("authorization", "Bearer sk-installation")], "sk-installation")
+
+    def test_a_missing_or_unsafe_file_is_a_refusal_with_no_fallback(self):
+        with self.assertRaises(Refused): self.read()                       # missing
+        self.write(mode=0o400); self.assertEqual(self.read(), self.SECRET)  # the safe case reads
+        self.write(mode=0o600); self.assertEqual(self.read(), self.SECRET)
+        for mode in (0o640, 0o604, 0o440, 0o404, 0o644, 0o666):
+            self.write(mode=mode)
+            with self.subTest(mode=oct(mode)), self.assertRaises(Refused): self.read()
+        self.write(mode=0o400)
+        with self.assertRaises(Refused): self.read(owner=self.mine + 1)     # not owned by root (the owner argument)
+        link = pathlib.Path(self.directory.name) / "44444444-4444-4444-8444-444444444444"
+        link.symlink_to(pathlib.Path(self.directory.name) / self.AGENT)
+        with self.assertRaises(Refused): self.read("44444444-4444-4444-8444-444444444444")
+        os.link(pathlib.Path(self.directory.name) / self.AGENT, pathlib.Path(self.directory.name) / "second")
+        with self.assertRaises(Refused): self.read()                       # two links to one inode
+        os.unlink(pathlib.Path(self.directory.name) / "second")
+        (pathlib.Path(self.directory.name) / "55555555-5555-4555-8555-555555555555").mkdir()
+        with self.assertRaises(Refused): self.read("55555555-5555-4555-8555-555555555555")
+        fifo = pathlib.Path(self.directory.name) / "66666666-6666-4666-8666-666666666666"
+        os.mkfifo(fifo)
+        with self.assertRaises(Refused): self.read("66666666-6666-4666-8666-666666666666")
+
+    def test_the_file_must_hold_exactly_one_printable_token(self):
+        for content in (b"", b"\n", b"sk fixture\n", b"sk\nfixture\n", b"sk\tfixture", b"sk-\xc3\xa6\n", b"sk-\x1bx\n", b" sk-x\n", b"sk-x\r\n", b"k" * 4097):
+            self.write(content=content)
+            with self.subTest(content=content[:12]), self.assertRaises(Refused): self.read()
+        for content, key in ((b"k" * 4096, "k" * 4096), (b"k" * 4096 + b"\n", "k" * 4096), (b"sk-x", "sk-x")):
+            self.write(content=content)
+            self.assertEqual(self.read(), key)
+
+    def test_only_a_key_revision_id_can_name_a_file(self):
+        self.write(name="installation")
+        for selector in ("installation", "../" + self.AGENT, "", self.AGENT + "/x", None):
+            with self.subTest(selector=selector), self.assertRaises(Refused): self.read(selector)
+
+    def test_the_wire_must_carry_exactly_the_agent_key_and_never_the_installation_key(self):
+        def selected(wire="openai"):
+            request = self.accepted(self.AGENT)
+            request.provider_key = self.SECRET
+            return request
+        installation = "sk-installation-fixture"
+        good_openai = [("content-type", "application/json"), ("Authorization", "Bearer " + self.SECRET)]
+        good_anthropic = [("x-api-key", self.SECRET), ("anthropic-version", "2023-06-01")]
+        selected().check_credential("openai", good_openai, installation)
+        selected().check_credential("anthropic", good_anthropic, installation)
+        bad = {
+            "installation key instead": ("openai", [("authorization", "Bearer " + installation)]),
+            "no credential at all": ("openai", [("content-type", "application/json")]),
+            "agent key beside the installation key": ("openai", good_openai + [("x-api-key", installation)]),
+            "installation key in another header": ("openai", good_openai + [("x-forwarded", installation)]),
+            "two authorization headers": ("openai", good_openai + [("authorization", "Bearer " + self.SECRET)]),
+            "a different key": ("openai", [("authorization", "Bearer " + self.SECRET + "x")]),
+            "agent key without Bearer": ("openai", [("authorization", self.SECRET)]),
+            "anthropic with the installation key": ("anthropic", [("x-api-key", installation)]),
+            "anthropic under the wrong header": ("anthropic", [("authorization", "Bearer " + self.SECRET)]),
+        }
+        for label, (wire, headers) in bad.items():
+            with self.subTest(label), self.assertRaises(Refused): selected().check_credential(wire, headers, installation)
+        unloaded = self.accepted(self.AGENT)
+        with self.assertRaises(Refused): unloaded.check_credential("openai", good_openai, installation)
 
 
 if __name__ == "__main__": unittest.main()

@@ -65,7 +65,7 @@ receives headers, so native request snapshots cannot retain it.
 
 An allow response contains exactly `version`, `state: "allowed"`, `nonce`,
 `requestHash`, `profileHash`, `endpointHash`, `keyFingerprint`, `purposeAlias`,
-`attemptId`, `bindingId` and integer `validForMs` between 1 and 3000. All echoed
+`attemptId`, `bindingId`, `providerKey` and integer `validForMs` between 1 and 3000. All echoed
 fields must match. IDs are UUIDs. Local validity ends at the earlier of the
 request's five-second monotonic deadline and RPC-start plus `validForMs`; server
 wall clocks are not used to extend it. The authority reports its whole RPC window in
@@ -104,6 +104,34 @@ current authority and recovery state from the persisted ticket and binding. None
 is established by caller billing metadata. It must commit admission and consume
 its local dispatch permit before signing the allow. A replay must not mint another
 allow, including when the first response was lost.
+
+### Which provider key pays
+
+`providerKey` is `installation` or the revision id (a UUID) of the calling agent's own
+model-provider key. It is chosen inside the admission transaction from the agent the
+ticket belongs to, so it applies to conversation steps and to that agent's scheduled work
+and tools alike, and it is part of the grant hash: a settle receipt must echo it exactly.
+Embeddings always use the installation's embedding key; an embeddings grant that names
+an agent key is refused. An agent with no key of its own gets `installation`.
+
+Only the id crosses the wire. The key is a root-only file, `<revision>`, in
+`secrets/gateway-provider-keys/` under the keeper-owned root (mode 0400, directory 0700).
+The keeper writes it from the host command `lares agent provider-key set <agent>
+--key-file <path>`; the gateway sees that directory read-only at
+`/run/lares/provider-keys` and nothing else does. After an allow, the gateway opens the
+named file once for that request (no links, a regular single-link file owned by root,
+no group or other bits, one line of 1 to 4096 printable characters), holds the key on the
+request only and clears it when the request ends. A file added or replaced after the
+gateway started is used without a restart.
+
+A missing or unsafe file is the fixed refusal above. The gateway never falls back to the
+installation key and never retries. Before the request is sent, the transport checks in
+constant time that its one credential header is exactly the selected key and that no
+header carries the installation key; otherwise nothing is sent. Removing a key deletes
+its row at once and its file after a short grace period, so a call admitted a moment
+earlier can still finish. Spending limits apply whichever key pays. Diagnostics record
+only whether an agent key was selected. The keys are data: they are not part of the
+installation's settings, not shown anywhere and not reported by the doctor.
 
 ## Fresh policy and physical dispatch
 

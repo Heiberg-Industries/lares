@@ -9,7 +9,7 @@ import { PgGrantStore } from './grant-store.js';
 import { payloadFingerprint } from './approval-ledger.js';
 import { currentModelInvocation, MODEL_INVOCATION_REFUSED } from './model-invocation.js';
 import { captureBudgetAuthorityReference, captureOwnerJobAuthorityReference, validateBudgetAuthorityReference, type BudgetAuthorityReference, type ConversationBudgetAuthorityReference } from './budget-model-authority.js';
-import {gatewayModelPath} from './gateway-admission-protocol.js';
+import {gatewayModelPath,GATEWAY_INSTALLATION_KEY} from './gateway-admission-protocol.js';
 
 const SCALE=10n**18n;
 /** At most 18 integral and 18 fractional digits, no exponent/sign/nonfinite values. */
@@ -76,9 +76,9 @@ type Ref=BudgetAuthorityReference;
 /** Owner-job tickets one agent may have outstanding (prepared and unexpired, admitted, or unknown) at once. */
 export const OWNER_JOB_OUTSTANDING_MAX=8;
 const MODEL_PATHS:readonly string[]=['/v1/messages','/v1/chat/completions','/v1/embeddings'];
-const permits=new WeakMap<object,{attemptId:string;bindingId:string;requestHash:string}>();
+const permits=new WeakMap<object,{attemptId:string;bindingId:string;requestHash:string;providerKey:string}>();
 /** Burn synchronously BEFORE the first await/transport call; a thrown transport consumes it. */
-export function consumeDispatchPermit(permit:BudgetDispatchPermit):{attemptId:string;bindingId:string;requestHash:string}|undefined {
+export function consumeDispatchPermit(permit:BudgetDispatchPermit):{attemptId:string;bindingId:string;requestHash:string;providerKey:string}|undefined {
   const result=permits.get(permit);permits.delete(permit);return result;
 }
 const DENIED={state:'denied',reason:'Budget authority is unavailable or changed'} as const;
@@ -353,7 +353,13 @@ export class PgBudgetAdmissionStore {
           AND EXISTS(SELECT 1 FROM budget_windows WHERE id=$3 AND starts_at<=clock_timestamp() AND ends_at>clock_timestamp()) RETURNING id`,[a.id,i.active_window_id,m.active_window_id,authorityValidUntil]);
         if(admitted.rows.length!==1){await checkConsoleSourceDeadlines(db);return deny();}
         noteBudgetFinancialChange(db,'budget_attempts',a.id);
-        return {attemptId:a.id as string,bindingId:b.id as string,requestHash:a.request_hash as string};
+        // Chosen in the same transaction that admits the call, by the agent the ticket belongs to. Embeddings always use the
+        // installation's embedding key. The financial role only reads this table, so a removal stays safe because the key
+        // file outlives its row for a grace period.
+        const keyed=(b.pricing_profile as {format?:unknown}|null)?.format==='embedding'?[]:
+          (await db.query("SELECT revision FROM agent_provider_keys WHERE agent=$1 AND state='active'",[b.agent])).rows;
+        const providerKey=keyed.length===1&&uuid(keyed[0].revision)?keyed[0].revision as string:GATEWAY_INSTALLATION_KEY;
+        return {attemptId:a.id as string,bindingId:b.id as string,requestHash:a.request_hash as string,providerKey};
       },'admit');
       if(!admitted)return DENIED;
       if('limit' in admitted)return {...DENIED,limit:admitted.limit};

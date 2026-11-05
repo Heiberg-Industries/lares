@@ -1400,6 +1400,17 @@ run_stack() {
   python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "the installation's database authentication custody is missing or invalid; nothing was rendered or started." "$EX_REFUSED"
   do_or_say mkdir -p "$(dirname "$compose_file")" "$(dirname "$caddyfile")" "$(dirname "$gateway_config")" "$caddy_data" "$db_data"
   [ ! -L "$taste_dir" ] || die "$taste_dir is a symbolic link; refusing to mount it into the console." "$EX_REFUSED"
+  # Agents' own model-provider key files live here (the keeper writes them; the gateway mounts the directory read-only).
+  # It must exist before the gateway starts, and a link must never stand in for it. Same modes as the keeper's secret root.
+  local provider_keys_dir="$PREFIX/srv/lares/secrets/gateway-provider-keys" provider_keys_part
+  for provider_keys_part in "$PREFIX/srv/lares/secrets" "$provider_keys_dir"; do
+    [ ! -L "$provider_keys_part" ] || die "$provider_keys_part is a symbolic link, so it cannot hold provider keys. Nothing has been brought up." "$EX_REFUSED"
+    if [ ! -d "$provider_keys_part" ]; then
+      do_or_say mkdir -p "$provider_keys_part"
+      do_or_say chmod 0700 "$provider_keys_part"
+      do_or_say chown 0:0 "$provider_keys_part"
+    fi
+  done
   do_or_say mkdir -p "$taste_dir"
   do_or_say chown 10001:10001 "$taste_dir"
   do_or_say chmod 0750 "$taste_dir"
@@ -1418,7 +1429,7 @@ run_stack() {
   if ! engine_run "${render_mounts[@]}" bin/render-stack.ts \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
-      "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir" "$PREFIX/srv/lares/installation" "$database_auth_dir" "${PREFIX:-/}"; then
+      "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir" "$PREFIX/srv/lares/installation" "$database_auth_dir" "${PREFIX:-/}" "$provider_keys_dir"; then
     rm -f "$tmp"
     # Not "the release file was refused": this one call also installs the gateway's start script,
     # and a missing script is not a bad release. Naming the wrong thing is the failure this

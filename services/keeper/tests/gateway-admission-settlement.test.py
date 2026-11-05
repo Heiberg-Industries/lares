@@ -4,8 +4,10 @@ import json
 import pathlib
 import sys
 import types
+import os
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 RUNTIME = ROOT / "images/gateway-runtime"
@@ -81,6 +83,7 @@ class GatewaySettlementTests(unittest.IsolatedAsyncioTestCase):
             "purposeAlias": "chat",
             "attemptId": "11111111-1111-4111-8111-111111111111",
             "bindingId": "22222222-2222-4222-8222-222222222222",
+            "providerKey": "installation",
         }
 
         if wire_state == "complete":
@@ -228,6 +231,124 @@ class GatewaySettlementTests(unittest.IsolatedAsyncioTestCase):
 
                 await self.run_hook(request, sdk_chunks())
                 self.assertEqual(receipts, [])
+
+
+
+class AgentProviderKeyDispatchTests(unittest.IsolatedAsyncioTestCase):
+    """With an agent key selected, the receipt echoes the selector and the wire must carry exactly that key."""
+    AGENT = "33333333-3333-4333-8333-333333333333"
+    SECRET = "sk-agent-fixture-key"
+    INSTALLATION = "sk-installation-fixture-key"
+
+    def request(self, selector, path="/v1/chat/completions"):
+        request = RequestState("POST", path, b"{}", "a" * 64, "sk-test")
+        request.alias = "chat"
+        request.phase = "armed"
+        request.selector = selector
+        request.provider_key = self.SECRET if selector != "installation" else None
+        request.policy = SimpleNamespace(context=object(), release=self.release)
+        return request
+
+    async def release(self):
+        self.released = getattr(self, "released", 0) + 1
+
+    def transport(self, wire, upstream):
+        runtime = SimpleNamespace(check_runtime=lambda: None, check_destination=lambda outgoing, request: None,
+                                  profile=SimpleNamespace(route=lambda alias: SimpleNamespace(format=wire, key_env="LARES_MODEL_PROVIDER_KEY")))
+        gateway.runtime = runtime
+        transport = object.__new__(gateway.OneShotTransport)
+        calls = []
+
+        async def physical(outgoing):
+            calls.append(outgoing)
+            return SimpleNamespace(headers={"content-type": "application/json"}, status_code=200, stream=None)
+
+        transport.inner = SimpleNamespace(handle_async_request=physical)
+        return transport, calls
+
+    def outgoing(self, *headers):
+        return SimpleNamespace(headers=SimpleNamespace(multi_items=lambda: list(headers)))
+
+    async def send(self, request, wire, *headers):
+        transport, calls = self.transport(wire, None)
+        transport.request = request
+        token = gateway.current_request.set(request)
+        try:
+            with mock.patch.dict(os.environ, {"LARES_MODEL_PROVIDER_KEY": self.INSTALLATION}):
+                await transport.handle_async_request(self.outgoing(*headers))
+        finally:
+            gateway.current_request.reset(token)
+        return calls
+
+    async def test_the_receipt_echoes_which_key_paid(self):
+        for selector in ("installation", self.AGENT):
+            request = RequestState("POST", "/v1/chat/completions", b"{}", "a" * 64, "sk-test")
+            request.dispatched = True
+            request.alias = "chat"
+            request.allow = {"version": 1, "nonce": request.nonce, "requestHash": request.request_hash, "profileHash": "b" * 64, "endpointHash": request.endpoint_hash,
+                             "keyFingerprint": request.key_fingerprint, "purposeAlias": "chat", "attemptId": "11111111-1111-4111-8111-111111111111",
+                             "bindingId": "22222222-2222-4222-8222-222222222222", "providerKey": selector}
+            request.wire_usage = {"inputTokens": 1, "outputTokens": 1, "cacheReadTokens": 0, "cacheWriteTokens": 0}
+            sent = []
+            runtime = object.__new__(gateway.Runtime)
+            runtime.profile = SimpleNamespace(route=lambda alias: SimpleNamespace(format="openai"))
+
+            async def rpc(path, body, sent=sent): sent.append(body)
+            runtime.rpc = rpc
+            gateway.runtime = runtime
+            with self.subTest(selector=selector):
+                await runtime.settle(request, None)
+                self.assertEqual(sent[0]["providerKey"], selector)
+                self.assertNotIn(self.SECRET, json.dumps(sent))
+
+    async def test_the_agent_key_goes_on_the_wire_for_both_providers(self):
+        for wire, header in (("openai", ("authorization", "Bearer " + self.SECRET)), ("anthropic", ("x-api-key", self.SECRET))):
+            request = self.request(self.AGENT)
+            with self.subTest(wire=wire):
+                calls = await self.send(request, wire, ("content-type", "application/json"), header)
+                self.assertEqual(len(calls), 1)
+                self.assertTrue(request.dispatched)
+
+    async def test_the_installation_key_never_reaches_the_provider_for_an_agent_that_has_its_own(self):
+        for wire, header in (("openai", ("authorization", "Bearer " + self.INSTALLATION)), ("anthropic", ("x-api-key", self.INSTALLATION))):
+            request = self.request(self.AGENT)
+            with self.subTest(wire=wire), self.assertRaises(gateway.Refused):
+                await self.send(request, wire, header)
+            # Refused before the right to dispatch is spent: nothing was sent, and it can not be tried again with another key.
+            self.assertFalse(request.dispatched)
+            self.assertEqual(request.phase, "armed")
+            self.assertTrue(request._authored_refusal, "the caller must get the fixed refusal, not a transport error")
+
+    async def test_an_agent_key_that_was_never_loaded_is_a_refusal_not_a_fallback(self):
+        request = self.request(self.AGENT)
+        request.provider_key = None
+        with self.assertRaises(gateway.Refused):
+            await self.send(request, "openai", ("authorization", "Bearer " + self.INSTALLATION))
+        self.assertFalse(request.dispatched)
+
+    async def test_without_a_selected_key_the_wire_is_left_as_it_always_was(self):
+        request = self.request("installation")
+        calls = await self.send(request, "openai", ("authorization", "Bearer " + self.INSTALLATION))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(request.dispatched)
+
+    async def test_the_deployment_hook_hands_the_anthropic_leaf_the_agent_key(self):
+        request = self.request(self.AGENT, "/v1/messages")
+        request.pre_seen = True
+        request.allow = {}
+        route = SimpleNamespace(model="m", litellm_model="anthropic/m", base="https://provider.invalid", format="anthropic")
+        built = []
+
+        async def client(selected, provider): built.append(provider); return "client"
+        gateway.runtime = SimpleNamespace(profile=SimpleNamespace(document={"provider": "anthropic"}, route=lambda alias: route), client=client)
+        token = gateway.current_request.set(request)
+        try:
+            call = {"model": "anthropic/m", "api_base": "https://provider.invalid", "api_key": self.INSTALLATION}
+            kwargs = await gateway.gateway_hook.async_pre_call_deployment_hook(call, "anthropic_messages")
+            self.assertEqual(kwargs["api_key"], self.SECRET)
+            self.assertEqual(kwargs["client"], "client")
+        finally:
+            gateway.current_request.reset(token)
 
 
 if __name__ == "__main__":

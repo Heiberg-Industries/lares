@@ -25,7 +25,11 @@ export function gatewayRawRequestHash(method:string,path:string,rawBody:Uint8Arr
 const hash=z.string().regex(/^[a-f0-9]{64}$/),id=z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
 const echoed={version:z.literal(1),nonce:hash,requestHash:hash,profileHash:hash,endpointHash:hash,keyFingerprint:hash,purposeAlias:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)};
 export const gatewayAdmitSchema=z.object({...echoed,ticket:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).strict();
-export const gatewayGrantSchema=z.object({...echoed,attemptId:id,bindingId:id}).strict();
+/** Which provider key pays for this call: the installation's own, or the revision id of the agent's key file.
+ * Only the id crosses the wire, never the key. It is part of the grant, so it is under gatewayGrantHash. */
+export const GATEWAY_INSTALLATION_KEY='installation';
+export const gatewayProviderKeySchema=z.union([z.literal(GATEWAY_INSTALLATION_KEY),id]);
+export const gatewayGrantSchema=z.object({...echoed,attemptId:id,bindingId:id,providerKey:gatewayProviderKeySchema}).strict();
 const LIMIT_DATE='[1-9][0-9]? (?:January|February|March|April|May|June|July|August|September|October|November|December) [0-9]{4}';
 /** The only two sentences a spending-limit refusal may carry. The installation one has no digits but the date. */
 export const MEMBER_LIMIT_SENTENCE=new RegExp(`^You've reached your monthly limit of \\$[0-9]{1,18}(?:\\.[0-9]{2,18})?\\. It resets on ${LIMIT_DATE}\\.$`);

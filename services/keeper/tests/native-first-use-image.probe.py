@@ -275,7 +275,7 @@ MODEL_REQUEST_DIAGNOSTIC_CHECKS={'anthropicBetaPresent','authorizationPresent','
     'nativeBridgeReplyAccepted','nativeAuthoredRefusal','nativeFailureHookEntered','nativeDeploymentHookEntered',
     'nativeHttpGuardPassed','nativePolicyLockAcquired','nativeRpcSerialized','nativeRpcTlsContextCreated',
     'nativeRpcClientReady','nativeRpcSignatureCreated','nativeRpcSendStarted','nativeRpcResponseReceived',
-    'nativeRpcStatusAccepted','nativeRpcResponseBodyComplete','nativeRpcResponseSignatureValid','nativeRpcDocumentParsed'}
+    'nativeRpcStatusAccepted','nativeRpcResponseBodyComplete','nativeRpcResponseSignatureValid','nativeRpcDocumentParsed','nativeAgentKeySelected'}
 MODEL_PURPOSE_DIAGNOSTIC_STAGES={'idle','headers','fields','body-length','ticket','body-hash','profile','dispatch','upstream'}
 MODEL_PURPOSE_DIAGNOSTIC_CHECKS={'headersAccepted','fieldsAccepted','bodyLengthMatches','upstreamResponseSeen'}
 
@@ -1247,6 +1247,10 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
       '/run/secrets/runtime-control':str(secrets_dir/'proof-agent-runtime-control'),
       '/run/secrets/console-model-purpose-signing-key':str(secrets_dir/'console-model-purpose-signing-key')}
     actual_secret_sources={mount.get('Destination'):mount.get('Source') for mount in actual_secret_mounts}
+    # An agent's own model-provider key files belong to the gateway alone; no agent container ever mounts that directory.
+    if any('provider-keys' in mount.get('Destination','')+mount.get('Source','') for mount in runtime_mounts):
+        proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(chief_name,failed_stage=stage)
+        raise RuntimeError('Compiled Chief runtime was given the gateway provider key directory')
     if actual_secret_sources!=expected_secret_sources or any(mount.get('RW') for mount in actual_secret_mounts):
         proof['compiledRuntimeDiagnostics']=compiled_startup_diagnostics(chief_name,failed_stage=stage)
         raise RuntimeError('Compiled Chief runtime secret mounts did not match the narrow fixture')

@@ -28,6 +28,10 @@
 #                                                       duties.md and voice.md
 #   lares agent refresh                                 restart running agents onto this release's
 #                                                       software (lares update runs it last)
+#   lares agent provider-key set <name> --key-file <path>
+#                                                       make an agent pay with its own model-provider
+#                                                       key (path "-" reads the key from standard input)
+#   lares agent provider-key remove <name>              put the agent back on the installation's key
 #
 # Image mode only: nothing here needs Node, pnpm or a checkout. Layout (set by get-lares.sh):
 #   $PREFIX/opt/lares/releases/<name>/   unpacked engine files, one folder per release
@@ -66,6 +70,8 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares agent start <name> [--member <email>] [--yes]
        lares agent import <dir> [--yes]
        lares agent refresh
+       lares agent provider-key set <name> --key-file <path>
+       lares agent provider-key remove <name>
 
 <name> is the full release name from the repository's releases folder, for example
 2026-10-19-rc.11. Run as root.
@@ -361,7 +367,8 @@ cmd_budget() {
 cmd_agent() {
   if [ "${1:-}" = refresh ] && [ "$#" -eq 1 ]; then budget_commands agent-refresh; fi
   if [ "${1:-}" = import ] && [ "$#" -ge 2 ]; then shift; budget_commands agent-import "$@"; fi
-  [ "${1:-}" = start ] && [ "$#" -ge 2 ] || { printf 'lares: the agent commands are: lares agent start <name>, lares agent import <dir>, lares agent refresh\n' >&2; usage; exit "$EX_USAGE"; }
+  if [ "${1:-}" = provider-key ] && [ "$#" -ge 3 ]; then shift; budget_commands agent-provider-key "$@"; fi
+  [ "${1:-}" = start ] && [ "$#" -ge 2 ] || { printf 'lares: the agent commands are: lares agent start <name>, lares agent import <dir>, lares agent refresh, lares agent provider-key set|remove <name>\n' >&2; usage; exit "$EX_USAGE"; }
   shift
   budget_commands agent-start "$@"
 }

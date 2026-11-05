@@ -29,7 +29,7 @@ from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 from openai import AsyncOpenAI
 
 from admission_contract import (
-    ADMIT_PATH, SETTLE_PATH, ADMISSION_REFUSED_TYPE, ADMISSION_REFUSED_TEXT, CONTROL_ROUTES, HASH, MAX_RPC_BYTES, MODEL_ROUTES,
+    ADMIT_PATH, SETTLE_PATH, INSTALLATION_KEY, ADMISSION_REFUSED_TYPE, ADMISSION_REFUSED_TEXT, CONTROL_ROUTES, HASH, MAX_RPC_BYTES, MODEL_ROUTES,
     NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash,
     RPC_TIMEOUT, TICKET, VERSION, Profile, Refused, RequestState, TerminalEvidence, WireEvidence, canonical,
     https_url, native_route_allowed, parse_json, protected_key, sign, valid_anthropic_safety_metadata, verify,
@@ -81,7 +81,7 @@ def _write_model_request_diagnostic(marker):
                      "nativeDeploymentHookEntered", "nativeHttpGuardPassed", "nativePolicyLockAcquired",
                      "nativeRpcSerialized", "nativeRpcTlsContextCreated", "nativeRpcClientReady", "nativeRpcSignatureCreated",
                      "nativeRpcSendStarted", "nativeRpcResponseReceived", "nativeRpcStatusAccepted", "nativeRpcResponseBodyComplete",
-                     "nativeRpcResponseSignatureValid", "nativeRpcDocumentParsed"):
+                     "nativeRpcResponseSignatureValid", "nativeRpcDocumentParsed", "nativeAgentKeySelected"):
             normalized["checks"][name] = checks.get(name) is True if type(checks) is dict else False
         raw = canonical(normalized)
         if len(raw) > 2048: return
@@ -378,6 +378,12 @@ class OneShotTransport(httpx.AsyncBaseTransport):
         runtime.check_runtime()
         runtime.check_destination(outgoing, request)
         if request.policy is None or request.policy.context is None: raise Refused()
+        # An agent's own key must be the only credential on the wire; checked before the right to dispatch is spent.
+        route = runtime.profile.route(request.alias)
+        try: request.check_credential(route.format, outgoing.headers.multi_items(), os.environ.get(route.key_env, ""))
+        except Refused:
+            request._authored_refusal = True  # Nothing was sent, so the caller gets the fixed refusal.
+            raise
         # No await between consuming the right and invoking the physical transport.
         request.burn()
         try:
@@ -684,7 +690,7 @@ class Runtime:
         if provider in ("openai", "embedding"):
             # Chat and embeddings both speak the OpenAI wire; the key and the address come from this alias's route.
             route = self.profile.route(request.alias)
-            return AsyncOpenAI(api_key=os.environ[route.key_env], base_url=route.base, max_retries=0, http_client=client)
+            return AsyncOpenAI(api_key=request.credential(os.environ[route.key_env]), base_url=route.base, max_retries=0, http_client=client)
         handler = AsyncHTTPHandler(timeout=PHYSICAL_HEADER_SECONDS, event_hooks={"request": [self.before_http]})
         original = handler.client
         handler.client = client
@@ -693,7 +699,7 @@ class Runtime:
 
     async def settle(self, request, usage):
         if request.terminal or request.closed or request.cancelled or request.allow is None or not request.dispatched: return
-        receipt = {name: request.allow[name] for name in ("version", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias", "attemptId", "bindingId")}
+        receipt = {name: request.allow[name] for name in ("version", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias", "attemptId", "bindingId", "providerKey")}
         if request.wire_usage is None: return
         receipt.update({"kind": "terminal-usage", "format": self.profile.route(request.alias).format, "usage": request.wire_usage})
         receipt["receiptHash"] = hashlib.sha256(canonical(receipt)).hexdigest()
@@ -764,6 +770,8 @@ class AdmissionHook(CustomLogger):
             update_native_request_progress(request, "bridge-reply", nativeBridgeReplyReceived=True)
             request.accept(observation, reply, started)
             update_native_request_progress(request, "bridge-accepted", nativeBridgeReplyAccepted=True)
+            # The agent's own key, when the keeper selected one. A missing or unsafe file is the fixed refusal, never a fallback.
+            update_native_request_progress(request, "bridge-accepted", nativeAgentKeySelected=request.load_provider_key())
             return data
         except Refused:
             request = current_request.get()
@@ -795,7 +803,10 @@ class AdmissionHook(CustomLogger):
             phases.append(kind)
             # An approved translation envelope does not dispatch. Its one leaf gets
             # the target-specific client and shares exactly the same request state.
-            if len(phases) == len(expected): kwargs["client"] = await runtime.client(request, route.format)
+            if len(phases) == len(expected):
+                kwargs["client"] = await runtime.client(request, route.format)
+                # The Anthropic path takes its key from here; the transport refuses the call unless the wire carries exactly this one.
+                if request.selector != INSTALLATION_KEY: kwargs["api_key"] = request.credential(None)
             kwargs.update({"num_retries": 0, "max_retries": 0, "rust": False})
             return kwargs
         except Refused:
