@@ -551,6 +551,9 @@ it('sets an explicit initial member limit, serializes with account provisioning,
     provisioning=provisionBudgetAccounts(selected,journal,{installationCap:'100',memberIds:[users.a]},hold.readMonth);
     await hold.reached;
     racingLimit=setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:users.a,monthlyLimit:'40'},users.owner);
+    // It rejects the moment provisioning commits, which can be before the assertion below attaches.
+    // Mark it handled now; the assertion below still checks the exact rejection.
+    racingLimit.catch(()=>undefined);
     await waitForInitialLimitGate(selected);
     hold.resume();
     await expect(provisioning).resolves.toMatchObject({state:'closed',reason:'unreconciled',members:1});
