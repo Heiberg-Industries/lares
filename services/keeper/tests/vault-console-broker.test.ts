@@ -966,7 +966,7 @@ it('the digest is refused outside its own paths, areas and operations, and nothi
   await refused(sched('digest', 'move', { path: '_inbox/a.md', destination: 'reads/keep.md' }));                 // a note that is already there is never replaced by a move
   await refused(sched('digest', 'list', { prefix: 'reads/' }));
   await refused(sched('digest', 'list', { prefix: '_meta/' }));
-  await refused(runtime('vault.scheduled', { schedule: 'digest', operation: 'write', area: 'shared', ...digestFiled }));   // no shared rule
+  await refused(runtime('vault.scheduled', { schedule: 'digest', operation: 'write', area: 'shared', ...digestFiled }));   // the shared rule saves articles only
   await refused(runtime('vault.scheduled', { schedule: 'digest', operation: 'list', area: 'shared', prefix: '' }));
   expect(ids.writes).toBe(0);
   expect(ids.trackFiles.get('reads/keep.md')?.content).toBe('k');
@@ -1085,7 +1085,6 @@ it('a verbatim write is refused for a path, an origin, a front matter, a size or
   // Only a rule that names verbatim paths may use the operation, whatever the file says.
   await refused(sched('dream', 'write-verbatim', { path: '_meta/dream/2026-11-01.md', content: withOrigin('third_party') }));
   await refused(sched('clipping-requests', 'write-verbatim', { path: '_inbox/clip-a.md', content: withOrigin('third_party') }));
-  await refused(runtime('vault.scheduled', { schedule: 'digest', operation: 'write-verbatim', area: 'shared', path: 'articles/a-page.md', content: articleMd }));
   expect(ids.writes).toBe(0);
 });
 
@@ -1112,4 +1111,54 @@ it('with the real writer a verbatim article reaches the private area byte for by
   expect(await verbatim({ path: 'articles/a-page.txt', content: 'Full text.\n' })).toMatchObject({ unchanged: true });
   expect(await sched('digest', 'read', { path: 'articles/a-page.md' })).toMatchObject({ found: true, content: articleMd });
   expect((await sched('digest', 'list', { prefix: 'articles/' })).paths).toEqual(['articles/a-page.md']); // a listing names notes only; the text companion is not a note
+});
+
+// ── the digest's shared rule: a filed article and its companion, nothing else ──
+const schedShared = (operation: string, extra: Record<string, unknown> = {}) => runtime('vault.scheduled', { schedule: 'digest', operation, area: 'shared', ...extra });
+
+it('a shared article and its companion are saved verbatim in the shared area, as a job, with the grant', async () => {
+  expect(await schedShared('write-verbatim', { path: 'articles/a-page.txt', content: 'Full text.\n' })).toMatchObject({ commit: 'verbatim-1' });
+  expect(ids.lastBinding).toMatchObject({ areaId: ids.sharedArea, relativePath: 'articles/a-page.txt', approvedOrigin: 'third_party', authority: { origin: 'job', jobId: 'digest' } });
+  expect(await schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd, message: 'digest: file article a-page' })).toMatchObject({ commit: 'verbatim-2' });
+  expect(ids.lastBinding.areaId).toBe(ids.sharedArea);
+  expect(await schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd })).toMatchObject({ unchanged: true });
+  expect((await schedShared('list', { prefix: 'articles/' })).paths).toEqual(['articles/a-page.md', 'articles/a-page.txt']);
+  expect(await schedShared('read', { path: 'articles/a-page.md' })).toMatchObject({ found: true, content: articleMd });
+});
+
+it('a shared article is refused without the shared write grant, and a read grant still lists', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  await setVaultGrant({ scope: 'write', areas: ['private'] }, 'gated');
+  await refused(schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd }));
+  await refused(schedShared('list', { prefix: 'articles/' }));
+  await setVaultGrant({ scope: 'read', areas: ['private', 'shared'] });
+  await refused(schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd }));
+  expect((await schedShared('list', { prefix: 'articles/' })).paths).toEqual([]);
+  await setVaultGrant({ scope: 'write', areas: ['private', 'shared'] }, 'never');
+  await refused(schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd }));
+  expect(ids.writes).toBe(0);
+});
+
+it('in the shared area the digest cannot save outside articles/, write a note, remove, move or list the whole area', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  ids.trackFiles.set('articles/a-page.md', { content: articleMd, contentRevision: rev('a') });
+  ids.trackFiles.set('reads/keep.md', { content: 'k', contentRevision: rev('b') });
+  ids.trackFiles.set('_inbox/clip-a.md', { content: 'c', contentRevision: rev('c') });
+  await refused(schedShared('write-verbatim', { path: 'reads/a-note.md', content: articleMd }));
+  await refused(schedShared('write-verbatim', { path: 'articles/sub/a.md', content: articleMd }));
+  await refused(schedShared('write-verbatim', { path: '_inbox/clip-a.md', content: articleMd }));
+  await refused(schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd.replace('third_party', 'agent') }));
+  await refused(schedShared('write', { ...digestFiled, path: 'articles/x.md' }));
+  await refused(schedShared('write', digestFiled));
+  await refused(schedShared('write', { ...digestClip }));
+  await refused(schedShared('remove', { path: 'articles/a-page.md' }));
+  await refused(schedShared('remove', { path: '_inbox/clip-a.md' }));
+  await refused(schedShared('move', { path: '_inbox/clip-a.md', destination: 'reads/x.md' }));
+  await refused(schedShared('list', { prefix: '' }));
+  await refused(schedShared('list', { prefix: '_inbox/' }));
+  await refused(schedShared('read', { path: 'reads/keep.md' }));
+  await refused(schedShared('read', { path: 'articles/a-page.txt' }));
+  expect(ids.writes).toBe(0);
+  expect(ids.trackFiles.get('reads/keep.md')?.content).toBe('k');
+  expect(ids.trackFiles.has('articles/a-page.md')).toBe(true);
 });

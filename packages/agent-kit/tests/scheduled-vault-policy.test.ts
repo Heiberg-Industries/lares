@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  SCHEDULED_VAULT_MAX_BODY_BYTES, SCHEDULED_VAULT_POLICY, scheduledPathAllowed, scheduledVaultRule, scheduledVerbatimRefusal,
+  SCHEDULED_VAULT_MAX_BODY_BYTES, SCHEDULED_VAULT_POLICY, scheduledPathAllowed, scheduledPrefixAllowed, scheduledVaultRule, scheduledVerbatimRefusal,
 } from "../src/scheduled-vault-policy.js";
 
 const digest = scheduledVaultRule("digest", "private")!;
@@ -49,5 +49,37 @@ describe("what a verbatim file must say", () => {
     expect(why("articles/a.txt", "lone \ud800")).toMatch(/UTF-8/);
     expect(why("articles/a.txt", "x".repeat(SCHEDULED_VAULT_MAX_BODY_BYTES + 1))).toMatch(/too large/);
     expect(why("articles/a.txt", 5)).toMatch(/must be text/);
+  });
+});
+
+describe("the digest in the shared area", () => {
+  const shared = scheduledVaultRule("digest", "shared")!;
+
+  it("may list articles/, read an article note and save an article and its companion, and nothing else", () => {
+    expect(shared).toBeDefined();
+    expect(scheduledPrefixAllowed(shared, "articles/")).toBe(true);
+    for (const prefix of ["", "_inbox/", "reads/", "_meta/", "articles"]) expect(scheduledPrefixAllowed(shared, prefix)).toBe(false);
+    expect(scheduledPathAllowed(shared, "read", "articles/a-page.md")).toBe(true);
+    for (const path of ["articles/a-page.txt", "reads/a.md", "_inbox/clip-a.md", "articles/sub/a.md", "owner.md"]) expect(scheduledPathAllowed(shared, "read", path)).toBe(false);
+    for (const path of ["articles/a-page.md", "articles/a-page-1f2e3d.txt"]) expect(scheduledPathAllowed(shared, "verbatim", path)).toBe(true);
+    for (const path of ["reads/a.md", "articles/Not-A-Slug.md", "articles/sub/a.md", "articles/a.json", "_inbox/clip-a.md"]) expect(scheduledPathAllowed(shared, "verbatim", path)).toBe(false);
+  });
+
+  it("never writes a note, removes a file or lists the whole area", () => {
+    for (const path of ["articles/a-page.md", "reads/a.md", "_inbox/clip-a.md", "_inbox/karakeep-a.md", "inspiration/a.md"]) {
+      expect(scheduledPathAllowed(shared, "write", path)).toBe(false);
+      expect(scheduledPathAllowed(shared, "remove", path)).toBe(false);
+    }
+    expect(shared.listAll).not.toBe(true);
+  });
+
+  it("holds a shared article to the same file rules as a private one", () => {
+    expect(scheduledVerbatimRefusal(shared, "articles/a.md", md)).toBeNull();
+    expect(scheduledVerbatimRefusal(shared, "articles/a.md", md.replace("third_party", "agent"))).toMatch(/must be third_party/);
+    expect(scheduledVerbatimRefusal(shared, "articles/a.txt", "---\nx: y\n---\n")).toMatch(/front matter/);
+  });
+
+  it("no other schedule has a shared rule", () => {
+    for (const [name, rules] of Object.entries(SCHEDULED_VAULT_POLICY)) expect(rules.some((r) => r.area === "shared")).toBe(name === "digest");
   });
 });

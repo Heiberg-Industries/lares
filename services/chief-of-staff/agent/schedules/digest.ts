@@ -6,8 +6,8 @@
  * ask about the rest, then post ONE Slack summary with any error detail as a thread reply.
  *
  * NO VAULT FOLDER (an engine-image install): the Vault is reached through keeper
- * (`lib/digest/keeper-ports.ts`). Saved links and attachments then stay in the inbox, because
- * articles cannot be filed through keeper yet.
+ * (`lib/digest/keeper-ports.ts`). Saved links are filed as articles through keeper
+ * (`lib/digest/article-file-keeper.ts`); attachments stay in the inbox.
  *
  * ARTICLES: a saved link the reader can open is filed as an article note with a text companion
  * (`lib/digest/article-file.ts`), at most 20 model calls per pass, oldest saves first. Where it
@@ -82,7 +82,7 @@ import { emitSignal } from "../../lib/signal-emit.js";
 import { agentName } from "../../lib/agent-name.js";
 import { makeScheduledVault, scheduledVaultMounted } from "../../lib/scheduled-vault.js";
 import { makeKeeperDigestPorts, type KeeperDigestPorts } from "../../lib/digest/keeper-ports.js";
-import { DEFAULT_MAX_CLASSIFY } from "../../lib/digest/runner.js";
+import { makeKeeperArticleFiler } from "../../lib/digest/article-file-keeper.js";
 
 /** Must match the producer's own constant (`agent/tools/digest_run.ts`), which polls on agent. */
 
@@ -144,8 +144,7 @@ type DigestPorts = KeeperDigestPorts & { root?: string };
 
 /**
  * The Vault ports one pass uses. With a Vault folder mounted they are the file ports; without one
- * (an engine-image install) they go through keeper (`lib/digest/keeper-ports.ts`), and articles are
- * not filed yet.
+ * (an engine-image install) they go through keeper (`lib/digest/keeper-ports.ts`).
  */
 function digestPorts(log: (m: string) => void): DigestPorts {
   if (!scheduledVaultMounted()) return makeKeeperDigestPorts(makeScheduledVault("digest"), log);
@@ -284,10 +283,11 @@ export async function runDigestPass(
   // Articles child 1b. Where articles go is the installation's setting (LARES_ARTICLE_AREA,
   // default shared), and the shared area is offered to the filer only when THIS agent's own
   // definition grants it write there. Read once, so the whole pass agrees with itself.
-  // On an install with no Vault folder articles are not filed yet; the filer is not built there.
-  const targets = keeperBacked ? undefined : await articleTargets({
+  // With no Vault folder the shared area is reached through keeper: the "root" is only a marker that
+  // the definition grants it (keeper checks the grant again on every write).
+  const targets = await articleTargets({
     readDefinition: async () => (await thisAgent(undefined)).loaded.definition,
-    resolveShared: () => resolveSharedRoot(),
+    resolveShared: () => keeperBacked ? "keeper" : resolveSharedRoot(),
     log,
   });
 
@@ -302,14 +302,19 @@ export async function runDigestPass(
     projects: () => ports.projects(),
     llm: (prompt: string) => gatewayComplete(prompt, DIGEST_LLM_OPTIONS),
     fileNote: ports.fileNote,
-    ...(targets && ports.root !== undefined ? {
-      fileArticle: makeArticleFiler({
+    fileArticle: ports.root !== undefined
+      ? makeArticleFiler({
         privateRoot: ports.root,
         sharedRoot: targets.sharedRoot,
         articleArea: targets.articleArea,
         mayWritePrivate: targets.mayWritePrivate,
+      })
+      : makeKeeperArticleFiler({
+        privateVault: makeScheduledVault("digest"),
+        sharedVault: targets.sharedRoot !== undefined ? makeScheduledVault("digest", { area: "shared" }) : undefined,
+        articleArea: targets.articleArea,
+        mayWritePrivate: targets.mayWritePrivate,
       }),
-    } : { maxClassify: DEFAULT_MAX_CLASSIFY }),
     // The clipping ledger keeps where each article went. Best effort: filing never waits on it.
     onFiled: makeLedgerOnFiled(db, log),
     recordSkip: (path, reason) => recordDigestSkip(db, { agent: agentName(), path, reason }),
