@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import type {
-  DeskDirConfig, DesksConfig, NotionSyncConfig, PeopleConfig, ProjectMapping, TranscriptsConfig, WikiConfig,
+  DeskDirConfig, DesksConfig, NotionSyncConfig, PeopleConfig, ProjectMapping, SyncPassName, TranscriptsConfig, WikiConfig,
 } from "./types.js";
+import { SYNC_PASS_NAMES, VAULT_FREE_PASSES } from "./types.js";
 
 const DEFAULT_CONFIG_PATH = "/etc/lares/notion-sync.config.json";
 const DEFAULT_WINDOW_DAYS = 400;
@@ -356,6 +357,31 @@ function parsePeopleConfig(root: Record<string, unknown>): PeopleConfig | undefi
   };
 }
 
+/**
+ * `passes`: the explicit list of passes a tick may run. Absent keeps every pass (the older
+ * installations). A typo'd or duplicated name is refused, not ignored: a pass that silently never
+ * runs is the failure this whole file is written against. `people` additionally needs its group.
+ */
+function parsePasses(root: Record<string, unknown>): SyncPassName[] | undefined {
+  if (root.passes === undefined) return undefined;
+  if (!Array.isArray(root.passes) || root.passes.length === 0) {
+    throw new Error("notion-sync config: passes must be a non-empty array of pass names");
+  }
+  const known = new Set<string>(SYNC_PASS_NAMES);
+  const seen = new Set<string>();
+  for (const name of root.passes) {
+    if (typeof name !== "string" || !known.has(name)) {
+      throw new Error(`notion-sync config: passes has an unknown pass ${JSON.stringify(name)} (known: ${SYNC_PASS_NAMES.join(", ")})`);
+    }
+    if (seen.has(name)) throw new Error(`notion-sync config: passes lists "${name}" twice`);
+    seen.add(name);
+  }
+  if (seen.has("people") && root.people === undefined) {
+    throw new Error("notion-sync config: passes names people but the people group is missing");
+  }
+  return root.passes as SyncPassName[];
+}
+
 export function parseNotionSyncConfig(raw: unknown): NotionSyncConfig {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new Error("notion-sync config: root must be an object");
@@ -371,7 +397,11 @@ export function parseNotionSyncConfig(raw: unknown): NotionSyncConfig {
     );
   }
 
-  const projects = parseProjectMappings(root.projects, "projects");
+  const passes = parsePasses(root);
+  // Only the vault-free passes asked for: nothing here touches a vault, so neither a vault path nor
+  // project folders are needed (and a placeholder for them would be a lie).
+  const vaultFree = passes !== undefined && passes.every((name) => VAULT_FREE_PASSES.includes(name));
+  const projects = vaultFree && root.projects === undefined ? [] : parseProjectMappings(root.projects, "projects");
 
   const windowRaw = root.calendarWindowDays ?? DEFAULT_WINDOW_DAYS;
   if (typeof windowRaw !== "number" || !Number.isFinite(windowRaw) || windowRaw <= 0) {
@@ -386,7 +416,7 @@ export function parseNotionSyncConfig(raw: unknown): NotionSyncConfig {
   return {
     notionVersion,
     meetingsDataSourceId: requireString(root, "meetingsDataSourceId", "config"),
-    vaultPath: requireString(root, "vaultPath", "config"),
+    vaultPath: vaultFree && root.vaultPath === undefined ? "" : requireString(root, "vaultPath", "config"),
     selfEmails: requireSelfEmails(root),
     projects,
     calendarWindowDays: windowRaw,
@@ -394,6 +424,7 @@ export function parseNotionSyncConfig(raw: unknown): NotionSyncConfig {
     ...(desks === undefined ? {} : { desks }),
     ...(transcripts === undefined ? {} : { transcripts }),
     ...(people === undefined ? {} : { people }),
+    ...(passes === undefined ? {} : { passes }),
   };
 }
 
