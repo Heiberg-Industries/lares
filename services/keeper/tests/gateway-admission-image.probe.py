@@ -99,6 +99,11 @@ def parse_roster_observations(lines):
 
 # A model of its own for the writer alias, per provider, in the extended-profile gateway start.
 PURPOSE_WRITER_MODEL={"anthropic":"claude-opus-4-5","openai":"gpt-4o"}
+# The embedding model the embedding-alias gateway start serves, and the key it is given. The fixture records a hash of the
+# Authorization header it receives on /v1/embeddings, so the probe can tell this key from the chat provider's.
+EMBED_MODEL="embed-model"
+EMBED_KEY="sk-fixture-embed"
+EMBED_TOKENS_PER_INPUT=5
 
 FIXTURE = r'''
 import http.server,ssl,threading,json,time,pathlib,hashlib,uuid,sys,gzip
@@ -106,7 +111,7 @@ sys.path.insert(0,'/adapter')
 from admission_contract import sign,verify,canonical,ADMIT_PATH,SETTLE_PATH
 key=pathlib.Path('/fixture/service-key').read_bytes()
 lock=threading.Lock(); release=threading.Event(); release.set()
-data={'mode':'normal','upstream':0,'models':[],'routes':{'chat':0,'messages':0,'other':0},'traps':0,'gates':0,'receipts':[],'observations':[],'allows':[],'seen':set()}
+data={'mode':'normal','upstream':0,'models':[],'embedAuth':[],'embedBodies':[],'routes':{'chat':0,'messages':0,'embeddings':0,'other':0},'traps':0,'gates':0,'receipts':[],'observations':[],'allows':[],'seen':set()}
 class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*a): pass
  def respond(self,status,document,signed=False,compress=False):
@@ -147,12 +152,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
    self.respond(200,reply,mode!='unsigned');return
   with lock:
    data['upstream']+=1
-   data['routes']['chat' if self.path=='/v1/chat/completions' else 'messages' if self.path=='/v1/messages' else 'other']+=1
-   if self.path in ('/v1/chat/completions','/v1/messages'):data['models'].append(body.get('model'))
+   data['routes']['chat' if self.path=='/v1/chat/completions' else 'messages' if self.path=='/v1/messages' else 'embeddings' if self.path=='/v1/embeddings' else 'other']+=1
+   if self.path in ('/v1/chat/completions','/v1/messages','/v1/embeddings'):data['models'].append(body.get('model'))
   if self.path=='/trap':
    with lock:data['traps']+=1
    self.respond(500,{});return
-  if self.path not in ('/v1/chat/completions','/v1/messages'):self.respond(404,{});return
+  if self.path not in ('/v1/chat/completions','/v1/messages','/v1/embeddings'):self.respond(404,{});return
   with lock:mode=data['mode']
   if mode=='redirect':self.send_response(307);self.send_header('location','https://fixture:8443/trap');self.send_header('content-length','0');self.end_headers();return
   if mode=='disconnect':self.connection.close();return
@@ -160,6 +165,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
   errors={'429':(429,'rate_limit_error','fixture'), '500':(500,'api_error','fixture'), 'reformat':(400,'invalid_request_error','Conversation roles must alternate user/assistant'), 'signature':(400,'invalid_request_error','Invalid signature in thinking block')}
   if mode in errors:
    status,kind,message=errors[mode];self.respond(status,{'error':{'type':kind,'message':message}});return
+  if self.path=='/v1/embeddings':
+   items=body.get('input') or []
+   with lock:
+    data['embedAuth'].append(hashlib.sha256((self.headers.get('authorization') or '').encode()).hexdigest())
+    data['embedBodies'].append({'keys':sorted(body),'encodingFormat':body.get('encoding_format'),'inputs':len(items)})
+   tokens=5*len(items)
+   usage={'prompt_tokens':tokens,'total_tokens':tokens}
+   if mode=='malformed-usage':usage={'prompt_tokens':tokens,'total_tokens':tokens+1}
+   self.respond(200,{'id':'emb_fixture','object':'list','model':body['model'],'data':[{'object':'embedding','index':i,'embedding':[0.5,0.25]} for i in range(len(items))],'usage':usage});return
   text='FIXTURE_OK';model=body['model']
   if self.path.endswith('chat/completions'):
    usage={'prompt_tokens':12,'completion_tokens':4,'total_tokens':16}
@@ -530,15 +544,17 @@ print('ok')
             "refused":mode in ("fake-descriptor","inherited-write"),
             "exclusiveStillHeld":mode=="inherited-write","sharedStillHeld":mode in ("inherited-shared","current-unlocked")}
 
-    def config(self, provider, purpose=False):
+    def config(self, provider, purpose=False, embed=False):
         # Render with actual committed TypeScript, using the built role's dependencies.
         options={"alias":"lares-brain","providerModel":provider+"/"+("gpt-4o-mini" if provider=="openai" else "claude-sonnet-4-5"),"providerBaseUrl":"https://fixture:8443"+("/v1" if provider=="openai" else "")}
         # The writer purpose gets a model of its own; the other purposes keep the brain's model.
         if purpose:options["purposeModels"]={"writer":provider+"/"+PURPOSE_WRITER_MODEL[provider]}
+        # The embedding model has its own address (the fixture's, with the version path) and its own provider key.
+        if embed:options["embedding"]={"model":EMBED_MODEL,"baseUrl":"https://fixture:8443/v1"}
         script = "import{renderGatewayConfig,gatewayAdmissionProfile}from'/app/services/box/lib/gateway-config.ts';import{createRequire}from'node:module';const{parse}=createRequire('/app/services/box/package.json')('yaml');const o="+json.dumps(options)+";console.log(JSON.stringify({config:parse(renderGatewayConfig(o)),profile:gatewayAdmissionProfile(o)}));"
         return json.loads(command("docker", "exec", self.name+"-client", "/app/services/chief-of-staff/node_modules/.bin/tsx", "-e", script))
 
-    def gateway_service(self, folder, secret_dir):
+    def gateway_service(self, folder, secret_dir, embed=False):
         """Render the real ordinary Compose service in the pinned client image."""
         script = "import{readFileSync}from'node:fs';import{createRequire}from'node:module';const require=createRequire('/app/services/box/package.json');const{parse}=require('yaml');const{renderStackCompose}=await import('/app/services/box/lib/stack-compose.ts');const input=JSON.parse(readFileSync(0,'utf8'));const source=renderStackCompose(input.manifest,input.options);const compose=parse(source);const fixture={...compose,networks:{[input.options.network]:{name:input.options.network,external:true}}};console.log(JSON.stringify({source,fixture,service:compose.services['lares-gateway'],secrets:compose.secrets}));"
         options = {
@@ -564,6 +580,7 @@ print('ok')
             "ownerHomeTz": "UTC",
             "modelAlias": "lares-brain",
             "pgDatabase": "litellm",
+            **({"embeddingKey": True} if embed else {}),
             "gatewayAuthority": {
                 "origin": "https://fixture:8443",
                 "endpointHash": "a" * 64,
@@ -644,6 +661,9 @@ print('ok')
         self.secret_dir.mkdir(mode=0o700)
         for name in ("gateway-key","gateway-master-key","model-provider-key","gateway-database-password","gateway-budget-service-key"):
             (self.secret_dir/name).write_bytes((self.root/name).read_bytes());(self.secret_dir/name).chmod(0o600)
+        # Only the embedding-alias gateway start mounts this one; the rendered Compose names it only when embeddingKey is set.
+        (self.secret_dir/"embed-provider-key").write_text(EMBED_KEY);(self.secret_dir/"embed-provider-key").chmod(0o600)
+        self.disposable_secrets.append(EMBED_KEY.encode())
         self.native_barrier=self.root/"native-probe-barrier"
         self.native_barrier.write_text("idle");self.native_barrier.chmod(0o600)
         self.native_expected=self.root/"native-probe-expected"
@@ -676,11 +696,11 @@ print('ok')
         self.run("client",self.image,client_mounts,["-e","setInterval(()=>{},60000)"])
         self.wait(lambda:self.control().get("mode")=="normal","HTTPS fixture failed")
 
-    def start_gateway(self, provider, broken=None, purpose=False):
-        label=provider+("-purpose" if purpose else "")
+    def start_gateway(self, provider, broken=None, purpose=False, embed=False):
+        label=provider+("-purpose" if purpose else "")+("-embed" if embed else "")
         suffix="gateway-"+label+("-"+broken if broken else "")
         folder=self.root/suffix;folder.mkdir()
-        document=self.config(provider,purpose)
+        document=self.config(provider,purpose,embed)
         if broken=="hook":document["config"]["litellm_settings"]["callbacks"]=[]
         if broken=="callback":document["config"]["litellm_settings"]["callbacks"].append("prometheus")
         if broken=="duplicate":document["config"]["litellm_settings"]["callbacks"].append("lares_gateway.gateway_hook")
@@ -692,7 +712,7 @@ print('ok')
             ("gateway-start.sh.admission_contract.py",ASSETS/"admission_contract.py"),
             ("gateway-start.sh.lares_gateway.py",ASSETS/"lares_gateway.py")):
             target=folder/name;target.write_bytes(source.read_bytes());target.chmod(0o755 if name=="gateway-start.sh" else 0o644)
-        service, top_level_secrets, _, _ = self.gateway_service(folder,self.secret_dir)
+        service, top_level_secrets, _, _ = self.gateway_service(folder,self.secret_dir,embed)
         self.artifact["generatedGatewayService"]=service
         require(service.get("networks") == [self.name], "Ordinary renderer Gateway network differs from the internal proof network")
         arguments=["--network-alias",suffix,"--network-alias","lares-gateway"]
@@ -1174,7 +1194,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
     def sdk(self,url,key,lane,**opts):
         return self.client({"kind":"sdk","url":url,"key":key,"lane":lane,"ticket":secrets.token_urlsafe(32),**opts})
 
-    def receipt(self, before, after, result, key, provider):
+    def receipt(self, before, after, result, key, provider, usage=None):
         fingerprint=hashlib.sha256(key.encode()).hexdigest()
         receipts=[r for r in after["receipts"][len(before["receipts"]):] if r["keyFingerprint"]==fingerprint]
         require(len(receipts)==1,"Terminal usage did not settle exactly once")
@@ -1185,7 +1205,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
         require(len(allows)==1,"Receipt lacks a unique signed allow")
         for field in ("version","nonce","requestHash","profileHash","endpointHash","keyFingerprint","purposeAlias","attemptId","bindingId"):
             require(receipt[field]==allows[0][field],"Receipt binding differs from signed allow")
-        require(receipt["kind"]=="terminal-usage" and receipt["format"]==provider and receipt["usage"]=={"inputTokens":12,"outputTokens":4,"cacheReadTokens":0,"cacheWriteTokens":0},"Terminal receipt usage/format differs from actual provider")
+        require(receipt["kind"]=="terminal-usage" and receipt["format"]==provider and receipt["usage"]==(usage or {"inputTokens":12,"outputTokens":4,"cacheReadTokens":0,"cacheWriteTokens":0}),"Terminal receipt usage/format differs from actual provider")
 
     def case(self,name,fn):
         record={"name":name,"passed":False}
@@ -1291,6 +1311,60 @@ exec litellm --config "$CONFIG_FILE_PATH"
         name=self.name+"-gateway-anthropic-purpose"
         command("docker","stop",name)
         require(self.exclusive_gate_available(),"Purpose gateway stop did not release its maintenance lock")
+
+    def embeddings(self):
+        """A gateway that serves an embedding alias. An admitted request reaches the fixture's embeddings route once, with the
+        embedding model and the EMBEDDING key (never the chat key); its receipt is in the embedding format and charges input tokens
+        only. Every refused request, at the gate or before it, makes no provider call at all."""
+        url=self.start_gateway("anthropic",embed=True)
+        key,team,member=self.provision(url,models=("lares-brain","lares-embed"))
+        path="/v1/embeddings"
+        def raw_of(**changes): return json.dumps({"model":"lares-embed","input":["fixture one","fixture two"],"encoding_format":"float",**changes},separators=(",",":"))
+        def digest(raw): return hashlib.sha256(b"lares.gateway.raw-request.v1\0POST\0"+path.encode()+b"\0"+raw.encode()).hexdigest()
+        def send(raw,ticket=None,route=path):
+            return self.client({"url":url,"path":route,"key":key,"ticket":ticket or secrets.token_urlsafe(32),"raw":raw})
+        chat_auth=hashlib.sha256(b"Bearer sk-fixture-provider").hexdigest()
+        embed_auth=hashlib.sha256(("Bearer "+EMBED_KEY).encode()).hexdigest()
+        def reaches():
+            self.control(mode="normal")
+            raw=raw_of();ticket=secrets.token_urlsafe(32)
+            before=self.control();result=send(raw,ticket);after=self.control()
+            body=result["body"] if type(result.get("body")) is dict else {}
+            require(result["status"]==200 and body.get("object")=="list" and [item.get("index") for item in body.get("data",[])]==[0,1],"Embedding request did not complete")
+            require(after["upstream"]-before["upstream"]==1,"Embedding produced more than one upstream request")
+            require(after["routes"]["embeddings"]-before["routes"]["embeddings"]==1 and after["routes"]["other"]==0 and after["traps"]==0,"Embedding reached an unexpected provider route")
+            require(after["models"][len(before["models"]):]==[EMBED_MODEL],"Embedding reached the provider with the wrong model")
+            require(after["embedAuth"][len(before["embedAuth"]):]==[embed_auth] and chat_auth not in after["embedAuth"],"Embedding was not sent with the embedding provider key")
+            require(after["embedBodies"][len(before["embedBodies"]):]==[{"keys":["encoding_format","input","model"],"encodingFormat":"float","inputs":2}],"Embedding reached the provider with a different body shape")
+            require(after["gates"]-before["gates"]==1 and after["observations"][-1]["requestHash"]==digest(raw) and after["observations"][-1]["purposeAlias"]=="lares-embed","Embedding admission differs from the request")
+            self.receipt(before,after,{"hash":digest(raw)},key,"embedding",{"inputTokens":EMBED_TOKENS_PER_INPUT*2,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0})
+            # The same ticket again is a replay: refused at the gate, nothing sent.
+            again_before=self.control();replay=send(raw,ticket);again_after=self.control()
+            require(replay["status"]==400,"A replayed embedding ticket was not refused")
+            require(again_after["upstream"]==again_before["upstream"] and again_after["gates"]-again_before["gates"]==1,"A replayed embedding ticket reached the provider")
+        self.case("anthropic-embed-reaches-the-embedding-model",reaches)
+        self.idle_after_one_shot()
+        for mode in ("deny","unsigned","mismatch","gate_close"):
+            def refused_at_the_gate(mode=mode):
+                self.control(mode=mode);before=self.control();result=send(raw_of());after=self.control()
+                require(result["status"]==400,"Refused embedding admission was not refused")
+                require(after["upstream"]==before["upstream"] and after["routes"]["embeddings"]==before["routes"]["embeddings"] and after["embedBodies"]==before["embedBodies"],"Refused embedding admission made a provider call")
+                require(after["gates"]-before["gates"]==1 and len(after["receipts"])==len(before["receipts"]),"Refused embedding admission was not asked once or left a receipt")
+            self.case("anthropic-embed-"+mode+"-makes-no-provider-call",refused_at_the_gate)
+        self.control(mode="normal")
+        for name,route,raw in (
+            ("a-chat-alias",path,raw_of(model="lares-brain")), ("base64",path,raw_of(encoding_format="base64")), ("no-encoding-format",path,json.dumps({"model":"lares-embed","input":["x"]},separators=(",",":"))),
+            ("empty-input",path,raw_of(input=[])), ("token-array-input",path,raw_of(input=[[1,2,3]])), ("too-many-inputs",path,raw_of(input=["x"]*33)),
+            ("an-extra-field",path,raw_of(dimensions=256)), ("the-embed-alias-on-the-chat-route","/v1/chat/completions",json.dumps({"model":"lares-embed","messages":[{"role":"user","content":"x"}],"max_tokens":8},separators=(",",":"))),
+            ("the-embed-alias-on-the-messages-route","/v1/messages",json.dumps({"model":"lares-embed","messages":[{"role":"user","content":"x"}],"max_tokens":8},separators=(",",":")))):
+            def refused_before_the_gate(route=route,raw=raw):
+                before=self.control();result=send(raw,route=route);after=self.control()
+                require(result["status"]==400,"An unreviewed embedding request was not refused")
+                require(after["upstream"]==before["upstream"] and after["gates"]==before["gates"],"An unreviewed embedding request reached the gate or the provider")
+            self.case("anthropic-embed-refuses-"+name+"-before-the-gate",refused_before_the_gate)
+        name=self.name+"-gateway-anthropic-embed"
+        command("docker","stop",name)
+        require(self.exclusive_gate_available(),"Embedding gateway stop did not release its maintenance lock")
 
     def exercise(self,provider,url,key,team,member):
         for lane in ("anthropic","openai-compatible"):
@@ -1636,6 +1710,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 require(self.exclusive_gate_available(),"Gateway stop did not release its maintenance lock")
                 self.artifact["guardedGateway"][provider]["maintenanceAvailableAfterStop"]=True
             self.purpose_models()
+            self.embeddings()
             self.artifact["passed"]=self.artifact["nativeCredentialContract"].get("passed") is True and all(case.get("passed") is True for case in self.artifact["cases"])
             if not self.artifact["passed"]:raise RuntimeError("Pinned image proof did not pass")
         except Exception as error:

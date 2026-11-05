@@ -31,6 +31,8 @@ const exceptions = new Set([
 const neutralPrefixes = new Set([
   'lares', 'home', 'example', 'installation', 'tenant', 'other', 'x', 'some', 'custom', 'test',
   'fixture', 'external', 'fake', 'dream', 'vault', 'atlas',
+  // A provider's own model id, not an installation's alias: the release-pinned default embedding model is written "mistral-embed".
+  'mistral',
 ]);
 const modelAlias = /["'`]([a-z0-9]+)-(?:brain|writer|utility|gate|embed)["'`]/g;
 const modelNameDirs = ['services/', 'packages/', 'scripts/'];

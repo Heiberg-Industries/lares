@@ -65,6 +65,9 @@ export interface StackComposeOptions {
    *  `DEADLINE_CALENDAR_FILE` naming it; the setting alone would point at a file the container
    *  cannot see. Never a directory mount: Docker would invent a missing source. */
   readonly deadlineCalendarFile: string | null;
+  /** True when the gateway serves an embedding model: it then gets the embedding provider key as a secret. False or absent
+   *  renders the compose file exactly as it was before there was one. */
+  readonly embeddingKey?: boolean;
   /** Supplied only by the explicit staged authority renderer after protected-source checks. */
   readonly gatewayAuthority?: {
     readonly origin: string;
@@ -210,7 +213,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       ports: ["127.0.0.1:4000:4000"],
       // Virtual keys are persisted by LiteLLM, not represented in config.yaml. The gateway has
       // its own login and password file; it never receives the app or operator credentials.
-      secrets: ["gateway-key", "gateway-master-key", "model-provider-key", "gateway-database-password"],
+      secrets: ["gateway-key", "gateway-master-key", "model-provider-key", ...(opts.embeddingKey ? ["embed-provider-key"] : []), "gateway-database-password"],
       volumes: [
         `${opts.gatewayConfigFile}:/etc/litellm/config.yaml:ro`,
         `${opts.gatewayStartScript}:${startScriptInContainer}:ro`,
@@ -271,6 +274,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
         // not optional hints — they are the whole of how the gateway gets its credentials.
         // The paths mirror the on-disk secret names exactly, as every other service's do.
         MODEL_PROVIDER_KEY_FILE: "/run/secrets/model-provider-key",
+        ...(opts.embeddingKey ? { EMBED_PROVIDER_KEY_FILE: "/run/secrets/embed-provider-key" } : {}),
         GATEWAY_MASTER_KEY_FILE: "/run/secrets/gateway-master-key",
         DATABASE_PASSWORD_FILE: "/run/secrets/gateway-database-password",
         PGHOST: "db",
@@ -306,6 +310,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     "gateway-key": secret("gateway-key"),
     "gateway-master-key": secret("gateway-master-key"),
     "model-provider-key": secret("model-provider-key"),
+    ...(opts.embeddingKey ? { "embed-provider-key": secret("embed-provider-key") } : {}),
     "gateway-database-password": secret("gateway-database-password"),
     "token-enc-key": secret("token-enc-key"),
   };

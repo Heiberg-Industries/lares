@@ -6,14 +6,19 @@ import {gatewayUsageSchema,type GatewayUsage} from './gateway-admission-protocol
 const SCALE=10n**18n,MILLION=1_000_000n;
 const rate=z.string().refine(v=>{try{return canonicalBudgetMoney(v)===v&&moneyUnits(v)<=1_000_000n*SCALE;}catch{return false;}},'Invalid reviewed rate');
 export const gatewayPricingSchema=z.object({
-  version:z.literal(1),capabilityHash:z.string().regex(/^[a-f0-9]{64}$/),format:z.enum(['openai','anthropic']),
+  version:z.literal(1),capabilityHash:z.string().regex(/^[a-f0-9]{64}$/),format:z.enum(['openai','anthropic','embedding']),
   // inputTokens bounds the TOTAL of all chargeable input categories. These are explicit
   // reviewed provider/capability bounds, never inferred from request byte count.
   limits:z.object({inputTokens:z.number().int().min(1).max(1_000_000_000),outputTokens:z.number().int().min(1).max(1_000_000_000)}).strict(),
   // Rates are USD per million tokens, canonical decimal strings. A supported tariff has
   // fixed rates for the complete reviewed context range; tiered/extra fees are unsupported.
   usdPerMillionTokens:z.object({input:rate,output:rate,cacheRead:rate,cacheWrite:rate}).strict(),
-}).strict().superRefine((p,ctx)=>{if(p.format==='openai'&&p.usdPerMillionTokens.cacheWrite!=='0')ctx.addIssue({code:'custom',message:'OpenAI cache writes are unsupported'});});
+}).strict().superRefine((p,ctx)=>{
+  if(p.format==='openai'&&p.usdPerMillionTokens.cacheWrite!=='0')ctx.addIssue({code:'custom',message:'OpenAI cache writes are unsupported'});
+  // An embedding is charged on input tokens alone; any other rate is not a real tariff of one.
+  const r=p.usdPerMillionTokens;
+  if(p.format==='embedding'&&(r.output!=='0'||r.cacheRead!=='0'||r.cacheWrite!=='0'))ctx.addIssue({code:'custom',message:'Embeddings are priced on input tokens only'});
+});
 export type GatewayPricing=z.infer<typeof gatewayPricingSchema>;
 function moneyUnits(value:string):bigint {const [a,b='']=canonicalBudgetMoney(value).split('.');return BigInt(a!)*SCALE+BigInt(b.padEnd(18,'0'));}
 function amount(numerator:bigint):string {
@@ -25,7 +30,7 @@ function amount(numerator:bigint):string {
 }
 export function gatewayMaximumLiability(profile:GatewayPricing):string {
   const p=gatewayPricingSchema.parse(profile),r=p.usdPerMillionTokens;
-  const inputRates=[r.input,r.cacheRead,...(p.format==='anthropic'?[r.cacheWrite]:[])].map(moneyUnits);
+  const inputRates=(p.format==='embedding'?[r.input]:[r.input,r.cacheRead,...(p.format==='anthropic'?[r.cacheWrite]:[])]).map(moneyUnits);
   const highest=inputRates.reduce((a,b)=>a>b?a:b);
   const maximum=amount(BigInt(p.limits.inputTokens)*highest+BigInt(p.limits.outputTokens)*moneyUnits(r.output));
   if(maximum==='0')throw new Error('A positive maximum liability is required');
@@ -34,6 +39,7 @@ export function gatewayMaximumLiability(profile:GatewayPricing):string {
 export function gatewayActualAmount(profile:GatewayPricing,usage:GatewayUsage):string {
   const p=gatewayPricingSchema.parse(profile),u=gatewayUsageSchema.parse(usage),r=p.usdPerMillionTokens;
   if(p.format==='openai'&&(u.cacheReadTokens>u.inputTokens||u.cacheWriteTokens!==0))throw new Error('Invalid OpenAI cache usage');
+  if(p.format==='embedding'&&(u.outputTokens!==0||u.cacheReadTokens!==0||u.cacheWriteTokens!==0))throw new Error('Invalid embedding usage');
   const ordinary=BigInt(u.inputTokens)-(p.format==='openai'?BigInt(u.cacheReadTokens):0n);
   // Do not discard valid observed overages. Even counts above the reviewed maximum must
   // reach the ledger's over-reservation conflict/freeze path. Safe integers and bounded

@@ -483,6 +483,7 @@ function stageOutput(request: GatewayAuthorityStageRequest): StageBuild {
     modelAlias: authority.modelAlias,
     pgDatabase: request.pgDatabase,
     deadlineCalendarFile,
+    ...(gateway.embedding ? { embeddingKey: true } : {}),
     gatewayAuthority: { origin: authority.origin, endpointHash: authority.endpointHash, serviceKeyFile: authority.serviceKeyFile },
   });
   const keeperEnv = renderKeeperComposeEnvironment(manifest, {

@@ -25,12 +25,15 @@ REQUEST_LIFETIME = 5.0
 RPC_TIMEOUT = 3.0
 MAX_RPC_BYTES = 8192
 MAX_RESPONSE_BYTES = 1_048_576
+# An embeddings reply carries up to 32 vectors of floats, which is far larger than a chat reply.
+MAX_EMBEDDING_RESPONSE_BYTES = 4 * 1_048_576
 PHYSICAL_HEADER_SECONDS = 30
 PHYSICAL_BODY_SECONDS = 120
 TERMINAL_TAIL_SECONDS = 2
 CLEANUP_SECONDS = 2
 NATIVE_POLICY_SECONDS = PHYSICAL_HEADER_SECONDS + 5
-MODEL_ROUTES = frozenset(("/v1/messages", "/v1/chat/completions"))
+EMBEDDINGS_PATH = "/v1/embeddings"
+MODEL_ROUTES = frozenset(("/v1/messages", "/v1/chat/completions", EMBEDDINGS_PATH))
 NATIVE_MODEL_ROUTE_GROUP = "llm_api_routes"
 # Every forwarded route still executes LiteLLM's native authentication. /health is paid.
 CONTROL_ROUTES = frozenset((
@@ -163,6 +166,8 @@ def protected_key(path):
 
 
 PROFILE_REQUIRED_KEYS = frozenset(("version", "provider", "model", "aliases", "providerBaseUrl", "maxBodyBytes", "maxOutputTokens"))
+EMBEDDING_KEYS = frozenset(("alias", "provider", "model", "providerBaseUrl", "maxInputs", "maxInputTokens"))
+EMBED_MAX_INPUTS = 32
 MODEL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,160}\Z")
 # The upstream path and the shape of the provider's usage, per provider. Every chat alias of one
 # profile shares the provider, its address and its key; only the model can differ by alias.
@@ -179,6 +184,7 @@ class Route:
     key_env: str
     path: str
     format: str
+    kind: str = "chat"
 
 
 @dataclass(frozen=True)
@@ -188,15 +194,26 @@ class Profile:
 
     def __post_init__(self):
         p = self.document
-        # purposeModels is the only optional key: a model of its own for the writer, utility or gate alias.
-        if not PROFILE_REQUIRED_KEYS <= set(p) <= PROFILE_REQUIRED_KEYS | {"purposeModels"}: raise Refused()
+        # Two optional keys: purposeModels (a model of its own for the writer, utility or gate alias) and
+        # embedding (a fifth alias, served over the embeddings wire with its own address and key).
+        if not PROFILE_REQUIRED_KEYS <= set(p) <= PROFILE_REQUIRED_KEYS | {"purposeModels", "embedding"}: raise Refused()
         if type(p["version"]) is not int or p["version"] != VERSION or p["provider"] not in ("openai", "anthropic"): raise Refused()
         if not isinstance(p["model"], str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", p["model"]): raise Refused()
         aliases = p["aliases"]
-        if not isinstance(aliases, list) or len(aliases) != 4 or len(set(aliases)) != 4 or any(not isinstance(a, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", a) for a in aliases): raise Refused()
+        wanted = 5 if "embedding" in p else 4
+        if not isinstance(aliases, list) or len(aliases) != wanted or len(set(aliases)) != wanted or any(not isinstance(a, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", a) for a in aliases): raise Refused()
         for name, maximum in (("maxBodyBytes", 1048576), ("maxOutputTokens", 1000000)):
             if type(p[name]) is not int or not 1 <= p[name] <= maximum: raise Refused()
         https_url(p["providerBaseUrl"])
+        embedding = p.get("embedding")
+        if "embedding" in p:
+            # Absent is the default. Present describes the one embedding alias, which is always the fifth.
+            if type(embedding) is not dict or set(embedding) != EMBEDDING_KEYS: raise Refused()
+            if embedding["alias"] != aliases[4] or embedding["provider"] != "openai": raise Refused()
+            if not isinstance(embedding["model"], str) or not MODEL_NAME.fullmatch(embedding["model"]): raise Refused()
+            if not isinstance(embedding["providerBaseUrl"], str) or https_url(embedding["providerBaseUrl"]) != embedding["providerBaseUrl"]: raise Refused()
+            if type(embedding["maxInputs"]) is not int or embedding["maxInputs"] != EMBED_MAX_INPUTS: raise Refused()
+            if type(embedding["maxInputTokens"]) is not int or not 1 <= embedding["maxInputTokens"] <= 1_000_000: raise Refused()
         purpose_models = p.get("purposeModels")
         if "purposeModels" in p:
             # Absent is the default. Present means at least one alias really differs from the brain model.
@@ -206,21 +223,43 @@ class Profile:
         object.__setattr__(self, "digest", hashlib.sha256(canonical(p)).hexdigest())
         document = {**p, "aliases": tuple(aliases)}
         if purpose_models is not None: document["purposeModels"] = MappingProxyType(dict(purpose_models))
+        if embedding is not None: document["embedding"] = MappingProxyType(dict(embedding))
         object.__setattr__(self, "document", MappingProxyType(document))
 
     def route(self, alias):
         p = self.document
         if alias not in p["aliases"]: raise Refused()
+        embedding = p.get("embedding")
+        if embedding is not None and alias == embedding["alias"]:
+            return Route(alias, embedding["model"], "openai/" + embedding["model"], embedding["providerBaseUrl"], "LARES_EMBED_PROVIDER_KEY", "/embeddings", "embedding", "embedding")
         model = p.get("purposeModels", {}).get(alias, p["model"])
         path, wire = CHAT_UPSTREAM[p["provider"]]
         return Route(alias, model, p["provider"] + "/" + model, p["providerBaseUrl"], "LARES_MODEL_PROVIDER_KEY", path, wire)
 
+    def chat_aliases(self):
+        """The aliases a chat route may name. The embedding alias is never one of them."""
+        embedding = self.document.get("embedding")
+        return [a for a in self.document["aliases"] if embedding is None or a != embedding["alias"]]
+
+    def check_embedding_body(self, raw):
+        """The only embeddings request that is admitted: model, string inputs, and float encoding. Nothing else."""
+        p = self.document
+        embedding = p.get("embedding")
+        if embedding is None or len(raw) > p["maxBodyBytes"]: raise Refused()
+        body = parse_json(raw)
+        if set(body) != {"model", "input", "encoding_format"} or body["model"] != embedding["alias"] or body["encoding_format"] != "float": raise Refused()
+        inputs = body["input"]
+        if not isinstance(inputs, list) or not 1 <= len(inputs) <= embedding["maxInputs"]: raise Refused()
+        if any(not isinstance(item, str) or not item for item in inputs): raise Refused()
+        return body
+
     def check_body(self, path, raw):
         p = self.document
+        if path == EMBEDDINGS_PATH: return self.check_embedding_body(raw)
         if path not in MODEL_ROUTES or len(raw) > p["maxBodyBytes"]: raise Refused()
         body = parse_json(raw)
         allowed = {"model", "messages", "max_tokens", "max_completion_tokens", "stream", "stream_options", "temperature", "top_p", "stop", "stop_sequences", "system", "tools", "tool_choice", "parallel_tool_calls", "thinking", "metadata"}
-        if set(body) - allowed or body.get("model") not in p["aliases"]: raise Refused()
+        if set(body) - allowed or body.get("model") not in self.chat_aliases(): raise Refused()
         if "metadata" in body:
             if not valid_anthropic_safety_metadata(body["metadata"], path, p["provider"]): raise Refused()
         if not isinstance(body.get("messages"), list) or not body["messages"]: raise Refused()
@@ -384,6 +423,15 @@ class TerminalEvidence:
         if not isinstance(usage, dict): raise Refused()
         return {"inputTokens":cls.integer(usage.get("input_tokens")),"outputTokens":cls.integer(usage.get("output_tokens")),"cacheReadTokens":cls.integer(usage.get("cache_read_input_tokens",0)),"cacheWriteTokens":cls.integer(usage.get("cache_creation_input_tokens",0))}
 
+    @classmethod
+    def embedding_usage(cls, usage):
+        """Embeddings are charged on input tokens only; any output or cache token is a refusal."""
+        if not isinstance(usage, dict): raise Refused()
+        prompt = cls.integer(usage.get("prompt_tokens"))
+        completion = cls.integer(usage.get("completion_tokens", 0))
+        if completion != 0 or cls.integer(usage.get("total_tokens")) != prompt + completion: raise Refused()
+        return {"inputTokens":prompt,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0}
+
     @staticmethod
     def stop_reason(value, anthropic=False):
         permitted = {"end_turn","max_tokens","stop_sequence","tool_use","pause_turn","refusal"} if anthropic else {"stop","length","tool_calls","content_filter","function_call"}
@@ -392,6 +440,13 @@ class TerminalEvidence:
     def nonstream(self, response):
         try:
             if not isinstance(response, dict): raise Refused()
+            if self.path == EMBEDDINGS_PATH:
+                # The provider's reply carries no stop reason and, for some providers, no id.
+                data = response.get("data")
+                if response.get("object") != "list" or not isinstance(data, list) or not data: raise Refused()
+                for index, item in enumerate(data):
+                    if not isinstance(item, dict) or item.get("object") != "embedding" or type(item.get("index")) is not int or item["index"] != index: raise Refused()
+                return self.embedding_usage(response.get("usage"))
             if not isinstance(response.get("id"), str) or not response["id"]: raise Refused()
             if self.path == "/v1/messages":
                 if response.get("type") != "message" or response.get("role") != "assistant" or not self.stop_reason(response.get("stop_reason"), True): raise Refused()
@@ -459,10 +514,12 @@ class TerminalEvidence:
 class WireEvidence:
     """Bounded transient parsing of the ACTUAL provider bytes, before SDKs can fill
     missing usage. No content leaves this object or enters a receipt/log."""
-    def __init__(self, provider, content_type, status):
-        self.path = "/v1/messages" if provider == "anthropic" else "/v1/chat/completions"
+    def __init__(self, wire, content_type, status):
+        # `wire` is the route's usage format: "openai", "anthropic" or "embedding".
+        self.path = "/v1/messages" if wire == "anthropic" else EMBEDDINGS_PATH if wire == "embedding" else "/v1/chat/completions"
+        self.limit = MAX_EMBEDDING_RESPONSE_BYTES if wire == "embedding" else MAX_RESPONSE_BYTES
         self.sse = content_type.split(";")[0].strip() == "text/event-stream"
-        self.poisoned = status != 200 or content_type.split(";")[0].strip() not in ("application/json", "text/event-stream")
+        self.poisoned = status != 200 or content_type.split(";")[0].strip() not in ("application/json", "text/event-stream") or (wire == "embedding" and self.sse)
         self.buffer = b""
         self.total = 0
         self.done = False
@@ -471,7 +528,7 @@ class WireEvidence:
     def feed(self, raw):
         if self.poisoned: return
         self.total += len(raw)
-        if self.total > MAX_RESPONSE_BYTES:
+        if self.total > self.limit:
             self.poisoned = True; self.buffer = b""; return
         self.buffer += raw
         if not self.sse: return

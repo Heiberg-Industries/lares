@@ -207,6 +207,33 @@ describe("the gateway runtime's start script", () => {
     expect(readFileSync(log, "utf8")).toBe("");
   });
 
+  it.skipIf(!admissionFixtureReady)("exports the embedding key only when its file is named, and refuses an unreadable one", () => {
+    writeFileSync(join(binDir, "litellm"), `#!/bin/sh\nprintf 'LARES_EMBED_PROVIDER_KEY=%s\\n' "$LARES_EMBED_PROVIDER_KEY" >> "${log}"\n`);
+    chmodSync(join(binDir, "litellm"), 0o755);
+    const base = { MODEL_PROVIDER_KEY_FILE: providerKeyFile, GATEWAY_MASTER_KEY_FILE: masterKeyFile };
+    expect(runAdmitted(base).code).toBe(0);
+    expect(readFileSync(log, "utf8")).toContain("LARES_EMBED_PROVIDER_KEY=\n");
+    const embedKeyFile = join(dir, "embed-provider-key");
+    writeFileSync(embedKeyFile, "sk-fixture-embed-only\n");
+    writeFileSync(log, "");
+    const named = runAdmitted({ ...base, EMBED_PROVIDER_KEY_FILE: embedKeyFile });
+    expect(named.code).toBe(0);
+    expect(readFileSync(log, "utf8")).toContain("LARES_EMBED_PROVIDER_KEY=sk-fixture-embed-only");
+    expect(named.stdout + named.stderr).not.toContain("sk-fixture-embed-only");
+    writeFileSync(log, "");
+    const missing = runAdmitted({ ...base, EMBED_PROVIDER_KEY_FILE: join(dir, "missing-key") });
+    expect(missing.code).not.toBe(0);
+    expect(missing.stderr).toContain("EMBED_PROVIDER_KEY_FILE");
+    expect(readFileSync(log, "utf8")).toBe("");
+  });
+
+  it("reads the embedding key only inside an explicit opt-in, after the guard", () => {
+    const script = readFileSync(SCRIPT, "utf8");
+    expect(script).toContain('if [ -n "${EMBED_PROVIDER_KEY_FILE:-}" ]; then');
+    expect(script.indexOf("gateway_admission.py verify")).toBeLessThan(script.indexOf("EMBED_PROVIDER_KEY_FILE"));
+    expect(script).not.toContain(': "${EMBED_PROVIDER_KEY_FILE:?');
+  });
+
   it("is POSIX sh", () => {
     expect(() => execFileSync("/bin/sh", ["-n", SCRIPT])).not.toThrow();
   });

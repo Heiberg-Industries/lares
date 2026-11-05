@@ -119,6 +119,27 @@ describe("the reviewed budget policy", () => {
     expect(() => renderNativePolicy({ ...request, purposeModels: { brain: "anthropic/x" } as never })).toThrow(/Only the writer, utility and gate/);
   });
 
+  it("reviews the embedding model inside the capability and prices only the chat model", () => {
+    const embedding = { model: "mistral-embed", baseUrl: "https://api.mistral.ai/v1" };
+    const plain = renderNativePolicy(request);
+    const result = renderNativePolicy({ ...request, embedding });
+    expect(result.unpricedAliases).toEqual(["lares-embed"]);
+    const [policy] = result.policy.policies;
+    expect(policy!.capability).toEqual(gatewayAdmissionProfile({ alias: request.alias, providerModel: request.providerModel, embedding }));
+    expect(policy!.capability.aliases).toHaveLength(5);
+    // Priced as the chat model it has always been: nothing about the embedding changes the price or the key's reach.
+    expect(policy!.pricing.format).toBe("anthropic");
+    expect(policy!.key.models).toEqual([request.alias]);
+    expect(result.maximumLiability).toBe(plain.maximumLiability);
+    expect(policy!.pricing.capabilityHash).not.toBe(plain.policy.policies[0]!.pricing.capabilityHash);
+    expect(parseBudgetNativePolicyDocument(JSON.stringify(result.policy))).toEqual(result.policy);
+    // Beside a purpose model, both are listed, in a stable order.
+    expect(renderNativePolicy({ ...request, purposeModels: { gate: "anthropic/claude-haiku-4-5" }, embedding: { ...embedding, maxInputTokens: "2048" } }).unpricedAliases)
+      .toEqual(["lares-gate", "lares-embed"]);
+    expect(() => renderNativePolicy({ ...request, embedding: { ...embedding, baseUrl: "http://api.mistral.ai/v1" } })).toThrow(/HTTPS/);
+    expect(() => renderNativePolicy({ ...request, embedding: { ...embedding, maxInputTokens: "many" } })).toThrow(/MAX_INPUT_TOKENS/);
+  });
+
   it("refuses a request with a repeated field", () => {
     expect(() => main('{"alias":"a","alias":"b"}', () => {})).toThrow();
   });

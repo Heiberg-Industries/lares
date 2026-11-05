@@ -83,6 +83,7 @@ Usage: install.sh --backups [options]   (switch on backups: see setup-backups.sh
                    [--domain <domain>] [--email <address>] [--name <name>]
                    [--model-key-file <path>] [--owner-id <id>]
                    [--writer-model <model>] [--utility-model <model>] [--gate-model <model>]
+                   [--embed-key-file <path>] [--embed-model <model>] [--embed-base-url <url>]
 
 Checks this box against the tested install path
 (docs/decisions/0022-the-tested-install-path.md) and refuses, in one pass, before
@@ -110,6 +111,12 @@ writing anything, if something here is wrong. Fix what it prints and run it agai
                        same provider as the main model (example: anthropic/claude-haiku-4-5). Left
                        out, that purpose uses the main model. Only on a first install: the answer
                        is written to installation.env, which later runs keep as it is
+  --embed-key-file <path>
+                       switch on the included gateway's embedding model: the provider key for it,
+                       read from this file (same rules as --model-key-file). The model and its
+                       address default to the ones this release was tested with; --embed-model <model>
+                       and --embed-base-url <https-url> name another, OpenAI-compatible one. Only on a
+                       first install, like the purpose models above
   -h, --help           show this message
 EOF
 }
@@ -128,6 +135,9 @@ OWNER_ID_GIVEN=0
 WRITER_MODEL_FLAG=""
 UTILITY_MODEL_FLAG=""
 GATE_MODEL_FLAG=""
+EMBED_KEY_FILE_FLAG=""
+EMBED_MODEL_FLAG=""
+EMBED_BASE_URL_FLAG=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -224,6 +234,34 @@ while [ $# -gt 0 ]; do
       esac
       shift 2
       ;;
+    --embed-key-file|--embed-model|--embed-base-url)
+      if [ $# -lt 2 ]; then
+        echo "install: $1 needs a value" >&2
+        exit "$EX_USAGE"
+      fi
+      case "$1" in
+        --embed-model)
+          case "$2" in
+            ""|*[!A-Za-z0-9._:-]*) echo "install: --embed-model must be a model name, not '$2'. Nothing was changed." >&2; exit "$EX_USAGE" ;;
+          esac
+          ;;
+        --embed-base-url)
+          case "$2" in
+            https://*) ;;
+            *) echo "install: --embed-base-url must be an https address, not '$2'. Nothing was changed." >&2; exit "$EX_USAGE" ;;
+          esac
+          case "$2" in
+            *[!A-Za-z0-9._:/-]*|*/) echo "install: --embed-base-url holds a character an address here never has, or ends in a slash ('$2'). Nothing was changed." >&2; exit "$EX_USAGE" ;;
+          esac
+          ;;
+      esac
+      case "$1" in
+        --embed-key-file) EMBED_KEY_FILE_FLAG="$2" ;;
+        --embed-model) EMBED_MODEL_FLAG="$2" ;;
+        --embed-base-url) EMBED_BASE_URL_FLAG="$2" ;;
+      esac
+      shift 2
+      ;;
     -h|--help) usage; exit "$EX_USAGE" ;;
     *)
       # A typo in a flag must never be read as "no flags" — on this command that would
@@ -235,6 +273,17 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# The embedding model's name and address mean nothing without its key, so they come with it or not at all. Checked here, with the
+# other flags, so a mistake is said before anything is written.
+if [ -z "$EMBED_KEY_FILE_FLAG" ] && [ -n "$EMBED_MODEL_FLAG$EMBED_BASE_URL_FLAG" ]; then
+  echo "install: --embed-model and --embed-base-url need --embed-key-file, the provider key for that model. Nothing was changed." >&2
+  exit "$EX_USAGE"
+fi
+if [ -n "$EMBED_KEY_FILE_FLAG" ] && [ ! -r "$EMBED_KEY_FILE_FLAG" ]; then
+  echo "install: cannot read the file given with --embed-key-file ('$EMBED_KEY_FILE_FLAG'). Nothing was changed." >&2
+  exit "$EX_USAGE"
+fi
 
 PREFIX="${PREFIX_ARG:-${LARES_PREFIX:-/}}"
 # Every path below is "$PREFIX/etc/..."; a trailing slash (and the default "/") would print
@@ -894,6 +943,11 @@ LARES_MODEL_ALIAS_DEFAULT="lares-brain"
 # tuning knob picked here — the gateway's own config renderer (lib/gateway-config.ts) takes
 # whatever this settles on and never chooses one itself.
 LARES_MODEL_DEFAULT="anthropic/claude-opus-5"
+# The included gateway's embedding model, switched on only by --embed-key-file. Like the model above, release-pinned: the
+# gateway config renderer takes what installation.env says and never chooses one itself. Mistral is a European provider;
+# the address carries its version path, the way the provider documents it.
+LARES_EMBED_MODEL_DEFAULT="mistral-embed"
+LARES_EMBED_BASE_URL_DEFAULT="https://api.mistral.ai/v1"
 LARES_NAME_MAX=200
 
 # env_line <key> <value> — one line of $INSTALL_ENV. A value made only of characters that are
@@ -1132,6 +1186,10 @@ write_installation_env() {
     [ -z "$WRITER_MODEL_FLAG" ] || env_line LARES_MODEL_WRITER "$WRITER_MODEL_FLAG"
     [ -z "$UTILITY_MODEL_FLAG" ] || env_line LARES_MODEL_UTILITY "$UTILITY_MODEL_FLAG"
     [ -z "$GATE_MODEL_FLAG" ] || env_line LARES_MODEL_GATE "$GATE_MODEL_FLAG"
+    if [ -n "$EMBED_KEY_FILE_FLAG" ]; then
+      env_line LARES_EMBED_MODEL "${EMBED_MODEL_FLAG:-$LARES_EMBED_MODEL_DEFAULT}"
+      env_line LARES_EMBED_BASE_URL "${EMBED_BASE_URL_FLAG:-$LARES_EMBED_BASE_URL_DEFAULT}"
+    fi
   } > "$tmp"
   do_or_say chmod 0640 "$tmp"
   if ! do_or_say chown "0:$LARES_RUNTIME_GID" "$tmp"; then
@@ -1205,11 +1263,46 @@ capture_model_key() {
   say "  model-provider-key — saved ($target). Its value is not printed, here or anywhere else."
 }
 
+# capture_embed_key — the embedding provider key, from the file named with --embed-key-file. No prompt: the embedding
+# model is an opt-in flag, never a question. Same discipline as capture_model_key: the value sits in one local variable,
+# goes to its own secret file by redirection, and is never echoed. A key already there is left exactly as it is.
+capture_embed_key() {
+  local target="$SECRETS_DIR/embed-provider-key" key tmp
+  [ -n "$EMBED_KEY_FILE_FLAG" ] || return 0
+
+  if [ -s "$target" ]; then
+    say "  embed-provider-key — already there ($target). Left exactly as it is."
+    return 0
+  fi
+
+  [ -r "$EMBED_KEY_FILE_FLAG" ] || die "cannot read the file given with --embed-key-file ('$EMBED_KEY_FILE_FLAG')." "$EX_USAGE"
+  key=$(cat "$EMBED_KEY_FILE_FLAG")
+  if ! validate_model_key "$key"; then
+    key=""
+    die "the file given with --embed-key-file does not hold a usable key: it must be one line, non-empty, with no whitespace or control characters inside it." "$EX_USAGE"
+  fi
+
+  ensure_secrets_dir
+  tmp="$target.partial"
+  rm -f "$tmp"
+  printf '%s\n' "$key" > "$tmp"
+  key=""
+  do_or_say chmod 0440 "$tmp"
+  if ! do_or_say chown "0:$LARES_RUNTIME_GID" "$tmp"; then
+    say "  could not set the owner of embed-provider-key to 0:$LARES_RUNTIME_GID — it stays root-only, and a container running as another user will not be able to read it. Fix: chown 0:$LARES_RUNTIME_GID $target"
+  fi
+  do_or_say mv "$tmp" "$target"
+  say "  embed-provider-key — saved ($target). Its value is not printed, here or anywhere else."
+}
+
 run_wizard() {
   if wizard_already_done; then
     say "the domain, e-mail address and name are already written down in $INSTALL_ENV — nothing was asked again."
     if [ -n "$WRITER_MODEL_FLAG$UTILITY_MODEL_FLAG$GATE_MODEL_FLAG" ]; then
       say "  --writer-model, --utility-model and --gate-model only apply to a first install, so they were ignored. To change a purpose's model, edit LARES_MODEL_WRITER, LARES_MODEL_UTILITY or LARES_MODEL_GATE in $INSTALL_ENV, before model budget setup."
+    fi
+    if [ -n "$EMBED_KEY_FILE_FLAG$EMBED_MODEL_FLAG$EMBED_BASE_URL_FLAG" ]; then
+      say "  --embed-key-file, --embed-model and --embed-base-url only apply to a first install, so they were ignored. To switch the embedding model on later, put LARES_EMBED_MODEL and LARES_EMBED_BASE_URL in $INSTALL_ENV and its key in $SECRETS_DIR/embed-provider-key, before model budget setup."
     fi
   else
     say "four questions, asked once. Sign in to the console to confirm this host and finish explicit model budget setup before creating an agent."
@@ -1237,6 +1330,8 @@ run_wizard() {
 
     write_installation_env
     say "wrote $INSTALL_ENV."
+    # Only on a first install: a re-run ignores the embedding flags (said above), so no key is stored for settings that were not written.
+    capture_embed_key
   fi
 
   capture_model_key
