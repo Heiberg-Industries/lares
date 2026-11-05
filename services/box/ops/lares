@@ -22,6 +22,9 @@
 #   lares budget setup [options]                        ask for the monthly limits and switch model
 #                                                       spending on for this installation
 #   lares agent start <name> [--member <email>]         connect a person to an agent and start it
+#   lares agent import <dir> [--yes]                    create the agents in <dir> (one agent folder,
+#                                                       or a folder of them) from agent.json,
+#                                                       duties.md and voice.md
 #   lares agent refresh                                 restart running agents onto this release's
 #                                                       software (lares update runs it last)
 #
@@ -60,6 +63,7 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares budget recover [--check]
        lares budget setup [--installation-limit <usd>] [--person-limit <usd>] [--prices <in,out,cache-read,cache-write>] [--yes]
        lares agent start <name> [--member <email>]
+       lares agent import <dir> [--yes]
        lares agent refresh
 
 <name> is the full release name from the repository's releases folder, for example
@@ -355,7 +359,8 @@ cmd_budget() {
 
 cmd_agent() {
   if [ "${1:-}" = refresh ] && [ "$#" -eq 1 ]; then budget_commands agent-refresh; fi
-  [ "${1:-}" = start ] && [ "$#" -ge 2 ] || { printf 'lares: the agent commands are: lares agent start <name>, lares agent refresh\n' >&2; usage; exit "$EX_USAGE"; }
+  if [ "${1:-}" = import ] && [ "$#" -ge 2 ]; then shift; budget_commands agent-import "$@"; fi
+  [ "${1:-}" = start ] && [ "$#" -ge 2 ] || { printf 'lares: the agent commands are: lares agent start <name>, lares agent import <dir>, lares agent refresh\n' >&2; usage; exit "$EX_USAGE"; }
   shift
   budget_commands agent-start "$@"
 }

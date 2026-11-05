@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { commitNote, guardedVaultPushArguments, moveNote, removeNote, VaultPushFailedError } from "../src/vault-git.js";
+import { commitNote, commitNotes, guardedVaultPushArguments, moveNote, removeNote, VaultPushFailedError } from "../src/vault-git.js";
 import { NotePathEscapesStoreError } from "../src/notes-store.js";
 
 /**
@@ -346,5 +346,24 @@ describe("guarded push to a repository owned by another user", () => {
   it("reaches the repository with the guarded arguments, even with a quote in the path", () => {
     pushWith(guardedVaultPushArguments(join(root, "bare.git")));
     expect(execFileSync("git", ["-C", join(root, "bare.git"), "rev-list", "--count", "main"], { encoding: "utf8" }).trim()).toBe("1");
+  });
+});
+
+describe("commitNotes", () => {
+  it("creates several files in one commit, pushes once, and never overwrites", async () => {
+    seedNote(workDir, "a.md", "kept");
+    const before = commitCount(bareDir);
+    const result = await commitNotes({
+      vaultRoot: workDir,
+      files: [{ path: "a.md", content: "new" }, { path: "d/b.md", content: "b\r\n" }, { path: "../x.md", content: "x" }],
+      message: "import: two",
+    });
+    expect(result.results.map((r) => r.outcome)).toEqual(["exists", "written", "refused"]);
+    expect(commitCount(bareDir) - before).toBe(1);
+    expect(git(bareDir, "show", "HEAD:d/b.md")).toBe("b\r\n");
+    expect(git(bareDir, "show", "HEAD:a.md")).toBe("kept");
+    const none = await commitNotes({ vaultRoot: workDir, files: [{ path: "a.md", content: "x" }], message: "noop" });
+    expect(none.commit).toBeNull();
+    expect(commitCount(bareDir) - before).toBe(1);
   });
 });
