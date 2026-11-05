@@ -505,6 +505,122 @@ class BudgetCommandTests(unittest.TestCase):
         self.assertEqual(code, budget.EX_REFUSED)
         self.assertEqual(self.keeper.actions(), [])
 
+    # agent import, which brings existing agent folders onto this server
+
+    def write_agent(self, parent: Path, folder: str, name: str | None = None, role: str = "creative", **files: object) -> Path:
+        path = parent / folder
+        path.mkdir(parents=True)
+        (path / "agent.json").write_text(files.get("agent.json") or json.dumps({"name": name or folder, "role": role, "model": "lares-brain"}))
+        if files.get("duties.md") is not False:
+            (path / "duties.md").write_text("Duties.\n")
+        if files.get("voice.md") is not False:
+            (path / "voice.md").write_text("Voice.\n")
+        return path
+
+    def import_flow(self, existing: list[str] | None = None, ceiling: int | None = 5, active: int = 0, refusals: dict | None = None) -> None:
+        self.keeper.answers["definition.list"] = ok([{"name": name, "status": "valid", "hash": "a" * 64} for name in existing or []])
+        self.keeper.answers["definition.capacity"] = ok({"ceiling": ceiling, "activeCount": active})
+        refusals = refusals or {}
+        self.keeper.answers["definition.import"] = lambda request: (
+            {"ok": False, "outcome": "refused", "error": f"keeper: {refusals[request['input']['name']]}"}
+            if request["input"]["name"] in refusals else ok({"name": request["input"]["name"], "hash": "c" * 64}))
+
+    def imports(self) -> list[dict]:
+        return [request["input"] for request in self.keeper.requests if request["action"] == "definition.import"]
+
+    def test_import_one_folder_sends_its_three_files_to_the_keeper_and_writes_nothing_itself(self) -> None:
+        parent = self.prefix / "from-old"
+        path = self.write_agent(parent, "assistant")
+        self.import_flow()
+        code, output = self.run_command("agent-import", str(path), "--yes")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.imports(), [{"name": "assistant", "definition": {"name": "assistant", "role": "creative", "model": "lares-brain"},
+                                           "duties": "Duties.\n", "voice": "Voice.\n"}])
+        self.assertIn("created  assistant", output)
+        self.assertEqual(list((self.prefix / "srv/lares/agents").iterdir()), [], "the keeper writes the folder, not this command")
+
+    def test_import_a_folder_of_folders_shows_names_roles_and_models_first(self) -> None:
+        parent = self.prefix / "from-old"
+        self.write_agent(parent, "first")
+        self.write_agent(parent, "second", role="chief-of-staff")
+        (parent / ".hidden").mkdir()
+        self.import_flow()
+        code, output = self.run_command("agent-import", str(parent), "--yes")
+        self.assertEqual(code, 0, output)
+        self.assertIn("will create  first  (creative, model lares-brain)", output)
+        self.assertIn("will create  second  (chief-of-staff, model lares-brain)", output)
+        self.assertEqual([item["name"] for item in self.imports()], ["first", "second"])
+
+    def test_one_refusal_does_not_stop_the_others_and_the_summary_says_why(self) -> None:
+        parent = self.prefix / "from-old"
+        for name in ("alpha", "beta", "gamma"):
+            self.write_agent(parent, name)
+        self.write_agent(parent, "no-voice", **{"voice.md": False})
+        self.write_agent(parent, "old-role", role="travel")
+        self.write_agent(parent, "taken")
+        self.write_agent(parent, "bad-json", **{"agent.json": "{not json"})
+        self.import_flow(existing=["taken"], refusals={"beta": "[skills-within-grants] a skill can never widen access"})
+        code, output = self.run_command("agent-import", str(parent), "--yes")
+        self.assertEqual(code, budget.EX_REFUSED, output)
+        self.assertEqual([item["name"] for item in self.imports()], ["alpha", "beta", "gamma"])
+        for expected in ("created  alpha", "created  gamma", "refused  beta: [skills-within-grants] a skill can never widen access",
+                         "refused  no-voice: voice.md is missing", 'refused  old-role: "travel" is a role this version of Lares no longer runs',
+                         "refused  taken: an agent with that name already exists", "refused  bad-json: agent.json is not valid JSON"):
+            self.assertIn(expected, output)
+
+    def test_the_limit_is_checked_for_the_whole_batch_before_anything_is_created(self) -> None:
+        parent = self.prefix / "from-old"
+        for name in ("alpha", "beta", "gamma"):
+            self.write_agent(parent, name)
+        self.write_agent(parent, "old-role", role="travel")
+        self.import_flow(ceiling=3, active=1)
+        code, output = self.run_command("agent-import", str(parent), "--yes")
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("raise the agent limit to 4 in Settings > Agents", output)
+        self.assertIn("Nothing was imported", output)
+        self.assertEqual(self.imports(), [])
+        self.import_flow(ceiling=None)
+        code, output = self.run_command("agent-import", str(parent), "--yes")
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("agent limit has not been set", output)
+        self.assertEqual(self.imports(), [])
+        self.import_flow(ceiling=4, active=1)
+        self.assertEqual(self.run_command("agent-import", str(parent), "--yes")[0], budget.EX_REFUSED, "only the retired-role folder is refused")
+        self.assertEqual(len(self.imports()), 3)
+
+    def test_without_yes_it_asks_and_nothing_is_created_when_the_owner_says_no(self) -> None:
+        path = self.write_agent(self.prefix / "from-old", "assistant")
+        self.import_flow()
+        with mock.patch.object(budget, "ask", return_value="n") as question:
+            code, output = self.run_command("agent-import", str(path))
+        self.assertEqual(code, 0, output)
+        question.assert_called_once()
+        self.assertIn("will create  assistant", output)
+        self.assertIn("Nothing was imported", output)
+        self.assertEqual(self.imports(), [])
+        with mock.patch.object(budget, "ask", return_value="yes"):
+            code, output = self.run_command("agent-import", str(path))
+        self.assertEqual(code, 0, output)
+        self.assertEqual([item["name"] for item in self.imports()], ["assistant"])
+
+    def test_an_unreadable_source_stops_before_the_keeper_is_asked_to_create_anything(self) -> None:
+        self.import_flow()
+        code, output = self.run_command("agent-import", str(self.prefix / "missing"), "--yes")
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("is not a folder", output)
+        empty = self.prefix / "empty"
+        empty.mkdir()
+        code, output = self.run_command("agent-import", str(empty), "--yes")
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("holds no agent folders", output)
+        link = self.write_agent(self.prefix / "linked", "assistant")
+        (link / "voice.md").unlink()
+        (link / "voice.md").symlink_to(self.prefix / "etc/lares/installation.env")
+        code, output = self.run_command("agent-import", str(link), "--yes")
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("voice.md is not a plain file", output)
+        self.assertEqual(self.imports(), [])
+
     def recover_flow(self, check: dict, applied: dict | None = None, answer: str = "recover") -> tuple[int, str]:
         (self.prefix / "var/lib/lares/budget-financial").mkdir(exist_ok=True)
         os.environ["FAKE_RECOVER_CHECK"] = json.dumps(check)

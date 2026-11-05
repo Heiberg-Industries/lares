@@ -12,8 +12,9 @@ import type { GrantDatabase } from './grant-store.js';
 import type { PgVaultStore } from './vault-area-store.js';
 import { findBacklinks, listNotes, NoteNotFoundError, NotePathEscapesStoreError, resolveInStore, searchNotes } from './notes-store.js';
 import { withGuardedVaultRepositoryLock } from './note-lock.js';
-import { commitFile, commitNote, moveNote, removeNote, runGuardedVaultGit, vaultCompanionOf, vaultContentRevision, VaultContentChangedError, VaultPushFailedError, VaultStagedChangesError, type VaultGitGuard } from './vault-git.js';
+import { commitFile, commitNote, commitNotes, moveNote, removeNote, runGuardedVaultGit, vaultCompanionOf, vaultContentRevision, VaultContentChangedError, VaultPushFailedError, VaultStagedChangesError, type VaultBatchFileResult, type VaultGitGuard } from './vault-git.js';
 import { articleCompanionPath } from '@lares/vault-format/article';
+import { narrowest, readOriginFrontmatter, upsertOriginFrontmatter, type Origin } from '@lares/vault-format/origin';
 
 export const VAULT_AREA_MARKER = '.lares-vault-area.json';
 /** Provisioning must explicitly initialize an EMPTY area with this marker and its own Git repository.
@@ -59,6 +60,19 @@ function regular(path:string):void {
   const st=lstatSync(path);
   if (!st.isFile()||st.isSymbolicLink()||st.nlink!==1) throw new VaultFilesUnavailableError();
 }
+
+export const IMPORT_CHUNK_FILES = 500;
+export interface VaultImportResult {results:VaultBatchFileResult[]; commits:string[]; /** paths whose wider existing stamp was replaced by the approved origin */ narrowed:string[]}
+/** Byte-preserving stamp for an imported markdown note: an existing VALID `lares_origin` stays only
+ * when it is the approved origin or narrower (the import never widens trust); a wider or invalid one,
+ * or none, becomes `origin` through the one shared parser. Other files pass through. */
+export function stampImportedNote(path:string,content:string,origin:Origin):string {
+  if(!/\.md$/i.test(path))return content;
+  const existing=readOriginFrontmatter(content);
+  if(existing!==undefined&&narrowest([existing,origin])===existing)return content;
+  return upsertOriginFrontmatter(content,origin);
+}
+const importBindingSchema=vaultWriteBindingSchema.omit({relativePath:true,expectedContentRevision:true});
 
 export class GuardedVaultFiles {
   constructor(private readonly authority:Pick<PgVaultStore,'vaultAreaBinding'>, private readonly backings:VaultFilesBackings) {}
@@ -199,5 +213,29 @@ export class GuardedVaultFiles {
     const expected={ [input.binding.relativePath]:input.binding.expectedContentRevision,...(input.companion?{[input.companion.path]:input.companion.revision}:{}) };
     const {root,guard}=await this.writeArea(ctx,input.binding,expected,input.companion);
     return removeNote({vaultRoot:root,path:input.binding.relativePath,message:`drop: ${input.binding.relativePath}`,guard}).catch(safeFailure);
+  }
+  /** Create-only bulk import: needs the same edit grant and area binding as `write`. Files already
+   * present are reported `exists` and never overwritten; unsafe paths are `refused`. Markdown is
+   * stamped with `binding.approvedOrigin` unless it carries a valid stamp. Commits in chunks (default
+   * 500 files), each its own lock, commit and push, so a crash leaves whole chunks and a re-run only
+   * adds what is missing. Results are in input order. A push failure throws VaultPushFailedError. */
+  async importBatch(ctx:VaultFilesContext,input:{binding:Omit<VaultWriteBinding,'relativePath'|'expectedContentRevision'>;
+    files:ReadonlyArray<{path:string;content:string}>;message?:string;chunkSize?:number}):Promise<VaultImportResult> {
+    const chunk=input.chunkSize??IMPORT_CHUNK_FILES;
+    if(!Number.isInteger(chunk)||chunk<1||chunk>5000)throw new VaultFilesDeniedError();
+    const binding=importBindingSchema.parse(input.binding);
+    const {root,guard}=await this.writeArea(ctx,{...binding,relativePath:'import.md',expectedContentRevision:null},{},null);
+    const results:VaultBatchFileResult[]=[],commits:string[]=[],narrowed:string[]=[],chunks=Math.ceil(input.files.length/chunk);
+    for(let i=0;i<chunks;i++){
+      const files=input.files.slice(i*chunk,(i+1)*chunk).map(f=>{
+        const content=stampImportedNote(f.path,f.content,binding.approvedOrigin),before=/\.md$/i.test(f.path)?readOriginFrontmatter(f.content):undefined;
+        if(before!==undefined&&before!==readOriginFrontmatter(content))narrowed.push(f.path);
+        return {path:f.path,content};
+      });
+      const base=input.message??`import: ${input.files.length} files`;
+      const done=await commitNotes({vaultRoot:root,files,message:chunks>1?`${base} (${i+1}/${chunks})`:base,guard}).catch(safeFailure);
+      results.push(...done.results);if(done.commit)commits.push(done.commit);
+    }
+    return {results,commits,narrowed};
   }
 }
