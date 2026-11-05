@@ -26,6 +26,8 @@ import { DEADLINE_CALENDAR_IN_CONTAINER } from "./stack-compose.js";
  *  `files` (relative, resolved against `dir` — `docker.ts`'s `execute`) and
  *  `lifecycle.composeFile` (absolute — `ownedDocker`'s `-f`). */
 export const AGENTS_COMPOSE_FILE = "compose.lares-agents.yaml";
+/** The keeper-rendered compose file for managed services that are not agents (the Notion sync). */
+export const SERVICES_COMPOSE_FILE = "compose.lares-services.yaml";
 
 /** Where the roles and their templates live INSIDE the keeper image, not on the host: the
  *  keeper reads `join(templatesDir, role, "role.md")` and `deployedToolsFor(join(rolesDir,
@@ -199,6 +201,8 @@ export function renderKeeperConfig(
         "chief-of-staff": imageFor(manifest, "chief-of-staff"),
         creative: imageFor(manifest, "creative"),
       },
+      // The Notion sync is optional: a release that names no sync-jobs image simply cannot offer it.
+      ...(manifest.images["sync-jobs"] === undefined ? {} : { services: { composeFile: join(opts.dir, SERVICES_COMPOSE_FILE), notionSyncImage: imageFor(manifest, "sync-jobs") } }),
       proxyContainer: PROXY_CONTAINER,
       squidImage: imageFor(manifest, "lares-egress-proxy"),
       firewallImage: imageFor(manifest, "lares-firewall-helper"),

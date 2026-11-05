@@ -31,6 +31,9 @@
  *   tsx bin/notion-sync.ts --transcripts [--dry-run] → run just that pass
  *   tsx bin/notion-sync.ts --notion-born [--dry-run] → run just that pass
  *   tsx bin/notion-sync.ts --people [--dry-run]      → run just that pass
+ *   tsx bin/notion-sync.ts --preview                 → print, as one JSON line, what a first live tick
+ *                                                     would create / patch / skip / flag per pass.
+ *                                                     Writes nothing; needs the config's `passes`
  *   tsx bin/notion-sync.ts --approve <path>          → approve the open proposal for <path>
  *   tsx bin/notion-sync.ts --reject <path>           → reject the open proposal for <path>
  *
@@ -82,7 +85,7 @@ if (ONE_SHOT_MODE === undefined && !ONCE && process.env["NOTION_SYNC_LIVE"] !== 
 import {
   syncAttendeesOnce, syncWikiOnce, syncDeskPushOnce, syncPullOnce, syncApplyOnce,
   syncTranscriptsOnce, syncNotionBornOnce, syncPeopleOnce,
-  runPassesContained, tickPasses, parseOneShotArgs,
+  runPassesContained, recordTickRun, tickPasses, parseOneShotArgs,
   runReconcile, runEnableTwoWay, runAutoTwoWayOnce, runFidelityOnce, syncDirPrefixes, resolveFrozenDoc,
   syncArchiveExcludedOnce, archiveExcludedDryRun,
   runAdoptionReportOnce, printAdoptionReport,
@@ -90,6 +93,7 @@ import {
   type ResolveKeep,
 } from "../lib/cli.js";
 import { loadNotionSyncConfig } from "../lib/config.js";
+import { attendeePreview, peoplePreview, runPreview, selectPasses } from "../lib/preview.js";
 import { DEFAULT_TOLERANCE_MINUTES } from "../lib/attendees.js";
 
 const DRY_RUN = process.argv.includes("--dry-run") || process.env["NOTION_SYNC_DRY_RUN"] === "1";
@@ -297,7 +301,7 @@ async function runDeskPass(): Promise<number> {
  * outage) can never starve the rest, or vice versa. Resolves true only when
  * every pass was clean.
  */
-const runTick = (): Promise<boolean> => runPassesContained(tickPasses({
+const runTick = (): Promise<boolean> => runPassesContained(selectPasses(tickPasses({
   attendees: runAttendeePass,
   transcripts: runTranscriptPass,
   notionBorn: runNotionBornPass,
@@ -307,7 +311,10 @@ const runTick = (): Promise<boolean> => runPassesContained(tickPasses({
   desk: runDeskPass,
   autoTwoWay: runAutoTwoWayPass,
   people: runPeoplePass,
-}));
+// The config's `passes` list, when it has one, is the whole truth about what may run (a managed
+// install lists only the passes that need no vault). A config that cannot be read throws here and
+// runs nothing, rather than falling back to "every pass".
+}), loadNotionSyncConfig().passes), DRY_RUN ? undefined : recordTickRun);
 
 /**
  * The one-shot operator modes. Deliberately mutually exclusive and checked before
@@ -329,6 +336,25 @@ async function runOneShot(): Promise<boolean> {
   if (ONE_SHOT_MODE === "notion-born") return await runNotionBornPass() === 0;
   if (ONE_SHOT_MODE === "people") return await runPeoplePass() === 0;
   if (ONE_SHOT_MODE === "auto-two-way") return await runAutoTwoWayPass() === 0;
+
+  if (ONE_SHOT_MODE === "preview") {
+    // What a first live tick would do, as JSON on stdout and nothing else: every pass runs with its
+    // dry-run on (no write to Notion, the vault or the store), and everything the passes print goes
+    // to stderr so the one stdout line stays machine-readable.
+    console.log = (...args: unknown[]) => console.error(...args);
+    const allowed = loadNotionSyncConfig().passes;
+    if (allowed === undefined) throw new Error("notion-sync: --preview needs the config's passes list");
+    const report = await runPreview({
+      attendees: async () => attendeePreview(await syncAttendeesOnce({ dryRun: true, toleranceMinutes: TOLERANCE_MINUTES })),
+      people: async () => {
+        const result = await syncPeopleOnce({ dryRun: true });
+        if (result === null) throw new Error("notion-sync: the people pass is not configured");
+        return peoplePreview(result);
+      },
+    }, allowed);
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return true;
+  }
 
   if (ONE_SHOT_MODE === "adoption-report") {
     // Never opens a database connection — see runAdoptionReportOnce's own doc

@@ -75,6 +75,10 @@ export const lifecycleSchema = z.object({
         microsoft: personalMicrosoftSchema.optional(),
         google: z.object({principal:z.string().min(1).optional(),tokenKeyFile:path,clients:z.record(z.string().regex(/^(?:[a-z][a-z0-9_-]*|[a-z0-9]{1,32})$/),z.object({clientIdFile:path,clientSecretFile:path}).strict())}).strict().optional() }).strict(),
     egress: z.object({ endpoints: z.preprocess(ignoreRetiredEndpoints, z.object({ READABILITY_URL: z.string().url().optional(), TWENTY_BASE_URL: z.string().url().optional() }).strict()), legacyConsumers: z.array(z.object({ name: z.string(), address: z.string(), hosts: z.array(z.string()) }).strict()), internalNetworks: z.array(z.string()), directDestinations: z.array(z.string()), infrastructureHosts: z.array(z.string()) }).strict(),
+    // Optional managed services (the Notion sync). Absent on an installation whose release names none.
+    // The file is the keeper's own rendering, separate from the agents' compose file; the image is a
+    // digest out of the release file, never a tag.
+    services: z.object({ composeFile: path, notionSyncImage: image }).strict().optional(),
     // Owner verifies a DIRECTORY-mounted owned proxy and complete retained-source inventory.
     installationPrepared: z.literal(true),
     bindings: z.preprocess(dropRetiredRoleBindings, z.record(z.string().regex(/^[a-z][a-z0-9-]{1,30}$/), runtimeBindingsSchema)).optional(),

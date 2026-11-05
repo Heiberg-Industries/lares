@@ -4,12 +4,13 @@ import { z } from 'zod';
 import type { KeeperConfig } from './config.js';
 import { INTEGRATION_SECRET_FILES, isRetiredRole } from './runtime-bindings.js';
 import type { CredentialConsumer, CredentialGrant } from './credential-state.js';
+import { NOTION_SYNC_NAME, notionSyncRequested } from './sync-service.js';
 
 /** Root-owned retained inventory plus actual resource/definition records, not catalogue rows.
  * Missing data fails closed. Runtime activation must recheck Docker ownership itself.
  */
 export type CredentialConsumerConfig = Pick<KeeperConfig, 'secretsDir' | 'credentials'> & {
-  lifecycle?: Pick<NonNullable<KeeperConfig['lifecycle']>, 'bindings' | 'defaultBindings'> & { egress?: Pick<NonNullable<KeeperConfig['lifecycle']>['egress'], 'legacyConsumers'> };
+  lifecycle?: Pick<NonNullable<KeeperConfig['lifecycle']>, 'bindings' | 'defaultBindings'> & Partial<Pick<NonNullable<KeeperConfig['lifecycle']>, 'maintenanceAdmission' | 'runtime'>> & { egress?: Pick<NonNullable<KeeperConfig['lifecycle']>['egress'], 'legacyConsumers'> & Partial<Pick<NonNullable<KeeperConfig['lifecycle']>['egress'], 'endpoints'>> };
 };
 export async function credentialConsumers(pool: Pool, config: CredentialConsumerConfig, grants: CredentialGrant[] = []): Promise<CredentialConsumer[]> {
   // A grant is only honoured for the chief of staff role; anything else is listed, never silent.
@@ -26,6 +27,10 @@ export async function credentialConsumers(pool: Pool, config: CredentialConsumer
     if (legacy.hosts.includes('api.notion.com') && !result.some(c => c.name === legacy.name))
       result.push({ name: z.string().regex(/^[a-z][a-z0-9-]{1,63}$/).parse(legacy.name), category: 'unmanaged-service', incarnation: null });
   }
+  // The Notion sync is a consumer exactly while it is allowed to run (switched on, a preview of this very
+  // configuration accepted): the keeper stops it before the key moves and starts it again after.
+  if (await notionSyncRequested(pool, config))
+    result.push({ name: NOTION_SYNC_NAME, category: 'managed-service', incarnation: null });
   // An alternate mount/key can retain token access after removing the named binding.
   if (bindingSources.some(b => b && (b.mounts.some(m => m.source === activePath || activePath.startsWith(m.source.replace(/\/$/, '') + '/')) ||
       Object.entries(b.secrets).some(([key, path]) => key !== 'NOTION_TOKEN_FILE' && path === activePath))))

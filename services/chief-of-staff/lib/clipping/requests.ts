@@ -18,7 +18,6 @@ import {
 } from "./notion-reader.js";
 import { linkOrigin, mapPageToClip, type ClipSource } from "./record.js";
 import { clippingPass, type ClippingStepDeps } from "./step.js";
-import type { InboxPort } from "./sync.js";
 import {
   findDuplicate, getItem, loadNotionSources, readClippingChoice, type Queryable,
 } from "./store.js";
@@ -246,24 +245,17 @@ async function recentLinkOrigins(
 
 // --- import ----------------------------------------------------------------------------------
 
-/** The requests share the step's deps, except that the Vault inbox may be missing: an engine-image
- *  install gives the agent no Vault folder, and only an import writes there. */
-export type RequestDeps = Omit<ClippingStepDeps, "inbox"> & { inbox: InboxPort | null };
+/** The requests share the step's deps; the inbox is a folder or, with no Vault folder, keeper. */
+export type RequestDeps = ClippingStepDeps;
 
 async function runImport(deps: RequestDeps): Promise<RequestOutcome> {
-  if (!deps.inbox) {
-    throw new ClippingFailure(
-      "not-configured", "This install cannot save clippings to the Vault yet, so nothing was imported.",
-      "Reading a database, testing the columns and adding columns still work.",
-    );
-  }
   if ((await readClippingChoice(deps.db)) === "karakeep") {
     throw new ClippingFailure(
       "not-configured", "Clipping is set to Karakeep only, so Notion was not read.",
       "Change the source to Notion or Both, then import.",
     );
   }
-  const r = await clippingPass({ ...deps, inbox: deps.inbox });
+  const r = await clippingPass(deps);
   if (r.outcome === "ok") {
     return { status: "done", outcome: "ok", detail: r.detail, result: { imported: r.imported, ...(r.counts ?? {}) } };
   }

@@ -14,6 +14,8 @@ export interface ScheduledVaultRule {
   area: ScheduledVaultArea;
   /** Folders a listing may be taken under, each ending in "/". */
   listPrefixes: readonly string[];
+  /** The empty prefix: list every note in the area (the ordinary listing, which hides `_meta/`). Names only. */
+  listAll?: boolean;
   read: RegExp;
   write: RegExp;
   remove: RegExp;
@@ -27,6 +29,12 @@ export function plainVaultPath(path: unknown): path is string {
     !/[\\\x00-\x1f\x7f]/.test(path) && path.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.startsWith("."));
 }
 
+// The digest: pulls saved links into the inbox, reads the inbox, moves a note it has classified out of the
+// inbox into the one folder it belongs in and rewrites it there. The folders are the ones the classifier
+// can name: three fixed ones, and `<project>/transcripts/` for a project the Vault already has.
+const DIGEST_INBOX_NOTE = String.raw`_inbox\/[^/]+\.md`;
+const DIGEST_PULLED_NOTE = String.raw`_inbox\/(?:clip|karakeep)-[A-Za-z0-9._-]+\.md`;
+const DIGEST_FILED_NOTE = String.raw`(?:(?:inspiration|writing-seeds|reads)|[^/_.][^/]*\/transcripts)\/[a-z0-9]+(?:-[a-z0-9]+)*\.md`;
 export const SCHEDULED_VAULT_POLICY: Readonly<Record<string, readonly ScheduledVaultRule[]>> = {
   // The nightly cycle: finds its cursor in its own dated notes, reads old conversation logs, writes one dated note.
   dream: [{
@@ -44,6 +52,15 @@ export const SCHEDULED_VAULT_POLICY: Readonly<Record<string, readonly ScheduledV
     write: /^_inbox\/[A-Za-z0-9][A-Za-z0-9._-]*\.md$/,
     remove: /^_inbox\/[A-Za-z0-9][A-Za-z0-9._-]*\.md$/,
   }],
+  // The digest: see the note above the patterns. Listing the whole area is for note names only.
+  digest: [{
+    area: "private",
+    listPrefixes: ["_inbox/"],
+    listAll: true,
+    read: new RegExp(`^(?:${DIGEST_INBOX_NOTE}|${DIGEST_FILED_NOTE})$`),
+    write: new RegExp(`^(?:${DIGEST_PULLED_NOTE}|${DIGEST_FILED_NOTE})$`),
+    remove: new RegExp(`^${DIGEST_INBOX_NOTE}$`),
+  }],
 };
 
 export function isScheduledVaultSchedule(name: unknown): name is string {
@@ -59,7 +76,7 @@ export function scheduledPathAllowed(rule: ScheduledVaultRule, operation: "read"
 }
 
 export function scheduledPrefixAllowed(rule: ScheduledVaultRule, prefix: unknown): prefix is string {
-  return typeof prefix === "string" && rule.listPrefixes.includes(prefix);
+  return typeof prefix === "string" && (prefix === "" ? rule.listAll === true : rule.listPrefixes.includes(prefix));
 }
 
 /** A note body in one frame is 256 KB shared with the envelope; the rest is for the frame itself. */

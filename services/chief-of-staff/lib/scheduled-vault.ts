@@ -18,7 +18,7 @@ import {
   SCHEDULED_VAULT_MAX_BODY_BYTES, type ScheduledVaultArea, type ScheduledVaultOperation,
 } from "@lares/agent-kit/scheduled-vault-policy";
 
-export type ScheduleName = "dream" | "clipping-requests";
+export type ScheduleName = "dream" | "clipping-requests" | "digest";
 
 export type BrokerRequest = (op: string, input: unknown, timeoutMs?: number) => Promise<any>;
 
@@ -45,7 +45,8 @@ export function splitRawNote(raw: string): { frontmatter: Record<string, string>
   for (const line of text.slice(4, end).split("\n")) {
     const colon = line.indexOf(":");
     const key = colon === -1 ? "" : line.slice(0, colon).trim();
-    if (/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(key)) frontmatter[key] = line.slice(colon + 1).trim();
+    // A tab or other control character in a value would be refused by keeper; a space reads the same.
+    if (/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(key)) frontmatter[key] = line.slice(colon + 1).replace(/[\x00-\x1f\x7f\u0085\u2028\u2029]/g, " ").trim();
   }
   const after = text.slice(end + 4).replace(/^\n/, "");
   return { frontmatter, body: after.replace(/^\n/, "") };
