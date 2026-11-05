@@ -96,7 +96,8 @@ describe("the digest schedule switches article filing on", () => {
   it("hands the runner an article filer built from the setting and the grant-checked shared root", async () => {
     const src = await read();
     expect(src).toMatch(/articleTargets\(\{/);
-    expect(src).toMatch(/fileArticle: makeArticleFiler\(\{\s*privateRoot: ports\.root,\s*sharedRoot: targets\.sharedRoot,\s*articleArea: targets\.articleArea,/);
+    expect(src).toMatch(/fileArticle: ports\.root !== undefined\s*\? makeArticleFiler\(\{\s*privateRoot: ports\.root,\s*sharedRoot: targets\.sharedRoot,\s*articleArea: targets\.articleArea,/);
+    expect(src).toMatch(/: makeKeeperArticleFiler\(\{\s*privateVault: makeScheduledVault\("digest"\),\s*sharedVault: targets\.sharedRoot !== undefined \? makeScheduledVault\("digest", \{ area: "shared" \}\) : undefined,/);
     // The grant is read from the running agent's own definition, never assumed.
     expect(src).toMatch(/readDefinition: async \(\) => \(await thisAgent\(undefined\)\)\.loaded\.definition/);
   });

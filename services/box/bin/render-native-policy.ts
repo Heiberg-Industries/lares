@@ -22,26 +22,40 @@ export const REVIEWED_INPUT_TOKENS = 100_000;
 export interface NativePolicyRequest {
   readonly alias: string;
   readonly providerModel: string;
-  /** A model of its own for the writer, utility or gate purpose, as in installation.env. Only the brain is priced here, but
-   *  the reviewed capability must be the exact profile the gateway runs, so these are carried into it. */
+  /** A model of its own for the writer, utility or gate purpose, as in installation.env. The reviewed capability must be the
+   *  exact profile the gateway runs, so these are carried into it, and each needs its own entry in `aliasPrices`. */
   readonly purposeModels?: Readonly<Partial<Record<PurposeModelPurpose, string>>>;
-  /** The embedding model, as in installation.env. Like the purpose models it is carried into the capability only: this policy does not price it. */
+  /** The embedding model, as in installation.env. It is priced on input tokens alone, through `aliasPrices`. */
   readonly embedding?: { readonly model: string; readonly baseUrl: string; readonly maxInputTokens?: number | string };
   readonly gatewayUrl: string;
   readonly installationLimit: string;
   readonly personLimit: string;
-  readonly prices: { readonly input: string; readonly output: string; readonly cacheRead: string; readonly cacheWrite: string };
+  /** The brain's prices. A purpose that runs the brain's model is priced with these too. */
+  readonly prices: AliasPrices;
+  /** Prices by served alias (for example "lares-writer") for each alias that runs a model of its own. The embedding alias
+   *  needs only `input`; its other rates are always zero. */
+  readonly aliasPrices?: Readonly<Record<string, Partial<AliasPrices>>>;
+}
+
+export interface AliasPrices { readonly input: string; readonly output: string; readonly cacheRead: string; readonly cacheWrite: string }
+
+export interface PricedAlias {
+  readonly alias: string;
+  /** `provider/model` for a chat alias, the bare model name for the embedding alias. */
+  readonly model: string;
+  readonly prices: AliasPrices;
 }
 
 export interface NativePolicyResult {
   readonly policy: BudgetNativePolicyDocument;
+  /** The brain's, as before. */
   readonly maximumLiability: string;
   readonly model: string;
-  /** Served aliases that run a model of their own, or embed, and are NOT priced by this policy yet. */
-  readonly unpricedAliases: readonly string[];
+  /** Every served alias with the prices its policy carries, in policy order (the brain first). */
+  readonly pricedAliases: readonly PricedAlias[];
   readonly installationLimit: string;
   readonly personLimit: string;
-  readonly prices: NativePolicyRequest["prices"];
+  readonly prices: AliasPrices;
 }
 
 function units(value: string): bigint {
@@ -88,35 +102,71 @@ export function renderNativePolicy(request: NativePolicyRequest): NativePolicyRe
     cacheRead: price(request.prices.cacheRead, "cache read"),
     cacheWrite: price(request.prices.cacheWrite, "cache write"),
   };
-  const pricing = gatewayPricingSchema.parse({
-    version: 1,
-    capabilityHash: gatewayHash(gatewayCanonical(capability)),
-    format: capability.provider,
-    limits: { inputTokens: REVIEWED_INPUT_TOKENS, outputTokens: capability.maxOutputTokens },
-    usdPerMillionTokens: prices,
-  });
-  const maximumLiability = gatewayMaximumLiability(pricing);
-  // Every call first holds its largest possible cost. Setup does not otherwise check this, and a
-  // limit below the hold would refuse every call.
-  if (units(maximumLiability) > units(personLimit))
-    throw new Error(`One model call can cost up to $${maximumLiability} at these prices, which is more than the per-person limit of $${personLimit}. Raise the limit.`);
+  const capabilityHash = gatewayHash(gatewayCanonical(capability));
+  const extraPrices = request.aliasPrices ?? {};
+  if (typeof extraPrices !== "object" || Object.keys(extraPrices).some(name => !capability.aliases.includes(name) || name === request.alias))
+    throw new Error("A price was given for an alias this gateway does not serve.");
+  const embedding = capability.embedding;
+  const ownModels = (capability.purposeModels ?? {}) as Record<string, string>;
   const gatewayOrigin = new URL(request.gatewayUrl).origin;
   const endpointHash = createHash("sha256").update(`lares.native-endpoint.v1\0${gatewayOrigin}\0${capability.providerBaseUrl}`).digest("hex");
+
+  // One policy per served alias, the brain's first. They share the team, user and membership blocks and differ in the key's
+  // alias, the model's rates and the limits one call may hold.
+  const entries = capability.aliases.map(alias => {
+    let aliasPrices: AliasPrices, format: "openai" | "anthropic" | "embedding", limits: { inputTokens: number; outputTokens: number }, model: string;
+    if (embedding && alias === embedding.alias) {
+      const given = extraPrices[alias];
+      if (!given || given.input === undefined) throw new Error(`The embedding model ${embedding.model} (${alias}) needs an input price.`);
+      aliasPrices = { input: price(given.input, `${alias} input`), output: "0", cacheRead: "0", cacheWrite: "0" };
+      format = "embedding";
+      limits = { inputTokens: embedding.maxInputs * embedding.maxInputTokens, outputTokens: 1 };
+      model = embedding.model;
+    } else {
+      const own = ownModels[alias];
+      if (own === undefined) {
+        // This alias runs the brain's model, so it is priced as the brain is.
+        aliasPrices = prices;
+        model = `${capability.provider}/${capability.model}`;
+      } else {
+        const given = extraPrices[alias];
+        if (!given) throw new Error(`The model ${capability.provider}/${own} (${alias}) needs its prices.`);
+        aliasPrices = {
+          input: price(given.input, `${alias} input`), output: price(given.output, `${alias} output`),
+          cacheRead: price(given.cacheRead, `${alias} cache read`), cacheWrite: price(given.cacheWrite, `${alias} cache write`),
+        };
+        model = `${capability.provider}/${own}`;
+      }
+      format = capability.provider as "openai" | "anthropic";
+      limits = { inputTokens: REVIEWED_INPUT_TOKENS, outputTokens: capability.maxOutputTokens };
+    }
+    const pricing = gatewayPricingSchema.parse({ version: 1, capabilityHash, format, limits, usdPerMillionTokens: aliasPrices });
+    let maximumLiability: string;
+    try { maximumLiability = gatewayMaximumLiability(pricing); }
+    catch { throw new Error(`The prices for ${alias} must not all be zero.`); }
+    // Every call first holds its largest possible cost. Setup does not otherwise check this, and a
+    // limit below the hold would refuse every call.
+    if (units(maximumLiability) > units(personLimit))
+      throw new Error(`One model call${alias === request.alias ? "" : ` to ${alias}`} can cost up to $${maximumLiability} at these prices, which is more than the per-person limit of $${personLimit}. Raise the limit.`);
+    return {
+      alias, model, aliasPrices,
+      policy: {
+        capability, pricing, maximumLiability,
+        team: { maxBudget: installationLimit, models: capability.aliases, budgetDuration: "1d" },
+        user: { maxBudget: personLimit, userRole: "internal_user", autoCreateKey: false },
+        membership: { maxBudget: personLimit, allowedModels: capability.aliases, budgetDuration: "1d", role: "user" },
+        key: { maxBudget: personLimit, models: [alias], budgetDuration: "1d", keyType: "llm_api", blocked: true },
+      },
+    };
+  });
   // The gateway's own daily caps are a backstop set no lower than the monthly limits, so the
   // monthly budget ledger stays the one rule a person can actually run into.
-  const policy = parseBudgetNativePolicyDocument(JSON.stringify({
-    endpointHash,
-    policies: [{
-      capability,
-      pricing,
-      maximumLiability,
-      team: { maxBudget: installationLimit, models: capability.aliases, budgetDuration: "1d" },
-      user: { maxBudget: personLimit, userRole: "internal_user", autoCreateKey: false },
-      membership: { maxBudget: personLimit, allowedModels: capability.aliases, budgetDuration: "1d", role: "user" },
-      key: { maxBudget: personLimit, models: [request.alias], budgetDuration: "1d", keyType: "llm_api", blocked: true },
-    }],
-  }));
-  return { policy, maximumLiability, model: `${capability.provider}/${capability.model}`, unpricedAliases: [...Object.keys(capability.purposeModels ?? {}), ...(capability.embedding ? [capability.embedding.alias] : [])], installationLimit, personLimit, prices };
+  const policy = parseBudgetNativePolicyDocument(JSON.stringify({ endpointHash, policies: entries.map(entry => entry.policy) }));
+  return {
+    policy, maximumLiability: policy.policies[0]!.maximumLiability, model: `${capability.provider}/${capability.model}`,
+    pricedAliases: entries.map(({ alias, model, aliasPrices }) => ({ alias, model, prices: aliasPrices })),
+    installationLimit, personLimit, prices,
+  };
 }
 
 export function main(input: string, out: (value: string) => void): number {

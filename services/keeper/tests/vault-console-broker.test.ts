@@ -44,7 +44,7 @@ vi.mock('@lares/agent-kit/vault-files', async (importOriginal) => {
     async list(...args: Parameters<InstanceType<typeof actual.GuardedVaultFiles>['list']>) { if (this.delegate) return this.delegate.list(...args); return { paths: ['owner.md', ...ids.trackFiles.keys()], files: 1 + ids.trackFiles.size }; }
     async read(_ctx: unknown, path = 'owner.md', ...rest: unknown[]) { if (this.delegate) return (this.delegate as any).read(_ctx, path, ...rest); ids.reads++; await ids.readGate?.();
       const track = ids.trackFiles.get(path); if (track) return { path, content: track.content, lines: track.content.split('\n').length, contentRevision: track.contentRevision, companion: null };
-      if (/^(tracks|_meta|_inbox|reads|inspiration|writing-seeds)\/|\/transcripts\//.test(path)) throw new NoteNotFoundError(path);
+      if (/^(tracks|_meta|_inbox|reads|inspiration|writing-seeds|articles)\/|\/transcripts\//.test(path)) throw new NoteNotFoundError(path);
       return { path, content: 'private note content', lines: 1, contentRevision: 'fixture', companion: null };
     }
     async listUnder(ctx: unknown, dir: string) { if (this.delegate) return (this.delegate as any).listUnder(ctx, dir); const prefix = dir.replace(/\/+$/, '') + '/'; const paths = [...ids.trackFiles.keys()].filter(p => p.startsWith(prefix)); return { paths, files: paths.length }; }
@@ -55,6 +55,14 @@ vi.mock('@lares/agent-kit/vault-files', async (importOriginal) => {
       ids.lastBinding = input.binding; ids.trackFiles.delete(input.binding.relativePath);
       ids.trackFiles.set(input.destination, { content: from.content, contentRevision: String(++ids.writes).padStart(64, '0') });
       return { commit: `moved-${ids.writes}` };
+    }
+    async writeVerbatim(_ctx: unknown, input: { binding: { relativePath: string; expectedContentRevision: string | null }; content: string }, ...rest: unknown[]) {
+      if (this.delegate) return (this.delegate as any).writeVerbatim(_ctx, input, ...rest);
+      const prior = ids.trackFiles.get(input.binding.relativePath);
+      if ((prior?.contentRevision ?? null) !== input.binding.expectedContentRevision) throw new Error('stale fixture content');
+      ids.lastBinding = input.binding;
+      ids.trackFiles.set(input.binding.relativePath, { content: input.content, contentRevision: String(++ids.writes).padStart(64, '0') });
+      return { commit: `verbatim-${ids.writes}` };
     }
     async write(_ctx: unknown, input: { binding: { relativePath: string; expectedContentRevision: string | null }; frontmatter: Record<string, unknown>; body: string }, ...rest: unknown[]) {
       if (this.delegate) return (this.delegate as any).write(_ctx, input, ...rest);
@@ -958,7 +966,7 @@ it('the digest is refused outside its own paths, areas and operations, and nothi
   await refused(sched('digest', 'move', { path: '_inbox/a.md', destination: 'reads/keep.md' }));                 // a note that is already there is never replaced by a move
   await refused(sched('digest', 'list', { prefix: 'reads/' }));
   await refused(sched('digest', 'list', { prefix: '_meta/' }));
-  await refused(runtime('vault.scheduled', { schedule: 'digest', operation: 'write', area: 'shared', ...digestFiled }));   // no shared rule
+  await refused(runtime('vault.scheduled', { schedule: 'digest', operation: 'write', area: 'shared', ...digestFiled }));   // the shared rule saves articles only
   await refused(runtime('vault.scheduled', { schedule: 'digest', operation: 'list', area: 'shared', prefix: '' }));
   expect(ids.writes).toBe(0);
   expect(ids.trackFiles.get('reads/keep.md')?.content).toBe('k');
@@ -1027,4 +1035,130 @@ it('with the real writer a scheduled note reaches the private area under _meta/,
   expect(await sched('clipping-requests', 'remove', { path: clip.path })).toMatchObject({ removed: true });
   console.log(`vault.scheduled real remove: ${(performance.now() - removeStarted).toFixed(0)} ms`);
   expect(() => readFileSync(join(privateRoot, clip.path))).toThrow();
+});
+
+// ── vault.scheduled write-verbatim: a file saved exactly as sent, for the digest's articles ──
+const articleMd = '---\ntitle: A page\nlares_origin: third_party\nsources:\n  - resource: https://example.com/a\n    fetched: 2026-11-01\ngenerated:\n  by: digest\n---\n\nSummary.\n';
+const verbatim = (extra: Record<string, unknown>) => sched('digest', 'write-verbatim', extra);
+
+it('a verbatim write saves the article and its companion exactly as sent, as a job, and the same bytes again change nothing', async () => {
+  expect(await verbatim({ path: 'articles/a-page.md', content: articleMd, message: 'digest: file article a-page' })).toMatchObject({ path: 'articles/a-page.md', commit: 'verbatim-1' });
+  expect(ids.lastBinding).toMatchObject({ relativePath: 'articles/a-page.md', expectedContentRevision: null, approvedOrigin: 'third_party',
+    authority: { origin: 'job', jobId: 'digest', actingMemberId: ids.member } });
+  expect(ids.trackFiles.get('articles/a-page.md')?.content).toBe(articleMd);
+  expect(await verbatim({ path: 'articles/a-page-1f2e3d.txt', content: 'Plain text\nof the page.\n' })).toMatchObject({ commit: 'verbatim-2' });
+  expect(ids.trackFiles.get('articles/a-page-1f2e3d.txt')?.content).toBe('Plain text\nof the page.\n');
+  expect(await verbatim({ path: 'articles/a-page.md', content: articleMd })).toEqual({ ok: true, path: 'articles/a-page.md', unchanged: true });
+  expect(ids.writes).toBe(2);
+  // A changed file replaces the old one under its current revision.
+  await verbatim({ path: 'articles/a-page.md', content: articleMd.replace('Summary.', 'Longer summary.') });
+  expect(ids.lastBinding.expectedContentRevision).toBe('0'.repeat(63) + '1');
+  expect(ids.writes).toBe(3);
+});
+
+it('a verbatim write is refused for a path, an origin, a front matter, a size or a text the schedule may not save, and nothing is written', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  const withOrigin = (origin: string) => articleMd.replace('lares_origin: third_party', `lares_origin: ${origin}`);
+  await refused(verbatim({ path: 'reads/a-note.md', content: articleMd }));                    // a folder the rule does not name
+  await refused(verbatim({ path: 'articles/sub/a.md', content: articleMd }));
+  await refused(verbatim({ path: 'articles/A-Page.md', content: articleMd }));                 // not a slug
+  await refused(verbatim({ path: 'articles/a-page.json', content: '{}' }));
+  await refused(verbatim({ path: 'articles/.hidden.md', content: articleMd }));
+  await refused(verbatim({ path: 'articles/../_inbox/x.md', content: articleMd }));
+  await refused(verbatim({ path: '_inbox/karakeep-b1.md', content: articleMd }));
+  await refused(verbatim({ path: 'articles/a-page.md', content: 'no front matter at all' }));
+  await refused(verbatim({ path: 'articles/a-page.md', content: articleMd.replace(/^---\n/, '\n---\n') }));   // does not start with the block
+  await refused(verbatim({ path: 'articles/a-page.md', content: '---\ntitle: x\n---\n\nbody' }));        // no origin line
+  for (const origin of ['agent', 'owner', 'synced', 'system', 'third_party ', '"third_party"']) await refused(verbatim({ path: 'articles/a-page.md', content: withOrigin(origin) }));
+  await refused(verbatim({ path: 'articles/a-page.md', content: articleMd.replace('title: A page', 'lares_origin: third_party\ntitle: A page') }));   // two origin lines
+  await refused(verbatim({ path: 'articles/a-page.md', content: articleMd.replace('title: A page', 'lares_origin: agent\ntitle: A page') }));       // a second, different one
+  await refused(verbatim({ path: 'articles/a-page.md', content: articleMd.replace('title: A page', '"lares_origin": owner\ntitle: A page') }));
+  await refused(verbatim({ path: 'articles/a-page.md', content: articleMd.replaceAll('\n', '\r\n') }));
+  await refused(verbatim({ path: 'articles/a-page-1f2e3d.txt', content: '---\nlares_origin: third_party\n---\ntext' }));        // a companion with front matter
+  await refused(verbatim({ path: 'articles/a-page.md', content: `${articleMd}\u0000` }));
+  await refused(verbatim({ path: 'articles/a-page-1f2e3d.txt', content: 'text\u0000more' }));
+  await refused(verbatim({ path: 'articles/a-page-1f2e3d.txt', content: 'lone \ud800 surrogate' }));
+  await refused(verbatim({ path: 'articles/a-page-1f2e3d.txt', content: 'x'.repeat(193 * 1024) }));
+  await refused(verbatim({ path: 'articles/a-page-1f2e3d.txt', content: 42 }));
+  await refused(verbatim({ path: 'articles/a-page-1f2e3d.txt' }));
+  await refused(verbatim({ path: 'articles/a-page-1f2e3d.txt', content: 'ok', message: 'two\nlines' }));
+  // Only a rule that names verbatim paths may use the operation, whatever the file says.
+  await refused(sched('dream', 'write-verbatim', { path: '_meta/dream/2026-11-01.md', content: withOrigin('third_party') }));
+  await refused(sched('clipping-requests', 'write-verbatim', { path: '_inbox/clip-a.md', content: withOrigin('third_party') }));
+  expect(ids.writes).toBe(0);
+});
+
+it('a verbatim write needs the agent\'s own write grant on the area', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  await setVaultGrant({ scope: 'read' });
+  await refused(verbatim({ path: 'articles/a-page.md', content: articleMd }));
+  await setVaultGrant({ scope: 'write' }, 'never');
+  await refused(verbatim({ path: 'articles/a-page.md', content: articleMd }));
+  await setVaultGrant({ scope: 'write', areas: ['shared'] }, 'gated');
+  await refused(verbatim({ path: 'articles/a-page.md', content: articleMd }));
+  expect(ids.writes).toBe(0);
+});
+
+it('with the real writer a verbatim article reaches the private area byte for byte, with its companion, in the origin, and can be read and listed', async () => {
+  await realAreasAndTurn();
+  const privateRoot = join(root, 'vault-files', `vault/private/${ids.area}`), origin = join(root, 'vault-origins', `${ids.area}.git`);
+  const saved = await verbatim({ path: 'articles/a-page.md', content: articleMd, message: 'digest: file article a-page' });
+  expect(readFileSync(join(privateRoot, 'articles/a-page.md'), 'utf8')).toBe(articleMd);
+  expect(execFileSync('git', ['-C', origin, 'log', '-1', '--format=%H%n%s'], { encoding: 'utf8' })).toMatch(new RegExp(`^${saved.commit}[0-9a-f]*\ndigest: file article a-page`));
+  await verbatim({ path: 'articles/a-page.txt', content: 'Full text.\n' });
+  expect(readFileSync(join(privateRoot, 'articles/a-page.txt'), 'utf8')).toBe('Full text.\n');
+  expect(await verbatim({ path: 'articles/a-page.md', content: articleMd })).toMatchObject({ unchanged: true });
+  expect(await verbatim({ path: 'articles/a-page.txt', content: 'Full text.\n' })).toMatchObject({ unchanged: true });
+  expect(await sched('digest', 'read', { path: 'articles/a-page.md' })).toMatchObject({ found: true, content: articleMd });
+  expect((await sched('digest', 'list', { prefix: 'articles/' })).paths).toEqual(['articles/a-page.md']); // a listing names notes only; the text companion is not a note
+});
+
+// ── the digest's shared rule: a filed article and its companion, nothing else ──
+const schedShared = (operation: string, extra: Record<string, unknown> = {}) => runtime('vault.scheduled', { schedule: 'digest', operation, area: 'shared', ...extra });
+
+it('a shared article and its companion are saved verbatim in the shared area, as a job, with the grant', async () => {
+  expect(await schedShared('write-verbatim', { path: 'articles/a-page.txt', content: 'Full text.\n' })).toMatchObject({ commit: 'verbatim-1' });
+  expect(ids.lastBinding).toMatchObject({ areaId: ids.sharedArea, relativePath: 'articles/a-page.txt', approvedOrigin: 'third_party', authority: { origin: 'job', jobId: 'digest' } });
+  expect(await schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd, message: 'digest: file article a-page' })).toMatchObject({ commit: 'verbatim-2' });
+  expect(ids.lastBinding.areaId).toBe(ids.sharedArea);
+  expect(await schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd })).toMatchObject({ unchanged: true });
+  expect((await schedShared('list', { prefix: 'articles/' })).paths).toEqual(['articles/a-page.md', 'articles/a-page.txt']);
+  expect(await schedShared('read', { path: 'articles/a-page.md' })).toMatchObject({ found: true, content: articleMd });
+});
+
+it('a shared article is refused without the shared write grant, and a read grant still lists', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  await setVaultGrant({ scope: 'write', areas: ['private'] }, 'gated');
+  await refused(schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd }));
+  await refused(schedShared('list', { prefix: 'articles/' }));
+  await setVaultGrant({ scope: 'read', areas: ['private', 'shared'] });
+  await refused(schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd }));
+  expect((await schedShared('list', { prefix: 'articles/' })).paths).toEqual([]);
+  await setVaultGrant({ scope: 'write', areas: ['private', 'shared'] }, 'never');
+  await refused(schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd }));
+  expect(ids.writes).toBe(0);
+});
+
+it('in the shared area the digest cannot save outside articles/, write a note, remove, move or list the whole area', async () => {
+  const refused = (run: Promise<unknown>) => expect(run).rejects.toThrow('Vault reader unavailable');
+  ids.trackFiles.set('articles/a-page.md', { content: articleMd, contentRevision: rev('a') });
+  ids.trackFiles.set('reads/keep.md', { content: 'k', contentRevision: rev('b') });
+  ids.trackFiles.set('_inbox/clip-a.md', { content: 'c', contentRevision: rev('c') });
+  await refused(schedShared('write-verbatim', { path: 'reads/a-note.md', content: articleMd }));
+  await refused(schedShared('write-verbatim', { path: 'articles/sub/a.md', content: articleMd }));
+  await refused(schedShared('write-verbatim', { path: '_inbox/clip-a.md', content: articleMd }));
+  await refused(schedShared('write-verbatim', { path: 'articles/a-page.md', content: articleMd.replace('third_party', 'agent') }));
+  await refused(schedShared('write', { ...digestFiled, path: 'articles/x.md' }));
+  await refused(schedShared('write', digestFiled));
+  await refused(schedShared('write', { ...digestClip }));
+  await refused(schedShared('remove', { path: 'articles/a-page.md' }));
+  await refused(schedShared('remove', { path: '_inbox/clip-a.md' }));
+  await refused(schedShared('move', { path: '_inbox/clip-a.md', destination: 'reads/x.md' }));
+  await refused(schedShared('list', { prefix: '' }));
+  await refused(schedShared('list', { prefix: '_inbox/' }));
+  await refused(schedShared('read', { path: 'reads/keep.md' }));
+  await refused(schedShared('read', { path: 'articles/a-page.txt' }));
+  expect(ids.writes).toBe(0);
+  expect(ids.trackFiles.get('reads/keep.md')?.content).toBe('k');
+  expect(ids.trackFiles.has('articles/a-page.md')).toBe(true);
 });
