@@ -12,6 +12,10 @@ export interface CredentialRuntime {
   verify(name: string, incarnation: string, revision: string | null): Promise<void>;
   /** True when installation configuration alone mounts the key into this agent (a revoke keeps it). */
   installationBound?(name: string): boolean;
+  /** The same three steps for the engine's own managed service (the Notion sync), which has no incarnation. */
+  quiesceService?(name: string): Promise<void>;
+  reconcileService?(name: string, revision: string | null): Promise<void>;
+  verifyService?(name: string, revision: string | null): Promise<void>;
 }
 export interface CredentialGrantRequest { agent: string; purpose: 'clipping' }
 export interface CredentialActivationInput {
@@ -143,9 +147,24 @@ export class CredentialActivation {
   }
   private async quiesce(r: CredentialRecord) {
     for (const c of r.consumers) {
+      if (c.category === 'managed-service' && this.runtime.quiesceService) { await this.runtime.quiesceService(c.name); continue; }
       if (c.category !== 'owned-agent' || !c.incarnation) throw new KeeperRefusedError('Owned credential consumers required');
       await this.runtime.quiesce(c.name, c.incarnation);
     }
+  }
+  private async reconcileOne(c: CredentialConsumer, revision: string | null) {
+    if (c.category === 'managed-service') {
+      if (!this.runtime.reconcileService) throw new KeeperRefusedError('Owned credential consumers required');
+      return this.runtime.reconcileService(c.name, revision);
+    }
+    return this.runtime.reconcile(c.name, revision);
+  }
+  private async verifyOne(c: CredentialConsumer, revision: string | null) {
+    if (c.category === 'managed-service') {
+      if (!this.runtime.verifyService) throw new KeeperRefusedError('Owned credential consumers required');
+      return this.runtime.verifyService(c.name, revision);
+    }
+    return this.runtime.verify(c.name, c.incarnation!, revision);
   }
   private async reconcile(journal: CredentialJournal, initial: CredentialRecord, rollback: boolean) {
     let r = initial;
@@ -154,8 +173,8 @@ export class CredentialActivation {
     for (const c of r.consumers) {
       const revision = revisionOf(c);
       try {
-        await this.runtime.reconcile(c.name, revision);
-        await this.runtime.verify(c.name, c.incarnation!, revision);
+        await this.reconcileOne(c, revision);
+        await this.verifyOne(c, revision);
         r = await journal.save(r, { ...r, [field]: r[field].map(p => p.name === c.name ? { ...p, state: 'complete' } : p) });
       } catch {
         await journal.save(r, { ...r, phase: 'recovery-required', [field]: r[field].map(p => p.name === c.name ? { ...p, state: 'failed' } : p) });
@@ -163,7 +182,7 @@ export class CredentialActivation {
       }
     }
     // Verify ALL again: completing the last consumer alone proves no fleet-wide agreement.
-    for (const c of r.consumers) await this.runtime.verify(c.name, c.incarnation!, revisionOf(c));
+    for (const c of r.consumers) await this.verifyOne(c, revisionOf(c));
     if ((await this.runtime.snapshot(r, true)).revision !== r.activationIntent!.inventoryRevision)
       throw new KeeperOutcomeUncertainError();
     return r;
@@ -182,7 +201,7 @@ export class CredentialActivation {
     const revision = rollback ? r.activationIntent!.previousRevision : r.activationIntent!.targetRevision;
     if ((await this.runtime.snapshot(r, true)).revision !== r.activationIntent!.inventoryRevision)
       throw new KeeperRefusedError('Host inspection required for changed consumers before cleanup');
-    for (const c of r.consumers) await this.runtime.verify(c.name, c.incarnation!, this.revisionFor(r.activationIntent!, c, rollback));
+    for (const c of r.consumers) await this.verifyOne(c, this.revisionFor(r.activationIntent!, c, rollback));
     if (!revision) this.files.removeActive();
     if (r.candidateRevision) this.files.removeCandidate(r.candidateRevision);
     if (r.rollbackRevision) this.files.removeRollback(r.rollbackRevision);

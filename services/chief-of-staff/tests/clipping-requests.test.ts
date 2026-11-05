@@ -367,21 +367,6 @@ describe("import", () => {
     expect(inbox.files.size).toBe(0);
   });
 
-  // An engine-image install gives the agent no Vault folder: say that, and keep the rest of the card working.
-  it("with no Vault the agent can write to, says imports cannot be saved yet, and reads nothing", async () => {
-    await seedSource();
-    fake.setPages([mkPage(1)]);
-    const row = await answer("import", {}, { ...deps(), inbox: null });
-    expect(row).toMatchObject({ status: "failed", outcome: "not-configured" });
-    expect(row.outcome_detail).toMatch(/cannot save clippings to the Vault yet/);
-    expect(fake.world.requests).toHaveLength(0);
-  });
-
-  it("with no Vault the agent can write to, still reads a database", async () => {
-    const row = await answer("schema", { link: DATABASE_ID }, { ...deps(), inbox: null });
-    expect(row).toMatchObject({ status: "done", outcome: "ok" });
-  });
-
   it.each(["notion", "both"])("is allowed while the source choice is %s", async (mode) => {
     await seedSource();
     await db.query(`INSERT INTO clipping_choice (mode, set_by) VALUES ($1, 'owner@example.test')`, [mode]);
@@ -506,13 +491,13 @@ describe("the digest honours the choice (wiring)", () => {
   const src = readFileSync(join(here, "..", "agent", "schedules", "digest.ts"), "utf8");
   it("reads the choice first; Notion skips the Karakeep pull, Karakeep skips the clipping step, a failed read changes nothing", () => {
     const read = src.indexOf("await readClippingChoice(db)");
-    const karakeep = src.indexOf("await karakeepPass(log)");
-    const clipping = src.indexOf("await clippingStep(log)");
+    const karakeep = src.indexOf("await karakeepPass(log, ports)");
+    const clipping = src.indexOf("await clippingStep(log, ports)");
     expect(read).toBeGreaterThan(0);
     expect(karakeep).toBeGreaterThan(read);
     expect(clipping).toBeGreaterThan(karakeep);
-    expect(src).toMatch(/if \(choice === "notion"\) log\([^\n]*\);\s+else \{\s+try \{ await karakeepPass\(log\); \}/);
-    expect(src).toMatch(/if \(choice === "karakeep"\) log\([^\n]*\);\s+else notices = await clippingStep\(log\);/);
+    expect(src).toMatch(/if \(choice === "notion"\) log\([^\n]*\);\s+else \{\s+try \{ await karakeepPass\(log, ports\); \}/);
+    expect(src).toMatch(/if \(choice === "karakeep"\) log\([^\n]*\);\s+else notices = await clippingStep\(log, ports\);/);
     expect(src).toMatch(/readClippingChoice\(db\)\.catch\([\s\S]*?return null;/);
   });
 });

@@ -46,6 +46,17 @@ export async function fileDecision(
  * links are never projects. Sorted, so the
  * model sees the same list every pass. An unreadable or empty store gives an empty list.
  */
+export function projectsFromPaths(paths: readonly string[]): string[] {
+  const found = new Set<string>();
+  for (const p of paths) {
+    const [top, second, ...rest] = p.split("/");
+    if (top === undefined || second !== "transcripts" || rest.length === 0) continue;
+    if (top.startsWith(".") || top.startsWith("_") || top.includes(",")) continue;
+    found.add(top);
+  }
+  return [...found].sort();
+}
+
 export function listTranscriptProjects(root: string): string[] {
   // Symbolic links are never followed: a linked folder could point outside the private store.
   const isRealDir = (p: string): boolean => { try { return lstatSync(p).isDirectory(); } catch { return false; } };

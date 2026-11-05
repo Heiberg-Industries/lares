@@ -16,7 +16,7 @@ import { isAbsolute, extname, join, resolve } from "node:path";
 
 import { loadIntegrationManifests, INTEGRATIONS_DIR } from "./integration-manifest.js";
 import { connections, secretsForRefs } from "./connections.js";
-import { platformSecretNames } from "./platform-secrets.js";
+import { platformSecretNames, PLATFORM_SECRET_PREFIXES } from "./platform-secrets.js";
 
 export interface SecretFinding {
   file: string;
@@ -97,7 +97,7 @@ export function lintUndeclaredSecrets(roots: readonly string[], dir?: string): S
       let m: RegExpExecArray | null;
       while ((m = re.exec(text)) !== null) {
         const secret = m[1]!;
-        if (declared.has(secret)) continue;
+        if (declared.has(secret) || PLATFORM_SECRET_PREFIXES.some((p) => secret.startsWith(p))) continue;
         const key = `${file}\0${secret}`;
         if (seen.has(key)) continue;
         seen.add(key);

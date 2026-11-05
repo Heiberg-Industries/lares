@@ -11,6 +11,7 @@ import { validateDefinition, doorSecretName } from '@lares/agent-kit/definition-
 import { rememberValid } from '@lares/agent-kit/definition-cache';
 import { KeeperRefusedError, registerAction, type ActionContext } from './actions.js';
 import { DOOR_FILES } from './compose-agents.js';
+import { NOTION_SYNC_NAME } from './sync-service.js';
 import { appliedDefinitionGeneration, clearUnknownApplyBaseline, forgetDefinitionGeneration, hasFirstActivation, hasUnknownApplyBaseline, markFirstActivation, markUnknownApplyBaseline, preserveDefinitionGeneration, publishDefinition, plainDirectory, preservedDefinitionGeneration, restoreDefinitionGeneration, syncDefinitionDirectory } from './definition-files.js';
 import type { Backup } from './git-backup.js';
 import { totalmem } from 'node:os';
@@ -55,6 +56,8 @@ export interface DefinitionStorage {
 }
 export interface DefinitionOptions {
     namespaceGuard?(): Promise<void>;
+    /** Called after the meetings source changes: the Notion sync's configuration (and so its accepted preview) depends on it. */
+    syncChanged?(actor: string): Promise<void>;
     pool: Pool;
     agentsDir: string;
     retiredDir: string;
@@ -191,6 +194,8 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         if (create) {
             if (!o.compose.create)
                 refused('agent creation is unavailable until lifecycle provisioning is configured');
+            if (input.name === NOTION_SYNC_NAME)
+                refused(`${NOTION_SYNC_NAME} is the name of the Notion sync service; choose another name for the agent`);
             if (hasPath(path) || previous)
                 refused('name already exists; delete its retired definition before reusing it');
             const ceiling = await o.ceiling();
@@ -502,6 +507,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             if (value === null)
                 refused('That is not a Notion data source id. It is 32 letters and digits, with or without dashes.');
             await writeSetting(o.pool, MEETINGS_KEY, value, ctx.actor);
+            await o.syncChanged?.(ctx.actor);
             const restarted: string[] = [], waiting: string[] = [], stopped: string[] = [];
             for (const name of await chiefNames()) {
                 const outcome = await o.compose.applyInstallationSettings?.(name) ?? 'waiting';
