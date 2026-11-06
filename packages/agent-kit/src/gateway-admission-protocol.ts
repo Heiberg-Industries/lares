@@ -30,10 +30,8 @@ export const gatewayAdmitSchema=z.object({...echoed,ticket:z.string().regex(/^[A
 export const GATEWAY_INSTALLATION_KEY='installation';
 export const gatewayProviderKeySchema=z.union([z.literal(GATEWAY_INSTALLATION_KEY),id]);
 export const gatewayGrantSchema=z.object({...echoed,attemptId:id,bindingId:id,providerKey:gatewayProviderKeySchema}).strict();
-const LIMIT_DATE='[1-9][0-9]? (?:January|February|March|April|May|June|July|August|September|October|November|December) [0-9]{4}';
-/** The only two sentences a spending-limit refusal may carry. The installation one has no digits but the date. */
-export const MEMBER_LIMIT_SENTENCE=new RegExp(`^You've reached your monthly limit of \\$[0-9]{1,18}(?:\\.[0-9]{2,18})?\\. It resets on ${LIMIT_DATE}\\.$`);
-export const INSTALLATION_LIMIT_SENTENCE=new RegExp(`^This installation has reached its monthly spending limit\\. It resets on ${LIMIT_DATE}\\.$`);
+import {MEMBER_LIMIT_SENTENCE,INSTALLATION_LIMIT_SENTENCE} from './limit-sentences.js';
+export {MEMBER_LIMIT_SENTENCE,INSTALLATION_LIMIT_SENTENCE};
 /** The ONE place an amount and a reset date become words. `resetsAt` is a UTC calendar date (YYYY-MM-DD);
  * `cap` is a canonical budget amount. The installation sentence never takes an amount. */
 export function limitSentence(limit:{scope:'member';cap:string;resetsAt:string}|{scope:'installation';resetsAt:string}):string {
