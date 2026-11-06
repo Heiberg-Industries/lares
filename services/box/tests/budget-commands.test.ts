@@ -51,6 +51,14 @@ describe("lares budget commands", () => {
       const bringAcross = lares("agent", "import", "/srv/old-agents", "--yes");
       expect(bringAcross.status).toBe(0);
       expect(bringAcross.stdout.trim().endsWith("agent-import /srv/old-agents --yes")).toBe(true);
+      const keySet = lares("agent", "provider-key", "set", "my-agent", "--key-file", "/root/key");
+      expect(keySet.status).toBe(0);
+      expect(keySet.stdout.trim().endsWith("agent-provider-key set my-agent --key-file /root/key")).toBe(true);
+      const keyRemove = lares("agent", "provider-key", "remove", "my-agent");
+      expect(keyRemove.status).toBe(0);
+      expect(keyRemove.stdout.trim().endsWith("agent-provider-key remove my-agent")).toBe(true);
+      expect(lares("agent", "provider-key", "set").status).toBe(64);
+      expect(lares("agent", "provider-key").status).toBe(64);
       expect(lares("agent", "import").status).toBe(64);
       expect(lares("agent", "refresh", "my-agent").status).toBe(64);
       expect(lares("budget").status).toBe(64);

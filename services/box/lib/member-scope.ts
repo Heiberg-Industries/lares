@@ -478,6 +478,12 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     reason: "an agent's last-valid definition; about the agent, not a member.",
   },
   {
+    table: "agent_provider_keys",
+    scope: "operational",
+    createdBy: `${BOX}/035_agent_provider_keys.sql`,
+    reason: "which model-provider key file an agent's calls use (revision id, state, a role label for who set it, key-test outcome); the key itself is never stored, and there is no person column.",
+  },
+  {
     table: "agent_doors",
     scope: "operational",
     createdBy: `${BOX}/001_baseline.sql`,

@@ -104,6 +104,9 @@ PURPOSE_WRITER_MODEL={"anthropic":"claude-opus-4-5","openai":"gpt-4o"}
 EMBED_MODEL="embed-model"
 EMBED_KEY="sk-fixture-embed"
 EMBED_TOKENS_PER_INPUT=5
+# An agent's own provider key, written after the gateway started. A sentinel: it must reach the provider for that agent's
+# chat calls and appear nowhere else (logs, diagnostics, the gateway's database).
+AGENT_KEY="sk-fixture-agent-sentinel-0123456789"
 
 FIXTURE = r'''
 import http.server,ssl,threading,json,time,pathlib,hashlib,uuid,sys,gzip
@@ -112,7 +115,7 @@ from admission_contract import sign,verify,canonical,ADMIT_PATH,SETTLE_PATH
 LIMIT_SENTENCES={'member_limit':"You've reached your monthly limit of $15. It resets on 1 December 2026.",'installation_limit':"This installation has reached its monthly spending limit. It resets on 1 December 2026."}
 key=pathlib.Path('/fixture/service-key').read_bytes()
 lock=threading.Lock(); release=threading.Event(); release.set()
-data={'mode':'normal','upstream':0,'models':[],'embedAuth':[],'embedBodies':[],'routes':{'chat':0,'messages':0,'embeddings':0,'other':0},'traps':0,'gates':0,'receipts':[],'observations':[],'allows':[],'seen':set()}
+data={'mode':'normal','providerKey':'installation','upstream':0,'models':[],'auth':[],'embedAuth':[],'embedBodies':[],'routes':{'chat':0,'messages':0,'embeddings':0,'other':0},'traps':0,'gates':0,'receipts':[],'observations':[],'allows':[],'seen':set()}
 class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*a): pass
  def respond(self,status,document,signed=False,compress=False):
@@ -152,14 +155,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
     denied.update({'state':'denied','reason':mode.replace('_','-'),'message':LIMIT_SENTENCES[mode]})
     self.respond(200,denied,True);return
    reply={k:v for k,v in body.items() if k!='ticket'}
-   reply.update({'state':'allowed','attemptId':str(uuid.uuid4()),'bindingId':str(uuid.uuid4()),'validForMs':3000})
+   reply.update({'state':'allowed','attemptId':str(uuid.uuid4()),'bindingId':str(uuid.uuid4()),'providerKey':data['providerKey'],'validForMs':3000})
    if mode=='mismatch':reply['requestHash']='f'*64
    with lock:data['allows'].append(reply)
    self.respond(200,reply,mode!='unsigned');return
   with lock:
    data['upstream']+=1
    data['routes']['chat' if self.path=='/v1/chat/completions' else 'messages' if self.path=='/v1/messages' else 'embeddings' if self.path=='/v1/embeddings' else 'other']+=1
-   if self.path in ('/v1/chat/completions','/v1/messages','/v1/embeddings'):data['models'].append(body.get('model'))
+   if self.path in ('/v1/chat/completions','/v1/messages','/v1/embeddings'):
+    data['models'].append(body.get('model'))
+    # A hash of the credential this route was called with, never the credential: the proof compares hashes.
+    sent=[self.headers.get(name) for name in ('authorization','x-api-key') if self.headers.get(name)]
+    data['auth'].append({'route':self.path,'hashes':[hashlib.sha256(value.encode()).hexdigest() for value in sent]})
   if self.path=='/trap':
    with lock:data['traps']+=1
    self.respond(500,{});return
@@ -573,6 +580,7 @@ print('ok')
             "caddyDataDir": str(self.root / "caddy-data"),
             "dbDataDir": str(self.root / "db-data"),
             "databaseAuthDir": str(self.root / "database-auth"),
+            "providerKeysDir": str(self.keys_dir),
             "maintenanceAdmission": {
                 "directory": str(self.admission_dir),
                 "installationId": self.admission_identity["installationId"],
@@ -665,6 +673,10 @@ print('ok')
         (self.root/"gateway-key").write_text("disposable-gateway-key");(self.root/"gateway-key").chmod(0o600)
         self.secret_dir=self.root/"secrets"
         self.secret_dir.mkdir(mode=0o700)
+        # Agents' own provider keys: root-only files the keeper would add. The gateway mounts the directory read-only.
+        self.keys_dir=self.root/"provider-keys"
+        self.keys_dir.mkdir(mode=0o700)
+        self.disposable_secrets.append(AGENT_KEY.encode())
         for name in ("gateway-key","gateway-master-key","model-provider-key","gateway-database-password","gateway-budget-service-key"):
             (self.secret_dir/name).write_bytes((self.root/name).read_bytes());(self.secret_dir/name).chmod(0o600)
         # Only the embedding-alias gateway start mounts this one; the rendered Compose names it only when embeddingKey is set.
@@ -818,7 +830,7 @@ print('ok')
         require(set(dependencies)=={"db"} and dependencies["db"].get("condition")=="service_started" and
             dependencies["db"].get("required",True) is True and set(networks)=={self.name},
             "Canonical Compose changed the generated Gateway dependency or internal network")
-        expected_targets={"/etc/litellm/config.yaml","/usr/local/bin/lares-gateway-start",
+        expected_targets={"/etc/litellm/config.yaml","/usr/local/bin/lares-gateway-start","/run/lares/provider-keys",
             "/opt/lares-gateway/gateway_admission.py","/opt/lares-gateway/admission_contract.py",
             "/opt/lares-gateway/lares_gateway.py","/etc/litellm/profile.json",
             "/run/lares-maintenance/admission","/run/secrets/gateway-budget-service-key"}
@@ -1209,7 +1221,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
         require(len(observations)==1,"Receipt did not match authenticated shaped request")
         observation=observations[0];allows=[a for a in after["allows"] if a["nonce"]==observation["nonce"]]
         require(len(allows)==1,"Receipt lacks a unique signed allow")
-        for field in ("version","nonce","requestHash","profileHash","endpointHash","keyFingerprint","purposeAlias","attemptId","bindingId"):
+        for field in ("version","nonce","requestHash","profileHash","endpointHash","keyFingerprint","purposeAlias","attemptId","bindingId","providerKey"):
             require(receipt[field]==allows[0][field],"Receipt binding differs from signed allow")
         require(receipt["kind"]=="terminal-usage" and receipt["format"]==provider and receipt["usage"]==(usage or {"inputTokens":12,"outputTokens":4,"cacheReadTokens":0,"cacheWriteTokens":0}),"Terminal receipt usage/format differs from actual provider")
 
@@ -1318,6 +1330,92 @@ exec litellm --config "$CONFIG_FILE_PATH"
         command("docker","stop",name)
         require(self.exclusive_gate_available(),"Purpose gateway stop did not release its maintenance lock")
 
+    def key_file(self, selector, content=AGENT_KEY+"\n", mode=0o400, owner=0):
+        """A key file as the keeper writes it (root, 0400), or a deliberately unsafe variant."""
+        path=self.keys_dir/selector
+        if path.is_symlink() or path.exists():path.unlink()
+        path.write_bytes(content.encode());os.chmod(path,mode);os.chown(path,owner,owner)
+        return path
+
+    def agent_keys(self, provider, url, key):
+        """An agent with its own provider key. The keeper's grant names the key; the gateway reads that root-only file once per
+        request, adds nothing to the wire but that key, never falls back to the installation key, and never lets an embeddings
+        call or a log line see it. The file is created AFTER the gateway started: no restart is needed."""
+        route="chat" if provider=="openai" else "messages"
+        def header(value): return ("Bearer "+value) if provider=="openai" else value
+        installation={hashlib.sha256(value.encode()).hexdigest() for value in ("sk-fixture-provider","Bearer sk-fixture-provider")}
+        agent=hashlib.sha256(header(AGENT_KEY).encode()).hexdigest()
+        def called(lane):
+            before=self.control();result=self.sdk(url,key,lane);after=self.control()
+            return before,after,result,after["auth"][len(before["auth"]):]
+        def sent_hashes(sent): return {value for item in sent for value in item["hashes"]}
+        for lane in ("anthropic","openai-compatible"):
+            def installation_key(lane=lane):
+                self.control(mode="normal",providerKey="installation")
+                before,after,result,sent=called(lane)
+                require(result["ok"] and len(sent)==1 and sent_hashes(sent)&installation and agent not in sent_hashes(sent),"With no key of its own an agent was not paid for with the installation key")
+                self.receipt(before,after,result,key,provider)
+                require(after["receipts"][-1]["providerKey"]=="installation","The receipt did not name the installation key")
+            self.case(provider+"-"+lane+"-agent-key-none-uses-the-installation-key",installation_key)
+            self.idle_after_one_shot()
+            def own_key(lane=lane):
+                selector=str(uuid.uuid4());self.key_file(selector)
+                self.control(mode="normal",providerKey=selector)
+                before,after,result,sent=called(lane)
+                require(result["ok"] and result["requests"]==1,"An agent with its own key did not complete")
+                require(len(sent)==1 and agent in sent_hashes(sent) and not sent_hashes(sent)&installation,"The provider was not called with exactly the agent key")
+                require(after["upstream"]-before["upstream"]==1 and after["routes"][route]-before["routes"][route]==1,"The agent key call did not reach the provider exactly once")
+                self.receipt(before,after,result,key,provider)
+                require(after["receipts"][-1]["providerKey"]==selector,"The receipt did not name the agent key")
+                # Rotation: a newer file under a new name is used at once; the old file going away changes nothing for it.
+                newer=str(uuid.uuid4());self.key_file(newer,content=AGENT_KEY+"-next\n")
+                self.control(providerKey=newer)
+                _,_,rotated,sent=called(lane)
+                require(rotated["ok"] and hashlib.sha256(header(AGENT_KEY+"-next").encode()).hexdigest() in sent_hashes(sent) and not sent_hashes(sent)&installation,"A rotated key file was not used")
+                self.disposable_secrets.append((AGENT_KEY+"-next").encode())
+                (self.keys_dir/newer).unlink()
+            self.case(provider+"-"+lane+"-agent-key-is-the-only-credential-sent",own_key)
+            self.idle_after_one_shot()
+            def unusable(lane=lane):
+                good=self.keys_dir/"good-source";good.write_bytes((AGENT_KEY+"\n").encode());os.chmod(good,0o400)
+                variants={
+                    "missing":lambda s:None,
+                    "group-readable":lambda s:self.key_file(s,mode=0o440),
+                    "world-readable":lambda s:self.key_file(s,mode=0o444),
+                    "not-root-owned":lambda s:self.key_file(s,owner=1000),
+                    "empty":lambda s:self.key_file(s,content=""),
+                    "two-lines":lambda s:self.key_file(s,content=AGENT_KEY+"\nsecond\n"),
+                    "with-a-space":lambda s:self.key_file(s,content="sk fixture\n"),
+                    "too-long":lambda s:self.key_file(s,content="k"*4097),
+                    "a-link":lambda s:(self.keys_dir/s).symlink_to(good),
+                    "two-links":lambda s:(self.key_file(s),os.link(self.keys_dir/s,self.keys_dir/(s+".again"))),
+                    "a-directory":lambda s:(self.keys_dir/s).mkdir(mode=0o700),
+                }
+                for label,make in variants.items():
+                    selector=str(uuid.uuid4());make(selector)
+                    self.control(mode="normal",providerKey=selector)
+                    before,after,result,sent=called(lane)
+                    # The grant was given, then the key could not be used: the fixed refusal, no call to the provider, and
+                    # never a retry with the installation key.
+                    require(not result["ok"] and result["admission"] and result["classification"]=="terminal" and result["requests"]==1,"An unusable agent key file ("+label+") was not refused as the fixed admission refusal")
+                    require(after["upstream"]==before["upstream"] and sent==[],"An unusable agent key file ("+label+") still reached the provider")
+                    require(after["gates"]-before["gates"]==1 and len(after["receipts"])==len(before["receipts"]),"An unusable agent key file ("+label+") was retried or settled")
+            self.case(provider+"-"+lane+"-agent-key-file-missing-or-unsafe-is-refused-with-no-fallback",unusable)
+        self.control(mode="normal",providerKey="installation")
+        self.idle_after_one_shot()
+
+    def agent_key_secrecy(self, name):
+        """The agent key sentinel is nowhere it should not be: this gateway's log, its /tmp diagnostics, its database."""
+        def nowhere():
+            logs=subprocess.run(["docker","logs",name],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60).stdout
+            require(AGENT_KEY not in logs,"The agent key appeared in a container log")
+            scan="import pathlib,sys;t=sys.argv[1].encode();print(sum(1 for p in pathlib.Path('/tmp').rglob('*') if p.is_file() and t in p.read_bytes()))"
+            require(command("docker","exec",name,"python","-I","-c",scan,AGENT_KEY)=="0","The agent key appeared in a /tmp diagnostic")
+            dump=command("docker","exec",self.name+"-db","pg_dump","-U","proof","-d","litellm",timeout=120)
+            require(AGENT_KEY not in dump,"The agent key appeared in the gateway's database")
+            require(AGENT_KEY not in json.dumps(self.control()),"The agent key appeared in what the provider fixture recorded")
+        self.case(name[len(self.name)+1:]+"-agent-key-never-appears-in-logs-diagnostics-or-the-database",nowhere)
+
     def embeddings(self):
         """A gateway that serves an embedding alias. An admitted request reaches the fixture's embeddings route once, with the
         embedding model and the EMBEDDING key (never the chat key); its receipt is in the embedding format and charges input tokens
@@ -1349,6 +1447,20 @@ exec litellm --config "$CONFIG_FILE_PATH"
             require(replay["status"]==400,"A replayed embedding ticket was not refused")
             require(again_after["upstream"]==again_before["upstream"] and again_after["gates"]-again_before["gates"]==1,"A replayed embedding ticket reached the provider")
         self.case("anthropic-embed-reaches-the-embedding-model",reaches)
+        self.idle_after_one_shot()
+        def never_the_agent_key():
+            selector=str(uuid.uuid4());self.key_file(selector)
+            # A grant naming an agent key for an embeddings call is refused: nothing reaches the provider.
+            self.control(mode="normal",providerKey=selector);before=self.control();result=send(raw_of());after=self.control()
+            require(result["status"]==400 and after["upstream"]==before["upstream"] and after["embedAuth"]==before["embedAuth"],"An embeddings call took an agent key or reached the provider")
+            # The installation's selector is the only one an embeddings call is paid with, and the agent key is never on its wire.
+            self.control(providerKey="installation");again_before=self.control();ok_result=send(raw_of());again_after=self.control()
+            require(ok_result["status"]==200 and again_after["embedAuth"][len(again_before["embedAuth"]):]==[embed_auth],"Embeddings were not sent with the embedding key")
+            agent=hashlib.sha256(("Bearer "+AGENT_KEY).encode()).hexdigest()
+            require(agent not in again_after["embedAuth"] and all(agent not in item["hashes"] for item in again_after["auth"] if item["route"]=="/v1/embeddings"),"The agent key reached the embeddings route")
+        self.case("anthropic-embed-never-carries-an-agent-key",never_the_agent_key)
+        self.agent_key_secrecy(self.name+"-gateway-anthropic-embed")
+        self.control(providerKey="installation")
         self.idle_after_one_shot()
         for mode in ("deny","unsigned","mismatch","gate_close"):
             def refused_at_the_gate(mode=mode):
@@ -1713,6 +1825,8 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 url=openai_url if provider=="openai" else self.start_gateway(provider);key,team,member=self.provision(url)
                 self.exercise(provider,url,key,team,member)
                 self.guarded_native_lookups(provider,url)
+                self.agent_keys(provider,url,key)
+                self.agent_key_secrecy(self.name+"-gateway-"+provider)
                 name=self.name+"-gateway-"+provider
                 before=self.artifact["guardedGateway"][provider]
                 command("docker","restart",name)

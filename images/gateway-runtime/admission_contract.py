@@ -39,6 +39,11 @@ TERMINAL_TAIL_SECONDS = 2
 CLEANUP_SECONDS = 2
 NATIVE_POLICY_SECONDS = PHYSICAL_HEADER_SECONDS + 5
 EMBEDDINGS_PATH = "/v1/embeddings"
+# An agent's own provider key lives as a root-only file in this read-only directory, named by the revision id the keeper selects.
+PROVIDER_KEY_DIRECTORY = "/run/lares/provider-keys"
+INSTALLATION_KEY = "installation"
+PROVIDER_KEY_MAX_BYTES = 4096
+KEY_REVISION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z")
 MODEL_ROUTES = frozenset(("/v1/messages", "/v1/chat/completions", EMBEDDINGS_PATH))
 NATIVE_MODEL_ROUTE_GROUP = "llm_api_routes"
 # Every forwarded route still executes LiteLLM's native authentication. /health is paid.
@@ -169,6 +174,23 @@ def protected_key(path):
             if len(key) != 32: raise Refused()
             return key
     except (OSError, TypeError): raise Refused() from None
+
+
+def read_provider_key(selector, directory=None, owner=0):
+    """Read the agent's key file once. Anything unexpected is a refusal: there is no fallback to the installation key."""
+    if not isinstance(selector, str) or KEY_REVISION.fullmatch(selector) is None: raise Refused()
+    try:
+        fd = os.open(os.path.join(directory or PROVIDER_KEY_DIRECTORY, selector), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != owner or info.st_mode & 0o077: raise Refused()
+            if not 1 <= info.st_size <= PROVIDER_KEY_MAX_BYTES + 1: raise Refused()
+            data = source.read(PROVIDER_KEY_MAX_BYTES + 2)
+    except OSError: raise Refused() from None
+    if data.endswith(b"\n"): data = data[:-1]
+    # One printable-ASCII token: it goes into an HTTP header and must be exactly what the keeper wrote.
+    if not 1 <= len(data) <= PROVIDER_KEY_MAX_BYTES or re.fullmatch(rb"[\x21-\x7e]+", data) is None: raise Refused()
+    return data.decode("ascii")
 
 
 PROFILE_REQUIRED_KEYS = frozenset(("version", "provider", "model", "aliases", "providerBaseUrl", "maxBodyBytes", "maxOutputTokens"))
@@ -359,6 +381,9 @@ class RequestState:
         self.cancelled = False
         self.wire_usage = None
         self.denial_text = None
+        # Which key pays: INSTALLATION_KEY, or the revision id of the agent's own key file. The key itself is held here only.
+        self.selector = INSTALLATION_KEY
+        self.provider_key = None
 
     @property
     def refusal_message(self):
@@ -382,6 +407,7 @@ class RequestState:
     def close(self):
         self.closed = True
         self.phase = "closed"
+        self.provider_key = None
 
     def observation(self, profile, ticket, alias):
         return {"version": VERSION, "nonce": self.nonce, "ticket": ticket, "requestHash": self.request_hash, "profileHash": profile.digest, "endpointHash": self.endpoint_hash, "keyFingerprint": self.key_fingerprint, "purposeAlias": alias}
@@ -390,18 +416,46 @@ class RequestState:
         if isinstance(reply, dict) and reply.get("state") == "denied":
             self.deny(request, reply)
             raise Refused()
-        keys = {"version", "state", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias", "attemptId", "bindingId", "validForMs"}
+        keys = {"version", "state", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias", "attemptId", "bindingId", "providerKey", "validForMs"}
         if set(reply) != keys or reply["state"] != "allowed": raise Refused()
         if type(reply["version"]) is not int: raise Refused()
         for name in ("version", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias"):
             if reply[name] != request[name]: raise Refused()
         for name in ("attemptId", "bindingId"):
             if not isinstance(reply[name], str) or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", reply[name]): raise Refused()
+        selector = reply["providerKey"]
+        if not isinstance(selector, str) or (selector != INSTALLATION_KEY and KEY_REVISION.fullmatch(selector) is None): raise Refused()
+        # Embeddings always use the installation's embedding key.
+        if selector != INSTALLATION_KEY and self.path == EMBEDDINGS_PATH: raise Refused()
         if type(reply["validForMs"]) is not int or not 1 <= reply["validForMs"] <= RPC_TIMEOUT * 1000: raise Refused()
+        self.selector = selector
         self.allow = reply
         self.arm(rpc_started + reply["validForMs"] / 1000)
         self.fresh()
 
+
+    def load_provider_key(self, directory=None, owner=0):
+        """After accept: read the selected key file once. A missing or unsafe file refuses; it never falls back."""
+        if self.selector == INSTALLATION_KEY: return False
+        self.provider_key = read_provider_key(self.selector, directory, owner)
+        return True
+
+    def credential(self, installation_key):
+        """The key this request sends: the agent's when one is selected, else the installation's."""
+        if self.selector == INSTALLATION_KEY: return installation_key
+        if self.provider_key is None: raise Refused()
+        return self.provider_key
+
+    def check_credential(self, wire, headers, installation_key):
+        """Called before the request is sent. With an agent key selected, the one auth header must carry exactly that key and
+        no header may carry the installation's; the comparison is constant time. Nothing here is logged."""
+        if self.selector == INSTALLATION_KEY: return
+        if self.provider_key is None: raise Refused()
+        name, want = ("x-api-key", self.provider_key) if wire == "anthropic" else ("authorization", "Bearer " + self.provider_key)
+        found = [value for header, value in headers if header.lower() == name]
+        if len(found) != 1 or not hmac.compare_digest(found[0].encode(), want.encode()): raise Refused()
+        other = (installation_key or "").encode()
+        if other and any(other in value.encode() for _, value in headers): raise Refused()
 
     def deny(self, request, reply):
         """Remember a signed limit sentence. Anything not exactly that shape leaves the fixed refusal text."""

@@ -248,7 +248,7 @@ beforeAll(async()=>{
  await pool.query("GRANT lares_workflow_owner TO lares_workflow_provisioner");
  await pool.query("CREATE ROLE lares_workflow LOGIN NOINHERIT PASSWORD 'test-only-workflow'");
  for(const name of ['001_baseline.sql','007_member_identity_sessions.sql','008_connected_accounts.sql','012_connected_account_credentials.sql',
-   '013_console_turn_authority.sql','014_agent_access_grants.sql']) await pool.query(readFileSync(join(repo,'services/box/sql',name),'utf8'));
+   '013_console_turn_authority.sql','014_agent_access_grants.sql','035_agent_provider_keys.sql']) await pool.query(readFileSync(join(repo,'services/box/sql',name),'utf8'));
  await pool.query('CREATE DATABASE empty_workflow OWNER lares_workflow_owner');
  const template=quiet(new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,'/empty_workflow')}));
  await template.query('CREATE SCHEMA workflow AUTHORIZATION lares_workflow_owner; CREATE TABLE workflow.memory(value text)');await template.query('ALTER TABLE workflow.memory OWNER TO lares_workflow_owner');await template.end();

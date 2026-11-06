@@ -344,6 +344,24 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const evidence={...echoes,kind:'terminal-usage',format:'openai',usage:{inputTokens:100,outputTokens,cacheReadTokens:40,cacheWriteTokens:0},...changes};
     return {...evidence,receiptHash:gatewayHash(gatewayCanonical(evidence))};
   }
+  it('names the key that pays inside the grant: the installation by default, the agent own key once it is active',async()=>{
+    expect((await allowed()).grant.providerKey).toBe('installation');
+    const revision=randomUUID();
+    await db.query("INSERT INTO agent_provider_keys(agent,revision,state,set_by) VALUES('helper',$1,'active','host')",[revision]);
+    const own=await allowed();
+    expect(own.grant.providerKey).toBe(revision);
+    expect(JSON.stringify(own.grant)).not.toMatch(/sk-|secret/i);
+    // The selector is under the grant hash: the receipt must echo it exactly, and any other value is refused.
+    expect((await rpc(own.selected,GATEWAY_SETTLE_PATH,terminal(own.grant,100,{providerKey:'installation'}))).reply.status).toBe(503);
+    expect((await rpc(own.selected,GATEWAY_SETTLE_PATH,terminal(own.grant))).document.state).toBe('settled');
+    // A key that is not active is never selected, and removing the row returns the agent to the installation key.
+    await db.query("UPDATE agent_provider_keys SET state='candidate' WHERE agent='helper'");
+    expect((await allowed()).grant.providerKey).toBe('installation');
+    await db.query("UPDATE agent_provider_keys SET state='active' WHERE agent='helper'");
+    expect((await allowed()).grant.providerKey).toBe(revision);
+    await db.query("DELETE FROM agent_provider_keys WHERE agent='helper'");
+    expect((await allowed()).grant.providerKey).toBe('installation');
+  });
   it('charges calls across a month change to the right month and keeps enforcing the limit afterwards',async()=>{
     const status=async()=>[(await store.readStatus(context())).liability,(await store.readStatus(context(),'installation')).liability];
     const admittedHere=async()=>{
@@ -591,6 +609,8 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     }
     it('gives the owner a ticket per request, charged to the owner, for chat and embeddings; refuses the rest',async()=>{
       await addKey('member-a','utility',pricing);await addKey('member-a','embed',embedPricing);
+      const agentKey=randomUUID();
+      await db.query("INSERT INTO agent_provider_keys(agent,revision,state,set_by) VALUES('helper',$1,'active','host')",[agentKey]);
       const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
       try{
         stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
@@ -603,9 +623,15 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
         // The ticket is admitted later by the gateway, against the owner's own limit.
         const admitted=await new PgBudgetAdmissionStore(db,env(),30_000,files.writer).admit(String(first.ticket),{requestHash:chat.request.requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'utility'},recovery());
         expect(admitted.state).toBe('allowed');
+        // The agent's own key pays for its owner jobs too; embeddings never use it.
+        expect(admitted.state==='allowed'&&consumeDispatchPermit(admitted.permit)?.providerKey).toBe(agentKey);
         expect((await db.query("SELECT state FROM budget_attempts")).rows[0].state).toBe('admitted');
         const embed=jobBody('/v1/embeddings');
-        expect(await consume(f,'embed',embed.request)).toMatchObject({ok:true,ticket:expect.any(String)});
+        const embedTicket=await consume(f,'embed',embed.request);
+        expect(embedTicket).toMatchObject({ok:true,ticket:expect.any(String)});
+        const embedded=await new PgBudgetAdmissionStore(db,env(),30_000,files.writer).admit(String(embedTicket.ticket),{requestHash:embed.request.requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'embed'},recovery());
+        expect(embedded.state).toBe('allowed');
+        expect(embedded.state==='allowed'&&consumeDispatchPermit(embedded.permit)?.providerKey).toBe('installation');
         // The wrong route for a key, a model name with no key, and a malformed request are all refused.
         expect((await consume(f,'utility',embed.request)).ok).toBe(false);
         expect((await consume(f,'embed',chat.request)).ok).toBe(false);
@@ -1753,7 +1779,7 @@ describe('inactive budget admission on real PostgreSQL',()=>{
   it('reserves exact money on a one-connection pool and burns only acknowledged commits',async()=>{
     await cap('member-a','0.100000000000000001');
     const a=await admitted();expect((await store.readStatus(context())).liability).toBe('0.1');
-    const dispatch=consumeDispatchPermit(a.permit);expect(dispatch).toEqual({attemptId:a.attemptId,bindingId:a.bindingId,requestHash:a.observation.requestHash});
+    const dispatch=consumeDispatchPermit(a.permit);expect(dispatch).toEqual({attemptId:a.attemptId,bindingId:a.bindingId,requestHash:a.observation.requestHash,providerKey:'installation'});
     expect(consumeDispatchPermit(a.permit)).toBeUndefined();
     expect((await store.admit(a.ticket,a.observation,recovery())).state).toBe('denied');
     expect((await new PgBudgetAdmissionStore(db,env()).admit(a.ticket,a.observation,recovery())).state).toBe('denied');

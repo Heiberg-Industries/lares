@@ -25,7 +25,11 @@ export function gatewayRawRequestHash(method:string,path:string,rawBody:Uint8Arr
 const hash=z.string().regex(/^[a-f0-9]{64}$/),id=z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
 const echoed={version:z.literal(1),nonce:hash,requestHash:hash,profileHash:hash,endpointHash:hash,keyFingerprint:hash,purposeAlias:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)};
 export const gatewayAdmitSchema=z.object({...echoed,ticket:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).strict();
-export const gatewayGrantSchema=z.object({...echoed,attemptId:id,bindingId:id}).strict();
+/** Which provider key pays for this call: the installation's own, or the revision id of the agent's key file.
+ * Only the id crosses the wire, never the key. It is part of the grant, so it is under gatewayGrantHash. */
+export const GATEWAY_INSTALLATION_KEY='installation';
+export const gatewayProviderKeySchema=z.union([z.literal(GATEWAY_INSTALLATION_KEY),id]);
+export const gatewayGrantSchema=z.object({...echoed,attemptId:id,bindingId:id,providerKey:gatewayProviderKeySchema}).strict();
 import {MEMBER_LIMIT_SENTENCE,INSTALLATION_LIMIT_SENTENCE} from './limit-sentences.js';
 export {MEMBER_LIMIT_SENTENCE,INSTALLATION_LIMIT_SENTENCE};
 /** The ONE place an amount and a reset date become words. `resetsAt` is a UTC calendar date (YYYY-MM-DD);

@@ -1400,6 +1400,7 @@ run_stack() {
   python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "the installation's database authentication custody is missing or invalid; nothing was rendered or started." "$EX_REFUSED"
   do_or_say mkdir -p "$(dirname "$compose_file")" "$(dirname "$caddyfile")" "$(dirname "$gateway_config")" "$caddy_data" "$db_data"
   [ ! -L "$taste_dir" ] || die "$taste_dir is a symbolic link; refusing to mount it into the console." "$EX_REFUSED"
+  local provider_keys_dir="$PREFIX/srv/lares/secrets/gateway-provider-keys"
   do_or_say mkdir -p "$taste_dir"
   do_or_say chown 10001:10001 "$taste_dir"
   do_or_say chmod 0750 "$taste_dir"
@@ -1418,7 +1419,7 @@ run_stack() {
   if ! engine_run "${render_mounts[@]}" bin/render-stack.ts \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
-      "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir" "$PREFIX/srv/lares/installation" "$database_auth_dir" "${PREFIX:-/}"; then
+      "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir" "$PREFIX/srv/lares/installation" "$database_auth_dir" "${PREFIX:-/}" "$provider_keys_dir"; then
     rm -f "$tmp"
     # Not "the release file was refused": this one call also installs the gateway's start script,
     # and a missing script is not a bad release. Naming the wrong thing is the failure this
@@ -1841,6 +1842,16 @@ run_keeper() {
     do_or_say mkdir -p "$managed_secrets_dir"
     do_or_say chmod 0700 "$managed_secrets_dir"
     do_or_say chown 0:0 "$managed_secrets_dir"
+  fi
+
+  # Agents' own model-provider key files live here (the keeper writes them; the gateway mounts the directory read-only,
+  # without creating it, so it must exist before the gateway starts). Same checks and modes as the secret root above.
+  local provider_keys_dir="$managed_secrets_dir/gateway-provider-keys"
+  [ ! -L "$provider_keys_dir" ] || die "$provider_keys_dir is a symbolic link, so it cannot hold provider keys. Nothing already written has been changed." "$EX_REFUSED"
+  if [ ! -d "$provider_keys_dir" ]; then
+    do_or_say mkdir -p "$provider_keys_dir"
+    do_or_say chmod 0700 "$provider_keys_dir"
+    do_or_say chown 0:0 "$provider_keys_dir"
   fi
 
   # Rendered to neighbouring names and moved into place, the same discipline every other file

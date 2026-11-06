@@ -902,6 +902,79 @@ class BudgetCommandTests(unittest.TestCase):
         self.assertIn("voice.md is not a plain file", output)
         self.assertEqual(self.imports(), [])
 
+    # agent provider-key
+
+    SECRET = "sk-agent-fixture-key"
+
+    def key_file(self, content: bytes | str | None = None, mode: int = 0o600) -> Path:
+        path = self.prefix / "agent-key"
+        path.unlink(missing_ok=True)
+        path.write_bytes(content if isinstance(content, bytes) else (content if content is not None else self.SECRET + "\n").encode())
+        path.chmod(mode)
+        return path
+
+    def key_requests(self) -> list[dict]:
+        return [request for request in self.keeper.requests if request["action"].startswith("provider-key.")]
+
+    def test_provider_key_set_sends_the_key_from_a_private_file_once_and_never_prints_it(self) -> None:
+        self.keeper.answers["provider-key.set"] = ok({"name": "assistant", "revision": "r", "replaced": False})
+        code, output = self.run_command("agent-provider-key", "set", "assistant", "--key-file", str(self.key_file()))
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.key_requests(), [{"action": "provider-key.set", "input": {"name": "assistant", "key": self.SECRET}}])
+        self.assertNotIn(self.SECRET, output)
+        self.assertIn("assistant now pays for its model calls with its own key", output)
+        self.assertIn("spending limits still apply", output)
+
+    def test_provider_key_set_reads_standard_input_when_the_file_is_a_dash(self) -> None:
+        self.keeper.answers["provider-key.set"] = ok({})
+        with mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO((self.SECRET + "\r\n").encode()))):
+            code, output = self.run_command("agent-provider-key", "set", "assistant", "--key-file", "-")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.key_requests()[0]["input"]["key"], self.SECRET)
+
+    def test_provider_key_set_refuses_a_key_that_is_not_one_clean_line_before_the_keeper_hears_anything(self) -> None:
+        for content in (b"", b"\n", b"sk fixture\n", b"sk-one\nsk-two\n", b"sk-\xc3\xa6\n", b"sk-\x1b\n", b"k" * 4097):
+            code, output = self.run_command("agent-provider-key", "set", "assistant", "--key-file", str(self.key_file(content)))
+            self.assertEqual(code, budget.EX_REFUSED, content[:10])
+            self.assertIn("not a usable key", output)
+            self.assertNotIn("sk-one", output)
+        self.assertEqual(self.key_requests(), [])
+        self.keeper.answers["provider-key.set"] = ok({})
+        self.assertEqual(self.run_command("agent-provider-key", "set", "assistant", "--key-file", str(self.key_file(b"k" * 4096)))[0], 0)
+
+    def test_provider_key_set_refuses_a_file_other_users_can_read_a_link_a_missing_file_and_no_file(self) -> None:
+        code, output = self.run_command("agent-provider-key", "set", "assistant", "--key-file", str(self.key_file(mode=0o644)))
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("can be read by other users", output)
+        real = self.key_file()
+        link = self.prefix / "key-link"
+        link.symlink_to(real)
+        self.assertEqual(self.run_command("agent-provider-key", "set", "assistant", "--key-file", str(link))[0], budget.EX_REFUSED)
+        self.assertEqual(self.run_command("agent-provider-key", "set", "assistant", "--key-file", str(self.prefix / "nothing-here"))[0], budget.EX_REFUSED)
+        code, output = self.run_command("agent-provider-key", "set", "assistant")
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("--key-file", output)
+        self.assertEqual(self.key_requests(), [])
+
+    def test_provider_key_set_tells_the_owner_when_the_keeper_refuses_and_does_not_print_the_key(self) -> None:
+        self.keeper.answers["provider-key.set"] = {"ok": False, "outcome": "refused", "error": "keeper: There is no such agent."}
+        code, output = self.run_command("agent-provider-key", "set", "nobody", "--key-file", str(self.key_file()))
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("There is no such agent", output)
+        self.assertNotIn(self.SECRET, output)
+
+    def test_provider_key_remove_says_to_revoke_the_key_at_the_provider(self) -> None:
+        self.keeper.answers["provider-key.remove"] = ok({"name": "assistant", "removed": True, "revision": "r"})
+        code, output = self.run_command("agent-provider-key", "remove", "assistant")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.key_requests(), [{"action": "provider-key.remove", "input": {"name": "assistant"}}])
+        self.assertIn("Revoke the key at your model provider", output)
+        self.keeper.answers["provider-key.remove"] = ok({"name": "assistant", "removed": False, "revision": None})
+        code, output = self.run_command("agent-provider-key", "remove", "assistant")
+        self.assertEqual(code, 0, output)
+        self.assertIn("had no key of its own", output)
+        self.assertEqual(self.run_command("agent-provider-key", "remove", "assistant", "--key-file", str(self.key_file()))[0], budget.EX_REFUSED)
+
     def recover_flow(self, check: dict, applied: dict | None = None, answer: str = "recover") -> tuple[int, str]:
         (self.prefix / "var/lib/lares/budget-financial").mkdir(exist_ok=True)
         os.environ["FAKE_RECOVER_CHECK"] = json.dumps(check)

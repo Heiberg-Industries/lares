@@ -68,6 +68,9 @@ export interface StackComposeOptions {
   /** True when the gateway serves an embedding model: it then gets the embedding provider key as a secret. False or absent
    *  renders the compose file exactly as it was before there was one. */
   readonly embeddingKey?: boolean;
+  /** Host directory holding agents' own model-provider key files (keeper-written, root-only). Mounted read-only into the
+   *  gateway and nowhere else, so the gateway can read a key file the keeper created after it started. */
+  readonly providerKeysDir?: string;
   /** Supplied only by the explicit staged authority renderer after protected-source checks. */
   readonly gatewayAuthority?: {
     readonly origin: string;
@@ -105,6 +108,9 @@ export function assertDatabaseAuthDirectory(path: string, prefix: string, subnet
   execFileSync("python3", args, { stdio: "pipe" });
 }
 
+/** Where the gateway reads an agent's own model-provider key file (admission_contract.py PROVIDER_KEY_DIRECTORY). */
+export const PROVIDER_KEYS_IN_CONTAINER = "/run/lares/provider-keys";
+
 /** Where the deadline calendar sits inside the console container (docs/install.md, section 7). */
 export const DEADLINE_CALENDAR_IN_CONTAINER = "/srv/lares/installation/deadline-calendar.json";
 
@@ -131,6 +137,9 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     throw new Error("Console model-purpose signing-key path must be absolute");
   if (consoleModelPurposeSigningKeyFile !== null && consoleModelPurposeSigningKeyFile !== join(opts.secretsDir, "console-model-purpose-signing-key"))
     throw new Error("Console model-purpose signing-key path must name its custody file");
+  const providerKeysDir = opts.providerKeysDir ?? null;
+  if (providerKeysDir !== null && (!isAbsolute(providerKeysDir) || resolve(providerKeysDir) !== providerKeysDir || /[\n\r\0]/.test(providerKeysDir)))
+    throw new Error("Provider key directory path must be absolute and normalized");
   const authority = opts.gatewayAuthority;
   if (authority && (!/^https:\/\/[^/]+$/.test(authority.origin) || new URL(authority.origin).origin !== authority.origin ||
       !/^[a-f0-9]{64}$/.test(authority.endpointHash) || authority.serviceKeyFile !== join(opts.secretsDir, "gateway-budget-service-key")))
@@ -222,6 +231,8 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
         `${opts.gatewayStartScript}.lares_gateway.py:/opt/lares-gateway/lares_gateway.py:ro`,
         `${opts.gatewayConfigFile}.profile.json:/etc/litellm/profile.json:ro`,
         { type: "bind", source: admission.directory, target: admissionDirectoryInContainer, read_only: true, bind: { create_host_path: false } },
+        // Read-only; the keeper adds and removes key files here without the gateway restarting. Nothing is mounted into agents.
+        ...(providerKeysDir ? [{ type: "bind", source: providerKeysDir, target: PROVIDER_KEYS_IN_CONTAINER, read_only: true, bind: { create_host_path: false } }] : []),
         ...(authority ? [{ type: "bind", source: authority.serviceKeyFile, target: "/run/secrets/gateway-budget-service-key", read_only: true, bind: { create_host_path: false } }] : []),
       ],
       // THE ENGINE SHIPS NO GATEWAY IMAGE, AND MAY NOT. The obvious way to give LiteLLM our

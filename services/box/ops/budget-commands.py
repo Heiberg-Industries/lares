@@ -15,6 +15,10 @@ Running either command again continues from what is actually on disk and in the 
 one step that cannot be repeated is creating the two ledgers; the journal has no reset, so a
 leftover from an interrupted creation stops the command and says so.
 
+`lares agent provider-key set <name> --key-file <path>` hands the keeper an agent's own model-provider key, and
+`... remove <name>` takes it away again. The key is read here on the host, sent over the same root-only socket, and
+never printed or logged.
+
 `lares agent import <dir>` reads the three files of each agent folder here on the host and sends their
 text to the keeper, which creates the agent exactly as a console save does. Nothing is copied into
 /srv/lares/agents by hand.
@@ -986,6 +990,56 @@ def agent_import(installation: Installation, options: argparse.Namespace) -> int
     return 0 if not refused else EX_REFUSED
 
 
+PROVIDER_KEY_BYTES = 4096
+
+
+def read_provider_key(source: str) -> str:
+    """The key the owner gives: one line, printable characters only, from a private file or from standard input ("-")."""
+    try:
+        if source == "-":
+            data = sys.stdin.buffer.read(PROVIDER_KEY_BYTES + 3)
+        else:
+            handle = os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW), "rb")
+            with handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise Stop(f"{source} is not a plain file. Nothing was changed.")
+                if info.st_mode & 0o077:
+                    raise Stop(f"{source} can be read by other users on this server. Run: chmod 600 {source}  and then this again. Nothing was changed.")
+                data = handle.read(PROVIDER_KEY_BYTES + 3)
+    except OSError:
+        raise Stop(f"The key could not be read from {source}. Nothing was changed.") from None
+    for ending in (b"\r\n", b"\n"):
+        if data.endswith(ending):
+            data = data[: -len(ending)]
+            break
+    if not 1 <= len(data) <= PROVIDER_KEY_BYTES or re.fullmatch(rb"[\x21-\x7e]+", data) is None:
+        raise Stop("That is not a usable key. It must be one line, up to 4096 characters, with no spaces or other invisible characters. Nothing was changed.")
+    return data.decode("ascii")
+
+
+def agent_provider_key(installation: Installation, options: argparse.Namespace) -> int:
+    """Give one agent its own provider key, or take it back. Owner only by construction: it needs root on the host."""
+    if options.action == "set":
+        if not options.key_file:
+            raise Stop("Say where the key is: --key-file <path> (a private file, or - to type or pipe it in). Nothing was changed.")
+        key = read_provider_key(options.key_file)
+        installation.host_action("provider-key.set", {"name": options.name, "key": key}, 30)
+        key = ""
+        say(f"{options.name} now pays for its model calls with its own key. Calls already under way finish with the old key; every new call uses this one.")
+        say("Your spending limits still apply, whichever key pays. The same key is used for this agent's own scheduled work and tools, never for search embeddings.")
+        return 0
+    if options.key_file:
+        raise Stop("Removing a key does not take a key file. Nothing was changed.")
+    result = installation.host_action("provider-key.remove", {"name": options.name}, 30) or {}
+    if result.get("removed"):
+        say(f"{options.name} is back on the installation's key. The old key file is deleted in a moment.")
+        say("Revoke the key at your model provider as well: removing it here does not cancel it there.")
+    else:
+        say(f"{options.name} had no key of its own. Nothing was changed.")
+    return 0
+
+
 def agent_refresh(installation: Installation, options: argparse.Namespace) -> int:
     """After an update: restart each running agent onto the software this release names. An agent with
     changes waiting, or one the keeper cannot read, is left alone and named."""
@@ -1131,6 +1185,10 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     import_ = commands.add_parser("agent-import")
     import_.add_argument("directory", help="one agent folder, or a folder of agent folders")
     import_.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    provider_key = commands.add_parser("agent-provider-key")
+    provider_key.add_argument("action", choices=("set", "remove"))
+    provider_key.add_argument("name")
+    provider_key.add_argument("--key-file", help="a private file holding the key; - reads it from standard input")
     commands.add_parser("agent-refresh", help="restart running agents onto this release's software (lares update runs this)")
     return parser.parse_args(argv)
 
@@ -1153,6 +1211,8 @@ def main(argv: list[str]) -> int:
                 return agent_refresh(installation, options)
             if options.command == "agent-import":
                 return agent_import(installation, options)
+            if options.command == "agent-provider-key":
+                return agent_provider_key(installation, options)
             return budget_setup(installation, options) if options.command == "setup" else agent_start(installation, options)
         finally:
             os.close(lock)

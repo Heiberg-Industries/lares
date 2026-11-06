@@ -13,6 +13,7 @@ import { KeeperRefusedError, resetActions, runAction } from '../lib/actions.js';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { outsideSecretName } from '@lares/agent-kit/outside-tools';
 import { recordAppliedDefinition } from '../lib/definition-files.js';
+import { ProviderKeyFiles } from '../lib/provider-keys.js';
 // Vitest 4 types a bare `vi.fn()` as an unusable Procedure | Constructable union, so the fakes are typed as plain mocks.
 type AnyMock = Mock<(...args: any[]) => any>;
 const repo = resolve('../..');
@@ -62,7 +63,7 @@ const connectionApplyCall = (sessionToken: string, name: string, expectedDefinit
     runAction('outside.connections.apply', { sessionToken, name, expectedDefinitionHash, expectedAccessRevision }, ctx());
 function register(ceiling = 2, storage = true) {
     resetActions();
-    registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, ceiling: async () => ceiling, memory: () => 0, compose, backup,
+    registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, providerKeys: new ProviderKeyFiles(secretsDir, { uid: process.getuid!(), gid: process.getgid!() }), ceiling: async () => ceiling, memory: () => 0, compose, backup,
         roleInfo: (r) => ({ roleMd: readFileSync(join(repo, 'packages/agent-kit/templates', r, 'role.md'), 'utf8'), deployedTools: deployedToolsFor(join(repo, 'services', r)) }),
         storage: storage ? { prepareDelete: async (name) => ({ delete: async () => { await pool.query('DELETE FROM owned_memory WHERE agent=$1', [name]); } }) } : undefined,
     });
@@ -71,7 +72,7 @@ beforeAll(async () => {
     container = await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
     pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(readFileSync(join(repo, 'services/box/sql', '001_baseline.sql'), 'utf8'));
-    for (const migration of ['007_member_identity_sessions.sql', '013_console_turn_authority.sql', '014_agent_access_grants.sql'])
+    for (const migration of ['007_member_identity_sessions.sql', '013_console_turn_authority.sql', '014_agent_access_grants.sql', '035_agent_provider_keys.sql'])
         await pool.query(readFileSync(join(repo, 'services/box/sql', migration), 'utf8'));
     await pool.query(`INSERT INTO orgs(id,display_name) VALUES('connection-org','Connection test'),('connection-other-org','Other connection test');
         INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES
@@ -459,7 +460,13 @@ it('retirement preserves seeded owned/shared rows; deletion removes only owned m
     compose.ownedSecrets=vi.fn(()=>['bookkeeper-gateway-key']);
     writeFileSync(join(secretsDir,'bookkeeper-gateway-key'),'sk-test-agent-key-only');
     await pool.query("INSERT INTO owned_memory VALUES ('bookkeeper','mine'),('another','theirs'); INSERT INTO standing_facts VALUES ('owner','shared')");
+    const keyRevision = '44444444-4444-4444-8444-444444444444';
+    new ProviderKeyFiles(secretsDir, { uid: process.getuid!(), gid: process.getgid!() }).publish(keyRevision, 'sk-test-agent-provider-key');
+    await pool.query("INSERT INTO agent_provider_keys(agent,revision,state,set_by) VALUES('bookkeeper',$1,'active','host')", [keyRevision]);
     await runAction('definition.retire', { name: 'bookkeeper' }, ctx());
+    // Retiring keeps the agent's provider key, inert; only deleting the agent removes it.
+    expect(existsSync(join(secretsDir, 'gateway-provider-keys', keyRevision))).toBe(true);
+    expect((await pool.query('SELECT revision FROM agent_provider_keys')).rows).toEqual([{ revision: keyRevision }]);
     expect(compose.stop).toHaveBeenCalledWith('bookkeeper');
     expect(existsSync(join(agentsDir, 'bookkeeper'))).toBe(false);
     expect((await pool.query('SELECT * FROM owned_memory ORDER BY agent')).rows).toEqual([{ agent: 'another', value: 'theirs' }, { agent: 'bookkeeper', value: 'mine' }]);
@@ -476,6 +483,8 @@ it('retirement preserves seeded owned/shared rows; deletion removes only owned m
     expect((await pool.query('SELECT * FROM standing_facts')).rows).toEqual([{ user_id: 'owner', fact: 'shared' }]);
     expect(existsSync(join(retiredDir, row.retired_folder))).toBe(false);
     expect(existsSync(join(secretsDir,'bookkeeper-gateway-key'))).toBe(false);
+    expect(existsSync(join(secretsDir, 'gateway-provider-keys', keyRevision))).toBe(false);
+    expect((await pool.query('SELECT * FROM agent_provider_keys')).rows).toEqual([]);
     await create();
     await runAction('definition.retire', { name: 'bookkeeper' }, ctx());
     expect((await pool.query('SELECT retired_folder FROM agent_definitions')).rows[0].retired_folder).not.toBe(row.retired_folder);

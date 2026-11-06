@@ -21,6 +21,7 @@ import { normaliseNotionId, readSetting, writeSetting } from './settings.js';
 import { CONSOLE_ENVIRONMENT, CONSOLE_ENVIRONMENT_BY_KEY } from './agent-environment.js';
 import { withDefinitionNamespace } from './definition-namespace.js';
 import { isRetiredRole } from './runtime-bindings.js';
+import { ProviderKeyFiles } from './provider-keys.js';
 const NAME_RE = /^[a-z][a-z0-9-]{1,30}$/;
 const ROLES = ['chief-of-staff', 'creative'] as const;
 export type DefinitionRole = typeof ROLES[number];
@@ -65,6 +66,8 @@ export interface DefinitionOptions {
     agentsDir: string;
     retiredDir: string;
     secretsDir: string;
+    /** Where an agent's own model-provider key file lives; deleting the agent removes it. Defaults to the keeper-owned directory. */
+    providerKeys?: ProviderKeyFiles;
     ceiling(): Promise<number>;
     /** The installation administrator's identity (the only non-host caller who may change the limit). */
     administrator?: string;
@@ -649,6 +652,10 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                     unlinkSync(secret);
             syncDefinitionDirectory(o.secretsDir);
             await db().query('DELETE FROM agent_doors WHERE agent=$1', [name]);
+            // The agent's own provider key (row and file) goes with the agent; a retired agent keeps both, inert.
+            // The file first: a repeat of an interrupted delete finds it already gone and carries on.
+            const providerKey = (await db().query('SELECT revision FROM agent_provider_keys WHERE agent=$1', [name])).rows[0]?.revision as string | undefined;
+            if (providerKey) (o.providerKeys ?? new ProviderKeyFiles(o.secretsDir)).remove(providerKey);
             await db().query("DELETE FROM agent_definitions WHERE name=$1 AND status='retired'", [name]);
             await o.compose.deleted?.(name);
             // Backup history is deliberately retained; deletion never calls git rm.

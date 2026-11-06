@@ -343,11 +343,14 @@ def generate_rendered_compose() -> None:
                       network, subnet, str(auth_dir), str(fixture_prefix)]
     docker(*common, "/app/services/box/bin/render-database-bootstrap.ts", *bootstrap_args, timeout=45)
     installation_dir = root / "srv/lares/installation"
+    # Where agents' own provider keys live; the gateway binds it read-only without creating it, as install.sh's keeper step ensures.
+    provider_keys_dir = fixture_prefix / "srv/lares/secrets/gateway-provider-keys"
+    provider_keys_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     stack_args = [release_in_container, str(normal_file), str(secrets_dir), str(root / "gateway.yml"),
                   str(root / "Caddyfile"), str(root / "caddy-data"), str(data_dir), network, subnet,
                   "proof.invalid", "lares_state", "lares-brain", "openai/gpt-4o-mini", str(root / "gateway-start.sh"),
                   "owner@example.invalid", str(root / "socket"), "proof-owner", "UTC", str(root / "taste"),
-                  str(installation_dir), str(auth_dir), str(fixture_prefix)]
+                  str(installation_dir), str(auth_dir), str(fixture_prefix), str(provider_keys_dir)]
     docker(*common, "/app/services/box/bin/render-stack.ts", *stack_args, timeout=45)
     def assert_effective_auth(path: pathlib.Path) -> None:
         raw = path.read_text(encoding="utf-8")

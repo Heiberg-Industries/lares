@@ -91,6 +91,9 @@ try:
  # glob-pattern mistake fails the image build instead of silently skipping a file.
  on_disk={q.name for q in (repo/'services/box/sql').iterdir() if q.name[:3].isdigit() and q.name.endswith('.sql')}
  assert set(applied)==on_disk and '001_baseline.sql' in applied,f'Probe applied {sorted(applied)} but disk has {sorted(on_disk)} — a box migration was silently skipped'
+ # The agent provider-key table came from the loop above on the empty database, holds no secret column, and reapplies as a no-op.
+ sql((repo/'services/box/sql/035_agent_provider_keys.sql').read_text())
+ sql("DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='agent_provider_keys') OR (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='agent_provider_keys')<>7 OR EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='agent_provider_keys' AND column_name ~* '(secret|token|password|key)') THEN RAISE EXCEPTION 'Agent provider key table missing, changed on reapply, or holding a secret column'; END IF; END $$")
  # Apply the production privilege helper to the exact migrated engine inventory. Its source is
  # mounted read-only into the existing crypto directory in this neutral role image.
  engine_privileges=root/'prepare-engine-privileges.mts'

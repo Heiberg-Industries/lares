@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {execFileSync} from 'node:child_process';
-import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,GATEWAY_EMBEDDINGS_MODEL_PATH,gatewayModelPath,gatewaySettleSchema,gatewayCanonical,gatewayRawRequestHash,gatewaySignature,verifyGatewaySignature,parseGatewayDocument,gatewayAdmitSchema,gatewayGrantHash,gatewayDeniedSchema,limitSentence,MEMBER_LIMIT_SENTENCE,INSTALLATION_LIMIT_SENTENCE} from '../src/gateway-admission-protocol.js';
+import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,GATEWAY_EMBEDDINGS_MODEL_PATH,gatewayModelPath,gatewaySettleSchema,gatewayGrantSchema,gatewayCanonical,gatewayRawRequestHash,gatewaySignature,verifyGatewaySignature,parseGatewayDocument,gatewayAdmitSchema,gatewayGrantHash,gatewayDeniedSchema,limitSentence,MEMBER_LIMIT_SENTENCE,INSTALLATION_LIMIT_SENTENCE} from '../src/gateway-admission-protocol.js';
 import {gatewayPricingSchema,gatewayMaximumLiability,gatewayActualAmount} from '../src/gateway-pricing.js';
 const request={version:1 as const,nonce:'1'.repeat(64),requestHash:'2'.repeat(64),profileHash:'3'.repeat(64),endpointHash:'4'.repeat(64),keyFingerprint:'5'.repeat(64),purposeAlias:'example-brain',ticket:'a'.repeat(43)};
 const key=Buffer.alloc(32,7);
@@ -26,7 +26,7 @@ print(hashlib.sha256(b'lares.gateway.raw-request.v1\\0POST\\0/v1/embeddings\\0'+
   });
   it('accepts an embedding receipt and nothing else new',()=>{
     const receipt={version:1 as const,nonce:'1'.repeat(64),requestHash:'2'.repeat(64),profileHash:'3'.repeat(64),endpointHash:'4'.repeat(64),keyFingerprint:'5'.repeat(64),purposeAlias:'example-embed',
-      attemptId:'11111111-1111-4111-8111-111111111111',bindingId:'22222222-2222-4222-8222-222222222222',kind:'terminal-usage' as const,format:'embedding' as const,
+      attemptId:'11111111-1111-4111-8111-111111111111',bindingId:'22222222-2222-4222-8222-222222222222',providerKey:'installation',kind:'terminal-usage' as const,format:'embedding' as const,
       usage:{inputTokens:9,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0},receiptHash:'6'.repeat(64)};
     expect(gatewaySettleSchema.parse(receipt).format).toBe('embedding');
     expect(()=>gatewaySettleSchema.parse({...receipt,format:'other'})).toThrow();
@@ -55,9 +55,21 @@ print(json.dumps({'body':raw.decode(),'signature':hmac.new(bytes([7])*32,envelop
     expect(gatewayAdmitSchema.parse(parseGatewayDocument(gatewayCanonical(request)))).toEqual(request);
   });
   it('commits to every echoed grant field without retaining its identity',()=>{
-    const {ticket,...base}=request,grant={...base,attemptId:'11111111-1111-4111-8111-111111111111',bindingId:'22222222-2222-4222-8222-222222222222'};
+    const {ticket,...base}=request,grant={...base,attemptId:'11111111-1111-4111-8111-111111111111',bindingId:'22222222-2222-4222-8222-222222222222',providerKey:'installation'};
     expect(gatewayGrantHash(grant)).not.toBe(gatewayGrantHash({...grant,purposeAlias:'example-writer'}));
     expect(gatewayGrantHash(grant)).not.toBe(gatewayGrantHash({...grant,nonce:'6'.repeat(64)}));
+  });
+  it('puts the provider key selector under the grant hash and accepts only the installation or a key revision id',()=>{
+    const {ticket,...base}=request,grant={...base,attemptId:'11111111-1111-4111-8111-111111111111',bindingId:'22222222-2222-4222-8222-222222222222',providerKey:'installation'};
+    const own={...grant,providerKey:'33333333-3333-4333-8333-333333333333'};
+    expect(gatewayGrantHash(grant)).not.toBe(gatewayGrantHash(own));
+    expect(gatewayGrantSchema.parse(own).providerKey).toBe('33333333-3333-4333-8333-333333333333');
+    for(const bad of [undefined,'','Installation','sk-example','33333333-3333-3333-0333-333333333333','../33333333-3333-4333-8333-333333333333'])
+      expect(()=>gatewayGrantSchema.parse({...grant,providerKey:bad})).toThrow();
+    const {providerKey,...old}=grant;
+    expect(()=>gatewayGrantSchema.parse(old)).toThrow();
+    expect(()=>gatewayGrantSchema.parse({...grant,key:'sk-example'})).toThrow();
+    expect(()=>gatewaySettleSchema.parse({...grant,providerKey:'bad',kind:'terminal-usage',format:'openai',usage:{inputTokens:1,outputTokens:1,cacheReadTokens:0,cacheWriteTokens:0},receiptHash:'6'.repeat(64)})).toThrow();
   });
 });
 describe('embedding pricing',()=>{

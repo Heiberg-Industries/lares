@@ -56,7 +56,7 @@ const runStackCli = (output: string, authDir = databaseAuthDir) => spawnSync(pro
   request.network, request.subnet, domain, request.pgDatabase, alias, providerModel,
   join(root, "gateway-start.sh"), "owner@example.test", join(prefix, "run", "lares"), ownerId,
   "Europe/Oslo", join(prefix, "srv", "taste"), join(prefix, "srv", "lares", "installation"),
-  authDir, prefix,
+  authDir, prefix, join(prefix, "srv", "lares", "secrets", "gateway-provider-keys"),
 ], { cwd: repo, encoding: "utf8", timeout: 30_000 });
 const activeSnapshot = () => Object.values(activePaths).map(path => [path, readFileSync(path).toString("hex"), statSync(path).mode & 0o777]);
 const databaseCustodySnapshot = () => [

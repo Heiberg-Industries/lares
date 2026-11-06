@@ -52,6 +52,7 @@ const ARGUMENTS = [
   "installationDir",
   "databaseAuthDir",
   "prefix",
+  "providerKeysDir",
 ] as const;
 
 /** The gateway's start script, committed once at the repository root and installed verbatim —
@@ -183,6 +184,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     caddyDataDir: at("caddyDataDir"),
     dbDataDir: at("dbDataDir"),
     databaseAuthDir: at("databaseAuthDir"),
+    providerKeysDir: at("providerKeysDir"),
     maintenanceAdmission,
     network: at("network"),
     subnet: at("subnet"),

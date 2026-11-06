@@ -281,6 +281,21 @@ describe("the generated stack compose file", () => {
     expect(() => renderStackCompose(MANIFEST, { ...OPTS, gatewayAuthority: { ...authority, serviceKeyFile: `${OPTS.secretsDir}/elsewhere` } })).toThrow("authority");
   });
 
+  it("mounts the agents' provider key directory read-only into the gateway and nowhere else", () => {
+    const keys = "/srv/lares/secrets/gateway-provider-keys";
+    const doc = parse(renderStackCompose(MANIFEST, { ...OPTS, providerKeysDir: keys })) as any;
+    const mount = { type: "bind", source: keys, target: "/run/lares/provider-keys", read_only: true, bind: { create_host_path: false } };
+    expect(doc.services["lares-gateway"].volumes).toContainEqual(mount);
+    for (const [name, service] of Object.entries<any>(doc.services)) {
+      if (name === "lares-gateway") continue;
+      expect(JSON.stringify(service)).not.toContain("provider-keys");
+    }
+    // Absent, the file is byte-identical to what it was before there was such a directory.
+    expect(renderStackCompose(MANIFEST, { ...OPTS })).not.toContain("provider-keys");
+    for (const bad of ["relative/keys", "/srv/lares/secrets/../x", "/srv/lares/keys/", "/srv/lares\nkeys"])
+      expect(() => renderStackCompose(MANIFEST, { ...OPTS, providerKeysDir: bad })).toThrow(/Provider key directory/);
+  });
+
   it("turns the gateway's local cost map on, so it loads costs without a network fetch at start", () => {
     const doc = parse(renderStackCompose(MANIFEST, OPTS)) as any;
     expect(doc.services["lares-gateway"].environment.LITELLM_LOCAL_MODEL_COST_MAP).toBe("True");

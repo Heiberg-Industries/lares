@@ -197,6 +197,19 @@ describe("engine database privilege foundation", () => {
     expect((await financial.query("DELETE FROM private_metadata_devices WHERE owner_member_id='mac-meta-member'")).rowCount).toBe(1);
   });
 
+  it("lets admission read which provider key an agent uses and nothing more",async()=>{
+    await admin.query("INSERT INTO agent_definitions(name,definition,hash,status) VALUES('key-fixture-agent','{}','fixture','valid')");
+    expect((await app.query("INSERT INTO agent_provider_keys(agent,revision,state,set_by) VALUES('key-fixture-agent','00000000-0000-4000-8000-000000000901','active','host')")).rowCount).toBe(1);
+    expect((await financial.query("SELECT agent,revision,state FROM agent_provider_keys WHERE agent='key-fixture-agent'")).rows)
+      .toEqual([{agent:'key-fixture-agent',revision:'00000000-0000-4000-8000-000000000901',state:'active'}]);
+    await expectDenied(()=>financial.query("SELECT * FROM agent_provider_keys"));
+    await expectDenied(()=>financial.query("SELECT set_by FROM agent_provider_keys"));
+    await expectDenied(()=>financial.query("UPDATE agent_provider_keys SET state='candidate'"));
+    await expectDenied(()=>financial.query("DELETE FROM agent_provider_keys"));
+    await expectDenied(()=>outsideCustody.query("SELECT agent FROM agent_provider_keys"));
+    expect((await app.query("DELETE FROM agent_provider_keys WHERE agent='key-fixture-agent'")).rowCount).toBe(1);
+  });
+
   it("allows custody to lock retained Vault metadata without changing authority or reading content",async()=>{
     await admin.query("INSERT INTO orgs(id,display_name) VALUES('metadata-org','Metadata fixture')");
     await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('metadata-owner','Fixture owner','metadata-org','owner','active')");
@@ -231,7 +244,7 @@ describe("engine database privilege foundation", () => {
   });
 
   it("matches the fixed table policy inventory to every shipped migration table and member scope", () => {
-    const online = [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.outsideCustody];
+    const online = [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.applicationOnly, ...ENGINE_TABLE_PRIVILEGES.outsideCustody];
     const complete = [...online, ...ENGINE_TABLE_PRIVILEGES.ledger].sort();
     expect(ENGINE_TABLE_PRIVILEGES.ledger).toEqual(["schema_migrations"]);
     expect(new Set(complete).size).toBe(complete.length);
