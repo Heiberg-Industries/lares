@@ -300,12 +300,16 @@ try:
         name: digest for name in ("db", "console", "lares-gateway", "caddy")},
         "migrations": {"box": "001_baseline.sql"}, "breaking": []}) + "\n")
     caddyfile = REPO / "services/box/ops/Caddyfile"
+    # The gateway binds agents' provider keys read-only without creating the folder, as install.sh's keeper step ensures.
+    provider_keys_dir = prefix / "srv/lares/secrets/gateway-provider-keys"
+    provider_keys_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     args = [str(release), str(stack_path), str(secrets), str(etc / "litellm-config.yaml"),
             str(caddyfile), str(prefix / "var/lib/lares/caddy"), str(prefix / "var/lib/lares/postgres"),
             network_name, subnet, "example.invalid", "lares_state", "lares-brain",
             "openai/neutral-fixture-model", str(etc / "gateway-start.sh"), "owner@example.invalid", str(socket_dir),
-            "neutral-owner", "Europe/Oslo", str(taste_dir), str(installation), str(auth), str(prefix)]
-    if len(args) != 22 or args[11] != "lares-brain" or args[12] != "openai/neutral-fixture-model":
+            "neutral-owner", "Europe/Oslo", str(taste_dir), str(installation), str(auth), str(prefix),
+            str(provider_keys_dir)]
+    if len(args) != 23 or args[11] != "lares-brain" or args[12] != "openai/neutral-fixture-model":
         raise ProbeFailure("ordinary-renderer-fixture-contract")
     stage = "ordinary-renderer"
     run("pnpm", "-C", str(REPO / "services/box"), "render-stack", *args, timeout=90)
