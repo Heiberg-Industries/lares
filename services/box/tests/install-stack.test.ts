@@ -362,6 +362,28 @@ describe("the stack the installer brings up", () => {
     okRun(run(["--release", releaseFile]));
     expect(calls()).not.toMatch(/--test-model|lares-doctor/);
     expect(calls()).not.toMatch(/curl .*127\.0\.0\.1:4000/);
+    expect(calls()).not.toMatch(/up -d --force-recreate lares-gateway/);
+  });
+
+  it("recreates a gateway that already exists, after its start script, code and configuration were rewritten", () => {
+    // A re-run (and every `lares update`) on an installation where budget setup started the
+    // gateway. The installer replaces the gateway's files, and a running gateway keeps reading
+    // the old ones until it is recreated: after an update it ran the previous release's code.
+    stub("docker", 'case "$*" in *"ps -a -q lares-gateway"*) echo gateway-container ;; *"ps -q db"*) case "$*" in *compose.bootstrap*) echo bootstrap-container ;; *) echo normal-container ;; esac ;; *"inspect -f"*) exit 0 ;; *"inspect bootstrap-container"*) exit 1 ;; *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');
+    const r = okRun(run(["--release", releaseFile]));
+    const recreate = at(/compose\.yaml up -d --force-recreate lares-gateway/);
+    expect(recreate, calls()).toBeGreaterThan(-1);
+    expect(at(/compose\.yaml up -d console caddy/)).toBeLessThan(recreate);
+    expect(readFileSync(join(prefix, "etc", "lares", "gateway-start.sh.lares_gateway.py"), "utf8").length).toBeGreaterThan(0);
+    expect(r.stdout + r.stderr).toContain("the gateway was restarted onto this run's start script, code and configuration");
+    expect(calls()).not.toMatch(/curl .*127\.0\.0\.1:4000/);
+  });
+
+  it("stops, saying so, when the existing gateway cannot be restarted onto the new files", () => {
+    stub("docker", 'case "$*" in *"ps -a -q lares-gateway"*) echo gateway-container ;; *"force-recreate lares-gateway"*) exit 1 ;; *"ps -q db"*) case "$*" in *compose.bootstrap*) echo bootstrap-container ;; *) echo normal-container ;; esac ;; *"inspect -f"*) exit 0 ;; *"inspect bootstrap-container"*) exit 1 ;; *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');
+    const r = run(["--release", releaseFile]);
+    expect(r.code).toBe(78);
+    expect(r.stderr).toContain("the gateway could not be restarted onto this run's files");
   });
 
   it("stops before the database when the stack cannot be brought up, and changes nothing else", () => {

@@ -144,11 +144,14 @@ export function readParityInput(args: ParsedDoctorArgs): ParityInput | undefined
       for (const line of readFileSync(args.containersFile, "utf8").split(/\r?\n/)) {
         if (line.trim() === "") continue;
         const row = JSON.parse(line) as Partial<ContainerRow>;
+        const replaced = (row as { replacedFiles?: unknown }).replacedFiles;
         rows.push({
           name: String(row.name ?? "").replace(/^\//, ""),
           project: String(row.project ?? ""),
           service: String(row.service ?? ""),
           image: String(row.image ?? ""),
+          // An array when the host looked, null when it could not; anything else counts as not looked.
+          replacedFiles: Array.isArray(replaced) ? replaced.map(String) : null,
         });
       }
       containers = rows;

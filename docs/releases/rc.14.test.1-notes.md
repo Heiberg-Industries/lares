@@ -114,6 +114,11 @@ uses one person only.
 Everything listed under known faults in [the rc.13.test.5 notes](rc.13.test.5-notes.md) still
 applies, apart from the faults fixed above. Also:
 
+- **After `lares update` to this release, every model call is refused** ("I could not verify
+  permission to spend"; web chat says "This conversation is unavailable"). Found on a test server
+  after the update. The update rewrites the gateway's code and settings but leaves the running
+  gateway alone, so it keeps the previous release's code. `lares doctor` does not notice. Fixed for
+  the next test release. A fresh install of this release is not affected.
 - There is no console page yet for an agent's own provider key; it is set from the server only.
 - The Notion sync does not yet write to the Vault (wiki, desk and transcripts come later).
 - Importing an existing Vault (`lares vault import`) is not in this release.

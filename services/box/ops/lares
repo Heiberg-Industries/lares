@@ -213,12 +213,32 @@ cmd_doctor() {
     trap 'rm -rf -- "$parity_dir"' RETURN
     chmod 0700 "$parity_dir"
     containers_file="$parity_dir/containers.jsonl"
-    # One JSON line per running container: name, compose project, compose service, image as started.
+    # One JSON line per running container: name, compose project, compose service, image as started,
+    # and the bind-mounted files replaced on the host since it started. A file replaced by rename
+    # (as the installer writes them) stays open in the container under its old inode, which the
+    # kernel marks "//deleted" in the process's mountinfo: the container still reads the old file.
+    # Paths are the container's own; null when this user cannot read that process's mountinfo.
     if ids=$(docker ps -q 2>/dev/null); then
       : > "$containers_file"
       if [ -n "$ids" ]; then
         # shellcheck disable=SC2086
-        docker inspect --format '{"name":{{json .Name}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"image":{{json .Config.Image}}}' $ids > "$containers_file" 2>/dev/null || containers_file=""
+        docker inspect --format '{"name":{{json .Name}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"image":{{json .Config.Image}},"pid":{{.State.Pid}}}' $ids 2>/dev/null \
+          | python3 -I -c '
+import json, re, sys
+unescape = lambda field: re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    row = json.loads(line)
+    pid = row.pop("pid", 0)
+    try:
+        with open(f"/proc/{int(pid)}/mountinfo", encoding="utf-8", errors="replace") as mounts:
+            fields = [entry.split(" ") for entry in mounts]
+        row["replacedFiles"] = sorted({unescape(f[4]) for f in fields if len(f) > 4 and f[3].endswith("//deleted")})
+    except (OSError, ValueError):
+        row["replacedFiles"] = None
+    print(json.dumps(row))
+' > "$containers_file" || containers_file=""
       fi
     else
       containers_file=""
