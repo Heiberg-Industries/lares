@@ -18,11 +18,11 @@ import {BudgetNativeActivator} from '../lib/budget-native-activation.js';
 import {createNativeRuntimeAuthority} from '../lib/budget-native-runtime-authority.js';
 import {BudgetNativeCredentialClient} from '../lib/budget-native-client.js';
 import {BudgetNativeCustodyStore,type NativeCustodyGate,type NativeOperation} from '../lib/budget-native-custody.js';
-import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
+import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
-import {createNativeTestCustody,nativeTestPolicy,nativeTestTarget} from './helpers/native-cleanup.js';
+import {createNativeTestCustody,nativeTestPolicy,nativeTestPolicyFor,nativeTestTarget,openNativeTestCustody} from './helpers/native-cleanup.js';
 
 let container:StartedPostgreSqlContainer|undefined;
 let pool:Pool;
@@ -520,6 +520,148 @@ it('adds a genuinely later capped member to an active installation under the fin
     .resolves.toEqual(['active','bound-closed']);
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },30_000);
+
+type OwnerFixture=Awaited<ReturnType<typeof startActiveOwnerFixture>>;
+const extraProvisioner=(fixture:OwnerFixture,alias:string,options:{designatedOwnerId?:string}={designatedOwnerId:fixture.owner},source=nativeTestPolicy())=>
+  new BudgetNativeProvisioner(fixture.financial,fixture.journal,fixture.custody,fixture.fake.native,nativeTestTarget,nativeTestPolicyFor(alias,source),options);
+const extraActivator=(fixture:OwnerFixture,options:{designatedOwnerId?:string}={designatedOwnerId:fixture.owner})=>
+  new BudgetNativeActivator(fixture.financial,fixture.journal,fixture.custody,fixture.fake.native,options);
+const extraRequest=(fixture:OwnerFixture,bindingId:string,purposeAlias:string,memberId=fixture.owner,agent=fixture.ownerAgent)=>
+  ({bindingId,credentialGeneration:'0',memberId,agent,incarnation:fixture.incarnation,purposeAlias});
+const accountSnapshot=(fixture:OwnerFixture)=>fixture.financial.query(`SELECT id,state,reason,installation_cap,active_window_id,endpoint_generation,recovery_epoch,selected_endpoint
+  FROM budget_accounts WHERE kind IN ('installation','member') ORDER BY kind,id`).then(result=>result.rows);
+const phases=(fixture:OwnerFixture)=>fixture.custody.withGate(gate=>Promise.resolve(gate.inventory().operations.filter((row):row is NativeOperation=>row.kind==='operation').map(row=>({alias:row.association.purposeAlias,phase:row.phase}))));
+
+it('gives the owner one more key for another served model name on an account that is already open',async()=>{
+  const fixture=await startActiveOwnerFixture(),writer=id(),utility=id();
+  const before=await accountSnapshot(fixture);
+  await expect(extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'))).resolves.toEqual({state:'bound-closed',bindingId:writer,credentialGeneration:'0'});
+  // Closed means closed: the new key exists but nothing has opened for it, and the account is untouched.
+  expect(await accountSnapshot(fixture)).toEqual(before);
+  await expect(phases(fixture)).resolves.toEqual([{alias:'lares-brain',phase:'active'},{alias:'lares-writer',phase:'bound-closed'}]);
+  expect(fixture.fake.activationCalls).toEqual({unblock:1,unblockedRead:1});
+  await expect(extraActivator(fixture).activate({bindingId:writer,credentialGeneration:'0'})).resolves.toEqual({state:'active',bindingId:writer,credentialGeneration:'0'});
+  expect(fixture.fake.activationCalls).toEqual({unblock:2,unblockedRead:2});
+  // Opening a key never reopens the account or changes its month.
+  expect(await accountSnapshot(fixture)).toEqual(before);
+  await expect(phases(fixture)).resolves.toEqual([{alias:'lares-brain',phase:'active'},{alias:'lares-writer',phase:'active'}]);
+  await expect(extraProvisioner(fixture,'lares-utility').provision(extraRequest(fixture,utility,'lares-utility'))).resolves.toMatchObject({state:'bound-closed'});
+  await expect(extraActivator(fixture).activate({bindingId:utility,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
+  const bindings=(await fixture.financial.query("SELECT purpose_alias,state,profile_hash FROM budget_gateway_bindings WHERE live_member_id=$1 ORDER BY purpose_alias",[fixture.owner])).rows;
+  expect(bindings.map((row:any)=>[row.purpose_alias,row.state])).toEqual([['lares-brain','active'],['lares-utility','active'],['lares-writer','active']]);
+  expect(new Set(bindings.map((row:any)=>row.profile_hash)).size).toBe(1);
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+  // The one person has one native user and one team, with three keys.
+  const custody=await fixture.custody.withGate(gate=>Promise.resolve(gate.inventory()));
+  expect(custody.users.filter(row=>row.kind==='user')).toHaveLength(1);expect(custody.teams.filter(row=>row.kind==='team')).toHaveLength(1);
+  // The same key cannot be made twice, and a finished request is not repeated.
+  await expect(extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,id(),'lares-writer'))).rejects.toThrow('Native budget provisioning refused');
+  await expect(extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'))).rejects.toThrow('Native budget provisioning refused');
+  expect(fixture.fake.calls.key).toBe(3);
+},60_000);
+
+it('refuses an extra key for anyone but the configured owner, for a missing owner, and for an owner the request names',async()=>{
+  const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture);await grantLaterAgentUse(fixture,later);
+  const laterBrain=id();
+  await expect(fixture.provisioner.provision(extraRequest(fixture,laterBrain,'lares-brain',later.member,later.agent))).resolves.toMatchObject({state:'bound-closed'});
+  await expect(extraActivator(fixture).activate({bindingId:laterBrain,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
+  const keys=fixture.fake.calls.key;
+  // A member whose own main key is active still gets no second key.
+  await expect(extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,id(),'lares-writer',later.member,later.agent))).rejects.toThrow('Native budget provisioning refused');
+  // No configured owner, or a different one, means no extra keys for anyone.
+  await expect(extraProvisioner(fixture,'lares-writer',{}).provision(extraRequest(fixture,id(),'lares-writer'))).rejects.toThrow('Native budget provisioning refused');
+  await expect(extraProvisioner(fixture,'lares-writer',{designatedOwnerId:later.member}).provision(extraRequest(fixture,id(),'lares-writer'))).rejects.toThrow('Native budget provisioning refused');
+  expect(fixture.fake.calls.key).toBe(keys);
+  await expect(phases(fixture)).resolves.toHaveLength(2);
+  expect((await fixture.financial.query("SELECT purpose_alias FROM budget_gateway_bindings WHERE state='active' ORDER BY live_member_id,purpose_alias")).rows).toHaveLength(2);
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},60_000);
+
+it('refuses an extra key under another capability, for a name the capability does not serve, or as a second main key',async()=>{
+  const fixture=await startActiveOwnerFixture(),base=nativeTestPolicy();
+  // Another capability gives another hash: the main key's capability is the only one an extra key may use.
+  const otherCapability={...base.capability,model:'another-model'};
+  const other={...base,capability:otherCapability,pricing:{...base.pricing,capabilityHash:gatewayHash(gatewayCanonical(otherCapability))}};
+  await expect(extraProvisioner(fixture,'lares-writer',{designatedOwnerId:fixture.owner},other).provision(extraRequest(fixture,id(),'lares-writer'))).rejects.toThrow('Native budget provisioning refused');
+  // A name the capability does not serve cannot even be built into a policy.
+  expect(()=>extraProvisioner(fixture,'lares-unlisted')).toThrow();
+  // A request for a name other than the policy's key is refused before anything is made.
+  await expect(extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,id(),'lares-gate'))).rejects.toThrow('Native budget provisioning refused');
+  // The main key's name is made once only: a second main-key request is not an extra key.
+  await expect(fixture.provisioner.provision(extraRequest(fixture,id(),'lares-brain'))).rejects.toThrow('Native budget provisioning refused');
+  expect(fixture.fake.calls.key).toBe(1);
+  await expect(phases(fixture)).resolves.toEqual([{alias:'lares-brain',phase:'active'}]);
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},60_000);
+
+it('leaves the main key working when an extra key is refused or its activation is refused, and finishes on a later run',async()=>{
+  const fixture=await startActiveOwnerFixture(),writer=id();
+  const before=await accountSnapshot(fixture);
+  await expect(extraProvisioner(fixture,'lares-writer',{}).provision(extraRequest(fixture,writer,'lares-writer'))).rejects.toThrow();
+  expect(await accountSnapshot(fixture)).toEqual(before);
+  await expect(phases(fixture)).resolves.toEqual([{alias:'lares-brain',phase:'active'}]);
+  // A key made by an owner is not opened by a host that does not know the owner.
+  await expect(extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'))).resolves.toMatchObject({state:'bound-closed'});
+  await expect(extraActivator(fixture,{}).activate({bindingId:writer,credentialGeneration:'0'})).rejects.toThrow('Native budget activation refused');
+  await expect(phases(fixture)).resolves.toEqual([{alias:'lares-brain',phase:'active'},{alias:'lares-writer',phase:'bound-closed'}]);
+  expect(await accountSnapshot(fixture)).toEqual(before);
+  expect((await fixture.financial.query("SELECT state FROM budget_gateway_bindings WHERE id=$1",[fixture.ownerBinding])).rows[0]).toEqual({state:'active'});
+  await expect(extraActivator(fixture).activate({bindingId:writer,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},60_000);
+
+it('lets the runtime authority recognise the extra key of an owner whose main key is active, and nobody else',async()=>{
+  const fixture=await startActiveOwnerFixture(),writer=id();
+  await extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'));
+  await extraActivator(fixture).activate({bindingId:writer,credentialGeneration:'0'});
+  const definitionHash=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash as string;
+  const authority=(alias:string)=>createNativeRuntimeAuthority({custody:fixture.custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:nativeTestPolicyFor(alias),
+    designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
+  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,definitionHash,purposeAlias});
+  await expect(authority('lares-brain').current(identity('lares-brain'))).resolves.toEqual({state:'active'});
+  await expect(authority('lares-writer').current(identity('lares-writer'))).resolves.toEqual({state:'active'});
+  // A name that has no key made for it is held.
+  await expect(authority('lares-gate').current(identity('lares-gate'))).resolves.toMatchObject({state:'held'});
+},60_000);
+
+it('freezes the whole key store on an uncertain extra key, and lifting the stop frees the main key but never the uncertain one',async()=>{
+  const fixture=await startActiveOwnerFixture(),writer=id();
+  const definitionHash=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash as string;
+  const authority=(custody:BudgetNativeCustodyStore,alias:string)=>createNativeRuntimeAuthority({custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:nativeTestPolicyFor(alias),
+    designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
+  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,definitionHash,purposeAlias});
+  await expect(authority(fixture.custody,'lares-brain').current(identity('lares-brain'))).resolves.toEqual({state:'active'});
+  const bindingsBefore=(await fixture.financial.query('SELECT id,state FROM budget_gateway_bindings ORDER BY id')).rows;
+  // The gateway cannot confirm the new extra key, so provisioning records it as uncertain.
+  const unconfirmed={...fixture.fake.native,lookupKey:async()=>({kind:'mismatch' as const})} as unknown as BudgetNativeCredentialClient;
+  const failing=new BudgetNativeProvisioner(fixture.financial,fixture.journal,fixture.custody,unconfirmed,nativeTestTarget,nativeTestPolicyFor('lares-writer'),{designatedOwnerId:fixture.owner});
+  await expect(failing.provision(extraRequest(fixture,writer,'lares-writer'))).rejects.toThrow('Native budget provisioning refused');
+  // The stop covers the whole installation: the main key is held too, not only the uncertain one.
+  await expect(fixture.custody.withGate(async()=>undefined)).rejects.toThrow();
+  await expect(authority(fixture.custody,'lares-brain').current(identity('lares-brain'))).resolves.toMatchObject({state:'held'});
+  fixture.custody.close();
+  const directory=join(fixture.root,'native'),owned={ownershipUid:testJournalUid,ownershipGid:process.getgid!(),lock};
+  expect(BudgetNativeCustodyStore.controlStateForOwner(directory)).toBe('uncertain');
+  expect(()=>openNativeTestCustody(directory)).toThrow();
+  // The owner proves the ledger and lifts the stop (`lares budget recover`).
+  BudgetNativeCustodyStore.closeUncertainForOwner(directory,owned);
+  expect(BudgetNativeCustodyStore.controlStateForOwner(directory)).toBe('closed');
+  const reopened=openNativeTestCustody(directory);fixtureCustodies.push(reopened);
+  await expect(authority(reopened,'lares-brain').current(identity('lares-brain'))).resolves.toEqual({state:'active'});
+  // Lifting the stop does not settle the extra key: it stays uncertain, is never opened and is never used.
+  await expect(reopened.withGate(gate=>Promise.resolve(gate.inventory().operations.filter((row):row is NativeOperation=>row.kind==='operation')
+    .map(row=>({alias:row.association.purposeAlias,phase:row.phase}))))).resolves.toEqual([{alias:'lares-brain',phase:'active'},{alias:'lares-writer',phase:'uncertain'}]);
+  const unblocks=fixture.fake.activationCalls.unblock;
+  await expect(new BudgetNativeActivator(fixture.financial,fixture.journal,reopened,fixture.fake.native,{designatedOwnerId:fixture.owner}).activate({bindingId:writer,credentialGeneration:'0'}))
+    .rejects.toThrow('Native budget activation refused');
+  expect(fixture.fake.activationCalls.unblock).toBe(unblocks);
+  await expect(authority(reopened,'lares-writer').current(identity('lares-writer'))).resolves.toMatchObject({state:'held'});
+  // Nothing was bound in SQL for the uncertain key, and the main key's binding is untouched.
+  expect((await fixture.financial.query('SELECT id,state FROM budget_gateway_bindings ORDER BY id')).rows).toEqual(bindingsBefore);
+  await expect(reopened.withGate(gate=>Promise.resolve(gate.inventory().operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.association.purposeAlias==='lares-writer')?.plaintext)))
+    .resolves.toBe('present');
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},60_000);
 
 it('completes a reopened prepared native retry using the current verified target state and retained owner roster',async()=>{
   const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture,'neutral-native-prepared-retry'),binding=id();

@@ -992,7 +992,12 @@ print(json.dumps({'passed':passed,'pythonVersion':python_version,'opensslVersion
     policy={'capability':capability,'pricing':pricing,'maximumLiability':maximum_liability,'team':{'maxBudget':'100','models':capability['aliases'],'budgetDuration':'1d'},
       'user':{'maxBudget':'30','userRole':'internal_user','autoCreateKey':False},'membership':{'maxBudget':'20','allowedModels':capability['aliases'],'budgetDuration':'1d','role':'user'},
       'key':{'maxBudget':'10','models':[alias],'budgetDuration':'1d','keyType':'llm_api','blocked':True}}
-    policy_file=secrets_dir/'native-policy.json';policy_file.write_text(json.dumps({'endpointHash':endpoint_hash,'policies':[policy]}));policy_file.chmod(0o600)
+    # One more reviewed policy for a second served model name, with its own key and the same capability. A third name is left
+    # out on purpose: it has no price on file, so no key may be made for it.
+    extra_alias=next(name for name in capability['aliases'] if name!=alias)
+    unpriced_alias=next(name for name in capability['aliases'] if name not in (alias,extra_alias))
+    extra_policy={**policy,'key':{**policy['key'],'models':[extra_alias]}}
+    policy_file=secrets_dir/'native-policy.json';policy_file.write_text(json.dumps({'endpointHash':endpoint_hash,'policies':[policy,extra_policy]}));policy_file.chmod(0o600)
     base_config['budgetNative']={'directory':'/var/lib/lares/budget-native','reviewedPolicyFile':'/etc/lares/secrets/native-policy.json'}
     config_dir_path.write_text(json.dumps(base_config));config_dir_path.chmod(0o600)
     stage = 'source-rows-and-readiness'
@@ -1073,15 +1078,15 @@ try{const definition=definitionSchema.parse({...JSON.parse(readFileSync('/defini
         raise RuntimeError('Post-cap source adoption did not return current source identity')
     cases['ordinarySourceAdoptionAndShareFollowInitialBudgetActions']=True
 
-    def host_cli(command_name,payload=None):
+    def host_cli(command_name,payload=None,check=True):
         args=['docker','run','--rm','--network',network,'--user','0:0','--mount',f'type=volume,src={volume},dst=/var/lib/lares',
           '--mount',f'type=bind,src={secrets_dir},dst=/etc/lares/secrets,readonly','--mount',f'type=bind,src={config_dir_path},dst=/etc/lares/keeper.json,readonly',
           '--mount',f'type=bind,src={install_root},dst=/fixture-install',
           '--mount',f'type=bind,src={host_socket_dir},dst=/run/lares-host',
           '-i',
           '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/bin/budget-financial.ts',command_name,'--host']
-        result=run(*args,input=json.dumps(payload) if payload is not None else None,timeout=45)
-        return result.stdout.strip()
+        result=run(*args,input=json.dumps(payload) if payload is not None else None,timeout=45,check=check)
+        return result.stdout.strip() if check else result
     stage = 'owner-only-host-provisioning'
     accounts=json.loads(host_cli('provision-accounts',{'installationCap':'100','memberIds':[owner]}))
     if accounts.get('state')!='closed' or accounts.get('members')!=1:raise RuntimeError('Owner-only closed account provisioning was not acknowledged')
@@ -1435,6 +1440,35 @@ try{const db=await p.connect();try{await db.query('BEGIN');try{const grant=await
     if not financial_settlement_delta_matches(later_authority,final_authority,owner,owner_binding_id):
         raise RuntimeError('Owner repeat settlement was not exactly linked to the owner and native authority')
     if upstream_calls()!=3:raise RuntimeError('Replay or activation caused an extra upstream dispatch')
+    # The owner's agent gets a second key for another served model name on the account that is already open. Nobody else does,
+    # and a name with no price on file does not. Nothing here sends a model request.
+    stage = 'owner-extra-key'
+    before_extra=native_snapshot()
+    before_extra_bindings=json.loads(financial_observer('bindings',base_config['budgetFinancial']['db']))['bindings']
+    def extra_request(member,name,binding=None):
+        return {'bindingId':binding or str(uuid.uuid4()),'credentialGeneration':'0','memberId':member,'agent':agent,'incarnation':incarnation,'purposeAlias':name}
+    unpriced=host_cli('provision-native',extra_request(owner,unpriced_alias),check=False)
+    if unpriced.returncode==0:raise RuntimeError('A model name with no reviewed price was given a key')
+    not_owner=host_cli('provision-native',extra_request(later_member,extra_alias),check=False)
+    if not_owner.returncode==0:raise RuntimeError('A member who is not the configured owner was given an extra key')
+    if json.loads(financial_observer('bindings',base_config['budgetFinancial']['db']))['bindings']!=before_extra_bindings or native_snapshot()!=before_extra:
+        raise RuntimeError('A refused extra key changed financial or native state')
+    cases['extraKeyRefusedForUnpricedNameAndForNonOwner']=True
+    extra_binding_id=str(uuid.uuid4())
+    extra_made=json.loads(host_cli('provision-native',extra_request(owner,extra_alias,extra_binding_id)))
+    if extra_made!={'state':'bound-closed','bindingId':extra_binding_id,'credentialGeneration':'0'}:raise RuntimeError('Closed extra owner key was not acknowledged')
+    extra_opened=json.loads(host_cli('activate-native',{'bindingId':extra_binding_id,'credentialGeneration':'0'}))
+    if extra_opened.get('state')!='active':raise RuntimeError('Extra owner key activation was not acknowledged')
+    after_extra=native_snapshot()
+    if any(after_extra[key]!=before_extra[key] for key in ('state','reason','selected_endpoint','recovery_epoch','endpoint_generation','attempts','grants','settled','liability')):
+        raise RuntimeError('Opening an extra key changed the account, endpoint, epoch or usage')
+    extra_bindings=json.loads(financial_observer('bindings',base_config['budgetFinancial']['db']))['bindings']
+    if len(extra_bindings)!=len(before_extra_bindings)+1 or not any(row.get('id')==extra_binding_id and row.get('state')=='active' for row in extra_bindings):
+        raise RuntimeError('The extra key is not on record beside the existing ones')
+    if not selected_member_states_match(json.loads(financial_observer('members',base_config['budgetFinancial']['db']))['members'],{owner:'open',later_member:'open'}):
+        raise RuntimeError('Opening an extra key changed which accounts are open')
+    if upstream_calls()!=3:raise RuntimeError('Making an extra key caused an upstream dispatch')
+    cases['ownerExtraKeyMadeAndOpenedOnOpenAccountWithoutUsage']=True
     proof['combinedLaterMemberContinuity']={'firstOwnerSettlement':1,'laterMemberSettlement':1,
       'ownerRepeatSettlement':1,'upstreamDispatches':3,'exactPriorFinancialRowsPreserved':True,
       'ownerAndLaterMemberOpen':True}

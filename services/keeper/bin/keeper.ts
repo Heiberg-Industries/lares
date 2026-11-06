@@ -146,7 +146,9 @@ async function main(): Promise<void> {
             if(financialJournal.isFrozen)console.error("keeper: the spending ledger is frozen; model calls that need a budget are refused, everything else keeps running. See: sudo lares budget recover --check");
         }
         registerInitialMemberBudgetActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
-        if(financialPool)registerBudgetAgentStartActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
+        if(financialPool)registerBudgetAgentStartActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId,
+            keyPhases:async ids=>nativeCustody?nativeCustody.withGate(gate=>Promise.resolve(new Map(gate.inventory().operations
+                .flatMap(row=>row.kind==='operation'&&ids.includes(row.bindingId)?[[row.bindingId,row.phase] as [string,string]]:[])))):undefined});
         registerAction({name:'budget.freeze',hostOnly:true,input:z.object({}).strict(),run:async()=>{
             if(!financialJournal)throw new Error('Financial custody is not configured');
             await nativeCustody?.drainForShutdown();
@@ -168,11 +170,11 @@ async function main(): Promise<void> {
             const document=readBudgetNativePolicyDocument(config.budgetNative.reviewedPolicyFile);
             const policy=selectBudgetNativeReviewedPolicy(document,input.purposeAlias);
             const native=createNativeCredentialClient(config.lifecycle?.runtime.gatewayUrl,config.lifecycle?.runtime.gatewayMasterKeyFile);
-            return new BudgetNativeProvisioner(financialPool,financialJournal,nativeCustody,native,{origin:native.gatewayOrigin,hash:document.endpointHash},policy).provision(input);
+            return new BudgetNativeProvisioner(financialPool,financialJournal,nativeCustody,native,{origin:native.gatewayOrigin,hash:document.endpointHash},policy,{designatedOwnerId:config.designatedOwnerId}).provision(input);
         },activate:async input=>{
             if(!financialPool||!financialJournal?.prepared||!nativeCustody)throw new Error('Native budget activation is unavailable');
             const native=createNativeCredentialClient(config.lifecycle?.runtime.gatewayUrl,config.lifecycle?.runtime.gatewayMasterKeyFile);
-            return new BudgetNativeActivator(financialPool,financialJournal,nativeCustody,native).activate(input);
+            return new BudgetNativeActivator(financialPool,financialJournal,nativeCustody,native,{designatedOwnerId:config.designatedOwnerId}).activate(input);
         }});
         if(financialPool)registerMemberRemovalAction({pool:financialPool,journal:financialJournal,designatedOwnerId:config.designatedOwnerId,nativeCustody});
         registerDefinitionActions({

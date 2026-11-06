@@ -695,7 +695,7 @@ def describe_blocker(name: str, status: dict[str, Any], owner_asked: bool, alias
 def top_up_policy(installation: Installation, options: argparse.Namespace, state: dict[str, Any]) -> None:
     """An installation set up before every model name was priced has only the brain's policy on file. Add the others,
     but only when the gateway's models are still the ones the brain's policy was reviewed for. This changes the
-    reviewed file and the saved answers and nothing else: no key is made for the new names."""
+    reviewed file and the saved answers and nothing else. The keys for the new names come after, for the owner only."""
     saved = state.get("policy")
     saved_policies = saved.get("policies") if isinstance(saved, dict) else None
     if not isinstance(saved_policies, list) or not saved_policies:
@@ -737,7 +737,51 @@ def top_up_policy(installation: Installation, options: argparse.Namespace, state
     state["policy"] = rendered["policy"]
     state["aliasPrices"] = alias_prices
     installation.save_state(state)
-    say("The prices are saved. Nothing else changes now.")
+    say("The prices are saved.")
+
+
+def start_extra_keys(installation: Installation, state: dict[str, Any], name: str, request: dict[str, Any]) -> str | None:
+    """The installation owner's agent gets one key for each other model name the gateway serves, after its own. The
+    agent's own key is already open, so a failure here leaves it working. Returns what went wrong, or None. Running
+    `agent start` again carries on from what the keeper has on record: a key is made once, and opened once."""
+    policies = (state.get("policy") or {}).get("policies") or []
+    aliases = [policy["key"]["models"][0] for policy in policies if policy["key"]["models"][0] != state["alias"]]
+    if not aliases:
+        return None
+    status = installation.host_action("budget.agent-start-status", request)
+    member_id, incarnation = status["member"]["id"], status["agent"]["incarnation"]
+    for alias in aliases:
+        have = {entry["alias"]: entry for entry in status.get("bindings") or []}
+        if (have.get(alias) or {}).get("active") is True:
+            continue
+        try:
+            if alias not in have:
+                say(f"Creating the key for {alias}. It stays blocked until the next step.")
+                key = f"{name}/{member_id}/{incarnation}/{alias}"
+                binding = state["bindings"].get(key)
+                if not binding:
+                    # Written before the first attempt: a retry must carry the same id, never a second key.
+                    binding = {"bindingId": str(uuid.uuid4()), "credentialGeneration": "0"}
+                    state["bindings"][key] = binding
+                    installation.save_state(state)
+                installation.host_action("budget.provision-native", {**binding, "memberId": member_id, "agent": name,
+                                         "incarnation": incarnation, "purposeAlias": alias}, NATIVE_TIMEOUT_SECONDS)
+                status = installation.host_action("budget.agent-start-status", request)
+                have = {entry["alias"]: entry for entry in status.get("bindings") or []}
+                if alias not in have:
+                    return f"The key for {alias} is not on record."
+            elif have[alias].get("active") is None:
+                return f"The keeper cannot tell how far the key for {alias} got."
+            else:
+                say(f"Opening the key for {alias}.")
+            installation.host_action("budget.activate-native", {"bindingId": have[alias]["id"],
+                                     "credentialGeneration": have[alias]["credentialGeneration"]}, NATIVE_TIMEOUT_SECONDS)
+        except KeeperRefused as error:
+            return f"The keeper refused the key for {alias} ({error})."
+        except KeeperUnclear as error:
+            return f"The keeper did not confirm the key for {alias} ({error})."
+        status = installation.host_action("budget.agent-start-status", request)
+    return None
 
 
 def agent_start(installation: Installation, options: argparse.Namespace) -> int:
@@ -788,6 +832,14 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
         installation.host_action("budget.activate-native", {"bindingId": status["binding"]["id"],
                                  "credentialGeneration": status["binding"]["credentialGeneration"]}, NATIVE_TIMEOUT_SECONDS)
 
+    # Only the installation's owner gets a key for each of the other model names; everyone else uses the agent's own.
+    extra_problem = None
+    if status.get("owner"):
+        extra_problem = start_extra_keys(installation, state, name, request)
+        if extra_problem:
+            say(f"{extra_problem} {name} keeps working on its own model name. Run sudo lares agent start {name} again to finish the other keys.")
+    code = EX_REFUSED if extra_problem else 0
+
     listed = installation.host_action("definition.list", {})
     agent = next((entry for entry in listed if entry.get("name") == name), None)
     if not agent or not agent.get("hash"):
@@ -797,7 +849,7 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
     running = (installation.host_action("definition.get", {"name": name}).get("runtime") or {}).get("running")
     if running is True:
         say(f"{name} is already running, and this person can now use it.")
-        return 0
+        return code
     if running is not False:
         raise Stop(f"The keeper cannot tell whether {name} is running, so it was not started. Spending is open for this person. Check docker on this server, then run this command again.")
     say(f"Starting {name}. This can take a minute.")
@@ -806,7 +858,7 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
         reason = (result or {}).get("reason") or "it did not report healthy in time"
         raise Stop(f"{name} did not start: {reason}. Run this command again.")
     say(f"{name} is running. Open the console to talk to it.")
-    return 0
+    return code
 
 
 class Folder:

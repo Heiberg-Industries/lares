@@ -249,6 +249,58 @@ it('journals trigger retirement and the expanded closure while leaving admitted 
   expect(proposal.atoms.some((atom:any)=>Object.values(historyIds).includes(atom.id))).toBe(false);
 });
 
+it('retires every key binding and prepared attempt of a member who has several keys, and keeps all their native keys for cleanup',async()=>{
+  await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('target-multi-key','Several keys','org-main','member','active')");
+  await pool.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES('target-multi-key','https://identity.example.invalid','multi-key','tenant')");
+  await pool.query("INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES('target-multi-key',30)");
+  await provisionBudgetAccounts(pool,journal,{installationCap:'100',memberIds:['target-multi-key']});
+  const accounts=(await pool.query(`SELECT a.id,a.kind,a.policy_generation::text,a.active_window_id FROM budget_accounts a
+    WHERE a.kind='installation' OR a.live_member_id='target-multi-key' ORDER BY a.kind,a.id`)).rows;
+  const installation=accounts.find(row=>row.kind==='installation')!,member=accounts.find(row=>row.kind==='member')!;
+  const aliases=['lares-brain','lares-writer','lares-utility'],bindingIds=aliases.map(()=>randomUUID()),incarnation=randomUUID();
+  const preparedIds=[randomUUID(),randomUUID()],historyId=randomUUID(),profile='c'.repeat(64),endpoint='a'.repeat(64);
+  const changes:BudgetFinancialChange[]=[...bindingIds.map(id=>({table:'budget_gateway_bindings' as const,id})),...[...preparedIds,historyId].map(id=>({table:'budget_attempts' as const,id}))];
+  await seedFinancial(changes,async db=>{
+    for(const [index,alias] of aliases.entries())await db.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,
+      key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,state)
+      VALUES($1,$2,$3,'target-multi-key',$4,0,$5,'keeper-test',$6,$7,$8,5,'active')`,[bindingIds[index],installation.id,member.id,endpoint,createHash('sha256').update(`multi-key-${alias}`).digest('hex'),incarnation,alias,profile]);
+    const iw=(await db.query('SELECT active_window_id FROM budget_accounts WHERE id=$1',[installation.id])).rows[0].active_window_id;
+    // Two prepared attempts on different keys, and one already-admitted attempt that removal must leave alone.
+    for(const [attemptId,state,bindingId] of [[preparedIds[0],'prepared',bindingIds[0]],[preparedIds[1],'prepared',bindingIds[2]],[historyId,'admitted',bindingIds[1]]] as const)
+      await db.query(`INSERT INTO budget_attempts(id,ticket_hash,invocation_hash,installation_account_id,member_account_id,binding_id,live_member_id,
+        installation_window_id,member_window_id,endpoint_hash,credential_generation,installation_policy_generation,member_policy_generation,
+        endpoint_generation,recovery_epoch,request_hash,authority_hash,profile_hash,reserved_amount,installation_cap_snapshot,member_cap_snapshot,
+        expires_at,admitted_at,state,highest_observed_liability)
+        VALUES($1,$2,$3,$4,$5,$6,'target-multi-key',$7,$8,$9,0,$10,$11,0,'proof-epoch',$12,$13,$14,2,100,30,
+          clock_timestamp()+interval '20 seconds',CASE WHEN $15='prepared' THEN NULL ELSE clock_timestamp() END,$15,0)`,
+      [attemptId,createHash('sha256').update(`multi-ticket-${attemptId}`).digest('hex'),createHash('sha256').update(`multi-invocation-${attemptId}`).digest('hex'),
+        installation.id,member.id,bindingId,iw,member.active_window_id,endpoint,installation.policy_generation,member.policy_generation,
+        createHash('sha256').update(`multi-request-${attemptId}`).digest('hex'),createHash('sha256').update(`multi-authority-${attemptId}`).digest('hex'),profile,state]);
+  });
+  nativeCustody=createNativeTestCustody(join(roots[0]!, 'native-multi-key'));
+  const operationIds:string[]=[];
+  for(const [index,alias] of aliases.entries())
+    operationIds.push(await addUnboundNativeCredential(nativeCustody,member.id,installation.id,{alias,secret:`sk-${String(index).repeat(43)}`}));
+  register('designated-owner',pool,nativeCustody);
+  await expect(act(sessions.designated,'target-multi-key')).resolves.toEqual({removed:true,nativeCleanup:{status:'pending',remaining:3}});
+  // Every key binding is revoked, none is left active, and only the prepared attempts are retired.
+  expect((await pool.query("SELECT id,state FROM budget_gateway_bindings WHERE live_member_id='target-multi-key' ORDER BY id")).rows)
+    .toEqual(bindingIds.map(id=>({id,state:'revoked'})).sort((a,b)=>a.id.localeCompare(b.id)));
+  expect((await pool.query("SELECT count(*)::int AS n FROM budget_gateway_bindings WHERE live_member_id='target-multi-key' AND state='active'")).rows[0].n).toBe(0);
+  expect((await pool.query('SELECT id,state FROM budget_attempts WHERE id=ANY($1::uuid[]) ORDER BY id',[[...preparedIds,historyId]])).rows)
+    .toEqual([...preparedIds.map(id=>({id,state:'retired'})),{id:historyId,state:'admitted'}].sort((a,b)=>a.id.localeCompare(b.id)));
+  expect((await pool.query("SELECT state,reason FROM budget_accounts WHERE id=$1",[member.id])).rows[0]).toEqual({state:'retired',reason:'member_removed'});
+  const proposal=readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record).filter(record=>record.kind==='proposal').at(-1);
+  expect(proposal.atoms.filter((atom:any)=>atom.kind==='binding').map((atom:any)=>atom.id).sort()).toEqual([...bindingIds].sort());
+  expect(proposal.atoms.filter((atom:any)=>atom.kind==='attempt').map((atom:any)=>atom.id).sort()).toEqual([...preparedIds].sort());
+  // All three local keys are revoked and their plaintext removed, ready for gateway cleanup.
+  await nativeCustody.withGate(async gate=>{
+    const rows=gate.inventory().operations;
+    expect(rows.map(row=>row.kind==='operation'?row.operationId:'').sort()).toEqual([...operationIds].sort());
+    expect(rows.every(row=>row.phase==='revoke-pending'&&row.plaintext==='removed'&&row.nativeDeletion==='unverified')).toBe(true);
+  });
+});
+
 it('refuses an expanded preimage closure above 128 atoms before the status trigger runs',async()=>{
   register('designated-owner');
   await provisionBudgetAccounts(pool,journal,{installationCap:'100',memberIds:['target-overflow']});

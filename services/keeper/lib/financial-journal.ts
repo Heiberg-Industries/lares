@@ -224,7 +224,11 @@ function activeProvisionProjectionCovers(beforeAtoms:readonly FinancialAtom[],af
     installation.installationAccountId!==installation.id||installation.state!=='open'||installation.reason!=='approved'||installation.selectedEndpointHash!==binding.endpointHash||
     !positiveMoney(installation.installationCap)||!installation.activeWindowId||installation.endpointGeneration==='0'||installation.recoveryEpochHash===null)return false;
   if(!member||member.kind!=='account'||member.id===installation.id||member.accountKind!=='member'||member.installationAccountId!==installation.id||
-    member.state!=='closed'||member.reason!=='unreconciled'||member.selectedEndpointHash!==null||member.recoveryEpochHash!==null||!member.activeWindowId)return false;
+    // A person's first key is bound while their account is closed. An extra key is bound beside an active one, so the
+    // account is already open: that is accepted only when the account already holds an active binding of its own.
+    !(member.state==='closed'&&member.reason==='unreconciled'||member.state==='open'&&member.reason==='approved'&&
+      [...before.values()].some(atom=>atom.kind==='binding'&&atom.memberAccountId===member.id&&atom.state==='active'&&atom.id!==binding.id))||
+    member.selectedEndpointHash!==null||member.recoveryEpochHash!==null||!member.activeWindowId)return false;
   const installationWindow=before.get(`window:${installation.activeWindowId}`),memberWindow=before.get(`window:${member.activeWindowId}`);
   if(!installationWindow||installationWindow.kind!=='window'||installationWindow.id!==installation.activeWindowId||installationWindow.accountId!==installation.id||
     !isCurrentMonthWindow(installationWindow)||installationWindow.openingCap!==installation.installationCap)return false;

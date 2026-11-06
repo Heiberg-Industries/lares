@@ -30,7 +30,11 @@ export function nativeProvisioningDeadline(startedAt=Date.now()):{deadlineAtMs:n
 const exact=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b));
 const uuidString=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 type Target=z.infer<typeof endpointSchema>;
-type Snapshot={installationId:string;memberAccountId:string;definitionHash:string;active:boolean;authority:string;monthEndsAt:string;grantValidUntil:string;monotonicDeadline:number};
+type Snapshot={installationId:string;memberAccountId:string;definitionHash:string;active:boolean;extra:boolean;brainBindingId:string|null;authority:string;monthEndsAt:string;grantValidUntil:string;monotonicDeadline:number};
+/** Who may hold more than one key. The owner is the installation's configured owner, set by the host, never a request field. */
+export interface BudgetNativeProvisionerOptions {designatedOwnerId?:string}
+/** An owner's agent may hold its main key plus up to four more, one per other served model name. */
+const MAX_KEYS_PER_AGENT=5;
 type DispatchDeadline={wallDeadline:number;monotonicDeadline:number};
 type DbRow=Record<string,any>;
 
@@ -65,7 +69,7 @@ async function currentMonth(db:SourceDatabase):Promise<{startsAt:string;endsAt:s
     SELECT to_char(s,'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS starts_at,to_char(s+interval '1 month','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ends_at FROM m`)).rows[0];
   if(typeof row?.starts_at!=='string'||typeof row?.ends_at!=='string')throw refuse();return {startsAt:row.starts_at,endsAt:row.ends_at};
 }
-async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy:BudgetNativeReviewedPolicy,request:z.infer<typeof budgetNativeProvisionRequestSchema>,endpoint:Target,dispatch:DispatchDeadline,expected?:Snapshot,keyFingerprint?:string):Promise<Snapshot> {
+async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy:BudgetNativeReviewedPolicy,request:z.infer<typeof budgetNativeProvisionRequestSchema>,endpoint:Target,dispatch:DispatchDeadline,designatedOwnerId:string|undefined,expected?:Snapshot,keyFingerprint?:string):Promise<Snapshot> {
   if(performance.now()>=dispatch.monotonicDeadline||dispatch.wallDeadline<=Date.now())throw refuse();
   const deadlineAtMs=dispatch.wallDeadline;
   if(deadlineAtMs!==undefined&&deadlineAtMs<=Date.now())throw refuse();
@@ -95,7 +99,10 @@ async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy
   if(memberRows.length!==1)throw refuse();const member=memberRows[0]!;
   const storedProviders=Array.isArray(member.provider_suppression_hashes)?[...member.provider_suppression_hashes].sort():[];
   if(!uuidString(member.id)||member.installation_id!==installation.installation_id||member.installation_account_id!==installation.id||member.live_member_id!==request.memberId||member.organisation_id!==userRows[0]!.org_id||
-    member.canonical_suppression_hash!==suppression.canonicalSuppressionHash||!exact(storedProviders,suppression.providerSuppressionHashes)||member.state!=='closed'||member.reason!=='unreconciled'||member.selected_endpoint!==null||member.recovery_epoch!==null)throw refuse();
+    member.canonical_suppression_hash!==suppression.canonicalSuppressionHash||!exact(storedProviders,suppression.providerSuppressionHashes)||member.selected_endpoint!==null||member.recovery_epoch!==null)throw refuse();
+  // A main key needs a closed account; an extra key needs an open one. Which of the two this is
+  // depends on the agent's own model name, so the state is judged after the definition is read.
+  const memberClosed=member.state==='closed'&&member.reason==='unreconciled',memberOpen=member.state==='open'&&member.reason==='approved';
   const windowsByAccount=new Map<string,DbRow>();
   for(const account of [installation,member]){
     const windows=(await db.query(`SELECT id,account_id,live_member_id,${FINANCIAL_UTC_TIMESTAMP('starts_at')} AS starts_utc,${FINANCIAL_UTC_TIMESTAMP('ends_at')} AS ends_utc,opening_liability,opening_cap,policy_revision
@@ -114,8 +121,26 @@ async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy
   if(rows.length!==1)throw refuse();const row=rows[0]!;
   let definition,applied;try{definition=parseDefinition(definitionSchema.parse(row.definition));applied=parseDefinition(definitionSchema.parse(row.applied_definition));}catch{throw refuse();}
   const definitionHash=hashOf({definition,dutiesMd:row.duties,voiceMd:row.voice});
-  if(row.status!=='valid'||row.hash!==definitionHash||row.ownership!=='owned'||definition.model!==request.purposeAlias||applied.model!==request.purposeAlias||!policy.capability.aliases.includes(request.purposeAlias)||
+  if(row.status!=='valid'||row.hash!==definitionHash||row.ownership!=='owned'||
     row.ownership_token!==request.incarnation||row.runtime_control_token!==request.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
+  // The agent's own model name gets the main key. Any other served name is an extra key.
+  const extra=definition.model!==request.purposeAlias;
+  let brainBindingId:string|null=null;
+  if(!extra){
+    if(applied.model!==request.purposeAlias||!policy.capability.aliases.includes(request.purposeAlias)||!memberClosed)throw refuse();
+  }else{
+    // Only the installation's owner, only the chief-of-staff role, only a name the reviewed policy serves,
+    // only on an account the main key already opened, and only under the same capability as the main key.
+    if(designatedOwnerId===undefined||request.memberId!==designatedOwnerId||definition.role!=='chief-of-staff'||applied.role!=='chief-of-staff'||
+      applied.model!==definition.model||!active||!memberOpen||!policy.capability.aliases.includes(request.purposeAlias)||!policy.capability.aliases.includes(definition.model))throw refuse();
+    const siblings=(await db.query(`SELECT id,purpose_alias,endpoint_hash,profile_hash FROM budget_gateway_bindings
+      WHERE installation_account_id=$1 AND member_account_id=$2 AND agent=$3 AND incarnation=$4 AND state='active' ORDER BY id LIMIT 6 FOR UPDATE`,
+      [installation.id,member.id,request.agent,request.incarnation])).rows;
+    const brain=siblings.filter((b:DbRow)=>b.purpose_alias===definition.model);
+    if(brain.length!==1||brain[0]!.endpoint_hash!==endpoint.hash||brain[0]!.profile_hash!==policy.pricing.capabilityHash||siblings.length>=MAX_KEYS_PER_AGENT||
+      siblings.some((b:DbRow)=>b.purpose_alias===request.purposeAlias))throw refuse();
+    brainBindingId=String(brain[0]!.id);
+  }
   const grant=await new PgGrantStore().captureUseWithExpiry(request.memberId,request.agent,{db:db as unknown as import('pg').PoolClient});
   if(!grant)throw refuse();if(grant.validUntil)retainSourceTransactionDeadline(db,grant.validUntil);
   const conflicts=(await db.query(`SELECT id FROM budget_gateway_bindings WHERE id=$1 OR
@@ -133,7 +158,7 @@ async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy
     definition:{definition,duties:row.duties,voice:row.voice,hash:row.hash,status:row.status,applied,ownership:row.ownership,ownershipToken:row.ownership_token,runtimeControlToken:row.runtime_control_token,state:row.state,pending:row.pending},
     grant:{accessRevision:grant.accessRevision,validUntil:grant.validUntil},month,endpoint:{origin:endpoint.origin,hash:endpoint.hash},reviewedPolicyDigest:gatewayHash(gatewayCanonical(policy))};
   const authorityText=gatewayCanonical(authority).toString('utf8');
-  if(expected&&(expected.installationId!==installation.id||expected.memberAccountId!==member.id||expected.definitionHash!==definitionHash||expected.authority!==authorityText||expected.active!==active||expected.monthEndsAt!==month.endsAt||expected.grantValidUntil!==(grant.validUntil??'')))throw refuse();
+  if(expected&&(expected.installationId!==installation.id||expected.memberAccountId!==member.id||expected.definitionHash!==definitionHash||expected.authority!==authorityText||expected.active!==active||expected.extra!==extra||expected.brainBindingId!==brainBindingId||expected.monthEndsAt!==month.endsAt||expected.grantValidUntil!==(grant.validUntil??'')))throw refuse();
   const deadlineObservedAt=performance.now();
   const remaining=(await db.query(`SELECT floor(LEAST(extract(epoch FROM ($1::timestamptz-clock_timestamp()))*1000,
       extract(epoch FROM ($2::timestamptz-clock_timestamp()))*1000))::text AS remaining_ms`,[month.endsAt,grant.validUntil??month.endsAt])).rows[0]?.remaining_ms;
@@ -143,7 +168,7 @@ async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy
   const monotonicDeadline=Math.min(dispatch.monotonicDeadline,expected?.monotonicDeadline??Number.POSITIVE_INFINITY,translated);
   if(performance.now()>=monotonicDeadline)throw refuse();
   dispatch.monotonicDeadline=monotonicDeadline;
-  return {installationId:installation.id,memberAccountId:member.id,definitionHash,active,authority:authorityText,monthEndsAt:month.endsAt,grantValidUntil:grant.validUntil??'',monotonicDeadline};
+  return {installationId:installation.id,memberAccountId:member.id,definitionHash,active,extra,brainBindingId,authority:authorityText,monthEndsAt:month.endsAt,grantValidUntil:grant.validUntil??'',monotonicDeadline};
 }
 
 function teamRoster(team:ReturnType<NativeCustodyGate['reserveTeam']>,users:readonly unknown[],policy:BudgetNativeReviewedPolicy,excludeUnverifiedUserId?:string):NativeTeamRosterExpectation {
@@ -173,7 +198,7 @@ function teamPolicyExpectation(team:ReturnType<NativeCustodyGate['reserveTeam']>
 export class BudgetNativeProvisioner {
   private readonly endpoint:Target;private readonly policy:BudgetNativeReviewedPolicy;private readonly expectations:ReturnType<typeof nativePolicy>;
   constructor(private readonly pool:SourcePool,private readonly journal:HostFinancialJournal,private readonly custody:BudgetNativeCustodyStore,
-    private readonly native:BudgetNativeCredentialClient,endpoint:unknown,reviewedPolicy:unknown){
+    private readonly native:BudgetNativeCredentialClient,endpoint:unknown,reviewedPolicy:unknown,private readonly options:BudgetNativeProvisionerOptions={}){
     this.endpoint=endpointSchema.parse(endpoint);this.policy=budgetNativeReviewedPolicySchema.parse(reviewedPolicy);this.expectations=nativePolicy(this.policy);
     if(native.gatewayOrigin!==this.endpoint.origin)throw refuse();
   }
@@ -193,9 +218,15 @@ export class BudgetNativeProvisioner {
           checkpointDeadline();return consoleSourceTransaction(this.pool,work,boundary,{deadlineAtMs,beforeCommit:checkpointDeadline,afterCommit:checkpointDeadline});
         };
         let first:Snapshot;
-        try{first=await writer.run('provision',boundary=>sourceTransaction(db=>sourceState(db,this.journal,this.policy,request,this.endpoint,dispatch),boundary));checkpointDeadline();}
+        try{first=await writer.run('provision',boundary=>sourceTransaction(db=>sourceState(db,this.journal,this.policy,request,this.endpoint,dispatch,this.options.designatedOwnerId),boundary));checkpointDeadline();}
         catch(error){if(isJournaledAbort(error,{journalId:writer.journalId,operation:'provision'}))return {kind:'initial-preflight-refused' as const,error};throw error;}
-        const inventory=gate.inventory(),prior=inventory.operations.find((o):o is NativeOperation=>o.kind==='operation'&&o.bindingId===request.bindingId&&o.credentialGeneration===request.credentialGeneration);
+        const inventory=gate.inventory();
+        // A main key is made while every key of this person is still closed. An extra key is made beside
+        // active ones, so active keys count as settled and known; a half-finished one never does.
+        const settledPhases:readonly string[]=first.extra?['bound-closed','active','prepared']:['bound-closed','prepared'];
+        const knownPhases:readonly string[]=first.extra?['bound-closed','active']:['bound-closed'];
+        if(first.extra&&!inventory.operations.some(o=>o.kind==='operation'&&o.bindingId===first.brainBindingId&&o.phase==='active'))throw refuse();
+        const prior=inventory.operations.find((o):o is NativeOperation=>o.kind==='operation'&&o.bindingId===request.bindingId&&o.credentialGeneration===request.credentialGeneration);
         if(inventory.operations.some(o=>o.kind==='operation'&&o.bindingId===request.bindingId&&o.credentialGeneration!==request.credentialGeneration))throw refuse();
         const existingTeam=inventory.teams.find(t=>t.installationAccountId===first.installationId&&t.endpoint.hash===this.endpoint.hash);
         if(existingTeam?.createAttempt==='attempted')throw new Error('Native custody operation refused');
@@ -203,9 +234,9 @@ export class BudgetNativeProvisioner {
           existingTeam.capabilityHash!==gatewayHash(gatewayCanonical(this.policy.capability))||!exact(existingTeam.policy,this.policy.team)))throw refuse();
         const existingUser=inventory.users.find((u):u is Extract<typeof u,{kind:'user'}>=>u.kind==='user'&&u.accountId===first.memberAccountId&&u.endpoint.hash===this.endpoint.hash);
         if(existingUser&&(existingUser.userCreateAttempt==='attempted'||existingUser.membershipCreateAttempt==='attempted'||
-          inventory.operations.some(o=>o.kind==='operation'&&o.userOwnershipId===existingUser.ownershipId&&o.phase!=='bound-closed'&&o.phase!=='prepared')))throw new Error('Native custody operation refused');
+          inventory.operations.some(o=>o.kind==='operation'&&o.userOwnershipId===existingUser.ownershipId&&!settledPhases.includes(o.phase))))throw new Error('Native custody operation refused');
         const team=gate.reserveTeam(first.installationId,this.endpoint,this.policy),user=gate.reserveUser(first.memberAccountId,team.ownershipId,this.policy);
-        if(team.createAttempt==='attempted'||user.userCreateAttempt==='attempted'||user.membershipCreateAttempt==='attempted'||inventory.operations.some(o=>o.kind==='operation'&&o.userOwnershipId===user.ownershipId&&o.phase!=='bound-closed'&&o.phase!=='prepared'))throw new Error('Native custody operation refused');
+        if(team.createAttempt==='attempted'||user.userCreateAttempt==='attempted'||user.membershipCreateAttempt==='attempted'||inventory.operations.some(o=>o.kind==='operation'&&o.userOwnershipId===user.ownershipId&&!settledPhases.includes(o.phase)))throw new Error('Native custody operation refused');
         const targetMembershipVerified=user.userCreateAttempt==='verified'&&user.membershipCreateAttempt==='verified';
         const priorTeamRoster=teamRoster(team,inventory.users,this.policy,targetMembershipVerified?undefined:user.nativeUserId);
         const association={agent:request.agent,incarnation:request.incarnation,definitionHash:first.definitionHash,purposeAlias:alias};let key:string;
@@ -220,7 +251,7 @@ export class BudgetNativeProvisioner {
         }
         const operation=gate.readOperation(operationId);
         if(operation.phase!=='prepared'||operation.keyCreateAttempt!=='not-attempted')throw refuse();
-        checkpointDeadline();await writer.run('provision',boundary=>sourceTransaction(db=>sourceState(db,this.journal,this.policy,request,this.endpoint,dispatch,first,operation.keyFingerprint),boundary));checkpointDeadline();
+        checkpointDeadline();await writer.run('provision',boundary=>sourceTransaction(db=>sourceState(db,this.journal,this.policy,request,this.endpoint,dispatch,this.options.designatedOwnerId,first,operation.keyFingerprint),boundary));checkpointDeadline();
         gate.beginProvisioning(operationId);
         const markUncertain=():never=>{try{gate.recordUncertain(operationId);}catch{}throw refuse();};
         const check=(result:{kind:string}):void=>{if(result.kind!=='match')markUncertain();};
@@ -260,8 +291,8 @@ export class BudgetNativeProvisioner {
         }
 
         const related=inventory.operations.filter((o):o is NativeOperation=>o.kind==='operation'&&o.userOwnershipId===user.ownershipId);
-        if(related.some(o=>!['bound-closed','prepared'].includes(o.phase)))markUncertain();
-        const known=[...new Set(related.filter(o=>o.phase==='bound-closed').map(o=>o.keyFingerprint))].filter(f=>f!==operation.keyFingerprint).sort();
+        if(related.some(o=>!settledPhases.includes(o.phase)))markUncertain();
+        const known=[...new Set(related.filter(o=>knownPhases.includes(o.phase)).map(o=>o.keyFingerprint))].filter(f=>f!==operation.keyFingerprint).sort();
         checkpoint();const before=await this.native.listOwnedKeys(user.nativeUserId);checkpoint();
         if(before.kind!=='match'||!exact([...before.value].sort(),known)||known.length>=10)markUncertain();
         checkpoint();const claimed=gate.claimKeyCreate(operationId),secret=gate.readKey(operationId);checkpoint();
@@ -277,7 +308,7 @@ export class BudgetNativeProvisioner {
           checkpoint();
           gate.linkFinancialOperation(operationId,financialOperationId,this.journal.id);
           return sourceTransaction(async db=>{
-            const current=await sourceState(db,this.journal,this.policy,request,this.endpoint,dispatch,first,operation.keyFingerprint);
+            const current=await sourceState(db,this.journal,this.policy,request,this.endpoint,dispatch,this.options.designatedOwnerId,first,operation.keyFingerprint);
             if(current.installationId!==first.installationId||current.memberAccountId!==first.memberAccountId||current.authority!==first.authority)throw refuse();
             const row=(await db.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,native_team,native_user,purpose_alias,profile_hash,maximum_liability,pricing_profile,state)
               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,'active') RETURNING id`,

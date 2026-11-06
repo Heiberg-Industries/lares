@@ -8,7 +8,7 @@ import {BudgetNativeCredentialClient} from '../lib/budget-native-client.js';
 import {createNativeCredentialClient,parseBudgetNativePolicyDocument,readBudgetNativePolicyDocument,selectBudgetNativeReviewedPolicy,registerBudgetNativeHostActions} from '../lib/budget-native-host.js';
 import {resetActions,runAction} from '../lib/actions.js';
 import {requestNativeActivation,requestNativeProvision} from '../bin/budget-financial.js';
-import {nativeTestPolicy,nativeTestTarget} from './helpers/native-cleanup.js';
+import {nativeTestPolicy,nativeTestPolicyFor,nativeTestTarget} from './helpers/native-cleanup.js';
 import type {HostFinancialJournal} from '../lib/financial-journal.js';
 import type {SourcePool} from '@lares/agent-kit/console-source-transaction';
 import type {BudgetNativeCustodyStore} from '../lib/budget-native-custody.js';
@@ -32,6 +32,16 @@ it('rejects duplicate JSON keys, extra policy fields, duplicate aliases and unma
   expect(()=>parseBudgetNativePolicyDocument(JSON.stringify({...document,unexpected:'value'}))).toThrow('unavailable or invalid');
   expect(()=>parseBudgetNativePolicyDocument(JSON.stringify({...document,policies:[...document.policies,...document.policies]}))).toThrow('unavailable or invalid');
   expect(()=>selectBudgetNativeReviewedPolicy(document,'unknown-alias')).toThrow('unavailable or invalid');
+});
+
+it('keeps one reviewed policy per served model name and selects each by the key it is for',()=>{
+  const document={endpointHash:nativeTestTarget.hash,policies:[nativeTestPolicy(),nativeTestPolicyFor('lares-writer'),nativeTestPolicyFor('lares-utility')]};
+  const parsed=parseBudgetNativePolicyDocument(JSON.stringify(document));
+  expect(parsed.policies).toHaveLength(3);
+  expect(selectBudgetNativeReviewedPolicy(parsed,'lares-brain').key.models).toEqual(['lares-brain']);
+  expect(selectBudgetNativeReviewedPolicy(parsed,'lares-writer').key.models).toEqual(['lares-writer']);
+  // A served name with no price of its own on file has no policy, so no key can be made for it.
+  expect(()=>selectBudgetNativeReviewedPolicy(parsed,'lares-gate')).toThrow('unavailable or invalid');
 });
 
 it('opens reviewed policy only from a stable root-only regular file',()=>{
@@ -58,6 +68,7 @@ it('constructs the real provisioner with the exact reviewed alias, endpoint and 
   const policy=nativeTestPolicy(),native=new BudgetNativeCredentialClient(nativeTestTarget.origin,`sk-${'a'.repeat(43)}`);
   const service=new BudgetNativeProvisioner({} as SourcePool,{prepared:true} as HostFinancialJournal,{} as BudgetNativeCustodyStore,native,nativeTestTarget,policy);
   expect(service).toBeInstanceOf(BudgetNativeProvisioner);
+  expect(new BudgetNativeProvisioner({} as SourcePool,{prepared:true} as HostFinancialJournal,{} as BudgetNativeCustodyStore,native,nativeTestTarget,policy,{designatedOwnerId:'owner-1'})).toBeInstanceOf(BudgetNativeProvisioner);
   expect(()=>new BudgetNativeProvisioner({} as SourcePool,{prepared:true} as HostFinancialJournal,{} as BudgetNativeCustodyStore,
     new BudgetNativeCredentialClient('https://other.invalid',`sk-${'a'.repeat(43)}`),nativeTestTarget,policy)).toThrow('Native budget provisioning refused');
 });

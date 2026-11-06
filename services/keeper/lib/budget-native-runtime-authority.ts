@@ -163,9 +163,18 @@ export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptio
           if(definitions.length!==1)throw refuse();const row=definitions[0]!;let definition,applied;
           try{definition=parseDefinition(definitionSchema.parse(row.definition));applied=parseDefinition(definitionSchema.parse(row.applied_definition));}catch{throw refuse();}
           const definitionHash=hashOf({definition,dutiesMd:row.duties,voiceMd:row.voice});
-          if(row.status!=='valid'||row.hash!==definitionHash||definitionHash!==identity.definitionHash||definition.model!==identity.purposeAlias||applied.model!==identity.purposeAlias||
+          if(row.status!=='valid'||row.hash!==definitionHash||definitionHash!==identity.definitionHash||
             definition.role!=='chief-of-staff'||applied.role!=='chief-of-staff'||
             row.ownership!=='owned'||row.ownership_token!==identity.incarnation||row.runtime_control_token!==identity.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
+          if(definition.model!==identity.purposeAlias){
+            // An extra key (the owner's only) stands on the main key: the agent's own model name must be a served name
+            // of the same reviewed capability, and its main key must be active under it.
+            if(applied.model!==definition.model||!policy.capability.aliases.includes(identity.purposeAlias)||!policy.capability.aliases.includes(definition.model))throw refuse();
+            const brain=(await db.query(`SELECT id,endpoint_hash,profile_hash FROM budget_gateway_bindings WHERE installation_account_id=$1 AND member_account_id=$2 AND agent=$3 AND incarnation=$4 AND purpose_alias=$5 AND state='active' LIMIT 2 FOR SHARE`,
+              [installation.id,member.id,identity.agent,identity.incarnation,definition.model])).rows;
+            if(brain.length!==1||brain[0]!.endpoint_hash!==endpointHash||brain[0]!.profile_hash!==policy.pricing.capabilityHash||
+              !snapshot.operations.some(v=>v.kind==='operation'&&v.bindingId===brain[0]!.id&&v.phase==='active'))throw refuse();
+          }else if(applied.model!==identity.purposeAlias)throw refuse();
           const grant=await new PgGrantStore().captureUseWithExpiry(ownerId,identity.agent,{db:db as never});if(!grant)throw refuse();
           if(grant.validUntil)retainSourceTransactionDeadline(db,grant.validUntil);
           const deadlineQueryStarted=performance.now(),deadline=(await db.query(`SELECT floor(extract(epoch FROM

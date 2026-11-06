@@ -145,7 +145,7 @@ def status(**overrides: object) -> dict:
         "agent": {"status": "valid", "model": "lares-brain", "incarnation": INCARNATION, "state": "ready",
                   "pending": False, "pendingReason": None, "owned": True},
         "member": {"id": OWNER, "active": True, "verified": True, "limit": "15", "canUse": True},
-        "installation": {"state": "closed"}, "account": None, "binding": None,
+        "installation": {"state": "closed"}, "account": None, "binding": None, "bindings": [], "owner": False,
     }
     value.update(overrides)
     return value
@@ -522,6 +522,133 @@ class BudgetCommandTests(unittest.TestCase):
         self.assertEqual(code, budget.EX_REFUSED)
         self.assertIn("cannot spend", output)
         self.assertNotIn("definition.reconcile", self.keeper.actions())
+
+    # extra keys for the installation owner
+
+    ALIASES = ("lares-brain", "lares-writer", "lares-utility", "lares-gate")
+
+    def owner_flow(self, owner: bool = True, refuse: str | None = None, existing: dict | None = None, aliases: tuple = ALIASES) -> dict:
+        """A keeper that remembers what was made: the status it reports follows the keys it was asked to make and open."""
+        self.mark_setup_done()
+        path = self.prefix / "etc/lares/budget-setup.json"
+        state = json.loads(path.read_text())
+        state["policy"] = {"endpointHash": "e" * 64, "policies": [{"key": {"models": [alias]}} for alias in aliases]}
+        path.write_text(json.dumps(state))
+        keys: dict[str, dict] = {alias: dict(entry) for alias, entry in (existing or {}).items()}
+        world = {"keys": keys, "account": "open" if keys.get("lares-brain", {}).get("active") else "closed", "refuse": refuse}
+
+        def report(request: dict) -> dict:
+            listed = [{"id": key["id"], "credentialGeneration": "0", "alias": alias, "active": key["active"]}
+                      for alias, key in sorted(keys.items(), key=lambda item: aliases.index(item[0]))]
+            brain = keys.get("lares-brain")
+            return ok(status(owner=owner, bindings=listed, account=None if brain is None and world["account"] == "closed" and not listed else {"state": world["account"]},
+                             binding={"id": brain["id"], "credentialGeneration": "0"} if brain else None))
+
+        def provision(request: dict) -> dict:
+            alias = request["input"]["purposeAlias"]
+            if alias == world["refuse"]:
+                return {"ok": False, "outcome": "refused", "error": "Native budget provisioning refused"}
+            keys[alias] = {"id": request["input"]["bindingId"], "active": False}
+            return ok({"state": "bound-closed"})
+
+        def activate(request: dict) -> dict:
+            for alias, key in keys.items():
+                if key["id"] == request["input"]["bindingId"]:
+                    key["active"] = True
+                    if alias == "lares-brain":
+                        world["account"] = "open"
+            return ok({"state": "active"})
+
+        self.start_flow(status(), status())
+        self.keeper.answers["budget.agent-start-status"] = report
+        self.keeper.answers["budget.provision-native"] = provision
+        self.keeper.answers["budget.activate-native"] = activate
+        return world
+
+    def native_calls(self) -> list[tuple[str, str]]:
+        """Each key request, as (step, model name), in order. An activation is named by the key it opens."""
+        names: dict[str, str] = {}
+        calls = []
+        for request in self.keeper.requests:
+            if request["action"] == "budget.provision-native":
+                names[request["input"]["bindingId"]] = request["input"]["purposeAlias"]
+                calls.append(("make", request["input"]["purposeAlias"]))
+            elif request["action"] == "budget.activate-native":
+                calls.append(("open", names.get(request["input"]["bindingId"], request["input"]["bindingId"])))
+        return calls
+
+    def test_the_owner_gets_a_key_for_each_other_model_name_after_the_agents_own(self) -> None:
+        self.owner_flow()
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.native_calls(), [("make", "lares-brain"), ("open", "lares-brain"), ("make", "lares-writer"), ("open", "lares-writer"),
+                                               ("make", "lares-utility"), ("open", "lares-utility"), ("make", "lares-gate"), ("open", "lares-gate")])
+        for alias in self.ALIASES[1:]:
+            self.assertIn(f"Creating the key for {alias}.", output)
+        self.assertEqual(output.count("Creating the key for"), 3)
+        self.assertEqual(self.keeper.actions()[-3:], ["definition.list", "definition.get", "definition.reconcile"])
+        state = json.loads((self.prefix / "etc/lares/budget-setup.json").read_text())
+        self.assertEqual(len(state["bindings"]), 4)
+        self.assertEqual(sorted(key.rsplit("/", 1)[-1] for key in state["bindings"] if key.count("/") == 3), sorted(self.ALIASES[1:]))
+        # Every key was made with its own id, under the one agent and its one incarnation.
+        made = [request["input"] for request in self.keeper.requests if request["action"] == "budget.provision-native"]
+        self.assertEqual(len({entry["bindingId"] for entry in made}), 4)
+        self.assertEqual({(entry["memberId"], entry["agent"], entry["incarnation"]) for entry in made}, {(OWNER, "my-agent", INCARNATION)})
+
+    def test_running_again_makes_and_opens_nothing_twice(self) -> None:
+        self.owner_flow()
+        self.assertEqual(self.run_command("agent-start", "my-agent")[0], 0)
+        self.keeper.requests.clear()
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.native_calls(), [])
+        self.assertNotIn("Creating the key", output)
+
+    def test_a_failed_extra_key_leaves_the_agents_own_key_working_and_a_second_run_carries_on(self) -> None:
+        world = self.owner_flow(refuse="lares-utility")
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, budget.EX_REFUSED, output)
+        self.assertIn("The keeper refused the key for lares-utility", output)
+        self.assertIn("my-agent keeps working on its own model name", output)
+        self.assertIn("sudo lares agent start my-agent again", output)
+        self.assertEqual(self.native_calls(), [("make", "lares-brain"), ("open", "lares-brain"), ("make", "lares-writer"), ("open", "lares-writer"), ("make", "lares-utility")])
+        self.assertTrue(world["keys"]["lares-brain"]["active"])
+        self.assertEqual(world["account"], "open")
+        # The agent itself still starts.
+        self.assertEqual(self.keeper.actions()[-1], "definition.reconcile")
+        refused_id = next(request["input"]["bindingId"] for request in self.keeper.requests if request["input"].get("purposeAlias") == "lares-utility")
+        self.keeper.requests.clear()
+        world["refuse"] = None
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.native_calls(), [("make", "lares-utility"), ("open", "lares-utility"), ("make", "lares-gate"), ("open", "lares-gate")])
+        self.assertEqual(world["keys"]["lares-utility"]["id"], refused_id, "a retry must carry the same id")
+
+    def test_a_key_made_but_not_opened_is_opened_and_not_made_again(self) -> None:
+        brain = {"id": "key-1", "active": True}
+        self.owner_flow(existing={"lares-brain": brain, "lares-writer": {"id": "key-2", "active": False},
+                                  "lares-utility": {"id": "key-3", "active": True}})
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.native_calls(), [("open", "key-2"), ("make", "lares-gate"), ("open", "lares-gate")])
+        self.assertIn("Opening the key for lares-writer.", output)
+        self.assertIn("Creating the key for lares-gate.", output)
+        self.assertNotIn("lares-utility.", output)
+
+    def test_a_key_the_keeper_cannot_place_is_not_guessed_at(self) -> None:
+        self.owner_flow(existing={"lares-brain": {"id": "key-1", "active": True}, "lares-writer": {"id": "key-2", "active": None}})
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, budget.EX_REFUSED, output)
+        self.assertIn("cannot tell how far the key for lares-writer got", output)
+        self.assertEqual(self.native_calls(), [])
+        self.assertEqual(self.keeper.actions()[-1], "definition.reconcile")
+
+    def test_nobody_but_the_owner_gets_more_than_the_agents_own_key(self) -> None:
+        self.owner_flow(owner=False)
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.native_calls(), [("make", "lares-brain"), ("open", "lares-brain")])
+        self.assertNotIn("Creating the key for", output)
 
     def test_blockers_are_named_before_anything_changes(self) -> None:
         self.mark_setup_done()
