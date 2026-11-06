@@ -172,3 +172,14 @@ describe("gatewayComplete — purpose resolution reaches generateText", () => {
     expect((arg["model"] as { id: string }).id).toBe("explicit-model");
   });
 });
+
+describe("gatewayComplete runs as an owner job", () => {
+  it("wraps the model call so the provider sees the requested model alias as the owner-job alias", async () => {
+    const { currentOwnerJob } = await import("@lares/agent-kit/owner-job");
+    let seen: string | undefined;
+    generateTextMock.mockImplementationOnce((async () => { seen = currentOwnerJob()?.alias; return { text: "ok" }; }) as never);
+    await gatewayComplete("hello", { purpose: "writer" });
+    expect(seen).toBe("lares-writer");
+    expect(currentOwnerJob()).toBeUndefined();
+  });
+});

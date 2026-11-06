@@ -93,7 +93,7 @@ export function modelPurposeMac(key: Buffer, fields: ModelPurposeMacFields): Buf
 
 export function modelPurposeDispatchMac(key: Buffer, fields: ModelPurposeDispatchFields): Buffer {
   if (key.length !== 32 || fields.method !== 'POST' ||
-      (fields.path !== '/v1/messages' && fields.path !== '/v1/chat/completions') ||
+      (fields.path !== '/v1/messages' && fields.path !== '/v1/chat/completions' && fields.path !== '/v1/embeddings') ||
       !/^[a-f0-9]{64}$/.test(fields.requestHash) || !/^[A-Za-z0-9_-]{43}$/.test(fields.ticket) ||
       !/^[a-z][a-z0-9-]{1,30}$/.test(fields.agent) || !/^[a-f0-9-]{36}$/.test(fields.incarnation) ||
       !/^[A-Za-z0-9_-]{43}$/.test(fields.nonce) || !Number.isSafeInteger(fields.deadline)) {

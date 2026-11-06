@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {dirname,isAbsolute,join} from 'node:path';
 import type {Pool} from 'pg';
 import {PgBudgetAdmissionStore,type BudgetGatewayTicket} from '@lares/agent-kit/budget-admission-store';
-import {gatewayRawRequestHash,GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_OPENAI_MODEL_PATH,type GatewayModelPath} from '@lares/agent-kit/gateway-admission-protocol';
+import {gatewayRawRequestHash,GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_EMBEDDINGS_MODEL_PATH,GATEWAY_OPENAI_MODEL_PATH,type GatewayModelPath} from '@lares/agent-kit/gateway-admission-protocol';
 import {modelPurposeDispatchMac,MODEL_PURPOSE_DISPATCH_BODY_MAX,type ModelPurposeDispatchFields} from '@lares/agent-kit/model-purpose-protocol';
 import {BudgetNativeCustodyStore,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
 import {readModelPurposeRuntimeControlKey} from './model-purpose-broker.js';
@@ -17,7 +17,8 @@ export const MODEL_PURPOSE_TRANSPORT_BODY_MAX=MODEL_PURPOSE_DISPATCH_BODY_MAX;
 const CLIENTS_MAX=8,QUEUE_MAX=4,NONCES_MAX=4096,HEADER_DEADLINE_MS=20_000,IDLE_TIMEOUT_MS=5_000,RESPONSE_BYTES_MAX=64*1024*1024;
 const deny=()=>new Error('Model purpose dispatch is unavailable');
 const deniedBody=Buffer.from('{"error":"Model purpose dispatch is unavailable"}');
-const ROUTES=new Set<string>([GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_OPENAI_MODEL_PATH]);
+const ROUTES=new Set<string>([GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_OPENAI_MODEL_PATH,GATEWAY_EMBEDDINGS_MODEL_PATH]);
+const formatOfPath=(path:string):'anthropic'|'openai'|'embedding'=>path===GATEWAY_ANTHROPIC_MODEL_PATH?'anthropic':path===GATEWAY_EMBEDDINGS_MODEL_PATH?'embedding':'openai';
 const REQUEST_HEADERS=new Set(['host','connection','content-length','content-type','accept','accept-encoding','anthropic-version','anthropic-beta',
   'x-lares-budget-intent','x-lares-purpose-agent','x-lares-purpose-incarnation','x-lares-purpose-request-hash','x-lares-purpose-nonce','x-lares-purpose-deadline','x-lares-purpose-mac']);
 const RESPONSE_HEADERS=['content-type','content-length','content-encoding','cache-control','retry-after','anthropic-version','x-request-id'] as const;
@@ -103,7 +104,7 @@ function waitForDrain(res:ServerResponse,signal:AbortSignal):Promise<void>{
 function validBodyModel(raw:Buffer,alias:string):boolean{
   try{const body=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(raw)) as {model?:unknown};return !!body&&typeof body==='object'&&!Array.isArray(body)&&body.model===alias;}catch{return false;}
 }
-function matchNative(gate:NativeCustodyGate,ticket:BudgetGatewayTicket,path:GatewayModelPath,bodyBytes:number):{endpoint:string;key:string;format:'anthropic'|'openai'}|undefined{
+function matchNative(gate:NativeCustodyGate,ticket:BudgetGatewayTicket,path:GatewayModelPath,bodyBytes:number):{endpoint:string;key:string;format:'anthropic'|'openai'|'embedding'}|undefined{
   const snapshot=gate.inventory();
   const matches=snapshot.operations.filter((value):value is NativeOperation=>value.kind==='operation'&&value.phase==='active'&&
     value.plaintext==='present'&&value.bindingReceipt!==null&&value.activationReceipt!==null&&value.bindingReceipt.journalId===value.activationReceipt.journalId&&value.bindingId===ticket.bindingId&&value.credentialGeneration===ticket.credentialGeneration&&
@@ -118,7 +119,7 @@ function matchNative(gate:NativeCustodyGate,ticket:BudgetGatewayTicket,path:Gate
   if(!team||team.kind!=='team'||user.installationAccountId!==ticket.installationAccountId||team.installationAccountId!==ticket.installationAccountId||
     user.endpoint.hash!==ticket.endpointHash||team.endpoint.hash!==ticket.endpointHash||
     team.capabilityHash!==ticket.profileHash||user.endpoint.origin!==team.endpoint.origin)return undefined;
-  const expectedFormat=path===GATEWAY_ANTHROPIC_MODEL_PATH?'anthropic':'openai';
+  const expectedFormat=formatOfPath(path);
   if(operation.reviewedPolicy.pricing.format!==expectedFormat)return undefined;
   const key=gate.readKey(operation.operationId);
   if(createHash('sha256').update(key).digest('hex')!==ticket.keyFingerprint)return undefined;
@@ -225,7 +226,7 @@ export async function serveModelPurposeTransport(options:ModelPurposeTransportOp
     const raw=Buffer.concat(chunks,bytes);
     if(gatewayRawRequestHash(fields.method,fields.path,raw)!==ticket.requestHash||fields.requestHash!==ticket.requestHash){refuse(req,res,403);return;}
     recordStage(req,'profile');
-    const format=fields.path===GATEWAY_ANTHROPIC_MODEL_PATH?'anthropic':'openai';
+    const format=formatOfPath(fields.path);
     try{if((ticket.pricingProfile as {format?:unknown})?.format!==format||!validBodyModel(raw,ticket.purposeAlias)){refuse(req,res,403);return;}}catch{refuse(req,res,403);return;}
     // One host dispatch is reserved per ticket even if the same authenticated runtime
     // retries with a fresh nonce while gateway admission is in flight or uncertain.

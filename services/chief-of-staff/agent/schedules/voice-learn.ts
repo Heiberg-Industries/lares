@@ -32,7 +32,6 @@ import { purposeModel } from "@lares/agent-kit/gateway-status";
 import { googleClients, listEnrolledMailboxes } from "../../lib/google.js";
 import { gatewayComplete } from "../../lib/llm-complete.js";
 import { makeGatewayEmbedder } from "../../lib/embeddings-gateway.js";
-import { gatewayUrl, gatewayKey } from "../../lib/gateway-provider.js";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass, recordScheduleTick } from "@lares/agent-kit/schedule-heartbeat";
@@ -145,7 +144,7 @@ export async function learnAllMailboxes(): Promise<boolean> {
   }
 
   const embedModel = process.env["EMBED_MODEL"] ?? purposeModel("embed");
-  const embedder = makeGatewayEmbedder({ gatewayUrl: gatewayUrl(), apiKey: gatewayKey(), model: embedModel });
+  const embedder = makeGatewayEmbedder({ model: embedModel });
   try {
     await embedder.embed(["voice-learn probe"]);
   } catch (err) {

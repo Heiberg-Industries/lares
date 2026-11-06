@@ -187,6 +187,16 @@ describe('bounded runtime model-purpose client', () => {
     expect(seen.headers['x-lares-purpose-mac']).toBe(modelPurposeDispatchMac(key,fields).toString('base64url'));
   });
 
+  it('dispatches an embeddings request on its own route with a MAC over that route',async()=>{
+    const {modelPurposeDispatchRequest}=await import('../src/model-purpose-client.js');
+    const body=Buffer.from('{"model":"fixture-embed","input":["a"],"encoding_format":"float"}');
+    await (await modelPurposeDispatchRequest({ticket:'T'.repeat(43),method:'POST',path:'/v1/embeddings',rawBody:body,deadline:Date.now()+10_000})).text();
+    const seen=dispatchSeen.at(-1)!;
+    expect(seen.path).toBe('/v1/embeddings');expect(seen.body).toEqual(body);
+    const expected=(await import('../src/gateway-admission-protocol.js')).gatewayRawRequestHash('POST','/v1/embeddings',body);
+    expect(seen.headers['x-lares-purpose-request-hash']).toBe(expected);
+  });
+
   it('refuses over-limit bodies before opening the dispatch socket',async()=>{
     const {modelPurposeDispatchRequest,MODEL_PURPOSE_DISPATCH_BODY_MAX}=await import('../src/model-purpose-client.js');
     const count=dispatchSeen.length;

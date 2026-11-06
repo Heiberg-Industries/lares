@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { claimModelDispatch, hasModelPurposeInvocation, prepareCurrentModelPurposeIntent } from "./model-invocation.js";
 import { modelPurposeDispatchRequest, MODEL_PURPOSE_DISPATCH_BODY_MAX } from "./model-purpose-client.js";
+import { currentOwnerJob, dispatchOwnerJob, hasOwnerJob } from "./owner-job.js";
 import { GATEWAY_ANTHROPIC_MODEL_PATH, GATEWAY_OPENAI_MODEL_PATH } from "./gateway-admission-protocol.js";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
@@ -151,7 +152,7 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
         if (!constructed) return undefined;
         // The managed-purpose transport authenticates with the protected runtime-control
         // key. This placeholder is removed before the request leaves the agent process.
-        if (hasModelPurposeInvocation()) return "lares-managed-purpose";
+        if (hasModelPurposeInvocation() || hasOwnerJob()) return "lares-managed-purpose";
         return gatewayKey();
       },
       markConstructed(): void {
@@ -169,7 +170,7 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
     const headers = new Headers(init?.headers);
     headers.set("Accept-Encoding", IDENTITY_ENCODING_HEADERS["Accept-Encoding"]);
     const request = { ...reshapeJsonBody(init, shapeAnthropicBody), headers };
-    if (hasModelPurposeInvocation()) return dispatchModelPurpose(input, request, GATEWAY_ANTHROPIC_MODEL_PATH);
+    if (hasModelPurposeInvocation() || hasOwnerJob()) return dispatchModelPurpose(input, request, GATEWAY_ANTHROPIC_MODEL_PATH);
     claimModelDispatch();
     return globalThis.fetch(input, { ...request, redirect: "error" });
   };
@@ -232,7 +233,7 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
     headers.set("Accept-Encoding", IDENTITY_ENCODING_HEADERS["Accept-Encoding"]);
     // This lane cannot carry `cache_control`; only the boundary marker is removed (`./prompt-cache.ts`).
     const request = { ...reshapeJsonBody(init, stripBoundaryFromChatBody), headers };
-    if (hasModelPurposeInvocation()) return dispatchModelPurpose(input, request, GATEWAY_OPENAI_MODEL_PATH);
+    if (hasModelPurposeInvocation() || hasOwnerJob()) return dispatchModelPurpose(input, request, GATEWAY_OPENAI_MODEL_PATH);
     headers.set("Authorization", `Bearer ${gatewayKey()}`);
     claimModelDispatch();
     return globalThis.fetch(input, { ...request, redirect: "error" });
@@ -257,6 +258,14 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
       : undefined;
     if (path !== expectedPath || request.method !== "POST" || !bytes || bytes.length > MODEL_PURPOSE_DISPATCH_BODY_MAX)
       throw new Error("Model purpose authority is not available");
+    // A conversation step keeps its own claim. Outside one, a scheduled job or a tool that
+    // wraps its call in `withOwnerJob` gets one ticket per request, charged to the owner.
+    const job = hasModelPurposeInvocation() ? undefined : currentOwnerJob();
+    if (job) {
+      request.headers.delete("authorization");
+      request.headers.delete("x-api-key");
+      return dispatchOwnerJob({ alias: job.alias, path: expectedPath, rawBody: bytes, headers: request.headers, signal: request.signal ?? undefined });
+    }
     const prepared = await prepareCurrentModelPurposeIntent("POST", expectedPath, bytes);
     // The local claim burns synchronously before opening the UDS request. A failed or
     // uncertain transport is never retried through the ordinary gateway key.

@@ -4,7 +4,7 @@ import { chmod, chown, lstat, mkdir, open, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type {Pool} from 'pg';
-import { captureBudgetAuthorityReference, validateBudgetAuthorityReference, type BudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
+import { captureBudgetAuthorityReference, validateBudgetAuthorityReference, type ConversationBudgetAuthorityReference as BudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
 import {PgBudgetAdmissionStore,type BudgetFinancialWriter,type GatewayModelRequestIdentity,type ModelPurposeClaimSource} from '@lares/agent-kit/budget-admission-store';
 import {GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_OPENAI_MODEL_PATH} from '@lares/agent-kit/gateway-admission-protocol';
 import { checkConsoleSourceDeadlines, consoleSourceTransaction, retainSourceTransactionDeadline, type SourceDatabase, type SourcePool } from '@lares/agent-kit/console-source-transaction';
@@ -27,6 +27,8 @@ export type ModelPurposeTurnInput={pendingReceipt:string;context:ConsoleAuthorit
 export type ModelPurposeStepInput={turnCapability:string;purposeAlias:string;event:unknown};
 export interface ModelPurposeBrokerOptions {
   consoleSigningKeyFile:string;runtimeSecretsDir:string;consoleSocket?:string;runtimeSocket?:string;
+  /** The installation owner who pays for calls made outside any conversation. Taken from Keeper configuration only. */
+  designatedOwnerId?:string;
   rootUid?:number;runtimeKeyUid?:number;runtimeKeyGid?:number;consoleKeyUid?:number;consoleKeyGid?:number;
   socketUid?:number;socketGid?:number;now?:()=>number;
   /** Test-only fault point for proving listener cleanup after a successful bind. */
@@ -374,6 +376,19 @@ export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurpo
       if(!purposeStore)throw deny();
       const prepared=await purposeStore.prepareModelPurposeIntent(handle,request as unknown as GatewayModelRequestIdentity,signal);
       if(signal.aborted||prepared.expiresAt<=now()||!state.resolveConsumedClaim(handle))throw deny();
+      return signedAck(key,req,input,prepared);
+    }
+    if(req.op==='job.consume'){
+      // A call outside any conversation. The payer is the owner in Keeper's own configuration; the
+      // agent only names the model it wants and the exact request, and must hold the owner's key for it.
+      if(req.outcomeDigest!==EMPTY_DIGEST||req.payloadDigest!==modelPurposeDigest(input)||Object.keys(input).sort().join(',')!=='alias,request'||
+        typeof input.alias!=='string'||!/^[a-z][a-z0-9-]{1,63}$/.test(input.alias))throw deny();
+      const request=object(input.request);
+      if(Object.keys(request).sort().join(',')!=='method,path,requestHash'||request.method!=='POST'||typeof request.path!=='string'||!validDigest(request.requestHash))throw deny();
+      if(!purposeStore||!options.designatedOwnerId)throw deny();
+      const prepared=await purposeStore.prepareOwnerJobIntent({agent:String(req.agent),incarnation:String(req.incarnation),ownerId:options.designatedOwnerId,
+        alias:input.alias,jobId:String(req.requestId),request:request as unknown as GatewayModelRequestIdentity},signal);
+      if(signal.aborted||prepared.expiresAt<=now())throw deny();
       return signedAck(key,req,input,prepared);
     }
     if(req.op==='turn.close'){

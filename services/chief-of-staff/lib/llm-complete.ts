@@ -22,6 +22,7 @@
  */
 import { generateText } from "ai";
 import { purposeModel } from "@lares/agent-kit/gateway-status";
+import { withOwnerJob } from "@lares/agent-kit/owner-job";
 import { gatewayModel } from "./gateway-provider.js";
 
 export type Purpose = "utility" | "writer" | "brain";
@@ -117,7 +118,9 @@ export async function gatewayComplete(prompt: string, opts: GatewayCompleteOptio
   const purpose = opts.purpose ?? "utility";
   const model = resolveModelForPurpose(purpose, process.env, opts.model);
   const maxOutputTokens = outputTokenBudget(purpose, opts.maxOutputTokens);
-  const { text, finishReason, usage } = await generateText({
+  // A completion runs outside any conversation (a schedule, or a tool in someone's chat), so it
+  // asks the Keeper for its own ticket per request, charged to the installation owner.
+  const { text, finishReason, usage } = await withOwnerJob(model, () => generateText({
     model: gatewayModel(model),
     prompt,
     maxOutputTokens,
@@ -125,7 +128,7 @@ export async function gatewayComplete(prompt: string, opts: GatewayCompleteOptio
     // own default in place, so every existing call site (the commercial radar's ICP scoring, the
     // track routing classifier, email triage) keeps the retry behaviour it was written against.
     ...(opts.maxRetries === undefined ? {} : { maxRetries: opts.maxRetries }),
-  });
+  }));
   if (opts.onUsage && usage) {
     opts.onUsage({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens });
   }
