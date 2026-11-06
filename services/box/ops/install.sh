@@ -1400,17 +1400,7 @@ run_stack() {
   python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "the installation's database authentication custody is missing or invalid; nothing was rendered or started." "$EX_REFUSED"
   do_or_say mkdir -p "$(dirname "$compose_file")" "$(dirname "$caddyfile")" "$(dirname "$gateway_config")" "$caddy_data" "$db_data"
   [ ! -L "$taste_dir" ] || die "$taste_dir is a symbolic link; refusing to mount it into the console." "$EX_REFUSED"
-  # Agents' own model-provider key files live here (the keeper writes them; the gateway mounts the directory read-only).
-  # It must exist before the gateway starts, and a link must never stand in for it. Same modes as the keeper's secret root.
-  local provider_keys_dir="$PREFIX/srv/lares/secrets/gateway-provider-keys" provider_keys_part
-  for provider_keys_part in "$PREFIX/srv/lares/secrets" "$provider_keys_dir"; do
-    [ ! -L "$provider_keys_part" ] || die "$provider_keys_part is a symbolic link, so it cannot hold provider keys. Nothing has been brought up." "$EX_REFUSED"
-    if [ ! -d "$provider_keys_part" ]; then
-      do_or_say mkdir -p "$provider_keys_part"
-      do_or_say chmod 0700 "$provider_keys_part"
-      do_or_say chown 0:0 "$provider_keys_part"
-    fi
-  done
+  local provider_keys_dir="$PREFIX/srv/lares/secrets/gateway-provider-keys"
   do_or_say mkdir -p "$taste_dir"
   do_or_say chown 10001:10001 "$taste_dir"
   do_or_say chmod 0750 "$taste_dir"
@@ -1852,6 +1842,16 @@ run_keeper() {
     do_or_say mkdir -p "$managed_secrets_dir"
     do_or_say chmod 0700 "$managed_secrets_dir"
     do_or_say chown 0:0 "$managed_secrets_dir"
+  fi
+
+  # Agents' own model-provider key files live here (the keeper writes them; the gateway mounts the directory read-only,
+  # without creating it, so it must exist before the gateway starts). Same checks and modes as the secret root above.
+  local provider_keys_dir="$managed_secrets_dir/gateway-provider-keys"
+  [ ! -L "$provider_keys_dir" ] || die "$provider_keys_dir is a symbolic link, so it cannot hold provider keys. Nothing already written has been changed." "$EX_REFUSED"
+  if [ ! -d "$provider_keys_dir" ]; then
+    do_or_say mkdir -p "$provider_keys_dir"
+    do_or_say chmod 0700 "$provider_keys_dir"
+    do_or_say chown 0:0 "$provider_keys_dir"
   fi
 
   # Rendered to neighbouring names and moved into place, the same discipline every other file
