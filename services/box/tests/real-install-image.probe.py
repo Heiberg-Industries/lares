@@ -251,6 +251,17 @@ def running_images() -> set[str]:
     return set(output("docker", "inspect", "--format", "{{.Config.Image}}", *ids).split()) if ids else set()
 
 
+def gateway_replaced_files() -> list[str]:
+    """Files mounted into the running gateway that were replaced on the host after it started: the
+    kernel marks such a mount's root "//deleted", and the gateway still reads the old file."""
+    ids = output("docker", "ps", "-q", "--filter", "label=com.docker.compose.service=lares-gateway").split()
+    if not ids:
+        raise RuntimeError("no gateway container is running")
+    pid = output("docker", "inspect", "--format", "{{.State.Pid}}", ids[0]).strip()
+    fields = [line.split(" ") for line in pathlib.Path(f"/proc/{pid}/mountinfo").read_text().splitlines()]
+    return sorted(f[4] for f in fields if len(f) > 4 and f[3].endswith("//deleted"))
+
+
 def agent_image() -> str | None:
     """The image the proof agent's running container was started from; None when it is not running."""
     ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
@@ -706,6 +717,12 @@ def main(argv: list[str]) -> int:
         if release["images"]["lares-gateway"] not in running:
             raise RuntimeError(f"the unchanged gateway is not running after the update: {sorted(running)}")
         passed("update-runs-the-second-build")
+        # The gateway image does not change here, but the installer rewrites its code and settings;
+        # a gateway left running reads the previous release's files and refuses every model call.
+        stale = gateway_replaced_files()
+        if stale:
+            raise RuntimeError(f"the gateway still reads files the update replaced: {stale}")
+        passed("update-restarted-the-gateway-onto-the-new-files")
         wait_for_sign_in_offer()
         kept = (len(list(pathlib.Path("/srv/vault").rglob(f"tracks/{APPROVAL_TRACK}/track.md"))) == len(written) and
                 len(list(pathlib.Path("/srv/vault").rglob("private/*/_inbox/proof-note.md"))) == len(notes))
