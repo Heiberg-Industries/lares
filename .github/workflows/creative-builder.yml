@@ -21,7 +21,7 @@ env:
 jobs:
   build:
     if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Enable corepack and prepare pnpm 9.15.0

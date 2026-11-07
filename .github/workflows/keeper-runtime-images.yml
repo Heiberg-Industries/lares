@@ -20,10 +20,14 @@ on:
 permissions: {contents: read, packages: write}
 env:
   EVE_TELEMETRY_DISABLED: "1"
+# Every workflow names its runner exactly (ubuntu-24.04), never ubuntu-latest: the image proofs
+# below run Docker and nftables on the runner itself, so a new runner image is a new host to prove
+# on, not a routine change. On ubuntu-26.04 (Docker 29.4) the configured outside discovery proof's
+# routed path to the MCP peer times out; move only after that is understood.
 jobs:
   real-install:
     if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       PUBLIC_DOCS_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.docs_release || 'candidate' }}
@@ -89,7 +93,7 @@ jobs:
           if-no-files-found: error
   runtime:
     if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       PUBLIC_DOCS_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.docs_release || 'candidate' }}
     strategy:
@@ -241,7 +245,7 @@ jobs:
           labels: org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares
   keeper:
     if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       # This changes only the disposable GitHub-hosted job daemon, before buildx or proof resources exist.
