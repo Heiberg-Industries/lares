@@ -1,0 +1,24 @@
+{
+  "release": "2026-11-07-rc.14.test.2",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:b41b6e42947a6062d59a1d551b8ffbf2facd6e01fb2242e5633694b5ab2495f3",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:1e29d6eb0bbe3dc0485b232295c2b72000aaccff97a4ac0a3c11b056fdbc7ffa",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:25997b169c7769856ce1a0456016064ecae7c9964499a24002077cb632645ab9",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:0c3cba0145dd128e91114d66fec0be22f25f52f95f2b0e4f63fc7783af284a74",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:0c37026ee24ec67f6ed58f712bd3a7b58041aea2c08a556d8b6cbd2d8e69c75b",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:43b8b1c93d15f60f112547b0fb340cdadfd320a4fc0cb1bd45c78acfce4ae2b5",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:d5e083a10e072a8dedf5c29a2ae90d8302866ae6847dacc654b6d27dfa73cfa3"
+  },
+  "migrations": {
+    "box": "035_agent_provider_keys.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "This is a test release, not a finished rc.14. Use it only to test it on a test server; see docs/releases/rc.14.test.2-notes.md for what is unfinished.",
+    "A server on rc.12 or earlier cannot update to this release in place. lares update refuses an older server before changing anything. There is no upgrade path from rc.12 in this release.",
+    "Selective import from an older installation can only preview; it cannot write anything yet."
+  ]
+}
