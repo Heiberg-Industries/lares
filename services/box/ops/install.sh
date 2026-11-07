@@ -1481,6 +1481,20 @@ run_online_stack() {
     die "Console and Caddy did not start after the offline database steps completed." "$EX_REFUSED"
   fi
   say "Console and Caddy are running; the database remains operator-secret-free. This installer did not start the gateway."
+  # A gateway that already exists (lares budget setup started it) reads its start script, code and
+  # configuration from files run_stack just replaced. A running container keeps the old files
+  # until it is recreated, and `up -d` sees no change when only those files changed, so after an
+  # update the gateway ran the previous release's code and refused every model call. Recreate it
+  # here so it reads this run's files. A fresh install has no gateway yet and skips this.
+  local gateway_ids
+  gateway_ids=$(docker compose -f "$compose_file" ps -a -q lares-gateway 2>/dev/null) \
+    || die "the gateway's container could not be listed, so it may still run the previous files. Run the installer again." "$EX_REFUSED"
+  if [ -n "$gateway_ids" ]; then
+    if ! docker compose -f "$compose_file" up -d --force-recreate lares-gateway; then
+      die "the gateway could not be restarted onto this run's files, so model calls may be refused. Run the installer again." "$EX_REFUSED"
+    fi
+    say "the gateway was restarted onto this run's start script, code and configuration."
+  fi
 }
 
 # The first database container exists only for initialization. Its password is a host file under

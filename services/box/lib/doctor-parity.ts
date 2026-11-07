@@ -18,6 +18,10 @@ export interface ContainerRow {
   readonly project: string; // compose project label, "" when the container is not compose-made
   readonly service: string; // compose service label
   readonly image: string; // the image reference the container was started from
+  /** Files bind-mounted into the container (paths inside it) that were replaced on the host after
+   *  it started, so it still reads the old ones. null when the host could not look; absent when
+   *  not reported. */
+  readonly replacedFiles?: readonly string[] | null;
 }
 
 /** What the installer records next to keeper.json each time it renders it. */
@@ -165,8 +169,19 @@ function containerDifferences(release: ReleaseManifest, containers: readonly Con
     } else {
       lines.push(`${label}: a container the release does not define`);
     }
+    // Same image, old files: an installer re-run replaces a file such a container reads, and the
+    // container keeps the old one until it is recreated (the gateway's code, 6 Nov).
+    const replaced = c.replacedFiles ?? [];
+    if (replaced.length > 0) {
+      lines.push(`${label}: still reads ${replaced.length === 1 ? "a file" : `${replaced.length} files`} replaced since it started (${replaced.join(", ")}); it runs the old ${replaced.length === 1 ? "one" : "ones"} until it is recreated`);
+    }
   }
   return lines;
+}
+
+function uncheckedFiles(containers: readonly ContainerRow[], projects: readonly string[]): string[] {
+  const names = containers.filter((c) => projects.includes(c.project) && c.replacedFiles === null).map((c) => c.service || c.name);
+  return names.length === 0 ? [] : [`whether ${names.join(", ")} still ${names.length === 1 ? "reads" : "read"} replaced files (run lares doctor with sudo)`];
 }
 
 function capped(items: readonly string[]): string[] {
@@ -182,6 +197,7 @@ export function checkParity(input: ParityInput): CheckResult {
   if (input.release !== null && input.containers !== null) {
     differences.push(...containerDifferences(input.release, input.containers, input.projects));
   }
+  if (input.containers !== null) unknowns.push(...uncheckedFiles(input.containers, input.projects));
 
   if (!input.keeperConfigPresent) {
     unknowns.push("keeper.json could not be read");
@@ -203,7 +219,7 @@ export function checkParity(input: ParityInput): CheckResult {
       fix: [
         ...lines,
         ...unknowns.map((u) => `- not checked: ${u}`),
-        "Remove each difference (stop the extra container, run the installer again, or undo the hand edit), then run: lares doctor",
+        "Remove each difference (stop the extra container, run the installer again, restart an agent with sudo lares agent refresh, or undo the hand edit), then run: lares doctor",
       ].join("\n"),
     };
   }

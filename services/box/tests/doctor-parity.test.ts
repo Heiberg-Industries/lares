@@ -78,6 +78,31 @@ describe("containers", () => {
     expect(text(r)).toContain("metrics");
   });
 
+  it("fails naming a container that still reads files replaced since it started", () => {
+    const stale = healthy().map((c) => c.service === "lares-gateway" ? { ...c, replacedFiles: ["/opt/lares-gateway/lares_gateway.py", "/etc/litellm/config.yaml"] } : { ...c, replacedFiles: [] });
+    const r = checkParity(input({ containers: stale }));
+    expect(r.state).toBe("fail");
+    expect(r.say).toContain("1 place");
+    expect(r.fix).toContain("lares-gateway: still reads 2 files replaced since it started (/opt/lares-gateway/lares_gateway.py, /etc/litellm/config.yaml)");
+  });
+
+  it("passes when the host looked and found no replaced files", () => {
+    expect(checkParity(input({ containers: healthy().map((c) => ({ ...c, replacedFiles: [] })) })).state).toBe("ok");
+  });
+
+  it("warns, naming the containers, when the host could not look for replaced files", () => {
+    const r = checkParity(input({ containers: healthy().map((c) => ({ ...c, replacedFiles: c.service === "db" ? [] : null })) }));
+    expect(r.state).toBe("warn");
+    expect(r.fix).toContain("whether console, lares-gateway");
+    expect(r.fix).toContain("sudo");
+    expect(r.fix).not.toContain("db,");
+  });
+
+  it("ignores replaced files in containers outside the Lares projects", () => {
+    const other: ContainerRow = { ...row("other-app", D("x", "e"), "someone-else"), replacedFiles: ["/etc/other.conf"] };
+    expect(checkParity(input({ containers: [...healthy(), other] })).state).toBe("ok");
+  });
+
   it("ignores containers outside the Lares projects", () => {
     expect(checkParity(input({ containers: [...healthy(), row("other-app", D("x", "e"), "someone-else"), { name: "loose", project: "", service: "", image: "x" }] })).state).toBe("ok");
   });
@@ -180,7 +205,7 @@ describe("the doctor command", () => {
       const handSet = JSON.parse(JSON.stringify(config));
       handSet.lifecycle.runtime.sneaky = secret;
       writeFileSync(join(dir, "release.json"), JSON.stringify(RELEASE));
-      writeFileSync(join(dir, "containers.jsonl"), healthy().map((c) => JSON.stringify({ ...c, name: `/${c.name}` })).join("\n") + "\n");
+      writeFileSync(join(dir, "containers.jsonl"), healthy().map((c) => JSON.stringify({ ...c, name: `/${c.name}`, replacedFiles: c.service === "lares-gateway" ? ["/etc/litellm/config.yaml"] : [] })).join("\n") + "\n");
       writeFileSync(join(dir, "keeper.json"), JSON.stringify(handSet));
       writeFileSync(join(dir, "keeper.json.rendered"), JSON.stringify(provenanceRecord(config)));
       const flags = [
@@ -197,6 +222,7 @@ describe("the doctor command", () => {
       expect(code).toBe(1);
       expect(report).toContain("Matches the release");
       expect(report).toContain("lifecycle.runtime.sneaky");
+      expect(report).toContain("lares-gateway: still reads a file replaced since it started (/etc/litellm/config.yaml)");
       expect(report).not.toContain(secret);
 
       const plain: string[] = [];
