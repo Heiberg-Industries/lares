@@ -35,7 +35,7 @@ concurrency:
 jobs:
   build-push:
     if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write

@@ -50,7 +50,7 @@ env:
 jobs:
   test:
     name: test (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -127,7 +127,7 @@ jobs:
 
   typecheck:
     name: workspace typecheck
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -173,7 +173,7 @@ jobs:
     name: CI passed
     needs: [test, typecheck]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 2
     env:
       TEST_RESULT: ${{ needs.test.result }}

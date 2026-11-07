@@ -32,7 +32,7 @@ env:
 jobs:
   typecheck:
     if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -56,7 +56,7 @@ jobs:
   build-push:
     if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
     needs: typecheck
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
