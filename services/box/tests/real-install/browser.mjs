@@ -78,6 +78,17 @@ const steps = {
     await page.locator(".lares-message-agent", { hasText: settings.followUpReply }).first().waitFor({ timeout: STEP_MS });
     if (await page.getByText("This conversation is unavailable").count()) throw new Error("The conversation became unavailable");
   },
+  // After `lares update`: the same conversation, one more message, a new answer from the model.
+  async "chat-after-update"(page) {
+    await page.goto(`${origin}/chat/${settings.agent}`);
+    const replies = page.locator(".lares-message-agent", { hasText: settings.followUpReply });
+    await page.waitForTimeout(2000);
+    const before = await replies.count();
+    await page.getByPlaceholder(/^Message /).fill(settings.followUpPrompt, { timeout: 60_000 });
+    await page.getByRole("button", { name: "Send message" }).click();
+    await replies.nth(before).waitFor({ timeout: STEP_MS });
+    if (await page.getByText("This conversation is unavailable").count()) throw new Error("The conversation became unavailable");
+  },
 };
 
 async function startSignIn(page) {

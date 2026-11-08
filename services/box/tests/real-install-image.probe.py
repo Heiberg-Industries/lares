@@ -744,6 +744,19 @@ def main(argv: list[str]) -> int:
             raise RuntimeError("lares agent start after the update did not find the agent running")
         passed("agent-start-after-the-update-finds-it-running")
 
+        # Everything above can pass while every model call is refused; only a chat shows it.
+        stage("a chat after the update")
+        calls_before = len([call for call in fake_calls(fixture) if call["kind"] == "model"])
+        browser("chat-after-update", settings_file, tls)
+        if len([call for call in fake_calls(fixture) if call["kind"] == "model"]) <= calls_before:
+            raise RuntimeError("the chat after the update answered without a model call reaching the provider")
+        deadline = time.monotonic() + 60
+        while int(read_only_query("SELECT count(*) FROM budget_attempts WHERE state = 'settled'", update) or 0) <= int(settled_after or 0):
+            if time.monotonic() > deadline:
+                raise RuntimeError("the model call after the update did not settle in the budget ledger")
+            time.sleep(3)
+        passed("chat-after-the-update-reached-the-model-and-settled")
+
         stage("sudo lares doctor")
         doctor = run("lares", "doctor", timeout=180, check=False)
         said = doctor.stdout + doctor.stderr
