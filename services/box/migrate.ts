@@ -15,7 +15,9 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
+import type { PoolClient } from "pg";
 import { poolFromEnv, type Queryable } from "./lib/db.js";
+import { refreshEngineDatabasePrivileges } from "./lib/database-privileges.js";
 import { ensureLedger, listApplied } from "./lib/migration-ledger.js";
 import {
   adoptMigrations,
@@ -59,7 +61,8 @@ const HELP_TEXT = [
   "                           applied by hand before this tool existed.",
   "  --confirm-will-run       Required with --adopt-through when some files would still run after",
   "                           adoption. Read that list first, then add this flag.",
-  "  --schema-owner           Connect as lares_operator and SET ROLE lares_schema_owner.",
+  "  --schema-owner           Connect as lares_operator and SET ROLE lares_schema_owner; afterwards",
+  "                           give the engine logins the permissions this release's tables need.",
   "  --bootstrap-operator     Apply the initial baseline as lares_operator before role setup.",
   "  --help                   Show this message.",
   "",
@@ -175,7 +178,23 @@ export async function main(
         return 1;
       }
       if (args.schemaOwner) await client.query('SET ROLE "lares_schema_owner"');
-      return await main(argv.filter((arg) => arg !== "--schema-owner" && arg !== "--bootstrap-operator"), { db: client, out: deps.out });
+      const code = await main(argv.filter((arg) => arg !== "--schema-owner" && arg !== "--bootstrap-operator"), { db: client, out: deps.out });
+      if (code !== 0 || !args.schemaOwner || args.dryRun || args.adoptThrough !== undefined || args.dir !== undefined) return code;
+      // A table a migration just made has no grants: only setup hands them out. Give the engine
+      // logins exactly what this release's fixed list says, every time, so an update never
+      // leaves a table no login may read.
+      let refreshed: Awaited<ReturnType<typeof refreshEngineDatabasePrivileges>>;
+      try {
+        await client.query("RESET ROLE");
+        const database = (await client.query<{ name: string }>("SELECT current_database() AS name")).rows[0]?.name ?? "";
+        refreshed = await refreshEngineDatabasePrivileges(client as PoolClient, { expectedDatabase: database });
+      } catch {
+        deps.out("migrate: the migrations were applied, but the database logins' permissions could not be brought up to this release's list. Nothing about them was changed; inspect the database before retrying.");
+        return 1;
+      }
+      if (refreshed.status === "repaired") deps.out("migrate: the database logins were given the permissions this release's tables need.");
+      else if (refreshed.status === "verified") deps.out("migrate: the database logins' permissions already match this release.");
+      return 0;
     } catch {
       deps.out("migrate: the requested database authority could not be established; nothing was applied.");
       return 1;

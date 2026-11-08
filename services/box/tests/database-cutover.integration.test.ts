@@ -8,6 +8,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { Pool } from 'pg';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { applyWorkflowRuntimePrivileges } from '../lib/workflow-database-privileges.js';
+import { engineDatabasePrivilegesMatch } from '../lib/database-privileges.js';
 import { quiet } from './helpers/quiet-pool.js';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -186,4 +187,46 @@ it('sets up, finalizes, migrates, and restores the exact managed database roles 
       current_user,session_user`);
     expect(acl.rows[0]).toEqual({ connect: true, create: false, temp: false, current_user: 'lares_workflow', session_user: 'lares_workflow' });
   } finally { await runtime.end(); }
+}, 60_000);
+
+it('an update whose migration adds a table gives the engine logins that table\'s permissions', async () => {
+  // The state an earlier release leaves behind: set up with the logins, then a newer migration
+  // creates a table under the schema owner, with no grants. Made here by taking the newest table
+  // away and forgetting its migration, so the next run applies it exactly as an update does.
+  const connection = new URL(pg.getConnectionUri());
+  connection.pathname = '/lares_state';
+  const engine = quiet(new Pool({ connectionString: connection.toString(), max: 1 }));
+  const migrateEnv = { ...env, PGUSER: 'lares_operator', PGDATABASE: 'lares_state', DATABASE_PASSWORD_FILE: secretPaths.get('operator')!, LARES_OPERATOR_PASSWORD_FILE: secretPaths.get('operator')! };
+  const loginPool = (role: string, secret: string) => quiet(new Pool({ host: env.PGHOST, port: Number(env.PGPORT), database: 'lares_state', user: role, password: password(secret), max: 1 }));
+  const financial = loginPool('lares_financial', 'financial');
+  const app = loginPool('lares_app', 'app');
+  try {
+    expect(await engineDatabasePrivilegesMatch(engine)).toBe(true);
+    await engine.query('DROP TABLE agent_provider_keys');
+    await engine.query("DELETE FROM schema_migrations WHERE filename='035_agent_provider_keys.sql'");
+    await engine.query('SET ROLE lares_schema_owner');
+    await engine.query(readFileSync(join(box, 'sql/035_agent_provider_keys.sql'), 'utf8'));
+    await engine.query('RESET ROLE');
+    // This is what an updated server had: the spend check's provider-key lookup is refused.
+    await expect(financial.query("SELECT revision FROM agent_provider_keys WHERE agent=$1 AND state='active'", ['proof-agent'])).rejects.toMatchObject({ code: '42501' });
+    expect(await engineDatabasePrivilegesMatch(engine)).toBe(false);
+    await engine.query('DROP TABLE agent_provider_keys');
+
+    const update = await exec(tsx, ['migrate.ts', '--schema-owner'], { cwd: box, env: migrateEnv });
+    expect(update.stdout.toString()).toContain('035_agent_provider_keys.sql');
+    expect((await financial.query("SELECT revision FROM agent_provider_keys WHERE agent=$1 AND state='active'", ['proof-agent'])).rows).toEqual([]);
+    expect((await app.query('SELECT revision FROM agent_provider_keys')).rows).toEqual([]);
+    expect(update.stdout.toString()).toContain("the database logins were given the permissions this release's tables need");
+    await expect(financial.query('SELECT set_at FROM agent_provider_keys')).rejects.toMatchObject({ code: '42501' });
+    expect(await engineDatabasePrivilegesMatch(engine)).toBe(true);
+
+    // Running it again changes nothing, and says so.
+    const again = await exec(tsx, ['migrate.ts', '--schema-owner'], { cwd: box, env: migrateEnv });
+    expect(again.stdout.toString()).toContain("the database logins' permissions already match this release");
+    await exec(tsx, ['bin/database-setup.ts', '--verify-restored-engine',
+      '--operator-password-file', secretPaths.get('operator')!, '--app-password-file', secretPaths.get('app')!,
+      '--financial-password-file', secretPaths.get('financial')!, '--outside-custody-password-file', secretPaths.get('outside')!], { cwd: box, env });
+  } finally {
+    await Promise.all([engine.end(), financial.end(), app.end()]);
+  }
 }, 60_000);
