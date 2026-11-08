@@ -709,3 +709,65 @@ export async function provisionEngineDatabasePrivileges(
     throw safeFailure();
   }
 }
+
+/**
+ * Bring an already-managed engine database's grants up to this release's fixed list, then verify
+ * them exactly. A fresh install grants once, at setup; a migration applied later under the schema
+ * owner creates its table with no grants at all, so every update, installer re-run and restore
+ * calls this after migrating. It only ever ADDS what the fixed list names: the inventory must be
+ * exactly this release's, no grant may name a role outside the engine's, and the result is then
+ * checked privilege by privilege. "verified" means nothing was missing; "repaired" means grants
+ * were added. A database without the four managed roles is left to the restore path that
+ * prepares them, and reported as "not-managed" with nothing changed.
+ */
+export async function refreshEngineDatabasePrivileges(
+  operator: PoolClient,
+  input: { expectedDatabase: string },
+): Promise<{ status: "verified" | "repaired" | "not-managed" }> {
+  let inTransaction = false;
+  try {
+    await operator.query("BEGIN");
+    inTransaction = true;
+    const identity = (await queryRows<{ database: string; superuser: boolean }>(operator, `SELECT current_database() AS database, r.rolsuper AS superuser FROM pg_roles r WHERE r.rolname=current_user`))[0];
+    if (!identity?.superuser || identity.database !== input.expectedDatabase) throw safeFailure();
+    if (await requireRoleState(operator) !== "managed") {
+      await operator.query("ROLLBACK");
+      inTransaction = false;
+      return { status: "not-managed" };
+    }
+    await requireInventory(operator);
+    await requireOnlyExpectedGrants(operator);
+    await operator.query("SAVEPOINT lares_grants_before");
+    let complete = true;
+    try { await requireManagedState(operator, identity.database, true); } catch { complete = false; }
+    await operator.query("ROLLBACK TO SAVEPOINT lares_grants_before");
+    if (!complete) {
+      await applyGrants(operator);
+      await requireManagedState(operator, identity.database, true);
+    }
+    await operator.query("COMMIT");
+    inTransaction = false;
+    return { status: complete ? "verified" : "repaired" };
+  } catch {
+    if (inTransaction) {
+      try { await operator.query("ROLLBACK"); } catch { /* Preserve the fixed safe failure. */ }
+    }
+    throw safeFailure();
+  }
+}
+
+/** Read-only: true when every engine table, column, sequence and function carries exactly the
+ *  grants this release's fixed list names (the same check setup and the refresh end with). Any
+ *  login can read the catalog it asks about; nothing is changed. */
+export async function engineDatabasePrivilegesMatch(client: Pick<PoolClient, "query">): Promise<boolean> {
+  const reader = client as PoolClient;
+  try {
+    const database = (await queryRows<{ name: string }>(reader, "SELECT current_database() AS name"))[0]!.name;
+    if (await requireRoleState(reader) !== "managed") return false;
+    await requireOnlyExpectedGrants(reader);
+    await requireManagedState(reader, database, true);
+    return true;
+  } catch {
+    return false;
+  }
+}

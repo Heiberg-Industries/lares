@@ -40,11 +40,12 @@ import type { SettingReader } from "@lares/vault-format/settings";
 import { settingByName } from "@lares/vault-format/settings";
 import { checkParity, type ParityInput } from "./doctor-parity.js";
 import { checkSettings, type FileProbe, type ProbeFile } from "@lares/vault-format/settings-check";
+import { engineDatabasePrivilegesMatch } from "./database-privileges.js";
 
 export type CheckState = "ok" | "warn" | "fail" | "unknown";
 
 export interface CheckResult {
-  readonly id: string; // "settings" | "database" | "migrations" | "owner" | "backup" | "repairs" | "gateway"
+  readonly id: string; // "settings" | "database" | "migrations" | "permissions" | "owner" | "backup" | "repairs" | "gateway"
   readonly state: CheckState;
   readonly say: string; // one sentence saying what was found
   readonly fix: string | null; // paste-ready — a command, or an exact line for an exact file
@@ -200,6 +201,23 @@ function checkSettingsCheck(env: NodeJS.ProcessEnv, probeFile: ProbeFile): Check
     state: "fail",
     say: `${lines.length} setting${lines.length === 1 ? "" : "s"} ${lines.length === 1 ? "is" : "are"} missing or unusable: ${names.join(", ")}.`,
     fix: lines.join("\n"),
+  };
+}
+
+/** Every engine table must carry exactly the grants this release names. A table a migration added
+ *  without them is readable by no login, and the first thing to touch it is refused. */
+async function checkPermissions(operatorDb: Queryable | undefined): Promise<CheckResult> {
+  if (!operatorDb) {
+    return { id: "permissions", state: "unknown", say: "The database permissions can only be checked with the root-only database login.", fix: "Run `sudo lares doctor`." };
+  }
+  if (await engineDatabasePrivilegesMatch(operatorDb as Parameters<typeof engineDatabasePrivilegesMatch>[0])) {
+    return { id: "permissions", state: "ok", say: "Every database login has exactly the permissions this release names.", fix: null };
+  }
+  return {
+    id: "permissions",
+    state: "fail",
+    say: "The database logins' permissions differ from what this release names, so some database reads or writes are refused (a chat can be refused with \"I could not verify permission to spend\").",
+    fix: "Update to a release whose update repairs them: `sudo lares update --release <name>`. If this keeps failing after an update, do not change anything by hand; ask for help.",
   };
 }
 
@@ -680,18 +698,21 @@ export async function runDoctor(deps: DoctorDeps): Promise<CheckResult[]> {
   const database = await checkDatabase(db);
   const installed = deps.installed === true;
   const migrations = db ? await checkMigrations(deps.ledgerDb ?? db, deps.sqlDir, installed) : unknownBecauseNoDatabase("migrations");
+  // Only an installed server has the four managed database logins; a checkout's database does not.
+  const permissions = installed ? (db ? await checkPermissions(deps.ledgerDb) : unknownBecauseNoDatabase("permissions")) : undefined;
   const owner = db ? await checkOwner(db, deps.sqlDir, installed) : unknownBecauseNoDatabase("owner");
   const backup = db ? await checkBackup(db, deps.now, installed) : unknownBecauseNoDatabase("backup");
   const repairs = db ? await checkRepairs(db, installed) : unknownBecauseNoDatabase("repairs");
   const gateway = await checkGateway(deps.testModel);
 
-  return [settings, database, migrations, owner, backup, repairs, gateway, ...(deps.parity ? [checkParity(deps.parity)] : [])];
+  return [settings, database, migrations, ...(permissions ? [permissions] : []), owner, backup, repairs, gateway, ...(deps.parity ? [checkParity(deps.parity)] : [])];
 }
 
 const CHECK_NAME: Record<string, string> = {
   settings: "Settings",
   database: "Database connection",
   migrations: "Database migrations",
+  permissions: "Database permissions",
   owner: "Installation owner",
   backup: "Backups",
   repairs: "Known issues",
