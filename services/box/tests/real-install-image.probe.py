@@ -615,7 +615,9 @@ def main(argv: list[str]) -> int:
         settings_file = work / "browser.json"
         settings_file.write_text(json.dumps({
             "domain": DOMAIN, "agent": AGENT, "memberLimit": MEMBER_LIMIT, "toolPrompt": TOOL_PROMPT, "followUpPrompt": FOLLOW_UP_PROMPT,
-            "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "notePrompt": NOTE_PROMPT, "noteReply": NOTE_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY, "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
+            "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "notePrompt": NOTE_PROMPT, "noteReply": NOTE_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
+            # Any message the stand-in does not recognise is answered with PROOF_OK.
+            "afterUpdatePrompt": "PROOF_AFTER_THE_UPDATE", "afterUpdateReply": "PROOF_OK", "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
             "screenshotDir": str(shots),
         }))
         browser("discover-owner", settings_file, tls)
