@@ -252,7 +252,7 @@ export interface VaultBatchFileResult { path: string; outcome: VaultBatchOutcome
  *  `commit` is null when nothing needed committing. */
 export async function commitNotes(opts: {
   vaultRoot: string;
-  files: ReadonlyArray<{ path: string; content: string }>;
+  files: ReadonlyArray<{ path: string; content: string | Uint8Array }>;
   message: string;
   guard?: VaultGitGuard;
 }): Promise<{ commit: string | null; results: VaultBatchFileResult[] }> {
@@ -261,13 +261,14 @@ export async function commitNotes(opts: {
   return withGitLock(vaultRoot, opts.guard, async () => {
     if (opts.guard) await opts.guard.revalidate();
     const results: VaultBatchFileResult[] = [];
-    const todo: { path: string; abs: string; content: string; adopt: boolean }[] = [];
+    const todo: { path: string; abs: string; content: Buffer; adopt: boolean }[] = [];
     const seen = new Set<string>();
     let untracked: Set<string> | null = null;
     const untrackedPaths = (): Set<string> => untracked ??=
       new Set(git(vaultRoot, ["ls-files", "-z", "--others", "--exclude-standard"], opts.guard).split("\0").filter(Boolean));
     for (const file of files) {
       const refuse = (reason: string): void => { results.push({ path: file.path, outcome: "refused", reason }); };
+      const bytes = typeof file.content === "string" ? Buffer.from(file.content, "utf8") : Buffer.from(file.content);
       if (seen.has(file.path)) { refuse("duplicate path in batch"); continue; }
       seen.add(file.path);
       let abs: string;
@@ -278,22 +279,22 @@ export async function commitNotes(opts: {
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") { refuse("path not allowed"); continue; }
         results.push({ path: file.path, outcome: "written" });
-        todo.push({ path: file.path, abs, content: file.content, adopt: false });
+        todo.push({ path: file.path, abs, content: bytes, adopt: false });
         continue;
       }
       if (st.isSymbolicLink()) { refuse("symlink"); continue; }
       if (!st.isFile()) { refuse("not a regular file"); continue; }
       if (untrackedPaths().has(file.path)) {
-        if (st.nlink === 1 && readFileSync(abs, "utf8") === file.content) {
+        if (st.nlink === 1 && readFileSync(abs).equals(bytes)) {
           results.push({ path: file.path, outcome: "written" });
-          todo.push({ path: file.path, abs, content: file.content, adopt: true });
+          todo.push({ path: file.path, abs, content: bytes, adopt: true });
         } else refuse("untracked file in the way");
         continue;
       }
       results.push({ path: file.path, outcome: "exists" });
     }
     const paths = todo.map((f) => f.path);
-    await prepare(vaultRoot, opts.guard && { ...opts.guard, expectedContents: Object.fromEntries(todo.map((f) => [f.path, f.adopt ? vaultContentRevision(Buffer.from(f.content, "utf8")) : null])) }, paths, null);
+    await prepare(vaultRoot, opts.guard && { ...opts.guard, expectedContents: Object.fromEntries(todo.map((f) => [f.path, f.adopt ? vaultContentRevision(f.content) : null])) }, paths, null);
     if (todo.length === 0) return { commit: null, results };
     const created: string[] = [];
     try {
@@ -302,7 +303,7 @@ export async function commitNotes(opts: {
         resolveInStore(f.path, vaultRoot, { rejectNestedRepositories: nested });
         mkdirSync(dirname(f.abs), { recursive: true });
         resolveInStore(f.path, vaultRoot, { rejectNestedRepositories: nested });
-        writeFileSync(f.abs, f.content, { encoding: "utf8", flag: "wx" });
+        writeFileSync(f.abs, f.content, { flag: "wx" });
         created.push(f.abs);
       }
     } catch (error) {

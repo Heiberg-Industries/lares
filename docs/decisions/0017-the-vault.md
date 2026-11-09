@@ -223,3 +223,17 @@ are the truth and whose changes are recorded in Git. This is an exception to the
 table rule for dated records. The exception covers only track membership, step, date, note and
 source signal; it does not make the item's person or organisation profile a Vault track
 record.
+
+## Amendment 2026-11 — Importing an existing folder of notes
+
+`lares vault import <folder>` is the one way an existing folder of notes enters the managed Vault.
+It writes through the guarded bulk path (`GuardedVaultFiles.importBatch`), never around it, so every
+write keeps the grant, revision, lock and push checks of rule 1. It is create-only: a note already
+in the Vault is never overwritten. Notes are stamped under rule 3 (default `synced`, never wider
+than the stamp the owner chose), with only the stamp line changed. There is no note index to
+update (rule 10): imported notes are found straight from the files. Each batch of up to 500 files
+is one commit that also carries its own ledger file under `_meta/import/`, so a re-run can tell what
+it imported, what the owner changed and what the owner deleted, and never overwrites or
+resurrects. Updating notes whose source changed is not part of this decision. An import leaves the
+stores non-empty, so `lares restore` onto that installation is refused; restore is for a fresh
+server. The operator steps are in `docs/runbooks/vault-import.md`.

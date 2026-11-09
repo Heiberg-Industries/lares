@@ -555,6 +555,10 @@ not schema drift.
 
 ### 5a. The vaults
 
+To bring an ordinary folder of notes into a Vault (not a restore), see the
+[Vault import runbook](vault-import.md). After an import, `lares restore` onto that same server is
+refused, because restore needs untouched empty Vault stores.
+
 Each `.bundle` is a complete git repository in one file. Clone it back into a bare repository at
 the path the installation expects:
 

@@ -16,6 +16,9 @@
 #                                                       in a container of the current engine image
 #   lares import-preview <archive.tar>                  verify source archive/schema, then report
 #                                                       the remaining blocked inventory work
+#   lares vault import <folder> [options]               look at an existing folder of notes and print the
+#                                                       plan (nothing is written); add --apply --confirm
+#                                                       <plan-id> to bring exactly that plan into the Vault
 #   lares owner-bootstrap                               pin a verified first-owner identity
 #   lares backups  [setup-backups.sh options]           switch on or check backups (setup-backups.sh)
 #   lares budget recover [--check]                      prove the ledger against the database and lift a freeze
@@ -52,6 +55,7 @@ CUR="$ROOT/current"
 OPS="$CUR/services/box/ops"
 EX_USAGE=64
 EX_NOTROOT=77
+EX_REFUSED=78
 
 die() { printf 'lares: %s\n' "$1" >&2; exit "$2"; }
 
@@ -63,6 +67,8 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares restore --snapshot <id|latest> [--old-server-stopped] [--dry-run] [--yes]
        lares doctor [--help]
        lares import-preview <archive.tar>
+       lares vault import <folder> [--map <file>] [--shared <folder>]... [--private <folder>]... [--skip <glob>]...
+                                   [--origin owner|agent|synced] [--include-conversations] [--apply --confirm <plan-id>]
        lares owner-bootstrap
        lares backups [--dry-run] [--yes] [setup-backups.sh options]
        lares budget recover [--check]
@@ -82,7 +88,7 @@ EOF
 cmd="$1"
 shift
 case "$cmd" in
-  update|rollback|restore|doctor|import-preview|owner-bootstrap|backups|budget|agent) ;;
+  update|rollback|restore|doctor|import-preview|vault|owner-bootstrap|backups|budget|agent) ;;
   -h|--help) usage; exit "$EX_USAGE" ;;
   *) printf 'lares: I do not know the command %s.\n' "'$cmd'" >&2; usage; exit "$EX_USAGE" ;;
 esac
@@ -359,6 +365,88 @@ cmd_import_preview() {
   return "$run_status"
 }
 
+# lares vault import <folder> ...: the folder is copied to a private scratch place (links are copied as
+# links, never followed) so the preview and the apply read the same files as the runtime user, and
+# the engine does the rest. The importing member is the installation owner; nothing is sent anywhere.
+cmd_vault_import() {
+  local src="$1" mode=preview label="" map="" origin="" confirm="" apply=0 scratch="" areas="" path="" status=0
+  local -a eargs=()
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --apply) apply=1; mode=apply; shift ;;
+      --include-conversations) eargs+=("$1"); shift ;;
+      --map|--shared|--private|--skip|--origin|--confirm)
+        [ "$#" -ge 2 ] || die "$1 needs a value. Nothing was changed." "$EX_USAGE"
+        case "$1" in
+          --map) map="$2" ;;
+          --origin) origin="$2"; eargs+=("$1" "$2") ;;
+          --confirm) confirm="$2" ;;
+          *) eargs+=("$1" "$2") ;;
+        esac
+        shift 2 ;;
+      *) die "I do not know the option $1 for vault import. Nothing was changed." "$EX_USAGE" ;;
+    esac
+  done
+  case "$origin" in ''|owner|agent|synced) ;; *) die "--origin must be owner, agent or synced. Nothing was changed." "$EX_USAGE" ;; esac
+  if [ "$apply" -eq 1 ]; then
+    printf '%s' "$confirm" | grep -Eq '^[a-f0-9]{64}$' || die "--apply needs --confirm <plan-id>, the 64-character id the preview printed. Nothing was changed." "$EX_USAGE"
+  else
+    [ -z "$confirm" ] || die "--confirm only goes with --apply. Nothing was changed." "$EX_USAGE"
+  fi
+  [ -d "$src" ] && [ ! -L "$src" ] || die "$src must be an existing folder (not a link). Nothing was changed." "$EX_USAGE"
+  src="$(cd "$src" && pwd -P)"
+  label="${src##*/}"
+  if [ -n "$map" ]; then
+    [ -f "$map" ] && [ ! -L "$map" ] || die "the map must be an existing regular file, not a link. Nothing was changed." "$EX_USAGE"
+  fi
+  local install_dir="$PREFIX/srv/lares/installation"
+  [ ! -e "$install_dir/vault-storage.pending.json" ] || die "the Vault setup on this server is not finished (vault-storage.pending.json exists). Finish or repair it first; nothing was changed." "$EX_REFUSED"
+  [ -f "$install_dir/vault-storage.json" ] || die "this server has no Vault yet (no vault-storage.json). Finish the install first; nothing was changed." "$EX_REFUSED"
+  BOX_DIR="$CUR/services/box"
+  # shellcheck source=engine-run.sh
+  . "$OPS/engine-run.sh"
+  engine_resolve_image "$CUR/release.json" || die "this release has no engine image recorded ($BOX_DIR/engine-image). Run get-lares.sh again. Nothing was changed." "$EX_USAGE"
+  areas=$(python3 - "$PREFIX" "$install_dir/vault-storage.json" <<'PYAREAS'
+import json, sys
+prefix = sys.argv[1]
+for a in json.load(open(sys.argv[2]))['areas']:
+    print(prefix + '/srv/' + a['relativePath'])
+    print(prefix + a['origin'])
+PYAREAS
+  ) || die "the Vault inventory could not be read. Nothing was changed." "$EX_REFUSED"
+  scratch=$(mktemp -d "${TMPDIR:-/var/tmp}/lares-vault-import.XXXXXX") || die "could not create private scratch space. Nothing was changed." "$EX_USAGE"
+  trap 'rm -rf -- "$scratch"; exit 130' INT
+  trap 'rm -rf -- "$scratch"; exit 143' TERM
+  mkdir -m 0700 "$scratch/source"
+  # cp -a keeps links as links and keeps hard links paired, so the engine can see and skip them.
+  cp -a -- "$src/." "$scratch/source/" || { rm -rf -- "$scratch"; die "could not copy the folder. Nothing was changed." "$EX_USAGE"; }
+  if [ -n "$map" ]; then
+    cp -- "$map" "$scratch/map.json" || { rm -rf -- "$scratch"; die "could not copy the map file. Nothing was changed." "$EX_USAGE"; }
+    eargs+=(--map "$scratch/map.json")
+  fi
+  chown -R -h 10001:10001 "$scratch" || { rm -rf -- "$scratch"; die "could not hand the scratch copy to the Lares runtime user. Nothing was changed." "$EX_USAGE"; }
+  chmod 0700 "$scratch"
+  local -a mounts=(--runtime-user --ro "$PREFIX/etc/lares/secrets/database-password" --ro "$install_dir" --ro "$scratch")
+  while IFS= read -r path; do [ -z "$path" ] || mounts+=(--rw "$path"); done <<<"$areas"
+  [ "$apply" -eq 0 ] || eargs+=(--confirm "$confirm")
+  engine_run "${mounts[@]}" \
+    --env "DATABASE_PASSWORD_FILE=$PREFIX/etc/lares/secrets/database-password" \
+    --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
+    --env "PGDATABASE=${PGDATABASE:-lares_state}" --env "PGUSER=lares_app" \
+    bin/vault-import.ts "$mode" --source "$scratch/source" --label "$label" --prefix "$PREFIX" ${eargs[@]+"${eargs[@]}"} || status=$?
+  rm -rf -- "$scratch"
+  trap - INT TERM
+  return "$status"
+}
+
+cmd_vault() {
+  if [ "${1:-}" = import ] && [ "$#" -ge 2 ]; then shift; cmd_vault_import "$@"; return; fi
+  printf 'lares: the vault commands are: lares vault import <folder> [options]\n' >&2
+  usage
+  exit "$EX_USAGE"
+}
+
 cmd_owner_bootstrap() {
   [ "$#" -eq 0 ] || die "owner-bootstrap takes no options; paste the setup JSON at its protected prompt" "$EX_USAGE"
   python3 "$OPS/owner-bootstrap.py" --prefix "${PREFIX:-/}"
@@ -399,6 +487,7 @@ case "$cmd" in
   restore) exec bash "$OPS/restore.sh" "$@" ;;
   owner-bootstrap) cmd_owner_bootstrap "$@" ;;
   import-preview) cmd_import_preview "$@" ;;
+  vault) cmd_vault "$@" ;;
   backups) exec bash "$OPS/setup-backups.sh" "$@" ;;
   doctor) cmd_doctor "$@" ;;
   budget) cmd_budget "$@" ;;

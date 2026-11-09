@@ -4,6 +4,8 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
+- `lares vault import <folder>` brings an existing folder of notes into the Vault. It first prints a plan (nothing is written) and only applies a plan you confirm by its id. It never overwrites a note, keeps a record so a re-run does not bring back what you deleted or overwrite what you edited, and leaves hidden folders, links and conversation logs behind. See the Vault import runbook.
+
 - A server installed before rc.14 and then updated no longer refuses every chat with "I could not verify permission to spend". An update now gives the database logins the permissions that a new table needs; until now only a fresh install did, so rc.14's new table could not be read by anyone. The next `lares update` repairs an affected server by itself. `lares doctor` now has a Database permissions check that fails when a login's permissions differ from what the release names.
 
 - The Notion sync can now run on the server as an optional service. It keeps meeting attendees and People records in Notion up to date once an hour. It is off on every installation until the owner switches it on in the console (Settings, Notion, Notion sync), runs a preview that shows what it would add, update or leave alone (writing nothing), and accepts that preview. The acceptance belongs to the exact settings previewed, so changing the Meetings or People database means a new preview. The service restarts or stops with the shared Notion key, and a restore always leaves it off. Pages and transcripts between the Vault and Notion are not part of it yet.

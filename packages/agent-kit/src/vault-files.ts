@@ -220,7 +220,7 @@ export class GuardedVaultFiles {
    * 500 files), each its own lock, commit and push, so a crash leaves whole chunks and a re-run only
    * adds what is missing. Results are in input order. A push failure throws VaultPushFailedError. */
   async importBatch(ctx:VaultFilesContext,input:{binding:Omit<VaultWriteBinding,'relativePath'|'expectedContentRevision'>;
-    files:ReadonlyArray<{path:string;content:string}>;message?:string;chunkSize?:number}):Promise<VaultImportResult> {
+    files:ReadonlyArray<{path:string;content:string|Uint8Array}>;message?:string;chunkSize?:number}):Promise<VaultImportResult> {
     const chunk=input.chunkSize??IMPORT_CHUNK_FILES;
     if(!Number.isInteger(chunk)||chunk<1||chunk>5000)throw new VaultFilesDeniedError();
     const binding=importBindingSchema.parse(input.binding);
@@ -228,7 +228,10 @@ export class GuardedVaultFiles {
     const results:VaultBatchFileResult[]=[],commits:string[]=[],narrowed:string[]=[],chunks=Math.ceil(input.files.length/chunk);
     for(let i=0;i<chunks;i++){
       const files=input.files.slice(i*chunk,(i+1)*chunk).map(f=>{
-        const content=stampImportedNote(f.path,f.content,binding.approvedOrigin),before=/\.md$/i.test(f.path)?readOriginFrontmatter(f.content):undefined;
+        // Markdown is stamped as text; every other file (images, PDFs) is written as the bytes it is.
+        if(!/\.md$/i.test(f.path))return {path:f.path,content:f.content};
+        const text=typeof f.content==='string'?f.content:Buffer.from(f.content).toString('utf8');
+        const content=stampImportedNote(f.path,text,binding.approvedOrigin),before=readOriginFrontmatter(text);
         if(before!==undefined&&before!==readOriginFrontmatter(content))narrowed.push(f.path);
         return {path:f.path,content};
       });

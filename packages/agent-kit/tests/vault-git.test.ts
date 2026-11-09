@@ -401,3 +401,18 @@ describe("commitNotes", () => {
     expect(commitCount(bareDir) - before).toBe(1);
   });
 });
+
+describe("commitNotes with binary files", () => {
+  it("writes bytes as they are, and adopts an untracked leftover only when the bytes match", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0xc3, 0x28]);
+    const result = await commitNotes({ vaultRoot: workDir, files: [{ path: "img/a.png", content: png }, { path: "n.md", content: "text" }], message: "import: bytes" });
+    expect(result.results.map((r) => r.outcome)).toEqual(["written", "written"]);
+    expect(Buffer.from(execFileSync("git", ["-C", bareDir, "show", "HEAD:img/a.png"]))).toEqual(png);
+    expect(readFileSync(join(workDir, "img/a.png"))).toEqual(png);
+    writeFileSync(join(workDir, "left.png"), png);
+    writeFileSync(join(workDir, "other.png"), Buffer.from([1, 2, 3]));
+    const again = await commitNotes({ vaultRoot: workDir, files: [{ path: "left.png", content: png }, { path: "other.png", content: png }], message: "import: adopt" });
+    expect(again.results.map((r) => r.outcome)).toEqual(["written", "refused"]);
+    expect(readFileSync(join(workDir, "other.png"))).toEqual(Buffer.from([1, 2, 3]));
+  });
+});
