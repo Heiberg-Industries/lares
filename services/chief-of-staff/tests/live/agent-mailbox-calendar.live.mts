@@ -5,8 +5,8 @@
  *   RUN_AGENT_MAILBOX_CALENDAR_LIVE=1     manual opt-in
  *   GOOGLE_LIVE_CLIENT_ID, GOOGLE_LIVE_CLIENT_SECRET   the OAuth client the account was connected with
  *   GOOGLE_LIVE_REFRESH_TOKEN             a refresh token granted with the "read+mail-draft" power
- *                                         (services/console/tests/live/google-account-consent.live.mts with
- *                                         PERSONAL_CONSENT_POWER=read+mail-draft; the probe never stores it)
+ *                                         (normally run all three through agent-mailbox-all.live.mts,
+ *                                         which signs in once and passes it in; the probe never stores it)
  * Writes one event on the primary calendar 30 days ahead, no attendees, sendUpdates "none", then removes it
  * (also when something fails in between). Only booleans are printed, never ids, addresses or titles:
  *   accessTokenIssued      the refresh token produced an access token

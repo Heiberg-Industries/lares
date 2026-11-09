@@ -119,6 +119,12 @@ calendar. It stores no credential and sends no mail or calendar writes. Local si
 and database tests establish refusal/transaction behavior; they do not establish live Google
 acceptance. The manual probe has not been run as part of this source change.
 
+`services/chief-of-staff/tests/live/agent-mailbox-all.live.mts` checks the "read + drafts" permission
+end to end with one Google sign-in: it shows whether the Gmail, Calendar and Drive APIs are switched
+on in the Google Cloud project, then runs the draft, Drive and calendar-event probes with that
+permission and withdraws it at Google afterwards. It prints only booleans and Google's short refusal
+reasons, and stores nothing.
+
 ## Models (Settings page)
 
 The **Models** section on Settings is read-only. It shows the address of the model gateway, whether
