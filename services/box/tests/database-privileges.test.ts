@@ -210,6 +210,28 @@ describe("engine database privilege foundation", () => {
     expect((await app.query("DELETE FROM agent_provider_keys WHERE agent='key-fixture-agent'")).rowCount).toBe(1);
   });
 
+  it("lets the application login read and write which account an agent works on, and keeps custody out",async()=>{
+    await admin.query("INSERT INTO orgs(id,display_name) VALUES('binding-org','Binding fixture')");
+    await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('binding-member','Fixture member','binding-org','member','active')");
+    await admin.query("INSERT INTO agent_definitions(name,definition,hash,status) VALUES('binding-agent','{}','fixture','valid')");
+    await admin.query("INSERT INTO agent_access(agent_name,owner_member_id,organisation_id,revision) VALUES('binding-agent','binding-member','binding-org',1)");
+    await admin.query(`INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status)
+      VALUES('binding-account','binding-member','google','https://accounts.example','subject','Fixture','ok')`);
+    await admin.query(`INSERT INTO connected_resource_bindings(id,owner_member_id,connected_account_id,resource_kind,external_id,provider_label)
+      VALUES('binding-resource','binding-member','binding-account','mailbox','subject','Fixture')`);
+    expect((await app.query(`INSERT INTO agent_account_bindings(agent,purpose,owner_member_id,connected_account_id,resource_binding_id,account_generation,revision)
+      VALUES('binding-agent','mailbox','binding-member','binding-account','binding-resource',0,'00000000-0000-4000-8000-000000000a01')`)).rowCount).toBe(1);
+    expect((await app.query("SELECT agent FROM agent_account_bindings")).rows).toEqual([{agent:'binding-agent'}]);
+    expect((await app.query("UPDATE agent_account_bindings SET account_generation=1 WHERE agent='binding-agent'")).rowCount).toBe(1);
+    // The financial login erases and exports a person's rows, so it needs the same reach as for the accounts themselves.
+    expect((await financial.query("SELECT agent FROM agent_account_bindings")).rows).toEqual([{agent:'binding-agent'}]);
+    await expectDenied(()=>outsideCustody.query("SELECT agent FROM agent_account_bindings"));
+    // The cross-owner guard holds under the real login too: another member's account cannot be named.
+    await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('binding-other','Other member','binding-org','member','active')");
+    await expect(app.query(`UPDATE agent_account_bindings SET owner_member_id='binding-other' WHERE agent='binding-agent'`)).rejects.toThrow();
+    expect((await app.query("DELETE FROM agent_account_bindings WHERE agent='binding-agent'")).rowCount).toBe(1);
+  });
+
   it("allows custody to lock retained Vault metadata without changing authority or reading content",async()=>{
     await admin.query("INSERT INTO orgs(id,display_name) VALUES('metadata-org','Metadata fixture')");
     await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('metadata-owner','Fixture owner','metadata-org','owner','active')");

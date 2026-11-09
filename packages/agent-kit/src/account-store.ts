@@ -58,7 +58,8 @@ const sameIdentity = (r: Row, p: z.infer<typeof verifiedAccountSchema>) =>
 export class PgAccountStore {
   constructor(private readonly pool: Pool) {}
 
-  private async transaction<T>(memberId: string, work: (db: PoolClient) => Promise<T>): Promise<T> {
+  /** Reused by PgAgentMailboxStore; same behaviour, now reachable from it. */
+  async transaction<T>(memberId: string, work: (db: PoolClient) => Promise<T>): Promise<T> {
     return consoleSourceTransaction(this.pool,async client=>{
       const db=client as PoolClient;
       try{await gateConsoleOrganisation(db,memberId);}catch{throw new AccountAccessError();}
@@ -132,7 +133,8 @@ export class PgAccountStore {
         boundTo: { kind: 'member', id: b.owner_member_id } }));
     });
   }
-  private async personalResource(db: PoolClient, memberId: string,
+  /** Reused by PgAgentMailboxStore: locks the account row and shares the selected resource. */
+  async personalResource(db: PoolClient, memberId: string,
     expected: PersonalResourceSelection, resourceKind: string): Promise<{ row: Row; selection: ResolvedPersonalResource }> {
     const r = await this.row(db, memberId, expected.accountId);
     if (r.status !== 'ok' || r.generation !== expected.generation) throw new AccountAccessError();

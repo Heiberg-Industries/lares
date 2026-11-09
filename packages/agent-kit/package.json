@@ -111,6 +111,7 @@
     "./identity": "./src/identity.ts",
     "./authority-contract": "./src/authority-contract.ts",
     "./account-store": "./src/account-store.ts",
+    "./agent-mailbox-store": "./src/agent-mailbox-store.ts",
     "./personal-consent": "./src/personal-consent.ts",
     "./account-credentials": "./src/account-credentials.ts",
     "./member-store": "./src/member-store.ts",

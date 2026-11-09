@@ -28,7 +28,7 @@ const LEDGER_TABLES = ["schema_migrations"] as const;
 /** Every migrated engine table appears exactly once in one of the three fixed classes. */
 export const ENGINE_TABLE_PRIVILEGES = {
   ordinary: [
-    "agent_avatars", "agent_conversations", "agent_definitions", "agent_door_claim_audit",
+    "agent_account_bindings", "agent_avatars", "agent_conversations", "agent_definitions", "agent_door_claim_audit",
     "agent_door_connections", "agent_doors", "agent_notes", "agent_registry", "agent_resources", "agent_access",
     "approval_asks", "approval_events", "atlas_notes", "atlas_proposals", "audit", "backup_status",
     "brief_settings", "clipping_choice", "clipping_items", "clipping_requests", "clipping_sources",
