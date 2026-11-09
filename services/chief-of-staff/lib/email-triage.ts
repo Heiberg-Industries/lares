@@ -75,10 +75,9 @@ export interface EmailTriageDeps {
    *  into `renderBusyBlock`'s rendered text. Optional so
    *  every existing caller/test keeps constructing deps unchanged; when omitted the rendered
    *  text falls back to the generic "availability" wording it always had. The live wiring's
-   *  `freeBusy` resolves exactly ONE calendar of the TWO enrolled Google accounts (the
-   *  env-pinned `CALENDAR_PRIMARY_EMAIL`, `lib/google.ts`'s `resolveCalendarApi`) — without
+   *  `freeBusy` resolves exactly ONE calendar (the chosen mailbox's primary one) — without
    *  this label, "no conflicts" reads as a universal claim when it is really a claim about one
-   *  calendar out of two. */
+   *  calendar. */
   calendarLabel?: string;
   /** Injected clock, default `() => new Date()`. eve injects no ambient clock into agents —
    *  every computed date is a guess without one (see proposed-time.ts's header) — so no bare

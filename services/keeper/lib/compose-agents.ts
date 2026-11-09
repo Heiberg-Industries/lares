@@ -12,7 +12,7 @@ export function agentName(name: string): string { if (!/^[a-z][a-z0-9-]{1,30}$/.
     throw new Error('Invalid agent name'); return name; }
 export function pinnedImage(image: string): string { if (!DIGEST.test(image))
     throw new Error('Image must have a full SHA256 digest'); return image; }
-export const ROLE_DOORS:Record<string,readonly string[]>={creative:['slack'],'chief-of-staff':['slack','telegram','email']};
+export const ROLE_DOORS:Record<string,readonly string[]>={creative:['slack'],'chief-of-staff':['slack','telegram']};
 export const DOOR_FILES = DOOR_SECRET_FILES;
 export interface AgentContainer {
     name: string;
@@ -21,7 +21,6 @@ export interface AgentContainer {
     incarnation?: string;
     notionRevision?: string | null;
     bindings?: RuntimeBindings;
-    email?: {principal:string;org:string;mailbox:string;revision:string;owner:string;tokenKeyFile:string;clientIdFile:string;clientSecretFile:string};
     personalGoogle?: PersonalGoogleConfig;
     personalMicrosoft?: PersonalMicrosoftConfig;
     claims?: {kind:'slack'|'telegram';principal:string;revision:string;owner:string}[];
@@ -60,7 +59,7 @@ export interface ComposeOptions {
      * derives its purpose names from it as LARES_MODEL_PREFIX. */
     modelPrefix: string;
     /** The installation owner's console address (keeper.json `credentials.administrator`). The
-     * console approver of an agent that has no door or email claim. A claim always wins. */
+     * console approver of an agent that has no door claim. A claim always wins. */
     consoleAdministrator?: string;
 }
 function absolute(path: string): string { if (!isAbsolute(path) || /[\n\r\0]/.test(path))
@@ -128,7 +127,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
         // approver: the administrator fallback below.
         if (a.consoleOwner) environment.LARES_CONSOLE_PRINCIPAL = a.consoleOwner;
         // A fresh install has no claim yet, so web chat would admit nobody. Fall back to the owner's
-        // own console address. A door claim (above) or the email owner (below) takes precedence.
+        // own console address. A door claim (above) takes precedence.
         if (a.incarnation && opts.consoleAdministrator && !environment.LARES_CONSOLE_PRINCIPAL)
             environment.LARES_CONSOLE_PRINCIPAL = opts.consoleAdministrator;
         const mounts: {
@@ -151,22 +150,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             environment[key] = `/run/secrets/${target}`;
         }
         if (a.incarnation) secret(`${a.name}-runtime-control`, `${opts.secretsDir}/${a.name}-runtime-control`, 'runtime-control');
-        if (a.email) {
-            const e=a.email;
-            environment.GOOGLE_PRINCIPAL_ID=e.principal;
-            environment.LARES_EMAIL_PRINCIPAL=e.principal;
-            environment.LARES_EMAIL_ORG=e.org;
-            environment.LARES_EMAIL_MAILBOX=e.mailbox;
-            environment.LARES_EMAIL_CLAIM_REVISION=e.revision;
-            environment.GMAIL_PRIMARY_EMAIL=e.mailbox;
-            environment.CALENDAR_PRIMARY_EMAIL=e.mailbox;
-            environment.AGENT_OWNER_USER_ID=e.owner;
-            for (const [key,file,target] of [['TOKEN_ENC_KEY_FILE',e.tokenKeyFile,'google-token-key'],['LARES_GOOGLE_CLIENT_ID_FILE',e.clientIdFile,'google-client-id'],['LARES_GOOGLE_CLIENT_SECRET_FILE',e.clientSecretFile,'google-client-secret']]) {
-                secret(`${a.name}-${target}`,file,target);environment[key]=`/run/secrets/${target}`;
-            }
-        }
-        // Personal mailbox credentials use only this root-configured registry, independently
-        // of the legacy email-door principal and selected organisation.
+        // Personal mailbox credentials use only this root-configured registry.
         personalReadSecretFiles(a); // Reject an ambiguous shared token key before publishing anything.
         if (a.personalGoogle) {
             if (a.role !== 'chief-of-staff') throw new Error('Role has no personal Gmail reader');
@@ -211,7 +195,6 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
         for (const door of a.doors)
             if (door.enabled) {
                 if (!ROLE_DOORS[a.role]?.includes(door.kind)) throw new Error('Role does not support this door');
-                if (door.kind === 'email') { if (!a.email) throw new Error('Email connection must be selected and configured'); continue; }
                 if (!(door.kind in DOOR_FILES))
                     throw new Error('Unsupported runnable door');
                 for (const [variable, suffix] of Object.entries(DOOR_FILES[door.kind as keyof typeof DOOR_FILES])) {

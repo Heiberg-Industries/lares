@@ -14,12 +14,12 @@ export function personalMicrosoftEnabled(d: AgentDefinition): boolean {
     return !!grant && grant.scope!=='none' && autonomyOf(d,capability)!=='never';
   });
 }
-type Sources = {personalMicrosoft?:PersonalMicrosoftConfig;personalGoogle?:PersonalGoogleConfig;email?:{tokenKeyFile:string;clientIdFile:string;clientSecretFile:string}};
+type Sources = {personalMicrosoft?:PersonalMicrosoftConfig;personalGoogle?:PersonalGoogleConfig};
 /** Console custody uses one encryption key. Distinct provider mounts must name the same source
  * when both are mounted. Microsoft-only installations need no Google configuration. */
 export function personalReadSecretFiles(a: Sources): string[] {
   const google=googleSecretFiles(a),ms=a.personalMicrosoft?personalMicrosoftSchema.parse(a.personalMicrosoft):undefined;
-  const googleKey=a.personalGoogle?.tokenKeyFile ?? a.email?.tokenKeyFile;
+  const googleKey=a.personalGoogle?.tokenKeyFile;
   if(ms && googleKey && ms.tokenKeyFile!==googleKey)throw new Error('Conflicting personal-read custody key sources');
   return [...new Set([...google,...(ms?Object.values(ms):[])])];
 }

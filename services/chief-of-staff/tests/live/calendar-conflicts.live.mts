@@ -23,15 +23,15 @@
  *
  * NOT part of `pnpm test` — it needs a live Calendar OAuth session, which only exists inside
  * the deployed chief-of-staff container. Run it there, by hand, whenever `lib/calendar-conflicts.ts`
- * changes what it assumes about these fields, exactly as `tests/live/google.live.mts`'s header
- * says (the read-only rootfs and the `/proc/1/environ` env read are the same two traps):
+ * changes what it assumes about these fields
+ * (the read-only rootfs and the `/proc/1/environ` env read are the same two traps):
  *
  *   cat services/chief-of-staff/tests/live/calendar-conflicts.live.mts | \
  *     ssh <user>@<server-address> 'docker exec -i <chief-of-staff-container> sh -c \
  *       "cat > /app/services/chief-of-staff/node_modules/.cache/calendar-conflicts.live.mts"'
  *   ssh <user>@<server-address> 'docker exec <chief-of-staff-container> sh -c \
  *     "cd /app/services/chief-of-staff && \
- *      export \$(tr \"\\0\" \"\\n\" < /proc/1/environ | grep -E \"^(DATABASE_URL|PGPASSWORD|TOKEN_ENC_KEY_FILE|GOOGLE_|GMAIL_PRIMARY_EMAIL|CALENDAR_PRIMARY_EMAIL|EGRESS_PROXY_URL)\" | xargs) && \
+ *      export \$(tr \"\\0\" \"\\n\" < /proc/1/environ | grep -E \"^(DATABASE_URL|PGPASSWORD|TOKEN_ENC_KEY_FILE|GOOGLE_|EGRESS_PROXY_URL)\" | xargs) && \
  *      /app/node_modules/.bin/tsx node_modules/.cache/calendar-conflicts.live.mts"'
  *   ssh <user>@<server-address> 'docker exec <chief-of-staff-container> rm -f /app/services/chief-of-staff/node_modules/.cache/calendar-conflicts.live.mts'
  *

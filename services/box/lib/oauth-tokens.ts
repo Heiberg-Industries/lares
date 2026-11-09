@@ -27,7 +27,7 @@ function warnNoTokenForPrincipal(principal: string, provider: string): void {
     `oauth tokens: no ${provider} token is stored under the principal "${principal}". ` +
     `Legacy principal spellings were replaced by the identity register's id ` +
     `(users.id): if this deployment still names the old spelling in its principal setting ` +
-    `(GOOGLE_PRINCIPAL_ID / CONSOLE_PRINCIPAL_ID / NOTION_SYNC_PRINCIPAL), point it at the ` +
+    `(CONSOLE_PRINCIPAL_ID / NOTION_SYNC_PRINCIPAL), point it at the ` +
     `register's id instead. Said once per process.`,
   );
 }

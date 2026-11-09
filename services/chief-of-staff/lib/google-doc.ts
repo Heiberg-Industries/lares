@@ -8,8 +8,8 @@
  *
  * Export formats — documented Drive v3 behaviour, not measured here: Docs → text/plain,
  * Sheets → text/csv (the FIRST sheet only; the text says so), Slides → text/plain. A PDF or text
- * file stored in Drive is downloaded; anything else gets a plain sentence. The live check for this
- * path is a deploy step (it needs the re-consented token): tests/live/google-doc.live.mts.
+ * file stored in Drive is downloaded; anything else gets a plain sentence. No agent has a Drive
+ * connection today (`driveApisFor` refuses), so this path has no live check.
  */
 import type { DriveApi } from "./google-drive.js";
 

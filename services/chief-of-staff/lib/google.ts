@@ -1,4 +1,3 @@
-import {managedGoogleSelection} from './managed-google.js';
 /**
  * Google (Gmail/Calendar) OAuth stack — decrypt existing `oauth_tokens` refresh tokens and
  * build authed googleapis clients from them.
@@ -6,10 +5,10 @@ import {managedGoogleSelection} from './managed-google.js';
  * AUTH PLUMBING LIVES IN THE KIT: `decryptSecret`, `readTokenEncKey`,
  * `readSecretFile`, the `oauth_tokens` row reads, the egress-proxy pinning and the
  * `OAuth2Client` construction live once in `@lares/agent-kit/google-auth`.
- * What deliberately did NOT move to the kit: the per-org client lookup
+ * What deliberately did NOT move to the kit: the client lookup
  * (in ./google-orgs.ts, beside `GoogleUnenrolledError`; a shared lookup would be one config
  * line away from handing another agent a mailbox it should not see), the mailbox-SELECTION
- * policy in `resolveGmailApi`/`resolveCalendarApi`, the
+ * policy (`chosenMailbox` below), the
  * `GoogleUnenrolledError` type, every Gmail/Calendar capability function below, and this
  * file's own test-factory seams. The kit hands back an authenticated `OAuth2Client` and stops
  * there; the `google.gmail(...)`/`google.calendar(...)` calls stay here.
@@ -39,18 +38,13 @@ import {managedGoogleSelection} from './managed-google.js';
  * call — never at module load — so a missing/malformed key surfaces as a typed error the
  * first time a Google tool actually runs, not at container boot.
  *
- * PRINCIPAL: `googleClients()` defaults its principal from `GOOGLE_PRINCIPAL_ID` and uses it
- * AS-IS — this file never canonicalises, never consults the identity register, and never
- * rewrites what it was given. `oauth_tokens.principal` rows are keyed by the register's id
- * (`services/box/sql/001_baseline.sql`), and the environment value must name that same id.
- * That is deliberately a configuration matter and not a code one: whatever string the
- * environment names is the string this file looks under, and a lookup that finds nothing says
- * so once in the log.
+ * WHICH MAILBOX: `googleClients()` opens the one mailbox the agent's owner chose on the Access tab
+ * (`lib/agent-mailbox.ts`) and nothing else. No principal, no environment pin, no fallback.
  *
- * LAZINESS (the trap this file must not reproduce): `googleClients(principal)` returns
+ * LAZINESS (the trap this file must not reproduce): `googleClients()` returns
  * immediately — it does no I/O. Only calling `.gmail()` / `.calendar()` touches the
  * secret files, the DB, or googleapis. Resolving a client EAGERLY at construction time throws
- * synchronously for an unenrolled principal and crash-loops the service.
+ * synchronously for an agent with no mailbox and crash-loops the service.
  */
 import { google } from "googleapis";
 
@@ -59,9 +53,6 @@ import {
   buildOAuth2Client,
   decryptSecret,
   readTokenEncKey,
-  getMostRecentRefreshToken,
-  listDecryptedRefreshTokens,
-  readSecretFile,
 } from "@lares/agent-kit/google-auth";
 
 // GoogleUnenrolledError and the per-org OAuth client registry live in ./google-orgs.ts, so
@@ -69,7 +60,7 @@ import {
 // holds Gmail send and Calendar writes — the write-shape lint follows imports.
 export { GoogleUnenrolledError, type GoogleOrgConfig } from "./google-orgs.js";
 import type { AgentMailbox, AgentMailboxDeps, AgentMailboxResult } from "./agent-mailbox.js";
-import { GoogleUnenrolledError, orgConfig, personalOrgConfig, type GoogleOrgConfig } from "./google-orgs.js";
+import { personalOrgConfig, type GoogleOrgConfig } from "./google-orgs.js";
 
 // -----------------------------------------------------------------------------------------
 // Gmail — client construction + adapter + MIME. The egress-proxy pinning lives inside the
@@ -818,91 +809,29 @@ export function makeCalendarClient(calendar: CalendarApiClient): CalendarClient 
 // tool's execute() actually calls `.gmail()` / `.calendar()`.
 // -----------------------------------------------------------------------------------------
 
-const PROVIDER = "google";
-
-/** Token lookup happens BEFORE org-config secret reads, deliberately: the resolver never
- *  touches an OAuth client config until it
- *  already has a token row to act on. An unenrolled principal must surface as
- *  `GoogleUnenrolledError` even when this host has no Google client secrets mounted at
- *  all, not as a confusing `GoogleConfigError` about a file that was never going to be
- *  needed for this call. */
-async function resolveGmailApi(principal: string, account?: string): Promise<{ api: GmailApi; mailboxKey: string }> {
-  // Default mailbox is PINNED by env, not the `updated_at DESC` lottery: with two enrolled
-  // mailboxes, "most recently updated" silently flipped to
-  // owner@project.example — an org whose OAuth client is deliberately not mounted here — and every
-  // gmail tool failed. GMAIL_PRIMARY_EMAIL pins the mailbox when two are enrolled (the calendar side
-  // does the same with CALENDAR_PRIMARY_EMAIL); an explicit `account` argument wins.
-  const selected=await managedGoogleSelection(principal,account);
-  const wanted = selected?.mailbox ?? account ?? process.env["GMAIL_PRIMARY_EMAIL"] ?? undefined;
-  const tok = wanted
-    ? (await listDecryptedRefreshTokens(principal, PROVIDER, selected??undefined)).find((t) => t.emailAddress === wanted)
-    : await getMostRecentRefreshToken(principal, PROVIDER);
-  if (!tok || (selected && tok.orgId !== selected.org)) throw new GoogleUnenrolledError(principal, wanted);
-  const org = orgConfig(tok.orgId);
-  const factory = testGmailApiFactory ?? buildAuthedGmail;
-  return { api: factory(org, tok.token), mailboxKey: tok.emailAddress };
-}
-
-async function resolveCalendarApi(principal: string, account?: string): Promise<{ api: CalendarApi }> {
-  // Same env-pinned default as resolveGmailApi above — CALENDAR_PRIMARY_EMAIL picks the
-  // calendar mailbox when two are enrolled.
-  const selected=await managedGoogleSelection(principal,account);
-  const wanted = selected?.mailbox ?? account ?? process.env["CALENDAR_PRIMARY_EMAIL"] ?? undefined;
-  const tok = wanted
-    ? (await listDecryptedRefreshTokens(principal, PROVIDER, selected??undefined)).find((t) => t.emailAddress === wanted)
-    : await getMostRecentRefreshToken(principal, PROVIDER);
-  if (!tok || (selected && tok.orgId !== selected.org)) throw new GoogleUnenrolledError(principal, wanted);
-  const org = orgConfig(tok.orgId);
-  const factory = testCalendarApiFactory ?? buildAuthedCalendar;
-  return { api: factory(org, tok.token) };
-}
-
 export interface GoogleClients {
-  /** The primary (most-recently-updated) mailbox's Gmail client, or a specific `account`
-   *  (an email address). Throws
-   *  `GoogleUnenrolledError` if the principal (or that specific account) has no token row. */
+  /** The chosen mailbox's Gmail client (drafts only, never send). Refuses plainly when the agent has no
+   *  chosen mailbox, or when `account` is any other address. */
   gmail(account?: string): Promise<GmailClient>;
-   /** Same resolution shape for Calendar. The calendar tools own picking a sensible default account
-    *  (e.g. via `CALENDAR_PRIMARY_EMAIL`) — this
-    *  layer has no opinion beyond "most recently
-    *  updated" when `account` is omitted. */
+  /** The same for Calendar. */
   calendar(account?: string): Promise<CalendarClient>;
 }
 
 /**
- * The lazy, per-call Google client builder. `principal` defaults to `GOOGLE_PRINCIPAL_ID`,
- * whatever the environment sets it to, and is used AS-IS — never canonicalised here, and never
- * looked up in the identity register (see this file's header). Calling this function
- * does no I/O; only calling `.gmail()`/`.calendar()` touches secrets, the DB, or Google.
+ * The lazy, per-call Google client builder. The only mailbox an agent reads is the one its owner
+ * chose on the Access tab. Calling this function does no I/O; only calling `.gmail()`/`.calendar()`
+ * touches secrets, the DB, or Google.
  */
-export function googleClients(principal?: string): GoogleClients {
+export function googleClients(): GoogleClients {
   return {
-    async gmail(account?: string): Promise<GmailClient> {
-      if (principal === undefined) {
-        const chosen = await chosenMailboxOrLegacy();
-        if (chosen) return chosen.gmail(account);
-      }
-      const p = principal ?? process.env["GOOGLE_PRINCIPAL_ID"];
-      if (!p) throw new GoogleConfigError("GOOGLE_PRINCIPAL_ID is not set and no principal was given");
-      const { api, mailboxKey } = await resolveGmailApi(p, account);
-      return makeGmailClient(wrapGmailApi(api, mailboxKey));
-    },
-    async calendar(account?: string): Promise<CalendarClient> {
-      if (principal === undefined) {
-        const chosen = await chosenMailboxOrLegacy();
-        if (chosen) return chosen.calendar(account);
-      }
-      const p = principal ?? process.env["GOOGLE_PRINCIPAL_ID"];
-      if (!p) throw new GoogleConfigError("GOOGLE_PRINCIPAL_ID is not set and no principal was given");
-      const { api } = await resolveCalendarApi(p, account);
-      return makeCalendarClient(wrapCalendarApi(api));
-    },
+    gmail: async (account?: string): Promise<GmailClient> => (await chosenMailboxView(account)).gmail,
+    calendar: async (account?: string): Promise<CalendarClient> => (await chosenMailboxView(account)).calendar,
   };
 }
 
-// The chosen mailbox: the one choke point. When the agent's owner chose a connected mailbox, every
-// default read (no explicit principal) goes to it, drafts only, and never to the older email door.
-//   - nothing chosen, or not a managed agent: the older path above, unchanged;
+// The chosen mailbox: the one choke point. Every Gmail and Calendar read goes to the mailbox the
+// agent's owner chose on the Access tab, drafts only. There is no other door.
+//   - nothing chosen, or not a managed agent: a plain "not connected" refusal;
 //   - a stale choice (disconnected, reconnected, owner changed, ...): refuse, never fall back;
 //   - any other account than the chosen one: refuse.
 // The opened mailbox is kept for its working window and rechecked (credential-free, no lock held)
@@ -914,6 +843,11 @@ let chosenCache: { until: number; result: Promise<AgentMailboxResult> } | null =
 let chosenDeps: AgentMailboxDeps = {};
 /** Test seam: the pool, HTTP layer and definition the chosen-mailbox opening uses. Also forgets the open mailbox. */
 export function __setChosenMailboxDepsForTests(deps: AgentMailboxDeps = {}): void { chosenDeps = deps; chosenCache = null; }
+
+/** Test seam: pretend this mailbox result is open (null forgets it). */
+export function __setChosenMailboxForTests(result: AgentMailboxResult | null): void {
+  chosenCache = result ? { until: Number.POSITIVE_INFINITY, result: Promise.resolve(result) } : null;
+}
 
 async function chosenMailbox(): Promise<AgentMailboxResult> {
   const hit = chosenCache;
@@ -931,34 +865,22 @@ async function chosenMailbox(): Promise<AgentMailboxResult> {
   return r;
 }
 
-const usesOlderPath = (r: AgentMailboxResult): boolean => !r.ok && (r.reason === "none" || r.reason === "not-managed");
+const NO_MAILBOX = "No mailbox chosen for this agent; choose one on its Access tab";
+const noMailbox = (r: AgentMailboxResult): boolean => !r.ok && (r.reason === "none" || r.reason === "not-managed");
 
-/** The chosen mailbox's view, or null when the older path applies. */
-async function chosenMailboxOrLegacy(): Promise<GoogleClients | null> {
+/** The chosen mailbox, or a refusal: "not connected" (a config error) when none is chosen. */
+async function chosenMailboxView(account?: string): Promise<AgentMailbox> {
   const r = await chosenMailbox();
-  if (usesOlderPath(r)) return null;
+  if (noMailbox(r)) throw new GoogleConfigError(NO_MAILBOX);
   const { AgentMailboxRefusedError } = await import("./agent-mailbox.js");
-  const pick = <T>(account: string | undefined, client: (m: AgentMailbox) => T): T => {
-    if (!r.ok) throw new AgentMailboxRefusedError("This agent's mailbox choice no longer holds; reconnect it in the console");
-    if (account !== undefined && account !== r.mailbox) throw new AgentMailboxRefusedError(`This agent works on ${r.mailbox} only`);
-    return client(r);
-  };
-  return { gmail: async account => pick(account, m => m.gmail), calendar: async account => pick(account, m => m.calendar) };
+  if (!r.ok) throw new AgentMailboxRefusedError("This agent's mailbox choice no longer holds; reconnect it in the console");
+  if (account !== undefined && account !== r.mailbox) throw new AgentMailboxRefusedError(`This agent works on ${r.mailbox} only`);
+  return r;
 }
 
-/** Every Gmail mailbox enrolled for a principal — e.g. so a schedule can poll all of them
- *  (both owner@owner.example and owner@project.example) without hard-coding the list.
- *  Returns email addresses only; resolving a client for one still goes through
- *  `googleClients().gmail(account)` like everywhere else. */
-export async function listEnrolledMailboxes(principal?: string): Promise<string[]> {
-  if (principal === undefined) {
-    const r = await chosenMailbox();
-    if (r.ok) return [r.mailbox];
-    if (!usesOlderPath(r)) return [];
-  }
-  const p = principal ?? process.env["GOOGLE_PRINCIPAL_ID"];
-  if (!p) throw new GoogleConfigError("GOOGLE_PRINCIPAL_ID is not set and no principal was given");
-  const selected=await managedGoogleSelection(p);
-  const tokens = await listDecryptedRefreshTokens(p, PROVIDER, selected??undefined);
-  return tokens.filter(t=>!selected||(t.emailAddress===selected.mailbox&&t.orgId===selected.org)).map((t) => t.emailAddress);
+/** The mailbox this agent works on, as a list: one address, or none when nothing is chosen (or the
+ *  choice no longer holds). Resolving a client for it goes through `googleClients().gmail(account)`. */
+export async function listEnrolledMailboxes(): Promise<string[]> {
+  const r = await chosenMailbox();
+  return r.ok ? [r.mailbox] : [];
 }

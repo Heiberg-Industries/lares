@@ -12,7 +12,8 @@ import gmailDraft from "../catalogue/gmail_draft.js";
 import gmailSend from "../catalogue/gmail_send.js";
 import gmailDraftRecipients from "../catalogue/gmail_draft_recipients.js";
 import { readFileSync } from "node:fs";
-import { __setTestGmailApiFactory, wrapGmailApi } from "../lib/google.js";
+import { wrapGmailApi } from "../lib/google.js";
+import { forgetChosenMailbox, useChosenMailbox } from "./helpers/chosen-mailbox.js";
 import { UnauthorizedApproverError } from "../lib/approvals.js";
 import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
@@ -108,7 +109,6 @@ beforeEach(async () => {
   process.env["TOKEN_ENC_KEY_FILE"] = join(keyDir, "token-enc-key");
   process.env["GOOGLE_CLIENT_ID_ACME_FILE"] = join(keyDir, "client-id");
   process.env["GOOGLE_CLIENT_SECRET_ACME_FILE"] = join(keyDir, "client-secret");
-  process.env["GOOGLE_PRINCIPAL_ID"] = "U_owner";
   process.env["SLACK_ALLOWED_USER_IDS"] = OWNER_SLACK_ID;
 });
 
@@ -117,23 +117,16 @@ afterEach(async () => {
   delete process.env["TOKEN_ENC_KEY_FILE"];
   delete process.env["GOOGLE_CLIENT_ID_ACME_FILE"];
   delete process.env["GOOGLE_CLIENT_SECRET_ACME_FILE"];
-  delete process.env["GOOGLE_PRINCIPAL_ID"];
   delete process.env["SLACK_ALLOWED_USER_IDS"];
-  __setTestGmailApiFactory(undefined);
-  await getPool().query(`DELETE FROM oauth_tokens`);
+  forgetChosenMailbox();
   await getPool().query(`DELETE FROM approval_asks`);
 });
 
-/** Seeds one enrolled mailbox for U_owner and installs a stub googleapis factory. Returns
- *  the recorded calls array so a test can assert on it. */
+/** Makes owner@owner.example the agent's chosen mailbox, backed by a stub googleapis client.
+ *  Returns the recorded calls array so a test can assert on it. */
 async function enroll(responses: Parameters<typeof stubGmailApi>[0] = {}): Promise<RecordedCall[]> {
-  const enc = encryptForTest("refresh-token-real", testKeyHex);
-  await getPool().query(
-    `INSERT INTO oauth_tokens (principal, provider, org_id, email_address, refresh_token_enc, scopes) VALUES ($1,$2,$3,$4,$5,$6)`,
-    ["U_owner", "google", "acme", "owner@owner.example", enc, ["gmail.readonly", "gmail.send"]],
-  );
   const { api, calls } = stubGmailApi(responses);
-  __setTestGmailApiFactory(() => api);
+  useChosenMailbox({ mailbox: "owner@owner.example", gmailApi: api as never });
   return calls;
 }
 
@@ -235,6 +228,21 @@ describe("gmail_draft", () => {
     const mime = Buffer.from(body.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
     expect(mime).toContain("Subject: Re: hi");
     expect(mime).toContain("Thanks!");
+  });
+
+  it("uses the chosen mailbox only, whatever the old environment pins say", async () => {
+    process.env["GOOGLE_PRINCIPAL_ID"] = "someone-else";
+    process.env["GMAIL_PRIMARY_EMAIL"] = "other@owner.example";
+    try {
+      const calls = await enroll();
+      await expect(gmailDraft.execute(INPUT, READ_CTX)).resolves.toMatchObject({ gmailDraftId: "d1" });
+      expect(calls.map((c) => c.method)).toEqual(["createDraft"]);
+      await expect(gmailDraft.execute({ ...INPUT, account: "other@owner.example" }, READ_CTX)).rejects.toThrow(/works on owner@owner.example only/);
+      expect(calls).toHaveLength(1);
+    } finally {
+      delete process.env["GOOGLE_PRINCIPAL_ID"];
+      delete process.env["GMAIL_PRIMARY_EMAIL"];
+    }
   });
 });
 

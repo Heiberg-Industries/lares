@@ -90,7 +90,7 @@ export async function claimCode(name:string,kind:'slack'|'telegram'):Promise<Def
 export async function registerTelegram(name:string):Promise<DefinitionActionResult<{registered:boolean}>> {
   return call('telegram.webhook_set',{name},await actor());
 }
-export async function setDoorEnabled(name:string,kind:'slack'|'telegram'|'email',enabled:boolean):Promise<DefinitionActionResult<DefinitionResult>> {
+export async function setDoorEnabled(name:string,kind:'slack'|'telegram',enabled:boolean):Promise<DefinitionActionResult<DefinitionResult>> {
   const email=await actor();
   try {
   const saved=await keeper<{definition:string;duties:string;voice:string}>('definition.get',{name},email);

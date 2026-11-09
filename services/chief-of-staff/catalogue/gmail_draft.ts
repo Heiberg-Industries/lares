@@ -40,7 +40,7 @@ export default defineTool({
     if (!input.threadId && !input.inReplyTo) return gmail.draft(input);
     if (!input.threadId || !input.inReplyTo) throw new Error("A reply draft needs both threadId and inReplyTo so its original recipients can be checked.");
     const self = [...await listAliases(getPool(), configuredOwnerId(), "email"),
-      ...await listEnrolledMailboxes(process.env["GOOGLE_PRINCIPAL_ID"])];
+      ...await listEnrolledMailboxes()];
     const key = turnKeyFrom(context);
     // Provider failures may carry outside text too, so mark the turn before the read.
     if (key) taintTurn(key, "third_party");

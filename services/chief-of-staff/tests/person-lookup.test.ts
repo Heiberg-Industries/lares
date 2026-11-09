@@ -13,7 +13,7 @@ import type { PersonWiring } from "../lib/person-sources.js";
 import { gatherPerson } from "../lib/person/gather.js";
 import { renderDossier } from "../lib/person/render.js";
 import { NotApplicableError } from "../lib/person/types.js";
-import { __setTestGmailApiFactory, __setTestCalendarApiFactory } from "../lib/google.js";
+import { forgetChosenMailbox, stubChosenCalendar, stubChosenGmail, useChosenMailbox } from "./helpers/chosen-mailbox.js";
 import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
 
@@ -29,7 +29,7 @@ import { quiet } from "./helpers/quiet-pool.js";
  *
  *   2. "the real wiring" — `eveSagaPersonWiring()`'s individual functions against chief-of-staff's
  *      own real clients' own test doubles (a real Postgres for identity/oauth_tokens, a real
- *      HTTP stub for Twenty, `__setTestGmailApiFactory`/`__setTestCalendarApiFactory`
+ *      HTTP stub for Twenty, a stubbed chosen mailbox (`useChosenMailbox`)
  *      for Gmail/Calendar, a real temp-dir vault) — proving the
  *      adapter actually calls the RIGHT client with the RIGHT request shape — plus the
  *      `person_lookup` TOOL itself, end to end, over the same real infrastructure.
@@ -479,14 +479,9 @@ describe("eveSagaPersonWiring() against real client test doubles, and person_loo
     process.env["GOOGLE_CLIENT_ID_ACME_FILE"] = join(workDir, "client-id");
     writeFileSync(join(workDir, "client-secret"), "test-client-secret");
     process.env["GOOGLE_CLIENT_SECRET_ACME_FILE"] = join(workDir, "client-secret");
-    process.env["GOOGLE_PRINCIPAL_ID"] = OWNER_PRINCIPAL;
 
-    // A real oauth_tokens row so googleClients().gmail()/.calendar() resolve.
-    const enc = encryptForTest("refresh-token-real", testKeyHex);
-    await getPool().query(
-      `INSERT INTO oauth_tokens (principal, provider, org_id, email_address, refresh_token_enc, scopes) VALUES ($1,$2,$3,$4,$5,$6)`,
-      [OWNER_PRINCIPAL, "google", "acme", "owner@owner.example", enc, ["gmail.readonly"]],
-    );
+    // The agent's chosen mailbox, so googleClients().gmail()/.calendar() resolve.
+    useChosenMailbox({ mailbox: "owner@owner.example" });
 
     // Vault (Brain)
     const vaultDir = join(workDir, "brain");
@@ -517,14 +512,12 @@ describe("eveSagaPersonWiring() against real client test doubles, and person_loo
   // masking an actual hang.
   afterEach(async () => {
     await new Promise<void>((resolve) => twentyServer ? twentyServer.close(() => resolve()) : resolve());
-    __setTestGmailApiFactory(undefined);
-    __setTestCalendarApiFactory(undefined);
-    await getPool().query(`DELETE FROM oauth_tokens`);
+    forgetChosenMailbox();
     rmSync(workDir, { recursive: true, force: true });
     for (const key of [
       "TWENTY_BASE_URL", "TWENTY_KEY_FILE",
       "TOKEN_ENC_KEY_FILE", "GOOGLE_CLIENT_ID_ACME_FILE", "GOOGLE_CLIENT_SECRET_ACME_FILE",
-      "GOOGLE_PRINCIPAL_ID", "VAULT_PATH", "ATLAS_PATH",
+      "VAULT_PATH", "ATLAS_PATH",
     ]) delete process.env[key];
   }, 60_000);
 
@@ -552,7 +545,7 @@ describe("eveSagaPersonWiring() against real client test doubles, and person_loo
 
   it("mailSearch()/mailRead() go through the real (stubbed) Gmail client", async () => {
     const calls: unknown[] = [];
-    __setTestGmailApiFactory(() => ({
+    stubChosenGmail(({
       users: {
         messages: {
           list: async (params: unknown) => { calls.push(params); return { data: { messages: [{ id: "m1", threadId: "t1" }] } }; },
@@ -582,7 +575,7 @@ describe("eveSagaPersonWiring() against real client test doubles, and person_loo
   });
 
   it("listEvents() goes through the real (stubbed) Calendar client", async () => {
-    __setTestCalendarApiFactory(() => ({
+    stubChosenCalendar(({
       events: {
         list: async () => ({
           data: { items: [{ id: "e1", summary: "Pilot sync", start: { dateTime: "2026-07-20T09:00:00Z" }, end: { dateTime: "2026-07-20T09:30:00Z" }, attendees: [{ email: "per@partner.example" }] }] },
@@ -636,7 +629,7 @@ describe("eveSagaPersonWiring() against real client test doubles, and person_loo
   // ---------------------------------------------------------------------------------------
 
   it("end to end: every source found, over real infrastructure", async () => {
-    __setTestGmailApiFactory(() => ({
+    stubChosenGmail(({
       users: {
         messages: {
           list: async () => ({ data: { messages: [{ id: "m1", threadId: "t1" }] } }),
@@ -654,7 +647,7 @@ describe("eveSagaPersonWiring() against real client test doubles, and person_loo
         },
       },
     } as never));
-    __setTestCalendarApiFactory(() => ({
+    stubChosenCalendar(({
       events: {
         list: async () => ({
           data: { items: [{ id: "e1", summary: "Pilot sync", start: { dateTime: "2026-07-20T09:00:00Z" }, end: { dateTime: "2026-07-20T09:30:00Z" }, attendees: [{ email: "per@partner.example" }] }] },

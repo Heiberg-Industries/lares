@@ -207,7 +207,7 @@ async function main(): Promise<void> {
         const gatewayUrl = config.lifecycle?.runtime.gatewayUrl;
         registerGatewayStatusAction(new GatewayStatusReader({ gatewayUrl, masterKeyFile: config.lifecycle?.runtime.gatewayMasterKeyFile,
             aliasPrefix: () => readSetting(pool, "models.alias_prefix"), admin: new GatewayAdmin(gatewayUrl ?? "http://unconfigured.invalid") }));
-        registerDoorActions({pool,secretsDir:config.secretsDir,publicOrigin:config.publicDoorOrigin,emailPrincipal:config.lifecycle?.runtime.google?.principal,googleOrgs:Object.keys(config.lifecycle?.runtime.google?.clients??{}),namespaceGuard});
+        registerDoorActions({pool,secretsDir:config.secretsDir,publicOrigin:config.publicDoorOrigin,namespaceGuard});
         registerConversationActions(pool,(name,incarnation,id)=>runtimeReset(config.project,name,incarnation,id));
         registerOutsideToolActions({ pool, agentsDir: config.agentsDir, secretsDir: config.secretsDir });
         registerProviderKeyActions({ pool, files: new ProviderKeyFiles(config.secretsDir), designatedOwnerId: config.designatedOwnerId });

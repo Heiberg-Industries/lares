@@ -26,11 +26,11 @@ export function telegramSteps(agent:string):{step:number;text:string}[] {
   ];
 }
 /** The door's row as the keeper reports it. `configured` means a token was saved at some point. */
-export interface DoorRow {kind:string;enabled:boolean;configured?:boolean;claimed:boolean;mailbox?:string;pending:boolean;pending_reason?:string;applied:boolean}
-/** A door the owner has never touched: not enabled, no saved token, no owner, no mailbox. The
+export interface DoorRow {kind:string;enabled:boolean;configured?:boolean;claimed:boolean;pending:boolean;pending_reason?:string;applied:boolean}
+/** A door the owner has never touched: not enabled, no saved token, no owner. The
  * keeper's pending flag belongs to the whole agent, so it says nothing about such a door. */
 export function doorTouched(row?:DoorRow):boolean {
-  return Boolean(row&&(row.enabled||row.configured||row.claimed||row.mailbox));
+  return Boolean(row&&(row.enabled||row.configured||row.claimed));
 }
 export function doorStateText(row?:DoorRow):string {
   if(!row||!doorTouched(row))return 'Not set up';

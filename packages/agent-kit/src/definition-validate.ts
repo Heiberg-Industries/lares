@@ -101,7 +101,7 @@ export function validateDefinition(opts: ValidateOptions): ValidationFinding[] {
   const exists = opts.secretExists;
   if (exists) {
     for (const door of d.doors ?? []) {
-      if (!door.enabled || door.kind === "email") continue; // Email is real OAuth metadata, verified by keeper lifecycle, never a token file.
+      if (!door.enabled) continue;
       capture("door-secret", () => {
         const secret = doorSecretName(d.name, door.kind);
         if (!exists(secret)) {

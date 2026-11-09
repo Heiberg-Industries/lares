@@ -76,7 +76,6 @@ async function attempt(label: string, fn: () => Promise<unknown>) {
   catch (e: any) { say(`${label}: REFUSED/FAILED -> ${String(e.message).slice(0, 400).replace(/\n/g, ' / ')}${steps.length ? ' | docker steps: ' + steps.join(',') : ''}`); return false; }
 }
 const save = (name: string, definition: any) => runAction('definition.save', { name, definition, duties: 'Made-up duties.\n', voice: 'Be concise.\n' }, ctx);
-const email = { kind: 'email', enabled: true, settings: {} };
 
 try {
   // Put the two OLD-style folders on disk exactly as the keeper keeps them, and the same in the table.
@@ -90,8 +89,8 @@ try {
   await attempt('definition.list', async () => (await runAction('definition.list', {}, ctx) as any[]).map((x) => `${x.name}:${x.status}`));
   for (const n of Object.keys(ROLE)) await attempt('definition.get ' + n, async () => { const r: any = await runAction('definition.get', { name: n }, ctx); return JSON.parse(r.definition).grants.map((g: any) => g.capability).filter((c: string) => ['brain', 'atlas', 'memory', 'vault'].includes(c)); });
   say('--- B. save ONE definition in the new style while the other stays old-style');
-  const chief = newStyle('chief-of-staff'); chief.doors = [email];
-  await attempt('save chief-of-staff (new style, email door on, keeper setting ' + config.runtime.google.principal + ')', () => save('chief-of-staff', chief));
+  const chief = newStyle('chief-of-staff');
+  await attempt('save chief-of-staff (new style)', () => save('chief-of-staff', chief));
   await attempt('save creative (new style)', () => save('creative', newStyle('creative')));
   say('--- C. apply connection changes (reconcile) for chief-of-staff while the other is whatever they are now');
   const hash = (await pool.query("SELECT hash FROM agent_definitions WHERE name='chief-of-staff'")).rows[0].hash;

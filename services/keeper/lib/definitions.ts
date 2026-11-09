@@ -179,8 +179,8 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         if (!ROLES.includes(d.role as DefinitionRole))
             refused('role must be chief-of-staff or creative');
         const info = o.roleInfo(d.role as DefinitionRole);
-        if (!d.doors && d.channels.some(kind => !["slack", "telegram", "email"].includes(kind))) refused("unsupported legacy door kind");
-        const findings = validateDefinition({ definition: { ...d, doors: d.doors ?? d.channels.map(kind => ({ kind: kind as "slack" | "telegram" | "email", enabled: true, settings: {} })) }, ...info, secretExists: (name) => {
+        if (!d.doors && d.channels.some(kind => !["slack", "telegram"].includes(kind))) refused("unsupported legacy door kind; the email door was removed");
+        const findings = validateDefinition({ definition: { ...d, doors: d.doors ?? d.channels.map(kind => ({ kind: kind as "slack" | "telegram", enabled: true, settings: {} })) }, ...info, secretExists: (name) => {
                 // Never expose filesystem exceptions as trusted validation messages.
                 try {
                     const s = lstatSync(join(o.secretsDir, name));
@@ -636,7 +636,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 refused('deletion is unavailable: agent storage ownership has not been configured');
             // Removed only after storage ownership proof and successful owned deletion.
             // Reconcile preserves this file within one incarnation; slug reuse must not.
-            const secrets = [...new Set([`${name}-runtime-control`,...(o.compose.ownedSecrets?.(name)??[]),...['slack','telegram','email'].map(kind=>doorSecretName(name,kind)),...Object.values(DOOR_FILES).flatMap(files=>Object.values(files).map(s=>`${name}-${s}`))])].map(file=>join(o.secretsDir,file));
+            const secrets = [...new Set([`${name}-runtime-control`,...(o.compose.ownedSecrets?.(name)??[]),...['slack','telegram'].map(kind=>doorSecretName(name,kind)),...Object.values(DOOR_FILES).flatMap(files=>Object.values(files).map(s=>`${name}-${s}`))])].map(file=>join(o.secretsDir,file));
             for (const path of secrets)
                 if (hasPath(path)) {
                     const st = lstatSync(path);
@@ -668,7 +668,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         const {name,kind,secret}=input;
         plainDirectory(active(name));
         const loaded=await loadDefinition({serviceDir:'unused',env:{LARES_DEFINITION_DIR:active(name)}});
-        const supported:Record<string,string[]>={creative:['slack'],'chief-of-staff':['slack','telegram','email']};
+        const supported:Record<string,string[]>={creative:['slack'],'chief-of-staff':['slack','telegram']};
         if(!supported[loaded.definition.role??'']?.includes(kind))refused('This starting point does not support that door');
         if(!o.compose.prepareSecretChange||!o.compose.secretChanged)refused('Configure resource lifecycle before connecting doors');
         await o.compose.prepareSecretChange(name);

@@ -14,7 +14,7 @@ const environmentKeys = [
   'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'STUDIO_MODEL',
   'KARAKEEP_URL', 'SIGNAL_SPINE_URL', 'SIGNAL_PROJECT',
   'EVE_DREAM_LIVE', 'EVE_DIGEST_LIVE',
-  'DIGEST_SLACK_TARGET', 'TELEGRAM_BOT_USERNAME', 'GOOGLE_PRINCIPAL_ID', 'GOOGLE_ORG',
+  'DIGEST_SLACK_TARGET', 'TELEGRAM_BOT_USERNAME', 'GOOGLE_ORG',
   // Whose Slack sign-in (oauth_tokens principal) the chief of staff reads. A managed one is given
   // it from the owner's register id below; this is the explicit override.
   'SLACK_TOKEN_PRINCIPAL_ID',

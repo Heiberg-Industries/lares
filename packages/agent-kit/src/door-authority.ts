@@ -88,8 +88,8 @@ export async function assertManagedRuntimeCurrent(db?:DoorDatabase,env:NodeJS.Pr
  const {rows}=await database.query(`SELECT 1 FROM agent_resources r JOIN agent_definitions a ON a.name=r.name
    WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND a.status='valid'`,[own.name,own.incarnation]);
  if(!rows.length)throw new Error('Managed runtime authority changed');
- const claims=(await database.query(`SELECT kind,principal,revision,applied_revision FROM agent_door_connections WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL`,[own.name,own.incarnation])).rows;
- for(const kind of ['slack','telegram','email']) {
+ const claims=(await database.query(`SELECT kind,principal,revision,applied_revision FROM agent_door_connections WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL AND kind IN ('slack','telegram')`,[own.name,own.incarnation])).rows;
+ for(const kind of ['slack','telegram']) {
   const revision=env[`LARES_${kind.toUpperCase()}_CLAIM_REVISION`];
   if(!revision)continue;
   const c=claims.find(c=>c.kind===kind);

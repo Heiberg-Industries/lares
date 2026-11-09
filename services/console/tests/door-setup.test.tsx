@@ -33,6 +33,11 @@ it('never shows Pending for a door the owner has not touched, even while the age
  const html=renderToStaticMarkup(DoorSetup(cos));
  expect(html.match(/Pending:/g)).toHaveLength(1);expect(html).toContain('Not set up');
 });
+it('has no email door: the mailbox is chosen on the Access tab',()=>{
+ mocks.states[STATE.rows]=[row('slack'),row('telegram'),row('email',{enabled:true,pending:true})];
+ const html=renderToStaticMarkup(DoorSetup(cos));
+ expect(html).toContain('Slack');expect(html).toContain('Telegram');expect(html).not.toContain('Email');expect(html).not.toContain('mailbox');
+});
 it('has no refresh button, and shows a prominent pending state while an apply runs',()=>{
  mocks.states[STATE.rows]=[row('slack',{enabled:true,configured:true})];mocks.states[STATE.progress]='Applying (restarts the agent, about a minute)…';
  const tree=DoorSetup(props);const html=renderToStaticMarkup(tree);
