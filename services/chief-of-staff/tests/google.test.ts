@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { createCipheriv, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +14,10 @@ import {
 import { GoogleConfigError } from "@lares/agent-kit/google-auth";
 import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
+
+// This file tests the older email-door path; this test database has no agent mailbox tables, so say plainly "nothing chosen".
+vi.mock("../lib/agent-mailbox.js", async (original) => ({ ...(await original<typeof import("../lib/agent-mailbox.js")>()),
+  agentMailbox: async () => ({ ok: false, reason: "none" }) }));
 
 /**
  * The Google OAuth stack:

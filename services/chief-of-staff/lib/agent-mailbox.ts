@@ -145,7 +145,7 @@ export async function agentMailbox(job: string, deps: AgentMailboxDeps = {}): Pr
     };
     const gmail: GmailClient = {
       ...opened.gmail,
-      send: async () => refuse('This agent writes drafts only; sending is refused'),
+      send: async () => refuse('This agent writes drafts only; send it from Gmail'),
       draft: async input => { await stillOrRefuse(); return opened.gmail.draft(input); },
       updateDraftRaw: async (id, raw, threadId) => { await stillOrRefuse(); return opened.gmail.updateDraftRaw(id, raw, threadId); },
     };
@@ -213,7 +213,7 @@ async function openClients(pool: Pool, binding: AgentMailboxBinding, deps: Agent
       }
       const jobAuth = client('', work); jobAuth.setCredentials({ access_token: access as string });
       const gmailMessages = wrapGmailApi(personalGmailApi(cfg, jobAuth, access as string), mailbox);
-      const gmail = makeGmailClient({ ...gmailMessages, send: async () => refuse('This agent writes drafts only; sending is refused') });
+      const gmail = makeGmailClient({ ...gmailMessages, send: async () => refuse('This agent writes drafts only; send it from Gmail') });
       const calendar = makeCalendarClient(wrapCalendarApi(personalCalendarApi(cfg, jobAuth, access as string)));
       return { mailbox, gmail, calendar };
     });

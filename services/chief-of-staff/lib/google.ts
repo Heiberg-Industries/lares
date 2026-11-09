@@ -68,6 +68,7 @@ import {
 // a READ tool can resolve a Drive client without importing this file, which also
 // holds Gmail send and Calendar writes — the write-shape lint follows imports.
 export { GoogleUnenrolledError, type GoogleOrgConfig } from "./google-orgs.js";
+import type { AgentMailbox, AgentMailboxDeps, AgentMailboxResult } from "./agent-mailbox.js";
 import { GoogleUnenrolledError, orgConfig, personalOrgConfig, type GoogleOrgConfig } from "./google-orgs.js";
 
 // -----------------------------------------------------------------------------------------
@@ -877,12 +878,20 @@ export interface GoogleClients {
 export function googleClients(principal?: string): GoogleClients {
   return {
     async gmail(account?: string): Promise<GmailClient> {
+      if (principal === undefined) {
+        const chosen = await chosenMailboxOrLegacy();
+        if (chosen) return chosen.gmail(account);
+      }
       const p = principal ?? process.env["GOOGLE_PRINCIPAL_ID"];
       if (!p) throw new GoogleConfigError("GOOGLE_PRINCIPAL_ID is not set and no principal was given");
       const { api, mailboxKey } = await resolveGmailApi(p, account);
       return makeGmailClient(wrapGmailApi(api, mailboxKey));
     },
     async calendar(account?: string): Promise<CalendarClient> {
+      if (principal === undefined) {
+        const chosen = await chosenMailboxOrLegacy();
+        if (chosen) return chosen.calendar(account);
+      }
       const p = principal ?? process.env["GOOGLE_PRINCIPAL_ID"];
       if (!p) throw new GoogleConfigError("GOOGLE_PRINCIPAL_ID is not set and no principal was given");
       const { api } = await resolveCalendarApi(p, account);
@@ -891,11 +900,62 @@ export function googleClients(principal?: string): GoogleClients {
   };
 }
 
+// The chosen mailbox: the one choke point. When the agent's owner chose a connected mailbox, every
+// default read (no explicit principal) goes to it, drafts only, and never to the older email door.
+//   - nothing chosen, or not a managed agent: the older path above, unchanged;
+//   - a stale choice (disconnected, reconnected, owner changed, ...): refuse, never fall back;
+//   - any other account than the chosen one: refuse.
+// The opened mailbox is kept for its working window and rechecked (credential-free, no lock held)
+// before each reuse, so many calls in a tick cost one refresh.
+const CHOSEN_WORK_MS = 10 * 60_000;
+const CHOSEN_WINDOW_MS = 9 * 60_000;
+const CHOSEN_UNAVAILABLE_MS = 30_000;
+let chosenCache: { until: number; result: Promise<AgentMailboxResult> } | null = null;
+let chosenDeps: AgentMailboxDeps = {};
+/** Test seam: the pool, HTTP layer and definition the chosen-mailbox opening uses. Also forgets the open mailbox. */
+export function __setChosenMailboxDepsForTests(deps: AgentMailboxDeps = {}): void { chosenDeps = deps; chosenCache = null; }
+
+async function chosenMailbox(): Promise<AgentMailboxResult> {
+  const hit = chosenCache;
+  if (hit && hit.until > Date.now()) {
+    const r = await hit.result;
+    if (!r.ok || (await r.recheck())) return r;
+    if (chosenCache === hit) chosenCache = null;
+  }
+  // Loaded on use: agent-mailbox builds on this file.
+  const { agentMailbox } = await import("./agent-mailbox.js");
+  const entry = { until: Number.POSITIVE_INFINITY, result: agentMailbox("mail-readers", { ...chosenDeps, workMs: CHOSEN_WORK_MS }) };
+  chosenCache = entry;
+  const r = await entry.result;
+  entry.until = Date.now() + (r.ok ? CHOSEN_WINDOW_MS : r.reason === "unavailable" ? CHOSEN_UNAVAILABLE_MS : 0);
+  return r;
+}
+
+const usesOlderPath = (r: AgentMailboxResult): boolean => !r.ok && (r.reason === "none" || r.reason === "not-managed");
+
+/** The chosen mailbox's view, or null when the older path applies. */
+async function chosenMailboxOrLegacy(): Promise<GoogleClients | null> {
+  const r = await chosenMailbox();
+  if (usesOlderPath(r)) return null;
+  const { AgentMailboxRefusedError } = await import("./agent-mailbox.js");
+  const pick = <T>(account: string | undefined, client: (m: AgentMailbox) => T): T => {
+    if (!r.ok) throw new AgentMailboxRefusedError("This agent's mailbox choice no longer holds; reconnect it in the console");
+    if (account !== undefined && account !== r.mailbox) throw new AgentMailboxRefusedError(`This agent works on ${r.mailbox} only`);
+    return client(r);
+  };
+  return { gmail: async account => pick(account, m => m.gmail), calendar: async account => pick(account, m => m.calendar) };
+}
+
 /** Every Gmail mailbox enrolled for a principal — e.g. so a schedule can poll all of them
  *  (both owner@owner.example and owner@project.example) without hard-coding the list.
  *  Returns email addresses only; resolving a client for one still goes through
  *  `googleClients().gmail(account)` like everywhere else. */
 export async function listEnrolledMailboxes(principal?: string): Promise<string[]> {
+  if (principal === undefined) {
+    const r = await chosenMailbox();
+    if (r.ok) return [r.mailbox];
+    if (!usesOlderPath(r)) return [];
+  }
   const p = principal ?? process.env["GOOGLE_PRINCIPAL_ID"];
   if (!p) throw new GoogleConfigError("GOOGLE_PRINCIPAL_ID is not set and no principal was given");
   const selected=await managedGoogleSelection(p);
