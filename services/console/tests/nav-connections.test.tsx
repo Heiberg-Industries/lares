@@ -27,8 +27,8 @@ it("shows a member who is not the owner Your accounts and Membership, and no Int
   expect(screen.queryByRole("link", { name: "Integrations" })).toBeNull();
 });
 
-it("marks the right page current, including the details page and the pages that sit under Integrations", () => {
-  for (const [pathname, label] of [["/accounts", "Your accounts"], ["/integrations", "Integrations"], ["/integrations/details", "Integrations"], ["/voice", "Integrations"], ["/meetings", "Integrations"]]) {
+it("marks the right page current, including an integration page and the pages that sit under Integrations", () => {
+  for (const [pathname, label] of [["/accounts", "Your accounts"], ["/integrations", "Integrations"], ["/integrations/notion", "Integrations"], ["/voice", "Integrations"], ["/meetings", "Integrations"]]) {
     path.current = pathname; cleanup(); render(<Nav owner={true} />);
     expect([...new Set(current())], pathname).toEqual([label]);
   }

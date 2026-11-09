@@ -5,7 +5,8 @@ import { pool } from "../lib/db";
 import { listAgents } from "../lib/agents";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import { ConnectionsTable } from "../components/ConnectionsTable";
+import { IntegrationDetail } from "../components/IntegrationDetail";
+import { integrationCard } from "../lib/integrations-grid";
 import { getConnectionRows, buildConnectionRows, lastUsedByConnection, lastUsedByInstance, isEvidenceOfUse } from "../lib/connections";
 import { connectionsByCapability, connections, declaredConsumers } from "@lares/agent-kit/connections";
 
@@ -257,7 +258,7 @@ describe("buildConnectionRows", () => {
   });
 });
 
-describe("connection read failures through the rendered table", () => {
+describe("connection read failures through the rendered page", () => {
   beforeEach(() => {
     vi.mocked(listAgents).mockResolvedValue(agents.map((agent) => ({
       ...agent, name: "assistant", displayName: "Assistant",
@@ -270,6 +271,11 @@ describe("connection read failures through the rendered table", () => {
 
   const googleRow = (rows: Awaited<ReturnType<typeof getConnectionRows>>) =>
     rows.find((r) => r.connectionId === "google" && r.instanceId === "acme")!;
+  // Google is a personal account and has no Integrations page, so the page is rendered for Twenty.
+  const twentyPage = (rows: Awaited<ReturnType<typeof getConnectionRows>>) => {
+    const card = integrationCard("twenty", { rows, credential: { kind: "unavailable" }, outsideToolsInUse: null })!;
+    return renderToStaticMarkup(createElement(IntegrationDetail, { card, rows: rows.filter((r) => r.connectionId === "twenty"), board: [] }));
+  };
   const storedAccount = {
     id: "token", principal: "owner", provider: "google", orgId: "acme",
     emailAddress: "owner@acme.example", scopes: ["read"],
@@ -282,9 +288,7 @@ describe("connection read failures through the rendered table", () => {
       status: "partial", detail: "client configured, no mailbox",
       accountsUnavailable: false, usageUnavailable: false,
     });
-    const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
-    expect(html).toContain("client configured, no mailbox");
-    expect(html).toContain("Manage your personal accounts");
+    const html = twentyPage(rows);
     expect(html).not.toContain("unavailable");
   });
 
@@ -301,10 +305,10 @@ describe("connection read failures through the rendered table", () => {
     expect(rows.find((r) => r.connectionId === "twenty")).toMatchObject({
       status: "live", lastUsed: "2026-10-08T10:00:00.000Z", usedBy: ["assistant"],
     });
-    const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
-    expect(html).toContain("Accounts unavailable");
-    expect(html).toContain("client configured");
-    expect(html).not.toContain("no mailbox");
+    const html = twentyPage(rows);
+    expect(html).toContain("assistant");
+    expect(html).toMatch(/\d+d ago/);
+    expect(html).not.toContain("Usage unavailable");
     expect(html).not.toContain("private credential token SQL");
   });
 
@@ -321,13 +325,11 @@ describe("connection read failures through the rendered table", () => {
     expect(rows.find((r) => r.connectionId === "twenty")).toMatchObject({
       status: "unavailable", detail: "usage unavailable", lastUsed: null, usedBy: ["assistant"],
     });
-    const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
+    const html = twentyPage(rows);
     expect(html).toContain("Usage unavailable");
-    expect(html).toContain("owner@acme.example");
-    expect(html).toContain("Remove");
-    expect(html).toContain("provider health not tested");
-    expect(html).not.toContain("no recorded use");
-    expect(html).not.toContain("Last use recorded here: none");
+    expect(html).toContain("Could not be read");
+    expect(html).toContain("assistant");
+    expect(html).not.toContain("Not used yet");
     expect(html).not.toContain("private audit SQL");
   });
 
@@ -336,12 +338,10 @@ describe("connection read failures through the rendered table", () => {
       throw new Error(String(sql).includes("FROM oauth_tokens") ? "private account error" : "private usage error");
     });
     const rows = await getConnectionRows();
-    const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
-    expect(html).toContain("Accounts unavailable");
+    const html = twentyPage(rows);
     expect(html).toContain("Usage unavailable");
-    expect(html).toContain("Agent access: assistant");
-    expect(html).not.toContain("no mailbox");
-    expect(html).not.toContain("no recorded use");
+    expect(html).toContain("assistant");
+    expect(html).not.toContain("Not used yet");
     expect(html).not.toContain("private account error");
     expect(html).not.toContain("private usage error");
   });

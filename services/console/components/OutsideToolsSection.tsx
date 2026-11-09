@@ -4,6 +4,7 @@ import type { OutsideToolDeclaration } from "@lares/agent-kit/definition";
 import { Button } from "@lares/ui/primitives/button";
 import { acceptOutsideDescriptions } from "../app/actions/definition";
 import type { DescribedTool, OutsideToolEvidence, OutsideToolLock } from "../lib/outside-tools";
+import { keyLine } from "../lib/outside-tools-words";
 
 /** A declaration plus its display host, worked out on the server (the address check uses node-only code). */
 export type OutsideToolView = OutsideToolDeclaration & { host?: string };
@@ -12,16 +13,6 @@ const short = (hash: string) => hash.slice(0, 12);
 const schemaText = (schema: unknown) => JSON.stringify(schema ?? null, null, 2);
 const same = (a: DescribedTool, b: DescribedTool) =>
   a.description === b.description && schemaText(a.inputSchema) === schemaText(b.inputSchema);
-
-function keyLine(needsKey: boolean, keys: OutsideToolEvidence["keys"] | undefined, tool: string): string {
-  if (!needsKey) return "Needs a key: no";
-  if (!keys) return "Needs a key: yes";
-  if (!keys.available) return "Needs a key: yes. Key status unavailable: the keeper could not be asked.";
-  const present = keys.value[tool];
-  if (present === true) return "Needs a key: yes. Key file in place.";
-  if (present === false) return "Needs a key: yes. Key file missing: the agent cannot use this tool until the key is placed on the server.";
-  return "Needs a key: yes. Key status unavailable: the keeper could not check the key file.";
-}
 
 function Described({ label, tool }: { label: string; tool: DescribedTool }) {
   return (

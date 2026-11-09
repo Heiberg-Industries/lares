@@ -1,5 +1,5 @@
 // One map, one vocabulary. Callers pass the state they actually have — they must not translate
-// into some other domain's words on the way in. ConnectionsTable used to map live→done, which
+// into some other domain's words on the way in. The old connections table used to map live→done, which
 // printed "done" for a credential; the fix was to delete that translation, not to patch the word.
 //
 // Unmapped states fall through to grey with their raw label. That is deliberate and correct for
