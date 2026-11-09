@@ -33,6 +33,7 @@ export function AgentDetail({
   outsideTools = { tools: [], inEffect: true },
   promptCache = null,
   accessSettings,
+  providerKeySettings,
 }: {
   agent: AgentFolder;
   board: Reading<BoardRowDTO[]>;
@@ -45,6 +46,8 @@ export function AgentDetail({
   promptCache?: string | null;
   /** Who may use or edit this agent, shown first on the Access tab; absent when the definition could not be read. */
   accessSettings?: ReactNode;
+  /** The agent's own model key section, shown after the access settings. */
+  providerKeySettings?: ReactNode;
 }) {
   const edit = `/agents/${encodeURIComponent(agent.name)}/edit`;
   const groups = [
@@ -134,6 +137,7 @@ export function AgentDetail({
         </TabsContent>
         <TabsContent value="access" className="lares-stack">
           {accessSettings}
+          {providerKeySettings}
           <OutsideToolsSection agent={agent.name} tools={outsideTools.tools} inEffect={outsideTools.inEffect} evidence={outsideTools.evidence} />
           {!board.available ? (
             <Notice error>

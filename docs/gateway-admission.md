@@ -133,6 +133,14 @@ earlier can still finish. Spending limits apply whichever key pays. Diagnostics 
 only whether an agent key was selected. The keys are data: they are not part of the
 installation's settings, not shown anywhere and not reported by the doctor.
 
+The designated owner can also set or remove the key in the console, in the "Own model
+key" section of the agent's Access tab. It goes through the same keeper code as the host
+command (same file, same row, same grace period), and the keeper checks the signed-in
+session itself: only the installation's designated owner is accepted, not another
+administrator. There is no key test yet: a wrong key is saved as given, and that agent's
+chats are refused until the key is replaced or removed. The console shows only whether
+the agent has its own key and the date it was set, never the key.
+
 ## Fresh policy and physical dispatch
 
 After admission completes, the gateway opens a fresh native database transaction
