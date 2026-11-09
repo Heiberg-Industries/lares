@@ -11,7 +11,7 @@ const ISSUER = "https://accounts.google.com";
 export function consoleOrigin(): string { return new URL(consoleRedirect()).origin; }
 export function accountRedirect(): string { return new URL("/api/accounts/google/callback", consoleOrigin()).href; }
 export function callbackRedirect(origin: string, result: { added?: string; error?: string }): string {
-  const url = new URL("/membership", origin);
+  const url = new URL("/accounts", origin);
   if (result.added) url.searchParams.set("added", result.added);
   if (result.error) url.searchParams.set("error", result.error);
   return url.href;

@@ -17,7 +17,7 @@ async function handleGET(req: Request): Promise<Response> {
     response.cookies.set(ACCOUNT_FLOW_COOKIE, "", { httpOnly: true, sameSite: "lax", secure: origin.startsWith("https:"), path: "/api/accounts/google", maxAge: 0 });
     return response;
   };
-  const fail = () => terminal({ error: "Google consent could not be saved. Start again from Your membership." });
+  const fail = () => terminal({ error: "Google consent could not be saved. Start again from Your accounts." });
   // Clear terminally even when admission is refused or its backing store is unavailable.
   try {
     const session = jar.get("lares_session")?.value;

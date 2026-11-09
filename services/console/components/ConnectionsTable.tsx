@@ -21,10 +21,15 @@ export function ConnectionsTable({ rows }: { rows: ConnectionRowDTO[] }) {
   const usageUnavailable = rows.some((r) => r.usageUnavailable);
   const active = rows.filter((r) => r.status !== "unknown" || r.usedBy.length > 0 || r.accounts.length > 0);
   const other = rows.filter((r) => !active.includes(r));
+  // The first row of a connection carries its stable anchor (`connection-<id>`), which the
+  // Integrations cards link to; further instances of the same connection get a longer one.
+  const firstOf = new Map<string, string>();
+  for (const r of rows) if (!firstOf.has(r.connectionId)) firstOf.set(r.connectionId, r.instanceId);
   const cards = (items: ConnectionRowDTO[]) => (
     <div className="lares-connections">
       {items.map((r) => (
-        <section className="lares-surface lares-surface-compact" key={`${r.connectionId}:${r.instanceId}`}>
+        <section className="lares-surface lares-surface-compact" key={`${r.connectionId}:${r.instanceId}`}
+          id={firstOf.get(r.connectionId) === r.instanceId ? `connection-${r.connectionId}` : `connection-${r.connectionId}-${r.instanceId}`}>
           <h2 className="lares-section-title">{r.label}</h2>
           <StatePill state={r.status} />
           <p className="lares-muted">{r.detail}</p>
@@ -59,7 +64,7 @@ export function ConnectionsTable({ rows }: { rows: ConnectionRowDTO[] }) {
           {cards(other)}
         </details>
       )}
-      {hasConsoleCustody && <p><Link href="/membership">Manage your personal Google accounts →</Link></p>}
+      {hasConsoleCustody && <p><Link href="/accounts">Manage your personal accounts →</Link></p>}
     </>
   );
 }

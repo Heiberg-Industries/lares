@@ -84,3 +84,16 @@ export async function getOutsideToolEvidence(name: string): Promise<OutsideToolE
   const [k, l] = await Promise.all([keys(name), locks(name)]);
   return { keys: k, locks: l };
 }
+
+/** True when any valid agent definition declares an outside tool; null when that could not be read. */
+export async function anyOutsideToolsInUse(): Promise<boolean | null> {
+  try {
+    const { rows } = await pool.query<{ used: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM agent_definitions
+         WHERE status = 'valid' AND jsonb_typeof(definition->'outsideTools') = 'array'
+           AND jsonb_array_length(definition->'outsideTools') > 0) AS used`);
+    return rows[0]?.used === true;
+  } catch {
+    return null;
+  }
+}

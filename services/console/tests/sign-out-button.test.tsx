@@ -30,10 +30,11 @@ describe("sidebar sign out", () => {
   });
 });
 
-it('shows only private chat and membership to another member and never mounts owner inbox polling',()=>{
+it('shows only private chat, your accounts and membership to another member and never mounts owner inbox polling',()=>{
   inbox.mounted.mockClear();render(<Nav owner={false} />);
   expect(screen.getAllByRole('link',{name:'Chat'}).length).toBeGreaterThan(0);
   expect(screen.getAllByRole('link',{name:'Membership'}).length).toBeGreaterThan(0);
-  for(const name of ['Home','Waiting on you','Agents','Activity','Connections','Members','Deadlines','Preferences','Settings'])expect(screen.queryByRole('link',{name})).toBeNull();
+  expect(screen.getAllByRole('link',{name:'Your accounts'}).length).toBeGreaterThan(0);
+  for(const name of ['Home','Waiting on you','Agents','Activity','Connections','Integrations','Members','Deadlines','Preferences','Settings'])expect(screen.queryByRole('link',{name})).toBeNull();
   expect(inbox.mounted).not.toHaveBeenCalled();
 });

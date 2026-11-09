@@ -8,7 +8,7 @@ vi.mock("../lib/queries", () => ({ getNotionSyncStatus: async () => ({
 }) }));
 vi.mock("../lib/notion-proposals", () => ({ getNotionProposalsView: async () => ({ proposals: [], frozen: [] }) }));
 import { getConnectionRows } from "../lib/connections";
-import IntegrationsPage from "../app/integrations/page";
+import IntegrationsPage from "../app/integrations/details/page";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ConnectionsTable } from "../components/ConnectionsTable";
 import type { ConnectionRowDTO } from "../lib/contracts";
@@ -91,7 +91,7 @@ describe("Integrations page partial evidence", () => {
     expect(html).toContain("Accounts unavailable");
     expect(html).toContain("Usage unavailable");
     expect(html).toContain("Agent access: assistant");
-    expect(html).toContain("Manage your personal Google accounts");
+    expect(html).toContain("Manage your personal accounts");
     expect(html).toContain("7 synced");
     expect(html).toContain("Credential status unavailable");
     expect(html).toContain("Agent permissions");

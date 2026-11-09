@@ -67,7 +67,7 @@ describe("Google account consent against local simulated provider", () => {
     api.calendar.mockResolvedValue({ data: { id: "own", primary: true, accessRole: "owner", ...changed } });
     await expect(finishAccountConsent(callback(), flow)).rejects.toThrow();
   });
-  it("returns to member page with encoded neutral flash text", () => { expect(callbackRedirect("https://console.example", { added: "Saved consent" })).toBe("https://console.example/membership?added=Saved+consent"); });
+  it("returns to member page with encoded neutral flash text", () => { expect(callbackRedirect("https://console.example", { added: "Saved consent" })).toBe("https://console.example/accounts?added=Saved+consent"); });
 });
 
 it("requests the closed send profile only after explicit selection", async () => {

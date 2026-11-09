@@ -11,7 +11,7 @@ vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { begin
 vi.mock("../lib/accounts", () => ({ googleOrgClientConfig: () => ({ clientId: "data-client", clientSecret: "secret" }), tokenEncKeyHex: () => "key", googleOrgs: () => [{ id: "example" }], orgDomains: () => ({}), resolveOrgForEmail: () => ({ org: "microsoft" }) }));
 vi.mock("../lib/microsoft-account-oauth", () => ({ MICROSOFT_DATA_ORG: "microsoft", microsoftDataSettings: () => ({ clientId: "data-client", tenantId: "11111111-2222-4333-8444-555555555555", issuer: "https://login.microsoftonline.com/11111111-2222-4333-8444-555555555555/v2.0" }), microsoftAccountRedirect: () => "https://console.example.test/api/accounts/microsoft/callback", startMicrosoftAccountConsent: mock.start, finishMicrosoftAccountConsent: mock.finish }));
 vi.mock("../lib/account-oauth", () => ({ consoleOrigin: () => "https://console.example.test", accountRedirect: () => "https://console.example.test/api/accounts/microsoft/callback",
-  callbackRedirect: (origin: string, p: Record<string,string>) => `${origin}/membership?${new URLSearchParams(p)}`, startAccountConsent: mock.start, finishAccountConsent: mock.finish }));
+  callbackRedirect: (origin: string, p: Record<string,string>) => `${origin}/accounts?${new URLSearchParams(p)}`, startAccountConsent: mock.start, finishAccountConsent: mock.finish }));
 import { ConsoleAdmissionUnavailableError } from "../lib/admission-error";
 import { GET } from "../app/api/accounts/microsoft/callback/route";
 import { POST } from "../app/api/accounts/microsoft/start/route";
