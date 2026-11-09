@@ -734,7 +734,7 @@ describe("installed import-preview command boundary", () => {
     expect(cli).toContain("engine_run --network-none --ro \"$archive\" --ro \"$ledger_file\" --ro \"$toc_dir\" --ro \"$scratch\"");
     expect(cli).toContain("--database-toc-dir \"$toc_dir\"");
     expect(cli).toContain("--copy-directory \"$scratch\"");
-    const previewCommand = cli.split("cmd_import_preview() {")[1]?.split("cmd_owner_bootstrap()")[0] ?? "";
+    const previewCommand = cli.split("cmd_import_preview() {")[1]?.split("\n}\n")[0] ?? "";
     expect(previewCommand).not.toMatch(/DATABASE_PASSWORD|LARES_OPERATOR_PASSWORD|docker\.sock/);
     expect(previewCommand).not.toMatch(/pg_restore[^\n]*\s-d\s/);
   });
