@@ -17,7 +17,13 @@
  * only guard: `send` is replaced on both the client and the message layer, and every write the
  * calendar offers is refused. `draft` and `updateDraftRaw` re-run the credential-free check first;
  * if the choice no longer holds, the draft is refused.
+ *
+ * DRIVE, READ ONLY. When the verified token also carries `drive.readonly` (the "read + drafts" consent
+ * since Drive reading joined it), the mailbox carries a Drive reader that can fetch a file's details,
+ * export a Google document and download a file, and nothing else; each use rechecks the choice first.
+ * An account connected earlier has no such scope and gets `drive: null`.
  */
+import { google } from 'googleapis';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 import { PgAccountStore } from '@lares/agent-kit/account-store';
@@ -30,6 +36,7 @@ import { buildOAuth2Client, decryptSecret, readTokenEncKey } from '@lares/agent-
 import { validateGooglePersonalScopes } from '@lares/agent-kit/personal-consent';
 import { encryptSecret } from '@lares/agent-box/lib/crypto.js';
 import { thisAgent } from './definition.js';
+import type { DriveApi } from './google-drive.js';
 import { personalOrgConfig } from './google-orgs.js';
 import {
   bindPersonalGoogleDeadline, makeCalendarClient, makeGmailClient, personalCalendarApi, personalGmailApi,
@@ -37,6 +44,7 @@ import {
 } from './google.js';
 
 const GOOGLE_ISSUER = 'https://accounts.google.com';
+const DRIVE_READONLY = 'https://www.googleapis.com/auth/drive.readonly';
 /** The single refresh, identity check and profile read must finish inside this. */
 const SETUP_MS = 15_000;
 /** How long a job may keep using its clients (an access token lives about an hour). */
@@ -59,6 +67,8 @@ export interface AgentMailbox {
   gmail: GmailClient;
   /** Reads only. Every write refuses. */
   calendar: CalendarClient;
+  /** Reads files (details, export, download) only; null when the account's consent has no Drive permission. */
+  drive: DriveApi | null;
   /** Is the stored choice still usable right now? Credential-free, holds no lock. */
   recheck(): Promise<boolean>;
 }
@@ -140,8 +150,8 @@ export async function agentMailbox(job: string, deps: AgentMailboxDeps = {}): Pr
           now.binding.ownerMemberId === owner;
       } catch { return false; }
     };
-    const stillOrRefuse = async (): Promise<void> => {
-      if (!(await recheck())) refuse("The agent's mailbox choice no longer holds; the draft was not written");
+    const stillOrRefuse = async (notDone = 'the draft was not written'): Promise<void> => {
+      if (!(await recheck())) refuse(`The agent's mailbox choice no longer holds; ${notDone}`);
     };
     const gmail: GmailClient = {
       ...opened.gmail,
@@ -155,8 +165,14 @@ export async function agentMailbox(job: string, deps: AgentMailboxDeps = {}): Pr
       updateEvent: async () => refuse('This agent reads the calendar only'),
       deleteEvent: async () => refuse('This agent reads the calendar only'),
     };
+    const drive: DriveApi | null = opened.drive && {
+      files: {
+        get: (async (...args: Parameters<DriveApi['files']['get']>) => { await stillOrRefuse('the file was not read'); return (opened.drive!.files.get as (...a: unknown[]) => unknown)(...args); }) as DriveApi['files']['get'],
+        export: (async (...args: Parameters<DriveApi['files']['export']>) => { await stillOrRefuse('the file was not read'); return (opened.drive!.files.export as (...a: unknown[]) => unknown)(...args); }) as DriveApi['files']['export'],
+      },
+    };
     sayOnce(job, null, log);
-    return { ok: true, mailbox: opened.mailbox, ownerMemberId: owner, gmail, calendar, recheck };
+    return { ok: true, mailbox: opened.mailbox, ownerMemberId: owner, gmail, calendar, drive, recheck };
   } catch (err) {
     // Provider, key, client-config or database trouble. Say it plainly, once; no stack, no detail.
     void err;
@@ -215,6 +231,8 @@ async function openClients(pool: Pool, binding: AgentMailboxBinding, deps: Agent
       const gmailMessages = wrapGmailApi(personalGmailApi(cfg, jobAuth, access as string), mailbox);
       const gmail = makeGmailClient({ ...gmailMessages, send: async () => refuse('This agent writes drafts only; send it from Gmail') });
       const calendar = makeCalendarClient(wrapCalendarApi(personalCalendarApi(cfg, jobAuth, access as string)));
-      return { mailbox, gmail, calendar };
+      const drive = info.scopes.includes(DRIVE_READONLY)
+        ? { files: google.drive({ version: 'v3', auth: jobAuth }).files } as DriveApi : null;
+      return { mailbox, gmail, calendar, drive };
     });
 }

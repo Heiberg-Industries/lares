@@ -59,8 +59,9 @@ import {
 // a READ tool can resolve a Drive client without importing this file, which also
 // holds Gmail send and Calendar writes — the write-shape lint follows imports.
 export { GoogleUnenrolledError, type GoogleOrgConfig } from "./google-orgs.js";
-import type { AgentMailbox, AgentMailboxDeps, AgentMailboxResult } from "./agent-mailbox.js";
+import type { AgentMailbox } from "./agent-mailbox.js";
 import { personalOrgConfig, type GoogleOrgConfig } from "./google-orgs.js";
+import { chosenMailbox, mailboxRefusal, noMailbox, staleChoiceError } from "./chosen-mailbox.js";
 
 // -----------------------------------------------------------------------------------------
 // Gmail — client construction + adapter + MIME. The egress-proxy pinning lives inside the
@@ -829,52 +830,19 @@ export function googleClients(): GoogleClients {
   };
 }
 
-// The chosen mailbox: the one choke point. Every Gmail and Calendar read goes to the mailbox the
-// agent's owner chose on the Access tab, drafts only. There is no other door.
-//   - nothing chosen, or not a managed agent: a plain "not connected" refusal;
-//   - a stale choice (disconnected, reconnected, owner changed, ...): refuse, never fall back;
-//   - any other account than the chosen one: refuse.
-// The opened mailbox is kept for its working window and rechecked (credential-free, no lock held)
-// before each reuse, so many calls in a tick cost one refresh.
-const CHOSEN_WORK_MS = 10 * 60_000;
-const CHOSEN_WINDOW_MS = 9 * 60_000;
-const CHOSEN_UNAVAILABLE_MS = 30_000;
-let chosenCache: { until: number; result: Promise<AgentMailboxResult> } | null = null;
-let chosenDeps: AgentMailboxDeps = {};
-/** Test seam: the pool, HTTP layer and definition the chosen-mailbox opening uses. Also forgets the open mailbox. */
-export function __setChosenMailboxDepsForTests(deps: AgentMailboxDeps = {}): void { chosenDeps = deps; chosenCache = null; }
-
-/** Test seam: pretend this mailbox result is open (null forgets it). */
-export function __setChosenMailboxForTests(result: AgentMailboxResult | null): void {
-  chosenCache = result ? { until: Number.POSITIVE_INFINITY, result: Promise.resolve(result) } : null;
-}
-
-async function chosenMailbox(): Promise<AgentMailboxResult> {
-  const hit = chosenCache;
-  if (hit && hit.until > Date.now()) {
-    const r = await hit.result;
-    if (!r.ok || (await r.recheck())) return r;
-    if (chosenCache === hit) chosenCache = null;
-  }
-  // Loaded on use: agent-mailbox builds on this file.
-  const { agentMailbox } = await import("./agent-mailbox.js");
-  const entry = { until: Number.POSITIVE_INFINITY, result: agentMailbox("mail-readers", { ...chosenDeps, workMs: CHOSEN_WORK_MS }) };
-  chosenCache = entry;
-  const r = await entry.result;
-  entry.until = Date.now() + (r.ok ? CHOSEN_WINDOW_MS : r.reason === "unavailable" ? CHOSEN_UNAVAILABLE_MS : 0);
-  return r;
-}
+// The chosen mailbox: the one choke point (the cache and its policy live in ./chosen-mailbox.ts, so
+// Drive can share it without importing this file's write code). Every Gmail and Calendar read goes
+// to the mailbox the agent's owner chose on the Access tab, drafts only. There is no other door.
+export { __setChosenMailboxDepsForTests, __setChosenMailboxForTests } from "./chosen-mailbox.js";
 
 const NO_MAILBOX = "No mailbox chosen for this agent; choose one on its Access tab";
-const noMailbox = (r: AgentMailboxResult): boolean => !r.ok && (r.reason === "none" || r.reason === "not-managed");
 
 /** The chosen mailbox, or a refusal: "not connected" (a config error) when none is chosen. */
 async function chosenMailboxView(account?: string): Promise<AgentMailbox> {
   const r = await chosenMailbox();
   if (noMailbox(r)) throw new GoogleConfigError(NO_MAILBOX);
-  const { AgentMailboxRefusedError } = await import("./agent-mailbox.js");
-  if (!r.ok) throw new AgentMailboxRefusedError("This agent's mailbox choice no longer holds; reconnect it in the console");
-  if (account !== undefined && account !== r.mailbox) throw new AgentMailboxRefusedError(`This agent works on ${r.mailbox} only`);
+  if (!r.ok) throw await staleChoiceError();
+  if (account !== undefined && account !== r.mailbox) throw await mailboxRefusal(`This agent works on ${r.mailbox} only`);
   return r;
 }
 

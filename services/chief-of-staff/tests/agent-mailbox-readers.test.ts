@@ -10,6 +10,7 @@ import { PgAccountStore, type TrustedAccountAdapter } from '@lares/agent-kit/acc
 import { googlePersonalConsentScopes } from '@lares/agent-kit/personal-consent';
 import { PgAgentMailboxStore } from '@lares/agent-kit/agent-mailbox-store';
 import { resetAgentMailboxLogForTests } from '../lib/agent-mailbox.js';
+import { driveApisFor } from '../lib/google-drive.js';
 import { __setTestGmailApiFactory, __setTestCalendarApiFactory, __setChosenMailboxDepsForTests, googleClients, listEnrolledMailboxes } from '../lib/google.js';
 import { quietPool } from './helpers/quiet-pool.js';
 
@@ -56,12 +57,13 @@ async function choose(scopes?: string[]) {
 
 // What the stubbed provider says.
 let tokenCalls = 0, tokenInfo: { sub: string; aud: string; expires_in: number; scope: string }, rotateTo: string | undefined;
-let gmailCalls: string[] = [];
+let gmailCalls: string[] = [], driveCalls = 0;
 const logs: string[] = [];
 const log = (line: string) => { logs.push(line); };
 const fakeFetch = vi.fn<typeof fetch>(async input => {
   const url = new URL(input instanceof Request ? input.url : String(input));
   if (url.pathname.endsWith('/tokeninfo')) return Response.json(tokenInfo);
+  if (url.hostname === 'www.googleapis.com' && url.pathname.startsWith('/drive/')) { driveCalls++; return Response.json({ name: 'Plan', mimeType: 'application/vnd.google-apps.document' }); }
   if (url.hostname === 'oauth2.googleapis.com') {
     tokenCalls++;
     return Response.json({ access_token: 'access-1', token_type: 'Bearer', expires_in: 3600, ...(rotateTo ? { refresh_token: rotateTo } : {}) });
@@ -82,7 +84,7 @@ beforeEach(async () => {
   vi.stubEnv('TOKEN_ENC_KEY_FILE', '/run/secrets/google-token-key');
   vi.stubEnv('LARES_PERSONAL_GOOGLE_CLIENTS', JSON.stringify({ acme: { clientIdFile: '/run/secrets/personal-google-acme-id',
     clientSecretFile: '/run/secrets/personal-google-acme-secret' } }));
-  resetAgentMailboxLogForTests(); __setChosenMailboxDepsForTests({ pool, fetch: fakeFetch, definition: async () => definition, log }); logs.length = 0; tokenCalls = 0; rotateTo = undefined; gmailCalls = []; fakeFetch.mockClear();
+  resetAgentMailboxLogForTests(); __setChosenMailboxDepsForTests({ pool, fetch: fakeFetch, definition: async () => definition, log }); logs.length = 0; tokenCalls = 0; driveCalls = 0; rotateTo = undefined; gmailCalls = []; fakeFetch.mockClear();
   tokenInfo = { sub: 'subject-a', aud: 'fixture-client', expires_in: 3600, scope: COMPOSE.join(' ') };
   await pool.query('DELETE FROM connected_accounts; DELETE FROM oauth_tokens; DELETE FROM agent_resources; DELETE FROM agent_definitions');
   await pool.query(`INSERT INTO orgs(id,display_name) VALUES ('fixture-org','Fixture') ON CONFLICT DO NOTHING;
@@ -170,5 +172,39 @@ describe('default readers on the chosen mailbox', () => {
     await expect(listEnrolledMailboxes()).resolves.toEqual([]);
     await expect(googleClients().gmail()).rejects.toThrow('No mailbox chosen for this agent');
     expect(tokenCalls).toBe(0);
+  });
+});
+
+// Drive: the same chosen mailbox, the same single refresh, read only.
+describe('Drive on the chosen mailbox', () => {
+  const OLD_CONSENT = COMPOSE.filter(s => !s.endsWith('drive.readonly'));
+  it("gives the chosen mailbox's Drive, and many reads with mail calls in one window cost one refresh", async () => {
+    await choose();
+    await googleClients().gmail();
+    const [one] = await driveApisFor();
+    expect(one!.account).toBe('own@example.invalid');
+    await one!.api.files.get({ fileId: 'f1' });
+    await (await driveApisFor())[0]!.api.files.get({ fileId: 'f1' });
+    await googleClients().calendar();
+    expect(driveCalls).toBe(2);
+    expect(tokenCalls).toBe(1);
+  });
+  it('says plainly when nothing is chosen', async () => {
+    await expect(driveApisFor()).rejects.toThrow('Google Drive is not connected for this agent; choose a mailbox on its Access tab');
+    expect(tokenCalls).toBe(0);
+  });
+  it('says plainly to reconnect when the account has no Drive permission', async () => {
+    tokenInfo = { ...tokenInfo, scope: OLD_CONSENT.join(' ') };
+    await choose(OLD_CONSENT);
+    await expect(driveApisFor()).rejects.toThrow('To read Google Docs, reconnect Google on Your accounts');
+    await expect(googleClients().gmail()).resolves.toBeDefined(); // mail and drafts keep working
+  });
+  it('refuses a stale choice, never another account, and a recheck failure mid-window', async () => {
+    const a = await choose();
+    const [{ api }] = await driveApisFor() as [{ api: Awaited<ReturnType<typeof driveApisFor>>[0]['api'] }];
+    await store.setStatus('member-a', await store.beginUpdate('member-a', a.id, 0), 'revoked');
+    await expect(driveApisFor()).rejects.toThrow(/no longer holds/);
+    await expect(api.files.get({ fileId: 'f1' })).rejects.toThrow(/no longer holds/);
+    expect(driveCalls).toBe(0);
   });
 });

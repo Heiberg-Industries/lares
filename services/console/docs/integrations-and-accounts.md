@@ -22,6 +22,13 @@ must include `openid`, `gmail.readonly`, `gmail.compose`, `calendar.readonly`, `
 and `drive.readonly` (the data scopes use their full Google API URLs). Missing actual scope evidence
 or a missing refresh token refuses the consent; requested scopes are not treated as granted scopes.
 
+The "read + drafts" permission is the one an agent's chosen mailbox needs. It asks for read access to
+mail and calendar, permission to write drafts (never to send), and read-only access to Drive files, so
+the agent can open a Google Docs, Sheets or Slides link it is sent. An account connected with "read +
+drafts" before Drive was added keeps working for mail and drafts; opening a Google document says
+"To read Google Docs, reconnect Google on Your accounts" until it is reconnected. The agent never
+writes to Drive.
+
 The same verified grant reads Gmail's own profile (`userId: "me"`) and the current primary calendar
 (`calendarId: "primary"`, primary flag and owner access required). The mailbox binding's opaque
 external ID is the verified Google subject; its address is display metadata. An account-aware Gmail

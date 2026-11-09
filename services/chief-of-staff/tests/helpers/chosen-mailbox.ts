@@ -19,6 +19,7 @@ function apply(): void {
     ownerMemberId: o.ownerMemberId ?? "owner-1",
     gmail: makeGmailClient(wrapGmailApi(o.gmailApi ?? ({} as GmailApi), o.mailbox)),
     calendar: makeCalendarClient(wrapCalendarApi(o.calendarApi ?? ({} as CalendarApi))),
+    drive: null,
     recheck: async () => true,
   };
   __setChosenMailboxForTests(result);

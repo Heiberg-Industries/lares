@@ -70,6 +70,8 @@ const fakeFetch = vi.fn<typeof fetch>(async input => {
   }
   throw new Error(`Unexpected URL ${url}`);
 });
+const DRIVE = 'https://www.googleapis.com/auth/drive.readonly';
+const OLD_CONSENT = COMPOSE.filter(s => s !== DRIVE);
 const open = (extra = {}) => agentMailbox('email-triage', { pool, fetch: fakeFetch, definition: async () => definition, log, ...extra });
 
 beforeAll(async () => {
@@ -242,6 +244,49 @@ describe('agentMailbox', () => {
     await choose(COMPOSE.filter(s => !s.endsWith('gmail.compose')));
     expect(await open()).toEqual({ ok: false, reason: 'scopes-not-draft' });
     expect(tokenCalls).toBe(0);
+  });
+
+  describe('Drive, read only', () => {
+    const driveCalls: string[] = [];
+    const driveFetch = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.hostname === 'www.googleapis.com' && url.pathname.startsWith('/drive/')) {
+        driveCalls.push(`${init?.method ?? 'GET'} ${url.pathname}`);
+        return Response.json({ id: 'f1', name: 'Plan', mimeType: 'application/vnd.google-apps.document' });
+      }
+      return fakeFetch(input, init);
+    });
+    beforeEach(() => { driveCalls.length = 0; });
+
+    it('is present with the Drive scope, reads through the one refresh, and offers nothing that writes', async () => {
+      await choose();
+      const am = await open({ fetch: driveFetch });
+      if (!am.ok) throw new Error('expected a mailbox');
+      expect(am.drive).not.toBeNull();
+      expect(Object.keys(am.drive!)).toEqual(['files']);
+      expect(Object.keys(am.drive!.files).sort()).toEqual(['export', 'get']);
+      await am.drive!.files.get({ fileId: 'f1', fields: 'name' });
+      await am.drive!.files.get({ fileId: 'f1', fields: 'name' });
+      expect(driveCalls).toEqual(['GET /drive/v3/files/f1', 'GET /drive/v3/files/f1']);
+      expect(tokenCalls).toBe(1);
+    });
+
+    it('is null for an account consented before Drive was added, which still opens for mail and drafts', async () => {
+      tokenInfo = { ...tokenInfo, scope: OLD_CONSENT.join(' ') };
+      await choose(OLD_CONSENT);
+      const am = await open({ fetch: driveFetch });
+      expect(am.ok && am.drive).toBeNull();
+      expect(am.ok).toBe(true);
+    });
+
+    it('refuses a Drive read once the choice stops holding', async () => {
+      const a = await choose();
+      const am = await open({ fetch: driveFetch });
+      if (!am.ok) throw new Error('expected a mailbox');
+      await store.setStatus('member-a', await store.beginUpdate('member-a', a.id, 0), 'revoked');
+      await expect(am.drive!.files.get({ fileId: 'f1' })).rejects.toThrow(/no longer holds; the file was not read/);
+      expect(driveCalls).toEqual([]);
+    });
   });
 
   it('says nothing is chosen once, and again only when the reason changes', async () => {
