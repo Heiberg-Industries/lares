@@ -27,6 +27,8 @@ vi.mock("../lib/google.js", () => ({
   listEnrolledMailboxes: (...args: unknown[]) => listEnrolledMailboxesMock(...args),
   googleClients: () => ({ gmail: async () => ({ search: async () => [], read: async () => null }) }),
 }));
+let agentMailboxMock: ReturnType<typeof vi.fn>;
+vi.mock("../lib/agent-mailbox.js", () => ({ agentMailbox: (...args: unknown[]) => agentMailboxMock(...args) }));
 vi.mock("../lib/voice-learn.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/voice-learn.js")>();
   return { ...actual, runVoiceLearn: (...args: unknown[]) => runVoiceLearnMock(...args) };
@@ -43,8 +45,32 @@ beforeEach(() => {
   process.env["LARES_MODEL_PREFIX"] = "lares";
   delete process.env["EMBED_MODEL"];
   embedMock = vi.fn(async () => [[0]]);
+  agentMailboxMock = vi.fn(async () => ({ ok: false, reason: "none" }));
   listEnrolledMailboxesMock = vi.fn(async () => ["owner@project.example"]);
   runVoiceLearnMock = vi.fn(async () => ({ kept: 1, dropped: 0 }));
+});
+
+describe("learnAllMailboxes with a chosen mailbox", () => {
+  it("learns on the chosen mailbox only, reading through its client, and ignores the older enrolment", async () => {
+    const search = vi.fn(async () => []);
+    agentMailboxMock = vi.fn(async () => ({ ok: true, mailbox: "chosen@example.com", gmail: { search, read: async () => null } }));
+    listEnrolledMailboxesMock = vi.fn(async () => ["old@example.com"]);
+    runVoiceLearnMock = vi.fn(async (deps: { mailbox: string; listSentMessages: () => Promise<unknown> }) => {
+      await deps.listSentMessages();
+      return { kept: 1, dropped: 0 };
+    });
+    await expect(learnAllMailboxes()).resolves.toBe(true);
+    expect(runVoiceLearnMock.mock.calls.map((c) => (c[0] as { mailbox: string }).mailbox)).toEqual(["chosen@example.com"]);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(listEnrolledMailboxesMock).not.toHaveBeenCalled();
+  });
+
+  it("skips the pass without touching any mailbox when the chosen one is stale", async () => {
+    agentMailboxMock = vi.fn(async () => ({ ok: false, reason: "account-not-ok" }));
+    await expect(learnAllMailboxes()).resolves.toBe(false);
+    expect(runVoiceLearnMock).not.toHaveBeenCalled();
+    expect(listEnrolledMailboxesMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("learnAllMailboxes", () => {

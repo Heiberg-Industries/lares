@@ -4,6 +4,8 @@
  * and CONSOLE_OAUTH_REDIRECT=http://localhost:6767/api/auth/callback. Register the distinct data
  * callback http://localhost:6767/api/accounts/google/callback on that data client first.
  * Optional PERSONAL_CONSENT_POWER=read+mail-send requests sending permission only; default read.
+ * PERSONAL_CONSENT_POWER=read+mail-draft requests read plus draft writing (gmail.compose), the power an
+ * agent's mailbox needs; the consent screen of the Google client must list gmail.compose first.
  * No message is sent by this probe and permission does not enable engine writes.
  * Only neutral booleans/counts are printed; do not paste consent codes or tokens into a ticket.
  */

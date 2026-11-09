@@ -77,7 +77,7 @@ import { GoogleUnenrolledError, orgConfig, personalOrgConfig, type GoogleOrgConf
 // OAuth2 client's own gaxios transporter.
 // -----------------------------------------------------------------------------------------
 
-type GmailApi = ReturnType<typeof google.gmail>;
+export type GmailApi = ReturnType<typeof google.gmail>;
 
 interface RawGmailHeader { name?: string; value?: string }
 interface RawGmailPart { mimeType?: string; body?: { data?: string }; parts?: RawGmailPart[] }
@@ -168,6 +168,12 @@ export function personalGmailReader(credential: { refreshTokenEnc: string; orgId
 let testGmailApiFactory: ((cfg: GoogleOrgConfig, refreshToken: string) => GmailApi) | undefined;
 export function __setTestGmailApiFactory(factory: typeof testGmailApiFactory): void {
   testGmailApiFactory = factory;
+}
+
+/** The Gmail API object for an already-authenticated personal client, honouring the test seam.
+ * `auth` holds an access token only; the token argument is what a test factory sees. */
+export function personalGmailApi(cfg: GoogleOrgConfig, auth: ReturnType<typeof buildOAuth2Client>, accessToken: string): GmailApi {
+  return testGmailApiFactory ? testGmailApiFactory(cfg, accessToken) : google.gmail({ version: "v1", auth });
 }
 
 /** Adapt the googleapis `gmail.users.messages` surface to the structural
@@ -568,7 +574,7 @@ export function makeGmailClient(messages: GmailMessagesClient): GmailClient {
 // caller actually calls `.calendar()`.
 // -----------------------------------------------------------------------------------------
 
-type CalendarApi = ReturnType<typeof google.calendar>;
+export type CalendarApi = ReturnType<typeof google.calendar>;
 
 export interface CalendarAttendee { email: string; displayName?: string }
 export interface CalendarSummary { id: string; summary: string; primary: boolean }
@@ -686,6 +692,11 @@ export function __setTestCalendarApiFactory(factory: typeof testCalendarApiFacto
  *  told not to. */
 const sendUpdatesFor = (notify: boolean | undefined): "all" | "none" => (notify === false ? "none" : "all");
 const calFor = (calendarId: string | undefined): string => calendarId || "primary";
+
+/** Calendar twin of `personalGmailApi`. */
+export function personalCalendarApi(cfg: GoogleOrgConfig, auth: ReturnType<typeof buildOAuth2Client>, accessToken: string): CalendarApi {
+  return testCalendarApiFactory ? testCalendarApiFactory(cfg, accessToken) : google.calendar({ version: "v3", auth });
+}
 
 /** Adapt the googleapis calendar surface to `CalendarApiClient`. */
 export function wrapCalendarApi(api: CalendarApi): CalendarApiClient {
