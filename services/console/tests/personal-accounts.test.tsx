@@ -1,18 +1,19 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-const m=vi.hoisted(()=>({member:vi.fn(),list:vi.fn()}));
+const m=vi.hoisted(()=>({member:vi.fn(),list:vi.fn(),uses:vi.fn()}));
 vi.mock('../lib/auth',()=>({requireMember:m.member,isConsoleOwner:()=>false}));
 vi.mock('../lib/db',()=>({pool:{}}));
 vi.mock('@lares/agent-kit/account-store',()=>({PgAccountStore:class{list=m.list;}}));
+vi.mock('../lib/agent-mailbox',()=>({listAgentUses:m.uses}));
 vi.mock('../app/actions/accounts',()=>({removeAccount:vi.fn()}));
 vi.mock('../app/actions/members',()=>({signOutEverywhere:vi.fn()}));
 import MembershipPage from '../app/membership/page';
-beforeEach(()=>{vi.clearAllMocks();m.member.mockResolvedValue({id:'member-a',role:'member'});m.list.mockResolvedValue([{id:'stable-account',connectorId:'google',providerAccount:{label:'Own mailbox'},generation:7,status:'ok'}]);});
+beforeEach(()=>{vi.clearAllMocks();m.member.mockResolvedValue({id:'member-a',role:'member'});m.uses.mockResolvedValue([{agent:'writer',accountId:'stable-account'},{agent:'other',accountId:'elsewhere'}]);m.list.mockResolvedValue([{id:'stable-account',connectorId:'google',providerAccount:{label:'Own mailbox'},generation:7,status:'ok'}]);});
 it('lets a normal member manage only their personal account by stable ID and generation',async()=>{
  const html=renderToStaticMarkup(await MembershipPage({searchParams:Promise.resolve({})}));
  expect(m.list).toHaveBeenCalledWith('member-a');expect(html).toContain('Own mailbox');
  expect(html).toContain('name="accountId" value="stable-account"');expect(html).toContain('name="generation" value="7"');
- expect(html).toContain('name="intent" value="reconnect"');expect(html).toContain('name="intent" value="new"');
+ expect(html).toContain('Used by: writer');expect(html).not.toContain('Used by: other');expect(html).toContain('Read mailbox and calendar, and write drafts');expect(html).toContain('name="intent" value="reconnect"');expect(html).toContain('name="intent" value="new"');
  expect(html).toContain('Private chat is available with agents you have permission to use');expect(html).toContain('Provider permission alone does not enable agent writes');expect(html).toContain('write-with-confirm');expect(html.match(/value="read" selected=""/g)).toHaveLength(3);expect(html).not.toContain('Open the owner console');
 });
 it('renders unavailable and neutral flash text without claiming an empty list or exposing URL error text',async()=>{

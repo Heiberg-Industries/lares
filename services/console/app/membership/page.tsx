@@ -8,6 +8,7 @@ import type { ConnectedAccountView } from "@lares/agent-kit/authority-contract";
 import Link from "next/link";
 import { requireMember, isConsoleOwner } from "../../lib/auth";
 import { signOutEverywhere } from "../actions/members";
+import { listAgentUses } from "../../lib/agent-mailbox";
 import { OutsideDiscoverySection } from "../../components/OutsideDiscoverySection";
 import { PrivateMetadataDeviceSection } from "../../components/PrivateMetadataDeviceSection";
 export const dynamic = "force-dynamic";
@@ -15,7 +16,9 @@ export default async function MembershipPage({ searchParams }: { searchParams: P
   const member = await requireMember();
   const params = await searchParams;
   let accounts: ConnectedAccountView[] = [], unavailable = false;
+  let uses: { agent: string; accountId: string }[] = [];
   try { accounts = await new PgAccountStore(pool).list(member.id); } catch { unavailable = true; }
+  try { uses = await listAgentUses(member); } catch { /* the rows still show without it */ }
   return <Page width="narrow" className="lares-stack">
     <PageHeader title="Your membership" />
     <p>Your membership is active. Your current role is {member.role}. New members begin with draft-and-ask automation.</p>
@@ -29,6 +32,7 @@ export default async function MembershipPage({ searchParams }: { searchParams: P
       <p>Read is selected by default. Google or Microsoft may retain permissions you granted earlier; selecting read does not revoke those broader provider permissions.</p>
       {unavailable ? <p role="status">Personal accounts unavailable. Try again later.</p> : accounts.length ? accounts.map(account => <div key={account.id} className="lares-surface lares-stack">
         <strong>{account.providerAccount.label}</strong><span>{account.status}</span>
+        {uses.filter(use => use.accountId === account.id).map(use => <span key={use.agent}>Used by: {use.agent}</span>)}
         {(account.connectorId === "google" || account.connectorId === "microsoft") && <form method="post" action={`/api/accounts/${account.connectorId}/start`} className="lares-stack">
           <input type="hidden" name="intent" value="reconnect" />
           <input type="hidden" name="accountId" value={account.id} />
