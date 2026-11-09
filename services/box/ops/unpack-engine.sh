@@ -38,6 +38,7 @@ required=(
   "$box/ops/install.sh"
   "$box/ops/engine-run.sh"
   "$box/ops/maintenance-custody.py"
+  "$box/ops/keeper-personal-mounts.py"
   "$box/ops/update.sh"
   "$box/ops/rollback.sh"
   "$box/ops/restore.sh"

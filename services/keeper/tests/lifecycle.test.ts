@@ -948,7 +948,7 @@ it('preflights all personal files before a definition save without affecting unr
  rmSync(google.clients.acme!.clientSecretFile);
  await expect(l.create('bookkeeper',definition)).resolves.toMatchObject({healthy:true});
  const before=readFileSync(config.composeFile,'utf8');events=[];
- await expect(l.prepare('bookkeeper',personalChief(),false)).rejects.toThrow('Personal-read runtime files unavailable');
+ await expect(l.prepare('bookkeeper',personalChief(),false)).rejects.toThrow('The keeper cannot see the configured personal-read file');
  expect(events).toEqual([]);expect(readFileSync(config.composeFile,'utf8')).toBe(before);
  const noGmail={...personalChief(),autonomy:{gmail:'never'}};
  await expect(l.prepare('bookkeeper',noGmail,false)).resolves.toBeUndefined();
@@ -1033,7 +1033,7 @@ it('preflights Microsoft-only sources before save and ignores unavailable ungran
  const chief={...definition,role:'chief-of-staff',grants:[{capability:'personal_calendar',scope:'read'}],autonomy:{}};
  await expect(l.prepare('bookkeeper',chief,false)).resolves.toBeUndefined();
  rmSync(ms.clientSecretFile);const before=readFileSync(config.composeFile,'utf8');events=[];
- await expect(l.prepare('bookkeeper',chief,false)).rejects.toThrow('Personal-read runtime files');expect(events).toEqual([]);expect(readFileSync(config.composeFile,'utf8')).toBe(before);
+ await expect(l.prepare('bookkeeper',chief,false)).rejects.toThrow('The keeper cannot see the configured personal-read file');expect(events).toEqual([]);expect(readFileSync(config.composeFile,'utf8')).toBe(before);
  await expect(l.prepare('bookkeeper',{...chief,autonomy:{personal_calendar:'never'}},false)).resolves.toBeUndefined();
 });
 const SOURCE_A='11111111-2222-4333-8444-555555555555',SOURCE_B='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';

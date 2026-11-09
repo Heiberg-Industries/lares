@@ -4,6 +4,7 @@ import { isAbsolute, normalize } from 'node:path';
 import { z } from 'zod';
 import type { AgentDefinition } from '@lares/agent-kit/definition';
 import { autonomyOf, grantFor } from '@lares/agent-kit/manifest';
+import { KeeperRefusedError } from './actions.js';
 import { googleSecretFiles, type PersonalGoogleConfig } from './personal-google.js';
 const path = z.string().refine(s => isAbsolute(s) && normalize(s) === s && !/[\r\n\0$]/.test(s));
 export const personalMicrosoftSchema = z.strictObject({tenantIdFile:path,clientIdFile:path,clientSecretFile:path,tokenKeyFile:path});
@@ -23,11 +24,16 @@ export function personalReadSecretFiles(a: Sources): string[] {
   if(ms && googleKey && ms.tokenKeyFile!==googleKey)throw new Error('Conflicting personal-read custody key sources');
   return [...new Set([...google,...(ms?Object.values(ms):[])])];
 }
+/** Refuses, naming the path only, when a configured source file is not visible to the keeper as a
+ * single plain non-empty file. The usual cause is a keeper.json path no compose mount covers. */
 export function verifyPersonalReadSecretSources(a: Sources): void {
-  try {
-    for(const file of personalReadSecretFiles(a)) {
+  let files: string[];
+  try{files=personalReadSecretFiles(a);}
+  catch{throw new KeeperRefusedError('Personal-read runtime settings are invalid or conflicting');}
+  for(const file of files) {
+    try {
       const st=lstatSync(file);
       if(!st.isFile() || st.isSymbolicLink() || st.nlink!==1 || !st.size)throw new Error();
-    }
-  }catch{throw new Error('Personal-read runtime files unavailable or conflicting');}
+    }catch{throw new KeeperRefusedError(`The keeper cannot see the configured personal-read file ${file}: it is missing, empty, linked or not a plain file inside the keeper`);}
+  }
 }

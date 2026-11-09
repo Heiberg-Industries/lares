@@ -212,6 +212,9 @@ describe("which engine image is used", () => {
     boxDir = join(dir, "engine", "services", "box");
     mkdirSync(boxDir, { recursive: true });
     copyFileSync(join(BOX, "compose.lares-keeper.yaml"), join(boxDir, "compose.lares-keeper.yaml"));
+    // install.sh renders the keeper's personal-file mounts with this script from the unpacked ops folder.
+    mkdirSync(join(boxDir, "ops"), { recursive: true });
+    copyFileSync(join(BOX, "ops", "keeper-personal-mounts.py"), join(boxDir, "ops", "keeper-personal-mounts.py"));
     mkdirSync(join(dir, "engine", "services", "creative", "sql"), { recursive: true });
     copyFileSync(join(BOX, "..", "creative", "sql", "001-eve-workflow.sql"), join(dir, "engine", "services", "creative", "sql", "001-eve-workflow.sql"));
   });
