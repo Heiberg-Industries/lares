@@ -501,8 +501,18 @@ Then:
    (an explicit lower-case organisation id), and register
    `https://example.com/api/accounts/google/callback` (your domain) as a redirect address on that
    client.
-2. Run `python3 /opt/lares/current/services/box/ops/configure-google-keeper.py --org <org>` as root, then restart the
-   keeper and recreate the console. The commands are in
+2. Run `python3 /opt/lares/current/services/box/ops/configure-google-keeper.py --org <org>` as root. Then give the
+   keeper the new files and recreate the console, in this order:
+
+   ```bash
+   bash /opt/lares/current/services/box/ops/install.sh --yes --release /opt/lares/current/release.json
+   COMPOSE_IGNORE_ORPHANS=1 docker compose -f /opt/lares/compose.yaml up -d --no-deps --force-recreate console
+   ```
+
+   The installer shows the keeper only the exact Google (and Microsoft) files its settings name, read-only,
+   and recreates the keeper to do so; a plain restart does not add them. It refuses, and changes nothing, if
+   one of those files is missing, is a link, is not owned by root or sits outside `/etc/lares/secrets/`.
+   If an agent was left with changes waiting, press "Apply changes" on it in the console afterwards. See also
    [`integrations-and-accounts.md`](../services/console/docs/integrations-and-accounts.md#personal-google-consent).
 3. Connect your Google account on **Your accounts**, choosing the permission that starts with
    "Read mailbox, calendar and Drive files, write drafts". Or do it from the agent: open it in the console, go to the Access
@@ -777,8 +787,9 @@ Ubuntu server with the tools from section 1, plus `restic` (`apt-get install -y 
    apply to your snapshot are left out of its list and the numbers shift:
    1. Google, once per organisation: add `GOOGLE_CLIENT_ID_<ORG>` and `GOOGLE_CLIENT_SECRET_<ORG>`
       to `/etc/lares/console-oauth.env` if they are not already there, then run
-      `python3 /opt/lares/current/services/box/ops/configure-google-keeper.py --org <org>` and restart only the
-      keeper: `env -u COMPOSE_FILE docker compose --env-file /etc/lares/keeper.env restart`.
+      `python3 /opt/lares/current/services/box/ops/configure-google-keeper.py --org <org>`, then run
+      `bash /opt/lares/current/services/box/ops/install.sh --yes --release /opt/lares/current/release.json` so the keeper
+      gets those files mounted (a plain restart does not).
    2. Point DNS for your domain at this server. You already did in step 2; check it still holds.
    3. Only when the snapshot held a deadline calendar: run the installer again with the same
       release so it mounts the calendar:

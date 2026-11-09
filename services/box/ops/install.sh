@@ -1815,6 +1815,8 @@ run_keeper() {
   local keeper_env="$PREFIX/etc/lares/keeper.env"
   local keeper_compose="$PREFIX/opt/lares/compose.lares-keeper.yaml"
   local keeper_vault_compose="$PREFIX/opt/lares/compose.lares-keeper-vault.yaml"
+  local keeper_personal_compose="$PREFIX/opt/lares/compose.lares-keeper-personal.yaml"
+  local personal_present=0 personal_changed=0
   local vault_ready=""
   local vault_mounts=""
   local -a compose_cmd
@@ -1897,6 +1899,15 @@ run_keeper() {
     rm -f "$tmp" "$env_tmp" "$tmp.rendered"
     die "rendering the keeper's configuration from '$RELEASE_FILE' produced nothing, so $keeper_config has not been written. The keeper has not been started, and everything written before this is left exactly as it is." "$EX_REFUSED"
   fi
+  # The personal Google and Microsoft files keeper.json names are read from inside the keeper
+  # container, so each needs its own exact read-only mount (compose.lares-keeper.yaml mounts only
+  # fixed files). Checked BEFORE keeper.json is replaced: a missing or unsafe file refuses here
+  # and nothing already written changes.
+  rm -f "$keeper_personal_compose.partial"
+  if ! python3 "$BOX_DIR/ops/keeper-personal-mounts.py" "$tmp" "$keeper_personal_compose.partial" "$SECRETS_DIR" "$PREFIX"; then
+    rm -f "$tmp" "$env_tmp" "$tmp.rendered" "$keeper_personal_compose.partial"
+    die "a Google or Microsoft file named in $keeper_config cannot be given to the keeper (the reason is printed above). The keeper has not been changed and nothing already written has been changed. Fix the file, then run this again." "$EX_REFUSED"
+  fi
   # 0600, set HERE as well as by the program that wrote it: `umask 077` at the top of this file
   # already makes it root-only, and this says so on purpose rather than by accident. keeper.json
   # names every path this installation keeps a secret at, and the one process that reads it is
@@ -1920,6 +1931,20 @@ run_keeper() {
   do_or_say cp "$BOX_DIR/compose.lares-keeper.yaml" "$keeper_compose"
   do_or_say chmod 0640 "$keeper_compose"
 
+  if [ -s "$keeper_personal_compose.partial" ]; then
+    cmp -s "$keeper_personal_compose.partial" "$keeper_personal_compose" 2>/dev/null || personal_changed=1
+    personal_present=1
+    do_or_say chmod 0640 "$keeper_personal_compose.partial"
+    do_or_say mv "$keeper_personal_compose.partial" "$keeper_personal_compose"
+    [ "$DRY" -eq 0 ] || rm -f "$keeper_personal_compose.partial"
+  else
+    rm -f "$keeper_personal_compose.partial"
+    if [ -f "$keeper_personal_compose" ]; then
+      personal_changed=1
+      do_or_say rm -f "$keeper_personal_compose"
+    fi
+  fi
+
   # A separate exact-path overlay gives Keeper access only to the already prepared managed
   # roots. Validate the published inventory and every canonical directory before activating it.
   # Missing custody disables Vault mounts while leaving ordinary Keeper startup available.
@@ -1938,35 +1963,39 @@ run_keeper() {
     # preserving these mounts avoids silently changing custody evidence during recovery.
     if python3 "$BOX_DIR/ops/keeper-vault-roots.py" roots "$PREFIX" >/dev/null 2>&1; then vault_mounts=preserved; fi
   fi
+  # The compose files the keeper is brought up from: the base file, then the optional Vault
+  # overlay, then the optional personal-files overlay. keeper.env remembers the selection.
+  local compose_files="$keeper_compose"
+  local -a compose_flags=(-f "$keeper_compose")
   if [ -n "$vault_mounts" ]; then
+    compose_files="$compose_files:$keeper_vault_compose"
+    compose_flags+=(-f "$keeper_vault_compose")
+  fi
+  if [ "$personal_present" -eq 1 ]; then
+    compose_files="$compose_files:$keeper_personal_compose"
+    compose_flags+=(-f "$keeper_personal_compose")
+  fi
+  if [ "$DRY" -eq 0 ]; then
+    do_or_say cp "$keeper_env" "$keeper_env.partial"
     # Persist only the two canonical host paths, so a later compose recreate using keeper.env
     # can retain the optional exact overlay. No secret value is added.
-    if [ "$DRY" -eq 0 ]; then
-      do_or_say cp "$keeper_env" "$keeper_env.partial"
+    if [ -n "$vault_mounts" ]; then
       printf 'LARES_VAULT_WORKING_ROOT="%s/srv/vault"\nLARES_VAULT_BARE_ROOT="%s/var/lib/lares-vault-git"\n' "$PREFIX" "$PREFIX" >> "$keeper_env.partial"
-      printf 'COMPOSE_FILE="%s:%s"\n' "$keeper_compose" "$keeper_vault_compose" >> "$keeper_env.partial"
-      do_or_say chmod 0640 "$keeper_env.partial"
-      do_or_say mv "$keeper_env.partial" "$keeper_env"
-      compose_cmd=(env -u COMPOSE_FILE docker compose --env-file "$keeper_env")
-    else
-      compose_cmd=(docker compose --env-file "$keeper_env" -f "$keeper_compose" -f "$keeper_vault_compose")
     fi
+    printf 'COMPOSE_FILE="%s"\n' "$compose_files" >> "$keeper_env.partial"
+    do_or_say chmod 0640 "$keeper_env.partial"
+    do_or_say mv "$keeper_env.partial" "$keeper_env"
+    compose_cmd=(env -u COMPOSE_FILE docker compose --env-file "$keeper_env")
   else
-    if [ "$DRY" -eq 0 ]; then
-      do_or_say cp "$keeper_env" "$keeper_env.partial"
-      printf 'COMPOSE_FILE="%s"\n' "$keeper_compose" >> "$keeper_env.partial"
-      do_or_say chmod 0640 "$keeper_env.partial"
-      do_or_say mv "$keeper_env.partial" "$keeper_env"
-      compose_cmd=(env -u COMPOSE_FILE docker compose --env-file "$keeper_env")
-    else
-      compose_cmd=(docker compose --env-file "$keeper_env" -f "$keeper_compose")
-    fi
+    compose_cmd=(docker compose --env-file "$keeper_env" "${compose_flags[@]}")
   fi
 
   # The keeper reads keeper.json only when it starts, so a keeper that is already running keeps
-  # its old settings until it is recreated. Recreate it only when this run changed the file;
+  # its old settings until it is recreated, and a mount added to its compose files needs a recreate
+  # too (a plain restart does not add mounts). Recreate it only when this run changed the file
+  # or the personal mounts;
   # an unchanged file leaves a healthy keeper alone.
-  if [ "$DRY" -eq 0 ] && [ -n "$before_sum" ] && [ "$before_sum" != "$after_sum" ]; then
+  if [ "$DRY" -eq 0 ] && { { [ -n "$before_sum" ] && [ "$before_sum" != "$after_sum" ]; } || [ "$personal_changed" -eq 1 ]; }; then
     keeper_running=$("${compose_cmd[@]}" ps -q lares-keeper 2>/dev/null || true)
   fi
   if [ -n "$keeper_running" ]; then

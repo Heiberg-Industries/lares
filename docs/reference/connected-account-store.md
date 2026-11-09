@@ -125,6 +125,13 @@ actor of a personal read. Agent definitions and tool inputs cannot supply these 
 `configure-google-keeper.py` setup helper configures legacy email-door access only and refuses
 an existing personal-only Google configuration; do not add a principal to satisfy that helper.
 
+The keeper container sees these files only because `install.sh` renders
+`/opt/lares/compose.lares-keeper-personal.yaml` from `keeper.json`: one read-only bind per named Google or
+Microsoft file, at the same path, and nothing else of the secrets folder. It refuses when a named file is
+missing, linked, shared, not owned by root or outside `/etc/lares/secrets/`. After changing these settings,
+run `install.sh` again (a plain keeper restart does not add mounts). A missing file makes reconciliation refuse
+with that file's path named.
+
 Only a chief-of-staff definition with an effective Gmail grant receives personal client mounts:
 its scope must not be `none` and its autonomy must not be `never`. Explicit reconciliation uses
 the desired definition. Rendering other agents or credential rollback uses their applied

@@ -533,16 +533,26 @@ describe("the keeper the installer configures and starts", () => {
   describe("re-running the installer", () => {
     const calendar = () => join(prefix, "srv", "lares", "installation", "deadline-calendar.json");
     const IN_CONTAINER = "/srv/lares/installation/deadline-calendar.json";
-    const GOOGLE = {
-      principal: "owner",
-      tokenKeyFile: "/etc/lares/secrets/token-enc-key",
-      clients: {
-        work: {
-          clientIdFile: "/etc/lares/secrets/google-client-id-work",
-          clientSecretFile: "/etc/lares/secrets/google-client-secret-work",
-        },
-      },
+    const secretsDir = () => join(prefix, "etc", "lares", "secrets");
+    const personalCompose = () => join(prefix, "opt", "lares", "compose.lares-keeper-personal.yaml");
+    /** The block configure-google-keeper.py writes, with its files really there (root-owned in life). */
+    const google = () => {
+      const files = ["token-enc-key", "google-client-id-work", "google-client-secret-work"].map((n) => join(secretsDir(), n));
+      mkdirSync(secretsDir(), { recursive: true });
+      for (const f of files) writeFileSync(f, "fixture\n");
+      return {
+        principal: "owner",
+        tokenKeyFile: files[0]!,
+        clients: { work: { clientIdFile: files[1]!, clientSecretFile: files[2]! } },
+      };
     };
+    const setRuntime = (key: "google" | "microsoft", value: unknown) => {
+      const config = readKeeperConfig();
+      if (value === undefined) delete config.lifecycle.runtime[key]; else config.lifecycle.runtime[key] = value;
+      writeFileSync(keeperConfigPath(), JSON.stringify(config, null, 2) + "\n");
+    };
+    const overrideMounts = () =>
+      (parse(readFileSync(personalCompose(), "utf8")) as any).services["lares-keeper"].volumes as Array<Record<string, any>>;
     /** docker reports a running keeper only when asked which containers the keeper's compose has. */
     const keeperIsRunning = () =>
       stub("docker", 'case "$*" in *" ps -q lares-keeper"*) echo abc123 ;; esac\nexit 0');
@@ -582,23 +592,88 @@ describe("the keeper the installer configures and starts", () => {
 
     it("keeps the Google settings and does not restart an unchanged keeper", () => {
       expect(install().code).toBe(0);
-      const config = readKeeperConfig();
-      config.lifecycle.runtime.google = GOOGLE;
-      writeFileSync(keeperConfigPath(), JSON.stringify(config, null, 2) + "\n");
+      const block = google();
+      setRuntime("google", block);
       keeperIsRunning();
+      // Giving the keeper its new mounts is the one reason to recreate it here: keeper.json itself is carried over unchanged.
       expect(install().code).toBe(0);
-      expect(readKeeperConfig().lifecycle.runtime.google).toEqual(GOOGLE);
-      // The Google block is carried over, so the re-run renders exactly the file already there.
-      expect(recreates()).toBe(0);
+      expect(readKeeperConfig().lifecycle.runtime.google).toEqual(block);
+      expect(recreates()).toBe(1);
+      expect(install().code).toBe(0);
+      expect(recreates()).toBe(1);
+    });
+
+    it("mounts exactly the Google files its settings name, read-only, at the same path", () => {
+      expect(install().code).toBe(0);
+      expect(existsSync(personalCompose())).toBe(false);
+      expect(keeperEnv().COMPOSE_FILE).not.toContain("personal");
+      const block = google();
+      setRuntime("google", block);
+      expect(install().code).toBe(0);
+      const wanted = [block.tokenKeyFile, block.clients.work.clientIdFile, block.clients.work.clientSecretFile].sort();
+      expect(overrideMounts().map((m) => m.source)).toEqual(wanted);
+      for (const mount of overrideMounts()) {
+        expect(mount).toEqual({ type: "bind", source: mount.source, target: mount.source, read_only: true, bind: { create_host_path: false } });
+      }
+      expect(keeperEnv().COMPOSE_FILE).toBe(`"${join(prefix, "opt", "lares", "compose.lares-keeper.yaml")}:${join(prefix, "opt", "lares", "compose.lares-keeper-vault.yaml")}:${personalCompose()}"`);
+      // Every path the tool-managed block names is a mount target, so the keeper can open it.
+      const paths = [block.tokenKeyFile, block.clients.work.clientIdFile, block.clients.work.clientSecretFile];
+      const targets = overrideMounts().map((m) => m.target);
+      for (const path of paths) expect(targets, `${path} is named in keeper.json but not mounted`).toContain(path);
+      // And the block is removed again: no block, no override, no entry in the saved selection.
+      setRuntime("google", undefined);
+      expect(install().code).toBe(0);
+      expect(existsSync(personalCompose())).toBe(false);
+      expect(keeperEnv().COMPOSE_FILE).not.toContain("personal");
+    });
+
+    it("mounts the Microsoft files the same way", () => {
+      expect(install().code).toBe(0);
+      google();
+      const names = ["ms-tenant", "ms-id", "ms-secret", "token-enc-key"];
+      const [tenantIdFile, clientIdFile, clientSecretFile, tokenKeyFile] = names.map((n) => join(secretsDir(), n));
+      for (const f of [tenantIdFile!, clientIdFile!, clientSecretFile!]) writeFileSync(f, "fixture\n");
+      const microsoft = { tenantIdFile, clientIdFile, clientSecretFile, tokenKeyFile };
+      setRuntime("microsoft", microsoft);
+      expect(install().code).toBe(0);
+      expect(readKeeperConfig().lifecycle.runtime.microsoft).toEqual(microsoft);
+      expect(overrideMounts().map((m) => m.target).sort()).toEqual([tenantIdFile, clientIdFile, clientSecretFile, tokenKeyFile].sort());
+    });
+
+    it("refuses before changing anything when a named Google file is missing, linked or outside the secrets folder", () => {
+      expect(install().code).toBe(0);
+      const block = google();
+      setRuntime("google", block);
+      const before = readFileSync(keeperConfigPath(), "utf8");
+      const outside = join(dir, "elsewhere-secret");
+      writeFileSync(outside, "fixture\n");
+      for (const [label, change, path] of [
+        ["missing", () => rmSync(block.clients.work.clientSecretFile), block.clients.work.clientSecretFile],
+        ["linked", () => { rmSync(block.clients.work.clientSecretFile, { force: true }); symlinkSync(outside, block.clients.work.clientSecretFile); }, block.clients.work.clientSecretFile],
+        ["outside", () => { rmSync(block.clients.work.clientSecretFile, { force: true }); writeFileSync(block.clients.work.clientSecretFile, "fixture\n"); setRuntime("google", { ...block, tokenKeyFile: outside }); }, outside],
+      ] as const) {
+        change();
+        const after = readFileSync(keeperConfigPath(), "utf8");
+        const r = install();
+        expect(r.code, label).toBe(78);
+        expect(r.stderr, label).toContain(path);
+        expect(readFileSync(keeperConfigPath(), "utf8"), label).toBe(after);
+        expect(existsSync(personalCompose()), label).toBe(false);
+      }
+      expect(before).toContain(block.tokenKeyFile);
     });
 
     it("preserves explicit Microsoft-only runtime settings on installer rerun", () => {
       expect(install().code).toBe(0);
-      const config=readKeeperConfig();
-      const microsoft={tenantIdFile:"/srv/secrets/ms-tenant",clientIdFile:"/srv/secrets/ms-id",clientSecretFile:"/srv/secrets/ms-secret",tokenKeyFile:"/srv/secrets/token-key"};
-      config.lifecycle.runtime.microsoft=microsoft;
-      writeFileSync(keeperConfigPath(),JSON.stringify(config,null,2)+"\n");keeperIsRunning();
-      expect(install().code).toBe(0);expect(readKeeperConfig().lifecycle.runtime.microsoft).toEqual(microsoft);expect(recreates()).toBe(0);
+      google();
+      const microsoft = {
+        tenantIdFile: join(secretsDir(), "ms-tenant"), clientIdFile: join(secretsDir(), "ms-id"),
+        clientSecretFile: join(secretsDir(), "ms-secret"), tokenKeyFile: join(secretsDir(), "token-enc-key"),
+      };
+      for (const f of [microsoft.tenantIdFile, microsoft.clientIdFile, microsoft.clientSecretFile]) writeFileSync(f, "fixture\n");
+      setRuntime("microsoft", microsoft); keeperIsRunning();
+      expect(install().code).toBe(0); expect(readKeeperConfig().lifecycle.runtime.microsoft).toEqual(microsoft); expect(recreates()).toBe(1);
+      expect(install().code).toBe(0); expect(recreates()).toBe(1);
     });
 
     it("restarts a running keeper when its settings changed", () => {

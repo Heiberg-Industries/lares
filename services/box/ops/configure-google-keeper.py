@@ -3,7 +3,8 @@
 
 Run as root after adding GOOGLE_CLIENT_ID_<ORG> and GOOGLE_CLIENT_SECRET_<ORG>
 to the console's root-only OAuth env file. No credential is passed on argv or printed.
-Restart only the Keeper after this exits successfully; the script does not touch Docker.
+Run install.sh again afterwards: it gives the Keeper read-only mounts for the files named here (a plain
+restart does not add mounts). The script itself does not touch Docker.
 """
 
 import argparse
@@ -13,6 +14,12 @@ import re
 import stat
 import tempfile
 from pathlib import Path
+
+
+INSTALL_COMMAND = "bash /opt/lares/current/services/box/ops/install.sh --yes --release /opt/lares/current/release.json"
+
+
+CONSOLE_COMMAND = "COMPOSE_IGNORE_ORPHANS=1 docker compose -f /opt/lares/compose.yaml up -d --no-deps --force-recreate console"
 
 
 def read_values(path: Path) -> dict[str, str]:
@@ -134,7 +141,10 @@ def main() -> None:
     atomic_write(args.keeper_config, (json.dumps(config, indent=2) + "\n").encode(), 0o600, 0)
     if console_env != args.env_file.read_text():
         atomic_write(args.env_file, console_env.encode(), 0o600, 0)
-    print(f"Configured Google org {args.org} for Keeper and console. Restart only Keeper and console before connecting an agent.")
+    print(f"Configured Google org {args.org} for Keeper and console. Now run these two commands, in this order:\n"
+          f"  {INSTALL_COMMAND}\n"
+          f"  {CONSOLE_COMMAND}\n"
+          "The first gives the keeper the new files (a plain restart is not enough: the keeper only sees them once the installer has mounted them).")
 
 
 if __name__ == "__main__":

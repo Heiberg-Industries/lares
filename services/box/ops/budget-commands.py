@@ -132,6 +132,10 @@ class KeeperUnclear(Exception):
     """The keeper could not be reached, or the outcome of the action is not known."""
 
 
+class KeeperReportedError(KeeperUnclear):
+    """The keeper answered, but with an error rather than a refusal: it did not time out."""
+
+
 def say(message: str) -> None:
     print(message, flush=True)
 
@@ -328,7 +332,7 @@ class Installation:
             return answer.get("result")
         if answer.get("outcome") == "refused":
             raise KeeperRefused(str(answer.get("error") or "The keeper refused."))
-        raise KeeperUnclear(str(answer.get("error") or "The keeper could not confirm the outcome."))
+        raise KeeperReportedError(str(answer.get("error") or "The keeper could not confirm the outcome."))
 
     def lock(self) -> int:
         """Two copies of these commands must never interleave their steps."""
@@ -1053,6 +1057,10 @@ def agent_refresh(installation: Installation, options: argparse.Namespace) -> in
             result = installation.host_action("definition.refresh-image", {"name": name}, RECONCILE_TIMEOUT_SECONDS) or {}
         except KeeperRefused as error:
             say(f"{name} stays on the previous software: the keeper refused ({error}).")
+            left += 1
+            continue
+        except KeeperReportedError:
+            say(f"{name} stays on the previous software: the keeper reported an error. Check it with: sudo lares agent start {name}")
             left += 1
             continue
         except (KeeperUnclear, subprocess.TimeoutExpired):

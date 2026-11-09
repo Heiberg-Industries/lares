@@ -16,6 +16,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -770,12 +771,26 @@ class BudgetCommandTests(unittest.TestCase):
         code, output = self.run_command("agent-refresh")
         self.assertEqual(code, 0, output)
 
-    def test_agent_refresh_says_how_to_check_an_unconfirmed_restart(self) -> None:
+    def test_agent_refresh_says_the_keeper_reported_an_error_when_it_did(self) -> None:
         self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64}])
-        self.keeper.answers["definition.refresh-image"] = {"ok": False, "outcome": "unknown", "error": "timeout"}
+        self.keeper.answers["definition.refresh-image"] = {"ok": False, "outcome": "failed", "error": "something broke"}
         code, output = self.run_command("agent-refresh")
         self.assertNotEqual(code, 0, output)
-        self.assertIn("sudo lares agent start first", output)
+        self.assertIn("first stays on the previous software: the keeper reported an error. Check it with: sudo lares agent start first", output)
+        self.assertNotIn("in time", output)
+
+    def test_agent_refresh_keeps_the_timeout_wording_for_a_real_timeout(self) -> None:
+        self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64}])
+
+        def slow(request: dict) -> dict:
+            time.sleep(1.5)
+            return ok({"moved": True, "running": True})
+
+        self.keeper.answers["definition.refresh-image"] = slow
+        with mock.patch.object(budget, "RECONCILE_TIMEOUT_SECONDS", 0.4):
+            code, output = self.run_command("agent-refresh")
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("first: the keeper could not confirm the restart in time. Check it with: sudo lares agent start first", output)
 
     def test_agent_start_needs_a_finished_setup_and_a_real_name(self) -> None:
         code, output = self.run_command("agent-start", "my-agent")

@@ -663,6 +663,14 @@ describe("restore.sh: a good restore", () => {
     expect(lastIdx(/compose --env-file .*keeper\.env up -d$/)).toBe(logLines().length - 1);
   }, 15_000);
 
+  it("keeps the installer's personal Google and Microsoft mounts selected for the keeper recreate", () => {
+    write("opt/lares/compose.lares-keeper-personal.yaml", "services:\n  lares-keeper:\n    volumes: []\n", 0o640);
+    const r = run(base());
+    expect(r.code, r.all).toBe(0);
+    expect(readFileSync(join(prefix, "etc/lares/keeper.env"), "utf8")).toContain(
+      `COMPOSE_FILE="${join(prefix, "opt/lares/compose.lares-keeper.yaml")}:${join(prefix, "opt/lares/compose.lares-keeper-personal.yaml")}"`);
+  });
+
   it("restores every dump except postgres into a dropped-and-recreated database, and postgres.dump into postgres", () => {
     expect(run(base()).code).toBe(0);
     for (const db of ["lares_state", "litellm", workflowDatabase]) {

@@ -4,6 +4,7 @@ import {join} from 'node:path';
 import {afterEach,expect,it} from 'vitest';
 import {parse} from 'yaml';
 import {renderAgentsCompose,type AgentContainer} from '../lib/compose-agents.js';
+import {KeeperRefusedError} from '../lib/actions.js';
 import {personalMicrosoftSchema,personalMicrosoftEnabled,personalReadSecretFiles,verifyPersonalReadSecretSources} from '../lib/personal-microsoft.js';
 import {personalGoogleEnabled} from '../lib/personal-google.js';
 const microsoft={tenantIdFile:'/srv/secrets/tenant',clientIdFile:'/srv/secrets/id',clientSecretFile:'/srv/secrets/client-secret',tokenKeyFile:'/srv/secrets/key'};
@@ -50,4 +51,16 @@ it('preflights every file and refuses missing, empty, linked and directory sourc
  rmSync(config.clientIdFile);symlinkSync(config.tokenKeyFile,config.clientIdFile);expect(()=>verifyPersonalReadSecretSources({personalMicrosoft:config})).toThrow();
  rmSync(config.clientIdFile);linkSync(config.tokenKeyFile,config.clientIdFile);expect(()=>verifyPersonalReadSecretSources({personalMicrosoft:config})).toThrow();
  expect(()=>verifyPersonalReadSecretSources({personalMicrosoft:{...config,tenantIdFile:dir}})).toThrow();
+});
+it('refuses with a KeeperRefusedError that names the unseen path and nothing else',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'personal-ms-'));dirs.push(dir);
+ const config=Object.fromEntries(Object.keys(microsoft).map((field,i)=>[field,join(dir,`file${i}`)])) as typeof microsoft;
+ for(const file of personalReadSecretFiles({personalMicrosoft:config}))writeFileSync(file,'secret-value');
+ rmSync(config.clientSecretFile);
+ let caught:unknown;try{verifyPersonalReadSecretSources({personalMicrosoft:config});}catch(error){caught=error;}
+ expect(caught).toBeInstanceOf(KeeperRefusedError);
+ expect((caught as Error).message).toContain(config.clientSecretFile);
+ expect((caught as Error).message).not.toContain('secret-value');
+ const google={tokenKeyFile:join(dir,'absent-key'),clients:{example:{clientIdFile:join(dir,'file0'),clientSecretFile:join(dir,'file1')}}};
+ expect(()=>verifyPersonalReadSecretSources({personalGoogle:google as any})).toThrow(new RegExp(`${join(dir,'absent-key')}`));
 });

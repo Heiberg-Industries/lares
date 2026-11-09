@@ -129,6 +129,7 @@ COMPOSE_FILE="$OPT_LARES/compose.yaml"
 KEEPER_COMPOSE="$OPT_LARES/compose.lares-keeper.yaml"
 KEEPER_VAULT_COMPOSE="$OPT_LARES/compose.lares-keeper-vault.yaml"
 KEEPER_VAULT_COMPOSE_SOURCE="$BOX_DIR/compose.lares-keeper-vault.yaml"
+KEEPER_PERSONAL_COMPOSE="$OPT_LARES/compose.lares-keeper-personal.yaml"
 KEEPER_ENV="$ETC_LARES/keeper.env"
 KEEPER_JSON="$ETC_LARES/keeper.json"
 AGENTS_COMPOSE="$SRV_LARES/compose.lares-agents.yaml"
@@ -889,6 +890,11 @@ write_keeper_compose_selection() { # 0 base only; 1 verified Vault inventory and
   else
     printf 'COMPOSE_FILE="%s"\n' "$KEEPER_COMPOSE" >> "$temporary" || midway 'Could not save the base keeper compose selection.'
   fi
+  # The installer's exact mounts for the personal Google and Microsoft files stay selected when it wrote them.
+  if [ -f "$KEEPER_PERSONAL_COMPOSE" ]; then
+    awk -F= -v personal="$KEEPER_PERSONAL_COMPOSE" '$1 == "COMPOSE_FILE" { sub(/"$/, ":" personal "\"") } { print }' "$temporary" > "$temporary.next" \
+      && mv -f "$temporary.next" "$temporary" || midway 'Could not keep the personal-file mounts in the keeper compose selection.'
+  fi
   chmod 0640 "$temporary" && mv -f "$temporary" "$KEEPER_ENV" || midway 'Could not install the selected keeper compose environment.'
 }
 
@@ -1108,7 +1114,7 @@ say "What is left, in this order:"
 step=1
 say "  $step. Google connection, once per organisation: add GOOGLE_CLIENT_ID_<ORG> and GOOGLE_CLIENT_SECRET_<ORG> to /etc/lares/console-oauth.env if they are not already there, then run:"
 say "       python3 $HERE/configure-google-keeper.py --org <org>"
-say "       and restart only the keeper: env -u COMPOSE_FILE docker compose --env-file /etc/lares/keeper.env restart"
+say "       and then run the installer again so the keeper gets the new files mounted: bash /opt/lares/current/services/box/ops/install.sh --yes --release /opt/lares/current/release.json"
 step=$((step + 1))
 say "  $step. Point DNS for $RESTORED_DOMAIN at THIS server (the old server must stay off)."
 # The installer only mounts the deadline calendar when the file is there when it runs, and the
