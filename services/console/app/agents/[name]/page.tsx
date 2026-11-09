@@ -1,6 +1,9 @@
 import { AgentAccess } from "../../../components/AgentAccess";
 import { agentAccess } from "../../../lib/agent-access";
-import { members } from "../../../lib/auth";
+import { members, memberAuditAddress } from "../../../lib/auth";
+import { cookies } from "next/headers";
+import { AgentProviderKey } from "../../../components/AgentProviderKey";
+import { providerKeyStatusFor } from "../../../lib/provider-key";
 import { requireConsolePage } from "../../../lib/auth";
 import { notFound } from "next/navigation";
 import { Notice, PageHeader, Page } from "@lares/ui/patterns";
@@ -69,10 +72,14 @@ export default async function AgentPage({
       : undefined;
   const access = await agentAccess.agentAccess(actor.id,name);
   const directory = await members.listMembers(actor.id);
+  const sessionToken = (await cookies()).get("lares_session")?.value;
+  const auditAddress = await memberAuditAddress(actor.id);
+  const providerKey = sessionToken && auditAddress ? await providerKeyStatusFor(sessionToken, name, auditAddress) : { kind: "unavailable" as const };
   return (
     <Page>
     <AgentDetail
       accessSettings={definition.status === "fulfilled" && definition.value.initial ? <AgentAccess name={name} hash={definition.value.initial.hash} access={access} members={directory.filter(entry=>entry.member.status==='active').map(entry=>({id:entry.member.id,displayName:entry.displayName}))}/> : undefined}
+      providerKeySettings={<AgentProviderKey name={name} initial={providerKey} />}
       routing={routing}
       outsideTools={outsideTools}
       agent={agent}

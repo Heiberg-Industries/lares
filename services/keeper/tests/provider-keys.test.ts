@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -144,4 +145,80 @@ it('sweeps files no row names once they are older than the grace period, and kee
   for (const name of [stray, live.revision, `.candidate-${stray}`]) utimesSync(join(files.directory, name), old, old);
   files.sweep(new Set([live.revision]));
   expect(listed()).toEqual([live.revision, fresh].sort());
+});
+
+// ---- From the console: the designated owner only, through the signed-in session ----
+const OWNER = 'member-owner', ADMIN = 'member-admin', PLAIN = 'member-plain';
+const token = (seed: string) => seed.padEnd(43, 'x');
+const sessions = { owner: token('owner'), admin: token('admin'), plain: token('plain'), removed: token('removed'), expired: token('expired'), revoked: token('revoked') };
+const consoleRun = (name: string, input: Record<string, unknown>) => runAction(name, input, { actor: 'owner@example.com', audit }, {}) as Promise<any>;
+async function consoleSetup() {
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'");
+  await pool.query('CREATE TABLE IF NOT EXISTS member_sessions (id text PRIMARY KEY, member_id text NOT NULL, token_hash text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz)');
+  await pool.query('DELETE FROM member_sessions');
+  await pool.query('DELETE FROM users');
+  await pool.query("INSERT INTO orgs(id,display_name) VALUES('org','Example') ON CONFLICT DO NOTHING");
+  for (const [id, role, status] of [[OWNER, 'owner', 'active'], [ADMIN, 'owner', 'active'], [PLAIN, 'member', 'active'], ['member-removed', 'owner', 'removed']])
+    await pool.query('INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,$1,$2,$3,$4)', [id, 'org', role, status]);
+  const add = (name: keyof typeof sessions, member: string, expires = '1 hour', revoked = false) => pool.query(
+    `INSERT INTO member_sessions(id,member_id,token_hash,expires_at,revoked_at) VALUES($1,$2,$3,now() + $4::interval,${revoked ? 'now()' : 'NULL'})`,
+    [name, member, createHash('sha256').update(sessions[name]).digest('hex'), expires]);
+  await add('owner', OWNER); await add('admin', ADMIN); await add('plain', PLAIN); await add('removed', 'member-removed');
+  await add('expired', OWNER, '-1 second'); await add('revoked', OWNER, '1 hour', true);
+  resetActions();
+  registerProviderKeyActions({ pool, files, designatedOwnerId: OWNER });
+}
+
+it('lets only the designated owner read, set or remove a key from the console, including refusing another administrator', async () => {
+  await consoleSetup();
+  for (const who of ['admin', 'plain', 'removed', 'expired', 'revoked'] as const) {
+    for (const [action, extra] of [['provider-key.status', {}], ['provider-key.save', { key: KEY }], ['provider-key.remove-own', {}]] as const)
+      await expect(consoleRun(action, { sessionToken: sessions[who], name: 'writer', ...extra })).rejects.toThrow('Only the designated owner');
+  }
+  await expect(consoleRun('provider-key.save', { sessionToken: token('unknown'), name: 'writer', key: KEY })).rejects.toThrow('Only the designated owner');
+  expect((await pool.query('SELECT 1 FROM agent_provider_keys')).rowCount).toBe(0);
+  expect(listed()).toEqual([]);
+  // Without a configured owner nothing is allowed.
+  resetActions();
+  registerProviderKeyActions({ pool, files });
+  await expect(consoleRun('provider-key.save', { sessionToken: sessions.owner, name: 'writer', key: KEY })).rejects.toThrow('Only the designated owner');
+});
+
+it('saves, shows and removes the key for the designated owner, sharing the host behaviour', async () => {
+  await consoleSetup();
+  expect(await consoleRun('provider-key.status', { sessionToken: sessions.owner, name: 'writer' })).toEqual({ name: 'writer', own: false });
+  const first = await consoleRun('provider-key.save', { sessionToken: sessions.owner, name: 'writer', key: KEY });
+  expect(first).toMatchObject({ name: 'writer', replaced: false, revision: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+  expect(lstatSync(join(files.directory, first.revision)).mode & 0o777).toBe(0o400);
+  expect(readFileSync(join(files.directory, first.revision), 'utf8')).toBe(KEY + '\n');
+  expect((await pool.query('SELECT * FROM agent_provider_keys')).rows[0]).toMatchObject({ agent: 'writer', revision: first.revision, state: 'active', set_by: 'owner', tested_at: null, test_outcome: null });
+  expect(await consoleRun('provider-key.status', { sessionToken: sessions.owner, name: 'writer' })).toMatchObject({ name: 'writer', own: true, setBy: 'owner', setAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) });
+  // A host set after the console set replaces it the same way, and the console sees it.
+  expect((await run('provider-key.set', { name: 'writer', key: KEY + '-host' })).replaced).toBe(true);
+  expect(await consoleRun('provider-key.status', { sessionToken: sessions.owner, name: 'writer' })).toMatchObject({ own: true, setBy: 'host' });
+  // Rotation from the console removes the previous file after the grace period.
+  const second = await consoleRun('provider-key.save', { sessionToken: sessions.owner, name: 'writer', key: KEY + '-next' });
+  expect(second.replaced).toBe(true);
+  await wait(400);
+  expect(listed()).toEqual([second.revision]);
+  expect(await consoleRun('provider-key.remove-own', { sessionToken: sessions.owner, name: 'writer' })).toMatchObject({ removed: true, revision: second.revision });
+  expect((await pool.query('SELECT 1 FROM agent_provider_keys')).rowCount).toBe(0);
+  await wait(400);
+  expect(listed()).toEqual([]);
+  await expect(consoleRun('provider-key.save', { sessionToken: sessions.owner, name: 'old-agent', key: KEY })).rejects.toThrow('no such agent');
+});
+
+it('never puts the key or the session token in an audit record, a result or an error', async () => {
+  await consoleSetup();
+  const results = [
+    await consoleRun('provider-key.save', { sessionToken: sessions.owner, name: 'writer', key: KEY }),
+    await consoleRun('provider-key.status', { sessionToken: sessions.owner, name: 'writer' }),
+    await consoleRun('provider-key.remove-own', { sessionToken: sessions.owner, name: 'writer' }),
+  ];
+  const errors: string[] = [];
+  for (const input of [{ sessionToken: sessions.admin, name: 'writer', key: KEY }, { sessionToken: sessions.owner, name: 'writer', key: KEY + ' bad' }])
+    errors.push(String(await consoleRun('provider-key.save', input).catch(error => error.message)));
+  const seen = JSON.stringify([audit.mock.calls, results, errors]);
+  for (const secret of [KEY, sessions.owner, sessions.admin]) expect(seen).not.toContain(secret);
+  expect(seen).toContain('<redacted>');
 });
