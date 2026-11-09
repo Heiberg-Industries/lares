@@ -193,17 +193,21 @@ describe('which mailbox an agent works on', () => {
 describe('personal consent powers', () => {
   const compose = 'https://www.googleapis.com/auth/gmail.compose';
   const gmailSend = 'https://www.googleapis.com/auth/gmail.send';
+  const drive = 'https://www.googleapis.com/auth/drive.readonly';
   it('gives each Google power exactly its own scopes', () => {
     expect(googlePersonalConsentScopes('read')).toEqual(READ);
     expect(googlePersonalConsentScopes('read+mail-send')).toEqual([...READ, gmailSend]);
-    expect(googlePersonalConsentScopes('read+mail-draft')).toEqual([...READ, compose]);
+    expect(googlePersonalConsentScopes('read+mail-draft')).toEqual([...READ, compose, drive]);
     expect(googlePersonalConsentScopes('read+mail-draft')).not.toContain(gmailSend);
+    expect(googlePersonalConsentScopes('read')).not.toContain(drive);
     expect(() => personalConsentPower('read+mail-everything')).toThrow();
   });
   it('validates each Google power against what the account really holds', () => {
     expect(() => validateGooglePersonalScopes(READ, 'read')).not.toThrow();
     expect(() => validateGooglePersonalScopes(COMPOSE, 'read+mail-draft')).not.toThrow();
     expect(() => validateGooglePersonalScopes([...READ, 'https://www.googleapis.com/auth/gmail.modify'], 'read+mail-draft')).not.toThrow();
+    // An account consented before Drive joined "read + drafts" has no Drive scope and still validates.
+    expect(() => validateGooglePersonalScopes([...READ, compose], 'read+mail-draft')).not.toThrow();
     expect(() => validateGooglePersonalScopes(READ, 'read+mail-draft')).toThrow(/incomplete/);
     expect(() => validateGooglePersonalScopes(SEND, 'read+mail-draft')).toThrow(/incomplete/);
     expect(() => validateGooglePersonalScopes(SEND, 'read+mail-send')).not.toThrow();

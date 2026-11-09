@@ -1,7 +1,7 @@
 /**
  * Google Docs/Sheets/Slides/Drive links through the Drive API.
  * The Drive client is a stand-in shaped like googleapis' `drive.files` (shaped, not recorded).
- * No agent has a Drive connection today (`driveApisFor` refuses), so there is no live probe.
+ * The real Drive path is probed by hand in tests/live/agent-mailbox-drive.live.mts.
  */
 import { describe, it, expect, vi } from "vitest";
 
@@ -103,7 +103,7 @@ describe("readGoogleDoc", () => {
 });
 
 describe("Drive for an agent", () => {
-  it("is not connected: refuses plainly, whatever the old environment says", async () => {
+  it("outside a managed agent: not connected, whatever the old environment says", async () => {
     vi.stubEnv("GOOGLE_PRINCIPAL_ID", "someone"); vi.stubEnv("GMAIL_PRIMARY_EMAIL", "owner@owner.example");
     try {
       await expect(driveApisFor()).rejects.toThrow("Google Drive is not connected for this agent");

@@ -12,11 +12,14 @@ export const GOOGLE_PERSONAL_READ_SCOPES = ['openid', 'https://www.googleapis.co
   'https://www.googleapis.com/auth/calendar.readonly'] as const;
 const GMAIL_SEND = 'https://www.googleapis.com/auth/gmail.send';
 const GMAIL_COMPOSE = 'https://www.googleapis.com/auth/gmail.compose';
+const DRIVE_READONLY = 'https://www.googleapis.com/auth/drive.readonly';
 export function googlePersonalConsentScopes(power: PersonalConsentPower): readonly string[] {
   const checked = personalConsentPower(power);
   if (checked === 'read') return GOOGLE_PERSONAL_READ_SCOPES;
   if (checked === 'read+mail-send') return [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_SEND];
-  if (checked === 'read+mail-draft') return [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_COMPOSE];
+  // "Read + drafts" also reads Drive files (read-only). An account consented before this was added still
+  // validates for this power: validateGooglePersonalScopes does not require the Drive scope.
+  if (checked === 'read+mail-draft') return [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_COMPOSE, DRIVE_READONLY];
   throw new Error('Invalid personal consent power');
 }
 // Prior verified consent may carry these known broader powers. Preserve actual scopes;
@@ -25,7 +28,7 @@ const GOOGLE_ALLOWED = [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_SEND, 'email', 'pr
   'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile',
   GMAIL_COMPOSE, 'https://www.googleapis.com/auth/gmail.modify',
   'https://mail.google.com/', 'https://www.googleapis.com/auth/calendar.events',
-  'https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/drive.readonly'];
+  'https://www.googleapis.com/auth/calendar', DRIVE_READONLY];
 export function validateGooglePersonalScopes(scopes: readonly string[], power: PersonalConsentPower): void {
   personalConsentPower(power);
   if (!Array.isArray(scopes) || scopes.length > GOOGLE_ALLOWED.length || scopes.some(s => typeof s !== 'string' || !GOOGLE_ALLOWED.includes(s))) throw new Error('Consent scopes refused');

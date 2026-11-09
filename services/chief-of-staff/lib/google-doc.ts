@@ -3,13 +3,13 @@
  *
  * A private Doc link sent to the readability worker gets Google's
  * sign-in shell and nothing else. The chief of staff would answer honestly ("needs a sign-in") but a user expects
- * their own document to open. So Google links go through the Drive API with the owner's own enrolled
- * accounts, read-only (`drive.readonly`).
+ * their own document to open. So Google links go through the Drive API with the mailbox the agent's
+ * owner chose, read-only (`drive.readonly`, part of the "read + drafts" consent).
  *
  * Export formats — documented Drive v3 behaviour, not measured here: Docs → text/plain,
  * Sheets → text/csv (the FIRST sheet only; the text says so), Slides → text/plain. A PDF or text
- * file stored in Drive is downloaded; anything else gets a plain sentence. No agent has a Drive
- * connection today (`driveApisFor` refuses), so this path has no live check.
+ * file stored in Drive is downloaded; anything else gets a plain sentence. The live check is
+ * tests/live/agent-mailbox-drive.live.mts.
  */
 import type { DriveApi } from "./google-drive.js";
 
@@ -71,7 +71,7 @@ async function pdfText(bytes: Uint8Array): Promise<string> {
 }
 
 export interface GoogleDocDeps {
-  /** Every enrolled account's Drive client, primary first (`driveApisFor` in lib/google-drive.ts). */
+  /** The Drive client of each account to try (`driveApisFor` in lib/google-drive.ts: the chosen mailbox). */
   apis: () => Promise<Array<{ account: string; api: DriveApi }>>;
 }
 
