@@ -13,7 +13,7 @@ import { googleOrgs } from "./accounts";
 export type MailboxSentenceKey = AgentMailboxReason | AgentMailboxRefusal
   | "working" | "view-unavailable" | "no-account" | "google-not-configured" | "definition-unavailable";
 
-const LINE = "Sorts new mail and writes reply drafts in Gmail, and can read your Drive files. It never sends.";
+const LINE = "Sorts new mail and writes reply drafts in Gmail, can read your Drive files, and adds or changes calendar events only when you approve each one. It never sends.";
 /** The only place a mailbox state or refusal becomes a sentence. A later redesign reuses it. */
 const SENTENCES: Record<MailboxSentenceKey, (address: string) => string> = {
   working: () => LINE,
@@ -23,7 +23,7 @@ const SENTENCES: Record<MailboxSentenceKey, (address: string) => string> = {
   "google-not-configured": () => "Google is not set up on this installation yet, so no mailbox can be chosen.",
   "generation-changed": a => `You reconnected ${a || "that account"}. Confirm that this agent may keep working on it.`,
   "account-not-ok": a => `${a || "That account"} was disconnected or needs your permission again. Reconnect it, or choose another mailbox.`,
-  "scopes-not-draft": a => `${a || "That account"} can be read, but this agent may not write drafts in it. Reconnect it with “read + drafts”, which also lets the agent read your Drive files.`,
+  "scopes-not-draft": a => `${a || "That account"} can be read, but this agent may not write drafts in it. Reconnect it with “read + drafts”, which also lets the agent read your Drive files and add calendar events you approve.`,
   "owner-changed": () => "This agent changed owner after its mailbox was chosen. Choose again.",
   "member-inactive": () => "Your membership is not active, so this agent cannot use your mailbox.",
   "not-granted": () => "This agent’s definition has no Gmail permission. Add one in Edit agent.",
