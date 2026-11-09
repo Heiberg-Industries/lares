@@ -202,6 +202,10 @@ it('an update whose migration adds a table gives the engine logins that table\'s
   const app = loginPool('lares_app', 'app');
   try {
     expect(await engineDatabasePrivilegesMatch(engine)).toBe(true);
+    // Every migration after 035 is taken away too: the runner refuses to slot a file beneath
+    // one already applied, so they all reapply in order, as on a real update.
+    await engine.query('DROP TABLE agent_account_bindings');
+    await engine.query("DELETE FROM schema_migrations WHERE filename='036_agent_account_bindings.sql'");
     await engine.query('DROP TABLE agent_provider_keys');
     await engine.query("DELETE FROM schema_migrations WHERE filename='035_agent_provider_keys.sql'");
     await engine.query('SET ROLE lares_schema_owner');
