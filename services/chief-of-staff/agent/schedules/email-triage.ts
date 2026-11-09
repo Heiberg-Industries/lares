@@ -44,6 +44,8 @@ import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
 import { SEND_UNGATED, type DoorInitiate } from "../../lib/initiation.js";
 import { routeDelivery } from "../../lib/delivery.js";
+import { ownerId } from "../../lib/principals.js";
+import { agentMailbox, noteOnce } from "../../lib/agent-mailbox.js";
 import { sendText } from "../../lib/delivery-send.js";
 import { gatherPerson, type PersonDossier, type PersonSources } from "../../lib/person/gather.js";
 import { renderDossier } from "../../lib/person/render.js";
@@ -267,8 +269,13 @@ export default defineSchedule({
       return;
     }
 
-    const principal = process.env["GOOGLE_PRINCIPAL_ID"];
-    if (skipWithoutMailbox(principal, liveState)) return;
+    // The mailbox the agent's owner chose (a connected personal account) wins. Only when none was
+    // chosen does the older email-door path below still apply; a chosen-but-stale mailbox skips
+    // (the reason is said once) and never falls back to another account.
+    const am = await agentMailbox("email-triage");
+    if (!am.ok && am.reason !== "none") return;
+    const principal = am.ok ? undefined : process.env["GOOGLE_PRINCIPAL_ID"];
+    if (!am.ok && skipWithoutMailbox(principal, liveState)) return;
 
     try {
       const pool = getPool();
@@ -281,7 +288,9 @@ export default defineSchedule({
       // (`calFor`'s default, `lib/google.ts`). Named here once, per tick, and threaded through
       // to `triageOneMessage` so `renderBusyBlock`'s "no conflicts" text reads as the scoped
       // claim it actually is rather than a universal one.
-      const calendarLabel = `${process.env["CALENDAR_PRIMARY_EMAIL"] ?? "the primary Google account"}'s primary calendar`;
+      const calendarLabel = am.ok
+        ? `${am.mailbox}'s primary calendar`
+        : `${process.env["CALENDAR_PRIMARY_EMAIL"] ?? "the primary Google account"}'s primary calendar`;
 
       // Resolving a Gmail client re-decrypts the refresh token
       // from the DB every call — this used to happen fresh for search/read/triage
@@ -291,7 +300,7 @@ export default defineSchedule({
       function gmailFor(mailbox: string): Promise<GmailClient> {
         let client = gmailByMailbox.get(mailbox);
         if (!client) {
-          client = googleClients(principal).gmail(mailbox);
+          client = am.ok ? Promise.resolve(am.gmail) : googleClients(principal).gmail(mailbox);
           gmailByMailbox.set(mailbox, client);
         }
         return client;
@@ -302,7 +311,7 @@ export default defineSchedule({
       // mailbox it arrived on.
       let calendarClientPromise: Promise<CalendarClient> | undefined;
       function calendarClient(): Promise<CalendarClient> {
-        if (!calendarClientPromise) calendarClientPromise = googleClients(principal).calendar();
+        if (!calendarClientPromise) calendarClientPromise = am.ok ? Promise.resolve(am.calendar) : googleClients(principal).calendar();
         return calendarClientPromise;
       }
 
@@ -328,8 +337,17 @@ export default defineSchedule({
         return draftDossierLookup(sources);
       }
 
+      // The ping must reach the mailbox's owner only. Web chat is addressed by the configured owner id,
+      // which is the member id space, so it is provably the owner when the two match. A chat door
+      // (Telegram, Slack) is addressed by a chat id with no member attached: that cannot be proven here,
+      // so the ping is withheld and the draft stays.
+      let pingable = true;
+      if (am.ok) {
+        try { pingable = routed.door === "web" && ownerId() === am.ownerMemberId; } catch { pingable = false; }
+      }
+
       const deps: EmailTriageDeps = {
-        mailboxes: () => listEnrolledMailboxes(principal),
+        mailboxes: async () => (am.ok ? [am.mailbox] : listEnrolledMailboxes(principal)),
         searchCandidates: async (mailbox) => (await gmailFor(mailbox)).search(query, SCAN_CEILING),
         readMessage: async (mailbox, id) => (await gmailFor(mailbox)).read(id),
         readThread: async (mailbox, threadId) => (await gmailFor(mailbox)).readThread(threadId),
@@ -343,13 +361,16 @@ export default defineSchedule({
           const voice = makeDbVoiceAccess({ db: pool, mailbox });
           // The member's own addresses, so a reply-to-everyone never includes them: the identity
           // registry's email aliases plus the arriving mailbox (per install, never a literal).
-          const selfEmails = [...(await listAliases(pool, configuredOwnerId(), "email")), mailbox];
+          // With a chosen mailbox the person is the BINDING owner (the account's owner), not the
+          // configured owner id: they are separate id spaces on some installs.
+          const person = am.ok ? am.ownerMemberId : configuredOwnerId();
+          const selfEmails = [...(await listAliases(pool, person, "email")), mailbox];
           return triageOneMessage(
             {
               gmail,
               voice,
               selfEmails,
-              ownerName: await getDisplayName(pool, configuredOwnerId()).catch(() => null),
+              ownerName: await getDisplayName(pool, person).catch(() => null),
               // Both are best-effort at the lib layer already (tryOrNull around every call in
               // lib/email-triage.ts) — a dossier or calendar failure surfaces as an absent
               // context block, never a failed draft or a failed tick.
@@ -365,8 +386,11 @@ export default defineSchedule({
           );
         },
         recordOutcome: (mailbox, id, outcome) => recordOutcome(pool, mailbox, id, outcome),
-        gate: routed.gate,
-        notify: (text) => sendText(routed, text, { title: "New email draft" }),
+        gate: pingable ? routed.gate : SEND_UNGATED,
+        notify: async (text) => {
+          if (pingable) return sendText(routed, text, { title: "New email draft" });
+          noteOnce("email-triage/ping", "email-triage: draft ping withheld (cannot tell the chosen door reaches the mailbox owner); drafts are still written");
+        },
         reportDropped: (mailbox, id, err) => emitSignal(
           "email-triage-message-dropped",
           `email-triage: gave up on ${mailbox}:${id} after ${MAX_ATTEMPTS} attempts`,
