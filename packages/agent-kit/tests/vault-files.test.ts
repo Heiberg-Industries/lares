@@ -338,6 +338,12 @@ describe('importBatch',()=>{
     expect(result.narrowed).toEqual(['a.md']);
     expect(git(origin,'show','HEAD:a.md')).toBe('---\nlares_origin: synced\n---\nA');expect(git(origin,'show','HEAD:b.md')).toBe(files[1]!.content);expect(git(origin,'show','HEAD:c.md')).toBe(files[2]!.content);
   });
+  it('keeps a PNG byte for byte while stamping the markdown beside it',async()=>{
+    const png=Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0xff,0xfe,0x00,0xc3,0x28]);
+    const result=await api.importBatch(ctx,{binding:importBinding,files:[{path:'media/a.png',content:png},{path:'media/n.md',content:Buffer.from('plain\n')}]});
+    expect(outcomes(result)).toEqual(['written','written']);expect(readFileSync(join(root,'media/a.png'))).toEqual(png);
+    expect(git(origin,'show','HEAD:media/n.md')).toBe('---\nlares_origin: synced\n---\n\nplain\n');expect(git(root,'status','--porcelain')).toBe('');
+  });
   it('rejects an invalid chunk size',async()=>{
     await expect(api.importBatch(ctx,{binding:importBinding,files:[note(1)],chunkSize:0})).rejects.toThrow(VaultFilesDeniedError);
   });

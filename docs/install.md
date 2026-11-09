@@ -599,7 +599,9 @@ working repository under `/srv/vault/private/<area-id>` or `/srv/vault/shared/<a
 local bare repository under `/var/lib/lares-vault-git/<area-id>.git`. The portable inventory is
 `/srv/lares/installation/vault-storage.json`; a `.pending.json` file means initialization has
 not completed. Retrying the installer uses the same planned identities and preserves existing
-notes and sharing. Foreign directories are never adopted.
+notes and sharing. Foreign directories are never adopted. To bring an existing folder of notes
+into these stores, use `lares vault import` (preview first); see the
+[Vault import runbook](runbooks/vault-import.md).
 
 These stores do not enable agent tools or mounts. `/srv/taste` stays in its existing location;
 converting its existing writers is a separate step. No agent receives a mount of `/srv`.

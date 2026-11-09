@@ -32,6 +32,7 @@ Numbering has gaps; see [`decisions/README.md`](decisions/README.md).
 - [`definition-backups.md`](runbooks/definition-backups.md) — Optional Git backups of agent definitions
 - [`export-and-teardown.md`](runbooks/export-and-teardown.md) — Export, restore and tear down an installation
 - [`outside-tool-tokens.md`](runbooks/outside-tool-tokens.md) — Placing the token file for an outside tool
+- [`vault-import.md`](runbooks/vault-import.md) — Bringing an existing folder of notes into the Vault
 
 ## releases
 
