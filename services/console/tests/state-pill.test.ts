@@ -4,9 +4,7 @@ import { STATE_COLOURS } from "../lib/state-colours";
 describe("StatePill vocabulary", () => {
   // "done" is job vocabulary. A credential is not "done" — it is live. This only checks the
   // vocabulary data itself — that credential states own their own labels, distinct from the
-  // job-status words. It does NOT prove ConnectionsTable renders them untranslated; that
-  // render-path guarantee (the live→done mislabel this task fixed) is covered by
-  // tests/connections-table.test.tsx, which renders the real table.
+  // job-status words. It does NOT prove a page renders them untranslated.
   it("gives credential statuses their own labels, never job vocabulary", () => {
     expect(STATE_COLOURS["live"]).toEqual({ c: "var(--ok)", label: "live" });
     expect(STATE_COLOURS["partial"]).toEqual({ c: "var(--warn)", label: "partial" });

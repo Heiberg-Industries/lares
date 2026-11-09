@@ -30,7 +30,7 @@ it("makes one card per shared service, none for the personal accounts, with stat
   const cards = buildIntegrationCards({ rows: rows(["gateway", "telegram"]), credential: { kind: "unavailable" }, outsideToolsInUse: false });
   expect(cards.map(c => c.name)).toEqual(["Notion", "Twenty CRM", "Slack (bot)", "Telegram (bot)", "Karakeep", "Readability worker", "Model gateway", "Signal spine", "Outside tools (MCP)"]);
   expect(cards.filter(c => c.status === "enabled").map(c => c.id)).toEqual(["telegram", "gateway"]);
-  expect(cards.find(c => c.id === "twenty")!.href).toBe("/integrations/details#connection-twenty");
+  expect(cards.find(c => c.id === "twenty")!.href).toBe("/integrations/twenty");
 });
 
 it("counts an applied Notion key, agent access and outside tools in use as enabled, and an unreadable status as unavailable", () => {
@@ -43,6 +43,12 @@ it("counts an applied Notion key, agent access and outside tools in use as enabl
   expect([status("notion"), status("slack"), status("outside"), status("karakeep"), status("twenty")]).toEqual(["enabled", "enabled", "enabled", "unavailable", "available"]);
 });
 
+it("puts the writing-style and meetings buttons in the page header", async () => {
+  render(await IntegrationsPage());
+  expect(screen.getByRole("link", { name: "Email writing style" }).getAttribute("href")).toBe("/voice");
+  expect(screen.getByRole("link", { name: "Meetings" }).getAttribute("href")).toBe("/meetings");
+});
+
 it("renders the header, Enabled before Available, and each card's own status word", async () => {
   render(await IntegrationsPage());
   expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
@@ -52,14 +58,14 @@ it("renders the header, Enabled before Available, and each card's own status wor
     expect.stringContaining("Telegram (bot)"), expect.stringContaining("Model gateway")]);
   expect([...enabled.querySelectorAll(".lares-card-status")].map(e => e.textContent)).toEqual(["Enabled", "Enabled"]);
   expect(within(available).getAllByText("Connect")).toHaveLength(7);
-  expect(within(available).getByRole("link", { name: /Outside tools/ }).getAttribute("href")).toBe("/integrations/details#outside-tools");
+  expect(within(available).getByRole("link", { name: /Outside tools/ }).getAttribute("href")).toBe("/integrations/outside");
 });
 
 it("filters the cards by name as you type, and says when nothing matches", async () => {
   render(await IntegrationsPage());
   const search = screen.getByRole("searchbox", { name: "Search integrations" });
   await userEvent.type(search, "tele");
-  expect(screen.getAllByRole("link").map(a => a.textContent)).toEqual([expect.stringContaining("Telegram (bot)")]);
+  expect([...document.querySelectorAll(".lares-card-link")].map(a => a.textContent)).toEqual([expect.stringContaining("Telegram (bot)")]);
   expect(screen.queryByRole("region", { name: "Available" })).toBeNull();
   await userEvent.clear(search); await userEvent.type(search, "zzz");
   expect(screen.getByRole("status").textContent).toContain("No integration matches");

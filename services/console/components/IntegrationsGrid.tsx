@@ -3,10 +3,8 @@ import Link from "next/link";
 import { useState } from "react";
 import { Search } from "@lares/ui/icons";
 import { Input } from "@lares/ui/primitives/input";
-import type { IntegrationCard } from "../lib/integrations-grid";
+import { STATUS_TEXT, type IntegrationCard } from "../lib/integrations-grid";
 import { LogoTile } from "./LogoTile";
-
-const STATUS_TEXT = { enabled: "Enabled", available: "Connect", unavailable: "Status unavailable" } as const;
 
 function Cards({ cards }: { cards: IntegrationCard[] }) {
   return (

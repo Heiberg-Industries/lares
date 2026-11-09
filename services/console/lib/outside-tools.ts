@@ -85,6 +85,31 @@ export async function getOutsideToolEvidence(name: string): Promise<OutsideToolE
   return { keys: k, locks: l };
 }
 
+export interface DeclaredOutsideServer { name: string; needsKey: boolean; tools: string[] }
+export interface DeclaredOutside { agent: string; displayName: string; servers: DeclaredOutsideServer[] }
+
+/** Per agent with a valid definition that declares outside tools: the servers and tool names it
+ *  declares. Null when the definitions could not be read. */
+export async function declaredOutsideTools(): Promise<DeclaredOutside[] | null> {
+  try {
+    const { rows } = await pool.query<{ name: string; definition: { display?: unknown; outsideTools?: unknown } }>(
+      `SELECT name, definition FROM agent_definitions
+        WHERE status = 'valid' AND jsonb_typeof(definition->'outsideTools') = 'array'
+          AND jsonb_array_length(definition->'outsideTools') > 0 ORDER BY name`);
+    return rows.flatMap((r) => {
+      const list = Array.isArray(r.definition.outsideTools) ? r.definition.outsideTools as Array<{ name?: unknown; token?: unknown; tools?: { allow?: unknown } }> : [];
+      const servers = list.flatMap((s) => typeof s?.name === "string" ? [{
+        name: s.name,
+        needsKey: s.token === true,
+        tools: Array.isArray(s.tools?.allow) ? s.tools.allow.filter((t): t is string => typeof t === "string") : [],
+      }] : []);
+      return servers.length ? [{ agent: r.name, displayName: typeof r.definition.display === "string" ? r.definition.display : r.name, servers }] : [];
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** True when any valid agent definition declares an outside tool; null when that could not be read. */
 export async function anyOutsideToolsInUse(): Promise<boolean | null> {
   try {
