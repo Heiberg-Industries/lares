@@ -267,3 +267,11 @@ The existing erasure preflight refuses a person with owned area metadata before 
 pass begins. Actual backing-content reconciliation and erasure remain required before a
 complete member erasure can be claimed. File reads/writes, content revisions, source-history
 retirement, access-derived mounts and import are not integrated by this metadata slice.
+
+## Amendment 9 Nov 2026 — a personal mailbox chosen for an agent
+
+A member who owns an agent may choose one of their own connected Google mailboxes for it. The
+choice is a stored reference to the account and its generation, never a credential. It is
+drafts only (no sending), and it stops at once on disconnect, on a reconnect (the owner confirms
+again), when the member is no longer active, or when the agent changes owner. The provider
+permission for drafts is a separate, opt-in consent power from plain read.

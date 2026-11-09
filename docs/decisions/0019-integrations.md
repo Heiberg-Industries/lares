@@ -186,3 +186,11 @@ ADR-0024 amends rule 5 and resolves the open question about a neutral CRM contra
 the typed core concept for owner-defined workflows. A Vault home is available by default; a
 typed CRM adapter or owner-supplied MCP mapping is optional. This terminology does not change
 ADR-0023's authority, audience or approval requirements.
+
+## Amendment 9 Nov 2026 — an agent works on its owner's chosen mailbox
+
+E-mail triage and reply drafting run on a Google mailbox the agent's owner connected as a
+personal account, chosen per agent on its Access tab. Only the agent's current owner chooses,
+only from their own accounts, one mailbox per agent. The agent writes drafts and never sends.
+The choice stops working on disconnect, on reconnect (the owner confirms again) and when the
+agent changes owner; the Access tab says why. This replaces the older e-mail door.

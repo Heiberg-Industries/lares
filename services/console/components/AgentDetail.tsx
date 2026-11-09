@@ -34,6 +34,7 @@ export function AgentDetail({
   promptCache = null,
   accessSettings,
   providerKeySettings,
+  mailboxSettings,
 }: {
   agent: AgentFolder;
   board: Reading<BoardRowDTO[]>;
@@ -48,6 +49,8 @@ export function AgentDetail({
   accessSettings?: ReactNode;
   /** The agent's own model key section, shown after the access settings. */
   providerKeySettings?: ReactNode;
+  /** Which Google mailbox the agent works on; only chief-of-staff agents have one. */
+  mailboxSettings?: ReactNode;
 }) {
   const edit = `/agents/${encodeURIComponent(agent.name)}/edit`;
   const groups = [
@@ -137,6 +140,7 @@ export function AgentDetail({
         </TabsContent>
         <TabsContent value="access" className="lares-stack">
           {accessSettings}
+          {mailboxSettings}
           {providerKeySettings}
           <OutsideToolsSection agent={agent.name} tools={outsideTools.tools} inEffect={outsideTools.inEffect} evidence={outsideTools.evidence} />
           {!board.available ? (
