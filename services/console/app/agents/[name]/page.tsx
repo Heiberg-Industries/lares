@@ -2,6 +2,8 @@ import { AgentAccess } from "../../../components/AgentAccess";
 import { agentAccess } from "../../../lib/agent-access";
 import { members, memberAuditAddress } from "../../../lib/auth";
 import { cookies } from "next/headers";
+import { AgentMailbox } from "../../../components/AgentMailbox";
+import { agentMailboxView, mailboxUnavailableView } from "../../../lib/agent-mailbox";
 import { AgentProviderKey } from "../../../components/AgentProviderKey";
 import { providerKeyStatusFor } from "../../../lib/provider-key";
 import { requireConsolePage } from "../../../lib/auth";
@@ -75,10 +77,12 @@ export default async function AgentPage({
   const sessionToken = (await cookies()).get("lares_session")?.value;
   const auditAddress = await memberAuditAddress(actor.id);
   const providerKey = sessionToken && auditAddress ? await providerKeyStatusFor(sessionToken, name, auditAddress) : { kind: "unavailable" as const };
+  const mailbox = saved?.role === "chief-of-staff" ? await agentMailboxView(actor, name, saved).catch(() => mailboxUnavailableView(name)) : undefined;
   return (
     <Page>
     <AgentDetail
       accessSettings={definition.status === "fulfilled" && definition.value.initial ? <AgentAccess name={name} hash={definition.value.initial.hash} access={access} members={directory.filter(entry=>entry.member.status==='active').map(entry=>({id:entry.member.id,displayName:entry.displayName}))}/> : undefined}
+      mailboxSettings={mailbox ? <AgentMailbox name={name} initial={mailbox} /> : undefined}
       providerKeySettings={<AgentProviderKey name={name} initial={providerKey} />}
       routing={routing}
       outsideTools={outsideTools}

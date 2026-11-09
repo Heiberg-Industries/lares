@@ -72,7 +72,12 @@ An agent's page has four tabs and two buttons, **Chat** and **Edit agent**:
 - **Overview**: who it is and its state.
 - **Access**: what it may touch, grouped as reads, acts without asking, and you decide. Locked
   outside-tool descriptions are accepted here
-  ([`outside-tool-tokens.md`](../runbooks/outside-tool-tokens.md)).
+  ([`outside-tool-tokens.md`](../runbooks/outside-tool-tokens.md)). For a chief of staff it also
+  holds **Mailbox**: which of your Google accounts it sorts mail and writes reply drafts in
+  (drafts only, it never sends). Choose the account under "Works on"; only the agent's owner can.
+  If you disconnect or reconnect the account, the line says "Mailbox paused" and why; press
+  **Confirm** after a reconnect, or choose again. Connect the account first on your membership
+  page (or with **Connect Google** on this line), using "Read mailbox and calendar, and write drafts".
 - **Schedules**: the recurring work it does, each with a sentence saying what it does and when,
   and **Where messages go** (below).
 - **Activity**: recent permission checks for this agent.

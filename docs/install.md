@@ -478,8 +478,12 @@ reloads. A door you have not touched reads "Not set up".
 4. When the console shows the message to send, open a direct message with the app in Slack and
    send exactly that (for example `claim 0123...`; "Copy" puts it on your clipboard).
 
-**E-mail** (chief-of-staff agent). The agent works on one mailbox you choose. It needs a Google
-client with Gmail and Calendar scopes, which is separate from the sign-in client from section 5:
+**E-mail** (chief-of-staff agent). The agent works on one of your own Google mailboxes. It sorts
+new mail and writes reply drafts in Gmail; it never sends. It needs a Google client with Gmail and
+Calendar scopes, which is separate from the sign-in client from section 5. The client's consent
+screen must list the `gmail.compose` scope (drafts need it). A Google Cloud project of type
+External that is still in "Testing" makes Google expire refresh tokens after 7 days, so the agent
+would stop each week; use an Internal Workspace project, or an External project in production:
 
 1. Add `GOOGLE_CLIENT_ID_<ORG>` and `GOOGLE_CLIENT_SECRET_<ORG>` to `/etc/lares/console-oauth.env`
    (an explicit lower-case organisation id), and register
@@ -488,9 +492,13 @@ client with Gmail and Calendar scopes, which is separate from the sign-in client
 2. Run `python3 /opt/lares/current/services/box/ops/configure-google-keeper.py --org <org>` as root, then restart the
    keeper and recreate the console. The commands are in
    [`integrations-and-accounts.md`](../services/console/docs/integrations-and-accounts.md#connecting-a-google-account).
-3. With the agent running, open it in the console, and under Email type the mailbox and press
-   "Connect mailbox with Google". Complete Google's consent screen, then press "Apply connection
-   changes (restarts agent)".
+3. Connect your Google account on the membership page, choosing the permission "Read mailbox and
+   calendar, and write drafts". Or do it from the agent: open it in the console, go to the Access
+   tab, and under Mailbox press "Connect Google".
+4. On the agent's Access tab, under Mailbox, choose the account in "Works on". No restart is
+   needed. Only the agent's owner can choose, and only from their own accounts. If you later
+   disconnect or reconnect the account, or the agent changes owner, the agent stops using the
+   mailbox and the tab says why; after a reconnect, press "Confirm" to let it carry on.
 
 E-mail triage tells you about new mail on a chat door; where those messages go is your choice (next
 subsection).
