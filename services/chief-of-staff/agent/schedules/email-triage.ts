@@ -1,8 +1,7 @@
 /**
  * Email triage — the eve schedule (native Gmail polling).
  *
- * Every enrolled mailbox (both owner@owner.example and owner@project.example — `listEnrolledMailboxes`,
- * no hard-coded account), a short rolling window (`in:inbox -from:me newer_than:2d`), each
+ * The mailbox the agent's owner chose (`agentMailbox`, no hard-coded account), a short rolling window (`in:inbox -from:me newer_than:2d`), each
  * candidate message claimed via `email-triage-store.ts`'s exactly-once table, then
  * `lib/email-triage.ts`'s triageOneMessage does the actual classify/draft.
  *
@@ -30,13 +29,13 @@
  * is reported by the morning brief's held-back line, not re-attempted from a marker.
  */
 import { defineSchedule } from "eve/schedules";
-import { configuredOwnerId, getDisplayName, listAliases } from "../../lib/identity-client.js";
+import { getDisplayName, listAliases } from "../../lib/identity-client.js";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass } from "@lares/agent-kit/schedule-heartbeat";
 import { logSlackNotConnected } from "../../lib/slack-allowlist.js";
-import { googleClients, listEnrolledMailboxes, type MailMessage, type ThreadMessage, type GmailClient, type CalendarClient } from "../../lib/google.js";
+import { type MailMessage, type ThreadMessage, type GmailClient, type CalendarClient } from "../../lib/google.js";
 import { makeDbVoiceAccess } from "../../lib/voice-store.js";
 import { triageOneMessage, notifyTextFor, hasHumanReplyAfter, type TriageResult } from "../../lib/email-triage.js";
 import { claimMessage, recordOutcome, recordDraft, pruneOldRecords, MAX_ATTEMPTS, type TriageOutcome, type ClaimResult } from "../../lib/email-triage-store.js";
@@ -146,22 +145,8 @@ export interface EmailTriageDeps {
   prune(): Promise<void>;
 }
 
-export interface EmailTriageState { running: boolean; toldNoMailbox?: boolean }
+export interface EmailTriageState { running: boolean }
 export function freshState(): EmailTriageState { return { running: false }; }
-
-/** No mailbox connected (the keeper sets `GOOGLE_PRINCIPAL_ID` only with one) is a normal install,
- *  not a fault: say so once and skip, instead of a stack trace every minute. No heartbeat either,
- *  so the freshness check still says triage is not running. */
-export function skipWithoutMailbox(
-  principal: string | undefined, state: EmailTriageState, log: (line: string) => void = console.log,
-): boolean {
-  if (principal) return false;
-  if (!state.toldNoMailbox) {
-    state.toldNoMailbox = true;
-    log("email-triage: no mailbox connected; skipping until one is");
-  }
-  return true;
-}
 
 /** `tick` resolves `true` for a completed pass — including zero mailboxes, zero candidates,
  *  or a per-item failure caught inside the loop (one bad message must not cost the whole tick
@@ -269,28 +254,22 @@ export default defineSchedule({
       return;
     }
 
-    // The mailbox the agent's owner chose (a connected personal account) wins. Only when none was
-    // chosen does the older email-door path below still apply; a chosen-but-stale mailbox skips
-    // (the reason is said once) and never falls back to another account.
+    // The mailbox the agent's owner chose (a connected personal account). No mailbox chosen, or a
+    // stale one, skips this pass: the reason is said once (agentMailbox) and no other account is used.
+    // No heartbeat either, so the freshness check still says triage is not running.
     const am = await agentMailbox("email-triage");
-    if (!am.ok && am.reason !== "none") return;
-    const principal = am.ok ? undefined : process.env["GOOGLE_PRINCIPAL_ID"];
-    if (!am.ok && skipWithoutMailbox(principal, liveState)) return;
+    if (!am.ok) return;
+    const chosen = am; // narrowed once, so the hoisted helpers below keep the type
 
     try {
       const pool = getPool();
       const query = `in:inbox -from:me newer_than:${SCAN_WINDOW_DAYS}d`;
 
-      // `calendarClient` below resolves NO explicit
-      // account, so it always lands on `CALENDAR_PRIMARY_EMAIL` (env-pinned to
-      // owner@owner.example, `services/box/compose.yaml`) — ONE calendar of the TWO
-      // Google accounts enrolled — and always queries the literal calendarId "primary"
-      // (`calFor`'s default, `lib/google.ts`). Named here once, per tick, and threaded through
-      // to `triageOneMessage` so `renderBusyBlock`'s "no conflicts" text reads as the scoped
-      // claim it actually is rather than a universal one.
-      const calendarLabel = am.ok
-        ? `${am.mailbox}'s primary calendar`
-        : `${process.env["CALENDAR_PRIMARY_EMAIL"] ?? "the primary Google account"}'s primary calendar`;
+      // The calendar is the chosen mailbox's own primary calendar (`calFor`'s default calendarId is
+      // the literal "primary"). Named here once, per tick, and threaded through to
+      // `triageOneMessage` so `renderBusyBlock`'s "no conflicts" text reads as the scoped claim it
+      // actually is rather than a universal one.
+      const calendarLabel = `${am.mailbox}'s primary calendar`;
 
       // Resolving a Gmail client re-decrypts the refresh token
       // from the DB every call — this used to happen fresh for search/read/triage
@@ -300,7 +279,7 @@ export default defineSchedule({
       function gmailFor(mailbox: string): Promise<GmailClient> {
         let client = gmailByMailbox.get(mailbox);
         if (!client) {
-          client = am.ok ? Promise.resolve(am.gmail) : googleClients(principal).gmail(mailbox);
+          client = Promise.resolve(chosen.gmail);
           gmailByMailbox.set(mailbox, client);
         }
         return client;
@@ -311,19 +290,14 @@ export default defineSchedule({
       // mailbox it arrived on.
       let calendarClientPromise: Promise<CalendarClient> | undefined;
       function calendarClient(): Promise<CalendarClient> {
-        if (!calendarClientPromise) calendarClientPromise = am.ok ? Promise.resolve(am.calendar) : googleClients(principal).calendar();
+        if (!calendarClientPromise) calendarClientPromise = Promise.resolve(chosen.calendar);
         return calendarClientPromise;
       }
 
       // The dossier for the message's counterpart, scoped to the mailbox the
       // message ARRIVED on. `eveSagaPersonWiring`'s own mailSearch/mailRead resolve
-      // `googleClients.gmail` with NO account — the env-pinned primary mailbox — which
-      // would read the WRONG inbox for a message on the other enrolled mailbox (a false "you
-      // owe a reply" line in the dossier) and would re-decrypt a fresh refresh token from the
-      // DB instead of reusing gmailFor's per-tick cache. `listEvents` gets the same caching
-      // treatment via `calendarClient`, for the same re-decrypt-per-call reason — the account
-      // it resolves to is unchanged (still `CALENDAR_PRIMARY_EMAIL`/most-recent, same as the
-      // default), only the resolution is now shared with `freeBusy` below instead of repeated
+      // `googleClients.gmail` afresh on each call; these reuse gmailFor's per-tick client, and
+      // `listEvents` reuses `calendarClient`, shared with `freeBusy` below instead of repeated
       // per drafted message. `gatherPerson` does no LLM call — it is pure I/O fan-out — so this
       // adds no billed call. Construction alone does no I/O (see person-sources.ts's header),
       // so this is safe to build fresh per message.
@@ -341,13 +315,11 @@ export default defineSchedule({
       // which is the member id space, so it is provably the owner when the two match. A chat door
       // (Telegram, Slack) is addressed by a chat id with no member attached: that cannot be proven here,
       // so the ping is withheld and the draft stays.
-      let pingable = true;
-      if (am.ok) {
-        try { pingable = routed.door === "web" && ownerId() === am.ownerMemberId; } catch { pingable = false; }
-      }
+      let pingable: boolean;
+      try { pingable = routed.door === "web" && ownerId() === am.ownerMemberId; } catch { pingable = false; }
 
       const deps: EmailTriageDeps = {
-        mailboxes: async () => (am.ok ? [am.mailbox] : listEnrolledMailboxes(principal)),
+        mailboxes: async () => [am.mailbox],
         searchCandidates: async (mailbox) => (await gmailFor(mailbox)).search(query, SCAN_CEILING),
         readMessage: async (mailbox, id) => (await gmailFor(mailbox)).read(id),
         readThread: async (mailbox, threadId) => (await gmailFor(mailbox)).readThread(threadId),
@@ -361,16 +333,15 @@ export default defineSchedule({
           const voice = makeDbVoiceAccess({ db: pool, mailbox });
           // The member's own addresses, so a reply-to-everyone never includes them: the identity
           // registry's email aliases plus the arriving mailbox (per install, never a literal).
-          // With a chosen mailbox the person is the BINDING owner (the account's owner), not the
-          // configured owner id: they are separate id spaces on some installs.
-          const person = am.ok ? am.ownerMemberId : configuredOwnerId();
-          const selfEmails = [...(await listAliases(pool, person, "email")), mailbox];
+          // The person is the BINDING owner (the account's owner), not the configured owner id:
+          // they are separate id spaces on some installs.
+          const selfEmails = [...(await listAliases(pool, am.ownerMemberId, "email")), mailbox];
           return triageOneMessage(
             {
               gmail,
               voice,
               selfEmails,
-              ownerName: await getDisplayName(pool, person).catch(() => null),
+              ownerName: await getDisplayName(pool, am.ownerMemberId).catch(() => null),
               // Both are best-effort at the lib layer already (tryOrNull around every call in
               // lib/email-triage.ts) — a dossier or calendar failure surfaces as an absent
               // context block, never a failed draft or a failed tick.

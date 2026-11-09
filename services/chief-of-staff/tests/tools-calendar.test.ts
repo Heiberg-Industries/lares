@@ -11,7 +11,9 @@ import calendarListCalendars from "../catalogue/calendar_list_calendars.js";
 import calendarCreateEvent from "../catalogue/calendar_create_event.js";
 import calendarUpdateEvent from "../catalogue/calendar_update_event.js";
 import calendarDeleteEvent from "../catalogue/calendar_delete_event.js";
-import { __setTestCalendarApiFactory, wrapCalendarApi, GoogleUnenrolledError } from "../lib/google.js";
+import { wrapCalendarApi } from "../lib/google.js";
+import { GoogleConfigError } from "@lares/agent-kit/google-auth";
+import { forgetChosenMailbox, useChosenMailbox, useNoChosenMailbox } from "./helpers/chosen-mailbox.js";
 import { UnauthorizedApproverError } from "../lib/approvals.js";
 import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
@@ -29,7 +31,7 @@ import { quiet } from "./helpers/quiet-pool.js";
  *   - create_event/update_event/delete_event thread `notify` to `sendUpdates` exactly as
  *     lib/google.ts's `sendUpdatesFor` does: true -> "all", false -> "none", omitted -> "all"
  *     (: "invites now actually SEND")
- *   - an unenrolled principal surfaces `GoogleUnenrolledError` only when a tool's execute()
+ *   - an agent with no chosen mailbox is refused plainly only when a tool's execute()
  *     actually runs — never at import/registration time
  *   - delete_event's schema refuses a missing/empty eventId outright (the idiomatic
  *     equivalent of the old hand's "guessing an id here would cancel someone else's meeting"
@@ -129,7 +131,6 @@ beforeEach(async () => {
   process.env["TOKEN_ENC_KEY_FILE"] = join(keyDir, "token-enc-key");
   process.env["GOOGLE_CLIENT_ID_ACME_FILE"] = join(keyDir, "client-id");
   process.env["GOOGLE_CLIENT_SECRET_ACME_FILE"] = join(keyDir, "client-secret");
-  process.env["GOOGLE_PRINCIPAL_ID"] = "U_owner";
   process.env["SLACK_ALLOWED_USER_IDS"] = OWNER_SLACK_ID;
 });
 
@@ -138,22 +139,15 @@ afterEach(async () => {
   delete process.env["TOKEN_ENC_KEY_FILE"];
   delete process.env["GOOGLE_CLIENT_ID_ACME_FILE"];
   delete process.env["GOOGLE_CLIENT_SECRET_ACME_FILE"];
-  delete process.env["GOOGLE_PRINCIPAL_ID"];
   delete process.env["SLACK_ALLOWED_USER_IDS"];
-  __setTestCalendarApiFactory(undefined);
-  await getPool().query(`DELETE FROM oauth_tokens`);
+  forgetChosenMailbox();
 });
 
-/** Seeds one enrolled mailbox for U_owner and installs a stub googleapis factory. Returns
- *  the recorded calls array so a test can assert on it. */
+/** Makes owner@example.invalid the agent's chosen mailbox, backed by a stub googleapis client.
+ *  Returns the recorded calls array so a test can assert on it. */
 async function enroll(responses: Parameters<typeof stubCalendarApi>[0] = {}): Promise<RecordedCall[]> {
-  const enc = encryptForTest("refresh-token-real", testKeyHex);
-  await getPool().query(
-    `INSERT INTO oauth_tokens (principal, provider, org_id, email_address, refresh_token_enc, scopes) VALUES ($1,$2,$3,$4,$5,$6)`,
-    ["U_owner", "google", "acme", "owner@example.invalid", enc, ["calendar"]],
-  );
   const { api, calls } = stubCalendarApi(responses);
-  __setTestCalendarApiFactory(() => api);
+  useChosenMailbox({ mailbox: "owner@example.invalid", calendarApi: api as never });
   return calls;
 }
 
@@ -186,9 +180,11 @@ describe("calendar_list_events", () => {
     expect((calls[0]!.params as { calendarId: string }).calendarId).toBe("acme@group.calendar.google.com");
   });
 
-  it("throws GoogleUnenrolledError only once execute() actually runs, not at import time", async () => {
-    // Deliberately no enroll() — no oauth_tokens row for U_owner.
-    await expect(calendarListEvents.execute({ timeMin: "t1", timeMax: "t2" }, READ_CTX)).rejects.toThrow(GoogleUnenrolledError);
+  it("refuses plainly, only once execute() actually runs and not at import time, when no mailbox is chosen", async () => {
+    useNoChosenMailbox();
+    const attempt = calendarListEvents.execute({ timeMin: "t1", timeMax: "t2" }, READ_CTX);
+    await expect(attempt).rejects.toThrow(GoogleConfigError);
+    await expect(attempt).rejects.toThrow("No mailbox chosen for this agent; choose one on its Access tab");
   });
 });
 
@@ -263,10 +259,10 @@ describe("calendar_create_event", () => {
     expect(calls[0]!.method).toBe("insert");
   });
 
-  it("surfaces GoogleUnenrolledError once approval passes, not before", async () => {
-    // No enroll() — the approval gate must pass first (a valid approver), THEN resolution
-    // hits the real "no oauth_tokens row" outcome.
-    await expect(calendarCreateEvent.execute(INPUT, ctx(slackAuth(OWNER_SLACK_ID)))).rejects.toThrow(GoogleUnenrolledError);
+  it("refuses for want of a mailbox once approval passes, not before", async () => {
+    // The approval gate must pass first (a valid approver), THEN resolution hits "no mailbox chosen".
+    useNoChosenMailbox();
+    await expect(calendarCreateEvent.execute(INPUT, ctx(slackAuth(OWNER_SLACK_ID)))).rejects.toThrow(GoogleConfigError);
   });
 
   describe("sendUpdates threading (: notify unless explicitly told not to)", () => {

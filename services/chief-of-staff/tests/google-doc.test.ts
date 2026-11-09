@@ -1,10 +1,11 @@
 /**
  * Google Docs/Sheets/Slides/Drive links through the Drive API.
- * The Drive client is a stand-in shaped like googleapis' `drive.files` (shaped, not recorded);
- * the real response shapes are checked by tests/live/google-doc.live.mts.
+ * The Drive client is a stand-in shaped like googleapis' `drive.files` (shaped, not recorded).
+ * No agent has a Drive connection today (`driveApisFor` refuses), so there is no live probe.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
+import { driveApisFor } from "../lib/google-drive.js";
 import { GoogleDocUnavailableError, googleDocFromUrl, readGoogleDoc } from "../lib/google-doc.js";
 import type { DriveApi } from "../lib/google-drive.js";
 
@@ -98,5 +99,14 @@ describe("readGoogleDoc", () => {
         apis: async () => [{ account: "a", api: drive({ meta: { name: "movie.mp4", mimeType: "video/mp4" } }) }],
       }),
     ).rejects.toThrow(/"movie\.mp4" is a video\/mp4 file/);
+  });
+});
+
+describe("Drive for an agent", () => {
+  it("is not connected: refuses plainly, whatever the old environment says", async () => {
+    vi.stubEnv("GOOGLE_PRINCIPAL_ID", "someone"); vi.stubEnv("GMAIL_PRIMARY_EMAIL", "owner@owner.example");
+    try {
+      await expect(driveApisFor()).rejects.toThrow("Google Drive is not connected for this agent");
+    } finally { vi.unstubAllEnvs(); }
   });
 });

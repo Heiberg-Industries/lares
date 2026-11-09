@@ -76,4 +76,10 @@ describe("the definition", () => {
     const d = parseDefinition({ ...MINIMAL, channels: ["slack", "telegram"] });
     expect(doorsOf(d)).toEqual([{ kind: "slack", enabled: true }, { kind: "telegram", enabled: true }]);
   });
+
+  it("refuses an email door in plain words: delete it and choose the mailbox on the Access tab", () => {
+    expect(() => parseDefinition({ ...MINIMAL, doors: [{ kind: "email", enabled: true }] }))
+      .toThrow(/the email door was removed.*delete it from agent\.json.*Access tab/);
+    expect(parseDefinition({ ...MINIMAL, doors: [{ kind: "slack", enabled: true }] }).doors).toHaveLength(1);
+  });
 });

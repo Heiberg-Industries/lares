@@ -40,7 +40,7 @@ export default defineTool({
     }
     // The mailbox the draft lives in: the named account, else the primary (first enrolled) one —
     // the same default `googleClients.gmail` applies.
-    const mailbox = input.account ?? (await listEnrolledMailboxes(process.env["GOOGLE_PRINCIPAL_ID"]))[0] ?? "";
+    const mailbox = input.account ?? (await listEnrolledMailboxes())[0] ?? "";
     const gmail = await googleClients().gmail(mailbox || undefined);
 
     let draftId = input.draftId;

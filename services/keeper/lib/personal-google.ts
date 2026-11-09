@@ -28,14 +28,11 @@ export function personalGoogleEnabled(d: AgentDefinition): boolean {
     return !!grant && grant.scope !== 'none' && autonomyOf(d, capability) !== 'never';
   });
 }
-type GoogleSources = { personalGoogle?: PersonalGoogleConfig; email?: {tokenKeyFile: string; clientIdFile: string; clientSecretFile: string} };
+type GoogleSources = { personalGoogle?: PersonalGoogleConfig };
 /** One inventory for compose, reconciliation and credential-operation preflight/rollback. */
 export function googleSecretFiles(a: GoogleSources): string[] {
   const personal = a.personalGoogle ? personalGoogleSchema.parse(a.personalGoogle) : undefined;
-  if (personal && a.email && personal.tokenKeyFile !== a.email.tokenKeyFile)
-    throw new Error('Conflicting Google token encryption sources');
   return [...new Set([
-    ...(a.email ? [a.email.tokenKeyFile, a.email.clientIdFile, a.email.clientSecretFile] : []),
     ...(personal ? [personal.tokenKeyFile, ...Object.keys(personal.clients).sort().flatMap(org =>
       [personal.clients[org]!.clientIdFile, personal.clients[org]!.clientSecretFile])] : []),
   ])];

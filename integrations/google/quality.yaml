@@ -9,7 +9,7 @@
 # landed, and flipped both to `done` for google — see the per-rule comments below for the tests.
 tier: none
 rules:
-  live-probe: done             # services/chief-of-staff/tests/live/google.live.mts (286 lines) is committed and is exactly the file the manifest names
+  live-probe: done             # services/chief-of-staff/tests/live/agent-mailbox-draft.live.mts is committed and is exactly the file the manifest names
   region-declared: done        # integrations/google/integration.json: "region": "global", checked for every integration by packages/agent-kit/tests/integration-manifest-agrees.test.ts; packages/agent-kit/tests/capability-region.test.ts separately confirms the gmail/calendar adapter capability docs also declare "global"
   outbound-declared: done      # services/keeper/tests/egress-from-manifest.test.ts ("lets no capability reach a host its manifest did not declare") checks the "gmail" and "calendar" capabilities' hosts against outbound_hosts and passes
   secrets-declared: done       # packages/agent-kit/tests/integration-secret-lint.test.ts scans services/chief-of-staff/lib for undeclared /run/secrets/<name> literals; the google-client-id/-secret files this manifest's capabilities read are declared per instance in integrations/installation.json, and google-places-api-key (a different, uncovered capability, not gmail/calendar) is the only google-shaped allow-listed gap

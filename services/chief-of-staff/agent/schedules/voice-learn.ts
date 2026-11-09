@@ -29,7 +29,7 @@ import { defineSchedule } from "eve/schedules";
 
 import { getPool } from "@lares/agent-kit/db";
 import { purposeModel } from "@lares/agent-kit/gateway-status";
-import { googleClients, listEnrolledMailboxes, type GmailClient } from "../../lib/google.js";
+import { type GmailClient } from "../../lib/google.js";
 import { agentMailbox } from "../../lib/agent-mailbox.js";
 import { gatewayComplete } from "../../lib/llm-complete.js";
 import { makeGatewayEmbedder } from "../../lib/embeddings-gateway.js";
@@ -96,8 +96,7 @@ export async function setStatusFor(mailbox: string, status: string, message?: st
 }
 
 /** One mailbox's Sent mail within the lookback window, capped. */
-async function listSentMessages(mailbox: string, cfg: LearnConfig, chosen?: Pick<GmailClient, "search" | "read">): Promise<SentMessage[]> {
-  const gmail = chosen ?? await googleClients(process.env["GOOGLE_PRINCIPAL_ID"]).gmail(mailbox);
+async function listSentMessages(cfg: LearnConfig, gmail: Pick<GmailClient, "search" | "read">): Promise<SentMessage[]> {
   const afterEpoch = Math.floor((Date.now() - cfg.lookbackDays * 86_400_000) / 1000);
   const ids = await gmail.search(`in:sent after:${afterEpoch}`, cfg.cap);
   // Paced: 300 tight `messages.get` calls tripped Gmail's per-minute quota on one mailbox
@@ -138,16 +137,12 @@ async function claimRelearnRequest(): Promise<boolean> {
  */
 export async function learnAllMailboxes(): Promise<boolean> {
   const cfg = await readConfig();
-  // The mailbox the agent's owner chose wins (reads only here). A chosen-but-stale one skips this
-  // pass (the reason is said once); only with no choice at all does the older enrolment apply.
-  // A long deadline: a paced read of a year of Sent mail takes minutes.
+  // The mailbox the agent's owner chose (reads only here). No mailbox chosen is a normal install:
+  // skip, said once (agentMailbox). A chosen-but-stale one skips too, and does not count as a
+  // completed pass. A long deadline: a paced read of a year of Sent mail takes minutes.
   const am = await agentMailbox("voice-learn", { workMs: 45 * 60_000 });
-  if (!am.ok && am.reason !== "none") return false;
-  const mailboxes = am.ok ? [am.mailbox] : await listEnrolledMailboxes();
-  if (mailboxes.length === 0) {
-    console.warn("voice-learn: no enrolled mailboxes; skipping");
-    return true;
-  }
+  if (!am.ok) return am.reason === "none";
+  const mailboxes = [am.mailbox];
 
   const embedModel = process.env["EMBED_MODEL"] ?? purposeModel("embed");
   const embedder = makeGatewayEmbedder({ model: embedModel });
@@ -166,7 +161,7 @@ export async function learnAllMailboxes(): Promise<boolean> {
     try {
       const { kept, dropped } = await runVoiceLearn({
         mailbox,
-        listSentMessages: () => listSentMessages(mailbox, cfg, am.ok ? am.gmail : undefined),
+        listSentMessages: () => listSentMessages(cfg, am.gmail),
         embedder,
         think: (prompt) => gatewayComplete(prompt, { maxOutputTokens: 1024, purpose: "writer" }),
         upsertExemplar,

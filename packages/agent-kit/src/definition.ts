@@ -54,7 +54,9 @@ export const MODEL_ALIAS_RE = /^[a-z0-9]+-(brain|writer|utility|gate|embed)$/;
 export const GENDERS = ["female", "male", "agent"] as const;
 
 const doorSchema = z.strictObject({
-  kind: z.enum(["slack", "telegram", "email"]),
+  kind: z.enum(["slack", "telegram"], {
+    error: "a door is slack or telegram; the email door was removed, so delete it from agent.json and choose the agent's mailbox on its Access tab in the console",
+  }),
   /** A door may be SAVED while its setup is pending; it may not be switched on until its
    *  secrets exist. `enabled` is that switch; the keeper refuses `true` without
    *  the secret (the door-secret check). */

@@ -6,7 +6,7 @@ import {z} from 'zod';
 import {claimHash} from '@lares/agent-kit/door-authority';
 import {registerAction,KeeperRefusedError} from './actions.js';
 const NAME=/^[a-z][a-z0-9-]{1,30}$/;
-const roles:Record<string,string[]>={creative:['slack'],'chief-of-staff':['slack','telegram','email']};
+const roles:Record<string,string[]>={creative:['slack'],'chief-of-staff':['slack','telegram']};
 export function doorOrigin(value:string):string {
   const u=new URL(value);if(u.protocol!=='https:'||u.username||u.password||u.pathname!=='/'||u.search||u.hash)throw new Error('Explicit HTTPS public door origin required');return u.origin;
 }
@@ -22,7 +22,7 @@ async function refuseOtherOwner(db:Pick<Pool,'query'>,agent:string,incarnation:s
   if(rows.length)throw new KeeperRefusedError(OTHER_OWNER);
 }
 /** Caller-supplied names cannot choose URLs, secret paths, platform methods or transports. */
-export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?:string;emailPrincipal?:string;googleOrgs?:string[];fetch?:typeof fetch;namespaceGuard?():Promise<void>}) {
+export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?:string;fetch?:typeof fetch;namespaceGuard?():Promise<void>}) {
  const query=o.pool.query.bind(o.pool);
  async function resource(name:string,kind:string,db:Pick<Pool,'query'>=o.pool) {
   const {rows}=await db.query(`SELECT r.*,d.definition,d.status FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1`,[name]);
@@ -31,9 +31,9 @@ export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?
   return row;
  }
  registerAction({name:'door.status',input:z.strictObject({name:z.string().regex(NAME)}),run:async({name})=>{
-  const {rows}=await query(`SELECT k.kind,COALESCE(d.enabled,false) AS enabled,d.secret_set_at IS NOT NULL AS configured,c.principal IS NOT NULL AS claimed,c.mailbox,c.org,c.expires_at,c.attempts,c.webhook_set_at,
+  const {rows}=await query(`SELECT k.kind,COALESCE(d.enabled,false) AS enabled,d.secret_set_at IS NOT NULL AS configured,c.principal IS NOT NULL AS claimed,c.expires_at,c.attempts,c.webhook_set_at,
     r.pending,r.pending_reason,c.revision=c.applied_revision AND NOT r.pending AS applied
-    FROM agent_resources r CROSS JOIN (VALUES('slack'),('telegram'),('email')) k(kind) LEFT JOIN agent_doors d ON d.agent=r.name AND d.kind=k.kind
+    FROM agent_resources r CROSS JOIN (VALUES('slack'),('telegram')) k(kind) LEFT JOIN agent_doors d ON d.agent=r.name AND d.kind=k.kind
     LEFT JOIN agent_door_connections c ON c.agent=r.name AND c.kind=k.kind AND c.incarnation=r.ownership_token
     WHERE r.name=$1 AND r.runtime_control_token=r.ownership_token AND r.state='ready'`,[name]);
   return rows;
@@ -73,25 +73,6 @@ export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?
       RETURNING expires_at`,[name,kind,row.ownership_token,randomUUID(),ctx.actor,claimHash(code)]);
    if(!inserted.rows.length)throw new KeeperRefusedError('This door is already claimed or belongs to another incarnation');
    await client.query('COMMIT');return {code,expiresAt:inserted.rows[0].expires_at.toISOString(),instruction:`Send claim ${code} as an ordinary message in a private chat with this agent (no slash), then apply connection changes in the console.`};
-  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
- }});
- registerAction({name:'email.connect',input:z.strictObject({name:z.string().regex(NAME),incarnation:z.string().uuid(),principal:z.string().min(1),org:z.string().min(1),mailbox:z.string().email()}),run:async(input,ctx)=>{
-  const row=await resource(input.name,'email');
-  if(row.ownership_token!==input.incarnation||!o.emailPrincipal||input.principal!==o.emailPrincipal||!o.googleOrgs?.includes(input.org))throw new KeeperRefusedError('Google installation configuration or agent incarnation does not match');
-  const token=await query("SELECT 1 FROM oauth_tokens t WHERE principal=$1 AND provider='google' AND org_id=$2 AND email_address=$3 AND NOT EXISTS(SELECT 1 FROM connected_account_credentials c WHERE c.oauth_token_id=t.id) AND refresh_token_enc IS NOT NULL",[input.principal,input.org,input.mailbox]);
-  if(!token.rows.length)throw new KeeperRefusedError('Complete the real Google OAuth connection first');
-  const client=await o.pool.connect();
-  try {
-   await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(1279349317,12)');await o.namespaceGuard?.();
-   const current=await client.query("SELECT 1 FROM agent_resources WHERE name=$1 AND ownership_token=$2::uuid AND runtime_control_token=ownership_token AND state='ready' FOR UPDATE",[input.name,input.incarnation]);
-   if(!current.rows.length)throw new KeeperRefusedError('Agent incarnation changed');
-   await refuseOtherOwner(client,input.name,input.incarnation,ctx.actor);
-   const saved=await client.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,org,mailbox,claimed_at)
-    VALUES($1,'email',$2,$3,$4,$5,$6,$7,now()) ON CONFLICT(agent,kind) DO UPDATE SET revision=EXCLUDED.revision,principal=EXCLUDED.principal,org=EXCLUDED.org,mailbox=EXCLUDED.mailbox,claimed_at=now()
-    WHERE agent_door_connections.incarnation=EXCLUDED.incarnation AND agent_door_connections.owner_email=EXCLUDED.owner_email RETURNING agent`,[input.name,input.incarnation,randomUUID(),ctx.actor,input.principal,input.org,input.mailbox]);
-   if(!saved.rows.length)throw new KeeperRefusedError('Email connection belongs to a different owner or incarnation');
-   await client.query("UPDATE agent_resources SET pending=true,pending_reason='Apply email connection changes (restarts agent)' WHERE name=$1",[input.name]);
-   await client.query('COMMIT');return {pending:true,mailbox:input.mailbox};
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
  }});
  registerAction({name:'telegram.webhook_set',input:z.strictObject({name:z.string().regex(NAME)}),run:async({name})=>{

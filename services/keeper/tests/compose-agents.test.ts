@@ -109,13 +109,19 @@ it('a telegram claim sets only the principal field, no legacy admin variable',()
  const e=doc.services['lares-bookkeeper'].environment;
  expect(e.TELEGRAM_PRINCIPAL_ID).toBe('12345');
 });
-it('mounts only explicit selected Google client files and identity without a synthetic email token',()=>{
- const email={principal:'explicit-owner',org:'tenant',mailbox:'selected@example.test',revision:'11111111-1111-4111-8111-111111111111',owner:'owner@example.test',tokenKeyFile:'/srv/secrets/encryption',clientIdFile:'/srv/secrets/tenant-id',clientSecretFile:'/srv/secrets/tenant-secret'};
- const doc=parse(renderAgentsCompose([{...agent,role:'chief-of-staff',doors:[{kind:'email',enabled:true}],email}],{...opts,imageByRole:{'chief-of-staff':image}}));
+it('has no email door: the legacy mailbox variables are gone and a Gmail grant still gets the personal Google mounts',()=>{
+ const personalGoogle={tokenKeyFile:'/srv/secrets/encryption',clients:{tenant:{clientIdFile:'/srv/secrets/tenant-id',clientSecretFile:'/srv/secrets/tenant-secret'}}};
+ const doc=parse(renderAgentsCompose([{...agent,role:'chief-of-staff',doors:[],personalGoogle}],{...opts,imageByRole:{'chief-of-staff':image}}));
  const e=doc.services['lares-bookkeeper'].environment;
- expect(e).toMatchObject({GOOGLE_PRINCIPAL_ID:'explicit-owner',LARES_EMAIL_MAILBOX:'selected@example.test',LARES_EMAIL_ORG:'tenant',GMAIL_PRIMARY_EMAIL:'selected@example.test',CALENDAR_PRIMARY_EMAIL:'selected@example.test',EGRESS_PROXY_URL:'http://proxy:8888'});
- expect(doc.secrets['bookkeeper-google-client-secret'].file).toBe('/srv/secrets/tenant-secret');
- expect(JSON.stringify(doc)).not.toContain('bookkeeper-email-token');expect(e.SLACK_ALLOWED_USER_IDS).toBeUndefined();
+ for(const name of ['GOOGLE_PRINCIPAL_ID','LARES_EMAIL_PRINCIPAL','LARES_EMAIL_ORG','LARES_EMAIL_MAILBOX','LARES_EMAIL_CLAIM_REVISION','GMAIL_PRIMARY_EMAIL','CALENDAR_PRIMARY_EMAIL','LARES_GOOGLE_CLIENT_ID_FILE','LARES_GOOGLE_CLIENT_SECRET_FILE'])
+  expect(e[name]).toBeUndefined();
+ expect(e.TOKEN_ENC_KEY_FILE).toBe('/run/secrets/google-token-key');
+ expect(JSON.parse(e.LARES_PERSONAL_GOOGLE_CLIENTS)).toEqual({tenant:{clientIdFile:'/run/secrets/personal-google-tenant-id',clientSecretFile:'/run/secrets/personal-google-tenant-secret'}});
+ expect(doc.secrets['bookkeeper-google-token-key'].file).toBe('/srv/secrets/encryption');
+ expect(doc.secrets['bookkeeper-personal-google-tenant-secret'].file).toBe('/srv/secrets/tenant-secret');
+});
+it('refuses an email door outright',()=>{
+ expect(()=>renderAgentsCompose([{...agent,role:'chief-of-staff',doors:[{kind:'email',enabled:true}]}],{...opts,imageByRole:{'chief-of-staff':image}})).toThrow('Role does not support this door');
 });
 
 // Exercise real consumer routing against a disposable loopback CONNECT receiver.

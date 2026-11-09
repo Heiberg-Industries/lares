@@ -144,7 +144,7 @@ export interface DecryptedGoogleToken {
 //
 // The schema baseline (services/box/sql/001_baseline.sql) renamed every legacy
 // `principal` spelling onto the identity register's id. A deployment that applies it but leaves
-// `GOOGLE_PRINCIPAL_ID` at the old spelling does not crash: the SELECTs below simply match no
+// a principal setting at the old spelling does not crash: the SELECTs below simply match no
 // row, and the caller turns that into "not enrolled with Google". That is the ONE failure this
 // rename can cause, so it says so — once per process, naming the principal it looked under, so
 // the line is a diagnosis rather than noise in a schedule that polls.
@@ -156,7 +156,7 @@ function warnNoTokenForPrincipal(principal: string, provider: string): void {
   console.warn(
     `google-auth: no ${provider} token is stored under the principal "${principal}". ` +
     `Legacy principal spellings were replaced by the identity register's id ` +
-    `(users.id): if this deployment still names the old spelling in GOOGLE_PRINCIPAL_ID, point ` +
+    `(users.id): if this deployment still names the old spelling in its principal setting, point ` +
     `it at the register's id instead. Said once per process.`,
   );
 }

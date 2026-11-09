@@ -104,7 +104,7 @@ async function main(): Promise<void> {
   const defaultCard = await loadVoiceProfile(pool, "default");
 
   for (const r of rows) {
-    const gmail = await googleClients(process.env["GOOGLE_PRINCIPAL_ID"]).gmail(r.mailbox);
+    const gmail = await googleClients().gmail(r.mailbox);
     const msg = await gmail.read(r.gmail_message_id);
     if (!msg) { console.warn(`draft-compare: ${r.gmail_message_id} not readable — skipped`); continue; }
     const lang = detectLanguage(msg.bodyText || msg.subject);

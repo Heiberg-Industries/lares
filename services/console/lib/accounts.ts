@@ -15,9 +15,8 @@ import type { GoogleAccountDTO, GoogleOrg } from "./contracts";
  * every legacy principal spelling onto the identity register's id, so the DEFAULT here is the
  * owner key this console already uses for every other person-keyed row (`ownerId()`, the same
  * rule as the fleet's own `services/chief-of-staff/lib/principals.ts`) rather than a hard-coded
- * legacy string. An installation that sets `CONSOLE_PRINCIPAL_ID` explicitly still wins, and it
- * must name the same value as the fleet's `GOOGLE_PRINCIPAL_ID` — otherwise the console lists
- * accounts the agents cannot find. Read when an operation runs, never during module import.
+ * legacy string. An installation that sets `CONSOLE_PRINCIPAL_ID` explicitly still wins. Read when
+ * an operation runs, never during module import.
  */
 export function consolePrincipal(): string {
   return process.env.CONSOLE_PRINCIPAL_ID?.trim() || ownerId();

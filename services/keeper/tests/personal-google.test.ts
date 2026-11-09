@@ -15,18 +15,11 @@ it('mounts exact root-configured files for all declared clients with bounded sor
  expect(Object.keys(JSON.parse(runtime.environment.LARES_PERSONAL_GOOGLE_CLIENTS))).toEqual(['acme','second']);
  expect(JSON.parse(runtime.environment.LARES_PERSONAL_GOOGLE_CLIENTS)).toEqual(Object.fromEntries(['acme','second'].map(org=>[org,{clientIdFile:`/run/secrets/personal-google-${org}-id`,clientSecretFile:`/run/secrets/personal-google-${org}-secret`}])));
  expect(runtime.environment.TOKEN_ENC_KEY_FILE).toBe('/run/secrets/google-token-key');
- expect(runtime.environment.GOOGLE_PRINCIPAL_ID).toBeUndefined(); expect(runtime.environment.LARES_EMAIL_ORG).toBeUndefined();
+ for(const name of ['GOOGLE_PRINCIPAL_ID','LARES_EMAIL_ORG','GMAIL_PRIMARY_EMAIL','CALENDAR_PRIMARY_EMAIL']) expect(runtime.environment[name]).toBeUndefined();
  expect(JSON.stringify(runtime.environment)).not.toContain('/srv/');
  expect(runtime.secrets).toContainEqual({source:'helper-personal-google-acme-id',target:'personal-google-acme-id'});
  expect(doc.secrets['helper-personal-google-acme-id']).toEqual({file:'/srv/secrets/acme-id'});
  expect(new Set(runtime.secrets.map((s:any)=>s.target)).size).toBe(runtime.secrets.length);
-});
-it('deduplicates the shared token key with legacy email and rejects conflicting sources',()=>{
- const email={principal:'legacy',org:'acme',mailbox:'legacy@example.invalid',revision:'11111111-1111-4111-8111-111111111111',owner:'owner',tokenKeyFile:google.tokenKeyFile,clientIdFile:'/srv/secrets/acme-id',clientSecretFile:'/srv/secrets/acme-secret'};
- const doc=parse(renderAgentsCompose([{...agent,email}],opts)),runtime=doc.services['lares-helper'];
- expect(runtime.secrets.filter((s:any)=>s.target==='google-token-key')).toHaveLength(1);
- expect(runtime.environment.LARES_EMAIL_ORG).toBe('acme');
- expect(()=>renderAgentsCompose([{...agent,email:{...email,tokenKeyFile:'/srv/other'}}],opts)).toThrow('Conflicting Google token');
 });
 it('does not add mounts without trusted configuration and refuses another role',()=>{
  const runtime=parse(renderAgentsCompose([{...agent,personalGoogle:undefined}],opts)).services['lares-helper'];

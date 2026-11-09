@@ -13,7 +13,7 @@
  *     as "a quiet day", a claim a cut-off read has not earned. Checked PER CALENDAR, because
  *     that is the request whose ceiling was actually hit.
  *
- *  2. **A missing OAuth client for an org is a SKIP, not a failure.** `orgConfig()` throws
+ *  2. **A missing OAuth client for an org is a SKIP, not a failure.** A client lookup throws
  *     `GoogleConfigError` when an org's client secrets are not mounted on this host — the token
  *     row exists, the client does not. That is a deterministic, host-level absence, not a data
  *     gap a retry could fix, and it must not silence the whole brief. It is logged loudly and

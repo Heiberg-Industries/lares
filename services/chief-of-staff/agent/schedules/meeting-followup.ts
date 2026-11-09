@@ -150,7 +150,7 @@ import { KitRatchet } from "@lares/agent-kit/ratchet";
 import { logSlackNotConnected } from "../../lib/slack-allowlist.js";
 import { listAliases, configuredOwnerId, getDisplayName } from "../../lib/identity-client.js";
 import { makeDbVoiceAccess } from "../../lib/voice-store.js";
-import { googleClients } from "../../lib/google.js";
+import { googleClients, listEnrolledMailboxes } from "../../lib/google.js";
 import { buildVoiceBlock } from "../../lib/voice.js";
 import { detectCounterpartLanguage, type Lang } from "@lares/compose-contract";
 import { gatewayComplete } from "../../lib/llm-complete.js";
@@ -1374,12 +1374,11 @@ export default defineSchedule({
     try {
       const pool = getPool();
 
-      // The primary account — same env pin `email-triage.ts` documents (`CALENDAR_PRIMARY_EMAIL`,
-      // services/box/compose.yaml) — is both the mailbox this schedule sends AS and the
+      // The mailbox the agent's owner chose is both the mailbox this schedule sends AS and the
       // voice corpus it composes from. Falls back to the identity registry's own alias list
-      // only if that pin is ever unset.
+      // when no mailbox is chosen.
       const selfEmails = await listAliases(pool, configuredOwnerId(), "email");
-      const fromMailbox = process.env["CALENDAR_PRIMARY_EMAIL"] ?? selfEmails[0] ?? "";
+      const fromMailbox = (await listEnrolledMailboxes())[0] ?? selfEmails[0] ?? "";
 
       const deps: FollowupDeps = {
         listMeetings: () => liveListMeetings(pool),

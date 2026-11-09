@@ -1,51 +1,24 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
-import { createCipheriv, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 import {
   wrapGmailApi,
   googleClients, listEnrolledMailboxes,
-  GoogleUnenrolledError,
   __setTestGmailApiFactory,
 } from "../lib/google.js";
 import { GoogleConfigError } from "@lares/agent-kit/google-auth";
-import { getPool, closePool } from "@lares/agent-kit/db";
-import { quiet } from "./helpers/quiet-pool.js";
-
-// This file tests the older email-door path; this test database has no agent mailbox tables, so say plainly "nothing chosen".
-vi.mock("../lib/agent-mailbox.js", async (original) => ({ ...(await original<typeof import("../lib/agent-mailbox.js")>()),
-  agentMailbox: async () => ({ ok: false, reason: "none" }) }));
+import { forgetChosenMailbox, useChosenMailbox, useNoChosenMailbox } from "./helpers/chosen-mailbox.js";
 
 /**
- * The Google OAuth stack:
- *   - an unenrolled principal → GoogleUnenrolledError, proven against a REAL Postgres
- *     (testcontainers, matching tests/reminders.test.ts's convention — a fake Pool
- *     that never executes SQL is exactly the defect class this house avoids)
+ * The Google stack:
+ *   - googleClients() serves only the mailbox the agent's owner chose, and refuses plainly when
+ *     none is chosen (the choice itself is covered in agent-mailbox*.test.ts)
  *   - wrapGmailApi marshals the googleapis params (userId/q/maxResults/format/raw/…) exactly,
  *     proven against a stub `google.gmail()`-shaped object — no network, no DB
  *
- * Step D: the `decryptSecret` and `readTokenEncKey` suites that used to open this file
- * moved to `packages/agent-kit/tests/google-auth.test.ts` along with the functions themselves
- * — they are covered once there. What
- * stays here is what is specific to this service: the two-org registry, the mailbox-selection policy (the
- * `GMAIL_PRIMARY_EMAIL` pin and the most-recently-updated fallback behind it), and the
- * capability adapter.
+ * The `decryptSecret` and `readTokenEncKey` suites live in
+ * `packages/agent-kit/tests/google-auth.test.ts`; what is specific to this service is the
+ * mailbox policy and the capability adapter.
  */
-
-/** Test-only mirror of services/box/lib/crypto.ts's `encryptSecret` — used ONLY to
- *  build the `oauth_tokens` fixtures the googleClients suite below decrypts. The kit's
- *  google-auth.ts deliberately has no encryptSecret of its own (this stack only ever reads
- *  existing tokens). */
-function encryptForTest(plaintext: string, keyHex: string): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", Buffer.from(keyHex, "hex"), iv);
-  const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, ct, tag]).toString("base64");
-}
 
 // -----------------------------------------------------------------------------------------
 // wrapGmailApi — marshals googleapis params exactly. Stub api only;
@@ -194,204 +167,37 @@ describe("wrapGmailApi", () => {
 // -----------------------------------------------------------------------------------------
 
 describe("googleClients", () => {
-  let container: StartedPostgreSqlContainer;
-  let keyDir: string;
-
-  beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    process.env["DATABASE_URL"] = container.getConnectionUri();
-    await quiet(getPool()).query(`
-      CREATE TABLE connected_account_credentials (oauth_token_id uuid PRIMARY KEY);
-      CREATE TABLE oauth_tokens (
-        id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        principal          text        NOT NULL,
-        provider           text        NOT NULL,
-        org_id             text        NOT NULL,
-        email_address      text        NOT NULL,
-        refresh_token_enc  text        NOT NULL,
-        scopes             text[]      NOT NULL DEFAULT '{}',
-        created_at         timestamptz NOT NULL DEFAULT now(),
-        updated_at         timestamptz NOT NULL DEFAULT now(),
-        CONSTRAINT oauth_tokens_principal_provider_email_uk UNIQUE (principal, provider, email_address)
-      )
-    `);
-  }, 120_000);
-
-  afterAll(async () => {
-    await closePool();
-    await container.stop();
-  });
-
-  beforeEach(() => {
-    keyDir = mkdtempSync(join(tmpdir(), "google-clients-key-"));
-    writeFileSync(join(keyDir, "token-enc-key"), randomBytes(32).toString("hex"));
-    process.env["TOKEN_ENC_KEY_FILE"] = join(keyDir, "token-enc-key");
-    // Acme org secrets — only needed once an ENROLLED principal's row is found (the
-    // unenrolled-principal tests deliberately do NOT rely on these being readable; see the
-    // ordering note on resolveGmailApi in lib/google.ts).
-    writeFileSync(join(keyDir, "client-id"), "test-client-id");
-    writeFileSync(join(keyDir, "client-secret"), "test-client-secret");
-    process.env["GOOGLE_CLIENT_ID_ACME_FILE"] = join(keyDir, "client-id");
-    process.env["GOOGLE_CLIENT_SECRET_ACME_FILE"] = join(keyDir, "client-secret");
-    // Beta org secrets: both mailboxes are addressable now, caller
-    // picks per-call. Mounted here so most tests exercise the normal (both-orgs-configured)
-    // deployment; the "beta secrets not mounted" test below deletes these first.
-    writeFileSync(join(keyDir, "beta-client-id"), "test-beta-client-id");
-    writeFileSync(join(keyDir, "beta-client-secret"), "test-beta-client-secret");
-    process.env["GOOGLE_CLIENT_ID_BETA_FILE"] = join(keyDir, "beta-client-id");
-    process.env["GOOGLE_CLIENT_SECRET_BETA_FILE"] = join(keyDir, "beta-client-secret");
-  });
-
-  afterEach(async () => {
-    rmSync(keyDir, { recursive: true, force: true });
-    delete process.env["TOKEN_ENC_KEY_FILE"];
-    delete process.env["GOOGLE_CLIENT_ID_ACME_FILE"];
-    delete process.env["GOOGLE_CLIENT_SECRET_ACME_FILE"];
-    delete process.env["GOOGLE_CLIENT_ID_BETA_FILE"];
-    delete process.env["GOOGLE_CLIENT_SECRET_BETA_FILE"];
-    delete process.env["GOOGLE_PRINCIPAL_ID"];
-    __setTestGmailApiFactory(undefined);
-    await getPool().query(`DELETE FROM oauth_tokens`);
-  });
+  beforeEach(() => { useNoChosenMailbox(); });
+  afterEach(() => { forgetChosenMailbox(); vi.unstubAllEnvs(); });
 
   it("is lazy: constructing the client does no I/O at all", () => {
-    // No TOKEN_ENC_KEY_FILE, no DATABASE_URL row, nothing set up beyond the container —
-    // calling googleClients() itself must not throw or touch anything.
-    delete process.env["TOKEN_ENC_KEY_FILE"];
-    expect(() => googleClients("nobody")).not.toThrow();
+    expect(() => googleClients()).not.toThrow();
   });
 
-  it("throws GoogleUnenrolledError for a principal with no oauth_tokens row — even with no client secrets mounted", async () => {
-    // Deliberately no GOOGLE_CLIENT_ID_ACME_FILE/GOOGLE_CLIENT_SECRET_ACME_FILE set —
-    // an unenrolled principal must surface AS unenrolled, not as a missing-secret config error.
-    await expect(googleClients("nobody@nowhere").gmail()).rejects.toThrow(GoogleUnenrolledError);
+  it("with no mailbox chosen, refuses plainly and lists nothing", async () => {
+    await expect(googleClients().gmail()).rejects.toThrow(GoogleConfigError);
+    await expect(googleClients().gmail()).rejects.toThrow("No mailbox chosen for this agent; choose one on its Access tab");
+    await expect(googleClients().calendar()).rejects.toThrow("No mailbox chosen for this agent; choose one on its Access tab");
+    await expect(listEnrolledMailboxes()).resolves.toEqual([]);
   });
 
-  it("GMAIL_PRIMARY_EMAIL pins the default mailbox over the updated_at lottery; explicit account still wins", async () => {
-    // With two enrolled mailboxes, "most recently updated" is not a reliable
-    // default — the env pin is the fix, and stays the fix now that BOTH orgs are configured
-    // (an explicit account argument overriding the pin must reach the RIGHT org, not just
-    // avoid throwing).
-    const key = await readKeyFromFile();
-    const enc1 = encryptForTest("acme-token", key);
-    const enc2 = encryptForTest("beta-token", key);
-    await getPool().query(
-      `INSERT INTO oauth_tokens (principal, provider, org_id, email_address, refresh_token_enc, scopes, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6, now() - interval '1 day')`,
-      ["U_owner", "google", "acme", "owner@owner.example", enc1, []],
-    );
-    // The beta row is NEWER — the lottery would pick it without the pin.
-    await getPool().query(
-      `INSERT INTO oauth_tokens (principal, provider, org_id, email_address, refresh_token_enc, scopes, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6, now())`,
-      ["U_owner", "google", "beta", "owner@project.example", enc2, []],
-    );
-    const seen: Array<{ org: string; token: string }> = [];
-    __setTestGmailApiFactory((org, token) => {
-      seen.push({ org: org.orgId, token });
-      return {} as never;
-    });
+  it("never falls back to an environment pin or a stored token when nothing is chosen", async () => {
+    vi.stubEnv("GOOGLE_PRINCIPAL_ID", "U_owner"); vi.stubEnv("GMAIL_PRIMARY_EMAIL", "owner@owner.example");
+    vi.stubEnv("CALENDAR_PRIMARY_EMAIL", "owner@owner.example"); vi.stubEnv("LARES_EMAIL_PRINCIPAL", "U_owner");
+    let built = 0;
+    __setTestGmailApiFactory(() => { built++; return {} as never; });
     try {
-      process.env["GMAIL_PRIMARY_EMAIL"] = "owner@owner.example";
-      await googleClients("U_owner").gmail();
-      expect(seen).toEqual([{ org: "acme", token: "acme-token" }]);
-      // An explicit account argument overrides the pin and now resolves to the beta org's
-      // own client config (both mailboxes addressable, caller picks per-call).
-      await googleClients("U_owner").gmail("owner@project.example");
-      expect(seen).toEqual([
-        { org: "acme", token: "acme-token" },
-        { org: "beta", token: "beta-token" },
-      ]);
-    } finally {
-      delete process.env["GMAIL_PRIMARY_EMAIL"];
-    }
+      await expect(googleClients().gmail("owner@owner.example")).rejects.toThrow(/No mailbox chosen/);
+      await expect(listEnrolledMailboxes()).resolves.toEqual([]);
+      expect(built).toBe(0);
+    } finally { __setTestGmailApiFactory(undefined); }
   });
 
-  it("surfaces a clear config error naming the org when that org's secrets aren't mounted", async () => {
-    // The safety net for an incomplete deployment: an enrolled beta token with no beta
-    // OAuth client secrets mounted must fail loudly and specifically, not silently or with
-    // an unrelated error.
-    delete process.env["GOOGLE_CLIENT_ID_BETA_FILE"];
-    delete process.env["GOOGLE_CLIENT_SECRET_BETA_FILE"];
-    const enc = encryptForTest("beta-token", await readKeyFromFile());
-    await getPool().query(
-      `INSERT INTO oauth_tokens (principal, provider, org_id, email_address, refresh_token_enc, scopes) VALUES ($1,$2,$3,$4,$5,$6)`,
-      ["U_owner", "google", "beta", "owner@project.example", enc, []],
-    );
-    await expect(googleClients("U_owner").gmail("owner@project.example")).rejects.toThrow(GoogleConfigError);
+  it("with a mailbox chosen, serves only that mailbox", async () => {
+    const { api } = stubGmailApi({ list: { data: { messages: [{ id: "m1", threadId: "t1" }] } } });
+    useChosenMailbox({ mailbox: "owner@owner.example", gmailApi: api });
+    await expect(listEnrolledMailboxes()).resolves.toEqual(["owner@owner.example"]);
+    await expect((await googleClients().gmail()).search("in:inbox", 25)).resolves.toEqual(["m1"]);
+    await expect(googleClients().gmail("other@owner.example")).rejects.toThrow(/owner@owner.example only/);
   });
-
-  it("throws GoogleUnenrolledError for a specific unenrolled `account` even when the principal has OTHER mailboxes", async () => {
-    const enc = encryptForTest("refresh-token", await readKeyFromFile());
-    await getPool().query(
-      `INSERT INTO oauth_tokens (principal, provider, org_id, email_address, refresh_token_enc, scopes) VALUES ($1,$2,$3,$4,$5,$6)`,
-      ["U_owner", "google", "acme", "owner@owner.example", enc, []],
-    );
-    await expect(googleClients("U_owner").gmail("someone-else@owner.example")).rejects.toThrow(GoogleUnenrolledError);
-  });
-
-  it("uses GOOGLE_PRINCIPAL_ID as-is when no principal is passed — never canonicalised", async () => {
-    process.env["GOOGLE_PRINCIPAL_ID"] = "U_owner";
-    await expect(googleClients().gmail()).rejects.toThrow(GoogleUnenrolledError);
-    // Proves the lookup ran against "U_owner" (the channel-address form), not "the owner".
-  });
-
-  it("on an enrolled principal, decrypts the real row and builds a working client end to end", async () => {
-    const enc = encryptForTest("refresh-token-real", await readKeyFromFile());
-    await getPool().query(
-      `INSERT INTO oauth_tokens (principal, provider, org_id, email_address, refresh_token_enc, scopes) VALUES ($1,$2,$3,$4,$5,$6)`,
-      ["U_owner", "google", "acme", "owner@owner.example", enc, ["gmail.readonly"]],
-    );
-    let seenRefreshToken: string | undefined;
-    __setTestGmailApiFactory((_cfg, refreshToken) => {
-      seenRefreshToken = refreshToken;
-      const { api } = stubGmailApi({ list: { data: { messages: [{ id: "m1", threadId: "t1" }] } } });
-      return api;
-    });
-
-    const ids = await (await googleClients("U_owner").gmail()).search("in:inbox", 25);
-
-    expect(seenRefreshToken).toBe("refresh-token-real"); // proves the row was actually decrypted, not stubbed away
-    expect(ids).toEqual(["m1"]);
-  });
-
-  it("restricts managed clients and schedules to the selected mailbox and rejects stale authority",async()=>{
-    const db=getPool(),inc='11111111-1111-4111-8111-111111111111',rev='22222222-2222-4222-8222-222222222222';
-    await db.query(`CREATE TABLE agent_resources(name text,ownership_token uuid,runtime_control_token uuid,pending boolean,state text);
-      CREATE TABLE agent_doors(agent text,kind text,enabled boolean);CREATE TABLE agent_definitions(name text,status text);
-      CREATE TABLE agent_door_connections(agent text,incarnation uuid,kind text,principal text,org text,mailbox text,revision uuid,applied_revision uuid);
-      INSERT INTO agent_resources VALUES('managed','${inc}','${inc}',false,'ready');INSERT INTO agent_doors VALUES('managed','email',true);
-      INSERT INTO agent_definitions VALUES('managed','valid');INSERT INTO agent_door_connections VALUES('managed','${inc}','email','explicit-owner','tenant','selected@example.test','${rev}','${rev}')`);
-    const vars={LARES_AGENT_NAME:'managed',LARES_AGENT_INCARNATION:inc,LARES_EMAIL_PRINCIPAL:'explicit-owner',LARES_EMAIL_ORG:'tenant',LARES_EMAIL_MAILBOX:'selected@example.test',LARES_EMAIL_CLAIM_REVISION:rev,LARES_GOOGLE_CLIENT_ID_FILE:join(keyDir,'client-id'),LARES_GOOGLE_CLIENT_SECRET_FILE:join(keyDir,'client-secret'),GOOGLE_PRINCIPAL_ID:'explicit-owner'};
-    const prior=Object.fromEntries(Object.keys(vars).map(k=>[k,process.env[k]]));Object.assign(process.env,vars);
-    try {
-      const enc=encryptForTest('selected-token',await readKeyFromFile());
-      await db.query(`INSERT INTO oauth_tokens(principal,provider,org_id,email_address,refresh_token_enc)VALUES('explicit-owner','google','tenant','selected@example.test',$1),('explicit-owner','google','other','other@example.test','deliberately-not-decryptable')`,[enc]);
-      let observed='';__setTestGmailApiFactory((_cfg,token)=>{observed=token;return stubGmailApi().api;});
-      expect(await listEnrolledMailboxes()).toEqual(['selected@example.test']);
-      await googleClients().gmail();expect(observed).toBe('selected-token');
-      await expect(googleClients().gmail('other@example.test')).rejects.toThrow('selected connection');
-      await expect(googleClients('other-owner').calendar()).rejects.toThrow('selected connection');
-      // Revoke ONLY runtime control: pending=false and the applied email connection stay intact.
-      observed='';await db.query('UPDATE agent_resources SET runtime_control_token=NULL');
-      await expect(listEnrolledMailboxes()).rejects.toThrow('Email connection is disabled');
-      await expect(googleClients().gmail()).rejects.toThrow('Email connection is disabled');
-      expect(observed).toBe('');
-      // A poisoned selected credential distinguishes authority refusal from token decryption.
-      await db.query("UPDATE oauth_tokens SET refresh_token_enc='not-decryptable' WHERE org_id='tenant'");
-      await expect(googleClients().gmail()).rejects.toThrow('Email connection is disabled');
-      await expect(googleClients().calendar()).rejects.toThrow('Email connection is disabled');
-      expect(observed).toBe('');
-      await db.query("UPDATE oauth_tokens SET refresh_token_enc=$1 WHERE org_id='tenant'",[enc]);
-      await db.query('UPDATE agent_resources SET runtime_control_token=ownership_token');
-      expect(await listEnrolledMailboxes()).toEqual(['selected@example.test']);
-      await googleClients().gmail();expect(observed).toBe('selected-token');
-      await db.query('UPDATE agent_resources SET pending=true');await expect(googleClients().gmail()).rejects.toThrow('awaiting application');
-    }finally{for(const [k,v] of Object.entries(prior)){if(v===undefined)delete process.env[k];else process.env[k]=v;}await db.query('DROP TABLE agent_door_connections,agent_definitions,agent_doors,agent_resources');}
-  });
-
-  async function readKeyFromFile(): Promise<string> {
-    const { readFileSync } = await import("node:fs");
-    return readFileSync(process.env["TOKEN_ENC_KEY_FILE"]!, "utf8").trim();
-  }
 });

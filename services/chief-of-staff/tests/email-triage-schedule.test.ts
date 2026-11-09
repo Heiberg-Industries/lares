@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { makeEmailTriageTick, freshState, renderDossierForDraft, draftDossierLookup, skipWithoutMailbox, type EmailTriageDeps } from "../agent/schedules/email-triage.js";
+import { makeEmailTriageTick, freshState, renderDossierForDraft, draftDossierLookup, type EmailTriageDeps } from "../agent/schedules/email-triage.js";
 import type { TriageResult } from "../lib/email-triage.js";
 import type { MailMessage, ThreadMessage } from "../lib/google.js";
 import type { TriageOutcome, ClaimResult } from "../lib/email-triage-store.js";
@@ -38,23 +38,6 @@ function harness(overrides: Partial<EmailTriageDeps> = {}) {
   };
   return { deps, claims, outcomes, notified, dropped, prunedRef: () => pruned };
 }
-
-describe("skipWithoutMailbox", () => {
-  // An install with no mailbox connected is a normal install: one plain line, never a stack each minute.
-  it("says no mailbox is connected once, and skips every tick until one is", () => {
-    const state = freshState(), log = vi.fn();
-    expect(skipWithoutMailbox(undefined, state, log)).toBe(true);
-    expect(skipWithoutMailbox("", state, log)).toBe(true);
-    expect(log).toHaveBeenCalledTimes(1);
-    expect(log.mock.calls[0]).toEqual([expect.stringContaining("no mailbox connected")]);
-  });
-
-  it("runs, and says nothing, once a mailbox is connected", () => {
-    const state = freshState(), log = vi.fn();
-    expect(skipWithoutMailbox("member-1", state, log)).toBe(false);
-    expect(log).not.toHaveBeenCalled();
-  });
-});
 
 describe("makeEmailTriageTick", () => {
   it("skips a message already claimed (exactly-once)", async () => {

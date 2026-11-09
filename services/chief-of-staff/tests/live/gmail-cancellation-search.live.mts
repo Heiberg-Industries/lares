@@ -26,7 +26,7 @@
  *       "cat > /app/services/chief-of-staff/node_modules/.cache/gmail-cancellation-search.live.mts"'
  *   ssh root@<box> 'docker exec <chief-of-staff container> sh -c \
  *     "cd /app/services/chief-of-staff && \
- *      export \$(tr \"\\0\" \"\\n\" < /proc/1/environ | grep -E \"^(DATABASE_URL|PGPASSWORD|TOKEN_ENC_KEY_FILE|GOOGLE_|GMAIL_PRIMARY_EMAIL|CALENDAR_PRIMARY_EMAIL|EGRESS_PROXY_URL)\" | xargs) && \
+ *      export \$(tr \"\\0\" \"\\n\" < /proc/1/environ | grep -E \"^(DATABASE_URL|PGPASSWORD|TOKEN_ENC_KEY_FILE|GOOGLE_|EGRESS_PROXY_URL)\" | xargs) && \
  *      /app/node_modules/.bin/tsx node_modules/.cache/gmail-cancellation-search.live.mts \"<vendor>\" <YYYY-MM-DD check-in day>"'
  *   ssh root@<box> 'docker exec <chief-of-staff container> rm -f /app/services/chief-of-staff/node_modules/.cache/gmail-cancellation-search.live.mts'
  *

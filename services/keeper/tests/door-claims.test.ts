@@ -150,30 +150,9 @@ it('does not let another member overwrite a pending code, until that code has ex
  await issueFor('slack',bob);
  expect((await pool.query("SELECT owner_email FROM agent_door_connections WHERE agent='assistant' AND kind='slack'")).rows).toEqual([{owner_email:'bob@example.com'}]);
 });
-it('refuses an email connection by a member when another member owns a door of the agent',async()=>{
+it('has no email.connect action any more',async()=>{
  await addAssistant();
- await pool.query("INSERT INTO oauth_tokens(principal,provider,org_id,email_address,refresh_token_enc)VALUES('install-principal','google','tenant','box@example.com','x')");
- resetActions();registerDoorActions({pool,secretsDir:'/unused',emailPrincipal:'install-principal',googleOrgs:['tenant']});
- const connect=(who:typeof alice)=>runAction('email.connect',{name:'assistant',incarnation:incB,principal:'install-principal',org:'tenant',mailbox:'box@example.com'},who);
- const {code}=await issueFor('slack',alice);
- await consumeClaim('slack',`/claim ${code}`,'U_ALICE',true,pool,{LARES_AGENT_NAME:'assistant',LARES_AGENT_INCARNATION:incB});
- await expect(connect(bob)).rejects.toThrow(REFUSAL);
- await connect(alice);
- expect((await pool.query("SELECT owner_email FROM agent_door_connections WHERE agent='assistant' AND kind='email'")).rows).toEqual([{owner_email:'alice@example.com'}]);
-});
-
-it('refuses legacy email.connect when the exact mailbox belongs to a revoked personal account',async()=>{
- const chief={name:'writer',role:'chief-of-staff',doors:[{kind:'email',enabled:true}]};
- await pool.query("UPDATE agent_definitions SET definition=$1 WHERE name='writer'",[JSON.stringify(chief)]);
- await pool.query("INSERT INTO users(id,display_name)VALUES('fixture-personal-owner','Fixture')");
- await pool.query(`INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status)
-   VALUES('fixture-personal-account','fixture-personal-owner','google','https://accounts.google.com','fixture-subject','Mailbox','revoked')`);
- await pool.query(`INSERT INTO oauth_tokens(principal,provider,org_id,email_address,refresh_token_enc)
-   VALUES('fixture-personal-owner','google','tenant','own@example.test','ciphertext')`);
- await pool.query(`INSERT INTO connected_account_credentials(account_id,owner_member_id,connector_id,account_generation,oauth_token_id)
-   SELECT 'fixture-personal-account','fixture-personal-owner','google',0,id FROM oauth_tokens WHERE principal='fixture-personal-owner'`);
- resetActions();registerDoorActions({pool,secretsDir:'/unused',emailPrincipal:'fixture-personal-owner',googleOrgs:['tenant']});
- try{await expect(runAction('email.connect',{name:'writer',incarnation:inc,principal:'fixture-personal-owner',org:'tenant',mailbox:'own@example.test'},ctx)).rejects.toThrow('real Google OAuth');
- expect((await pool.query("SELECT 1 FROM agent_door_connections WHERE agent='writer' AND kind='email'")).rows).toEqual([]);
- }finally{await pool.query("DELETE FROM connected_accounts WHERE id='fixture-personal-account'");await pool.query("DELETE FROM oauth_tokens WHERE principal='fixture-personal-owner'");await pool.query("DELETE FROM users WHERE id='fixture-personal-owner'");}
+ resetActions();registerDoorActions({pool,secretsDir:'/unused'});
+ await expect(runAction('email.connect',{name:'assistant',incarnation:incB,principal:'p',org:'tenant',mailbox:'box@example.com'},alice)).rejects.toThrow('unknown action');
+ expect((await runAction('door.status',{name:'assistant'},alice) as {kind:string}[]).map(r=>r.kind).sort()).toEqual(['slack','telegram']);
 });

@@ -110,7 +110,7 @@ afterEach(() => { __setTestGmailApiFactory(undefined); __setTestCalendarApiFacto
 const draftInput = { from: 'own@example.invalid', to: ['x@example.com'], subject: 's', bodyText: 'b' };
 
 
-// The default Google readers (no explicit principal) go through the chosen mailbox.
+// The Google readers go through the chosen mailbox, and only it.
 describe('default readers on the chosen mailbox', () => {
   it('lists the chosen mailbox and hands out its clients, with one refresh for many calls', async () => {
     await choose();
@@ -139,7 +139,7 @@ describe('default readers on the chosen mailbox', () => {
     expect(gmailCalls.filter(c => c === 'send' || c.startsWith('events.'))).toEqual([]);
   });
 
-  it('a stale choice gives no mailboxes and refuses, never the older door', async () => {
+  it('a stale choice gives no mailboxes and refuses, never another account', async () => {
     const a = await choose();
     await store.setStatus('member-a', await store.beginUpdate('member-a', a.id, 0), 'revoked');
     await expect(listEnrolledMailboxes()).resolves.toEqual([]);
@@ -156,22 +156,19 @@ describe('default readers on the chosen mailbox', () => {
     await expect(gmail.draft(draftInput)).rejects.toThrow(/no longer holds/);
   });
 
-  it('with nothing chosen, an explicit principal is left to the older path', async () => {
-    await choose();
-    await expect(googleClients('some-principal').gmail()).rejects.not.toThrow(/works on|no longer holds/);
+  it('with nothing chosen, refuses plainly and lists nothing, whatever the environment says', async () => {
+    vi.stubEnv('GOOGLE_PRINCIPAL_ID', 'member-a'); vi.stubEnv('GMAIL_PRIMARY_EMAIL', 'own@example.invalid');
+    await expect(listEnrolledMailboxes()).resolves.toEqual([]);
+    await expect(googleClients().gmail()).rejects.toThrow('No mailbox chosen for this agent; choose one on its Access tab');
+    await expect(googleClients().calendar()).rejects.toThrow('No mailbox chosen for this agent; choose one on its Access tab');
     expect(tokenCalls).toBe(0);
   });
 
-  it('with nothing chosen, the older path is unchanged', async () => {
-    vi.stubEnv('GOOGLE_PRINCIPAL_ID', '');
-    await expect(listEnrolledMailboxes()).rejects.toThrow(/GOOGLE_PRINCIPAL_ID/);
-    await expect(googleClients().gmail()).rejects.toThrow(/GOOGLE_PRINCIPAL_ID/);
-    expect(tokenCalls).toBe(0);
-  });
-
-  it('outside a managed agent the older path applies', async () => {
+  it('outside a managed agent there is no mailbox either', async () => {
     await choose();
-    vi.stubEnv('LARES_AGENT_NAME', ''); vi.stubEnv('LARES_AGENT_INCARNATION', ''); vi.stubEnv('GOOGLE_PRINCIPAL_ID', '');
-    await expect(listEnrolledMailboxes()).rejects.toThrow(/GOOGLE_PRINCIPAL_ID/);
+    vi.stubEnv('LARES_AGENT_NAME', ''); vi.stubEnv('LARES_AGENT_INCARNATION', '');
+    await expect(listEnrolledMailboxes()).resolves.toEqual([]);
+    await expect(googleClients().gmail()).rejects.toThrow('No mailbox chosen for this agent');
+    expect(tokenCalls).toBe(0);
   });
 });

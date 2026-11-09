@@ -627,18 +627,11 @@ export class AgentLifecycle {
           WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL
           ORDER BY claimed_at NULLS LAST,kind`,[a.name,a.incarnation]);
         const rows=result.rows.map(c=>apply?c:c.applied_connection).filter(Boolean);
-        a.claims=rows.filter(c=>c.kind!=='email'&&a.doors.some(d=>d.kind===c.kind&&d.enabled)).map(c=>({kind:c.kind,principal:c.principal,revision:c.revision,owner:c.owner_email}));
-        if(a.doors.some(d=>d.kind==='email'&&d.enabled)) {
-            const e=rows.find(c=>c.kind==='email'),config=this.config.runtime.google,client=config?.clients[e?.org];
-            if(!e||!config||!client||e.principal!==config.principal)throw new KeeperRefusedError('Configure and select a Google mailbox before enabling email');
-            const token=await this.pool.query("SELECT 1 FROM oauth_tokens t WHERE principal=$1 AND provider='google' AND org_id=$2 AND email_address=$3 AND NOT EXISTS(SELECT 1 FROM connected_account_credentials c WHERE c.oauth_token_id=t.id)",[e.principal,e.org,e.mailbox]);
-            if(!token.rows.length)throw new KeeperRefusedError('Selected Google mailbox is no longer connected');
-            a.email={principal:e.principal,org:e.org,mailbox:e.mailbox,revision:e.revision,owner:e.owner_email,tokenKeyFile:config.tokenKeyFile,...client};
-        }
+        a.claims=rows.filter(c=>a.doors.some(d=>d.kind===c.kind&&d.enabled)).map(c=>({kind:c.kind,principal:c.principal,revision:c.revision,owner:c.owner_email}));
         verifyPersonalReadSecretSources(a);
         // One approver per agent: the owner of the earliest claim among the connections in use.
         // The rows are already in claim order, so this is the same answer whatever order they arrive in.
-        const used=rows.filter(c=>c.kind==='email'?!!a.email:a.claims!.some(x=>x.kind===c.kind));
+        const used=rows.filter(c=>a.claims!.some(x=>x.kind===c.kind));
         a.consoleOwner=used[0]?.owner_email;
         return a;
     }
@@ -681,7 +674,6 @@ export class AgentLifecycle {
         for (const door of doorsOf(d))
             if (door.enabled) {
                 if(!ROLE_DOORS[d.role??'']?.includes(door.kind))throw new KeeperRefusedError('This role does not support that door');
-                if (door.kind === 'email') { if(d.role!=='chief-of-staff') throw new KeeperRefusedError('This role has no email adapter'); continue; }
                 if (!(door.kind in DOOR_FILES))
                     throw new KeeperRefusedError('This door has no runnable adapter contract');
                 for (const suffix of Object.values(DOOR_FILES[door.kind as keyof typeof DOOR_FILES])) {
@@ -705,7 +697,6 @@ export class AgentLifecycle {
             throw new KeeperRefusedError('Prior resources require reconciliation before name reuse');
         const candidate=this.container(row ?? { name, address: '192.0.2.2', workflow_database: 'lares_preflight' }, d, await this.notionRevision(), await this.notionGranted());
         verifyBindingSources(candidate.bindings);
-        if(doorsOf(d).some(x=>x.kind==='email'&&x.enabled))await this.connections(candidate,true);
         verifyPersonalReadSecretSources(candidate);
         // Build the allow-list now so a refusal happens before the definition is stored. A new agent has no resource row yet.
         if (create) this.refuseUnknownGrants(name, d); else await this.plan({ name, definition: d });

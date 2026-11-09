@@ -641,36 +641,14 @@ it('keeps unadopted legacy addresses sealed without publishing their containers'
  expect(readFileSync(join(config.egressDir,'squid.conf'),'utf8')).toContain('172.18.0.25');
 });
 
-// The email door follows the register's id: the keeper's own email row holds the same value as
-// oauth_tokens and is looked up against the installation's configured principal, so a
-// configuration that still names an old spelling is refused. Neutral fixture names throughout.
-it('accepts the email door once the configured principal is the register id, and refuses another spelling',async()=>{
- try{
-  const l=lifecycle();await l.create('bookkeeper',definition);
-  const row=await l.storage.row('bookkeeper');
-  const secret=join(root,'secrets','google');writeFileSync(secret,'fixture',{mode:0o600});
-  const google=(principal:string)=>({principal,tokenKeyFile:secret,clients:{tenant:{clientIdFile:secret,clientSecretFile:secret}}});
-  const withMail={...definition,role:'chief-of-staff',doors:[{kind:'email',enabled:true}]};
-  await pool.query("INSERT INTO users(id,display_name) VALUES('fixture-owner','Fixture Owner')");
-  await pool.query("INSERT INTO user_aliases(system,alias,user_id) VALUES('google','U_fixture','fixture-owner')");
-  await pool.query("INSERT INTO oauth_tokens(principal,provider,org_id,email_address,refresh_token_enc) VALUES('fixture-owner','google','tenant','selected@example.test','not-a-token')");
-  await pool.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,org,mailbox,applied_connection)
-    VALUES('bookkeeper','email',$1::uuid,$1::uuid,'owner@example.test','fixture-owner','tenant','selected@example.test',
-      jsonb_build_object('kind','email','principal','fixture-owner','revision',$1::text,'owner_email','owner@example.test','org','tenant','mailbox','selected@example.test'))`,[row.ownership_token]);
-  // The configuration names another spelling -> refused.
-  config.runtime.google=google('U_fixture');
-  await expect(lifecycle().prepare('bookkeeper',withMail,false)).rejects.toThrow('Configure and select a Google mailbox before enabling email');
-  // The configuration names the register id -> accepted, and the token is found under it.
-  config.runtime.google=google('fixture-owner');
-  await expect(lifecycle().prepare('bookkeeper',withMail,false)).resolves.toBeUndefined();
-  await pool.query(`INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status)
-    VALUES('fixture-account','fixture-owner','google','https://accounts.google.com','fixture-subject','Mailbox','revoked')`);
-  await pool.query(`INSERT INTO connected_account_credentials(account_id,owner_member_id,connector_id,account_generation,oauth_token_id)
-    SELECT 'fixture-account','fixture-owner','google',0,id FROM oauth_tokens WHERE principal='fixture-owner'`);
-  await expect(lifecycle().prepare('bookkeeper',withMail,false)).rejects.toThrow('Selected Google mailbox is no longer connected');
-  await pool.query("DELETE FROM connected_accounts WHERE id='fixture-account'");
-
- }finally{await pool.query("DELETE FROM connected_accounts WHERE id='fixture-account'");await pool.query('DELETE FROM agent_door_connections');await pool.query('DELETE FROM oauth_tokens');await pool.query('DELETE FROM user_aliases');await pool.query('DELETE FROM users');}
+// The email door is gone: a definition that still declares one is refused, and an old email row of
+// an earlier install is inert (it adds no claim, no mount and no console approver). Neutral fixture names.
+it('refuses a definition with an email door, whatever the Google configuration says',async()=>{
+ const l=lifecycle();await l.create('bookkeeper',definition);
+ const secret=join(root,'secrets','google');writeFileSync(secret,'fixture',{mode:0o600});
+ config.runtime.google={principal:'fixture-owner',tokenKeyFile:secret,clients:{tenant:{clientIdFile:secret,clientSecretFile:secret}}};
+ const withMail={...definition,role:'chief-of-staff',doors:[{kind:'email',enabled:true}]};
+ await expect(lifecycle().prepare('bookkeeper',withMail,false)).rejects.toThrow('This role does not support that door');
 });
 
 it.each([[undefined,true,false],[false,true,false],[true,false,false],[true,true,true]])('packages schedule master %s and definition %s as effective %s',async(master,on,expected)=>{
@@ -944,7 +922,7 @@ it('mounts personal clients without any email door, claim, legacy principal or O
  const doc=parse(readFileSync(config.composeFile,'utf8')),env=doc.services['lares-bookkeeper'].environment;
  expect(Object.keys(JSON.parse(env.LARES_PERSONAL_GOOGLE_CLIENTS))).toEqual(['acme','second']);
  expect(env.TOKEN_ENC_KEY_FILE).toBe('/run/secrets/google-token-key');
- expect(env.GOOGLE_PRINCIPAL_ID).toBeUndefined();expect(env.LARES_EMAIL_ORG).toBeUndefined();
+ for(const name of ['GOOGLE_PRINCIPAL_ID','LARES_EMAIL_ORG','LARES_EMAIL_MAILBOX','GMAIL_PRIMARY_EMAIL','CALENDAR_PRIMARY_EMAIL'])expect(env[name]).toBeUndefined();
  for(const file of [google.tokenKeyFile,...Object.values(google.clients).flatMap(c=>[c.clientIdFile,c.clientSecretFile])])expect(provisioned).toContain(file);
  expect(JSON.stringify(env)).not.toMatch(/value|personal-google-key/);
 });
@@ -993,7 +971,7 @@ it('credential preflight and rollback reconciliation preserve the applied person
   writeFileSync(file,content);
  }
 });
-it('preserves an all-legacy native email client and adds only canonical personal clients in mixed config',async()=>{
+it('keeps an all-legacy native client out of the personal mounts, adds only canonical personal clients, and ignores an old email row',async()=>{
  const fixture=personalGoogleFixture(),legacy=fixture.clients.acme!,chief=personalChief(),l=lifecycle();
  config.runtime.google={principal:'legacy-member',tokenKeyFile:fixture.tokenKeyFile,clients:{old_tenant:legacy}};
  await l.create('bookkeeper',chief);
@@ -1005,13 +983,13 @@ it('preserves an all-legacy native email client and adds only canonical personal
   await pool.query("INSERT INTO oauth_tokens(principal,provider,org_id,email_address,refresh_token_enc) VALUES('legacy-member','google','old_tenant','legacy@example.invalid','fixture')");
   await pool.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,org,mailbox)
     VALUES('bookkeeper','email',$1,$1,'owner@example.invalid','legacy-member','old_tenant','legacy@example.invalid')`,[row.ownership_token]);
-  const withEmail={...chief,doors:[{kind:'email',enabled:true}]};
-  await l.reconcile('bookkeeper',withEmail);
-  expect(service().environment.LARES_EMAIL_ORG).toBe('old_tenant');
+  await l.reconcile('bookkeeper',chief);
+  expect(service().environment.LARES_EMAIL_ORG).toBeUndefined();
+  expect(service().environment.LARES_CONSOLE_PRINCIPAL).not.toBe('owner@example.invalid');
   expect(service().environment.LARES_PERSONAL_GOOGLE_CLIENTS).toBeUndefined();
   config.runtime.google.clients.acme=fixture.clients.acme!;
-  await l.reconcile('bookkeeper',withEmail);
-  expect(service().environment.LARES_EMAIL_ORG).toBe('old_tenant');
+  await l.reconcile('bookkeeper',chief);
+  expect(service().environment.LARES_EMAIL_ORG).toBeUndefined();
   expect(Object.keys(JSON.parse(service().environment.LARES_PERSONAL_GOOGLE_CLIENTS))).toEqual(['acme']);
   expect(service().secrets.filter((s:any)=>s.target==='google-token-key')).toHaveLength(1);
  } finally {

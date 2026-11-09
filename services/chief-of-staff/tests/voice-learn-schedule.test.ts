@@ -3,15 +3,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 /**
  * `learnAllMailboxes` is not a pure factory over
  * injected deps like the other schedules' `makeXTick`, so its dependencies (Postgres,
- * `listEnrolledMailboxes`, `runVoiceLearn`) are stubbed the same way
+ * `agentMailbox`, `runVoiceLearn`) are stubbed the same way
  * `tests/meeting-followup-auto.test.ts` stubs `@lares/agent-kit/db`: hoisted `vi.mock`s, so the
  * function under test runs for real against fakes instead of live infrastructure.
  *
- * The rule under test: `learnAllMailboxes()` resolves `true` for a completed pass — zero
- * enrolled mailboxes, or at least one mailbox succeeding — and `false` only when EVERY enrolled
- * mailbox failed. A per-mailbox failure alone (one of two) still counts as completed.
+ * The rule under test: `learnAllMailboxes()` resolves `true` for a completed pass — no mailbox
+ * chosen, or the chosen mailbox learned — and `false` when the chosen mailbox failed or no longer
+ * holds, so a swallowed failure never stamps the heartbeat.
  */
-let listEnrolledMailboxesMock: ReturnType<typeof vi.fn>;
 let runVoiceLearnMock: ReturnType<typeof vi.fn>;
 
 const poolQueries: Array<{ sql: string; params: unknown[] | undefined }> = [];
@@ -22,10 +21,6 @@ vi.mock("@lares/agent-kit/db", () => ({
       return { rows: [{ learn_lookback_days: 365, learn_cap: 300 }] };
     },
   }),
-}));
-vi.mock("../lib/google.js", () => ({
-  listEnrolledMailboxes: (...args: unknown[]) => listEnrolledMailboxesMock(...args),
-  googleClients: () => ({ gmail: async () => ({ search: async () => [], read: async () => null }) }),
 }));
 let agentMailboxMock: ReturnType<typeof vi.fn>;
 vi.mock("../lib/agent-mailbox.js", () => ({ agentMailbox: (...args: unknown[]) => agentMailboxMock(...args) }));
@@ -45,16 +40,14 @@ beforeEach(() => {
   process.env["LARES_MODEL_PREFIX"] = "lares";
   delete process.env["EMBED_MODEL"];
   embedMock = vi.fn(async () => [[0]]);
-  agentMailboxMock = vi.fn(async () => ({ ok: false, reason: "none" }));
-  listEnrolledMailboxesMock = vi.fn(async () => ["owner@project.example"]);
+  agentMailboxMock = vi.fn(async () => ({ ok: true, mailbox: "chosen@example.com", gmail: { search: async () => [], read: async () => null } }));
   runVoiceLearnMock = vi.fn(async () => ({ kept: 1, dropped: 0 }));
 });
 
 describe("learnAllMailboxes with a chosen mailbox", () => {
-  it("learns on the chosen mailbox only, reading through its client, and ignores the older enrolment", async () => {
+  it("learns on the chosen mailbox only, reading through its client", async () => {
     const search = vi.fn(async () => []);
     agentMailboxMock = vi.fn(async () => ({ ok: true, mailbox: "chosen@example.com", gmail: { search, read: async () => null } }));
-    listEnrolledMailboxesMock = vi.fn(async () => ["old@example.com"]);
     runVoiceLearnMock = vi.fn(async (deps: { mailbox: string; listSentMessages: () => Promise<unknown> }) => {
       await deps.listSentMessages();
       return { kept: 1, dropped: 0 };
@@ -62,39 +55,28 @@ describe("learnAllMailboxes with a chosen mailbox", () => {
     await expect(learnAllMailboxes()).resolves.toBe(true);
     expect(runVoiceLearnMock.mock.calls.map((c) => (c[0] as { mailbox: string }).mailbox)).toEqual(["chosen@example.com"]);
     expect(search).toHaveBeenCalledTimes(1);
-    expect(listEnrolledMailboxesMock).not.toHaveBeenCalled();
   });
 
   it("skips the pass without touching any mailbox when the chosen one is stale", async () => {
     agentMailboxMock = vi.fn(async () => ({ ok: false, reason: "account-not-ok" }));
     await expect(learnAllMailboxes()).resolves.toBe(false);
     expect(runVoiceLearnMock).not.toHaveBeenCalled();
-    expect(listEnrolledMailboxesMock).not.toHaveBeenCalled();
+  });
+
+  it("with no mailbox chosen, skips quietly: a completed pass, and nothing is learned or embedded", async () => {
+    agentMailboxMock = vi.fn(async () => ({ ok: false, reason: "none" }));
+    await expect(learnAllMailboxes()).resolves.toBe(true);
+    expect(runVoiceLearnMock).not.toHaveBeenCalled();
+    expect(embedMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves false when the chosen mailbox fails — a swallowed total failure must not stamp the heartbeat", async () => {
+    runVoiceLearnMock = vi.fn(async () => { throw new Error("gateway 500"); });
+    await expect(learnAllMailboxes()).resolves.toBe(false);
   });
 });
 
 describe("learnAllMailboxes", () => {
-  it("resolves true when zero mailboxes are enrolled — a quiet pass is a completed pass", async () => {
-    listEnrolledMailboxesMock = vi.fn(async () => []);
-    await expect(learnAllMailboxes()).resolves.toBe(true);
-    expect(runVoiceLearnMock).not.toHaveBeenCalled();
-  });
-
-  it("resolves true when at least one enrolled mailbox succeeds, even if another fails", async () => {
-    listEnrolledMailboxesMock = vi.fn(async () => ["ok@x.com", "bad@x.com"]);
-    runVoiceLearnMock = vi.fn(async (deps: { mailbox: string }) => {
-      if (deps.mailbox === "bad@x.com") throw new Error("gateway 500");
-      return { kept: 1, dropped: 0 };
-    });
-    await expect(learnAllMailboxes()).resolves.toBe(true);
-  });
-
-  it("resolves false when EVERY enrolled mailbox fails — a swallowed total failure must not stamp the heartbeat", async () => {
-    listEnrolledMailboxesMock = vi.fn(async () => ["bad1@x.com", "bad2@x.com"]);
-    runVoiceLearnMock = vi.fn(async () => { throw new Error("gateway 500"); });
-    await expect(learnAllMailboxes()).resolves.toBe(false);
-  });
-
   it("skips plainly, once, and returns false when the gateway cannot embed — no mailbox is marked errored", async () => {
     embedMock = vi.fn(async () => { throw new Error("gateway embeddings → 400 no such model"); });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
