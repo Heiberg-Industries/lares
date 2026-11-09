@@ -4,8 +4,8 @@
  *   RUN_AGENT_MAILBOX_DRIVE_LIVE=1        manual opt-in
  *   GOOGLE_LIVE_CLIENT_ID, GOOGLE_LIVE_CLIENT_SECRET   the OAuth client the account was connected with
  *   GOOGLE_LIVE_REFRESH_TOKEN             a refresh token granted with the "read+mail-draft" power
- *                                         (services/console/tests/live/google-account-consent.live.mts with
- *                                         PERSONAL_CONSENT_POWER=read+mail-draft; the probe never stores it)
+ *                                         (normally run all three through agent-mailbox-all.live.mts,
+ *                                         which signs in once and passes it in; the probe never stores it)
  *   GOOGLE_LIVE_DOC_URL                   a Google Doc the account owns
  * Reads only. Only booleans are printed, never document text, ids or addresses:
  *   accessTokenIssued      the refresh token produced an access token

@@ -38,8 +38,9 @@ member-budget enforcement for that legacy setup.
   after sign-in, the owner completes explicit model budget setup before creating an agent.
 - **A Google OAuth client for console sign-in.** Create an OAuth web client in your Google Cloud
   project and register the redirect address `https://example.com/api/auth/callback` (with your
-  own domain). You need its client id and client secret. Connecting Gmail and Calendar later
-  needs a second client with those scopes; that is done from the console, not at install time.
+  own domain). You need its client id and client secret. Letting the chief of staff work on your
+  Gmail, Calendar and Drive later needs a second client in a Google Cloud project with those three
+  APIs switched on (section 8); that is set up after the install, not during it.
 - **On the server:** Docker with Compose v2, `curl`, and `python3`. That is all. There is no Node.js,
   no pnpm and no checkout of the code on the server. `python3` is only used by a few repair helpers
   that the restore steps name; Ubuntu 24.04 already has it. As root:
@@ -50,8 +51,8 @@ member-budget enforcement for that legacy setup.
 - **A place for backups** that is not this server: an SFTP host, an S3-compatible bucket, or a
   second disk. See section 9.
 - **A chat channel.** None is needed to install. Web chat in the console is the first door; every
-  agent has it. Slack, Telegram and (for the chief of staff) an e-mail door are connected
-  afterwards (section 8).
+  agent has it. Slack and Telegram are connected afterwards, and the chief of staff's mailbox is
+  your own Google account, chosen on the agent's page (section 8).
 
 Set the server's time zone before you install (`timedatectl set-timezone <zone>`). The installer
 reads it and uses it as the owner's clock for quiet hours and briefs. It does not ask.
@@ -447,8 +448,9 @@ file it was told to mount is missing.
 ## 8. Doors, outside tools and integrations
 
 After your first agent runs, connect what it needs from the console. A **door** is a way to reach
-an agent. Web chat always exists. Slack and Telegram are chat doors; the chief of staff also has an
-e-mail door (a mailbox it may use). Google accounts are connected on the Connections page.
+an agent. Web chat always exists. Slack and Telegram are chat doors. The chief of staff can also
+work on one of your own Google mailboxes; you connect the account on **Your accounts** and choose
+it on the agent's Access tab (E-mail, below).
 
 The installer already stored your public address as the door address, so nothing needs editing
 on the server. Open the agent in the console and use its "Connect doors" section. You paste the
@@ -479,11 +481,21 @@ reloads. A door you have not touched reads "Not set up".
    send exactly that (for example `claim 0123...`; "Copy" puts it on your clipboard).
 
 **E-mail** (chief-of-staff agent). The agent works on one of your own Google mailboxes. It sorts
-new mail and writes reply drafts in Gmail; it never sends. It needs a Google client with Gmail and
-Calendar scopes, which is separate from the sign-in client from section 5. The client's consent
-screen must list the `gmail.compose` scope (drafts need it). A Google Cloud project of type
-External that is still in "Testing" makes Google expire refresh tokens after 7 days, so the agent
-would stop each week; use an Internal Workspace project, or an External project in production:
+new mail and writes reply drafts in Gmail; it never sends. With the same permission it reads your
+Drive files when you send it a Docs link, and adds or changes calendar events, each one only after
+you approve it. It needs its own Google client, separate from the sign-in client from section 5.
+Set it up in your Google Cloud project first:
+
+- **Switch on three APIs.** Under "APIs & Services", "Library", enable the **Gmail API**, the
+  **Google Calendar API** and the **Google Drive API**. Without them Google refuses the agent's
+  calls even though the sign-in worked.
+- **List five scopes on the consent screen:** `gmail.readonly`, `gmail.compose` (drafts),
+  `calendar.readonly`, `calendar.events` (events you approve) and `drive.readonly`.
+- **Keep the agent connected.** A project of type External that is still in "Testing" makes Google
+  expire the agent's access after 7 days, so the agent would stop each week. Use an Internal
+  Workspace project, or an External project in production.
+
+Then:
 
 1. Add `GOOGLE_CLIENT_ID_<ORG>` and `GOOGLE_CLIENT_SECRET_<ORG>` to `/etc/lares/console-oauth.env`
    (an explicit lower-case organisation id), and register
@@ -491,9 +503,9 @@ would stop each week; use an Internal Workspace project, or an External project 
    client.
 2. Run `python3 /opt/lares/current/services/box/ops/configure-google-keeper.py --org <org>` as root, then restart the
    keeper and recreate the console. The commands are in
-   [`integrations-and-accounts.md`](../services/console/docs/integrations-and-accounts.md#connecting-a-google-account).
-3. Connect your Google account on the membership page, choosing the permission "Read mailbox and
-   calendar, and write drafts". Or do it from the agent: open it in the console, go to the Access
+   [`integrations-and-accounts.md`](../services/console/docs/integrations-and-accounts.md#personal-google-consent).
+3. Connect your Google account on **Your accounts**, choosing the permission that starts with
+   "Read mailbox, calendar and Drive files, write drafts". Or do it from the agent: open it in the console, go to the Access
    tab, and under Mailbox press "Connect Google".
 4. On the agent's Access tab, under Mailbox, choose the account in "Works on". No restart is
    needed. Only the agent's owner can choose, and only from their own accounts. If you later
