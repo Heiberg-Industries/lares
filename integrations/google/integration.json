@@ -11,7 +11,7 @@
   "credential_type": "oauth2_owner_client",
   "owner_supplies_client": true,
   "sdk": { "package": "googleapis-common", "licence": "Apache-2.0" },
-  "live_probe": "services/chief-of-staff/tests/live/google.live.mts",
+  "live_probe": "services/chief-of-staff/tests/live/agent-mailbox-draft.live.mts",
   "quality": "integrations/google/quality.yaml",
   "codeowner": "lares-core"
 }
