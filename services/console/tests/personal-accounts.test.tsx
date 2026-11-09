@@ -7,7 +7,7 @@ const m = vi.hoisted(() => ({ member: vi.fn(), owner: vi.fn(), list: vi.fn(), us
 vi.mock("../lib/auth", () => ({ requireMember: m.member, isConsoleOwner: m.owner }));
 vi.mock("../lib/db", () => ({ pool: {} }));
 vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { list = m.list; } }));
-vi.mock("../lib/agent-mailbox", async () => ({ listAgentUses: m.uses, accountStatusLabel: (await vi.importActual<typeof import("../lib/agent-mailbox")>("../lib/agent-mailbox")).accountStatusLabel }));
+vi.mock("../lib/agent-mailbox", () => ({ listAgentUses: m.uses }));
 vi.mock("../app/actions/accounts", () => ({ removeAccount: m.remove }));
 vi.mock("../app/actions/members", () => ({ signOutEverywhere: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: m.refresh }) }));
@@ -31,7 +31,7 @@ it("shows both services with Connect when nothing is connected, and reads only t
   await show();
   expect(m.list).toHaveBeenCalledWith("member-a");
   expect(screen.getByRole("heading", { name: "Your accounts" })).toBeTruthy();
-  expect(within(row("Google")).getByText("Gmail and Calendar")).toBeTruthy();
+  expect(within(row("Google")).getByText("Gmail, Calendar and Drive")).toBeTruthy();
   expect(within(row("Microsoft")).getByText("Work mailbox and calendar")).toBeTruthy();
   expect(screen.getAllByRole("button", { name: /^Connect/ })).toHaveLength(2);
   expect(screen.queryByText("Connected")).toBeNull();
@@ -97,13 +97,30 @@ it("disconnects through the existing action with the account id and generation",
   expect(m.refresh).toHaveBeenCalled();
 });
 
-it("says a disconnected account needs attention instead of Connected, in the one plain sentence", async () => {
-  m.list.mockResolvedValue([{ ...google, status: "revoked" }, microsoft]);
+it("says a problem account needs attention in its own sentence naming the address, never the mailbox wording", async () => {
+  m.uses.mockResolvedValue([]);
+  const cases: [string, string][] = [
+    ["needs_reconsent", "owner@example.com needs your permission again. Reconnect it."],
+    ["revoked", "owner@example.com was disconnected at Google. Reconnect it to use it again."],
+    ["error", "owner@example.com could not be checked. Try reconnecting it."],
+  ];
+  for (const [status, sentence] of cases) {
+    m.list.mockResolvedValue([{ ...google, status }, microsoft]);
+    await show();
+    expect(within(row("Google")).getByRole("button", { name: /Needs attention/ })).toBeTruthy();
+    expect(within(row("Google")).queryByText("Connected")).toBeNull();
+    expect(row("Google").textContent).toContain(sentence);
+    expect(row("Google").textContent).not.toContain("paused");
+    expect(document.body.textContent).not.toContain("another mailbox");
+    expect(within(row("Microsoft")).getByRole("button", { name: /Connected/ })).toBeTruthy();
+    cleanup();
+  }
+});
+
+it("adds that an agent is paused when one works on the problem account", async () => {
+  m.list.mockResolvedValue([{ ...google, status: "revoked" }]);
   await show();
-  expect(within(row("Google")).getByRole("button", { name: /Needs attention/ })).toBeTruthy();
-  expect(within(row("Google")).queryByText("Connected")).toBeNull();
-  expect(row("Google").textContent).toContain("owner@example.com was disconnected or needs your permission again");
-  expect(within(row("Microsoft")).getByRole("button", { name: /Connected/ })).toBeTruthy();
+  expect(row("Google").textContent).toContain("Reconnect it to use it again. An agent that works on it is paused until then.");
 });
 
 it("keeps technical words and raw errors off the page", async () => {

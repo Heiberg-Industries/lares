@@ -4,7 +4,7 @@ import type { ConnectedAccountView } from "@lares/agent-kit/authority-contract";
 import { Page, PageHeader } from "@lares/ui/patterns";
 import { pool } from "../../lib/db";
 import { requireMember, isConsoleOwner } from "../../lib/auth";
-import { accountStatusLabel, listAgentUses } from "../../lib/agent-mailbox";
+import { listAgentUses } from "../../lib/agent-mailbox";
 import { buildServiceRows } from "../../lib/your-accounts";
 import { AccountServiceRow } from "../../components/AccountServiceRow";
 import { RemoveAccountButton } from "../../components/RemoveAccountButton";
@@ -25,8 +25,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
     {params.added && <p role="status">Account connected.</p>}
     {params.error && <p role="alert">The account could not be connected. Try again.</p>}
     {unavailable ? <p role="status">Your accounts are unavailable. Try again later.</p> : <section className="lares-service-list" aria-label="Services">
-      {rows.map(row => <AccountServiceRow key={row.service} row={row}
-        attention={row.attention !== undefined && !row.accounts.some(a => a.ok) ? accountStatusLabel("account-not-ok", row.attention) : undefined} />)}
+      {rows.map(row => <AccountServiceRow key={row.service} row={row} attention={row.attention} />)}
     </section>}
     {older.length > 0 && <section className="lares-stack" aria-label="Older mailbox connections">
       <h2 className="lares-section-title">Older mailbox connections</h2>
