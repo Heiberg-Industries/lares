@@ -10,7 +10,7 @@ vi.mock("@lares/agent-kit/member-store", () => ({ currentSession: mock.currentSe
 vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { beginUpdate = mock.begin; read = mock.read; forTrustedAdapter = () => ({ createPersonalAccount: mock.create, renew: mock.renew }); } }));
 vi.mock("../lib/accounts", () => ({ googleOrgClientConfig: () => ({ clientId: "data-client", clientSecret: "secret" }), tokenEncKeyHex: () => "key", googleOrgs: () => [{ id: "example" }], orgDomains: () => ({}), resolveOrgForEmail: () => ({ org: "example" }) }));
 vi.mock("../lib/account-oauth", () => ({ consoleOrigin: () => "https://console.example.test", accountRedirect: () => "https://console.example.test/api/accounts/google/callback",
-  callbackRedirect: (origin: string, p: Record<string,string>) => `${origin}/membership?${new URLSearchParams(p)}`, startAccountConsent: mock.start, finishAccountConsent: mock.finish }));
+  callbackRedirect: (origin: string, p: Record<string,string>) => `${origin}/accounts?${new URLSearchParams(p)}`, startAccountConsent: mock.start, finishAccountConsent: mock.finish }));
 import { ConsoleAdmissionUnavailableError } from "../lib/admission-error";
 import { GET } from "../app/api/accounts/google/callback/route";
 import { POST } from "../app/api/accounts/google/start/route";

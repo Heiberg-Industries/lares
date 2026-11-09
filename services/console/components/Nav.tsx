@@ -31,9 +31,14 @@ const main = [
   { href: "/chat", label: "Chat", Icon: MessageSquareText },
   { href: "/agents", label: "Agents", Icon: UsersRound },
   { href: "/activity", label: "Activity", Icon: History },
-  { href: "/integrations", label: "Connections", Icon: Plug },
   { href: "/members", label: "Members", Icon: UsersRound },
 ];
+// "Connections" is a group: one page for the member's own accounts, one for the shared services.
+const connections = [
+  { href: "/accounts", label: "Your accounts", Icon: UsersRound },
+  { href: "/integrations", label: "Integrations", Icon: Plug },
+];
+const [beforeConnections, afterConnections] = [main.slice(0, 5), main.slice(5)];
 const tools = [
   { href: "/deadlines", label: "Deadlines", Icon: CalendarDays },
   { href: "/taste", label: "Preferences", Icon: Bookmark },
@@ -78,8 +83,14 @@ export function Nav({owner}:{owner:boolean}) {
         lares
       </Link>
       <nav aria-label="Console navigation" className={styles.navItems}>
-        {owner?main.map(item):[
+        {owner ? <>
+          {beforeConnections.map(item)}
+          <p className={styles.groupLabel}>Connections</p>
+          {connections.map(item)}
+          {afterConnections.map(item)}
+        </> : [
           {href:'/chat',label:'Chat',Icon:MessageSquareText},
+          connections[0],
           {href:'/membership',label:'Membership',Icon:UsersRound},
         ].map(item)}
         {owner && <><p className={styles.groupLabel}>Tools</p>{tools.map(item)}</>}

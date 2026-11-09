@@ -284,7 +284,7 @@ describe("connection read failures through the rendered table", () => {
     });
     const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
     expect(html).toContain("client configured, no mailbox");
-    expect(html).toContain("Manage your personal Google accounts");
+    expect(html).toContain("Manage your personal accounts");
     expect(html).not.toContain("unavailable");
   });
 

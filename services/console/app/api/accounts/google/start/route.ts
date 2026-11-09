@@ -23,7 +23,7 @@ async function handlePOST(req: Request): Promise<Response> {
   try {
     const form = await req.formData();
     if (form.has("agent")) {
-      const response = new Response("Agent mailbox connection requires the account-aware runtime adapter. Manage personal accounts on /membership.", { status: 409 });
+      const response = new Response("Agent mailbox connection requires the account-aware runtime adapter. Manage personal accounts on /accounts.", { status: 409 });
       // Overwriting/clearing the sole flow cookie prevents an earlier flow surviving this start.
       response.headers.append("Set-Cookie", `${ACCOUNT_FLOW_COOKIE}=; Path=/api/accounts/google; HttpOnly; SameSite=Lax; Max-Age=0${origin.startsWith("https:") ? "; Secure" : ""}`);
       return response;

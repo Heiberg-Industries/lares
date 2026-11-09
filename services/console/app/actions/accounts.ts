@@ -23,6 +23,7 @@ export async function removeAccount(input: RemoveAccountInput): Promise<void> {
     }
   } catch { throw new Error("Account could not be disconnected. Refresh the page and try again."); }
   revalidatePath("/membership");
+  revalidatePath("/accounts");
   revalidatePath("/integrations");
 }
 
