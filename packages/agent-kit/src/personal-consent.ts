@@ -1,7 +1,7 @@
 /** Closed provider permission profiles. Provider consent never grants engine write authority. */
-export type PersonalConsentPower = 'read' | 'read+mail-send';
+export type PersonalConsentPower = 'read' | 'read+mail-send' | 'read+mail-draft';
 export function personalConsentPower(value: unknown): PersonalConsentPower {
-  if (value === 'read' || value === 'read+mail-send') return value;
+  if (value === 'read' || value === 'read+mail-send' || value === 'read+mail-draft') return value;
   throw new Error('Invalid personal consent power');
 }
 // openid validates issuer+subject through the OIDC library; the verified Gmail profile supplies
@@ -11,14 +11,19 @@ export function personalConsentPower(value: unknown): PersonalConsentPower {
 export const GOOGLE_PERSONAL_READ_SCOPES = ['openid', 'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/calendar.readonly'] as const;
 const GMAIL_SEND = 'https://www.googleapis.com/auth/gmail.send';
+const GMAIL_COMPOSE = 'https://www.googleapis.com/auth/gmail.compose';
 export function googlePersonalConsentScopes(power: PersonalConsentPower): readonly string[] {
-  return personalConsentPower(power) === 'read' ? GOOGLE_PERSONAL_READ_SCOPES : [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_SEND];
+  const checked = personalConsentPower(power);
+  if (checked === 'read') return GOOGLE_PERSONAL_READ_SCOPES;
+  if (checked === 'read+mail-send') return [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_SEND];
+  if (checked === 'read+mail-draft') return [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_COMPOSE];
+  throw new Error('Invalid personal consent power');
 }
 // Prior verified consent may carry these known broader powers. Preserve actual scopes;
 // accepting them for reads is never an engine authorization decision.
 const GOOGLE_ALLOWED = [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_SEND, 'email', 'profile',
   'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile',
-  'https://www.googleapis.com/auth/gmail.compose', 'https://www.googleapis.com/auth/gmail.modify',
+  GMAIL_COMPOSE, 'https://www.googleapis.com/auth/gmail.modify',
   'https://mail.google.com/', 'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/drive.readonly'];
 export function validateGooglePersonalScopes(scopes: readonly string[], power: PersonalConsentPower): void {
@@ -28,16 +33,21 @@ export function validateGooglePersonalScopes(scopes: readonly string[], power: P
   const fullMail = has('https://www.googleapis.com/auth/gmail.modify', 'https://mail.google.com/');
   if (!has('openid') || !(fullMail || has(GOOGLE_PERSONAL_READ_SCOPES[1])) ||
     !has(GOOGLE_PERSONAL_READ_SCOPES[2], 'https://www.googleapis.com/auth/calendar') ||
-    (power === 'read+mail-send' && !(fullMail || has(GMAIL_SEND, 'https://www.googleapis.com/auth/gmail.compose')))) throw new Error('Consent scopes incomplete');
+    (power === 'read+mail-send' && !(fullMail || has(GMAIL_SEND, GMAIL_COMPOSE))) ||
+    // Drafts need compose (or a broader mail scope); gmail.send alone cannot create or update a draft.
+    (power === 'read+mail-draft' && !(fullMail || has(GMAIL_COMPOSE)))) throw new Error('Consent scopes incomplete');
 }
 export const MICROSOFT_PERSONAL_READ_SCOPES = ['openid', 'offline_access', 'User.Read', 'Mail.Read', 'Calendars.Read'] as const;
 const MICROSOFT_ALLOWED = [...MICROSOFT_PERSONAL_READ_SCOPES, 'profile', 'email', 'Mail.Send'];
 export function microsoftPersonalConsentScopes(power: PersonalConsentPower): readonly string[] {
-  return personalConsentPower(power) === 'read' ? MICROSOFT_PERSONAL_READ_SCOPES : [...MICROSOFT_PERSONAL_READ_SCOPES, 'Mail.Send'];
+  const checked = personalConsentPower(power);
+  if (checked === 'read') return MICROSOFT_PERSONAL_READ_SCOPES;
+  if (checked === 'read+mail-send') return [...MICROSOFT_PERSONAL_READ_SCOPES, 'Mail.Send'];
+  throw new Error('Microsoft accounts have no draft-only permission');
 }
 /** Known broader carryover is retained honestly. Unknown, shared and application scopes refuse. */
 export function normalizeMicrosoftPersonalScopes(scopes: readonly string[], power: PersonalConsentPower = 'read'): string[] {
-  personalConsentPower(power);
+  if (personalConsentPower(power) === 'read+mail-draft') throw new Error('Microsoft accounts have no draft-only permission');
   if (!Array.isArray(scopes) || scopes.length > MICROSOFT_ALLOWED.length || scopes.some(s => typeof s !== 'string' || s.length > 128)) throw new Error('Consent scopes refused');
   const normalized = [...new Set(scopes.map(s => s.replace(/^https:\/\/graph\.microsoft\.com\//, '')))].sort();
   if (['User.Read', 'Mail.Read', 'Calendars.Read', ...(power === 'read+mail-send' ? ['Mail.Send'] : [])].some(s => !normalized.includes(s)) ||

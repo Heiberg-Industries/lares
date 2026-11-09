@@ -440,6 +440,10 @@ const SEED_ROWS: SeedRow[] = [
       `INSERT INTO resource_grants(id,resource_kind,resource_id,principal_member_id,permission,grantor_member_id,issued_access_revision)
        SELECT $1,'agent',agent_name,$2,'use',$2,revision FROM agent_access WHERE agent_name=$3`,
       [`22222222-2222-4222-8222-${String(index+1).padStart(12,'0')}`,member,`fixture-shared-${index}`]),
+    row("agent_account_bindings", "owner_member_id", member,
+      `INSERT INTO agent_account_bindings(agent,purpose,owner_member_id,connected_account_id,resource_binding_id,account_generation,revision)
+       VALUES($1,'mailbox',$2,$3,$4,0,$5)`,
+      [`fixture-shared-${index}`,member,`fixture-account-${index+1}`,`fixture-account-${index+1}-resource`,`44444444-4444-4444-8444-${String(index+1).padStart(12,'0')}`]),
   ]),
 
   // Outside custody is private person data, so both members have independent encrypted

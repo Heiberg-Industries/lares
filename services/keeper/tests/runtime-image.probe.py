@@ -94,6 +94,9 @@ try:
  # The agent provider-key table came from the loop above on the empty database, holds no secret column, and reapplies as a no-op.
  sql((repo/'services/box/sql/035_agent_provider_keys.sql').read_text())
  sql("DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='agent_provider_keys') OR (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='agent_provider_keys')<>7 OR EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='agent_provider_keys' AND column_name ~* '(secret|token|password|key)') THEN RAISE EXCEPTION 'Agent provider key table missing, changed on reapply, or holding a secret column'; END IF; END $$")
+ # The agent account-binding table came from the loop above, holds no credential column, and reapplies as a no-op.
+ sql((repo/'services/box/sql/036_agent_account_bindings.sql').read_text())
+ sql("DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='agent_account_bindings') OR (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='agent_account_bindings')<>8 OR EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='agent_account_bindings' AND column_name ~* '(secret|token|password|key|credential)') THEN RAISE EXCEPTION 'Agent account binding table missing, changed on reapply, or holding a credential column'; END IF; END $$")
  # Apply the production privilege helper to the exact migrated engine inventory. Its source is
  # mounted read-only into the existing crypto directory in this neutral role image.
  engine_privileges=root/'prepare-engine-privileges.mts'
