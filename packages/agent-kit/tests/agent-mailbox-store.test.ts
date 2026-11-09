@@ -194,12 +194,15 @@ describe('personal consent powers', () => {
   const compose = 'https://www.googleapis.com/auth/gmail.compose';
   const gmailSend = 'https://www.googleapis.com/auth/gmail.send';
   const drive = 'https://www.googleapis.com/auth/drive.readonly';
+  const events = 'https://www.googleapis.com/auth/calendar.events';
   it('gives each Google power exactly its own scopes', () => {
     expect(googlePersonalConsentScopes('read')).toEqual(READ);
     expect(googlePersonalConsentScopes('read+mail-send')).toEqual([...READ, gmailSend]);
-    expect(googlePersonalConsentScopes('read+mail-draft')).toEqual([...READ, compose, drive]);
+    expect(googlePersonalConsentScopes('read+mail-draft')).toEqual([...READ, compose, drive, events]);
     expect(googlePersonalConsentScopes('read+mail-draft')).not.toContain(gmailSend);
     expect(googlePersonalConsentScopes('read')).not.toContain(drive);
+    expect(googlePersonalConsentScopes('read')).not.toContain(events);
+    expect(googlePersonalConsentScopes('read+mail-send')).not.toContain(events);
     expect(() => personalConsentPower('read+mail-everything')).toThrow();
   });
   it('validates each Google power against what the account really holds', () => {
@@ -208,6 +211,9 @@ describe('personal consent powers', () => {
     expect(() => validateGooglePersonalScopes([...READ, 'https://www.googleapis.com/auth/gmail.modify'], 'read+mail-draft')).not.toThrow();
     // An account consented before Drive joined "read + drafts" has no Drive scope and still validates.
     expect(() => validateGooglePersonalScopes([...READ, compose], 'read+mail-draft')).not.toThrow();
+    // Same for calendar.events: asked for, never required.
+    expect(() => validateGooglePersonalScopes([...READ, compose, drive], 'read+mail-draft')).not.toThrow();
+    expect(() => validateGooglePersonalScopes([...READ, compose, drive, events], 'read+mail-draft')).not.toThrow();
     expect(() => validateGooglePersonalScopes(READ, 'read+mail-draft')).toThrow(/incomplete/);
     expect(() => validateGooglePersonalScopes(SEND, 'read+mail-draft')).toThrow(/incomplete/);
     expect(() => validateGooglePersonalScopes(SEND, 'read+mail-send')).not.toThrow();

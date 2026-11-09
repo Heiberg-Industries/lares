@@ -45,6 +45,7 @@ import {
 
 const GOOGLE_ISSUER = 'https://accounts.google.com';
 const DRIVE_READONLY = 'https://www.googleapis.com/auth/drive.readonly';
+const CALENDAR_WRITE_SCOPES = ['https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/calendar'];
 /** The single refresh, identity check and profile read must finish inside this. */
 const SETUP_MS = 15_000;
 /** How long a job may keep using its clients (an access token lives about an hour). */
@@ -65,7 +66,7 @@ export interface AgentMailbox {
   ownerMemberId: string;
   /** Reads, and drafts. `send` always refuses. */
   gmail: GmailClient;
-  /** Reads only. Every write refuses. */
+  /** Reads always. Event writes work only when the account's consent includes calendar.events (or calendar). */
   calendar: CalendarClient;
   /** Reads files (details, export, download) only; null when the account's consent has no Drive permission. */
   drive: DriveApi | null;
@@ -159,11 +160,17 @@ export async function agentMailbox(job: string, deps: AgentMailboxDeps = {}): Pr
       draft: async input => { await stillOrRefuse(); return opened.gmail.draft(input); },
       updateDraftRaw: async (id, raw, threadId) => { await stillOrRefuse(); return opened.gmail.updateDraftRaw(id, raw, threadId); },
     };
+    // Event writes: only with the scope the verified token carries, and only while the choice still holds.
+    // (The tools gate each one behind the owner's approval before they ever get here.)
+    const writable = async (): Promise<void> => {
+      if (!opened.calendarWrites) refuse('To add calendar events, reconnect Google on Your accounts');
+      await stillOrRefuse('the event was not changed');
+    };
     const calendar: CalendarClient = {
       ...opened.calendar,
-      insertEvent: async () => refuse('This agent reads the calendar only'),
-      updateEvent: async () => refuse('This agent reads the calendar only'),
-      deleteEvent: async () => refuse('This agent reads the calendar only'),
+      insertEvent: async o => { await writable(); return opened.calendar.insertEvent(o); },
+      updateEvent: async o => { await writable(); return opened.calendar.updateEvent(o); },
+      deleteEvent: async o => { await writable(); return opened.calendar.deleteEvent(o); },
     };
     const drive: DriveApi | null = opened.drive && {
       files: {
@@ -233,6 +240,7 @@ async function openClients(pool: Pool, binding: AgentMailboxBinding, deps: Agent
       const calendar = makeCalendarClient(wrapCalendarApi(personalCalendarApi(cfg, jobAuth, access as string)));
       const drive = info.scopes.includes(DRIVE_READONLY)
         ? { files: google.drive({ version: 'v3', auth: jobAuth }).files } as DriveApi : null;
-      return { mailbox, gmail, calendar, drive };
+      const calendarWrites = CALENDAR_WRITE_SCOPES.some(sc => info.scopes.includes(sc));
+      return { mailbox, gmail, calendar, drive, calendarWrites };
     });
 }

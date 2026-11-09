@@ -29,6 +29,12 @@ drafts" before Drive was added keeps working for mail and drafts; opening a Goog
 "To read Google Docs, reconnect Google on Your accounts" until it is reconnected. The agent never
 writes to Drive.
 
+The same permission also lets the agent add, change and delete calendar events (the `calendar.events`
+permission). Every one of those still needs your tap on Approve in chat before anything happens, and
+only on the chosen mailbox's calendar. An account connected with "read + drafts" before this was added
+keeps working for mail, drafts and Drive; adding or changing an event says "To add calendar events,
+reconnect Google on Your accounts" until it is reconnected. Sending mail stays refused.
+
 The same verified grant reads Gmail's own profile (`userId: "me"`) and the current primary calendar
 (`calendarId: "primary"`, primary flag and owner access required). The mailbox binding's opaque
 external ID is the verified Google subject; its address is display metadata. An account-aware Gmail

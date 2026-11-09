@@ -7,7 +7,7 @@ import { AgentMailbox } from '../components/AgentMailbox';
 import type { AgentMailboxViewDTO } from '../lib/agent-mailbox';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-const LINE = 'Sorts new mail and writes reply drafts in Gmail, and can read your Drive files. It never sends.';
+const LINE = 'Sorts new mail and writes reply drafts in Gmail, can read your Drive files, and adds or changes calendar events only when you approve each one. It never sends.';
 const options = [
   { accountId: 'acct-a', resourceBindingId: 'res-a', address: 'one@example.com', canDraft: true },
   { accountId: 'acct-b', resourceBindingId: 'res-b', address: 'two@example.com', canDraft: false },

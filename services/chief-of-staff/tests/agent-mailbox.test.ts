@@ -145,15 +145,12 @@ describe('agentMailbox', () => {
     expect(holding.rows[0].n).toBe(0);
   });
 
-  it('refuses every send path and never reaches the provider', async () => {
+  it('refuses every mail send path and never reaches the provider', async () => {
     await choose();
     const am = await open();
     if (!am.ok) throw new Error(am.reason);
     await expect(am.gmail.send({ ...draftInput })).rejects.toThrow(/drafts only/);
-    await expect(am.calendar.insertEvent({ summary: 's', start: 'a', end: 'b' })).rejects.toThrow();
-    await expect(am.calendar.updateEvent({ eventId: 'e' })).rejects.toThrow();
-    await expect(am.calendar.deleteEvent({ eventId: 'e' })).rejects.toThrow();
-    expect(gmailCalls.filter(c => c === 'send' || c.startsWith('events.'))).toEqual([]);
+    expect(gmailCalls.filter(c => c === 'send')).toEqual([]);
     // The send method on the message layer is refused too, whatever builds on it.
     expect(Object.keys(am.gmail)).toEqual(expect.arrayContaining(['draft', 'updateDraftRaw', 'send']));
   });
@@ -244,6 +241,46 @@ describe('agentMailbox', () => {
     await choose(COMPOSE.filter(s => !s.endsWith('gmail.compose')));
     expect(await open()).toEqual({ ok: false, reason: 'scopes-not-draft' });
     expect(tokenCalls).toBe(0);
+  });
+
+  describe('calendar events', () => {
+    const NO_EVENTS = COMPOSE.filter(sc => !sc.endsWith('calendar.events'));
+    it('are written through the one refresh when the token carries calendar.events', async () => {
+      await choose();
+      const am = await open();
+      if (!am.ok) throw new Error('expected a mailbox');
+      await am.calendar.insertEvent({ summary: 's', start: '2026-01-01T10:00:00Z', end: '2026-01-01T11:00:00Z' });
+      await am.calendar.updateEvent({ eventId: 'e', summary: 't' });
+      await am.calendar.deleteEvent({ eventId: 'e' });
+      expect(gmailCalls.filter(c => c.startsWith('events.'))).toEqual(['events.insert', 'events.patch', 'events.delete']);
+      expect(tokenCalls).toBe(1);
+    });
+    it('also work with the broader calendar scope', async () => {
+      const broad = [...NO_EVENTS, 'https://www.googleapis.com/auth/calendar'];
+      tokenInfo = { ...tokenInfo, scope: broad.join(' ') };
+      await choose(broad);
+      const am = await open();
+      if (!am.ok) throw new Error('expected a mailbox');
+      await am.calendar.deleteEvent({ eventId: 'e' });
+      expect(gmailCalls).toContain('events.delete');
+    });
+    it('refuse in plain words without the scope, while the mailbox still opens and reads', async () => {
+      tokenInfo = { ...tokenInfo, scope: NO_EVENTS.join(' ') };
+      await choose(NO_EVENTS);
+      const am = await open();
+      if (!am.ok) throw new Error('expected a mailbox');
+      await expect(am.calendar.insertEvent({ summary: 's', start: 'a', end: 'b' })).rejects.toThrow('To add calendar events, reconnect Google on Your accounts');
+      await expect(am.calendar.freeBusy({ timeMin: 'a', timeMax: 'b' })).resolves.toEqual([]);
+      expect(gmailCalls.filter(c => c.startsWith('events.'))).toEqual([]);
+    });
+    it('refuse once the choice no longer holds, before reaching Google', async () => {
+      const a = await choose();
+      const am = await open();
+      if (!am.ok) throw new Error('expected a mailbox');
+      await store.setStatus('member-a', await store.beginUpdate('member-a', a.id, 0), 'revoked');
+      await expect(am.calendar.updateEvent({ eventId: 'e' })).rejects.toThrow(/no longer holds; the event was not changed/);
+      expect(gmailCalls).toEqual([]);
+    });
   });
 
   describe('Drive, read only', () => {

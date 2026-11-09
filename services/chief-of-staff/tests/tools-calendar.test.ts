@@ -259,6 +259,15 @@ describe("calendar_create_event", () => {
     expect(calls[0]!.method).toBe("insert");
   });
 
+  it("refuses any account other than the chosen mailbox, after approval and before any googleapis call", async () => {
+    const calls = await enroll();
+    const ok = ctx(slackAuth(OWNER_SLACK_ID));
+    await expect(calendarCreateEvent.execute({ ...INPUT, account: "other@example.invalid" }, ok)).rejects.toThrow(/works on owner@example.invalid only/);
+    await expect(calendarUpdateEvent.execute({ eventId: "e1", account: "other@example.invalid" }, ok)).rejects.toThrow(/only/);
+    await expect(calendarDeleteEvent.execute({ eventId: "e1", account: "other@example.invalid" }, ok)).rejects.toThrow(/only/);
+    expect(calls).toHaveLength(0);
+  });
+
   it("refuses for want of a mailbox once approval passes, not before", async () => {
     // The approval gate must pass first (a valid approver), THEN resolution hits "no mailbox chosen".
     useNoChosenMailbox();

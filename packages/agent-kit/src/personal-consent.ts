@@ -13,13 +13,15 @@ export const GOOGLE_PERSONAL_READ_SCOPES = ['openid', 'https://www.googleapis.co
 const GMAIL_SEND = 'https://www.googleapis.com/auth/gmail.send';
 const GMAIL_COMPOSE = 'https://www.googleapis.com/auth/gmail.compose';
 const DRIVE_READONLY = 'https://www.googleapis.com/auth/drive.readonly';
+const CALENDAR_EVENTS = 'https://www.googleapis.com/auth/calendar.events';
 export function googlePersonalConsentScopes(power: PersonalConsentPower): readonly string[] {
   const checked = personalConsentPower(power);
   if (checked === 'read') return GOOGLE_PERSONAL_READ_SCOPES;
   if (checked === 'read+mail-send') return [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_SEND];
-  // "Read + drafts" also reads Drive files (read-only). An account consented before this was added still
-  // validates for this power: validateGooglePersonalScopes does not require the Drive scope.
-  if (checked === 'read+mail-draft') return [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_COMPOSE, DRIVE_READONLY];
+  // "Read + drafts" also reads Drive files (read-only) and manages calendar events (each one approved by the
+  // owner in chat). An account consented before either was added still validates for this power:
+  // validateGooglePersonalScopes requires neither scope.
+  if (checked === 'read+mail-draft') return [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_COMPOSE, DRIVE_READONLY, CALENDAR_EVENTS];
   throw new Error('Invalid personal consent power');
 }
 // Prior verified consent may carry these known broader powers. Preserve actual scopes;
@@ -27,7 +29,7 @@ export function googlePersonalConsentScopes(power: PersonalConsentPower): readon
 const GOOGLE_ALLOWED = [...GOOGLE_PERSONAL_READ_SCOPES, GMAIL_SEND, 'email', 'profile',
   'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile',
   GMAIL_COMPOSE, 'https://www.googleapis.com/auth/gmail.modify',
-  'https://mail.google.com/', 'https://www.googleapis.com/auth/calendar.events',
+  'https://mail.google.com/', CALENDAR_EVENTS,
   'https://www.googleapis.com/auth/calendar', DRIVE_READONLY];
 export function validateGooglePersonalScopes(scopes: readonly string[], power: PersonalConsentPower): void {
   personalConsentPower(power);

@@ -61,7 +61,7 @@ it('lets the agent owner choose their own account and returns the working view',
   await account('acct-a', 'member-a', COMPOSE, 'one@example.com');
   const response = await post(pick); expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('no-store');
   const json = await response.json();
-  expect(json.view).toMatchObject({ state: 'working', title: 'Mailbox', sentence: 'Sorts new mail and writes reply drafts in Gmail, and can read your Drive files. It never sends.',
+  expect(json.view).toMatchObject({ state: 'working', title: 'Mailbox', sentence: 'Sorts new mail and writes reply drafts in Gmail, can read your Drive files, and adds or changes calendar events only when you approve each one. It never sends.',
     chosen: { accountId: 'acct-a', address: 'one@example.com' } });
   expect(json.view.options).toEqual([{ accountId: 'acct-a', resourceBindingId: 'res-a', address: 'one@example.com', canDraft: true }]);
   expect(JSON.stringify(json)).not.toContain('fixture-encrypted');
@@ -87,7 +87,7 @@ it('refuses an account whose consent only reads, with a plain sentence', async (
   await account('acct-a', 'member-a', READ);
   const response = await post(pick); expect(response.status).toBe(409);
   expect(await response.json()).toEqual({ ok: false, code: 'scopes-not-draft',
-    message: 'That account can be read, but this agent may not write drafts in it. Reconnect it with “read + drafts”, which also lets the agent read your Drive files.' });
+    message: 'That account can be read, but this agent may not write drafts in it. Reconnect it with “read + drafts”, which also lets the agent read your Drive files and add calendar events you approve.' });
   expect(await stored()).toEqual([]);
 });
 it('refuses when the definition has no Gmail permission', async () => {

@@ -132,13 +132,39 @@ describe('default readers on the chosen mailbox', () => {
     await expect(googleClients().calendar('other@example.invalid')).rejects.toThrow(/only/);
   });
 
-  it('refuses to send or write, in plain words, and never reaches the provider', async () => {
+  it('refuses to send mail, in plain words, and never reaches the provider', async () => {
     await choose();
     const gmail = await googleClients().gmail();
     await expect(gmail.send({ ...draftInput })).rejects.toThrow('This agent writes drafts only; send it from Gmail');
+    expect(gmailCalls.filter(c => c === 'send')).toEqual([]);
+  });
+
+  it('refuses calendar writes in plain words for an account consented before calendar.events, and never reaches the provider', async () => {
+    const OLD = COMPOSE.filter(s => !s.endsWith('calendar.events'));
+    tokenInfo = { ...tokenInfo, scope: OLD.join(' ') };
+    await choose(OLD);
     const calendar = await googleClients().calendar();
-    await expect(calendar.insertEvent({ summary: 's', start: 'a', end: 'b' })).rejects.toThrow(/calendar only/);
-    expect(gmailCalls.filter(c => c === 'send' || c.startsWith('events.'))).toEqual([]);
+    const refusal = 'To add calendar events, reconnect Google on Your accounts';
+    await expect(calendar.insertEvent({ summary: 's', start: 'a', end: 'b' })).rejects.toThrow(refusal);
+    await expect(calendar.updateEvent({ eventId: 'e' })).rejects.toThrow(refusal);
+    await expect(calendar.deleteEvent({ eventId: 'e' })).rejects.toThrow(refusal);
+    await expect(calendar.freeBusy({ timeMin: 'a', timeMax: 'b' })).resolves.toEqual([]);
+    expect(gmailCalls.filter(c => c.startsWith('events.'))).toEqual([]);
+  });
+
+  it('writes calendar events when the token carries calendar.events, and refuses once the choice stops holding', async () => {
+    const a = await choose();
+    const calendar = await googleClients().calendar();
+    await calendar.insertEvent({ summary: 's', start: '2026-01-01T10:00:00Z', end: '2026-01-01T11:00:00Z' });
+    await calendar.updateEvent({ eventId: 'e', summary: 't' });
+    await calendar.deleteEvent({ eventId: 'e' });
+    expect(gmailCalls.filter(c => c.startsWith('events.'))).toEqual(['events.insert', 'events.patch', 'events.delete']);
+    await store.setStatus('member-a', await store.beginUpdate('member-a', a.id, 0), 'revoked');
+    gmailCalls.length = 0;
+    for (const write of [() => calendar.insertEvent({ summary: 's', start: 'a', end: 'b' }), () => calendar.updateEvent({ eventId: 'e' }), () => calendar.deleteEvent({ eventId: 'e' })]) {
+      await expect(write()).rejects.toThrow(/no longer holds; the event was not changed/);
+    }
+    expect(gmailCalls).toEqual([]);
   });
 
   it('a stale choice gives no mailboxes and refuses, never another account', async () => {
