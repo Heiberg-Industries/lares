@@ -38,6 +38,7 @@ import { grantedToolNames } from "@lares/agent-kit/catalogue";
 
 import { CATALOGUE } from "../../catalogue/index.js";
 import { thisAgent } from "../../lib/definition.js";
+import { callerIsAgentOwner } from "../../lib/webchat-owner.js";
 import { consoleAdmission } from "@lares/agent-kit/console-turn-authority";
 import { managedIdentity } from "@lares/agent-kit/door-authority";
 import { vaultBrokerRequest } from "@lares/agent-kit/vault-broker-client";
@@ -73,7 +74,9 @@ export default defineDynamic({
     "session.started": async (_event: unknown, ctx?: ResolveCtx) => {
       const privateSession = await verifyPrivateConsoleSession(ctx);
       const { loaded } = await thisAgent(ctx?.session?.id);
-      const names = grantedToolNames(CATALOGUE, loaded.definition).filter(name => privateSession ? privateToolAllowed("chief-of-staff", name) : !privateOnlyTool(name));
+      // Decided once, here; the guard at execution asks again (ownership can change mid-conversation).
+      const callerIsOwner = privateSession ? await callerIsAgentOwner(ctx) : false;
+      const names = grantedToolNames(CATALOGUE, loaded.definition).filter(name => privateSession ? privateToolAllowed("chief-of-staff", name, { callerIsOwner }) : !privateOnlyTool(name));
       // Eve requires authenticated button responses whenever this descriptor exists.
       // Native Telegram deliberately resumes with auth:null; its legacy executor check stays
       // authoritative. Bound console sessions retain their tagged initiator on cold replay.
