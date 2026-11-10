@@ -1,0 +1,26 @@
+{
+  "release": "2026-11-10-rc.14",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:63a4c5eaeddc275e00027a2a76933e4a0dac182baf7c24592e8da688f2f39940",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:b5366d848181776b048d31a059e5537650d59debb12f727cb6046d4c3f716d0c",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:40bf00349cd784e4635228cab07095d6d56c05f19a705198d9b85fa3bce7e03b",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:e1a46b659780bcf6534ff7787433fcefe791e25efce18e514cf44e315c4cce1d",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:5be3871d0931a5b660d89ef21cfcb692e23aaff43529f66f1348241acf5d5c31",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:35c48a3f25e9683c461572985785925972de757e1d844bba4557243b26413ebb",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:9c771389178e98dd9f540a4e92bfdad8e3c19177a722877da5dc91400600cd3a"
+  },
+  "migrations": {
+    "box": "036_agent_account_bindings.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "A server on rc.12 or earlier cannot update to this release in place. lares update refuses an older server before changing anything. Install rc.14 on a fresh server, then bring the agents across with lares agent import and the notes with lares vault import; see docs/releases/rc.14-notes.md.",
+    "The e-mail door is gone. An agent definition that still has an email door is refused, and the agent keeps its last valid definition: delete the door from agent.json before updating or importing, then choose the agent's mailbox on its Access tab.",
+    "The chief of staff's mailbox is now your own Google account. Its Google Cloud project needs the Gmail, Google Calendar and Google Drive APIs switched on and five scopes on the consent screen (gmail.readonly, gmail.compose, calendar.readonly, calendar.events, drive.readonly). An account connected earlier with read access only cannot be chosen; reconnect it.",
+    "Fresh installations use only the included model gateway; there is no installer choice for an external gateway.",
+    "Selective import from an older installation can only preview; it cannot write anything yet."
+  ]
+}
