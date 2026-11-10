@@ -660,6 +660,8 @@ class BudgetCommandTests(unittest.TestCase):
             (status(member={"id": OWNER, "active": True, "verified": True, "limit": None, "canUse": False}), "adopted"),
             (status(agent={"status": "valid", "model": "other-brain", "incarnation": INCARNATION, "state": "ready", "pending": False, "pendingReason": None, "owned": True}), "covers only"),
             (status(account={"state": "open"}), "one agent only"),
+            (status(agent={"status": "valid", "model": "lares-brain", "incarnation": INCARNATION, "state": "ready", "pending": True, "pendingReason": "Apply failed", "owned": True}),
+             "choose Edit agent and press Apply connection changes"),
         ]
         for answer, expected in cases:
             self.keeper.requests.clear()

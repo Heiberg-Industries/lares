@@ -117,6 +117,10 @@ it('stages rendered native runtimes without a legacy key and checks current auth
  expect(provisioned).not.toContain(keyPath);
  const noReader=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},docker);
  expect(await noReader.status('bookkeeper')).toEqual({pending:false,reason:'Native budget activation required'});
+ await pool.query("UPDATE agent_resources SET pending=true,pending_reason='Apply failed; previous definition restored but runtime recovery failed' WHERE name='bookkeeper'");
+ expect(await l.status('bookkeeper')).toEqual({pending:true,reason:'Apply failed; previous definition restored but runtime recovery failed'});
+ expect(await noReader.status('bookkeeper')).toEqual({pending:true,reason:'Apply failed; previous definition restored but runtime recovery failed'});
+ await pool.query("UPDATE agent_resources SET pending=false,pending_reason=NULL WHERE name='bookkeeper'");
  await expect(l.credentialPreflight(['bookkeeper'])).rejects.toThrow('Native budget activation required');
  await expect(l.reconcileCredential('bookkeeper',null)).rejects.toThrow('Native budget activation required');
  expect(events).not.toContain('start:bookkeeper');

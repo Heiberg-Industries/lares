@@ -35,6 +35,7 @@ export function AgentDetail({
   accessSettings,
   providerKeySettings,
   mailboxSettings,
+  waiting = false,
 }: {
   agent: AgentFolder;
   board: Reading<BoardRowDTO[]>;
@@ -51,6 +52,8 @@ export function AgentDetail({
   providerKeySettings?: ReactNode;
   /** Which Google mailbox the agent works on; only chief-of-staff agents have one. */
   mailboxSettings?: ReactNode;
+  /** The agent has saved changes that are not applied yet. */
+  waiting?: boolean;
 }) {
   const edit = `/agents/${encodeURIComponent(agent.name)}/edit`;
   const groups = [
@@ -104,6 +107,11 @@ export function AgentDetail({
         </TabsList>
         <TabsContent value="overview">
           <div className="lares-stack">
+            {waiting && (
+              <p role="status">
+                Changes are waiting: <Link href={edit}>open Edit agent</Link> to apply them.
+              </p>
+            )}
             <section className="lares-surface">
               <h2 className="lares-section-title">About this agent</h2>
               <p>

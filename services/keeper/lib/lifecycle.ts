@@ -846,7 +846,8 @@ export class AgentLifecycle {
     async status(name: string) {
         const row = await this.storage.row(name);
         if (!row) return { pending: true, reason: 'Ownership migration required' };
-        if (this.nativeGuarded && (await this.currentNative(name)).state !== 'active') return { pending: row.pending, reason: NATIVE_HELD };
+        // A pending agent reports its own reason: the native hold is only a consequence of the pending state.
+        if (!row.pending && this.nativeGuarded && (await this.currentNative(name)).state !== 'active') return { pending: false, reason: NATIVE_HELD };
         return { pending: row.pending, reason: row.pending_reason };
     }
     /** Whether a running agent still runs an older image than this keeper renders for its role, as

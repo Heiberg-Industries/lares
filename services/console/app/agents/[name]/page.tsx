@@ -87,6 +87,7 @@ export default async function AgentPage({
       routing={routing}
       outsideTools={outsideTools}
       agent={agent}
+      waiting={definition.status === "fulfilled" && definition.value.initial?.runtime?.pending === true}
       promptCache={promptCache.status === "fulfilled" ? promptCache.value : null}
       board={
         board.status === "fulfilled"

@@ -681,7 +681,9 @@ def describe_blocker(name: str, status: dict[str, Any], owner_asked: bool, alias
     if not agent["owned"] or not agent["incarnation"] or agent["state"] != "ready":
         return f"{name} is not ready to start yet. Open it in the console and check that it saved without errors."
     if agent["pending"]:
-        return f"{name} is waiting: {agent['pendingReason'] or 'the keeper has work in progress'}."
+        reason = (agent['pendingReason'] or 'the keeper has work in progress').rstrip('.')
+        return (f"{name} is waiting: {reason}. Open it in the console, choose Edit agent "
+                "and press Apply connection changes.")
     if agent["model"] != alias:
         return f"{name} uses the model name {agent['model']}, but budget setup covers only {alias}. Change the agent's model in the console."
     if not member:
