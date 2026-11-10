@@ -1,0 +1,25 @@
+{
+  "release": "2026-11-10-rc.14.test.5",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:47d438a543a8fd114ec0073d09fcaf57c5ec39c2f37546236a26391d3988d781",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:471d51839db6bf6f315c25a24d38658c93d0cea9179b0d7bf51a10eed84b9132",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:5d19e4711ef9ebc61dc163ce4dbe5137e5737ca30ffa1fd150bcbf56eaa77311",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:5b00b08bd0ba4ea2ebaea5253c8c85a04d9df780b123b74866570e71a01617ae",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:0e333daa2d347daf7f894e92292faeeac2119b37f884370c447362a4b6ac46e4",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:4e76c0f7baf284d6089bcd70eb8a5651c7e169f2b253f86ec9a9f6e357e93b39",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:c96d5aa1397973eedd8429456ca88365d9719f28493a3584dd64ab6a0188a78b"
+  },
+  "migrations": {
+    "box": "036_agent_account_bindings.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "This is a test release, not a finished rc.14. Use it only to test it on a test server; see docs/releases/rc.14.test.5-notes.md for what is unfinished.",
+    "The e-mail door is gone. An agent definition that still has an email door is refused, and the agent keeps its last valid definition: delete the door from agent.json before updating, then choose the agent's mailbox on its Access tab.",
+    "A server on rc.12 or earlier cannot update to this release in place. lares update refuses an older server before changing anything. There is no upgrade path from rc.12 in this release.",
+    "Selective import from an older installation can only preview; it cannot write anything yet."
+  ]
+}
