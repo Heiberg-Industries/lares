@@ -68,8 +68,8 @@ export function AccountServiceRow({ row, attention }: { row: ServiceRow; attenti
         <div className="lares-service-name">{row.name}</div>
         <p className="lares-service-line">
           {attention ?? row.line}
-          {row.usedBy.length > 0 && <> Used by: {row.usedBy.join(", ")}</>}
         </p>
+        {row.usedBy.length > 0 && <p className="lares-service-line">Used by: {row.usedBy.join(", ")}</p>}
         {error && <p role="alert" className="lares-form-error">{error}</p>}
       </div>
       {row.accounts.length === 0 ? (

@@ -3,13 +3,15 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 const m = vi.hoisted(() => ({
   guard: vi.fn(), rows: vi.fn(), board: vi.fn(), credential: vi.fn(), clipping: vi.fn(), sync: vi.fn(), proposals: vi.fn(),
-  inUse: vi.fn(), declared: vi.fn(), evidence: vi.fn(),
+  inUse: vi.fn(), declared: vi.fn(), evidence: vi.fn(), gateway: vi.fn(), agents: vi.fn(),
 }));
 vi.mock("../lib/auth", () => ({ requireConsolePage: m.guard }));
 vi.mock("next/navigation", () => ({ notFound: () => { throw new Error("NEXT_NOT_FOUND"); } }));
 vi.mock("../lib/connections", () => ({ getConnectionRows: m.rows }));
 vi.mock("../lib/board", () => ({ getBoardRows: m.board }));
 vi.mock("../lib/credentials", () => ({ getCredentialView: m.credential }));
+vi.mock("../lib/gateway-status", () => ({ getGatewayStatusView: m.gateway }));
+vi.mock("../lib/agents", () => ({ listAgents: m.agents }));
 vi.mock("../lib/clipping", () => ({ getClippingView: m.clipping }));
 vi.mock("../lib/queries", () => ({ getNotionSyncStatus: m.sync }));
 vi.mock("../lib/notion-proposals", () => ({ getNotionProposalsView: m.proposals }));
@@ -40,6 +42,7 @@ beforeEach(() => {
   rows = catalogue.map(id => row(id));
   m.rows.mockImplementation(async () => rows);
   m.board.mockResolvedValue([board("twenty"), board("vault", { action: "private", actionLabel: "Private notes" }), board("gmail"), board("deadline", { scope: "read", controllable: false })]);
+  m.gateway.mockResolvedValue({ kind: "keeper-unavailable" }); m.agents.mockResolvedValue([{ name: "assistant", displayName: "Assistant" }]);
   m.credential.mockResolvedValue({ kind: "unavailable" }); m.inUse.mockResolvedValue(false);
   m.clipping.mockResolvedValue({ kind: "unavailable" });
   m.sync.mockResolvedValue({ lastRunAt: "2026-10-08T10:00:00Z", synced: 7, needsYou: 0, retrying: 0, unmatched: 0 });
@@ -70,7 +73,7 @@ it("lists the agents, last use, and where the key is kept for each custody", asy
   rows.find(r => r.connectionId === "twenty")!.usedBy = ["assistant", "writer"];
   rows.find(r => r.connectionId === "twenty")!.lastUsed = new Date(Date.now() - 3 * 86400000).toISOString();
   let html = await show("twenty");
-  expect(html).toContain("assistant, writer");
+  expect(html).toContain("Assistant, writer");
   expect(html).toContain("3d ago");
   expect(html).toContain("Kept on the server. The console cannot see it; it shows only what agents report using.");
   html = await show("slack");
@@ -166,4 +169,20 @@ it("says when the keeper could not be asked, when no agent uses outside tools, a
   expect(await show("outside")).toContain("No agent uses outside tools yet. Open an agent and choose Outside tools to add some.");
   m.declared.mockResolvedValue(null);
   expect(await show("outside")).toContain("Outside tools could not be read. Reload the page to try again.");
+});
+
+it("shows the gateway status the grid shows, and which agents use it by display name", async () => {
+  const setUp = (usage: Record<string, string[]> | null) => ({ kind: "status", usage, status: { reachability: "reachable" } });
+  expect(await show("gateway")).toContain("Status unavailable");
+  m.gateway.mockResolvedValue(setUp({ "model-a": ["assistant", "writer"] }));
+  const html = await show("gateway");
+  expect(html).toContain("Enabled");
+  expect(html).toContain("Assistant, writer");
+});
+
+it("names the built-in services plainly and leaves an unknown id as it is", async () => {
+  rows.find(r => r.connectionId === "telegram")!.declaredFor = ["notion-sync", "other-service"];
+  const html = await show("telegram");
+  expect(html).toContain("Notion sync, other-service");
+  expect(html).not.toContain("notion-sync");
 });

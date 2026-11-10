@@ -3,6 +3,7 @@
 import type { ConnectionRowDTO } from "./contracts";
 import type { CredentialView } from "./credentials";
 import type { Logo } from "../components/LogoTile";
+import type { GatewayStatusView } from "./gateway-status";
 
 export type CardStatus = "enabled" | "available" | "unavailable";
 export interface IntegrationCard { id: string; name: string; line: string; logo: Logo; status: CardStatus; href: string }
@@ -29,10 +30,21 @@ export function isActiveRow(r: ConnectionRowDTO): boolean {
   return r.status !== "unknown" && r.status !== "unavailable" || r.usedBy.length > 0 || r.accounts.length > 0;
 }
 
-interface CardInput { rows: ConnectionRowDTO[]; credential: CredentialView; outsideToolsInUse: boolean | null }
+export interface CardInput { rows: ConnectionRowDTO[]; credential: CredentialView; outsideToolsInUse: boolean | null; gateway: GatewayStatusView }
+
+/** The model gateway is read from the gateway itself, not from connection rows: it is "Enabled" when it
+ *  reports it is set up (any reachability but "not-configured") or an agent is set to use one of its models. */
+export function gatewayAgents(view: GatewayStatusView): string[] {
+  return view.kind === "status" && view.usage ? [...new Set(Object.values(view.usage).flat())].sort() : [];
+}
+function gatewayStatus(view: GatewayStatusView): CardStatus {
+  if (view.kind !== "status") return "unavailable";
+  return view.status.reachability !== "not-configured" || gatewayAgents(view).length > 0 ? "enabled" : "available";
+}
 
 function statusOf(id: string, input: CardInput): CardStatus {
   const rows = input.rows.filter(r => r.connectionId === id);
+  if (id === "gateway") return gatewayStatus(input.gateway);
   if (id === "outside") return input.outsideToolsInUse === true ? "enabled" : "available";
   if (id === "notion" && input.credential.kind === "status" && input.credential.status.state === "applied") return "enabled";
   if (rows.some(isActiveRow)) return "enabled";

@@ -2,6 +2,12 @@
 import { connectionsByCapability, parseConnectionRef } from "@lares/agent-kit/connections";
 import type { BoardRowDTO, ConnectionRowDTO } from "./contracts";
 
+/** Agent ids as the member knows them: the display name, or the id itself when none is known. */
+export function agentNames(ids: readonly string[], agents: readonly { name: string; displayName: string }[]): string[] {
+  const names = new Map(agents.map((a) => [a.name, a.displayName]));
+  return ids.map((id) => names.get(id) || id);
+}
+
 export function ago(iso: string, now = Date.now()): string {
   const mins = Math.round((now - new Date(iso).getTime()) / 60000);
   if (mins < 60) return `${mins}m ago`;

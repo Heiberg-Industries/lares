@@ -3,10 +3,11 @@ import React from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-const m = vi.hoisted(() => ({ member: vi.fn(), owner: vi.fn(), list: vi.fn(), uses: vi.fn(), remove: vi.fn(), refresh: vi.fn() }));
+const m = vi.hoisted(() => ({ member: vi.fn(), owner: vi.fn(), list: vi.fn(), uses: vi.fn(), remove: vi.fn(), refresh: vi.fn(), agents: vi.fn() }));
 vi.mock("../lib/auth", () => ({ requireMember: m.member, isConsoleOwner: m.owner }));
 vi.mock("../lib/db", () => ({ pool: {} }));
 vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { list = m.list; } }));
+vi.mock("../lib/agents", () => ({ listAgents: m.agents }));
 vi.mock("../lib/agent-mailbox", () => ({ listAgentUses: m.uses }));
 vi.mock("../app/actions/accounts", () => ({ removeAccount: m.remove }));
 vi.mock("../app/actions/members", () => ({ signOutEverywhere: vi.fn() }));
@@ -23,6 +24,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.member.mockResolvedValue({ id: "member-a", role: "member" }); m.owner.mockReturnValue(false);
   m.uses.mockResolvedValue([{ agent: "writer", accountId: "stable-account" }, { agent: "other", accountId: "elsewhere" }]);
+  m.agents.mockResolvedValue([{ name: "writer", displayName: "Writer" }]);
   m.list.mockResolvedValue([]); m.remove.mockResolvedValue(undefined);
 });
 afterEach(cleanup);
@@ -66,7 +68,8 @@ it("posts a new Microsoft connection without asking for an address", async () =>
 it("shows Connected with a menu, and who uses the account, for the member's own account only", async () => {
   m.list.mockResolvedValue([google]);
   await show({ added: "x" });
-  expect(document.body.textContent).toContain("Used by: writer");
+  expect(document.body.textContent).toContain("Used by: Writer");
+  expect(row("Google").textContent).not.toContain("Drive Used by");
   expect(document.body.textContent).not.toContain("other");
   expect(screen.getByRole("status").textContent).toBe("Account connected.");
   await userEvent.click(screen.getByRole("button", { name: /Connected/ }));
@@ -145,4 +148,10 @@ it("moves the personal accounts off the membership page, leaving a link", async 
   expect(screen.getByRole("link", { name: "Your accounts" }).getAttribute("href")).toBe("/accounts");
   expect(document.body.textContent).toContain("Private chat is available");
   expect(document.body.textContent).not.toContain("Your personal accounts");
+});
+
+it("shows the agent id when no display name is known", async () => {
+  m.list.mockResolvedValue([google]); m.agents.mockResolvedValue([]);
+  await show();
+  expect(document.body.textContent).toContain("Used by: writer");
 });
