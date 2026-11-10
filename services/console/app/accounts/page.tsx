@@ -5,6 +5,8 @@ import { Page, PageHeader } from "@lares/ui/patterns";
 import { pool } from "../../lib/db";
 import { requireMember, isConsoleOwner } from "../../lib/auth";
 import { listAgentUses } from "../../lib/agent-mailbox";
+import { listAgents } from "../../lib/agents";
+import { agentNames } from "../../lib/connection-words";
 import { buildServiceRows } from "../../lib/your-accounts";
 import { AccountServiceRow } from "../../components/AccountServiceRow";
 import { RemoveAccountButton } from "../../components/RemoveAccountButton";
@@ -17,7 +19,8 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
   let uses: { agent: string; accountId: string }[] = [];
   try { accounts = await new PgAccountStore(pool).list(member.id); } catch { unavailable = true; }
   try { uses = await listAgentUses(member); } catch { /* the rows still show without it */ }
-  const rows = buildServiceRows(accounts, uses);
+  const agents = uses.length > 0 ? await listAgents() : [];
+  const rows = buildServiceRows(accounts, uses).map(r => ({ ...r, usedBy: agentNames(r.usedBy, agents) }));
   // Mailboxes from the older way of connecting mail. Owner only; nothing shows if they cannot be read.
   const older = isConsoleOwner(member) ? await listGoogleAccounts().then(v => v.unavailable ? [] : v.accounts, () => []) : [];
   return <Page width="narrow" className="lares-stack">

@@ -273,7 +273,7 @@ describe("connection read failures through the rendered page", () => {
     rows.find((r) => r.connectionId === "google" && r.instanceId === "acme")!;
   // Google is a personal account and has no Integrations page, so the page is rendered for Twenty.
   const twentyPage = (rows: Awaited<ReturnType<typeof getConnectionRows>>) => {
-    const card = integrationCard("twenty", { rows, credential: { kind: "unavailable" }, outsideToolsInUse: null })!;
+    const card = integrationCard("twenty", { rows, credential: { kind: "unavailable" }, outsideToolsInUse: null, gateway: { kind: "refused" } })!;
     return renderToStaticMarkup(createElement(IntegrationDetail, { card, rows: rows.filter((r) => r.connectionId === "twenty"), board: [] }));
   };
   const storedAccount = {

@@ -8,6 +8,10 @@ import { boardRowsFor, keptText, lastUseText } from "../lib/connection-words";
 import { LogoTile } from "./LogoTile";
 import { ServicePermissions } from "./ServicePermissions";
 
+/** Plain names for the built-in services a connection can be declared for; an unknown id is shown as is. */
+const BUILT_IN_NAMES: Record<string, string> = { "notion-sync": "Notion sync" };
+const builtInName = (id: string) => BUILT_IN_NAMES[id] ?? id;
+
 /** The top of every integration's page: its logo, name, one line and the status the grid shows. */
 export function IntegrationHeader({ card, actions }: { card: IntegrationCard; actions?: ReactNode }) {
   return (
@@ -49,7 +53,7 @@ export function IntegrationDetail({ card, rows, board }: { card: IntegrationCard
           {r.declaredFor.length > 0 && (
             <div>
               <h3 className="lares-section-title">Built in for</h3>
-              <p>{r.declaredFor.join(", ")}</p>
+              <p>{r.declaredFor.map(builtInName).join(", ")}</p>
               <p className="lares-muted">This lists what Lares can use it for, not what runs here.</p>
             </div>
           )}

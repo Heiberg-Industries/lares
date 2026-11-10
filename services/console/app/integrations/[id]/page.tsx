@@ -8,7 +8,10 @@ import { getClippingView } from "../../../lib/clipping";
 import { getNotionSyncStatus } from "../../../lib/queries";
 import { getNotionProposalsView } from "../../../lib/notion-proposals";
 import { anyOutsideToolsInUse, declaredOutsideTools, getOutsideToolEvidence, type OutsideToolEvidence } from "../../../lib/outside-tools";
-import { integrationCard } from "../../../lib/integrations-grid";
+import { getGatewayStatusView } from "../../../lib/gateway-status";
+import { listAgents } from "../../../lib/agents";
+import { agentNames } from "../../../lib/connection-words";
+import { gatewayAgents, integrationCard } from "../../../lib/integrations-grid";
 import { IntegrationDetail, IntegrationHeader } from "../../../components/IntegrationDetail";
 import { OutsideToolsOverview } from "../../../components/OutsideToolsOverview";
 import { NotionCredential } from "../../../components/NotionCredential";
@@ -55,8 +58,8 @@ function NotionExtras({ credential, notionSync, notionProposals }: { credential:
 export default async function IntegrationPage({ params }: { params: Promise<{ id: string }> }) {
   await requireConsolePage();
   const { id } = await params;
-  const [rows, credential, outsideToolsInUse] = await Promise.all([getConnectionRows(), getCredentialView(), anyOutsideToolsInUse()]);
-  const card = integrationCard(id, { rows, credential, outsideToolsInUse });
+  const [rows, credential, outsideToolsInUse, gateway] = await Promise.all([getConnectionRows(), getCredentialView(), anyOutsideToolsInUse(), getGatewayStatusView()]);
+  const card = integrationCard(id, { rows, credential, outsideToolsInUse, gateway });
   if (!card) notFound();
 
   if (card.id === "outside") {
@@ -71,14 +74,19 @@ export default async function IntegrationPage({ params }: { params: Promise<{ id
     );
   }
 
-  const [board, notion, clipping] = await Promise.all([
+  const [board, notion, clipping, agents] = await Promise.all([
     getBoardRows({ strict: true }).catch(() => null),
     card.id === "notion" ? Promise.all([getNotionSyncStatus(), getNotionProposalsView()]).then(([sync, proposals]) => ({ sync, proposals })) : null,
     card.id === "readability" ? getClippingView() : null,
+    listAgents(),
   ]);
+  const shown = rows.filter((r) => r.connectionId === card.id).map((r) => {
+    const ids = card.id === "gateway" && r.usedBy.length === 0 ? gatewayAgents(gateway) : r.usedBy;
+    return { ...r, usedBy: agentNames(ids, agents) };
+  });
   return (
     <Page className="lares-stack">
-      <IntegrationDetail card={card} rows={rows.filter((r) => r.connectionId === card.id)} board={board} />
+      <IntegrationDetail card={card} rows={shown} board={board} />
       {notion && <NotionExtras credential={credential} notionSync={notion.sync} notionProposals={notion.proposals} />}
       {clipping && <ClippingCard initial={clipping} credential={credential} />}
     </Page>
