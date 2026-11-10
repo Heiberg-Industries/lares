@@ -9,7 +9,7 @@ const keys=await import(`${dist}context/keys.js`);
 const {dispatchDynamicToolEvent}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
 const {buildDynamicTools,replayDynamicTools}=await import(`${dist}context/build-dynamic-tools.js`);
 const {clearDurableDynamicCallbacks}=await import(`${dist}tools/durable-callbacks.js`);
-import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateRoleInstructions,privateConsoleTracePolicy} from '../src/private-console-surface.js';
+import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateOwnerTool,privateRoleInstructions,privateConsoleTracePolicy} from '../src/private-console-surface.js';
 import {definitionModel} from '../src/definition-model.js';
 import {defineDurableCallback,defineDurableSchema,defineDynamic,defineTool} from 'eve/tools';
 import {z} from 'zod';
@@ -39,6 +39,30 @@ it('private tools are an intersection and native/source-free controls keep their
  expect(privateConsoleTracePolicy({channel:{kind:'http'}})).toEqual({emit:false});
  expect(privateConsoleTracePolicy({channel:{kind:'channel:http'}})).toEqual({emit:false});
  expect(privateConsoleTracePolicy({channel:{kind:'telegram'}})).toEqual({emit:true,recordInputs:true,recordOutputs:true});
+});
+it('owner-only tools are offered to a chief of staff only when the caller is the owner',()=>{
+ const owner=['gmail_draft','gmail_draft_recipients','read_url','calendar_list_events','calendar_list_calendars','calendar_free_busy','calendar_conflicts'];
+ for(const n of owner){
+  expect(privateOwnerTool(n),n).toBe(true);
+  expect(privateToolAllowed('chief-of-staff',n),n).toBe(false);
+  expect(privateToolAllowed('chief-of-staff',n,{}),n).toBe(false);
+  expect(privateToolAllowed('chief-of-staff',n,{callerIsOwner:false}),n).toBe(false);
+  expect(privateToolAllowed('chief-of-staff',n,{callerIsOwner:true}),n).toBe(true);
+  expect(privateToolAllowed('creative',n,{callerIsOwner:true}),n).toBe(false);
+  // Native channels keep them exactly as before.
+  expect(privateOnlyTool(n),n).toBe(false);
+  expect(()=>assertPrivateConsoleTool({},'chief-of-staff',n)).not.toThrow();
+  const priv={session:{initiator:auth()}};
+  expect(()=>assertPrivateConsoleTool(priv,'chief-of-staff',n)).toThrow('Conversation authority');
+  expect(()=>assertPrivateConsoleTool(priv,'chief-of-staff',n,{callerIsOwner:false})).toThrow('Conversation authority');
+  expect(()=>assertPrivateConsoleTool(priv,'chief-of-staff',n,{callerIsOwner:true})).not.toThrow();
+  expect(()=>assertPrivateConsoleTool(priv,'creative',n,{callerIsOwner:true})).toThrow('Conversation authority');
+ }
+ // Nothing else widens, not even for the owner: no send, no event writes, no other tool.
+ for(const n of ['gmail_send','calendar_create_event','calendar_update_event','calendar_delete_event','gmail_signature','remember'])expect(privateToolAllowed('chief-of-staff',n,{callerIsOwner:true}),n).toBe(false);
+ expect(privateToolAllowed('chief-of-staff','gmail_read',{callerIsOwner:false})).toBe(true);
+ expect(privateToolAllowed('chief-of-staff','personal_mailbox_send',{callerIsOwner:false})).toBe(true);
+ expect(privateRoleInstructions('chief-of-staff')).toContain('never send them');
 });
 it('a chief of staff may propose a new private note in a private conversation; nothing else changes notes',()=>{
  expect(privateToolAllowed('chief-of-staff','agent-kit__vault_write')).toBe(true);

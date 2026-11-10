@@ -1,7 +1,8 @@
 import {personalSendApprovalRequest,personalSendApprovalResponse,requirePersonalSendCall} from './personal-send-approval.js';
-import { assertPrivateConsoleTool } from "@lares/agent-kit/private-console-surface";
+import { assertPrivateConsoleTool as assertPrivateTool, privateOwnerTool, isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
 import { isExactApprovalContext, isExactApprovalResponse, reserveExactApprovalOrDeny, approveExactResponse,
   requireApprovedExecution, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
+import { callerIsAgentOwner } from "./webchat-owner.js";
 import { deadlineApprovalAdapter } from "./deadlines-store.js";
 import { canApproveCompanyTrack, tracksApprovalAdapter, twentyTracksApprovalAdapter } from "./tracks-approval.js";
 import { vaultNoteApprovalAdapter } from "./vault-note-write.js";
@@ -228,9 +229,15 @@ export async function runApprovedTwentyTrackOnce<T>(approved: ApprovedExecution 
   return write();
 }
 
+/** The private-surface check, with the owner question asked afresh for the tools only an owner may use. */
+async function assertPrivateConsoleTool(ctx: unknown, role: "chief-of-staff", name: string): Promise<void> {
+  const callerIsOwner = privateOwnerTool(name) && isPrivateConsoleContext(ctx) ? await callerIsAgentOwner(ctx) : false;
+  assertPrivateTool(ctx, role, name, { callerIsOwner });
+}
+
 /** Preserve the authored native policy; bound console calls additionally require exact authority. */
 export async function catalogueApprovalRequest(name: string, ctx: unknown, authored: unknown): Promise<unknown> {
-  assertPrivateConsoleTool(ctx,"chief-of-staff",name);
+  await assertPrivateConsoleTool(ctx,"chief-of-staff",name);
   if(name==='personal_mailbox_send')return personalSendApprovalRequest(ctx as never);
   if (!isExactApprovalContext(ctx)) {
     await guardConsoleToolContext(ctx);
@@ -255,13 +262,13 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
   return 'user-approval';
 }
 export async function catalogueApprovalResponse(name: string, ctx: unknown): Promise<unknown> {
-  assertPrivateConsoleTool(ctx,"chief-of-staff",name);
+  await assertPrivateConsoleTool(ctx,"chief-of-staff",name);
   if(name==='personal_mailbox_send')return personalSendApprovalResponse(ctx as never);
   if (!isExactApprovalResponse(ctx)) return {status:'allowed'};
   return approveExactResponse(ctx as ExactResponseContext,{adapter:adapterFor(name,(ctx as ExactResponseContext).request.toolInput)});
 }
 export async function guardCatalogueExecution(ctx: unknown, name: string, input: unknown): Promise<void> {
-  assertPrivateConsoleTool(ctx,"chief-of-staff",name);
+  await assertPrivateConsoleTool(ctx,"chief-of-staff",name);
   if(name==='personal_mailbox_send'){await requirePersonalSendCall(ctx as never,input);return;}
   if (isExactApprovalContext(ctx) && consoleAdmission((ctx as ConsoleAuthorityContext).session?.auth?.current)?.purpose === 'resolver') {
     await requireApprovedExecution(ctx as ConsoleAuthorityContext,name,input,{adapter:adapterFor(name,input)});

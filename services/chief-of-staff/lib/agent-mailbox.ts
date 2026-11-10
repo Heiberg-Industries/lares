@@ -114,7 +114,7 @@ export function noteOnce(key: string, text: string, log: (line: string) => void 
   log(text);
 }
 
-async function loadOwner(pool: Pool, agent: string, incarnation: string): Promise<string | null> {
+export async function loadOwner(pool: Pool, agent: string, incarnation: string): Promise<string | null> {
   const { rows } = await pool.query<{ owner_member_id: string }>(
     `SELECT x.owner_member_id FROM agent_resources r
        JOIN agent_definitions d ON d.name=r.name
