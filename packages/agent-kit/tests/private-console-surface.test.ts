@@ -41,7 +41,7 @@ it('private tools are an intersection and native/source-free controls keep their
  expect(privateConsoleTracePolicy({channel:{kind:'telegram'}})).toEqual({emit:true,recordInputs:true,recordOutputs:true});
 });
 it('owner-only tools are offered to a chief of staff only when the caller is the owner',()=>{
- const owner=['gmail_draft','gmail_draft_recipients','read_url','calendar_list_events','calendar_list_calendars','calendar_free_busy','calendar_conflicts'];
+ const owner=['gmail_draft','gmail_draft_recipients','read_url','calendar_list_events','calendar_list_calendars','calendar_free_busy','calendar_conflicts','calendar_create_event','calendar_update_event','calendar_delete_event'];
  for(const n of owner){
   expect(privateOwnerTool(n),n).toBe(true);
   expect(privateToolAllowed('chief-of-staff',n),n).toBe(false);
@@ -58,11 +58,12 @@ it('owner-only tools are offered to a chief of staff only when the caller is the
   expect(()=>assertPrivateConsoleTool(priv,'chief-of-staff',n,{callerIsOwner:true})).not.toThrow();
   expect(()=>assertPrivateConsoleTool(priv,'creative',n,{callerIsOwner:true})).toThrow('Conversation authority');
  }
- // Nothing else widens, not even for the owner: no send, no event writes, no other tool.
- for(const n of ['gmail_send','calendar_create_event','calendar_update_event','calendar_delete_event','gmail_signature','remember'])expect(privateToolAllowed('chief-of-staff',n,{callerIsOwner:true}),n).toBe(false);
+ // Nothing else widens, not even for the owner: no send, no other tool. Event writes are owner-only and ask an exact card first.
+ for(const n of ['gmail_send','gmail_signature','remember'])expect(privateToolAllowed('chief-of-staff',n,{callerIsOwner:true}),n).toBe(false);
  expect(privateToolAllowed('chief-of-staff','gmail_read',{callerIsOwner:false})).toBe(true);
  expect(privateToolAllowed('chief-of-staff','personal_mailbox_send',{callerIsOwner:false})).toBe(true);
  expect(privateRoleInstructions('chief-of-staff')).toContain('never send them');
+ expect(privateRoleInstructions('chief-of-staff')).toContain('add, move and delete events');
 });
 it('a chief of staff may propose a new private note in a private conversation; nothing else changes notes',()=>{
  expect(privateToolAllowed('chief-of-staff','agent-kit__vault_write')).toBe(true);

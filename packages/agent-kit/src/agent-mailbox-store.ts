@@ -85,6 +85,16 @@ function problem(r: JoinedRow, granted: boolean | undefined): AgentMailboxReason
   return undefined;
 }
 
+/** The same read-only check as `PgAgentMailboxStore.check`, on any database handle (a pool or a
+ * transaction), so an approval can ask it of the connection it already holds. */
+export async function checkAgentMailboxOn(db: { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> },
+  agent: string, definition: AgentDefinition): Promise<AgentMailboxCheck> {
+  const row = (await db.query(JOINED, [agent])).rows[0] as JoinedRow | undefined;
+  if (!row) return { ok: false, reason: 'none' };
+  const reason = problem(row, agentMayUsePersonalMailbox(definition));
+  return reason ? { ok: false, reason } : { ok: true, binding: bindingOf(row) };
+}
+
 export class PgAgentMailboxStore {
   private readonly accounts: PgAccountStore;
   constructor(private readonly pool: Pool) { this.accounts = new PgAccountStore(pool); }
@@ -151,10 +161,7 @@ export class PgAgentMailboxStore {
   /** Is the stored choice usable right now? One read-only statement: no lock is held after it,
    * so the caller repeats it before each draft. Never touches credential material. */
   async check(agent: string, definition: AgentDefinition): Promise<AgentMailboxCheck> {
-    const row = (await this.pool.query<JoinedRow>(JOINED, [agent])).rows[0];
-    if (!row) return { ok: false, reason: 'none' };
-    const reason = problem(row, agentMayUsePersonalMailbox(definition));
-    return reason ? { ok: false, reason } : { ok: true, binding: bindingOf(row) };
+    return checkAgentMailboxOn(this.pool, agent, definition);
   }
 
   private async requireOwner(db: PoolClient, memberId: string, agent: string): Promise<void> {

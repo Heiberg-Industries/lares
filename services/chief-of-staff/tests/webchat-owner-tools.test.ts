@@ -38,13 +38,13 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("which tools web chat offers", () => {
-  it("lists the owner tools the definition grants, for the owner only, and never an event write", async () => {
+  it("lists the owner tools the definition grants, for the owner only, event writes included", async () => {
     const native = Object.keys(await resolve(nativeCtx));
     const granted = OWNER_TOOLS.filter((n) => native.includes(n));
     expect(granted.length).toBeGreaterThan(0);
     const tools = await resolve(ctxFor("member-owner"));
     for (const n of granted) expect(tools, n).toHaveProperty(n);
-    for (const n of EVENT_WRITES) expect(tools, n).not.toHaveProperty(n);
+    for (const n of EVENT_WRITES) expect(tools, n).toHaveProperty(n);
     expect(tools).not.toHaveProperty("gmail_send");
   });
 
@@ -89,8 +89,14 @@ describe("the execution guard", () => {
     await expect(guardCatalogueExecution(ctxFor("member-owner"), "gmail_draft", {})).rejects.toThrow("Conversation authority");
   });
 
-  it("refuses an event write even from the owner", async () => {
-    for (const n of EVENT_WRITES) await expect(guardCatalogueExecution(ctxFor("member-owner"), n, {}), n).rejects.toThrow("Conversation authority");
+  it("passes the owner at the guard but runs an event write only on an exact approved card", async () => {
+    const tools = await resolve(ctxFor("member-owner"));
+    for (const n of EVENT_WRITES) {
+      await expect(guardCatalogueExecution(ctxFor("member-owner"), n, {}), n).resolves.toBeUndefined();
+      // No approved card behind this call: the tool itself refuses before Google is touched.
+      await expect(tools[n].execute({ eventId: "e1", summary: "x", start: "s", end: "e" }, ctxFor("member-owner")), n).rejects.toThrow();
+    }
+    expect(fake.google).not.toHaveBeenCalled();
   });
 
   it("does not touch a native call", async () => {
