@@ -228,6 +228,9 @@ release to these exact images:
   agent says the tool "was refused". Use Telegram or Slack for these; scheduled triage writes drafts
   as before. Reading mail and the calendar works in web chat.
 - **Web chat shows tool-call lines, raw tables and quote marks** instead of formatted text.
+- **One person can be connected to one agent.** `sudo lares agent start` refuses a second agent for
+  the same person ("This person is already connected to another agent"), because a person's
+  spending account can be opened once. That includes the owner.
 - **When an apply fails**, the console shows only that it failed and that the previous definition
   was restored, not the file the keeper named.
 - **Disconnecting an account in Lares does not withdraw its permission at Google.**
