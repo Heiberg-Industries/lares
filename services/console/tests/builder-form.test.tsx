@@ -56,12 +56,20 @@ it('says plainly when a started agent is not answering yet, and when it runs',()
  render(<DefinitionForm {...base} initial={startInitial({runtime:{pending:false,reason:null,running:true,healthy:true}})}/>);
  expect(document.body.innerHTML).toContain('Running. Saved connections are applied.');
 });
-it('shows current native activation hold ahead of pending details and offers no restart action',()=>{
- render(<DefinitionForm {...base} initial={startInitial({runtime:{pending:true,reason:'Native budget activation required',running:false,healthy:null}})}/>);
+it('shows a non-pending native activation hold and offers no restart action',()=>{
+ render(<DefinitionForm {...base} initial={startInitial({runtime:{pending:false,reason:'Native budget activation required',running:false,healthy:null}})}/>);
  expect(document.body.textContent).toContain('Native budget activation is required before this agent can start.');
  expect(document.body.textContent).not.toContain('Connection changes are pending.');
  expect(document.body.textContent).not.toContain('Apply connection changes (restarts agent)');
  expect(document.body.textContent).not.toContain('Start agent (applies saved definition)');
+});
+it('a pending agent on a native-guarded installation shows its reason and the Apply button',async()=>{
+ vi.mocked(applyConnections).mockResolvedValue({ok:true} as any);
+ render(<DefinitionForm {...base} initial={startInitial({runtime:{pending:true,reason:'Apply failed; previous definition restored but runtime recovery failed',running:false,healthy:null}})}/>);
+ expect(document.body.textContent).toContain('Connection changes are pending. Apply failed; previous definition restored');
+ expect(document.body.textContent).not.toContain('Native budget activation is required');
+ fireEvent.click([...document.querySelectorAll('button')].find(b=>b.textContent==='Apply connection changes (restarts agent)')!);
+ await waitFor(()=>expect(applyConnections).toHaveBeenCalledWith({name:'example',hash:'a'.repeat(64)}));
 });
 it('shows a grant the engine no longer knows, and removes it only when asked',()=>{
  const base0=startInitial();

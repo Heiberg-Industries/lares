@@ -595,7 +595,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         if(!o.compose.imageState||!o.compose.reconcile) refused('Runtime reconciliation is not configured');
         const state=await o.compose.imageState(name);
         const left={current:'already on this release',stopped:'not running, so it starts on this release next time',
-            pending:'has changes waiting to be applied, so it was left alone; apply them in the console',
+            pending:'has changes waiting to be applied, so it was left alone; open it in the console, choose Edit agent and press Apply connection changes',
             unknown:'the keeper cannot tell which software it runs, so it was left alone'} as const;
         if(state!=='older') return { moved:false, state, reason:left[state] };
         const loaded=await loadDefinition({serviceDir:'unused',env:{LARES_DEFINITION_DIR:active(name)}});

@@ -105,7 +105,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
   const [uncertain, setUncertain] = useState(false);
   const [creating, setCreating] = useState<"idle" | "working" | "done" | "failed">("idle");
   const [runtime, setRuntime] = useState(p.initial?.runtime);
-  const nativeHeld = runtime?.reason === "Native budget activation required";
+  const nativeHeld = !runtime?.pending && runtime?.reason === "Native budget activation required";
   const [hash, setHash] = useState(p.initial?.hash ?? "");
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [retireConfirm, setRetireConfirm] = useState(false);
