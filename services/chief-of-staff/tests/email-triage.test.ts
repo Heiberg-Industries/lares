@@ -161,7 +161,7 @@ describe("triageOneMessage", () => {
     expect(gmail.draft).toHaveBeenCalledWith(expect.objectContaining({
       account: "owner@project.example", from: "owner@project.example", to: ["Prospect <p@example.com>"],
       subject: "Re: Question about pricing", bodyText: "Happy to help — it's $10/mo.",
-      threadId: "t1", inReplyTo: "<orig@example.com>",
+      threadId: "t1", inReplyTo: "<orig@example.com>", references: "<orig@example.com>",
     }));
   });
 

@@ -30,6 +30,7 @@ import { replyRecipients, ownerRecipientPosition, otherToNames, PRIVATE_REPLY_NO
 import { labeledContext } from "@lares/compose-contract";
 import { twentyLookup } from "../catalogue/twenty_lookup.js";
 import { detectProposedWindow, type ProposedWindow } from "./proposed-time.js";
+import { replyHeaders, replySubject as threadedSubject } from "./reply-threading.js";
 import type { VoiceAccess } from "./voice-store.js";
 import type { MailMessage, GmailClient, ThreadMessage } from "./google.js";
 
@@ -294,7 +295,6 @@ export async function triageOneMessage(
   }
 
   const lang = detectLanguage(body || subject);
-  const references = [origReferences, origMessageId].filter(Boolean).join(" ").trim();
   const addr = addressOf(from);
   const clockNow = (deps.now ?? (() => new Date()))();
   // Conservative by design (see proposed-time.ts's header) — a miss costs nothing, so the
@@ -418,13 +418,14 @@ export async function triageOneMessage(
     }),
     { model, purpose: "writer" },
   );
-  const { subject: replySubject, body: replyBody } = splitDraft(draft, subject);
+  const { body: replyBody } = splitDraft(draft, subject);
+  // The subject comes from the original, so the draft joins its Gmail conversation.
+  const replySubject = threadedSubject(subject);
 
   // Visible owners reply to everyone; hidden/absent owners get a private sender-only draft.
   const created = await deps.gmail.draft({
     account, from: account, to: recipients.to, cc: recipients.cc, subject: replySubject, bodyText: replyBody, threadId,
-    ...(origMessageId ? { inReplyTo: origMessageId } : {}),
-    ...(references ? { references } : {}),
+    ...replyHeaders({ messageId: origMessageId, references: origReferences }),
     ...(signatureHtml ? { signatureHtml } : {}),
   });
 
