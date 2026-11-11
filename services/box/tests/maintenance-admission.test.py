@@ -759,6 +759,21 @@ while [ ! -e "$MARK.release" ]; do sleep 0.01; done
         self.assertIn("I cannot tell whether an update is running", untrusted.stderr)
         self.assertFalse((self.root / "untrusted.started").exists())
 
+        # Asked the wrong way, it says so and looks at nothing; a program that cannot be started is
+        # named as that, not as a folder problem.
+        for wrong in (["beside-update"], ["beside-update", str(prefix), "--"],
+                      ["beside-update", "relative/prefix", "--", "/bin/true"]):
+            usage = subprocess.run(["python3", str(installed / "maintenance-custody.py"), *wrong],
+                                   env=self._test_env(prefix), text=True, capture_output=True, timeout=10)
+            self.assertEqual(usage.returncode, 64, wrong)
+            self.assertIn("usage: beside-update", usage.stderr, wrong)
+        missing = subprocess.run(["python3", str(installed / "maintenance-custody.py"), "beside-update", str(prefix),
+                                  "--", str(self.root / "no-such-program")],
+                                 env=self._test_env(prefix), text=True, capture_output=True, timeout=10)
+        self.assertEqual(missing.returncode, 78, missing.stderr)
+        self.assertIn("could not start", missing.stderr)
+        self.assertNotIn("cannot tell whether an update is running", missing.stderr)
+
     def test_state_is_durable_one_way_and_keeps_service_lock_inode(self) -> None:
         lock = self.admission_dir / "service-gate.lock"
         before = lock.stat().st_ino

@@ -759,6 +759,14 @@ class UpdateRunning(ValueError):
     """An update holds the run lock, so a command that starts the keeper or an agent must not run."""
 
 
+class BesideUpdateUsage(ValueError):
+    """`beside-update` was called the wrong way; nothing was looked at or started."""
+
+
+class BesideUpdateDidNotStart(ValueError):
+    """The lock was taken, but the program could not be started."""
+
+
 def hold_beside_update(prefix: Path, uid: int) -> int | None:
     """For the commands that start, restart or recreate the keeper or an agent without passing
     through this gatekeeper (install.sh, and the agent and budget commands in budget-commands.py).
@@ -795,10 +803,11 @@ def hold_beside_update(prefix: Path, uid: int) -> int | None:
 def _run_beside_update(prefix: str, program: list[str]) -> None:
     """`beside-update`: run one program (install.sh re-runs itself this way) holding the run lock
     shared for its whole length; its children inherit the lock on descriptor 198."""
-    if not program:
-        raise ValueError("usage: beside-update <prefix> -- <program> [arguments]")
+    target = Path(prefix)
+    if not program or not target.is_absolute() or ".." in target.parts:
+        raise BesideUpdateUsage("usage: beside-update <absolute prefix> -- <program> [arguments]")
     uid = os.geteuid() if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1" else 0
-    run_fd = hold_beside_update(Path(prefix), uid)
+    run_fd = hold_beside_update(target, uid)
     if run_fd is not None:
         if run_fd != _RUN_FD:
             os.dup2(run_fd, _RUN_FD, inheritable=True)
@@ -808,7 +817,10 @@ def _run_beside_update(prefix: str, program: list[str]) -> None:
     env = os.environ.copy()
     # Tells install.sh it is already running under this lock, so it does not run itself again.
     env["LARES_RUN_LOCK_HELD"] = "1"
-    os.execvpe(program[0], program, env)
+    try:
+        os.execvpe(program[0], program, env)
+    except OSError as error:
+        raise BesideUpdateDidNotStart(f"could not start {program[0]} ({error.strerror or error})") from None
 
 
 def _validate_inherited_normal(prefix: Path, uid: int, *, test_owner: bool) -> None:
@@ -1052,9 +1064,9 @@ def main(argv: list[str]) -> int:
             if separator >= len(argv) or argv[separator] != "--":
                 raise ValueError("usage: run-normal <prefix> <operation-id> [--test-owner] -- [arguments]")
             _run_normal(argv[2], argv[3], argv[separator + 1:], test_owner=test_owner)
-        elif len(argv) >= 4 and argv[1] == "beside-update":
-            if argv[3] != "--":
-                raise ValueError("usage: beside-update <prefix> -- <program> [arguments]")
+        elif len(argv) >= 2 and argv[1] == "beside-update":
+            if len(argv) < 5 or argv[3] != "--":
+                raise BesideUpdateUsage("usage: beside-update <absolute prefix> -- <program> [arguments]")
             _run_beside_update(argv[2], argv[4:])
         elif len(argv) in (4, 5) and argv[1] == "assert-normal-held":
             test_owner = len(argv) == 5 and argv[4] == "--test-owner"
@@ -1068,10 +1080,18 @@ def main(argv: list[str]) -> int:
         if len(argv) > 1 and argv[1] == "beside-update":
             if isinstance(error, UpdateRunning):
                 print(f"lares: {error}", file=sys.stderr)
+            elif isinstance(error, BesideUpdateUsage):
+                print(f"maintenance custody: {error}", file=sys.stderr)
+                return 64
+            elif isinstance(error, BesideUpdateDidNotStart):
+                print(f"lares: {error}, so nothing was changed. Check that this release's files are complete "
+                      "(run get-lares.sh again for it), then run this again.", file=sys.stderr)
             else:
                 print(f"lares: I cannot tell whether an update is running ({error}), so this did not start and "
                       "nothing was changed. The folder var/lib/lares-maintenance/custody must belong to root with "
-                      "mode 0700 and must not be a link; fix that, then run this again.", file=sys.stderr)
+                      "mode 0700, the folders above it must not be writable by anyone else, the lock file "
+                      "operation.lock inside it must belong to root with mode 0600, and none of them may be a "
+                      "link; fix that, then run this again.", file=sys.stderr)
             return 78
         if len(argv) > 1 and argv[1] in ("run-normal", "assert-normal-held", "validate-update-target"):
             if isinstance(error, MaintenanceRunBusy):

@@ -1281,8 +1281,9 @@ def hold_beside_update(prefix: str) -> int | None:
         raise Stop(str(error)) from None
     except (OSError, ValueError) as error:
         raise Stop(f"I cannot tell whether an update is running ({error}), so nothing was started or changed. The folder "
-                   "var/lib/lares-maintenance/custody must belong to root with mode 0700 and must not be a link; fix "
-                   "that, then run this again.") from None
+                   "var/lib/lares-maintenance/custody must belong to root with mode 0700, the folders above it must "
+                   "not be writable by anyone else, the lock file operation.lock inside it must belong to root with "
+                   "mode 0600, and none of them may be a link; fix that, then run this again.") from None
 
 
 def parse_arguments(argv: list[str]) -> argparse.Namespace:

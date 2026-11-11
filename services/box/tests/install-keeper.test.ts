@@ -708,7 +708,8 @@ describe("the keeper the installer configures and starts", () => {
       setRuntime("microsoft", microsoft); keeperIsRunning();
       expect(install().code).toBe(0); expect(readKeeperConfig().lifecycle.runtime.microsoft).toEqual(microsoft); expect(recreates()).toBe(1);
       expect(install().code).toBe(0); expect(recreates()).toBe(1);
-    });
+      // Three whole installer runs, so it sits as close to 20 seconds as the case above on a slow runner.
+    }, 60_000);
 
     it("restarts a running keeper when its settings changed", () => {
       expect(install().code).toBe(0);

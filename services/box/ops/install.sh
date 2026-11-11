@@ -2096,7 +2096,7 @@ run_finish() {
 
 if [ "$DRY_RUN" -eq 1 ]; then
   say "the four questions (domain, e-mail, name, model key) would be asked next, and the answers written to $INSTALL_ENV and $SECRETS_DIR/model-provider-key."
-  say "then the release given with --release would be rendered, the database prepared and verified offline, and Console and Caddy started. The owner would sign in to confirm this host and finish explicit model budget setup before creating an agent. No model call or conversation would be tested. A real run needs --release <file>; a dry run asks nothing and writes nothing."
+  say "then the release given with --release would be rendered, the database prepared and verified offline, and Console and Caddy started. The owner would sign in to confirm this host and finish explicit model budget setup before creating an agent. No model call or conversation would be tested. A real run needs --release <file>; a dry run asks nothing and writes nothing (on a server prepared before this release, the first run of any lares command, a dry run included, leaves one empty lock file under /var/lib/lares-maintenance)."
 else
   # Preserve the offline database boundary before starting the owner-facing services. Owner,
   # organisation and keeper setup complete before the truthful infrastructure-ready handoff.
