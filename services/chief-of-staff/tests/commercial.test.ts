@@ -21,6 +21,31 @@ vi.mock("../../../packages/agent-kit/src/console-turn-authority.js", async (orig
   requireConsoleSessionBinding: consoleBinding,
 }));
 
+// The last valid definition lives in Postgres. A fixture pool with just the statements
+// `definition-cache.ts` issues, so section 6 runs the REAL fail-closed fallback over a mounted
+// definition folder without a database. Nothing else in this file touches the pool.
+const definitionStore = vi.hoisted(() => ({
+  remembered: new Map<string, { definition: unknown; duties: string; voice: string; hash: string }>(),
+  reads: 0,
+}));
+vi.mock("../../../packages/agent-kit/src/db.js", async (original) => ({
+  ...(await original<typeof import("../../../packages/agent-kit/src/db.js")>()),
+  getPool: () => ({
+    query: async (sql: string, params: unknown[] = []) => {
+      const name = String(params[0]);
+      if (sql.includes("SELECT definition")) {
+        const row = definitionStore.remembered.get(name);
+        return { rows: row ? [row] : [] };
+      }
+      if (sql.includes("INSERT INTO agent_definitions")) {
+        definitionStore.reads += 1;
+        definitionStore.remembered.set(name, { definition: JSON.parse(String(params[1])), duties: String(params[2]), voice: String(params[3]), hash: String(params[4]) });
+      }
+      return { rows: [] };
+    },
+  }),
+}));
+
 // `gatewayModel` (lib/gateway-provider.ts) caches its providers at MODULE scope — so a fresh
 // module per test is needed. commercial_who_to_contact
 // transitively imports it via lib/llm-complete.ts, so each "live wiring" test below needs its
@@ -42,10 +67,24 @@ vi.mock("../../../packages/agent-kit/src/console-turn-authority.js", async (orig
 //
 // eve 1.0: the tool file is ONE function of the conversation (`defineDynamic(fn)` keeps it under
 // the symbol below) and it answers with the tool or with `null`. It is called here with an
-// ordinary conversation, not a private console one.
+// ordinary conversation, not a private console one. A conversation is a session id of its own
+// plus a memo like the framework's: a key runs once, its JSON is kept, a throw keeps nothing.
 interface CommercialTool { execute: (input: { brand?: string }, ctx: unknown) => Promise<Record<string, SurfacedContact[]>> }
 type ToolFunction = (ctx: unknown) => Promise<CommercialTool | null>;
-const ordinaryConversation = () => ({ session: { id: "native", auth: { current: null, initiator: null } } });
+let conversations = 0;
+function conversation(auth: { current: unknown; initiator: unknown }) {
+  const kept = new Map<string, string>();
+  return {
+    kept,
+    session: { id: `commercial-test-${conversations += 1}`, auth },
+    memo: async <T>(key: unknown, fn: () => T | Promise<T>): Promise<T> => {
+      const k = JSON.stringify(key ?? null);
+      if (!kept.has(k)) kept.set(k, JSON.stringify(await fn()));
+      return JSON.parse(kept.get(k)!) as T;
+    },
+  };
+}
+const ordinaryConversation = () => conversation({ current: null, initiator: null });
 async function commercialResolver(): Promise<ToolFunction> {
   const resolver = (await import("../agent/tools/commercial_who_to_contact.js")).default as unknown as Record<symbol, ToolFunction>;
   return resolver[Symbol.for("eve.dynamic")]!;
@@ -533,77 +572,175 @@ describe("commercial_who_to_contact (live wiring)", () => {
 // ─── 6. commercial_who_to_contact — where the tool exists ──────────────────────────────────
 //
 // eve 1.0 calls the tool file's function before every model call, and what it returns is whether
-// the tool EXISTS in that conversation. `resolveSkillTool` still decides it from the declaration;
-// a private console conversation never has it.
+// the tool EXISTS in that conversation. `resolveSkillTool` decides it from the conversation's
+// LOADED definition (the mounted definition folder, or this service's own agent.json when none
+// is mounted), never from the file built into the image. A private console conversation never
+// has it.
 
 describe("commercial_who_to_contact (where it exists)", () => {
+  const AGENT = "chief-of-staff";
   const consoleMember = {
     authenticator: "lares-console", principalType: "user", principalId: "member-one",
     attributes: { lares_member_id: "member-one", lares_admission_nonce: "a".repeat(43), lares_purpose: "human" },
   };
-  const privateConversation = () => ({ session: { id: "private", auth: { current: consoleMember, initiator: consoleMember } } });
+  const privateConversation = () => conversation({ current: consoleMember, initiator: consoleMember });
 
-  /** The resolver, built over a changed copy of this service's own agent.json. */
-  async function resolverOver(change: (m: Record<string, unknown>) => Record<string, unknown>): Promise<ToolFunction> {
-    vi.resetModules();
-    const actual = (await vi.importActual<{ default: Record<string, unknown> }>("../agent.json")).default;
-    vi.doMock("../agent.json", () => ({ default: change(structuredClone(actual)) }));
-    return commercialResolver();
+  type Declaration = { grants: { capability: string }[]; autonomy: Record<string, string>; skills: { name: string; requires?: unknown[] }[] } & Record<string, unknown>;
+  let neutral: Declaration;
+  let dir: string | undefined;
+  /** Mount a definition folder holding `agentJson` (an object, or raw text for a broken file). */
+  function mount(agentJson: unknown): void {
+    dir ??= mkdtempSync(join(tmpdir(), "commercial-definition-"));
+    writeFileSync(join(dir, "agent.json"), typeof agentJson === "string" ? agentJson : JSON.stringify(agentJson));
+    writeFileSync(join(dir, "voice.md"), "Plain and brief.\n");
+    writeFileSync(join(dir, "duties.md"), "");
+    vi.stubEnv("LARES_DEFINITION_DIR", dir);
   }
+  const withoutCommercial = () => ({ ...neutral, skills: neutral.skills.filter((k) => k.name !== "commercial") });
+  const twentyNever = () => ({ ...neutral, autonomy: { ...neutral.autonomy, twenty: "never" } });
+  const twentyRevoked = () => ({
+    ...neutral,
+    grants: neutral.grants.filter((g) => g.capability !== "twenty"),
+    autonomy: Object.fromEntries(Object.entries(neutral.autonomy).filter(([k]) => k !== "twenty")),
+    skills: neutral.skills.filter((k) => k.name !== "commercial"),
+  });
 
-  beforeEach(() => {
-    vi.stubEnv("LARES_AGENT_NAME", "chief-of-staff");
+  beforeEach(async () => {
+    // A fresh module registry per case: `thisAgent` pins a definition per session in-process.
+    vi.resetModules();
+    neutral = structuredClone((await vi.importActual<{ default: Declaration }>("../agent.json")).default);
+    vi.stubEnv("LARES_AGENT_NAME", AGENT);
     vi.stubEnv("LARES_AGENT_INCARNATION", "11111111-1111-4111-8111-111111111111");
     consoleBinding.mockResolvedValue({});
+    definitionStore.remembered.clear();
+    definitionStore.reads = 0;
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
   afterEach(() => {
-    vi.doUnmock("../agent.json");
     vi.resetModules();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
     consoleBinding.mockReset();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
   });
 
   it("exists in an ordinary conversation under this service's own declaration", async () => {
-    vi.resetModules();
     const tool = await (await commercialResolver())(ordinaryConversation());
     expect(typeof tool?.execute).toBe("function");
   });
 
-  it("does not exist in a private console conversation", async () => {
-    vi.resetModules();
-    expect(await (await commercialResolver())(privateConversation())).toBeNull();
+  it("exists under a mounted definition that declares the skill inside its grants", async () => {
+    mount(neutral);
+    const tool = await (await commercialResolver())(ordinaryConversation());
+    expect(typeof tool?.execute).toBe("function");
+  });
+
+  it("does not exist in a private console conversation, and does not read the definition to say so", async () => {
+    mount(neutral);
+    const c = privateConversation();
+    expect(await (await commercialResolver())(c)).toBeNull();
     expect(consoleBinding).toHaveBeenCalledOnce();
+    expect(definitionStore.reads).toBe(0);
+    expect(c.kept.size).toBe(0);
   });
 
   it("refuses the turn for a caller who claims a private console conversation but is not verified", async () => {
-    vi.resetModules();
+    mount(neutral);
     const resolve = await commercialResolver();
     consoleBinding.mockRejectedValue(new Error("refused"));
     await expect(resolve(privateConversation())).rejects.toThrow();
     // A different person speaking than the one who opened the conversation.
     const other = { ...consoleMember, principalId: "member-two", attributes: { ...consoleMember.attributes, lares_member_id: "member-two" } };
-    await expect(resolve({ session: { id: "private", auth: { current: other, initiator: consoleMember } } })).rejects.toThrow();
+    await expect(resolve(conversation({ current: other, initiator: consoleMember }))).rejects.toThrow();
+    expect(definitionStore.reads).toBe(0);
   });
 
-  it("does not exist when the declaration does not list the commercial skill", async () => {
-    const resolve = await resolverOver((m) => ({ ...m, skills: (m["skills"] as { name: string }[]).filter((k) => k.name !== "commercial") }));
+  // The case this decision exists for. The file built into the image always declares
+  // `commercial`; what counts is the definition the installation mounted.
+  it("does not exist when the mounted definition does not list the commercial skill", async () => {
+    mount(withoutCommercial());
+    expect(await (await commercialResolver())(ordinaryConversation())).toBeNull();
+  });
+
+  it("does not exist when the mounted definition switches twenty off with never", async () => {
+    mount(twentyNever());
+    expect(await (await commercialResolver())(ordinaryConversation())).toBeNull();
+  });
+
+  it("does not exist when the mounted definition revokes the twenty grant", async () => {
+    mount(twentyRevoked());
+    expect(await (await commercialResolver())(ordinaryConversation())).toBeNull();
+  });
+
+  it("reads the definition once per conversation and keeps only the yes/no", async () => {
+    mount(neutral);
+    const resolve = await commercialResolver();
+    const c = ordinaryConversation();
+    for (let call = 0; call < 5; call += 1) expect(typeof (await resolve(c))?.execute).toBe("function");
+    expect(definitionStore.reads).toBe(1);
+    expect([...c.kept.values()]).toEqual(["true"]);
+  });
+
+  it("a definition that drops the skill: absent in the next conversation, unchanged in this one", async () => {
+    mount(neutral);
+    const resolve = await commercialResolver();
+    const first = ordinaryConversation();
+    expect(typeof (await resolve(first))?.execute).toBe("function");
+
+    mount(withoutCommercial());
     expect(await resolve(ordinaryConversation())).toBeNull();
+    // The conversation already under way keeps the answer it started with (ADR-0015).
+    expect(typeof (await resolve(first))?.execute).toBe("function");
   });
 
-  it("does not exist when a capability the skill composes is switched off with never", async () => {
-    const resolve = await resolverOver((m) => ({ ...m, autonomy: { ...(m["autonomy"] as Record<string, string>), twenty: "never" } }));
-    expect(await resolve(ordinaryConversation())).toBeNull();
-  });
+  describe("an invalid or unreadable definition fails closed", () => {
+    const broken = (): Record<string, unknown> => ({
+      "is not JSON": "{ this is not json",
+      "has a misspelled field": { ...neutral, skill: [] },
+      "has a skill that asks for more than its grant (never widen)": { ...neutral, skills: [{ name: "commercial", requires: [{ capability: "twenty", scope: "write" }] }] },
+      "declares a different agent": { ...neutral, name: "someone-else" },
+    });
+    const reasons = ["is not JSON", "has a misspelled field", "has a skill that asks for more than its grant (never widen)", "declares a different agent"];
 
-  it("does not exist, and nothing throws, when the declaration widens or does not parse", async () => {
-    // `resolveSkillTool` throws on both. In a conversation that must mean "absent", never "offered".
-    const widened = await resolverOver((m) => ({ ...m, skills: [{ name: "commercial", requires: [{ capability: "twenty", scope: "write" }] }] }));
-    expect(await widened(ordinaryConversation())).toBeNull();
-    const ungranted = await resolverOver((m) => ({ ...m, grants: (m["grants"] as { capability: string }[]).filter((g) => g.capability !== "twenty"), autonomy: {} }));
-    expect(await ungranted(ordinaryConversation())).toBeNull();
-    const misspelled = await resolverOver((m) => ({ ...m, skill: [] }));
-    expect(await misspelled(ordinaryConversation())).toBeNull();
+    for (const why of reasons) {
+      it(`with no last valid definition, when agent.json ${why}: the tool is absent and nothing throws`, async () => {
+        mount(broken()[why]);
+        const resolve = await commercialResolver();
+        const c = ordinaryConversation();
+        expect(await resolve(c)).toBeNull();
+        // The failure is not kept: a repaired definition is picked up by the next model call.
+        expect(c.kept.size).toBe(0);
+        mount(neutral);
+        expect(typeof (await resolve(c))?.execute).toBe("function");
+      });
+
+      it(`with a last valid definition that did not allow the skill, when agent.json ${why}: still absent`, async () => {
+        mount(withoutCommercial());
+        const resolve = await commercialResolver();
+        expect(await resolve(ordinaryConversation())).toBeNull();
+        expect(definitionStore.remembered.has(AGENT)).toBe(true);
+        // The broken edit cannot bring the tool back; the agent keeps its last valid definition.
+        mount(broken()[why]);
+        expect(await resolve(ordinaryConversation())).toBeNull();
+      });
+    }
+
+    it("when the framework's memo fails: the tool is absent", async () => {
+      mount(neutral);
+      const c = ordinaryConversation();
+      c.memo = async () => { throw new Error("memo unavailable"); };
+      expect(await (await commercialResolver())(c)).toBeNull();
+    });
+
+    it("when the memo hands back anything but an exact true: the tool is absent", async () => {
+      mount(neutral);
+      const resolve = await commercialResolver();
+      for (const kept of ["true", 1, { offered: true }, null]) {
+        const c = ordinaryConversation();
+        c.memo = (async () => kept) as never;
+        expect(await resolve(c), JSON.stringify(kept)).toBeNull();
+      }
+    });
   });
 });
