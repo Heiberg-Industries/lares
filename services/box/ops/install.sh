@@ -1590,12 +1590,11 @@ if not re.fullmatch(r'[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}',value):raise Sy
 print(value)
 PYIMAGE
   ) || die "the release does not name the creative role image by digest, so the workflow template cannot be prepared." "$EX_REFUSED"
-  docker run --rm --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-    -w /app/services/creative \
-    -v "$SECRETS_DIR/workflow-provisioner-password:/run/secrets/workflow-provisioner:ro" \
-    -e PGPASSWORD_FILE=/run/secrets/workflow-provisioner -e PGOPTIONS='-c role=lares_workflow_owner' \
-    -e "WORKFLOW_POSTGRES_URL=postgres://lares_workflow_provisioner@${db_host}:${db_port}/empty_workflow" \
-    --entrypoint /bin/sh "$role_image" -ec 'PGPASSWORD="$(cat "$PGPASSWORD_FILE")"; export PGPASSWORD; exec node --input-type=module -e '\''import { Pool } from "pg"; import { setupDatabase } from "@workflow/world-postgres/cli"; const pool = new Pool({ connectionString: process.env.WORKFLOW_POSTGRES_URL, max: 1 }); try { const r = await pool.query("SELECT current_user, session_user, current_database()"); if (r.rows[0]?.current_user !== "lares_workflow_owner" || r.rows[0]?.session_user !== "lares_workflow_provisioner" || r.rows[0]?.current_database !== "empty_workflow") throw new Error("workflow template authority check failed"); } finally { await pool.end(); } await setupDatabase();'\'' ' \
+  # The same step the updater runs on existing stores (engine-run.sh, workflow_store_step), in
+  # its fresh-install mode: it refuses a template that is not empty. That the template then
+  # holds exactly this release's full list of schema steps is checked by the next program, as
+  # the login the agents use (lib/workflow-database-privileges.ts pins the list).
+  workflow_store_step "$role_image" create empty_workflow "$db_host" "$db_port" "$SECRETS_DIR/workflow-provisioner-password" \
     || die "the pinned workflow package could not prepare its owned template migrations." "$EX_REFUSED"
 
   engine_run --ro "$SECRETS_DIR/workflow-provisioner-password" --ro "$SECRETS_DIR/workflow-password" \

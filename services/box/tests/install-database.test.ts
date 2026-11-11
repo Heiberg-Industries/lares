@@ -166,7 +166,17 @@ describe("the database the installer creates", () => {
     expect(calls).toMatch(/docker .*compose .*compose\.bootstrap\.yaml up -d db/);
     expect(calls).toContain("bin/database-setup.ts");
     expect(calls).toContain("bin/workflow-template.ts apply");
-    expect(calls).toContain("setupDatabase()");
+    // The workflow package's own schema step, through the one program the updater also uses:
+    // inside the release's creative image, as the provisioner, in its fresh-install mode.
+    const template = calls.split("\n").find((line) => line.includes(" sh create empty_workflow"))!;
+    expect(template, "the workflow template was not prepared by the shared role-image step").toBeDefined();
+    expect(template).toContain(`example.invalid/lares-creative@sha256:${"b".repeat(64)}`);
+    expect(template).toContain("--network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges -w /app/services/creative");
+    expect(template).toContain("workflow-provisioner-password:/run/secrets/workflow-provisioner:ro");
+    expect(template).toContain("WORKFLOW_POSTGRES_URL=postgres://lares_workflow_provisioner@127.0.0.1:5432/empty_workflow");
+    expect(template).toContain("node --input-type=module -");
+    expect(calls.indexOf(" sh create empty_workflow")).toBeLessThan(calls.indexOf("bin/workflow-template.ts apply"));
+    expect(calls).not.toContain("setupDatabase()");
     expect(calls).not.toContain("001-eve-workflow.sql");
     expect(calls).not.toContain("CREATE SCHEMA IF NOT EXISTS workflow;");
     const bootstrapDown = calls.indexOf("compose.bootstrap.yaml down");

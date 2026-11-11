@@ -185,7 +185,9 @@ engine_normal_client_cleanup() {
 
 # engine_normal_client OPERATION [--ro PATH]... [--env NAME=VALUE]... SCRIPT [ARGS...]
 # OPERATION is update or rollback; SCRIPT is update-record.ts or migrate.ts (migration is
-# update-only). No generic command, entrypoint override, or writable admission bind is exposed.
+# update-only), or, for an update only, one of the fixed agent-store modes of
+# bin/workflow-template.ts and the template check of bin/database-setup.ts. No generic command,
+# entrypoint override, or writable admission bind is exposed.
 engine_normal_client() {
   local operation="$1" script token admission identity identity_id identity_epoch
   shift
@@ -219,6 +221,15 @@ engine_normal_client() {
   shift
   case "$operation:$script" in
     update:bin/update-record.ts|update:migrate.ts|rollback:bin/update-record.ts) ;;
+    # The agent-store step of an update: these two programs have other modes (a fresh install's
+    # database setup among them), so the mode is fixed here too.
+    update:bin/workflow-template.ts)
+      case "${1:-}" in
+        update-plan|apply|apply-database|verify-database) ;;
+        *) echo "engine client: program mode is outside the fixed update set" >&2; return 78 ;;
+      esac ;;
+    update:bin/database-setup.ts)
+      [ "${1:-}" = --verify-workflow-template ] || { echo "engine client: program mode is outside the fixed update set" >&2; return 78; } ;;
     *) echo "engine client: program is outside the fixed update/rollback set" >&2; return 78 ;;
   esac
   [ -n "$ENGINE_IMAGE" ] || { echo "engine client: no engine image is known" >&2; return 78; }
@@ -328,6 +339,74 @@ engine_normal_client() {
     return 78
   fi
   return "$wait_status"
+}
+
+# workflow_store_step ROLE_IMAGE MODE DATABASE HOST PORT PROVISIONER_PASSWORD_FILE
+# The one way the installer and the updater run the agent framework's own schema step. MODE is
+# check, upgrade or create (ops/workflow-store-migrate.mjs says what each does); DATABASE
+# is the workflow template or one agent store. The program runs inside the release's own role
+# image, fed on standard input with the role's folder as the working directory, so the workflow
+# package it loads is exactly the one that role image runs. It connects as the provisioner login
+# with the workflow owner role. The password is a read-only file read inside that short-lived
+# container: never a value in the address, in argv or in the environment of the host.
+# Returns the program's own status: 0, 3 (refused, with a plain reason on standard error), or
+# another non-zero value when it could not finish. A step that outlives its time limit is stopped
+# and counts as not finished; the caller checks the store again before trusting anything.
+workflow_store_step() {
+  local role_image="${1:-}" mode="${2:-}" database="${3:-}" host="${4:-}" port="${5:-}" password_file="${6:-}"
+  local program="${HERE:?}/workflow-store-migrate.mjs" limit=120 name status=0
+  local -a client=()
+  case "$mode" in
+    check) ;;
+    # An operator may allow a long upgrade more time (LARES_WORKFLOW_UPGRADE_SECONDS, from one
+    # minute to one day). Running out of time changes nothing: each store's step is one transaction.
+    upgrade|create)
+      limit="${LARES_WORKFLOW_UPGRADE_SECONDS:-900}"
+      [[ "$limit" =~ ^[0-9]{2,5}$ ]] && [ "$limit" -ge 60 ] && [ "$limit" -le 86400 ] \
+        || { echo "workflow store step: LARES_WORKFLOW_UPGRADE_SECONDS must be a number of seconds from 60 to 86400" >&2; return 78; }
+      ;;
+    *) echo "workflow store step: unsupported mode" >&2; return 78 ;;
+  esac
+  printf '%s' "$role_image" | grep -Eq "$ENGINE_DIGEST_PATTERN" \
+    || { echo "workflow store step: the role image is not named by digest" >&2; return 78; }
+  [[ "$database" =~ ^(empty_workflow|lares_[a-f0-9]{32})$ ]] \
+    || { echo "workflow store step: unsupported database name" >&2; return 78; }
+  [[ "$host" =~ ^[A-Za-z0-9.-]+$ ]] && [[ "$port" =~ ^[0-9]{1,5}$ ]] \
+    || { echo "workflow store step: unsupported database address" >&2; return 78; }
+  [ -f "$program" ] && [ ! -L "$program" ] \
+    || { echo "workflow store step: its program is missing from this release's files" >&2; return 78; }
+  [ -f "$password_file" ] && [ ! -L "$password_file" ] && [ -s "$password_file" ] \
+    || { echo "workflow store step: the provisioner credential is missing or unsafe" >&2; return 78; }
+  # A name of its own, so that a step that outlives its time limit can be found and stopped:
+  # stopping the docker client alone would leave the container running.
+  name="lares-workflow-store-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  [[ "$name" =~ ^lares-workflow-store-[a-f0-9]{16}$ ]] \
+    || { echo "workflow store step: could not name its container" >&2; return 78; }
+  client=(docker run --rm -i --name "$name" --label lares.maintenance=workflow-store
+    --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges
+    -w /app/services/creative
+    -v "$password_file:/run/secrets/workflow-provisioner:ro"
+    -e PGPASSWORD_FILE=/run/secrets/workflow-provisioner -e "PGOPTIONS=-c role=lares_workflow_owner"
+    -e "WORKFLOW_POSTGRES_URL=postgres://lares_workflow_provisioner@${host}:${port}/${database}"
+    --entrypoint /bin/sh "$role_image" -ec
+    'PGPASSWORD="$(cat "$PGPASSWORD_FILE")"; export PGPASSWORD; unset PGPASSWORD_FILE; exec node --input-type=module - "$@"'
+    sh "$mode" "$database")
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --kill-after=10 "$limit" "${client[@]}" < "$program" || status=$?
+  else
+    "${client[@]}" < "$program" || status=$?
+  fi
+  if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+    # Its database connection ends with the container, and an unfinished step is rolled back.
+    docker rm --force "$name" >/dev/null 2>&1 || true
+    if [ -n "$(docker ps --all --quiet --filter "name=^/${name}\$" 2>/dev/null)" ]; then
+      echo "workflow store: the step ran out of its $limit seconds and its container ($name) could not be stopped; stop it with: docker rm --force $name, then run the same command again" >&2
+    else
+      echo "workflow store: the step ran out of its $limit seconds and was stopped; the store was left as it was. To allow more time, run the same command again with LARES_WORKFLOW_UPGRADE_SECONDS set to more seconds (up to 86400)" >&2
+    fi
+    return 1
+  fi
+  return "$status"
 }
 
 # Restore clients retain the same baked admission entrypoint as update clients, but their

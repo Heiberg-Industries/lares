@@ -4,9 +4,53 @@ const RUNTIME = "lares_workflow";
 const PROVISIONER = "lares_workflow_provisioner";
 const SCHEMAS = ["workflow", "workflow_drizzle", "graphile_worker"] as const;
 const WORKFLOW_DML = [
-  "workflow_event_slots", "workflow_events", "workflow_hooks", "workflow_runs",
-  "workflow_steps", "workflow_stream_chunks", "workflow_waits",
+  "workflow_event_slots", "workflow_events", "workflow_hooks", "workflow_invocations", "workflow_runs",
+  "workflow_snapshots", "workflow_start_hook_admissions", "workflow_steps", "workflow_stream_chunks", "workflow_waits",
 ] as const;
+// The one sequence the workflow package owns that the runtime needs: it is the default of
+// workflow_invocations.sequence, so an insert there fails without USAGE on it.
+const WORKFLOW_SEQUENCES = ["workflow_invocations_sequence_seq"] as const;
+/**
+ * The workflow package's own record of applied schema steps (workflow_drizzle.workflow_migrations)
+ * at the pinned package version, in the order they are applied: [created_at, hash]. created_at is
+ * the package journal's timestamp for the step and hash is the sha256 of the step's file. Row ids
+ * are deliberately not pinned: a refused attempt uses ids up without leaving a row.
+ * The first 20 are what the previous package version left behind (WORKFLOW_SCHEMA_STEPS_BEFORE).
+ */
+export const WORKFLOW_SCHEMA_STEPS: ReadonlyArray<readonly [string, string]> = [
+  ["1762873019948", "e92421745b2346049a277afbce781da3f260e68067eb1bdbd7d10bbf2ad2e743"],
+  ["1763903867386", "5bb606a2a55a2095101907d62d28917091316d9cddcdff5e8fc9a43e2e6f7a30"],
+  ["1764815363008", "ac88e448e940f38bf18f076dde2abe63b53659a4c9936325e4e44cf95434e311"],
+  ["1765900000000", "ad911e947a121b1def77b7ad37bd95ae7de2b453a05645e9b40f979a166e79b9"],
+  ["1765900000001", "673b7222d0df6c2fd2d335072a9d85b695b5dae4a2c52b287d2aaa5d31d462f9"],
+  ["1767723210726", "7c3f3b73a707af2386f5c20b953e4c54631be616bf0b9bfa8ced1b97018ad384"],
+  ["1768500000000", "928760bfbdd23576f119f3f14c3e6db78fb765cfd24f8595c70536cb975c7178"],
+  ["1769500000000", "f904ecb9232a269f599b393fa4ce5e3762a8267d111ad103d56fdcd11837fdcd"],
+  ["1770000000000", "e424a48df5a1ddd752e4d09f05696e76da94e366b3d617ca10c3d3fbcdb74c77"],
+  ["1770500000000", "eafc36b3c9b1aaff44cd33cff9126bd7fdd796d2672b104125c32d91e0ce5597"],
+  ["1771000000000", "5584c9be57e2c0d82fa1e972d5ee5da711b31368fbf8efee16cd2857e071af41"],
+  ["1771500000000", "169d2d8dea24763593830768249a1832b951a8a456f3757a2a2aa08063b41f6b"],
+  ["1775600000000", "31308216105f22820ff834667fd3c34cc53939deeff5f56d9865f77a5579105d"],
+  ["1779609600000", "f22c7907d5cbfcf8e85801490677aae0fa9212fca01ad5a27aec0f8742cb2be7"],
+  ["1780185600000", "f09414bc7166d782e8c93f6d65e3b16493b56911b1a241356b382f7e6008439f"],
+  ["1782691200000", "adc88e08a9a0bba0bd13962db0c317b4e4aab4c6ae6ec281f2453dee9e4199c7"],
+  ["1784937600000", "f54db91ba1d89a06bfa1dcd6f869dfe419b94fc54b0329052e2a18e314ee5a82"],
+  ["1785283200000", "4ce073262fcb6bb23919f5c57df2bd513b95bff75d104a0c9131840eca6e4846"],
+  ["1785619990000", "28feaa8700bbe8ca2402e9b50db2b966e70b9be954eb1c75579a67adba1a7d98"],
+  ["1786060800000", "81e4aa926131374e338b11c2a2b6105266617f5b7f75b02cf966afd834dbc0bf"],
+  ["1789430400000", "1f1f72fbb5062f4daf8b9876b72f0e5535b1db2726e480b1f4dfb2304500bf00"],
+  ["1789516800000", "02a86bea8cda78bfda21f197d90273c30a55efa5d587c63a62843f20d2c3adb4"],
+  ["1789603200000", "ce83e2d48c02b4897faeadd310c52bf326d7d9a11f6a266a30ea779334259c06"],
+  ["1789689600000", "cc8ef02fd74872bee4a09ff2ce29a9c85058c8f217224fbfec107a2663a775d7"],
+  ["1789776000000", "0c60b6f7d20a1629bfe0a6c5c2b503d5c925d783bfff30470686828a0afb6ca4"],
+  ["1789862400000", "778c6d87381429bc4da17f91001c2f819cce103c0a942accda6bcf4fce626f99"],
+  ["1789948800000", "a3bb76f889812fee9ccf60fcb9fd698005d115daedc52edb1ecdb3d8911a494c"],
+  ["1790035200000", "a1951926f0ea05daeab8803dba636fa0bf01ac01ac168b6dcb7f7f9696bbc437"],
+  ["1790121600000", "902cb40ad074e6c034524de6f8c2f3f3b163cb51453b6753709986ebfa1f86b3"],
+  ["1790208000000", "542bfbe211b0d39d313a6de6cdffc9651e2726e776c0294e7349a85349a6329e"],
+];
+/** How many of WORKFLOW_SCHEMA_STEPS the previous package version had applied. */
+export const WORKFLOW_SCHEMA_STEPS_BEFORE = 20;
 const GRAPHILE_DML = [
   "_private_job_queues", "_private_jobs", "_private_known_crontabs", "_private_tasks",
 ] as const;
@@ -32,10 +76,13 @@ function quoteIdent(value: string): string { return `"${value.replaceAll('"', '"
 function relation(schema: string, name: string): string { return `${quoteIdent(schema)}.${quoteIdent(name)}`; }
 
 /**
- * Grants the fixed workflow runtime ACL to a newly migrated template, or to a new per-agent
- * database cloned from it. Caller must prove that this database is newly created and owned by
- * lares_workflow_owner before applying. It never creates roles, changes ownership, or grants
- * schema CREATE, database CREATE/TEMP, or other object DDL authority.
+ * Grants the fixed workflow runtime ACL to a migrated template, to a new per-agent database
+ * cloned from it, or again to an existing per-agent database after an update has run the
+ * workflow package's own schema step on it (new tables arrive with no grants). Caller must prove
+ * that this database is owned by lares_workflow_owner and is one the installation owns before
+ * applying. Safe to repeat: grants are repeatable and a row policy is created only when absent.
+ * It never creates roles, changes ownership, or grants schema CREATE, database CREATE/TEMP, or
+ * other object DDL authority.
  */
 export async function applyWorkflowRuntimePrivileges(db: Queryable): Promise<void> {
   const identity = await db.query<{ database: string }>("SELECT current_database() AS database");
@@ -67,6 +114,7 @@ export async function applyWorkflowRuntimePrivileges(db: Queryable): Promise<voi
     await db.query(`GRANT USAGE ON SCHEMA ${quoteIdent(schema)} TO ${quoteIdent(RUNTIME)}`);
   }
   for (const table of WORKFLOW_DML) await db.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ${relation("workflow", table)} TO ${quoteIdent(RUNTIME)}`);
+  for (const sequence of WORKFLOW_SEQUENCES) await db.query(`GRANT USAGE ON SEQUENCE ${relation("workflow", sequence)} TO ${quoteIdent(RUNTIME)}`);
   await db.query(`GRANT SELECT ON TABLE ${relation("workflow_drizzle", "workflow_migrations")} TO ${quoteIdent(RUNTIME)}`);
   for (const table of GRAPHILE_DML) {
     const policyName = `runtime_${table}`;
@@ -140,13 +188,31 @@ export async function verifyWorkflowRuntimePrivileges(db: Queryable): Promise<vo
     ...(currentRuntimeRole?.superuser || currentRuntimeRole?.createdb || currentRuntimeRole?.createrole || currentRuntimeRole?.bypassrls || currentRuntimeRole?.replication || !currentRuntimeRole?.login || currentRuntimeRole?.inherit || currentRuntimeRole?.memberships !== 0 || currentRuntimeRole?.settings !== 0 ? ["runtime-role-attributes"] : []),
   ];
   if (identityFailures.length) throw new Error(`Workflow database authority identity is not the expected runtime login (${identityFailures.join(",")})`);
+  // The workflow package's own list of applied schema steps must be exactly the pinned one. The
+  // package does not change its schema when an agent starts, so a store that is behind (left by
+  // an earlier release and not yet upgraded by the updater), ahead, or different is refused here,
+  // before the object inventory, so that the refusal names the real cause. Keeper runs this check
+  // on every agent store before it starts anything.
+  let workflowSteps: Array<{ hash: string; created_at: string | null }>;
+  try {
+    workflowSteps = (await db.query<{ hash: string; created_at: string | null }>(`
+      SELECT hash,created_at::text AS created_at FROM workflow_drizzle.workflow_migrations ORDER BY id
+    `)).rows;
+  } catch {
+    throw new Error("Workflow schema step record could not be read");
+  }
+  if (workflowSteps.length !== WORKFLOW_SCHEMA_STEPS.length ||
+      workflowSteps.some((row, index) => row.created_at !== WORKFLOW_SCHEMA_STEPS[index]![0] || row.hash !== WORKFLOW_SCHEMA_STEPS[index]![1])) {
+    throw new Error(`Workflow schema step record is not at the pinned head (${workflowSteps.length} recorded, ${WORKFLOW_SCHEMA_STEPS.length} expected)`);
+  }
   const relationInventory = await db.query<{ schema: string; name: string; kind: string; owner: string }>(`
     SELECT n.nspname AS schema,c.relname AS name,c.relkind AS kind,r.rolname AS owner
     FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner
     WHERE n.nspname=ANY($1::text[]) AND c.relkind IN ('r','p','v','m','f','S','c')
   `, [[...SCHEMAS]]);
   const expectedRelations = [
-    ...WORKFLOW_DML.map((name) => `workflow.${name}:r`), "workflow_drizzle.workflow_migrations:r",
+    ...WORKFLOW_DML.map((name) => `workflow.${name}:r`), ...WORKFLOW_SEQUENCES.map((name) => `workflow.${name}:S`),
+    "workflow_drizzle.workflow_migrations:r",
     "workflow_drizzle.workflow_migrations_id_seq:S",
     ...GRAPHILE_DML.map((name) => `graphile_worker.${name}:r`), "graphile_worker.jobs:v", "graphile_worker.migrations:r",
     ...GRAPHILE_SEQUENCES.map((name) => `graphile_worker.${name}:S`), "graphile_worker.job_spec:c",
@@ -264,6 +330,14 @@ export async function verifyWorkflowRuntimePrivileges(db: Queryable): Promise<vo
       if (result.rows[0]?.allowed !== false) throw new Error("Workflow runtime sequence privileges are broader than intended");
     }
   }
+  for (const sequence of WORKFLOW_SEQUENCES) {
+    const usage = await db.query<{ allowed: boolean }>(`SELECT has_sequence_privilege($1,$2,'USAGE') AS allowed`, [RUNTIME, relation("workflow", sequence)]);
+    if (usage.rows[0]?.allowed !== true) throw new Error("Workflow runtime sequence privileges are incomplete");
+    for (const privilege of ["SELECT", "UPDATE"] as const) {
+      const result = await db.query<{ allowed: boolean }>(`SELECT has_sequence_privilege($1,$2,$3) AS allowed`, [RUNTIME, relation("workflow", sequence), privilege]);
+      if (result.rows[0]?.allowed !== false) throw new Error("Workflow runtime sequence privileges are broader than intended");
+    }
+  }
   for (const privilege of ["USAGE", "SELECT", "UPDATE"] as const) {
     const result = await db.query<{ allowed: boolean }>(`SELECT has_sequence_privilege($1,$2,$3) AS allowed`, [RUNTIME, relation("workflow_drizzle", "workflow_migrations_id_seq"), privilege]);
     if (result.rows[0]?.allowed !== false) throw new Error("Workflow runtime migration sequence is accessible");
@@ -352,7 +426,10 @@ export async function verifyWorkflowRuntimePrivileges(db: Queryable): Promise<vo
     CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('s'::"char",c.relowner))) a
     LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE n.nspname=ANY($1::text[]) AND c.relkind='S' AND a.grantee<>c.relowner
   `, [[...SCHEMAS]]);
-  exactAcl("sequence", sequenceAcl.rows, GRAPHILE_SEQUENCES.map((name) => ({ object: `graphile_worker.${name}`, grantee: RUNTIME, privilege: "USAGE" })));
+  exactAcl("sequence", sequenceAcl.rows, [
+    ...WORKFLOW_SEQUENCES.map((name) => ({ object: `workflow.${name}`, grantee: RUNTIME, privilege: "USAGE" })),
+    ...GRAPHILE_SEQUENCES.map((name) => ({ object: `graphile_worker.${name}`, grantee: RUNTIME, privilege: "USAGE" })),
+  ]);
   const functionAcl = await db.query<{ object: string; grantee: string; privilege: string; grantable: boolean }>(`
     SELECT p.oid::text AS object,COALESCE(r.rolname,'PUBLIC') AS grantee,a.privilege_type AS privilege,a.is_grantable AS grantable
     FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
