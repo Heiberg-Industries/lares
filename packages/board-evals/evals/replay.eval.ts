@@ -46,10 +46,16 @@ export default defineEval({
 
     // The grant has to be in place BEFORE the first send: the resolver decides once per conversation.
     writeFileSync(G, JSON.stringify(["vault_list"]));
+    // ONE conversation for all three steps. The scripted model (agent/agent.ts) remembers which
+    // `seam …` messages it already acted on, keyed by the message's number in its conversation and
+    // its text; two fresh conversations sending the same line as message 1 would share a key, and
+    // the second would never call the tool. The grant is read once per conversation, and it is in
+    // place before the first message; the board is read fresh for every decision.
+    const session = await t.session();
     try {
       // The tool exists at all, and it is the POOL's copy — description carried across by the
       // resolver, not invented by it.
-      const set = await t.send("seam describe vault_list");
+      const set = await session.send("seam describe vault_list");
       check(
         /count=1/u.test(set.reply ?? "") && (set.reply ?? "").includes("List notes (pool fixture)."),
         `pool tool absent or not the pool's copy — ${set.reply ?? "<no message>"}`,
@@ -60,7 +66,7 @@ export default defineEval({
       // way through the resolver and replaced, would show a card here.
       board({ vault: "autonomous" });
       const before = calls();
-      const a = await t.send("seam call vault_list");
+      const a = await session.send("seam call vault_list");
       check(a.interactions.length === 0, "autonomous: a card appeared — the approval in force is not the pool tool's own");
       check(calls() === before + 1, `autonomous: the pool executor did not run — reply ${JSON.stringify(a.reply ?? null)}, status ${a.status}, call ${JSON.stringify(a.toolCalls.find((c) => c.name === "vault_list") ?? null)}`);
       check((a.reply ?? "").includes('"from":"pool"'), `autonomous: the POOL's executor did not answer — ${a.reply ?? "<no message>"}`);
@@ -69,10 +75,10 @@ export default defineEval({
       // CASE 2 — gated -> pause -> approve. The executor has to be rebuilt for the resumed turn.
       board({ vault: "gated" });
       const gatedBefore = calls();
-      const b = await t.send("seam call vault_list");
-      check(b.interactions.length === 1, "gated: expected exactly one card from the pool tool's own approval");
+      const b = await session.send("seam call vault_list");
+      check(b.interactions.length === 1, `gated: expected exactly one card from the pool tool's own approval — reply ${JSON.stringify(b.reply ?? null)}, status ${b.status}, cards ${b.interactions.length}`);
       check(calls() === gatedBefore, "gated: the executor ran BEFORE the approval was given");
-      await b.session.respondAll("approve");
+      await session.respondAll("approve");
       check(calls() === gatedBefore + 1, "gated: the executor did not run after the approval — it did not survive the replay");
       t.log(`[replay] gated -> one card -> approved -> the pool executor ran (${calls()} calls logged)`);
     } finally {

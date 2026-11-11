@@ -31,7 +31,9 @@ try {
   for (const { ids, live, unmounted } of batches) {
     abort.signal.throwIfAborted();
     const app = makeApp(container.getConnectionUri(), live); apps.push(app);
-    if (unmounted) delete app.env.LARES_DEFINITION_DIR;
+    // The environment `scripts/setup-eval-env.sh` gives these two: the control files and nothing that
+    // makes the runtime a managed installation (no definition, no identity, no database).
+    if (unmounted) for (const key of ['LARES_DEFINITION_DIR', 'LARES_AGENT_NAME', 'LARES_AGENT_INCARNATION', 'LARES_SLACK_CLAIM_REVISION', 'LARES_SLACK_PRINCIPAL', 'DATABASE_URL']) delete app.env[key];
     console.log(`Building isolated fixture: ${ids.join(', ')}; schedules live=${live}`);
     await run(app.eve, ['build'], { cwd: app.root, env: app.env });
     const result = await run(app.eve, ['eval', ...ids, '--verbose', '--strict', '--skip-report', '--timeout', '300000', '--max-concurrency', '1'], { cwd: app.root, env: app.env, timeout: 600_000 }).catch(error => {
