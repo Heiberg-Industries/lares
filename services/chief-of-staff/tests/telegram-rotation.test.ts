@@ -74,11 +74,11 @@ describe("telegram-rotation", () => {
 
   describe("dayHasRolledOver", () => {
     it("is false when the tracked day matches today", () => {
-      expect(dayHasRolledOver({ homeDay: "2026-08-16", pendingContext: null }, "2026-08-16")).toBe(false);
+      expect(dayHasRolledOver({ homeDay: "2026-08-16", pendingContext: null, handoverDay: null }, "2026-08-16")).toBe(false);
     });
 
     it("is true once today has moved past the tracked day", () => {
-      expect(dayHasRolledOver({ homeDay: "2026-08-16", pendingContext: null }, "2026-08-17")).toBe(true);
+      expect(dayHasRolledOver({ homeDay: "2026-08-16", pendingContext: null, handoverDay: null }, "2026-08-17")).toBe(true);
     });
   });
 
@@ -175,7 +175,7 @@ describe("telegram-rotation", () => {
   //
   // The framework's session rename is additive (every address a session ever claimed keeps
   // resolving to it), so the only way to retire the day's conversation is to name its exact
-  // durable session id and reset it — from a route handler, which is the only place handed
+  // durable session id and end it — from a route handler, which is the only place handed
   // `attachSession`. That splits the rotation in two: the turn writes down WHICH session
   // answered, and the front door claims it on the first update of the next day.
   describe("recordServingSession", () => {
@@ -229,7 +229,7 @@ describe("telegram-rotation", () => {
       // claims inside an open transaction and holds the row lock; the second runs while it is
       // held. A read-followed-by-a-write would sail past — a reader is not blocked, and the
       // second connection's snapshot still shows the session — and BOTH would retire, the
-      // second reset landing on the fresh conversation the first update had just opened. The
+      // second retirement landing on the fresh conversation the first update had just opened. The
       // claim being the UPDATE itself is what makes the second one block, re-check the
       // committed row, and find nothing left to claim.
       const first = await pool.connect();
@@ -255,16 +255,16 @@ describe("telegram-rotation", () => {
       // arrives in that window must still reach the agent.
       await pool.query("ALTER TABLE telegram_session_rotation DROP COLUMN session_id, DROP COLUMN session_day");
       const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-      const resets: string[] = [];
+      const ended: string[] = [];
       try {
         const update = JSON.stringify({ message: { chat: { id: 5550001 } } });
         await expect(
           retirePriorDaySession(update, (id) => ({
-            reset: async () => { resets.push(id); return {}; },
+            end: async () => { ended.push(id); return {}; },
           }), { db: pool }),
         ).resolves.toBeUndefined();
 
-        expect(resets).toEqual([]);
+        expect(ended).toEqual([]);
         expect(logged).toHaveBeenCalledTimes(1);
       } finally {
         logged.mockRestore();
@@ -296,10 +296,10 @@ describe("telegram-rotation", () => {
     });
   });
 
-  // The other half of the day boundary, through the real terminal-reply handler: the session id
+  // The other half of the day boundary, through the real reply handler: the session id
   // is only knowable from inside the turn, so the turn is what writes it down. Driven against
   // the same disposable Postgres, through the channel's own exported handler.
-  describe("the terminal reply writes down which conversation served", () => {
+  describe("the reply writes down which conversation served", () => {
     const FIXTURE_CHAT = "5550001";
 
     beforeEach(() => {
@@ -307,17 +307,19 @@ describe("telegram-rotation", () => {
       process.env["TELEGRAM_PRINCIPAL_ID"] = FIXTURE_CHAT;
     });
 
-    it("records the session id and the Berlin day on a terminal reply", async () => {
-      const { onMessageCompleted } = await import("../agent/channels/telegram.js");
+    it("records the session id and the Berlin day on a reply", async () => {
+      const { onContentCompleted } = await import("../agent/channels/telegram.js");
       const posted: unknown[] = [];
 
-      await onMessageCompleted(
-        { finishReason: "stop", message: "klart" },
+      await onContentCompleted(
+        { data: { kind: "text", phase: "reply", value: "klart" } },
         {
-          state: { chatId: FIXTURE_CHAT, chatType: "private" },
-          telegram: { post: async (m: unknown) => { posted.push(m); } },
+          channel: {
+            state: { chatId: FIXTURE_CHAT, chatType: "private" },
+            telegram: { post: async (m: unknown) => { posted.push(m); return {}; } },
+          },
+          session: { id: "wrun_fixture_today" },
         },
-        { session: { id: "wrun_fixture_today" } },
       );
 
       expect(posted).toHaveLength(1);
@@ -329,16 +331,18 @@ describe("telegram-rotation", () => {
     });
 
     it("records nothing for a chat outside rotation tracking, and still delivers the reply", async () => {
-      const { onMessageCompleted } = await import("../agent/channels/telegram.js");
+      const { onContentCompleted } = await import("../agent/channels/telegram.js");
       const posted: unknown[] = [];
 
-      await onMessageCompleted(
-        { finishReason: "stop", message: "group reply" },
+      await onContentCompleted(
+        { data: { kind: "text", phase: "reply", value: "group reply" } },
         {
-          state: { chatId: "5559999", chatType: "group" },
-          telegram: { post: async (m: unknown) => { posted.push(m); } },
+          channel: {
+            state: { chatId: "5559999", chatType: "group" },
+            telegram: { post: async (m: unknown) => { posted.push(m); return {}; } },
+          },
+          session: { id: "wrun_fixture_group" },
         },
-        { session: { id: "wrun_fixture_group" } },
       );
 
       expect(posted).toHaveLength(1);
@@ -496,14 +500,16 @@ describe("telegram-rotation", () => {
     });
 
     async function completeATurn(message: string): Promise<void> {
-      const { onMessageCompleted } = await import("../agent/channels/telegram.js");
-      await onMessageCompleted(
-        { finishReason: "stop", message },
+      const { onContentCompleted } = await import("../agent/channels/telegram.js");
+      await onContentCompleted(
+        { data: { kind: "text", phase: "reply", value: message } },
         {
-          state: { chatId: FIXTURE_CHAT, chatType: "private" },
-          telegram: { post: async () => {} },
+          channel: {
+            state: { chatId: FIXTURE_CHAT, chatType: "private" },
+            telegram: { post: async () => ({}) },
+          },
+          session: { id: "wrun_fixture_today" },
         },
-        { session: { id: "wrun_fixture_today" } },
       );
     }
 

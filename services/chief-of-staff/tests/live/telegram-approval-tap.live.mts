@@ -2,22 +2,22 @@
  * tests/live/telegram-approval-tap.live.mts — the LIVE sweep behind the Telegram tap gate
  * (`lib/telegram-tap-gate.ts`).
  *
- * Per the root CLAUDE.md's third-party rule — "a fixture is what we believe an API does; only a
+ * Per the root AGENTS.md's third-party rule — "a fixture is what we believe an API does; only a
  * live call is what it does." `tests/telegram-tap-gate.test.ts` proves the decision against a
- * fixture of a `callback_query` update. A fixture cannot tell us either of the two things the
- * front door now depends on:
+ * `callback_query` update whose callback data is produced by the installed eve's own renderer. A
+ * fixture still cannot tell us either of the two things the front door depends on:
  *
  *   1. THE UPDATE SHAPE. The gate reads `callback_query.from.id`, `callback_query.id`,
- *      `callback_query.message.chat.id` and the `callback_data` prefix off the body Telegram
- *      POSTs. If `from.id` ever arrives as something `asId` refuses, an allowed approver's own
- *      tap is REFUSED — a false alarm the owner would meet as "you may not answer your own card".
- *      If the prefix is not what eve's `hitl.js` says it builds, a stranger's tap is FORWARDED.
- *      Both are silent.
+ *      `callback_query.message.chat.id` and `callback_query.data` off the body Telegram POSTs.
+ *      If `from.id` ever arrives as something `asId` refuses, an allowed approver's own tap is
+ *      REFUSED — a false alarm the owner would meet as "you may not answer your own card". If the
+ *      data on a real card is not what the gate recognises as an approval tap (`eve:` followed by
+ *      a base-36 number), EVERY tap on a card is refused, the owner's included — the gate fails
+ *      closed, so this shows up as cards nobody can answer, never as a stranger getting through.
  *   2. WHAT `answerCallbackQuery` DOES WITH AN ID THAT IS NOT FRESH. The door answers a refused
- *      tap and wraps that call in try/catch. Telegram expires a callback query after a short
- *      window and rejects a second answer to the same one — but whether eve's helper THROWS or
- *      returns `{ok: false}` on that decides whether the catch is doing anything at all, and
- *      whether a refusal ever surfaces as a red error line for a tap that was refused correctly.
+ *      tap with one direct Bot API call and logs a refusal. Telegram expires a callback query
+ *      after a short window and rejects a second answer to the same one — the door expects that
+ *      as a returned `{ ok: false }`, not a throw.
  *
  * NOT part of `pnpm test`: it needs the live bot token, which exists only inside the deployed
  * container, and it speaks to the Bot API through the egress proxy. Run it by hand, inside that
@@ -32,27 +32,24 @@
  *
  * With no arguments it prints only the read-only half. It WRITES NOTHING: it answers a callback
  * query (a toast on the tapper's own screen) and reads webhook metadata. It never approves,
- * cancels or forwards anything, and it prints no message text, no card payload and no token.
+ * denies or forwards anything, and it prints no message text, no card payload and no token.
  */
-import { answerTelegramCallbackQuery } from "eve/channels/telegram";
-import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
-
 import { telegramCredentials } from "../../agent/channels/telegram.js";
-import { HITL_CALLBACK_PREFIX, refusedApprovalTap } from "../../lib/telegram-tap-gate.js";
 import { allowedPrincipalIds } from "../../lib/principals.js";
+import { callTelegramApi } from "../../lib/telegram-send.js";
+import { HITL_CALLBACK_PREFIX, refusedTap, tapLane } from "../../lib/telegram-tap-gate.js";
 
 const [callbackQueryId, rawArgument] = process.argv.slice(2);
 
 // ── 1. Why `getUpdates` is not how this is captured ──────────────────────────────────────
 // A bot with a webhook set cannot long-poll, so the raw update has to come from the door's own
 // log. Printing the webhook state says plainly which regime this container is in.
-const token = await telegramCredentials.botToken();
-const info = await telegramFetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
-const infoBody = (await info.json()) as { ok: boolean; result?: Record<string, unknown> };
-console.log("getWebhookInfo ok    :", infoBody.ok, `(http ${info.status})`);
-console.log("  webhook url set    :", Boolean(infoBody.result?.["url"]));
-console.log("  allowed_updates    :", JSON.stringify(infoBody.result?.["allowed_updates"] ?? "(default)"));
-console.log("  pending updates    :", JSON.stringify(infoBody.result?.["pending_update_count"]));
+const info = await callTelegramApi({ credentials: telegramCredentials, method: "getWebhookInfo" });
+const infoBody = info.body as { ok?: boolean; result?: Record<string, unknown> } | null;
+console.log("getWebhookInfo ok    :", info.ok, `(http ${info.status})`);
+console.log("  webhook url set    :", Boolean(infoBody?.result?.["url"]));
+console.log("  allowed_updates    :", JSON.stringify(infoBody?.result?.["allowed_updates"] ?? "(default)"));
+console.log("  pending updates    :", JSON.stringify(infoBody?.result?.["pending_update_count"]));
 console.log("allowed approvers    :", allowedPrincipalIds("telegram").length, "id(s) configured");
 console.log("");
 
@@ -81,12 +78,15 @@ if (raw === undefined || raw.trim() === "") {
     console.log("message.chat.id              typeof:", typeof message?.chat?.["id"]);
     console.log("data                         typeof:", typeof data);
     console.log(
-      "data starts with the HITL prefix:",
+      "data starts with eve's prefix    :",
       typeof data === "string" && data.startsWith(HITL_CALLBACK_PREFIX),
       `(expected prefix ${JSON.stringify(HITL_CALLBACK_PREFIX)}; the rest is a base-36 counter)`,
     );
+    // The lane the gate puts this tap in. For a tap on an approval card it must be "approval":
+    // "unrecognised" here means the gate would refuse every tap on a real card.
+    console.log("the gate reads the data as       :", tapLane(data));
     // The verdict the front door would reach on this exact body, with this container's allowlist.
-    const verdict = refusedApprovalTap(raw);
+    const verdict = refusedTap(raw);
     console.log("the gate would:", verdict === null ? "FORWARD it" : `REFUSE it (${JSON.stringify(verdict)})`);
   }
 }
@@ -98,16 +98,15 @@ if (callbackQueryId === undefined) {
 } else {
   for (const attempt of [1, 2]) {
     try {
-      const result = await answerTelegramCallbackQuery({
+      const result = await callTelegramApi({
         credentials: telegramCredentials,
-        callbackQueryId,
-        text: "Live probe — nothing was done.",
-        showAlert: true,
-        fetch: telegramFetch,
+        method: "answerCallbackQuery",
+        body: { callback_query_id: callbackQueryId, text: "Live probe — nothing was done.", show_alert: true },
       });
       console.log(`answerCallbackQuery attempt ${attempt}: returned`, JSON.stringify(result));
     } catch (err) {
-      // THE branch the front door's catch exists for.
+      // The door expects a refusal as a returned `{ ok: false }`. If this branch is hit for a
+      // stale id, the door's try/catch is what handles it, not its `ok` check.
       console.log(`answerCallbackQuery attempt ${attempt}: THREW`, err instanceof Error ? err.message : String(err));
     }
   }
