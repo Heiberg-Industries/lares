@@ -1,5 +1,5 @@
-import { KNOWN_SKILLS, KNOWN_CAPABILITIES, VAULT_AREAS, assertSkillsWithinGrants, isVaultArea, scopeAtLeast, type KnownSkill, type VaultArea } from "./skill-grants.js";
-export { KNOWN_SKILLS, KNOWN_CAPABILITIES, VAULT_AREAS, assertSkillsWithinGrants, isVaultArea, scopeAtLeast, type KnownSkill, type VaultArea } from "./skill-grants.js";
+import { INSTRUCTION_SKILLS, INSTRUCTION_SKILL_NAMES, KNOWN_SKILLS, KNOWN_CAPABILITIES, VAULT_AREAS, assertSkillsWithinGrants, grantsCover, isInstructionSkill, isVaultArea, scopeAtLeast, type InstructionSkillName, type InstructionSkillRule, type KnownSkill, type VaultArea } from "./skill-grants.js";
+export { INSTRUCTION_SKILLS, INSTRUCTION_SKILL_NAMES, KNOWN_SKILLS, KNOWN_CAPABILITIES, VAULT_AREAS, assertSkillsWithinGrants, grantsCover, isInstructionSkill, isVaultArea, scopeAtLeast, type InstructionSkillName, type InstructionSkillRule, type KnownSkill, type VaultArea } from "./skill-grants.js";
 const KNOWN_CAPABILITY_SET: ReadonlySet<string> = new Set(KNOWN_CAPABILITIES);
 // The agent declaration — `agent.json` — and the boot-time seam that turns it into a toolset.
 //
@@ -58,8 +58,9 @@ const level = z.enum(AUTONOMY_LEVELS);
 // ---------------------------------------------------------------------------
 
 /** Every CODE skill the fleet knows — a tool whose implementation composes other capabilities'
- *  libraries under an ENFORCED policy. Instruction skills
- *  (`agent/skills/*.md`) are eve-native and are not listed here. */
+ *  libraries under an ENFORCED policy. Instruction skills (the text files under `agent/skills/`)
+ *  are a separate list with their own rule: INSTRUCTION_SKILLS in `./skill-grants.ts`, decided
+ *  per conversation by `instructionSkillOffered` below. */
 /** Which TOOL each code skill is served by — the skills-layer counterpart of a capability doc's
  *  `tools` list, and the reason it exists here rather than in a persona doc.
  *
@@ -409,6 +410,109 @@ export function resolveSkillTool<T extends ResolvableTool>(
     if (autonomyOf(m, req.capability) === "never") return disableTool();
   }
   return tool;
+}
+
+// ---------------------------------------------------------------------------
+// Instruction skills: which ones exist in a conversation
+// ---------------------------------------------------------------------------
+//
+// Since eve 1.0 the framework's own loader (`eve__skill`) loads ANY skill a conversation has, and
+// no authored tool can stand in front of it. So the rule that used to sit in each agent's own
+// loader ("who may load which skill") is decided here instead, as "which skills exist": each
+// file under `agent/skills/` resolves to its text or to nothing, and a skill that resolves to
+// nothing cannot be listed, searched for or loaded. A conversation in which every skill resolves
+// to nothing gets no skill loader at all.
+//
+// This is the conversation-start half of never-widen. The save-time half is unchanged:
+// `assertSkillsWithinGrants`, through `assertDeclarationIntegrity`.
+
+/**
+ * The instruction skills this declaration allows OUTSIDE a private console conversation, sorted.
+ *
+ * THROWS on a declaration that does not parse or that widens (`assertSkillsWithinGrants`), exactly
+ * as `resolveSkillTool` does; `instructionSkillOffered` turns that throw into "no skill". For a
+ * declaration that is valid, a skill is in the answer only when ALL of these hold:
+ *
+ *  - where the skill is the method for a code skill (`declaredAs`), the declaration lists that
+ *    code skill, and none of the capabilities IT says it requires is at autonomy `never`;
+ *  - the grants reach every capability the engine says the text uses (`requires`), at the scope
+ *    its tools need;
+ *  - none of those capabilities is at autonomy `never`, because a skill cannot outlive the
+ *    access it composes.
+ *
+ * Pass the manifest-shaped view of a loaded definition (`manifestViewOf`), not the definition.
+ */
+export function instructionSkillsAllowedBy(manifest: unknown): InstructionSkillName[] {
+  const m = parseManifest(manifest);
+  assertSkillsWithinGrants(m);
+  return INSTRUCTION_SKILL_NAMES.filter((name) => {
+    const rule: InstructionSkillRule = INSTRUCTION_SKILLS[name];
+    if (rule.declaredAs !== undefined) {
+      const decl = skillFor(m, rule.declaredAs);
+      if (!decl) return false;
+      if (decl.requires.some((req) => autonomyOf(m, req.capability) === "never")) return false;
+    }
+    if (!grantsCover(m.grants, rule.requires)) return false;
+    return !rule.requires.some((req) => autonomyOf(m, req.capability) === "never");
+  });
+}
+
+/** What a skill file hands over: this conversation, as far as the decision needs it. `memo` is
+ *  the framework's per-conversation memo (`ctx.memo` on eve's dynamic context). */
+export interface InstructionSkillConversation {
+  /**
+   * Whether this is a VERIFIED private console conversation. The skill file computes it with
+   * `verifyPrivateConsoleSession(ctx)` and lets that call throw: a conversation that claims to be
+   * private and cannot prove it must fail before this function is reached, not be passed in as
+   * `false`.
+   */
+  readonly privateConsole: boolean;
+  readonly memo: <T>(key: unknown, fn: () => T | Promise<T>) => Promise<T>;
+  /** The manifest-shaped view of the agent's loaded definition for this conversation. May
+   *  reject: an unreadable definition is one of the cases this function exists to close. */
+  readonly definition: () => Promise<unknown>;
+}
+
+/** The memo key every skill file reads the allowed list under. The framework keeps a memo per
+ *  file, so this is one read of the definition per skill file per conversation. */
+export const INSTRUCTION_SKILLS_MEMO_KEY = "lares.instruction-skills-allowed";
+
+/**
+ * Whether the instruction skill `name` exists in this conversation. NEVER THROWS, and every
+ * path that is not a plain "yes" is "no":
+ *
+ *  - a name the engine does not know: no;
+ *  - a private console conversation: only a skill marked `privateConsole`, whatever the
+ *    definition says. The definition can take a skill away there; it can never add one;
+ *  - a definition that cannot be read, does not parse or widens: no for every skill that depends
+ *    on the definition. The failure is NOT kept in the memo (the catch is outside it), so the
+ *    next model call asks again and a repaired definition is picked up;
+ *  - a memo that hands back anything other than a list of names: no.
+ *
+ * A skill that needs nothing from the definition (no `declaredAs`, no `requires`) is answered
+ * without reading it. Today that is `lares-docs` alone; see its entry in INSTRUCTION_SKILLS for
+ * why it needs no grant.
+ *
+ * THE ANSWER IS FIXED FOR THE CONVERSATION once the definition has been read: an edited
+ * definition reaches the next conversation, the same promise the tool list makes (ADR-0015).
+ * The private console check is deliberately NOT part of what is kept: the caller verifies it
+ * again before every model call.
+ */
+export async function instructionSkillOffered(name: string, conversation: InstructionSkillConversation): Promise<boolean> {
+  if (!isInstructionSkill(name)) return false;
+  const rule: InstructionSkillRule = INSTRUCTION_SKILLS[name];
+  if (conversation.privateConsole !== false && rule.privateConsole !== true) return false;
+  if (rule.declaredAs === undefined && rule.requires.length === 0) return true;
+  try {
+    const allowed: unknown = await conversation.memo(
+      INSTRUCTION_SKILLS_MEMO_KEY,
+      async () => instructionSkillsAllowedBy(await conversation.definition()),
+    );
+    return Array.isArray(allowed) && allowed.includes(name);
+  } catch (err) {
+    console.error(`[skills] "${name}" is not offered: the agent's definition could not be used (${err instanceof Error ? err.message : String(err)})`);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
