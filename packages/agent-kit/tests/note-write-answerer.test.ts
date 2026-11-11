@@ -7,7 +7,9 @@
 //   - injected: the kit's requester check is not asked (it would refuse the app); the injected
 //     check gets the tool's own ctx and raw input; a refusal stops the write before any git step;
 //     the injected card check (`assertApprovedCall`) still runs after it;
-//   - not injected: the kit's requester check runs exactly as before.
+//   - given an area authority but not injected: every call refuses (fail closed), and neither the
+//     weaker requester check nor the card check is asked;
+//   - no deps at all (the mounted copies, which open no area): the kit's requester check runs.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const APP = { authenticator: "app", principalId: "eve:app", principalType: "runtime", attributes: {} };
@@ -88,8 +90,20 @@ describe("an injected approver check replaces the kit's requester check", () => 
       expect(gitSteps).toEqual([]);
     });
 
-    it(`${name}: with nothing injected the kit's requester check runs, as before`, async () => {
-      const tool = await build(name, {});
+    it(`${name}: given an area authority but no approver check → refused, never the weaker requester check`, async () => {
+      const cardChecks: unknown[] = [];
+      const tool = await build(name, { assertApprovedCall: async () => { cardChecks.push(1); } });
+      await expect(tool.execute(input, scheduledCard)).rejects.toThrow(/mounted without an approver check/);
+      const { MissingApproverCheckError } = await import("../extension/lib/note-write-tools.js");
+      await expect(tool.execute(input, scheduledCard)).rejects.toBeInstanceOf(MissingApproverCheckError);
+      expect(requesterChecks).toEqual([]);
+      expect(cardChecks).toEqual([]);
+      expect(gitSteps).toEqual([]);
+    });
+
+    it(`${name}: with no deps at all (the mounted copy) the kit's requester check runs, as before`, async () => {
+      const kit = await import("../extension/lib/note-write-tools.js");
+      const tool = kit[name]() as unknown as { execute: (input: unknown, ctx: unknown) => Promise<unknown> };
       await expect(tool.execute(input, scheduledCard)).rejects.toThrow("the requester is not an allowed approver");
       expect(requesterChecks).toEqual([APP]);
       expect(gitSteps).toEqual([]);

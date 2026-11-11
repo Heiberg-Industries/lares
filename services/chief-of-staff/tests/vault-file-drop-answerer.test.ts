@@ -7,8 +7,9 @@
 // the area grant and the git steps faked:
 //   - the owner answers a scheduled job's card (requester: the app) → the move, delete or write runs;
 //   - a second allowed person, or the app, as the answerer → refused at execution, nothing written;
-//   - no card (an autonomous call the board allows) → the old rule: the session's caller must be an
-//     allowed approver;
+//   - no card (an autonomous call the board allows) → for a move or a write, the old rule: the
+//     session's caller must be an allowed approver (✓ on "Private notes" lets them act alone). A
+//     delete always asks, so a delete with no answered card is refused, whoever the caller is;
 //   - the card on record shows a different call → refused, whoever answered.
 // No database: the ledger is a fake reader, as in `telegram-approval-card.test.ts`.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,7 +33,7 @@ vi.mock("../../../packages/agent-kit/src/vault-git.js", () => ({
 vi.mock("../../../packages/agent-kit/src/notes-store.js", () => ({ storeRootForArea: () => "/tmp/vault" }));
 vi.mock("../lib/vault-areas.js", () => ({ vaultWriteAreasForTurn: async () => ["private"] }));
 
-import { payloadFingerprint } from "@lares/agent-kit/approval-ledger";
+import { ApprovalPayloadChangedError, payloadFingerprint } from "@lares/agent-kit/approval-ledger";
 
 import vaultDrop from "../catalogue/agent-kit__vault_drop.js";
 import vaultFile from "../catalogue/agent-kit__vault_file.js";
@@ -52,10 +53,11 @@ const answered = (requester: unknown, responder: unknown) => ({
 const autonomous = (caller: unknown) => ({ callId: "call-1", session: { id: "s1", auth: { current: caller, initiator: caller } } });
 
 type Tool = { execute: (input: unknown, ctx: unknown) => Promise<unknown> };
-const TOOLS: Array<{ name: string; tool: Tool; input: Record<string, unknown>; step: string }> = [
-  { name: "agent-kit__vault_file", tool: vaultFile as unknown as Tool, input: { area: "private", path: "_inbox/a.md", destination: "seeds" }, step: "move" },
-  { name: "agent-kit__vault_drop", tool: vaultDrop as unknown as Tool, input: { area: "private", path: "_inbox/a.md" }, step: "remove" },
-  { name: "agent-kit__vault_write", tool: vaultWrite as unknown as Tool, input: { area: "private", title: "t", body: "b" }, step: "commit" },
+/** `alwaysAsks`: the board can never let it act without a card (`always-ask.ts`'s `delete`). */
+const TOOLS: Array<{ name: string; tool: Tool; input: Record<string, unknown>; step: string; alwaysAsks: boolean }> = [
+  { name: "agent-kit__vault_file", tool: vaultFile as unknown as Tool, input: { area: "private", path: "_inbox/a.md", destination: "seeds" }, step: "move", alwaysAsks: false },
+  { name: "agent-kit__vault_drop", tool: vaultDrop as unknown as Tool, input: { area: "private", path: "_inbox/a.md" }, step: "remove", alwaysAsks: true },
+  { name: "agent-kit__vault_write", tool: vaultWrite as unknown as Tool, input: { area: "private", title: "t", body: "b" }, step: "commit", alwaysAsks: false },
 ];
 
 /** The ledger row a card leaves: approved, fresh, and for exactly this call unless told otherwise. */
@@ -75,7 +77,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("Vault file, drop and write check the person who answered the card", () => {
-  for (const { name, tool, input, step } of TOOLS) {
+  for (const { name, tool, input, step, alwaysAsks } of TOOLS) {
     it(`${name}: the owner answers a scheduled job's card (requester: the app) → it runs`, async () => {
       ledger.row = approvedRow(name, input);
       await tool.execute(input, answered(APP, telegram("100")));
@@ -102,18 +104,27 @@ describe("Vault file, drop and write check the person who answered the card", ()
       expect(gitSteps).toEqual([]);
     });
 
-    it(`${name}: no card (autonomous) → the session's caller must be an allowed approver, as before`, async () => {
-      await tool.execute(input, autonomous(telegram("200")));
-      expect(gitSteps).toEqual([step]);
-      gitSteps.length = 0;
-      await expect(tool.execute(input, autonomous(APP))).rejects.toThrow(/approval refused/);
-      await expect(tool.execute(input, autonomous(telegram("999")))).rejects.toThrow(/approval refused/);
-      expect(gitSteps).toEqual([]);
-    });
+    if (alwaysAsks) {
+      it(`${name}: no card → refused, whoever the caller is: a delete always asks first`, async () => {
+        for (const caller of [telegram("100"), telegram("200"), APP]) {
+          await expect(tool.execute(input, autonomous(caller))).rejects.toThrow(/runs only from an answered card/);
+        }
+        expect(gitSteps).toEqual([]);
+      });
+    } else {
+      it(`${name}: no card (autonomous) → the session's caller must be an allowed approver, as before`, async () => {
+        await tool.execute(input, autonomous(telegram("200")));
+        expect(gitSteps).toEqual([step]);
+        gitSteps.length = 0;
+        await expect(tool.execute(input, autonomous(APP))).rejects.toThrow(/approval refused/);
+        await expect(tool.execute(input, autonomous(telegram("999")))).rejects.toThrow(/approval refused/);
+        expect(gitSteps).toEqual([]);
+      });
+    }
 
     it(`${name}: the card on record shows a different call → refused even when the owner answered`, async () => {
       ledger.row = { ...approvedRow(name, input), payloadHash: "a-different-call" };
-      await expect(tool.execute(input, answered(APP, telegram("100")))).rejects.toThrow();
+      await expect(tool.execute(input, answered(APP, telegram("100")))).rejects.toBeInstanceOf(ApprovalPayloadChangedError);
       expect(gitSteps).toEqual([]);
     });
   }

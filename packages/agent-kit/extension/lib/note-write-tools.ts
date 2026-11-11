@@ -49,8 +49,10 @@
  * service may inject `NoteWriteDeps.assertApproval`, its own one check for every gated tool (in
  * the chief of staff, `lib/approvals.ts`'s `assertApproval`: the answerer, owner only, when a card
  * was answered; the session's caller when there was no card). When it is injected it REPLACES the
- * kit's requester check; when it is omitted the kit's check runs exactly as before. The kit cannot
- * make the owner question itself: that needs the service's allow-list (`./approval-gate.ts`).
+ * kit's requester check. A tool given an area authority (`areas`) but no `assertApproval` REFUSES
+ * every call (`MissingApproverCheckError`): fail closed, never the weaker check. Only the mounted
+ * copies with no deps at all still reach the kit's requester check, and they open no area. The kit
+ * cannot make the owner question itself: that needs the service's allow-list (`./approval-gate.ts`).
  *
  * THE APPROVAL IS INJECTABLE, AND THAT IS THE POINT. If these three hard-coded eve's
  * `always()`, the permissions board would never be consulted for them: a 🚫 on "Private notes" would
@@ -169,18 +171,37 @@ export type NoteWriteDeps = NoteToolDeps & {
   approval?: NoteWriteApproval;
   /** Omitted ⇒ no check — what these three have always had (see this file's header). */
   assertApprovedCall?: NoteWriteApprovedCallCheck;
-  /** Omitted ⇒ the kit's own requester check. Given ⇒ this check instead (see this file's header). */
+  /** Given ⇒ this check instead of the kit's requester check (see this file's header). REQUIRED
+   *  whenever `areas` is given: a tool that can write but was mounted without it refuses. */
   assertApproval?: NoteWriteApproverCheck;
 };
 
+/** Refused because a tool that can open an area was mounted without its service's approver check. */
+export class MissingApproverCheckError extends Error {
+  constructor() {
+    super(
+      "this Vault write was mounted without an approver check (NoteWriteDeps.assertApproval), " +
+        "so it is refused. The mounting service must inject the check it makes for every gated tool.",
+    );
+    this.name = "MissingApproverCheckError";
+  }
+}
+
 /** The approver check, before anything else on the write path: the service's own when it
- *  injected one, the kit's requester check otherwise. Then the card check, when one was given. */
+ *  injected one. Then the card check, when one was given.
+ *
+ *  FAIL CLOSED. A tool built WITH an area authority but WITHOUT `assertApproval` is refused here:
+ *  the kit's requester check is weaker (the allow-list, not the owner; the requester, not the
+ *  answerer), so a catalogue entry that forgot the injection must not quietly get it. Only the
+ *  mounted copies with no deps at all reach the kit's requester check, and they open no area
+ *  (`writableRoot` refuses them next). */
 async function checkApproval(
   deps: NoteWriteDeps | undefined,
   ctx: { session: { auth: SessionAuthLike | null | undefined } },
   input: unknown,
 ): Promise<void> {
   if (deps?.assertApproval !== undefined) await deps.assertApproval(ctx, input);
+  else if (deps?.areas !== undefined) throw new MissingApproverCheckError();
   else assertApprover(approverFrom(ctx.session.auth));
   await deps?.assertApprovedCall?.(ctx, input);
 }
