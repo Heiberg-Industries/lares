@@ -3,9 +3,11 @@
  *
  * WHY THIS EXISTS. A tap on an approval card executes a real action, and the webhook front door
  * (`agent/channels/telegram-webhook.ts`) is the first code of ours that sees it. This gate
- * refuses a tap from anyone who is not an allowed approver THERE, before the update is forwarded
- * to the framework at all: nothing is resumed, nothing is recorded as an answer, and the card
- * stays up for whoever may actually answer it.
+ * refuses a tap from anyone who may not answer THERE, before the update is forwarded to the
+ * framework at all: nothing is resumed, nothing is recorded as an answer, and the card stays up
+ * for whoever may actually answer it. For a card that is the agent's OWNER alone: the first id on
+ * the Telegram allow-list (`ownerPrincipalId`), the same person the response policy accepts. A
+ * second allowed person may talk to the agent but is told on the tap that they cannot answer.
  *
  * eve 1.0 does pass the tapper on (`dispatchCallbackQuery` in
  * `eve/dist/src/public/channels/telegram/telegramChannel.js` resumes a tap with
@@ -33,7 +35,8 @@
  *
  * FAIL CLOSED FOR A TAP. The gate decides from what it positively recognises:
  *   - a proposal button is forwarded (that lane refuses a stranger itself);
- *   - one of eve's own buttons is forwarded only for an allowed approver;
+ *   - a tap on one of eve's cards (the `approval` lane) is forwarded only for the owner;
+ *   - a tap on eve's sign-in button is forwarded for anyone on the allow-list;
  *   - ANYTHING ELSE that is a tap is refused, whoever tapped: callback data in no known lane,
  *     data that only resembles eve's (`eve:` with something other than a base-36 number after
  *     it), no data at all, a `callback_query` that is not an object. If a later eve changes how
@@ -46,15 +49,20 @@
  * gate looks at `callback_query` regardless, so an update carrying both cannot use the one to
  * hide the other.)
  *
- * The question asked is "is this Telegram id an allowed approver". No id is hard-coded here and
- * no new environment variable is introduced: adding a second approver stays a comma in
- * `TELEGRAM_PRINCIPAL_ID`, not a code change.
+ * The questions asked are "is this Telegram id on the allow-list" and, for a card, "is it the
+ * FIRST id there". No id is hard-coded here and no new environment variable is introduced:
+ * adding a second person stays a comma in `TELEGRAM_PRINCIPAL_ID`, not a code change, and that
+ * person can talk to the agent but not answer for the owner.
+ *
+ * The `approval` lane is every request eve posts with buttons, not only tool approvals: eve puts
+ * the same `eve:<n>` data on a question with options and on its session usage-limit prompt, and
+ * the data alone cannot tell them apart. All of them are owner-only at this door.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { isAllowedPrincipalId } from "./principals.js";
+import { isAllowedPrincipalId, ownerPrincipalId } from "./principals.js";
 import { parseProposalCallback } from "./proposal-buttons.js";
 
 /**
@@ -67,7 +75,8 @@ export const HITL_CALLBACK_PREFIX = "eve:";
 /** eve's own prefix for a sign-in button (`TELEGRAM_AUTHORIZATION_CALLBACK_PREFIX`). */
 export const SIGN_IN_CALLBACK_PREFIX = "eve_auth:";
 
-/** What a refused tapper who is not an allowed approver is told, on the tap itself. Names no payload. */
+/** What a refused tapper who may not answer is told, on the tap itself: a stranger, or a second
+ *  allowed person tapping a card only the owner may answer. Names no payload. */
 export const TAP_REFUSAL = "Only this installation's owner can answer an approval. Nothing was done.";
 
 /** What anyone is told about a tap the gate does not recognise. Names no payload. */
@@ -117,8 +126,8 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 /**
  * A tap that must NOT be forwarded, or `null` for everything that may be: a message, a proposal
- * button, one of eve's own buttons tapped by an allowed approver, a body that is not a tap at
- * all. Never throws.
+ * button, a card tapped by the owner, a sign-in button tapped by anyone on the allow-list, a body
+ * that is not a tap at all. Never throws.
  */
 export function refusedTap(raw: string, env: NodeJS.ProcessEnv = process.env): TapRefusal | null {
   let update: unknown;
@@ -149,6 +158,11 @@ export function refusedTap(raw: string, env: NodeJS.ProcessEnv = process.env): T
   const tapper = from === undefined || from["is_bot"] === true ? undefined : asId(from["id"]);
   if (!isAllowedPrincipalId("telegram", tapper, env)) return refusal("not-allowed");
   if (lane === "unrecognised") return refusal("unrecognised");
+  // A card is answered by the OWNER only: the first id on the allow-list, the same source the
+  // response policy reads (`nativeAnswerDecision` in `lib/approvals.ts`). A second allowed person
+  // may talk to the agent and sign in, but their tap on a card stops here and is answered with
+  // `TAP_REFUSAL`, instead of reaching eve and being refused there with nothing said to them.
+  if (lane === "approval" && tapper !== ownerPrincipalId("telegram", env)) return refusal("not-allowed");
   return null;
 }
 

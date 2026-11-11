@@ -2,8 +2,9 @@
  * Which button taps may reach the agent on Telegram.
  *
  * A tap on an approval card executes a real action. The webhook front door is the first code of
- * ours that sees it, so the check lives there (`lib/telegram-tap-gate.ts`): a tap from anyone who
- * is not an allowed approver is refused BEFORE it is forwarded to the framework.
+ * ours that sees it, so the check lives there (`lib/telegram-tap-gate.ts`): a tap on a card from
+ * anyone but the owner (the first id on the allow-list), and a sign-in tap from anyone not on the
+ * allow-list, is refused BEFORE it is forwarded to the framework.
  *
  * The gate recognises an approval tap by its callback data, so everything here that stands for
  * "an approval tap" is built by the INSTALLED eve's own renderer, not typed in: if eve changes
@@ -80,7 +81,11 @@ process.env["TMPDIR"] = mkdtempSync(joinPath(tmpdir(), "tap-capture-"));
 
 const OWNER = 111;
 const STRANGER = 222;
+/** A second id on the allow-list: may talk to the agent, may not answer a card. */
+const SECOND = 333;
 const env = { TELEGRAM_PRINCIPAL_ID: String(OWNER) } as NodeJS.ProcessEnv;
+/** The owner first, then a second allowed person: the first id is the owner (`ownerPrincipalId`). */
+const envTwo = { TELEGRAM_PRINCIPAL_ID: `${OWNER},${SECOND}` } as NodeJS.ProcessEnv;
 
 // ── An approval card, as the installed eve renders it ────────────────────────────────────
 // eve's exports map does not expose these, so they are loaded by file path.
@@ -238,7 +243,7 @@ describe("who may tap, and what counts as a tap the gate knows", () => {
     expect(refusedTap(tap(OWNER, card()), { TELEGRAM_PRINCIPAL_ID: "  " } as NodeJS.ProcessEnv)).toMatchObject({ reason: "not-allowed" });
   });
 
-  it("gates eve's sign-in button like a card: an allowed approver only", () => {
+  it("gates eve's sign-in button by the allow-list: anyone on it, nobody else", () => {
     expect(tapLane(`${SIGN_IN_CALLBACK_PREFIX}${OWNER}`)).toBe("sign-in");
     expect(refusedTap(tap(OWNER, `${SIGN_IN_CALLBACK_PREFIX}${OWNER}`), env)).toBeNull();
     expect(refusedTap(tap(STRANGER, `${SIGN_IN_CALLBACK_PREFIX}${OWNER}`), env)).toMatchObject({ reason: "not-allowed" });
@@ -259,6 +264,60 @@ describe("who may tap, and what counts as a tap the gate knows", () => {
     expect(refusedTap("", env)).toBeNull();
     expect(refusedTap("null", env)).toBeNull();
     expect(refusedTap("[]", env)).toBeNull();
+  });
+});
+
+describe("a second allowed person: may talk, may sign in, may not answer a card", () => {
+  // The allow-list says who may START a conversation; only its FIRST id, the owner, may answer a
+  // card (`ownerPrincipalId`, the same source the response policy reads). The gate refuses a
+  // second person's tap at the door, so they are told so on the spot instead of the tap being
+  // forwarded to eve and refused there in silence.
+
+  it("lets the owner's tap on Approve and on Deny through", () => {
+    for (const button of eveButtons().buttons) {
+      expect(refusedTap(tap(OWNER, button.callback_data), envTwo), button.text).toBeNull();
+    }
+  });
+
+  it("refuses a second allowed person's tap on Approve and on Deny, as not allowed", () => {
+    const buttons = eveButtons().buttons;
+    expect(buttons.map((b) => b.text).sort()).toEqual(["Approve", "Deny"]);
+    for (const button of buttons) {
+      expect(refusedTap(tap(SECOND, button.callback_data), envTwo), button.text).toEqual({
+        callbackQueryId: "cb1",
+        chatId: String(OWNER),
+        reason: "not-allowed",
+      });
+    }
+  });
+
+  it("the owner is whoever is FIRST: the same two ids the other way round swap who may answer", () => {
+    const card = eveButtons().buttons[1]!.callback_data;
+    const swapped = { TELEGRAM_PRINCIPAL_ID: ` ${SECOND} , ${OWNER} ` } as NodeJS.ProcessEnv;
+    expect(refusedTap(tap(SECOND, card), swapped)).toBeNull();
+    expect(refusedTap(tap(OWNER, card), swapped)).toMatchObject({ reason: "not-allowed" });
+  });
+
+  it("lets a second allowed person's sign-in tap through: sign-in keeps the allow-list rule", () => {
+    expect(refusedTap(tap(SECOND, `${SIGN_IN_CALLBACK_PREFIX}${SECOND}`), envTwo)).toBeNull();
+    expect(refusedTap(tap(OWNER, `${SIGN_IN_CALLBACK_PREFIX}${OWNER}`), envTwo)).toBeNull();
+  });
+
+  it("leaves a second allowed person's proposal tap to its own lane", () => {
+    expect(refusedTap(tap(SECOND, "np:a:61"), envTwo)).toBeNull();
+  });
+
+  it("still refuses a stranger, a bot and a missing sender, on a card and on sign-in", () => {
+    const card = eveButtons().buttons[1]!.callback_data;
+    for (const data of [card, `${SIGN_IN_CALLBACK_PREFIX}${STRANGER}`]) {
+      expect(refusedTap(tap(STRANGER, data), envTwo), data).toMatchObject({ reason: "not-allowed" });
+      expect(refusedTap(tap(SECOND, data, { from: { id: SECOND, is_bot: true } }), envTwo), data).toMatchObject({ reason: "not-allowed" });
+      expect(refusedTap(tap(SECOND, data, { from: undefined }), envTwo), data).toMatchObject({ reason: "not-allowed" });
+    }
+  });
+
+  it("tells a second allowed person a button it does not recognise is unrecognised, like the owner", () => {
+    expect(refusedTap(tap(SECOND, "eve2:0"), envTwo)).toMatchObject({ reason: "unrecognised" });
   });
 });
 
@@ -382,6 +441,52 @@ describe("the webhook front door, with the tap gate in it", () => {
     expect(bot.calls).toEqual([
       { method: "answerCallbackQuery", body: { callback_query_id: "cb1", text: TAP_REFUSAL, show_alert: true } },
     ]);
+  });
+
+  it("refuses a second allowed person's tap on Approve and on Deny: nothing reaches eve, they are told only the owner can answer", async () => {
+    process.env["TELEGRAM_PRINCIPAL_ID"] = `${OWNER},${SECOND}`;
+    const forwarded = captureForward();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    for (const button of eveButtons().buttons) {
+      bot.calls.length = 0;
+      const response = await handler(post(tap(SECOND, button.callback_data)), { attachSession });
+      expect(response.status, button.text).toBe(200);
+      expect(bot.calls, button.text).toEqual([
+        { method: "answerCallbackQuery", body: { callback_query_id: "cb1", text: TAP_REFUSAL, show_alert: true } },
+      ]);
+    }
+    expect(forwarded).toEqual([]);
+  });
+
+  it("with a second person on the list, the owner's tap is still forwarded byte for byte and a second person's sign-in tap too", async () => {
+    process.env["TELEGRAM_PRINCIPAL_ID"] = `${OWNER},${SECOND}`;
+    const forwarded = captureForward();
+    const owners = tap(OWNER, approveData());
+    const signIn = tap(SECOND, `${SIGN_IN_CALLBACK_PREFIX}${SECOND}`);
+
+    await handler(post(owners), { attachSession });
+    await handler(post(signIn), { attachSession });
+
+    expect(forwarded.map((f) => f.init.body)).toEqual([owners, signIn]);
+    expect(bot.calls).toEqual([]);
+  });
+
+  it("a second allowed person's card tap without Telegram's secret: 401, no answer, not forwarded", async () => {
+    process.env["TELEGRAM_PRINCIPAL_ID"] = `${OWNER},${SECOND}`;
+    const forwarded = captureForward();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const unsigned = new Request("http://127.0.0.1/eve/v1/telegram", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: tap(SECOND, approveData()),
+    });
+
+    const response = await handler(unsigned, { attachSession });
+
+    expect(response.status).toBe(401);
+    expect(forwarded).toEqual([]);
+    expect(bot.calls).toEqual([]);
   });
 
   it("refuses a tap it does not recognise, the owner's included, and says a different thing", async () => {
