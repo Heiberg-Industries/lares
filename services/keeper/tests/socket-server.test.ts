@@ -150,6 +150,33 @@ it("never lets a secret in an unknown error's message, cause or extra fields rea
   expect(JSON.stringify(audit.mock.calls)).not.toContain("sk-live");
 });
 
+it("writes a failure's cause to the keeper's own log under the reference, and sends none of it over the socket", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => { });
+  try {
+    registerAction({ name: "apply", input: z.object({ name: z.string() }), run: async () => {
+      throw new KeeperFailedError("Apply failed. Hand-written reason.", "previous-running", { cause: Object.assign(new Error("compose start exited with status 1"), { code: "ENOENT" }) });
+    } });
+    const socket = join(dir, "keeper.sock");
+    stop = await serve({ socket, host: true, context: { actor: "unused", audit }, ownership });
+    const raw = await new Promise<string>((resolve, reject) => {
+      const client = createConnection(socket);
+      let text = "";
+      client.on("error", reject);
+      client.on("connect", () => client.end('{"action":"apply","input":{"name":"bookkeeper"}}\n'));
+      client.on("data", chunk => { text += chunk; });
+      client.on("end", () => resolve(text));
+    });
+    const reference = audit.mock.calls[0][0].operationId;
+    expect(JSON.parse(raw)).toEqual({ ok: false, outcome: "failed", error: "Apply failed. Hand-written reason.", state: "previous-running", reference });
+    const lines = logged.mock.calls.map(call => String(call[0]));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(`keeper: apply failed (previous-running) for agent bookkeeper, reference ${reference}, `);
+    const cause = lines[0]!.split("; cause: ")[1];
+    expect(cause).toBe('Error ENOENT "compose start exited with status 1"');
+    for (const text of [cause!, "compose start", "ENOENT", "cause"]) expect(raw).not.toContain(text);
+  } finally { logged.mockRestore(); }
+});
+
 it.each(KEEPER_FAILURE_STATES)("sends a failure the keeper can explain as the closed outcome failed, with its message, state (%s) and reference", async (state) => {
   registerAction({ name: "apply", input: z.object({}), run: async () => {
     throw new KeeperFailedError("Apply failed. Hand-written reason.", state, { cause: new Error("private failure detail") });

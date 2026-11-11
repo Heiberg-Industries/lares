@@ -1,5 +1,157 @@
 """Disposable CI-image runtime proof. No production data or provider credentials."""
 import subprocess,json,pathlib,tempfile,time,urllib.request,http.server,threading,os,shutil,sys,uuid,secrets,importlib.util
+# Agent memory budget, in MB. One MB here is 1024*1024 bytes, the unit `docker stats` prints as MiB.
+# Set on 11 November 2026 from a run of the image workflow on the change that added this check:
+# 2733.5 MB after start and 2796.6 MB after turns, for the chief-of-staff role. The budget is the
+# highest reading plus about 25 percent, rounded. The creative role is not measured by this probe.
+# Raise or lower it only from new readings, and say here when and from which.
+AGENT_MEMORY_BUDGET_MB=3500
+# A reading is the highest of this many looks, this many seconds apart. The second reading is taken
+# after this many more scripted turns.
+AGENT_MEMORY_SAMPLES=4;AGENT_MEMORY_SAMPLE_GAP_SECONDS=2;AGENT_MEMORY_TURNS=3
+import re
+MB=1024*1024
+def mb(n):return None if n is None else round(n/MB,1)
+def docker_size(text):
+ # A size as `docker stats` prints it ('812.3MiB', '2.35GiB'), in bytes.
+ m=re.fullmatch(r'([0-9.]+)\s*([A-Za-z]+)',text.strip())
+ if not m:raise ValueError('Not a docker size: '+text)
+ return int(float(m.group(1))*{'B':1,'kB':1000,'KB':1000,'MB':1000**2,'GB':1000**3,'KiB':1024,'MiB':1024**2,'GiB':1024**3,'TiB':1024**4}[m.group(2)])
+def memory_process(pid,proc='/proc'):
+ # One process, read on the Docker host: resident bytes, and the base names of its first two words
+ # (enough to tell a launcher from the server; never a whole command line).
+ try:status=pathlib.Path(proc,str(pid),'status').read_text();argv=pathlib.Path(proc,str(pid),'cmdline').read_bytes().decode(errors='replace').split('\0')
+ except OSError:return None # it ended between the listing and the read
+ rss=re.search(r'^VmRSS:\s+(\d+) kB',status,re.M)
+ return {'pid':int(pid),'rss':int(rss.group(1))*1024 if rss else 0,'command':' '.join(os.path.basename(a) for a in argv[:2] if a)}
+def memory_cgroup(pid,proc='/proc',mount='/sys/fs/cgroup'):
+ # The container's own cgroup directory on this host, found from its first process. None where
+ # there is no cgroup v2 memory file to read from here: a cgroup v1 host, or a Docker that keeps
+ # its containers in a virtual machine.
+ try:lines=pathlib.Path(proc,str(pid),'cgroup').read_text().splitlines()
+ except OSError:return None
+ for line in lines:
+  if line.startswith('0::') and pathlib.Path(mount+line[3:],'memory.current').is_file():return pathlib.Path(mount+line[3:])
+ return None
+def memory_cgroup_sample(directory,proc='/proc'):
+ # `bytes` is what `docker stats` shows for a container: memory.current less inactive_file (file
+ # cache the kernel gives back first). The parts are kept beside it: anon is the processes' own
+ # memory, file is cache, and shmem is what was written to the container's tmpfs mounts.
+ stat={k:int(v) for k,v in (line.split() for line in (directory/'memory.stat').read_text().splitlines() if len(line.split())==2)}
+ current=int((directory/'memory.current').read_text());inactive=stat.get('inactive_file',0)
+ sample={'source':'cgroup','bytes':current-inactive if inactive<current else current,'current':current,'anon':stat.get('anon'),'file':stat.get('file'),'shmem':stat.get('shmem'),'peak':None,'threads':None}
+ for key,file in [('peak','memory.peak'),('threads','pids.current')]:
+  try:sample[key]=int((directory/file).read_text())
+  except (OSError,ValueError):pass
+ sample['processes']=[p for p in (memory_process(pid,proc) for pid in (directory/'cgroup.procs').read_text().split()) if p]
+ return sample
+def memory_docker_sample(stats,top=None):
+ # The same figure where the cgroup files cannot be read from here: one `docker stats --no-stream
+ # --format '{{json .}}'` row, and `docker top <name> -eo pid,rss,args` for the processes.
+ row=json.loads(stats.strip().splitlines()[-1]);pids=str(row.get('PIDs',''))
+ sample={'source':'docker-stats','bytes':docker_size(row['MemUsage'].split('/')[0]),'current':None,'anon':None,'file':None,'shmem':None,'peak':None,'threads':int(pids) if pids.isdigit() else None,'processes':None}
+ if top is not None:sample['processes']=[{'pid':int(f[0]),'rss':int(f[1])*1024,'command':' '.join(os.path.basename(a) for a in f[2].split()[:2])} for f in (line.split(None,2) for line in top.splitlines()[1:]) if len(f)==3 and f[0].isdigit() and f[1].isdigit()]
+ return sample
+def memory_reading(phase,sample,pause=time.sleep,docker_stats=None,budget=None):
+ # The one place a reading is compared with the budget: the MB figure that is printed is the one compared.
+ budget=AGENT_MEMORY_BUDGET_MB if budget is None else budget;samples=[]
+ for i in range(AGENT_MEMORY_SAMPLES):
+  if i:pause(AGENT_MEMORY_SAMPLE_GAP_SECONDS)
+  samples.append(sample())
+ top=max(samples,key=lambda s:s['bytes']);processes=top['processes']
+ reading={'phase':phase,'mb':mb(top['bytes']),'budgetMb':budget,'withinBudget':mb(top['bytes'])<=budget,'source':top['source'],'samplesMb':[mb(s['bytes']) for s in samples],'currentMb':mb(top['current']),'anonMb':mb(top['anon']),'fileMb':mb(top['file']),'shmemMb':mb(top['shmem']),'peakMb':mb(top['peak']),'dockerStatsMb':None,'threads':top['threads'],'processCount':None if processes is None else len(processes),'processes':None if processes is None else [{'pid':p['pid'],'rssMb':mb(p['rss']),'node':p['command'].split()[:1]==['node'],'command':p['command']} for p in processes]}
+ if docker_stats and top['source']=='cgroup':
+  # Not part of the verdict: shows beside the cgroup figure what `docker stats` itself said a moment later.
+  try:reading['dockerStatsMb']=mb(memory_docker_sample(docker_stats())['bytes'])
+  except Exception:pass
+ return reading
+def memory_report(reading,first,summary=None,out=None):
+ # One `agent-memory:` line per reading, one `agent-memory-process:` line per process, and the same
+ # numbers as a table row in the job summary when there is one.
+ out=out or (lambda line:print(line,flush=True))
+ def show(v):
+  if isinstance(v,list):return ','.join(str(x) for x in v) or 'none'
+  return 'na' if v is None else 'yes' if v is True else 'no' if v is False else str(v)
+ r=reading;node=None if r['processes'] is None else [p['rssMb'] for p in r['processes'] if p['node']]
+ out('agent-memory: phase=%s mb=%s budget_mb=%s within_budget=%s source=%s samples_mb=%s current_mb=%s anon_mb=%s file_mb=%s shmem_mb=%s peak_mb=%s docker_stats_mb=%s processes=%s threads=%s node_rss_mb=%s'%tuple(show(v) for v in (r['phase'],r['mb'],r['budgetMb'],r['withinBudget'],r['source'],r['samplesMb'],r['currentMb'],r['anonMb'],r['fileMb'],r['shmemMb'],r['peakMb'],r['dockerStatsMb'],r['processCount'],r['threads'],node)))
+ for p in r['processes'] or []:out('agent-memory-process: phase=%s pid=%s rss_mb=%s node=%s command="%s"'%(r['phase'],p['pid'],p['rssMb'],show(p['node']),p['command']))
+ if summary:
+  with open(summary,'a') as f:
+   if first:f.write('### Agent memory in the runtime image test\n\nMB of 1024*1024 bytes. `mb` is the highest of %d looks %d s apart at what `docker stats` shows for the agent container; the budget applies to it.\n\n| phase | mb | budget | within budget | looks | anon | file | shmem | peak | docker stats | processes | threads | Node resident |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n'%(AGENT_MEMORY_SAMPLES,AGENT_MEMORY_SAMPLE_GAP_SECONDS))
+   f.write('| '+' | '.join(show(v).replace(',',', ') for v in (r['phase'],r['mb'],r['budgetMb'],r['withinBudget'],r['samplesMb'],r['anonMb'],r['fileMb'],r['shmemMb'],r['peakMb'],r['dockerStatsMb'],r['processCount'],r['threads'],node))+' |\n')
+def memory_check(readings,summary=None,out=None):
+ # Fails plainly when a reading is above the budget, and also when a reading is missing or empty,
+ # so that this check cannot pass by not measuring.
+ out=out or (lambda line:print(line,flush=True))
+ failures=['agent-memory: FAIL phase=%s mb=%s is above the budget of %s MB (AGENT_MEMORY_BUDGET_MB in runtime-image.probe.py)'%(r['phase'],r['mb'],r['budgetMb']) for r in readings if not r['withinBudget']]
+ failures+=['agent-memory: FAIL phase=%s read no memory in use'%r['phase'] for r in readings if r['mb']<=0]
+ if [r['phase'] for r in readings]!=['after_start','after_turns']:failures.append('agent-memory: FAIL the readings recorded were %s, not after_start then after_turns'%[r['phase'] for r in readings])
+ if not failures:return
+ for line in failures:out(line)
+ if summary:
+  with open(summary,'a') as f:f.write('\n'+'\n\n'.join('**'+line+'**' for line in failures)+'\n')
+ # Not an Exception: the handler below prints the agent's log and its workflow tables, which say nothing about a number.
+ raise SystemExit(1)
+def memory_self_test():
+ # No Docker: the functions above, fed fixed samples, a made-up cgroup directory and saved command output.
+ assert AGENT_MEMORY_SAMPLES>=3 and AGENT_MEMORY_SAMPLE_GAP_SECONDS>=2 and AGENT_MEMORY_TURNS>=3,'A reading needs a few looks a couple of seconds apart, and the second one at least three turns'
+ def looks(highest):
+  # The highest look is neither first nor last, so a reading that kept the first or the last look would be wrong.
+  values=[highest/2,highest]+[highest/4]*(AGENT_MEMORY_SAMPLES-2)
+  return iter([{'source':'cgroup','bytes':int(v*MB),'current':int(v*MB),'anon':None,'file':None,'shmem':None,'peak':None,'threads':None,'processes':None} for v in values]).__next__
+ def refused(readings):
+  said=[]
+  try:memory_check(readings,out=said.append)
+  except SystemExit as e:assert e.code==1;return said
+  assert not said;return None
+ pauses=[]
+ below=memory_reading('after_start',looks(299.9),pause=pauses.append,budget=300);level=memory_reading('after_turns',looks(300),pause=pauses.append,budget=300)
+ assert below['mb']==299.9 and below['withinBudget'] and level['mb']==300.0 and level['withinBudget'],'A reading at or below the budget was not within it'
+ assert below['samplesMb'][1]==299.9 and len(below['samplesMb'])==AGENT_MEMORY_SAMPLES and pauses==[AGENT_MEMORY_SAMPLE_GAP_SECONDS]*(2*AGENT_MEMORY_SAMPLES-2),'A reading is not the highest of the looks, or the looks were not spaced'
+ assert refused([below,level]) is None,'Two readings within the budget failed'
+ above_start=memory_reading('after_start',looks(300.1),pause=pauses.append,budget=300);above_turns=memory_reading('after_turns',looks(300.1),pause=pauses.append,budget=300)
+ assert not above_start['withinBudget'] and not above_turns['withinBudget'],'A reading above the budget was within it'
+ assert refused([below,above_turns])==['agent-memory: FAIL phase=after_turns mb=300.1 is above the budget of 300 MB (AGENT_MEMORY_BUDGET_MB in runtime-image.probe.py)'],'A second reading above the budget passed'
+ assert refused([above_start,level])==['agent-memory: FAIL phase=after_start mb=300.1 is above the budget of 300 MB (AGENT_MEMORY_BUDGET_MB in runtime-image.probe.py)'],'A first reading above the budget passed'
+ assert len(refused([above_start,above_turns]))==2,'Two readings above the budget did not both fail'
+ assert refused([below]) and refused([]) and refused([level,below]),'A missing reading passed'
+ assert refused([below,memory_reading('after_turns',looks(0),pause=pauses.append,budget=300)]),'An empty reading passed'
+ default=memory_reading('after_start',looks(AGENT_MEMORY_BUDGET_MB+1),pause=pauses.append)
+ assert default['budgetMb']==AGENT_MEMORY_BUDGET_MB and not default['withinBudget'],'The named budget is not the one applied'
+ try:memory_reading('after_start',lambda:(_ for _ in ()).throw(OSError('gone')),pause=pauses.append);raise AssertionError('A reading that could not be taken passed')
+ except OSError:pass
+ assert [docker_size(x) for x in ['0B','512kB','812.3MiB','2.35GiB',' 1.5GiB ']]==[0,512000,int(812.3*MB),int(2.35*1024*MB),1536*MB]
+ with tempfile.TemporaryDirectory(prefix='lares-memory-self-test-') as temp:
+  temp=pathlib.Path(temp);proc=temp/'proc';mount=temp/'cgroup';scope=mount/'system.slice/docker-fixture.scope';scope.mkdir(parents=True)
+  for pid,cgroup,status,cmdline in [('4242','0::/system.slice/docker-fixture.scope\n','Name:\tmaintenance-adm\nVmRSS:\t    2048 kB\n',b'/usr/local/lib/lares/maintenance-admission-v1\0/run/lares-maintenance/admission\0fixture\0'),('4243','0::/system.slice/docker-fixture.scope\n','Name:\tMainThread\nVmHWM:\t  600000 kB\nVmRSS:\t  512000 kB\n',b'node\0/app/services/chief-of-staff/node_modules/.bin/eve\0start\0'),('7','4:memory:/docker/fixture\n0::/\n','',b'')]:
+   (proc/pid).mkdir(parents=True);(proc/pid/'cgroup').write_text(cgroup);(proc/pid/'status').write_text(status);(proc/pid/'cmdline').write_bytes(cmdline)
+  (scope/'memory.current').write_text(str(1000*MB)+'\n');(scope/'memory.peak').write_text(str(1400*MB)+'\n');(scope/'pids.current').write_text('23\n')
+  (scope/'memory.stat').write_text('anon %d\nfile %d\nkernel 1\nshmem %d\ninactive_anon 5\nactive_file %d\ninactive_file %d\n'%(600*MB,380*MB,50*MB,180*MB,200*MB))
+  # 4999 is listed but gone: a process that ended between the listing and the read is left out.
+  (scope/'cgroup.procs').write_text('4242\n4243\n4999\n')
+  assert memory_cgroup('4242',proc,str(mount))==scope and memory_cgroup('7',proc,str(mount)) is None and memory_cgroup('4999',proc,str(mount)) is None,'The container cgroup was not found, or one was found where there is none'
+  sample=memory_cgroup_sample(scope,proc)
+  assert sample['bytes']==800*MB and sample['current']==1000*MB and sample['peak']==1400*MB and sample['threads']==23,'The cgroup figure is not memory.current less inactive_file'
+  assert sample['processes']==[{'pid':4242,'rss':2048*1024,'command':'maintenance-admission-v1 admission'},{'pid':4243,'rss':512000*1024,'command':'node eve'}],'Processes were not read from the cgroup'
+  (scope/'memory.peak').unlink();assert memory_cgroup_sample(scope,proc)['peak'] is None,'A kernel without memory.peak was not allowed for'
+  stats='WARNING: fixture\n{"MemUsage":"812.3MiB / 15.61GiB","PIDs":"23","Name":"fixture"}\n'
+  reading=memory_reading('after_start',lambda:sample,pause=pauses.append,docker_stats=lambda:stats,budget=900)
+  assert reading['mb']==800.0 and reading['withinBudget'] and reading['dockerStatsMb']==812.3 and reading['processCount']==2 and [p['rssMb'] for p in reading['processes'] if p['node']]==[500.0]
+  said=[];memory_report(reading,True,str(temp/'summary.md'),said.append);memory_report(level,False,str(temp/'summary.md'),said.append)
+  assert said==['agent-memory: phase=after_start mb=800.0 budget_mb=900 within_budget=yes source=cgroup samples_mb=%s current_mb=1000.0 anon_mb=600.0 file_mb=380.0 shmem_mb=50.0 peak_mb=1400.0 docker_stats_mb=812.3 processes=2 threads=23 node_rss_mb=500.0'%','.join(['800.0']*AGENT_MEMORY_SAMPLES),'agent-memory-process: phase=after_start pid=4242 rss_mb=2.0 node=no command="maintenance-admission-v1 admission"','agent-memory-process: phase=after_start pid=4243 rss_mb=500.0 node=yes command="node eve"','agent-memory: phase=after_turns mb=300.0 budget_mb=300 within_budget=yes source=cgroup samples_mb=%s current_mb=300.0 anon_mb=na file_mb=na shmem_mb=na peak_mb=na docker_stats_mb=na processes=na threads=na node_rss_mb=na'%','.join(str(x) for x in level['samplesMb'])],'The recorded lines changed: '+repr(said)
+  summary=(temp/'summary.md').read_text()
+  assert summary.count('### Agent memory')==1 and '| after_start | 800.0 | 900 | yes |' in summary and '| after_turns | 300.0 | 300 | yes |' in summary,'The job summary does not carry the readings'
+  try:memory_check([above_start,level],str(temp/'summary.md'),said.append);raise AssertionError('A reading above the budget passed')
+  except SystemExit:assert '**agent-memory: FAIL phase=after_start mb=300.1 is above the budget of 300 MB' in (temp/'summary.md').read_text(),'The job summary does not carry the failure'
+  json.dumps([reading,level])
+ fallback=memory_docker_sample(stats,'PID                 RSS                 COMMAND\n4242                2048                /usr/local/lib/lares/maintenance-admission-v1 /run/lares-maintenance/admission fixture\n4243                512000              node /app/services/chief-of-staff/node_modules/.bin/eve start\n')
+ assert fallback['source']=='docker-stats' and fallback['bytes']==int(812.3*MB) and fallback['threads']==23 and fallback['processes']==sample['processes'],'The docker stats and docker top output was not read'
+ assert memory_docker_sample(stats)['processes'] is None
+ if sys.platform=='linux':
+  own=memory_process(os.getpid());assert own and own['rss']>0 and own['command'],'This process could not be read from /proc: '+repr(own)
+ print('agent memory budget self-test passed')
+memory_self_test()
+if sys.argv[1:]==['--self-test']:sys.exit(0)
 repo=pathlib.Path(__file__).resolve().parents[3]
 root=pathlib.Path(tempfile.mkdtemp(prefix='lares-image-proof-'));root.chmod(0o755)
 custody_spec=importlib.util.spec_from_file_location('maintenance_custody',repo/'services/box/ops/maintenance-custody.py')
@@ -38,6 +190,18 @@ def wait_quiet(what):
   if calm==2:return
   time.sleep(.5)
  raise RuntimeError('Workflow work never went quiet '+what)
+memory_readings=[]
+def memory_sample():
+ # Read on the host, so nothing is started inside the container to measure it (the image has no `ps`).
+ directory=memory_cgroup(cmd('docker','inspect','--format','{{.State.Pid}}',name+'-runtime'))
+ if directory:return memory_cgroup_sample(directory)
+ stats=cmd('docker','stats','--no-stream','--format','{{json .}}',name+'-runtime')
+ try:top=cmd('docker','top',name+'-runtime','-eo','pid,rss,args')
+ except Exception:top=None
+ return memory_docker_sample(stats,top)
+def memory(phase):
+ reading=memory_reading(phase,memory_sample,docker_stats=lambda:cmd('docker','stats','--no-stream','--format','{{json .}}',name+'-runtime'))
+ memory_report(reading,not memory_readings,os.environ.get('GITHUB_STEP_SUMMARY'));memory_readings.append(reading)
 requests=[]
 app_password=secrets.token_urlsafe(32)
 financial_password=secrets.token_urlsafe(32)
@@ -312,6 +476,9 @@ void main();"""
  for k,v in env.items():args+=['-e',k+'='+v]
  cmd(*args,image,'/run/lares-maintenance/admission',admission_identity['installationId'],str(admission_identity['epoch']),'--','/usr/local/bin/lares-start')
  wait_healthy()
+ # Memory, first reading: healthy, nothing asked of it yet, and before the first `docker exec`
+ # below (a process started that way runs inside this container and is counted with it).
+ wait_quiet('after start');memory('after_start')
  # Exercise the shipped ordinary-tool factory without a token mount or provider network call.
  outside_proof=root/'outside-tools.mts'
  outside_proof.write_text("import {existsSync} from 'node:fs';import {resolveOutsideTools} from '/app/packages/agent-kit/src/outside-connections.ts';\n"
@@ -356,7 +523,16 @@ void main();"""
  assert len(requests)>request_count,'No new model call for the interrupted turn after restart'
  wait_quiet('after the recovered turn')
  request_count=len(requests);fifth=turn(fourth);assert fifth['sessionId']==third['sessionId'];assert len(requests)>request_count,'Recovered conversation did not answer a new message'
- print(json.dumps({'status':'PASS','mountedPersonaReachedModel':True,'aliasPinnedAcrossRestart':True,'dynamicCatalogueAndSkillToolsRetainedAcrossRestart':True,'newSessionHonorsRemovedCatalogueGrant':True,'newSessionHonorsRemovedSkill':True,'newSessionReadsNewAliasAndDuties':True,'restartMidTurnRecovers':True,'separateApplicationLogin':True,'applicationCredentialRejectedByWorkflow':True,'workflowSchemaPreparedOffline':True,'gatewayIsLocalFixture':True}))
+ # Memory, second reading: more scripted turns, each allowed to finish, so the process measured has
+ # answered these and the two above since its last restart. They alternate a new conversation and a
+ # second message in it, the two ways of sending a turn already used above. The budget is checked
+ # only here, after both readings are recorded and every check above has had its say.
+ request_count=len(requests);latest=None
+ for i in range(AGENT_MEMORY_TURNS):wait_quiet('before memory turn '+str(i+1));latest=turn(latest) if i%2 else turn()
+ assert len(requests)>=request_count+AGENT_MEMORY_TURNS,'The memory turns did not each reach the model'
+ wait_quiet('after the memory turns');memory('after_turns')
+ memory_check(memory_readings,os.environ.get('GITHUB_STEP_SUMMARY'))
+ print(json.dumps({'status':'PASS','mountedPersonaReachedModel':True,'aliasPinnedAcrossRestart':True,'dynamicCatalogueAndSkillToolsRetainedAcrossRestart':True,'newSessionHonorsRemovedCatalogueGrant':True,'newSessionHonorsRemovedSkill':True,'newSessionReadsNewAliasAndDuties':True,'restartMidTurnRecovers':True,'separateApplicationLogin':True,'applicationCredentialRejectedByWorkflow':True,'workflowSchemaPreparedOffline':True,'gatewayIsLocalFixture':True,'agentMemory':memory_readings}))
 except Exception:
  logs=subprocess.run(['docker','logs',name+'-runtime'],capture_output=True,text=True)
  print((logs.stdout+logs.stderr)[-24000:],flush=True)

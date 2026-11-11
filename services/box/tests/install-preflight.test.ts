@@ -212,3 +212,88 @@ describe("the installer, before it writes anything", () => {
     expect(calls.filter((c) => writeCapableStubs.includes(c!))).toEqual([]);
   });
 });
+
+// The Google sign-in settings file is checked before anything is written. One message
+// ("malformed") used to cover three different mistakes, and sent a person to the value when the
+// line's NAME had lost its first letter in a paste. Each case below is one a person can act on,
+// and none of them may print a value from the file — only ever a line's name.
+describe("the installer, reading the Google sign-in settings file before it writes anything", () => {
+  const CLIENT_ID = "12345-fixture.apps.googleusercontent.com";
+  const SECRET_LINE = "GOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n";
+
+  /** Save the settings file and run the real preflight (not --dry-run, which skips this check). */
+  function runWithSettings(contents: string) {
+    mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
+    writeFileSync(join(prefix, "etc", "lares", "console-oauth.env"), contents);
+    const before = snapshotTree(prefix);
+    const r = run(["--yes"]);
+    expect(snapshotTree(prefix)).toEqual(before);   // refused before writing anything
+    return r;
+  }
+
+  it("names the line it found when the name lost its first letter, and does not blame the value", () => {
+    const r = runWithSettings(`OOGLE_CLIENT_ID_CONSOLE=${CLIENT_ID}\n${SECRET_LINE}`);
+    expect(r.code).toBe(78);
+    expect(r.stderr).toContain("no line named GOOGLE_CLIENT_ID_CONSOLE");
+    expect(r.stderr).toContain("(found OOGLE_CLIENT_ID_CONSOLE)");
+    expect(r.stderr).toContain("console-oauth.env");
+    expect(r.stderr).not.toMatch(/malformed/);
+    expect(r.stderr).not.toMatch(/is missing/);
+    expect(r.stderr).not.toContain(CLIENT_ID);
+    expect(r.stderr).not.toContain("12345");
+    expect(r.stderr).not.toContain("fixture-secret");
+    expect(r.stdout).not.toContain(CLIENT_ID);
+  });
+
+  it.each([
+    ["more than one leading letter lost", `GLE_CLIENT_ID_CONSOLE=${CLIENT_ID}\n`, "(found GLE_CLIENT_ID_CONSOLE)"],
+    ["a different letter case", `google_client_id_console=${CLIENT_ID}\n`, "(found google_client_id_console)"],
+    ["spaces around the = sign", `GOOGLE_CLIENT_ID_CONSOLE = ${CLIENT_ID}\n`, "(found GOOGLE_CLIENT_ID_CONSOLE with spaces around it)"],
+    ["spaces in front of the name", `  GOOGLE_CLIENT_ID_CONSOLE=${CLIENT_ID}\n`, "(found GOOGLE_CLIENT_ID_CONSOLE with spaces around it)"],
+  ])("names a near-miss line with %s", (_what, contents, found) => {
+    const r = runWithSettings(contents + SECRET_LINE);
+    expect(r.code).toBe(78);
+    expect(r.stderr).toContain("no line named GOOGLE_CLIENT_ID_CONSOLE");
+    expect(r.stderr).toContain(found);
+    expect(r.stderr).not.toMatch(/malformed/);
+    expect(r.stderr).not.toContain(CLIENT_ID);
+    expect(r.stderr).not.toContain("fixture-secret");
+  });
+
+  it("says the line is missing when no line has that name or anything close to it", () => {
+    const r = runWithSettings(SECRET_LINE);
+    expect(r.code).toBe(78);
+    expect(r.stderr).toContain("the GOOGLE_CLIENT_ID_CONSOLE line is missing");
+    expect(r.stderr).toContain("console-oauth.env");
+    expect(r.stderr).not.toMatch(/malformed/);
+    expect(r.stderr).not.toMatch(/found/);
+    expect(r.stderr).not.toContain("fixture-secret");
+  });
+
+  it("never repeats a line that has no name at all, because it may be a pasted value", () => {
+    const r = runWithSettings(`${CLIENT_ID}\n${SECRET_LINE}`);
+    expect(r.code).toBe(78);
+    expect(r.stderr).toContain("the GOOGLE_CLIENT_ID_CONSOLE line is missing");
+    expect(r.stderr).not.toContain(CLIENT_ID);
+    expect(r.stderr).not.toContain("12345");
+  });
+
+  it("still says the value is malformed when the line has the right name and the wrong shape", () => {
+    const r = runWithSettings(`GOOGLE_CLIENT_ID_CONSOLE="${CLIENT_ID}"\n${SECRET_LINE}`);
+    expect(r.code).toBe(78);
+    expect(r.stderr).toContain("the Google console client ID is malformed");
+    expect(r.stderr).not.toMatch(/no line named|is missing/);
+    expect(r.stderr).not.toContain(CLIENT_ID);
+    expect(r.stderr).not.toContain("fixture-secret");
+  });
+
+  // A correct file on a box with one unrelated problem: the run stops at the report, so the
+  // installer writes nothing, and the report shows whether this check added a problem of its own.
+  it("has nothing to say about a correct file", () => {
+    stub("free", 'echo "Mem: 1024 512 512"');
+    const r = runWithSettings(`GOOGLE_CLIENT_ID_CONSOLE=${CLIENT_ID}\n${SECRET_LINE}`);
+    expect(r.code).toBe(78);
+    expect(r.stderr).toMatch(/memory/i);
+    expect(r.stderr).not.toMatch(/GOOGLE_CLIENT_ID_CONSOLE|client ID|console-oauth/);
+  });
+});
