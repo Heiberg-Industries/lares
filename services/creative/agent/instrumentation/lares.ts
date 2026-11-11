@@ -45,9 +45,9 @@ import { installAttachmentHydration } from "@lares/agent-kit/attachment-hydratio
 import { registerAgent } from "@lares/agent-kit/agent-registry";
 import { grantedToolNames } from "@lares/agent-kit/catalogue";
 import { releaseStaleWorkflowLocks, workflowDatabaseUrl } from "@lares/agent-kit/release-stale-workflow-locks";
-import { CATALOGUE } from "../catalogue/index.js";
+import { CATALOGUE } from "../../catalogue/index.js";
 import { bootDefinitionOrStop } from "@lares/agent-kit/boot-definition";
-import { BOOT, thisAgent } from "../lib/definition.js";
+import { BOOT, thisAgent } from "../../lib/definition.js";
 
 // FIRST in the module, above the awaited start-up work below (neither of those calls a model;
 // this keeps it true if they ever do). Nothing can ask for a model before this has run. The engine's model is a provider object on the

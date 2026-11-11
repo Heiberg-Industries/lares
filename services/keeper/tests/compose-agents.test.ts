@@ -17,6 +17,19 @@ it('renders real YAML with own identity, two Slack secrets and stable read-only 
  expect(JSON.stringify(doc)).not.toContain('telegram-token');expect(s.networks.test_default.ipv4_address).toBe(agent.address);
  expect(Object.keys(doc.services)).toEqual(['lares-bookkeeper']);
 });
+// eve keeps the sandbox template the image was built with under .eve/sandbox-cache and copies it
+// into a per-conversation folder beside it. A writable mount over the whole cache hides the
+// template, and every conversation that needs the sandbox then fails.
+it.each(['creative','chief-of-staff'] as const)('makes only the %s sandbox conversation folders writable, never the whole sandbox cache',role=>{
+ const s=parse(renderAgentsCompose([{...agent,role}],{...opts,imageByRole:{[role]:image}})).services['lares-bookkeeper'];
+ const cache=`/app/services/${role}/.eve/sandbox-cache`,targets=(s.tmpfs as string[]).map(entry=>entry.split(':')[0]);
+ expect(s.tmpfs).toContain(`${cache}/just-bash/sessions:uid=10001,gid=10001,mode=0700,size=256m`);
+ // No entry is the cache itself or any folder above it.
+ expect(targets.filter(target=>cache===target||cache.startsWith(target.endsWith('/')?target:target+'/'))).toEqual([]);
+ expect(targets.filter(target=>target.startsWith(cache+'/'))).toEqual([`${cache}/just-bash/sessions`]);
+ expect(s.read_only).toBe(true);expect(s.user).toBe('10001:10001');
+ expect(s.cap_drop).toEqual(['ALL']);expect(s.security_opt).toEqual(['no-new-privileges:true']);
+});
 it('mounts Keeper-prepared Vault sockets only for the chief runtime',()=>{
  const chief={...agent,role:'chief-of-staff' as const};
  const chiefOpts={...opts,imageByRole:{'chief-of-staff':image}};

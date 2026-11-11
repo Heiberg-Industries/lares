@@ -5,7 +5,7 @@ const calls = vi.hoisted(() => ({ summary: vi.fn(), hydration: vi.fn(), register
 vi.mock("@lares/agent-kit/approval-summary", () => ({ registerApprovalSummary: (...args: unknown[]) => { calls.order.push("summary"); calls.summary(...args); } }));
 vi.mock("@lares/agent-kit/attachment-hydration", () => ({ installAttachmentHydration: (...args: unknown[]) => { calls.order.push("hydration"); calls.hydration(...args); } }));
 vi.mock("@lares/agent-kit/agent-registry", () => ({ registerAgent: calls.register }));
-import instrumentation from "../agent/instrumentation.js";
+import instrumentation from "../agent/instrumentation/lares.js";
 
 // eve 1.0's `defineInstrumentation` has no top-level `recordInputs` / `recordOutputs`: what a trace
 // carries is decided by `tracePolicy` alone (docs/guides/instrumentation/instrumentation.mdx,
