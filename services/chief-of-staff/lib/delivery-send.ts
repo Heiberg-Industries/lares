@@ -93,7 +93,11 @@ export async function sendTurn(routed: Routed, rt: TurnRuntime, prompt: string, 
     ? rt.to(rt.telegram, { chatId: routed.target }).send(prompt, {
         auth: { ...rt.appAuth, attributes: { ...telegramPushAttributes(o.lane, routed.target), ...continuityAttributes } },
       })
-    : rt.to(rt.slack, { channelId: routed.target }).send(prompt, {
+    // Slack: the conversation is started at the owner's direct-message channel, not at the user
+    // id, or the approval cards it posts have buttons that reach nothing (see `Routed`). A lookup
+    // that fails rejects here, before anything is sent: no fallback to the user id, so the gate
+    // records "not sent" and the item stays eligible.
+    : rt.to(rt.slack, { channelId: await routed.conversationAddress() }).send(prompt, {
         auth: { ...rt.appAuth, attributes: { lane: o.lane, ...continuityAttributes } },
       });
   rt.waitUntil(task);
