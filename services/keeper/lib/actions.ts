@@ -82,7 +82,11 @@ const LOG_RAW_MAX = 4000;
 const LOG_AGENT = /^[a-z][a-z0-9-]{1,30}$/;
 const LOG_ERROR_NAME = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
 const LOG_ERROR_CODE = /^[A-Za-z0-9_.-]{1,32}$/;
-/** Applied in this order to every message a cause summary prints, after the marked-secret scrubber. */
+/** A value after a name: quoted up to its closing quote (and anything glued to it), or an unquoted
+ * run up to the next whitespace, with a leading scheme word (`Basic xyz`) taken along. */
+const LOG_VALUE = String.raw`(?:"(?:[^"\\]|\\.)*"?[^\s,;}\])]*|'(?:[^'\\]|\\.)*'?[^\s,;}\])]*|(?:(?:[Bb]asic|BASIC|[Bb]earer|BEARER|[Tt]oken|TOKEN|[Dd]igest|DIGEST|[Nn]egotiate|NEGOTIATE|[Aa]pi[Kk]ey|APIKEY)\s+)?\S+)`;
+/** Applied in this order to every message a cause summary prints, after the marked-secret scrubber.
+ * Hiding too much is fine here; a harmless word after `key:` is an acceptable loss. */
 const LOG_PATTERNS: readonly (readonly [RegExp, string])[] = [
   [/\b[a-z][a-z0-9+.-]*:\/\/[^\s'"]+/gi, "<url>"],
   [/\bBearer\s+\S+/gi, "Bearer <token>"],
@@ -90,8 +94,13 @@ const LOG_PATTERNS: readonly (readonly [RegExp, string])[] = [
   [/\bxox[a-z]-[A-Za-z0-9-]+/gi, "<token>"],
   [/\b\d{6,12}:[A-Za-z0-9_-]{30,}/g, "<token>"],
   [/\b(?:ntn|secret)_[A-Za-z0-9]{20,}/g, "<token>"],
-  [/\b([A-Z][A-Z0-9_]{2,})=\S+/g, "$1=<redacted>"],
-  [/\b(password|passwd|pwd|secret|token|key)(\s*[=:]\s*)\S+/gi, "$1$2<redacted>"],
+  // Environment style: NAME=value and NAME = value for any upper-case name, NAME_PART: value for one with an underscore
+  // (so that `ENOENT: no such file` stays readable).
+  [new RegExp(String.raw`\b([A-Z][A-Z0-9_]{2,}["']?\s*=\s*)${LOG_VALUE}`, "g"), "$1<redacted>"],
+  [new RegExp(String.raw`\b([A-Z][A-Z0-9]*_[A-Z0-9_]*["']?\s*:\s*)${LOG_VALUE}`, "g"), "$1<redacted>"],
+  // Any name that contains a secret word, with whatever is joined to it by `_`, `.` or `-`, quoted or
+  // not: password, api_key, "client_secret", access-token, Authorization, SLACK_BOT_TOKEN.
+  [new RegExp(String.raw`(?<![\w.-])([\w.-]*(?:pass|pwd|secret|token|key|auth|credential|cookie|signature)[\w.-]*["']?\s*[=:]\s*)${LOG_VALUE}`, "gi"), "$1<redacted>"],
   [/[A-Za-z0-9+/_=-]{32,}/g, "<redacted>"],
 ];
 const oneLine = (value: string): string => value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();

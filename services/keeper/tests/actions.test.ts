@@ -327,6 +327,54 @@ it("strips every listed secret shape from a cause, reads no property but name, c
   expect(lines[1]!.length).toBe(1000);
   expect(lines[1]!.endsWith("…")).toBe(true);
 });
+it.each([
+  ["a JSON key in double quotes", `request body {"password":"hunter2json"} was rejected`, ["hunter2json"]],
+  ["a key in single quotes", `options were {'password': 'singleval9'}`, ["singleval9"]],
+  ["a number under a quoted key, and the key after it", `sent {"pin_token": 48151623, "client_secret": "afterval7"}`, ["48151623", "afterval7"]],
+  ["snake_case with a prefix", "config api_key: snakeval1 was refused", ["snakeval1"]],
+  ["snake_case with a prefix and equals", "config access_token=snakeval2 was refused", ["snakeval2"]],
+  ["snake_case ending in the secret word", "config client_secret=snakeval3 was refused", ["snakeval3"]],
+  ["snake_case with both", "config slack_bot_token=snakeval4 was refused", ["snakeval4"]],
+  ["dotted and dashed names", "set gateway.master-key: dottedval5 and x-api-key=dashedval6 failed", ["dottedval5", "dashedval6"]],
+  ["an upper-case name and a colon", "environment SLACK_BOT_TOKEN: upperval1 is wrong", ["upperval1"]],
+  ["an upper-case name and a spaced equals", "environment GATEWAY_KEY = upperval2 is wrong", ["upperval2"]],
+  ["an upper-case name without a secret word, and a colon", "environment NOTION_SOURCE_ID: upperval3 is wrong", ["upperval3"]],
+  ["an upper-case name without a secret word, and a spaced equals", "environment WORKSPACE = upperval4 is wrong", ["upperval4"]],
+  ["a scheme word after an upper-case name", "environment PROXY_AUTH = Basic dXBwZXI6dmFs is wrong", ["dXBwZXI6dmFs", "Basic"]],
+  ["Authorization: Basic", "upstream said 401 for Authorization: Basic dXNlcjpwYXNz on retry", ["dXNlcjpwYXNz"]],
+  ["Authorization: Token", "upstream said 401 for Authorization: Token authtokval1 on retry", ["authtokval1"]],
+  ["Authorization: Bearer", "upstream said 401 for Authorization: Bearer authbearval2 on retry", ["authbearval2"]],
+  ["a header object", `headers {"authorization":"Basic aGVhZGVyOnZhbA==","cookie":"sid=cookieval3"}`, ["aGVhZGVyOnZhbA", "cookieval3"]],
+  ["a double-quoted value with spaces", `login with password = "hunter 2" failed`, ["hunter", ` 2"`]],
+  ["a single-quoted value with spaces", "login with passphrase: 'correct horse staple' failed", ["correct", "horse", "staple"]],
+  ["a quoted value with an escaped quote", String.raw`login with secret="first\"second part" failed`, ["first", "second", "part"]],
+  ["a quoted value that never closes", `login with token: "openval8 and the rest`, ["openval8", "the rest"]],
+  ["a value on the next line", "credentials:\n  nextlineval9", ["nextlineval9"]],
+  ["a query string without its address", "retry with token=queryval1&signature=queryval2", ["queryval1", "queryval2"]],
+])("strips a secret written as %s from the cause", async (_shape, message, hidden) => {
+  const c = context();
+  registerAction({ name: "leaky", input: z.object({}), run: async () => { throw new Error(message); } });
+  await caught(runAction("leaky", {}, c));
+  const lines = errorLines();
+  expect(lines).toHaveLength(1);
+  // Scrubbed, not merely cut off: the message is short enough to be printed whole.
+  expect(lines[0]).toContain("<redacted>");
+  expect(lines[0]).not.toContain("…");
+  for (const value of hidden) expect(lines[0]).not.toContain(value);
+});
+it.each([
+  "ENOENT: no such file or directory, open 'agent.json'",
+  "connect ECONNREFUSED 127.0.0.1:5432",
+  'password authentication failed for user "keeper"',
+  'duplicate key value violates unique constraint "agent_doors_pkey"',
+  "Native runtime authority changed during start and the owned runtime could not be stopped",
+  "Runtime held: native budget activation required",
+])("leaves an ordinary cause readable: %s", async (message) => {
+  const c = context();
+  registerAction({ name: "plain", input: z.object({}), run: async () => { throw new Error(message); } });
+  await caught(runAction("plain", {}, c));
+  expect(errorLines()).toEqual([expect.stringContaining(`; cause: Error "${message}"`)]);
+});
 it("logs an audit that cannot be written: no reference when the action never ran, the reference when its record could not be closed", async () => {
   const run = vi.fn(async () => { throw new KeeperFailedError("Apply failed.", "previous-running", { cause: new Error("start failed") }); });
   registerAction({ name: "apply", input: z.object({ name: z.string() }), run });

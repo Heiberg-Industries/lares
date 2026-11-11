@@ -615,16 +615,14 @@ export class AgentLifecycle {
         await this.publishCompose();
         if ((await this.imageState(name)) === 'stopped') return 'stopped';
         await this.docker.stop(name);
+        let result: { running: boolean; healthy: boolean | null };
         try {
             await this.apply(plan);
-            const result = await this.startWithCurrentAuthority(name, String(row.address).split('/')[0]);
-            await this.recordSuccessfulDefinitionStart(name, definitionFiles, result);
-            // Held by the budget guard after the restart: stopped, and status() already says why.
-            return result.running === true ? 'restarted' : 'stopped';
+            result = await this.startWithCurrentAuthority(name, String(row.address).split('/')[0]);
         }
         catch (error) {
-            // The agent is stopped now. Mark it pending so the console offers Apply, which starts it
-            // again; the failure itself still reaches the caller unchanged.
+            // The firewall step or the start itself failed, so the agent is stopped. Mark it pending so
+            // the console offers Apply, which starts it again; the failure still reaches the caller unchanged.
             try {
                 await this.pool.query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'A settings change stopped this agent and it could not start again; press Apply connection changes to start it.']);
             }
@@ -637,6 +635,12 @@ export class AgentLifecycle {
             }
             throw error;
         }
+        // Held by the budget guard after the restart: stopped, and status() already says why.
+        if (result.running !== true) return 'stopped';
+        // From here the agent is running. A failure in recording that start fails the caller, as it
+        // always did, but never marks a running agent as one that could not start.
+        await this.recordSuccessfulDefinitionStart(name, definitionFiles, result);
+        return 'restarted';
     }
     private async connections(a: AgentContainer, apply: boolean): Promise<AgentContainer> {
         await this.applyMeetingsSource(a);

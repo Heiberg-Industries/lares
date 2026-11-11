@@ -1156,6 +1156,21 @@ it('marks the agent pending when the firewall step of a settings restart fails, 
   expect(await l.status('bookkeeper')).toEqual({pending:true,reason:SETTINGS_RESTART_FAILED});
  }finally{fail=undefined;}
 });
+it('does not mark a running agent pending when a step after a healthy settings restart fails, and still reports that failure',async()=>{
+ const chief=await chiefFixture();
+ const agentDir=join(root,'agents','bookkeeper');mkdirSync(agentDir);
+ writeFileSync(join(agentDir,'agent.json'),JSON.stringify(chief));writeFileSync(join(agentDir,'duties.md'),'Restart duties.\n');writeFileSync(join(agentDir,'voice.md'),'Restart voice.\n');
+ await lifecycle().create('bookkeeper',chief);
+ // The start succeeds and the agent is running; someone saves the definition while it starts, so the
+ // keeper refuses to record which definition is applied.
+ const editedWhileStarting:DockerBoundary={...docker,start:async(n,address)=>{started.push(address);await step('start:'+n);writeFileSync(join(agentDir,'duties.md'),'Edited while the agent was starting.\n');}};
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},editedWhileStarting,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ events=[];
+ await expect(l.applyInstallationSettings('bookkeeper')).rejects.toThrow('Definition files changed while the runtime was starting');
+ expect(events.filter(event=>event==='stop:bookkeeper'||event==='start:bookkeeper')).toEqual(['stop:bookkeeper','start:bookkeeper']);
+ expect((await pool.query("SELECT pending,pending_reason FROM agent_resources WHERE name='bookkeeper'")).rows[0]).toEqual({pending:false,pending_reason:null});
+ expect(await l.status('bookkeeper')).toEqual({pending:false,reason:null});
+});
 it('still reports the restart failure itself when the stopped agent cannot be marked pending either',async()=>{
  const chief=await chiefFixture();
  const l=lifecycle();await l.create('bookkeeper',chief);
