@@ -11,7 +11,16 @@ script = '/app/services/keeper/tests/vault-files-image.probe.ts'
 password = 'disposable-vault-image-probe'
 url = f'postgres://proof:{password}@proof-db:5432/proof'
 
-def command(*args, input=None, check=True, timeout=90):
+def command(*args, input=None, check=True, timeout=90, separate_stderr=False):
+    if separate_stderr:
+        # The Keeper logs on stderr (one line for each refused Vault request). Keep those lines out of
+        # the value the caller parses, and pass them on so they still show in this probe's own output.
+        result = subprocess.run(args, input=input, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                check=False, timeout=timeout)
+        sys.stderr.write(result.stderr)
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, args, output=result.stdout, stderr=result.stderr)
+        return result.stdout.strip()
     result = subprocess.run(args, input=input, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             check=check, timeout=timeout)
     return result.stdout.strip()
@@ -31,7 +40,7 @@ def keeper(mode, timeout=90, managed=False, runtime_user=False):
     if runtime_user:
         args += ['--user', '10001:10001']
     args += ['-e', 'VAULT_PROBE_DATABASE_URL=' + url, '--entrypoint', tsx, image, script, mode]
-    return command(*args, timeout=timeout)
+    return command(*args, timeout=timeout, separate_stderr=True)
 
 try:
     root.chmod(0o755)
