@@ -996,3 +996,174 @@ describe("a conversation the agent has ended", () => {
     }
   });
 });
+
+it("runs against the agent kit's own envelope check, which refuses a field it does not list", async () => {
+  // Earlier, while the kit on this branch still expected the older bodies, these tests used a
+  // stand-in for its check and printed which one they ran against. There is no stand-in any more.
+  // This is that line as an assertion: the check the proxy calls is the kit's real one, and it
+  // is the strict one — so a body the proxy sends on has passed the same lists the agent applies.
+  const kit = await vi.importActual<typeof import("@lares/agent-kit/private-console-envelope")>("@lares/agent-kit/private-console-envelope");
+  const takes = (payload: unknown, path: string) => { try { kit.assertPrivateConsoleEnvelope(payload, path); return true; } catch { return false; } };
+  const PATH = "/eve/v1/session/wrun_A";
+  expect(takes({ message: "x" }, PATH)).toBe(true);
+  expect(takes({ answers: [{ interactionId: "int_A", optionId: "deny" }] }, PATH)).toBe(true);
+  expect(takes({ reason: "done" }, `${PATH}/end`)).toBe(true);
+  for (const refused of [
+    { message: "x", inbox: "opaque" },
+    { message: "x", turnPolicy: "steer" },
+    { answers: [{ interactionId: "int_A", optionId: "cancel" }] },
+    { answers: [{ interactionId: "int_A", optionId: "approve", text: "t" }] },
+    { inputResponses: [{ requestId: "int_A", optionId: "approve" }] },
+  ]) expect(takes(refused, PATH), JSON.stringify(refused)).toBe(false);
+  expect(takes({ turnId: null }, `${PATH}/cancel`)).toBe(false);
+  // And with nothing overriding it, a request through the proxy is shown to that same check.
+  expect(envelope.check).toBeUndefined();
+  const d = deps();
+  expect((await forwardChat(sessionRequest("eve/v1/session/wrun_A", "POST"), "helper", "eve/v1/session/wrun_A", d)).status).toBe(200);
+  expect(envelope.seen).toEqual([{ payload: { message: "hello" }, path: PATH }]);
+});
+
+/**
+ * THE WHOLE OUTGOING SURFACE, driven by the framework's OWN client.
+ *
+ * Nothing here is written by hand: the framework's shipped `Client` makes every request the chat
+ * page can cause, each goes through `forwardChat`, and a stand-in agent records the body that
+ * reaches it. The agent refuses any field it does not list, so every recorded body must be one of
+ * the listed shapes exactly. If a later client library adds a field of its own — as this one adds
+ * `inbox` — this fails: either the proxy refuses the send (the call throws), or an unlisted field
+ * shows up in what was recorded.
+ */
+describe("what leaves the console when the framework's own client talks through it", () => {
+  const BASE = "https://console.example.invalid/api/chat/helper";
+  type Sent = { path: string; raw: string; body: unknown; purpose: string | null };
+
+  async function drive(run: (client: InstanceType<typeof import("eve/client").Client>, seen: { fromBrowser: Sent[]; toAgent: Sent[] }) => Promise<void>) {
+    const { Client } = await import("eve/client");
+    const d = deps();
+    const seen = { fromBrowser: [] as Sent[], toAgent: [] as Sent[] };
+    let delivery = 0;
+    // The agent: accepts, and — like an agent set up to issue them — hands back an `inbox`.
+    d.fetch.mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      const raw = init?.body === undefined ? "" : Buffer.from(init.body as Uint8Array).toString("utf8");
+      seen.toAgent.push({ path, raw, body: raw === "" ? undefined : JSON.parse(raw), purpose: new Headers(init?.headers).get("x-lares-purpose") });
+      const answer = path === "/eve/v1/session"
+        ? { ok: true, sessionId: "wrun_A" }
+        : { ok: true, sessionId: "wrun_A", deliveryId: `dlv_${++delivery}`, inbox: "v1.aW5ib3g.c2lnbmF0dXJl" };
+      return new Response(JSON.stringify(answer), { status: 202, headers: { "content-type": "application/json", "x-eve-session-id": "wrun_A" } });
+    });
+    // The browser: the client's requests, with the cookies a browser would send back.
+    const cookies = new Map<string, string>([["lares_session", "abc"]]);
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.href.startsWith(`${BASE}/`)).toBe(true);
+      const path = url.pathname.slice("/api/chat/helper/".length);
+      const raw = typeof init?.body === "string" ? init.body : "";
+      seen.fromBrowser.push({ path: `/${path}`, raw, body: raw === "" ? undefined : JSON.parse(raw), purpose: null });
+      const headers = new Headers(init?.headers);
+      headers.set("cookie", [...cookies].map(([name, value]) => `${name}=${value}`).join("; "));
+      const response = await forwardChat(new Request(url, { method: init?.method ?? "GET", headers, ...(raw === "" ? {} : { body: raw }) }), "helper", path, d);
+      const issued = response.headers.get("set-cookie")?.split(";")[0];
+      if (issued) cookies.set(issued.slice(0, issued.indexOf("=")), issued.slice(issued.indexOf("=") + 1));
+      return response;
+    });
+    try {
+      await run(new Client({ baseUrl: BASE }), seen);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    return seen;
+  }
+
+  /** The agent's lists, as a table: every body it will take from the console, and no other. */
+  function listed(sent: Sent): boolean {
+    const exact = (...shapes: string[][]) => sent.body !== undefined && shapes.some((keys) => JSON.stringify(Object.keys(sent.body as object).sort()) === JSON.stringify([...keys].sort()));
+    if (sent.path === "/eve/v1/session") return sent.raw === "" || exact([], ["message"], ["message", "operationId"]);
+    if (sent.path === "/eve/v1/session/wrun_A") {
+      if (exact(["message"])) return typeof (sent.body as { message: unknown }).message === "string";
+      if (!exact(["answers"])) return false;
+      const answers = (sent.body as { answers: unknown[] }).answers;
+      return answers.length === 1 && JSON.stringify(Object.keys(answers[0] as object).sort()) === '["interactionId","optionId"]'
+        && ["approve", "deny"].includes((answers[0] as { optionId: string }).optionId);
+    }
+    if (sent.path === "/eve/v1/session/wrun_A/cancel") return sent.raw === "" || exact([]) || (exact(["turnId"]) && typeof (sent.body as { turnId: unknown }).turnId === "string");
+    if (/^\/eve\/v1\/session\/wrun_A\/(end|reset)$/.test(sent.path)) return sent.raw === "" || exact([], ["reason"]);
+    if (/^\/eve\/v1\/session\/wrun_A\/(clear|compact)$/.test(sent.path)) return sent.raw === "" || exact([]);
+    return false;
+  }
+
+  it("every body is one the agent lists, exactly — the client's own inbox included in what is stripped", async () => {
+    const seen = await drive(async (client) => {
+      const { session } = await client.sessions.create();            // what the page does first
+      await session.send("first message");                           // the agent answers with an inbox
+      await session.send("second message");                          // the client now adds it by itself
+      await session.respond([{ interactionId: "int_A", optionId: "approve" }]);
+      await session.respond([{ interactionId: "int_B", optionId: "deny" }]);
+      await session.cancel({ turnId: "turn_1" });
+      await session.cancel();                                        // no turn named
+      await session.cancel({ turnId: null });                        // what the store sends with none running
+      await session.clear();
+      await session.compact();
+      await session.end({ reason: "Conversation finished" });
+      await session.end();
+    });
+
+    // The premise, checked: the client library really did add a field of its own on the way in.
+    const withInbox = seen.fromBrowser.filter((sent) => sent.body !== undefined && "inbox" in (sent.body as object));
+    expect(withInbox.map((sent) => sent.path)).toEqual(Array(3).fill("/eve/v1/session/wrun_A"));
+    expect(seen.fromBrowser[2]!.body).toEqual({ message: "second message", inbox: "v1.aW5ib3g.c2lnbmF0dXJl" });
+    // And that the client really does write a null turn id, which must not reach the agent.
+    expect(seen.fromBrowser.filter((sent) => sent.path.endsWith("/cancel")).map((sent) => sent.raw)).toEqual(['{"turnId":"turn_1"}', "{}", '{"turnId":null}']);
+    expect(seen.toAgent.some((sent) => sent.raw.includes("null"))).toBe(false);
+
+    // What reached the agent: the exact bytes, in order.
+    expect(seen.toAgent.map((sent) => [sent.path, sent.raw, sent.purpose])).toEqual([
+      ["/eve/v1/session", "", "human"],
+      ["/eve/v1/session/wrun_A", '{"message":"first message"}', "human"],
+      ["/eve/v1/session/wrun_A", '{"message":"second message"}', "human"],
+      ["/eve/v1/session/wrun_A", '{"answers":[{"interactionId":"int_A","optionId":"approve"}]}', "resolver"],
+      ["/eve/v1/session/wrun_A", '{"answers":[{"interactionId":"int_B","optionId":"deny"}]}', "resolver"],
+      ["/eve/v1/session/wrun_A/cancel", '{"turnId":"turn_1"}', "control"],
+      ["/eve/v1/session/wrun_A/cancel", "{}", "control"],
+      ["/eve/v1/session/wrun_A/cancel", "{}", "control"],
+      ["/eve/v1/session/wrun_A/clear", "{}", "control"],
+      ["/eve/v1/session/wrun_A/compact", "{}", "control"],
+      ["/eve/v1/session/wrun_A/end", '{"reason":"Conversation finished"}', "control"],
+      ["/eve/v1/session/wrun_A/end", "{}", "control"],
+    ]);
+    // And the rule itself, over everything recorded: no field outside the agent's lists, anywhere.
+    for (const sent of seen.toAgent) expect(listed(sent), `${sent.path} ${sent.raw}`).toBe(true);
+    expect(JSON.stringify(seen.toAgent)).not.toMatch(/inbox|idempotencyKey|clientContext|turnPolicy|inputResponses|requestId|"cancel"/);
+  });
+
+  it("the check above is not vacuous: it tells a listed body from one with a field added", () => {
+    const sent = (path: string, body: unknown): Sent => ({ path, raw: JSON.stringify(body), body, purpose: null });
+    expect(listed(sent("/eve/v1/session/wrun_A", { message: "x" }))).toBe(true);
+    for (const extra of ["inbox", "idempotencyKey", "clientContext", "turnPolicy", "outputSchema", "callback", "anything"]) {
+      expect(listed(sent("/eve/v1/session/wrun_A", { message: "x", [extra]: "y" })), extra).toBe(false);
+      expect(listed(sent("/eve/v1/session/wrun_A", { answers: [{ interactionId: "i", optionId: "approve" }], [extra]: "y" })), extra).toBe(false);
+    }
+    expect(listed(sent("/eve/v1/session/wrun_A", { answers: [{ interactionId: "i", optionId: "approve", text: "t" }] }))).toBe(false);
+    expect(listed(sent("/eve/v1/session/wrun_A", { answers: [{ interactionId: "i", optionId: "cancel" }] }))).toBe(false);
+    expect(listed(sent("/eve/v1/session/wrun_A", { inputResponses: [{ requestId: "i", optionId: "approve" }] }))).toBe(false);
+    expect(listed(sent("/eve/v1/session/wrun_A/end", { reason: "r", force: true }))).toBe(false);
+    expect(listed(sent("/eve/v1/session/wrun_A/cancel", { turnId: null }))).toBe(false);
+    expect(listed(sent("/eve/v1/session/wrun_A/cancel", { turnId: "t" }))).toBe(true);
+    expect(listed(sent("/eve/v1/session/wrun_A/clear", { reason: "r" }))).toBe(false);
+  });
+
+  it.each([
+    ["page context the client can attach to a turn", { clientContext: "the page says" }],
+    ["a turn policy", { turnPolicy: "queue" }],
+    ["an output schema", { outputSchema: { type: "object" } }],
+  ])("a client option that adds a field (%s) is refused at the console, not passed on and not quietly dropped", async (_name, option) => {
+    let thrown: unknown;
+    const seen = await drive(async (client) => {
+      const { session } = await client.sessions.create();
+      try { await session.send("with an option", option as never); } catch (error) { thrown = error; }
+    });
+    expect((thrown as { status?: number })?.status).toBe(400);
+    // Only the create reached the agent.
+    expect(seen.toAgent.map((sent) => sent.path)).toEqual(["/eve/v1/session"]);
+  });
+});
