@@ -4,19 +4,21 @@
  * a `defineDynamic()` value is an opaque brand holding ONE function, `(ctx) => value`, run before
  * every model call with the session, the latest turn and a `memo`. The old version of this file
  * drove eve 0.60's internal lifecycle modules, which are gone.
- *
- * What still waits for another part of the upgrade (the approvals packet owns `agent/tools/catalogue.ts`
- * and `agent/tools/outside-tools.ts`, which are not on eve 1.0 yet) is listed as `it.todo` at the bottom. */
+ */
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {fileURLToPath} from 'node:url';
 import {readFileSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
-const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),resume:vi.fn(),docsRead:vi.fn(),docsIndex:vi.fn(),definition:vi.fn(),connections:vi.fn(),clock:vi.fn(),source:vi.fn(),facts:vi.fn()}));
+const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),resume:vi.fn(),docsRead:vi.fn(),docsIndex:vi.fn(),definition:vi.fn(),connections:vi.fn(),clock:vi.fn(),source:vi.fn(),facts:vi.fn(),outside:vi.fn(),granted:['fixture','gmail_accounts','gmail_read','gmail_search']}));
 vi.mock('../src/console-turn-authority.js',async original=>({...await original<typeof import('../src/console-turn-authority.js')>(),requireConsoleSessionBinding:fake.binding,guardConsoleToolContext:fake.turn}));
 vi.mock('../src/private-console-resume.js',async original=>({...await original<typeof import('../src/private-console-resume.js')>(),
  privateResolverAdmission:(auth:any)=>auth?.attributes?.lares_purpose==='resolver'?{memberId:auth.attributes.lares_resolver_member_id,requestId:auth.attributes.lares_resume_request_id,optionId:auth.attributes.lares_resume_option}:undefined,
  requirePrivateConsoleResume:fake.resume,requireConsoleResume:fake.resume}));
 vi.mock('@lares/agent-kit/public-docs-runtime',()=>({publicDocsIndex:fake.docsIndex,readBakedPublicDoc:fake.docsRead}));
+vi.mock('../src/catalogue.js',async original=>({...await original<typeof import('../src/catalogue.js')>(),grantedToolNames:()=>fake.granted}));
+vi.mock('../../../services/chief-of-staff/lib/outside-tools.js',()=>({acceptedOutsideTools:fake.outside,runOutsideTool:vi.fn(),requestOutsideApproval:vi.fn(),respondOutsideApproval:vi.fn()}));
+vi.mock('../../../services/chief-of-staff/catalogue/index.js',()=>({CATALOGUE:Object.fromEntries(['fixture','gmail_accounts','gmail_read','gmail_search'].map(name=>[name,{capability:'fixture',tool:{description:name==='fixture'?'OWNER_TOOL_CANARY':'Personal mail read',inputSchema:{type:'object'},execute:fake.source}}]))}));
+vi.mock('../../../services/creative/catalogue/index.js',()=>({CATALOGUE:Object.fromEntries(['fixture','gmail_accounts','gmail_read','gmail_search'].map(name=>[name,{capability:'fixture',tool:{description:'OWNER_TOOL_CANARY',inputSchema:{type:'object'},execute:fake.source}}]))}));
 vi.mock('../../../services/chief-of-staff/lib/definition.js',()=>({thisAgent:fake.definition,roleMdPath:()=>fileURLToPath(new URL('../templates/chief-of-staff/role.md',import.meta.url))}));
 vi.mock('../../../services/creative/lib/definition.js',()=>({thisAgent:fake.definition,roleMdPath:()=>fileURLToPath(new URL('../templates/creative/role.md',import.meta.url))}));
 vi.mock('../../../services/chief-of-staff/lib/connections.js',()=>({readConnections:fake.connections,connectionsMarkdown:()=> 'OWNER_CONNECTION_CANARY'}));
@@ -163,7 +165,32 @@ describe('usage hooks never count a private conversation',()=>{
  });
 });
 
-// Still parked: they need the approvals packet's tool catalogue and outside-tools resolvers on eve 1.0.
-it.todo('private tools are only the safe intersection of the grant, with no owner-tool description (agent/tools/catalogue.ts: approvals packet)');
-it.todo('native owner keeps its full native source tool surface (agent/tools/catalogue.ts: approvals packet)');
-it.todo('outside tools are not offered in a private conversation and run no discovery (agent/tools/outside-tools.ts, agent/connections/outside-tools.ts: approvals packet)');
+for(const role of ['chief-of-staff','creative'])describe(`${role} tool resolvers`,()=>{
+ it('private tools are only the safe intersection of the grant, with no owner-tool description, and run the turn check on execution',async()=>{
+  const catalogue=await load(`../../../services/${role}/agent/tools/catalogue.ts`);
+  const tools=await resolve(catalogue,context);
+  expect(Object.keys(tools).sort()).toEqual(role==='creative'?[]:['gmail_accounts','gmail_read','gmail_search']);
+  expect(JSON.stringify(tools)).not.toContain('OWNER_TOOL_CANARY');
+  if(role!=='creative'){await tools.gmail_read.execute({},context);expect(fake.turn).toHaveBeenCalled();expect(fake.source).toHaveBeenCalledOnce();}
+  // The tool list is decided from the definition's grant alone: one read, no owner source or discovery.
+  expect(fake.definition).toHaveBeenCalledTimes(1);
+ });
+ it('native owner keeps the full native source tool surface',async()=>{
+  fake.definition.mockResolvedValue(nativeDefinition(role));
+  const catalogue=await load(`../../../services/${role}/agent/tools/catalogue.ts`);
+  const tools=await resolve(catalogue,native);
+  expect(Object.keys(tools)).toContain('fixture');
+ });
+ it('a private conversation gets no outside connection, and with none declared no outside tool and no read of the accepted list',async()=>{
+  // What this pins, exactly, and no more. (1) The connections resolver offers nothing in a private
+  // conversation, for either role: eve 1.0 has no live outside-connection discovery (main asserted
+  // the same `null`). (2) With a definition that declares no outside tools, as here, the
+  // chief-of-staff outside-tools resolver offers none and Keeper's accepted list is never read.
+  // It does NOT show that declared outside tools stay out of a private conversation: the current
+  // resolver (`agent/tools/outside-tools.ts`) offers them only in a verified private conversation.
+  const connection=await load(`../../../services/${role}/agent/connections/outside-tools.ts`);
+  expect(await resolve(connection,context)).toBeNull();
+  if(role==='chief-of-staff')expect(await resolve(await load(`../../../services/${role}/agent/tools/outside-tools.ts`),context)).toBeNull();
+  expect(fake.outside).not.toHaveBeenCalled();
+ });
+});

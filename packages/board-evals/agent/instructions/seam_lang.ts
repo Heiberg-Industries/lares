@@ -1,6 +1,6 @@
-// The reading half of the session-state probe: a per-turn instruction resolver that reads eve session state. If eve refuses
-// state access here, eve logs the failure and omits this fragment — the marker simply never reaches
-// the system prompt and the eval reports NO rather than crashing.
+// The reading half of the session-state probe: an instruction resolver that reads eve session state
+// before every model call. If eve refused state access here, the resolver would throw and the turn
+// would fail, and the eval would report NO.
 //
 // A directory entry, not agent/instructions.ts: the flat agent/instructions.md and this directory
 // coexist by design (eve/docs/instructions.mdx, "Split instructions across a directory"), so the
@@ -8,8 +8,4 @@
 import { defineDynamic, defineInstructions } from "eve/instructions";
 import { language } from "../../lib/seam-state.js";
 
-export default defineDynamic({
-  events: {
-    "turn.started": async () => defineInstructions({ markdown: `SEAM_LANG=${language.get()}` }),
-  },
-});
+export default defineDynamic(() => defineInstructions({ content: `SEAM_LANG=${language.get()}` }));

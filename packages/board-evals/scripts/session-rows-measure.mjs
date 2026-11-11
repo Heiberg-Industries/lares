@@ -229,6 +229,21 @@ try {
     ].join('\n'),
   );
   writeFileSync(join(root, 'agent/instructions.md'), 'Disposable measurement fixture. No real instructions.\n');
+  // The model guard, first statement, the same call the role services make first: the model above is a mock, but eve
+  // re-resolves a saved model id through the AI SDK's default provider on a cold pick-up, and that
+  // default reaches a hosted gateway. This makes the default refuse. eve 1.0 reads instrumentation
+  // from a directory, one file per provider.
+  mkdirSync(join(root, 'agent/instrumentation'), { recursive: true });
+  writeFileSync(
+    join(root, 'agent/instrumentation/model-guard.ts'),
+    [
+      "import {installRefusingDefaultProvider} from '@lares/agent-kit/gateway-budget';",
+      "import {defineInstrumentation} from 'eve/instrumentation';",
+      'installRefusingDefaultProvider();',
+      'export default defineInstrumentation({});',
+      '',
+    ].join('\n'),
+  );
   writeFileSync(
     join(root, 'agent/tools/proof_write.ts'),
     [
@@ -278,7 +293,7 @@ try {
   await waitHealthy(host, () => logs);
 
   const { Client } = await import(join(repo, 'services/chief-of-staff/node_modules/eve/dist/src/client/index.js'));
-  const client = new Client({ host, auth: { basic: { username: 'fixture', password: 'disposable-fixture-only' } } });
+  const client = new Client({ baseUrl: host, auth: { basic: { username: 'fixture', password: 'disposable-fixture-only' } } });
 
   // --- the measurement ---------------------------------------------------------------------------
   const stages = [];
@@ -292,27 +307,36 @@ try {
   await record('0-baseline (build+start, no session yet)');
 
   const one = await client.sessions.create({ message: 'hello' });
-  const first = await one.response.result();
-  if (!/measurement-fixture-reply/.test(first.message)) throw new Error('Turn 1 reply did not come from the fixture model: ' + JSON.stringify(first));
+  const first = await one.delivery.result();
+  if (!/measurement-fixture-reply/.test(first.reply ?? '')) throw new Error('Turn 1 reply did not come from the fixture model: ' + JSON.stringify(first));
   await waitQuiet(db, 'after turn 1');
   await record('1-after-turn-1 (plain)');
 
   const second = await (await one.session.send('hello again')).result();
-  if (!/measurement-fixture-reply/.test(second.message)) throw new Error('Turn 2 reply did not come from the fixture model: ' + JSON.stringify(second));
+  if (!/measurement-fixture-reply/.test(second.reply ?? '')) throw new Error('Turn 2 reply did not come from the fixture model: ' + JSON.stringify(second));
   await waitQuiet(db, 'after turn 2');
   await record('2-after-turn-2 (plain)');
 
   const third = await (await one.session.send('pending write')).result();
-  if (!(third.inputRequests?.length > 0)) throw new Error('Turn 3 did not park an approval card');
+  if (!(third.interactions?.length > 0)) throw new Error('Turn 3 did not park an approval card');
   await waitQuiet(db, 'after turn 3');
   const afterThird = await record('3-after-turn-3 (tool call, approval pending)');
 
   const titlesBeforeReset = await titleLengths(db);
 
-  const resetResult = await one.session.reset({ reason: 'session-rows-measure' });
-  if (!['reset', 'no_active_session'].includes(resetResult.status)) {
-    throw new Error('Unexpected reset outcome: ' + JSON.stringify(resetResult));
-  }
+  // eve 1.0's client has no `reset()`: a session is retired with `end()`, which is what a reset did
+  // to the session being measured.
+  // On rc.9 the end's receipt cannot be read to its settlement: the session ends and its stream
+  // closes first, and `result()` throws "The stream ended before the accepted delivery settled."
+  // (the same behaviour the keeper's conversation reset trips over). So the end is confirmed the
+  // way that cannot be fooled: a later message to the same session must be refused.
+  const ending = await one.session.end({ reason: 'session-rows-measure' });
+  let receipt;
+  try { receipt = await ending.result(); } catch (error) { receipt = { threw: String(error?.message ?? error) }; }
+  console.log('end receipt: ' + JSON.stringify(receipt));
+  let refused = false;
+  try { await (await one.session.send('after end')).result(); } catch { refused = true; }
+  if (!refused) throw new Error('The session still accepted a message after end()');
   await waitQuiet(db, 'after reset');
   const afterReset = await record('4-after-reset');
 
