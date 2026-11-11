@@ -24,7 +24,7 @@ import {
 } from "eve/channels/slack";
 import type { SessionAuthContext } from "eve/context";
 
-import { isAllowedSlackUserId } from "../../lib/slack-allowlist.js";
+import { allowedSlackUserIds, isAllowedSlackUserId } from "../../lib/slack-allowlist.js";
 import { getPool } from "@lares/agent-kit/db";
 import { installSlackProxyDispatcher } from "@lares/agent-kit/slack-dispatcher";
 import { slackUnreadableNote } from "@lares/agent-kit/unreadable-content";
@@ -104,9 +104,9 @@ async function replyBeforeClaimApplied(channelId: string, text: string): Promise
  * a trap worth restating: principal ids are also channel addresses — canonicalise the
  * *person*, never rewrite channel addresses.
  *
- * This gates who may START a turn. Who may ANSWER a card is `authorizeSlackAnswer` below, and
- * the gated tool itself checks a third time (`agent/tools/echo_note.ts`), all three against the
- * same list in `lib/slack-allowlist.ts`.
+ * This gates who may START a turn. Who may ANSWER a card is narrower, the owner alone
+ * (`authorizeSlackAnswer` below), and the gated tool itself checks again when an approved call
+ * runs (`agent/tools/echo_note.ts`). All three read the list in `lib/slack-allowlist.ts`.
  */
 export function isAllowedSlackUser(message: SlackMessage): boolean {
   const author = message.author;
@@ -115,14 +115,35 @@ export function isAllowedSlackUser(message: SlackMessage): boolean {
 }
 
 /**
- * Who may answer an approval or a question card: the same allowlist, and it fails closed the
- * same way. eve calls this for every tap on one of its controls and every typed answer in its
- * modal, before the conversation is resumed. Returning `null` refuses the answer: the action
- * does not run, and the card stays open for someone who is allowed.
+ * The owner's Slack user id: the FIRST id on the door's list, the same one scheduled messages are
+ * addressed to (`lib/delivery.ts`, `liveTargets`). `undefined` when the list is unset, blank or
+ * cannot be read, and every caller treats that as "nobody".
+ */
+export function slackOwnerUserId(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  try {
+    const owner = allowedSlackUserIds(env)[0];
+    return typeof owner === "string" && owner.length > 0 ? owner : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Who may answer an approval or a question card: THE OWNER, and nobody else. Approve and Deny
+ * alike.
  *
- * Without it eve accepts any tap, from anyone who can see the card, with that person's own
- * identity, and only the tool's own check stands between a stranger's Approve and the action.
- * The tool's check stays. This one stops the tap at the door.
+ * This is deliberately narrower than who may start a turn. `SLACK_ALLOWED_USER_IDS` can hold
+ * several trusted people, and any of them may talk to the agent; only the first of them, the
+ * owner, decides what the agent is allowed to do. It matters most for Deny: the tool's own check
+ * runs only when an approved call executes, so a Deny from someone else would never meet it.
+ *
+ * eve calls this for every tap on one of its controls and every typed answer in its modal, in
+ * the webhook handler, BEFORE the answer is delivered to the conversation and so before eve's own
+ * rule about who may answer is consulted. Returning `null` refuses the answer: nothing is
+ * delivered, nothing runs, and the card stays as it is, still pending, for the owner.
+ *
+ * It fails closed. No owner id (an unset or blank list, or one that cannot be read) refuses
+ * everybody.
  *
  * Setting `onAnswers` also makes eve stop reading a typed Slack message as an answer to an open
  * card. That is wanted, but it is not what turns typed approvals off: the framework patch does
@@ -132,8 +153,9 @@ export function authorizeSlackAnswer(
   ctx: { readonly defaultAuth: SessionAuthContext },
   submission: { readonly user: { readonly id: string } },
 ): SlackAnswerResult {
-  if (!isAllowedSlackUserId(submission.user.id)) {
-    console.warn("chief-of-staff slack: an answer from a Slack user who is not allowed was refused; nothing was executed");
+  const owner = slackOwnerUserId();
+  if (owner === undefined || submission.user.id !== owner) {
+    console.warn("chief-of-staff slack: an answer from someone other than the owner was refused; nothing was executed and the card is still pending");
     return null;
   }
   return { auth: ctx.defaultAuth };
@@ -347,7 +369,7 @@ export const slackDoorConfig: SlackChannelConfig = {
   onAppMention: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.channelId, text)) ? null : admitSlackMessage(ctx, message),
   onDirectMessage: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.channelId, text)) ? null : admitSlackDirectMessage(ctx, message),
   onMessageEdited: ignoreSlackMessageEdit,
-  // The third way in: a tap on a card. Same allowlist as the two above.
+  // The third way in: a tap on a card. Narrower than the two above: the owner only.
   onAnswers: authorizeSlackAnswer,
   renderers: [approvalCardRenderer, doorRenderer],
 };
