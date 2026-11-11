@@ -279,13 +279,14 @@ function askerContext(sessionId:string,admissionNonce:string,member='member-a'){
 /** A continuation's budget ticket the only way one is now made: the answer's Keeper resume receipt
  * opens the continuation's turn, and its first model step is claimed and consumed through the real
  * broker and prepared journal. */
-async function brokerResumeTicket(writer:BudgetFinancialWriter,input:{sessionId:string;admissionNonce:string;definitionHash:string;policyRevision:number;requestId:string;optionId:'approve'|'deny'}){
+async function brokerResumeTicket(writer:BudgetFinancialWriter,input:{sessionId:string;admissionNonce:string;definitionHash:string;policyRevision:number;requestId:string;optionId:'approve'|'deny';member?:string}){
+  const member=input.member??'member-a';
   const purposeFiles=purposeBrokerFiles();let stop:(()=>Promise<void>)|undefined;
   try{
     stop=await startPurposeBroker(purposeFiles,writer);
-    const pendingReceipt=await purposeRequestAdmission(purposeFiles,purposeRequest({session:input.sessionId,admissionNonce:input.admissionNonce,policyRevision:input.policyRevision,
+    const pendingReceipt=await purposeRequestAdmission(purposeFiles,purposeRequest({session:input.sessionId,member,admissionNonce:input.admissionNonce,policyRevision:input.policyRevision,
       definitionHash:input.definitionHash,purpose:'resume',resume:{requestId:input.requestId,optionId:input.optionId}}));
-    const turn=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.open',{pendingReceipt,context:askerContext(input.sessionId,input.admissionNonce)},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+    const turn=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.open',{pendingReceipt,context:askerContext(input.sessionId,input.admissionNonce,member)},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
     if(turn.ok!==true)throw new Error('Keeper refused the continuation turn');
     const event={type:'step.started',data:{turnId:'turn_1',sequence:1,stepIndex:0}};
     const claimed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.claim',{turnCapability:turn.capability,purposeAlias:'standard',event},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
@@ -960,6 +961,13 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const input={sessionId,admissionNonce,definitionHash,policyRevision:bound.policyRevision,requestId};
     // A Deny receipt never opens a continuation for an approved card (S3), and makes no ticket.
     await expect(brokerResumeTicket(files.writer,{...input,optionId:'deny'})).rejects.toThrow('continuation turn');
+    // Another member's answer, in their own live web-chat session with this agent, never makes a
+    // ticket for member A's card: Keeper refuses the continuation turn, and nothing is reserved.
+    const otherSession=`session-member-b-${randomBytes(8).toString('hex')}`,otherNonce=createHash('sha256').update(otherSession).digest('base64url');
+    await bindConsoleSession({agent:'helper',incarnation,memberId:'member-b',admissionNonce:otherNonce,sessionId:otherSession},db,env());
+    const otherBound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId:otherSession,memberId:'member-b',admissionNonce:otherNonce},db,env());
+    await expect(brokerResumeTicket(files.writer,{...input,sessionId:otherSession,admissionNonce:otherNonce,policyRevision:otherBound.policyRevision,optionId:'approve',member:'member-b'})).rejects.toThrow('continuation turn');
+    expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(0);
     const {ticket,observation}=await brokerResumeTicket(files.writer,{...input,optionId:'approve'});
     const rows=async()=>(await db.query('SELECT state,authority_reference FROM budget_attempts')).rows;
     expect(await rows()).toHaveLength(1);
