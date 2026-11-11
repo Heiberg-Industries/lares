@@ -27,10 +27,14 @@ if os.environ.get("CI") != "true":
     raise SystemExit("Maintenance fence image proof runs only in disposable CI")
 if os.geteuid() != 0:
     raise SystemExit("Maintenance fence image proof requires the isolated CI root fixture")
-if len(sys.argv) != 4:
-    raise SystemExit("usage: maintenance-fence-image.probe.py <keeper-image> <source-sha> <proof.json>")
+if len(sys.argv) != 5:
+    raise SystemExit("usage: maintenance-fence-image.probe.py <keeper-image> <creative-image@sha256:digest> <source-sha> <proof.json>")
 
-IMAGE, SOURCE_SHA, PROOF_PATH = sys.argv[1:]
+# The creative role image is the one this commit builds: the workflow template must be made by
+# the same workflow package version the keeper image's checks pin.
+IMAGE, CREATIVE_IMAGE, SOURCE_SHA, PROOF_PATH = sys.argv[1:]
+if not re.fullmatch(r"[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}", CREATIVE_IMAGE):
+    raise SystemExit("Maintenance proof needs the creative role image named by digest")
 REPO = pathlib.Path(__file__).resolve().parents[3]
 PINNED_DB_IMAGE = "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b"
 if len(SOURCE_SHA) != 40 or any(char not in "0123456789abcdef" for char in SOURCE_SHA.lower()):
@@ -1698,9 +1702,7 @@ def run_database_proof() -> None:
     release = json.loads((REPO / "releases/2026-10-21-rc.12.json").read_text(encoding="utf-8"))
     if release.get("images", {}).get("db") != PINNED_DB_IMAGE:
         raise ProbeFailure()
-    creative_image = release.get("images", {}).get("creative", "")
-    if not re.fullmatch(r"[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}", creative_image):
-        raise ProbeFailure("workflow-image")
+    creative_image = CREATIVE_IMAGE
     credentials = {"operator-password": operator_password, "database-password": app_password,
         "financial-database-password": secrets.token_urlsafe(40),
         "outside-custody-database-password": secrets.token_urlsafe(40),
@@ -1770,26 +1772,18 @@ def run_database_proof() -> None:
     wait_operator_ready(compose_files, budget_seconds=90)
     proof["stages"]["normalDatabaseStarted"] = True
     stage = "production-workflow-template-setup"
-    workflow_script = 'PGPASSWORD="$(cat /run/workflow-provisioner-password)"; export PGPASSWORD; exec node --input-type=module -e "$1"'
-    workflow_program = (
-        'import { Pool } from "pg"; import { setupDatabase } from "@workflow/world-postgres/cli"; '
-        'const pool = new Pool({ connectionString: process.env.WORKFLOW_POSTGRES_URL, max: 1 }); '
-        'try { const r = await pool.query("SELECT current_user, session_user, current_database()"); '
-        'if (r.rows[0]?.current_user !== "lares_workflow_owner" || r.rows[0]?.session_user !== "lares_workflow_provisioner" || '
-        'r.rows[0]?.current_database !== "empty_workflow") throw new Error("workflow template authority check failed"); } '
-        'finally { await pool.end(); } await setupDatabase();'
-    )
-    workflow_setup = docker("run", "--rm", "--network", "host", "--read-only", "--tmpfs", "/tmp",
-        "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001",
-        "--workdir", "/app/services/creative",
-        "--mount", f"type=bind,src={role_password_paths['lares_workflow_provisioner']},dst=/run/workflow-provisioner-password,readonly",
-        "--env", "PGPASSWORD_FILE=/run/workflow-provisioner-password", "--env", "PGOPTIONS=-c role=lares_workflow_owner",
-        "--env", "WORKFLOW_POSTGRES_URL=postgres://lares_workflow_provisioner@127.0.0.1:5432/empty_workflow",
-        "--entrypoint", "/bin/sh", creative_image, "-ec", workflow_script, "workflow", workflow_program,
-        check=False, timeout=180)
+    # The installer's own step, not a copy of it: install.sh calls workflow_store_step (ops/engine-run.sh)
+    # in its create mode, which runs ops/workflow-store-migrate.mjs inside the creative role image.
+    # Its own time limit is set below this call's, so it stops and removes its container first.
+    workflow_setup = run("bash", "-c",
+        'HERE="$1"; . "$HERE/engine-run.sh"; workflow_store_step "$2" create empty_workflow 127.0.0.1 5432 "$3"',
+        "workflow-store-step", str(REPO / "services/box/ops"), creative_image,
+        str(role_password_paths["lares_workflow_provisioner"]),
+        check=False, timeout=300, env={"LARES_WORKFLOW_UPGRADE_SECONDS": "240"})
     if workflow_setup.returncode != 0:
         raise ProbeFailure("workflow-template-setup",
-                           "workflow package schema step (setupDatabase in the creative image)", workflow_setup)
+                           "workflow_store_step create (ops/workflow-store-migrate.mjs in the creative image)",
+                           workflow_setup)
     workflow_apply = engine_box("bin/workflow-template.ts", ["apply", "--host", "127.0.0.1", "--port", "5432",
         "--provisioner-password-file", "/run/workflow-provisioner-password",
         "--runtime-password-file", "/run/workflow-password"], setup_files, {"PGHOST": "127.0.0.1", "PGPORT": "5432"})
