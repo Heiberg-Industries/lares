@@ -369,6 +369,10 @@ fi
 if [ "$1" = rm ]; then
   id="\${@: -1}"; client_save "$id" "$(client_field "$id" 1)" "$(client_field "$id" 2)" "$(client_field "$id" 3)" false "$(client_field "$id" 5)" true; exit 0
 fi
+if [ "$1" = ps ] && case "$*" in *label=lares.maintenance=workflow-store*) true ;; *) false ;; esac; then
+  [ -z "\${RESTORE_LEFTOVER_STORE_STEP:-}" ] || printf '%s\\n' "$RESTORE_LEFTOVER_STORE_STEP"
+  exit "\${RESTORE_LEFTOVER_PS_RC:-0}"
+fi
 if [ "$1" = ps ] && case "$*" in *service=lares-notion-sync*) true ;; *) false ;; esac; then
   [ -z "\${RESTORE_SYNC_CONTAINER:-}" ] || printf '%s\\n' "$RESTORE_SYNC_CONTAINER"
   exit 0
@@ -1265,13 +1269,13 @@ describe("restore.sh: a backup from an older release", () => {
     expect(r.code, r.all).toBe(0);
     expect(r.all).toContain(`upgrade these agent stores from the release before this one: ${workflowDatabase}`);
     expect(changes()).toEqual([]);
-    expect(logLines().filter((line) => /workflow-store/.test(line))).toEqual([]);
+    expect(logLines().filter((line) => /^docker run .*workflow-store/.test(line))).toEqual([]);
   });
 
   it("restores a store from this release exactly as before: no store step and no permission step", () => {
     const r = run(base());
     expect(r.code, r.all).toBe(0);
-    expect(logLines().filter((line) => /lares\.maintenance=workflow-store|apply-database/.test(line))).toEqual([]);
+    expect(logLines().filter((line) => /^docker run .*lares\.maintenance=workflow-store|apply-database/.test(line))).toEqual([]);
     expect(idx(/dropdb .*lares_state$/)).toBeGreaterThan(idx(new RegExp(`dropdb .*${workflowDatabase}`)));
   });
 
@@ -1372,6 +1376,37 @@ describe("restore.sh: a backup from an older release", () => {
     const r = run(base(), { env: { FREEZE_LIVE_FAIL: "1" } });
     expect(r.code, r.all).toBe(78);
     expect(r.all).toContain("financial freeze was not durably acknowledged; this run stopped no service and replaced no database (an earlier run of this same restore may already have stopped services and restored agent stores)");
+  });
+
+  it("refuses, changing nothing, while a store step from an earlier attempt is still running, and goes ahead once it has ended", () => {
+    oldBackup();
+    write("etc/lares/keeper.json", keeperConfig({ budgetFinancial: financialBinding() }));
+    mkdirSync(join(prefix, "var/lib/lares/budget-financial"), { recursive: true });
+    const leftover = "lares-workflow-store-0123456789abcdef";
+    const refused = run(base(), { env: { RESTORE_LEFTOVER_STORE_STEP: leftover } });
+    expect(refused.code, refused.all).toBe(78);
+    expect(refused.all).toContain(`an agent store step from an earlier attempt is still running (${leftover}).`);
+    expect(refused.all).toContain("Wait until it ends (docker ps --filter label=lares.maintenance=workflow-store lists it until then), or stop it with docker rm --force <name>, then run the same restore again.");
+    expect(refused.all).toContain("This run has changed nothing (an earlier run of this same restore may already have stopped services and restored agent stores).");
+    expect(refused.all).not.toContain("Nothing has been changed.");
+    // Not even the financial freeze: nothing this run would do has started.
+    expect(changes()).toEqual([]);
+    expect(logLines().filter((line) => /budget-financial\.ts|workflow-store.* (check|upgrade) /.test(line))).toEqual([]);
+    expect(runsLeft()).toEqual([]);
+    expect(scratchLeft()).toEqual([]);
+
+    writeFileSync(log, "");
+    const again = run(base());
+    expect(again.code, again.all).toBe(0);
+    expect(idx(storeStep("upgrade"))).toBeGreaterThan(-1);
+  });
+
+  it("refuses, changing nothing, when Docker cannot say whether a store step is still running", () => {
+    oldBackup();
+    const r = run(base(), { env: { RESTORE_LEFTOVER_PS_RC: "1" } });
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toContain("I could not ask Docker whether an agent store step from an earlier attempt is still running. This run has changed nothing");
+    expect(changes()).toEqual([]);
   });
 
   it("a store whose check after restoring is not the older layout stops the same re-runnable way", () => {

@@ -913,6 +913,16 @@ if [ "$NATIVE_PREPARED" = 1 ];then
   say 'prepared native custody is recorded outside backups and will be drained before restore'
 fi
 
+# An agent store check or upgrade from an earlier attempt that is still running (its restore was
+# killed, or install or update left one behind) works on a store this run is about to drop and
+# restore again. Two of them on one store fail each other, so wait for it to end first.
+LEFTOVER_STORE_STEPS=$(docker ps --filter label=lares.maintenance=workflow-store --format '{{.Names}}' </dev/null) \
+  || die "I could not ask Docker whether an agent store step from an earlier attempt is still running. This run has changed nothing (an earlier run of this same restore may already have stopped services and restored agent stores)." "$EX_REFUSED"
+if [ -n "$LEFTOVER_STORE_STEPS" ]; then
+  LEFTOVER_STORE_NAMES=$(printf '%s\n' "$LEFTOVER_STORE_STEPS" | tr -d '\r' | grep -E '^[A-Za-z0-9][A-Za-z0-9_.-]*$' | head -5 | tr '\n' ' ' | sed 's/ *$//') || LEFTOVER_STORE_NAMES=""
+  die "an agent store step from an earlier attempt is still running (${LEFTOVER_STORE_NAMES:-a container labelled lares.maintenance=workflow-store}). It checks or upgrades one agent store, and this restore would drop and restore that store while it runs. Wait until it ends (docker ps --filter label=lares.maintenance=workflow-store lists it until then), or stop it with docker rm --force <name>, then run the same restore again. This run has changed nothing (an earlier run of this same restore may already have stopped services and restored agent stores)." "$EX_REFUSED"
+fi
+
 # --- 8. dry run stops here ----------------------------------------------------------------------------
 if [ "$DRY" = 1 ]; then
   say "dry run: nothing on this server was changed. With these answers I would:"
@@ -1071,11 +1081,13 @@ store_upgrade_stopped() {
 #    inside the container), and it never touches the main database, the Vault or the folders;
 #  - each upgrade is one transaction: stopped at any point, the store stays as the backup had it;
 #  - it is time-limited (two minutes for a check, LARES_WORKFLOW_UPGRADE_SECONDS, 15 minutes by
-#    default, for an upgrade) and removed by force when it runs out;
+#    default, for an upgrade) and removed by force when it runs out, as long as the host
+#    `timeout` that watches it is still alive (a kill of the whole process group takes that too);
 #  - if this restore is killed while one runs, the container may finish or fail on its own, but
-#    only inside that one store, and a second run of this restore first drops that store with
-#    `dropdb --force`, which ends its session and rolls back whatever it had not committed. It
-#    holds no restore claim or run record, so it cannot keep a second run out.
+#    only inside that one store. A second run of this restore refuses, before it changes
+#    anything, while any such container is still running (the check above the dry run), so two
+#    of them never work on one store; once it has ended, the second run drops that store with
+#    `dropdb --force` and restores it again. It holds no restore claim or run record.
 # The permissions step, which needs the agents' login as well, is the fixed restore job.
 ONLY_AGENT_STORES_CHANGED=1
 for db in "${DUMPS[@]}"; do
