@@ -4,7 +4,7 @@ vi.mock("../catalogue/index.js", () => ({ CATALOGUE: {} }));
 const calls = vi.hoisted(() => ({ summary: vi.fn(), hydration: vi.fn(), order: [] as string[] }));
 vi.mock("@lares/agent-kit/approval-summary", () => ({ registerApprovalSummary: (...args: unknown[]) => { calls.order.push("summary"); calls.summary(...args); } }));
 vi.mock("@lares/agent-kit/attachment-hydration", () => ({ installAttachmentHydration: (...args: unknown[]) => { calls.order.push("hydration"); calls.hydration(...args); } }));
-import instrumentation from "../agent/instrumentation.js";
+import instrumentation from "../agent/instrumentation/lares.js";
 
 describe("startup: what the framework patch and the approval cards need", () => {
   it("setup registers the approval summary and installs attachment hydration", async () => {
