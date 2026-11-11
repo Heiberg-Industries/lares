@@ -431,7 +431,7 @@ const server=createServer(async(req,res)=>{{
 }});
 await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 try{{
-  const client=new Client({{host:`http://127.0.0.1:${{server.address().port}}`,headers:()=>currentHeaders}});
+  const client=new Client({{baseUrl:`http://127.0.0.1:${{server.address().port}}`,headers:()=>currentHeaders}});
   const session=client.sessions.attach("sdk-header-regression");
   const capsule="signed-post-capability";
   currentHeaders={{...currentHeaders,"content-type":"application/json","x-lares-model-purpose-required":"1","x-lares-model-capsule":capsule}};
