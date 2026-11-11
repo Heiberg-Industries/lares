@@ -9,14 +9,13 @@ import { closePool } from '../src/db.js';
 import { searchTool,readTool,listTool,backlinksTool } from '../src/note-tools.js';
 import { vi } from 'vitest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-// `position(view)` reads a number off the stand-in view used for the model tests below.
-vi.mock('eve/events',async actual=>{const real=await actual<typeof import('eve/events')>();return {...real,position:(view:unknown)=>(view as {line?:unknown}).line!==undefined?(view as {line:number}).line:real.position(view as never)};});
 import { bindConsoleSession, bindConsoleSessionStarted, requireConsoleSessionBinding, requireConsoleTurnAuthority,
   consoleRouteAdmission, hasConsoleTurnAuthorityTag, CONSOLE_AUTHORITY_REVISION, authorityTransaction, type ConsoleAuthorityContext } from '../src/console-turn-authority.js';
 import { observeConversation, resetConversation } from '../src/conversation-control.js';
 import { verifyPrivateConsoleSession, markPrivateConsoleSurface } from '../src/private-console-surface.js';
 import { MockLanguageModelV3 } from 'ai/test';
 import { definitionModelResolver } from '../src/definition-model.js';
+import { viewAt } from './helpers/session-view.js';
 const keeperPath=new URL('../../../services/keeper/lib/conversations.js',import.meta.url).href;
 const actionPath=new URL('../../../services/keeper/lib/actions.js',import.meta.url).href;
 const waitingPath=new URL('../../../services/console/lib/waiting.js',import.meta.url).href;
@@ -325,7 +324,7 @@ it('a real revoked binding stops a cached model before either fake provider exec
   markPrivateConsoleSurface();const call=vi.fn(async()=>{throw new Error('PROVIDER REACHED');});
   const select=definitionModelResolver({resolveAlias:async()=> 'synthetic-model',provider:()=>new MockLanguageModelV3({doGenerate:call,doStream:call})});
   // eve 1.0 hands a dynamic model its session, latest turn and session view (the view's stream position is the step).
-  const modelCtx=(line:number)=>({session:ctx().session,turn:{id:'turn_0',status:'running',input:[]},view:{line}}) as never;
+  const modelCtx=(line:number)=>({session:ctx().session,turn:{id:'turn_0',status:'running',input:[]},view:viewAt(line)}) as never;
   const selections=[await select(modelCtx(1)),await select(modelCtx(2))];
   await db.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE session_id=$1',[tuple.sessionId]);
   await expect(select(modelCtx(3))).rejects.toThrow('Conversation authority');

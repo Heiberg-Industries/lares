@@ -85,6 +85,20 @@ it('native chief skills are offered with their exact text, and the private one d
  expect(JSON.stringify(offered)).toContain('agent-kit__signals_recent');
  expect(await resolve(signals,context)).toBeNull();
 });
+it('the native sales-outreach skill is offered where the definition grants it, with its exact text, and never in a private conversation',async()=>{
+ const outreach=await load('../../../services/chief-of-staff/agent/skills/sales-outreach.ts');
+ fake.definition.mockResolvedValue(nativeDefinition('chief-of-staff'));
+ const offered=await resolve(outreach,native);
+ // The shipped chief declares the commercial skill, so it is offered natively.
+ expect(offered).not.toBeNull();
+ expect(JSON.stringify(offered)).toContain('# Sales outreach');
+ expect(await resolve(outreach,context)).toBeNull();
+ // A definition that grants nothing does not get it: an unreadable one is "no", not "yes".
+ fake.definition.mockResolvedValue({loaded:{definition:{}}});
+ expect(await resolve(outreach,native)).toBeNull();
+ fake.definition.mockRejectedValue(new Error('definition unreadable'));
+ expect(await resolve(outreach,native)).toBeNull();
+});
 it('private skills resolve only the reviewed docs skill, natively and privately alike',async()=>{
  for(const role of ['chief-of-staff','creative']){
   const docs=await load(`../../../services/${role}/agent/skills/lares-docs.ts`);
@@ -119,16 +133,23 @@ it('both roles expose only the fixed public reader and recheck private or resume
  expect(fake.resume.mock.calls.every(([ctx,phase])=>ctx.session.id==='resumed-public-doc'&&phase==='surface')).toBe(true);
  expect(fake.docsRead).toHaveBeenCalledTimes(1);
 });
-it('the framework todo tool is off in both roles, so no per-session todo state exists to cross between private sessions',()=>{
- // eve 0.60 kept todo state in the session container; eve 1.0 has `defaultTools: false` and each
- // service decides every framework tool (`tests/eve-tools-offered.test.ts`). The cross-session
- // property this case guarded now rests on there being no such tool.
+it('the framework todo tool is off in both roles, so no per-session todo state exists to cross between private sessions',async()=>{
+ // eve 0.60 kept todo state in the session container; eve 1.0 has `defaultTools: false`, which drops every
+ // framework tool that has no file of its own. The cross-session property this case guarded rests on the
+ // agent not being handed that tool: checked on the REAL agent definition and the INSTALLED framework's own
+ // list of default tools, not on source text.
+ const {installedFrameworkDefaultTools}=await import('../src/framework-default-tools.js');
+ const {existsSync}=await import('node:fs');
+ const defaults=await installedFrameworkDefaultTools(import.meta.url);
  for(const role of ['chief-of-staff','creative']){
-  const agent=readFileSync(new URL(`../../../services/${role}/agent/agent.ts`,import.meta.url),'utf8');
-  expect(agent,role).toMatch(/defaultTools:\s*false/);
+  const module=await load(`../../../services/${role}/agent/agent.ts`);
+  expect((module.default as {defaultTools?:unknown}).defaultTools,`${role} defaultTools`).toBe(false);
+  // The only way a dropped default tool survives is a file of its own in agent/tools/.
+  for(const tool of defaults.filter(name=>/todo/i.test(name)))
+   expect(existsSync(new URL(`../../../services/${role}/agent/tools/${tool}.ts`,import.meta.url)),`${role} must not re-add ${tool}`).toBe(false);
+  expect(existsSync(new URL(`../../../services/${role}/agent/tools/todo.ts`,import.meta.url)),role).toBe(false);
  }
 });
-
 describe('usage hooks never count a private conversation',()=>{
  // eve 1.0: usage is the `usage.recorded` fact, its place on the stream is `ctx.position`, its turn is `scope.turnId`.
  const event={type:'usage.recorded',scope:{turnId:'turn'},data:{kind:'model',owner:{runId:'run_1'},usage:{inputTokens:12,outputTokens:3,cacheReadTokens:0,cacheWriteTokens:0}}};

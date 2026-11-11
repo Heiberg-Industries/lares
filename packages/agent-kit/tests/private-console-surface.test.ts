@@ -1,18 +1,17 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {MockLanguageModelV3} from 'ai/test';
-const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),source:vi.fn(),approval:vi.fn()}));
+import {viewAt} from './helpers/session-view.js';
+const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),source:vi.fn(),approval:vi.fn(),docsRead:vi.fn()}));
+vi.mock('@lares/agent-kit/public-docs-runtime',()=>({publicDocsIndex:()=>'- install: reviewed page',readBakedPublicDoc:fake.docsRead}));
 vi.mock('../src/console-turn-authority.js',async original=>({...await original<typeof import('../src/console-turn-authority.js')>(),requireConsoleSessionBinding:fake.binding,guardConsoleToolContext:fake.turn}));
-// `position(view)` reads a number off the stand-in view below: a view at a later position can only be
-// built by folding real stream lines, and what these tests vary is the position, not the fold.
-vi.mock('eve/events',async actual=>{const real=await actual<typeof import('eve/events')>();return {...real,position:(view:unknown)=>(view as {line?:unknown}).line!==undefined?(view as {line:number}).line:real.position(view as never)};});
 const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
 import {definitionModelResolver} from '../src/definition-model.js';
 import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateOwnerTool,privateRoleInstructions,privateConsoleTracePolicy} from '../src/private-console-surface.js';
 const inc='11111111-1111-4111-8111-111111111111';
 const auth=(member='member-a')=>({authenticator:'lares-console',principalType:'user',principalId:member,attributes:{lares_member_id:member,lares_admission_nonce:'a'.repeat(43),lares_purpose:'human'}});
 const ctx=()=>({session:{id:'private-test',auth:{current:auth(),initiator:auth()}}});
-beforeEach(()=>{vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION',inc);fake.binding.mockResolvedValue({});fake.source.mockResolvedValue('read');fake.turn.mockResolvedValue(undefined);});
+beforeEach(()=>{fake.docsRead.mockImplementation((id:string)=>({markdown:`PUBLIC_DOC:${id}`}));vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION',inc);fake.binding.mockResolvedValue({});fake.source.mockResolvedValue('read');fake.turn.mockResolvedValue(undefined);});
 afterEach(()=>{vi.unstubAllEnvs();vi.clearAllMocks();});
 it('validates identical immutable admissions before any binding read; malformed tags never become native',async()=>{
  await expect(verifyPrivateConsoleSession(ctx())).resolves.toBe(true);
@@ -79,7 +78,7 @@ it('the private console channel exports no trace, under the 1.0 channel name and
 });
 const {ContextContainer,contextStorage}=await import(`${dist}context/container.js`);
 /** What eve 1.0 hands the agent's dynamic `model`: the session, its latest turn and the session view. */
-const modelCtx=(c:{session:unknown},turn:string,line:number)=>({session:c.session,turn:{id:turn,status:'running',input:[]},view:{line}}) as never;
+const modelCtx=(c:{session:unknown},turn:string,line:number)=>({session:c.session,turn:{id:turn,status:'running',input:[]},view:viewAt(line)}) as never;
 for(const [n,method] of (['doGenerate','doStream'] as const).entries()){
  // A different turn per method: a repeated run for the same coordinates shares one single-use claim.
  const turnA=`turn_${n}`,turnB=`turn_${n+2}`;
@@ -118,13 +117,19 @@ for(const [n,method] of (['doGenerate','doStream'] as const).entries()){
 }
 it('a tool resolved while the binding was good is refused after it is revoked, before any authored source runs',async()=>{
  // eve 0.60 persisted each dynamic tool as a durable descriptor and rebuilt it cold; eve 1.0 has no such
- // descriptor and re-runs the resolver before every model call. What that case guarded survives as this:
- // the executor checks the live binding on every call, so a stale handle cannot reach the source.
- const docs={read:vi.fn(()=> 'PUBLIC')};
- const guarded=async(c:unknown)=>{await verifyPrivateConsoleSession(c);assertPrivateConsoleTool(c,'chief-of-staff','lares_read_public_doc');return docs.read();};
- await expect(guarded(ctx())).resolves.toBe('PUBLIC');
- fake.binding.mockRejectedValue(new Error('binding revoked'));
- await expect(guarded(ctx())).rejects.toThrow('binding revoked');
- expect(docs.read).toHaveBeenCalledTimes(1);
- expect(fake.source).not.toHaveBeenCalled();
+ // descriptor and re-runs the resolver before every model call. What that case guarded survives as this,
+ // on the REAL public reader tool of both roles: the executor checks the live binding on every call, so a
+ // handle resolved earlier cannot reach the source after the binding is revoked.
+ for(const role of ['chief-of-staff','creative']){
+  fake.docsRead.mockClear();
+  const module=await import(new URL(`../../../services/${role}/agent/tools/public_doc.ts`,import.meta.url).href);
+  const resolve=Reflect.get(module.default,Symbol.for('eve.dynamic')) as (ctx:unknown)=>Promise<Record<string,{execute(input:unknown,ctx:unknown):Promise<unknown>}>>;
+  const tools=await contextStorage.run(new ContextContainer(),()=>resolve({...ctx(),turn:{id:'turn_0',status:'running',input:[]},memo:(_k:unknown,fn:()=>unknown)=>fn()}));
+  const read=tools.lares_read_public_doc!;
+  await expect(read.execute({id:'install'},ctx())).resolves.toBe('PUBLIC_DOC:install');
+  fake.binding.mockRejectedValue(new Error('binding revoked'));
+  await expect(read.execute({id:'install'},ctx()),role).rejects.toThrow('unavailable or this conversation is no longer authorized');
+  expect(fake.docsRead,role).toHaveBeenCalledTimes(1);
+  fake.binding.mockResolvedValue({});
+ }
 });

@@ -30,6 +30,14 @@ import { bootDefinitionOrStop } from "@lares/agent-kit/boot-definition";
 import { BOOT, thisAgent } from "../lib/definition.js";
 import { ownerTzSync } from "../lib/owner-clock.js";
 
+// FIRST in the module, above the awaited start-up work below (neither of those calls a model;
+// this keeps it true if they ever do). Nothing can ask for a model before this has run. The engine's model is a provider object on the
+// gateway, but eve keeps only its id between steps and, picking a session up cold (after a restart,
+// a between-turns compact), resolves that id again through the AI SDK's DEFAULT provider, which is
+// Vercel's AI Gateway: a model call outside admission and spending limits. This replaces the
+// default with one that refuses every request, and locks it. See `refusingDefaultProvider`.
+installRefusingDefaultProvider();
+
 // before anything else, free the workflow jobs a previous, dead process of this agent left
 // locked — otherwise a restart that landed inside a turn leaves that conversation silent for ~14
 // minutes. AWAITED AT MODULE LEVEL on purpose, not inside `setup`: eve calls `setup` without
@@ -45,13 +53,6 @@ if (workflowDatabaseUrl()) await releaseStaleWorkflowLocks();
 // every conversation. Same module-level placement and reason as the unlock above; the helper's
 // header has the argument. Only where a database exists — never at `eve build`.
 const boot = process.env.DATABASE_URL ? await bootDefinitionOrStop(() => thisAgent(BOOT)) : null;
-
-// FIRST, before anything else can ask for a model. The engine's model is a provider object on the
-// gateway, but eve keeps only its id between steps and, picking a session up cold (after a restart,
-// a between-turns compact), resolves that id again through the AI SDK's DEFAULT provider, which is
-// Vercel's AI Gateway: a model call outside admission and spending limits. This replaces the
-// default with one that refuses every request, and locks it. See `refusingDefaultProvider`.
-installRefusingDefaultProvider();
 
 export default defineInstrumentation({
   setup: ({ agentName }) => {

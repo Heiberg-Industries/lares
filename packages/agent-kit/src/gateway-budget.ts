@@ -520,15 +520,24 @@ export const DEFAULT_PROVIDER_REFUSED =
  */
 export function refusingDefaultProvider(): Record<PropertyKey, unknown> {
   const refuse = (): never => { throw new Error(DEFAULT_PROVIDER_REFUSED); };
-  const refusingModel = (kind: string, modelId: unknown) => ({
+  // Every `do…` method a model of any kind has (doGenerate, doStream, doEmbed, doRerank, doDecide,
+  // doEvaluate, doTranscribe, …, and any a later AI SDK adds) is the refusal: matched by name, not listed.
+  const refusingModel = (kind: string, modelId: unknown) => new Proxy({
     specificationVersion: "v4" as const,
     provider: "lares-refused",
     modelId: typeof modelId === "string" ? modelId : "refused",
     supportedUrls: {},
     maxEmbeddingsPerCall: 1,
     supportsParallelCalls: false,
-    doGenerate: refuse, doStream: refuse, doEmbed: refuse, doRerank: refuse, doTranscribe: refuse,
-    doSpeak: refuse, doRerankDocuments: refuse, kind,
+    // A decision call checks the question types first; claim them all so it reaches `doDecide` and is
+    // refused with the message below rather than failing earlier with a TypeError.
+    supportedQuestionTypes: { includes: () => true },
+    kind,
+  } as Record<PropertyKey, unknown>, {
+    get(target, property) {
+      if (property in target) return target[property];
+      return typeof property === "string" && property.startsWith("do") ? refuse : undefined;
+    },
   });
   const base: Record<PropertyKey, unknown> = { specificationVersion: "v4" };
   return new Proxy(base, {

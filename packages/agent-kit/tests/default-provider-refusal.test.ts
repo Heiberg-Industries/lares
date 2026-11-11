@@ -23,7 +23,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { streamText } from "ai";
+import { experimental_decide as decide, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_PROVIDER_REFUSED, installRefusingDefaultProvider, refusingDefaultProvider,
@@ -93,6 +93,12 @@ describe("a saved model id resolved again by eve (the cold-start compact)", () =
     }
   });
 
+  it("a decision call on a bare model id is refused with the same message, not a TypeError", async () => {
+    installRefusingDefaultProvider();
+    const attempt = decide({ model: "lares-brain", questions: { q: { type: "select", prompt: "Which?", options: [{ id: "a", label: "A" }] } } } as never);
+    await expect(attempt).rejects.toThrow(DEFAULT_PROVIDER_REFUSED);
+  });
+
   it("the gateway's own provider object is unaffected: it never asks the default provider", async () => {
     installRefusingDefaultProvider();
     const { MockLanguageModelV3 } = await import("ai/test");
@@ -131,7 +137,7 @@ describe("the refusing provider itself", () => {
     for (const kind of ["languageModel", "embeddingModel", "textEmbeddingModel", "imageModel", "speechModel", "transcriptionModel", "rerankingModel", "videoModel", "somethingEveAddsLater"]) {
       const model = provider[kind]!("any-id");
       expect(model.modelId ?? "any-id").toBeTruthy();
-      for (const call of ["doGenerate", "doStream", "doEmbed", "doRerank"]) expect(() => model[call]!(), `${kind}.${call}`).toThrow(DEFAULT_PROVIDER_REFUSED);
+      for (const call of ["doGenerate", "doStream", "doEmbed", "doRerank", "doDecide", "doEvaluate", "doTranscribe", "doGenerateImage", "doSomethingLater"]) expect(() => model[call]!(), `${kind}.${call}`).toThrow(DEFAULT_PROVIDER_REFUSED);
     }
   });
 
