@@ -70,13 +70,24 @@ for directory, mode in ((custody_dir, 0o700), (admission_dir, 0o755),
 marker_dir.chmod(0o777)  # contains only readiness markers written by disposable uid 10001 processes
 os.chown(data_dir, 999, 999)
 
+# Every secret value this fixture generates is recorded here, so a failure report can replace
+# each occurrence by value before anything reaches the (public) job log.
+generated_secrets: set[str] = set()
+
+
+def new_secret(nbytes: int) -> str:
+    value = secrets.token_urlsafe(nbytes)
+    generated_secrets.add(value)
+    return value
+
+
 private_root = pathlib.Path(tempfile.mkdtemp(prefix="lares-maintenance-private-")).resolve()
 private_root.chmod(0o700)
 operator_path = private_root / "operator-password"
-operator_password = secrets.token_urlsafe(32)
+operator_password = new_secret(32)
 operator_path.write_text(operator_password + "\n", encoding="ascii")
 operator_path.chmod(0o600)
-app_password = secrets.token_urlsafe(32)
+app_password = new_secret(32)
 role_login_dir = private_root / "role-login-fixtures"
 role_login_dir.mkdir(mode=0o700)
 role_login_dir.chmod(0o700)
@@ -148,29 +159,55 @@ class ProbeFailure(Exception):
         self.result = result
 
 
-# The most recent command run() finished, so a failure raised right after a check=False
-# command can still show what that command printed.
+# The most recent command run() finished. A failure raised without output of its own names
+# that command and its exit status, but never prints what it printed: that is often
+# `docker inspect` JSON, which carries a container's environment and mounts.
 last_command: tuple[list[str], subprocess.CompletedProcess | None] | None = None
 LOG_OUTPUT_HEAD = 1500
 LOG_OUTPUT_TAIL = 4500
 REDACTED = "<redacted>"
+SECRET_WORD = r"(?:password|passwd|secret|token|key)"
+SECRET_VALUE = r"""(?!['"]?/)('[^']*'|"[^"]*"|[^\s'"]+)"""  # a quoted or bare value, never a /path
+# The second net, after every known value has been replaced. Each pattern replaces only the value.
 REDACTION_PATTERNS = (
     # credentials inside a connection address: scheme://user:secret@host
     (re.compile(r"([a-z][a-z0-9+.-]*://[^\s:/@]+):[^\s@]+@", re.IGNORECASE), r"\1:" + REDACTED + "@"),
-    # PASSWORD 'literal' in SQL, and SCRAM verifiers wherever they are echoed
-    (re.compile(r"(PASSWORD\s+)'[^']*'", re.IGNORECASE), r"\1'" + REDACTED + "'"),
+    (re.compile(r"(\bBearer\s+)[^\s'\"]+", re.IGNORECASE), r"\1" + REDACTED),
+    (re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"), REDACTED),  # JWT-shaped
     (re.compile(r"SCRAM-SHA-256\$[^\s'\"]+"), "SCRAM-SHA-256$" + REDACTED),
-    # key=value and "key": "value" forms of passwords, secrets and tokens
-    (re.compile(r"((?:PGPASSWORD|password|passwd|secret|token)\"?\s*[=:]\s*)\"?[^\s\"',;}]+", re.IGNORECASE),
+    (re.compile(r"(\bPASSWORD\s+)('[^']*'|\"[^\"]*\")", re.IGNORECASE), r"\1'" + REDACTED + "'"),
+    # --password VALUE, --api-key=VALUE (never --password-file /path)
+    (re.compile(r"(?<![\w-])(--?[\w-]*" + SECRET_WORD + r"(?:=|\s+))(?!-)" + SECRET_VALUE, re.IGNORECASE),
+     r"\1" + REDACTED),
+    # PGPASSWORD=x, TOKEN_ENC_KEY='x', password = "x"
+    (re.compile(r"(\b[\w.-]*" + SECRET_WORD + r"\w*\s*=\s*)" + SECRET_VALUE, re.IGNORECASE), r"\1" + REDACTED),
+    # "password": "x", {'secret': 'x'}, api_key: x
+    (re.compile(r"""((["']?)[\w.-]*""" + SECRET_WORD + r"""[\w.-]*\2\s*:\s*)""" + SECRET_VALUE, re.IGNORECASE),
      r"\1" + REDACTED),
 )
+SECRET_NAME = re.compile(SECRET_WORD, re.IGNORECASE)
+
+
+def _secret_values_in_json(value: object, key: str = "") -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            found |= _secret_values_in_json(child, str(child_key))
+    elif isinstance(value, list):
+        for child in value:
+            found |= _secret_values_in_json(child, key)
+    elif isinstance(value, str) and SECRET_NAME.search(key) and not value.startswith("/"):
+        found.add(value)
+    return found
 
 
 def fixture_secret_values() -> set[str]:
-    """Every credential this fixture generated: the in-memory ones and each short file under
-    the private credential folder and the rendered compose secrets folder."""
-    values = {operator_password, app_password}
-    for folder in (private_root, secrets_dir):
+    """Every secret value this fixture made or holds: each value new_secret() returned, and the
+    secret values in every small file of the private credential folder, the rendered compose
+    secrets folder and the installed configuration (whole lines of the two secret folders,
+    KEY=VALUE values whose key names a secret, JSON strings whose key names a secret)."""
+    values = set(generated_secrets) | {operator_password, app_password}
+    for folder, whole_lines in ((private_root, True), (secrets_dir, True), (fixture_prefix / "etc", False)):
         try:
             paths = [path for path in folder.rglob("*") if path.is_file() and not path.is_symlink()]
         except Exception:
@@ -179,15 +216,25 @@ def fixture_secret_values() -> set[str]:
             try:
                 if path.stat().st_size > 4096:
                     continue
-                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                    if len(line.strip()) >= 8:
-                        values.add(line.strip())
+                text = path.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 continue
-    return values
+            try:
+                values |= _secret_values_in_json(json.loads(text))
+            except ValueError:
+                pass
+            for line in text.splitlines():
+                line = line.strip()
+                name, separator, value = line.partition("=")
+                if separator and SECRET_NAME.search(name):
+                    values.add(value.strip().strip("'\""))
+                elif whole_lines:
+                    values.add(line)
+    return {value for value in values if len(value) >= 8}
 
 
 def redact(text: str) -> str:
+    """Known values first, by value; then the patterns as a second net."""
     for value in sorted(fixture_secret_values(), key=len, reverse=True):
         text = text.replace(value, REDACTED)
     for pattern, replacement in REDACTION_PATTERNS:
@@ -209,35 +256,50 @@ def as_text(value: str | bytes | None) -> str:
 
 
 def describe_command(args: list[str]) -> str:
-    """The command line, shortened: the program it runs (often a long inline script) is cut."""
-    shown = [arg if len(arg) <= 160 else arg[:120] + f"...[{len(arg)} characters]" for arg in args]
+    """The command line: each argument is redacted first, then shortened (a long inline program
+    is cut), then quoted."""
+    shown = []
+    for arg in args:
+        arg = redact(arg)
+        shown.append(arg if len(arg) <= 160 else arg[:120] + f"...[{len(arg)} characters]")
     return shlex.join(shown)
 
 
+def output_withheld(args: list[str]) -> bool:
+    """Inspect output and environment dumps are never printed, not even redacted."""
+    return any(arg in ("inspect", "env", "printenv") or arg.endswith("/environ") for arg in args)
+
+
 def report_failure(failed_stage: str, error: BaseException) -> None:
-    """Print the failing stage, sub-step and captured output to the job log, redacted and trimmed.
-    The proof file keeps only the sanitized stage and kind."""
+    """Print the failing stage, sub-step, command and its captured output to the job log,
+    redacted and trimmed. The proof file keeps only the sanitized stage and kind."""
     try:
         lines = [f"maintenance fence proof FAILED at stage '{failed_stage}'"]
         if isinstance(error, ProbeFailure):
             lines.append(f"failure kind: {error.kind}")
-            command: list[str] | None = None
-            result = error.result
             if error.step:
                 lines.append(f"failing sub-step: {error.step}")
-            if result is None and last_command is not None:
-                command, result = last_command
-                lines.append("(no output attached to this failure; showing the last command run before it)")
-            elif result is not None and isinstance(result.args, (list, tuple)):
-                command = [str(arg) for arg in result.args]
-            if command:
-                lines.append("command: " + describe_command(command))
-            if result is not None:
+            result = error.result
+            if result is None:
+                if last_command is not None:
+                    previous_command, previous = last_command
+                    lines.append("(no output attached to this failure; the last command run before it was:)")
+                    lines.append("command: " + describe_command(previous_command))
+                    if previous is not None:
+                        lines.append(f"exit status: {previous.returncode}")
+            else:
+                command = [str(arg) for arg in result.args] if isinstance(result.args, (list, tuple)) else []
+                if command:
+                    lines.append("command: " + describe_command(command))
                 lines.append(f"exit status: {result.returncode}")
                 output = as_text(result.stdout) + as_text(result.stderr)
-                lines.append("captured output:" if output.strip() else "captured output: (none)")
-                if output.strip():
-                    lines.append(trimmed(output.rstrip()))
+                if output_withheld(command):
+                    lines.append("captured output: (withheld: inspect and environment output is never printed)")
+                elif output.strip():
+                    lines.append("captured output:")
+                    lines.append(trimmed(redact(output.rstrip())))
+                else:
+                    lines.append("captured output: (none)")
         else:
             lines.append(f"unexpected error: {type(error).__name__}: {error}")
             lines.append(trimmed("".join(traceback.format_exception(error)).rstrip()))
@@ -569,13 +631,13 @@ def prove_keeper_default_admission() -> None:
         elif name == "gateway-database-password":
             value = (private_root / "gateway-database-password").read_bytes()
         else:
-            value = (secrets.token_urlsafe(32) + "\n").encode("ascii")
+            value = (new_secret(32) + "\n").encode("ascii")
         destination = secrets_dir / name
         destination.write_bytes(value)
         destination.chmod(0o600)
     for name in ("gateway-master-key", "eve-route-password", "console-vault-signing-key", "outside-custody-database-password"):
         destination = secrets_dir / name
-        destination.write_text(secrets.token_urlsafe(32) + "\n", encoding="ascii")
+        destination.write_text(new_secret(32) + "\n", encoding="ascii")
         destination.chmod(0o600)
 
     release_path = REPO / "releases/2026-10-21-rc.12.json"
@@ -1544,7 +1606,9 @@ def scram_verifier(password: str) -> str:
     stored = hashlib.sha256(client).digest()
     server = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
     b64 = lambda value: base64.b64encode(value).decode("ascii")
-    return "SCRAM-SHA-256$4096:" + b64(salt) + "$" + b64(stored) + ":" + b64(server)
+    verifier = "SCRAM-SHA-256$4096:" + b64(salt) + "$" + b64(stored) + ":" + b64(server)
+    generated_secrets.add(verifier)
+    return verifier
 
 
 def app_client(role: str, *, check: bool) -> subprocess.CompletedProcess:
@@ -1704,10 +1768,10 @@ def run_database_proof() -> None:
         raise ProbeFailure()
     creative_image = CREATIVE_IMAGE
     credentials = {"operator-password": operator_password, "database-password": app_password,
-        "financial-database-password": secrets.token_urlsafe(40),
-        "outside-custody-database-password": secrets.token_urlsafe(40),
-        "workflow-provisioner-password": secrets.token_urlsafe(40),
-        "workflow-password": secrets.token_urlsafe(40), "gateway-database-password": secrets.token_urlsafe(40)}
+        "financial-database-password": new_secret(40),
+        "outside-custody-database-password": new_secret(40),
+        "workflow-provisioner-password": new_secret(40),
+        "workflow-password": new_secret(40), "gateway-database-password": new_secret(40)}
     credential_files: dict[str, pathlib.Path] = {}
     for name, value in credentials.items():
         path = private_root / name
