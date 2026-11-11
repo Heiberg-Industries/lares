@@ -1186,6 +1186,20 @@ describe("upgrading the agent stores during an update", { timeout: 60_000 }, () 
     expect(steps()).toEqual([]);
   });
 
+  // The installer makes this login file (from rc.13 on); a server installed earlier and never
+  // installed again since has none. The refusal says how to get it.
+  it("refuses before anything is stopped when the store login file is missing, and says how to get it", () => {
+    const credential = join(prefix, "etc", "lares", "secrets", "workflow-provisioner-password");
+    rmSync(credential);
+    const r = run(["--release", release, "--yes"], ALL_OLD);
+    expect(r.code, r.stderr).toBe(78);
+    expect(r.stderr).toContain(`the provisioner credential (${credential}) is missing, empty or a link`);
+    expect(r.stderr).toContain("running its installer once creates it: sudo bash /opt/lares/current/services/box/ops/install.sh --yes --release /opt/lares/current/release.json");
+    expect(r.stderr).toContain("On an older release, update to rc.14 first. Then run this again. Nothing has been changed.");
+    expect(steps().join("\n")).not.toMatch(/stop|start|backup|record|pull|migrations|upgrade|switch|permissions/);
+    expect(existsSync(noteFile())).toBe(false);
+  });
+
   it("starts the agents and the keeper again when the second look refuses, having changed no store", () => {
     const r = run(["--release", release, "--yes"], { ...ALL_OLD, STUB_QUIET_FAIL: STORE_A });
     expect(r.code).toBe(78);
