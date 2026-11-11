@@ -14,16 +14,19 @@ import {assertDoorAuthority,managedIdentity} from '@lares/agent-kit/door-authori
  * handle uses `lib/telegram-send.ts`.
  *
  * Written against eve 1.0.0-rc.9. Approval cards are rendered, posted and registered by eve
- * itself (with the Lares framework patch for their text and buttons); this door only words the
- * card once it is decided.
+ * itself (with the Lares framework patch for their text and buttons). This door adds two things
+ * around a card: under one that could not show everything, a line saying where the whole of it
+ * can be read and approved; and, once the request is decided, how it ended.
  */
 import { readFileSync } from "node:fs";
-import { interaction, type SessionView } from "eve/events";
+import type { ChannelEvents } from "eve/channels";
+import { APPROVE_OPTION_ID, interaction, type SessionView } from "eve/events";
 import {
   defaultTelegramAuth,
   telegramChannel,
   type TelegramBotToken,
   type TelegramChannelEvents,
+  type TelegramEventContext,
   type TelegramMessage,
   type TelegramWebhookSecretToken,
 } from "eve/channels/telegram";
@@ -201,6 +204,28 @@ export function shouldTrackForRotation(
     && isAllowedPrincipalId("telegram", chatId);
 }
 
+/**
+ * The events this door answers in eve's place. Each one below reproduces what eve's default did
+ * and adds this door's own part.
+ */
+const replacedEvents = {
+  // The reply, then session rotation: logs the reply, writes down which durable session
+  // answered, and — once the calendar day (in the home time zone) has rolled over since this
+  // chat's live session was anchored — leaves a carry-forward summary waiting for the next
+  // message. The retirement of the previous day's session itself happens at the webhook front
+  // door (`telegram-webhook.ts`), the only place eve hands out `attachSession`; see
+  // `lib/telegram-rotation.ts`. Scoped to the allowed principal's private chat only.
+  "content.completed": onContentCompleted,
+  // A capped turn says so instead of failing generically. In eve 1.0 one failure is one event:
+  // a failure the session survives ends the TURN (`turn.settled`, outcome `failed`), a failure
+  // it does not survive ends the SESSION (`session.ended`, outcome `failed`) and the turn
+  // carries no error of its own. A gateway budget refusal can arrive as either.
+  "turn.settled": onTurnSettled,
+  "session.ended": onSessionEnded,
+  // A card shows how it ended and loses its buttons once it is settled.
+  "interaction.settled": onInteractionSettled,
+} satisfies TelegramChannelEvents;
+
 export default telegramChannel({
   // This channel listens on an INNER path. The public webhook URL is unchanged and is owned by
   // agent/channels/telegram-webhook.ts, which refuses the taps that may not be answered, clears
@@ -317,27 +342,158 @@ export default telegramChannel({
     }
   },
   // SUPPLYING A HANDLER REPLACES eve's DEFAULT FOR THAT EVENT (`{...defaultEvents, ...events}` in
-  // telegramChannel), so each one below reproduces what the default did and adds this door's own
-  // part. Events not named here keep eve's default — in particular `interaction.opened`, which
-  // renders an approval card, posts it and registers its buttons. This door does not touch that.
+  // telegramChannel); see `replacedEvents` above. Events not named there keep eve's default — in
+  // particular `interaction.opened`, which renders an approval card, posts it and registers its
+  // buttons. This door does not touch that.
   events: {
-    // The reply, then session rotation: logs the reply, writes down which durable session
-    // answered, and — once the calendar day (in the home time zone) has rolled over since this
-    // chat's live session was anchored — leaves a carry-forward summary waiting for the next
-    // message. The retirement of the previous day's session itself happens at the webhook front
-    // door (`telegram-webhook.ts`), the only place eve hands out `attachSession`; see
-    // `lib/telegram-rotation.ts`. Scoped to the allowed principal's private chat only.
-    "content.completed": onContentCompleted,
-    // A capped turn says so instead of failing generically. In eve 1.0 one failure is one event:
-    // a failure the session survives ends the TURN (`turn.settled`, outcome `failed`), a failure
-    // it does not survive ends the SESSION (`session.ended`, outcome `failed`) and the turn
-    // carries no error of its own. A gateway budget refusal can arrive as either.
-    "turn.settled": onTurnSettled,
-    "session.ended": onSessionEnded,
-    // A card shows how it ended and loses its buttons once it is settled.
-    "interaction.settled": onInteractionSettled,
-  } satisfies TelegramChannelEvents,
+    ...replacedEvents,
+    // Once per stored line, after that line's handlers have run — so after eve has posted the
+    // cards the line opened. A card that could not show everything gets its pointer to the
+    // console here. `committed` is the framework's own per-line handler for every channel
+    // (`ChannelEvents` in `eve/channels`, wired by `defineChannel`); the Telegram channel's
+    // narrower `TelegramChannelEvents` type does not list it, hence the cast. It replaces
+    // nothing: eve's Telegram channel has no per-line handler of its own.
+    committed: onLineCommitted satisfies NonNullable<ChannelEvents<TelegramEventContext>["committed"]>,
+  } as TelegramChannelEvents,
 });
+
+// ── A card that could not show everything ───────────────────────────────────────────────
+
+/**
+ * The console's Waiting on you page for one request, from `LARES_CONSOLE_URL` — or null when it is
+ * unset or not an http(s) address, in which case the note says to open the console instead.
+ * The page selects the request by eve's interaction id (`?request=<id>`). EXPORTED for tests.
+ */
+export function waitingPageLink(interactionId: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env["LARES_CONSOLE_URL"]?.trim();
+  if (!raw) return null;
+  let base: URL;
+  try {
+    base = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (base.protocol !== "https:" && base.protocol !== "http:") return null;
+  const url = new URL("waiting", base.href.endsWith("/") ? base.href : `${base.href}/`);
+  url.searchParams.set("request", interactionId);
+  return url.href;
+}
+
+/** What is said under a card that could not show everything. EXPORTED for tests. */
+export function shortenedCardNote(link: string | null): string {
+  const lead = "The request above is shortened: Telegram cannot show all of it, so it cannot be approved here.";
+  return link === null
+    ? `${lead} Open the console to read the whole of it and approve it there. Deny still works here.`
+    : `${lead} Read the whole of it and approve it in the console: ${link}\nDeny still works here.`;
+}
+
+/** What a note that could not be removed is changed to, once its request is decided. */
+export const SHORTENED_NOTE_CLOSED_TEXT = "The request above is closed.";
+
+/** This door's own record of the notes it posted, by request: the Telegram message each one is.
+ *  Kept in the channel's state under a key of the door's own, as eve's upgrade guide asks. */
+const NOTES_KEY = "laresShortenedCardNotes";
+
+function postedNotes(state: object): Record<string, string> {
+  const held = (state as Record<string, unknown>)[NOTES_KEY];
+  if (!isRecord(held)) return {};
+  return Object.fromEntries(Object.entries(held).filter((e): e is [string, string] => typeof e[1] === "string"));
+}
+
+/**
+ * True when eve posted a card for this approval WITHOUT an Approve button.
+ *
+ * The framework patch leaves Approve off a card whose text was cut, at Telegram's limit or by the
+ * approval summary itself. That decision is made inside the renderer and is not reported
+ * anywhere, so it is read off what the renderer left behind in the channel's state: a card on
+ * record for the request (`hitlPrompts`), buttons registered for it (`hitlCallbacks`, one entry
+ * per button eve actually rendered), and none of them answering `approve`.
+ *
+ * Both are fields eve keeps for itself, like the one `takePostedCard` reads. Anything missing or
+ * shaped differently answers false: no note is posted, which costs a pointer and nothing else.
+ * `tests/telegram-approval-card.test.ts` renders cut and whole cards through the installed,
+ * patched eve and checks this against the buttons that were really sent.
+ */
+function wasPostedWithoutApprove(state: object, interactionId: string): boolean {
+  const held = state as { hitlPrompts?: unknown; hitlCallbacks?: unknown };
+  if (!isRecord(held.hitlPrompts) || !isRecord(held.hitlPrompts[interactionId])) return false;
+  if (!isRecord(held.hitlCallbacks)) return false;
+  const answers = Object.values(held.hitlCallbacks)
+    .filter((entry): entry is Record<string, unknown> => isRecord(entry) && entry["interactionId"] === interactionId)
+    .map((entry) => entry["optionId"]);
+  return answers.length > 0 && !answers.includes(APPROVE_OPTION_ID);
+}
+
+/** The slice of eve's event context `onLineCommitted` uses. */
+interface CommittedLineContext {
+  readonly channel: {
+    readonly state: { chatId: string | null };
+    readonly telegram: { post(message: string): Promise<{ id?: unknown }> };
+  };
+}
+
+/**
+ * `committed` — one stored line's facts, after that line's own handlers have run.
+ *
+ * For each approval the line opened whose card eve posted without an Approve button, one message
+ * goes out under the card: it cannot be approved here, and here is where it can — the console's
+ * Waiting on you page for that request, when `LARES_CONSOLE_URL` is set. It is a message of its
+ * own, not part of the card: the card's text is composed inside the framework, which does not
+ * know the request's id there, and this door does not redraw the card.
+ *
+ * The note is remembered under the door's own state key so that it is posted once and can be
+ * taken away when the request is decided (`onInteractionSettled`).
+ *
+ * Never throws, and a failed send costs one log line: the card itself is already up, with Deny.
+ * EXPORTED for tests.
+ */
+export async function onLineCommitted(
+  line: { readonly facts: ReadonlyArray<{ readonly type: string; readonly data?: unknown }> },
+  ctx: CommittedLineContext,
+): Promise<void> {
+  for (const fact of line.facts) {
+    try {
+      if (fact.type !== "interaction.opened" || !isRecord(fact.data)) continue;
+      const interactionId = fact.data["interactionId"];
+      const request = fact.data["request"];
+      if (typeof interactionId !== "string" || !isRecord(request) || request["kind"] !== "approval") continue;
+      // Only where Approve was on offer and eve left it off. A request that never offered it is
+      // not "shortened".
+      const offered = Array.isArray(request["options"]) && request["options"].some((o) => isRecord(o) && o["id"] === APPROVE_OPTION_ID);
+      if (!offered || !wasPostedWithoutApprove(ctx.channel.state, interactionId)) continue;
+      const notes = postedNotes(ctx.channel.state);
+      if (notes[interactionId] !== undefined) continue;
+
+      const posted = await ctx.channel.telegram.post(shortenedCardNote(waitingPageLink(interactionId)));
+      if (typeof posted?.id === "string" && posted.id.length > 0) {
+        (ctx.channel.state as Record<string, unknown>)[NOTES_KEY] = { ...notes, [interactionId]: posted.id };
+      }
+    } catch (err) {
+      console.error("telegram approval card: could not say where a shortened request can be approved", err instanceof Error ? err.message : "unknown error");
+    }
+  }
+}
+
+/**
+ * Takes away the note posted under a shortened card, now that its request is decided: the note
+ * is only true while the card is open. Deleted when Telegram allows it; a message it will no
+ * longer delete is changed to say the request is closed. Forgotten either way. Never throws.
+ */
+async function removeShortenedCardNote(ctx: SettledCardContext, interactionId: string): Promise<void> {
+  try {
+    const { [interactionId]: noteId, ...rest } = postedNotes(ctx.channel.state);
+    if (noteId === undefined) return;
+    (ctx.channel.state as Record<string, unknown>)[NOTES_KEY] = rest;
+    const chatId = ctx.channel.state.chatId;
+    if (!chatId) return;
+    const deleted = await ctx.channel.telegram.request("deleteMessage", { chat_id: chatId, message_id: Number(noteId) });
+    if (deleted.ok) return;
+    const edited = await ctx.channel.telegram.editMessageText({ messageId: noteId, text: SHORTENED_NOTE_CLOSED_TEXT });
+    if (!edited.ok) console.error(`telegram approval card: could not take away a shortened card's note (HTTP ${edited.status})`);
+  } catch (err) {
+    console.error("telegram approval card: could not take away a shortened card's note", err instanceof Error ? err.message : "unknown error");
+  }
+}
 
 // ── The card, once it is settled ────────────────────────────────────────────────────────
 
@@ -427,6 +583,7 @@ interface SettledCardContext {
         replyMarkup?: Readonly<Record<string, unknown>>;
         text: string;
       }): Promise<{ ok: boolean; status: number; body?: unknown }>;
+      request(method: string, body?: Record<string, string | number>): Promise<{ ok: boolean; status: number; body?: unknown }>;
     };
   };
   readonly view: SessionView;
@@ -458,6 +615,9 @@ export async function onInteractionSettled(
   event: { readonly data: { readonly interactionId: string; readonly outcome: string } },
   ctx: SettledCardContext,
 ): Promise<void> {
+  // Whatever happens to the card, a note this door put under it goes: it said the request could
+  // still be approved in the console, and it no longer can.
+  await removeShortenedCardNote(ctx, event.data.interactionId);
   try {
     const { interactionId, outcome } = event.data;
     const asked = interaction(ctx.view, interactionId);
