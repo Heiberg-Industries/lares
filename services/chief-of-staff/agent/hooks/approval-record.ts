@@ -13,7 +13,8 @@ export type { ApprovalRecordDeps } from "@lares/agent-kit/approval-record-hook";
 
 import {personalSendInputRequested,personalSendInputResolved} from '../../lib/personal-send-approval.js';
 import { getPool } from "@lares/agent-kit/db";
-import { approverFrom, assertApprover, noteSettledCard, takeNativeAnswerer } from "../../lib/approvals.js";
+import { approverFrom, assertApprover, takeNativeAnswerer } from "../../lib/approvals.js";
+import { noteApprovalCardTurn } from "../../lib/approval-card-turns.js";
 import { applyRouteProposalDecline, recordRouteApprovalLink, routeApprovalLinkAudience } from "../../lib/route-decline.js";
 import { withCurrentNativeContinuity } from "../../lib/conversation-continuity.js";
 const live = makeApprovalRecord({personalRequested:(r,c)=>personalSendInputRequested(r,c as never),personalResolved:(r,o,c)=>personalSendInputResolved(r,o,c as never)});
@@ -66,6 +67,17 @@ async function applyScheduledRouteDeclines(event: unknown, ctx: HookContext): Pr
     (db, identity) => applyRouteProposalDecline(db, requestId, identity));
 }
 
+/** The turn a card belongs to: the event's own scope, else the hook's current turn (the same turn
+ *  while it runs; packages/agent-kit/tests/answer-turn-position.test.ts). */
+/** Whether an opened interaction is an approval card, from the event alone: unlike
+ *  `openedApproval`, it does not need the call to be readable, so an unreadable call still marks. */
+function asksApproval(event: unknown): boolean {
+  return (event as { data?: { request?: { kind?: unknown } } } | undefined)?.data?.request?.kind === "approval";
+}
+function cardTurnOf(event: unknown, ctx: HookContext): unknown {
+  return (event as { scope?: { turnId?: unknown } } | undefined)?.scope?.turnId ?? ctx?.session?.turn?.id;
+}
+
 let routeDeclineWarned = false;
 function warnRouteDecline(error: unknown): void {
   if (routeDeclineWarned) return;
@@ -77,13 +89,15 @@ function warnRouteDecline(error: unknown): void {
 export default defineHook({
   events: {
     "interaction.opened": async (event: unknown, ctx: HookContext) => {
+      // A turn that asks a card carries no new human instruction from here on (durable; throws,
+      // failing the turn, when it cannot be recorded).
+      if (asksApproval(event)) noteApprovalCardTurn(cardTurnOf(event, ctx));
       await live["interaction.opened"](event, ctx);
       try { await linkScheduledRouteRequests(getPool(), event, ctx); } catch (error) { warnRouteDecline(error); }
     },
     "interaction.settled": async (event: unknown, ctx: HookContext) => {
-      // Any approval card that settles ends "the owner just said so" for the rest of its turn.
-      if (settledApproval(event, ctx)) noteSettledCard(ctx?.session?.id,
-        (event as { scope?: { turnId?: unknown } })?.scope?.turnId ?? ctx?.session?.turn?.id);
+      // Marked again on settle; a no-op when the opening hook already marked the turn.
+      if (settledApproval(event, ctx)) noteApprovalCardTurn(cardTurnOf(event, ctx));
       await live["interaction.settled"](event, ctx);
       try { await applyScheduledRouteDeclines(event, ctx); } catch (error) { warnRouteDecline(error); }
     },

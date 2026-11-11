@@ -19,6 +19,7 @@ import { getPool } from "@lares/agent-kit/db";
 import type { ApprovedExecution } from "@lares/agent-kit/approval-execution";
 
 import { declaredApprover, isAllowedPrincipal, isOwnerPrincipal, principalFromAuth } from "./principals.js";
+import { turnAskedACard } from "./approval-card-turns.js";
 
 const companyHome = (input: unknown) => !!input && typeof input === 'object' && !Array.isArray(input) && (input as Record<string, unknown>).home === 'twenty';
 const adapterFor = (tool: string, input?: unknown) => {
@@ -110,33 +111,6 @@ export function approverFrom(
 }
 
 /**
- * THE TURN AFTER AN ANSWERED CARD (eve 1.0, every door).
- *
- * eve 1.0 continues a paused turn after a card is answered, as the person who ASKED: on Slack or
- * Telegram that is the owner, so `auth.current` alone would let the continuation's model call an
- * ungated write (`remember`, `forget`, `deadline_add`, `deadline_reset`) as if the owner had just
- * said so. Once any approval card in a turn has settled, by any ending, the rest of that turn
- * carries no new human instruction. The approval-record hook notes each settled card here from the
- * `interaction.settled` event's own turn; the refusal reads it. In memory, bounded, kept for the
- * life of a turn; if it is lost (restart), the continuation itself is refused elsewhere.
- */
-const SETTLED_TURN_MS = 30 * 60_000, MAX_SETTLED_TURNS = 4096;
-const settledTurns = new Map<string, number>();
-const turnSlot = (sessionId: string, turnId: string) => `${sessionId}\0${turnId}`;
-export function noteSettledCard(sessionId: unknown, turnId: unknown, now = Date.now()): void {
-  if (typeof sessionId !== "string" || !sessionId || typeof turnId !== "string" || !turnId) return;
-  for (const [k, at] of settledTurns) if (at <= now) settledTurns.delete(k);
-  if (settledTurns.size >= MAX_SETTLED_TURNS) settledTurns.delete(settledTurns.keys().next().value as string);
-  settledTurns.set(turnSlot(sessionId, turnId), now + SETTLED_TURN_MS);
-}
-export function turnAnsweredACard(session?: { id?: unknown; turn?: { id?: unknown } | null } | null, now = Date.now()): boolean {
-  const id = session?.id, turnId = session?.turn?.id;
-  if (typeof id !== "string" || typeof turnId !== "string") return false;
-  const at = settledTurns.get(turnSlot(id, turnId));
-  return at !== undefined && at > now;
-}
-
-/**
  * WHO ANSWERED A NATIVE CARD. On eve 1.0 the settle hook's `session.auth.current` is the turn's
  * requester (for a scheduled job, the app). The person who answered is only `response.principal`
  * in the response policy, so the policy keeps it here once it has accepted the answer, and the
@@ -174,12 +148,14 @@ export function takeNativeAnswerer(requestId: string, now = Date.now()): unknown
  * telling the model why costs nothing; throwing would cost the owner the turn the owner is in.
  */
 export function humanTurnRefusal(
-  auth: SessionAuthLike | null | undefined,
+  session: { auth?: SessionAuthLike | null; turn?: { id?: unknown } | null } | null | undefined,
   lead: string,
   env: NodeJS.ProcessEnv = process.env,
-  session?: { id?: unknown; turn?: { id?: unknown } | null } | null,
 ): string | null {
-  if (consoleResolverOnly(auth?.current) || turnAnsweredACard(session)) return `${lead} This turn answers an approval; it contains no new human instruction. Nothing changed.`;
+  const auth = session?.auth;
+  // The whole session, never the auth alone: the turn after an answered card runs as the person
+  // who asked, so only the durable card mark (lib/approval-card-turns.ts) tells the two apart.
+  if (consoleResolverOnly(auth?.current) || turnAskedACard(session)) return `${lead} This turn answers an approval; it contains no new human instruction. Nothing changed.`;
   const current = principalFromAuth(auth?.current);
   if (current.absent !== true && isAllowedPrincipal(current.authenticator, current.userId, env)) {
     return null;

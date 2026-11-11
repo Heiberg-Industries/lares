@@ -23,10 +23,8 @@ export default defineTool({
   inputSchema: z.object({ id: z.string() }),
   async execute({ id }, ctx) {
     const notHim = humanTurnRefusal(
-      ctx.session?.auth,
-      "A ladder starts chasing again because the owner asked for it on this turn.",
-      process.env,
       ctx.session,
+      "A ladder starts chasing again because the owner asked for it on this turn.",
     );
     if (notHim) return { reset: false as const, message: notHim };
 

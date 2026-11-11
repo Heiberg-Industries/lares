@@ -121,10 +121,8 @@ export default defineTool({
     const auth = ctx.session?.auth as { current?: { authenticator?: unknown; attributes?: Record<string, unknown> }; initiator?: { attributes?: Record<string, unknown> } } | undefined;
     // WHO is speaking, before WHAT was said: a fact quoted from nobody is not a quote.
     const notHim = humanTurnRefusal(
-      ctx.session?.auth,
-      "A standing fact is something the owner said, in their own words, on this turn.",
-      process.env,
       ctx.session,
+      "A standing fact is something the owner said, in their own words, on this turn.",
     );
     if (notHim) return { remembered: false as const, message: notHim };
 
