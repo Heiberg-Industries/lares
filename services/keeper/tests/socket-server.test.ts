@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { registerAction, resetActions, KeeperRefusedError, type AuditRecord } from "../lib/actions.js";
+import { registerAction, resetActions, KeeperFailedError, KeeperRefusedError, KEEPER_FAILURE_STATES, type AuditRecord } from "../lib/actions.js";
 import { serve, MAX_REQUEST_BYTES } from "../lib/socket-server.js";
 let dir: string;
 let stop: (() => Promise<void>) | undefined;
@@ -119,12 +119,59 @@ it("never returns serializer exception text after an audited action", async () =
   expect(audit.mock.calls.map(([r]) => r.outcome)).toEqual(["pending", "ok"]);
 });
 
-it("labels generic action failures as outcome-unknown and never returns the exception text",async()=>{
+it("labels generic action failures as outcome-unknown, with the audit reference, and never returns the exception text",async()=>{
   registerAction({name:"failure",input:z.object({}),run:async()=>{throw new Error("private failure detail");}});
   const socket=await start(true),response=await request(socket,'{"action":"failure"}\n');
-  expect(response).toEqual({ok:false,outcome:"unknown",error:"keeper could not confirm the action outcome"});
+  expect(response).toEqual({ok:false,outcome:"unknown",error:"keeper could not confirm the action outcome",reference:audit.mock.calls[0][0].operationId});
+  expect(response.reference).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   expect(JSON.stringify(response)).not.toContain("private failure detail");
   expect(audit.mock.calls.map(([r])=>r.outcome)).toEqual(["pending","failed"]);
+});
+
+it("never lets a secret in an unknown error's message, cause or extra fields reach the reply", async () => {
+  const secret = "sk-live-9f8e7d6c5b4a3210";
+  registerAction({ name: "leaky", input: z.object({}), run: async () => {
+    throw Object.assign(new Error(`upstream rejected Authorization: Bearer ${secret}`, { cause: new Error(secret) }),
+      { name: "KeeperFailedError", state: secret, reference: secret, detail: secret });
+  } });
+  const socket = join(dir, "keeper.sock");
+  stop = await serve({ socket, host: true, context: { actor: "unused", audit }, ownership });
+  const raw = await new Promise<string>((resolve, reject) => {
+    const client = createConnection(socket);
+    let text = "";
+    client.on("error", reject);
+    client.on("connect", () => client.end('{"action":"leaky"}\n'));
+    client.on("data", chunk => { text += chunk; });
+    client.on("end", () => resolve(text));
+  });
+  expect(raw).not.toContain("sk-live");
+  expect(raw).not.toContain("Bearer");
+  expect(JSON.parse(raw)).toEqual({ ok: false, outcome: "unknown", error: "keeper could not confirm the action outcome", reference: audit.mock.calls[0][0].operationId });
+  expect(JSON.stringify(audit.mock.calls)).not.toContain("sk-live");
+});
+
+it.each(KEEPER_FAILURE_STATES)("sends a failure the keeper can explain as the closed outcome failed, with its message, state (%s) and reference", async (state) => {
+  registerAction({ name: "apply", input: z.object({}), run: async () => {
+    throw new KeeperFailedError("Apply failed. Hand-written reason.", state, { cause: new Error("private failure detail") });
+  } });
+  const socket = await start();
+  const response = await request(socket, JSON.stringify({ action: "apply", actor: "owner@example.com" }) + "\n");
+  expect(response).toEqual({ ok: false, outcome: "failed", error: "Apply failed. Hand-written reason.", state, reference: audit.mock.calls[0][0].operationId });
+  expect(JSON.stringify(response)).not.toContain("private failure detail");
+  expect(audit.mock.calls.map(([r]) => r.outcome)).toEqual(["pending", "failed"]);
+});
+
+it("keeps refusals as they were: no state and no reference", async () => {
+  registerAction({ name: "refusing", input: z.object({}), run: async () => { throw new KeeperRefusedError("not now", [{ check: "c", message: "m" }]); } });
+  const socket = await start(true);
+  expect(await request(socket, '{"action":"refusing"}\n')).toEqual({ ok: false, outcome: "refused", error: "not now", findings: [{ check: "c", message: "m" }] });
+});
+
+it("sends no reference when the action never got an audit record", async () => {
+  registerAction({ name: "work", input: z.object({}), run: async () => 1 });
+  const socket = await start(true);
+  audit.mockRejectedValue(new Error("secret-token"));
+  expect(await request(socket, '{"action":"work"}\n')).toEqual({ ok: false, outcome: "unknown", error: "keeper could not confirm the action outcome" });
 });
 
 it("recovers an owned socket after SIGKILL and refuses a regular file", async () => {

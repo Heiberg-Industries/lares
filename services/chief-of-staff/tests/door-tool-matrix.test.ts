@@ -152,6 +152,9 @@ import { hasDispatchableContent, isAllowedTelegramMessage } from "../agent/chann
 import catalogueResolver from "../agent/tools/catalogue.js";
 import commercialResolver from "../agent/tools/commercial_who_to_contact.js";
 import publicDocResolver from "../agent/tools/public_doc.js";
+import laresDocsSkill from "../agent/skills/lares-docs.js";
+import salesOutreachSkill from "../agent/skills/sales-outreach.js";
+import signalsSkill from "../agent/skills/signals.js";
 import { CATALOGUE } from "../catalogue/index.js";
 import { runDynamic } from "../../../packages/agent-kit/tests/helpers/eve-dynamic.js";
 import { approverFrom, assertApprover, humanTurnRefusal } from "../lib/approvals.js";
@@ -273,18 +276,26 @@ type OwnRow = readonly [tool: string, slackDm: OwnCell, slackRoom: OwnCell, tele
 const OWN_RESOLVER: readonly OwnRow[] = [
   ["commercial_who_to_contact",           S,       S,       S,       H,       H],
   ["lares_read_public_doc",               S,       S,       S,       S,       S],
+  // The skills replace main's `load_skill` rows. On eve 1.0 a skill the conversation may not have is simply absent
+  // (there is no authored loader to refuse it), so what a door can load is what its skill files return.
+  ["skill lares-docs",                    S,       S,       S,       S,       S],
+  ["skill sales-outreach",                S,       S,       S,       H,       H],
+  ["skill signals",                       S,       S,       S,       H,       H],
 ];
 
 /** Baseline tools no door decides. Every other baseline tool must have a row above. */
 const NOT_DOOR_DEPENDENT: Readonly<Record<string, string>> = {
   ask_question: "eve's own tool for asking the person a question; no code in this repository adds, removes or guards it per door",
   todo: "eve's own task list for the model; no code in this repository adds, removes or guards it per door",
-  load_skill: "gone on eve 1.0: skills are loaded with eve's own eve__skill, and which skills a door offers is tested in skill-availability.test.ts",
+  load_skill: "gone on eve 1.0: skills are loaded with eve's own eve__skill; the per-door rows `skill lares-docs`, `skill sales-outreach` and `skill signals` below replace it",
 };
 
 /** Rows for tools the baseline snapshot does not list, each with why. The snapshot is evidence
  *  of an earlier capture and is not regenerated here; this list makes the gap explicit. */
 const NOT_IN_BASELINE: Readonly<Record<string, string>> = {
+  "skill lares-docs": "an instruction skill, not a tool: the tool snapshot never lists skills (main's matrix reached it through load_skill)",
+  "skill sales-outreach": "an instruction skill, not a tool: the tool snapshot never lists skills (main's matrix reached it through load_skill)",
+  "skill signals": "an instruction skill, not a tool: the tool snapshot never lists skills (main's matrix reached it through load_skill)",
   gmail_accounts: "shown on every door today; the snapshot predates it",
   lares_read_public_doc: "shown on every door today; the snapshot predates it",
   tracks_list: "web chat only; the snapshot was captured from a session that was not web chat",
@@ -587,6 +598,9 @@ describe("tools with their own resolver", () => {
     commercial_who_to_contact: async (session) => (await started(commercialResolver, session)) !== null,
     lares_read_public_doc: async (session) =>
       "lares_read_public_doc" in ((await started(publicDocResolver, session)) as Record<string, unknown>),
+    "skill lares-docs": async (session) => (await started(laresDocsSkill, session)) !== null,
+    "skill sales-outreach": async (session) => (await started(salesOutreachSkill, session)) !== null,
+    "skill signals": async (session) => (await started(signalsSkill, session)) !== null,
   };
 
   for (const { key, title } of DOORS) {
@@ -603,6 +617,26 @@ describe("tools with their own resolver", () => {
     it(`${door(key).title}: a call of commercial_who_to_contact is refused before the CRM is read`, async () => {
       const native = (await started(commercialResolver, (await observe("slackDm")).session)) as { execute(input: unknown, ctx: unknown): Promise<unknown> };
       await expect(native.execute({}, (await observe(key)).session)).rejects.toThrow(CONSOLE_AUTHORITY_REFUSED);
+    });
+
+    // Main's "load_skill offers the public help skill only, and refuses the others": on eve 1.0 the others are not there.
+    it(`${door(key).title}: offers the public help skill only; the others are absent, not refused`, async () => {
+      const { session } = await observe(key);
+      const docs = (await started(laresDocsSkill, session)) as { description?: string; content?: string } | null;
+      expect(docs).not.toBeNull();
+      expect(JSON.stringify(docs)).toContain("Public Lares documentation");
+      expect(await started(signalsSkill, session)).toBeNull();
+      expect(await started(salesOutreachSkill, session)).toBeNull();
+    });
+  }
+
+  // Main's "load_skill offers and loads the agent's own skills" for the chat doors.
+  for (const key of ["slackDm", "slackRoom", "telegram"] as const) {
+    it(`${door(key).title}: offers the agent's own skills and their text`, async () => {
+      const { session } = await observe(key);
+      expect(JSON.stringify(await started(signalsSkill, session))).toContain("# Signals");
+      expect(await started(salesOutreachSkill, session)).not.toBeNull();
+      expect(await started(laresDocsSkill, session)).not.toBeNull();
     });
   }
 });

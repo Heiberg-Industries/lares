@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { keeper, KeeperUnavailableError } from "../lib/keeper-client";
+import { keeper, keeperFailureText, keeperReferenceText, KeeperFailedError, KeeperUnavailableError, KEEPER_FAILURE_STATES } from "../lib/keeper-client";
 
 const MAX_MESSAGE_BYTES = 256 * 1024;
 let server: Server | undefined;
@@ -89,6 +89,75 @@ describe("the keeper client", () => {
       outcomeMayBeUnknown:true,
       message: expect.stringContaining("refresh before trying again"),
     });
+  });
+
+  const REFERENCE = "3f2b8c1e-5a4d-4e6f-9a7b-0c1d2e3f4a5b";
+
+  it("passes on the reference the keeper sent with an unknown outcome", async () => {
+    await fakeKeeper((_request, socket) => reply(socket, {
+      ok: false, outcome: "unknown", error: "keeper could not confirm the action outcome", reference: REFERENCE,
+    }));
+
+    await expect(keeper("definition.save", {}, "b@h.co")).rejects.toMatchObject({
+      name: "KeeperUnavailableError", outcomeMayBeUnknown: true, reference: REFERENCE,
+      message: "keeper could not confirm the action outcome; refresh before trying again",
+    });
+  });
+
+  it.each(KEEPER_FAILURE_STATES)("turns a failure the keeper can explain into a typed error with its message, state (%s) and reference", async (state) => {
+    await fakeKeeper((_request, socket) => reply(socket, {
+      ok: false, outcome: "failed", error: "Apply failed. Hand-written reason.", state, reference: REFERENCE,
+    }));
+
+    const error = await keeper("definition.reconcile", {}, "b@h.co").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(KeeperFailedError);
+    expect(error).not.toBeInstanceOf(KeeperUnavailableError);
+    expect(error).toMatchObject({ name: "KeeperFailedError", message: "Apply failed. Hand-written reason.", state, reference: REFERENCE });
+  });
+
+  it.each([
+    ["a state outside the closed set", { state: "running-fine", reference: REFERENCE }],
+    ["a state that is not a string", { state: 1, reference: REFERENCE }],
+    ["no state", { reference: REFERENCE }],
+    ["no reference", { state: "previous-running" }],
+    ["a reference that is not an operation id", { state: "previous-running", reference: "see /etc/lares/secrets" }],
+    ["a reference that is not a string", { state: "previous-running", reference: { id: REFERENCE } }],
+  ])("rejects a failed reply with %s as an invalid response, never as a failure it can explain", async (_label, fields) => {
+    await fakeKeeper((_request, socket) => reply(socket, { ok: false, outcome: "failed", error: "Apply failed.", ...fields }));
+
+    const error = await keeper("definition.reconcile", {}, "b@h.co").catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(KeeperFailedError);
+    expect(error).toMatchObject({
+      name: "KeeperUnavailableError", outcomeMayBeUnknown: true,
+      message: "keeper returned an invalid response; the action outcome may be unknown",
+    });
+  });
+
+  it("rejects a failed reply without a message, an outcome outside the closed set, and a malformed reference on unknown", async () => {
+    for (const body of [
+      { ok: false, outcome: "failed", state: "previous-running", reference: REFERENCE },
+      { ok: false, outcome: "broken", error: "Apply failed.", state: "previous-running", reference: REFERENCE },
+      { ok: false, outcome: "unknown", error: "keeper could not confirm the action outcome", reference: "not-an-id" },
+    ]) {
+      await fakeKeeper((_request, socket) => reply(socket, body));
+      await expect(keeper("definition.reconcile", {}, "b@h.co")).rejects.toMatchObject({
+        name: "KeeperUnavailableError", outcomeMayBeUnknown: true,
+        message: "keeper returned an invalid response; the action outcome may be unknown",
+      });
+      await new Promise<void>(resolve => server!.close(() => resolve()));
+      server = undefined;
+    }
+  });
+
+  it("writes the reason, the state the agent is left in and the reference into one line for the owner", () => {
+    expect(keeperFailureText(new KeeperFailedError("Apply failed. The previous working definition was restored; save the edit again before retrying.", "previous-running", REFERENCE)))
+      .toBe(`Apply failed. The previous working definition was restored; save the edit again before retrying. The previous definition is still running. Quote reference ${REFERENCE} if you ask for help.`);
+    expect(keeperFailureText(new KeeperFailedError("Apply failed.", "restored-stopped", REFERENCE)))
+      .toContain("The saved definition was restored, but the agent is stopped and needs recovery.");
+    expect(keeperFailureText(new KeeperFailedError("Apply failed.", "recovery-required", REFERENCE)))
+      .toContain("Nothing verified is available; recovery is required.");
+    expect(keeperReferenceText(REFERENCE)).toBe(` Quote reference ${REFERENCE} if you ask for help.`);
+    expect(keeperReferenceText(undefined)).toBe("");
   });
 
   it("treats an error response without an outcome discriminator as unknown",async()=>{

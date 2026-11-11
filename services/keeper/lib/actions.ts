@@ -22,7 +22,40 @@ export class KeeperRefusedError extends Error {
     this.findings = findings;
   }
 }
-function safeRefusal(error: KeeperRefusedError, input: unknown, fields: readonly string[]): KeeperRefusedError {
+/** The state an agent is left in when an action fails after its side effects began.
+ * Closed: the socket sends it and the console validates it against the same three values.
+ *  - previous-running: the previous definition is still running.
+ *  - restored-stopped: the saved definition was restored, but the agent is stopped and needs recovery.
+ *  - recovery-required: nothing verified is available; recovery is required. */
+export const KEEPER_FAILURE_STATES = ["previous-running", "restored-stopped", "recovery-required"] as const;
+export type KeeperFailureState = (typeof KEEPER_FAILURE_STATES)[number];
+/** Trusted keeper-code failure, raised AFTER side effects, that says why the action failed and
+ * what the agent is left in. Like a refusal, its message is hand-written by the caller: never
+ * pass an arbitrary exception's text. The real error goes in `cause`, which is never audited or
+ * transported. runAction adds `reference`, the audit record's operation id, for the owner to quote.
+ */
+export class KeeperFailedError extends Error {
+  readonly state: KeeperFailureState;
+  readonly reference?: string;
+  constructor(message: string, state: KeeperFailureState, options: { cause?: unknown; reference?: string } = {}) {
+    super(message, "cause" in options ? { cause: options.cause } : undefined);
+    this.name = "KeeperFailedError";
+    this.state = state;
+    this.reference = options.reference;
+  }
+}
+/** Fixed, secret-free failure for every exception the keeper did not write itself: such a
+ * message can contain secrets, so it is never audited or transported. Only the audit record's
+ * operation id is kept, as `reference`. */
+export class KeeperUnknownFailureError extends Error {
+  readonly reference: string;
+  constructor(reference: string, message = "keeper: action failed") {
+    super(message);
+    this.name = "KeeperUnknownFailureError";
+    this.reference = reference;
+  }
+}
+function scrubber(input: unknown, fields: readonly string[]): (value: string) => string {
   const secrets = new Set<string>();
   function collect(value: unknown, secret = false): void {
     if (value && typeof value === "object") {
@@ -30,17 +63,35 @@ function safeRefusal(error: KeeperRefusedError, input: unknown, fields: readonly
     } else if (secret && value !== null && value !== undefined && String(value)) secrets.add(String(value));
   }
   collect(input);
-  function scrub(value: string): string {
+  return (value: string): string => {
     for (const secret of [...secrets].sort((a, b) => b.length - a.length)) value = value.replaceAll(secret, "<redacted>");
     return value;
-  }
+  };
+}
+function safeRefusal(error: KeeperRefusedError, input: unknown, fields: readonly string[]): KeeperRefusedError {
+  const scrub = scrubber(input, fields);
   return new KeeperRefusedError(scrub(error.message), error.findings?.map(f => ({check: scrub(f.check), message: scrub(f.message)})));
+}
+/** The cause is dropped here on purpose: nothing past runAction may read it. */
+function safeFailure(error: KeeperFailedError, input: unknown, fields: readonly string[], reference: string): KeeperFailedError {
+  return new KeeperFailedError(scrubber(input, fields)(error.message), error.state, { reference });
 }
 
 /** A fixed, secret-free result for a durable operation that may have crossed a side-effect
  * boundary. Callers must inspect its journal; the transport must never resubmit it. */
 export class KeeperOutcomeUncertainError extends Error {
-  constructor() { super("keeper: outcome uncertain; inspect credential status; do not retry automatically"); }
+  /** The audit record's operation id, added by runAction. */
+  readonly reference?: string;
+  constructor(reference?: string) {
+    super("keeper: outcome uncertain; inspect credential status; do not retry automatically");
+    this.reference = reference;
+  }
+}
+/** The audit reference an error thrown by runAction carries, if it has one. Errors raised before
+ * an audit record exists (an unavailable audit, a transport refusal) have none. */
+export function failureReference(error: unknown): string | undefined {
+  return error instanceof KeeperFailedError || error instanceof KeeperUnknownFailureError || error instanceof KeeperOutcomeUncertainError
+    ? error.reference : undefined;
 }
 
 export interface ActionContext {
@@ -115,7 +166,9 @@ export async function runAction(name: string, rawInput: unknown, ctx: ActionCont
   }
   if (!parsed.success)
     return refuse(ctx, name, "invalid input");
-  const record: AuditRecord = { operationId: randomUUID(), action: name, actor: ctx.actor, input: redact(parsed.data, action.secretFields ?? []), outcome: "pending" };
+  // The owner can quote this id: it names the audit row for this one attempt.
+  const reference = randomUUID();
+  const record: AuditRecord = { operationId: reference, action: name, actor: ctx.actor, input: redact(parsed.data, action.secretFields ?? []), outcome: "pending" };
   try {
     await ctx.audit(record);
   }
@@ -125,6 +178,7 @@ export async function runAction(name: string, rawInput: unknown, ctx: ActionCont
   let result: unknown;
   let failed = false;
   let refusal: KeeperRefusedError | undefined;
+  let failure: KeeperFailedError | undefined;
   let uncertain: KeeperOutcomeUncertainError | undefined;
   let auditFinalized = false;
   try {
@@ -138,18 +192,21 @@ export async function runAction(name: string, rawInput: unknown, ctx: ActionCont
   }
   catch (error) {
     failed = true;
-    if (error instanceof KeeperOutcomeUncertainError) uncertain = error;
+    if (error instanceof KeeperOutcomeUncertainError) uncertain = new KeeperOutcomeUncertainError(reference);
     if (error instanceof KeeperRefusedError) refusal = safeRefusal(error, rawInput, action.secretFields ?? []);
+    if (error instanceof KeeperFailedError) failure = safeFailure(error, rawInput, action.secretFields ?? [], reference);
+    // Anything else keeps the fixed text below: its message is never read.
   }
   try {
-    if (!auditFinalized) await ctx.audit({ ...record, outcome: refusal ? "refused" : failed ? "failed" : "ok", ...(failed ? { detail: refusal?.message ?? uncertain?.message ?? "action failed" } : action.successDetail ? { detail: action.successDetail(result) } : {}) });
+    if (!auditFinalized) await ctx.audit({ ...record, outcome: refusal ? "refused" : failed ? "failed" : "ok", ...(failed ? { detail: refusal?.message ?? (failure ? `${failure.message} [${failure.state}]` : undefined) ?? uncertain?.message ?? "action failed" } : action.successDetail ? { detail: action.successDetail(result) } : {}) });
   }
   catch {
-    throw new Error("keeper: outcome uncertain; audit finalization failed; do not retry automatically");
+    throw new KeeperUnknownFailureError(reference, "keeper: outcome uncertain; audit finalization failed; do not retry automatically");
   }
   if (refusal) throw refusal;
+  if (failure) throw failure;
   if (uncertain) throw uncertain;
   if (failed)
-    throw new Error("keeper: action failed");
+    throw new KeeperUnknownFailureError(reference);
   return result;
 }
