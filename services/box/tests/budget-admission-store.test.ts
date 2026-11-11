@@ -607,7 +607,21 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     async function consume(f:ReturnType<typeof purposeBrokerFiles>,alias:string,request:object){
       return purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('job.consume',{alias,request},f.runtimeKey),f.runtimeKey);
     }
+    // The shared fixture grants every agent to the whole organisation, and member-b is active in it, so
+    // `helper` starts out as an agent someone else can use. These replace who it is shared with.
+    type Share={principal:{kind:'member'|'organisation';id:string};permission:'use'|'edit';expiresAt:string|null};
+    const everyone:Share={principal:{kind:'organisation',id:'org'},permission:'use',expiresAt:null};
+    const memberB:Share={principal:{kind:'member',id:'member-b'},permission:'use',expiresAt:null};
+    async function shareWith(grants:Share[],agent='helper'){
+      const store=new PgGrantStore(db),access=await store.agentAccess('member-a',agent);
+      if(!access)throw new Error('fixture');
+      await store.updateAgentAccess('member-a',{agentName:agent,expectedRevision:access.accessRevision,grants});
+    }
+    const makeOwnerOnly=(agent='helper')=>shareWith([],agent);
+    const attempts=async()=>(await db.query('SELECT state,member_account_id FROM budget_attempts ORDER BY created_at')).rows;
+    const observed=(requestHash:string,purposeAlias='utility')=>({requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias});
     it('gives the owner a ticket per request, charged to the owner, for chat and embeddings; refuses the rest',async()=>{
+      await makeOwnerOnly();
       await addKey('member-a','utility',pricing);await addKey('member-a','embed',embedPricing);
       const agentKey=randomUUID();
       await db.query("INSERT INTO agent_provider_keys(agent,revision,state,set_by) VALUES('helper',$1,'active','host')",[agentKey]);
@@ -646,6 +660,7 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
       }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
     });
     it('allows at most 8 outstanding owner-job tickets per agent and frees a slot when one is retired',async()=>{
+      await makeOwnerOnly();
       await addKey('member-a','utility',pricing);
       const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
       try{
@@ -675,12 +690,15 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
         try{
           stopBroker=await startPurposeBroker(g,files.writer,db,'member-b');
           expect((await consume(g,'utility',jobBody('/v1/chat/completions').request)).ok).toBe(false);
-          expect((await consume(g,'standard',jobBody('/v1/chat/completions').request)).ok).toBe(true);
+          // member-b holds a key for `standard`, but `helper` is member-a's agent: an owner job runs
+          // only on an agent the owner on record owns, so this is refused as well.
+          expect((await consume(g,'standard',jobBody('/v1/chat/completions').request)).ok).toBe(false);
         }finally{await stopBroker?.();stopBroker=undefined;rmSync(g.root,{recursive:true,force:true});}
-        expect((await db.query('SELECT member_account_id FROM budget_attempts')).rows.map(r=>r.member_account_id)).toEqual([accounts['member-b']]);
+        expect((await db.query('SELECT member_account_id FROM budget_attempts')).rows.map(r=>r.member_account_id)).toEqual([]);
       }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
     });
     it('refuses when the owner is no longer an active owner or the agent is not running',async()=>{
+      await makeOwnerOnly();
       await addKey('member-a','utility',pricing);
       const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
       try{
@@ -691,6 +709,80 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
         expect((await consume(f,'utility',jobBody('/v1/chat/completions','b').request)).ok).toBe(true);
         await db.query("UPDATE agent_resources SET pending=true WHERE name='helper'");
         expect((await consume(f,'utility',jobBody('/v1/chat/completions','c').request)).ok).toBe(false);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+    it('refuses an owner job on an agent another member can use',async()=>{
+      // The fixture as it stands: `helper` is granted to the whole organisation and member-b is active.
+      await addKey('member-a','utility',pricing);
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        expect((await consume(f,'utility',jobBody('/v1/chat/completions').request)).ok).toBe(false);
+        expect(await attempts()).toEqual([]);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+    it('keeps the owner\'s own jobs running while nobody else can use the agent',async()=>{
+      await addKey('member-a','utility',pricing);
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      const job=async(tag:string)=>(await consume(f,'utility',jobBody('/v1/chat/completions',tag).request)).ok;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        await makeOwnerOnly();
+        expect(await job('alone')).toBe(true);
+        // One other member is enough to stop them, and taking the grant away starts them again.
+        await shareWith([memberB]);
+        expect(await job('shared')).toBe(false);
+        await makeOwnerOnly();
+        expect(await job('alone-again')).toBe(true);
+        // A grant to the whole organisation reaches nobody else while its only other member is restricted.
+        await shareWith([everyone]);
+        expect(await job('organisation')).toBe(false);
+        await db.query("UPDATE users SET org_role='restricted' WHERE id='member-b'");
+        expect(await job('organisation-of-one')).toBe(true);
+        expect(await attempts()).toEqual([1,2,3].map(()=>({state:'prepared',member_account_id:accounts['member-a']})));
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+    it('refuses the owner\'s job when a member who is not an owner holds a grant, and refuses an owner on record who does not own the agent',async()=>{
+      await addKey('member-a','utility',pricing);
+      await shareWith([memberB]);
+      await db.query("UPDATE users SET org_role='member' WHERE id='member-b'");
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        expect((await consume(f,'utility',jobBody('/v1/chat/completions').request)).ok).toBe(false);
+        await stopBroker();stopBroker=undefined;
+        // member-b as the owner on record: an active owner who can use `helper` and holds a key for
+        // `standard` on it. `helper` is still member-a's agent, so member-b is never charged for it.
+        await db.query("UPDATE users SET org_role='owner' WHERE id='member-b'");
+        const g=purposeBrokerFiles();
+        try{
+          stopBroker=await startPurposeBroker(g,files.writer,db,'member-b');
+          expect((await consume(g,'standard',jobBody('/v1/chat/completions').request)).ok).toBe(false);
+        }finally{await stopBroker?.();stopBroker=undefined;rmSync(g.root,{recursive:true,force:true});}
+        expect(await attempts()).toEqual([]);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+    it('checks again when the ticket is admitted, so a ticket from before the agent was shared is not charged',async()=>{
+      await addKey('member-a','utility',pricing);
+      const writerStore=new PgBudgetAdmissionStore(db,env(),30_000,files.writer);
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        await makeOwnerOnly();
+        const first=jobBody('/v1/chat/completions','before-sharing'),ticket=await consume(f,'utility',first.request);
+        expect(ticket.ok).toBe(true);
+        await shareWith([memberB]);
+        expect((await writerStore.admit(String(ticket.ticket),observed(first.request.requestHash),recovery())).state).toBe('denied');
+        expect((await attempts()).map(row=>row.state)).toEqual(['retired']);
+        // A member who joins after the ticket was made changes nothing on the agent itself, so only
+        // this second check can see that the organisation grant now reaches someone else.
+        await shareWith([everyone]);
+        await db.query("UPDATE users SET org_role='restricted' WHERE id='member-b'");
+        const second=jobBody('/v1/chat/completions','before-joining'),later=await consume(f,'utility',second.request);
+        expect(later.ok).toBe(true);
+        await db.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('member-c','C','org','member','active')");
+        expect((await writerStore.admit(String(later.ticket),observed(second.request.requestHash),recovery())).state).toBe('denied');
+        expect((await attempts()).map(row=>row.state)).toEqual(['retired','retired']);
       }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
     });
   });
