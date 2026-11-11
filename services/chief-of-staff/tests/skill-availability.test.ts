@@ -57,7 +57,7 @@ vi.mock("../../../packages/agent-kit/src/db.js", async (original) => ({
   }),
 }));
 
-import { INSTRUCTION_SKILLS, INSTRUCTION_SKILLS_MEMO_KEY } from "@lares/agent-kit/manifest";
+import { INSTRUCTION_SKILLS, INSTRUCTION_SKILLS_MEMO_KEY, KNOWN_CAPABILITIES } from "@lares/agent-kit/manifest";
 import { CONSOLE_AUTHORITY_REFUSED } from "@lares/agent-kit/console-turn-authority";
 
 import neutral from "../agent.json";
@@ -386,11 +386,23 @@ describe("an invalid or unreadable definition fails closed", () => {
   }
 
   it("when the last valid definition no longer passes today's checks either: every restricted skill is absent", async () => {
-    fake.remembered.set(AGENT, { definition: { ...neutral, grants: [...neutral.grants, { capability: "brain", scope: "read" }] }, duties: "", voice: "", hash: "0".repeat(64) });
+    // A row an older engine stored as valid: it carries a grant for a capability this engine
+    // does not know. Any unknown name makes the point, so a made-up one is used; the names the
+    // vault rename retired may not be spelled as a capability anywhere in the tree.
+    const unknownToThisEngine = { capability: "retired_capability", scope: "read" };
+    expect(KNOWN_CAPABILITIES as readonly string[]).not.toContain(unknownToThisEngine.capability);
+    const remember = (definition: unknown) => fake.remembered.set(AGENT, { definition, duties: "", voice: "", hash: "0".repeat(64) });
+
+    remember({ ...neutral, grants: [...neutral.grants, unknownToThisEngine] });
     mount("{ this is not json");
     const got = await skillsOf(ordinary());
     expect(got.refused).toEqual([]);
     expect(got.present).toEqual(["lares-docs"]);
+
+    // Control: the same row without that one grant is a usable last valid definition, so the
+    // grant the engine no longer knows is what closed the case above, not the broken folder.
+    remember(neutral);
+    expect((await skillsOf(ordinary())).present).toEqual(["lares-docs", "sales-outreach", "signals"]);
   });
 
   it("when the definition store cannot be reached at all: every restricted skill is absent", async () => {
