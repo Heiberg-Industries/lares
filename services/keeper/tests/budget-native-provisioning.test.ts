@@ -1219,6 +1219,9 @@ const journaledAccountState=(fixture:OwnerFixture,accountId:string,state:string,
   consoleSourceTransaction(fixture.financial as unknown as SourcePool,async db=>{
     await db.query('UPDATE budget_accounts SET state=$2,reason=$3 WHERE id=$1',[accountId,state,reason]);noteBudgetFinancialChange(db,'budget_accounts',accountId);
   },boundary));
+/** The exact words the keeper action gives back for each refusal: nothing about other people or keys. */
+const PROVISION_REFUSED=/^Native budget provisioning refused; reconciliation may be required$/,ACTIVATION_REFUSED=/^Native budget activation refused; reconciliation may be required$/;
+const keyStoreOpen=(custody:BudgetNativeCustodyStore)=>expect(custody.withGate(async()=>'open')).resolves.toBe('open');
 const nativeUsers=(fixture:OwnerFixture)=>fixture.custody.withGate(gate=>Promise.resolve(gate.inventory().users.filter(row=>row.kind==='user').length));
 async function laterMemberWithTwoAgents(fixture:OwnerFixture){
   const later=await addLaterAccount(fixture,'neutral-native-later-a');await grantLaterAgentUse(fixture,later);
@@ -1279,7 +1282,7 @@ it('refuses a further agent key, and changes nothing, when the agent or the acco
   const refusedWithoutChange=async(request:ReturnType<typeof mainRequest>)=>{
     const rows=await financialRows(fixture),bindings=(await fixture.financial.query('SELECT * FROM budget_gateway_bindings ORDER BY id')).rows,
       phasesBefore=await keyPhases(fixture),keys=fixture.fake.calls.key,unblocks=fixture.fake.activationCalls.unblock;
-    await expect(ownerProvisioner(fixture).provision(request)).rejects.toThrow('Native budget provisioning refused');
+    await expect(ownerProvisioner(fixture).provision(request)).rejects.toThrow(PROVISION_REFUSED);
     expect(await financialRows(fixture)).toEqual(rows);
     expect((await fixture.financial.query('SELECT * FROM budget_gateway_bindings ORDER BY id')).rows).toEqual(bindings);
     await expect(keyPhases(fixture)).resolves.toEqual(phasesBefore);
@@ -1302,10 +1305,19 @@ it('refuses a further agent key, and changes nothing, when the agent or the acco
   await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,made,second.agent,later.member))).resolves.toMatchObject({state:'bound-closed'});
   const switchOnRefused=async()=>{
     const rows=await financialRows(fixture),unblocks=fixture.fake.activationCalls.unblock;
-    await expect(ownerActivator(fixture).activate({bindingId:made,credentialGeneration:'0'})).rejects.toThrow('Native budget activation refused');
+    await expect(ownerActivator(fixture).activate({bindingId:made,credentialGeneration:'0'})).rejects.toThrow(ACTIVATION_REFUSED);
     expect(await financialRows(fixture)).toEqual(rows);expect(fixture.fake.activationCalls.unblock).toBe(unblocks);
     await expect(keyPhases(fixture)).resolves.toContainEqual({agent:second.agent,phase:'bound-closed'});
+    await keyStoreOpen(fixture.custody);
   };
+  // Something about the agent changes after its key was made: the key is not switched on.
+  await fixture.operator.query('UPDATE agent_resources SET pending=true WHERE name=$1',[second.agent]);await switchOnRefused();
+  await fixture.operator.query("UPDATE agent_resources SET pending=false,state='provisioning' WHERE name=$1",[second.agent]);await switchOnRefused();
+  await fixture.operator.query("UPDATE agent_resources SET state='ready' WHERE name=$1",[second.agent]);
+  const revision=(await fixture.operator.query('SELECT revision FROM agent_access WHERE agent_name=$1',[second.agent])).rows[0]!.revision;
+  await new PgGrantStore(fixture.operator).updateAgentAccess(fixture.owner,{agentName:second.agent,expectedRevision:Number(revision),grants:[]});
+  await switchOnRefused();
+  await grantLaterAgentUse(fixture,second);
   await journaledAccountState(fixture,later.accountId,'frozen','recovery_mismatch');
   await refusedWithoutChange(mainRequest(fixture,id(),third.agent,later.member));
   await switchOnRefused();
@@ -1339,7 +1351,10 @@ it('never makes a key the person could not switch on: ten keys is the ceiling, a
   expect(fixture.fake.calls.key).toBe(10);
   const eleventh='neutral-native-many-10';await seedAgent(fixture.operator,eleventh,fixture.incarnation,fixture.owner,fixture.org);
   const rows=await financialRows(fixture),phasesBefore=await keyPhases(fixture);
-  await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,id(),eleventh))).rejects.toThrow('Native budget provisioning refused');
+  await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,id(),eleventh))).rejects.toThrow(PROVISION_REFUSED);
+  // The same ceiling holds for the owner's extra key (another model name) on an agent that has room for one: refused
+  // cleanly up front, where before it reached the gateway's key list and stopped the whole key store.
+  await expect(extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,id(),'lares-writer'))).rejects.toThrow(PROVISION_REFUSED);
   // Refused before anything was made or recorded, and the key store stays open.
   expect(fixture.fake.calls.key).toBe(10);
   await expect(keyPhases(fixture)).resolves.toEqual(phasesBefore);
@@ -1377,13 +1392,16 @@ it('makes and switches on no further key for a person while one of their agent k
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },60_000);
 
-it('handles two further agents of one person at once: each is made and switched on, or cleanly refused and done on a later run',async()=>{
+it('takes two further agents of one person one at a time: the second caller is turned away without anything frozen, and done on a later run',async()=>{
   const fixture=await startActiveOwnerFixture(),agents=['neutral-native-together-b','neutral-native-together-c'],bindings=[id(),id()];
   for(const agent of agents)await seedAgent(fixture.operator,agent,fixture.incarnation,fixture.owner,fixture.org);
   const rows=await financialRows(fixture);
   const settle=async(work:(index:number)=>Promise<unknown>)=>{
+    // The key store lets one caller in at a time. The second is turned away at once, before it reads or makes
+    // anything, with the ordinary refusal; this does not show two callers overlapping inside the work.
     const results=await Promise.allSettled([work(0),work(1)]);
-    expect(results.filter(result=>result.status==='fulfilled').length).toBeGreaterThanOrEqual(1);
+    expect(results.map(result=>result.status).sort()).toEqual(['fulfilled','rejected']);
+    await keyStoreOpen(fixture.custody);
     for(const [index,result] of results.entries())if(result.status==='rejected')await work(index);
   };
   await settle(index=>ownerProvisioner(fixture).provision(mainRequest(fixture,bindings[index]!,agents[index]!)));
@@ -1414,3 +1432,24 @@ it('refuses a further agent key until the new month has opened, and the same cal
   for(const agent of [fixture.ownerAgent,second,third])await expect(runtimeState(fixture,agent)).resolves.toEqual({state:'active'});
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },120_000);
+
+it('refuses a further agent key, freezing nothing, when the ledger says the account is open but the key store shows no key of that person switched on',async()=>{
+  const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture),made=id();await grantLaterAgentUse(fixture,later);
+  // The member's first key is made while the account is closed, as usual, and is not switched on.
+  await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,made,later.agent,later.member))).resolves.toMatchObject({state:'bound-closed'});
+  // The ledger then shows the account open although no key of this person was ever switched on: the two disagree.
+  await journaledAccountState(fixture,later.accountId,'open','approved');
+  const second={member:later.member,agent:'neutral-native-later-b'};
+  await seedAgent(fixture.operator,second.agent,fixture.incarnation,fixture.owner,fixture.org);await grantLaterAgentUse(fixture,second);
+  const rows=await financialRows(fixture),bindings=(await fixture.financial.query('SELECT * FROM budget_gateway_bindings ORDER BY id')).rows,
+    phasesBefore=await keyPhases(fixture),keys=fixture.fake.calls.key,unblocks=fixture.fake.activationCalls.unblock;
+  // Switching the made key on would join an account nobody opened, and making a key for the second agent would stand on nothing.
+  await expect(ownerActivator(fixture).activate({bindingId:made,credentialGeneration:'0'})).rejects.toThrow(ACTIVATION_REFUSED);
+  await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,id(),second.agent,later.member))).rejects.toThrow(PROVISION_REFUSED);
+  expect(fixture.fake.calls.key).toBe(keys);expect(fixture.fake.activationCalls.unblock).toBe(unblocks);
+  expect(await financialRows(fixture)).toEqual(rows);
+  expect((await fixture.financial.query('SELECT * FROM budget_gateway_bindings ORDER BY id')).rows).toEqual(bindings);
+  await expect(keyPhases(fixture)).resolves.toEqual(phasesBefore);
+  await keyStoreOpen(fixture.custody);
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},60_000);
