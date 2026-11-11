@@ -22,6 +22,12 @@
  *      to make room for the outcome line. Telegram must accept that edit.
  *   5. A REFUSED SEND IS THROWN, WITH TELEGRAM'S OWN DESCRIPTION. `sendTelegramMessage` to a chat
  *      that does not exist must throw, and the message must not contain the bot token.
+ *   6. THE NOTE UNDER A SHORTENED CARD CARRIES A LINK TELEGRAM RECOGNISES, AND CAN BE TAKEN AWAY.
+ *      The door posts `shortenedCardNote(waitingPageLink(id))` under a card eve posted without
+ *      Approve, and deletes it when the request is decided. The link must come back as a `url`
+ *      entity, and `deleteMessage` on the bot's own message must be accepted. The link uses
+ *      `LARES_CONSOLE_URL`, or a placeholder address when it is unset (it then goes nowhere;
+ *      Telegram still shows whether it recognised it).
  *
  * NOT part of `pnpm test`: it needs the live bot token, which exists only inside the deployed
  * container, and it reaches the Bot API through the egress proxy. Run it by hand, inside that
@@ -30,14 +36,20 @@
  *
  *     tsx telegram-approval-card.live.mts
  *
- * It WRITES TWO MESSAGES: a test card in the first allowed approver's private chat, which it then
- * edits, and a second, long one, which it also edits. Their buttons carry callback data no
+ * It WRITES THREE MESSAGES: a test card in the first allowed approver's private chat, which it
+ * then edits; a second, long one, which it also edits; and the note, which it deletes again. Their buttons carry callback data no
  * handler claims and the webhook front door does not recognise, so a tap is refused at the door
  * ("This button is not recognised"). It approves, denies and runs nothing, and it prints no token.
  */
 import { emptySessionView, foldEvents } from "eve/events";
 
-import { APPROVAL_OUTCOME_TEXT, onInteractionSettled, telegramCredentials } from "../../agent/channels/telegram.js";
+import {
+  APPROVAL_OUTCOME_TEXT,
+  onInteractionSettled,
+  shortenedCardNote,
+  telegramCredentials,
+  waitingPageLink,
+} from "../../agent/channels/telegram.js";
 import { allowedPrincipalIds } from "../../lib/principals.js";
 import { callTelegramApi, sendTelegramMessage } from "../../lib/telegram-send.js";
 
@@ -122,6 +134,8 @@ await onInteractionSettled(settled as never, {
         edits.push({ ...result, characters: input.text.length });
         return result;
       },
+      // Only a card with a note under it makes this call; the probe's card has none.
+      request: async (method, body) => callTelegramApi({ credentials: telegramCredentials, method, body }),
     },
   },
 });
@@ -141,4 +155,24 @@ try {
   const message = err instanceof Error ? err.message : String(err);
   console.log("send to a chat that is not there: THREW", JSON.stringify(message));
   console.log("  the error names the token  :", message.includes(token), "(must be false)");
+}
+
+// ── 6. The note under a shortened card: a link Telegram recognises, and a message it deletes ──
+const link = waitingPageLink("live-probe-request", { LARES_CONSOLE_URL: process.env["LARES_CONSOLE_URL"] || "https://console.example.com" });
+const noteSent = await callTelegramApi({
+  credentials: telegramCredentials,
+  method: "sendMessage",
+  body: { chat_id: chatId, text: shortenedCardNote(link) },
+});
+const note = (noteSent.body as { result?: { message_id?: number; entities?: Array<{ type: string }> } } | null)?.result;
+console.log("note: sent ok / status       :", noteSent.ok, noteSent.status);
+console.log("  url entity recognised      :", note?.entities?.some((e) => e.type === "url") ?? false);
+if (note?.message_id !== undefined) {
+  const removed = await callTelegramApi({
+    credentials: telegramCredentials,
+    method: "deleteMessage",
+    body: { chat_id: chatId, message_id: note.message_id },
+  });
+  const description = (removed.body as { description?: unknown } | null)?.description;
+  console.log("  deleteMessage ok / status  :", removed.ok, removed.status, removed.ok ? "" : JSON.stringify(description));
 }
