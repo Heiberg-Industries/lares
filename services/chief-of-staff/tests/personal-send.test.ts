@@ -20,7 +20,7 @@ import { definitionModel } from '@lares/agent-kit/definition-model';
 import { markPrivateConsoleSurface } from '@lares/agent-kit/private-console-surface';
 import {personalSendApprovalRequest,personalSendInputRequested,personalSendApprovalResponse,personalSendInputResolved,requirePersonalSendCall} from '../lib/personal-send-approval.js';
 import { claimModelPurposeForInvocation,closeModelPurposeTurn,prepareModelPurposeInvocation } from '../agent/lib/model-purpose.js';
-import {requirePrivateConsoleResume} from '@lares/agent-kit/private-console-resume';
+import {requirePrivateConsoleResume,clearAcceptedAnswersForTests} from '@lares/agent-kit/private-console-resume';
 import {readPersonalResource} from '../lib/personal-reads.js';
 import { executeApprovedPersonalSend,requirePersonalSendPolicy,type PersonalSendRuntime } from '../lib/personal-send.js';
 import { quiet } from './helpers/quiet-pool.js';
@@ -291,15 +291,39 @@ describe('exact personal approval lifecycle through authenticated resolver refer
   await expect(personalSendApprovalResponse({...p.response,response:{decision:'deny',principal:resolverAuth(p.requestId,'approve')}})).rejects.toThrow();
   expect((await pool.query('SELECT outcome FROM approval_asks WHERE call_id=$1',[p.callId])).rows[0].outcome).toBeNull();
  });
- it.each(['ignored','invalid'] as const)('nothing is sent when the card ended with nobody deciding (%s)',async outcome=>{
-  const p=await proposed();p.resume.session.auth.current=resolverAuth(p.requestId,'deny');
-  expect(await personalSendInputResolved(p.requestId,outcome,p.resume)).toBe(true);
+ // eve 1.0: the settle hook runs in the original turn as the person who ASKED; the answer is only
+ // what the response policy recorded in memory, and nothing is recorded when nobody answered.
+ const settling=()=>({session:{id:'wrun_send',turn:{id:'original-human',sequence:0},auth:{current:auth(),initiator:auth()}}}) as never;
+ const denied=(p:Awaited<ReturnType<typeof proposed>>)=>({...structuredClone(p.response),response:{decision:'deny' as const,principal:resolverAuth(p.requestId,'deny')},
+   session:{...p.response.session,turn:{id:'original-human',sequence:0}}});
+ it.each(['ignored','invalid'] as const)('nothing is sent, and the prepared send closes, when the card ended with nobody deciding (%s)',async outcome=>{
+  clearAcceptedAnswersForTests();const p=await proposed();
+  expect(await personalSendInputResolved(p.requestId,outcome,settling())).toBe(true);
+  expect((await stored(p.row.id)).state).toBe('cancelled');
+  expect((await pool.query('SELECT outcome FROM approval_asks WHERE call_id=$1',[p.callId])).rows[0].outcome).toBe(outcome);
   await expect(requirePersonalSendCall({...p.run,approval:{responder:resolverAuth(p.requestId,'deny')}} as never,p.input)).rejects.toThrow();
   expect(sends).not.toHaveBeenCalled();
  });
+ it('a Deny closes the prepared send even when its recorded answer was lost to a restart',async()=>{
+  const p=await proposed();
+  expect(await personalSendApprovalResponse(denied(p))).toEqual({status:'allowed'});
+  clearAcceptedAnswersForTests(); // the restart
+  expect(await personalSendInputResolved(p.requestId,'cancelled',settling())).toBe(true);
+  expect((await stored(p.row.id)).state).toBe('cancelled');
+  expect(sends).not.toHaveBeenCalled();
+ });
+ it('leaves every other card, and another conversation, alone',async()=>{
+  clearAcceptedAnswersForTests();const p=await proposed();
+  expect(await personalSendInputResolved('some-other-card','cancelled',settling())).toBe(false);
+  expect(await personalSendInputResolved(p.requestId,'cancelled',{session:{id:'wrun_other',turn:{id:'turn_0',sequence:0},auth:{current:auth(),initiator:auth()}}} as never)).toBe(false);
+  expect(await personalSendInputResolved(p.requestId,'cancelled',{session:{id:'wrun_send',turn:{id:'turn_0',sequence:0},auth:{current:auth('human','member-b'),initiator:auth('human','member-b')}}} as never)).toBe(false);
+  expect(await personalSendInputResolved(p.requestId,'approved',settling())).toBe(false);
+  expect((await stored(p.row.id)).state).toBe('awaiting_dispatch');
+ });
  it('cancels exactly the unclaimed proposal and permits only its bounded model response',async()=>{
   const p=await proposed();p.resume.session.auth.current=resolverAuth(p.requestId,'deny');
-  expect(await personalSendInputResolved(p.requestId,'cancelled',p.resume)).toBe(true);
+  expect(await personalSendApprovalResponse(denied(p))).toEqual({status:'allowed'});
+  expect(await personalSendInputResolved(p.requestId,'cancelled',settling())).toBe(true);
   expect((await stored(p.row.id)).state).toBe('cancelled');await requirePrivateConsoleResume(p.resume,'model');
   await expect(requirePersonalSendCall({...p.run,approval:{responder:resolverAuth(p.requestId,'deny')}} as never,p.input)).rejects.toThrow();
   expect(await recheckOf({...p.human,callId:'cancel-second'})).toMatchObject({denied:true});await expect(readPersonalResource(p.resume,p.input.selection,{kind:'readMail',id:'mail'})).rejects.toThrow();expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();

@@ -110,18 +110,35 @@ export async function personalSendApprovalResponse(ctx:PersonalSendResponseConte
   });
 }
 /** The card settled. On eve 1.0 the settle hook's `session.auth.current` is the person who ASKED, so
- *  the answer comes from what the response policy accepted for this card. A personal card that nobody
- *  answered (expired, withdrawn, interrupted) has no accepted answer; the shared hook then closes the
- *  card, and the prepared send can never be claimed because its card is not approved. */
+ *  the answer comes from what the response policy accepted for this card (`acceptedAnswerFor`).
+ *
+ *  With no accepted answer here (nobody answered, eve applied another answer, or the agent restarted
+ *  since the answer), a card that did not end approved still closes its prepared send: closing widens
+ *  nothing, so it needs no answerer, only the person who asked, whose send it is
+ *  (`closeUnansweredPersonalSend`). An approved card needs nothing here: its approval row is what the
+ *  send itself is checked against. */
 export async function personalSendInputResolved(requestId:string,outcome:string,ctx:ConsoleAuthorityContext):Promise<boolean>{
   const answer=typeof ctx.session?.id==='string'?acceptedAnswerFor(requestId,ctx.session.id):undefined;
-  const auth=privateResolverAdmission(answer?.principal);if(!answer||!auth||auth.requestId!==requestId)return false;
+  const auth=privateResolverAdmission(answer?.principal);
+  if(!answer||!auth||auth.requestId!==requestId)return outcome==='approved'?false:closeUnansweredPersonalSend(requestId,outcome,ctx);
   const answered={...ctx,session:{...ctx.session,auth:{current:answer.principal,initiator:ctx.session?.auth?.initiator}}} as ConsoleAuthorityContext;
   const current=await requirePrivateConsoleResume(answered,'surface');
   if(outcome==='approved')return true; // The independent response authorizer already wrote approval.
   if(!['cancelled','ignored','invalid'].includes(outcome))throw new Error('Unsupported personal approval outcome');
   if(auth.optionId!=='deny')throw new Error('Approval answer changed');
   await personalActions().cancelApprovalRequest(auth.memberId,current.reference.requestId,outcome as 'cancelled'|'ignored'|'invalid');
+  return true;
+}
+/** Closes the prepared send of exactly this card, when it belongs to the person who asked in this
+ *  conversation. False when the card is not a personal send (every other card passes through here). */
+async function closeUnansweredPersonalSend(requestId:string,outcome:string,ctx:ConsoleAuthorityContext):Promise<boolean>{
+  const asker=consoleAdmission(ctx.session?.auth?.initiator),own=managedIdentity(process.env);
+  if(!asker||asker.purpose!=='human'||!own||typeof ctx.session?.id!=='string')return false;
+  const {rows}=await getPool().query('SELECT 1 FROM personal_actions WHERE approval_request_id=$1 AND actor_member_id=$2 AND agent=$3 AND session_id=$4',
+    [requestId,asker.memberId,own.name,ctx.session.id]);
+  if(rows.length!==1)return false;
+  if(!['cancelled','ignored','invalid'].includes(outcome))throw new Error('Unsupported personal approval outcome');
+  await personalActions().cancelApprovalRequest(asker.memberId,requestId,outcome as 'cancelled'|'ignored'|'invalid');
   return true;
 }
 export async function requirePersonalSendCall(ctx:ConsoleAuthorityContext,input:unknown){
