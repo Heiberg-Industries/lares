@@ -431,7 +431,7 @@ const server=createServer(async(req,res)=>{{
 }});
 await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 try{{
-  const client=new Client({{host:`http://127.0.0.1:${{server.address().port}}`,headers:()=>currentHeaders}});
+  const client=new Client({{baseUrl:`http://127.0.0.1:${{server.address().port}}`,headers:()=>currentHeaders}});
   const session=client.sessions.attach("sdk-header-regression");
   const capsule="signed-post-capability";
   currentHeaders={{...currentHeaders,"content-type":"application/json","x-lares-model-purpose-required":"1","x-lares-model-capsule":capsule}};
@@ -478,7 +478,7 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
             "headers={authorization:'Basic '+Buffer.from('eve:'+password).toString('base64')",
             "'x-lares-purpose':'read'", "mark('stream-auth')", "await pending.result()",
             "'x-lares-model-capsule':capsule", "'x-lares-member-id':'first-use-no-such-member'",
-            "response:result.message",
+            "response:result.reply",
             "fs.writeFileSync(temp,JSON.stringify({phase}),{mode:0o600})", "fs.renameSync(temp,phaseFile)",
             "catch(error){if(!resultObserved)recordThrownResult(error);process.exitCode=1}",
         ):
@@ -663,17 +663,23 @@ class CompiledFirstResultDiagnosticTests(unittest.TestCase):
 
     def test_generated_client_preserves_returned_status_and_fixed_admission_category(self) -> None:
         canary = "PRIVATE-CANARY-DO-NOT-EMIT"
-        event = {"type": "step.failed", "data": {"code": "budget_admission_refused", "message": canary,
+        # eve 1.0: a model run ends with `model.settled`, and it is a failure only when its outcome
+        # is `failed`. The error sits under `error`; the result carries `reply`, and the events are
+        # read from the delivery's own stream, not from the result.
+        event = {"type": "model.settled", "data": {"outcome": "failed", "error": {"code": "budget_admission_refused", "message": canary,
             "details": {"statusCode": 400, "upstreamStatusCode": 400, "apiErrorMessage": canary,
                 "responseBodySnippet": canary, "stack": canary, "headers": {"authorization": canary},
-                "ticket": canary, "requestId": canary}}}
-        raw = self.generated_diagnostic(json.dumps({"status": "failed", "message": "not FIRST_USE_OK", "events": [event]}))
+                "ticket": canary, "requestId": canary}}}}
+        settled_fine = [{"type": "model.settled", "data": {"outcome": "completed"}},
+            {"type": "turn.settled", "data": {"outcome": "completed", "error": {"code": canary, "message": canary}}}]
+        raw = self.generated_diagnostic(json.dumps({"status": "failed", "reply": "not FIRST_USE_OK"}) + "," + json.dumps([*settled_fine, event]))
         summary = self.reader["safe_compiled_client_result_summary"](raw, 0)
         self.assertEqual(summary["outcome"], "returned")
         self.assertEqual(summary["resultStatus"], "failed")
         self.assertFalse(summary["expectedMessage"])
         self.assertEqual(summary["failureEventCount"], 1)
-        self.assertEqual(summary["events"], [{"event": "step.failed", "code": "budget_admission_refused",
+        self.assertEqual(summary["failureEvents"], {"step": True, "turn": False, "session": False})
+        self.assertEqual(summary["events"], [{"event": "model.settled", "code": "budget_admission_refused",
             "statusCode": 400, "upstreamStatusCode": 400}])
         self.assertTrue(summary["categories"]["nativeAdmissionRefused"])
         self.assertNotIn(canary, raw)
@@ -681,7 +687,7 @@ class CompiledFirstResultDiagnosticTests(unittest.TestCase):
 
     def test_generated_client_records_success_timeout_and_thrown_client_error_separately(self) -> None:
         success = self.reader["safe_compiled_client_result_summary"](
-            self.generated_diagnostic('{status:"completed",message:"FIRST_USE_OK",events:[]}'), 0)
+            self.generated_diagnostic('{status:"completed",reply:"FIRST_USE_OK"},[]'), 0)
         self.assertEqual((success["outcome"], success["resultStatus"], success["expectedMessage"]),
                          ("returned", "completed", True))
         thrown = self.reader["safe_compiled_client_result_summary"](
@@ -696,7 +702,7 @@ class CompiledFirstResultDiagnosticTests(unittest.TestCase):
 
     def test_result_marker_reader_rejects_malformed_extra_oversized_and_invalid_values(self) -> None:
         parse = self.reader["safe_compiled_client_result_summary"]
-        valid = json.loads(self.generated_diagnostic('{status:"failed",message:"no",events:[]}'))
+        valid = json.loads(self.generated_diagnostic('{status:"failed",reply:"no"},[]'))
         self.assertTrue(parse(json.dumps(valid), 0)["markerValid"])
         secret = "PRIVATE-RESULT-MARKER-CANARY"
         bad_cases = [

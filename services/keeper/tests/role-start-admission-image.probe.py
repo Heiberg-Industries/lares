@@ -63,8 +63,8 @@ proof = {
     "claims": {
         "actualRendererUsed": False, "effectiveGeneratedComposeMatchesExceptImage": False,
         "bakedGuardAndExplicitDefaultCommand": False, "compiledServerReady": False,
-        "cliPid1AndCompiledChildHoldHostGateInode": False,
-        "ordinaryImageNodeFd9ClassificationAndThreeStdio": False,
+        "serverPid1HoldsHostGateInode": False,
+        "noLauncherInImage": False,
         "exclusiveFlockBlockedLiveAndReleasedAfterStop": False,
         "restartReachedReadyAndRetainedAdmission": False,
         "enteringBlockedAndCommandOverrideRefusedBeforeSecretRead": False,
@@ -625,7 +625,10 @@ def wait_ready() -> None:
 
 
 def container_process_and_gate() -> None:
-    probe = """const fs=require('node:fs');const base='/proc';const pid1=fs.readFileSync(base+'/1/cmdline').toString().split('\\0').filter(Boolean).join(' ');if(!pid1.includes('eve')||!pid1.includes('start'))process.exit(2);let serverPid;for(const entry of fs.readdirSync(base)){if(!/^\\d+$/.test(entry)||entry==='1')continue;try{const s=fs.readFileSync(base+'/'+entry+'/status','utf8');if(!/^PPid:\\s+1$/m.test(s))continue;const args=fs.readFileSync(base+'/'+entry+'/cmdline').toString().split('\\0').filter(Boolean).join(' ');if(args.endsWith('/.output/server/index.mjs')){serverPid=entry;break}}catch{}}if(!serverPid)process.exit(3);const out={pid1,serverPid,pid1Gate:fs.statSync(base+'/1/fd/9'),serverGate:fs.statSync(base+'/'+serverPid+'/fd/9')};process.stdout.write(JSON.stringify({pid1,serverPid,pid1Dev:out.pid1Gate.dev,pid1Ino:out.pid1Gate.ino,serverDev:out.serverGate.dev,serverIno:out.serverGate.ino}))"""
+    # The start script execs the built server, so the server itself is PID 1 and holds the gate
+    # descriptor the admission wrapper locked. No eve launcher runs anywhere in the container: the
+    # launcher starts the server with three stdio entries and would drop descriptor 9.
+    probe = """const fs=require('node:fs');const base='/proc';const argv=fs.readFileSync(base+'/1/cmdline').toString().split('\\0').filter(Boolean);const pid1=argv.join(' ');if(argv.length!==2||!/(^|\\/)node$/.test(argv[0])||!/^(\\.|\\/app\\/services\\/[a-z-]+)\\/\\.output\\/server\\/index\\.mjs$/.test(argv[1]))process.exit(2);const launchers=[];for(const entry of fs.readdirSync(base)){if(!/^\\d+$/.test(entry)||Number(entry)===process.pid)continue;try{const args=fs.readFileSync(base+'/'+entry+'/cmdline').toString().split('\\0').filter(Boolean);if(args.some(arg=>/(^|\\/)eve(\\.js)?$/.test(arg)))launchers.push(args.join(' '))}catch{}}if(launchers.length)process.exit(3);const gate=fs.statSync(base+'/1/fd/9');process.stdout.write(JSON.stringify({pid1,pid1Dev:gate.dev,pid1Ino:gate.ino}))"""
     inside = docker("exec", current_container_id(), "node", "-e", probe)
     try:
         seen = json.loads(inside.stdout)
@@ -634,42 +637,37 @@ def container_process_and_gate() -> None:
     gate = (admission_dir / "service-gate.lock").stat()
     expected = (gate.st_dev, gate.st_ino)
     actual_pid1 = (seen.get("pid1Dev"), seen.get("pid1Ino"))
-    actual_server = (seen.get("serverDev"), seen.get("serverIno"))
-    if actual_pid1 != expected or actual_server != expected:
+    if actual_pid1 != expected:
         raise ProbeFailure("host-gate-inode-mismatch")
-    proof["claims"]["cliPid1AndCompiledChildHoldHostGateInode"] = True
+    proof["claims"]["serverPid1HoldsHostGateInode"] = True
 
 
-def ordinary_image_fd9_classification() -> None:
-    # Run the pinned production function using the newly built role image's Node. Only the
-    # classifier callsite and process side effects are instrumented; the image supplies its code.
-    script = r'''import{createRequire}from"node:module";import{dirname,join}from"node:path";import{readFileSync,writeFileSync,mkdirSync,rmSync,existsSync}from"node:fs";import{pathToFileURL}from"node:url";
+def no_launcher_in_image() -> None:
+    # The image's own start script goes straight to the built server, and the eve launcher that
+    # ships in the image is the framework's own file: it carries no maintenance handoff, so a start
+    # routed through it would lose the gate. Read from the running role container.
+    script = r'''import{createRequire}from"node:module";import{createHash}from"node:crypto";import{dirname,join}from"node:path";import{readFileSync}from"node:fs";
 const role=__ROLE__,require=createRequire(`/app/services/${role}/package.json`);let eveRoot=dirname(require.resolve("eve"));while(eveRoot!==dirname(eveRoot)){const packagePath=join(eveRoot,"package.json");try{if(JSON.parse(readFileSync(packagePath,"utf8")).name==="eve")break}catch{}eveRoot=dirname(eveRoot)}
-const productionPath=join(eveRoot,"dist/src/internal/nitro/host/start-production-server.js"),source0=readFileSync(productionPath,"utf8");for(const marker of ["function validateMaintenanceAdmission(participating=false)","try{gateFd=fstatSync(9)}catch(error){statError=error}","stdio:(checkAdmission()?"])if(!source0.includes(marker))throw Error("pinned Eve production marker missing: "+marker);
-for(const key of ["LARES_MAINTENANCE_ADMISSION_DIR","LARES_MAINTENANCE_INSTALLATION_ID","LARES_MAINTENANCE_EPOCH"])delete process.env[key];
-const scratch=`/tmp/lares-role-fd9-${process.pid}`,modulePath=join(scratch,"start-production-server.mjs"),appRoot=join(scratch,"app"),inventoryPath=join(scratch,"inventory.json"),stdioPath=join(scratch,"stdio.json");mkdirSync(join(appRoot,".output/server"),{recursive:true});writeFileSync(join(appRoot,".output/server/index.mjs"),"import{createServer}from'node:http';createServer((_q,r)=>r.end('ok')).listen(Number(process.env.PORT),'127.0.0.1');");
-let source=source0;source=source.replace('import{loadDevelopmentEnvironmentFiles}from"#cli/dev/environment.js";','const loadDevelopmentEnvironmentFiles=async()=>{};').replace('import{prewarmBuiltAppSandboxes}from"#execution/sandbox/prewarm.js";','const prewarmBuiltAppSandboxes=async()=>{};').replace('import{closeSync,constants,existsSync,fstatSync,lstatSync,openSync,readSync}from"node:fs";','import{closeSync,constants,existsSync,fstatSync,lstatSync,openSync,readSync,writeFileSync}from"node:fs";').replace('import{spawn}from"node:child_process";','import{spawn as realSpawn}from"node:child_process";const spawn=(...args)=>{writeFileSync('+JSON.stringify(stdioPath)+',JSON.stringify(args[2].stdio));return realSpawn(...args)};');
-const original='try{gateFd=fstatSync(9)}catch(error){statError=error}',instrumented='try{gateFd=fstatSync(9);writeFileSync('+JSON.stringify(inventoryPath)+',JSON.stringify({fd:9,metadataPresent,isRegular:gateFd.isFile(),isFIFO:gateFd.isFIFO(),isSocket:gateFd.isSocket(),mode:gateFd.mode,dev:gateFd.dev,ino:gateFd.ino}))}catch(error){writeFileSync('+JSON.stringify(inventoryPath)+',JSON.stringify({fd:9,metadataPresent,error:error.code}));statError=error}';if(!source.includes(original))throw Error("fd9 classifier instrumentation point missing");source=source.replace(original,instrumented);writeFileSync(modulePath,source);
-const emitEvidence=()=>process.stderr.write("LARES_FD9_EVIDENCE="+JSON.stringify({nodeVersion:process.version,productionPath,inventory:JSON.parse(readFileSync(inventoryPath,"utf8")),stdio:existsSync(stdioPath)?JSON.parse(readFileSync(stdioPath,"utf8")):null})+"\n");process.exit=code=>{throw Object.assign(new Error("captured admission exit"),{code:"LARES_TEST_EXIT",exitCode:code})};
-try{const{startProductionServer}=await import(pathToFileURL(modulePath));const server=await startProductionServer(appRoot,{host:"127.0.0.1",port:0});await server.close();await server.wait();emitEvidence();}catch(error){if(error?.code!=="LARES_TEST_EXIT")throw error;emitEvidence();process.exitCode=error.exitCode;}finally{rmSync(scratch,{recursive:true,force:true})}'''
+const sha=text=>createHash("sha256").update(text).digest("hex");
+const start=readFileSync("/usr/local/bin/lares-start","utf8"),commands=start.split("\n").filter(line=>!line.trimStart().startsWith("#")).join("\n");
+const launcherPath=join(eveRoot,"dist/src/internal/nitro/host/start-production-server.js"),launcher=readFileSync(launcherPath,"utf8");
+process.stdout.write("LARES_NO_LAUNCHER_EVIDENCE="+JSON.stringify({nodeVersion:process.version,eveVersion:JSON.parse(readFileSync(join(eveRoot,"package.json"),"utf8")).version,
+ startScriptSha256:sha(start),startExecsBuiltServer:/^exec node \.\/\.output\/server\/index\.mjs$/m.test(commands),startNamesLauncher:/\beve\b/.test(commands),
+ launcherPath,launcherSha256:sha(launcher),launcherHasMaintenanceHandoff:/LARES_MAINTENANCE|validateMaintenanceAdmission|fstatSync\(9\)/.test(launcher)})+"\n");'''
     script = script.replace("__ROLE__", json.dumps(ROLE))
     result = docker("exec", current_container_id(), "node", "--input-type=module", "-e", script, check=False, timeout=30)
     try:
-        line = next(line for line in reversed(result.stdout.splitlines()) if line.startswith("LARES_FD9_EVIDENCE="))
-        evidence = json.loads(line.removeprefix("LARES_FD9_EVIDENCE="))
+        line = next(line for line in reversed(result.stdout.splitlines()) if line.startswith("LARES_NO_LAUNCHER_EVIDENCE="))
+        evidence = json.loads(line.removeprefix("LARES_NO_LAUNCHER_EVIDENCE="))
     except (StopIteration, json.JSONDecodeError):
-        raise ProbeFailure("ordinary-image-node-fd9-evidence") from None
+        raise ProbeFailure("no-launcher-evidence") from None
     if not str(evidence.get("nodeVersion", "")).startswith("v24."):
-        raise ProbeFailure("ordinary-image-node-version")
-    proof["ordinaryImageNodeFd9"] = evidence
-    if result.returncode != 0:
-        raise ProbeFailure("ordinary-image-node-fd9-classification")
-    inventory, stdio = evidence.get("inventory", {}), evidence.get("stdio")
-    ordinary = inventory.get("metadataPresent") is False and \
-        (inventory.get("error") == "EBADF" or inventory.get("isRegular") is False)
-    if not ordinary or stdio != ["ignore", "pipe", "pipe"]:
-        raise ProbeFailure("ordinary-image-node-fd9-classification")
-    proof["claims"]["ordinaryImageNodeFd9ClassificationAndThreeStdio"] = True
+        raise ProbeFailure("image-node-version")
+    proof["noLauncherInImage"] = evidence
+    if result.returncode != 0 or evidence.get("startExecsBuiltServer") is not True or \
+            evidence.get("startNamesLauncher") is not False or evidence.get("launcherHasMaintenanceHandoff") is not False:
+        raise ProbeFailure("launcher-in-image")
+    proof["claims"]["noLauncherInImage"] = True
 
 
 def contender(expected: int) -> None:
@@ -710,7 +708,7 @@ def main() -> None:
         raise ProbeFailure("actual-role-image-id")
     proof["actualImageId"] = image_id
     container_process_and_gate()
-    ordinary_image_fd9_classification()
+    no_launcher_in_image()
     contender(1)
     proof["stages"]["exclusiveDeniedWhileLive"] = True
 
