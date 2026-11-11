@@ -200,3 +200,16 @@ describe('eve 1.0 wire shapes',()=>{
   expect(verifiedPrivateConsoleModelResponseReceipt(good).resume).toEqual({requestId:'int_1',optionId:'deny'});
  });
 });
+
+describe('session create accepts exactly these bodies',()=>{
+ const create='/eve/v1/session';
+ it('{}, {message}, {operationId} and {message, operationId} are accepted; nothing else',()=>{
+  for(const body of [{},{message:'hello'},{operationId:'op-1'},{message:'hello',operationId:'op-1'}])expect(()=>assertPrivateConsoleEnvelope(body,create),JSON.stringify(body)).not.toThrow();
+  for(const body of [{message:''},{operationId:''},{message:'hello',operationId:''},{message:'hello',answers:[{interactionId:'i',optionId:'approve'}]},{answers:[{interactionId:'i',optionId:'approve'}]},{message:'hello',extra:1},{clientContext:'x'},{callback:{}}])expect(()=>assertPrivateConsoleEnvelope(body,create),JSON.stringify(body)).toThrow();
+ });
+ it('a message-free create gets no message receipt, so it cannot carry a message later',async()=>{
+  const request=new Request('https://example.invalid'+create,{method:'POST',body:JSON.stringify({})});
+  await expect(assertPrivateConsoleRequest(request)).resolves.toBeUndefined();
+  expect(()=>assertVerifiedPrivateConsoleMessage(request,'anything')).toThrow();
+ });
+});

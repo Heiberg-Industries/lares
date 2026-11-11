@@ -13,6 +13,9 @@ import { bindConsoleSession, bindConsoleSessionStarted, requireConsoleSessionBin
   consoleRouteAdmission, hasConsoleTurnAuthorityTag, CONSOLE_AUTHORITY_REVISION, authorityTransaction, type ConsoleAuthorityContext } from '../src/console-turn-authority.js';
 import { observeConversation, resetConversation } from '../src/conversation-control.js';
 import { verifyPrivateConsoleSession, markPrivateConsoleSurface } from '../src/private-console-surface.js';
+import { MockLanguageModelV3 } from 'ai/test';
+import { definitionModelResolver } from '../src/definition-model.js';
+import { viewAt } from './helpers/session-view.js';
 const keeperPath=new URL('../../../services/keeper/lib/conversations.js',import.meta.url).href;
 const actionPath=new URL('../../../services/keeper/lib/actions.js',import.meta.url).href;
 const waitingPath=new URL('../../../services/console/lib/waiting.js',import.meta.url).href;
@@ -313,8 +316,25 @@ it('old projected private rows stay invisible to keeper list/reset, runtime rese
  await resetConversation({sessionId:'wrun_native',incarnation,confirm:true},attach,db,env);expect(attach).toHaveBeenCalledOnce();
 });
 
-// Needs the new `definitionModel` (agent definition part of the eve 1.0 upgrade); its eve 0.60 resolver shape is gone.
-it.todo('a real revoked binding stops a cached model before either fake provider execution mode');
+it('a real revoked binding stops a cached model before either fake provider execution mode',async()=>{
+ await bindConsoleSession(tuple,db,env);
+ const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/context/container.js',import.meta.url))).href;
+ const {ContextContainer,contextStorage}=await import(dist);
+ await contextStorage.run(new ContextContainer(),async()=>{
+  markPrivateConsoleSurface();const call=vi.fn(async()=>{throw new Error('PROVIDER REACHED');});
+  const select=definitionModelResolver({resolveAlias:async()=> 'synthetic-model',provider:()=>new MockLanguageModelV3({doGenerate:call,doStream:call})});
+  // eve 1.0 hands a dynamic model its session, latest turn and session view (the view's stream position is the step).
+  const modelCtx=(line:number)=>({session:ctx().session,turn:{id:'turn_0',status:'running',input:[]},view:viewAt(line)}) as never;
+  const selections=[await select(modelCtx(1)),await select(modelCtx(2))];
+  await db.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE session_id=$1',[tuple.sessionId]);
+  await expect(select(modelCtx(3))).rejects.toThrow('Conversation authority');
+  for(const [index,method] of (['doGenerate','doStream'] as const).entries()){
+   await expect((selections[index]!.model as any)[method]({prompt:[]})).rejects.toThrow('Conversation authority');
+   await expect((selections[index]!.model as any)[method]({prompt:[]})).rejects.toThrow('fresh trusted model invocation');
+  }
+  expect(call).not.toHaveBeenCalled();
+ });
+});
 
 it('upgrades pre-account-invalidation history once and preserves protocol 2 on ordered reapply',async()=>{
  const access=await new PgGrantStore(db).agentAccess('Owner-ID','helper');
