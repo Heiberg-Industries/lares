@@ -97,6 +97,9 @@ an unmerged draft for weeks.
 - Do: confirm a migration exists for every breaking change before the release is cut.
 - Do: rehearse the rollback to the previous image digests before every release, not only when
   something goes wrong.
+- Do: check the providers' price pages before every release, update the suggested price table and
+  its `PRICES_CHECKED` date in `services/box/ops/budget-commands.py`, and put that date in the
+  release notes.
 - Do: bump eve monthly with pending approvals drained beforehand — eve's 0.57.0 execution-model
   rewrite means every session restarts fresh on an eve bump, so this must happen at a quiet time,
   never mid-turn.
