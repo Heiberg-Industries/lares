@@ -21,17 +21,25 @@
 // This tool keeps asking whatever the dial says: it is
 // `["delete"]` in `TOOL_CATEGORIES`, and `mustAlwaysAsk` outranks an `autonomous` level, a rule
 // no setting can loosen. A refusal on the board still refuses it, because a refusal only tightens.
-// `assertApprovedCall` (the check against the card that was shown) is injected here rather than
-// called inside the kit's factory; see `agent-kit__vault_write.ts`'s header for why.
-import { approvalLedger, assertApprovedCall, callIdFrom } from "@lares/agent-kit/approval-ledger";
+// At execution the call goes through `assertApproval`, the same check every other gated tool makes:
+// when a card was answered, the person who ANSWERED it (`ctx.approval.responder`) must be the
+// owner, and the call must be the one the card showed (`assertApprovedCall`); with no card, the
+// session's own caller must be an allowed approver. It is injected here, in place of the kit's
+// requester-only check, because on eve 1.0 the requester of a scheduled job's card is the app.
+// A private Console conversation is not offered this tool (`private-console-surface.ts`), so a
+// call bound to one is refused here rather than read as a door's card.
+import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
 import { dropTool } from "@lares/agent-kit/note-write-tools";
 
+import { assertApproval } from "../lib/approvals.js";
 import { approvalFor } from "../lib/board.js";
 import { vaultWriteAreasForTurn } from "../lib/vault-areas.js";
 
 export default dropTool({
   areas: vaultWriteAreasForTurn,
   approval: approvalFor("agent-kit__vault_drop"),
-  assertApprovedCall: (ctx: unknown, input: unknown) =>
-    assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName: "agent-kit__vault_drop", input }),
+  assertApproval: async (ctx: unknown, input: unknown) => {
+    if (isExactApprovalContext(ctx)) throw new Error("A Vault note delete is not available in a private Console conversation");
+    await assertApproval(ctx as never, "agent-kit__vault_drop", input);
+  },
 });

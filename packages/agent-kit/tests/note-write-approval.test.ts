@@ -92,9 +92,15 @@ describe("the Vault's own write tools answer to the permissions board", () => {
     }
   });
 
-  it("the chief of staff's three vault writes also inject the card check", () => {
+  // The chief of staff injects its own `assertApproval` (`lib/approvals.ts`), which checks the
+  // person who answered the card AND the card itself (`assertApprovedCall`) in one call, named
+  // after the tool. `note-write-answerer.test.ts` and that service's
+  // `vault-file-drop-answerer.test.ts` drive what it does.
+  it("the chief of staff's three vault writes also inject the answerer and card check", () => {
     for (const name of THREE) {
-      expect(readFileSync(join(COS, `${name}.ts`), "utf8"), name).toContain("assertApprovedCall:");
+      const text = readFileSync(join(COS, `${name}.ts`), "utf8");
+      expect(text, name).toContain("assertApproval:");
+      expect(text, name).toMatch(new RegExp(`assertApproval\\(ctx as never, "${name}", input\\)`));
     }
   });
 });
