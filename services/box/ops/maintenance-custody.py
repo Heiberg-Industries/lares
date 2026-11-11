@@ -22,6 +22,12 @@ _STATES = ("normal", "entering", "blocked")
 _MAX_INTENT_BYTES = 256
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 _LEASE_FD = 197
+# A second inherited descriptor, held for a whole top-level maintenance run (and everything it
+# starts): an exclusive lock for an update, a shared one for every other operation. So an update
+# never runs beside another update, a backup, a restore or a rollback, while those keep running
+# beside each other as before. The service gate above stays the shared lease it always was.
+_RUN_FD = 198
+_RUN_LOCK = "operation.lock"
 _LOCK_WAIT_SECONDS = 1.0
 _NORMAL_OPERATIONS = {
     "backup": "backup.sh",
@@ -681,9 +687,23 @@ def _assert_inherited_lease(prefix: Path, by_name: dict[str, int], uid: int,
     _assert_namespace_paths(prefix, by_name, {name: os.fstat(fd) for name, fd in by_name.items()}, uid)
 
 
-def _acquire_normal_lease(prefix: Path, uid: int) -> None:
+class MaintenanceRunBusy(ValueError):
+    """Another top-level maintenance run holds the run lock in a way this one cannot share."""
+
+
+def _open_run_lock(custody_fd: int, uid: int) -> int:
+    """The run lock inside the root-only custody folder, created on first use."""
+    try:
+        _write_exclusive_at(custody_fd, _RUN_LOCK, b"", 0o600, uid)
+    except FileExistsError:
+        pass
+    fd, _ = _open_fixed_file(custody_fd, _RUN_LOCK, 0o600, uid, writable=True)
+    return fd
+
+
+def _acquire_normal_lease(prefix: Path, uid: int, operation: str) -> None:
     fds, by_name, infos = _open_namespace(prefix, uid)
-    command_fd = gate_fd = -1
+    command_fd = gate_fd = run_fd = -1
     locked_command = False
     try:
         command_fd, command_info = _open_fixed_file(by_name["custody"], "command.lock", 0o600, uid,
@@ -704,15 +724,23 @@ def _acquire_normal_lease(prefix: Path, uid: int) -> None:
         )["installationId"]:
             raise ValueError("maintenance receipt changed during admission")
         _assert_namespace_paths(prefix, by_name, infos, uid)
-        if _LEASE_FD in (command_fd, gate_fd):
+        run_fd = _open_run_lock(by_name["custody"], uid)
+        try:
+            fcntl.flock(run_fd, (fcntl.LOCK_EX if operation == "update" else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise MaintenanceRunBusy(
+                "another maintenance run is still going (an update cannot run beside an update, a backup, "
+                "a restore or a rollback); wait until it has finished, then run this again") from error
+        if {_LEASE_FD, _RUN_FD} & {command_fd, gate_fd, run_fd}:
             raise ValueError("reserved maintenance descriptor collided")
         os.dup2(gate_fd, _LEASE_FD, inheritable=True)
         if not _same_file(os.fstat(_LEASE_FD), gate_info):
             raise ValueError("maintenance lease descriptor changed")
+        os.dup2(run_fd, _RUN_FD, inheritable=True)
     finally:
         if locked_command:
             fcntl.flock(command_fd, fcntl.LOCK_UN)
-        for fd in (command_fd, gate_fd):
+        for fd in (command_fd, gate_fd, run_fd):
             if fd >= 0:
                 os.close(fd)
         for fd in reversed(fds):
@@ -760,7 +788,7 @@ def _run_normal(prefix: str, operation: str, args: list[str], *, test_owner: boo
     try:
         os.fstat(_LEASE_FD)
     except OSError:
-        _acquire_normal_lease(target, uid)
+        _acquire_normal_lease(target, uid, operation)
     else:
         _validate_inherited_normal(target, uid, test_owner=test_owner)
     script = Path(__file__).resolve().with_name(_NORMAL_OPERATIONS[operation])
@@ -970,7 +998,10 @@ def main(argv: list[str]) -> int:
         return 0
     except (OSError, ValueError) as error:
         if len(argv) > 1 and argv[1] in ("run-normal", "assert-normal-held", "validate-update-target"):
-            print("maintenance admission: refused", file=sys.stderr)
+            if isinstance(error, MaintenanceRunBusy):
+                print(f"maintenance admission: refused: {error}", file=sys.stderr)
+            else:
+                print("maintenance admission: refused", file=sys.stderr)
             return 78
         print(f"maintenance custody: {error}", file=sys.stderr)
         return 1

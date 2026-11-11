@@ -585,6 +585,84 @@ while [ ! -e '{release}' ]; do sleep 0.01; done
             stdout, stderr = process.communicate(timeout=5)
         self.assertEqual(process.returncode, 0, stdout + stderr)
 
+    def test_an_update_never_runs_beside_another_maintenance_run(self) -> None:
+        prefix, installed = self._installed_bundle()
+        # Each fixed script says it started, then waits to be released. update.sh also runs a
+        # nested backup the way the real one does (it inherits the update's admission).
+        for name, operation in (("backup.sh", "backup"), ("update.sh", "update"), ("rollback.sh", "rollback")):
+            (installed / name).write_text(f"""#!/bin/bash
+set -euo pipefail
+python3 "$(dirname "$0")/maintenance-custody.py" assert-normal-held "$LARES_MAINTENANCE_TEST_PREFIX" {operation} --test-owner
+if [ "{operation}" = update ]; then
+  bash "$(dirname "$0")/nested-backup.sh"
+fi
+touch "$MARK.started"
+while [ ! -e "$MARK.release" ]; do sleep 0.01; done
+""", encoding="utf8")
+            (installed / name).chmod(0o750)
+        (installed / "nested-backup.sh").write_text("""#!/bin/bash
+set -euo pipefail
+python3 "$(dirname "$0")/maintenance-custody.py" assert-normal-held "$LARES_MAINTENANCE_TEST_PREFIX" backup --test-owner
+touch "$MARK.nested"
+""", encoding="utf8")
+
+        def command(operation: str) -> list[str]:
+            return ["python3", str(installed / "maintenance-custody.py"), "run-normal",
+                    str(prefix), operation, "--test-owner", "--"]
+
+        def hold(operation: str, mark: Path) -> subprocess.Popen[str]:
+            process = subprocess.Popen(command(operation), env=self._test_env(prefix, MARK=str(mark)),
+                                       text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            deadline = time.monotonic() + 5
+            while not Path(f"{mark}.started").exists() and time.monotonic() < deadline and process.poll() is None:
+                time.sleep(0.01)
+            self.assertTrue(Path(f"{mark}.started").exists(), f"{operation} did not start")
+            return process
+
+        def attempt(operation: str, phase: str) -> subprocess.CompletedProcess[str]:
+            mark = self.root / f"attempt-{phase}-{operation}"
+            Path(f"{mark}.release").touch()
+            return subprocess.run(command(operation), env=self._test_env(prefix, MARK=str(mark)),
+                                  text=True, capture_output=True, timeout=10)
+
+        def release(process: subprocess.Popen[str], mark: Path) -> None:
+            Path(f"{mark}.release").touch()
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0, stdout + stderr)
+
+        # A running backup refuses an update; a second backup and a rollback still run beside it.
+        backup_mark = self.root / "backup"
+        backup = hold("backup", backup_mark)
+        try:
+            refused = attempt("update", "during-backup")
+            self.assertEqual(refused.returncode, 78)
+            self.assertIn("another maintenance run is still going", refused.stderr)
+            self.assertFalse(Path(f"{self.root / 'attempt-during-backup-update'}.started").exists(), "the update script ran")
+            self.assertEqual(attempt("backup", "during-backup").returncode, 0)
+            self.assertEqual(attempt("rollback", "during-backup").returncode, 0)
+        finally:
+            release(backup, backup_mark)
+
+        # A running update refuses a second update, a backup and a rollback, for its whole length,
+        # while its own nested backup is admitted.
+        update_mark = self.root / "update"
+        update = hold("update", update_mark)
+        try:
+            self.assertTrue(Path(f"{update_mark}.nested").exists(), "the update's own backup was not admitted")
+            for operation in ("update", "backup", "rollback"):
+                refused = attempt(operation, "during-update")
+                self.assertEqual(refused.returncode, 78, operation)
+                self.assertIn("another maintenance run is still going", refused.stderr, operation)
+                self.assertFalse(Path(f"{self.root / ('attempt-during-update-' + operation)}.started").exists(), operation)
+        finally:
+            release(update, update_mark)
+
+        # Once it has finished, the next update is admitted.
+        self.assertEqual(attempt("update", "after").returncode, 0)
+        lock = prefix / "var/lib/lares-maintenance/custody/operation.lock"
+        self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
+        self.assertEqual(lock.stat().st_uid, self.owner)
+
     def test_state_is_durable_one_way_and_keeps_service_lock_inode(self) -> None:
         lock = self.admission_dir / "service-gate.lock"
         before = lock.stat().st_ino

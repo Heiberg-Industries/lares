@@ -182,6 +182,24 @@ it('clones verified workflow storage and starts the pinned world as the DML-only
   await asOwner(row.workflow_database, client => applyWorkflowRuntimePrivileges(client));
   await storage.verifyReadyDatabases();
 
+  // A store the updater has not brought to this release's workflow schema (its record of applied
+  // schema steps stops where the previous release left it) must stop the keeper before it starts
+  // anything: the workflow package does not change its own schema when an agent starts.
+  let newer: Array<{ id: number; hash: string; created_at: string }> = [];
+  await asOwner(row.workflow_database, async client => {
+    newer = (await client.query<{ id: number; hash: string; created_at: string }>(
+      'DELETE FROM workflow_drizzle.workflow_migrations WHERE id IN (SELECT id FROM workflow_drizzle.workflow_migrations ORDER BY id OFFSET 20) RETURNING id,hash,created_at::text AS created_at')).rows;
+  });
+  expect(newer).toHaveLength(10);
+  await expect(storage.verifyReadyDatabases()).rejects.toThrow('Workflow schema step record is not at the pinned head (20 recorded, 30 expected)');
+  // One step with different contents is refused too, not only a shorter list.
+  await asOwner(row.workflow_database, async client => {
+    for (const step of [...newer].sort((a, b) => a.id - b.id)) await client.query('INSERT INTO workflow_drizzle.workflow_migrations(id,hash,created_at) VALUES($1,$2,$3)', [step.id, step.id === newer[0]!.id ? '0'.repeat(64) : step.hash, step.created_at]);
+  });
+  await expect(storage.verifyReadyDatabases()).rejects.toThrow('Workflow schema step record is not at the pinned head (30 recorded, 30 expected)');
+  await asOwner(row.workflow_database, client => client.query('UPDATE workflow_drizzle.workflow_migrations SET hash=$2 WHERE id=$1', [newer[0]!.id, newer[0]!.hash]).then(() => undefined));
+  await storage.verifyReadyDatabases();
+
   const engineDb = pool('lares_state', runtime, runtimePassword);
   try { await expect(engineDb.query('SELECT 1')).rejects.toMatchObject({ code: '42501' }); }
   finally { await engineDb.end(); pools.splice(pools.indexOf(engineDb), 1); }
