@@ -811,7 +811,10 @@ exit 0`);
   });
 
   it("refuses, changing nothing, when \"latest\" cannot be looked up", () => {
-    for (const env of [{ RESTIC_SNAPSHOTS_FAIL: "1" }, { RESTIC_SNAPSHOTS_JSON: "[]" }, { RESTIC_SNAPSHOTS_JSON: '[{"id":"not-hex","time":"2026-11-11T02:00:00Z"}]' }]) {
+    const lookups: Record<string, string>[] = [
+      { RESTIC_SNAPSHOTS_FAIL: "1" }, { RESTIC_SNAPSHOTS_JSON: "[]" }, { RESTIC_SNAPSHOTS_JSON: '[{"id":"not-hex","time":"2026-11-11T02:00:00Z"}]' },
+    ];
+    for (const env of lookups) {
       writeFileSync(log, "");
       const r = run(latest(), { env });
       expect(r.code, r.all).toBe(78);
