@@ -338,7 +338,7 @@ if [ "$1" = create ]; then
   done
   id=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
   client_save "$id" "$owner" "$operation" "$name" false 0 false
-  if [ -z "\${RESTORE_CLIENT_CIDFILE_MISSING:-}" ]; then
+  if [ -z "\${RESTORE_CLIENT_CIDFILE_MISSING:-}" ] && [ "\${RESTORE_CLIENT_CIDFILE_MISSING_FOR:-@none@}" != "$operation" ]; then
     case "\${RESTORE_CLIENT_CIDFILE_FORMAT:-raw}" in
       raw) printf '%s' "$id" > "$cidfile" ;;
       newline) printf '%s\\n' "$id" > "$cidfile" ;;
@@ -1392,9 +1392,11 @@ describe("restore.sh: a backup from an older release", () => {
 
   it("when its cleanup is uncertain after a failed upgrade step, says the next run will be refused and what to check and remove first", () => {
     oldBackup();
+    // A fresh install has target Vault stores, and restore holds their locks through the store loop.
+    const vaultLocks = addTargetVault();
     rmSync(join(binDir, "pnpm"));
     const ENGINE = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
-    const failed = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_CLIENT_CIDFILE_MISSING: "1" } });
+    const failed = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_CLIENT_CIDFILE_MISSING_FOR: "keeper:workflow-apply-database" } });
     expect(failed.code, failed.all).toBe(75);
     expect(failed.all).toContain("its permissions could not be applied and verified");
     expect(failed.all).toContain("Fix the cause and run the same restore command again");
@@ -1406,13 +1408,22 @@ describe("restore.sh: a backup from an older release", () => {
     expect(failed.all).toContain("docker ps --all --filter name=lares-restore- --filter name=lares-workflow-store- must list nothing; remove anything it lists with docker rm --force <name>");
     expect(failed.all).toContain(`remove the private scratch folder, which holds decrypted backup files: rm -rf ${join(scratchParent, scratch!)}`);
     expect(failed.all).toContain(`remove this run's record and its claim: rm -rf ${runDirectory} ${runsRoot}/restore-active.lock`);
-    // The advice is right on both counts: refused as it says, then fine once those are gone.
+    expect(vaultLocks.length).toBeGreaterThan(0);
+    for (const lock of vaultLocks) {
+      const real = lock;
+      const mark = readFileSync(real, "utf8");
+      expect(mark).toMatch(/^[a-f0-9]{32}$/);
+      expect(failed.all).toContain(`once the docker check lists nothing, remove the Vault lock this run left: rm -f ${real} (it holds this run's mark ${mark};`);
+    }
+    // The advice is right on both counts: refused as it says, then fine once everything it names
+    // is gone (left in place, the Vault locks would refuse it as "target Vault repositories are busy").
     const refused = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
     expect(refused.code).toBe(78);
     expect(refused.all).toContain("could not create a private restore work record");
     rmSync(join(scratchParent, scratch!), { recursive: true, force: true });
     rmSync(runDirectory, { recursive: true, force: true });
     rmSync(join(runsRoot, "restore-active.lock"));
+    for (const lock of vaultLocks) rmSync(lock);
     // The stub's store was upgraded by the first run; the next run restores it from the backup again.
     rmSync(join(workflowStoreDir, workflowDatabase), { force: true });
     const again = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });

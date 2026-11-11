@@ -445,6 +445,15 @@ rerun_blocked_advice() {
     echo "restore:   - remove the private scratch folder, which holds decrypted backup files: rm -rf $SCRATCH" >&2
   fi
   echo "restore:   - remove this run's record and its claim: rm -rf $RESTORE_WORK $RESTORE_WORK_ROOT/restore-active.lock" >&2
+  # The Vault lock is kept too when a client's cleanup is uncertain (a Vault client may still run).
+  # The keeper, the only other writer, stays stopped, so once the docker check lists nothing the
+  # lock is this run's alone. The mark it holds proves that.
+  local entry lock_path lock_mark
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    lock_path="${entry%%$'\t'*}"; lock_mark="${entry#*$'\t'}"
+    echo "restore:   - once the docker check lists nothing, remove the Vault lock this run left: rm -f $lock_path (it holds this run's mark $lock_mark; if it holds anything else, something else is writing to the Vault: leave it and find out what)" >&2
+  done <<< "${VAULT_STORAGE_LOCKS:-}"
   echo "restore: Then run the same restore again${RUN_AGAIN_TAIL}. Nothing else needs undoing: the services stay stopped, only agent stores were replaced, and the next run restores them from the backup again." >&2
 }
 
