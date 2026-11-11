@@ -203,7 +203,7 @@ try {
   symlinkSync(join(repo, 'services/chief-of-staff/node_modules'), join(root, 'node_modules'));
   writeFileSync(
     join(root, 'package.json'),
-    JSON.stringify({ name: 'session-rows-measure-fixture', type: 'module', dependencies: { eve: '0.60.1', zod: '4.5.4' } }),
+    JSON.stringify({ name: 'session-rows-measure-fixture', type: 'module', dependencies: { eve: '1.0.0-rc.9', zod: '4.5.4' } }),
   );
   mkdirSync(join(root, 'agent/tools'), { recursive: true });
   mkdirSync(join(root, 'agent/channels'), { recursive: true });

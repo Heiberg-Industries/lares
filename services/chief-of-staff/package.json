@@ -20,7 +20,7 @@
     "import:conversations": "tsx bin/import-conversation-logs.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.72",
+    "@ai-sdk/anthropic": "4.0.102",
     "@lares/agent-box": "workspace:^",
     "@lares/agent-kit": "workspace:*",
     "@lares/compose-contract": "workspace:*",
@@ -31,9 +31,9 @@
     "@opentelemetry/resources": "2.11.0",
     "@opentelemetry/sdk-node": "0.222.0",
     "@opentelemetry/semantic-conventions": "1.43.0",
-    "@workflow/world-postgres": "5.0.0-beta.42",
-    "ai": "^7.0.128",
-    "eve": "0.60.1",
+    "@workflow/world-postgres": "5.1.1",
+    "ai": "7.0.169",
+    "eve": "1.0.0-rc.9",
     "googleapis": "^183.0.0",
     "https-proxy-agent": "9.1.0",
     "just-bash": "^3.6.0",

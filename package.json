@@ -13,9 +13,6 @@
     "build": "pnpm -r build"
   },
   "pnpm": {
-    "patchedDependencies": {
-      "eve@0.60.1": "patches/eve.patch"
-    },
     "overrides": {
       "@prisma/config@6.19.3>deepmerge-ts": "8.0.2",
       "protobufjs@<7.6.5": "7.6.5",

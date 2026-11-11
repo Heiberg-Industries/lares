@@ -16,7 +16,7 @@
     "@lares/taste": "workspace:^",
     "@lares/ui": "workspace:*",
     "@microsoft/microsoft-graph-client": "^3.0.7",
-    "eve": "0.60.1",
+    "eve": "1.0.0-rc.9",
     "googleapis": "^183.0.0",
     "jose": "^6.2.12",
     "next": "16.4.1",
