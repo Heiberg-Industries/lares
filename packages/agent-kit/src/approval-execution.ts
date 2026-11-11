@@ -49,9 +49,12 @@ const supported = (tool: string, o: ExactApprovalOptions): ExactApprovalAdapter 
   return o.adapter!;
 };
 export function isExactApprovalContext(ctx: unknown): boolean { return hasConsoleTurnAuthorityTag(ctx); }
+/** Whether an approval ANSWER (eve's response-policy context) belongs to a bound console card.
+ *  The person who answered is `ctx.response.principal`; the session's pinned opener is
+ *  `ctx.session.initiator`. */
 export function isExactApprovalResponse(ctx: unknown): boolean {
-  const c = ctx as { responder?: unknown; session?: { initiator?: unknown } };
-  return hasConsoleTurnAuthorityTag({session:{auth:{current:c?.responder,initiator:c?.session?.initiator}}});
+  const c = ctx as { response?: { principal?: unknown }; session?: { initiator?: unknown } };
+  return hasConsoleTurnAuthorityTag({session:{auth:{current:c?.response?.principal,initiator:c?.session?.initiator}}});
 }
 /** Fresh effective board plus APPLIED valid definition. No session or 30-second board cache.
  * These share locks last through a caller's transaction; a standalone policy read is a snapshot.
@@ -131,7 +134,8 @@ export async function reserveExactApprovalOrDeny(ctx: ConsoleAuthorityContext & 
   try { await reserveExactApproval(ctx,tool,o); return null; }
   catch (error) { return { type: 'denied', reason: error instanceof ApprovalRefusal ? error.message : NOT_PREPARED }; }
 }
-/** input.requested is the first framework event that contains requestId. Strict failures throw. */
+/** `interaction.opened` is the first framework event that names the card (`interactionId`, stored as the
+ * request id). Strict failures throw. */
 export async function attachExactApproval(a: {requestId:string;callId:string;tool:string;input:unknown}, db: AuthorityDatabase = getPool()): Promise<void> {
   const row = await rowForCall(db,a.callId);
   if (row.tool !== a.tool || row.payload_hash !== payloadFingerprint(a.tool,a.input)) refuse();
@@ -139,43 +143,100 @@ export async function attachExactApproval(a: {requestId:string;callId:string;too
     AND (request_id IS NULL OR request_id=$2) RETURNING request_id`,[a.callId,a.requestId]);
   if (rows.length !== 1) refuse();
 }
+/** What eve's response policy hands over (`ApprovalResponseContext`), as far as this file reads it. */
 export interface ExactResponseContext {
-  request: {requestId:string;callId:string;toolName:string;toolInput?:unknown}; responder: unknown;
+  request: {interactionId:string;callId:string;toolName:string;toolInput?:unknown};
+  response: {decision:'approve'|'deny'; principal: unknown};
   session: {id:string;initiator:unknown;turn?:unknown};
 }
-/** The actual responder is authenticated independently. Never borrow session.initiator. */
+/** The actual responder is authenticated independently. Never borrow session.initiator.
+ *
+ * eve 1.0 asks this policy about a DENY as well as an APPROVE. The rule is one rule: only the
+ * person who may approve this card may deny it. Every check below runs for both; they differ in
+ * exactly two ways. The option the console named must match the decision eve is acting on, and a
+ * Deny writes nothing (no approval is recorded; `settleExactInput` records the Deny when eve
+ * settles the card). A Deny from anyone else is refused exactly like their Approve, the card stays
+ * pending, and nothing is recorded. A decision that is neither `approve` nor `deny` is refused. */
 export async function approveExactResponse(ctx: ExactResponseContext, o: ExactApprovalOptions = {}): Promise<{status:'allowed'}> {
+  const decision = ctx.response?.decision;
+  if (decision !== 'approve' && decision !== 'deny') refuse();
   supported(ctx.request.toolName,o);
   const db = database(o), row = await rowForCall(db,ctx.request.callId);
   const r = exact(row,ctx.request.toolName,ctx.request.toolInput,o);
-  const responder = consoleAdmission(ctx.responder), initial = consoleAdmission(ctx.session.initiator), answered = exactResolverAdmission(ctx.responder);
-  if (!row.request_id || row.request_id !== ctx.request.requestId || !responder || responder.purpose !== 'resolver' ||
-      answered?.requestId !== row.request_id || answered.optionId !== 'approve' ||
+  const principal = ctx.response.principal;
+  const responder = consoleAdmission(principal), initial = consoleAdmission(ctx.session.initiator), answered = exactResolverAdmission(principal);
+  if (!row.request_id || row.request_id !== ctx.request.interactionId || !responder || responder.purpose !== 'resolver' ||
+      answered?.requestId !== row.request_id || answered.optionId !== decision ||
       !initial || initial.purpose !== 'human' || initial.memberId !== responder.memberId || initial.admissionNonce !== responder.admissionNonce ||
-      (row.outcome !== null && row.outcome !== 'approved')) refuse();
+      (decision === 'approve' ? (row.outcome !== null && row.outcome !== 'approved') : row.outcome !== null)) refuse();
   await current(r,responder!.memberId,responder!.admissionNonce,ctx.session.id,ctx.request.toolName,ctx.request.toolInput,o,
-    {toolName:ctx.request.toolName,session:{id:ctx.session.id,turn:ctx.session.turn as never,auth:{current:ctx.responder,initiator:ctx.session.initiator}}} as ConsoleAuthorityContext);
+    {toolName:ctx.request.toolName,session:{id:ctx.session.id,turn:ctx.session.turn as never,auth:{current:principal,initiator:ctx.session.initiator}}} as ConsoleAuthorityContext);
+  if (decision === 'deny') return {status:'allowed'};
   const result = await db.query(`UPDATE approval_asks SET outcome='approved',answered_at=COALESCE(answered_at,now()),
     answered_via='console',resolved_by_member_id=$3 WHERE call_id=$1 AND request_id=$2 AND original_authority IS NOT NULL
     AND (outcome IS NULL OR (outcome='approved' AND resolved_by_member_id=$3)) RETURNING call_id`,[row.call_id,row.request_id,responder!.memberId]);
   if (result.rows.length !== 1) refuse();
   return {status:'allowed'};
 }
-/** Exact call only. Returns provenance without mutating session.auth or conferring fresh-human authority. */
+/**
+ * WHO IS WHO ON eve 1.0. An approved call runs, and its request policy is asked again before it,
+ * as the person who ASKED: `ctx.session.auth.current` is the requester, never the person who
+ * answered (`docs/tools/human-in-the-loop.md`, "Act as the approver"; `harness/hitl/approved-calls.js`
+ * runs the call with the requester's context). The answerer is only `ctx.approval.responder`, and it
+ * exists only while the approved call runs. The policy RE-CHECK before it sees no responder at all.
+ * So this file never looks for the answerer in `session.auth.current`:
+ *   - at execution: `requireApprovedExecution` reads the answerer from `ctx.approval.responder`;
+ *     a missing or unverifiable responder means NOT approved;
+ *   - at the re-check: `requireApprovedRecheck` has no responder to read, so it relies on the card
+ *     the response policy wrote (`outcome = 'approved'`, `resolved_by_member_id`), which only
+ *     `approveExactResponse` writes after verifying the authenticated resolver.
+ */
+
+/** The framework's own mark on a policy context during the re-check before an approved call runs
+ *  (`dist/src/approval/evaluation.js`, `Symbol.for("eve.approval-evaluation")`). Pinned by a test
+ *  that drives the real `evaluateApproval`. Anything else is a first request. */
+export function isApprovalRecheck(ctx: unknown): boolean {
+  const mark = (ctx as Record<symbol, { recheck?: unknown } | undefined> | null | undefined)?.[Symbol.for('eve.approval-evaluation')];
+  return mark?.recheck === true;
+}
+/** The person who approved the call that is running, as eve gives it to the tool (`ctx.approval.responder`). */
+export function approvalResponderOf(ctx: unknown): unknown {
+  return (ctx as { approval?: { responder?: unknown } } | null | undefined)?.approval?.responder;
+}
+/** The requester's human admission and the pinned initiator's must be the same member and admission. */
+function humanRequester(ctx: ConsoleAuthorityContext) {
+  const requester = consoleAdmission(ctx.session?.auth?.current), initial = consoleAdmission(ctx.session?.auth?.initiator);
+  if (!requester || requester.purpose !== 'human' || !initial || initial.purpose !== 'human' ||
+      initial.memberId !== requester.memberId || initial.admissionNonce !== requester.admissionNonce) refuse();
+  return requester!;
+}
+/** Exact call only, at execution. Returns provenance without mutating session.auth or conferring fresh-human authority.
+ *  The answerer must be `ctx.approval.responder`: an authenticated resolver admission for this card, naming Approve,
+ *  of the very member (and admission) who asked. */
 export async function requireApprovedExecution(ctx: ConsoleAuthorityContext, tool: string, input: unknown, o: ExactApprovalOptions = {}): Promise<ApprovedExecution> {
   supported(tool,o);
   const row = await rowForCall(database(o),callIdFrom(ctx) ?? ''), r = exact(row,tool,input,o);
-  const responder = consoleAdmission(ctx.session?.auth?.current), initial = consoleAdmission(ctx.session?.auth?.initiator);
+  const requester = humanRequester(ctx);
+  const answer = approvalResponderOf(ctx), responder = consoleAdmission(answer), answered = exactResolverAdmission(answer);
   // Cards raised in one step settle together under the last answer, so this answer may name a
-  // sibling card. Each call still needs its own approved row. A cancel never runs anything.
+  // sibling card. Each call still needs its own approved row. A Deny never runs anything.
   if (!row.request_id || row.outcome !== 'approved' || !responder || responder.purpose !== 'resolver' ||
-      exactResolverAdmission(ctx.session?.auth?.current)?.optionId !== 'approve' ||
-      row.resolved_by_member_id !== responder.memberId || !initial || initial.purpose !== 'human' ||
-      initial.memberId !== responder.memberId || initial.admissionNonce !== responder.admissionNonce) refuse();
+      answered?.requestId !== row.request_id || answered.optionId !== 'approve' ||
+      row.resolved_by_member_id !== responder.memberId ||
+      requester.memberId !== responder.memberId || requester.admissionNonce !== responder.admissionNonce) refuse();
   await current(r,responder!.memberId,responder!.admissionNonce,ctx.session?.id ?? '',tool,input,o,ctx);
   return {authority:{...r.original,origin:'approval-resume',actingMemberId:r.original.actingMemberId!,
     resolvedByMemberId:responder!.memberId,requestId:row.request_id!},target:r.target,
     callId:row.call_id,toolName:row.tool,payloadHash:row.payload_hash};
+}
+/** The re-check before an approved call runs: the call must already be approved by the requester, on the
+ *  card the response policy wrote. It sees no responder, so it checks the stored card, not the context. */
+export async function requireApprovedRecheck(ctx: ConsoleAuthorityContext & {callId?:string}, tool: string, input: unknown, o: ExactApprovalOptions = {}): Promise<void> {
+  supported(tool,o);
+  const row = await rowForCall(database(o),callIdFrom(ctx) ?? ''), r = exact(row,tool,input,o);
+  const requester = humanRequester(ctx);
+  if (!row.request_id || row.outcome !== 'approved' || row.resolved_by_member_id !== requester.memberId) refuse();
+  await current(r,requester.memberId,requester.admissionNonce,ctx.session?.id ?? '',tool,input,o,ctx);
 }
 /** Trusted broker seam. Identity comes from the signed runtime and the current session binding;
  * approval comes only from the immutable ask and its independently authenticated resolver.

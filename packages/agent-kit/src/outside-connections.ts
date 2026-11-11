@@ -1,10 +1,10 @@
 // Accepted outside tools execute only through Keeper; no agent-side provider or token access.
-import { defineTool, defineDurableCallback, type ToolContext } from "eve/tools";
+import { defineTool, type ToolContext } from "eve/tools";
 
 import type { ApprovalContext, ApprovalResponseContext, ApprovalResponseDecision, ApprovalStatus } from "eve/tools/approval";
 
 import type { AgentDefinition, OutsideToolDeclaration } from "./definition.js";
-import { registerOutsideConnections } from "./approval-summary.js";
+import { registerOutsideConnections, withCardTitle } from "./approval-summary.js";
 import { outsideToolsInEffect } from "./outside-tools.js";
 import { asksAfterUntrustedText } from "./tainted-approval.js";
 import type { Taint } from "./origin-taint.js";
@@ -82,6 +82,14 @@ export function outsideRequestPolicy(
  * fail-closed direction: anything that is not clearly an allowed principal is rejected and the
  * request stays pending.
  *
+ * ASKED ABOUT A DENY TOO. eve 1.0 runs this policy for `decision: "deny"` as well as `"approve"`
+ * (`dist/src/harness/hitl/responders.js`: the policy gets `response: { decision, principal }`). The
+ * rule is one rule: only a person who may approve may deny. A Deny from anyone else is rejected
+ * exactly like their Approve, the request stays pending, and nothing is recorded as a decision. A
+ * decision that is neither is rejected.
+ *
+ * The person who answered is `ctx.response.principal` (it was `ctx.responder`).
+ *
  * TELEGRAM: eve refuses a responder with no identity before this runs. eve 1.0's own Telegram
  * channel resumes a button tap WITH the tapper's identity, and the chief of staff's webhook front
  * door refuses a tap by anyone who is not an allowed approver before it reaches eve
@@ -95,7 +103,8 @@ export function outsideResponsePolicy(
   return (ctx) => {
     let allowed = false;
     try {
-      allowed = isAllowedApprover(ctx.responder);
+      const decision = ctx?.response?.decision;
+      allowed = (decision === "approve" || decision === "deny") && isAllowedApprover(ctx.response.principal) === true;
     } catch {
       allowed = false;
     }
@@ -105,9 +114,9 @@ export function outsideResponsePolicy(
 
 // ─── Taint ─────────────────────────────────────────────────────────────────────────────────
 
-/** eve's built-in tool the model uses to find a connection's tools. Its output carries the server's
- *  own tool descriptions, which are outside text. */
-export const CONNECTION_SEARCH_TOOL = "connection_search";
+/** eve's built-in tool the model uses to find a connection's tools (it was `connection_search`). Its
+ *  output carries the server's own tool descriptions, which are outside text. */
+export const CONNECTION_SEARCH_TOOL = "eve__search";
 
 /**
  * The class a tool result from an outside tool taints the turn at, or undefined for none. Results of
@@ -201,22 +210,30 @@ export interface AcceptedOutsideTool { name:string; description?:string; inputSc
 export interface OutsideRuntimeDeps {
   acceptedTools:(connectionName:string)=>Promise<AcceptedOutsideTool[]>;
   approval?:(connectionName:string,toolName:string)=>{request:(ctx:ApprovalContext)=>Promise<ApprovalStatus>;response:(ctx:ApprovalResponseContext)=>Promise<ApprovalResponseDecision>};
-  /** Role-owned durable executor; its authority comes from the admitted-turn hook. */
+  /** Role-owned executor; its authority comes from the admitted-turn hook. */
   executor:(connectionName:string,toolName:string)=>(input:unknown,ctx:ToolContext)=>Promise<unknown>;
 }
 
 /** Ordinary Eve tools using the accepted catalog. The Keeper independently requires an exact,
- * current, unused receipt on execution. An Eve approval card alone never grants that authority. */
+ * current, unused receipt on execution. An Eve approval card alone never grants that authority.
+ *
+ * Every tool here is gated: `approval` is ALWAYS the object form, with the role's request and
+ * response policies when it supplied them, and the card title (`prompt`) added. The model may reach
+ * one of these by its own name or through `eve__tool`; either way eve shows the policies the entry's
+ * own name, so the tainted-approval and exact-approval rules apply to both routes. */
 export async function resolveOutsideTools(definition:OutsideDefinitionView,deps:OutsideRuntimeDeps){
   const tools:Record<string,ReturnType<typeof defineTool>>={};
   for(const entry of outsideToolsInEffect(definition)){
+    // `eve` and the `eve__` prefix are eve's own; a tool or connection under that name is refused.
+    if(entry.name==='eve'||entry.name.startsWith('eve__'))continue;
     let accepted:AcceptedOutsideTool[];
     try{accepted=await deps.acceptedTools(entry.name);}catch{continue;}
     registerOutsideConnections([entry.name]);
     for(const tool of accepted){
       if(!entry.tools.allow.includes(tool.name))continue;
+      const authored=deps.approval?.(entry.name,tool.name)??{request:async()=> 'user-approval' as const};
       tools[`${entry.name}__${tool.name}`]=defineTool({description:tool.description??'',inputSchema:tool.inputSchema,
-        approval:deps.approval?.(entry.name,tool.name)??defineDurableCallback({closure:{},callback:()=> 'user-approval' as const}),execute:deps.executor(entry.name,tool.name)});
+        approval:withCardTitle(authored),execute:deps.executor(entry.name,tool.name)});
     }
   }
   return Object.keys(tools).length?tools:null;

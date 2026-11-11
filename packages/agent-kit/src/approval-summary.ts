@@ -1,16 +1,20 @@
 /**
  * Human-readable approval-card titles for every gated tool.
  *
- * eve builds an approval card's title in `dist/src/harness/input-extraction.js` as the bare
- * string `Approve tool call: <toolName>`, derived from the tool NAME alone — there is no
- * per-tool label or description hook in the 0.32 approval API (`Approval` is a policy
- * function returning a decision, nothing more). So the only thing distinguishing "send this
- * email to a customer" from "delete this calendar event" on the card itself was the tool
- * name, with the actual arguments relegated to a collapsed raw-JSON block.
+ * eve titles an approval card `Approve <tool label>?` from the tool NAME alone, so on its own the
+ * only thing distinguishing "send this email to a customer" from "delete this calendar event" on the
+ * card itself is the tool name, with the actual arguments relegated to a collapsed raw-JSON block.
  *
- * `patches/eve.patch` makes that one line consult this module instead, falling back to eve's
- * original string. All semantics live HERE, in our code, so the patch stays a single
- * expression and survives an eve upgrade with minimal re-derivation.
+ * eve 1.0 has a supported place for a better title: the OBJECT form of a tool's `approval`,
+ * `{ request, response?, prompt }`, where `prompt({ callId, input, toolName })` returns the title
+ * (`ApprovalConfiguration`). {@link cardTitle} is that `prompt` for every gated Lares tool. It
+ * replaces the framework patch that used to edit eve's own title line. All semantics live HERE, in
+ * our code. Two eve rules shape it:
+ *   - `prompt` is only read when `approval` is the object form. A bare policy function gets eve's
+ *     default title, so every gated tool must be wrapped (`withCardTitle`).
+ *   - `prompt` must return a string or `undefined`; anything else makes eve throw
+ *     `approval prompt must return a string`, with nothing catching it. {@link cardTitle} therefore
+ *     never throws and never returns anything else.
  *
  * Two invariants this module must never break, because it renders the last thing a human
  * reads before authorising a write:
@@ -709,6 +713,51 @@ export function detailsForApproval(
   }
 }
 
+/** The owner's timezone reader that `registerApprovalSummary` installed; the card title reads it. */
+let registeredTz: (() => string) | undefined;
+
+/**
+ * The `prompt` for an approval card: the title {@link summarizeApproval} writes, or `undefined`
+ * (eve then shows its own default title). NEVER THROWS and never returns anything but a string or
+ * `undefined` — eve calls it with nothing around it.
+ *
+ * A tool with a dedicated formatter gets its dedicated title; an outside tool gets the outside-tool
+ * title; any other gated tool gets the generic "name — first fields" title, which is never worse
+ * than eve's default.
+ */
+export function cardTitle(context: { callId?: unknown; input?: unknown; toolName?: unknown }): string | undefined {
+  try {
+    if (typeof context?.toolName !== "string" || context.toolName === "") return undefined;
+    let tz = defaultCardTz();
+    try {
+      const t = registeredTz?.();
+      if (typeof t === "string" && t.trim() !== "") tz = t;
+    } catch {
+      /* the home clock is a small wrongness; a card that failed to render is an outage */
+    }
+    const title = summarizeApproval(context?.toolName, context?.input, tz);
+    return typeof title === "string" && title !== "" ? title : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A tool's `approval` in the object form eve needs to show {@link cardTitle}. A bare policy
+ * function becomes `{ request: fn, prompt }`; an object keeps its `request` and `response` and
+ * gets the `prompt`. An object that already has a `prompt` of its own keeps it.
+ *
+ * The result is typed `never`-loose on purpose: eve's `Approval<TInput>` is invariant in the tool's
+ * input type (see `ResolvableTool` in `./manifest.ts`), and `prompt` is declared `=> string` while
+ * eve accepts `undefined` at run time (it only throws for a non-string, non-undefined value).
+ */
+export function withCardTitle(approval: unknown): never {
+  const base = typeof approval === "function"
+    ? { request: approval }
+    : typeof approval === "object" && approval !== null ? (approval as Record<string, unknown>) : { request: () => "user-approval" };
+  return { ...base, prompt: typeof base["prompt"] === "function" ? base["prompt"] : cardTitle } as never;
+}
+
 declare global {
   // eslint-disable-next-line no-var
   var __eveApprovalSummary: ((toolName: unknown, input: unknown) => string | undefined) | undefined;
@@ -718,10 +767,11 @@ declare global {
   var __eveApprovalDetails: ((toolName: unknown, input: unknown) => string | undefined) | undefined;
 }
 
-/** Publish the formatters where the eve patch can reach them. Called once at server startup,
- *  before any turn runs, from `agent/instrumentation.ts`. A global is the seam because the
- *  patch edits COMPILED framework code that cannot import from our workspace. If this is
- *  never called — other workspace members share this patch — eve keeps its original cards. */
+/** Publish the formatters. Called once at server startup, before any turn runs, from
+ *  `agent/instrumentation.ts`. It installs the owner's clock for {@link cardTitle} and, for the
+ *  framework patch that draws the Telegram and Slack cards (which edits COMPILED framework code that
+ *  cannot import from our workspace), the globals `__eveApprovalDetails` / `__eveApprovalCovers` /
+ *  `__eveApprovalSummary`. Without a call, cards keep eve's own titles. */
 export interface ApprovalSummaryOptions {
   /**
    * The OWNER's timezone at render time. SYNCHRONOUS, because eve's card
@@ -743,6 +793,7 @@ export function registerApprovalSummary(opts: ApprovalSummaryOptions = {}): void
       return defaultCardTz();
     }
   };
+  registeredTz = tz;
   globalThis.__eveApprovalSummary = (toolName, input) => summarizeApproval(toolName, input, tz());
   globalThis.__eveApprovalCovers = coversApproval;
   globalThis.__eveApprovalDetails = detailsForApproval;

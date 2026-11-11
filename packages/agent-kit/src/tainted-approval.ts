@@ -16,12 +16,10 @@
  * where it has gets one card per call, naming the whole address
  * (`approval-summary.ts`'s `read_url` formatter).
  *
- * WHY THE POLICY AND NOT THE TOOL. The taint is per TURN, and a turn parked on an approval card
- * does not stay open: the harness emits its epilogue at the park point and the continuation
- * arrives as a brand-new turn id (`origin-taint.ts`'s `TAINT_MAX_AGE_MS` docblock). The taint is
- * therefore NOT readable inside an approved tool's `execute` — by the time the owner has tapped,
- * the turn that read the mail is over. An approval policy runs in the ORIGINAL turn, before the
- * park, which is the only place this question can still be asked.
+ * WHY THE POLICY AND NOT THE TOOL. The question has to be asked BEFORE the fetch is allowed, and
+ * only an approval policy runs before the card is raised. On eve 1.0 the turn that parked on a card
+ * keeps its turn id when the owner answers, so the taint IS still readable afterwards; the policy
+ * is still the place, because it is the one step that can turn the fetch into a card at all.
  *
  * THE TAINT IS READ, NEVER RE-DERIVED. "Tainted" means exactly what the origin model records: an entry
  * in `origin-taint.ts`'s per-turn map, written by `agent/hooks/origin-taint.ts` on a tool result
@@ -34,11 +32,11 @@
  * unattributable fetch is precisely the state an attacker would engineer, so it never gets the
  * benefit of the doubt. The cost of being wrong in this direction is one tap.
  *
- * A FUNCTION, NOT eve's `{request, response}` OBJECT. Each role's `agent/tools/catalogue.ts`
- * re-stamps a durable approval descriptor by CALLING `tool.approval`
- * (`(valueOf(name).approval as (...a) => unknown)(...args)`), so an object here would be called
- * as a function and eve would drop the whole resolver result — the incident where a role went
- * from 77 tools to 4 with every build green.
+ * A FUNCTION, WRAPPED BY THE CALLER. This returns the bare request policy. A role's
+ * `agent/tools/catalogue.ts` calls `tool.approval` as a function (`catalogueApprovalRequest`), then
+ * wraps the result in eve's object form with the card title (`withCardTitle`), so an object here
+ * would be called as a function and eve would drop the whole resolver result — the incident where a
+ * role went from 77 tools to 4 with every build green.
  *
  * MODULE SCOPE IS INERT: `eve build` evaluates every module with no secrets and no database.
  */

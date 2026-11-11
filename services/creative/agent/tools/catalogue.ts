@@ -3,49 +3,34 @@ import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
 import { catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution } from "../../lib/approvals.js";
 // The one seam that turns a definition into a toolset (ADR-0015 rule 4).
 //
-// `session.started`, never `turn.started`: the tool list is part of what the prompt cache keys
-// on, and changing it mid-session re-bills the whole conversation. A grant change therefore
-// reaches the agent at its NEXT conversation — which the builder says out loud (ADR-0015).
+// DECIDED ONCE PER CONVERSATION. The tool list is part of what the prompt cache keys on, and
+// changing it mid-session re-bills the whole conversation. eve 1.0 runs this function before EVERY
+// model call, so the decision (which tools, and whether the conversation is a bound console one)
+// is saved with `ctx.memo` under the session id: it runs once, in any process, and a later
+// evaluation gets the saved answer. A grant change therefore reaches the agent at its NEXT
+// conversation — which the builder says out loud (ADR-0015). The memo holds plain JSON (tool
+// names and one flag); the tools and their callbacks are rebuilt from it each time with ordinary
+// code, so there is nothing to register for a fresh process (the old durable wrappers are gone).
 //
-// EVERY CALLBACK BELOW CARRIES A DURABLE DESCRIPTOR, AND THAT IS NOT OPTIONAL (eve 0.59.0+).
-// eve refuses a dynamic tool whose `execute`, approval policy or live (zod) `inputSchema` it
-// cannot rebuild in a fresh process, and it refuses the WHOLE resolver result when a single
-// entry fails — one unstamped tool would leave this agent with no catalogue at all, silently,
-// with only a log line. Two things can produce a descriptor: eve's compiler transform, which
-// rewrites inline callbacks in AUTHORED source, and the public helpers `defineDurableCallback` /
-// `defineDurableSchema` (`eve/tools`). The transform cannot help here — it only rewrites a
-// `defineTool(<object literal>)` call (`eve/dist/src/internal/workflow-bundle/
-// dynamic-tool-transform.js` requires `arguments[0].type === "ObjectExpression"`), and the
-// literal below is cast `as never` for the typing reason the `CatalogueToolValue` docblock gives;
-// it also never sees a callback reached through a conditional spread, which is how an approval
-// gets here. So each phase is stamped explicitly, with the same closure the old inline code relied
-// on: `{ name }`, one plain string, re-reading the module-level CATALOGUE when it runs.
-// See node_modules/eve/docs/guides/dynamic-capabilities.md, "Create dynamic tools in a package".
-//
-// THE APPROVAL IS COPIED ACROSS, AND THAT LINE IS LOAD-BEARING. Measurement showed that a
-// resolver-emitted tool REPLACES an authored `agent/tools/<name>.ts` completely — description,
-// executor and approval (eve 0.32). Omit the
-// spread below and `vault_write`, the creative agent's one gated tool, commits and pushes to the Atlas
-// with no card. eve's own `DynamicToolEntry` docstring claims approval is "only honored for
-// step-scoped dynamic tools"; that comment is stale for 0.32 — `dynamic-tool-lifecycle.js`
-// registers a session-scoped entry's approval as a durable step function
-// (`eve:dynamic-tool-approval:<slug>:<key>`) and `build-dynamic-tools.js`'s `buildReplayedApproval`
-// rebuilds it on replay, defaulting to "user-approval" if the step is missing. Measured, not read:
-// packages/board-evals/evals/replay.eval.ts drives this exact shape through autonomous -> no card
-// -> runs and gated -> card -> approve -> runs. The autonomous half is what discriminates: a lost
-// approval would ALSO produce a card, so only a case where the card must NOT appear can tell the
-// tool's own approval from eve's ask-by-default fallback.
-import { defineDurableCallback, defineDurableSchema, defineDynamic, defineTool } from "eve/tools";
-import { registerDurableDynamicTools } from "@lares/agent-kit/durable-dynamic-tools";
+// THE APPROVAL IS COPIED ACROSS, AND THAT LINE IS LOAD-BEARING. A resolver-emitted tool REPLACES an
+// authored `agent/tools/<name>.ts` completely — description, executor and approval. Omit the
+// approval below and `vault_write`, the creative agent's one gated tool, commits and pushes to the
+// Atlas with no card. A tool that authored no approval gets none; one that did gets the object form
+// `{ request, response?, prompt }`:
+//   - `request` is the authored policy through `catalogueApprovalRequest`;
+//   - `response` is on every gated tool, and eve asks it about a Deny as well as an Approve: in a
+//     bound console conversation it is the exact check, on a native door it refuses a card with no
+//     requester and anyone who is not an allowed approver — only the person who may approve may deny;
+//   - `prompt` is the card title (`cardTitle`, never throws), because eve only reads a `prompt`
+//     from the object form.
+// `guardCatalogueExecution` runs before every catalogue call, whoever approved it.
+import { defineDynamic, defineTool } from "eve/tools";
+import { withCardTitle } from "@lares/agent-kit/approval-summary";
 
 import { grantedToolNames } from "@lares/agent-kit/catalogue";
 
 import { CATALOGUE } from "../../catalogue/index.js";
 import { thisAgent } from "../../lib/definition.js";
-
-/** Only the field this resolver needs off eve's `DynamicResolveContext`. Optional-chained for the
- *  same reason the instructions resolver's is (agent/instructions/aa-definition.ts). */
-interface ResolveCtx { readonly session?: { readonly id?: string } }
 
 /** The four fields the resolver reads off a catalogue tool. `CatalogueEntry.tool` is typed as the
  *  kit's structural `ResolvableTool` — description + approval only — because eve's `Approval<…>`
@@ -62,72 +47,44 @@ interface CatalogueToolValue {
 const valueOf = (name: string): CatalogueToolValue =>
   CATALOGUE[name]!.tool as unknown as CatalogueToolValue;
 
-registerDurableDynamicTools("catalogue", Object.fromEntries(
-  Object.keys(CATALOGUE).map(name => [name, valueOf(name)]),
-));
+/** What the resolver decides once per conversation: plain JSON, so `ctx.memo` can keep it. */
+interface CatalogueDecision { readonly names: readonly string[] }
 
-export default defineDynamic({
-  events: {
-    // The session id pins ONE read of the definition for this whole conversation — the persona,
-    // the model, the approval fallback and this tool list all resolve from it (lib/definition.ts).
-    "session.started": async (_event: unknown, ctx?: ResolveCtx) => {
-      const privateSession = await verifyPrivateConsoleSession(ctx);
-      const { loaded } = await thisAgent(ctx?.session?.id);
-      const names = grantedToolNames(CATALOGUE, loaded.definition).filter(name => !privateSession || privateToolAllowed("creative", name));
-      // Eve requires authenticated button responses whenever this descriptor exists.
-      // Native Telegram deliberately resumes with auth:null; its legacy executor check stays
-      // authoritative. Bound console sessions retain their tagged initiator on cold replay.
-      const exactApproval = isExactApprovalContext(ctx);
-      return Object.fromEntries(
-        names.map((name) => {
-          const tool = valueOf(name);
-          return [
-            name,
-            defineTool({
-              description: tool.description,
-              // The SAME validator, behind a factory eve can re-run. `defineDurableSchema` returns
-              // a delegating view whose prototype IS the authored schema and whose JSON Schema is
-              // serialized from it, so what the model is handed does not change; a plain JSON
-              // Schema (no validator) is returned untouched and needs no descriptor at all.
-              inputSchema: defineDurableSchema({
-                closure: { name },
-                schema: (closure) => valueOf(closure.name).inputSchema as Record<string, unknown>,
-              }),
-              // Untouched: the approval is whatever the tool itself authored, which since
-              // the permissions board bound to that tool's own name, decided per call.
-              // Wrapped, never replaced — the call below IS the authored policy, same arguments,
-              // same answer; the wrapper exists only so eve can find it again after a restart.
-              ...(tool.approval !== undefined
-                ? {
-                    approval: {
-                      request: defineDurableCallback({
-                        closure: { name },
-                        callback: async (closure: { name: string }, ctx: unknown) =>
-                          catalogueApprovalRequest(closure.name,ctx,valueOf(closure.name).approval),
-                      }),
-                      ...(exactApproval ? {
-                        response: defineDurableCallback({
-                          closure: { name },
-                          callback: async (closure: { name: string }, ctx: unknown) =>
-                            catalogueApprovalResponse(closure.name,ctx),
-                        }),
-                      } : {}),
-                    },
-                  }
-                : {}),
-              // Reaching the module-level `CATALOGUE` through the captured string `name` — the one
-              // value that has to survive a cold start. See this file's header before changing it.
-              execute: defineDurableCallback({
-                closure: { name },
-                callback: async (closure: { name: string }, input: unknown, toolCtx: unknown) => {
-                  await guardCatalogueExecution(toolCtx,closure.name,input);
-                  return valueOf(closure.name).execute(input, toolCtx);
-                },
-              }),
-            } as never),
-          ];
-        }),
-      );
-    },
-  },
+export default defineDynamic(async (ctx) => {
+  // The session id pins ONE read of the definition for this whole conversation — the persona,
+  // the model, the approval fallback and this tool list all resolve from it (lib/definition.ts).
+  // The key says which kind of conversation this is, so a session id that is later seen as a bound
+  // console conversation (or the reverse) never reuses the other kind's tool list.
+  const decided: CatalogueDecision = await ctx.memo(["catalogue", ctx.session.id, isExactApprovalContext(ctx)], async () => {
+    const privateSession = await verifyPrivateConsoleSession(ctx);
+    const { loaded } = await thisAgent(ctx.session.id);
+    const names = grantedToolNames(CATALOGUE, loaded.definition).filter(name => !privateSession || privateToolAllowed("creative", name));
+    return { names };
+  });
+  return Object.fromEntries(
+    decided.names.map((name) => {
+      const tool = valueOf(name);
+      return [
+        name,
+        defineTool({
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          // The approval is whatever the tool itself authored — the permissions board bound to that
+          // tool's own name, decided per call — wrapped in the object form so the card has a title.
+          ...(tool.approval !== undefined
+            ? {
+                approval: withCardTitle({
+                  request: async (approvalCtx: unknown) => catalogueApprovalRequest(name, approvalCtx, tool.approval),
+                  response: async (responseCtx: unknown) => catalogueApprovalResponse(name, responseCtx),
+                }),
+              }
+            : {}),
+          execute: async (input: unknown, toolCtx: unknown) => {
+            await guardCatalogueExecution(toolCtx,name,input);
+            return tool.execute(input, toolCtx);
+          },
+        } as never),
+      ];
+    }),
+  );
 });

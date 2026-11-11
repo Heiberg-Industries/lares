@@ -4,7 +4,7 @@
 // area is in Keeper custody, so the card is reserved here against the note's current bytes and
 // Keeper writes the file, rechecking the card, the grant and those bytes, and using the card once.
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
-import { ApprovalRefusal, type ApprovedExecution, type ExactApprovalAdapter } from '@lares/agent-kit/approval-execution';
+import { ApprovalRefusal, approvalResponderOf, type ApprovedExecution, type ExactApprovalAdapter } from '@lares/agent-kit/approval-execution';
 import type { AuthorityDatabase } from '@lares/agent-kit/console-turn-authority';
 import { consoleAdmission } from '@lares/agent-kit/console-turn-authority';
 import { parseDefinition } from '@lares/agent-kit/definition';
@@ -68,7 +68,7 @@ export const vaultNoteApprovalAdapter: ExactApprovalAdapter = {
 
 /** The one approved write. Keeper rechecks the persisted card, the private edit grant and the note. */
 export async function writeApprovedConsoleNote(ctx: NoteContext, approved: ApprovedExecution, input: unknown): Promise<unknown> {
-  const session = ctx.session, admission = consoleAdmission(session?.auth?.current);
+  const session = ctx.session, admission = consoleAdmission(approvalResponderOf(ctx));
   if (!session?.id || !admission || admission.purpose !== 'resolver' || approved.toolName !== VAULT_NOTE_WRITE_TOOL ||
       approved.authority.origin !== 'approval-resume' || approved.authority.sessionId !== session.id ||
       approved.authority.actingMemberId !== admission.memberId || approved.authority.resolvedByMemberId !== admission.memberId)

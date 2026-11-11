@@ -20,7 +20,7 @@ const deny=()=>new Error('Model purpose authority is not available');
 export type ModelPurposeRequest={
   agent:string;incarnation:string;session:string;member:string;admissionNonce:string;
   method:'POST';path:string;rawBodyHash:string;policyRevision:number;definitionHash:string;
-  purpose:'human'|'resume';requestId:string;resume?:{requestId:string;optionId:'approve'|'cancel'};
+  purpose:'human'|'resume';requestId:string;resume?:{requestId:string;optionId:'approve'|'deny'};
 };
 export type ModelPurposeReceipt=Pick<ModelPurposeRequest,'method'|'path'|'rawBodyHash'> & Partial<Pick<ModelPurposeRequest,'requestId'|'purpose'|'resume'>>;
 export type ModelPurposeTurnInput={pendingReceipt:string;context:ConsoleAuthorityContext};
@@ -48,7 +48,7 @@ export { modelPurposeDigest, modelPurposeMac };
 function equalMac(given:unknown,expected:Buffer):boolean{return modelPurposeEqualMac(given,expected);}
 function requestIsValid(value:unknown):value is ModelPurposeRequest{
   if(!value||typeof value!=='object'||Array.isArray(value))return false;const x=value as ModelPurposeRequest;
-  return /^[a-z][a-z0-9-]{1,30}$/.test(x.agent)&&/^[a-f0-9-]{36}$/.test(x.incarnation)&&/^[A-Za-z0-9_-]{1,64}$/.test(x.session)&&typeof x.member==='string'&&/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(x.member)&&/^[A-Za-z0-9_-]{43}$/.test(x.admissionNonce)&&x.method==='POST'&&/^\/eve\/v1\/session(?:\/[A-Za-z0-9_-]{1,64})?$/.test(x.path)&&/^[a-f0-9]{64}$/.test(x.rawBodyHash)&&Number.isSafeInteger(x.policyRevision)&&x.policyRevision>0&&/^[a-f0-9]{64}$/.test(x.definitionHash)&&(x.purpose==='human'||x.purpose==='resume')&&/^[A-Za-z0-9_-]{32,64}$/.test(x.requestId)&&((x.purpose==='human'&&x.resume===undefined)||(x.purpose==='resume'&&!!x.resume&&typeof x.resume.requestId==='string'&&x.resume.requestId.length>0&&(x.resume.optionId==='approve'||x.resume.optionId==='cancel')));
+  return /^[a-z][a-z0-9-]{1,30}$/.test(x.agent)&&/^[a-f0-9-]{36}$/.test(x.incarnation)&&/^[A-Za-z0-9_-]{1,64}$/.test(x.session)&&typeof x.member==='string'&&/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(x.member)&&/^[A-Za-z0-9_-]{43}$/.test(x.admissionNonce)&&x.method==='POST'&&/^\/eve\/v1\/session(?:\/[A-Za-z0-9_-]{1,64})?$/.test(x.path)&&/^[a-f0-9]{64}$/.test(x.rawBodyHash)&&Number.isSafeInteger(x.policyRevision)&&x.policyRevision>0&&/^[a-f0-9]{64}$/.test(x.definitionHash)&&(x.purpose==='human'||x.purpose==='resume')&&/^[A-Za-z0-9_-]{32,64}$/.test(x.requestId)&&((x.purpose==='human'&&x.resume===undefined)||(x.purpose==='resume'&&!!x.resume&&typeof x.resume.requestId==='string'&&x.resume.requestId.length>0&&(x.resume.optionId==='approve'||x.resume.optionId==='deny')));
 }
 function validDigest(value:unknown):value is string{return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);}
 function object(value:unknown):Record<string,unknown>{if(!value||typeof value!=='object'||Array.isArray(value))throw deny();return value as Record<string,unknown>;}

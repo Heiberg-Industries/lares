@@ -17,7 +17,7 @@ const live = makeApprovalRecord();
 
 export default defineHook({
   events: {
-    "input.requested": live["input.requested"] as (event: unknown, ctx: HookContext) => Promise<void>,
-    "input.resolved": live["input.resolved"] as (event: unknown, ctx: HookContext) => Promise<void>,
+    "interaction.opened": live["interaction.opened"] as (event: unknown, ctx: HookContext) => Promise<void>,
+    "interaction.settled": live["interaction.settled"] as (event: unknown, ctx: HookContext) => Promise<void>,
   },
 });

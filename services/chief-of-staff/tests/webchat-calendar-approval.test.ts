@@ -1,5 +1,6 @@
 /** Web chat: the agent's owner changes the chosen mailbox's calendar only through an exact Approve card.
  *  Real Postgres, the real approval path (card, answer, execution), a recording stand-in for Google. */
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -20,18 +21,20 @@ import { quiet } from "./helpers/quiet-pool.js";
 const inc = "11111111-1111-4111-8111-111111111111";
 const MAILBOX = "owner@example.invalid";
 const env = { LARES_AGENT_NAME: "helper", LARES_AGENT_INCARNATION: inc };
-const auth = (purpose = "human", member = "member-a", nonce = "a".repeat(43)) => ({
+const auth = (purpose = "human", member = "member-a", nonce = "a".repeat(43), option = "approve") => ({
   authenticator: "lares-console", principalId: member, principalType: "user",
   attributes: { user_id: member, lares_member_id: member, lares_admission_nonce: nonce, lares_purpose: purpose,
-    ...(purpose === "resolver" ? { lares_resume_request_id: "request-1", lares_resume_option: "approve" } : {}) },
+    ...(purpose === "resolver" ? { lares_resume_request_id: "request-1", lares_resume_option: option } : {}) },
 });
-const context = (tool: string, raw: unknown, purpose = "human", member = "member-a") => ({
-  callId: "call-1", toolName: tool, toolInput: raw, abortSignal: new AbortController().signal, approvedTools: new Set<string>(),
-  session: { id: "wrun_exact", turn: { id: purpose === "human" ? "turn-original" : "turn-resolver", sequence: purpose === "human" ? 0 : 1 },
-    auth: { current: auth(purpose, member), initiator: auth("human", member) } },
+// eve 1.0: an approved call runs as the person who ASKED, in the ORIGINAL turn (`session.auth.current` is the
+// human requester); the person who answered is only `approval.responder`, present while the approved call runs.
+const context = (tool: string, raw: unknown, purpose = "human", member = "member-a"): any => ({
+  callId: "call-1", toolName: tool, toolInput: raw, abortSignal: new AbortController().signal,
+  session: { id: "wrun_exact", turn: { id: "turn-original", sequence: 0 }, auth: { current: auth("human", member), initiator: auth("human", member) } },
+  ...(purpose === "resolver" ? { approval: { responder: auth("resolver", member) } } : {}),
 });
-const answerCard = (tool: string, raw: unknown) => ({
-  request: { requestId: "request-1", callId: "call-1", toolName: tool, toolInput: raw }, responder: auth("resolver"),
+const answerCard = (tool: string, raw: unknown, decision: "approve" | "deny" = "approve", principal: unknown = auth("resolver", "member-a", "a".repeat(43), decision)) => ({
+  request: { interactionId: "request-1", callId: "call-1", toolName: tool, toolInput: raw }, response: { decision, principal },
   session: { id: "wrun_exact", initiator: auth(), turn: { id: "t", sequence: 1 } },
 });
 const def = { name: "helper", model: "fixture-brain", persona: "voice.md", role: "chief-of-staff", channels: [],
@@ -102,6 +105,10 @@ beforeEach(async () => {
 });
 afterEach(() => forgetChosenMailbox());
 
+/** eve's own re-check before an approved call: the real evaluateApproval with recheck on. */
+const evalUrl = pathToFileURL(fileURLToPath(new URL("../node_modules/eve/dist/src/approval/evaluation.js", import.meta.url))).href;
+const recheckOf = async (policy: (c: any) => unknown, ctx: any) => ((await import(evalUrl)) as any).evaluateApproval(policy, ctx, { recheck: true });
+
 /** The card: the request callback, then the framework's attach of the request id. */
 async function raise(tool: string, input: unknown, member = "member-a") {
   const result = await catalogueApprovalRequest(tool, context(tool, input, "human", member), () => "allow");
@@ -128,6 +135,21 @@ describe.each(CASES)("$tool in web chat", ({ tool, run, input, method }) => {
     expect(calls[0]!.params.calendarId).toBe("primary");
     if (method === "insert") expect(calls[0]!.params.requestBody).toMatchObject({ summary: "Sync", attendees: [{ email: "guest@example.invalid" }] });
     else expect(calls[0]!.params.eventId).toBe("e1");
+  });
+
+  it("runs in the original turn as the requester: the re-check passes only after Approve, and the call needs the responder", async () => {
+    const policy = (c: any) => catalogueApprovalRequest(tool, c, () => "allow");
+    await raise(tool, input);
+    expect(await recheckOf(policy, context(tool, input))).toMatchObject({ denied: true }); // not approved yet
+    await catalogueApprovalResponse(tool, answerCard(tool, input));
+    expect(await recheckOf(policy, context(tool, input))).toMatchObject({ denied: false });
+    // No approval on the run, or an answer that is not this member's approval: nothing is written.
+    await expect((run as any).execute(input, context(tool, input))).rejects.toThrow();
+    const wrongAnswer = context(tool, input, "resolver"); wrongAnswer.approval.responder = auth("resolver", "member-a", "a".repeat(43), "deny");
+    await expect((run as any).execute(input, wrongAnswer)).rejects.toThrow();
+    expect(calls).toEqual([]);
+    await (run as any).execute(input, running(tool, input));
+    expect(calls).toHaveLength(1);
   });
 
   it("writes once even when the same approved call is run again", async () => {
@@ -188,6 +210,23 @@ describe.each(CASES)("$tool in web chat", ({ tool, run, input, method }) => {
     await getPool().query("DELETE FROM agent_account_bindings");
     expect(await raise(tool, input)).toMatchObject({ type: "denied" });
     expect(await rows()).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("a Deny from anyone but the owner is refused like an Approve, and the card stays pending", async () => {
+    await raise(tool, input);
+    const refused = [
+      answerCard(tool, input, "deny", auth("resolver", "member-b", "a".repeat(43), "deny")),
+      answerCard(tool, input, "deny", auth("resolver", "member-a", "b".repeat(43), "deny")),
+      answerCard(tool, input, "deny", { authenticator: "slack-webhook", principalId: "U1", principalType: "user", attributes: { user_id: "U1" } }),
+      answerCard(tool, input, "deny", null),
+    ];
+    for (const card of refused) await expect(catalogueApprovalResponse(tool, card)).rejects.toThrow();
+    expect((await rows())[0].outcome).toBeNull();
+    // The owner's own Deny is allowed, writes no approval, and the write never happens.
+    await expect(catalogueApprovalResponse(tool, answerCard(tool, input, "deny"))).resolves.toEqual({ status: "allowed" });
+    expect((await rows())[0].outcome).toBeNull();
+    await expect((run as any).execute(input, running(tool, input))).rejects.toThrow();
     expect(calls).toEqual([]);
   });
 

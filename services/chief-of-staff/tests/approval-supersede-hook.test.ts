@@ -1,47 +1,51 @@
 import { describe, expect, it } from "vitest";
 import { makeApprovalSupersede } from "../agent/hooks/approval-supersede.js";
 import hook from "../agent/hooks/approval-supersede.js";
+import { eveSession } from "../../../packages/agent-kit/tests/helpers/eve-session.js";
 
-const card = (requestId: string, toolName: string, input: unknown) => ({
-  kind: "tool-approval",
-  requestId,
-  action: { kind: "tool-call", callId: `call-${requestId}`, toolName, input },
-});
-const event = (...requests: unknown[]) => ({ type: "input.requested", data: { requests } });
-const ctx = (turn: number) => ({ agent: { name: "fixture-agent" }, session: { id: "s1", turn: { sequence: turn } } });
+const open = (requestId: string, toolName: string, input: unknown) => {
+  const s = eveSession();
+  s.call(`call-${requestId}`, toolName, input);
+  return { event: s.open(requestId, `call-${requestId}`), view: s.view };
+};
+const ctx = (turn: number, view: unknown) => ({ agent: { name: "fixture-agent" }, session: { id: "s1", turn: { sequence: turn } }, view });
 
 describe("the approval-supersede hook", () => {
-  it("is registered for input.requested only", () => {
-    expect(Object.keys((hook as unknown as { events: object }).events)).toEqual(["input.requested"]);
+  it("is registered for interaction.opened only", () => {
+    expect(Object.keys((hook as unknown as { events: object }).events)).toEqual(["interaction.opened"]);
   });
 
   it("withdraws the older send card when a revised send arrives in a later turn", async () => {
-    const cancelled: unknown[] = [];
+    const denied: unknown[] = [];
     const h = makeApprovalSupersede({
       record: async () => undefined,
       openAsks: async () => [{ requestId: "old", tool: "gmail_send", turn: 1, targetHash: null }],
       markRevised: async () => true,
-      cancel: async (s, r) => void cancelled.push([s, r]),
+      deny: async (s, r) => void denied.push([s, r]),
+      isOpen: () => true,
     });
-    await h["input.requested"](event(card("new", "gmail_send", { to: ["a@x.example"] })), ctx(2));
-    expect(cancelled).toEqual([["s1", "old"]]);
+    const c = open("new", "gmail_send", { to: ["a@x.example"] });
+    await h["interaction.opened"](c.event, ctx(2, c.view));
+    expect(denied).toEqual([["s1", "old"]]);
   });
 
   it("leaves a card from the same turn alone", async () => {
-    const cancelled: unknown[] = [];
+    const denied: unknown[] = [];
     const h = makeApprovalSupersede({
       record: async () => undefined,
       openAsks: async () => [{ requestId: "old", tool: "gmail_send", turn: 2, targetHash: null }],
       markRevised: async () => true,
-      cancel: async (s, r) => void cancelled.push([s, r]),
+      deny: async (s, r) => void denied.push([s, r]),
+      isOpen: () => true,
     });
-    await h["input.requested"](event(card("new", "gmail_send", { to: ["a@x.example"] })), ctx(2));
-    expect(cancelled).toEqual([]);
+    const c = open("new", "gmail_send", { to: ["a@x.example"] });
+    await h["interaction.opened"](c.event, ctx(2, c.view));
+    expect(denied).toEqual([]);
   });
 
   it("never throws on an event shape it cannot read", async () => {
     const h = makeApprovalSupersede({});
-    await expect(h["input.requested"]({}, {})).resolves.toBeUndefined();
-    await expect(h["input.requested"](undefined, undefined)).resolves.toBeUndefined();
+    await expect(h["interaction.opened"]({}, {})).resolves.toBeUndefined();
+    await expect(h["interaction.opened"](undefined, undefined)).resolves.toBeUndefined();
   });
 });
