@@ -326,10 +326,17 @@ try {
 
   // eve 1.0's client has no `reset()`: a session is retired with `end()`, which is what a reset did
   // to the session being measured.
-  const resetResult = await (await one.session.end({ reason: 'session-rows-measure' })).result();
-  if (!resetResult.sessionEnded) {
-    throw new Error('Unexpected end outcome: ' + JSON.stringify(resetResult));
-  }
+  // On rc.9 the end's receipt cannot be read to its settlement: the session ends and its stream
+  // closes first, and `result()` throws "The stream ended before the accepted delivery settled."
+  // (the same behaviour the keeper's conversation reset trips over). So the end is confirmed the
+  // way that cannot be fooled: a later message to the same session must be refused.
+  const ending = await one.session.end({ reason: 'session-rows-measure' });
+  let receipt;
+  try { receipt = await ending.result(); } catch (error) { receipt = { threw: String(error?.message ?? error) }; }
+  console.log('end receipt: ' + JSON.stringify(receipt));
+  let refused = false;
+  try { await (await one.session.send('after end')).result(); } catch { refused = true; }
+  if (!refused) throw new Error('The session still accepted a message after end()');
   await waitQuiet(db, 'after reset');
   const afterReset = await record('4-after-reset');
 
