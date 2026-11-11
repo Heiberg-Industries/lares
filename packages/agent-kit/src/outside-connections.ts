@@ -17,8 +17,9 @@ interface OutsideDeps { isAllowedApprover:(responder:unknown)=>boolean }
 /**
  * Whether the owner has seen a Telegram tap approve an outside-tool write on the real bot.
  *
- * The engine now resumes a Telegram tap with the verified owner's identity
- * (`services/chief-of-staff/lib/telegram-tap-auth.ts`), and a test drives eve's own approval code to
+ * eve 1.0 resumes a Telegram tap with the tapper's own identity, and the webhook front door has
+ * already refused a tap by anyone who is not an allowed approver
+ * (`services/chief-of-staff/lib/telegram-tap-gate.ts`); a test drives eve's own approval code to
  * show that works. The live check on the real bot is still the owner's to run, so until
  * this is set to true outside-tool approvals are refused on Telegram rather than left to hang.
  */
@@ -81,10 +82,11 @@ export function outsideRequestPolicy(
  * fail-closed direction: anything that is not clearly an allowed principal is rejected and the
  * request stays pending.
  *
- * TELEGRAM: eve refuses a responder with no identity before this runs, and its own Telegram channel
- * resumes a button tap with none. The chief of staff's Telegram door therefore resumes a tap by an
- * allowed approver WITH that approver's identity (`lib/telegram-tap-auth.ts`), and until the owner has
- * seen it work on the real bot the request policy refuses outside-tool approvals on Telegram.
+ * TELEGRAM: eve refuses a responder with no identity before this runs. eve 1.0's own Telegram
+ * channel resumes a button tap WITH the tapper's identity, and the chief of staff's webhook front
+ * door refuses a tap by anyone who is not an allowed approver before it reaches eve
+ * (`lib/telegram-tap-gate.ts`). Until the owner has seen an approval work on the real bot, the
+ * request policy refuses outside-tool approvals on Telegram.
  * Slack and the console pass the clicker's identity.
  */
 export function outsideResponsePolicy(

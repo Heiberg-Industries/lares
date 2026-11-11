@@ -32,7 +32,7 @@
  * unseen.
  */
 import { defineSchedule } from "eve/schedules";
-import { sendTelegramMessage } from "eve/channels/telegram";
+import { sendTelegramMessage } from "../../lib/telegram-send.js";
 
 import { telegramCredentials } from "../channels/telegram.js";
 import { getPool } from "@lares/agent-kit/db";
@@ -55,7 +55,6 @@ import { errorDetail } from "../../lib/error-detail.js";
 import { SEND_UNGATED, type DoorInitiate, type InitiationOutcome } from "../../lib/initiation.js";
 import { routeDelivery } from "../../lib/delivery.js";
 import { plainFromTelegramHtml, sendText } from "../../lib/delivery-send.js";
-import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
 import {
   buildNotionAnnouncement,
   buildAtlasAnnouncement,
@@ -439,8 +438,7 @@ export default defineSchedule({
         await sendTelegramMessage({
           credentials: telegramCredentials,
           chatId: routed.target,
-          body: { text: a.text, parse_mode: a.parseMode, reply_markup: a.replyMarkup } as never,
-          fetch: telegramFetch,
+          body: { text: a.text, parse_mode: a.parseMode, reply_markup: a.replyMarkup },
         });
       },
     };
