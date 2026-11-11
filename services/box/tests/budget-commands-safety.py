@@ -154,8 +154,9 @@ def status(**overrides: object) -> dict:
 
 class BudgetCommandTests(unittest.TestCase):
     def setUp(self) -> None:
-        # Short on purpose: a Unix socket path has a small length limit.
-        self.temporary = tempfile.TemporaryDirectory(prefix="lb-", dir="/tmp")
+        # Short on purpose: a Unix socket path has a small length limit. The real path, because the
+        # maintenance check walks the prefix without following links (/tmp is one on macOS).
+        self.temporary = tempfile.TemporaryDirectory(prefix="lb-", dir=os.path.realpath("/tmp"))
         self.prefix = Path(self.temporary.name)
         budget.ROOT_UID = os.geteuid()
         budget.ROOT_GID = os.getegid()

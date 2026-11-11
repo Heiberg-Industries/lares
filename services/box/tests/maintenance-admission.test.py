@@ -663,6 +663,102 @@ touch "$MARK.nested"
         self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
         self.assertEqual(lock.stat().st_uid, self.owner)
 
+    def test_commands_that_start_agents_never_run_beside_an_update(self) -> None:
+        prefix, installed = self._installed_bundle()
+        for name, operation in (("backup.sh", "backup"), ("update.sh", "update")):
+            (installed / name).write_text(f"""#!/bin/bash
+set -euo pipefail
+python3 "$(dirname "$0")/maintenance-custody.py" assert-normal-held "$LARES_MAINTENANCE_TEST_PREFIX" {operation} --test-owner
+touch "$MARK.started"
+while [ ! -e "$MARK.release" ]; do sleep 0.01; done
+""", encoding="utf8")
+            (installed / name).chmod(0o750)
+        # What install.sh and the agent commands run under: the program says it started (and
+        # whether it holds the lock on descriptor 198), then waits until it is released.
+        program = ["/bin/bash", "-c", 'if [ -e /dev/fd/198 ]; then touch "$MARK.held"; fi; '
+                   '[ "$LARES_RUN_LOCK_HELD" = 1 ] || exit 9; touch "$MARK.started"; '
+                   'while [ ! -e "$MARK.release" ]; do sleep 0.01; done']
+
+        def beside(target: Path) -> list[str]:
+            return ["python3", str(installed / "maintenance-custody.py"), "beside-update", str(target), "--", *program]
+
+        def normal(operation: str) -> list[str]:
+            return ["python3", str(installed / "maintenance-custody.py"), "run-normal", str(prefix), operation,
+                    "--test-owner", "--"]
+
+        def hold(command: list[str], mark: Path) -> subprocess.Popen[str]:
+            process = subprocess.Popen(command, env=self._test_env(prefix, MARK=str(mark)),
+                                       text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            deadline = time.monotonic() + 5
+            while not Path(f"{mark}.started").exists() and time.monotonic() < deadline and process.poll() is None:
+                time.sleep(0.01)
+            self.assertTrue(Path(f"{mark}.started").exists(), command)
+            return process
+
+        def attempt(command: list[str], mark: Path) -> subprocess.CompletedProcess[str]:
+            Path(f"{mark}.release").touch()
+            return subprocess.run(command, env=self._test_env(prefix, MARK=str(mark)),
+                                  text=True, capture_output=True, timeout=10)
+
+        def release(process: subprocess.Popen[str], mark: Path) -> None:
+            Path(f"{mark}.release").touch()
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0, stdout + stderr)
+
+        # While an update runs, the command is refused before its program starts.
+        update_mark = self.root / "update"
+        update = hold(normal("update"), update_mark)
+        try:
+            refused = attempt(beside(prefix), self.root / "during-update")
+            self.assertEqual(refused.returncode, 78, refused.stderr)
+            self.assertIn("an update is running on this server, so this did not start and nothing was changed",
+                          refused.stderr)
+            self.assertFalse((self.root / "during-update.started").exists())
+        finally:
+            release(update, update_mark)
+
+        # Beside a backup it runs, as before.
+        backup_mark = self.root / "backup"
+        backup = hold(normal("backup"), backup_mark)
+        try:
+            beside_backup = attempt(beside(prefix), self.root / "during-backup")
+            self.assertEqual(beside_backup.returncode, 0, beside_backup.stderr)
+            self.assertTrue((self.root / "during-backup.held").exists(), "the program did not inherit the lock")
+        finally:
+            release(backup, backup_mark)
+
+        # While the command runs, no update can begin; a backup still can. Once it ends, an update can.
+        command_mark = self.root / "command"
+        command = hold(beside(prefix), command_mark)
+        try:
+            refused = attempt(normal("update"), self.root / "update-during-command")
+            self.assertEqual(refused.returncode, 78, refused.stderr)
+            self.assertIn("another maintenance run is still going", refused.stderr)
+            self.assertFalse((self.root / "update-during-command.started").exists())
+            self.assertEqual(attempt(normal("backup"), self.root / "backup-during-command").returncode, 0)
+        finally:
+            release(command, command_mark)
+        self.assertEqual(attempt(normal("update"), self.root / "update-after").returncode, 0)
+
+        # A server with no maintenance folder yet (a first install) runs the program and holds nothing.
+        bare = self.root / "bare-host"
+        bare.mkdir()
+        first = attempt(beside(bare), self.root / "bare")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertTrue((self.root / "bare.started").exists())
+        self.assertFalse((self.root / "bare.held").exists())
+        self.assertFalse((bare / "var").exists())
+
+        # A maintenance folder it cannot trust is never taken for "no update".
+        (prefix / "var/lib/lares-maintenance/custody").chmod(0o755)
+        try:
+            untrusted = attempt(beside(prefix), self.root / "untrusted")
+        finally:
+            (prefix / "var/lib/lares-maintenance/custody").chmod(0o700)
+        self.assertEqual(untrusted.returncode, 78, untrusted.stderr)
+        self.assertIn("I cannot tell whether an update is running", untrusted.stderr)
+        self.assertFalse((self.root / "untrusted.started").exists())
+
     def test_state_is_durable_one_way_and_keeps_service_lock_inode(self) -> None:
         lock = self.admission_dir / "service-gate.lock"
         before = lock.stat().st_ino

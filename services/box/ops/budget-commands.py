@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import importlib.util
 import json
 import os
 import re
@@ -1258,6 +1259,32 @@ def budget_recover(installation: Installation, options: argparse.Namespace) -> i
     return 0
 
 
+def hold_beside_update(prefix: str) -> int | None:
+    """Every command here can start, restart or recreate the keeper or an agent. An update holds the
+    maintenance run lock for its whole length while it stops them and upgrades their stores, so each
+    command holds that lock shared until it ends (maintenance-custody.py, hold_beside_update): it is
+    refused while an update runs, and no update can begin until it has finished. The descriptor is
+    not passed to the programs this file starts."""
+    spec = importlib.util.spec_from_file_location("lares_maintenance_custody", Path(__file__).resolve().with_name("maintenance-custody.py"))
+    if spec is None or spec.loader is None:
+        raise Stop("The maintenance program beside this command is missing, so whether an update is running cannot be "
+                   "checked. Nothing was started. Run get-lares.sh again for this release.")
+    custody = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(custody)
+    except OSError:
+        raise Stop("The maintenance program beside this command is missing, so whether an update is running cannot be "
+                   "checked. Nothing was started. Run get-lares.sh again for this release.") from None
+    try:
+        return custody.hold_beside_update(Path(os.path.normpath(prefix)), ROOT_UID)
+    except custody.UpdateRunning as error:
+        raise Stop(str(error)) from None
+    except (OSError, ValueError) as error:
+        raise Stop(f"I cannot tell whether an update is running ({error}), so nothing was started or changed. The folder "
+                   "var/lib/lares-maintenance/custody must belong to root with mode 0700 and must not be a link; fix "
+                   "that, then run this again.") from None
+
+
 def parse_arguments(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="lares", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--prefix", required=True)
@@ -1296,7 +1323,13 @@ def main(argv: list[str]) -> int:
         return EX_NOTROOT
     installation = Installation(options.prefix, options.image, options.release)
     try:
-        lock = installation.lock()
+        beside_update = hold_beside_update(options.prefix)
+        try:
+            lock = installation.lock()
+        except BaseException:
+            if beside_update is not None:
+                os.close(beside_update)
+            raise
         try:
             if options.command == "recover":
                 return budget_recover(installation, options)
@@ -1309,6 +1342,8 @@ def main(argv: list[str]) -> int:
             return budget_setup(installation, options) if options.command == "setup" else agent_start(installation, options)
         finally:
             os.close(lock)
+            if beside_update is not None:
+                os.close(beside_update)
     except Stop as error:
         print(f"lares: {error}", file=sys.stderr)
     except KeeperRefused as error:
