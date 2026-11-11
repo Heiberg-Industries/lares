@@ -6,7 +6,8 @@ import { preparedModelPurposeConsumer } from '../lib/budget-financial-writer.js'
 import { parseModelPurposeAdmissionResponse } from '@lares/agent-kit/model-purpose-protocol';
 
 const request=(overrides:Partial<ModelPurposeRequest>={}):ModelPurposeRequest=>({agent:'neutral-helper',incarnation:'123e4567-e89b-42d3-a456-426614174000',session:'wrun_model_test',member:'member-a',admissionNonce:'a'.repeat(43),method:'POST',path:'/eve/v1/session',rawBodyHash:'b'.repeat(64),policyRevision:3,definitionHash:'c'.repeat(64),purpose:'human',requestId:'d'.repeat(43),...overrides});
-const reference=(kind:'human'|'resume'='human',turnId=kind==='resume'?'':'eve-step-turn',turnSequence=kind==='resume'?0:7):BudgetAuthorityReference=>({kind,binding:{agent:'neutral-helper',incarnation:'123e4567-e89b-42d3-a456-426614174000',sessionId:'wrun_model_test',memberId:'member-a',admissionNonce:'a'.repeat(43),placeId:'place',audienceRevision:1,policyRevision:3,agentAccessRevision:2},turnId,turnSequence,...(kind==='resume'?{resume:{requestId:'resume-1',optionId:'approve' as const}}:{})});
+// eve 1.0: an answered card continues its own turn (`turn_<n>`); no turn has an empty id.
+const reference=(kind:'human'|'resume'='human',turnId=kind==='resume'?'turn_0':'eve-step-turn',turnSequence=kind==='resume'?0:7,resume:{requestId:string;optionId:'approve'|'deny'}={requestId:'resume-1',optionId:'approve'}):BudgetAuthorityReference=>({kind,binding:{agent:'neutral-helper',incarnation:'123e4567-e89b-42d3-a456-426614174000',sessionId:'wrun_model_test',memberId:'member-a',admissionNonce:'a'.repeat(43),placeId:'place',audienceRevision:1,policyRevision:3,agentAccessRevision:2},turnId,turnSequence,...(kind==='resume'?{resume}:{})});
 const step=(overrides:Partial<ModelPurposeStepInput>={}):ModelPurposeStepInput=>({turnCapability:'e'.repeat(43),purposeAlias:'lares-brain',event:{type:'step.started',data:{turnId:'eve-step-turn',sequence:7,stepIndex:0}},...overrides});
 
 describe('Keeper model-purpose broker state',()=>{
@@ -57,14 +58,25 @@ describe('Keeper model-purpose broker state',()=>{
     for(const bad of ['cancel','Approve','APPROVE',' approve','approve ','Deny','denied','',undefined,null,1,{}]) expect(attempt(bad),String(bad)).toThrow();
   });
 
-  it('allows only the authentic resume evidence to open the exact empty resume turn',()=>{
+  it('opens a resume turn only on the paused turn itself, from the authentic evidence for that one card',()=>{
     const state=new ModelPurposeBrokerState(()=>100),value=request({purpose:'resume',resume:{requestId:'resume-1',optionId:'approve'}});
-    const opened=state.registerTurn(value,reference('resume'),'',0,value.definitionHash,'lares-brain');
+    const opened=state.registerTurn(value,reference('resume'),'turn_0',0,value.definitionHash,'lares-brain');
     expect(opened).toBeDefined();
-    const firstResumeStep=step({turnCapability:opened.capability,purposeAlias:'lares-brain',event:{type:'step.started',data:{turnId:'',sequence:0,stepIndex:0}}});
+    const firstResumeStep=step({turnCapability:opened.capability,purposeAlias:'lares-brain',event:{type:'step.started',data:{turnId:'turn_0',sequence:0,stepIndex:0}}});
     expect(state.finishStep(state.reserveStep(opened.capability,{agent:value.agent,incarnation:value.incarnation},firstResumeStep)).claim).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    // A resume receipt never opens on a human reference, nor a human receipt on a resume one.
     expect(()=>state.registerTurn(value,reference('human'),'turn-1',0,value.definitionHash,'lares-brain')).toThrow();
-    expect(()=>state.registerTurn(request(),reference('human'),'',0,value.definitionHash,'lares-brain')).toThrow();
+    expect(()=>state.registerTurn(request(),reference('resume'),'turn_0',0,value.definitionHash,'lares-brain')).toThrow();
+    // Card A's receipt never opens on Keeper's reference for card B (S1), nor for the other option (S3).
+    expect(()=>state.registerTurn(value,reference('resume','turn_0',0,{requestId:'resume-2',optionId:'approve'}),'turn_0',0,value.definitionHash,'lares-brain')).toThrow();
+    expect(()=>state.registerTurn(value,reference('resume','turn_0',0,{requestId:'resume-1',optionId:'deny'}),'turn_0',0,value.definitionHash,'lares-brain')).toThrow();
+    // eve 1.0 has no empty turn id: refused for either purpose; the reference must name the turn opened.
+    expect(()=>state.registerTurn(value,reference('resume','',0),'',0,value.definitionHash,'lares-brain')).toThrow();
+    expect(()=>state.registerTurn(request(),reference('human','',0),'',0,value.definitionHash,'lares-brain')).toThrow();
+    expect(()=>state.registerTurn(value,reference('resume'),'turn_1',1,value.definitionHash,'lares-brain')).toThrow();
+    // A step event with an empty turn id is refused on an open turn.
+    const empty=step({turnCapability:opened.capability,event:{type:'step.started',data:{turnId:'',sequence:0,stepIndex:1}}});
+    expect(()=>state.reserveStep(opened.capability,{agent:value.agent,incarnation:value.incarnation},empty)).toThrow();
   });
 
   it('burns concurrent step claims and withholds a delayed ACK when the turn closes',()=>{
@@ -82,17 +94,17 @@ describe('Keeper model-purpose broker state',()=>{
     now+=30_001;expect(state.sizes.claims).toBe(0);expect(state.sizes.turns).toBe(1);
   });
 
-  it('resolves only an exact synchronously consumed claim handle and keeps raw empty coordinates',()=>{
+  it('resolves only an exact synchronously consumed claim handle and keeps the resume turn coordinates',()=>{
     let now=100;const state=new ModelPurposeBrokerState(()=>now),value=request({purpose:'resume',resume:{requestId:'resume-1',optionId:'approve'}});
-    const opened=state.registerTurn(value,reference('resume'),'',0,value.definitionHash,'lares-brain');
-    const event={type:'step.started',data:{turnId:'',sequence:0,stepIndex:4}};
+    const opened=state.registerTurn(value,reference('resume'),'turn_0',0,value.definitionHash,'lares-brain');
+    const event={type:'step.started',data:{turnId:'turn_0',sequence:0,stepIndex:4}};
     const token=state.finishStep(state.reserveStep(opened.capability,{agent:value.agent,incarnation:value.incarnation},step({turnCapability:opened.capability,event}))).claim;
     const handle=state.reserveClaimConsumption(token,{agent:value.agent,incarnation:value.incarnation},{method:'POST',path:'/v1/chat/completions',requestHash:'f'.repeat(64)});
     expect(state.resolveConsumedClaim({})).toBeUndefined();
-    expect(state.resolveConsumedClaim(handle)).toMatchObject({event:{turnId:'',sequence:0,stepIndex:4},reference:{kind:'resume',turnId:''},purposeAlias:'lares-brain'});
+    expect(state.resolveConsumedClaim(handle)).toMatchObject({event:{turnId:'turn_0',sequence:0,stepIndex:4},reference:{kind:'resume',turnId:'turn_0'},purposeAlias:'lares-brain'});
     expect(()=>state.reserveClaimConsumption(token,{agent:value.agent,incarnation:value.incarnation},{method:'POST',path:'/v1/chat/completions',requestHash:'f'.repeat(64)})).toThrow();
     expect(state.resolveConsumedClaim(handle)?.isActive()).toBe(true);
-    state.closeTurn(opened.capability,{agent:value.agent,incarnation:value.incarnation},'',0);
+    state.closeTurn(opened.capability,{agent:value.agent,incarnation:value.incarnation},'turn_0',0);
     expect(state.resolveConsumedClaim(handle)).toBeUndefined();
   });
 
