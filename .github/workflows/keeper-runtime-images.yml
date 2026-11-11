@@ -17,6 +17,10 @@ on:
         description: Run only the real install proof, to work on it without the other jobs
         type: boolean
         default: false
+      base:
+        description: "Commit to compare this ref with (a full commit id, a tag, or origin/<branch>), so that only the images the difference affects are built and probed. Empty builds every image. A publishing run builds every image whatever is given here"
+        type: string
+        default: ''
 permissions: {contents: read, packages: write}
 env:
   EVE_TELEMETRY_DISABLED: "1"
@@ -24,9 +28,89 @@ env:
 # below run Docker and nftables on the runner itself, so a new runner image is a new host to prove
 # on, not a routine change. On ubuntu-26.04 (Docker 29.4) the configured outside discovery proof's
 # routed path to the MCP peer times out; move only after that is understood.
+#
+# The `select` job runs first and asks the selector (services/box/lib/affected-images.ts, through
+# services/box/bin/images-to-build.ts) which of this workflow's five images the change can affect.
+# The three jobs after it build, probe and push only those. Doubt never skips a build: a job, a
+# role or a push is left out ONLY when its flag says exactly 'false', and a flag is 'false' only
+# when the selector compared two commits and answered "keep" for that image. A publishing run, no
+# base to compare with, a commit git does not know, an answer that fails or cannot be read in full:
+# every flag is 'true' and everything is built. Nothing is reported for an image that was kept; the
+# summary of the `select` job is the record of what this run built and what it left alone.
 jobs:
-  real-install:
+  select:
     if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      all: ${{ steps.select.outputs.all }}
+      chiefRuntime: ${{ steps.select.outputs.chiefRuntime }}
+      creativeRuntime: ${{ steps.select.outputs.creativeRuntime }}
+      keeper: ${{ steps.select.outputs.keeper }}
+      firewallHelper: ${{ steps.select.outputs.firewallHelper }}
+      egressProxy: ${{ steps.select.outputs.egressProxy }}
+      anyKeeperFamily: ${{ steps.select.outputs.anyKeeperFamily }}
+    steps:
+      # Neither setup step may stop this job: without the checkout or without Node 24 the script
+      # below cannot run, and the step then answers "every image" by itself.
+      - uses: actions/checkout@v4
+        continue-on-error: true
+        with: {fetch-depth: 0}
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        continue-on-error: true
+        with:
+          node-version: "24"
+      # The base is the last commit whose images were built and probed: the commit before a push,
+      # or the `base` input of a manual run. The head is always this run's commit.
+      - name: Select the images this change affects
+        id: select
+        env:
+          PUBLISHING: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}
+          BASE: ${{ github.event_name == 'workflow_dispatch' && inputs.base || github.event_name == 'push' && github.event.before || '' }}
+        run: |
+          flags="chiefRuntime creativeRuntime keeper firewallHelper egressProxy anyKeeperFamily"
+          outputs="$RUNNER_TEMP/images-to-build.outputs"
+          summary="$RUNNER_TEMP/images-to-build.md"
+          # Every image, for one stated reason: the answer to any doubt.
+          build_everything() {
+            { echo "all=true"; for flag in $flags; do echo "$flag=true"; done; } > "$outputs"
+            {
+              echo "Every image is built and probed: $1"
+              echo
+              echo "| image | decision | reason |"
+              echo "| --- | --- | --- |"
+              for image in chief-of-staff-runtime creative-runtime keeper firewall-helper egress-proxy; do echo "| $image | rebuild | $1 |"; done
+            } > "$summary"
+          }
+          rm -f "$outputs" "$summary"
+          if [ "${PUBLISHING-}" = "true" ]; then
+            build_everything "publishing run: every image is built, probed and pushed, whatever changed"
+          elif [ "${PUBLISHING-}" != "false" ]; then
+            build_everything "it is not known whether this run publishes, so nothing is skipped"
+          else
+            status=0
+            node services/box/bin/images-to-build.ts --base "${BASE-}" --head "$GITHUB_SHA" --outputs "$outputs" --summary "$summary" || status=$?
+            # The script's answer counts only if it exited 0 and left every flag, once, as true or
+            # false, and nothing else. Anything short of that builds everything.
+            complete=true
+            expected=0
+            for flag in all $flags; do
+              expected=$((expected + 1))
+              [ "$(grep -cxE "$flag=(true|false)" "$outputs" 2>/dev/null)" = "1" ] || complete=false
+            done
+            [ "$(grep -c '' "$outputs" 2>/dev/null)" = "$expected" ] || complete=false
+            [ -s "$summary" ] || complete=false
+            if [ "$status" -ne 0 ] || [ "$complete" != "true" ]; then
+              build_everything "the selection script failed or left no complete answer (exit status $status), so nothing is skipped"
+            fi
+          fi
+          cat "$outputs" >> "$GITHUB_OUTPUT"
+          { echo "### Images this run builds"; echo; cat "$summary"; } >> "$GITHUB_STEP_SUMMARY"
+          cat "$outputs"
+  real-install:
+    needs: select
+    if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && (needs.select.outputs.chiefRuntime != 'false' || needs.select.outputs.creativeRuntime != 'false' || needs.select.outputs.keeper != 'false' || needs.select.outputs.firewallHelper != 'false' || needs.select.outputs.egressProxy != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -92,7 +176,8 @@ jobs:
           path: ${{ runner.temp }}/real-install-proof
           if-no-files-found: error
   runtime:
-    if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only }}
+    needs: select
+    if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only && (needs.select.outputs.chiefRuntime != 'false' || needs.select.outputs.creativeRuntime != 'false') }}
     runs-on: ubuntu-24.04
     env:
       PUBLIC_DOCS_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.docs_release || 'candidate' }}
@@ -100,6 +185,11 @@ jobs:
       max-parallel: 1
       matrix:
         role: [chief-of-staff, creative]
+        # A role is left out only when the select job said exactly 'false' for its image. The
+        # other value names no role, so that entry removes nothing.
+        exclude:
+          - role: "${{ needs.select.outputs.chiefRuntime == 'false' && 'chief-of-staff' || 'no role is left out' }}"
+          - role: "${{ needs.select.outputs.creativeRuntime == 'false' && 'creative' || 'no role is left out' }}"
     steps:
       - uses: actions/checkout@v4
       # The snapshot is exported from this exact checkout before either role image is built.
@@ -240,11 +330,12 @@ jobs:
           context: .
           file: services/${{ matrix.role }}/Dockerfile
           target: runtime
-          push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}"
+          push: "${{ ((github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true')) && !(matrix.role == 'chief-of-staff' && needs.select.outputs.chiefRuntime == 'false') && !(matrix.role == 'creative' && needs.select.outputs.creativeRuntime == 'false') }}"
           tags: ghcr.io/heiberg-industries/lares-engine-${{ matrix.role }}-runtime:sha-${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares
   keeper:
-    if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only }}
+    needs: select
+    if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only && needs.select.outputs.anyKeeperFamily != 'false' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -413,8 +504,8 @@ jobs:
           path: ${{ runner.temp }}/proxy-proof.json
           if-no-files-found: error
       - uses: docker/build-push-action@v6
-        with: {context: ., file: services/keeper/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-keeper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
+        with: {context: ., file: services/keeper/Dockerfile, push: "${{ ((github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true')) && needs.select.outputs.keeper != 'false' }}", tags: 'ghcr.io/heiberg-industries/lares-engine-keeper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
       - uses: docker/build-push-action@v6
-        with: {context: ., file: images/firewall-helper/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-firewall-helper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
+        with: {context: ., file: images/firewall-helper/Dockerfile, push: "${{ ((github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true')) && needs.select.outputs.firewallHelper != 'false' }}", tags: 'ghcr.io/heiberg-industries/lares-engine-firewall-helper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
       - uses: docker/build-push-action@v6
-        with: {context: ., file: images/egress-proxy/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-egress-proxy:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
+        with: {context: ., file: images/egress-proxy/Dockerfile, push: "${{ ((github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true')) && needs.select.outputs.egressProxy != 'false' }}", tags: 'ghcr.io/heiberg-industries/lares-engine-egress-proxy:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
