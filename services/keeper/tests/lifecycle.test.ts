@@ -132,7 +132,12 @@ it('stages rendered native runtimes without a legacy key and checks current auth
  expect(events.at(-1)).toBe('start:bookkeeper');expect(events.filter(event=>event==='stop:bookkeeper')).toHaveLength(1);
  const changedHash=hashOf({definition:definitionSchema.parse(chief),dutiesMd:'Changed duties',voiceMd:voice});
  await pool.query('UPDATE agent_definitions SET duties=$1,hash=$2 WHERE name=$3',['Changed duties',changedHash,'bookkeeper']);
- events=[];await l.saved('bookkeeper',chief);
+ const heldSave=vi.spyOn(console,'error').mockImplementation(()=>{});
+ try{
+  events=[];await l.saved('bookkeeper',chief);
+  // The stop is by design of the budget activation; the keeper's log now says that it happened and why.
+  expect(heldSave.mock.calls.map(call=>String(call[0]))).toEqual(['keeper: agent bookkeeper was stopped after a save: its budget activation does not cover the saved definition']);
+ }finally{heldSave.mockRestore();}
  expect(events).toContain('stop:bookkeeper');
  expect(await l.status('bookkeeper')).toEqual({pending:false,reason:'Native budget activation required'});
  const observedDocker:DockerBoundary={...docker,inspect:async()=>({id:'container',running:true,incarnation:'11111111-1111-4111-8111-111111111111',notionRevision:null,image,mounts:[],addresses:[]}),healthy:async()=>true};
@@ -158,6 +163,12 @@ it('stages rendered native runtimes without a legacy key and checks current auth
  events=[];const result=await raced.reconcile('bookkeeper',chief);
  expect(result).toEqual({pending:false,reason:'Native budget activation required',running:false,healthy:null});
  expect(events.slice(-2)).toEqual(['start:bookkeeper','stop:bookkeeper']);
+ // A settings restart that comes back held by the budget guard is reported as stopped, never as restarted,
+ // and is not marked pending: status() reports the hold, as it does for any held agent.
+ postStartHeld=false;events=[];
+ expect(await raced.applyInstallationSettings('bookkeeper')).toBe('stopped');
+ expect(events.slice(-2)).toEqual(['start:bookkeeper','stop:bookkeeper']);
+ expect(await raced.status('bookkeeper')).toEqual({pending:false,reason:'Native budget activation required'});
  postStartHeld=false;events=[];
  const failedStartDocker:DockerBoundary={...docker,start:async n=>{events.push('start:'+n);postStartHeld=true;throw new Error('docker start failed');},stop:async n=>{events.push('stop:'+n);}};
  const failedStart=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},failedStartDocker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,raceAuthority);
@@ -751,6 +762,8 @@ it(': a real reload failure after a good plan still stops the agent',async()=>{
   const converted=make('bookkeeper',[{capability:'vault',scope:'read',areas:['shared']}]);
   fail='reload-squid';await expect(l.saved('bookkeeper',converted)).rejects.toThrow('injected');
   expect(events.at(-1)).toBe('stop:bookkeeper');expect((await l.status('bookkeeper')).pending).toBe(true);
+  // The reason says what happened and what to press, not that a reconciliation is still in progress.
+  expect(await l.status('bookkeeper')).toEqual({pending:true,reason:'The firewall could not be updated, so the agent was stopped; press Apply connection changes to try again.'});
  }finally{warn.mockRestore();}
 });
 it('skips a stored agent of the removed travel role with a message, and the other agents still publish',async()=>{
@@ -1109,4 +1122,52 @@ it('restarts a ready chief once for a changed console agent setting',async()=>{
  expect(await l.applyInstallationSettings('bookkeeper')).toBe('restarted');
  expect(composeEnv().TELEGRAM_BOT_USERNAME).toBe('example_bot');
  await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
+});
+const SETTINGS_RESTART_FAILED='A settings change stopped this agent and it could not start again; press Apply connection changes to start it.';
+it('leaves an agent that a settings restart could not start again pending with a plain reason, reports the failure, and Apply brings it back',async()=>{
+ const chief=await chiefFixture();
+ const l=lifecycle();await l.create('bookkeeper',chief);
+ await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agent_env.telegram_bot_username','\"example_bot\"'::jsonb,'test')");
+ try{
+  events=[];fail='start:bookkeeper';
+  // A plain start failure, not a health wait that ran out: the agent is left stopped.
+  await expect(l.applyInstallationSettings('bookkeeper')).rejects.toThrow('injected start:bookkeeper');
+  expect(events.filter(event=>event==='stop:bookkeeper'||event==='start:bookkeeper')).toEqual(['stop:bookkeeper','start:bookkeeper']);
+  expect((await pool.query("SELECT pending,pending_reason FROM agent_resources WHERE name='bookkeeper'")).rows[0]).toEqual({pending:true,pending_reason:SETTINGS_RESTART_FAILED});
+  // This is what the console reads to show the Apply button and the reason next to it.
+  expect(await l.status('bookkeeper')).toEqual({pending:true,reason:SETTINGS_RESTART_FAILED});
+  // A second settings change leaves it alone: it has a change waiting.
+  fail=undefined;events=[];
+  expect(await l.applyInstallationSettings('bookkeeper')).toBe('waiting');expect(events).toEqual([]);
+  // Apply: the agent starts again on its last valid definition, with the changed setting.
+  expect(await l.reconcile('bookkeeper',chief)).toEqual({pending:false,reason:null,running:true,healthy:true});
+  expect(events).toContain('start:bookkeeper');
+  expect(await l.status('bookkeeper')).toEqual({pending:false,reason:null});
+  expect(composeEnv().TELEGRAM_BOT_USERNAME).toBe('example_bot');
+ }finally{fail=undefined;await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");}
+});
+it('marks the agent pending when the firewall step of a settings restart fails, too',async()=>{
+ const chief=await chiefFixture();
+ const l=lifecycle();await l.create('bookkeeper',chief);
+ try{
+  events=[];fail='apply-nft';
+  await expect(l.applyInstallationSettings('bookkeeper')).rejects.toThrow('injected apply-nft');
+  expect(events).toContain('stop:bookkeeper');expect(events).not.toContain('start:bookkeeper');
+  expect(await l.status('bookkeeper')).toEqual({pending:true,reason:SETTINGS_RESTART_FAILED});
+ }finally{fail=undefined;}
+});
+it('still reports the restart failure itself when the stopped agent cannot be marked pending either',async()=>{
+ const chief=await chiefFixture();
+ const l=lifecycle();await l.create('bookkeeper',chief);
+ const query=pool.query.bind(pool) as (...args:any[])=>Promise<any>;
+ const marking=vi.spyOn(pool,'query').mockImplementation(((...args:any[])=>
+  Array.isArray(args[1])&&args[1][1]===SETTINGS_RESTART_FAILED?Promise.reject(new Error('injected update failure')):query(...args)) as any);
+ try{
+  fail='start:bookkeeper';
+  const error:any=await l.applyInstallationSettings('bookkeeper').then(()=>undefined,(e:unknown)=>e);
+  expect(error).toBeInstanceOf(Error);expect(error.message).toBe('injected start:bookkeeper');
+  expect(error.cause).toBeInstanceOf(AggregateError);
+  expect(error.cause.errors.map((e:Error)=>e.message)).toEqual(['injected update failure']);
+ }finally{marking.mockRestore();fail=undefined;}
+ expect((await l.status('bookkeeper')).pending).toBe(false);
 });

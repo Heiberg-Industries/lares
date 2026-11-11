@@ -615,10 +615,28 @@ export class AgentLifecycle {
         await this.publishCompose();
         if ((await this.imageState(name)) === 'stopped') return 'stopped';
         await this.docker.stop(name);
-        await this.apply(plan);
-        const result = await this.startWithCurrentAuthority(name, String(row.address).split('/')[0]);
-        await this.recordSuccessfulDefinitionStart(name, definitionFiles, result);
-        return 'restarted';
+        try {
+            await this.apply(plan);
+            const result = await this.startWithCurrentAuthority(name, String(row.address).split('/')[0]);
+            await this.recordSuccessfulDefinitionStart(name, definitionFiles, result);
+            // Held by the budget guard after the restart: stopped, and status() already says why.
+            return result.running === true ? 'restarted' : 'stopped';
+        }
+        catch (error) {
+            // The agent is stopped now. Mark it pending so the console offers Apply, which starts it
+            // again; the failure itself still reaches the caller unchanged.
+            try {
+                await this.pool.query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'A settings change stopped this agent and it could not start again; press Apply connection changes to start it.']);
+            }
+            catch (updateError) {
+                // Still the original failure; the one from marking the row rides along as its cause.
+                if (error instanceof Error) {
+                    try { Object.defineProperty(error, 'cause', { value: new AggregateError([...(error.cause === undefined ? [] : [error.cause]), updateError], 'the stopped agent could not be marked as pending'), writable: true, configurable: true, enumerable: false }); }
+                    catch { /* A frozen error keeps its own cause. */ }
+                }
+            }
+            throw error;
+        }
     }
     private async connections(a: AgentContainer, apply: boolean): Promise<AgentContainer> {
         await this.applyMeetingsSource(a);
@@ -721,7 +739,10 @@ export class AgentLifecycle {
             throw error;
         });
         const nativeState = this.nativeGuarded ? await this.currentNative(name) : { state: 'active' as const };
-        if (this.nativeGuarded && nativeState.state !== 'active') await this.docker.stop(name);
+        if (this.nativeGuarded && nativeState.state !== 'active') {
+            console.error(`keeper: agent ${name} was stopped after a save: its budget activation does not cover the saved definition`);
+            await this.docker.stop(name);
+        }
         const pending = row.pending || !row.applied_definition || fingerprint(row.applied_definition) !== fingerprint(d) || row.state === 'provisioning';
         await this.pool.query('UPDATE agent_resources SET pending=$2,pending_reason=$3,updated_at=now() WHERE name=$1', [name, true, 'Egress reconciliation in progress']);
         try {
@@ -729,6 +750,16 @@ export class AgentLifecycle {
         }
         catch (error) {
             await this.docker.stop(name);
+            // 'Egress reconciliation in progress' is no longer true: say what happened and what to press.
+            try {
+                await this.pool.query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'The firewall could not be updated, so the agent was stopped; press Apply connection changes to try again.']);
+            }
+            catch (updateError) {
+                if (error instanceof Error) {
+                    try { Object.defineProperty(error, 'cause', { value: new AggregateError([...(error.cause === undefined ? [] : [error.cause]), updateError], 'the stopped agent could not be marked as pending'), writable: true, configurable: true, enumerable: false }); }
+                    catch { /* A frozen error keeps its own cause. */ }
+                }
+            }
             throw error;
         }
         const reason = pending ? 'Apply connection changes (restarts agent)' : null;
