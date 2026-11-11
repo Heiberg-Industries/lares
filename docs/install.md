@@ -784,7 +784,10 @@ Ubuntu server with the tools from section 1, plus `restic` (`apt-get install -y 
    nothing. The agent stores are restored and upgraded first. If an upgrade fails, the restore
    stops before the main database, the Vault and the folders are replaced, the services stay
    stopped, and running the same restore command again starts the agent stores over from the
-   backup.
+   backup. With `--snapshot latest`, the restore looks up the newest nightly snapshot once and
+   names it by its id; run again with that id, so that a snapshot written in between is not used.
+   It also refuses, changing nothing, while an agent store step from an earlier attempt is still
+   running, and says how to wait for it or stop it.
    Vault inventory, stored ownership and both repositories are checked against a temporary
    restoration of the snapshot database before the target changes. A fresh install's exact,
    untouched marker-only stores may be moved into private restore staging; notes, extra refs,

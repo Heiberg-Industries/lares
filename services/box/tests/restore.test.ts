@@ -125,7 +125,7 @@ function run(args: string[], opts: { env?: Record<string, string>; input?: strin
     timeout: 20_000,
     input: opts.input ?? "",
     env: {
-      PATH: binDir, STUB_LOG: log, HOME: dir, ARCHIVE_ROOT: archive, LEDGER_FILE: ledgerFile,
+      PATH: binDir, STUB_LOG: log, HOME: dir, ARCHIVE_ROOT: archive, LEDGER_FILE: ledgerFile, NIGHTLY_SNAPSHOTS,
       RESTORE_DB_STATE_FILE: restoreDbState,
       WORKFLOW_DATA_FILE: workflowData, WORKFLOW_TOC_FILE: workflowToc, WORKFLOW_STORE_DIR: workflowStoreDir,
       RESTORE_DB_QUERY_COUNT_FILE: restoreDbQueryCount,
@@ -144,6 +144,13 @@ function run(args: string[], opts: { env?: Record<string, string>; input?: strin
   return { code: r.status ?? -1, stdout: r.stdout, stderr: r.stderr, all: r.stdout + r.stderr };
 }
 const base = () => ["--snapshot", "abc123", "--yes", "--old-server-stopped"];
+const latest = () => ["--snapshot", "latest", "--yes", "--old-server-stopped"];
+// Two nightly snapshots, the newer one listed first, as restic snapshots --json prints them.
+const NEWER_SNAPSHOT = "b".repeat(64), OLDER_SNAPSHOT = "a".repeat(64);
+const NIGHTLY_SNAPSHOTS = JSON.stringify([
+  { id: NEWER_SNAPSHOT, short_id: NEWER_SNAPSHOT.slice(0, 8), time: "2026-11-11T02:00:00.123456789+01:00", tags: ["nightly"] },
+  { id: OLDER_SNAPSHOT, short_id: OLDER_SNAPSHOT.slice(0, 8), time: "2026-11-10T02:00:00.987654321+01:00", tags: ["nightly"] },
+]);
 function vaultInventory() {
   const areaId = randomUUID(), backingId = randomUUID(), planId = randomUUID();
   const inventory = {
@@ -276,6 +283,10 @@ esac
   stub("restic", `
 if [ -n "\${RESTIC_FAIL:-}" ]; then echo "stub restic: boom" >&2; exit 1; fi
 case " $* " in
+  *" snapshots "*)
+    [ -z "\${RESTIC_SNAPSHOTS_FAIL:-}" ] || { echo "stub restic: cannot list" >&2; exit 1; }
+    printf '%s\\n' "\${RESTIC_SNAPSHOTS_JSON:-$NIGHTLY_SNAPSHOTS}"
+    ;;
   *" restore "*)
     target=""; prev=""
     for a in "$@"; do [ "$prev" = "--target" ] && target="$a"; prev="$a"; done
@@ -789,9 +800,26 @@ exit 0`);
     expect(readFileSync(seen, "utf8").trim()).toBe("drwx------");
   });
 
-  it("asks for \"latest\" among nightly snapshots only", () => {
-    expect(run(["--snapshot", "latest", "--yes", "--old-server-stopped"]).code).toBe(0);
-    expect(logLines().find((l) => l.startsWith("restic") && l.includes(" restore "))).toMatch(/restore latest --tag nightly --target /);
+  it("looks \"latest\" up once among nightly snapshots only, restores exactly that one and names it by its id", () => {
+    const r = run(latest());
+    expect(r.code, r.all).toBe(0);
+    expect(logLines().find((l) => l.startsWith("restic") && l.includes(" snapshots "))).toMatch(/ snapshots --json --tag nightly$/);
+    expect(logLines().find((l) => l.startsWith("restic") && l.includes(" restore "))).toMatch(new RegExp(` restore ${NEWER_SNAPSHOT} --target `));
+    expect(r.all).toContain(`the newest nightly snapshot is ${NEWER_SNAPSHOT.slice(0, 8)}; this run restores exactly that one.`);
+    expect(r.all).toContain(`restored snapshot ${NEWER_SNAPSHOT.slice(0, 8)}:`);
+    expect(r.all).not.toContain("snapshot latest");
+  });
+
+  it("refuses, changing nothing, when \"latest\" cannot be looked up", () => {
+    for (const env of [{ RESTIC_SNAPSHOTS_FAIL: "1" }, { RESTIC_SNAPSHOTS_JSON: "[]" }, { RESTIC_SNAPSHOTS_JSON: '[{"id":"not-hex","time":"2026-11-11T02:00:00Z"}]' }]) {
+      writeFileSync(log, "");
+      const r = run(latest(), { env });
+      expect(r.code, r.all).toBe(78);
+      expect(r.all).toContain("restic could not list the nightly snapshots in the backup repository");
+      expect(logLines().filter((l) => l.startsWith("restic") && l.includes(" restore "))).toEqual([]);
+      expect(changes()).toEqual([]);
+      expect(scratchLeft()).toEqual([]);
+    }
   });
 
   it("does not print the gateway-key repair when every agent's key file came back", () => {
@@ -1337,6 +1365,67 @@ describe("restore.sh: a backup from an older release", () => {
     expect(again.code, again.all).toBe(0);
     expect(idx(storeStep("upgrade"))).toBeGreaterThan(idx(new RegExp(`dropdb .*${workflowDatabase}`)));
     expect(idx(/compose --env-file \S+keeper\.env up -d$/)).toBeGreaterThan(-1);
+  });
+
+  it("names the snapshot \"latest\" stood for, and says to run again with it, when an upgrade fails", () => {
+    oldBackup();
+    const short = NEWER_SNAPSHOT.slice(0, 8);
+    const failed = run(latest(), { env: { STORE_UPGRADE_FAIL: "1" } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain(`This restore stopped while upgrading the agent stores from snapshot ${short}, before`);
+    expect(failed.all).toContain(`Fix the cause and run the same restore command again, with --snapshot ${short} in place of latest, so that it reads this same snapshot even if a newer one has been written since: it restores every agent store`);
+    expect(failed.all).not.toContain("snapshot latest");
+    // The run then really does read the same snapshot by its id.
+    writeFileSync(log, "");
+    const again = run(["--snapshot", short, "--yes", "--old-server-stopped"]);
+    expect(again.code, again.all).toBe(0);
+    expect(logLines().find((l) => l.startsWith("restic") && l.includes(" restore "))).toMatch(new RegExp(` restore ${short} --target `));
+  });
+
+  it("a store whose backup file cannot be restored names the snapshot \"latest\" stood for", () => {
+    const short = NEWER_SNAPSHOT.slice(0, 8);
+    const failed = run(latest(), { env: { PG_RESTORE_FAIL_DB: workflowDatabase } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain(`This restore stopped while restoring the agent stores from snapshot ${short}. Nothing outside the agent stores was changed`);
+    expect(failed.all).toContain(`Run the same restore command again, with --snapshot ${short} in place of latest, so that it reads this same snapshot even if a newer one has been written since. If the backup file`);
+  });
+
+  it("when its cleanup is uncertain after a failed upgrade step, says the next run will be refused and what to check and remove first", () => {
+    oldBackup();
+    rmSync(join(binDir, "pnpm"));
+    const ENGINE = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+    const failed = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_CLIENT_CIDFILE_MISSING: "1" } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain("its permissions could not be applied and verified");
+    expect(failed.all).toContain("Fix the cause and run the same restore command again");
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const runDirectory = join(runsRoot, runName!);
+    const [scratch] = scratchLeft();
+    expect(failed.all).toContain('restore: the message above says to run the same restore again, but for now that run would be refused ("could not create a private restore work record")');
+    expect(failed.all).toContain("docker ps --all --filter name=lares-restore- --filter name=lares-workflow-store- must list nothing; remove anything it lists with docker rm --force <name>");
+    expect(failed.all).toContain(`remove the private scratch folder, which holds decrypted backup files: rm -rf ${join(scratchParent, scratch!)}`);
+    expect(failed.all).toContain(`remove this run's record and its claim: rm -rf ${runDirectory} ${runsRoot}/restore-active.lock`);
+    // The advice is right on both counts: refused as it says, then fine once those are gone.
+    const refused = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
+    expect(refused.code).toBe(78);
+    expect(refused.all).toContain("could not create a private restore work record");
+    rmSync(join(scratchParent, scratch!), { recursive: true, force: true });
+    rmSync(runDirectory, { recursive: true, force: true });
+    rmSync(join(runsRoot, "restore-active.lock"));
+    // The stub's store was upgraded by the first run; the next run restores it from the backup again.
+    rmSync(join(workflowStoreDir, workflowDatabase), { force: true });
+    const again = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
+    expect(again.code, again.all).toBe(0);
+  });
+
+  it("says nothing about a refused next run when cleanup is uncertain but no message advised one", () => {
+    const ENGINE = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+    rmSync(join(binDir, "pnpm"));
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_CLIENT_CIDFILE_MISSING: "1" } });
+    expect(r.code).toBe(75);
+    expect(r.all).toContain("cleanup is uncertain");
+    expect(r.all).not.toContain("the message above says to run the same restore again");
   });
 
   it("a store whose backup file cannot be restored says the server is still fresh, and the same restore then succeeds", () => {
