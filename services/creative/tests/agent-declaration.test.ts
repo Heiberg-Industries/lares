@@ -445,9 +445,9 @@ describe("creative agent declaration ↔ authored tools", () => {
     // the lint's real complaint (`lintWriteShape`'s "unmapped-tool" kind) is that it maps to no
     // capability at all — true, and deliberate (ALWAYS_PRESENT_TOOLS above). Its only write is
     // `defineState(...).update()` on the session's own language slot, never a third party.
-    // The two instruction readers are also unmapped. Their real sources and their one-hop
-    // imports are checked by the agent-kit regression test; these reasons only exempt their
-    // intentionally instruction/read-only tool names from the capability join.
+    // The public-documentation reader is also unmapped. Its real sources and their one-hop
+    // imports are checked by the agent-kit regression test; the reason below only exempts its
+    // intentionally read-only tool name from the capability join.
     expect(() =>
       assertNoUngatedWrites({
         agentDir: AGENT_DIR,
@@ -455,7 +455,6 @@ describe("creative agent declaration ↔ authored tools", () => {
         label: "eve-creative-agent",
         skip: {
           set_language: "ALWAYS_PRESENT, no capability, writes only its own session's language slot",
-          load_skill: "instruction loader; its deployed sources are checked read-only in agent-kit",
           public_doc: "fixed-ID documentation reader; its deployed sources are checked read-only in agent-kit",
         },
       }),
@@ -517,14 +516,14 @@ describe("creative agent framework_tools matches the compiled manifest", () => {
 // capability — the generated section correctly says nothing about it, and the model is told
 // about it by its own tool description, not by this text. See ALWAYS_PRESENT_TOOLS above.
 //
-// `load_skill` joins it: it is the service's own agent/tools/load_skill.ts, always present and
-// not a capability. `ask_question` and `todo` used to be exempt here as framework built-ins the
-// agent kept. On eve 1.0 neither can be in a build of this agent: `todo` is gone from the
-// framework, `ask_question` is opt-in, and `defaultTools: false` turns every default away
-// (tests/tool-harness.test.ts). They are no longer exempt, so one turning up fails below.
+// Nothing else is exempt. `ask_question`, `todo` and `load_skill` used to be: the first two as
+// framework built-ins the agent kept, the third as the service's own skill loader. None can be
+// in a build of this agent now: `todo` is gone from the framework, `ask_question` is opt-in,
+// `defaultTools: false` turns every default away (tests/tool-harness.test.ts), and the skill
+// loader file was removed when skills moved onto eve's own loading
+// (tests/skill-availability.test.ts). One of them turning up fails below.
 const FRAMEWORK_BUILTIN_TOOLS: ReadonlySet<string> = new Set<string>([
   "set_language",
-  "load_skill",
 ]);
 
 // The post-build truth check for the same section. The
