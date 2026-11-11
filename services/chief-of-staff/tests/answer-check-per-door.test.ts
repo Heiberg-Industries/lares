@@ -28,8 +28,9 @@ const telegram = (id: string) => ({ authenticator: "telegram-webhook", issuer: "
 const consoleStranger = { authenticator: "lares-console", principalId: "member-x", principalType: "user", attributes: { user_id: "member-x" } };
 
 beforeEach(() => {
-  vi.stubEnv("SLACK_ALLOWED_USER_IDS", "U_OWNER");
-  vi.stubEnv("TELEGRAM_PRINCIPAL_ID", "100");
+  // TWO allowed people on each door: the first id is the owner, the second may talk to the agent but not approve for the owner.
+  vi.stubEnv("SLACK_ALLOWED_USER_IDS", "U_OWNER,U_SECOND");
+  vi.stubEnv("TELEGRAM_PRINCIPAL_ID", "100,200");
   vi.stubEnv("LARES_AGENT_INCARNATION", "");
 });
 afterEach(() => vi.unstubAllEnvs());
@@ -62,6 +63,19 @@ describe.each([["approve"], ["deny"]])("%s, at each door", (optionId) => {
     it("an answer with no identity is refused", async () => {
       expect(refused(await answer({ requester: slack("U_OWNER"), responder: null, optionId }))).toBe(true);
       expect(refused(await answer({ requester: app, responder: null, optionId }))).toBe(true);
+    });
+  });
+
+  describe("a second ALLOWED person (not the owner), on each door", () => {
+    it.each([["Slack", slack("U_SECOND")], ["Telegram", telegram("200")]])("%s: refused on a person's card, a scheduled card (requester = the app) and a card with no requester", async (_door, second) => {
+      for (const requester of [slack("U_OWNER"), telegram("100"), app, null]) {
+        const r = await answer({ requester, responder: second, optionId });
+        expect(r, `${_door} ${String((requester as any)?.authenticator)}`).toMatchObject({ stage: "held-or-refused", types: [["response.settled", "refused"]] });
+      }
+    });
+    it("the owner is still admitted next to them", async () => {
+      expect((await answer({ requester: app, responder: slack("U_OWNER"), optionId })).stage).toBe("admitted");
+      expect((await answer({ requester: app, responder: telegram("100"), optionId })).stage).toBe("admitted");
     });
   });
 

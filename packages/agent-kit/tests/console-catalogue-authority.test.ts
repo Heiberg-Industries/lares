@@ -55,6 +55,21 @@ describe('both catalogues guard their callbacks before underlying execution or a
       }
     });
 
+    it(`${role}: on a native door only the OWNER (first id of the list) may answer; a second allowed person is refused, Approve and Deny`, async () => {
+      vi.stubEnv('SLACK_ALLOWED_USER_IDS', 'U_OWNER,U_SECOND');
+      vi.stubEnv('LARES_AGENT_INCARNATION', '');
+      const t = (await runDynamic(resolver, nativeCtx)).fixture;
+      const slack = (id: string) => ({ authenticator: 'slack-webhook', principalId: id, principalType: 'user', attributes: { user_id: id } });
+      const app = { authenticator: 'app', principalId: 'eve:app', principalType: 'runtime', attributes: {} };
+      for (const decision of ['approve', 'deny']) {
+        const answer = (requester: unknown, who: string) => ({ request: { interactionId: 'i1', callId: 'call-1', toolName: 'fixture', principal: requester }, response: { decision, principal: slack(who) }, session: { id: 'wrun_native', initiator: null } });
+        for (const requester of [slack('U_OWNER'), app, null]) {
+          expect(await t.approval.response(answer(requester, 'U_OWNER')), decision).toEqual({ status: 'allowed' });
+          expect(await t.approval.response(answer(requester, 'U_SECOND')), decision).toMatchObject({ status: 'rejected' });
+        }
+      }
+    });
+
     it(`${role}: a bound console conversation gets a response policy that refuses an unbound answer, for Approve and for Deny`, async () => {
       // The one gated tool each role may show in a private conversation.
       const gated = role === 'chief' ? 'agent-kit__vault_write' : 'lares_read_public_doc';

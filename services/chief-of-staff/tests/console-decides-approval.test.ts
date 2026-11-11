@@ -79,8 +79,9 @@ describe("the console decides an approval that a Telegram session is waiting on"
     beforeEach(() => {
       // The unclaimed-door lists: the console's owner address and the Telegram owner id.
       vi.stubEnv("LARES_AGENT_INCARNATION", "");
-      vi.stubEnv("CONSOLE_ALLOWED_EMAILS", OWNER);
-      vi.stubEnv("TELEGRAM_PRINCIPAL_ID", "100");
+      // The owner is the FIRST id on each list; the second console member and the second Telegram person are allowed but not the owner.
+      vi.stubEnv("CONSOLE_ALLOWED_EMAILS", `${OWNER},second@example.com`);
+      vi.stubEnv("TELEGRAM_PRINCIPAL_ID", "100,200");
     });
     afterEach(() => vi.unstubAllEnvs());
 
@@ -92,6 +93,9 @@ describe("the console decides an approval that a Telegram session is waiting on"
     it.each(["approve", "deny"])("the owner's console %s is admitted on a card a SCHEDULED turn raised (requester = the app) and on one with no requester", async (optionId) => {
       for (const requester of [app, null]) expect((await verdict(await doorAuth(OWNER), optionId, requester)).stage).toBe("admitted");
     });
+    it.each(["approve", "deny"])("a second ALLOWED console member's %s is refused too, on a person's card, a scheduled card and one with no requester", async (optionId) => {
+      for (const requester of [telegram, app, null]) expect((await verdict(await doorAuth("second@example.com"), optionId, requester)).stage).not.toBe("admitted");
+    });
     it.each(["approve", "deny"])("another member's console %s is refused, on a person's card, a scheduled card and one with no requester", async (optionId) => {
       for (const requester of [telegram, app, null]) expect((await verdict(await doorAuth("someone-else@example.com"), optionId, requester)).stage).not.toBe("admitted");
     });
@@ -99,13 +103,16 @@ describe("the console decides an approval that a Telegram session is waiting on"
 
   it("3. at execution the answerer is ctx.approval.responder: the owner's console answer passes, another member's or none is refused", async () => {
     vi.stubEnv("LARES_AGENT_INCARNATION", "");
-    vi.stubEnv("CONSOLE_ALLOWED_EMAILS", OWNER);
-    vi.stubEnv("TELEGRAM_PRINCIPAL_ID", "100");
+    vi.stubEnv("CONSOLE_ALLOWED_EMAILS", `${OWNER},second@example.com`);
+    vi.stubEnv("TELEGRAM_PRINCIPAL_ID", "100,200");
     const telegram = { authenticator: "telegram-webhook", principalId: "100", principalType: "user", attributes: { user_id: "100" } };
     const run = (responder?: unknown) => ({ callId: "call-1", session: { auth: { current: telegram, initiator: telegram } }, ...(responder === undefined ? {} : { approval: { responder } }) });
     // The assertApproval path itself reads the process env, hence the stubs above; it needs the ledger, which passes when no row exists.
     await expect(assertApproval(run(await doorAuth(OWNER)) as never, "echo_note", { note: "hello" })).resolves.toBeUndefined();
     await expect(assertApproval(run(await doorAuth("someone-else@example.com")) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
+    // An ALLOWED second console member, or an allowed second Telegram person, is not the owner: refused at execution too.
+    await expect(assertApproval(run(await doorAuth("second@example.com")) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
+    await expect(assertApproval(run({ authenticator: "telegram-webhook", principalId: "200", principalType: "user", attributes: { user_id: "200" } }) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
     await expect(assertApproval(run({}) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
     vi.unstubAllEnvs();
   });
