@@ -638,7 +638,7 @@ _engine_restore_client_run() { # kind, operation, image, user, repeated --mount 
   shift
   node_args=("$@")
   case "$kind:$operation" in
-    keeper:financial-freeze|keeper:migrate|keeper:verify-restored-engine|keeper:workflow-database|vault:verify-files|vault:verify-empty|vault:verify-snapshot|vault:verify) ;;
+    keeper:financial-freeze|keeper:migrate|keeper:verify-restored-engine|keeper:workflow-database|keeper:workflow-apply-database|vault:verify-files|vault:verify-empty|vault:verify-snapshot|vault:verify) ;;
     *) echo 'restore client: operation is outside the fixed restore set' >&2; return 78 ;;
   esac
   [ "${node_args[0]:-}" = node ] && [ "${node_args[1]:-}" = --import ] &&
@@ -667,6 +667,13 @@ _engine_restore_client_run() { # kind, operation, image, user, repeated --mount 
         [ "${node_args[4]}" = verify-database ] && [ "${node_args[5]}" = --host ] && [ "${node_args[6]}" = 127.0.0.1 ] &&
         [ "${node_args[7]}" = --port ] && [ "${node_args[9]}" = --database ] &&
         [ "${node_args[11]}" = --runtime-password-file ] && [[ "${node_args[12]}" == /etc/lares/secrets/* ]] || return 78 ;;
+    keeper:workflow-apply-database)
+      [ "$user" = 0:0 ] && [ "${#node_args[@]}" -eq 15 ] &&
+        [ "${node_args[3]}" = /app/services/box/bin/workflow-template.ts ] &&
+        [ "${node_args[4]}" = apply-database ] && [ "${node_args[5]}" = --host ] && [ "${node_args[6]}" = 127.0.0.1 ] &&
+        [ "${node_args[7]}" = --port ] && [ "${node_args[9]}" = --database ] && [[ "${node_args[10]}" =~ ^lares_[a-f0-9]{32}$ ]] &&
+        [ "${node_args[11]}" = --provisioner-password-file ] && [ "${node_args[12]}" = /etc/lares/secrets/workflow-provisioner-password ] &&
+        [ "${node_args[13]}" = --runtime-password-file ] && [[ "${node_args[14]}" == /etc/lares/secrets/* ]] || return 78 ;;
     vault:*)
       [ "$user" = 10001:10001 ] && [ "${#node_args[@]}" -eq 7 ] &&
         [ "${node_args[3]}" = /app/services/box/bin/vault-storage.ts ] &&
@@ -744,6 +751,32 @@ _engine_restore_client_run() { # kind, operation, image, user, repeated --mount 
     echo 'restore client: attached output ended before completion was confirmed' >&2; return 78
   fi
   return "$wait_status"
+}
+
+# restore.sh writes each agent store it has just restored from an older release's backup, one
+# name per line, into its own private run directory (RESTORE_WORK, root only, mode 0700) as
+# workflow-upgrade-stores (mode 0600), and removes the file when the upgrade step ends. The
+# apply-database restore job runs only for a name in that file.
+restore_client_store_was_restored() { # database
+  [ -n "${RESTORE_WORK:-}" ] && [ -d "$RESTORE_WORK" ] || return 1
+  python3 - "$RESTORE_WORK/workflow-upgrade-stores" "$1" <<'PYRESTOREDSTORES'
+import os, stat, sys
+path, database = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_nlink != 1 or info.st_size > 65536):
+            raise ValueError()
+        raw = os.read(fd, 65537)
+    finally:
+        os.close(fd)
+    if database not in raw.decode("ascii").split("\n"):
+        raise ValueError()
+except Exception:
+    raise SystemExit(1)
+PYRESTOREDSTORES
 }
 
 engine_restore_keeper_client() { # fixed operation only; caller supplies only the workflow database and port for that operation
@@ -834,6 +867,36 @@ PYSOCKET
       environment+=(--env PGHOST=127.0.0.1 --env "PGPORT=$port" --env PGUSER=lares_app --env "PGDATABASE=$database")
       argv=(node --import tsx/esm /app/services/box/bin/workflow-template.ts verify-database \
         --host 127.0.0.1 --port "$port" --database "$database" --runtime-password-file "$workflow_container")
+      ;;
+    workflow-apply-database)
+      # The permissions half of upgrading an agent store that THIS restore restored from an older
+      # release's backup (restore.sh, then workflow-store-steps.sh). Only a store this run wrote
+      # into its private run record after restoring it; only on this host's database; only the
+      # two fixed workflow credential files, read-only. The program itself refuses a database the
+      # workflow owner does not own, and verifies the result as the agents' own login.
+      [ "$#" -eq 3 ] || return 78
+      database="$2"; port="$3"
+      [[ "$database" =~ ^lares_[a-f0-9]{32}$ && "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 78
+      restore_client_store_was_restored "$database" \
+        || { echo 'restore client: this agent store was not restored for upgrade by this restore run' >&2; return 78; }
+      workflow_host="${WORKFLOW_PASSWORD_FILE:-}"
+      if [ -n "${PREFIX:-}" ] && [ "${PREFIX%/}" != "" ] && [[ "$workflow_host" == "${PREFIX%/}"/* ]]; then
+        workflow_container="/${workflow_host#"${PREFIX%/}/"}"
+      else
+        workflow_container="$workflow_host"
+      fi
+      case "$workflow_container" in /etc/lares/secrets/*) ;; *) return 78 ;; esac
+      [[ "$workflow_container" != *'..'* && "$workflow_container" != *'/./'* && "$workflow_container" != *:* ]] || return 78
+      [ "$workflow_host" = "$(P "$workflow_container")" ] && [ -f "$workflow_host" ] && [ ! -L "$workflow_host" ] || return 78
+      local host_provisioner='/etc/lares/secrets/workflow-provisioner-password'
+      [ "$workflow_container" != "$host_provisioner" ] || return 78
+      [ -f "$(P "$host_provisioner")" ] && [ ! -L "$(P "$host_provisioner")" ] && [ -s "$(P "$host_provisioner")" ] || return 78
+      mounts+=(--mount "type=bind,src=$(P "$host_provisioner"),dst=$host_provisioner,readonly" \
+        --mount "type=bind,src=$workflow_host,dst=$workflow_container,readonly")
+      environment+=(--env PGHOST=127.0.0.1 --env "PGPORT=$port" --env PGUSER=lares_workflow_provisioner --env "PGDATABASE=$database")
+      argv=(node --import tsx/esm /app/services/box/bin/workflow-template.ts apply-database \
+        --host 127.0.0.1 --port "$port" --database "$database" \
+        --provisioner-password-file "$host_provisioner" --runtime-password-file "$workflow_container")
       ;;
     *) echo 'restore client: unsupported fixed Keeper operation' >&2; return 78 ;;
   esac

@@ -320,9 +320,23 @@ workflow_engine() {
   fi
 }
 
-# The last line a program wrote on its way out, without that program's own name in front.
-workflow_reason_from() {
-  sed -e '/^[[:space:]]*$/d' -e 's/^workflow stores: //' -e 's/^workflow store: //' "$1" 2>/dev/null | tail -1 | cut -c1-600
+# The per-store steps restore.sh runs too: workflow_reason_from, workflow_store_state and
+# workflow_store_bring_current. They call workflow_apply_one below for the permissions.
+# shellcheck source=workflow-store-steps.sh
+. "$HERE/workflow-store-steps.sh"
+
+# The permissions half of a store's step, through this update's own engine client.
+workflow_apply_one() { # KIND DATABASE ERRFILE
+  if [ "$1" = template ]; then
+    workflow_engine --ro "$WORKFLOW_PROVISIONER_PASSWORD_FILE" --ro "$WORKFLOW_PASSWORD_FILE" bin/workflow-template.ts apply \
+      --host "$UPDATE_PGHOST" --port "$UPDATE_PGPORT" --provisioner-password-file "$WORKFLOW_PROVISIONER_PASSWORD_FILE" \
+      --runtime-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$3"
+  else
+    workflow_engine --ro "$WORKFLOW_PROVISIONER_PASSWORD_FILE" --ro "$WORKFLOW_PASSWORD_FILE" bin/workflow-template.ts apply-database \
+      --host "$UPDATE_PGHOST" --port "$UPDATE_PGPORT" --database "$2" \
+      --provisioner-password-file "$WORKFLOW_PROVISIONER_PASSWORD_FILE" \
+      --runtime-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$3"
+  fi
 }
 
 # The durable note (see WORKFLOW_STATE_FILE). One writer, whole-file replace, mode 0600.
@@ -463,13 +477,12 @@ workflow_survey() {
       WORKFLOW_REASON="the list of agent stores came back unreadable, and an unreadable check counts as a failing one"
       return 1
     fi
-    if ! state=$(workflow_store_step "$ROLE_IMAGE" check "$database" "$UPDATE_PGHOST" "$UPDATE_PGPORT" \
-        "$WORKFLOW_PROVISIONER_PASSWORD_FILE" 2> "$WORK/workflow-check.err"); then
+    if ! state=$(workflow_store_state "$ROLE_IMAGE" "$database" "$UPDATE_PGHOST" "$UPDATE_PGPORT" \
+        "$WORKFLOW_PROVISIONER_PASSWORD_FILE" "$WORK/workflow-check.err"); then
       reason=$(workflow_reason_from "$WORK/workflow-check.err")
       WORKFLOW_REASON="$label: ${reason:-it could not be checked}"
       return 1
     fi
-    state=$(printf '%s' "$state" | tr -d '\r' | sed '/^$/d' | tail -1)
     case "$state" in
       old) WORKFLOW_OLD=$(( WORKFLOW_OLD + 1 )) ;;
       current) ;;
@@ -628,49 +641,15 @@ workflow_remove_agent_containers() {
 # but its permissions are applied and checked like every other: an earlier run may have ended
 # between the two. Returns 1 with WORKFLOW_REASON naming the store.
 workflow_upgrade_stores() {
-  local kind database state label after applied
+  local kind database state label
   workflow_state set phase migrating || { WORKFLOW_REASON="I could not write down that the upgrade has started"; return 1; }
   WORKFLOW_MOVED=1
   # From here on nothing is started again by this update, so the containers can go.
   workflow_remove_agent_containers || return 1
   while IFS="$TAB" read -r kind database state label <&3; do
     [ -n "$kind" ] || continue
-    if [ "$state" = old ]; then
-      echo "update: upgrading $label."
-      if ! workflow_store_step "$ROLE_IMAGE" upgrade "$database" "$UPDATE_PGHOST" "$UPDATE_PGPORT" \
-          "$WORKFLOW_PROVISIONER_PASSWORD_FILE" > "$WORK/workflow-migrate.out" 2> "$WORK/workflow-migrate.err"; then
-        WORKFLOW_REASON="$label: $(workflow_reason_from "$WORK/workflow-migrate.err")"
-        return 1
-      fi
-      # The package's step ends its own process, so its result is read back, never assumed.
-      if ! after=$(workflow_store_step "$ROLE_IMAGE" check "$database" "$UPDATE_PGHOST" "$UPDATE_PGPORT" \
-          "$WORKFLOW_PROVISIONER_PASSWORD_FILE" 2> "$WORK/workflow-check.err"); then
-        WORKFLOW_REASON="$label: after its upgrade, $(workflow_reason_from "$WORK/workflow-check.err")"
-        return 1
-      fi
-      after=$(printf '%s' "$after" | tr -d '\r' | sed '/^$/d' | tail -1)
-      if [ "$after" != current ]; then
-        WORKFLOW_REASON="$label: it is not at this release's schema after its upgrade"
-        return 1
-      fi
-    else
-      echo "update: $label is already upgraded; checking its permissions."
-    fi
-    applied=1
-    if [ "$kind" = template ]; then
-      workflow_engine --ro "$WORKFLOW_PROVISIONER_PASSWORD_FILE" --ro "$WORKFLOW_PASSWORD_FILE" bin/workflow-template.ts apply \
-        --host "$UPDATE_PGHOST" --port "$UPDATE_PGPORT" --provisioner-password-file "$WORKFLOW_PROVISIONER_PASSWORD_FILE" \
-        --runtime-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$WORK/workflow-apply.err" || applied=0
-    else
-      workflow_engine --ro "$WORKFLOW_PROVISIONER_PASSWORD_FILE" --ro "$WORKFLOW_PASSWORD_FILE" bin/workflow-template.ts apply-database \
-        --host "$UPDATE_PGHOST" --port "$UPDATE_PGPORT" --database "$database" \
-        --provisioner-password-file "$WORKFLOW_PROVISIONER_PASSWORD_FILE" \
-        --runtime-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$WORK/workflow-apply.err" || applied=0
-    fi
-    if [ "$applied" != 1 ]; then
-      WORKFLOW_REASON="$label: its permissions could not be applied and verified ($(workflow_reason_from "$WORK/workflow-apply.err"))"
-      return 1
-    fi
+    workflow_store_bring_current update "$ROLE_IMAGE" "$UPDATE_PGHOST" "$UPDATE_PGPORT" \
+      "$WORKFLOW_PROVISIONER_PASSWORD_FILE" "$WORK" "$kind" "$database" "$state" "$label" || return 1
   done 3< "$WORK/workflow-states.tsv"
   return 0
 }

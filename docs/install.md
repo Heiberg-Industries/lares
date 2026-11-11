@@ -778,6 +778,13 @@ Ubuntu server with the tools from section 1, plus `restic` (`apt-get install -y 
    newer release than the one installed here, a snapshot with an unsafe database name or no main database,
    too little free disk, a missing token folder, and a restored address that differs from the one
    the server was installed with (restoring to a different address is not possible yet).
+   Each agent's store in the snapshot is checked the same way: one written by this release is
+   restored as it is; one written by the release before it is restored and then upgraded with the
+   same steps `lares update` runs; anything else (a newer or unknown layout) is refused, changing
+   nothing. The agent stores are restored and upgraded first. If an upgrade fails, the restore
+   stops before the main database, the Vault and the folders are replaced, the services stay
+   stopped, and running the same restore command again starts the agent stores over from the
+   backup.
    Vault inventory, stored ownership and both repositories are checked against a temporary
    restoration of the snapshot database before the target changes. A fresh install's exact,
    untouched marker-only stores may be moved into private restore staging; notes, extra refs,
