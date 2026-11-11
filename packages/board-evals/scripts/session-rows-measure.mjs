@@ -293,7 +293,7 @@ try {
   await waitHealthy(host, () => logs);
 
   const { Client } = await import(join(repo, 'services/chief-of-staff/node_modules/eve/dist/src/client/index.js'));
-  const client = new Client({ host, auth: { basic: { username: 'fixture', password: 'disposable-fixture-only' } } });
+  const client = new Client({ baseUrl: host, auth: { basic: { username: 'fixture', password: 'disposable-fixture-only' } } });
 
   // --- the measurement ---------------------------------------------------------------------------
   const stages = [];
@@ -307,26 +307,28 @@ try {
   await record('0-baseline (build+start, no session yet)');
 
   const one = await client.sessions.create({ message: 'hello' });
-  const first = await one.response.result();
-  if (!/measurement-fixture-reply/.test(first.message)) throw new Error('Turn 1 reply did not come from the fixture model: ' + JSON.stringify(first));
+  const first = await one.delivery.result();
+  if (!/measurement-fixture-reply/.test(first.reply ?? '')) throw new Error('Turn 1 reply did not come from the fixture model: ' + JSON.stringify(first));
   await waitQuiet(db, 'after turn 1');
   await record('1-after-turn-1 (plain)');
 
   const second = await (await one.session.send('hello again')).result();
-  if (!/measurement-fixture-reply/.test(second.message)) throw new Error('Turn 2 reply did not come from the fixture model: ' + JSON.stringify(second));
+  if (!/measurement-fixture-reply/.test(second.reply ?? '')) throw new Error('Turn 2 reply did not come from the fixture model: ' + JSON.stringify(second));
   await waitQuiet(db, 'after turn 2');
   await record('2-after-turn-2 (plain)');
 
   const third = await (await one.session.send('pending write')).result();
-  if (!(third.inputRequests?.length > 0)) throw new Error('Turn 3 did not park an approval card');
+  if (!(third.interactions?.length > 0)) throw new Error('Turn 3 did not park an approval card');
   await waitQuiet(db, 'after turn 3');
   const afterThird = await record('3-after-turn-3 (tool call, approval pending)');
 
   const titlesBeforeReset = await titleLengths(db);
 
-  const resetResult = await one.session.reset({ reason: 'session-rows-measure' });
-  if (!['reset', 'no_active_session'].includes(resetResult.status)) {
-    throw new Error('Unexpected reset outcome: ' + JSON.stringify(resetResult));
+  // eve 1.0's client has no `reset()`: a session is retired with `end()`, which is what a reset did
+  // to the session being measured.
+  const resetResult = await (await one.session.end({ reason: 'session-rows-measure' })).result();
+  if (!resetResult.sessionEnded) {
+    throw new Error('Unexpected end outcome: ' + JSON.stringify(resetResult));
   }
   await waitQuiet(db, 'after reset');
   const afterReset = await record('4-after-reset');

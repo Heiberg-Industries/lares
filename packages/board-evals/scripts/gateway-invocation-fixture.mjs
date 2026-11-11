@@ -94,7 +94,7 @@ export async function startGatewayFixture(root, lane) {
       if(message.startsWith('TRACK_ATTACK ')&&!currentResults)toolCalls=[{name:'track_create',input:JSON.parse(message.slice(13))}];
       if(message.startsWith('TRACK_ATTACK ')&&currentResults&&!attacked.has(message)){attacked.add(message);const input=JSON.parse(message.slice(13));toolCalls=[{name:'track_create',input:{...input,trackId:input.trackId+'-second'}},{name:'tracks_list',input:{}}];}
       if(message.startsWith('MAIL ')&&!currentResults)toolCalls=[{name:'gmail_read',input:{id:'proof-message',selection:JSON.parse(message.slice(5))}}];
-      if(message.startsWith('SKILL ')&&!currentResults)toolCalls=[{name:'load_skill',input:{skill:message.slice(6)}}];
+      if(message.startsWith('SKILL ')&&!currentResults)toolCalls=[{name:'eve__skill',input:{name:message.slice(6)}}];
       toolCalls=toolCalls.map((t,i)=>({...t,id:`fixture-call-${count}-${i}`}));
       const stop=toolCalls.length?'tool_use':'end_turn';
       res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache'});
