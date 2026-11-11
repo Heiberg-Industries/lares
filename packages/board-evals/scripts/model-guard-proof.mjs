@@ -1,63 +1,122 @@
 /**
- * model-guard-proof.mjs — is a model call OUTSIDE the scripted model really refused?
+ * model-guard-proof.mjs — does the model guard refuse a bare model id in a live server?
  *
- * `tests/model-guard.test.ts` pins that the guard is installed. This run shows it biting in a real
- * runtime. A turn is served by the fixture's scripted model; then the conversation's history is
- * compacted between turns. Compaction makes a model call of its own, and it is the path on which
- * eve picks a model up from its saved id instead of the provider object the agent selected, so it
- * is where a call would leave for a hosted provider if nothing stopped it.
+ * `tests/model-guard.test.ts` pins that the guard file exists and that loading it in a test leaves
+ * the AI SDK's default provider refusing. This run shows the same thing in a real `eve start`
+ * server built from the fixture.
  *
- * WHAT IS ASSERTED: the scripted model is not called for the compaction; whatever the compaction
- * attempted was refused, by the kit's own compaction refusal or by the refusing default provider
- * (the message says which); no request left the machine (nothing here has a credential or a
- * provider configured, and the allowlisted environment carries none); and the conversation still
- * answers from the scripted model afterwards.
+ * WHY A BARE MODEL ID. Handed a model-id string, the AI SDK resolves it through
+ * `globalThis.AI_SDK_DEFAULT_PROVIDER` (`ai` 7.0.169, `dist/index.js`, `resolveLanguageModel`), and
+ * without one through a hosted gateway. eve keeps only a model's id between steps and can
+ * resolve it that way when it picks a conversation up cold. The guard
+ * (`agent/instrumentation/model-guard.ts` → `installRefusingDefaultProvider()`) replaces that
+ * default with one that refuses every request, and locks it.
+ *
+ * WHAT IS ASSERTED, two disposable copies of the fixture, each built and started with `eve start`:
+ *
+ *   A (the fixture as committed). A probe tool calls the AI SDK's `generateText` with a bare model
+ *     id. Asserted: in the server process the default provider is installed and locked; the call
+ *     throws the guard's own refusal ("outside the engine's gateway"); and the turn itself is
+ *     still served by the scripted model, a provider object, which the guard does not touch (the
+ *     reply is the scripted one and the scripted model was called).
+ *   B (the same copy with `agent/instrumentation/model-guard.ts` deleted). The probe tool only
+ *     LOOKS: asserted that no default provider is installed. This is what makes A's refusal the
+ *     guard file's doing. B never makes the call, because without the guard it would be addressed
+ *     to a hosted gateway.
+ *
+ * NOT asserted here: that eve itself ever takes the bare-id path. The kit refuses the known one
+ * (a compaction) before any provider is asked; this run shows what happens if any path does.
  *
  * Run: `node packages/board-evals/scripts/model-guard-proof.mjs` (Docker running, for the
- * definition database). One eve process; everything temporary is disposed in `finally`.
+ * definition database). One server at a time; everything temporary is disposed in `finally`.
  */
-import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
-import { makeApp, run, source, ensureProbeExtensionBuilt } from './proof-harness.mjs';
+import { Client } from 'eve/client';
+import { makeApp, run, source, ensureProbeExtensionBuilt, addFixtureDoor, startServer, FIXTURE_DOOR } from './proof-harness.mjs';
 
-const EVAL_SRC = `
-import { appendFileSync, readFileSync } from "node:fs";
-import { defineEval } from "eve/evals";
+const REFUSAL = "outside the engine's gateway";
 
-const note = (value: unknown) => appendFileSync(process.env.GUARD_PROOF_LOG!, JSON.stringify(value) + "\\n");
-const calls = () => readFileSync(process.env.PROOF_MODEL_LOG!, "utf8").split("\\n").filter(Boolean).length;
+// The one copy of the AI SDK eve itself uses, addressed by its real path: the fixture does not
+// depend on `ai` directly, so the probe tool imports it from where eve's own dependency resolves.
+const AI_ENTRY = join(realpathSync(resolve(source, '../agent-kit/node_modules/ai')), 'dist/index.js');
 
-export default defineEval({
-  async test(t) {
-    const session = await t.session();
-    const control = await session.send("hello there");
-    note({ step: "control", status: control.status, reply: control.reply ?? null, scriptedCalls: calls() });
-    const before = calls();
-    try {
-      const compaction = await session.compact();
-      note({
-        step: "compact", threw: false, status: compaction.status, error: compaction.error ?? null,
-        events: compaction.events.map((e) => (/settled|ended/.test(e.type) ? { type: e.type, data: e.data } : e.type)),
-        scriptedCallsDuring: calls() - before,
-      });
-    } catch (error) {
-      note({ step: "compact", threw: true, message: String(error instanceof Error ? error.message : error), scriptedCallsDuring: calls() - before });
+const PROBE_TOOL_SRC = `
+import { appendFileSync } from "node:fs";
+import { defineTool } from "eve/tools";
+import { z } from "zod";
+import { generateText } from ${JSON.stringify(AI_ENTRY)};
+
+export default defineTool({
+  description: "Model guard probe (proof fixture).",
+  inputSchema: z.object({}),
+  execute: async () => {
+    const d = Object.getOwnPropertyDescriptor(globalThis, "AI_SDK_DEFAULT_PROVIDER");
+    const record: Record<string, unknown> = {
+      pid: process.pid,
+      installed: d !== undefined && d.value !== undefined,
+      locked: d !== undefined && d.writable === false && d.configurable === false,
+    };
+    if (process.env.GUARD_PROBE_CALL === "1") {
+      try {
+        await generateText({ model: "anthropic/claude-guard-proof", prompt: "hello", maxRetries: 0 });
+        record.call = "completed";
+      } catch (error) {
+        const e = error as { name?: unknown; message?: unknown; cause?: { message?: unknown } };
+        record.call = "threw";
+        record.name = String(e?.name ?? "");
+        record.message = String(e?.message ?? error) + (e?.cause?.message ? " | cause: " + String(e.cause.message) : "");
+      }
     }
-    const beforeNext = calls();
-    try {
-      const next = await session.send("still here");
-      note({ step: "after", threw: false, status: next.status, reply: next.reply ?? null, error: next.error ?? null, scriptedCallsDuring: calls() - beforeNext });
-    } catch (error) {
-      note({ step: "after", threw: true, message: String(error instanceof Error ? error.message : error), scriptedCallsDuring: calls() - beforeNext });
-    }
+    appendFileSync(process.env.GUARD_PROOF_LOG!, JSON.stringify(record) + "\\n");
+    return { probed: true };
   },
 });
 `;
 
-let container, db, app;
+/** One anchored addition to the COPY's scripted model: "guard probe" calls the probe tool once. */
+function patchScriptedModel(root) {
+  const file = join(root, 'agent/agent.ts');
+  const text = readFileSync(file, 'utf8');
+  const anchor = 'const tool = msg.startsWith("write")';
+  assert.ok(text.includes(anchor), 'agent/agent.ts no longer dispatches on "write" — re-anchor the patch');
+  writeFileSync(file, text.replace(anchor, `if (msg === "guard probe") {\n    if (!acted.has(msg)) { acted.add(msg); return { toolCalls: [{ name: "guard_probe", input: {} }] }; }\n    return \`DONE:\${msg}\`;\n  }\n  ${anchor}`));
+}
+
+function prepare(app, { withGuard }) {
+  const { root, env } = app;
+  env.GUARD_PROOF_LOG = join(root, 'GUARD_PROOF_LOG');
+  writeFileSync(env.GUARD_PROOF_LOG, '');
+  if (withGuard) env.GUARD_PROBE_CALL = '1';
+  else rmSync(join(root, 'agent/instrumentation/model-guard.ts'));
+  patchScriptedModel(root);
+  writeFileSync(join(root, 'agent/tools/guard_probe.ts'), PROBE_TOOL_SRC);
+  addFixtureDoor(root);
+}
+
+async function probe(app) {
+  await run(app.eve, ['build'], { cwd: app.root, env: app.env });
+  const modelCallsBefore = readFileSync(app.env.PROOF_MODEL_LOG, 'utf8').split('\n').filter(Boolean).length;
+  const server = await startServer(app);
+  try {
+    const client = new Client({ baseUrl: server.url, auth: { basic: FIXTURE_DOOR } });
+    const { delivery } = await client.sessions.create({ message: 'guard probe' });
+    const result = await delivery.result({ signal: AbortSignal.timeout(120_000) });
+    const records = readFileSync(app.env.GUARD_PROOF_LOG, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const modelCalls = readFileSync(app.env.PROOF_MODEL_LOG, 'utf8').split('\n').filter(Boolean).length - modelCallsBefore;
+    return { result, records, modelCalls, serverPid: server.pid };
+  } catch (error) {
+    throw Object.assign(error, { message: `${error.message}\n--- eve start log ---\n${server.log().slice(-4000)}` });
+  } finally {
+    await server.stop();
+  }
+}
+
+let container, db;
+const apps = [];
 try {
   await ensureProbeExtensionBuilt();
   container = await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
@@ -65,33 +124,35 @@ try {
   await db.query(readFileSync(resolve(source, '../../services/box/sql/001_baseline.sql'), 'utf8'));
   await db.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending)
     VALUES ('board-evals','192.0.2.1','synthetic-unused','owned','11111111-1111-4111-8111-111111111111','11111111-1111-4111-8111-111111111111','ready',false)`);
-  app = makeApp(container.getConnectionUri(), '0');
-  const { root: cwd, env, eve } = app;
-  env.GUARD_PROOF_LOG = join(cwd, 'GUARD_PROOF_LOG');
-  writeFileSync(env.GUARD_PROOF_LOG, '');
-  rmSync(join(cwd, 'evals'), { recursive: true, force: true });
-  mkdirSync(join(cwd, 'evals'), { recursive: true });
-  writeFileSync(join(cwd, 'evals/evals.config.ts'), 'import { defineEvalConfig } from "eve/evals";\nexport default defineEvalConfig({ maxConcurrency: 1 });\n');
-  writeFileSync(join(cwd, 'evals/guard.eval.ts'), EVAL_SRC);
-  await run(eve, ['build'], { cwd, env });
-  const evalRun = await run(eve, ['eval', 'guard', '--verbose', '--skip-report', '--timeout', '300000', '--max-concurrency', '1'], { cwd, env, timeout: 600_000, acceptedCodes: [0, 1] });
-  const notes = readFileSync(env.GUARD_PROOF_LOG, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-  for (const n of notes) console.log(`OBSERVED ${JSON.stringify(n)}`);
-  const serverLog = `${evalRun.stdout}\n${evalRun.stderr}`;
-  const refusals = [...new Set(serverLog.split('\n').filter((l) => /outside the engine's gateway|compact/i.test(l)).map((l) => l.trim().slice(0, 300)))].slice(0, 12);
-  for (const line of refusals) console.log(`SERVER LOG ${line}`);
+  await db.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,applied_revision)
+    VALUES ('board-evals','slack','11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','owner@example.test','U_SYNTHETIC','22222222-2222-4222-8222-222222222222')`);
 
-  const control = notes.find((n) => n.step === 'control');
-  const compact = notes.find((n) => n.step === 'compact');
-  const after = notes.find((n) => n.step === 'after');
-  assert.ok(control?.reply?.includes('DONE:hello there'), 'the control turn was not served by the scripted model');
-  assert.ok(compact, 'the compaction step never reported');
-  assert.equal(compact.scriptedCallsDuring, 0, 'the scripted model was called for the compaction: this run cannot show a call outside it');
-  const everything = `${JSON.stringify(compact)}\n${serverLog}`;
-  const byDefaultProvider = everything.includes("outside the engine's gateway");
-  const byKit = /compact/i.test(JSON.stringify(compact.error ?? compact.message ?? '')) || /refus/i.test(JSON.stringify(compact.error ?? compact.message ?? ''));
-  assert.ok(byDefaultProvider || byKit, `the compaction did not end in a refusal: ${JSON.stringify(compact)}`);
-  console.log(`MODEL GUARD PROOF: PASS — the compaction's model call was refused (${byDefaultProvider ? 'by the refusing default provider' : "by the kit's own compaction refusal, before any provider was asked"}); the scripted model was not called for it; afterwards the conversation ${after?.reply ? `answered ${JSON.stringify(after.reply)}` : `ended ${JSON.stringify(after)}`}.`);
+  // A — the fixture as committed.
+  const guarded = makeApp(container.getConnectionUri(), '0'); apps.push(guarded);
+  prepare(guarded, { withGuard: true });
+  const a = await probe(guarded);
+  console.log(`OBSERVED A (guard file present): ${JSON.stringify({ status: a.result.status, reply: a.result.reply ?? null, modelCalls: a.modelCalls, records: a.records })}`);
+  assert.equal(a.records.length, 1, 'A: the probe tool did not run exactly once');
+  const ra = a.records[0];
+  assert.equal(ra.installed, true, 'A: no default provider is installed in the server process');
+  assert.equal(ra.locked, true, 'A: the default provider is not locked');
+  assert.equal(ra.call, 'threw', `A: a bare model id was NOT refused: ${JSON.stringify(ra)}`);
+  assert.ok(String(ra.message).includes(REFUSAL), `A: the call failed, but not with the guard's refusal: ${ra.message}`);
+  // The control: what the guard leaves alone still works in the same server.
+  assert.equal(a.result.status, 'completed', `A: the turn did not complete: ${JSON.stringify(a.result)}`);
+  assert.equal(a.result.reply, 'DONE:guard probe', 'A: the turn was not answered by the scripted model');
+  assert.ok(a.modelCalls >= 2, `A: the scripted model was called ${a.modelCalls} time(s); expected the tool step and the answer`);
+
+  // B — the same, with the guard file deleted. Looks only; never calls.
+  const bare = makeApp(container.getConnectionUri(), '0'); apps.push(bare);
+  prepare(bare, { withGuard: false });
+  const b = await probe(bare);
+  console.log(`OBSERVED B (guard file deleted): ${JSON.stringify({ status: b.result.status, reply: b.result.reply ?? null, records: b.records })}`);
+  assert.equal(b.records.length, 1, 'B: the probe tool did not run exactly once');
+  assert.equal(b.records[0].installed, false, 'B: a default provider is installed even without the guard file, so A does not show the guard file at work');
+  assert.equal(b.records[0].call, undefined, 'B must never make the call');
+
+  console.log(`MODEL GUARD PROOF: PASS — in a live eve start server (pid ${a.serverPid}) a bare model id handed to the AI SDK is refused with the guard's own message, the default provider is installed and locked, and the scripted model still serves the turn; with the guard file deleted (pid ${b.serverPid}) no default provider is installed.`);
 } finally {
-  try { app?.dispose(); } finally { try { await db?.end(); } finally { await container?.stop(); } }
+  try { for (const app of apps) app.dispose(); } finally { try { await db?.end(); } finally { await container?.stop(); } }
 }
