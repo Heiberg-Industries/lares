@@ -7,6 +7,8 @@
  * Keeper's real broker and a real Git Vault. Only the storage inventory's fixed path is mapped to a
  * file. Set TMPDIR to a real path with no symlink in it, as Vault paths refuse one.
  * Run: pnpm -C packages/board-evals exec tsx scripts/member-private-chat-proof.mjs
+ * On eve 1.0 the gateway lane (PRIVATE_CHAT_PROOF_GATEWAY_LANE) and the budget lane that needs it are
+ * NOT PORTED: see proofs/member-private-chat-2026-11-11.md.
  */
 import assert from 'node:assert/strict';
 import fs,{mkdtempSync,cpSync,symlinkSync,writeFileSync,readFileSync,readdirSync,mkdirSync,rmSync,existsSync} from 'node:fs';
@@ -195,7 +197,11 @@ async function stream(app,member,session){const lines=[];for(let retry=0;retry<8
  const tail=Number(response.headers.get('x-eve-stream-tail-index'));assert.ok(Number.isInteger(tail),'A catch-up read carried no tail index');
  const raw=await response.text();let read=session.index;
  for(const line of raw.split('\n').filter(Boolean)){const record=JSON.parse(line);if(record.$eve!==undefined)continue;lines.push(line);read++;
-  for(const fact of record.facts??[]){if(fact.type==='model.started')observedSteps.add(JSON.stringify([session.id,fact.scope?.turnId,fact.data?.runId??fact.scope?.runId,fact.data?.attempt]));
+  // NOT PORTED (gateway lane): the kit's model-invocation scope still keys a model call on 0.60's
+  // `step.started` coordinates (turn id, sequence, step index), which v27 streams do not carry, so
+  // this records nothing on eve 1.0 and the gateway lane's scope check fails. Kept in the shape
+  // that check (assertGatewayScopes) reads.
+  for(const fact of record.facts??[]){if(fact.type==='step.started')observedSteps.add(JSON.stringify([session.id,fact.data.turnId,fact.data.sequence,fact.data.stepIndex]));
    if(ends(fact)){session.index=read;assert.notEqual(fact.data?.outcome,'failed',raw);return lines.join('\n');}}}
  assert.equal(read-1,tail,'Counted stored lines and the server tail index differ');session.index=read;
  await sleep(100);

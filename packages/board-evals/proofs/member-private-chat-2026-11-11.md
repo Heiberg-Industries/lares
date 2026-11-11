@@ -38,7 +38,7 @@ request through the console's real `forwardChat`. Only the model (scripted) and 
 | Tracks cards (Keeper's real broker, real Git Vault) | `+ PRIVATE_CHAT_PROOF_TRACKS=1` | **PASS** (30 model calls) |
 | Vault read (recording broker fixture) | `+ PRIVATE_CHAT_PROOF_VAULT=1` | **PASS** (16 model calls) |
 | Personal mail send card | `+ PRIVATE_CHAT_PROOF_SEND=1` | **FAIL**, see below |
-| Gateway lane, budget | `PRIVATE_CHAT_PROOF_GATEWAY_LANE`, `PRIVATE_CHAT_PROOF_BUDGET=1` | **Not run.** The gateway lane's scope records still name `step.started` (the gateway fixture's hook, not ported); the budget lane needs the mail lane |
+| Gateway lane, budget | `PRIVATE_CHAT_PROOF_GATEWAY_LANE`, `PRIVATE_CHAT_PROOF_BUDGET=1` | **Not ported.** The kit's model-invocation scope (`captureModelInvocation`, which the gateway fixture records) still keys a model call on 0.60's `step.started` coordinates (turn id, sequence, step index); a v27 stream carries none of them, so the lane's scope check cannot pass as written. The budget lane also needs the mail lane |
 
 The default lane covers: the compiled channel refuses malformed and forbidden envelopes before
 dispatch; one `operationId` stays separate per member; neither member's text reaches the other's

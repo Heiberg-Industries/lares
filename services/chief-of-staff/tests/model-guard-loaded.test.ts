@@ -10,7 +10,7 @@
 // neither the guard nor the stop. So this test asks eve's OWN layout reader (the function the build
 // uses) which files it would load from `agent/`, and then loads exactly those, in a process where
 // nothing has installed a default provider yet. The built image is checked separately, in
-// `services/keeper/tests/runtime-image.probe.py`.
+// `services/keeper/tests/role-start-admission-image.probe.py` (claim `modelGuardActiveInBuiltImage`).
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
