@@ -269,10 +269,11 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         try {
             if (create) await o.compose.create!(input.name, d);
             runtime = create ? await o.compose.status?.(input.name) : await o.compose.saved?.(input.name,d);
-        } catch {
+        } catch (error) {
             // Disk/cache/backup publication already happened. Never describe a lifecycle precondition
             // discovered here as an effect-free refusal or silently replay the operation.
-            throw new Error('Definition published; runtime reconciliation failed. Inspect pending resources.');
+            // The cause is for the keeper's own log: runAction never audits or transports it.
+            throw new Error('Definition published; runtime reconciliation failed. Inspect pending resources.', { cause: error });
         }
         return { name: input.name, hash: loaded.hash, backup: backedUp, runtime };
     }
@@ -391,7 +392,8 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 return result;
             }
             if (!rollbackTarget && firstActivation && nativeHeld(result)) return result;
-            throw new Error('Runtime did not start healthy');
+            // Only ever a cause: this text goes to the keeper's log, never to the caller.
+            throw new Error(nativeHeld(result) ? 'Runtime held: native budget activation required' : 'Runtime did not start healthy');
         } catch (applyError) {
             await beforeRecovery?.();
             if (!rollbackTarget) {
@@ -411,7 +413,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 if (!runtimeStarted(restored)) throw new Error('Previous runtime did not start healthy');
             } catch (rollbackError) {
                 await db().query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'Apply failed; previous definition restored but runtime recovery failed']);
-                throw new KeeperFailedError('Apply failed. The previous saved definition was restored, but runtime recovery failed; explicit recovery is required.', 'restored-stopped', { cause: rollbackError });
+                throw new KeeperFailedError('Apply failed. The previous saved definition was restored, but runtime recovery failed; explicit recovery is required.', 'restored-stopped', { cause: new AggregateError([applyError, rollbackError], 'apply and rollback both failed') });
             }
             throw new KeeperFailedError('Apply failed. The previous working definition was restored; save the edit again before retrying.', 'previous-running', { cause: applyError });
         }
