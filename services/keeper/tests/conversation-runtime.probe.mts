@@ -1,6 +1,6 @@
 // Real installed eve runtime, disposable PostgreSQL projection and local workflow world.
 // No provider/gateway access: mockModel reports its actual session-pinned instructions.
-import {mkdtempSync,cpSync,symlinkSync,writeFileSync,readFileSync,rmSync,mkdirSync,existsSync} from 'node:fs';
+import {mkdtempSync,cpSync,symlinkSync,writeFileSync,readFileSync,readdirSync,rmSync,mkdirSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {resolve,join} from 'node:path';
 import {spawn,execFile} from 'node:child_process';
@@ -10,22 +10,24 @@ import {PostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
 import assert from 'node:assert/strict';
 const run=promisify(execFile),repo=resolve('../..'),root=mkdtempSync(join(tmpdir(),'lares-conversation-proof-'));
-let pg:any,db:Pool|undefined,server:ReturnType<typeof spawn>|undefined;
+let pg:any,db:Pool|undefined,server:ReturnType<typeof spawn>|undefined,logs='';
 const incarnation='11111111-1111-4111-8111-111111111111',secret='disposable-control-secret-'.repeat(3);
 try {
  cpSync(join(repo,'services/keeper/tests/fixtures/conversation-agent'),root,{recursive:true});
  symlinkSync(join(repo,'packages/board-evals/node_modules'),join(root,'node_modules'));
  mkdirSync(join(root,'definition'));const definition=JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/creative/definition.json'),'utf8'));
  writeFileSync(join(root,'definition/agent.json'),JSON.stringify({...definition,name:'example'}));writeFileSync(join(root,'definition/voice.md'),'');writeFileSync(join(root,'definition/duties.md'),'UNIQUE_OLD_DUTIES');writeFileSync(join(root,'control-secret'),secret);
- pg=await new PostgreSqlContainer('postgres:16-alpine').start();db=new Pool({connectionString:pg.getConnectionUri()});
- await db.query("CREATE TABLE agent_resources(name text PRIMARY KEY,ownership_token uuid,runtime_control_token uuid,pending boolean DEFAULT false,state text)");
- await db.query("INSERT INTO agent_resources VALUES('example',$1,$1,false,'ready')",[incarnation]);
- await db.query(readFileSync(join(repo,'services/box/sql/001_baseline.sql'),'utf8'));
+ pg=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();db=new Pool({connectionString:pg.getConnectionUri()});
+ // The box schema owns every table, the agent registry included: the baseline file,
+ // then every numbered file after it, in order, as a fresh install does: the conversation
+ // projection reads a table a later file creates. This probe adds only its one row.
+ for(const file of readdirSync(join(repo,'services/box/sql')).filter(name=>/^\d{3}_.*\.sql$/.test(name)).sort())await db.query(readFileSync(join(repo,'services/box/sql',file),'utf8'));
+ await db.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending) VALUES('example','192.0.2.1','synthetic-unused','owned',$1,$1,'ready',false)",[incarnation]);
  const env={...process.env,DATABASE_URL:pg.getConnectionUri(),LARES_AGENT_NAME:'example',LARES_AGENT_INCARNATION:incarnation,LARES_DEFINITION_DIR:join(root,'definition'),LARES_RUNTIME_CONTROL_SECRET_FILE:join(root,'control-secret'),PROOF_WRITE_LOG:join(root,'writes'),NODE_ENV:'production'};
  const build=await run(join(repo,'packages/board-evals/node_modules/.bin/eve'),['build'],{cwd:root,env,maxBuffer:8*1024*1024});writeFileSync(join(root,'build.log'),build.stdout+build.stderr);
  const listener=createServer();await new Promise<void>(r=>listener.listen(0,'127.0.0.1',r));const port=(listener.address() as any).port;await new Promise<void>(r=>listener.close(()=>r()));
  server=spawn(join(repo,'packages/board-evals/node_modules/.bin/eve'),['start','--host','127.0.0.1','--port',String(port)],{cwd:root,env,stdio:['ignore','pipe','pipe']});
- let logs='';server.stdout?.on('data',c=>logs+=c);server.stderr?.on('data',c=>logs+=c);
+ server.stdout?.on('data',c=>logs+=c);server.stderr?.on('data',c=>logs+=c);
  const host=`http://127.0.0.1:${port}`;
  for(let i=0;i<100;i++){try{if((await fetch(host+'/eve/v1/health')).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));if(i===99)throw new Error('Runtime did not start: '+logs);}
  const {Client}=await import(join(repo,'packages/board-evals/node_modules/eve/dist/src/client/index.js'));
@@ -70,5 +72,5 @@ try {
  await assert.rejects(()=>parked.session.respond([{interactionId:pending.interactions[0].interactionId,optionId:'approve'}]),(error:any)=>error.code==='session_not_active');
  assert.equal(existsSync(join(root,'writes')),false);
  console.log('PASS: session-pinned direct provider aliases, new-session model edit, real eve hook projection, dedicated auth, runtime-control revocation and pending refusal, incarnation refusal, exact reset, old ID refusal, new session reads edited duties, delayed duplicate preserves new session, raw chat address releases and reads new duties, pending approval reset cannot execute write.');
-} catch(e){console.error('Probe artifact:',root);throw e;}
+} catch(e){console.error('Probe artifact:',root);console.error('Runtime logs (last 6000 characters):',logs.slice(-6000));throw e;}
 finally {if(server&&!server.killed){server.kill('SIGTERM');await new Promise<void>(r=>server!.once('exit',()=>r()));}await db?.end();await pg?.stop();rmSync(root,{recursive:true,force:true});}
