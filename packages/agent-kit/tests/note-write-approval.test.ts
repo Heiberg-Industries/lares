@@ -92,9 +92,15 @@ describe("the Vault's own write tools answer to the permissions board", () => {
     }
   });
 
-  it("the chief of staff's three vault writes also inject the card check", () => {
+  // The chief of staff injects its own `assertApproval` (`lib/approvals.ts`), which checks the
+  // person who answered the card AND the card itself (`assertApprovedCall`) in one call, named
+  // after the tool. `note-write-answerer.test.ts` and that service's
+  // `vault-file-drop-answerer.test.ts` drive what it does.
+  it("the chief of staff's three vault writes also inject the answerer and card check", () => {
     for (const name of THREE) {
-      expect(readFileSync(join(COS, `${name}.ts`), "utf8"), name).toContain("assertApprovedCall:");
+      const text = readFileSync(join(COS, `${name}.ts`), "utf8");
+      expect(text, name).toContain("assertApproval:");
+      expect(text, name).toMatch(new RegExp(`assertApproval\\(ctx as never, "${name}", input\\)`));
     }
   });
 });
@@ -102,22 +108,17 @@ describe("the Vault's own write tools answer to the permissions board", () => {
 // The extension bundle cannot import @lares/agent-kit/approval-ledger (see
 // note-write-tools.ts's own header), so the freshness/payload check is injected through
 // `NoteWriteDeps.assertApprovedCall`. These cases pin the ORDER inside `execute`: the approver
-// check (bound, in production, to `extension.config.brain?.isApprovedPrincipal`) runs first and
-// unconditionally, exactly as it always has; the injected check runs after it and before any
-// area is resolved or any git write happens.
+// check (the service's injected `assertApproval`; a tool with areas and without it refuses, see
+// note-write-answerer.test.ts) runs first, unconditionally; the injected card check runs after it
+// and before any area is resolved or any git write happens.
 describe("the injected card check runs after the approver and before any git write", () => {
   let written: { frontmatter?: Record<string, unknown>; body?: string } | undefined;
+  /** An injected approver check that passes, so these cases can observe what happens after it. */
+  const assertApproval = async () => undefined;
 
   beforeEach(() => {
     written = undefined;
     vi.resetModules();
-    // Same technique as vault-write-origin.test.ts: a plain `import` never runs eve's mount
-    // factory, so the production `assertApprover` always refuses here (vault-write-gate.test.ts's
-    // own header explains why) — mocked so these cases can observe what happens once it PASSES.
-    vi.doMock("../extension/lib/approval-gate.js", () => ({
-      approverFrom: () => ({ userId: "U1" }),
-      assertApprover: () => undefined,
-    }));
     vi.doMock("../src/vault-git.js", () => ({
       commitNote: async (o: { frontmatter: Record<string, unknown>; body: string }) => {
         written = o;
@@ -128,7 +129,6 @@ describe("the injected card check runs after the approver and before any git wri
   });
 
   afterEach(() => {
-    vi.doUnmock("../extension/lib/approval-gate.js");
     vi.doUnmock("../src/vault-git.js");
     vi.doUnmock("../src/notes-store.js");
   });
@@ -138,6 +138,7 @@ describe("the injected card check runs after the approver and before any git wri
     const seen: unknown[] = [];
     const tool = writeTool({
       areas: () => ["private"],
+      assertApproval,
       assertApprovedCall: async (ctx, input) => {
         seen.push(input); // reached at all ⇒ the approver check above it already passed
         throw new Error("stale — refused by the injected check");
@@ -155,6 +156,7 @@ describe("the injected card check runs after the approver and before any git wri
     const order: string[] = [];
     const tool = writeTool({
       areas: () => ["private"],
+      assertApproval,
       assertApprovedCall: async () => {
         order.push("card-checked");
       },
@@ -164,9 +166,9 @@ describe("the injected card check runs after the approver and before any git wri
     expect(written?.frontmatter?.["title"]).toBe("t");
   });
 
-  it("omitting the injected check costs nothing — no check, and the write proceeds", async () => {
+  it("omitting the injected card check costs nothing — no check, and the write proceeds", async () => {
     const { writeTool } = await import("../extension/lib/note-write-tools.js");
-    const tool = writeTool({ areas: () => ["private"] });
+    const tool = writeTool({ areas: () => ["private"], assertApproval });
     await tool.execute({ area: "private", title: "t", body: "b" }, { session: { id: "s" } } as never);
     expect(written?.frontmatter?.["title"]).toBe("t");
   });
