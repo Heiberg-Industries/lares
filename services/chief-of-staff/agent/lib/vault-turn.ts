@@ -18,3 +18,10 @@ export function setVaultTurnCapability(k:Key,value:VaultTurnCapability|null){
  entries.set(id,value);
 }
 export function clearSessionVaultTurnCapabilities(sessionId:string,incarnation:string){const prefix=`${sessionId}\0`,suffix=`\0${incarnation}`;for(const id of entries.keys())if(id.startsWith(prefix)&&id.endsWith(suffix))entries.delete(id);for(const id of active.keys())if(id.startsWith(prefix)&&id.endsWith(suffix))active.delete(id)}
+/** Closes everything held for one turn id, whatever its sequence, and returns the capabilities that were open so the caller can tell the broker. */
+export function closeVaultTurn(sessionId:string,turnId:string,incarnation:string):VaultTurnCapability[]{
+ const prefix=`${sessionId}\0${turnId}\0`,suffix=`\0${incarnation}`,held:VaultTurnCapability[]=[];
+ for(const [id,value] of [...entries])if(id.startsWith(prefix)&&id.endsWith(suffix)){held.push(value);entries.delete(id);}
+ for(const id of [...active.keys()])if(id.startsWith(prefix)&&id.endsWith(suffix))active.delete(id);
+ return held;
+}

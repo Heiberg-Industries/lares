@@ -3,23 +3,26 @@ import { consoleAdmission } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
 import { thisAgent } from '../../lib/definition.js';
-import { clearSessionVaultTurnCapabilities, isVaultTurnActive, markVaultTurnActive, markVaultTurnClosed, setVaultTurnCapability, vaultTurnCapability } from '../lib/vault-turn.js';
+import { clearSessionVaultTurnCapabilities, closeVaultTurn, isVaultTurnActive, markVaultTurnActive, markVaultTurnClosed, setVaultTurnCapability, vaultTurnCapability } from '../lib/vault-turn.js';
 
 type Context=HookContext & {session?:{id?:string;turn?:{id?:string;sequence?:number};auth?:{current?:unknown}|null}};
+// eve 1.0's `turn.started` has no sequence: it comes from `ctx.session.turn`, and only when that is
+// THIS event's turn. Anything else yields no capability (the Vault tools stay off for the turn).
 function coords(event:unknown,ctx:Context){
- const e=(event as {data?:{turnId?:unknown;sequence?:unknown}}|undefined)?.data,turnId=e?.turnId,sequence=e?.sequence,sessionId=ctx.session?.id;
- if(typeof turnId!=='string'||turnId.length<1||turnId.length>128||!Number.isSafeInteger(sequence)||typeof sessionId!=='string'||!sessionId)return undefined;
+ const e=(event as {data?:{turnId?:unknown}}|undefined)?.data,turnId=e?.turnId,sessionId=ctx.session?.id,sequence=ctx.session?.turn?.sequence;
+ if(typeof turnId!=='string'||turnId.length<1||turnId.length>128||ctx.session?.turn?.id!==turnId||!Number.isSafeInteger(sequence)||typeof sessionId!=='string'||!sessionId)return undefined;
  const current=ctx.session?.auth?.current as {attributes?:Record<string,unknown>}|undefined,admission=consoleAdmission(current),own=managedIdentity(process.env),pending=current?.attributes?.lares_vault_pending;
  if(!admission||admission.purpose!=='human'||!own||typeof pending!=='string'||!/^[-_A-Za-z0-9]{43}$/.test(pending))return undefined;
- if(ctx.session?.turn?.id&&ctx.session.turn.id!==turnId)return undefined;
- if(Number.isSafeInteger(ctx.session?.turn?.sequence)&&ctx.session!.turn!.sequence!==sequence)return undefined;
  return {turnId,sequence:sequence as number,sessionId,memberId:admission.memberId,admissionNonce:admission.admissionNonce,pending,agent:own.name,incarnation:own.incarnation};
 }
+// Closes every capability this process holds for the turn, whatever its sequence: a turn id names one
+// turn, and the sequence is not needed to find it. Used for every settled outcome and when a turn pauses.
 async function close(event:unknown,raw:HookContext){
- const ctx=raw as Context,own=managedIdentity(process.env),sessionId=ctx.session?.id,data=(event as {data?:{turnId?:unknown;sequence?:unknown}}|undefined)?.data;
- if(!own||typeof sessionId!=='string'||typeof data?.turnId!=='string'||!Number.isSafeInteger(data.sequence))return;
- const key={sessionId,turnId:data.turnId,sequence:data.sequence as number,incarnation:own.incarnation},current=vaultTurnCapability(key);markVaultTurnClosed(key);
- if(current)await vaultBrokerRequest('turn.close',{turnCapability:current.capability,turnId:current.turnId,sequence:current.sequence}).catch(()=>{});
+ const ctx=raw as Context,own=managedIdentity(process.env),sessionId=ctx.session?.id,turnId=(event as {data?:{turnId?:unknown}}|undefined)?.data?.turnId;
+ if(!own||typeof sessionId!=='string'||typeof turnId!=='string')return;
+ for(const held of closeVaultTurn(sessionId,turnId,own.incarnation)){
+  await vaultBrokerRequest('turn.close',{turnCapability:held.capability,turnId:held.turnId,sequence:held.sequence}).catch(()=>{});
+ }
 }
 export default defineHook({events:{
  'turn.started':async(event:HookEvent<'turn.started'>,raw:HookContext)=>{
@@ -34,7 +37,7 @@ export default defineHook({events:{
    }
   }catch{markVaultTurnClosed(key);/* Missing Keeper custody disables only the private Vault tools. */}
  },
- 'turn.completed':async(event,ctx)=>close(event,ctx),
- 'turn.failed':async(event,ctx)=>close(event,ctx),
- 'turn.cancelled':async(event,ctx)=>close(event,ctx),
+ // Every outcome of a settled turn, and a turn paused for a person (0.60 closed at that park point).
+ 'turn.settled':async(event,ctx)=>close(event,ctx),
+ 'turn.paused':async(event,ctx)=>close(event,ctx),
 }});
