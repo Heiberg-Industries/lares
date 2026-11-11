@@ -18,7 +18,7 @@ import {dirname,join} from 'node:path';
 import {PgBudgetAdmissionStore,consumeDispatchPermit,budgetIdentitySuppression,type BudgetGatewayObservation,type BudgetTerminalReceipt} from '../../../packages/agent-kit/src/budget-admission-store.js';
 import {PgGrantStore} from '../../../packages/agent-kit/src/grant-store.js';
 import {bindConsoleSession,captureConsoleVaultSources} from '../../../packages/agent-kit/src/console-turn-authority.js';
-import {requirePrivateConsoleResume,requirePersistedPrivateConsoleModelResume} from '../../../packages/agent-kit/src/private-console-resume.js';
+import {requirePersistedPrivateConsoleModelResume} from '../../../packages/agent-kit/src/private-console-resume.js';
 import {PgPersonalActionStore,PERSONAL_MAIL_SEND_TOOL,personalActionApprovalDescriptor} from '../../../packages/agent-kit/src/personal-action-store.js';
 import {encryptSecret,decryptSecret} from '../lib/crypto.js';
 import {exportPerson} from '../lib/export-person.js';
@@ -40,6 +40,21 @@ import {openBudgetMonth} from '../../keeper/lib/budget-account-provisioning.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
 import {FinancialObservationUnavailable,inspectFinancialJournal,observeFinancialDatabase,openFinancialJournalForKeeper,runScheduledLedgerCheck,settleFinancialJournal,startFinancialSettlement,verifyFinancialContinuity,verifyFullFinancialContinuity} from '../../keeper/lib/financial-continuity.js';
 import {execFileSync} from 'node:child_process';
+import {createRequire} from 'node:module';
+import {pathToFileURL} from 'node:url';
+import {rememberAcceptedAnswer,settleAcceptedAnswer,clearAcceptedAnswersForTests} from '../../../packages/agent-kit/src/private-console-resume.js';
+import {prepareCurrentModelPurposeIntent} from '../../../packages/agent-kit/src/model-invocation.js';
+import {modelStepCoordinates} from '../../../packages/agent-kit/src/definition-model.js';
+
+// The agent's Keeper client checks that its runtime key file is root-owned (uid 0, gid 10001),
+// which a test cannot provision. A test that drives the agent's own model seam sets `forward`,
+// which signs the same operation with the same runtime key and sends it over the real Keeper
+// socket; every other caller keeps the real client.
+const purposeTransport=vi.hoisted(()=>({forward:undefined as undefined|((op:string,input:Record<string,unknown>)=>Promise<Record<string,unknown>>)}));
+vi.mock('../../../packages/agent-kit/src/model-purpose-client.ts',async importOriginal=>{
+  const real=await importOriginal<typeof import('../../../packages/agent-kit/src/model-purpose-client.ts')>();
+  return {...real,modelPurposeRequest:(op:string,input:Record<string,unknown>)=>purposeTransport.forward?purposeTransport.forward(op,input):real.modelPurposeRequest(op as never,input)};
+});
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
 const pricing={version:1,capabilityHash:profile,format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'10',output:'90',cacheRead:'5',cacheWrite:'0'}};
 let sessionGeneration=0;
@@ -237,7 +252,7 @@ async function window(accountId:string,member:string|null,opening='0'){
   await db.query('UPDATE budget_accounts SET active_window_id=$2 WHERE id=$1',[accountId,id]);return id;
 }
 /** Observe entry to the budget lock only after the real authority checks completed. */
-async function admitAcrossDeadline(p:Awaited<ReturnType<typeof prepared>>,validUntil:string){
+async function admitAcrossDeadline(p:Pick<Awaited<ReturnType<typeof prepared>>,'ticket'|'observation'>,validUntil:string){
   const other=quiet(new Pool({connectionString:container.getConnectionUri(),max:1})),locker=await other.connect();
   let entered!:()=>void;const budgetLock=new Promise<void>(resolve=>{entered=resolve;});
   const observed={connect:async()=>{const client=await db.connect();return {release:()=>client.release(),query:(sql:string,values?:unknown[])=>{
@@ -255,24 +270,51 @@ async function admitAcrossDeadline(p:Awaited<ReturnType<typeof prepared>>,validU
     await locker.query('ROLLBACK');locker.release();await pending;await other.end();
   }
 }
+/** The eve 1.0 context Keeper sees for the turn that continues after an answered card: the same
+ * turn (`turn_1`, the card's own), with `current` still the member who asked. */
+function askerContext(sessionId:string,admissionNonce:string,member='member-a'){
+  const auth={authenticator:'lares-console',attributes:{lares_member_id:member,lares_admission_nonce:admissionNonce,lares_purpose:'human'}};
+  return {session:{id:sessionId,turn:{id:'turn_1',sequence:1},auth:{current:auth,initiator:auth}}};
+}
+/** A continuation's budget ticket the only way one is now made: the answer's Keeper resume receipt
+ * opens the continuation's turn, and its first model step is claimed and consumed through the real
+ * broker and prepared journal. */
+async function brokerResumeTicket(writer:BudgetFinancialWriter,input:{sessionId:string;admissionNonce:string;definitionHash:string;policyRevision:number;requestId:string;optionId:'approve'|'deny'}){
+  const purposeFiles=purposeBrokerFiles();let stop:(()=>Promise<void>)|undefined;
+  try{
+    stop=await startPurposeBroker(purposeFiles,writer);
+    const pendingReceipt=await purposeRequestAdmission(purposeFiles,purposeRequest({session:input.sessionId,admissionNonce:input.admissionNonce,policyRevision:input.policyRevision,
+      definitionHash:input.definitionHash,purpose:'resume',resume:{requestId:input.requestId,optionId:input.optionId}}));
+    const turn=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.open',{pendingReceipt,context:askerContext(input.sessionId,input.admissionNonce)},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+    if(turn.ok!==true)throw new Error('Keeper refused the continuation turn');
+    const event={type:'step.started',data:{turnId:'turn_1',sequence:1,stepIndex:0}};
+    const claimed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.claim',{turnCapability:turn.capability,purposeAlias:'standard',event},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+    if(claimed.ok!==true)throw new Error('Keeper refused the continuation step');
+    const requestHash=gatewayRawRequestHash('POST','/v1/chat/completions',Buffer.from(`{"model":"standard","messages":[],"id":"${randomUUID()}"}`));
+    const consumed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request:{method:'POST',path:'/v1/chat/completions',requestHash}},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+    if(consumed.ok!==true)throw new Error('Keeper refused to consume the continuation step');
+    return {ticket:String(consumed.ticket),observation:{requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'standard'}};
+  }finally{await stop?.();rmSync(purposeFiles.root,{recursive:true,force:true});}
+}
 // eve 1.0 names the decline option `deny` (the console and the supersede hook send only `approve` or `deny`).
-async function resumeFixture(deadline:'action'|'approval',option:'approve'|'deny'='approve'){
+async function resumeFixture(writer:BudgetFinancialWriter,deadline:'action'|'approval',option:'approve'|'deny'='approve'){
+  const definitionHash=h('model-purpose-definition'),{sessionId,admissionNonce}=await selectPurposeModel(definitionHash);
+  const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());
   const callId=randomUUID(),requestId=randomUUID(),actionId=randomUUID(),payloadHash=h('expiry-payload');
-  const selection={actorMemberId:'member-a',agentId:'helper',incarnation,sessionId:context().session.id,originalTurnId:'turn-1',originalCallId:callId,accountId:'expiry-account',accountGeneration:0,resourceBindingId:'mailbox',connectorId:'example',kind:'mail.send' as const};
+  const selection={actorMemberId:'member-a',agentId:'helper',incarnation,sessionId,originalTurnId:'turn_1',originalCallId:callId,accountId:'expiry-account',accountGeneration:0,resourceBindingId:'mailbox',connectorId:'example',kind:'mail.send' as const};
   const delay=option==='approve'?1500:-1000;
   // This immutable fixture is born with a short deadline; no evidence/clock is rewritten.
   const row=(await db.query(`INSERT INTO personal_actions(id,payload_version,actor_member_id,agent,incarnation,session_id,original_turn_id,original_call_id,original_call_hash,account_id,account_generation,resource_binding_id,connector_id,kind,payload_hash,payload_ciphertext,approval_call_id,approval_request_id,state,created_at,expires_at)
-    SELECT $1,1,'member-a','helper',$2,$3,'turn-1',$4,$5,'expiry-account',0,'mailbox','example','mail.send',$6,'opaque-fixture',NULL,NULL,'awaiting_approval',t-interval '1 hour',t+(CASE WHEN $7='action' THEN $8 ELSE 3600000 END*interval '1 millisecond') FROM(SELECT clock_timestamp() AS t)c RETURNING *`,
+    SELECT $1,1,'member-a','helper',$2,$3,'turn_1',$4,$5,'expiry-account',0,'mailbox','example','mail.send',$6,'opaque-fixture',NULL,NULL,'awaiting_approval',t-interval '1 hour',t+(CASE WHEN $7='action' THEN $8 ELSE 3600000 END*interval '1 millisecond') FROM(SELECT clock_timestamp() AS t)c RETURNING *`,
     [actionId,incarnation,selection.sessionId,callId,h(callId),payloadHash,deadline,delay])).rows[0];
   const action={actionId,payloadHash,expiresAt:row.expires_at.toISOString(),state:row.state,attemptId:null,receipt:null};
   await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,asked_at,answered_at)
     SELECT $1,$2,'helper',$3,$4,$5::jsonb,'member-a','member-a',$6,$7,clock_timestamp()-interval '24 hours'+(CASE WHEN $8='approval' THEN $9 ELSE 3600000 END*interval '1 millisecond'),clock_timestamp()`,
     [callId,requestId,PERSONAL_MAIL_SEND_TOOL,payloadHash,JSON.stringify(personalActionApprovalDescriptor(action,selection,h('policy'))),selection.sessionId,option==='approve'?'approved':'cancelled',deadline,delay]);
   await db.query('UPDATE personal_actions SET approval_call_id=$2,approval_request_id=$3,state=$4 WHERE id=$1',[actionId,callId,requestId,option==='approve'?'awaiting_dispatch':'cancelled']);
-  const human=context(),resume={session:{...human.session,turn:{id:'',sequence:1},auth:{initiator:human.session.auth.initiator,current:{authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:requestId,lares_resume_option:option,lares_purpose:'resolver'}}}}};
-  const current=await requirePrivateConsoleResume(resume,'model',{db,env:env()}),requestHash=h(randomUUID()),bindingId=bindings['member-a:helper']!;
-  const ticket=await prepare(store,resume,{bindingId,requestHash,profileHash:profile});
-  return {ticket,bindingId,validUntil:current.validUntil,observation:{requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'standard'}};
+  const current=await requirePersistedPrivateConsoleModelResume({binding:{agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},requestId,optionId:option},{db,env:env()});
+  const made=await brokerResumeTicket(writer,{sessionId,admissionNonce,definitionHash,policyRevision:bound.policyRevision,requestId,optionId:option});
+  return {...made,validUntil:current.validUntil};
 }
 beforeAll(async()=>{
   container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
@@ -787,71 +829,155 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
       }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
     });
   });
-  it('consumes the real empty approval-resume step with resolver and human initiator preserved',async()=>{
+  /** eve 1.0's own readers over a stream eve folds (as in agent-kit `tests/answer-turn-position.test.ts`).
+   * Imported by file path because eve does not export them; if eve moves them, this fails with it. */
+  async function eveConversation(sessionId:string,auth:Record<string,unknown>){
+    const eveRoot=dirname(createRequire(new URL('../../../packages/agent-kit/package.json',import.meta.url)).resolve('eve/package.json'));
+    const load=(path:string)=>import(pathToFileURL(join(eveRoot,'dist/src',path)).href) as Promise<any>;
+    const [{sessionProvider},{SESSION_PROJECTION_STATE_KEY,activeTurnId,turnPosition},{latestTurn},{sessionTables},{emptySessionView,foldEvents}]=await Promise.all([
+      load('context/providers/session.js'),load('harness/session-machine/view.js'),load('definitions/turn.js'),
+      load('protocol/session-projection/session-view.js'),load('public/events/index.js')]);
+    let line=0,view=emptySessionView();
+    const projection=()=>({counters:{changes:0,runs:0},view:sessionTables(view)});
+    const push=(type:string,data:Record<string,unknown>,turnId?:string)=>{view=foldEvents(view,[{type,data,...(turnId?{scope:{turnId}}:{}),
+      meta:{position:{line:line++,index:0},at:new Date().toISOString(),endOfLine:true}}]);};
+    return {
+      get view(){return view;},
+      /** What eve hands a response policy, a hook or a tool: `ctx.session`. */
+      session(){
+        const ctx={require:(k:unknown)=>(String(k).includes('SessionId')?sessionId:auth),get:()=>undefined};
+        return sessionProvider.create(ctx,{state:{[SESSION_PROJECTION_STATE_KEY]:projection()}}).value as {turn:{id:string;sequence:number}};
+      },
+      startSession(){push('session.started',{parent:null,predecessor:null});},
+      startTurn(){const turnId=activeTurnId(turnPosition(projection())) as string;push('turn.started',{turnId,cause:{deliveryId:`d_${turnId}`},follows:null},turnId);return turnId;},
+      settleTurn(turnId:string){push('turn.settled',{turnId,outcome:'completed'},turnId);},
+      askCard(turnId:string,callId:string,interactionId:string){
+        push('call.requested',{callId,owner:{turnId},capability:{kind:'tool',name:PERSONAL_MAIL_SEND_TOOL},input:{}},turnId);
+        push('interaction.opened',{interactionId,subject:{callId},request:{kind:'approval',prompt:'Approve?',options:[{id:'approve',label:'Approve'},{id:'deny',label:'Deny'}]}},turnId);
+      },
+      settleCard(turnId:string,interactionId:string){push('interaction.settled',{interactionId,outcome:'accepted',response:{optionId:'approve'}},turnId);},
+      latestTurn(){return latestTurn(sessionTables(view));},
+    };
+  }
+  // eve 1.0 starts no new turn after an answered card: the paused turn carries on, still as the
+  // member who ASKED (`current` = their human admission). The answer is known only from what the
+  // response policy accepted (with its Keeper resume receipt), never from the turn's identity.
+  // This drives the agent's real model seam against the real Keeper broker and prepared journal.
+  it('charges the continuation after an answered card once, to the member who asked, under the answer\'s receipt',async()=>{
     const definitionHash=h('model-purpose-definition'),requestId=randomBytes(32).toString('base64url'),key='1'.repeat(64),selected=await selectPurposeModel(definitionHash),{sessionId,admissionNonce}=selected;
     await db.query("INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status) VALUES('purpose-account','member-a','example','https://issuer.invalid','purpose-subject','Example','ok')");
-    const selection={actorMemberId:'member-a',agentId:'helper',incarnation,sessionId,originalTurnId:'turn-1',originalCallId:'purpose-original-call',accountId:'purpose-account',accountGeneration:0,resourceBindingId:'purpose-mailbox',connectorId:'example',kind:'mail.send' as const};
+    const selection={actorMemberId:'member-a',agentId:'helper',incarnation,sessionId,originalTurnId:'turn_1',originalCallId:'purpose-original-call',accountId:'purpose-account',accountGeneration:0,resourceBindingId:'purpose-mailbox',connectorId:'example',kind:'mail.send' as const};
     const actions=new PgPersonalActionStore(db,{encrypt:s=>encryptSecret(s,key),decrypt:s=>decryptSecret(s,key)});
     const action=await actions.prepareAction({...selection,payload:{to:['recipient@example.invalid'],subject:'Approval fixture',body:'Private fixture'}});
     await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,answered_at)
       VALUES($1,$2,'helper',$3,$4,$5::jsonb,'member-a','member-a',$6,'approved',clock_timestamp())`,
       [selection.originalCallId,requestId,PERSONAL_MAIL_SEND_TOOL,action.payloadHash,JSON.stringify(personalActionApprovalDescriptor(action,selection,h('purpose-policy'))),selection.sessionId]);
     await actions.attachApproval({actionId:action.actionId,actorMemberId:'member-a',approvalCallId:selection.originalCallId,requestId});
-    const originalContext=context(),humanAuth={...originalContext.session.auth.current,attributes:{...originalContext.session.auth.current.attributes,lares_admission_nonce:admissionNonce}};
-    const human={session:{...originalContext.session,id:sessionId,auth:{current:humanAuth,initiator:humanAuth}}},resume={session:{...human.session,turn:{id:'',sequence:1},auth:{initiator:human.session.auth.initiator,current:{authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:requestId,lares_resume_option:'approve',lares_purpose:'resolver'}}}}};
-    expect(resume.session.auth.current).not.toBe(resume.session.auth.initiator);
     const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());
     const purposeFiles=purposeBrokerFiles();let stop:(()=>Promise<void>)|undefined;
+    const savedEnv={...process.env};
     try{
       stop=await startPurposeBroker(purposeFiles,files.writer);
-      const request=purposeRequest({session:sessionId,admissionNonce,policyRevision:bound.policyRevision,definitionHash,purpose:'resume',resume:{requestId,optionId:'approve'}});
-      const pendingReceipt=await purposeRequestAdmission(purposeFiles,request);
-      const turn=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.open',{pendingReceipt,context:resume},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
-      expect(turn.ok).toBe(true);
-      // Run the actual pinned Eve coordinator to obtain its approval continuation event.
-      // Its resolver context normalizes to turn_1 while the emitted event has raw turnId ''.
-      const eveRoot=new URL('../../chief-of-staff/node_modules/eve/dist/src/',import.meta.url);
-      const [{ContextContainer,contextStorage},keys,{sessionProvider},{createToolLoopHarness}]=await Promise.all([
-        import(new URL('context/container.js',eveRoot).href),import(new URL('context/keys.js',eveRoot).href),
-        import(new URL('context/providers/session.js',eveRoot).href),import(new URL('harness/tool-loop.js',eveRoot).href),
-      ]) as any;
-      const humanAuth=human.session.auth.initiator,resolverAuth={...resume.session.auth.current,attributes:{...resume.session.auth.current.attributes,
-        lares_model_purpose_required:'1',lares_model_pending_receipt:pendingReceipt}},contextStore=new ContextContainer();
-      contextStore.set(keys.AuthKey,resolverAuth);contextStore.set(keys.InitiatorAuthKey,humanAuth);contextStore.set(keys.SessionIdKey,human.session.id);
-      const harnessSession={agent:{dynamicModel:true,system:'',tools:[]},compaction:{recentWindowSize:10,threshold:100_000},
-        continuationToken:'eve:budget-purpose-resume',history:[],sessionId:human.session.id,state:{
-          'eve.harness.emission':{sessionStarted:true,sequence:1,stepIndex:0,turnId:''},
-          'eve.runtime.pendingInputBatches':[{event:{sequence:0,stepIndex:0,turnId:'turn_0'},requests:[{kind:'tool-approval',requestId,
-            prompt:'Approval fixture',options:[{id:'approve',label:'Approve'},{id:'cancel',label:'Cancel'}],
-            action:{kind:'tool-call',callId:selection.originalCallId,toolName:PERSONAL_MAIL_SEND_TOOL,input:{}}}],responseMessages:[],responseAuthRequiredRequestIds:[requestId]}],
-        }};
-      contextStore.set(keys.SessionKey,sessionProvider.create(contextStore,{state:harnessSession.state}).value);
-      const emitted:Array<{type:string;data?:any}>=[];
-      const harness=createToolLoopHarness({mode:'conversation',tools:new Map([[PERSONAL_MAIL_SEND_TOOL,{description:'Fixture',inputSchema:{type:'object'},approval:{response:async()=>({status:'allowed'})}}]]),
-        handleEvent:async(event:{type:string;data?:unknown})=>{emitted.push(event as never);},resolveModel:async()=>{throw new Error('No provider expected');},
-        dispatchDynamicModelEvent:async({event}:{event:{type:string;data?:any}})=>{emitted.push(event);throw new Error('Stop after actual SDK event');}});
-      const approvalInput={attributedInputResponses:[{auth:resolverAuth,response:{requestId,optionId:'approve'}}]};
-      const first=await contextStorage.run(contextStore,()=>harness(harnessSession,approvalInput));
-      expect(typeof first.next).toBe('function');
-      const second=await contextStorage.run(contextStore,()=>first.next!(first.session));
-      expect(second.next).toMatchObject({done:true});
-      const event=emitted.find(value=>value.type==='step.started');
-      expect(event).toMatchObject({type:'step.started',data:{turnId:'',sequence:1,stepIndex:0}});
-      const claimed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.claim',{
-        turnCapability:turn.capability,purposeAlias:'standard',event,
-      },purposeFiles.runtimeKey),purposeFiles.runtimeKey);
-      expect(claimed.ok).toBe(true);
-      const body=Buffer.from('{"model":"standard","messages":[]}'),identity={method:'POST',path:'/v1/chat/completions',requestHash:gatewayRawRequestHash('POST','/v1/chat/completions',body)};
-      const consumed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request:identity},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
-      expect(consumed).toMatchObject({ok:true,ticket:expect.stringMatching(/^[A-Za-z0-9_-]{43}$/)});
-      const reference=(await db.query('SELECT authority_reference FROM budget_attempts')).rows[0].authority_reference;
-      expect(reference).toMatchObject({kind:'resume',binding:{memberId:'member-a',agent:'helper',incarnation},turnId:'',turnSequence:1,resume:{requestId,optionId:'approve'}});
-      const close=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.close',{turnCapability:turn.capability,turnId:'',sequence:1},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
-      expect(close.ok).toBe(true);
-      const duplicate=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request:identity},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
-      expect(duplicate.ok).toBe(false);
-      expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(1);
-    }finally{await stop?.();rmSync(purposeFiles.root,{recursive:true,force:true});}
+      Object.assign(process.env,env());
+      purposeTransport.forward=async(op,input)=>{
+        const reply=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope(op,input,purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+        if(reply.ok!==true)throw new Error('Model purpose authority is unavailable');
+        const {ok:_ok,responseMac:_mac,responseRequestDigest:_r,responseOutcomeDigest:_o,responsePayloadDigest:_p,...result}=reply;return result;
+      };
+      const seam=await import(new URL('../../chief-of-staff/agent/lib/model-purpose.ts',import.meta.url).href) as typeof import('../../chief-of-staff/agent/lib/model-purpose.ts');
+      // The person's message: Console-admitted, so `current` carries its pending receipt.
+      const humanReceipt=await purposeRequestAdmission(purposeFiles,purposeRequest({session:sessionId,admissionNonce,policyRevision:bound.policyRevision,definitionHash}));
+      const asker={authenticator:'lares-console',attributes:{lares_member_id:'member-a',lares_admission_nonce:admissionNonce,lares_purpose:'human',
+        lares_model_purpose_required:'1',lares_model_pending_receipt:humanReceipt}};
+      const eve=await eveConversation(sessionId,asker);
+      eve.startSession();eve.settleTurn(eve.startTurn());
+      const turnId=eve.startTurn();expect(turnId).toBe('turn_1');
+      const session=()=>({id:sessionId,turn:eve.session().turn,auth:{current:asker,initiator:asker}});
+      await seam.openModelPurposeTurn({type:'turn.started',data:{turnId}},session());
+      eve.askCard(turnId,selection.originalCallId,requestId);
+      await seam.closeModelPurposeTurn({type:'turn.paused',data:{turnId}},session());
+      // The answer: Console admits it as a resume of exactly this card and option; the response
+      // policy accepts it under eve's `ctx.session.turn` at that moment.
+      const resumeReceipt=await purposeRequestAdmission(purposeFiles,purposeRequest({session:sessionId,admissionNonce,policyRevision:bound.policyRevision,definitionHash,purpose:'resume',resume:{requestId,optionId:'approve'}}));
+      const answerer={authenticator:'lares-console',attributes:{lares_member_id:'member-a',lares_admission_nonce:admissionNonce,lares_purpose:'human',lares_model_pending_receipt:resumeReceipt}};
+      expect(eve.session().turn).toEqual({id:'turn_1',sequence:1});
+      rememberAcceptedAnswer({request:{interactionId:requestId},response:{decision:'approve',principal:answerer},session:{id:sessionId,turn:eve.session().turn}},{memberId:'member-a',admissionNonce},env());
+      // eve settles the card; the settle hook confirms what eve applied, then opens the continuation.
+      eve.settleCard(turnId,requestId);
+      settleAcceptedAnswer(requestId,sessionId,'approve',env());
+      await seam.openContinuationAfterSettle(turnId,session());
+      // The continuation's model call, at the coordinates eve's own `latestTurn` gives the resolver.
+      const turn=eve.latestTurn();expect(turn).toMatchObject({id:'turn_1',status:'running'});
+      const event=modelStepCoordinates({turn,view:eve.view} as never);
+      expect(event.data).toMatchObject({turnId:'turn_1',sequence:1});
+      const modelSession={id:sessionId,auth:{current:asker,initiator:asker}};
+      const call=async()=>{
+        const invocation=captureModelInvocation(event,modelSession as never,'standard');
+        seam.prepareModelPurposeInvocation(event,modelSession as never);
+        await seam.claimModelPurposeForInvocation(invocation);
+        return runModelInvocation(invocation,()=>prepareCurrentModelPurposeIntent('POST','/v1/chat/completions',body));
+      };
+      const body=Buffer.from('{"model":"standard","messages":[]}');
+      const {ticket}=await call();
+      expect(ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      const attempts=async()=>(await db.query('SELECT state,authority_reference,member_account_id,live_member_id FROM budget_attempts')).rows;
+      expect(await attempts()).toHaveLength(1);
+      // Charged as the answer to that card, to the member who asked, under their own admission.
+      expect((await attempts())[0]).toMatchObject({state:'prepared',member_account_id:accounts['member-a'],live_member_id:'member-a',
+        authority_reference:{kind:'resume',binding:{memberId:'member-a',agent:'helper',incarnation,sessionId,admissionNonce},turnId:'turn_1',turnSequence:1,resume:{requestId,optionId:'approve'}}});
+      // The same step cannot be consumed twice, and the settle cannot open a second continuation.
+      await expect(call()).rejects.toThrow();
+      await seam.openContinuationAfterSettle(turnId,session());
+      await expect(call()).rejects.toThrow();
+      expect(await attempts()).toHaveLength(1);
+      const observation={requestHash:gatewayRawRequestHash('POST','/v1/chat/completions',body),profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'standard'};
+      expect((await gatewayPreparedStore!.admit(ticket,observation,recovery())).state).toBe('allowed');
+      expect((await attempts())[0]).toMatchObject({state:'admitted',member_account_id:accounts['member-a']});
+      // The turn settles: its Keeper capability closes, and nothing more is admitted for it.
+      await seam.closeModelPurposeTurn({type:'turn.settled',data:{turnId}},session());
+      const later={type:'step.started',data:{...event.data,stepIndex:event.data.stepIndex+1}};
+      const laterInvocation=captureModelInvocation(later,modelSession as never,'standard');
+      await expect(seam.claimModelPurposeForInvocation(laterInvocation)).rejects.toThrow();
+      expect(await attempts()).toHaveLength(1);
+    }finally{
+      purposeTransport.forward=undefined;clearAcceptedAnswersForTests();
+      for(const name of ['LARES_AGENT_NAME','LARES_AGENT_INCARNATION','AGENT_OWNER_USER_ID'])if(savedEnv[name]===undefined)delete process.env[name];else process.env[name]=savedEnv[name];
+      await stop?.();rmSync(purposeFiles.root,{recursive:true,force:true});
+    }
+  });
+  it('keeps the exact actor, card and outcome on a continuation ticket, and retires it when the card\'s authority changes',async()=>{
+    const key='1'.repeat(64),actions=new PgPersonalActionStore(db,{encrypt:s=>encryptSecret(s,key),decrypt:s=>decryptSecret(s,key)});
+    const definitionHash=h('model-purpose-definition'),{sessionId,admissionNonce}=await selectPurposeModel(definitionHash);
+    const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());
+    await db.query("INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status) VALUES('account-a','member-a','example','https://issuer.invalid','subject-a','Example','ok')");
+    const selection={actorMemberId:'member-a',agentId:'helper',incarnation,sessionId,originalTurnId:'turn_1',originalCallId:'original-call',accountId:'account-a',accountGeneration:0,resourceBindingId:'mailbox-a',connectorId:'example',kind:'mail.send' as const};
+    const action=await actions.prepareAction({...selection,payload:{to:['recipient@example.invalid'],subject:'Example',body:'Private example'}}),requestId='exact-request';
+    await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,answered_at)
+      VALUES($1,$2,'helper',$3,$4,$5::jsonb,'member-a','member-a',$6,'approved',clock_timestamp())`,[selection.originalCallId,requestId,PERSONAL_MAIL_SEND_TOOL,action.payloadHash,JSON.stringify(personalActionApprovalDescriptor(action,selection,h('policy'))),selection.sessionId]);
+    await actions.attachApproval({actionId:action.actionId,actorMemberId:'member-a',approvalCallId:selection.originalCallId,requestId});
+    const binding={agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce};
+    expect((await requirePersistedPrivateConsoleModelResume({binding,requestId,optionId:'approve'},{db,env:env()})).reference.actionId).toBe(action.actionId);
+    const input={sessionId,admissionNonce,definitionHash,policyRevision:bound.policyRevision,requestId};
+    // A Deny receipt never opens a continuation for an approved card (S3), and makes no ticket.
+    await expect(brokerResumeTicket(files.writer,{...input,optionId:'deny'})).rejects.toThrow('continuation turn');
+    const {ticket,observation}=await brokerResumeTicket(files.writer,{...input,optionId:'approve'});
+    const rows=async()=>(await db.query('SELECT state,authority_reference FROM budget_attempts')).rows;
+    expect(await rows()).toHaveLength(1);
+    expect((await rows())[0].authority_reference).toMatchObject({kind:'resume',binding:{memberId:'member-a',admissionNonce},turnId:'turn_1',turnSequence:1,resume:{requestId,optionId:'approve'}});
+    await expect(requirePersistedPrivateConsoleModelResume({binding,requestId:'other',optionId:'approve'},{db,env:env()})).rejects.toThrow();
+    await expect(db.query("UPDATE approval_asks SET resolved_by_member_id='member-b' WHERE call_id=$1",[selection.originalCallId])).rejects.toThrow('immutable');
+    await db.query("UPDATE connected_accounts SET generation=generation+1 WHERE id='account-a'");
+    await expect(requirePersistedPrivateConsoleModelResume({binding,requestId,optionId:'approve'},{db,env:env()})).rejects.toThrow();
+    expect((await gatewayPreparedStore!.admit(ticket,observation,recovery())).state).toBe('denied');
+    expect((await rows())[0].state).toBe('retired');
+  });
+  it.each(['action','approval'] as const)('refuses a continuation when its locked %s expires during the budget wait',async deadline=>{
+    const p=await resumeFixture(files.writer,deadline);
+    expect(await admitAcrossDeadline(p,p.validUntil)).toEqual({state:'denied',reason:'Budget authority is unavailable or changed'});
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('retired');
+  });
+  it.each(['action','approval'] as const)('admits the continuation after a Deny even once the %s has expired',async deadline=>{
+    const p=await resumeFixture(files.writer,deadline,'deny');expect((await gatewayPreparedStore!.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
   });
   it('rolls back and withholds the ticket when the turn closes and socket aborts before COMMIT',async()=>{
     const definitionHash=h('model-purpose-precommit-abort'),selected=await selectPurposeModel(definitionHash),{sessionId,admissionNonce}=selected;
@@ -1898,29 +2024,6 @@ describe('inactive budget admission on real PostgreSQL',()=>{
     expect((await store.admit(p.ticket,p.observation,recovery())).state).toBe('denied');
     const row=(await db.query('SELECT ticket_hash FROM budget_attempts')).rows[0];expect(row.ticket_hash).not.toBe(p.ticket);
   });
-  it('preserves exact original actor/request/outcome for persisted model-only approval continuation',async()=>{
-    const key='1'.repeat(64),actions=new PgPersonalActionStore(db,{encrypt:s=>encryptSecret(s,key),decrypt:s=>decryptSecret(s,key)});
-    await db.query("INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status) VALUES('account-a','member-a','example','https://issuer.invalid','subject-a','Example','ok')");
-    const selection={actorMemberId:'member-a',agentId:'helper',incarnation,sessionId:context().session.id,originalTurnId:'turn-1',originalCallId:'original-call',accountId:'account-a',accountGeneration:0,resourceBindingId:'mailbox-a',connectorId:'example',kind:'mail.send' as const};
-    const action=await actions.prepareAction({...selection,payload:{to:['recipient@example.invalid'],subject:'Example',body:'Private example'}}),requestId='exact-request';
-    await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,answered_at)
-      VALUES($1,$2,'helper',$3,$4,$5::jsonb,'member-a','member-a',$6,'approved',clock_timestamp())`,[selection.originalCallId,requestId,PERSONAL_MAIL_SEND_TOOL,action.payloadHash,JSON.stringify(personalActionApprovalDescriptor(action,selection,h('policy'))),selection.sessionId]);
-    await actions.attachApproval({actionId:action.actionId,actorMemberId:'member-a',approvalCallId:selection.originalCallId,requestId});
-    const current=context(),resume={session:{...current.session,turn:{id:'',sequence:1},auth:{initiator:current.session.auth.initiator,current:{authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:requestId,lares_resume_option:'approve',lares_purpose:'resolver'}}}}};
-    const checked=await requirePrivateConsoleResume(resume,'model',{db,env:env()});
-    expect((await requirePersistedPrivateConsoleModelResume({binding:checked.binding,requestId,optionId:'approve'},{db,env:env()})).reference.actionId).toBe(action.actionId);
-    const requestHash=h('resume-model'),ticket=await prepare(store,resume,{bindingId:bindings['member-a:helper']!,requestHash,profileHash:profile});
-    const row=(await db.query('SELECT authority_reference FROM budget_attempts')).rows[0];expect(row.authority_reference).toMatchObject({kind:'resume',binding:{memberId:'member-a'},resume:{requestId,optionId:'approve'}});
-    const wrong=structuredClone(resume);wrong.session.auth.current.attributes.lares_resolver_member_id='member-b';await expect(prepare(store,wrong,{bindingId:bindings['member-a:helper']!,requestHash,profileHash:profile})).rejects.toThrow();
-    await expect(requirePersistedPrivateConsoleModelResume({binding:checked.binding,requestId:'other',optionId:'approve'},{db,env:env()})).rejects.toThrow();
-    await expect(db.query("UPDATE approval_asks SET resolved_by_member_id='member-b' WHERE call_id=$1",[selection.originalCallId])).rejects.toThrow('immutable');
-    await db.query("UPDATE connected_accounts SET generation=generation+1 WHERE id='account-a'");
-    await expect(requirePrivateConsoleResume(resume,'model',{db,env:env()})).rejects.toThrow();
-    await expect(requirePersistedPrivateConsoleModelResume({binding:checked.binding,requestId,optionId:'approve'},{db,env:env()})).rejects.toThrow();
-    const observation={requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'standard'};
-    expect((await new PgBudgetAdmissionStore(db,env()).admit(ticket,observation,recovery())).state).toBe('denied');
-    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('retired');
-  });
   it.each([null,'NaN','Infinity','-1','0'])('denies missing/invalid/zero member cap %s',async amount=>{
     await cap('member-a',amount);
     if(amount==='0'){
@@ -2000,14 +2103,6 @@ describe('inactive budget admission on real PostgreSQL',()=>{
     expect(await admitAcrossDeadline(p,deadline)).toEqual({state:'denied',reason:'Budget authority is unavailable or changed'});
     expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('retired');
     expect((await store.readStatus(context('member-a'),'installation')).liability).toBe('0');
-  });
-  it.each(['action','approval'] as const)('refuses model approval continuation when its locked %s expires during the budget wait',async deadline=>{
-    const p=await resumeFixture(deadline);
-    expect(await admitAcrossDeadline(p,p.validUntil)).toEqual({state:'denied',reason:'Budget authority is unavailable or changed'});
-    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('retired');
-  });
-  it.each(['action','approval'] as const)('preserves model cancellation continuation after %s expiry',async deadline=>{
-    const p=await resumeFixture(deadline,'deny');expect((await store.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
   });
   it('gives the same generic reason for member and installation cap exhaustion, naming only which limit',async()=>{
     await db.query("UPDATE users SET org_role='member' WHERE id='member-b'");await freshConsoleSessions();
