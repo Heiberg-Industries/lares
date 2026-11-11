@@ -4,7 +4,9 @@
  * Given the repository paths that changed between two commits, this answers, for every image the
  * workflows build, "rebuild" or "keep", each with the reason. It is deliberately one-sided: an
  * image is kept only when every changed path is placed and none of them is an input of that
- * image. Anything this file cannot place, parse or prove rebuilds EVERY image.
+ * image. Anything this file cannot place, parse or prove rebuilds EVERY image. So does an empty
+ * list of changes, unless the caller says an empty list is expected: an empty list is also what a
+ * failed `git diff` looks like. And so does a change to this selector itself.
  *
  * Nothing uses this yet. No workflow reads its answer.
  *
@@ -184,6 +186,12 @@ export const IN_NO_IMAGE: readonly { readonly path: string; readonly why: string
   { path: "scripts/check-prisma-config.mjs", why: "a pull request check" },
   { path: "scripts/rehearsal", why: "scripts run by hand against a server" },
 ];
+
+/**
+ * The selector itself. When one of these changes, the rules that decide "keep" have changed, so no
+ * image is kept on their word: every image is rebuilt. (The test file is not here: it changes no answer.)
+ */
+export const SELECTOR_FILES: readonly string[] = ["services/box/lib/affected-images.ts", "services/box/bin/affected-images.ts"];
 
 /** What `pnpm install` reads from the build context besides the package.json files themselves. */
 const INSTALL_FILES: readonly string[] = ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", ".npmrc", ".pnpmfile.cjs"];
@@ -708,14 +716,35 @@ function decision(image: ImageSpec, reasons: readonly string[]): ImageDecision {
   };
 }
 
+export interface SelectOptions {
+  /**
+   * Say true only when an empty list of changes is known to be real (the two commits are known to
+   * hold the same files). Without it an empty list answers "every image", because an empty list is
+   * also what a failed or cut-off listing of the changes looks like.
+   */
+  readonly allowEmpty?: boolean;
+}
+
 /**
  * The answer for one list of changed paths. Throws SelectorUnsure when it cannot be sure;
  * `selectAffectedImagesOrAll` turns that into "every image".
  */
-export function selectAffectedImages(changedPaths: readonly string[], repo: RepoReader, images: readonly ImageSpec[] = IMAGES): Selection {
+export function selectAffectedImages(
+  changedPaths: readonly string[],
+  repo: RepoReader,
+  images: readonly ImageSpec[] = IMAGES,
+  options: SelectOptions = {},
+): Selection {
   const changed = [...new Set(changedPaths.filter((path) => path.trim() !== "").map(normalisePath))].sort();
-  // Nothing changed, so nothing is rebuilt; there is nothing to read the repository for.
-  if (changed.length === 0) return { all: false, allBecause: null, changed, unknownPaths: [], images: images.map((image) => decision(image, [])) };
+  if (changed.length === 0) {
+    // Nothing changed and the caller vouches for that: nothing is rebuilt, and nothing needs reading.
+    if (options.allowEmpty === true) return { all: false, allBecause: null, changed, unknownPaths: [], images: images.map((image) => decision(image, [])) };
+    return everyImage("the list of changed files is empty and the caller did not say an empty list is expected (allowEmpty, --allow-empty), so every image is rebuilt", changed, images);
+  }
+  const own = changed.filter((path) => SELECTOR_FILES.includes(path));
+  if (own.length > 0) {
+    return everyImage(`the selector itself changed (${own.join(", ")}), so its rules for keeping an image may have changed with it: every image is rebuilt`, changed, images);
+  }
   const model = describeImages(repo, images);
   const reasons = new Map<string, string[]>(model.images.map((image) => [image.id, []]));
   const unknownPaths: string[] = [];
@@ -771,9 +800,14 @@ export function everyImage(because: string, changedPaths: readonly string[] = []
 }
 
 /** `selectAffectedImages`, except that anything it cannot be sure about answers "every image". */
-export function selectAffectedImagesOrAll(changedPaths: readonly string[], repo: RepoReader, images: readonly ImageSpec[] = IMAGES): Selection {
+export function selectAffectedImagesOrAll(
+  changedPaths: readonly string[],
+  repo: RepoReader,
+  images: readonly ImageSpec[] = IMAGES,
+  options: SelectOptions = {},
+): Selection {
   try {
-    return selectAffectedImages(changedPaths, repo, images);
+    return selectAffectedImages(changedPaths, repo, images, options);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return everyImage(`the selector could not be sure, so every image is rebuilt: ${message}`, changedPaths, images);

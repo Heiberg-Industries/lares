@@ -17,6 +17,7 @@ import {
   GENERATED_CONTEXT_PATHS,
   IMAGES,
   IN_NO_IMAGE,
+  SELECTOR_FILES,
   SelectorUnsure,
   WORKFLOWS_THAT_BUILD_NO_IMAGE,
   WORKFLOW_DECLARED_INPUTS,
@@ -237,7 +238,6 @@ describe("real changes against this repository", () => {
       rebuild: ALL,
       unknown: true,
     },
-    { name: "an empty change list rebuilds nothing", changed: [], rebuild: [] },
   ];
 
   it.each(cases)("$name", ({ changed, rebuild, because, unknown }) => {
@@ -256,6 +256,47 @@ describe("real changes against this repository", () => {
     // `all` means "could not be sure", not "every image happens to be an input".
     expect(selection.all).toBe(unknown === true);
     expect(selection.unknownPaths.length > 0).toBe(unknown === true);
+  });
+
+  it("rebuilds everything for an empty change list, unless the caller says an empty list is expected", () => {
+    // An empty list is also what a failed listing of the changes looks like.
+    for (const empty of [[], [""], ["  ", "\t"]]) {
+      const selection = selectAffectedImages(empty, repo);
+      expect(selection.all).toBe(true);
+      expect(rebuilt(selection)).toEqual(ALL);
+      expect(selection.allBecause).toMatch(/^the list of changed files is empty and the caller did not say an empty list is expected/);
+      for (const image of selection.images) expect(image.reason).toBe(selection.allBecause);
+      expect(rebuilt(selectAffectedImagesOrAll(empty, repo))).toEqual(ALL);
+
+      const expected = selectAffectedImages(empty, repo, IMAGES, { allowEmpty: true });
+      expect(expected.all).toBe(false);
+      expect(expected.changed).toEqual([]);
+      expect(rebuilt(expected)).toEqual([]);
+      expect(rebuilt(selectAffectedImagesOrAll(empty, repo, IMAGES, { allowEmpty: true }))).toEqual([]);
+    }
+    // Saying an empty list is expected changes nothing about a list that is not empty.
+    expect(rebuilt(selectAffectedImages(["a-new-top-level-file.txt"], repo, IMAGES, { allowEmpty: true }))).toEqual(ALL);
+    expect(rebuilt(selectAffectedImages(["images/console-runtime/start.sh"], repo, IMAGES, { allowEmpty: true }))).toEqual(["console"]);
+  });
+
+  it.each(SELECTOR_FILES)("rebuilds everything when the selector itself changes: %s", (path) => {
+    expect(tracked, `${path} is not in the repository`).toContain(path);
+    // Not just the images that copy services/box: the rules that say "keep" are what changed.
+    for (const changed of [[path], [path, "images/console-runtime/start.sh"], [path, "README.md"]]) {
+      const selection = selectAffectedImages(changed, repo, IMAGES, { allowEmpty: true });
+      expect(selection.all).toBe(true);
+      expect(selection.unknownPaths).toEqual([]);
+      expect(rebuilt(selection)).toEqual(ALL);
+      expect(selection.allBecause).toContain(`the selector itself changed (${path})`);
+      for (const image of selection.images) expect(image.reason).toBe(selection.allBecause);
+    }
+  });
+
+  it("treats its own test file like any other file under services/box", () => {
+    // The tests change no answer, so they are an ordinary input of the images that carry that package.
+    const selection = selectAffectedImages(["services/box/tests/affected-images.test.ts"], repo);
+    expect(selection.all).toBe(false);
+    expect(rebuilt(selection)).toEqual(["chief-of-staff-builder", "chief-of-staff-runtime", "console", "keeper", "sync-jobs"]);
   });
 
   it("names every unknown path, and says so on every image", () => {
@@ -478,7 +519,9 @@ describe("trees that exist only in memory", () => {
 
   it("needs nothing from the repository to say that nothing changed, or that everything must be rebuilt", () => {
     const nothing = memoryRepo({});
-    expect(rebuilt(selectAffectedImages([], nothing))).toEqual([]);
+    expect(rebuilt(selectAffectedImages([], nothing, IMAGES, { allowEmpty: true }))).toEqual([]);
+    expect(rebuilt(selectAffectedImages([], nothing))).toEqual(ALL);
+    expect(rebuilt(selectAffectedImages([SELECTOR_FILES[0]!], nothing))).toEqual(ALL);
     const everything = everyImage("the list of changes is not available");
     expect(rebuilt(everything)).toEqual(ALL);
     expect(everything.images.every((decision) => decision.reason === "the list of changes is not available")).toBe(true);
@@ -617,7 +660,8 @@ describe("guards: the selector's tables against the repository", () => {
       // Only two shapes are in use: one file, or everything under one directory.
       expect(entry, "a filter shape this guard does not read yet").toMatch(/^[A-Za-z0-9._/-]+(\/\*\*)?$/);
       const base = entry.replace(/\/\*\*$/, "");
-      const matches = tracked.filter((file) => (entry.endsWith("/**") ? file.startsWith(`${base}/`) : file === base));
+      // Without the selector's own two files: they rebuild everything, which would hide what this entry does.
+      const matches = tracked.filter((file) => (entry.endsWith("/**") ? file.startsWith(`${base}/`) : file === base) && !SELECTOR_FILES.includes(file));
 
       // A path a workflow names as an input must never be one the selector calls "in no image".
       for (const rule of IN_NO_IMAGE) expect(under(rule.path, base) || under(base, rule.path), `${entry} overlaps the in-no-image rule ${rule.path}`).toBe(false);
@@ -754,12 +798,53 @@ describe("the command-line entry", () => {
     expect(JSON.parse(out)).toEqual(JSON.parse(JSON.stringify(selectAffectedImages(["services/console/package.json", "docs/install.md"], repo))));
   });
 
-  it("compares two commits, reading the manifests from the newer one", () => {
-    const { status, out } = run(["--base", "HEAD", "--head", "HEAD"]);
+  it.each([["empty", ""], ["only a newline", "\n"], ["only whitespace", "  \n\t\n \r\n"]])("answers every image for %s standard input: a failed diff looks the same", (_name, input) => {
+    const { status, out } = run(["--stdin"], input);
     expect(status).toBe(0);
     const selection = JSON.parse(out) as Selection;
+    expect(selection.all).toBe(true);
     expect(selection.changed).toEqual([]);
-    expect(rebuilt(selection)).toEqual([]);
+    expect(rebuilt(selection)).toEqual(ALL);
+    expect(selection.allBecause).toMatch(/the list of changed files is empty .*--allow-empty/);
+  });
+
+  it.each([["empty", ""], ["only whitespace", "  \n\t\n"]])("rebuilds nothing for %s standard input only when told an empty list is expected", (_name, input) => {
+    for (const args of [["--stdin", "--allow-empty"], ["--allow-empty", "--stdin"]]) {
+      const { status, out } = run(args, input);
+      expect(status).toBe(0);
+      const selection = JSON.parse(out) as Selection;
+      expect(selection.all).toBe(false);
+      expect(selection.changed).toEqual([]);
+      expect(rebuilt(selection)).toEqual([]);
+    }
+  });
+
+  it("does not let --allow-empty soften a list that is not empty", () => {
+    const { status, out } = run(["--stdin", "--allow-empty"], "a-new-top-level-file.txt\n");
+    expect(status).toBe(0);
+    expect(rebuilt(JSON.parse(out) as Selection)).toEqual(ALL);
+  });
+
+  it("answers every image when two commits show no difference, unless told that is expected", () => {
+    const same = run(["--base", "HEAD", "--head", "HEAD"]);
+    expect(same.status).toBe(0);
+    const selection = JSON.parse(same.out) as Selection;
+    expect(selection.changed).toEqual([]);
+    expect(selection.all).toBe(true);
+    expect(rebuilt(selection)).toEqual(ALL);
+
+    const expected = run(["--base", "HEAD", "--head", "HEAD", "--allow-empty"]);
+    expect(expected.status).toBe(0);
+    expect((JSON.parse(expected.out) as Selection).all).toBe(false);
+    expect(rebuilt(JSON.parse(expected.out) as Selection)).toEqual([]);
+  });
+
+  it("answers every image when the selector's own file is among the changes", () => {
+    const { status, out } = run(["--stdin"], `${SELECTOR_FILES[1]}\nREADME.md\n`);
+    expect(status).toBe(0);
+    const selection = JSON.parse(out) as Selection;
+    expect(rebuilt(selection)).toEqual(ALL);
+    expect(selection.allBecause).toContain("the selector itself changed");
   });
 
   it("answers every image, and still exits 0, when git cannot say what changed", () => {
@@ -777,7 +862,7 @@ describe("the command-line entry", () => {
     expect(JSON.parse(out)).toEqual(JSON.parse(JSON.stringify(describeImages(repo))));
   });
 
-  it.each([[["--bogus"]], [[]], [["--base", "HEAD"]], [["--stdin", "--describe"]], [["--base", "HEAD", "--head"]]])("refuses a wrong command line %j with exit 2 and no answer", (args) => {
+  it.each([[["--bogus"]], [[]], [["--base", "HEAD"]], [["--stdin", "--describe"]], [["--base", "HEAD", "--head"]], [["--describe", "--allow-empty"]], [["--allow-empty"]]])("refuses a wrong command line %j with exit 2 and no answer", (args) => {
     const { status, out } = run(args);
     expect(status).toBe(2);
     expect(out).toBe("");

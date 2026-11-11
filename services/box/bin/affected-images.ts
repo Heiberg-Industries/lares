@@ -6,6 +6,12 @@
 //   affected-images.ts --stdin                           changed paths on standard input, one per line
 //   affected-images.ts --describe                        every image with the inputs worked out for it
 //   ... [--repo <dir>]                                   the repository; default: the one this file is in
+//   ... [--allow-empty]                                  an empty list of changes is expected: rebuild nothing
+//
+// An EMPTY list of changes answers "every image" unless --allow-empty is given. An empty list is
+// what `git diff ... | affected-images.ts --stdin` receives when the diff failed, and "nothing
+// changed, publish the old images" must never be the answer to a failure. Pass --allow-empty only
+// where the caller has itself established that the two commits hold the same files.
 //
 // With --base/--head the Dockerfiles and package.json files are read from <head> itself, not from
 // the files on disk, and the diff is taken WITHOUT rename detection: a renamed file must count as
@@ -32,7 +38,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 function usage(problem: string): never {
   process.stderr.write(
     `affected-images: ${problem}\n` +
-      "usage: affected-images.ts (--base <commit> --head <commit> | --stdin | --describe) [--repo <dir>]\n",
+      "usage: affected-images.ts (--base <commit> --head <commit> | --stdin | --describe) [--repo <dir>] [--allow-empty]\n",
   );
   process.exit(2);
 }
@@ -73,9 +79,11 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const values = new Map<string, string>();
   const flags = new Set<string>();
+  let allowEmpty = false;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     if (arg === "--stdin" || arg === "--describe") flags.add(arg);
+    else if (arg === "--allow-empty") allowEmpty = true;
     else if (arg === "--base" || arg === "--head" || arg === "--repo") {
       const value = args[i + 1];
       if (value === undefined || value.startsWith("--") || values.has(arg)) usage(`${arg} needs one value`);
@@ -86,6 +94,7 @@ async function main(): Promise<void> {
   const byCommits = values.has("--base") || values.has("--head");
   if (Number(byCommits) + flags.size !== 1) usage("give exactly one of --base/--head, --stdin or --describe");
   if (byCommits && !(values.has("--base") && values.has("--head"))) usage("--base and --head go together");
+  if (allowEmpty && flags.has("--describe")) usage("--allow-empty says nothing to --describe");
 
   const repo = resolve(values.get("--repo") ?? join(here, "..", "..", ".."));
   const lib: Lib = await import(pathToFileURL(join(here, "..", "lib", "affected-images.ts")).href);
@@ -97,7 +106,7 @@ async function main(): Promise<void> {
   }
   if (flags.has("--stdin")) {
     const paths = readFileSync(0, "utf8").split(/\r?\n|\0/).filter((line) => line.trim() !== "");
-    print(lib.selectAffectedImagesOrAll(paths, lib.fsRepoReader(repo)));
+    print(lib.selectAffectedImagesOrAll(paths, lib.fsRepoReader(repo), lib.IMAGES, { allowEmpty }));
     return;
   }
 
@@ -116,7 +125,7 @@ async function main(): Promise<void> {
     print(lib.everyImage(`git could not list what changed between ${base} and ${head}, so every image is rebuilt: ${detail}`));
     return;
   }
-  print(lib.selectAffectedImagesOrAll(paths, reader));
+  print(lib.selectAffectedImagesOrAll(paths, reader, lib.IMAGES, { allowEmpty }));
 }
 
 await main();
