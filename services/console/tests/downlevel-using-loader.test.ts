@@ -1,140 +1,111 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import vm from "node:vm";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import ts from "typescript";
 
 /**
- * Tests `build/downlevel-using-loader.cjs` for real semantics, not just "it parses": the fixtures
- * below are transpiled by the loader exactly as webpack would call it, then the OUTPUT is actually
- * executed (in a fresh `vm` context, never the real process, so a broken transform can't corrupt
- * this test run's own globals) and its observable behaviour is asserted — resource disposal order,
- * disposal on the happy path AND on a thrown error, and what happens with no `Symbol.dispose`.
+ * Why the console no longer has a `using` loader, kept as a test so the reason cannot go stale.
+ *
+ * An earlier framework version shipped ONE explicit-resource-management `using` declaration in the
+ * code a browser loads, which Next.js's webpack pipeline cannot parse. The console carried a narrow
+ * webpack loader (`build/downlevel-using-loader.cjs`, with wiring in `next.config.mjs`) to
+ * downlevel it. The framework's browser client holds no such declaration any more, so the loader
+ * and its wiring were removed.
+ *
+ * This file keeps its name because it guards the same thing from the other side: it walks every
+ * file the console's browser bundle can load from the framework — everything reachable from
+ * `eve/react`, `eve/client` and `eve/events`, the three entries the console imports — and PARSES
+ * each one for a `using` declaration. If a framework upgrade brings one back, this fails here, with
+ * the file's name, instead of as an unreadable `next build` error.
  */
 
 const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const loader = require("../build/downlevel-using-loader.cjs") as (this: { resourcePath: string }, source: string) => string;
+const SRC = join(dirname(realpathSync(require.resolve("eve/package.json"))), "dist", "src");
 
-function transpile(source: string): string {
-  return loader.call({ resourcePath: "/fake/eve/dist/src/client/eve-agent-store.js" }, source);
+/** The framework's own import map (`imports` in its package.json), for its compiled output. */
+function target(from: string, specifier: string): string | null {
+  if (specifier.startsWith("#compiled/")) return join(SRC, "compiled", specifier.slice("#compiled/".length));
+  if (specifier.startsWith("#")) return join(SRC, specifier.slice(1));
+  if (specifier.startsWith(".")) return resolve(dirname(from), specifier);
+  return null; // another package (react), not the framework's own code
 }
 
-/** Runs transpiled CommonJS-shaped output in an isolated realm and returns its `module.exports`. */
-function evaluate(code: string): Record<string, unknown> {
-  const moduleObj = { exports: {} as Record<string, unknown> };
-  const context = vm.createContext({ module: moduleObj, exports: moduleObj.exports, console });
-  vm.runInContext(code, context, { filename: "downlevel-using-fixture.js" });
-  return moduleObj.exports;
-}
-
-describe("downlevel-using-loader", () => {
-  it("returns a source with no 'using' declaration byte-identical, untouched", () => {
-    const source = 'const x = 1;\nfunction f() { return x + 1; }\nmodule.exports = { f };\n';
-    expect(transpile(source)).toBe(source);
-  });
-
-  it("disposes a single resource exactly once, at scope exit", () => {
-    const source = `
-      function run(order) {
-        using a = { [Symbol.dispose]() { order.push("dispose:a"); } };
-        order.push("body");
-      }
-      module.exports = { run };
-    `;
-    const output = transpile(source);
-    expect(output).not.toBe(source);
-    expect(output).not.toMatch(/(^|[^.\w$])using\s+[A-Za-z_$]/);
-
-    const order: string[] = [];
-    const { run } = evaluate(output) as { run: (order: string[]) => void };
-    run(order);
-    expect(order).toEqual(["body", "dispose:a"]);
-
-    // "exactly once": a second call must not accumulate extra dispose calls from the first run's
-    // resource, and must itself dispose exactly once.
-    const order2: string[] = [];
-    run(order2);
-    expect(order2).toEqual(["body", "dispose:a"]);
-  });
-
-  it("disposes two resources in reverse declaration order", () => {
-    const source = `
-      function run(order) {
-        using a = { [Symbol.dispose]() { order.push("dispose:a"); } };
-        using b = { [Symbol.dispose]() { order.push("dispose:b"); } };
-        order.push("body");
-      }
-      module.exports = { run };
-    `;
-    const output = transpile(source);
-    const order: string[] = [];
-    const { run } = evaluate(output) as { run: (order: string[]) => void };
-    run(order);
-    // b was declared after a, so it is disposed first — LIFO, the same order a real "using" block
-    // in a native runtime would use.
-    expect(order).toEqual(["body", "dispose:b", "dispose:a"]);
-  });
-
-  it("still disposes every resource, and still lets the original error propagate, when the block throws", () => {
-    const source = `
-      function run(order) {
-        using a = { [Symbol.dispose]() { order.push("dispose:a"); } };
-        using b = { [Symbol.dispose]() { order.push("dispose:b"); } };
-        order.push("body");
-        throw new Error("boom");
-      }
-      module.exports = { run };
-    `;
-    const output = transpile(source);
-    const order: string[] = [];
-    const { run } = evaluate(output) as { run: (order: string[]) => void };
-    expect(() => run(order)).toThrow("boom");
-    expect(order).toEqual(["body", "dispose:b", "dispose:a"]);
-  });
-
-  it("matches TypeScript's own emitted helper when Symbol.dispose does not exist: it throws a" +
-    "TypeError synchronously, at the point the resource is acquired, before the function body runs " +
-    "any further — not lazily, at what would have been disposal time", () => {
-    const source = `
-      function run(order) {
-        using a = { [Symbol.dispose]() { order.push("dispose:a"); } };
-        order.push("unreachable");
-      }
-      module.exports = { run };
-    `;
-    const output = transpile(source);
-    const moduleObj = { exports: {} as Record<string, unknown> };
-    // A fresh realm whose global `Symbol` has no `.dispose` — standing in for a runtime that
-    // predates explicit resource management, the case this fixture exists to pin down. The real
-    // `Symbol.dispose` is a non-configurable well-known symbol (deleting or reassigning it on the
-    // actual global throws), so this shadows the global binding with a plain stand-in instead of
-    // touching the real one; nothing else in this fixture needs a real `Symbol`.
-    const context = vm.createContext({ module: moduleObj, exports: moduleObj.exports, console, Symbol: { dispose: undefined } });
-    vm.runInContext(output, context, { filename: "downlevel-using-fixture-no-dispose.js" });
-    const { run } = moduleObj.exports as { run: (order: string[]) => void };
-
-    const order: string[] = [];
-    let caught: unknown;
-    try {
-      run(order);
-    } catch (error) {
-      caught = error;
+/** Every module a file statically or dynamically imports, read from its syntax tree. */
+function importsOf(source: ts.SourceFile): string[] {
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      found.push(node.moduleSpecifier.text);
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments[0] && ts.isStringLiteralLike(node.arguments[0])) {
+      found.push(node.arguments[0].text);
     }
-    // A cross-realm error is not `instanceof` this realm's TypeError, so assert on its shape
-    // instead — the vm context's own TypeError is exactly what TypeScript's helper throws.
-    expect((caught as Error)?.name).toBe("TypeError");
-    expect((caught as Error)?.message).toBe("Symbol.dispose is not defined.");
-    // The throw happens while acquiring "a", so the line after it — and "a"'s own dispose, which
-    // never got the chance to be registered — never runs.
-    expect(order).toEqual([]);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/** True for `using x = …` and `await using x = …`, and for nothing else (`const` and `let` share bits). */
+function isUsing(list: ts.VariableDeclarationList): boolean {
+  const scoped = list.flags & ts.NodeFlags.BlockScoped;
+  return scoped === ts.NodeFlags.Using || scoped === ts.NodeFlags.AwaitUsing;
+}
+
+function usingDeclarations(source: ts.SourceFile): number {
+  let count = 0;
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclarationList(node) && isUsing(node)) count += 1;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return count;
+}
+
+const parse = (file: string, text: string) => ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
+
+/** Everything reachable from the entries, by following the framework's own imports. */
+function closure(entries: readonly string[]): Map<string, ts.SourceFile> {
+  const seen = new Map<string, ts.SourceFile>();
+  const queue = entries.map((entry) => join(SRC, entry));
+  while (queue.length > 0) {
+    let file = queue.pop()!;
+    if (existsSync(file) && statSync(file).isDirectory()) file = join(file, "index.js");
+    if (seen.has(file)) continue;
+    const source = parse(file, readFileSync(file, "utf8"));
+    seen.set(file, source);
+    for (const specifier of importsOf(source)) {
+      const next = target(file, specifier);
+      if (next !== null) queue.push(next);
+    }
+  }
+  return seen;
+}
+
+describe("the framework's browser client needs no `using` loader", () => {
+  it("the check itself tells a `using` declaration from everything that merely looks like one", () => {
+    expect(usingDeclarations(parse("a.js", "function f(){ using a = open(); const b = 1; let c = 2; }"))).toBe(1);
+    expect(usingDeclarations(parse("b.js", "async function f(){ await using a = open(); }"))).toBe(1);
+    // The token in a string, in a comment, and as an ordinary name is not a declaration.
+    expect(usingDeclarations(parse("c.js", 'const s = "using foo bar"; /* using x = 1 */ const using = 3; let y = using + 1;'))).toBe(0);
   });
 
-  it("throws loudly if the output still contains what looks like a 'using' declaration", () => {
-    // TypeScript cannot fail to downlevel valid `using` syntax, so this exercises the guard without
-    // needing to break the real transform: the loader's trigger check is a token match, not a real
-    // parse, and a STRING LITERAL containing that same token is a source `ts.transpileModule` will
-    // (correctly) leave completely untouched — including inside the emitted output — which is
-    // exactly the shape the loader's own post-transform guard exists to catch rather than ship.
-    const source = 'const s = "using foo bar";\nmodule.exports = { s };\n';
-    expect(() => transpile(source)).toThrow(/still contains a "using" declaration/);
+  it("no file the browser can load from eve/react, eve/client or eve/events declares one", () => {
+    const files = closure(["react/index.js", "client/index.js", "public/events/index.js"]);
+    // The walk really followed the imports: the hook, the store, the stream reader and the
+    // projection the chat page uses are all in it.
+    const names = [...files.keys()].map((file) => relative(SRC, file));
+    for (const expected of ["react/use-eve-agent.js", "client/session-store.js", "client/open-stream.js", "client/session.js", "protocol/session-projection/fold.js"]) {
+      expect(names, expected).toContain(expected);
+    }
+    expect(files.size).toBeGreaterThan(40);
+    const offenders = [...files].filter(([, source]) => usingDeclarations(source) > 0).map(([file]) => relative(SRC, file));
+    expect(offenders).toEqual([]);
+  });
+
+  it("the loader and its wiring are gone", () => {
+    expect(existsSync(new URL("../build/downlevel-using-loader.cjs", import.meta.url))).toBe(false);
+    const config = readFileSync(new URL("../next.config.mjs", import.meta.url), "utf8");
+    expect(config).not.toMatch(/downlevel-using-loader\.cjs|enforce:\s*"pre"|module\.rules/);
   });
 });
