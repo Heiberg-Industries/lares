@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const { purposeRequest } = vi.hoisted(() => ({ purposeRequest: vi.fn() }));
 vi.mock('../src/model-purpose-client.js', () => ({ modelPurposeRequest: purposeRequest }));
 import { generateText } from 'ai';
+import { MockLanguageModelV3 } from 'ai/test';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,7 +11,7 @@ import { join } from 'node:path';
 import { captureModelInvocation, claimModelDispatch, currentModelInvocation, currentModelPurposeClaim, prepareCurrentModelPurposeIntent, requestAndAttachModelPurposeClaim, runModelInvocation } from '../src/model-invocation.js';
 import { gatewayRawRequestHash } from '../src/gateway-admission-protocol.js';
 import { createGatewayProvider, type GatewayLane } from '../src/gateway-provider.js';
-import { guardDefinitionModel, refuseModelCompaction } from '../src/definition-model.js';
+import { guardDefinitionModel, modelCompactionSettled, refuseModelCompaction } from '../src/definition-model.js';
 
 const event = { type: 'step.started', data: { turnId: 'turn', sequence: 1, stepIndex: 2 } };
 const session = () => ({ id: 'session', auth: { current: { authenticator: 'fixture', principalId: 'fixture-person', principalType: 'user' as const, attributes: { actor: 'original' } }, initiator: null } });
@@ -177,7 +178,31 @@ it('keeps concurrent sessions isolated across awaited work and does not rearm af
 });
 
 it('refuses whenever the awaited compaction event reaches its authored hook', () => {
-  expect(() => refuseModelCompaction()).toThrow('compaction requires a fresh trusted invocation');
+  expect(() => refuseModelCompaction('compacting-session')).toThrow('compaction requires a fresh trusted invocation');
+  modelCompactionSettled('compacting-session');
+});
+
+// eve 1.0 no longer lets a throwing hook stop the summary call: the hook's error fails the turn
+// at its next checkpoint, after the request has left. The summary goes out through the turn's
+// own selected model, so the model itself has to refuse while its session is being compacted.
+it('refuses a call through the selected model while its session is being compacted, and only that session', async () => {
+  const call = vi.fn(async () => { throw new Error('PROVIDER REACHED'); });
+  const selected = (id: string) => guardDefinitionModel(new MockLanguageModelV3({ doGenerate: call, doStream: call }), async () => undefined,
+    captureModelInvocation({ ...event, data: { ...event.data, turnId: randomUUID() } }, { ...session(), id }, 'fixture-brain'));
+  const summary = selected('session-being-compacted');
+  expect(() => refuseModelCompaction('session-being-compacted')).toThrow('compaction requires a fresh trusted invocation');
+  try {
+    for (const method of ['doGenerate', 'doStream'] as const) {
+      await expect(summary[method]({ prompt: [] } as never)).rejects.toThrow('compaction requires a fresh trusted invocation');
+    }
+    expect(call).not.toHaveBeenCalled();
+    // Another conversation in the same process is untouched.
+    await expect(selected('another-session').doGenerate({ prompt: [] } as never)).rejects.toThrow('PROVIDER REACHED');
+    expect(call).toHaveBeenCalledTimes(1);
+  } finally { modelCompactionSettled('session-being-compacted'); }
+  // Once the compaction has settled, a NEW selection for that session works again.
+  await expect(selected('session-being-compacted').doGenerate({ prompt: [] } as never)).rejects.toThrow('PROVIDER REACHED');
+  expect(call).toHaveBeenCalledTimes(2);
 });
 
 for (const lane of ['anthropic', 'openai-compatible'] satisfies GatewayLane[]) {

@@ -86,24 +86,37 @@ function pendingFrom(auth: unknown): { required: boolean; receipt?: string } {
   return { required, receipt: value };
 }
 
+/** A turn's zero-based position in its session.
+ *
+ * eve 1.0's `turn.started` and `turn.settled` events carry `turnId` and no `sequence` (0.60.1
+ * carried both). eve mints turn ids as `turn_<sequence>` and reports that same number to hooks
+ * and tools as `ctx.session.turn.sequence` (`dist/src/protocol/session-projection.js`,
+ * `turnCoordinates`), so the id itself is the framework's own record of the position. An event
+ * that does carry a `sequence` (the model resolver's coordinates, an older event) is used as
+ * given. Anything else is refused, never guessed at. */
+function sequenceFrom(data: { turnId?: unknown; sequence?: unknown } | undefined): number | undefined {
+  if (data?.sequence !== undefined) return Number.isSafeInteger(data.sequence) && Number(data.sequence) >= 0 ? Number(data.sequence) : undefined;
+  const parsed = typeof data?.turnId === 'string' ? /^turn_(0|[1-9]\d{0,14})$/.exec(data.turnId) : null;
+  return parsed ? Number(parsed[1]) : undefined;
+}
+
 function pointFrom(event: unknown, session: Session | undefined, incarnation: string, allowEmpty: boolean): Point {
   const data = (event as { data?: { turnId?: unknown; sequence?: unknown } } | undefined)?.data;
-  const sessionId = session?.id, turnId = data?.turnId, sequence = data?.sequence;
+  const sessionId = session?.id, turnId = data?.turnId, sequence = sequenceFrom(data);
   if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(sessionId) ||
       typeof turnId !== 'string' || (!allowEmpty && turnId.length === 0) ||
       (turnId !== '' && !/^[A-Za-z0-9._:-]{1,128}$/.test(turnId)) ||
-      !Number.isSafeInteger(sequence) || Number(sequence) < 0) throw deny();
-  // Eve 0.60.1 normalizes an empty emitted approval-resume turnId to `turn_N` on the
-  // session context. Keep the event's exact empty ID as the broker coordinate; only the
-  // sequence must agree for that trusted resolver continuation.
+      sequence === undefined) throw deny();
+  // The session context a hook passes carries the framework's own turn (`ctx.session.turn`);
+  // the model resolver's session snapshot carries none (a dynamic `model` is given only the
+  // session id and both authentications). Where the turn is present it has to agree.
   const sessionTurn = session?.turn;
-  // DynamicResolveContext intentionally exposes only session id and auth, not turn state.
-  // For a marked approval resume the trusted step event is the source of the raw turn tuple;
-  // if a richer internal context is present, its sequence still has to agree.
+  // For a marked approval resume the model resolver's coordinates are the source of the turn
+  // tuple; if a richer context is present, its sequence still has to agree.
   if (allowEmpty) {
     if (sessionTurn && sessionTurn.sequence !== sequence) throw deny();
   } else if (!sessionTurn || sessionTurn.sequence !== sequence || sessionTurn.id !== turnId) throw deny();
-  return { sessionId, turnId, sequence: Number(sequence), incarnation };
+  return { sessionId, turnId, sequence, incarnation };
 }
 
 function resumeBinding(session: Session | undefined, receipt: string): ResumeBinding {
@@ -122,7 +135,10 @@ function sameResumeBinding(left: ResumeBinding | undefined, right: ResumeBinding
     left.admissionNonce === right.admissionNonce && left.receipt === right.receipt;
 }
 
-/** Reserve an exact framework step before authority verification awaits. This creates no
+/** Reserve an exact model call before authority verification awaits. `event` is the coordinate
+ * record the model resolver builds from eve's session view (`modelStepCoordinates` in
+ * @lares/agent-kit/definition-model); it keeps the `step.started` name Keeper authenticates,
+ * though eve 1.0 has no event by that name. This creates no
  * Keeper authority; it only lets a terminal hook tombstone the real resume coordinates while
  * the verifier is in flight. Ordinary and human turns do not create these reservations. */
 export function prepareModelPurposeInvocation(event: unknown, session: Session | undefined): void {
@@ -131,7 +147,7 @@ export function prepareModelPurposeInvocation(event: unknown, session: Session |
   const pending = pendingFrom(current);
   if (!pending.required && !pending.receipt) return;
   if (!pending.receipt) throw deny();
-  if (!privateResumeAdmission(current)) return; // Human turns are opened by turn.started.
+  if (!privateResumeAdmission(current)) return; // Human turns are opened by the turn.started hook.
   const binding = resumeBinding(session, pending.receipt);
   const own = managedIdentity(process.env);
   if (!own) throw deny();
@@ -182,8 +198,8 @@ export async function openModelPurposeTurn(event: unknown, session: Session | un
   const purpose = human ? 'human' : undefined;
   const pending = pendingFrom(current);
   if (!pending.required && !pending.receipt) return;
-  // Approval continuations are opened lazily by the verified step resolver: Eve does not
-  // emit turn.started for the pinned response-authorization path.
+  // Approval continuations are opened lazily by the model resolver: an answered approval
+  // continues its turn, so no turn.started is emitted for it.
   if (!purpose) return;
   if (!pending.receipt) throw deny();
   const own = managedIdentity(process.env);
@@ -196,8 +212,11 @@ export async function openModelPurposeTurn(event: unknown, session: Session | un
 /** Burns local turn state synchronously, then best-effort closes the remote capability. */
 export async function closeModelPurposeTurn(event: unknown, session: Session | undefined): Promise<void> {
   const own = managedIdentity(process.env), data = (event as { data?: { turnId?: unknown; sequence?: unknown } } | undefined)?.data;
-  if (!own || typeof session?.id !== 'string' || typeof data?.turnId !== 'string' || !Number.isSafeInteger(data.sequence)) return;
-  const point: Point = { sessionId: session.id, turnId: data.turnId, sequence: Number(data.sequence), incarnation: own.incarnation };
+  // The position comes from the event alone: when a turn has just settled, the hook's own
+  // `ctx.session.turn` may already describe the next turn.
+  const sequence = sequenceFrom(data);
+  if (!own || typeof session?.id !== 'string' || typeof data?.turnId !== 'string' || sequence === undefined) return;
+  const point: Point = { sessionId: session.id, turnId: data.turnId, sequence, incarnation: own.incarnation };
   const capability = closePoint(point);
   if (capability) await modelPurposeRequest('turn.close', { turnCapability: capability, turnId: point.turnId, sequence: point.sequence }).catch(() => {});
 }
