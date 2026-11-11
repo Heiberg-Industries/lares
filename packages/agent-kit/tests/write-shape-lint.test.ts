@@ -10,7 +10,7 @@
 //   through `resolveSource` and `toolNames` so the cases are synthetic and readable; the real
 //   filesystem walk is what the service suites exercise.
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -450,25 +450,54 @@ describe("stripComments keeps offsets exact", () => {
 });
 
 describe("the depth rule", () => {
+  // WHAT AN "INSTRUCTION READER" IS SINCE eve 1.0. Skill text used to reach the model through
+  // each agent's own `load_skill` tool, and this case held that tool's sources to "reads only".
+  // The framework now loads skills itself, so there is no authored loader; the code that decides
+  // what the model is handed is each file under `agent/skills/` (a function of the conversation
+  // that returns the skill or nothing) plus `public_doc`, the reader the documentation skill
+  // names. Those are what is held to "reads only" now. A skill file is not a tool, so the
+  // capability lint never visits it; this case is the only thing that classifies its code.
   it.each(["chief-of-staff", "creative"])(
     "%s: skipped instruction readers resolve to real read-only sources",
     (role) => {
       const agentDir = new URL(`../../../services/${role}`, import.meta.url).pathname;
-      for (const tool of ["load_skill", "public_doc"]) {
-        const found = sourcesForTool(agentDir, tool);
-        expect(found, `${role}/${tool} must resolve to a deployed source`).not.toBeNull();
-        expect(found, `${role}/${tool} must resolve at least one source`).not.toHaveLength(0);
+      const skillsDir = join(agentDir, "agent", "skills");
+      const skills = readdirSync(skillsDir).filter((f) => f.endsWith(".ts")).map((f) => f.slice(0, -3)).sort();
+      expect(skills, `${role} ships no skill file, so this case would check nothing`).not.toHaveLength(0);
+
+      // No authored loader may come back: beside the framework's own it would gate nothing.
+      expect(sourcesForTool(agentDir, "load_skill"), `${role} must not author a load_skill tool`).toEqual([]);
+
+      // `sourcesForTool` resolves a name under `agent/tools/`; `../skills/<name>` points the SAME
+      // one-hop resolver at a skill file. Each loop below asserts the entry it got back is that
+      // file, so a change to how the resolver builds paths fails here instead of passing empty.
+      const readers = [...skills.map((skill) => ({ name: skill, tool: `../skills/${skill}`, entry: join(skillsDir, `${skill}.ts`) })),
+        { name: "public_doc", tool: "public_doc", entry: join(agentDir, "agent", "tools", "public_doc.ts") }];
+      for (const reader of readers) {
+        const found = sourcesForTool(agentDir, reader.tool);
+        expect(found, `${role}/${reader.name} must resolve to a deployed source`).not.toBeNull();
+        expect(found, `${role}/${reader.name} must resolve at least one source`).not.toHaveLength(0);
+        expect(found![0]!.file, `${role}/${reader.name} must resolve to its own file first`).toBe(reader.entry);
         for (const source of found!) {
           expect(
             classifyWriteShape(source.source),
-            `${role}/${tool} has a write-shaped source at ${source.file}`,
+            `${role}/${reader.name} has a write-shaped source at ${source.file}`,
           ).toEqual([]);
         }
-        if (tool === "public_doc") {
+        if (reader.name === "public_doc") {
           expect(
             found!.some((source) => source.file.endsWith("/src/public-docs-runtime.ts")),
-            `${role}/${tool} must include the actual shared baked-document reader in its one-hop sources`,
+            `${role}/${reader.name} must include the actual shared baked-document reader in its one-hop sources`,
           ).toBe(true);
+        } else {
+          // The three things a skill file runs before it hands anything over, each scanned above:
+          // the private console check, the kit's decision, and the service's definition reader.
+          for (const hop of ["/src/private-console-surface.ts", "/src/manifest.ts", `/services/${role}/lib/definition.ts`]) {
+            expect(
+              found!.some((source) => source.file.endsWith(hop)),
+              `${role}/${reader.name} must include ${hop} in its one-hop sources`,
+            ).toBe(true);
+          }
         }
       }
 

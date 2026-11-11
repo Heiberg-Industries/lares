@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { isDisabledToolSentinel } from "eve/tools";
 import { assertDeclarationIntegrity, grantFor } from "@lares/agent-kit/manifest";
 import { parseDefinition } from "@lares/agent-kit/definition";
 import { grantedToolNames } from "@lares/agent-kit/catalogue";
 
 import manifest from "../agent.json";
 import { CATALOGUE } from "../catalogue/index.js";
+
+// eve 1.0 no longer exports a recogniser for `disableTool()`'s value, which is an opaque
+// `{ [Symbol.for("eve.disabled-tool")]: true }`. One local line, on purpose not a shared helper.
+const isDisabledToolSentinel = (v: unknown): boolean => typeof v === "object" && v !== null && (v as Record<symbol, unknown>)[Symbol.for("eve.disabled-tool")] === true;
 
 describe("signals declaration and fleet gate", () => {
   it("grants the chief of staff signals read at gated autonomy", () => {
