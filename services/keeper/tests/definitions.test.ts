@@ -9,7 +9,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi, type Mock } from 'vite
 import { loadDefinition, readDefinitionFiles } from '@lares/agent-kit/definition';
 import { deployedToolsFor } from '@lares/agent-kit/persona';
 import { registerDefinitionActions } from '../lib/definitions.js';
-import { KeeperRefusedError, resetActions, runAction } from '../lib/actions.js';
+import { KeeperFailedError, KeeperRefusedError, resetActions, runAction, type KeeperFailureState } from '../lib/actions.js';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { outsideSecretName } from '@lares/agent-kit/outside-tools';
 import { recordAppliedDefinition } from '../lib/definition-files.js';
@@ -31,6 +31,20 @@ let backup: {
     ownedSecrets?:AnyMock;
 };
 const ctx = () => ({ actor: 'owner@example.com', audit: vi.fn(async (_record: unknown) => { }) });
+/** A failed Apply says why in the keeper's own words, names the state the agent is left in, and carries the
+ *  audit record's operation id as the reference. The injected cause never leaves the keeper. */
+async function expectApplyFailure(work: (c: ReturnType<typeof ctx>) => Promise<unknown>, state: KeeperFailureState, message: string, hidden: string): Promise<void> {
+    const c = ctx();
+    let error: unknown;
+    try { await work(c); } catch (e) { error = e; }
+    expect(error).toBeInstanceOf(KeeperFailedError);
+    const records = c.audit.mock.calls.map(([record]) => record as { operationId?: string; outcome: string; detail?: string });
+    expect(records[0]!.operationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(error).toMatchObject({ message, state, reference: records[0]!.operationId });
+    expect((error as Error).cause).toBeUndefined();
+    expect(records.at(-1)).toMatchObject({ operationId: records[0]!.operationId, outcome: 'failed', detail: `${message} [${state}]` });
+    expect(JSON.stringify([error, (error as Error).message, records])).not.toContain(hidden);
+}
 const save = (name = 'bookkeeper', extra = {}) => ({ name, definition: { ...GOOD, name }, duties: 'Books.\n', voice: 'Dry.\n', ...extra });
 const create = (name = 'bookkeeper', extra = {}) => runAction('definition.create', { ...save(name, extra), startingPoint: role }, ctx());
 async function recordApplied(name = 'bookkeeper') {
@@ -278,7 +292,8 @@ it('restores the complete previous definition when Apply startup fails, then req
     expect(readFileSync(join(path, '.apply-rollback'), 'utf8')).toBe(oldPointer);
     await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: stale.hash }, ctx())).rejects.toThrow('changed');
     expect(compose.reconcile).not.toHaveBeenCalled();
-    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: candidate.hash }, ctx())).rejects.toThrow('keeper: action failed');
+    await expectApplyFailure(c => runAction('definition.reconcile', { name: 'bookkeeper', hash: candidate.hash }, c), 'previous-running',
+        'Apply failed. The previous working definition was restored; save the edit again before retrying.', 'injected startup failure');
     const restored = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: path } });
     expect(readlinkSync(join(path, '.current'))).toBe(oldPointer);
     expect(restored).toMatchObject({ definition: previous.definition, dutiesMd: previous.dutiesMd, voiceMd: previous.voiceMd });
@@ -380,7 +395,8 @@ it('starts a new definition after native activation, and again after a first sta
     });
     register();
     const saved: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'first candidate' } }), ctx());
-    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: saved.hash }, ctx())).rejects.toThrow('keeper: action failed');
+    await expectApplyFailure(c => runAction('definition.reconcile', { name: 'bookkeeper', hash: saved.hash }, c), 'recovery-required',
+        'Apply failed and no verified previous full definition is available; runtime recovery is required.', 'Runtime did not start healthy');
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect((await pool.query("SELECT pending,pending_reason FROM agent_resources WHERE name='bookkeeper'")).rows).toEqual([]);
     expect(existsSync(join(path, '.first-activation'))).toBe(true);
@@ -414,7 +430,8 @@ it('marks recovery required when current authority blocks restoration after cand
     }) });
     register();
     const candidate: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'candidate' } }), ctx());
-    await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: candidate.hash }, ctx())).rejects.toThrow('keeper: action failed');
+    await expectApplyFailure(c => runAction('definition.reconcile', { name: 'bookkeeper', hash: candidate.hash }, c), 'restored-stopped',
+        'Apply failed. The previous saved definition was restored, but runtime recovery failed; explicit recovery is required.', 'injected candidate startup failure');
     const restored = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: path } });
     expect(restored).toMatchObject({ definition: previous.definition, dutiesMd: previous.dutiesMd, voiceMd: previous.voiceMd });
     expect((await pool.query("SELECT definition,hash,status FROM agent_definitions WHERE name='bookkeeper'")).rows[0]).toMatchObject({ definition: previous.definition, hash: previous.hash, status: 'valid' });

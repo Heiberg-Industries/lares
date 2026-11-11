@@ -188,7 +188,7 @@ it('uses real native lifecycle outcomes during Apply fallback and refuses a rest
  const candidate={...chief,description:'Candidate startup must be rolled back'};
  const saved:any=await runAction('definition.save',{name:'bookkeeper',definition:candidate,duties,voice},{actor:'owner@example.test',audit:async()=>{}});
  acceptedHash=saved.hash;allow=true;events=[];
- await expect(runAction('definition.reconcile',{name:'bookkeeper',hash:saved.hash},{actor:'owner@example.test',audit:async()=>{}})).rejects.toThrow('keeper: action failed');
+ await expect(runAction('definition.reconcile',{name:'bookkeeper',hash:saved.hash},{actor:'owner@example.test',audit:async()=>{}})).rejects.toMatchObject({name:'KeeperFailedError',state:'restored-stopped',message:'Apply failed. The previous saved definition was restored, but runtime recovery failed; explicit recovery is required.'});
  expect(starts).toBe(1);expect(events.filter(x=>x==='start:bookkeeper')).toHaveLength(1);
  const restored=await loadDefinition({serviceDir:'unused',env:{LARES_DEFINITION_DIR:agentDir}});
  expect(restored).toMatchObject({definition:chief,dutiesMd:duties,voiceMd:voice});

@@ -2,11 +2,26 @@ import { createConnection, createServer, type Socket } from "node:net";
 import { chmod, chown, lstat, mkdir, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { runAction, refuse, KeeperRefusedError, type ActionContext } from "./actions.js";
+import { runAction, refuse, failureReference, KeeperFailedError, KeeperRefusedError, type ActionContext } from "./actions.js";
 import { auditor } from "./audit.js";
 import { keeperPool, loadKeeperConfig } from "./config.js";
 export const MAX_REQUEST_BYTES = 256 * 1024;
 const requestSchema = z.object({ action: z.string().min(1).max(100), input: z.unknown().optional(), actor: z.unknown().optional() }).strict();
+const UNCONFIRMED = "keeper could not confirm the action outcome";
+/** The reply for an action that did not succeed. Three closed outcomes:
+ *  - refused: nothing was done; `error` and `findings` are the keeper's own words.
+ *  - failed: the keeper knows why and what the agent is left in; `error` is hand-written,
+ *    `state` is one of KEEPER_FAILURE_STATES, `reference` is the audit operation id.
+ *  - unknown: anything else. The exception text is never sent (it can contain secrets);
+ *    `reference` is sent whenever an audit record exists. */
+export function failureReply(error: unknown): Record<string, unknown> {
+  if (error instanceof KeeperRefusedError)
+    return { ok: false, outcome: "refused", error: error.message, ...(error.findings ? { findings: error.findings } : {}) };
+  if (error instanceof KeeperFailedError && error.reference)
+    return { ok: false, outcome: "failed", error: error.message, state: error.state, reference: error.reference };
+  const reference = failureReference(error);
+  return { ok: false, outcome: "unknown", error: UNCONFIRMED, ...(reference ? { reference } : {}) };
+}
 export interface ServeOptions {
   socket: string;
   host: boolean;
@@ -127,16 +142,13 @@ export async function serve(opts: ServeOptions): Promise<() => Promise<void>> {
             result = await runAction(req.action, req.input ?? {}, { ...context, actor: opts.host ? "host" : req.actor as string }, { host: opts.host });
           }
           catch (e) {
-            const refused=e instanceof KeeperRefusedError;
-            socket.write(JSON.stringify({ ok: false, outcome: refused?"refused":"unknown",
-              error: refused?e.message:"keeper could not confirm the action outcome",
-              ...(refused&&e.findings ? { findings: e.findings } : {}) }) + "\n");
+            socket.write(JSON.stringify(failureReply(e)) + "\n");
             continue;
           }
           try {
             socket.write(JSON.stringify({ ok: true, result: result ?? null }) + "\n");
           } catch {
-            socket.write(JSON.stringify({ ok: false, outcome: "unknown", error: "keeper could not confirm the action outcome" }) + "\n");
+            socket.write(JSON.stringify({ ok: false, outcome: "unknown", error: UNCONFIRMED }) + "\n");
           }
         }
         if (ended && !terminal)
