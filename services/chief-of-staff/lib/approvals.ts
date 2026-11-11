@@ -5,6 +5,7 @@ import { isExactApprovalContext, isExactApprovalResponse, reserveExactApprovalOr
 import { callerIsAgentOwner } from "./webchat-owner.js";
 import { deadlineApprovalAdapter } from "./deadlines-store.js";
 import { canApproveCompanyTrack, tracksApprovalAdapter, twentyTracksApprovalAdapter } from "./tracks-approval.js";
+import { calendarApprovalAdapter } from "./calendar-approval.js";
 import { vaultNoteApprovalAdapter } from "./vault-note-write.js";
 import { consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
 /**
@@ -24,7 +25,8 @@ const adapterFor = (tool: string, input?: unknown) => {
   return companyHome(input) && twentyTracksApprovalAdapter.toolNames.includes(tool)
     ? twentyTracksApprovalAdapter
     : tracksApprovalAdapter.toolNames.includes(tool) ? tracksApprovalAdapter
-    : vaultNoteApprovalAdapter.toolNames.includes(tool) ? vaultNoteApprovalAdapter : deadlineApprovalAdapter;
+    : vaultNoteApprovalAdapter.toolNames.includes(tool) ? vaultNoteApprovalAdapter
+    : calendarApprovalAdapter.toolNames.includes(tool) ? calendarApprovalAdapter : deadlineApprovalAdapter;
 };
 
 /**
@@ -226,6 +228,26 @@ export async function runApprovedTwentyTrackOnce<T>(approved: ApprovedExecution 
     RETURNING request_id`, [approved.authority.requestId, approved.callId, approved.toolName, approved.payloadHash,
       approved.authority.actingMemberId, approved.authority.sessionId, approved.authority.agentId]);
   if (claimed.rows.length !== 1) throw new Error('Exact Twenty track approval was already used or is unavailable');
+  return write();
+}
+
+/** The same durable one-use claim for an exact calendar event change, made before Google is called.
+ *  Without an exact approval (a native channel) the write runs as it always did. */
+export async function runApprovedCalendarOnce<T>(approved: ApprovedExecution | undefined,
+  write: () => Promise<T>, db = getPool()): Promise<T> {
+  if (!approved) return write();
+  if (!calendarApprovalAdapter.toolNames.includes(approved.toolName) ||
+      approved.authority.origin !== 'approval-resume' || !approved.authority.requestId ||
+      !approved.authority.actingMemberId || !approved.authority.agentId || !approved.authority.sessionId) {
+    throw new Error('Exact calendar approval is unavailable');
+  }
+  const claimed = await db.query(`UPDATE approval_asks
+    SET used_at=clock_timestamp(),use_count=use_count+1
+    WHERE request_id=$1 AND call_id=$2 AND tool=$3 AND payload_hash=$4 AND outcome='approved' AND used_at IS NULL
+      AND acting_member_id=$5 AND resolved_by_member_id=$5 AND session_id=$6 AND agent=$7
+    RETURNING request_id`, [approved.authority.requestId, approved.callId, approved.toolName, approved.payloadHash,
+      approved.authority.actingMemberId, approved.authority.sessionId, approved.authority.agentId]);
+  if (claimed.rows.length !== 1) throw new Error('Exact calendar approval was already used or is unavailable');
   return write();
 }
 

@@ -6,7 +6,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { googleClients } from "../lib/google.js";
-import { assertApproval } from "../lib/approvals.js";
+import { assertApproval, runApprovedCalendarOnce } from "../lib/approvals.js";
 import { approvalFor } from "../lib/board.js";
 
 export default defineTool({
@@ -31,10 +31,10 @@ export default defineTool({
   }),
   approval: approvalFor("calendar_create_event"),
   async execute(input, ctx) {
-    await assertApproval(ctx, "calendar_create_event", input);
+    const approved = await assertApproval(ctx, "calendar_create_event", input);
 
     const calendar = await googleClients().calendar(input.account);
-    return calendar.insertEvent({
+    return runApprovedCalendarOnce(approved, () => calendar.insertEvent({
       summary: input.summary,
       start: input.start,
       end: input.end,
@@ -42,6 +42,6 @@ export default defineTool({
       ...(input.attendees !== undefined ? { attendees: input.attendees } : {}),
       ...(input.notify !== undefined ? { notify: input.notify } : {}),
       ...(input.calendarId !== undefined ? { calendarId: input.calendarId } : {}),
-    });
+    }));
   },
 });

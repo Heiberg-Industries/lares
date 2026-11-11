@@ -12,7 +12,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { googleClients } from "../lib/google.js";
-import { assertApproval } from "../lib/approvals.js";
+import { assertApproval, runApprovedCalendarOnce } from "../lib/approvals.js";
 import { approvalFor } from "../lib/board.js";
 
 export default defineTool({
@@ -34,15 +34,15 @@ export default defineTool({
   }),
   approval: approvalFor("calendar_delete_event"),
   async execute(input, ctx) {
-    await assertApproval(ctx, "calendar_delete_event", input);
+    const approved = await assertApproval(ctx, "calendar_delete_event", input);
 
     // `reason` is deliberately NOT read past this point — it is card text for the approval
     // gate (see the formatter in @lares/agent-kit/approval-summary), never a Google API field.
     const calendar = await googleClients().calendar(input.account);
-    return calendar.deleteEvent({
+    return runApprovedCalendarOnce(approved, () => calendar.deleteEvent({
       eventId: input.eventId,
       ...(input.notify !== undefined ? { notify: input.notify } : {}),
       ...(input.calendarId !== undefined ? { calendarId: input.calendarId } : {}),
-    });
+    }));
   },
 });

@@ -119,6 +119,15 @@ describe("summarizeApproval — what owner-1 reads before authorising a write", 
       .toBe('Calendar: create "Solo block" at Tuesday 2026-09-01 10:00 (Europe/Berlin)');
   });
 
+  it("shows the new start time on a move, and nothing extra when the time is not changing", () => {
+    expect(summarizeApproval("calendar_update_event", { eventId: "evt1", summary: "Intro", start: "2026-09-01T10:00:00+02:00" }))
+      .toBe('Calendar: update "Intro" to Tuesday 2026-09-01 10:00 (Europe/Berlin)');
+    expect(summarizeApproval("calendar_update_event", { eventId: "evt1", start: "2026-09-01T10:00:00+02:00", notify: true }))
+      .toBe("Calendar: update event evt1 to Tuesday 2026-09-01 10:00 (Europe/Berlin) (guests notified)");
+    expect(summarizeApproval("calendar_update_event", { eventId: "evt1", summary: "Intro" }))
+      .toBe('Calendar: update "Intro"');
+  });
+
   it("surfaces a recurrence — one ping and a standing one are different asks", () => {
     // "tomorrow 09:00" is not a parseable date — it falls through unchanged rather than
     // rendering "Invalid Date".

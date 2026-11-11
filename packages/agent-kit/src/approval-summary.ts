@@ -356,7 +356,7 @@ const FORMATTERS: Record<string, Formatter> = {
 
   // — Calendar. `notify` decides whether real people receive mail; it is always stated.
   calendar_create_event: (i, tz) => line("Calendar: create", quoted(i["summary"]), when(i["start"], tz) && `at ${when(i["start"], tz)}`, recipients(i["attendees"]) && `with ${recipients(i["attendees"])}`, i["notify"] === true ? "(guests notified)" : null),
-  calendar_update_event: (i) => line("Calendar: update", quoted(i["summary"]) ?? (str(i["eventId"]) && `event ${trunc(str(i["eventId"])!, 32)}`), i["notify"] === true ? "(guests notified)" : null),
+  calendar_update_event: (i, tz) => line("Calendar: update", quoted(i["summary"]) ?? (str(i["eventId"]) && `event ${trunc(str(i["eventId"])!, 32)}`), when(i["start"], tz) && `to ${when(i["start"], tz)}`, i["notify"] === true ? "(guests notified)" : null),
   // `account`/`calendarId` name WHERE the event lives carries them
   // through from the calendar the fan-out read it off), and `reason` names WHY the agent is
   // asking — both are additive: absent, as on every call before this ticket, the line is
