@@ -548,6 +548,7 @@ BUNDLE_PATHS = ("etc/lares/installation.env", "etc/lares/console-oauth.env", "et
 RESTORE_LIMITS = [
     "The older backup comes from this release's server with its one agent store rebuilt the way the release before built stores (that release's creative image ran its own schema step, its keeper image gave its own grants); the main database, Vault and folders in it are this release's.",
     "The new server is this machine with everything Lares put on it removed, then installed again: a second machine, and its own disk and network, are not covered.",
+    "The budget rows restore puts back are compared, row for row, from the snapshot's own dump restored into a private database; on the live server, where the restarted keeper may settle a row, only that no row is lost.",
     "The first restore fails on purpose because the provisioner login is set to read-only transactions: the upgrade stops at its first change. An upgrade that dies after some of its steps relies on all of them being one transaction, which is proven by the integration test, not here.",
 ]
 LIMITS.extend(RESTORE_LIMITS)
@@ -670,11 +671,18 @@ def store_contents(substep: str, store: str) -> dict:
     return found
 
 
-def budget_rows(substep: str) -> dict[str, list[str]]:
-    """Every row of the owner's budget tables, as a fingerprint per row, read as the operator."""
-    said = operator_sql(substep, "lares_state",
-        "SELECT format('SELECT %L, md5(x::text) FROM public.%I x', tablename, tablename) FROM pg_tables "
-        "WHERE schemaname = 'public' AND tablename LIKE 'budget%' ORDER BY tablename \\gexec\n")
+def budget_rows(substep: str, database: str = "lares_state", keys: bool = False) -> dict[str, list[str]]:
+    """Every row of the owner's budget tables, as a fingerprint per row, read as the operator. With
+    keys, only each row's primary key (the whole row where a table has none): a row the keeper
+    settles keeps its key, a lost row does not."""
+    columns = ("coalesce((SELECT string_agg(format('x.%I', a.attname), ',' ORDER BY k.ord) FROM pg_index i "
+               "CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum, ord) "
+               "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum "
+               "WHERE i.indrelid = c.oid AND i.indisprimary), 'x.*')") if keys else "'x.*'"
+    said = operator_sql(substep, database,
+        f"SELECT format('SELECT %L, md5(row(%s)::text) FROM public.%I x', c.relname, {columns}, c.relname) "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname LIKE 'budget%' ORDER BY c.relname \\gexec\n")
     rows: dict[str, list[str]] = {}
     for line in said.splitlines():
         table, _, fingerprint = line.partition("\t")
@@ -820,7 +828,9 @@ def reinstall(home: pathlib.Path, console: str) -> None:
     said: list[str] = []
 
     def pump_lines() -> None:
-        for line in install.stdout:
+        for count, line in enumerate(install.stdout):
+            if count % 25 == 0:
+                remember_secrets()
             said.append(line)
             print(redact(line), end="", flush=True)
     pump = threading.Thread(target=pump_lines, daemon=True)
@@ -868,6 +878,7 @@ def older_backup_restores(work: pathlib.Path, home: pathlib.Path, tls: dict[str,
     if before["steps"] != 20 or len(before["runs"]) != 2 or len(before["events"]) != 1:
         restore_failed("old-store:contents", f"the rebuilt store holds {before['steps']} steps, {len(before['runs'])} runs, {len(before['events'])} events")
     budget_before = budget_rows("old-store:budget-records")
+    budget_keys_before = budget_rows("old-store:budget-records", keys=True)
     if not budget_before.get("budget_attempts"):
         restore_failed("old-store:budget-records", "the owner's budget records hold no model call")
     passed("older-store-built-by-the-previous-release-and-seen-as-old")
@@ -970,10 +981,35 @@ def older_backup_restores(work: pathlib.Path, home: pathlib.Path, tls: dict[str,
     if runtime != ["2", "0", "30"]:
         restore_failed("second-run:agents-login", f"the agents' login read {runtime}, expected 2 runs, the new table and 30 steps")
     passed("agents-login-reads-the-upgraded-store")
-    budget_after = budget_rows("second-run:budget-records")
-    lost = {table: len(set(rows) - set(budget_after.get(table, []))) for table, rows in budget_before.items() if set(rows) - set(budget_after.get(table, []))}
+    # The keeper that restore starts may settle a row, so the live database is checked by key (no row
+    # lost), and the exact rows restore put back are read from the snapshot's own dump, restored into
+    # a private database the keeper never opens: they must equal the old server's, row for row.
+    keys_after = budget_rows("second-run:budget-records-kept", keys=True)
+    lost = {table: len(set(rows) - set(keys_after.get(table, []))) for table, rows in budget_keys_before.items()
+            if set(rows) - set(keys_after.get(table, []))}
     if lost:
-        restore_failed("second-run:budget-records", f"budget rows missing or changed after the restore: {lost}")
+        restore_failed("second-run:budget-records-kept", f"budget rows missing after the restore: {lost}")
+    main_dump = work / "lares_state.dump"
+    with open(main_dump, "wb") as out:
+        dumped = subprocess.run(["restic", "-r", BACKUP_REPOSITORY, "--password-file", "/etc/lares/restic-password", "dump", snapshot,
+                                 "/var/backups/pg/lares_state.dump"], stdout=out, stderr=subprocess.PIPE, timeout=300)
+    if dumped.returncode != 0:
+        restore_failed("second-run:budget-records-restored", f"restic dump exited {dumped.returncode}", "", dumped.stderr)
+    scratch_db = "restore_proof_budget"
+    operator_sql("second-run:budget-records-restored", "postgres", f'CREATE DATABASE "{scratch_db}" OWNER lares_operator;')
+    try:
+        step("second-run:budget-records-restored", "bash", "-c",
+             '. "$1/engine-run.sh"; operator_db_run -f /opt/lares/compose.yaml -- pg_restore --exit-on-error -d "$2" < "$3"',
+             "operator-restore", INSTALLED_OPS, scratch_db, str(main_dump), timeout=600)
+        restored_rows = budget_rows("second-run:budget-records-restored", scratch_db)
+    finally:
+        operator_sql("second-run:budget-records-restored", "postgres", f'DROP DATABASE IF EXISTS "{scratch_db}" WITH (FORCE);')
+    if restored_rows != budget_before:
+        differ = sorted(table for table in set(budget_before) | set(restored_rows) if budget_before.get(table) != restored_rows.get(table))
+        restore_failed("second-run:budget-records-restored", f"the budget rows restore put back differ from the old server's in {differ}")
+    live_rows = budget_rows("second-run:budget-records-live")
+    changed_live = {table: len(set(rows) - set(live_rows.get(table, []))) for table, rows in budget_before.items()}
+    proof.setdefault("restore", {})["budgetRowsChangedSinceKeeperStart"] = {table: n for table, n in changed_live.items() if n}
     passed("owner-budget-records-whole-after-the-restore")
     if not (pathlib.Path("/srv/lares/agents") / AGENT).is_dir() or leftover_job_containers() or restore_runs_left():
         restore_failed("second-run:nothing-left", f"agent folder restored {(pathlib.Path('/srv/lares/agents') / AGENT).is_dir()}, "
@@ -1009,9 +1045,19 @@ def main(argv: list[str]) -> int:
         trusting_image(work, newest["images"]["lares-gateway"], gateway_trusting, tls, node=False)
         # The release before this one, for the last stage's older store: also pulled while the
         # registry's name still points at the real one.
+        # A failed pull stops only that stage, which then counts as not proven.
         previous = json.loads((REPO / "releases" / PREVIOUS_RELEASE_FILE).read_text())
+        previous_pull_failure: str | None = None
         for key in ("creative", "lares-keeper"):
-            run("docker", "pull", "-q", previous["images"][key], timeout=900)
+            try:
+                pulled = run("docker", "pull", "-q", previous["images"][key], timeout=900, check=False)
+                failed_with = None if pulled.returncode == 0 else f"docker pull exited {pulled.returncode}"
+            except subprocess.TimeoutExpired:
+                failed_with = "docker pull did not finish within 900 seconds"
+            if failed_with:
+                previous_pull_failure = f"could not fetch the older release's images ({PREVIOUS_RELEASE_FILE}, {key}: {failed_with})"
+                print(previous_pull_failure, flush=True)
+                break
         model_key = "sk-ant-api03-" + base64.urlsafe_b64encode(os.urandom(40)).decode().rstrip("=")
         fixture = start_fake_internet(work, tls, console, model_key)
         start_registry(work, tls)
@@ -1297,7 +1343,12 @@ def main(argv: list[str]) -> int:
         # Last: it replaces this server. Faults recorded so far are kept in the proof file first.
         proof["deferredFaults"] = deferred
         save_proof()
-        older_backup_restores(work, home, tls, console, update, age_key_file)
+        if previous_pull_failure:
+            stage("an older backup: not run")
+            proof["restore"] = {"status": "not proven", "reason": previous_pull_failure}
+            deferred.append(f"{previous_pull_failure}; the older-backup restore stage did not run, so it is not proven")
+        else:
+            older_backup_restores(work, home, tls, console, update, age_key_file)
 
         stage("faults recorded along the way")
         if deferred:
