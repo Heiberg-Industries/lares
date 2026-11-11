@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import uuid
 
 if os.environ.get("CI") != "true":
@@ -134,8 +135,112 @@ stage = "fixture-setup"
 
 
 class ProbeFailure(Exception):
-    def __init__(self, kind: str = "assertion") -> None:
+    """A failed check. step and output, when given, name the failing sub-step and carry
+    the captured command output; they are printed (redacted, trimmed) to the job log only."""
+    def __init__(self, kind: str = "assertion", step: str | None = None,
+                 result: subprocess.CompletedProcess | None = None) -> None:
         self.kind = kind
+        self.step = step
+        self.result = result
+
+
+# The most recent command run() finished, so a failure raised right after a check=False
+# command can still show what that command printed.
+last_command: tuple[list[str], subprocess.CompletedProcess | None] | None = None
+LOG_OUTPUT_HEAD = 1500
+LOG_OUTPUT_TAIL = 4500
+REDACTED = "<redacted>"
+REDACTION_PATTERNS = (
+    # credentials inside a connection address: scheme://user:secret@host
+    (re.compile(r"([a-z][a-z0-9+.-]*://[^\s:/@]+):[^\s@]+@", re.IGNORECASE), r"\1:" + REDACTED + "@"),
+    # PASSWORD 'literal' in SQL, and SCRAM verifiers wherever they are echoed
+    (re.compile(r"(PASSWORD\s+)'[^']*'", re.IGNORECASE), r"\1'" + REDACTED + "'"),
+    (re.compile(r"SCRAM-SHA-256\$[^\s'\"]+"), "SCRAM-SHA-256$" + REDACTED),
+    # key=value and "key": "value" forms of passwords, secrets and tokens
+    (re.compile(r"((?:PGPASSWORD|password|passwd|secret|token)\"?\s*[=:]\s*)\"?[^\s\"',;}]+", re.IGNORECASE),
+     r"\1" + REDACTED),
+)
+
+
+def fixture_secret_values() -> set[str]:
+    """Every credential this fixture generated: the in-memory ones and each short file under
+    the private credential folder and the rendered compose secrets folder."""
+    values = {operator_password, app_password}
+    for folder in (private_root, secrets_dir):
+        try:
+            paths = [path for path in folder.rglob("*") if path.is_file() and not path.is_symlink()]
+        except Exception:
+            continue
+        for path in paths:
+            try:
+                if path.stat().st_size > 4096:
+                    continue
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if len(line.strip()) >= 8:
+                        values.add(line.strip())
+            except Exception:
+                continue
+    return values
+
+
+def redact(text: str) -> str:
+    for value in sorted(fixture_secret_values(), key=len, reverse=True):
+        text = text.replace(value, REDACTED)
+    for pattern, replacement in REDACTION_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def trimmed(text: str) -> str:
+    if len(text) <= LOG_OUTPUT_HEAD + LOG_OUTPUT_TAIL:
+        return text
+    omitted = len(text) - LOG_OUTPUT_HEAD - LOG_OUTPUT_TAIL
+    return text[:LOG_OUTPUT_HEAD] + f"\n[... {omitted} characters omitted ...]\n" + text[-LOG_OUTPUT_TAIL:]
+
+
+def as_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+
+
+def describe_command(args: list[str]) -> str:
+    """The command line, shortened: the program it runs (often a long inline script) is cut."""
+    shown = [arg if len(arg) <= 160 else arg[:120] + f"...[{len(arg)} characters]" for arg in args]
+    return shlex.join(shown)
+
+
+def report_failure(failed_stage: str, error: BaseException) -> None:
+    """Print the failing stage, sub-step and captured output to the job log, redacted and trimmed.
+    The proof file keeps only the sanitized stage and kind."""
+    try:
+        lines = [f"maintenance fence proof FAILED at stage '{failed_stage}'"]
+        if isinstance(error, ProbeFailure):
+            lines.append(f"failure kind: {error.kind}")
+            command: list[str] | None = None
+            result = error.result
+            if error.step:
+                lines.append(f"failing sub-step: {error.step}")
+            if result is None and last_command is not None:
+                command, result = last_command
+                lines.append("(no output attached to this failure; showing the last command run before it)")
+            elif result is not None and isinstance(result.args, (list, tuple)):
+                command = [str(arg) for arg in result.args]
+            if command:
+                lines.append("command: " + describe_command(command))
+            if result is not None:
+                lines.append(f"exit status: {result.returncode}")
+                output = as_text(result.stdout) + as_text(result.stderr)
+                lines.append("captured output:" if output.strip() else "captured output: (none)")
+                if output.strip():
+                    lines.append(trimmed(output.rstrip()))
+        else:
+            lines.append(f"unexpected error: {type(error).__name__}: {error}")
+            lines.append(trimmed("".join(traceback.format_exception(error)).rstrip()))
+        print(redact("\n".join(lines)), file=sys.stderr, flush=True)
+    except Exception as report_error:
+        print(f"maintenance fence proof FAILED at stage '{failed_stage}' (the failure report itself failed: "
+              f"{type(report_error).__name__})", file=sys.stderr, flush=True)
 
 
 def parse_update_client_intent(contents: str) -> tuple[str, str] | None:
@@ -240,15 +345,19 @@ def write_role_login_fixture(role: str, password: str) -> pathlib.Path:
 def run(*args: str, check: bool = True, timeout: int = 60,
         input_data: str | bytes | None = None,
         env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    global last_command
     try:
         result = subprocess.run(args, input=input_data, text=isinstance(input_data, str) or input_data is None,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 env=({**os.environ, **env} if env else None),
                                 timeout=timeout, check=False)
-    except subprocess.TimeoutExpired:
-        raise ProbeFailure("timeout") from None
+    except subprocess.TimeoutExpired as expired:
+        last_command = (list(args), None)
+        raise ProbeFailure("timeout", f"timed out after {timeout} s",
+                           subprocess.CompletedProcess(list(args), -1, expired.output, None)) from None
+    last_command = (list(args), result)
     if check and result.returncode != 0:
-        raise ProbeFailure("command")
+        raise ProbeFailure("command", result=result)
     return result
 
 
@@ -1679,15 +1788,19 @@ def run_database_proof() -> None:
         "--entrypoint", "/bin/sh", creative_image, "-ec", workflow_script, "workflow", workflow_program,
         check=False, timeout=180)
     if workflow_setup.returncode != 0:
-        raise ProbeFailure("workflow-template-setup")
+        raise ProbeFailure("workflow-template-setup",
+                           "workflow package schema step (setupDatabase in the creative image)", workflow_setup)
     workflow_apply = engine_box("bin/workflow-template.ts", ["apply", "--host", "127.0.0.1", "--port", "5432",
         "--provisioner-password-file", "/run/workflow-provisioner-password",
         "--runtime-password-file", "/run/workflow-password"], setup_files, {"PGHOST": "127.0.0.1", "PGPORT": "5432"})
+    if workflow_apply.returncode != 0:
+        raise ProbeFailure("workflow-template-setup", "bin/workflow-template.ts apply", workflow_apply)
     workflow_finalize = engine_box("bin/database-setup.ts", ["--finalize-workflow-template",
         "--operator-password-file", "/run/operator-password",
         "--workflow-password-file", "/run/workflow-password"], setup_files, {"PGHOST": "127.0.0.1", "PGPORT": "5432"})
-    if workflow_apply.returncode != 0 or workflow_finalize.returncode != 0:
-        raise ProbeFailure("workflow-template-setup")
+    if workflow_finalize.returncode != 0:
+        raise ProbeFailure("workflow-template-setup", "bin/database-setup.ts --finalize-workflow-template",
+                           workflow_finalize)
     proof["claims"]["productionWorkflowTemplatePathUsed"] = True
     proof["stages"]["productionWorkflowTemplatePath"] = True
     stage = "production-schema-owner-migrations"
@@ -1979,11 +2092,13 @@ except ProbeFailure as error:
     proof["status"] = "failed"
     proof["failedStage"] = stage
     proof["failureKind"] = error.kind
-except Exception:
+    report_failure(stage, error)
+except Exception as error:
     exit_code = 1
     proof["status"] = "failed"
     proof["failedStage"] = stage
     proof["failureKind"] = "unexpected"
+    report_failure(stage, error)
 finally:
     exit_code = publish_result(exit_code)
 sys.exit(exit_code)
