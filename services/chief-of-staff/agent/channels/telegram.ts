@@ -9,26 +9,26 @@ import {assertDoorAuthority,managedIdentity} from '@lares/agent-kit/door-authori
  *
  * Outbound: `@lares/agent-kit/telegram-fetch` routes Bot API calls through the egress proxy via
  * eve's per-call `api.fetch` seam, because the service container's network allows nothing else
- * out.
+ * out. Inside a handler every call goes through the handle eve gives it (`ctx.telegram` in
+ * `onMessage` and `onCallbackQuery`, `ctx.channel.telegram` in an event handler). Code with no
+ * handle uses `lib/telegram-send.ts`.
+ *
+ * Written against eve 1.0.0-rc.9. Approval cards are rendered, posted and registered by eve
+ * itself (with the Lares framework patch for their text and buttons); this door only words the
+ * card once it is decided.
  */
 import { readFileSync } from "node:fs";
+import { interaction, type SessionView } from "eve/events";
 import {
-  answerTelegramCallbackQuery,
   defaultTelegramAuth,
-  editTelegramMessageReplyMarkup,
-  registerTelegramFreeformPrompt,
-  renderTelegramInputRequest,
-  sendTelegramMessage,
   telegramChannel,
   type TelegramBotToken,
   type TelegramChannelEvents,
-  type TelegramHitlState,
   type TelegramMessage,
   type TelegramWebhookSecretToken,
 } from "eve/channels/telegram";
 
 import { isAllowedPrincipalId } from "../../lib/principals.js";
-import { withOwnerTapAuth } from "../../lib/telegram-tap-auth.js";
 import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
 import { markRouteDeclineQuestionSent } from "../../lib/route-decline.js";
 import { continuityAuthAttributes, nativeConversationContinuity } from "../../lib/conversation-continuity.js";
@@ -44,6 +44,7 @@ import {
   type FailureEventData,
 } from "@lares/agent-kit/gateway-budget";
 import { handleProposalCallback } from "../../lib/proposal-buttons.js";
+import { sendTelegramMessage } from "../../lib/telegram-send.js";
 import { resolveProposal, resolveAtlasProposal } from "../../lib/proposals-store.js";
 import {
   advanceRotationDay,
@@ -132,7 +133,6 @@ async function replyBeforeClaimApplied(chatId: string | number, text: string): P
     credentials: { botToken: async () => readSecret("TELEGRAM_BOT_TOKEN_FILE", DEFAULT_BOT_TOKEN_FILE) },
     chatId,
     body: { text },
-    fetch: telegramFetch,
   });
 }
 
@@ -153,9 +153,10 @@ async function replyBeforeClaimApplied(chatId: string | number, text: string): P
  * member of — including a group — which is MORE permissive than even eve's own default
  * group-dispatch logic (which additionally requires an @mention/command/reply-to-bot).
  *
- * This gates who may START a turn, not who may APPROVE one — HITL button clicks are
- * handled by eve before any authored inbound handler reaches them, so that check lives in
- * `lib/approvals.ts` against the same `lib/principals.ts` list.
+ * This gates who may START a turn, not who may APPROVE one — a tap on an approval card is
+ * handled by eve before any authored inbound handler reaches it. Who may make that tap is
+ * decided at the webhook front door (`lib/telegram-tap-gate.ts`), before the tap reaches eve at
+ * all, against the same `lib/principals.ts` list `lib/approvals.ts` reads.
  */
 export function isAllowedTelegramMessage(message: TelegramMessage): boolean {
   const from = message.from;
@@ -190,21 +191,21 @@ export function buildRotationContext(pendingContext: string | null): readonly st
   ];
 }
 
-/** the three gates that decide whether a `message.completed` event is even a
- *  candidate for rotation tracking — a terminal reply (not tool-call narration), on the
- *  allowed principal's private chat. Exported so the gate logic is testable in isolation. */
+/** The three gates that decide whether a `content.completed` event is even a candidate for
+ *  rotation tracking — the turn's reply (`phase: "reply"`, not narration before a tool call), on
+ *  the allowed principal's private chat. Exported so the gate logic is testable in isolation. */
 export function shouldTrackForRotation(
-  finishReason: string, chatType: string | null, chatId: string | null,
+  phase: string, chatType: string | null, chatId: string | null,
 ): chatId is string {
-  return finishReason === "stop" && chatType === "private" && !!chatId
+  return phase === "reply" && chatType === "private" && !!chatId
     && isAllowedPrincipalId("telegram", chatId);
 }
 
-export default withOwnerTapAuth(telegramChannel({
-  // this channel now listens on an INNER path. The public webhook URL is unchanged and
-  // is owned by agent/channels/telegram-webhook.ts, which puts a reply-to-chief-of-staff back on eve's
-  // ordinary message path (eve routes it as an input response and then drops it). No setWebhook
-  // change: the URL Telegram posts to is the same one it always has been.
+export default telegramChannel({
+  // This channel listens on an INNER path. The public webhook URL is unchanged and is owned by
+  // agent/channels/telegram-webhook.ts, which refuses the taps that may not be answered, clears
+  // the reply-to-bot marker and retires the previous day's conversation before it forwards here.
+  // No setWebhook change: the URL Telegram posts to is the same one it always has been.
   route: TELEGRAM_INNER_ROUTE,
   botUsername: botUsername(),
   credentials: telegramCredentials as {
@@ -224,6 +225,11 @@ export default withOwnerTapAuth(telegramChannel({
   // logic: the Telegram door is
   // single-principal and private-chat-only with no group support. The one piece of default behaviour worth keeping is dropping
   // content-free updates (e.g. service messages), so that check is kept explicit here.
+  //
+  // Whatever this returns, eve dispatches the update as a MESSAGE (`from(...).send(...)`). Text
+  // typed into the chat is never turned into the answer to a card here: only a tap on one of
+  // eve's own buttons is resumed as an answer, and the front door has already decided who may
+  // make that tap.
   onMessage: async (ctx, message) => {
     if (await interceptTelegramClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.chat.id, text))) return null;
     if (!isAllowedTelegramMessage(message)) return null;
@@ -273,12 +279,13 @@ export default withOwnerTapAuth(telegramChannel({
       ...(context.length > 0 ? { context } : {}),
     };
   },
-  // One-tap proposal buttons (see lib/proposal-buttons.ts). eve hands every
-  // NON-HITL callback query here, and unlike HITL taps these carry the tapper's identity —
-  // handleProposalCallback verifies it against the Telegram allowlist before resolving.
-  // The api calls reuse the channel's own credentials + proxied fetch; failures inside the
-  // handler must never throw back into the channel (a tap is not worth a 500 to Telegram).
-  onCallbackQuery: async (_ctx, query) => {
+  // One-tap proposal buttons (see lib/proposal-buttons.ts). eve hands every callback query that
+  // is not one of its own buttons here, with the tapper's identity — handleProposalCallback
+  // verifies it against the Telegram allowlist before resolving. The Bot API calls go through
+  // the handle eve built for this tap, which is bound to the chat the button sits in and to the
+  // channel's own credentials and proxied fetch. Failures inside the handler must never throw
+  // back into the channel (a tap is not worth a 500 to Telegram).
+  onCallbackQuery: async (ctx, query) => {
     try {
       const pool = getPool();
       const outcome = await handleProposalCallback(query, {
@@ -289,260 +296,203 @@ export default withOwnerTapAuth(telegramChannel({
           await resolveAtlasProposal(pool, id, action);
         },
         answer: async (callbackQueryId, text) => {
-          await answerTelegramCallbackQuery({
-            credentials: telegramCredentials,
-            callbackQueryId,
-            text,
-            fetch: telegramFetch,
-          });
+          await ctx.telegram.answerCallbackQuery({ callbackQueryId, text });
         },
-        removeButtons: async (chatId, messageId) => {
-          await editTelegramMessageReplyMarkup({
-            credentials: telegramCredentials,
-            chatId,
-            messageId,
-            replyMarkup: undefined,
-            fetch: telegramFetch,
-          });
+        // The chat is the handle's: the announcement the button sits on. `handleProposalCallback`
+        // passes that same chat's id, so it is not read again here.
+        removeButtons: async (_chatId, messageId) => {
+          await ctx.telegram.editMessageReplyMarkup({ messageId });
         },
-        confirm: async (chatId, text) => {
-          await sendTelegramMessage({
-            credentials: telegramCredentials,
-            chatId,
-            body: { text },
-            fetch: telegramFetch,
-          });
+        confirm: async (_chatId, text) => {
+          await ctx.telegram.sendMessage(text);
         },
       });
       if (outcome === "not-a-proposal-callback") {
         // Mirror eve's default for callbacks nobody claims: ack so the client's spinner
         // clears, and say so honestly.
-        await answerTelegramCallbackQuery({
-          credentials: telegramCredentials,
-          callbackQueryId: query.id,
-          text: "Unsupported action.",
-          fetch: telegramFetch,
-        }).catch(() => {});
+        await ctx.telegram.answerCallbackQuery({ callbackQueryId: query.id, text: "Unsupported action." }).catch(() => {});
       }
     } catch (err) {
       console.error("telegram onCallbackQuery failed", err);
     }
   },
+  // SUPPLYING A HANDLER REPLACES eve's DEFAULT FOR THAT EVENT (`{...defaultEvents, ...events}` in
+  // telegramChannel), so each one below reproduces what the default did and adds this door's own
+  // part. Events not named here keep eve's default — in particular `interaction.opened`, which
+  // renders an approval card, posts it and registers its buttons. This door does not touch that.
   events: {
-    // session rotation: logs the terminal reply, writes down which durable session
-    // answered, and — once the calendar day (in the home time zone) has rolled over since this chat's live
-    // session was anchored — leaves a carry-forward summary waiting for the next message.
-    // The retirement of the previous day's session itself happens at the webhook front door
-    // (`telegram-webhook.ts`), the only place eve hands out `attachSession`; see
-    // `lib/telegram-rotation.ts` for why a rename cannot do it any more. Scoped to the allowed
-    // principal's private chat only — group/supergroup sessions already anchor per-thread and
-    // are untouched. Gated on finishReason === "stop" so interim tool-call narration (which
-    // also fires message.completed) is never logged or treated as a turn boundary. Failures
-    // are swallowed: rotation must never break a live reply that already reached the user.
-    "message.completed": onMessageCompleted,
-    // — a capped turn says so instead of failing generically. Same trap as
-    // `message.completed` above: supplying a handler REPLACES eve's default, so both of
-    // these reproduce the default's own text for every non-budget failure.
-    "turn.failed": onTurnFailed,
-    "session.failed": onSessionFailed,
-    // An approval card shows its outcome and loses its buttons once it is decided. eve's
-    // Telegram channel posts the card and resumes the tap, but never edits the card afterwards
-    // (Slack's channel does, on the same `approval.settled` event). `input.requested` is
-    // replaced to remember which message each card is, and to send a card too long for one
-    // message to the console (no Approve here); every other card is exactly what eve's default
-    // posts. eve's `TelegramChannelEvents` type does not list `approval.settled`, but
-    // `defineChannel` wires every event it knows from this object, that one included — hence
-    // the cast.
-    "input.requested": onInputRequested,
-    "approval.settled": onApprovalSettled,
-  } as TelegramChannelEvents,
-}));
+    // The reply, then session rotation: logs the reply, writes down which durable session
+    // answered, and — once the calendar day (in the home time zone) has rolled over since this
+    // chat's live session was anchored — leaves a carry-forward summary waiting for the next
+    // message. The retirement of the previous day's session itself happens at the webhook front
+    // door (`telegram-webhook.ts`), the only place eve hands out `attachSession`; see
+    // `lib/telegram-rotation.ts`. Scoped to the allowed principal's private chat only.
+    "content.completed": onContentCompleted,
+    // A capped turn says so instead of failing generically. In eve 1.0 one failure is one event:
+    // a failure the session survives ends the TURN (`turn.settled`, outcome `failed`), a failure
+    // it does not survive ends the SESSION (`session.ended`, outcome `failed`) and the turn
+    // carries no error of its own. A gateway budget refusal can arrive as either.
+    "turn.settled": onTurnSettled,
+    "session.ended": onSessionEnded,
+    // A card shows how it ended and loses its buttons once it is settled.
+    "interaction.settled": onInteractionSettled,
+  } satisfies TelegramChannelEvents,
+});
 
-/** One approval card waiting for its outcome: the Telegram message it is, and the text it shows. */
-interface ApprovalCard {
-  readonly messageId: string;
-  readonly text: string;
-}
+// ── The card, once it is settled ────────────────────────────────────────────────────────
 
-/** The slice of eve's Telegram event context these two handlers use. Cards live in the
- *  channel's own session state, which eve saves after every event handler. */
-interface ApprovalCardChat {
-  readonly state: TelegramHitlState & { approvalCards?: Record<string, ApprovalCard> };
-  readonly telegram: {
-    post(message: { reply_markup?: Readonly<Record<string, unknown>>; text: string }): Promise<{ id: string }>;
-    editMessageText(input: {
-      messageId: string;
-      replyMarkup?: Readonly<Record<string, unknown>>;
-      text: string;
-    }): Promise<{ ok: boolean; status: number; body?: unknown }>;
-  };
-}
+/** What a settled approval card says under its text. */
+export const APPROVAL_OUTCOME_TEXT = {
+  approved: "✅ Approved",
+  denied: "✖ Denied",
+  /** Nobody decided: the request was withdrawn, interrupted, expired or otherwise closed. */
+  notApproved: "✖ Not approved — this was closed without an answer.",
+} as const;
 
-type InputRequest = Parameters<typeof renderTelegramInputRequest>[0];
-
-/**
- * The ways a card's text admits it was cut:
- *  - `…(truncated)`: the Telegram renderer's own (`laresApprovalText` in `patches/eve.patch`, at
- *    4000 characters);
- *  - `— shortened —`: the approval summary's details (`shortenedNotice` at 2800 characters, and
- *    `DETAILS_VALUES_SHORTENED` when one value inside them was cut), used by the mail, calendar
- *    and meeting follow-up cards;
- *  - `(shortened)` / `(shortened, …`: the card's TITLE left something out — a field cut to fit,
- *    "and 2 more" recipients, fields the generic title could not show (`SUMMARY_SHORTENED`, and
- *    the outside-tool title's own wording), all in `@lares/agent-kit/approval-summary`.
- */
-const CUT_MARKERS: readonly RegExp[] = [/…\(truncated\)$/, /— shortened —/, /\(shortened[,)]/];
-
-/**
- * True when the card does not show everything the owner would be approving: it carries one of the
- * markers above, or it no longer starts with the whole request prompt (eve's own cut of a prompt
- * over its limit ends in a bare `...`, which is no marker at all). EXPORTED for tests.
- */
-export function isShortenedCard(text: string, prompt: string): boolean {
-  return !text.startsWith(prompt) || CUT_MARKERS.some((marker) => marker.test(text));
-}
-
-/** The longest card text this door posts — eve's own Telegram prompt limit, under Telegram's 4096. */
-const CARD_MAX = 4000;
-
-/**
- * The console's Waiting on you page for one request, from `LARES_CONSOLE_URL` — or null when it is
- * unset or not an http(s) address, in which case the card says to open the console instead.
- * EXPORTED for tests.
- */
-export function waitingPageLink(requestId: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const raw = env["LARES_CONSOLE_URL"]?.trim();
-  if (!raw) return null;
-  let base: URL;
-  try {
-    base = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (base.protocol !== "https:" && base.protocol !== "http:") return null;
-  const url = new URL("waiting", base.href.endsWith("/") ? base.href : `${base.href}/`);
-  url.searchParams.set("request", requestId);
-  return url.href;
-}
-
-/** What a shortened card says under its text. EXPORTED for tests. */
-export function shortenedCardNote(link: string | null): string {
-  const lead = "This is shortened: Telegram cannot show all of it, so it cannot be approved here.";
-  return link === null
-    ? `${lead} Open the console to read the whole of it and approve it there. Cancel still works here.`
-    : `${lead} Read the whole of it and approve it in the console: ${link}\nCancel still works here.`;
-}
-
-/**
- * A card that does not show everything loses its Approve button: nobody approves what they cannot
- * read. Its Cancel stays. The Approve callback is dropped from the channel's state too, so an old
- * keyboard (or a forged callback) has nothing to resolve to. Returns the keyboard to post.
- */
-function withoutApprove(replyMarkup: Readonly<Record<string, unknown>> | undefined, state: TelegramHitlState): Record<string, unknown> {
-  const rows = (replyMarkup?.["inline_keyboard"] as Array<Array<{ callback_data?: string; text: string }>> | undefined) ?? [];
-  const callbacks = { ...state.hitlCallbacks };
-  const kept = rows
-    .map((row) =>
-      row.filter((button) => {
-        const id = button.callback_data;
-        if (id === undefined || callbacks[id]?.optionId !== "approve") return true;
-        delete callbacks[id];
-        return false;
-      }),
-    )
-    .filter((row) => row.length > 0);
-  state.hitlCallbacks = callbacks;
-  return { inline_keyboard: kept };
-}
-
-/**
- * `input.requested` — eve's default (render each request, post it, register a free-text prompt for
- * its reply), plus two things:
- *   - a tool-approval card's message id and text are kept so `onApprovalSettled` can edit it;
- *   - a tool-approval card whose text was cut says so plainly, links to the console's Waiting on
- *     you page where the whole of it is shown and approved, and has no Approve button. A card that
- *     fits is posted exactly as eve renders it.
- * EXPORTED for tests.
- */
-export async function onInputRequested(
-  data: { requests: readonly InputRequest[] },
-  channel: ApprovalCardChat,
-): Promise<void> {
-  // No `env` parameter: eve calls every channel event handler as (data, channel, ctx), so a third
-  // parameter here would receive eve's context. The link is read from `process.env` per card.
-  for (const request of data.requests) {
-    const rendered = renderTelegramInputRequest(request, channel.state);
-    const isApproval = request.kind === "tool-approval" && rendered.freeformRequestId === undefined;
-    // `body` is what the card keeps once decided (`onApprovalSettled` adds the outcome to it); the
-    // note pointing at the console is only true while the card is still open.
-    let body = rendered.text;
-    let text = rendered.text;
-    let replyMarkup = rendered.replyMarkup;
-    if (isApproval && isShortenedCard(rendered.text, request.prompt)) {
-      const note = shortenedCardNote(waitingPageLink(request.requestId));
-      const room = CARD_MAX - note.length - 2;
-      body = body.length <= room ? body : `${body.slice(0, room - 1).trimEnd()}…`;
-      text = `${body}\n\n${note}`;
-      replyMarkup = withoutApprove(rendered.replyMarkup, channel.state);
-    }
-    const posted = await channel.telegram.post({ reply_markup: replyMarkup, text });
-    if (rendered.freeformRequestId !== undefined && posted.id) {
-      registerTelegramFreeformPrompt(channel.state, { messageId: posted.id, requestId: rendered.freeformRequestId });
-    }
-    if (isApproval && posted.id) {
-      channel.state.approvalCards = {
-        ...channel.state.approvalCards,
-        [request.requestId]: { messageId: posted.id, text: body },
-      };
-    }
-  }
-}
-
-/** What a decided card says under its text. */
-export const APPROVAL_OUTCOME_TEXT = { approved: "✅ Approved", cancelled: "✖ Cancelled" } as const;
-
-/** Added under "Cancelled" when the card was withdrawn because the agent proposed a revised one. */
+/** Added under the outcome when the card was closed because the agent proposed a revised one. */
 export const APPROVAL_REVISED_TEXT = "Revised — see the new card";
 
-/** Best-effort: a failed lookup answers false, so the card keeps today's text. */
-async function wasRevised(requestId: string): Promise<boolean> {
+/** What a settled card that is not an approval says (a question with buttons, a budget prompt). */
+export const PROMPT_OUTCOME_TEXT = { answered: "Answered", closed: "No longer needed" } as const;
+
+/** Telegram's cap on one message's text. */
+const TELEGRAM_TEXT_MAX = 4096;
+
+/** A card eve posted for one request: the Telegram message it is, the text it shows, its buttons. */
+interface PostedCard {
+  readonly messageId: string;
+  readonly text: string;
+  readonly options: ReadonlyArray<{ readonly id: string; readonly label: string }>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Takes the card eve posted for a request out of the channel's state, or returns undefined when
+ * there is none (the request was never posted in this chat, or its card was already taken).
+ *
+ * THIS READS A FIELD eve KEEPS FOR ITSELF. eve 1.0 renders and posts an approval card in its own
+ * `interaction.opened` handler and records the message under `hitlPrompts[interactionId]`
+ * (`registerTelegramHitlPrompt` in `eve/dist/src/public/channels/telegram/hitl.js`), which is
+ * where its own default `interaction.settled` reads it back from. This door replaces that
+ * default to word the outcome itself, and there is no other place the card's message id exists.
+ * The field is not part of eve's public state type, so everything about it is checked before it
+ * is used, a missing or reshaped field means "no card" (the card is then left as it is), and
+ * `tests/telegram-approval-card.test.ts` posts a card through the installed eve's own handler
+ * so that a rename fails a test rather than leaving buttons on decided cards.
+ *
+ * Taking the card forgets it, as eve's own handler does: a card is edited once.
+ */
+function takePostedCard(state: object, interactionId: string): PostedCard | undefined {
+  const held = state as { hitlPrompts?: unknown };
+  if (!isRecord(held.hitlPrompts)) return undefined;
+  const { [interactionId]: card, ...rest } = held.hitlPrompts;
+  if (!isRecord(card) || typeof card["messageId"] !== "string" || card["messageId"].length === 0 || typeof card["text"] !== "string") {
+    return undefined;
+  }
+  held.hitlPrompts = rest;
+  const options = Array.isArray(card["options"])
+    ? card["options"].filter(
+        (o): o is { id: string; label: string } => isRecord(o) && typeof o["id"] === "string" && typeof o["label"] === "string",
+      )
+    : [];
+  return { messageId: card["messageId"], text: card["text"], options };
+}
+
+/** Best-effort: a failed lookup answers false, so the card keeps its plain outcome. */
+async function wasRevised(interactionId: string): Promise<boolean> {
   try {
-    return (await answeredVia(requestId)) === "revised";
+    return (await answeredVia(interactionId)) === "revised";
   } catch {
     return false;
   }
 }
 
+/** The card's text with its outcome under it, inside Telegram's limit whatever the card held. */
+function settledCardText(cardText: string, outcome: string): string {
+  const room = TELEGRAM_TEXT_MAX - outcome.length - 2;
+  const body = cardText.length <= room ? cardText : `${cardText.slice(0, room - 1).trimEnd()}…`;
+  return `${body}\n\n${outcome}`;
+}
+
+/** The slice of eve's event context `onInteractionSettled` uses. */
+interface SettledCardContext {
+  readonly channel: {
+    readonly state: { chatId: string | null };
+    readonly telegram: {
+      editMessageText(input: {
+        messageId: string;
+        replyMarkup?: Readonly<Record<string, unknown>>;
+        text: string;
+      }): Promise<{ ok: boolean; status: number; body?: unknown }>;
+    };
+  };
+  readonly view: SessionView;
+}
+
 /**
- * `approval.settled` — eve has accepted the owner's Approve or Cancel. The card keeps its text,
- * gains the outcome on a line of its own, and loses its buttons (an empty keyboard), so it cannot
- * be tapped again. A card this chat did not post, or one already edited, is left alone.
+ * `interaction.settled` — a request eve asked a person has ended. Its card keeps its text, gains
+ * how it ended on a line of its own, and loses its buttons (an empty keyboard), so it cannot be
+ * tapped again. A request this chat holds no card for is left alone.
+ *
+ * AN APPROVAL IS "APPROVED" ONLY ON `accepted`. eve's outcomes are open-ended: `accepted` and
+ * `declined` mean a person decided; `withdrawn` and `interrupted` mean nobody did (a new message
+ * arrived while the card waited, the turn was cancelled), and others exist or may be added
+ * (`expired`, `abandoned`, `failed`, `invalid`). Everything that is not `accepted` or `declined`
+ * reads as not approved. This handler only words the card: it resumes nothing and runs nothing.
+ *
+ * The ledger is asked whether a card that was not approved was closed because the agent proposed
+ * a revised one, and the card says so. The ledger row is settled before eve closes the request.
+ *
+ * Replacing eve's default also replaces what it does for a sign-in (it updates the sign-in
+ * message). This agent defines no sign-in on Telegram; one would need that part put back here.
  *
  * Never throws: an event handler that throws parks the session, and a card that stays unedited
  * is not worth that. Telegram's refusal is a returned `{ ok: false }`, not an exception, so it is
  * checked and logged (status and Telegram's own description only — never the card text).
  * EXPORTED for tests.
  */
-export async function onApprovalSettled(
-  data: { outcome: "approved" | "cancelled"; requestId: string },
-  channel: ApprovalCardChat,
+export async function onInteractionSettled(
+  event: { readonly data: { readonly interactionId: string; readonly outcome: string } },
+  ctx: SettledCardContext,
 ): Promise<void> {
   try {
-    const card = channel.state.approvalCards?.[data.requestId];
-    if (card === undefined) return;
-    const remaining = { ...channel.state.approvalCards };
-    delete remaining[data.requestId];
-    channel.state.approvalCards = remaining;
+    const { interactionId, outcome } = event.data;
+    const asked = interaction(ctx.view, interactionId);
+    const card = takePostedCard(ctx.channel.state, interactionId);
+    if (card === undefined) {
+      if (asked?.request.kind === "approval") {
+        console.warn("telegram approval card: no posted card on record for a settled approval — nothing to edit");
+      }
+      return;
+    }
 
-    // The ledger row is settled `revised` BEFORE eve cancels the request, so this sees it.
-    const revised = data.outcome === "cancelled" && (await wasRevised(data.requestId));
-    const result = await channel.telegram.editMessageText({
+    let line: string;
+    if (asked?.request.kind === "approval") {
+      if (outcome === "accepted") {
+        line = APPROVAL_OUTCOME_TEXT.approved;
+      } else {
+        line = outcome === "declined" ? APPROVAL_OUTCOME_TEXT.denied : APPROVAL_OUTCOME_TEXT.notApproved;
+        if (await wasRevised(interactionId)) line = `${line}\n${APPROVAL_REVISED_TEXT}`;
+      }
+    } else if (outcome === "accepted" || outcome === "declined") {
+      // Not an approval (or a request this view no longer holds): say only that it was answered,
+      // and with which button when that is known. Never "Approved".
+      const chosen = card.options.find((o) => o.id === asked?.answer?.optionId)?.label;
+      line = chosen === undefined ? PROMPT_OUTCOME_TEXT.answered : `${PROMPT_OUTCOME_TEXT.answered}: ${chosen}`;
+    } else {
+      line = PROMPT_OUTCOME_TEXT.closed;
+    }
+
+    const result = await ctx.channel.telegram.editMessageText({
       messageId: card.messageId,
       replyMarkup: { inline_keyboard: [] },
-      text: `${card.text}\n\n${APPROVAL_OUTCOME_TEXT[data.outcome]}${revised ? `\n${APPROVAL_REVISED_TEXT}` : ""}`,
+      text: settledCardText(card.text, line),
     });
     if (!result.ok) {
-      const description = (result.body as { description?: unknown } | undefined)?.description;
+      const description = (result.body as { description?: unknown } | undefined | null)?.description;
       console.error(
         `telegram approval card: could not show the outcome (HTTP ${result.status}${typeof description === "string" ? `: ${description}` : ""})`,
       );
@@ -552,125 +502,156 @@ export async function onApprovalSettled(
   }
 }
 
+// ── A failed turn, a failed session ─────────────────────────────────────────────────────
+
 /**
  * What the agent says on Telegram when its gateway key hits its cap.
  *
  * Same condition, same sentence and the same reasoning as `agent/channels/slack.ts` (read its
- * docblock, including why the sentence is English by default). Only the
- * dialect differs: eve words its own default failure text slightly differently per channel —
- * Telegram writes the error id plain, Slack italicises it in backticks — and the non-budget
- * path has to reproduce THIS channel's version.
+ * docblock, including why the sentence is English by default). Only the dialect differs: eve
+ * words its own default failure text slightly differently per channel, and the non-budget path
+ * has to reproduce THIS channel's version.
  *
  * Posted as a plain string, not through `mdToTelegramHtml`: the sentence carries no markdown,
  * and eve's own failure posts are plain strings too, so the non-budget path stays identical
- * to what the chat saw before.
+ * to what eve would have posted.
  */
 const BUDGET_EXCEEDED_TEXT =
   "I have hit my spending cap — nothing was done. It resets with the next budget period, or you can raise the cap.";
 
 const FAILURE_OPTIONS = { refusalText: BUDGET_EXCEEDED_TEXT, dialect: "telegram" } as const;
 
-/** The post surface these handlers need — eve's `TelegramEventContext` satisfies it. */
-interface FailureChat {
-  readonly telegram: { post(message: unknown): Promise<unknown> };
+/** The post surface these handlers need — eve's event context satisfies it. */
+interface FailureContext {
+  readonly channel: { readonly telegram: { post(message: string): Promise<unknown> } };
 }
 
-/** `turn.failed` — EXPORTED for tests, the same convention as `onMessageCompleted` below. */
-export async function onTurnFailed(data: FailureEventData, channel: FailureChat): Promise<void> {
-  const response = respondToTurnFailed(data, FAILURE_OPTIONS);
+/** A turn's or a session's ending, as eve 1.0 reports it: an outcome and, on a failure, the
+ *  error. This is the event's `data`, and it is handed to `@lares/agent-kit/gateway-budget` as it
+ *  is: the kit reads `outcome` and `error: { code, message, id }` itself. */
+interface EndingEvent {
+  readonly data: FailureEventData;
+}
+
+/** `turn.settled` — a turn that FAILED says so. Any other outcome posts nothing, as eve's default.
+ *  EXPORTED for tests, the same convention as `onContentCompleted` below. */
+export async function onTurnSettled(event: EndingEvent, ctx: FailureContext): Promise<void> {
+  if (event.data.outcome !== "failed") return;
+  const response = respondToTurnFailed(event.data, FAILURE_OPTIONS);
   if (response.kind === "silent") return;
   if (response.kind === "budget-refusal") {
     console.warn("chief-of-staff telegram: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
   }
-  await channel.telegram.post(response.text);
+  await ctx.channel.telegram.post(response.text);
 }
 
 /**
- * `session.failed` — a budget refusal is terminal, so eve emits it right after `turn.failed`
- * for the same fault. `onTurnFailed` already answered; this stays quiet so a capped turn
- * produces exactly one sentence. Everything else keeps eve's default text.
+ * `session.ended` — a session that FAILED says so. A session that ended any other way (the day
+ * boundary retiring it, a timeout) posts nothing, as eve's default.
+ *
+ * A budget refusal the gateway answers with a 400 is terminal, and in eve 1.0 a terminal failure
+ * is reported HERE and nowhere else. `fail()` in eve's `harness/session-machine/transitions.js`
+ * emits EITHER `turn.settled` (failed) OR `session.ended` (failed), never both, and ending the
+ * session closes its open turn as `cancelled` with no error (`cascade.js`). So this handler asks
+ * the kit the turn question first and answers a refusal itself. `respondToSessionFailed` stays
+ * silent on a refusal, and asking only that would leave a capped turn with no answer at all.
  */
-export async function onSessionFailed(data: FailureEventData, channel: FailureChat): Promise<void> {
-  const response = respondToSessionFailed(data, FAILURE_OPTIONS);
+export async function onSessionEnded(event: EndingEvent, ctx: FailureContext): Promise<void> {
+  if (event.data.outcome !== "failed") return;
+  const refusal = respondToTurnFailed(event.data, FAILURE_OPTIONS);
+  if (refusal.kind === "budget-refusal") {
+    console.warn("chief-of-staff telegram: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
+    await ctx.channel.telegram.post(refusal.text);
+    return;
+  }
+  const response = respondToSessionFailed(event.data, FAILURE_OPTIONS);
   if (response.kind === "silent") return;
-  await channel.telegram.post(response.text);
+  await ctx.channel.telegram.post(response.text);
 }
 
-/** The terminal-reply handler — EXPORTED for tests (an outage once shipped
- *  precisely because nothing exercised this function: it replaced eve's default handler
- *  without reproducing the default's telegram.post). */
-export async function onMessageCompleted(
-  data: { finishReason: string; message?: string | null },
-  channel: {
-    state: { chatId: string | null; chatType: string | null };
-    telegram: { post(message: unknown): Promise<{ id?: unknown }> };
-  },
-  ctx: { session: { id: string; auth?: { current?: { attributes?: Record<string, unknown> } } } },
+// ── The reply ───────────────────────────────────────────────────────────────────────────
+
+/** The slice of eve's event context `onContentCompleted` uses. */
+interface ReplyContext {
+  readonly channel: {
+    readonly state: { chatId: string | null; chatType: string | null };
+    readonly telegram: { post(message: { text: string; parse_mode: string }): Promise<{ id?: unknown }> };
+  };
+  readonly session: { readonly id: string; readonly auth?: { readonly current?: { readonly attributes?: Readonly<Record<string, unknown>> } | null } };
+}
+
+/** The reply handler — EXPORTED for tests (an outage once shipped precisely because nothing
+ *  exercised this function: it replaced eve's default handler without reproducing the default's
+ *  telegram.post). */
+export async function onContentCompleted(
+  event: { readonly data: { readonly kind: string; readonly phase: string; readonly value?: unknown } },
+  ctx: ReplyContext,
 ): Promise<void> {
-      // DELIVER THE REPLY FIRST — and this line is the whole reason the handler exists at
-      // all costs. Supplying "message.completed" here REPLACES eve's default handler
-      // (`{...defaultEvents, ...events}` in telegramChannel), and the default's job IS the
-      // `telegram.post` that makes the assistant's reply visible in the chat. QA finding: this override shipped without the post — every session reply and every
-      // brief on Telegram was silently undelivered (the schedule still logged "delivered",
-      // because eve accepted the send), while raw sends (reminders, proposal buttons) kept
-      // working and masked it. Mirrors defaultEvents exactly: post unless the turn is
-      // interim tool-call narration or empty.
-      if (data.finishReason !== "tool-calls" && data.message) {
-        // — as Telegram HTML, so `**bold**` renders instead of arriving as literal
-        // asterisks. Chunked here rather than left to eve's `post`: its own splitter passes the
-        // body's extra fields to the FIRST chunk only, so every later chunk would lose
-        // `parse_mode` and arrive as visible tag soup. Splitting on newlines is safe because
-        // `mdToTelegramHtml` never opens a tag on one line and closes it on another.
-        const requestId = ctx.session.auth?.current?.attributes?.lares_route_decline_request_id;
-        const chunks = splitTelegramHtml(mdToTelegramHtml(data.message));
-        let firstMessageId: string | undefined;
-        for (const chunk of chunks) {
-          const posted = await channel.telegram.post({ text: chunk, parse_mode: "HTML" } as never);
-          if (!firstMessageId && typeof posted?.id === "string" && posted.id) firstMessageId = posted.id;
-        }
-        if (typeof requestId === "string" && firstMessageId) {
-          await markRouteDeclineQuestionSent(getPool(), requestId, `telegram:${firstMessageId}`);
-        }
-      }
+  const { kind, phase, value } = event.data;
+  // DELIVER THE REPLY FIRST — and this is the whole reason the handler exists at all costs.
+  // Supplying "content.completed" here REPLACES eve's default handler, and the default's job IS
+  // the `telegram.post` that makes the assistant's reply visible in the chat. This override once
+  // shipped without the post: every reply and every brief on Telegram was silently undelivered
+  // while raw sends (reminders, proposal buttons) kept working and masked it. Mirrors the
+  // default (`replyTextOf` in eve's `public/channels/reply.js`) exactly: post a text part whose
+  // phase is `reply`, and nothing else — not narration before a tool call, not an empty part.
+  const reply = kind === "text" && phase === "reply" && typeof value === "string" && value.length > 0 ? value : undefined;
+  if (reply !== undefined) {
+    // As Telegram HTML, so `**bold**` renders instead of arriving as literal asterisks. Chunked
+    // here rather than left to eve's `post`: its own splitter passes the body's extra fields to
+    // the FIRST chunk only, so every later chunk would lose `parse_mode` and arrive as visible
+    // tag soup. Splitting on newlines is safe because `mdToTelegramHtml` never opens a tag on
+    // one line and closes it on another.
+    const requestId = ctx.session.auth?.current?.attributes?.["lares_route_decline_request_id"];
+    const chunks = splitTelegramHtml(mdToTelegramHtml(reply));
+    let firstMessageId: string | undefined;
+    for (const chunk of chunks) {
+      const posted = await ctx.channel.telegram.post({ text: chunk, parse_mode: "HTML" });
+      if (!firstMessageId && typeof posted?.id === "string" && posted.id) firstMessageId = posted.id;
+    }
+    if (typeof requestId === "string" && firstMessageId) {
+      await markRouteDeclineQuestionSent(getPool(), requestId, `telegram:${firstMessageId}`);
+    }
+  }
 
-      const { chatId, chatType } = channel.state;
-      if (!shouldTrackForRotation(data.finishReason, chatType, chatId)) return;
+  const { chatId, chatType } = ctx.channel.state;
+  if (!shouldTrackForRotation(phase, chatType, chatId)) return;
 
-      try {
-        const pool = getPool();
-        const today = homeDay();
-        await recordExchange(pool, chatId, "assistant", data.message ?? "");
-        const state = await getRotationState(pool, chatId, today);
+  try {
+    const pool = getPool();
+    const today = homeDay();
+    await recordExchange(pool, chatId, "assistant", reply ?? "");
+    const state = await getRotationState(pool, chatId, today);
 
-        // The session id is knowable only from inside the turn, and the front door needs it to
-        // retire this conversation at the next day boundary. Written on EVERY terminal reply,
-        // not only on a rotation: the door reads the last one it finds. Without it the boundary
-        // simply passes — the day's conversation keeps answering — so it is worth a line.
-        const sessionId = ctx?.session?.id;
-        if (sessionId) await recordServingSession(pool, chatId, today, sessionId);
-        else console.warn("telegram-rotation: message.completed carried no session id — the next day boundary has nothing to retire");
+    // The session id is knowable only from inside the turn, and the front door needs it to
+    // retire this conversation at the next day boundary. Written on EVERY reply, not only on a
+    // rotation: the door reads the last one it finds. Without it the boundary simply passes —
+    // the day's conversation keeps answering — so it is worth a line.
+    const sessionId = ctx.session?.id;
+    if (sessionId) await recordServingSession(pool, chatId, today, sessionId);
+    else console.warn("telegram-rotation: the reply carried no session id — the next day boundary has nothing to retire");
 
-        if (!dayHasRolledOver(state, today)) return;
+    if (!dayHasRolledOver(state, today)) return;
 
-        // The previous day's session has already been retired at the door, before the message
-        // that opened this one was forwarded. What is left here is the hand-over: summarize the
-        // day being closed and leave it waiting, for `onMessage` to consume into the next turn.
-        // Committing the rotation after the summary is the safe direction it always was — a
-        // crash in between re-summarizes on the next terminal reply rather than never.
-        //
-        // UNLESS THE NIGHT ALREADY DID IT. When the overnight hand-over wrote this day's summary
-        // (`runDayHandover`), the message that opened this session was answered WITH it, and
-        // there is nothing left to produce: only the anchor day moves, so the boundary is not
-        // detected again. Re-summarizing here would spend a second model call on the same day
-        // and leave a second, differently-worded summary waiting for the next message.
-        if (state.handoverDay === state.homeDay) {
-          await advanceRotationDay(pool, chatId, today);
-        } else {
-          const summary = await summarizeRecentExchanges(pool, chatId);
-          await completeRotation(pool, chatId, today, summary, state.homeDay);
-        }
-        await pruneOldExchanges(pool);
-      } catch (err) {
-        console.error("telegram-rotation: message.completed rotation failed (keeping the live session)", err);
-      }
+    // The previous day's session has already been retired at the door, before the message
+    // that opened this one was forwarded. What is left here is the hand-over: summarize the
+    // day being closed and leave it waiting, for `onMessage` to consume into the next turn.
+    // Committing the rotation after the summary is the safe direction it always was — a
+    // crash in between re-summarizes on the next reply rather than never.
+    //
+    // UNLESS THE NIGHT ALREADY DID IT. When the overnight hand-over wrote this day's summary
+    // (`runDayHandover`), the message that opened this session was answered WITH it, and
+    // there is nothing left to produce: only the anchor day moves, so the boundary is not
+    // detected again. Re-summarizing here would spend a second model call on the same day
+    // and leave a second, differently-worded summary waiting for the next message.
+    if (state.handoverDay === state.homeDay) {
+      await advanceRotationDay(pool, chatId, today);
+    } else {
+      const summary = await summarizeRecentExchanges(pool, chatId);
+      await completeRotation(pool, chatId, today, summary, state.homeDay);
+    }
+    await pruneOldExchanges(pool);
+  } catch (err) {
+    console.error("telegram-rotation: reply-time rotation failed (keeping the live session)", err);
+  }
 }

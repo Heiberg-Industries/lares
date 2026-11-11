@@ -13,23 +13,33 @@
  *     turn's rotation left a carry-forward summary waiting, consumes it into this turn's
  *     `context` (verified against the compiled dispatch: `context: [contextBlock,
  *     ...(onMessage-returned context)]`, `telegramChannel.js` `dispatchMessage`).
- *   - the `message.completed` event (terminal replies only — gated on
- *     `finishReason === "stop"`) logs the assistant's reply, writes down WHICH durable session
+ *   - the `content.completed` event (the turn's reply only — text with `phase: "reply"`, never
+ *     narration before a tool call) logs the assistant's reply, writes down WHICH durable session
  *     answered and on which home-zone day, then checks whether the day has rolled over since the
  *     live session was last anchored. If so, it summarizes the day's exchanges and leaves that
  *     summary waiting as the carry-forward context for the next inbound message.
  *   - the webhook front door (`agent/channels/telegram-webhook.ts`) reads that recorded session
  *     on the way IN, and on the first update of a new day retires it — `attachSession(id)
- *     .reset({reason})` — before forwarding, so the update lands in a brand-new session.
+ *     .end({reason})` — before forwarding, so the update lands in a brand-new session.
  *
  * WHY THE FRONT DOOR AND NOT THE EVENT HANDLER. eve 0.57 replaced the channel's
  * `continuation.rekey()` with `continuation.alias()`, and alias is ADDITIVE: every address a
  * session has ever claimed keeps resolving to it. Renaming the live session would therefore
  * leave yesterday's conversation answering today's messages while this table claimed it had
  * rotated — the exact silent failure the rotation exists to prevent. The only public way to
- * retire a session is `Session.reset()`, reachable through `attachSession`, which eve hands to
- * ROUTE handlers only (`RouteHandlerArgs`) and never to a channel event context. So the id is
- * written down inside the turn and acted on at the door.
+ * retire a session is `Session.end()` (eve 1.0's name for what 0.60 called `reset()`), reachable
+ * through `attachSession`, which eve hands to ROUTE handlers only (`RouteHandlerArgs`) and never
+ * to a channel event context. So the id is written down inside the turn and acted on at the door.
+ *
+ * WHAT `end()` PROMISES, read off the shipped eve 1.0.0-rc.9. `attachSession(id)` is an
+ * immutable-id handle (`channel/session.d.ts`: "Retires this session without creating a
+ * replacement or changing this handle's ID"), so the retirement can only ever land on the exact
+ * session that was recorded. Its promise resolves with a delivery receipt, and only after the
+ * runtime has waited for the ended session to release its address (`dispatchWorkflowCommand` in
+ * `execution/workflow-runtime.js` awaits `waitForSessionHooksRelease` for this command), so the
+ * message forwarded next opens a new session instead of landing in the one being retired. A
+ * session that is already gone rejects (`SessionNotActiveError`): one log line, and the update
+ * is forwarded to whatever session now answers the chat.
  *
  * THE LAG, AND WHAT CLOSES IT. Producing the summary on the first completed turn of the next day
  * means the first message of a new day is answered by a fresh session that has not been handed
@@ -350,7 +360,7 @@ export async function recordServingSession(
  * update already claimed it.
  *
  * The claim IS the UPDATE. A read followed by a write would let two updates arriving together
- * at the day boundary both decide to retire, and the second reset would land on the fresh
+ * at the day boundary both decide to retire, and the second retirement would land on the fresh
  * session the first one's message had just opened. Under `READ COMMITTED` the second statement
  * blocks on the row lock, re-checks its `WHERE` against the committed row, finds `session_id`
  * already NULL, and matches nothing.
@@ -372,9 +382,10 @@ export async function claimRolledOverSession(
   return rows[0]?.session_id ?? null;
 }
 
-/** The subset of eve's `Session` the retirement needs — `attachSession(id)` returns one. */
+/** The subset of eve's `Session` the retirement needs — `attachSession(id)` returns one. The
+ *  promise resolves with eve's delivery receipt, which the retirement does not read. */
 export interface RetireHandle {
-  reset(options: { reason: string }): Promise<unknown>;
+  end(options?: { reason?: string }): Promise<unknown>;
 }
 
 /** Shape of an inbound update this door treats as a day boundary. Only a `message` counts:
@@ -399,7 +410,7 @@ export function telegramChatIdOfUpdate(raw: string): string | null {
   return null;
 }
 
-/** Recorded on the reset so a day-boundary retirement is distinguishable, in the runtime's own
+/** Recorded on the retirement so a day-boundary one is distinguishable, in the runtime's own
  *  logs, from the one the owner asks for from the console. */
 const DAY_BOUNDARY_REASON = "The home calendar day rolled over; the previous day's conversation is retired";
 
@@ -427,8 +438,8 @@ async function withBudget<T>(work: Promise<T>, ms: number, what: string): Promis
  * retire the conversation that served the previous one, so the update opens a fresh session.
  *
  * NEVER THROWS, NEVER STALLS. Every fault — an unreadable body, an unreachable database, a
- * column a box has not migrated yet, a reset the runtime refuses, a read that simply takes too
- * long — costs exactly one log line, and the caller forwards the update as if nothing had
+ * column a box has not migrated yet, a retirement the runtime refuses, a read that simply takes
+ * too long — costs exactly one log line, and the caller forwards the update as if nothing had
  * happened. A retirement missed today is retried at the next day boundary.
  */
 export async function retirePriorDaySession(
@@ -446,7 +457,7 @@ export async function retirePriorDaySession(
     );
     if (sessionId === null) return;
     await withBudget(
-      attachSession(sessionId).reset({ reason: DAY_BOUNDARY_REASON }), budget, "the session reset",
+      attachSession(sessionId).end({ reason: DAY_BOUNDARY_REASON }), budget, "ending the session",
     );
     console.log("[telegram-rotation] the day rolled over — the previous day's conversation is retired; this update starts a new one");
   } catch (err) {

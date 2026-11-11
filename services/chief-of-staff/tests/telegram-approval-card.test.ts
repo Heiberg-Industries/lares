@@ -1,25 +1,25 @@
-// A Telegram approval card shows its outcome and loses its buttons once it is decided.
+// A Telegram approval card shows how it ended and loses its buttons once it is settled.
 //
-// The bug: the owner tapped Approve, the action ran, and the card stayed exactly as it was —
-// both buttons, no outcome. eve's Telegram channel answers the tap ("Answer received.") and
-// resumes the session, but nothing ever edits the card; Slack's channel does, on
-// `approval.settled`. The chief of staff's door now does the same on Telegram.
+// Who does what on eve 1.0.0-rc.9:
+//   - eve renders the card, posts it and registers its buttons, in its own `interaction.opened`
+//     handler. This door no longer overrides that. (The card's text and button order, and the
+//     rule that a card whose text was cut shows no Approve button, belong to the Lares framework
+//     patch and its own test.)
+//   - this door words the card once the request is settled, in `interaction.settled`.
 //
-// Three halves, from the tap to the edit:
-//   1. eve's own approval coordinator, run for real: the owner's tap (with the identity
-//      `withOwnerTapAuth` gives it) settles the request — the settlement eve turns into
-//      `approval.settled`.
-//   2. the door's `input.requested` remembers which message each card is, posting exactly what
-//      eve's default posts.
-//   3. the door's `approval.settled` edits that card: text kept, outcome added, buttons gone —
-//      through the real channel object and its Bot API calls, and never twice.
+// Three halves:
+//   1. eve posts the card, through the real door object — and leaves the message on record where
+//      this door's handler looks for it. That record is a field eve keeps for itself, so this is
+//      the test that fails if a later eve renames it.
+//   2. `onInteractionSettled` words each outcome. Only `accepted` ever reads as approved.
+//   3. From card to outcome through the real door: the edit goes out as one `editMessageText`,
+//      and it is the only thing the handler does.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-import { ownerTapAuth } from "../lib/telegram-tap-auth.js";
+import { emptySessionView, foldEvents, INTERACTION_OUTCOMES, type SessionView } from "eve/events";
 
 const calls = vi.hoisted(() => [] as Array<{ method: string; body: Record<string, unknown> }>);
 vi.mock("@lares/agent-kit/telegram-fetch", () => ({
@@ -35,35 +35,58 @@ vi.mock("@lares/agent-kit/telegram-fetch", () => ({
 const ledger = vi.hoisted(() => ({ answeredVia: async (_id: string): Promise<string | null> => null }));
 vi.mock("@lares/agent-kit/approval-ledger", () => ({ answeredVia: (id: string) => ledger.answeredVia(id) }));
 
+import * as doorModule from "../agent/channels/telegram.js";
 import {
-  APPROVAL_REVISED_TEXT,
   APPROVAL_OUTCOME_TEXT,
-  isShortenedCard,
-  onApprovalSettled,
-  onInputRequested,
-  shortenedCardNote,
-  waitingPageLink,
+  APPROVAL_REVISED_TEXT,
+  onInteractionSettled,
+  PROMPT_OUTCOME_TEXT,
 } from "../agent/channels/telegram.js";
 
 const OWNER = "123456789";
-const REQUEST_ID = "req-1";
+const ID = "interaction-1";
+const PROMPT = 'Dismiss deadline 42 — "already handled"';
 
-const approvalRequest = {
-  requestId: REQUEST_ID,
-  kind: "tool-approval",
-  prompt: 'Dismiss deadline 42 — "already handled"',
-  options: [
-    { id: "approve", label: "Approve" },
-    { id: "cancel", label: "Cancel" },
-  ],
-  action: { kind: "tool-call", callId: "call-1", toolName: "deadline_dismiss", input: { id: 42 } },
-} as never;
+const APPROVAL_OPTIONS = [
+  { id: "deny", label: "Deny" },
+  { id: "approve", label: "Approve" },
+];
 
-const freeTextRequest = { requestId: "req-2", kind: "question", prompt: "Which day?", options: [] } as never;
+// ── A session's recorded state, built with eve's own public fold ─────────────────────────
+type Event = Record<string, unknown>;
+const at = (line: number, event: Event): Event => ({ ...event, meta: { position: { line, index: 0 }, at: "2026-11-11T10:00:00.000Z" } });
+
+const openedEvent = (request: Record<string, unknown>, interactionId = ID): Event =>
+  at(3, { type: "interaction.opened", scope: { turnId: "t1" }, data: { interactionId, subject: { callId: "c1" }, request } });
+
+const settledEvent = (outcome: string, extra: Record<string, unknown> = {}, interactionId = ID) =>
+  at(4, { type: "interaction.settled", scope: { turnId: "t1" }, data: { interactionId, outcome, ...extra } }) as {
+    type: string;
+    data: { interactionId: string; outcome: string };
+  };
+
+function fold(view: SessionView, events: Event[]): SessionView {
+  return foldEvents(view, events as never);
+}
+
+/** A session in which the agent asked for one thing and the request is still open. */
+function viewAsking(request: Record<string, unknown>, interactionId = ID): { view: SessionView; opened: Event } {
+  const opened = openedEvent(request, interactionId);
+  const view = fold(emptySessionView(), [
+    at(0, { type: "session.started", data: {} }),
+    at(1, { type: "turn.started", scope: { turnId: "t1" }, data: { turnId: "t1", cause: { deliveryId: "d1" }, follows: null } }),
+    at(2, { type: "call.requested", scope: { turnId: "t1" }, data: { callId: "c1", owner: { turnId: "t1" }, capability: { kind: "tool", name: "deadline_dismiss" }, input: { id: 42 } } }),
+    opened,
+  ]);
+  return { view, opened };
+}
+
+const approvalRequest = { kind: "approval", prompt: PROMPT, options: APPROVAL_OPTIONS };
 
 let dir: string;
 beforeEach(() => {
   calls.length = 0;
+  ledger.answeredVia = async () => null;
   dir = mkdtempSync(join(tmpdir(), "approval-card-"));
   writeFileSync(join(dir, "token"), "1:abc\n");
   process.env["TELEGRAM_BOT_TOKEN_FILE"] = join(dir, "token");
@@ -71,306 +94,352 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
-  for (const k of ["TELEGRAM_BOT_TOKEN_FILE", "TELEGRAM_PRINCIPAL_ID", "LARES_CONSOLE_URL"]) delete process.env[k];
+  for (const k of ["TELEGRAM_BOT_TOKEN_FILE", "TELEGRAM_PRINCIPAL_ID"]) delete process.env[k];
   vi.restoreAllMocks();
 });
 
+// ── The real door object, driven the way eve drives it ───────────────────────────────────
+/** eve's dist, for the internals its exports map does not expose. */
+const EVE_DIST = pathToFileURL(fileURLToPath(new URL("../node_modules/eve/dist/src", import.meta.url))).href;
+
+type AdapterHandler = (event: unknown, ctx: unknown) => Promise<void>;
+interface RealDoor {
+  adapter: Record<string, AdapterHandler | undefined> & {
+    state: Record<string, unknown>;
+    createAdapterContext(i: { state: unknown; ctx: unknown; session: unknown }): Record<string, unknown>;
+  };
+}
+
+/**
+ * Runs one of the door's event handlers the way eve's runtime does: inside eve's context, on the
+ * channel context eve builds from the chat's state (credentials and the proxied fetch included),
+ * with the session's tables as of the event.
+ */
+async function emit(door: RealDoor, state: Record<string, unknown>, event: { type: string }, view: SessionView): Promise<void> {
+  const { ContextContainer, contextStorage } = (await import(`${EVE_DIST}/context/container.js`)) as {
+    ContextContainer: new () => { set(key: unknown, value: unknown): void };
+    contextStorage: { run<R>(store: unknown, fn: () => R): R };
+  };
+  const { SessionKey } = (await import(`${EVE_DIST}/context/keys.js`)) as { SessionKey: unknown };
+  const { sessionTables } = (await import(`${EVE_DIST}/protocol/session-projection/session-view.js`)) as {
+    sessionTables(view: SessionView): unknown;
+  };
+  const container = new ContextContainer();
+  container.set(SessionKey, { sessionId: "sess-1", auth: { current: null, initiator: null }, turn: { id: "t1", sequence: 0 } });
+  const ctx = door.adapter.createAdapterContext({ state, ctx: undefined, session: undefined });
+  const handler = door.adapter[event.type];
+  if (handler === undefined) throw new Error(`the door handles no ${event.type}`);
+  await contextStorage.run(container, () => handler(event, { ...ctx, view: sessionTables(view), position: { line: 0, index: 0 } }));
+}
+
+async function realDoor(): Promise<{ door: RealDoor; state: Record<string, unknown> }> {
+  const door = doorModule.default as unknown as RealDoor;
+  return { door, state: { ...door.adapter.state, chatId: OWNER, chatType: "private" } };
+}
+
+interface PostedPrompts {
+  [interactionId: string]: { messageId: string; text: string; options: Array<{ id: string; label: string }> };
+}
+
+describe("1. eve posts the card; this door does not", () => {
+  it("the door no longer carries a card renderer of its own", () => {
+    const exported = doorModule as Record<string, unknown>;
+    for (const gone of ["onInputRequested", "onApprovalSettled", "isShortenedCard", "shortenedCardNote", "waitingPageLink"]) {
+      expect(exported[gone], gone).toBeUndefined();
+    }
+  });
+
+  it("the door handles eve 1.0's events and none of the removed ones", async () => {
+    const { door } = await realDoor();
+    for (const name of ["interaction.opened", "interaction.settled", "content.completed", "turn.settled", "session.ended"]) {
+      expect(typeof door.adapter[name], name).toBe("function");
+    }
+    for (const removed of ["input.requested", "approval.settled", "message.completed", "turn.failed", "session.failed"]) {
+      expect(door.adapter[removed], removed).toBeUndefined();
+    }
+  });
+
+  it("eve posts the card with a button per choice, each carrying eve's own callback data", async () => {
+    const { door, state } = await realDoor();
+    const { view, opened } = viewAsking(approvalRequest);
+
+    await emit(door, state, opened as { type: string }, view);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.method).toBe("sendMessage");
+    expect(calls[0]!.body).toMatchObject({ chat_id: OWNER, text: PROMPT });
+    const keyboard = (calls[0]!.body["reply_markup"] as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }).inline_keyboard;
+    expect(keyboard.flat().map((b) => b.text).sort()).toEqual(["Approve", "Deny"]);
+    expect(keyboard.flat().every((b) => /^eve:[0-9a-z]+$/.test(b.callback_data))).toBe(true);
+  });
+
+  it("eve leaves the card on record under the request's id — the record this door's handler reads", async () => {
+    // `hitlPrompts` is eve's own field, not part of its public state type. If this fails after an
+    // eve bump, `takePostedCard` in agent/channels/telegram.ts no longer finds a card, and decided
+    // cards keep their buttons.
+    const { door, state } = await realDoor();
+    const { view, opened } = viewAsking(approvalRequest);
+
+    await emit(door, state, opened as { type: string }, view);
+
+    expect(state["hitlPrompts"]).toEqual({ [ID]: { messageId: "41", text: PROMPT, options: APPROVAL_OPTIONS } } satisfies PostedPrompts);
+  });
+});
+
+// ── 2. The handler, on its own ───────────────────────────────────────────────────────────
 type Edit = { messageId: string; replyMarkup?: Readonly<Record<string, unknown>>; text: string };
 
-function fakeChat(edit: (input: Edit) => Promise<{ ok: boolean; status: number; body?: unknown }> = async () => ({ ok: true, status: 200 })) {
-  const posted: Array<{ reply_markup?: Readonly<Record<string, unknown>>; text: string }> = [];
+/** A chat in which eve has posted one card, as eve records it. */
+function chatWithCard(
+  edit: (input: Edit) => Promise<{ ok: boolean; status: number; body?: unknown }> = async () => ({ ok: true, status: 200 }),
+  card: Record<string, unknown> = { messageId: "100", text: PROMPT, options: APPROVAL_OPTIONS },
+  interactionId = ID,
+) {
   const edits: Edit[] = [];
-  let nextId = 100;
-  const chat = {
-    state: { hitlCallbacks: {}, nextHitlCallbackId: 0, pendingFreeformReplies: {} } as Record<string, unknown> as never,
+  const state: Record<string, unknown> & { chatId: string | null } = { chatId: OWNER, hitlPrompts: { [interactionId]: card } };
+  const channel = {
+    state,
     telegram: {
-      post: async (m: { reply_markup?: Readonly<Record<string, unknown>>; text: string }) => {
-        posted.push(m);
-        return { id: String(nextId++) };
-      },
       editMessageText: async (input: Edit) => {
         edits.push(input);
         return edit(input);
       },
     },
   };
-  return { chat, posted, edits, state: chat.state as unknown as Record<string, unknown> };
+  return { channel, edits, state };
 }
 
-/** eve's dist, for the internals its exports map does not expose. */
-const EVE_DIST = pathToFileURL(fileURLToPath(new URL("../node_modules/eve/dist/src", import.meta.url))).href;
-
-/** Runs `fn` inside the runtime context eve gives tools and channel event handlers. */
-async function inEveContext<T>(fn: () => Promise<T>): Promise<T> {
-  const { ContextContainer, contextStorage } = (await import(`${EVE_DIST}/context/container.js`)) as {
-    ContextContainer: new () => { set(key: { name: string }, value: unknown): void };
-    contextStorage: { run<R>(store: unknown, fn: () => R): R };
-  };
-  const container = new ContextContainer();
-  container.set({ name: "eve.session" }, { sessionId: "sess-1", auth: { current: null, initiator: null }, turn: { id: "t1", sequence: 0 } });
-  return contextStorage.run(container, fn);
+/** Settles an approval with `outcome` and runs the handler on a chat holding its card. */
+async function settleApproval(outcome: string, extra: Record<string, unknown> = {}) {
+  const { view } = viewAsking(approvalRequest);
+  const event = settledEvent(outcome, extra);
+  const fake = chatWithCard();
+  await onInteractionSettled(event, { channel: fake.channel, view: fold(view, [event]) });
+  return fake;
 }
 
-describe("1. the owner's tap settles the request (eve's coordinator, run for real)", () => {
-  async function settle(optionId: "approve" | "cancel") {
-    const { coordinateApprovalDelivery } = (await import(`${EVE_DIST}/harness/approval-delivery-coordinator.js`)) as {
-      coordinateApprovalDelivery: (i: unknown) => Promise<{ session: { state: unknown } }>;
-    };
-    const { getApprovalAuditState } = (await import(`${EVE_DIST}/harness/approval-candidates.js`)) as {
-      getApprovalAuditState: (s: unknown) => { settlements: Array<{ requestId: string; outcome: string }> };
-    };
-    // An ordinary gated tool: no `response` policy, so eve settles the tap directly.
-    const state = { "eve.runtime.pendingInputBatches": [{ requests: [approvalRequest], responseMessages: [] }] };
-    const tap = JSON.stringify({
-      update_id: 1,
-      callback_query: {
-        id: "cb1",
-        from: { id: Number(OWNER), is_bot: false, first_name: "X" },
-        message: { message_id: 100, date: 1, chat: { id: Number(OWNER), type: "private" }, text: "card" },
-        chat_instance: "ci",
-        data: "eve:0",
-      },
-    });
-    const result = await inEveContext(() =>
-      coordinateApprovalDelivery({
-        session: { state },
-        stepInput: { attributedInputResponses: [{ auth: ownerTapAuth(tap), response: { requestId: REQUEST_ID, optionId } }] },
-        tools: new Map([["deadline_dismiss", { approval: {} }]]),
-      }),
-    );
-    return getApprovalAuditState(result.session.state).settlements;
-  }
-
-  it("Approve settles as allowed — what eve emits as approval.settled { outcome: approved }", async () => {
-    expect(await settle("approve")).toMatchObject([{ requestId: REQUEST_ID, outcome: "allowed" }]);
-  });
-
-  it("Cancel settles as cancelled", async () => {
-    expect(await settle("cancel")).toMatchObject([{ requestId: REQUEST_ID, outcome: "cancelled" }]);
-  });
-});
-
-describe("2. input.requested remembers each approval card", () => {
-  it("posts what eve's default posts — the text and Cancel / Approve — and keeps the card's id and text", async () => {
-    const { chat, posted, state } = fakeChat();
-    await onInputRequested({ requests: [approvalRequest] }, chat);
-
-    expect(posted).toHaveLength(1);
-    expect(posted[0]!.text).toBe('Dismiss deadline 42 — "already handled"');
-    const keyboard = (posted[0]!.reply_markup as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }).inline_keyboard;
-    expect(keyboard.flat().map((b) => b.text)).toEqual(["Cancel", "Approve"]);
-    expect(keyboard.flat().every((b) => b.callback_data.startsWith("eve:"))).toBe(true);
-    expect(state["approvalCards"]).toEqual({ [REQUEST_ID]: { messageId: "100", text: 'Dismiss deadline 42 — "already handled"' } });
-  });
-
-  it("a free-text question is registered for its reply, as before, and is not an approval card", async () => {
-    const { chat, state } = fakeChat();
-    await onInputRequested({ requests: [freeTextRequest] }, chat);
-    expect(state["pendingFreeformReplies"]).toEqual({ "100": "req-2" });
-    expect(state["approvalCards"]).toBeUndefined();
-  });
-});
-
-describe("3. approval.settled edits the card", () => {
-  async function cardPosted(edit?: Parameters<typeof fakeChat>[0]) {
-    const fake = fakeChat(edit);
-    await onInputRequested({ requests: [approvalRequest] }, fake.chat);
-    return fake;
-  }
-
-  it("Approve: the text stays, ✅ Approved is added, the buttons go", async () => {
-    const { chat, edits, state } = await cardPosted();
-    await onApprovalSettled({ outcome: "approved", requestId: REQUEST_ID }, chat);
+describe("2. interaction.settled words the card", () => {
+  it("accepted: the text stays, ✅ Approved is added, the buttons go", async () => {
+    const { edits, state } = await settleApproval("accepted", { response: { optionId: "approve" } });
     expect(edits).toEqual([
-      { messageId: "100", replyMarkup: { inline_keyboard: [] }, text: `Dismiss deadline 42 — "already handled"\n\n${APPROVAL_OUTCOME_TEXT.approved}` },
+      { messageId: "100", replyMarkup: { inline_keyboard: [] }, text: `${PROMPT}\n\n${APPROVAL_OUTCOME_TEXT.approved}` },
     ]);
-    expect(state["approvalCards"]).toEqual({});
+    expect(APPROVAL_OUTCOME_TEXT.approved).toBe("✅ Approved");
+    // The card is forgotten once edited, as eve's own handler forgets it.
+    expect(state["hitlPrompts"]).toEqual({});
   });
 
-  it("Cancel: ✖ Cancelled is added", async () => {
-    const { chat, edits } = await cardPosted();
-    await onApprovalSettled({ outcome: "cancelled", requestId: REQUEST_ID }, chat);
-    expect(edits[0]!.text.endsWith(`\n\n${APPROVAL_OUTCOME_TEXT.cancelled}`)).toBe(true);
+  it("declined: ✖ Denied is added — the word is Denied, not Cancelled", async () => {
+    const { edits } = await settleApproval("declined", { response: { optionId: "deny" } });
+    expect(edits[0]!.text).toBe(`${PROMPT}\n\n${APPROVAL_OUTCOME_TEXT.denied}`);
+    expect(APPROVAL_OUTCOME_TEXT.denied).toBe("✖ Denied");
+    expect(edits[0]!.text).not.toContain("Cancel");
+    expect(edits[0]!.replyMarkup).toEqual({ inline_keyboard: [] });
   });
 
-  it("Cancel on a card the agent revised: one extra line says so", async () => {
+  it.each(["withdrawn", "interrupted"])("%s: nobody decided, so the card says plainly that it was not approved", async (outcome) => {
+    const { edits } = await settleApproval(outcome, outcome === "withdrawn" ? { reason: "superseded-by-message" } : {});
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.text).toBe(`${PROMPT}\n\n${APPROVAL_OUTCOME_TEXT.notApproved}`);
+    expect(edits[0]!.text).toContain("Not approved");
+    expect(edits[0]!.text).not.toContain("✅");
+    expect(edits[0]!.replyMarkup).toEqual({ inline_keyboard: [] });
+  });
+
+  it("ONLY accepted ever reads as approved — every outcome eve knows, and one it does not", async () => {
+    for (const outcome of [...INTERACTION_OUTCOMES, "an-outcome-a-later-eve-adds"]) {
+      const { edits } = await settleApproval(outcome);
+      expect(edits, outcome).toHaveLength(1);
+      const approved = edits[0]!.text.endsWith(APPROVAL_OUTCOME_TEXT.approved);
+      expect(approved, outcome).toBe(outcome === "accepted");
+      if (outcome !== "accepted") expect(edits[0]!.text, outcome).not.toMatch(/✅|\bApproved\b/);
+    }
+  });
+
+  it("a card closed because the agent proposed a revised one says so, whichever way eve closed it", async () => {
     ledger.answeredVia = async () => "revised";
-    const { chat, edits } = await cardPosted();
-    await onApprovalSettled({ outcome: "cancelled", requestId: REQUEST_ID }, chat);
-    expect(edits[0]!.text.endsWith(`\n\n${APPROVAL_OUTCOME_TEXT.cancelled}\n${APPROVAL_REVISED_TEXT}`)).toBe(true);
+    for (const [outcome, line] of [
+      ["declined", APPROVAL_OUTCOME_TEXT.denied],
+      ["withdrawn", APPROVAL_OUTCOME_TEXT.notApproved],
+      ["interrupted", APPROVAL_OUTCOME_TEXT.notApproved],
+    ] as const) {
+      const { edits } = await settleApproval(outcome);
+      expect(edits[0]!.text, outcome).toBe(`${PROMPT}\n\n${line}\n${APPROVAL_REVISED_TEXT}`);
+    }
     expect(APPROVAL_REVISED_TEXT).toBe("Revised — see the new card");
   });
 
-  it("a cancel the owner tapped (not revised) and a failed lookup both keep today's text", async () => {
+  it("the ledger is asked about the request by its id", async () => {
+    const asked: string[] = [];
+    ledger.answeredVia = async (id) => {
+      asked.push(id);
+      return null;
+    };
+    await settleApproval("declined");
+    expect(asked).toEqual([ID]);
+  });
+
+  it("a denial the owner tapped (not revised) and a failed lookup both keep the plain outcome", async () => {
     ledger.answeredVia = async () => "telegram";
-    let fake = await cardPosted();
-    await onApprovalSettled({ outcome: "cancelled", requestId: REQUEST_ID }, fake.chat);
-    expect(fake.edits[0]!.text.endsWith(APPROVAL_OUTCOME_TEXT.cancelled)).toBe(true);
+    expect((await settleApproval("declined")).edits[0]!.text.endsWith(APPROVAL_OUTCOME_TEXT.denied)).toBe(true);
     ledger.answeredVia = async () => {
       throw new Error("db down");
     };
-    fake = await cardPosted();
-    await onApprovalSettled({ outcome: "cancelled", requestId: REQUEST_ID }, fake.chat);
-    expect(fake.edits[0]!.text.endsWith(APPROVAL_OUTCOME_TEXT.cancelled)).toBe(true);
+    expect((await settleApproval("declined")).edits[0]!.text.endsWith(APPROVAL_OUTCOME_TEXT.denied)).toBe(true);
   });
 
   it("an approval is never reworded, whatever the ledger says", async () => {
     ledger.answeredVia = async () => "revised";
-    const { chat, edits } = await cardPosted();
-    await onApprovalSettled({ outcome: "approved", requestId: REQUEST_ID }, chat);
+    const { edits } = await settleApproval("accepted");
     expect(edits[0]!.text.endsWith(APPROVAL_OUTCOME_TEXT.approved)).toBe(true);
   });
 
-  it("a card already decided is not edited again, and a card this chat never posted is left alone", async () => {
-    const { chat, edits } = await cardPosted();
-    await onApprovalSettled({ outcome: "approved", requestId: REQUEST_ID }, chat);
-    await onApprovalSettled({ outcome: "cancelled", requestId: REQUEST_ID }, chat);
-    await onApprovalSettled({ outcome: "approved", requestId: "someone-elses" }, chat);
+  it("a card already settled is not edited again, and a request this chat holds no card for is left alone", async () => {
+    const { view } = viewAsking(approvalRequest);
+    const event = settledEvent("accepted");
+    const settledView = fold(view, [event]);
+    const { channel, edits } = chatWithCard();
+
+    await onInteractionSettled(event, { channel, view: settledView });
+    await onInteractionSettled(settledEvent("declined"), { channel, view: settledView });
+    await onInteractionSettled(settledEvent("accepted", {}, "someone-elses"), { channel, view: settledView });
+
     expect(edits).toHaveLength(1);
+  });
+
+  it("a card at Telegram's limit still gets its outcome: the text is shortened to make room, never refused", async () => {
+    const long = "x".repeat(4096);
+    const { view } = viewAsking({ ...approvalRequest, prompt: long });
+    const event = settledEvent("declined");
+    const { channel, edits } = chatWithCard(undefined, { messageId: "100", text: long, options: APPROVAL_OPTIONS });
+
+    await onInteractionSettled(event, { channel, view: fold(view, [event]) });
+
+    expect(edits[0]!.text.length).toBeLessThanOrEqual(4096);
+    expect(edits[0]!.text.endsWith(`…\n\n${APPROVAL_OUTCOME_TEXT.denied}`)).toBe(true);
   });
 
   it("Telegram refusing the edit is logged, never thrown (a throwing handler parks the session)", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { chat } = await cardPosted(async () => ({ ok: false, status: 400, body: { ok: false, description: "Bad Request: message to edit not found" } }));
-    await expect(onApprovalSettled({ outcome: "approved", requestId: REQUEST_ID }, chat)).resolves.toBeUndefined();
+    const { view } = viewAsking(approvalRequest);
+    const event = settledEvent("accepted");
+    const { channel } = chatWithCard(async () => ({ ok: false, status: 400, body: { ok: false, description: "Bad Request: message to edit not found" } }));
+
+    await expect(onInteractionSettled(event, { channel, view: fold(view, [event]) })).resolves.toBeUndefined();
+
     expect(String(error.mock.calls[0]?.[0])).toContain("HTTP 400: Bad Request: message to edit not found");
     expect(String(error.mock.calls[0]?.[0])).not.toContain("Dismiss deadline");
   });
 
   it("an edit that throws (network) is logged, never thrown", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    const { chat } = await cardPosted(async () => {
+    const { view } = viewAsking(approvalRequest);
+    const event = settledEvent("accepted");
+    const { channel } = chatWithCard(async () => {
       throw new Error("proxy down");
     });
-    await expect(onApprovalSettled({ outcome: "approved", requestId: REQUEST_ID }, chat)).resolves.toBeUndefined();
+    await expect(onInteractionSettled(event, { channel, view: fold(view, [event]) })).resolves.toBeUndefined();
   });
 
-  it("the real door wires both handlers, and the edit goes out as editMessageText to the card's chat", async () => {
-    vi.resetModules();
-    const door = (await import("../agent/channels/telegram.js")).default as unknown as {
-      adapter: {
-        createAdapterContext(i: { state: unknown; ctx: unknown; session: unknown }): unknown;
-        "input.requested"?: (data: unknown, ctx: unknown) => Promise<void>;
-        "approval.settled"?: (data: unknown, ctx: unknown) => Promise<void>;
+  it("a record that is missing or not shaped as expected means no card: nothing is edited, nothing throws, and it is logged", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { view } = viewAsking(approvalRequest);
+    const event = settledEvent("accepted");
+    const settledView = fold(view, [event]);
+    const shapes: unknown[] = [undefined, null, "cards", [], { [ID]: null }, { [ID]: { text: PROMPT } }, { [ID]: { messageId: 100, text: PROMPT } }, { [ID]: { messageId: "", text: PROMPT } }, { [ID]: { messageId: "100" } }];
+    for (const hitlPrompts of shapes) {
+      const edits: Edit[] = [];
+      const channel = {
+        state: { chatId: OWNER, hitlPrompts } as { chatId: string | null },
+        telegram: { editMessageText: async (input: Edit) => { edits.push(input); return { ok: true, status: 200 }; } },
       };
-    };
-    expect(typeof door.adapter["input.requested"]).toBe("function");
-    expect(typeof door.adapter["approval.settled"]).toBe("function");
+      await expect(onInteractionSettled(event, { channel, view: settledView })).resolves.toBeUndefined();
+      expect(edits, JSON.stringify(hitlPrompts)).toEqual([]);
+    }
+    expect(warn).toHaveBeenCalledTimes(shapes.length);
+    expect(String(warn.mock.calls[0]![0])).toContain("no posted card on record");
+  });
 
-    // The handlers themselves, on the context eve builds for the real channel (credentials and
-    // the proxied fetch included). The fetch is the mock above.
-    const state = { botUsername: null, chatId: OWNER, chatType: "private", conversationId: null, messageThreadId: null, hitlCallbacks: {}, nextHitlCallbackId: 0, pendingFreeformReplies: {} };
-    const ctx = door.adapter.createAdapterContext({ state, ctx: undefined, session: undefined });
-    // eve calls channel event handlers inside its runtime context; give them one.
-    await inEveContext(async () => {
-      await door.adapter["input.requested"]!({ requests: [approvalRequest] }, ctx);
-      await door.adapter["approval.settled"]!({ outcome: "approved", requestId: REQUEST_ID, responderPrincipalId: `telegram:${OWNER}` }, ctx);
+  describe("a card that is not an approval", () => {
+    const question = {
+      kind: "question",
+      prompt: "Which day?",
+      options: [
+        { id: "mon", label: "Monday" },
+        { id: "tue", label: "Tuesday" },
+      ],
+    };
+    const questionCard = { messageId: "100", text: "Which day?", options: question.options };
+
+    it("answered: says which button, and never 'Approved'", async () => {
+      const { view } = viewAsking(question);
+      const event = settledEvent("accepted", { response: { optionId: "tue" } });
+      const { channel, edits } = chatWithCard(undefined, questionCard);
+      await onInteractionSettled(event, { channel, view: fold(view, [event]) });
+      expect(edits[0]!.text).toBe(`Which day?\n\n${PROMPT_OUTCOME_TEXT.answered}: Tuesday`);
+      expect(edits[0]!.replyMarkup).toEqual({ inline_keyboard: [] });
     });
 
-    expect(calls.map((c) => c.method)).toEqual(["sendMessage", "editMessageText"]);
-    expect(calls[1]!.body).toMatchObject({
-      chat_id: OWNER,
-      message_id: 41,
-      reply_markup: { inline_keyboard: [] },
-      text: `Dismiss deadline 42 — "already handled"\n\n${APPROVAL_OUTCOME_TEXT.approved}`,
+    it("closed without an answer: 'No longer needed', and the ledger is not consulted", async () => {
+      const asked: string[] = [];
+      ledger.answeredVia = async (id) => {
+        asked.push(id);
+        return "revised";
+      };
+      const { view } = viewAsking(question);
+      const event = settledEvent("withdrawn");
+      const { channel, edits } = chatWithCard(undefined, questionCard);
+      await onInteractionSettled(event, { channel, view: fold(view, [event]) });
+      expect(edits[0]!.text).toBe(`Which day?\n\n${PROMPT_OUTCOME_TEXT.closed}`);
+      expect(asked).toEqual([]);
+    });
+
+    it("a card whose request the session no longer holds is closed without calling it approved", async () => {
+      // The view knows nothing about this id, so the kind cannot be told. `accepted` must still
+      // not read as an approval.
+      const event = settledEvent("accepted", {}, "unknown-to-the-view");
+      const { channel, edits } = chatWithCard(undefined, { messageId: "100", text: PROMPT, options: APPROVAL_OPTIONS }, "unknown-to-the-view");
+      await onInteractionSettled(event, { channel, view: emptySessionView() });
+      expect(edits[0]!.text).toBe(`${PROMPT}\n\n${PROMPT_OUTCOME_TEXT.answered}`);
+      expect(edits[0]!.text).not.toMatch(/✅|\bApproved\b/);
     });
   });
 });
 
-describe("4. a card too long for one message points to the console and cannot be approved here", () => {
-  // eve's renderer cuts a prompt over 4000 characters with a bare "..." (no marker of its own).
-  const longRequest = {
-    ...(approvalRequest as Record<string, unknown>),
-    requestId: "req-long",
-    prompt: `Send this reply: ${"word ".repeat(1200)}`,
-  } as never;
-  // A mail card's details end with the approval summary's own notice when they were cut at 2800.
-  const summarisedRequest = {
-    ...(approvalRequest as Record<string, unknown>),
-    requestId: "req-sum",
-    prompt: "Send mail to someone@example.com\n\nBody: …\n\n— shortened — 1234 characters are not shown.",
-  } as never;
-
-  function buttons(markup: Readonly<Record<string, unknown>> | undefined) {
-    return (markup as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }).inline_keyboard.flat();
+describe("3. from card to outcome, through the real door", () => {
+  async function cardThenSettle(outcome: string, extra: Record<string, unknown> = {}) {
+    const { door, state } = await realDoor();
+    const { view, opened } = viewAsking(approvalRequest);
+    await emit(door, state, opened as { type: string }, view);
+    const event = settledEvent(outcome, extra);
+    await emit(door, state, event, fold(view, [event]));
+    return { state };
   }
 
-  it("knows a cut card from a whole one", () => {
-    expect(isShortenedCard("Dismiss deadline 42", "Dismiss deadline 42")).toBe(false);
-    expect(isShortenedCard("Send this…(truncated)", "Send this")).toBe(true);
-    const summary = "Body: …\n\n— shortened — 12 characters are not shown.";
-    expect(isShortenedCard(summary, summary)).toBe(true);
-    expect(isShortenedCard("Send this rep...", "Send this reply in full")).toBe(true);
-    // A title that left something out says so (`SUMMARY_SHORTENED` in the approval summary)…
-    const counted = 'Send email to a@x.com and 2 more — "Hi" (shortened)';
-    expect(isShortenedCard(counted, counted)).toBe(true);
-    // …as does an outside tool's title, and details where one value was cut.
-    const outside = 'Ask outside tool files: write — path: "a" (shortened, see the full request below)';
-    expect(isShortenedCard(outside, outside)).toBe(true);
-    const value = "To: a…\n\n— shortened — some values are not shown in full.";
-    expect(isShortenedCard(value, value)).toBe(true);
+  it("Approve: the card eve posted is edited in place, in the card's chat, with an empty keyboard", async () => {
+    const { state } = await cardThenSettle("accepted", { response: { optionId: "approve" } });
+
+    expect(calls.map((c) => c.method)).toEqual(["sendMessage", "editMessageText"]);
+    expect(calls[1]!.body).toEqual({
+      chat_id: OWNER,
+      message_id: 41,
+      reply_markup: { inline_keyboard: [] },
+      text: `${PROMPT}\n\n${APPROVAL_OUTCOME_TEXT.approved}`,
+    });
+    expect(state["hitlPrompts"]).toEqual({});
   });
 
-  it("the real summary's cuts reach the card: 'and 2 more' recipients loses Approve", async () => {
-    const { summarizeApproval } = await import("@lares/agent-kit/approval-summary");
-    const prompt = summarizeApproval("gmail_send", { to: ["a@x.com", "b@x.com", "c@x.com"], subject: "Hi" })!;
-    const { chat, posted } = fakeChat();
-    await onInputRequested({ requests: [{ ...(approvalRequest as Record<string, unknown>), requestId: "req-many", prompt } as never] }, chat);
-    expect(buttons(posted[0]!.reply_markup).map((b) => b.text)).toEqual(["Cancel"]);
-    expect(posted[0]!.text).toContain("cannot be approved here");
+  it("Deny: the same edit, with ✖ Denied", async () => {
+    await cardThenSettle("declined", { response: { optionId: "deny" } });
+    expect(calls[1]!.body["text"]).toBe(`${PROMPT}\n\n${APPROVAL_OUTCOME_TEXT.denied}`);
   });
 
-  it("the link goes to the Waiting on you page for this request, and only from an http(s) address", () => {
-    expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "https://console.example.com" })).toBe("https://console.example.com/waiting?request=req-1");
-    expect(waitingPageLink("req 1", { LARES_CONSOLE_URL: "https://console.example.com/lares/" })).toBe("https://console.example.com/lares/waiting?request=req+1");
-    expect(waitingPageLink("req-1", {})).toBeNull();
-    expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "javascript:alert(1)" })).toBeNull();
-    expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "not a url" })).toBeNull();
-  });
-
-  it("over the limit: honest note, the link, Cancel only, and the Approve callback gone from state", async () => {
-    process.env["LARES_CONSOLE_URL"] = "https://console.example.com";
-    const { chat, posted, state } = fakeChat();
-    await onInputRequested({ requests: [longRequest] }, chat);
-
-    expect(posted).toHaveLength(1);
-    const text = posted[0]!.text;
-    expect(text.length).toBeLessThanOrEqual(4000);
-    expect(text.endsWith(shortenedCardNote("https://console.example.com/waiting?request=req-long"))).toBe(true);
-    expect(text).toContain("cannot be approved here");
-    expect(buttons(posted[0]!.reply_markup).map((b) => b.text)).toEqual(["Cancel"]);
-    const callbacks = state["hitlCallbacks"] as Record<string, { optionId: string }>;
-    expect(Object.values(callbacks).map((c) => c.optionId)).toEqual(["cancel"]);
-    expect(Object.keys(callbacks)).toEqual([buttons(posted[0]!.reply_markup)[0]!.callback_data]);
-    // The card is still remembered, without the note, so a decision made in the console edits it.
-    const card = (state["approvalCards"] as Record<string, { messageId: string; text: string }>)["req-long"]!;
-    expect(card.messageId).toBe("100");
-    expect(text.startsWith(card.text)).toBe(true);
-    expect(card.text).not.toContain("console");
-  });
-
-  it("a mail card cut at 2800 is treated the same; with no console address set it says to open the console", async () => {
-    const { chat, posted } = fakeChat();
-    await onInputRequested({ requests: [summarisedRequest] }, chat);
-    expect(posted[0]!.text.endsWith(shortenedCardNote(null))).toBe(true);
-    expect(posted[0]!.text).toContain("Open the console to read the whole of it");
-    expect(posted[0]!.text).not.toContain("http");
-    expect(buttons(posted[0]!.reply_markup).map((b) => b.text)).toEqual(["Cancel"]);
-  });
-
-  it("under the limit nothing changes: both buttons, no note", async () => {
-    process.env["LARES_CONSOLE_URL"] = "https://console.example.com";
-    const { chat, posted } = fakeChat();
-    await onInputRequested({ requests: [approvalRequest] }, chat);
-    expect(posted[0]!.text).toBe('Dismiss deadline 42 — "already handled"');
-    expect(buttons(posted[0]!.reply_markup).map((b) => b.text)).toEqual(["Cancel", "Approve"]);
-  });
-
-  it("decided in the console: the card keeps its shortened text, gains the outcome and loses Cancel", async () => {
-    const { chat, edits, state } = fakeChat();
-    await onInputRequested({ requests: [longRequest] }, chat);
-    const card = (state["approvalCards"] as Record<string, { text: string }>)["req-long"]!;
-    await onApprovalSettled({ outcome: "approved", requestId: "req-long" }, chat);
-    expect(edits).toEqual([{ messageId: "100", replyMarkup: { inline_keyboard: [] }, text: `${card.text}\n\n${APPROVAL_OUTCOME_TEXT.approved}` }]);
+  it.each(["withdrawn", "interrupted"])("%s: the handler edits the card and does nothing else", async (outcome) => {
+    await cardThenSettle(outcome);
+    // One Bot API call after the card itself: the edit. No message sent, no tap answered, nothing
+    // resumed — the handler has no way to run anything, and it does not say "Approved".
+    expect(calls.map((c) => c.method)).toEqual(["sendMessage", "editMessageText"]);
+    expect(calls[1]!.body["text"]).toBe(`${PROMPT}\n\n${APPROVAL_OUTCOME_TEXT.notApproved}`);
+    expect(calls[1]!.body["reply_markup"]).toEqual({ inline_keyboard: [] });
   });
 });
