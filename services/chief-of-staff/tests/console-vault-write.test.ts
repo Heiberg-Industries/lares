@@ -15,6 +15,7 @@ vi.mock("@lares/agent-kit/console-turn-authority", async (original) => ({
 vi.mock("../lib/definition.js", () => ({ thisAgent: async () => ({ loaded: { definition: fake.definition } }) }));
 import { parseDefinition } from "@lares/agent-kit/definition";
 import resolver from "../agent/tools/catalogue.js";
+import { runDynamic } from "../../../packages/agent-kit/tests/helpers/eve-dynamic.js";
 
 const NOTE_WRITE = "agent-kit__vault_write";
 const OUT_OF_SCOPE = ["agent-kit__vault_file", "agent-kit__vault_drop", "remember", "forget", "save_note"];
@@ -24,7 +25,9 @@ const consoleCtx = { session: { id: "console-note", turn: { id: "turn-1", sequen
 const nativeCtx = { session: { id: "native-note", auth: { current: null, initiator: null } } };
 const template = JSON.parse(readFileSync(new URL("../../../packages/agent-kit/templates/chief-of-staff/agent.json", import.meta.url), "utf8"));
 const consoleCreated = (change: (d: any) => any = (d) => d) => parseDefinition(change({ ...template, name: "helper", display: "Helper" }));
-const resolve = async (ctx: unknown) => (await resolver.events["session.started"]!({} as never, ctx as never)) as Record<string, { approval?: unknown }>;
+// The catalogue is one eve 1.0 `defineDynamic` function. Each call here is a NEW conversation: a
+// fresh memo store, so the tool list is decided again from the definition as it stands.
+const resolve = async (ctx: unknown) => (await runDynamic(resolver, ctx as Record<string, unknown>)) as Record<string, { approval?: unknown }>;
 
 beforeEach(() => {
   vi.stubEnv("LARES_AGENT_NAME", "helper");
