@@ -49,17 +49,16 @@ export async function linkScheduledRouteRequests(db: import("pg").Pool, event: u
   });
 }
 
-async function applyScheduledRouteDeclines(event: unknown, ctx: HookContext): Promise<void> {
+async function applyScheduledRouteDeclines(settled: ReturnType<typeof settledApproval>, answerer: unknown): Promise<void> {
   // Only a person's Deny is a veto. A card nobody answered (withdrawn, interrupted) or an invalid
   // answer creates neither a veto nor a learned fact.
-  const settled = settledApproval(event, ctx);
   if (!settled || settled.outcome !== "cancelled" || !settled.decidedByPerson) return;
   const requestId = settled.interactionId;
   const audience = await routeApprovalLinkAudience(getPool(), requestId);
   if (!audience) return;
   // eve 1.0: `session.auth.current` is the scheduled job's app identity, not the person who tapped
   // Deny. The owner's answer is the one the native response policy accepted for this card.
-  const principal = approverFrom({ current: takeNativeAnswerer(requestId) });
+  const principal = approverFrom({ current: answerer });
   assertApprover(principal);
   const auth = {
     authenticator: principal.authenticator,
@@ -99,6 +98,8 @@ export default defineHook({
     },
     "interaction.settled": async (event: unknown, ctx: HookContext) => {
       const settled = settledApproval(event, ctx);
+      // Every settled card takes its native answerer, so the store never outlives its cards (lib/approvals.ts).
+      const answerer = settled ? takeNativeAnswerer(settled.interactionId, ctx?.session?.id) : undefined;
       if (settled) {
         // Marked again on settle; a no-op when the opening hook already marked the turn.
         noteApprovalCardTurn(cardTurnOf(event, ctx));
@@ -110,7 +111,7 @@ export default defineHook({
       // After the card's own settle work, before eve runs the approved action: the answer's
       // 30-second receipt becomes the continuation's Keeper turn now (lib/model-purpose.ts).
       if (settled) await openContinuationAfterSettle(cardTurnOf(event, ctx), ctx?.session as never);
-      try { await applyScheduledRouteDeclines(event, ctx); } catch (error) { warnRouteDecline(error); }
+      try { await applyScheduledRouteDeclines(settled, answerer); } catch (error) { warnRouteDecline(error); }
     },
   },
 });
