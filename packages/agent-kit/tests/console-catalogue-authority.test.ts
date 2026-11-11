@@ -43,10 +43,16 @@ describe('both catalogues guard their callbacks before underlying execution or a
       expect(fake.execute).not.toHaveBeenCalled(); expect(fake.approval).not.toHaveBeenCalled(); expect(fake.query).not.toHaveBeenCalled();
     });
 
-    it(`${role}: a native conversation gets no response policy, so eve's own responder rule applies to Approve and to Deny`, async () => {
+    it(`${role}: a native conversation gets a response policy too, which refuses a card with no requester and an unknown answerer, for Approve and for Deny`, async () => {
       const t = (await runDynamic(resolver, nativeCtx)).fixture;
-      expect(t.approval.response).toBeUndefined();
-      expect(typeof t.approval.request).toBe('function');
+      expect(typeof t.approval.response).toBe('function');
+      const slack = { authenticator: 'slack-webhook', principalId: 'U-stranger', principalType: 'user', attributes: { user_id: 'U-stranger' } };
+      for (const decision of ['approve', 'deny']) {
+        const answer = (requester: unknown, principal: unknown) => ({ request: { interactionId: 'i1', callId: 'call-1', toolName: 'fixture', principal: requester }, response: { decision, principal }, session: { id: 'wrun_native', initiator: null } });
+        for (const requester of [null, undefined]) expect(await t.approval.response(answer(requester, slack)), decision).toMatchObject({ status: 'rejected' });
+        expect(await t.approval.response(answer(slack, slack)), decision).toMatchObject({ status: 'rejected' }); // known requester, answerer not an approver
+        expect(await t.approval.response(answer(slack, null)), decision).toMatchObject({ status: 'rejected' });
+      }
     });
 
     it(`${role}: a bound console conversation gets a response policy that refuses an unbound answer, for Approve and for Deny`, async () => {

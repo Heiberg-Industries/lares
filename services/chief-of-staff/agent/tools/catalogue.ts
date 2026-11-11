@@ -20,8 +20,9 @@ import { catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExec
 // none here; a tool that did gets the object form `{ request, response?, prompt }`:
 //   - `request` is the authored policy, run through `catalogueApprovalRequest` (same arguments,
 //     same answer; bound console conversations additionally reserve an exact approval first);
-//   - `response` exists only in a bound console conversation, and eve asks it about a Deny as well
-//     as an Approve — only the person who may approve may deny;
+//   - `response` is on every gated tool, and eve asks it about a Deny as well as an Approve: in a
+//     bound console conversation it is the exact check, on a native door it refuses a card with no
+//     requester and anyone who is not an allowed approver — only the person who may approve may deny;
 //   - `prompt` is the card title (`cardTitle`, never throws), because eve only reads a `prompt`
 //     from the object form.
 // `guardCatalogueExecution` runs before every catalogue call, whoever approved it.
@@ -54,7 +55,7 @@ const valueOf = (name: string): CatalogueToolValue =>
   CATALOGUE[name]!.tool as unknown as CatalogueToolValue;
 
 /** What the resolver decides once per conversation: plain JSON, so `ctx.memo` can keep it. */
-interface CatalogueDecision { readonly names: readonly string[]; readonly exactApproval: boolean }
+interface CatalogueDecision { readonly names: readonly string[] }
 
 export default defineDynamic(async (ctx) => {
   // The session id pins ONE read of the definition for this whole conversation — the persona,
@@ -67,10 +68,7 @@ export default defineDynamic(async (ctx) => {
     // Decided once, here; the guard at execution asks again (ownership can change mid-conversation).
     const callerIsOwner = privateSession ? await callerIsAgentOwner(ctx) : false;
     const names = grantedToolNames(CATALOGUE, loaded.definition).filter(name => privateSession ? privateToolAllowed("chief-of-staff", name, { callerIsOwner }) : !privateOnlyTool(name));
-    // A bound console conversation gets a response policy (and so authenticated button answers).
-    // Native Telegram deliberately resumes with auth:null; its legacy executor check stays
-    // authoritative. Bound console sessions retain their tagged initiator on cold replay.
-    return { names, exactApproval: isExactApprovalContext(ctx) };
+    return { names };
   });
   return Object.fromEntries(
     decided.names.map((name) => {
@@ -86,7 +84,7 @@ export default defineDynamic(async (ctx) => {
             ? {
                 approval: withCardTitle({
                   request: async (approvalCtx: unknown) => catalogueApprovalRequest(name, approvalCtx, tool.approval),
-                  ...(decided.exactApproval ? { response: async (responseCtx: unknown) => catalogueApprovalResponse(name, responseCtx) } : {}),
+                  response: async (responseCtx: unknown) => catalogueApprovalResponse(name, responseCtx),
                 }),
               }
             : {}),

@@ -2,7 +2,9 @@
  * No model/provider credentials or installation data. */
 import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawn } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { getPool, closePool } from '@lares/agent-kit/db';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
@@ -16,6 +18,7 @@ import { makeApprovalRecord } from '@lares/agent-kit/approval-record-hook';
 import { deadlineApprovalAdapter, dismissExactDeadline } from '../lib/deadlines-store.js';
 import { twentyTracksApprovalAdapter } from '../lib/tracks-approval.js';
 import resolver from '../agent/tools/catalogue.js';
+import { driveAnswer } from './helpers/answer-check.js';
 import { eveSession } from '../../../packages/agent-kit/tests/helpers/eve-session.js';
 import { runDynamic, type MemoStore } from '../../../packages/agent-kit/tests/helpers/eve-dynamic.js';
 import { assertApproval, catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution, humanTurnRefusal, runApprovedTwentyTrackOnce } from '../lib/approvals.js';
@@ -25,7 +28,13 @@ const inc='11111111-1111-4111-8111-111111111111';
 const env={LARES_AGENT_NAME:'helper',LARES_AGENT_INCARNATION:inc,AGENT_OWNER_USER_ID:'member-a'};
 const auth=(purpose='human',member='member-a',nonce='a'.repeat(43),option='approve')=>({authenticator:'lares-console',principalId:member,principalType:'user',attributes:{user_id:member,lares_member_id:member,lares_admission_nonce:nonce,lares_purpose:purpose,...(purpose==='resolver'?{lares_resume_request_id:'request-1',lares_resume_option:option}:{})}});
 const input={id:'11111111-2222-4333-8444-555555555555',reason:'Duplicate filing'};
-const context=(purpose='human',raw:unknown=input)=>({callId:'call-1',toolName:'deadline_dismiss',toolInput:raw,abortSignal:new AbortController().signal,session:{id:'wrun_exact',turn:{id:purpose==='human'?'turn-original':'turn-resolver',sequence:purpose==='human'?0:1},auth:{current:auth(purpose),initiator:auth()}}});
+/** eve 1.0: a call that runs after Approve, and the policy re-check before it, run as the person who ASKED
+ *  (`session.auth.current` stays the human requester, in the ORIGINAL turn). The person who answered is only
+ *  `approval.responder`, present while the approved call runs. `context('resolver')` is that approved run. */
+const context=(purpose='human',raw:unknown=input):any=>({callId:'call-1',toolName:'deadline_dismiss',toolInput:raw,abortSignal:new AbortController().signal,session:{id:'wrun_exact',turn:{id:'turn-original',sequence:0},auth:{current:auth('human'),initiator:auth()}},...(purpose==='resolver'?{approval:{responder:auth('resolver')}}:{})});
+/** eve's own re-check: the real evaluateApproval with recheck on hands the policy the mark it checks for. */
+const evalUrl=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/approval/evaluation.js',import.meta.url))).href;
+const recheckOf=async(policy:(c:any)=>unknown,ctx:any,recheck=true)=>{const {evaluateApproval}=await import(evalUrl) as any;return evaluateApproval(policy,ctx,{recheck});};
 const def={name:'helper',model:'fixture-brain',persona:'voice.md',role:'chief-of-staff',channels:[],grants:[{capability:'deadline',scope:'write-with-confirm'}],autonomy:{deadline:'gated'},skills:[]};
 const opts=()=>({adapter:deadlineApprovalAdapter});
 let container:StartedPostgreSqlContainer;
@@ -70,8 +79,9 @@ describe('exact private approval execution',()=>{
   await approved();const c=context('resolver');
   const r=await requireApprovedExecution(c,'deadline_dismiss',input,opts());
   expect(r.authority).toMatchObject({origin:'approval-resume',actingMemberId:'member-a',spokenByMemberId:'member-a',resolvedByMemberId:'member-a',turnId:'turn-original',requestId:'request-1'});
-  expect(c.session.auth.current.attributes.lares_purpose).toBe('resolver');
-  expect(humanTurnRefusal(c.session.auth,'Refused')).toContain('no new human instruction');
+  expect(c.approval.responder.attributes.lares_purpose).toBe('resolver');
+  expect(c.session.auth.current.attributes.lares_purpose).toBe('human');
+  expect(humanTurnRefusal({current:c.approval.responder,initiator:c.session.auth.initiator},'Refused')).toContain('no new human instruction');
   await dismissExactDeadline(getPool(),c,input);
   expect((await getPool().query('SELECT status,owner,status_reason FROM deadlines WHERE id=$1',[input.id])).rows[0]).toEqual({status:'dismissed',owner:'member-a',status_reason:input.reason});
  });
@@ -274,6 +284,23 @@ describe('exact private approval execution',()=>{
   await expect(tool.execute(input,context('resolver'))).rejects.toThrow('Conversation authority');
   await stillOpen();
  });
+ it('a fresh process (cold start: no memo, no module state) runs the approved call only with its responder',async()=>{
+  await approved();
+  const payload={context:context('resolver'),input};
+  const result=await new Promise<any>((resolve,reject)=>{
+   const p=spawn(process.execPath,['--import','tsx',fileURLToPath(new URL('./helpers/cold-process.mts',import.meta.url))],{
+    cwd:process.cwd(),env:{PATH:process.env.PATH,DATABASE_URL:process.env.DATABASE_URL,...env,EVE_TELEMETRY_DISABLED:'1'},stdio:['pipe','pipe','pipe']});
+   let out='',err='';p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);p.on('error',reject);
+   p.on('close',code=>code===0?resolve(JSON.parse(out)):reject(new Error(`Cold start exited ${code}: ${err} ${out}`)));
+   p.stdin.end(JSON.stringify(payload));
+  });
+  expect(result.pid).not.toBe(process.pid);
+  expect(result.hasResponder).toBe(true);
+  expect(result.withResponder).toBe('ran');                // approved card + its responder: allowed
+  expect(result.withoutResponder).toMatch(/^refused/);     // the same call with no responder on ctx.approval: refused
+  expect(result.guardWithoutResponder).toMatch(/^refused/);
+  await stillOpen();
+ },60_000);
  it('refuses a Deny from anyone but the person who may approve the card, and the card stays pending',async()=>{
   await reserved();
   const pending=async()=>(await getPool().query("SELECT outcome,resolved_by_member_id FROM approval_asks WHERE call_id='call-1'")).rows[0];
@@ -409,18 +436,27 @@ describe('answering an exact card through the private route',()=>{
   await expect(requireConsoleResume(resumed(answered()),'model',{env})).rejects.toThrow();
   await expect(requireConsoleResume(resumed(answered('request-1','deny')),'model',{env})).resolves.toBeDefined();
  });
- it('refuses a new card during an approval resume without failing the turn',async()=>{
+ it('runs only with an authenticated responder on ctx.approval: none, the requester themself, another card, member, admission or option is refused',async()=>{
   await approved();
-  await expect(catalogueApprovalRequest('track_create',{...context('resolver'),callId:'another-call',toolName:'track_create'},()=>'user-approval')).resolves.toBe('denied');
-  expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(1);
+  const withResponder=(responder:unknown)=>{const c=context();if(responder!==undefined)c.approval={responder};return c;};
+  for(const bad of [undefined,null,auth('human'),auth('resolver','member-b'),auth('resolver','member-a','b'.repeat(43)),auth('resolver','member-a','a'.repeat(43),'deny'),
+      {...auth('resolver'),attributes:{...auth('resolver').attributes,lares_resume_request_id:'another-request'}},{authenticator:'slack-webhook',attributes:{user_id:'U1'}}])
+    await expect(requireApprovedExecution(withResponder(bad),'deadline_dismiss',input,opts())).rejects.toThrow();
+  // The responder is read from ctx.approval only: a resolver identity in session.auth.current is not an answer.
+  const asCurrent=context();asCurrent.session.auth.current=auth('resolver');
+  await expect(requireApprovedExecution(asCurrent,'deadline_dismiss',input,opts())).rejects.toThrow();
+  await expect(requireApprovedExecution(withResponder(auth('resolver')),'deadline_dismiss',input,opts())).resolves.toMatchObject({callId:'call-1'});
+  // A requester who is not the member who approved, or whose admission differs, is refused too.
+  const otherAsker=withResponder(auth('resolver'));otherAsker.session.auth={current:auth('human','member-b'),initiator:auth()};
+  await expect(requireApprovedExecution(otherAsker,'deadline_dismiss',input,opts())).rejects.toThrow();
  });
  it('runs nothing under a deny answer, even a call approved earlier',async()=>{
   await approved();
   const cancelling=context('resolver');
-  (cancelling.session.auth.current.attributes as Record<string,unknown>).lares_resume_option='deny';
+  (cancelling.approval.responder.attributes as Record<string,unknown>).lares_resume_option='deny';
   await expect(requireApprovedExecution(cancelling,'deadline_dismiss',input,opts())).rejects.toThrow();
   const unnamed=context('resolver');
-  delete (unnamed.session.auth.current.attributes as Record<string,unknown>).lares_resume_option;
+  delete (unnamed.approval.responder.attributes as Record<string,unknown>).lares_resume_option;
   await expect(requireApprovedExecution(unnamed,'deadline_dismiss',input,opts())).rejects.toThrow();
   await expect(requireApprovedExecution(context('resolver'),'deadline_dismiss',input,opts())).resolves.toMatchObject({callId:'call-1'});
  });
@@ -469,6 +505,58 @@ describe('answering an exact card through the private route',()=>{
    await expect(catalogueApprovalRequest('track_add_item',other,()=>'user-approval')).resolves.toMatchObject({type:'denied'});
    expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(0);
    expect(listTracks).not.toHaveBeenCalled();
+  });
+  it("web chat through eve's real answer check: the owner's Approve and Deny are admitted; a stranger, a human turn, a missing card requester and no identity are refused",async()=>{
+   const tool=(await runDynamic(resolver,{session:{id:'wrun_exact',auth:{current:auth('human'),initiator:auth()}}})).track_add_item;
+   expect(typeof tool.approval.response).toBe('function');
+   const verdict=(o:{responder:unknown;optionId:string;requester?:unknown})=>driveAnswer({tool,toolName:'track_add_item',input:twenty,sessionId:'wrun_exact',callId:'call-1',cardId:'request-1',requester:'requester' in o?o.requester:auth('human'),responder:o.responder,optionId:o.optionId});
+   const outcome=async()=>(await getPool().query("SELECT outcome FROM approval_asks WHERE call_id='call-1'")).rows[0].outcome;
+   await raise();
+   for(const optionId of ['approve','deny']){
+    for(const bad of [auth('resolver','member-b','a'.repeat(43),optionId),auth('resolver','member-a','b'.repeat(43),optionId),auth('human'),null,{authenticator:'slack-webhook',principalId:'U1',principalType:'user',attributes:{user_id:'U1'}}]){
+     const r=await verdict({responder:bad,optionId});
+     expect(r.stage,optionId).not.toBe('admitted');
+    }
+    expect((await verdict({responder:auth('resolver','member-a','a'.repeat(43),optionId),optionId,requester:null})).stage,optionId).not.toBe('admitted');
+    expect(await outcome()).toBeNull(); // nothing was recorded by a refused answer
+   }
+   // The owner's own answers are admitted; a Deny writes nothing, an Approve records the approval.
+   expect((await verdict({responder:auth('resolver','member-a','a'.repeat(43),'deny'),optionId:'deny'})).stage).toBe('admitted');
+   expect(await outcome()).toBeNull();
+   expect((await verdict({responder:auth('resolver','member-a','a'.repeat(43),'approve'),optionId:'approve'})).stage).toBe('admitted');
+   expect(await outcome()).toBe('approved');
+  });
+  it('the re-check before an approved call: eve marks it, the approved card passes, anything else is denied',async()=>{
+   const policy=(c:any)=>catalogueApprovalRequest('track_add_item',c,()=>'user-approval');
+   await raise();
+   // Not approved yet: the re-check is denied, and nothing is reserved again or changed.
+   expect(await recheckOf(policy,crm())).toMatchObject({denied:true});
+   await catalogueApprovalResponse('track_add_item',answerCard());
+   // Approved by this member on this card: the re-check passes (eve then runs the call).
+   expect(await recheckOf(policy,crm())).toMatchObject({denied:false});
+   // The same call asked as a FIRST request (no mark) finds a settled card and is denied, not re-asked.
+   expect(await recheckOf(policy,crm(),false)).toMatchObject({denied:true});
+   // Another member, another call or a changed input: denied.
+   expect(await recheckOf(policy,crm('member-b'))).toMatchObject({denied:true});
+   expect(await recheckOf(policy,{...crm(),callId:'different'})).toMatchObject({denied:true});
+   expect(await recheckOf(policy,{...crm(),toolInput:{...twenty,note:'changed'}})).toMatchObject({denied:true});
+   expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(1);
+  });
+  it('a card that was denied, withdrawn or never approved never passes the re-check',async()=>{
+   const policy=(c:any)=>catalogueApprovalRequest('track_add_item',c,()=>'user-approval');
+   for(const outcome of ['cancelled','ignored'] as const){
+    await getPool().query('DELETE FROM approval_asks');
+    await raise();await settleExactInput('request-1',outcome);
+    expect(await recheckOf(policy,crm()),outcome).toMatchObject({denied:true});
+   }
+  });
+  it('the guard: an approved change runs only with its approval; without one it is refused',async()=>{
+   await raise();
+   await expect(guardCatalogueExecution(crm(),'track_add_item',twenty)).rejects.toThrow();
+   await expect(guardCatalogueExecution(running(),'track_add_item',twenty)).rejects.toThrow(); // asked, not yet approved
+   await catalogueApprovalResponse('track_add_item',answerCard());
+   await expect(guardCatalogueExecution(crm(),'track_add_item',twenty)).rejects.toThrow(); // approved, but this run carries no approval
+   await expect(guardCatalogueExecution(running(),'track_add_item',twenty)).resolves.toBeUndefined();
   });
   it('refuses the answer once the owner has lost the role',async()=>{
    await raise();

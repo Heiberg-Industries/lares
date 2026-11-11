@@ -1,9 +1,9 @@
 import { beforeEach,afterEach,expect,it,vi } from 'vitest';
 import { runDynamic } from '../../../packages/agent-kit/tests/helpers/eve-dynamic.js';
-const fake=vi.hoisted(()=>({broker:vi.fn(),execute:vi.fn(),privateSession:vi.fn(),definition:vi.fn(),reserve:vi.fn(),reserveOrDeny:vi.fn(),response:vi.fn(),approved:vi.fn()}));
+const fake=vi.hoisted(()=>({broker:vi.fn(),execute:vi.fn(),privateSession:vi.fn(),definition:vi.fn(),reserve:vi.fn(),reserveOrDeny:vi.fn(),response:vi.fn(),approved:vi.fn(),recheck:vi.fn()}));
 vi.mock('@lares/agent-kit/vault-broker-client',()=>({vaultBrokerRequest:fake.broker,executeApprovedOutsideCall:fake.execute}));
 vi.mock('@lares/agent-kit/private-console-surface',()=>({verifyPrivateConsoleSession:fake.privateSession}));
-vi.mock('@lares/agent-kit/approval-execution',()=>({reserveExactApproval:fake.reserve,reserveExactApprovalOrDeny:fake.reserveOrDeny,approveExactResponse:fake.response,requireApprovedExecution:fake.approved}));
+vi.mock('@lares/agent-kit/approval-execution',async orig=>({...(await orig<typeof import('@lares/agent-kit/approval-execution')>()),reserveExactApproval:fake.reserve,reserveExactApprovalOrDeny:fake.reserveOrDeny,approveExactResponse:fake.response,requireApprovedExecution:fake.approved,requireApprovedRecheck:fake.recheck}));
 vi.mock('../lib/definition.js',()=>({thisAgent:fake.definition}));
 import { clearSessionVaultTurnCapabilities } from '../agent/lib/vault-turn.js';
 import resolver from '../agent/tools/outside-tools.js';
@@ -32,7 +32,8 @@ it('builds ordinary tools that still execute after the original admitted turn cl
  const tools=await dyn(resolver);expect(Object.keys(tools)).toEqual(['registry__lookup']);
  {const events=hook.events as Record<string,((e:never,c:never)=>unknown)|undefined>;await (events['turn.settled']??events['turn.completed'])!(started as never,context as never);}
  const responder={...auth,attributes:{...auth.attributes,lares_purpose:'resolver'}};
- const answer={...context,callId:'call-1',toolName:'registry__lookup',session:{...context.session,auth:{current:responder,initiator:auth},turn:{id:'answer-turn',sequence:2}}};
+ // eve 1.0: the approved call runs as the requester (session.auth.current stays the human); the answerer is approval.responder.
+ const answer={...context,callId:'call-1',toolName:'registry__lookup',approval:{responder}};
  await expect(tools['registry__lookup'].execute({company:'Example'},answer)).resolves.toEqual({content:[{type:'text',text:'Example'}]});
  expect(fake.execute).toHaveBeenCalledWith({outsideCapability:capability,sessionId:context.session.id,
   memberId:'member-a',admissionNonce:nonce},{callId:'call-1',connectionName:'registry',toolName:'lookup',input:{company:'Example'}});
@@ -59,11 +60,11 @@ it('the exact-approval rules still fire for an outside tool, whichever way the m
  expect(await approval.request(human)).toBe('user-approval');expect(fake.reserveOrDeny).toHaveBeenCalledTimes(1);
  fake.reserveOrDeny.mockResolvedValueOnce({type:'denied',reason:'not prepared'});
  expect(await approval.request(human)).toEqual({type:'denied',reason:'not prepared'});
- // An approval resume asks for the exact approved call; without it the call is denied, never asked again.
- const responder={...auth,attributes:{...auth.attributes,lares_purpose:'resolver'}};
- const resume={...human,session:{...context.session,auth:{current:responder,initiator:auth}}};
- fake.approved.mockRejectedValueOnce(new Error('no'));expect(await approval.request(resume)).toBe('denied');
- fake.approved.mockResolvedValueOnce({});expect(await approval.request(resume)).toBe('user-approval');
+ // The re-check before an approved call (eve marks it): the exact approved card must exist, or the call is denied.
+ const recheck={...human,[Symbol.for('eve.approval-evaluation')]:{recheck:true}};
+ fake.recheck.mockRejectedValueOnce(new Error('no'));expect(await approval.request(recheck)).toBe('denied');
+ fake.recheck.mockResolvedValueOnce(undefined);expect(await approval.request(recheck)).toBe('user-approval');
+ expect(fake.reserveOrDeny).toHaveBeenCalledTimes(2); // the re-check reserves nothing
 });
 it('asks the exact response check for a Deny as well as an Approve, and a refusal reaches eve',async()=>{
  const approval=(await dyn(resolver))['registry__lookup'].approval;
@@ -80,8 +81,8 @@ it('asks the exact response check for a Deny as well as an Approve, and a refusa
 it('refuses missing exact approval, invalid call IDs and non-resolver execution before the signed client',async()=>{
  const tools=await dyn(resolver),execute=(tools as any)['registry__lookup'].execute;
  const responder={...auth,attributes:{...auth.attributes,lares_purpose:'resolver'}};
- const ctx={...context,callId:'call-1',toolName:'registry__lookup',session:{...context.session,auth:{current:responder,initiator:auth}}};
- for(const changed of [{callId:''},{toolName:'registry__write'},{session:context.session}])
+ const ctx={...context,callId:'call-1',toolName:'registry__lookup',approval:{responder}};
+ for(const changed of [{callId:''},{toolName:'registry__write'},{approval:undefined},{approval:{responder:auth}},{approval:{responder:{...responder,attributes:{...responder.attributes,lares_purpose:'human'}}}}])
   await expect(execute({}, {...ctx,...changed})).rejects.toThrow('unavailable');
  fake.approved.mockRejectedValueOnce(new Error('Exact approval unavailable'));
  await expect(execute({},ctx)).rejects.toThrow('Exact approval unavailable');

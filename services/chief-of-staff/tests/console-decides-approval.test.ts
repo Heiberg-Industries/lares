@@ -6,18 +6,23 @@
 // hands that to `attachSession(sessionId).respond(...)`, which is pinned to the durable session id
 // whatever channel opened it — so the request that a Telegram card is waiting on is answered.
 //
-// Two halves, run for real where they are ours:
+// Three halves, run for real:
 //   1. the door turns the console's request into the `lares-console` identity of that member;
-//   2. the tool's approver check accepts the owner and refuses anyone else, exactly as it does for an
-//      answer from web chat — for an Approve and, since eve 1.0 asks the same question of a Deny, for a Deny.
-// (A third half used to run eve 0.60's approval coordinator on a pending request. eve 1.0 has no such
-// entry point; what it does with an answer is eve's own, and the rules that are ours are above.)
+//   2. eve 1.0's REAL answer check (`checkResponders` + `weighResponders`, driven by `helpers/answer-check.ts`)
+//      admits that identity's Approve and Deny on a card a Telegram session raised, when it is the agent's
+//      owner, and refuses anyone else and a card with no requester;
+//   3. the tool's approver check, at execution, reads the answerer from `ctx.approval.responder` (eve 1.0:
+//      `session.auth.current` is the person who asked, on Telegram) and accepts the owner, refuses others.
+// NOT DRIVEN: eve's own session route turning the HTTP request into an answer (`attachSession(...).respond`),
+// which needs a running agent; and the console-side proxy that sends it.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { approverFrom, assertApprover, UnauthorizedApproverError } from "../lib/approvals.js";
+import { approverFrom, assertApprover, assertApproval, UnauthorizedApproverError } from "../lib/approvals.js";
+import { driveAnswer } from "./helpers/answer-check.js";
+import { eveDynamicFor } from "./helpers/catalogue-tool.js";
 
 const OWNER = "owner@example.com";
 const INTERACTION_ID = "req-telegram-1";
@@ -65,5 +70,40 @@ describe("the console decides an approval that a Telegram session is waiting on"
 
     const other = await doorAuth("someone-else@example.com");
     expect(() => assertApprover(approverFrom({ current: other, initiator: null }, managed), managed)).toThrow(UnauthorizedApproverError);
+  });
+
+  describe("2. eve's real answer check, on a card the Telegram session raised", () => {
+    const telegram = { authenticator: "telegram-webhook", issuer: "telegram", principalId: "100", principalType: "user", attributes: { user_id: "100" } };
+    const verdict = async (responder: unknown, optionId: string, requester: unknown = telegram) =>
+      driveAnswer({ tool: (await eveDynamicFor("echo_note"))["echo_note"], toolName: "echo_note", input: { note: "hello" }, requester, responder, optionId });
+    beforeEach(() => {
+      // The unclaimed-door lists: the console's owner address and the Telegram owner id.
+      vi.stubEnv("LARES_AGENT_INCARNATION", "");
+      vi.stubEnv("CONSOLE_ALLOWED_EMAILS", OWNER);
+      vi.stubEnv("TELEGRAM_PRINCIPAL_ID", "100");
+    });
+    afterEach(() => vi.unstubAllEnvs());
+
+    it.each(["approve", "deny"])("the owner's console %s is admitted", async (optionId) => {
+      const r = await verdict(await doorAuth(OWNER), optionId);
+      expect(r, JSON.stringify(r)).toMatchObject({ stage: "admitted" });
+    });
+    it.each(["approve", "deny"])("another member's console %s, and a card with no requester, are refused", async (optionId) => {
+      expect((await verdict(await doorAuth("someone-else@example.com"), optionId)).stage).not.toBe("admitted");
+      expect((await verdict(await doorAuth(OWNER), optionId, null)).stage).not.toBe("admitted");
+    });
+  });
+
+  it("3. at execution the answerer is ctx.approval.responder: the owner's console answer passes, another member's or none is refused", async () => {
+    vi.stubEnv("LARES_AGENT_INCARNATION", "");
+    vi.stubEnv("CONSOLE_ALLOWED_EMAILS", OWNER);
+    vi.stubEnv("TELEGRAM_PRINCIPAL_ID", "100");
+    const telegram = { authenticator: "telegram-webhook", principalId: "100", principalType: "user", attributes: { user_id: "100" } };
+    const run = (responder?: unknown) => ({ callId: "call-1", session: { auth: { current: telegram, initiator: telegram } }, ...(responder === undefined ? {} : { approval: { responder } }) });
+    // The assertApproval path itself reads the process env, hence the stubs above; it needs the ledger, which passes when no row exists.
+    await expect(assertApproval(run(await doorAuth(OWNER)) as never, "echo_note", { note: "hello" })).resolves.toBeUndefined();
+    await expect(assertApproval(run(await doorAuth("someone-else@example.com")) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
+    await expect(assertApproval(run({}) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
+    vi.unstubAllEnvs();
   });
 });

@@ -1,0 +1,88 @@
+/**
+ * Who may answer an approval card, at each door, driven through eve 1.0's REAL answer check.
+ *
+ * eve decides in two steps (`harness/hitl/responders.js`):
+ *   1. `checkResponders`: an answer needs an option eve knows. If the tool has NO response policy, the
+ *      answer is admitted when the card has no requester at all (anyone may answer) or the answerer is the
+ *      requester; a policy-less card with a different answerer is refused. If the tool HAS a response policy
+ *      the answer must carry an identity and is held for step 2.
+ *   2. `weighResponders`: the tool's response policy decides, for Approve AND for Deny.
+ * Lares attaches a response policy to every gated tool, so a card with no requester or an answerer who is not
+ * the agent's owner is refused at each door. The cards here are built by eve's own `askApprovals`, the tool is
+ * the one the real catalogue resolver emits, and the verdict is eve's (`response.admitted` / `response.settled`).
+ *
+ * NOT DRIVEN here: eve actually running the approved call afterwards (needs a compiled agent), and the doors'
+ * own code that turns a tap into an answer (Slack and Telegram channels). For Telegram the tap identity is
+ * supplied by `lib/telegram-tap-auth.ts`; this file takes the identity it gives as the answerer.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { driveAnswer } from "./helpers/answer-check.js";
+import { eveDynamicFor } from "./helpers/catalogue-tool.js";
+
+const slack = (id: string) => ({ authenticator: "slack-webhook", issuer: "slack", principalId: id, principalType: "user", attributes: { user_id: id } });
+// What lib/telegram-tap-auth.ts gives a tap by an allowed approver; and what eve gives a tap by anyone else.
+const telegram = (id: string) => ({ authenticator: "telegram-webhook", issuer: "telegram", principalId: id, principalType: "user", attributes: { user_id: id } });
+// A web chat answer by a console member whose admission is not the conversation's own.
+const consoleStranger = { authenticator: "lares-console", principalId: "member-x", principalType: "user", attributes: { user_id: "member-x" } };
+
+beforeEach(() => {
+  vi.stubEnv("SLACK_ALLOWED_USER_IDS", "U_OWNER");
+  vi.stubEnv("TELEGRAM_PRINCIPAL_ID", "100");
+  vi.stubEnv("LARES_AGENT_INCARNATION", "");
+});
+afterEach(() => vi.unstubAllEnvs());
+
+const answer = async (o: { requester: unknown; responder: unknown; optionId: string; withPolicy?: boolean }) =>
+  driveAnswer({ tool: (await eveDynamicFor("echo_note"))["echo_note"], toolName: "echo_note", input: { note: "hello" }, ...o });
+
+const refused = (r: { stage: string }) => r.stage !== "admitted" && r.stage !== "admitted-without-policy";
+
+describe.each([["approve"], ["deny"]])("%s, at each door", (optionId) => {
+  describe("Slack", () => {
+    it("the owner's answer on a card they raised is admitted", async () => {
+      expect((await answer({ requester: slack("U_OWNER"), responder: slack("U_OWNER"), optionId })).stage).toBe("admitted");
+    });
+    it("somebody else in the channel is refused, and the card stays open", async () => {
+      const r = await answer({ requester: slack("U_OWNER"), responder: slack("U_STRANGER"), optionId });
+      expect(refused(r)).toBe(true);
+      expect(r).toMatchObject({ stage: "held-or-refused", types: [["response.settled", "refused"]] }); // eve's verdict: refused by the policy
+    });
+    it("a card with no requester is refused even for the owner (eve's own default would let anyone answer it)", async () => {
+      expect(refused(await answer({ requester: null, responder: slack("U_OWNER"), optionId }))).toBe(true);
+      expect(refused(await answer({ requester: null, responder: slack("U_STRANGER"), optionId }))).toBe(true);
+    });
+    it("an answer with no identity is refused", async () => {
+      expect(refused(await answer({ requester: slack("U_OWNER"), responder: null, optionId }))).toBe(true);
+    });
+  });
+
+  describe("Telegram", () => {
+    it("a tap resumed with the owner's identity is admitted", async () => {
+      expect((await answer({ requester: telegram("100"), responder: telegram("100"), optionId })).stage).toBe("admitted");
+    });
+    it("a tap by anyone else (eve resumes it with no identity) is refused", async () => {
+      expect(refused(await answer({ requester: telegram("100"), responder: null, optionId }))).toBe(true);
+      expect(refused(await answer({ requester: telegram("100"), responder: telegram("999"), optionId }))).toBe(true);
+    });
+    it("a card with no requester is refused even for the owner", async () => {
+      expect(refused(await answer({ requester: null, responder: telegram("100"), optionId }))).toBe(true);
+    });
+  });
+
+  describe("web chat (a native card, answered by a console identity that is not an allowed approver)", () => {
+    it("is refused", async () => {
+      expect(refused(await answer({ requester: slack("U_OWNER"), responder: consoleStranger, optionId }))).toBe(true);
+    });
+  });
+});
+
+describe("what the default alone would have done (no response policy), for the record", () => {
+  it("lets anyone answer a card that has no requester, which is why Lares attaches a policy", async () => {
+    const r = await answer({ requester: null, responder: slack("U_STRANGER"), optionId: "approve", withPolicy: false });
+    expect(r.stage).toBe("admitted-without-policy");
+  });
+  it("refuses a different answerer than the requester when the card has one", async () => {
+    const r = await answer({ requester: slack("U_OWNER"), responder: slack("U_STRANGER"), optionId: "approve", withPolicy: false });
+    expect(r.stage).toBe("refused-before-policy");
+  });
+});

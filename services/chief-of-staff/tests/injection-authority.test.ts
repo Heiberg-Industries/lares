@@ -93,14 +93,17 @@ const auth = (purpose: 'human' | 'resolver', member: MemberId, option: 'approve'
  *  the session (initiator) come from the authenticated console admission, never from content. */
 function ctx(o: { raw: unknown; member?: MemberId; purpose?: 'human' | 'resolver'; session?: string; callId?: string }) {
   const member = o.member ?? 'member-a', purpose = o.purpose ?? 'human';
+  // eve 1.0: an approved call runs as the person who ASKED, in the original turn; the person who answered
+  // is only `approval.responder`. `purpose: 'resolver'` is that approved run.
   return {
     callId: o.callId ?? 'call-1', toolName: 'deadline_dismiss', toolInput: o.raw,
     abortSignal: new AbortController().signal,
     session: {
       id: o.session ?? SESSION[member],
-      turn: { id: purpose === 'human' ? 'turn-original' : 'turn-resolver', sequence: purpose === 'human' ? 0 : 1 },
-      auth: { current: auth(purpose, member), initiator: auth('human', member) },
+      turn: { id: 'turn-original', sequence: 0 },
+      auth: { current: auth('human', member), initiator: auth('human', member) },
     },
+    ...(purpose === 'resolver' ? { approval: { responder: auth('resolver', member) } } : {}),
   };
 }
 const response = (raw: unknown, o: { responder?: MemberId; initiator?: MemberId; purpose?: 'human' | 'resolver'; session?: string; decision?: 'approve' | 'deny' } = {}) => ({

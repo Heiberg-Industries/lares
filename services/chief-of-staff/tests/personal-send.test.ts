@@ -4,6 +4,7 @@
 const {purposeRequestMock}=vi.hoisted(()=>({purposeRequestMock:vi.fn()}));
 vi.mock('@lares/agent-kit/model-purpose-client',()=>({modelPurposeRequest:purposeRequestMock}));
 vi.mock('@lares/agent-kit/google-auth',async original=>({...await original<typeof import('@lares/agent-kit/google-auth')>(),readTokenEncKey:()=> '1'.repeat(64)}));
+import { fileURLToPath,pathToFileURL } from 'node:url';
 import { beforeAll,beforeEach,afterAll,describe,it,expect,vi,type Mock } from 'vitest';
 import { PostgreSqlContainer,type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { readFileSync,readdirSync } from 'node:fs';
@@ -200,6 +201,9 @@ describe('personal mail current authority executor',()=>{
  });
 });
 
+/** eve's own re-check before an approved call: the real evaluateApproval with recheck on. */
+const evalUrl=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/approval/evaluation.js',import.meta.url))).href;
+const recheckOf=async(ctx:any)=>((await import(evalUrl)) as any).evaluateApproval((c:any)=>personalSendApprovalRequest(c),ctx,{recheck:true});
 async function proposed(){
  const own=await connected(),input={selection:{accountId:own.account.id,generation:own.account.generation,resourceBindingId:own.resource.id},to:['recipient@example.invalid'],subject:'Exact review',body:'Whole body'},callId=`human-${++call}`;
  const human={callId,toolInput:input,session:{id:'wrun_send',turn:{id:'original-human',sequence:0},auth:{current:auth(),initiator:auth()}}};
@@ -209,7 +213,10 @@ async function proposed(){
  const requestId=`framework-${call}`;await personalSendInputRequested({requestId,callId,input},human);
  const resume={callId,toolInput:input,session:{id:'wrun_send',turn:{id:'resolver-only',sequence:1},auth:{current:resolverAuth(requestId),initiator:auth()}}};
  const response={request:{interactionId:requestId,callId,toolName:PERSONAL_MAIL_SEND_TOOL,toolInput:input},response:{decision:'approve' as 'approve'|'deny',principal:resume.session.auth.current as unknown},session:{id:'wrun_send',initiator:auth()}};
- return {own,input,callId,requestId,row,resume,response};
+ // eve 1.0: the approved call runs (and its policy is asked again) as the person who ASKED, in the original turn;
+ // the person who answered is only `approval.responder`.
+ const run={...human,approval:{responder:resolverAuth(requestId)}};
+ return {own,input,callId,requestId,row,resume,response,human,run};
 }
 describe('exact personal approval lifecycle through authenticated resolver references',()=>{
  it('admits one exact raw response into resolver-only attributes without human authority',async()=>{
@@ -223,8 +230,9 @@ describe('exact personal approval lifecycle through authenticated resolver refer
  it('prepares before a card, authenticates the actual response, revalidates SDK policy and returns the original action only',async()=>{
   const p=await proposed();await expect(requirePrivateConsoleResume(p.resume,'model')).rejects.toThrow();
   expect(await personalSendApprovalResponse(p.response)).toEqual({status:'allowed'});
-  expect(await personalSendApprovalRequest(p.resume)).toBe('user-approval');
-  expect((await requirePersonalSendCall(p.resume,p.input)).reference.actionId).toBe(p.row.id);
+  expect(await recheckOf(p.human)).toMatchObject({denied:false}); // the re-check, as the requester
+  await expect(requirePersonalSendCall(p.human,p.input)).rejects.toThrow(); // no responder on the run: not approved
+  expect((await requirePersonalSendCall(p.run,p.input)).reference.actionId).toBe(p.row.id);
   expect((await requirePrivateConsoleResume(p.resume,'model')).reference.requestId).toBe(p.requestId);
   expect(p.resume.session.auth.current.attributes).not.toHaveProperty('lares_member_id');
   expect(p.resume.session.auth.current.attributes).not.toHaveProperty('lares_admission_nonce');
@@ -246,11 +254,11 @@ describe('exact personal approval lifecycle through authenticated resolver refer
    await pool.query("INSERT INTO ratchet(agent,capability,action,level,updated_by) VALUES('helper','personal_mailbox','send','never','fixture')");await pool.query("DELETE FROM ratchet WHERE agent='helper'");
   }
   await expect(personalSendApprovalResponse(p.response)).rejects.toThrow();
-  expect(await personalSendApprovalRequest(p.resume)).toBe('denied');expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
+  expect(await recheckOf(p.human)).toMatchObject({denied:true});expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
  });
  it('refuses restored board policy after response approval and after claim before provider open',async()=>{
   const p=await proposed();await personalSendApprovalResponse(p.response);
-  const ref=(await requirePersonalSendCall(p.resume,p.input)).reference;
+  const ref=(await requirePersonalSendCall(p.run,p.input)).reference;
   const claim=actions.claimAction.bind(actions);vi.spyOn(actions,'claimAction').mockImplementationOnce(async input=>{
    const result=await claim(input);
    await pool.query("INSERT INTO ratchet(agent,capability,action,level,updated_by) VALUES('helper','personal_mailbox','send','never','fixture')");await pool.query("DELETE FROM ratchet WHERE agent='helper'");return result;
@@ -286,20 +294,20 @@ describe('exact personal approval lifecycle through authenticated resolver refer
  it.each(['ignored','invalid'] as const)('nothing is sent when the card ended with nobody deciding (%s)',async outcome=>{
   const p=await proposed();p.resume.session.auth.current=resolverAuth(p.requestId,'deny');
   expect(await personalSendInputResolved(p.requestId,outcome,p.resume)).toBe(true);
-  await expect(requirePersonalSendCall(p.resume,p.input)).rejects.toThrow();
+  await expect(requirePersonalSendCall({...p.run,approval:{responder:resolverAuth(p.requestId,'deny')}} as never,p.input)).rejects.toThrow();
   expect(sends).not.toHaveBeenCalled();
  });
  it('cancels exactly the unclaimed proposal and permits only its bounded model response',async()=>{
   const p=await proposed();p.resume.session.auth.current=resolverAuth(p.requestId,'deny');
   expect(await personalSendInputResolved(p.requestId,'cancelled',p.resume)).toBe(true);
   expect((await stored(p.row.id)).state).toBe('cancelled');await requirePrivateConsoleResume(p.resume,'model');
-  await expect(requirePersonalSendCall(p.resume,p.input)).rejects.toThrow();
-  expect(await personalSendApprovalRequest({...p.resume,callId:'cancel-second'})).toBe('denied');await expect(readPersonalResource(p.resume,p.input.selection,{kind:'readMail',id:'mail'})).rejects.toThrow();expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
+  await expect(requirePersonalSendCall({...p.run,approval:{responder:resolverAuth(p.requestId,'deny')}} as never,p.input)).rejects.toThrow();
+  expect(await recheckOf({...p.human,callId:'cancel-second'})).toMatchObject({denied:true});await expect(readPersonalResource(p.resume,p.input.selection,{kind:'readMail',id:'mail'})).rejects.toThrow();expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
  });
  it('never treats a previous ledger row as a new call/read/draft instruction',async()=>{
   const p=await proposed();await personalSendApprovalResponse(p.response);
-  expect(await personalSendApprovalRequest({...p.resume,callId:'second-call'})).toBe('denied');
-  await expect(requirePersonalSendCall({...p.resume,callId:'second-call'} as never,p.input)).rejects.toThrow();
+  expect(await recheckOf({...p.human,callId:'second-call'})).toMatchObject({denied:true});
+  await expect(requirePersonalSendCall({...p.run,callId:'second-call'} as never,p.input)).rejects.toThrow();
   await expect(readPersonalResource(p.resume,p.input.selection,{kind:'readMail',id:'mail'})).rejects.toThrow();
   expect((await pool.query('SELECT count(*)::int AS n FROM personal_actions')).rows[0].n).toBe(1);expect(sends).not.toHaveBeenCalled();
  });

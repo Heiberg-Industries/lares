@@ -7,21 +7,44 @@ import {readTokenEncKey} from '@lares/agent-kit/google-auth';
 import {PgAccountStore} from '@lares/agent-kit/account-store';
 import {PgPersonalActionStore,personalMailPayloadSchema,PERSONAL_MAIL_SEND_TOOL} from '@lares/agent-kit/personal-action-store';
 import {payloadFingerprint,callIdFrom} from '@lares/agent-kit/approval-ledger';
-import {authorityTransaction,requireConsoleTurnAuthority,type ConsoleAuthorityContext} from '@lares/agent-kit/console-turn-authority';
+import {authorityTransaction,consoleAdmission,requireConsoleTurnAuthority,type ConsoleAuthorityContext} from '@lares/agent-kit/console-turn-authority';
+import {isApprovalRecheck,approvalResponderOf} from '@lares/agent-kit/approval-execution';
 import {requirePrivateConsoleResume,privateResolverAdmission} from '@lares/agent-kit/private-console-resume';
 import {managedIdentity} from '@lares/agent-kit/door-authority';
 import {personalReadSelectionSchema} from './personal-reads.js';
 import {requirePersonalSendPolicy,requirePersonalSendApprovalPolicy,executeApprovedPersonalSend} from './personal-send.js';
 export const personalSendInputSchema=personalMailPayloadSchema.extend({selection:personalReadSelectionSchema});
 export function personalActions(){const key=readTokenEncKey();return new PgPersonalActionStore(getPool(),{encrypt:s=>encryptSecret(s,key),decrypt:s=>decryptSecret(s,key)});}
+/** On eve 1.0 `session.auth.current` is the person who ASKED; the person who answered is
+ *  `ctx.approval.responder` while an approved call runs. The shared resume checks read the answer from
+ *  `session.auth.current`, so hand them a context whose `current` is the answerer (and nothing when nobody
+ *  answered: that is refused). The requester must be the very member who answered. */
+function answeredContext(ctx:ConsoleAuthorityContext):ConsoleAuthorityContext{
+  const requester=consoleAdmission(ctx.session?.auth?.current),responder=privateResolverAdmission(approvalResponderOf(ctx));
+  if(!responder||!requester||requester.purpose!=='human'||requester.memberId!==responder.memberId)throw new Error('Personal mail approval unavailable');
+  return {...ctx,session:{...ctx.session,auth:{current:approvalResponderOf(ctx),initiator:ctx.session?.auth?.initiator}}} as ConsoleAuthorityContext;
+}
+/** The re-check before an approved call runs: eve asks the request policy again, as the requester, with no
+ *  responder in the context. The card the response policy wrote (approved by this member) stands in for it. */
+async function recheckContext(ctx:ConsoleAuthorityContext&{callId?:string}):Promise<ConsoleAuthorityContext>{
+  const requester=consoleAdmission(ctx.session?.auth?.current),initial=consoleAdmission(ctx.session?.auth?.initiator),own=managedIdentity();
+  const callId=callIdFrom(ctx);
+  if(!requester||requester.purpose!=='human'||!initial||initial.purpose!=='human'||initial.memberId!==requester.memberId||!own||!ctx.session?.id||!callId)throw new Error('Personal mail approval unavailable');
+  const {rows}=await getPool().query('SELECT request_id FROM approval_asks WHERE call_id=$1 AND agent=$2 AND session_id=$3 AND acting_member_id=$4',[callId,own.name,ctx.session.id,requester.memberId]);
+  if(rows.length!==1||typeof rows[0].request_id!=='string'||rows[0].request_id==='')throw new Error('Personal mail approval unavailable');
+  const stored={authenticator:'lares-console',attributes:{lares_resolver_member_id:requester.memberId,lares_purpose:'resolver',lares_resume_request_id:rows[0].request_id,lares_resume_option:'approve'}};
+  return {...ctx,session:{...ctx.session,auth:{current:stored,initiator:ctx.session?.auth?.initiator}}} as ConsoleAuthorityContext;
+}
 export async function personalSendApprovalRequest(ctx:ConsoleAuthorityContext&{callId?:string;toolInput?:unknown}){
   const input=personalSendInputSchema.parse(ctx.toolInput),pool=getPool();
-  if(privateResolverAdmission(ctx.session?.auth?.current)){
-    try{await authorityTransaction(pool,async db=>{
-      const approved=await requirePrivateConsoleResume(ctx,'action',{db,callId:callIdFrom(ctx)??'',toolName:PERSONAL_MAIL_SEND_TOOL,input});
-      await requirePersonalSendApprovalPolicy(db as never,approved.reference);
-      await requirePrivateConsoleResume(ctx,'action',{db,callId:callIdFrom(ctx)??'',toolName:PERSONAL_MAIL_SEND_TOOL,input});
-    });
+  if(isApprovalRecheck(ctx)){
+    try{
+      const rechecked=await recheckContext(ctx);
+      await authorityTransaction(pool,async db=>{
+        const approved=await requirePrivateConsoleResume(rechecked,'action',{db,callId:callIdFrom(ctx)??'',toolName:PERSONAL_MAIL_SEND_TOOL,input});
+        await requirePersonalSendApprovalPolicy(db as never,approved.reference);
+        await requirePrivateConsoleResume(rechecked,'action',{db,callId:callIdFrom(ctx)??'',toolName:PERSONAL_MAIL_SEND_TOOL,input});
+      });
     return 'user-approval' as const;}catch{return 'denied' as const;}
   }
   const authority=await requireConsoleTurnAuthority(ctx),own=managedIdentity();
@@ -93,9 +116,9 @@ export async function personalSendInputResolved(requestId:string,outcome:string,
   return true;
 }
 export async function requirePersonalSendCall(ctx:ConsoleAuthorityContext,input:unknown){
-  return requirePrivateConsoleResume(ctx,'action',{callId:callIdFrom(ctx)??'',toolName:PERSONAL_MAIL_SEND_TOOL,input});
+  return requirePrivateConsoleResume(answeredContext(ctx),'action',{callId:callIdFrom(ctx)??'',toolName:PERSONAL_MAIL_SEND_TOOL,input});
 }
 export async function sendApprovedPersonalMail(ctx:ConsoleAuthorityContext,input:unknown){
   const approved=await requirePersonalSendCall(ctx,input);
-  return executeApprovedPersonalSend(ctx,approved.reference,{pool:getPool(),actions:personalActions()});
+  return executeApprovedPersonalSend(answeredContext(ctx),approved.reference,{pool:getPool(),actions:personalActions()});
 }

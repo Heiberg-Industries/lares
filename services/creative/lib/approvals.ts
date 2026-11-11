@@ -1,6 +1,6 @@
 import { assertPrivateConsoleTool } from "@lares/agent-kit/private-console-surface";
-import { isExactApprovalContext, isExactApprovalResponse, reserveExactApproval, approveExactResponse,
-  requireApprovedExecution, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
+import { isExactApprovalContext, isExactApprovalResponse, isApprovalRecheck, reserveExactApproval, approveExactResponse,
+  requireApprovedExecution, requireApprovedRecheck, approvalResponderOf, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
 import { consoleAdmission, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
 /**
  * The approver re-check every gated tool calls.
@@ -141,7 +141,7 @@ export function assertApprover(
  * `ctx.session.auth` already satisfied.
  */
 export async function assertApproval(
-  ctx: { session?: { auth?: SessionAuthLike | null } },
+  ctx: { session?: { auth?: SessionAuthLike | null }; approval?: { responder?: unknown } },
   toolName: string,
   input: unknown,
 ): Promise<void> {
@@ -151,6 +151,10 @@ export async function assertApproval(
   }
   await guardConsoleToolContext(ctx);
   assertApprover(approverFrom(ctx?.session?.auth));
+  // eve 1.0: `session.auth.current` is the person who ASKED; the person who answered is
+  // `ctx.approval.responder`. When there is one it must be an allowed approver too.
+  const responder = approvalResponderOf(ctx);
+  if (responder !== undefined) assertApprover(principalFromAuth(responder));
   await assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName, input });
 }
 
@@ -162,8 +166,10 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
     return (authored as (ctx:unknown)=>unknown)(ctx);
   }
   const c = ctx as ConsoleAuthorityContext & {callId?:string;toolInput?:unknown};
-  if (consoleAdmission(c.session?.auth?.current)?.purpose === 'resolver') {
-    await requireApprovedExecution(c,name,c.toolInput,{});
+  if (isApprovalRecheck(c)) {
+    // eve asks the policy again, as the requester, before it runs a call that was approved: the call must
+    // already be approved on its card. Anything else is denied.
+    try { await requireApprovedRecheck(c,name,c.toolInput,{}); } catch { return 'denied'; }
     return 'user-approval';
   }
   await reserveExactApproval(c,name,{});
@@ -171,19 +177,38 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
   if (decision === 'denied' || (typeof decision === 'object' && decision !== null && 'type' in decision && decision.type === 'denied')) return decision;
   return 'user-approval';
 }
+/** The answer check for a card on the native door (Slack): the card needs a requester, and the person
+ *  answering must be an allowed approver. Asked about a Deny as well as an Approve. Fail closed. */
+export function nativeAnswerDecision(ctx: unknown): {status:'allowed'}|{status:'rejected';reason:string} {
+  const refused = (reason: string) => ({status:'rejected' as const,reason});
+  try {
+    const c = ctx as {request?:{principal?:unknown};response?:{decision?:unknown;principal?:unknown}};
+    if (c?.response?.decision !== 'approve' && c?.response?.decision !== 'deny') return refused('this answer is neither Approve nor Deny');
+    const requester = c.request?.principal as {principalType?: unknown}|null|undefined;
+    if (requester === null || requester === undefined || typeof requester !== 'object' || requester.principalType === 'anonymous')
+      return refused('this card has no known requester');
+    const answerer = principalFromAuth(c.response.principal);
+    if (answerer.absent === true || !isAllowedPrincipal(answerer.authenticator, answerer.userId)) return refused('this person is not an allowed approver for this agent');
+    return {status:'allowed'};
+  } catch { return refused('this answer could not be verified'); }
+}
 export async function catalogueApprovalResponse(name: string, ctx: unknown): Promise<unknown> {
   assertPrivateConsoleTool(ctx,"creative",name);
-  // The response policy is only attached to a bound console conversation, and it is asked about a
-  // Deny as well as an Approve. Anyone who is not that conversation's own resolver is refused for
-  // both, and the card stays pending.
-  if (!isExactApprovalResponse(ctx)) return {status:'rejected',reason:'this person is not an allowed approver for this agent'};
+  // Asked about a Deny as well as an Approve. Native door: the check above. Bound console conversation: the
+  // exact check, and anyone who is not that conversation's own resolver is refused for both.
+  if (!isExactApprovalResponse(ctx)) return nativeAnswerDecision(ctx);
   return approveExactResponse(ctx as ExactResponseContext,{});
 }
 export async function guardCatalogueExecution(ctx: unknown, name: string, input: unknown): Promise<void> {
   assertPrivateConsoleTool(ctx,"creative",name);
-  if (isExactApprovalContext(ctx) && consoleAdmission((ctx as ConsoleAuthorityContext).session?.auth?.current)?.purpose === 'resolver') {
-    await requireApprovedExecution(ctx as ConsoleAuthorityContext,name,input,{});
-    return;
+  if (isExactApprovalContext(ctx)) {
+    // The answerer of an approved call is `ctx.approval.responder`; `session.auth.current` is the requester.
+    if (approvalResponderOf(ctx) !== undefined) {
+      await requireApprovedExecution(ctx as ConsoleAuthorityContext,name,input,{});
+      return;
+    }
+    // This role's one gated write never runs in a bound console conversation without an approved card.
+    if (name === 'vault_write') throw new Error('Exact approval authority is unavailable or has changed');
   }
   await guardConsoleToolContext(ctx);
 }
