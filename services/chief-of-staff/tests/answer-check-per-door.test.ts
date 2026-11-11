@@ -12,15 +12,17 @@
  * the one the real catalogue resolver emits, and the verdict is eve's (`response.admitted` / `response.settled`).
  *
  * NOT DRIVEN here: eve actually running the approved call afterwards (needs a compiled agent), and the doors'
- * own code that turns a tap into an answer (Slack and Telegram channels). For Telegram the tap identity is
- * supplied by `lib/telegram-tap-auth.ts`; this file takes the identity it gives as the answerer.
+ * own code that turns a tap into an answer (Slack and Telegram channels). For Telegram, eve 1.0's own channel
+ * resumes a tap with the tapper's identity (`defaultTelegramAuth` shape, read in the installed source) and the
+ * webhook front door (`lib/telegram-tap-gate.ts`) turns away a stranger's tap before eve; this file takes that
+ * identity, or none, as the answerer.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { driveAnswer } from "./helpers/answer-check.js";
 import { eveDynamicFor } from "./helpers/catalogue-tool.js";
 
 const slack = (id: string) => ({ authenticator: "slack-webhook", issuer: "slack", principalId: id, principalType: "user", attributes: { user_id: id } });
-// What lib/telegram-tap-auth.ts gives a tap by an allowed approver; and what eve gives a tap by anyone else.
+// The identity eve 1.0's Telegram channel gives a tap (`defaultTelegramAuth` shape); `null` stands for a tap with no identity.
 const telegram = (id: string) => ({ authenticator: "telegram-webhook", issuer: "telegram", principalId: id, principalType: "user", attributes: { user_id: id } });
 // A web chat answer by a console member whose admission is not the conversation's own.
 const consoleStranger = { authenticator: "lares-console", principalId: "member-x", principalType: "user", attributes: { user_id: "member-x" } };
