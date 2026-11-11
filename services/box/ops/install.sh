@@ -975,7 +975,7 @@ LARES_MODEL_ALIAS_DEFAULT="lares-brain"
 # A fresh install's default model is Opus. Not a guess, not a
 # tuning knob picked here — the gateway's own config renderer (lib/gateway-config.ts) takes
 # whatever this settles on and never chooses one itself.
-LARES_MODEL_DEFAULT="anthropic/claude-opus-5"
+LARES_MODEL_DEFAULT="anthropic/claude-opus-5-5"
 # The included gateway's embedding model, switched on only by --embed-key-file. Like the model above, release-pinned: the
 # gateway config renderer takes what installation.env says and never chooses one itself. Mistral is a European provider;
 # the address carries its version path, the way the provider documents it.

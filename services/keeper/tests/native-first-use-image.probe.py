@@ -1474,9 +1474,11 @@ try{const db=await p.connect();try{await db.query('BEGIN');try{const grant=await
         raise RuntimeError('Opening an extra key changed which accounts are open')
     if upstream_calls()!=3:raise RuntimeError('Making an extra key caused an upstream dispatch')
     cases['ownerExtraKeyMadeAndOpenedOnOpenAccountWithoutUsage']=True
-    # A call outside any conversation (a schedule, or a tool) is charged to the configured owner through the extra key. It goes
-    # through the same generated request the agent's own model client builds, with no conversation step. A model name the owner
-    # holds no key for is refused before anything is dispatched.
+    # A call outside any conversation (a schedule, or a tool) is charged to the configured owner, and only on an agent the owner
+    # owns and nobody else can use. It goes through the same generated request the agent's own model client builds, with no
+    # conversation step. While the agent is shared with the organisation and the later member can use it, the job is refused
+    # and nothing is charged to anyone. Once the owner takes the share away, a model name the owner holds no key for is still
+    # refused before anything is dispatched, and the job through the extra key is charged once.
     stage = 'owner-job'
     before_job=native_snapshot()
     def run_owner_job(name):
@@ -1487,6 +1489,22 @@ try{const db=await p.connect();try{await db.query('BEGIN');try{const grant=await
               "console.log(JSON.stringify({length:String(out.text).length}));})().catch(()=>{process.exitCode=1});")
         return run('docker','exec','-e','OWNER_JOB_ALIAS='+name,'-w','/app/services/chief-of-staff',chief_name,
           '/app/services/chief-of-staff/node_modules/.bin/tsx','--eval',code,check=False,timeout=90)
+    shared_job=run_owner_job(extra_alias)
+    if shared_job.returncode==0:raise RuntimeError('An owner job on an agent another member can use was accepted')
+    if native_snapshot()!=before_job or upstream_calls()!=3:raise RuntimeError('An owner job refused on a shared agent changed usage or dispatched')
+    cases['ownerJobRefusedWhileAnotherMemberCanUseTheAgent']=True
+    owner_only_code="""import{Pool}from'pg';import{readFileSync}from'node:fs';import{PgGrantStore}from'/app/packages/agent-kit/src/grant-store.ts';
+const p=new Pool({host:'proof-db',database:'proof',user:'lares_app',password:readFileSync('/etc/lares/secrets/app-password','utf8').trim(),max:1});const owner='first-use-owner',member='first-use-member-later',agent='proof-agent';
+try{const grants=new PgGrantStore(p),shared=await grants.agentAccess(owner,agent);if(!shared||shared.grants.length!==1||shared.grants[0].principal.kind!=='organisation')throw Error();const alone=await grants.updateAgentAccess(owner,{agentName:agent,expectedRevision:shared.accessRevision,grants:[]});if(alone.accessRevision<=shared.accessRevision||alone.grants.length!==0)throw Error();const later=await grants.captureUseWithExpiry(member,agent);console.log(JSON.stringify({ownerOnly:true,laterMemberCanUse:later!==undefined}));}finally{await p.end()}"""
+    owner_only=root/'owner-only.mts';owner_only.write_text(owner_only_code)
+    owner_only_result=run('docker','run','--rm','--network',network,'--user','0:0',
+      '--mount',f'type=bind,src={secrets_dir}/app-password,dst=/etc/lares/secrets/app-password,readonly',
+      '--mount',f'type=bind,src={owner_only},dst=/app/services/keeper/owner-only.mts,readonly',
+      '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/owner-only.mts')
+    if json.loads(owner_only_result.stdout.strip())!={'ownerOnly':True,'laterMemberCanUse':False}:
+        raise RuntimeError('The agent could not be made owner-only')
+    if native_snapshot()!=before_job or upstream_calls()!=3:raise RuntimeError('Making the agent owner-only changed usage or dispatched')
+    cases['agentMadeOwnerOnlyThroughGrantStore']=True
     refused_job=run_owner_job(unpriced_alias)
     if refused_job.returncode==0:raise RuntimeError('An owner job for a model name the owner holds no key for was accepted')
     if native_snapshot()!=before_job or upstream_calls()!=3:raise RuntimeError('A refused owner job changed usage or dispatched')
