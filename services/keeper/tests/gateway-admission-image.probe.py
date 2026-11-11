@@ -226,10 +226,10 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Handler).serve_forever()
 
 CLIENT = r'''
 import{readFileSync,writeFileSync}from'node:fs';import{createHash,randomUUID}from'node:crypto';import{createRequire}from'node:module';import{pathToFileURL}from'node:url';
-const x=JSON.parse(readFileSync(0,'utf8'));const original=globalThis.fetch;let requests=0,hash;
+const x=JSON.parse(readFileSync(0,'utf8'));const original=globalThis.fetch;let requests=0,hash,status=null,body=null;
 if(x.kind==='control'){const r=await original('http://fixture:8080/control',{...(x.body?{method:'POST',body:JSON.stringify(x.body),headers:{'content-type':'application/json'}}:{})});console.log(await r.text());}
 else if(x.kind==='sdk'){
- globalThis.fetch=async(input,init)=>{requests++;if(typeof init?.body!=='string'||init.body.includes(PROMPT_CACHE_BOUNDARY)||(x.lane==='anthropic'&&!init.body.includes('cache_control')))throw Error('fixture body was not shaped');const headers=new Headers(init?.headers);headers.set('x-lares-budget-intent',x.ticket);const path=new URL(typeof input==='string'?input:input.url).pathname;hash=createHash('sha256').update('lares.gateway.raw-request.v1\0POST\0'+path+'\0').update(init.body).digest('hex');return original(input,{...init,headers});};
+ globalThis.fetch=async(input,init)=>{requests++;if(typeof init?.body!=='string'||init.body.includes(PROMPT_CACHE_BOUNDARY)||(x.lane==='anthropic'&&!init.body.includes('cache_control')))throw Error('fixture body was not shaped');const headers=new Headers(init?.headers);headers.set('x-lares-budget-intent',x.ticket);const path=new URL(typeof input==='string'?input:input.url).pathname;hash=createHash('sha256').update('lares.gateway.raw-request.v1\0POST\0'+path+'\0').update(init.body).digest('hex');const response=await original(input,{...init,headers});status=response.status;if(x.evidence&&!response.ok)body=await new Promise(done=>{const timer=setTimeout(done,2000,null);response.clone().text().then(text=>{clearTimeout(timer);done(text.slice(0,16384));},()=>{clearTimeout(timer);done(null);});});return response;};
  const require=createRequire('/app/services/chief-of-staff/package.json');const{generateText,streamText}=await import(pathToFileURL(require.resolve('ai')).href);
  const{createGatewayProvider}=await import('/app/packages/agent-kit/src/gateway-provider.ts');const{captureModelInvocation,runModelInvocation}=await import('/app/packages/agent-kit/src/model-invocation.ts');
  const{PROMPT_CACHE_BOUNDARY}=await import('/app/packages/agent-kit/src/prompt-cache.ts');
@@ -237,9 +237,9 @@ else if(x.kind==='sdk'){
  const{classifyModelCallError}=await import(pathToFileURL(require.resolve('eve').split('/dist/')[0]+'/dist/src/harness/model-call-error.js').href);
  process.env.GATEWAY_LANE=x.lane;process.env.GATEWAY_URL=x.url;process.env.GATEWAY_KEY_FILE='/tmp/key-'+process.pid;writeFileSync(process.env.GATEWAY_KEY_FILE,x.key,{mode:0o600});
  const{gatewayModel}=createGatewayProvider({defaultKeyFile:process.env.GATEWAY_KEY_FILE});
- const alias=x.alias??'lares-brain';const id=randomUUID();const invocation=captureModelInvocation({type:'step.started',data:{turnId:id,sequence:0,stepIndex:0}},{id,auth:{initiator:null,current:null}},alias);
- try{await runModelInvocation(invocation,async()=>{const args={model:gatewayModel(alias),system:'stable fixture instructions\n'+PROMPT_CACHE_BOUNDARY+'\nmoving fixture context',prompt:'fixture',maxOutputTokens:8,maxRetries:0,abortSignal:AbortSignal.timeout(x.timeout??10000)};if(x.stream){const result=streamText(args);let text='';for await(const part of result.textStream)text+=part;if(!text.includes('FIXTURE_OK'))throw Error('fixture text missing');}else{const result=await generateText(args);if(!result.text.includes('FIXTURE_OK'))throw Error('fixture text missing');}});console.log(JSON.stringify({ok:true,requests,hash}));}
- catch(error){const options={refusalText:'CAP_EXHAUSTED',dialect:'telegram'};console.log(JSON.stringify({ok:false,requests,hash,admission:isBudgetAdmissionRefused(error),budget:isBudgetExceeded(error),classification:classifyModelCallError(error),turn:respondToTurnFailed(error,options),session:respondToSessionFailed(error,options)}));}
+ const alias=x.alias??'lares-brain';const id=randomUUID();const began=Date.now();const invocation=captureModelInvocation({type:'step.started',data:{turnId:id,sequence:0,stepIndex:0}},{id,auth:{initiator:null,current:null}},alias);
+ try{await runModelInvocation(invocation,async()=>{const args={model:gatewayModel(alias),system:'stable fixture instructions\n'+PROMPT_CACHE_BOUNDARY+'\nmoving fixture context',prompt:'fixture',maxOutputTokens:8,maxRetries:0,abortSignal:AbortSignal.timeout(x.timeout??10000)};if(x.stream){const result=streamText(args);let text='';for await(const part of result.textStream)text+=part;if(!text.includes('FIXTURE_OK'))throw Error('fixture text missing');}else{const result=await generateText(args);if(!result.text.includes('FIXTURE_OK'))throw Error('fixture text missing');}});console.log(JSON.stringify({ok:true,requests,hash,status,ms:Date.now()-began}));}
+ catch(error){const options={refusalText:'CAP_EXHAUSTED',dialect:'telegram'};console.log(JSON.stringify({ok:false,requests,hash,status,ms:Date.now()-began,...(x.evidence?{evidence:{body,error:(String(error?.name??'Error')+': '+String(error?.message??'')).slice(0,4000),cause:String(error?.cause?.code??error?.cause?.name??'').slice(0,200)}}:{}),admission:isBudgetAdmissionRefused(error),budget:isBudgetExceeded(error),classification:classifyModelCallError(error),turn:respondToTurnFailed(error,options),session:respondToSessionFailed(error,options)}));}
 }else{
  const abort=new AbortController();const method=x.method??'POST';const headers=new Headers(method==='GET'?{}:{'content-type':'application/json'});if(x.key)headers.set('authorization','Bearer '+x.key);if(x.ticket)headers.set('x-lares-budget-intent',x.ticket);if(Array.isArray(x.headers)){for(const [name,value] of x.headers)headers.append(name,value);}else for(const [name,value] of Object.entries(x.headers??{}))headers.set(name,value);const response=await original(x.url+x.path,{method,signal:abort.signal,headers,...(method==='GET'?{}:{body:typeof x.raw==='string'?x.raw:JSON.stringify(x.body)})});if(x.cancel){await response.body.getReader().read();abort.abort();console.log(JSON.stringify({status:response.status,cancelled:true}));}else{const raw=await response.text();let body;try{body=JSON.parse(raw)}catch{body={stream:raw.includes('FIXTURE_OK')}}console.log(JSON.stringify({status:response.status,body}));}
 }
@@ -1212,6 +1212,48 @@ exec litellm --config "$CONFIG_FILE_PATH"
     def sdk(self,url,key,lane,**opts):
         return self.client({"kind":"sdk","url":url,"key":key,"lane":lane,"ticket":secrets.token_urlsafe(32),**opts})
 
+    def warm_answer(self,result,started):
+        """One warm-up attempt: fixed fields as typed values; the gateway's words bounded and sanitized."""
+        result=result if type(result) is dict else {}
+        evidence=result.get("evidence") if type(result.get("evidence")) is dict else {}
+        def text(value,limit):
+            return sanitize_diagnostic(value,self.disposable_secrets)[:limit] if type(value) is str and value else None
+        status=result.get("status");classification=result.get("classification")
+        return {"ok":bool(result.get("ok")),
+            "status":status if type(status) is int and 100<=status<=599 else None,
+            "requestCount":self.diagnostic_count(result.get("requests")),
+            "admission":result.get("admission") if type(result.get("admission")) is bool else None,
+            "budget":result.get("budget") if type(result.get("budget")) is bool else None,
+            "classification":classification if type(classification) is str and classification in CASE_CLASSIFICATIONS else None,
+            "clientMs":self.diagnostic_count(result.get("ms")),
+            "elapsedMs":min(120_000,max(0,int((time.monotonic()-started)*1000))),
+            "body":text(evidence.get("body"),2000),"error":text(evidence.get("error"),500),"cause":text(evidence.get("cause"),80)}
+
+    def warm(self,url,key):
+        """Warm native authentication before a gate-held mutation, and say what the gateway answered when it does not.
+
+        The call must still succeed. It gets ONE retry, after the router's cooldown where that is known,
+        because a first refusal has been seen that a rerun of the whole job did not repeat. A first attempt
+        that failed is written to the case, to the artifact and to the log whether or not the retry
+        passes, so a retried pass is never silent.
+        """
+        wait=self.cooldown_idle_seconds if type(self.cooldown_idle_seconds) is int and 1<=self.cooldown_idle_seconds<=10 else 5
+        attempts=[]
+        for attempt in (1,2):
+            started=time.monotonic()
+            result=self.sdk(url,key,"anthropic",evidence=True)
+            if result["ok"] and not attempts:return
+            attempts.append(self.warm_answer(result,started))
+            if attempts[-1]["ok"] or attempt==2:break
+            time.sleep(wait)
+        case=self.current_case["name"] if type(self.current_case) is dict else None
+        record={"retried":True,"passedOnRetry":attempts[-1]["ok"],"waitSeconds":wait,"attempts":attempts}
+        if type(self.current_case) is dict:self.current_case["warmUp"]=record
+        self.artifact.setdefault("warmUpRetries",[]).append(case)
+        said=json.dumps(attempts,separators=(",",":"))
+        print("gateway-warm-up: case="+str(case)+" retried=yes passed_on_retry="+("yes" if attempts[-1]["ok"] else "no")+" wait_seconds="+str(wait)+" attempts="+said,flush=True)
+        require(attempts[-1]["ok"],"Cannot warm native authentication, also after one retry. The gateway answered: "+said)
+
     def receipt(self, before, after, result, key, provider, usage=None):
         fingerprint=hashlib.sha256(key.encode()).hexdigest()
         receipts=[r for r in after["receipts"][len(before["receipts"]):] if r["keyFingerprint"]==fingerprint]
@@ -1610,7 +1652,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
         ]
         for name,change,restore in mutations:
             def fresh():
-                require(self.sdk(url,key,"anthropic")["ok"],"Cannot warm native authentication")
+                self.warm(url,key)
                 before=self.control();self.control(hold=True)
                 try:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -1844,7 +1886,9 @@ exec litellm --config "$CONFIG_FILE_PATH"
             if not self.artifact["passed"]:raise RuntimeError("Pinned image proof did not pass")
         except Exception as error:
             self.artifact["passed"]=False
-            self.artifact["failure"]=str(error) # fixed harness messages only, never raw responses/logs
+            # Fixed harness messages, never raw responses or logs. The one message that carries a gateway
+            # answer is the warm-up's, whose text is bounded and sanitized in warm_answer first.
+            self.artifact["failure"]=str(error)
             primary_failure=error
         finally:
             removal_commands_ok=True
