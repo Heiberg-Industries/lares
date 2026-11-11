@@ -188,6 +188,21 @@ describe("Slack and Telegram", () => {
       });
     }
 
+    // T7 asks for the D4 sentence on these doors too. That sentence is not built on Slack and Telegram
+    // (it waits for the owner's decision; see the PR), so this pins only the part that is: no write.
+    for (const outcome of ["expired", "withdrawn"] as const) {
+      it(`${door}, T7 (no-write part): a card that ${outcome} without an answer keeps nothing, opens nothing console-side, and ungated writes refuse`, async () => {
+        const session = sessionOf(`sess_${door}_${outcome}`, who.owner);
+        const ctx = { session, agent: { name: "chief-of-staff" } };
+        await m.hook.events["interaction.opened"]!(opened("turn_2", "int_t7"), ctx);
+        await m.hook.events["interaction.settled"]!(settled("turn_2", "int_t7", outcome), ctx);
+        expect(m.approvals.takeNativeAnswerer("int_t7", session.id)).toBeUndefined();
+        expect(m.approvals.humanTurnRefusal(session, "Not saved.")).toContain(REFUSED);
+        expect(requestMock).not.toHaveBeenCalled();
+        expect(m.approvals.humanTurnRefusal(sessionOf(session.id, who.owner, "turn_3"), "Not saved.")).toBeNull();
+      });
+    }
+
     it(`${door}, T8: a second allowed person's tap is refused; nothing is kept and the card stays pending`, async () => {
       const session = sessionOf(`sess_${door}_second`, who.owner);
       for (const decision of ["approve", "deny"] as const) {
