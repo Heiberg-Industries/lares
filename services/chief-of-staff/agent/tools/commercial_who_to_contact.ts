@@ -86,8 +86,18 @@ const tool = defineTool({
   },
 });
 
-export default defineDynamic({ events: { "session.started": async (_event, ctx) => {
+// Decided before every model call (eve 1.0's one-function dynamic form). The tool exists only
+// outside a private console conversation, and only where `resolveSkillTool` says the `commercial`
+// skill is declared, inside the grants, and not switched off. A private console claim that cannot
+// be verified makes the first line throw, which fails the turn. A declaration that widens makes
+// `resolveSkillTool` throw; here that means the tool is absent, never offered.
+export default defineDynamic(async (ctx) => {
   if (await verifyPrivateConsoleSession(ctx)) return null;
-  const resolved = resolveSkillTool(manifest, "commercial", tool);
-  return "execute" in resolved ? resolved : null;
-} } });
+  try {
+    const resolved = resolveSkillTool(manifest, "commercial", tool);
+    return "execute" in resolved ? resolved : null;
+  } catch (err) {
+    console.error(`commercial_who_to_contact is not offered: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+});

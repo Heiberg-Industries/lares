@@ -4,14 +4,22 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AddressInfo } from "node:net";
-import { isDisabledToolSentinel } from "eve/tools";
 
-import { surfaceCommercial, type SurfaceDeps } from "../lib/commercial/surface.js";
+import { surfaceCommercial, type SurfaceDeps, type SurfacedContact } from "../lib/commercial/surface.js";
 import { isJunkContact } from "../lib/commercial/junk.js";
 import { scoreContact } from "../lib/commercial/score.js";
 import { icpFor } from "../lib/commercial/icp.js";
 import { listPeopleCapped, type TwentyPerson } from "../lib/twenty-people.js";
 import { TwentyUnavailableError } from "../lib/twenty-client.js";
+
+// The one lookup the private console check makes against the database: whether this console
+// conversation is bound to this member. Replaced so section 6 can say "bound" or "refused"; no
+// other test in this file presents a console admission, so none of them reaches it.
+const consoleBinding = vi.hoisted(() => vi.fn());
+vi.mock("../../../packages/agent-kit/src/console-turn-authority.js", async (original) => ({
+  ...(await original<typeof import("../../../packages/agent-kit/src/console-turn-authority.js")>()),
+  requireConsoleSessionBinding: consoleBinding,
+}));
 
 // `gatewayModel` (lib/gateway-provider.ts) caches its providers at MODULE scope — so a fresh
 // module per test is needed. commercial_who_to_contact
@@ -28,17 +36,26 @@ import { TwentyUnavailableError } from "../lib/twenty-client.js";
 //
 // The cast alone is not the whole story, and a cast is a claim about a
 // value, not a check on one. Drop the `twenty` grant from agent.json and the tool
-// resolves to a sentinel — every test below would then fail on "tool.execute is not a function",
-// a stack trace about a missing method rather than the actual cause. `isDisabledToolSentinel` is
-// eve's own runtime discriminator, and one line of it turns that into a sentence naming the
-// declaration to fix.
+// resolves to nothing — every test below would then fail on "tool.execute is not a function",
+// a stack trace about a missing method rather than the actual cause. One check turns that into
+// a sentence naming the declaration to fix.
+//
+// eve 1.0: the tool file is ONE function of the conversation (`defineDynamic(fn)` keeps it under
+// the symbol below) and it answers with the tool or with `null`. It is called here with an
+// ordinary conversation, not a private console one.
+interface CommercialTool { execute: (input: { brand?: string }, ctx: unknown) => Promise<Record<string, SurfacedContact[]>> }
+type ToolFunction = (ctx: unknown) => Promise<CommercialTool | null>;
+const ordinaryConversation = () => ({ session: { id: "native", auth: { current: null, initiator: null } } });
+async function commercialResolver(): Promise<ToolFunction> {
+  const resolver = (await import("../agent/tools/commercial_who_to_contact.js")).default as unknown as Record<symbol, ToolFunction>;
+  return resolver[Symbol.for("eve.dynamic")]!;
+}
 async function freshCommercialTool() {
   vi.resetModules();
-  const resolver = (await import("../agent/tools/commercial_who_to_contact.js")).default;
-  const tool = await resolver.events["session.started"]!({}, {session:{id:"native",auth:{current:null,initiator:null}}} as never);
-  if (!tool || isDisabledToolSentinel(tool)) {
+  const tool = await (await commercialResolver())(ordinaryConversation());
+  if (!tool || typeof tool.execute !== "function") {
     throw new Error(
-      "commercial_who_to_contact resolved to a disabled-tool sentinel: agent.json no longer grants " +
+      "commercial_who_to_contact resolved to nothing: agent.json no longer grants " +
         "the `commercial` skill what it requires (twenty:read). Every test in this " +
         "file exercises the LIVE tool — fix the declaration or delete these tests, don't cast past it.",
     );
@@ -510,5 +527,83 @@ describe("commercial_who_to_contact (live wiring)", () => {
     // of `instanceof` (same reasoning as the fresh-module pattern above).
     const tool = await freshCommercialTool();
     await expect(tool.execute({}, READ_CTX)).rejects.toMatchObject({ name: "TwentyUnavailableError" });
+  });
+});
+
+// ─── 6. commercial_who_to_contact — where the tool exists ──────────────────────────────────
+//
+// eve 1.0 calls the tool file's function before every model call, and what it returns is whether
+// the tool EXISTS in that conversation. `resolveSkillTool` still decides it from the declaration;
+// a private console conversation never has it.
+
+describe("commercial_who_to_contact (where it exists)", () => {
+  const consoleMember = {
+    authenticator: "lares-console", principalType: "user", principalId: "member-one",
+    attributes: { lares_member_id: "member-one", lares_admission_nonce: "a".repeat(43), lares_purpose: "human" },
+  };
+  const privateConversation = () => ({ session: { id: "private", auth: { current: consoleMember, initiator: consoleMember } } });
+
+  /** The resolver, built over a changed copy of this service's own agent.json. */
+  async function resolverOver(change: (m: Record<string, unknown>) => Record<string, unknown>): Promise<ToolFunction> {
+    vi.resetModules();
+    const actual = (await vi.importActual<{ default: Record<string, unknown> }>("../agent.json")).default;
+    vi.doMock("../agent.json", () => ({ default: change(structuredClone(actual)) }));
+    return commercialResolver();
+  }
+
+  beforeEach(() => {
+    vi.stubEnv("LARES_AGENT_NAME", "chief-of-staff");
+    vi.stubEnv("LARES_AGENT_INCARNATION", "11111111-1111-4111-8111-111111111111");
+    consoleBinding.mockResolvedValue({});
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    vi.doUnmock("../agent.json");
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    consoleBinding.mockReset();
+  });
+
+  it("exists in an ordinary conversation under this service's own declaration", async () => {
+    vi.resetModules();
+    const tool = await (await commercialResolver())(ordinaryConversation());
+    expect(typeof tool?.execute).toBe("function");
+  });
+
+  it("does not exist in a private console conversation", async () => {
+    vi.resetModules();
+    expect(await (await commercialResolver())(privateConversation())).toBeNull();
+    expect(consoleBinding).toHaveBeenCalledOnce();
+  });
+
+  it("refuses the turn for a caller who claims a private console conversation but is not verified", async () => {
+    vi.resetModules();
+    const resolve = await commercialResolver();
+    consoleBinding.mockRejectedValue(new Error("refused"));
+    await expect(resolve(privateConversation())).rejects.toThrow();
+    // A different person speaking than the one who opened the conversation.
+    const other = { ...consoleMember, principalId: "member-two", attributes: { ...consoleMember.attributes, lares_member_id: "member-two" } };
+    await expect(resolve({ session: { id: "private", auth: { current: other, initiator: consoleMember } } })).rejects.toThrow();
+  });
+
+  it("does not exist when the declaration does not list the commercial skill", async () => {
+    const resolve = await resolverOver((m) => ({ ...m, skills: (m["skills"] as { name: string }[]).filter((k) => k.name !== "commercial") }));
+    expect(await resolve(ordinaryConversation())).toBeNull();
+  });
+
+  it("does not exist when a capability the skill composes is switched off with never", async () => {
+    const resolve = await resolverOver((m) => ({ ...m, autonomy: { ...(m["autonomy"] as Record<string, string>), twenty: "never" } }));
+    expect(await resolve(ordinaryConversation())).toBeNull();
+  });
+
+  it("does not exist, and nothing throws, when the declaration widens or does not parse", async () => {
+    // `resolveSkillTool` throws on both. In a conversation that must mean "absent", never "offered".
+    const widened = await resolverOver((m) => ({ ...m, skills: [{ name: "commercial", requires: [{ capability: "twenty", scope: "write" }] }] }));
+    expect(await widened(ordinaryConversation())).toBeNull();
+    const ungranted = await resolverOver((m) => ({ ...m, grants: (m["grants"] as { capability: string }[]).filter((g) => g.capability !== "twenty"), autonomy: {} }));
+    expect(await ungranted(ordinaryConversation())).toBeNull();
+    const misspelled = await resolverOver((m) => ({ ...m, skill: [] }));
+    expect(await misspelled(ordinaryConversation())).toBeNull();
   });
 });
