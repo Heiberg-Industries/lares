@@ -14,7 +14,8 @@ vi.mock('eve/context', () => ({ defineState: (key: string, initial: () => unknow
 vi.mock('eve/events', async (actual) => ({ ...(await actual<typeof import('eve/events')>()), position: (view: { line: number }) => view.line }));
 vi.mock('@lares/agent-kit/private-console-surface', () => ({ verifyPrivateConsoleModel: async () => undefined, verifyPrivateConsoleSession: async () => true }));
 
-import { claimModelPurposeForInvocation, closeModelPurposeTurn, openModelPurposeTurn, prepareModelPurposeInvocation } from '../agent/lib/model-purpose.js';
+import { claimModelPurposeForInvocation, closeModelPurposeTurn, openContinuationAfterSettle, openModelPurposeTurn, prepareModelPurposeInvocation } from '../agent/lib/model-purpose.js';
+import { rememberAcceptedAnswer } from '@lares/agent-kit/private-console-resume';
 import { captureModelInvocation } from '@lares/agent-kit/model-invocation';
 
 const incarnation = '123e4567-e89b-42d3-a456-426614174000';
@@ -275,6 +276,41 @@ describe('model-purpose Eve turn hooks', () => {
     await expect(opening).rejects.toThrow('Model purpose authority');
     expect(requestMock).toHaveBeenCalledWith('turn.close', { turnCapability: 'c'.repeat(43), turnId: 'late-turn', sequence: 9 });
     await expect(openModelPurposeTurn(event('late-turn', 9), session as never)).rejects.toThrow('Model purpose authority');
+  });
+});
+
+// The answer's Keeper receipt lives 30 seconds; eve runs the approved action between the settle
+// and the continuation's first model call. The receipt is used at the settle (before the action),
+// so a slow action no longer leaves the reply refused. Before this change the claim below was
+// refused: nothing opened the Keeper turn until the model call, 45 seconds after the answer.
+describe('a slow approved action', () => {
+  it('does not outlive the answer: the Keeper turn opens at the settle and serves the reply after the action', async () => {
+    vi.stubEnv('LARES_AGENT_NAME', 'helper');
+    vi.stubEnv('LARES_AGENT_INCARNATION', incarnation);
+    const base = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(base);
+    requestMock.mockImplementation(async (op: string) => op === 'turn.open'
+      ? { capability: 'c'.repeat(43), expiresAt: base + 5 * 60_000 }
+      : op === 'step.claim' ? { claim: 'k'.repeat(43), expiresAt: Date.now() + 30_000 } : { closed: true });
+    const asker = human({ lares_model_purpose_required: '1', lares_model_pending_receipt: receipt });
+    const session = context('turn_5', 5, asker, asker);
+    const answerReceipt = 'a'.repeat(43);
+    rememberAcceptedAnswer({ request: { interactionId: 'card-slow' }, response: { decision: 'approve', principal: { attributes: { lares_model_pending_receipt: answerReceipt } } },
+      session: { id: session.id, turn: session.turn } }, { memberId: 'member-1', admissionNonce: 'n'.repeat(43) });
+
+    clock.mockReturnValue(base + 1_000); // the card settles
+    await openContinuationAfterSettle('turn_5', session as never);
+    expect(requestMock).toHaveBeenCalledWith('turn.open', expect.objectContaining({ pendingReceipt: answerReceipt }));
+
+    clock.mockReturnValue(base + 45_000); // the approved action took 44 seconds
+    const step = { type: 'step.started' as const, data: { turnId: 'turn_5', sequence: 5, stepIndex: 20 } };
+    prepareModelPurposeInvocation(step, session as never);
+    await expect(claimModelPurposeForInvocation(captureModelInvocation(step, session as never, 'lares-brain'))).resolves.toBeUndefined();
+    expect(requestMock.mock.calls.filter(([op]) => op === 'turn.open')).toHaveLength(1);
+
+    // The same answer cannot open a second continuation: it was used up at the settle.
+    await closeModelPurposeTurn({ type: 'turn.settled', data: { turnId: 'turn_5', sequence: 5 } }, session as never);
+    await openContinuationAfterSettle('turn_5', session as never);
+    expect(requestMock.mock.calls.filter(([op]) => op === 'turn.open')).toHaveLength(1);
   });
 });
 

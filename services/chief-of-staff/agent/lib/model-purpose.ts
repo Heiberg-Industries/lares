@@ -235,6 +235,39 @@ export async function openModelPurposeTurn(event: unknown, session: Session | un
   await openEntry(point, entry, pending.receipt, session!);
 }
 
+/**
+ * Opens the continuation's Keeper turn as soon as eve has settled the card, BEFORE eve runs the
+ * approved action (the settle hook finishes first: `intake.js` `settleHumanInput`, see the PR).
+ *
+ * Why here and not at the continuation's first model call: the answer's Keeper receipt lives 30
+ * seconds and is single-use, and eve runs the approved action between the settle and that model
+ * call. A slow action (mail, a calendar, an outside tool) would outlive the receipt: the action ran
+ * and the reply was refused. Opened here, the receipt is used within moments of the answer and
+ * becomes a Keeper turn capability, which lives as long as any human turn's (five minutes, Keeper
+ * `TURN_MS`), is bound to this one turn position and card, and is closed with the turn
+ * (`turn.paused`, `turn.settled`). No receipt lives longer, and nothing can be opened twice: the
+ * answers are taken (used up) here, and the slot is tombstoned when closed.
+ *
+ * Call it after the card's own settle work (a Deny's row is written there, and Keeper checks it).
+ * Never throws: a refusal here leaves no slot, so the continuation's model call is refused with
+ * the fixed sentence, while eve still applies the answer.
+ */
+export async function openContinuationAfterSettle(turnId: unknown, session: Session | undefined): Promise<void> {
+  try {
+    const pending = pendingFrom(session?.auth?.current);
+    if (!pending.required && !pending.receipt) return;
+    const own = managedIdentity(process.env);
+    if (!own) return;
+    const point = pointFrom({ data: { turnId } }, session, own.incarnation, false);
+    prune();
+    if (entries.get(key(point))?.active || resumeEntryAt(point)) return;
+    const entry = beginResume(point, session);
+    if (entry?.resume) await openEntry(point, entry, entry.resume.receipt, session!);
+  } catch {
+    /* refused: no slot is open, so the continuation's model call is refused (fixed sentence) */
+  }
+}
+
 /** Burns local turn state synchronously, then best-effort closes the remote capability. */
 export async function closeModelPurposeTurn(event: unknown, session: Session | undefined): Promise<void> {
   const own = managedIdentity(process.env), data = (event as { data?: { turnId?: unknown; sequence?: unknown } } | undefined)?.data;

@@ -16,6 +16,7 @@ import { getPool } from "@lares/agent-kit/db";
 import { approverFrom, assertApprover, takeNativeAnswerer } from "../../lib/approvals.js";
 import { noteApprovalCardTurn } from "../../lib/approval-card-turns.js";
 import { settleAcceptedAnswer } from "@lares/agent-kit/private-console-resume";
+import { openContinuationAfterSettle } from "../lib/model-purpose.js";
 import { applyRouteProposalDecline, recordRouteApprovalLink, routeApprovalLinkAudience } from "../../lib/route-decline.js";
 import { withCurrentNativeContinuity } from "../../lib/conversation-continuity.js";
 const live = makeApprovalRecord({personalRequested:(r,c)=>personalSendInputRequested(r,c as never),personalResolved:(r,o,c)=>personalSendInputResolved(r,o,c as never)});
@@ -106,6 +107,9 @@ export default defineHook({
           settled.outcome === "approved" ? "approve" : settled.outcome === "cancelled" && settled.decidedByPerson ? "deny" : undefined);
       }
       await live["interaction.settled"](event, ctx);
+      // After the card's own settle work, before eve runs the approved action: the answer's
+      // 30-second receipt becomes the continuation's Keeper turn now (lib/model-purpose.ts).
+      if (settled) await openContinuationAfterSettle(cardTurnOf(event, ctx), ctx?.session as never);
       try { await applyScheduledRouteDeclines(event, ctx); } catch (error) { warnRouteDecline(error); }
     },
   },
