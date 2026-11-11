@@ -35,11 +35,24 @@
  * The two are intersected, so the answer is never wider than either. A revoked grant closes the
  * door mid-session; the constant keeps it shut even when the grant is wide.
  *
- * ORDER OF GUARDS. `assertApprover` runs FIRST, before any area is resolved and before any
+ * ORDER OF GUARDS. The approver check runs FIRST, before any area is resolved and before any
  * store root is read — so a call
  * from a principal who may not approve is refused for that reason, not for an area one. Every
  * other guard on the write path (`origin-taint`'s `stampFor`/`turnKeyFrom` on the new note, the
  * git containment inside `commitNote`/`moveNote`/`removeNote`) comes after.
+ *
+ * WHO THE APPROVER IS, ON EVE 1.0. `ctx.session.auth.current` is the person who ASKED (for a card
+ * a scheduled job raised, the app), and the person who ANSWERED a card is `ctx.approval.responder`.
+ * The kit's own check (`assertApprover(approverFrom(ctx.session.auth))`) can only ask about the
+ * requester, and against the allow-list, not the owner: it refuses every approved call off a
+ * scheduled job's card, and it lets a second allowed person's answer through. So a mounting
+ * service may inject `NoteWriteDeps.assertApproval`, its own one check for every gated tool (in
+ * the chief of staff, `lib/approvals.ts`'s `assertApproval`: the answerer, owner only, when a card
+ * was answered; the session's caller when there was no card). When it is injected it REPLACES the
+ * kit's requester check. A tool given an area authority (`areas`) but no `assertApproval` REFUSES
+ * every call (`MissingApproverCheckError`): fail closed, never the weaker check. Only the mounted
+ * copies with no deps at all still reach the kit's requester check, and they open no area. The kit
+ * cannot make the owner question itself: that needs the service's allow-list (`./approval-gate.ts`).
  *
  * THE APPROVAL IS INJECTABLE, AND THAT IS THE POINT. If these three hard-coded eve's
  * `always()`, the permissions board would never be consulted for them: a 🚫 on "Private notes" would
@@ -94,7 +107,7 @@ import { ORIGIN_FRONTMATTER_KEY } from "../../src/origin.js";
 import { stampFor, turnKeyFrom } from "../../src/origin-taint.js";
 import { vaultNotePath } from "../../src/vault-note-write.js";
 import type { VaultArea } from "../../src/skill-grants.js";
-import { approverFrom, assertApprover } from "./approval-gate.js";
+import { approverFrom, assertApprover, type SessionAuthLike } from "./approval-gate.js";
 
 /**
  * A request-time approval policy the MOUNTING SERVICE supplies — in practice
@@ -134,6 +147,13 @@ export type NoteWriteApproval = (...args: never[]) => unknown;
 export type NoteWriteApprovedCallCheck = (ctx: unknown, input: unknown) => Promise<void>;
 
 /**
+ * The execution-time approver check a MOUNTING SERVICE supplies, in place of the kit's own
+ * requester check (see this file's header, "WHO THE APPROVER IS"). It receives the tool's own
+ * `ctx` and its raw `input`, unchanged, and refuses by throwing. Whatever it resolves to is ignored.
+ */
+export type NoteWriteApproverCheck = (ctx: unknown, input: unknown) => Promise<unknown>;
+
+/**
  * `NoteToolDeps` plus the policy. Everything else about these three is unchanged.
  *
  * AN INTERSECTION, NOT `interface … extends …`, and that is not a style choice. This file is
@@ -151,7 +171,40 @@ export type NoteWriteDeps = NoteToolDeps & {
   approval?: NoteWriteApproval;
   /** Omitted ⇒ no check — what these three have always had (see this file's header). */
   assertApprovedCall?: NoteWriteApprovedCallCheck;
+  /** Given ⇒ this check instead of the kit's requester check (see this file's header). REQUIRED
+   *  whenever `areas` is given: a tool that can write but was mounted without it refuses. */
+  assertApproval?: NoteWriteApproverCheck;
 };
+
+/** Refused because a tool that can open an area was mounted without its service's approver check. */
+export class MissingApproverCheckError extends Error {
+  constructor() {
+    super(
+      "this Vault write was mounted without an approver check (NoteWriteDeps.assertApproval), " +
+        "so it is refused. The mounting service must inject the check it makes for every gated tool.",
+    );
+    this.name = "MissingApproverCheckError";
+  }
+}
+
+/** The approver check, before anything else on the write path: the service's own when it
+ *  injected one. Then the card check, when one was given.
+ *
+ *  FAIL CLOSED. A tool built WITH an area authority but WITHOUT `assertApproval` is refused here:
+ *  the kit's requester check is weaker (the allow-list, not the owner; the requester, not the
+ *  answerer), so a catalogue entry that forgot the injection must not quietly get it. Only the
+ *  mounted copies with no deps at all reach the kit's requester check, and they open no area
+ *  (`writableRoot` refuses them next). */
+async function checkApproval(
+  deps: NoteWriteDeps | undefined,
+  ctx: { session: { auth: SessionAuthLike | null | undefined } },
+  input: unknown,
+): Promise<void> {
+  if (deps?.assertApproval !== undefined) await deps.assertApproval(ctx, input);
+  else if (deps?.areas !== undefined) throw new MissingApproverCheckError();
+  else assertApprover(approverFrom(ctx.session.auth));
+  await deps?.assertApprovedCall?.(ctx, input);
+}
 
 /** The areas these three tools write. One, and it is the one they have always written. See this
  *  file's header, point (a), before adding to it: a second entry here is a capability widening
@@ -220,8 +273,7 @@ export function writeTool(deps?: NoteWriteDeps) {
     approval: (deps?.approval ?? always()) as never,
     async execute(input, ctx) {
       const { area, title, body, tags } = input;
-      assertApprover(approverFrom(ctx.session.auth));
-      await deps?.assertApprovedCall?.(ctx, input);
+      await checkApproval(deps, ctx, input);
       const vaultRoot = await writableRoot(area, deps, ctx);
 
       const key = turnKeyFrom(ctx);
@@ -262,8 +314,7 @@ export function fileTool(deps?: NoteWriteDeps) {
     approval: (deps?.approval ?? always()) as never,
     async execute(input, ctx) {
       const { area, path, destination } = input;
-      assertApprover(approverFrom(ctx.session.auth));
-      await deps?.assertApprovedCall?.(ctx, input);
+      await checkApproval(deps, ctx, input);
       const vaultRoot = await writableRoot(area, deps, ctx);
 
       const dest = destination.replace(/\/+$/, "");
@@ -293,8 +344,7 @@ export function dropTool(deps?: NoteWriteDeps) {
     approval: (deps?.approval ?? always()) as never,
     async execute(input, ctx) {
       const { area, path } = input;
-      assertApprover(approverFrom(ctx.session.auth));
-      await deps?.assertApprovedCall?.(ctx, input);
+      await checkApproval(deps, ctx, input);
       const vaultRoot = await writableRoot(area, deps, ctx);
 
       return removeNote({

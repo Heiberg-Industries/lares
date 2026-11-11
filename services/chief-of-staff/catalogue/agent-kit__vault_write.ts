@@ -32,13 +32,15 @@
 // inside the kit's factory: the extension bundle that factory lives in cannot import
 // `@lares/agent-kit/approval-ledger` without pulling a second copy of it, and the database pool
 // underneath it, into code `eve build` loads with no database (see `note-write-tools.ts`'s own
-// header). This agent already imports the ledger directly for its other gated tools, so it
-// supplies the check the same way here.
+// header). This agent supplies it through `assertApproval` (`../lib/approvals.ts`), the one check
+// every other gated tool makes: when a card was answered, the person who ANSWERED it
+// (`ctx.approval.responder`) must be the owner, and the call must be the one the card showed;
+// with no card, the session's own caller must be an allowed approver. Injected in place of the
+// kit's requester-only check, because on eve 1.0 the requester of a scheduled job's card is the app.
 //
 // A PRIVATE CONSOLE CONVERSATION TAKES THE OTHER ROAD. There the member's private area is in
 // Keeper custody, not this runtime's store, so the call runs only from its exact approved card
 // and Keeper writes the file (`../lib/vault-note-write.ts`). Same description, input and approval.
-import { approvalLedger, assertApprovedCall, callIdFrom } from "@lares/agent-kit/approval-ledger";
 import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
 import { writeTool } from "@lares/agent-kit/note-write-tools";
 import { defineTool } from "eve/tools";
@@ -51,8 +53,8 @@ import { writeApprovedConsoleNote } from "../lib/vault-note-write.js";
 const native = writeTool({
   areas: vaultWriteAreasForTurn,
   approval: approvalFor("agent-kit__vault_write"),
-  assertApprovedCall: (ctx: unknown, input: unknown) =>
-    assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName: "agent-kit__vault_write", input }),
+  // Reached only off the console-bound path (see `execute` below), so this is a door's card or no card.
+  assertApproval: (ctx: unknown, input: unknown) => assertApproval(ctx as never, "agent-kit__vault_write", input),
 });
 
 export default defineTool({
