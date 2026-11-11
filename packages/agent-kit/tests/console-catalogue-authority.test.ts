@@ -6,6 +6,16 @@ const fake = vi.hoisted(() => ({
   granted: [] as string[], verify: vi.fn(async (_ctx: unknown) => false),
 }));
 vi.mock('../src/db.js', () => ({ getPool: () => fake }));
+// The chief-of-staff's durable card marks (`lib/approval-card-turns.ts`) live in eve's per-session
+// state; outside a running eve session that state cannot be read, so every turn would count as
+// marked. Only those marks are held in memory here; every other eve state is the real one.
+const marks = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('eve/context', async (original) => {
+  const real = await original<typeof import('eve/context')>();
+  return { ...real, defineState: (key: string, initial: () => unknown) => !key.startsWith('lares.approval-')
+    ? (real.defineState as (k: string, i: () => unknown) => unknown)(key, initial)
+    : { get: () => (marks.has(key) ? marks.get(key) : initial()), update: (fn: (v: unknown) => unknown) => { marks.set(key, fn(marks.has(key) ? marks.get(key) : initial())); } } };
+});
 const tool = (gated: boolean) => ({ description: 'Fixture', inputSchema: { type: 'object' }, execute: fake.execute, ...(gated ? { approval: fake.approval } : {}) });
 const entries = () => ({
   fixture: { capability: 'fixture', tool: tool(true) },
@@ -24,6 +34,7 @@ vi.mock('../src/private-console-surface.js', async (original) => ({ ...(await or
 const chief = (await import(new URL('../../../services/chief-of-staff/agent/tools/catalogue.ts', import.meta.url).href)).default;
 const creative = (await import(new URL('../../../services/creative/agent/tools/catalogue.ts', import.meta.url).href)).default;
 const { humanTurnRefusal } = await import(new URL('../../../services/chief-of-staff/lib/approvals.ts', import.meta.url).href);
+const { noteApprovalCardTurn } = await import(new URL('../../../services/chief-of-staff/lib/approval-card-turns.ts', import.meta.url).href);
 const inc = '11111111-1111-4111-8111-111111111111';
 const auth = (purpose = 'human') => ({ authenticator: 'lares-console', attributes: { user_id: 'owner@example.invalid', lares_member_id: 'Owner-ID', lares_admission_nonce: 'a'.repeat(43), lares_purpose: purpose } });
 // What eve hands an approval policy / an executor: the session, the call, the input.
@@ -141,7 +152,17 @@ describe('both catalogues guard their callbacks before underlying execution or a
     await expect(runDynamic(chief, consoleCtx)).rejects.toThrow('Conversation authority');
   });
 
-  it('an approval resolver cannot become a new human instruction', () => {
-    expect(humanTurnRefusal({ current: auth('resolver'), initiator: auth() }, 'Refused.', { LARES_AGENT_INCARNATION: inc, LARES_CONSOLE_PRINCIPAL: 'owner@example.invalid' })).toContain('no new human instruction');
+  it('the turn after an answered card cannot become a new human instruction', () => {
+    // eve 1.0: that turn runs as the person who ASKED (`current` = their human admission); only
+    // the durable card mark tells it apart from their own new message.
+    const env = { LARES_AGENT_INCARNATION: inc, LARES_CONSOLE_PRINCIPAL: 'owner@example.invalid' };
+    const asker = { auth: { current: auth(), initiator: auth() }, turn: { id: 'turn_3' } };
+    expect(humanTurnRefusal(asker, 'Refused.', env)).toBeNull();
+    noteApprovalCardTurn('turn_3');
+    expect(humanTurnRefusal(asker, 'Refused.', env)).toContain('no new human instruction');
+    expect(humanTurnRefusal({ ...asker, turn: { id: 'turn_4' } }, 'Refused.', env)).toBeNull(); // the next message is new
+    // A resolver identity on `current`, or a turn with no id, is refused too (fails closed).
+    expect(humanTurnRefusal({ auth: { current: auth('resolver'), initiator: auth() }, turn: { id: 'turn_4' } }, 'Refused.', env)).toContain('no new human instruction');
+    expect(humanTurnRefusal({ auth: asker.auth }, 'Refused.', env)).toContain('no new human instruction');
   });
 });
