@@ -175,7 +175,7 @@ jobs:
           if-no-files-found: error
       - name: Exercise compiled runtime, mounted persona and gateway selection across restart
         if: matrix.role == 'chief-of-staff'
-        run: sudo env CI=true python3 -B services/keeper/tests/runtime-image.probe.py lares-runtime:test
+        run: sudo env CI=true "GITHUB_STEP_SUMMARY=$GITHUB_STEP_SUMMARY" python3 -B services/keeper/tests/runtime-image.probe.py lares-runtime:test
       - name: Prove guarded gateway ingress and physical dispatch in pinned upstream image
         if: matrix.role == 'chief-of-staff'
         run: sudo env CI=true HOME="$HOME" PATH="$PATH" python3 -B services/keeper/tests/gateway-admission-image.probe.py lares-runtime:test "$RUNNER_TEMP/gateway-admission-proof.json"

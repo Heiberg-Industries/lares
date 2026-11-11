@@ -9,7 +9,7 @@ import { currentSession } from '@lares/agent-kit/member-store';
 import { PgGrantStore, type GrantDatabase } from '@lares/agent-kit/grant-store';
 import { validateDefinition, doorSecretName } from '@lares/agent-kit/definition-validate';
 import { rememberValid } from '@lares/agent-kit/definition-cache';
-import { KeeperRefusedError, registerAction, type ActionContext } from './actions.js';
+import { KeeperFailedError, KeeperRefusedError, registerAction, type ActionContext } from './actions.js';
 import { DOOR_FILES } from './compose-agents.js';
 import { NOTION_SYNC_NAME } from './sync-service.js';
 import { appliedDefinitionGeneration, clearUnknownApplyBaseline, forgetDefinitionGeneration, hasFirstActivation, hasUnknownApplyBaseline, markFirstActivation, markUnknownApplyBaseline, preserveDefinitionGeneration, publishDefinition, plainDirectory, preservedDefinitionGeneration, restoreDefinitionGeneration, syncDefinitionDirectory } from './definition-files.js';
@@ -396,7 +396,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             await beforeRecovery?.();
             if (!rollbackTarget) {
                 await db().query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'Apply failed; no verified previous full definition is available; runtime recovery required']);
-                throw new Error('Apply failed and no verified previous full definition is available; runtime recovery is required.', { cause: applyError });
+                throw new KeeperFailedError('Apply failed and no verified previous full definition is available; runtime recovery is required.', 'recovery-required', { cause: applyError });
             }
             try {
                 const previous = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(path, rollbackTarget) } });
@@ -411,9 +411,9 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 if (!runtimeStarted(restored)) throw new Error('Previous runtime did not start healthy');
             } catch (rollbackError) {
                 await db().query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'Apply failed; previous definition restored but runtime recovery failed']);
-                throw new Error('Apply failed. The previous saved definition was restored, but runtime recovery failed; explicit recovery is required.', { cause: rollbackError });
+                throw new KeeperFailedError('Apply failed. The previous saved definition was restored, but runtime recovery failed; explicit recovery is required.', 'restored-stopped', { cause: rollbackError });
             }
-            throw new Error('Apply failed. The previous working definition was restored; save the edit again before retrying.', { cause: applyError });
+            throw new KeeperFailedError('Apply failed. The previous working definition was restored; save the edit again before retrying.', 'previous-running', { cause: applyError });
         }
     }
     registerAction({ name: 'outside.connections.apply', input: outsideConnectionsApplyInput, secretFields: ['sessionToken'],

@@ -237,6 +237,18 @@ describe('agentMailbox', () => {
     expect(await open()).toEqual({ ok: false, reason: 'unavailable' });
   });
 
+  it('logs which kind of failure stopped it, never the detail, and still answers unavailable', async () => {
+    await choose();
+    const refused = (async () => Response.json({ error: 'invalid_grant',
+      error_description: 'Token for own@example.invalid has been expired or revoked.' }, { status: 400 })) as typeof fetch;
+    expect(await open({ fetch: refused })).toEqual({ ok: false, reason: 'unavailable' });
+    expect(logs).toEqual([
+      'email-triage: agent mailbox could not be opened: category=provider class=GaxiosError status=400 code=invalid_grant',
+      'email-triage: agent mailbox unavailable (unavailable): Google did not accept the connection just now',
+    ]);
+    expect(gmailCalls).toEqual([]);
+  });
+
   it('refuses a read-only account without any provider call', async () => {
     await choose(COMPOSE.filter(s => !s.endsWith('gmail.compose')));
     expect(await open()).toEqual({ ok: false, reason: 'scopes-not-draft' });

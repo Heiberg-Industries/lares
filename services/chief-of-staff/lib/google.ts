@@ -658,14 +658,99 @@ export interface CalendarEvent {
   account?: string;
   /** Which calendar (of that account) this event was read from. Set by the fan-out, never by Google. */
   calendarId?: string;
+
+  /** What Google holds after a write that carried `expectedRevision`: the event's NEW revision,
+   *  read off Google's own answer (a part Google left out of that answer is an empty string, never
+   *  a guess). Set by `updateEvent` in that case only; absent everywhere else (a write without
+   *  `expectedRevision`, and every event `listEvents` returns). */
+  revision?: CalendarEventRevision;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// One event, read on its own, and writes that only land if the event has not changed since.
+//
+// Google gives every event a REVISION: an `etag`, which changes on every change to the event, and
+// an `updated` timestamp. A caller reads the event (`getEvent`), keeps the etag, and hands it back
+// as `expectedRevision` on `updateEvent` / `deleteEvent`. The request then carries it as an
+// `If-Match` precondition and GOOGLE refuses the write (HTTP 412) when the event is no longer the
+// one that was read. The check is the provider's, made at the moment of the write, so there is no
+// read-then-write gap for this file to close.
+//
+// Documented by Google, not yet observed from this code: `tests/live/calendar-event-precondition.live.mts`
+// is the probe that settles it against the real API.
+//
+// EVENT TEXT IS OUTSIDERS' TEXT. `summary` is written by whoever created the event. It is
+// returned to the caller, which needs it to show the person what they are approving; nothing in
+// this file logs it or puts it in an error message.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Google's revision of one event. `etag` is the value to hand back as `expectedRevision`; it is
+ *  opaque and includes its own quote characters, so pass it on untouched. `updated` is Google's
+ *  last-modified time (RFC 3339), for showing and recording, never for comparing. */
+export interface CalendarEventRevision { etag: string; updated: string }
+
+/** One event as `getEvent` read it: what an approval needs to show and to bind. */
+export interface CalendarEventSnapshot {
+  id: string;
+  /** Google's `status`, verbatim (`confirmed` | `tentative`); a cancelled event is not returned
+   *  as a snapshot, see `CalendarEventRead`. */
+  status: string;
+  /** Text written by whoever created the event. Never log it. */
+  summary: string;
+  /** `dateTime` (RFC 3339), or `date` (YYYY-MM-DD) for an all-day event. */
+  start: string;
+  end: string;
+  /** Google's `start.timeZone` / `end.timeZone` (IANA names) when the event carries them. */
+  startTimeZone?: string;
+  endTimeZone?: string;
+  allDay?: boolean;
+  /** People only: room resources and entries without an address are left out, as in `listEvents`. */
+  attendees?: CalendarAttendee[];
+  revision: CalendarEventRevision;
+}
+
+/**
+ * What reading one event found. "Not there" and "cancelled" are ordinary answers a caller
+ * branches on, not errors:
+ *   - `found`      a live event, with its revision
+ *   - `cancelled`  Google still knows the event and says it is cancelled (a 200 with
+ *                  `status: "cancelled"`, or HTTP 410 Gone)
+ *   - `not_found`  Google has no such event on that calendar (HTTP 404)
+ * Every other failure (no permission, rate limit, network) is thrown unchanged, exactly as the
+ * neighbouring calls throw it.
+ */
+export type CalendarEventRead =
+  | { outcome: "found"; event: CalendarEventSnapshot }
+  | { outcome: "cancelled" }
+  | { outcome: "not_found" };
+
+/**
+ * "Changed since it was read": a write that carried an `expectedRevision` was REFUSED by Google
+ * (HTTP 412 Precondition Failed) because the event is no longer at that revision. Nothing was
+ * written. Its own class so a caller can tell it from every other failure with `instanceof`;
+ * only ever thrown by a call that passed `expectedRevision`. Carries no event text.
+ */
+export class CalendarEventChangedError extends Error {
+  readonly outcome = "changed_since_read" as const;
+  constructor(readonly calendarId: string, readonly eventId: string) {
+    super("The calendar event changed since it was read; nothing was written");
+    this.name = "CalendarEventChangedError";
+  }
 }
 
 export interface CalendarApiClient {
   listEvents(params: { timeMin: string; timeMax: string; maxResults: number; calendarId?: string }): Promise<{ items: CalendarEvent[] }>;
+  /** Read one event. An absent or empty `calendarId` means the account's own calendar. */
+  getEvent(calendarId: string | undefined, eventId: string): Promise<CalendarEventRead>;
   freeBusy(params: { timeMin: string; timeMax: string; calendarId?: string }): Promise<{ busy: Array<{ start: string; end: string }> }>;
   insertEvent(params: { summary: string; start: string; end: string; description?: string; attendees?: string[]; notify?: boolean; calendarId?: string }): Promise<CalendarEvent>;
-  updateEvent(params: { eventId: string; summary?: string; start?: string; end?: string; description?: string; notify?: boolean; calendarId?: string }): Promise<CalendarEvent>;
-  deleteEvent(params: { eventId: string; notify?: boolean; calendarId?: string }): Promise<{ deleted: true }>;
+  /** With `expectedRevision` (an etag from `getEvent`): the write lands only if the event is still
+   *  at that revision, the answer carries the event's NEW `revision`, and a refusal throws
+   *  `CalendarEventChangedError`. Without it: the request and the answer are what they always were. */
+  updateEvent(params: { eventId: string; summary?: string; start?: string; end?: string; description?: string; notify?: boolean; calendarId?: string; expectedRevision?: string }): Promise<CalendarEvent>;
+  /** With `expectedRevision`: deletes only if the event is still at that revision; a refusal throws
+   *  `CalendarEventChangedError`. Without it: unchanged. */
+  deleteEvent(params: { eventId: string; notify?: boolean; calendarId?: string; expectedRevision?: string }): Promise<{ deleted: true }>;
   listCalendars(opts?: { includeReadOnly?: boolean }): Promise<CalendarSummary[]>;
 }
 
@@ -685,6 +770,30 @@ export function __setTestCalendarApiFactory(factory: typeof testCalendarApiFacto
  *  told not to. */
 const sendUpdatesFor = (notify: boolean | undefined): "all" | "none" => (notify === false ? "none" : "all");
 const calFor = (calendarId: string | undefined): string => calendarId || "primary";
+
+/** The HTTP status on an error the googleapis client threw, or 0 when it carries none. */
+function googleHttpStatus(err: unknown): number {
+  const x = err as { code?: unknown; status?: unknown; response?: { status?: unknown } } | null | undefined;
+  const n = Number(x?.response?.status ?? x?.status ?? x?.code);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** The per-call options that make a write conditional. An EMPTY revision is refused here, before
+ *  any request: sent on, it would be a precondition nobody chose, and dropped, it would turn a
+ *  write the caller asked to be conditional into an unconditional one. */
+function ifMatch(expectedRevision: string): { headers: { "If-Match": string } } {
+  if (expectedRevision === "") throw new Error("An expected revision was given but is empty; nothing was written");
+  return { headers: { "If-Match": expectedRevision } };
+}
+
+/** For a write that carried `expectedRevision`: Google's 412 becomes `CalendarEventChangedError`;
+ *  every other failure is thrown on untouched. One attempt, never a retry. */
+function changedOrRethrow(calendarId: string, eventId: string): (err: unknown) => never {
+  return (err) => {
+    if (googleHttpStatus(err) === 412) throw new CalendarEventChangedError(calendarId, eventId);
+    throw err;
+  };
+}
 
 /** Calendar twin of `personalGmailApi`. */
 export function personalCalendarApi(cfg: GoogleOrgConfig, auth: ReturnType<typeof buildOAuth2Client>, accessToken: string): CalendarApi {
@@ -729,6 +838,39 @@ export function wrapCalendarApi(api: CalendarApi): CalendarApiClient {
       });
       return { items };
     },
+    async getEvent(calendarId, eventId) {
+      // An empty id would address the calendar's event LIST, not an event.
+      if (eventId === "") throw new Error("eventId is required to read a calendar event");
+      let e;
+      try {
+        e = (await api.events.get({ calendarId: calFor(calendarId), eventId })).data;
+      } catch (err) {
+        const status = googleHttpStatus(err);
+        if (status === 404) return { outcome: "not_found" as const };
+        if (status === 410) return { outcome: "cancelled" as const };
+        throw err;
+      }
+      if (e.status === "cancelled") return { outcome: "cancelled" as const };
+      // No revision, nothing to bind an approval to: refuse rather than hand back a snapshot a
+      // later write could not be made conditional on.
+      if (typeof e.etag !== "string" || e.etag === "") throw new Error("Google returned a calendar event without a revision");
+      const attendees = (e.attendees ?? [])
+        .filter((a) => a.resource !== true && typeof a.email === "string" && a.email !== "")
+        .map((a) => ({ email: a.email as string, ...(a.displayName ? { displayName: a.displayName } : {}) }));
+      const allDay = !e.start?.dateTime && typeof e.start?.date === "string" && e.start.date !== "";
+      return {
+        outcome: "found" as const,
+        event: {
+          id: e.id ?? "", status: e.status ?? "", summary: e.summary ?? "",
+          start: e.start?.dateTime ?? e.start?.date ?? "", end: e.end?.dateTime ?? e.end?.date ?? "",
+          ...(e.start?.timeZone ? { startTimeZone: e.start.timeZone } : {}),
+          ...(e.end?.timeZone ? { endTimeZone: e.end.timeZone } : {}),
+          ...(allDay ? { allDay: true } : {}),
+          ...(attendees.length > 0 ? { attendees } : {}),
+          revision: { etag: e.etag, updated: e.updated ?? "" },
+        },
+      };
+    },
     async freeBusy(params) {
       const res = await api.freebusy.query({ requestBody: { timeMin: params.timeMin, timeMax: params.timeMax, items: [{ id: calFor(params.calendarId) }] } });
       const busy = (res.data.calendars?.[calFor(params.calendarId)]?.busy ?? []).map((b) => ({ start: b.start ?? "", end: b.end ?? "" }));
@@ -748,7 +890,7 @@ export function wrapCalendarApi(api: CalendarApi): CalendarApiClient {
       return { id: e.id ?? "", summary: e.summary ?? "", start: e.start?.dateTime ?? e.start?.date ?? "", end: e.end?.dateTime ?? e.end?.date ?? "" };
     },
     async updateEvent(params) {
-      const res = await api.events.patch({
+      const request = {
         calendarId: calFor(params.calendarId), eventId: params.eventId, sendUpdates: sendUpdatesFor(params.notify),
         requestBody: {
           ...(params.summary !== undefined ? { summary: params.summary } : {}),
@@ -756,12 +898,25 @@ export function wrapCalendarApi(api: CalendarApi): CalendarApiClient {
           ...(params.start ? { start: { dateTime: params.start } } : {}),
           ...(params.end ? { end: { dateTime: params.end } } : {}),
         },
-      });
+      };
+      // Without an expected revision this is the one-argument call it always was.
+      const conditional = params.expectedRevision !== undefined;
+      const res = conditional
+        ? await api.events.patch(request, ifMatch(params.expectedRevision as string)).catch(changedOrRethrow(request.calendarId, params.eventId))
+        : await api.events.patch(request);
       const e = res.data;
-      return { id: e.id ?? "", summary: e.summary ?? "", start: e.start?.dateTime ?? e.start?.date ?? "", end: e.end?.dateTime ?? e.end?.date ?? "" };
+      return {
+        id: e.id ?? "", summary: e.summary ?? "", start: e.start?.dateTime ?? e.start?.date ?? "", end: e.end?.dateTime ?? e.end?.date ?? "",
+        ...(conditional ? { revision: { etag: e.etag ?? "", updated: e.updated ?? "" } } : {}),
+      };
     },
     async deleteEvent(params) {
-      await api.events.delete({ calendarId: calFor(params.calendarId), eventId: params.eventId, sendUpdates: sendUpdatesFor(params.notify) });
+      const request = { calendarId: calFor(params.calendarId), eventId: params.eventId, sendUpdates: sendUpdatesFor(params.notify) };
+      if (params.expectedRevision !== undefined) {
+        await api.events.delete(request, ifMatch(params.expectedRevision)).catch(changedOrRethrow(request.calendarId, params.eventId));
+      } else {
+        await api.events.delete(request);
+      }
       return { deleted: true as const };
     },
     async listCalendars(opts) {
@@ -780,10 +935,14 @@ export function wrapCalendarApi(api: CalendarApi): CalendarApiClient {
 
 export interface CalendarClient {
   listEvents(opts: { timeMin: string; timeMax: string; max: number; calendarId?: string }): Promise<CalendarEvent[]>;
+  /** Read one event, with its revision. An absent or empty `calendarId` means the account's own calendar. */
+  getEvent(calendarId: string | undefined, eventId: string): Promise<CalendarEventRead>;
   freeBusy(opts: { timeMin: string; timeMax: string; calendarId?: string }): Promise<Array<{ start: string; end: string }>>;
   insertEvent(opts: { summary: string; start: string; end: string; description?: string; attendees?: string[]; notify?: boolean; calendarId?: string }): Promise<CalendarEvent>;
-  updateEvent(opts: { eventId: string; summary?: string; start?: string; end?: string; description?: string; notify?: boolean; calendarId?: string }): Promise<CalendarEvent>;
-  deleteEvent(opts: { eventId: string; notify?: boolean; calendarId?: string }): Promise<{ deleted: true }>;
+  /** `expectedRevision`: see `CalendarApiClient.updateEvent`. */
+  updateEvent(opts: { eventId: string; summary?: string; start?: string; end?: string; description?: string; notify?: boolean; calendarId?: string; expectedRevision?: string }): Promise<CalendarEvent>;
+  /** `expectedRevision`: see `CalendarApiClient.deleteEvent`. */
+  deleteEvent(opts: { eventId: string; notify?: boolean; calendarId?: string; expectedRevision?: string }): Promise<{ deleted: true }>;
   listCalendars(opts?: { includeReadOnly?: boolean }): Promise<CalendarSummary[]>;
 }
 
@@ -798,6 +957,7 @@ export function makeCalendarClient(calendar: CalendarApiClient): CalendarClient 
       const res = await calendar.freeBusy({ timeMin: opts.timeMin, timeMax: opts.timeMax, ...(opts.calendarId ? { calendarId: opts.calendarId } : {}) });
       return res.busy ?? [];
     },
+    getEvent: (calendarId, eventId) => calendar.getEvent(calendarId, eventId),
     insertEvent: (opts) => calendar.insertEvent(opts),
     updateEvent: (opts) => calendar.updateEvent(opts),
     deleteEvent: (opts) => calendar.deleteEvent(opts),

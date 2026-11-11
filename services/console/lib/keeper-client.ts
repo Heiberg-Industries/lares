@@ -14,14 +14,51 @@ const MAX_MESSAGE_BYTES = 256 * 1024;
 
 export type KeeperFinding = { check: string; message: string };
 
+// Keep these three aligned with KEEPER_FAILURE_STATES in services/keeper/lib/actions.ts.
+export const KEEPER_FAILURE_STATES = ["previous-running", "restored-stopped", "recovery-required"] as const;
+export type KeeperFailureState = (typeof KEEPER_FAILURE_STATES)[number];
+
+const FAILURE_STATE_TEXT: Record<KeeperFailureState, string> = {
+  "previous-running": "The previous definition is still running.",
+  "restored-stopped": "The saved definition was restored, but the agent is stopped and needs recovery.",
+  "recovery-required": "Nothing verified is available; recovery is required.",
+};
+
 export class KeeperUnavailableError extends Error {
   readonly outcomeMayBeUnknown: boolean;
+  /** The keeper's audit reference for this attempt, when it sent one. */
+  readonly reference?: string;
 
-  constructor(message: string, outcomeMayBeUnknown = false) {
+  constructor(message: string, outcomeMayBeUnknown = false, reference?: string) {
     super(message);
     this.name = "KeeperUnavailableError";
     this.outcomeMayBeUnknown = outcomeMayBeUnknown;
+    this.reference = reference;
   }
+}
+
+/** The keeper ran the action, it failed, and the keeper knows why and what the agent is left in.
+ * `message` is the keeper's own hand-written text, never an exception's. */
+export class KeeperFailedError extends Error {
+  readonly state: KeeperFailureState;
+  readonly reference: string;
+
+  constructor(message: string, state: KeeperFailureState, reference: string) {
+    super(message);
+    this.name = "KeeperFailedError";
+    this.state = state;
+    this.reference = reference;
+  }
+}
+
+/** A sentence that gives the owner the reference to quote, or nothing when there is none. */
+export function keeperReferenceText(reference: string | undefined): string {
+  return reference ? ` Quote reference ${reference} if you ask for help.` : "";
+}
+
+/** Everything the owner needs in one line: why it failed, what the agent is left in, and the reference. */
+export function keeperFailureText(error: KeeperFailedError): string {
+  return `${error.message} ${FAILURE_STATE_TEXT[error.state]}${keeperReferenceText(error.reference)}`;
 }
 
 export class KeeperRefusedError extends Error {
@@ -41,7 +78,8 @@ export interface KeeperOptions {
 type KeeperResponse =
   | { ok: true; result: unknown }
   | { ok: false; outcome: "refused"; error: string; findings?: KeeperFinding[] }
-  | { ok: false; outcome: "unknown"; error: string };
+  | { ok: false; outcome: "failed"; error: string; state: KeeperFailureState; reference: string }
+  | { ok: false; outcome: "unknown"; error: string; reference?: string };
 
 function unavailableAfterSend(reason: string): KeeperUnavailableError {
   return new KeeperUnavailableError(`${reason}; the action outcome may be unknown`, true);
@@ -58,6 +96,17 @@ function findings(value: unknown): KeeperFinding[] | undefined {
   return value.map(finding => ({ check: finding.check as string, message: finding.message as string }));
 }
 
+// The keeper's audit operation id: a lower-case UUID, and nothing else is shown to the owner as one.
+const REFERENCE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function isReference(value: unknown): value is string {
+  return typeof value === "string" && REFERENCE.test(value);
+}
+
+function isFailureState(value: unknown): value is KeeperFailureState {
+  return typeof value === "string" && (KEEPER_FAILURE_STATES as readonly string[]).includes(value);
+}
+
 function parseResponse(line: Buffer): KeeperResponse {
   let parsed: unknown;
   try {
@@ -71,8 +120,17 @@ function parseResponse(line: Buffer): KeeperResponse {
     if (Object.hasOwn(parsed, "findings") && findings(parsed.findings) === undefined) {
       throw unavailableAfterSend("keeper returned an invalid response");
     }
-    if(parsed.outcome === "unknown")return {ok:false,outcome:"unknown",error:parsed.error};
+    if (parsed.outcome === "unknown") {
+      // A reference is optional here (some failures happen before the keeper has one), but never malformed.
+      if (Object.hasOwn(parsed, "reference") && !isReference(parsed.reference)) throw unavailableAfterSend("keeper returned an invalid response");
+      return { ok: false, outcome: "unknown", error: parsed.error, ...(isReference(parsed.reference) ? { reference: parsed.reference } : {}) };
+    }
     return { ok: false, outcome:"refused", error: parsed.error, findings: findings(parsed.findings) };
+  }
+  // A failure the keeper can explain always names the state it left and a reference; without both it is not one.
+  if (parsed.ok === false && parsed.outcome === "failed" && typeof parsed.error === "string"
+    && isFailureState(parsed.state) && isReference(parsed.reference)) {
+    return { ok: false, outcome: "failed", error: parsed.error, state: parsed.state, reference: parsed.reference };
   }
   throw unavailableAfterSend("keeper returned an invalid response");
 }
@@ -140,7 +198,8 @@ export function keeper<T>(action: string, input: unknown, actor: string, opts: K
         const response = parseResponse(received.subarray(0, newline));
         if (response.ok) finish(undefined, response.result as T);
         else if(response.outcome === "refused")finish(new KeeperRefusedError(response.error,response.findings));
-        else finish(new KeeperUnavailableError("keeper could not confirm the action outcome; refresh before trying again",true));
+        else if(response.outcome === "failed")finish(new KeeperFailedError(response.error,response.state,response.reference));
+        else finish(new KeeperUnavailableError("keeper could not confirm the action outcome; refresh before trying again",true,response.reference));
       } catch (error) {
         finish(error instanceof Error ? error : unavailableAfterSend("keeper returned an invalid response"));
       }
