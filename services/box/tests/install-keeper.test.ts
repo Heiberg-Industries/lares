@@ -633,7 +633,11 @@ describe("the keeper the installer configures and starts", () => {
       expect(recreates()).toBe(1);
       expect(install().code).toBe(0);
       expect(recreates()).toBe(1);
-    });
+      // Three whole installer runs. Measured on one re-run (2.2 s on a laptop): the stack and
+      // keeper-config renderers, real TypeScript started through tsx, take 1.3 s of it, the python
+      // helpers most of the rest; the update-lock wrapper adds about 20 ms. A CI runner is about
+      // three times slower, so three runs land near 19 s: slow by nature, not a wait.
+    }, 60_000);
 
     it("mounts exactly the Google files its settings name, read-only, at the same path", () => {
       expect(install().code).toBe(0);
@@ -657,7 +661,8 @@ describe("the keeper the installer configures and starts", () => {
       expect(install().code).toBe(0);
       expect(existsSync(personalCompose())).toBe(false);
       expect(keeperEnv().COMPOSE_FILE).not.toContain("personal");
-    });
+      // Three whole installer runs, as the case above: near 19 s on a CI runner.
+    }, 60_000);
 
     it("mounts the Microsoft files the same way", () => {
       expect(install().code).toBe(0);
