@@ -18,7 +18,7 @@
  *   - FAIL OPEN for everything that is not a tap. A message, an unreadable body: forwarded
  *     exactly as it arrived, byte for byte.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -60,7 +60,9 @@ import {
   SIGN_IN_CALLBACK_PREFIX,
   TAP_REFUSAL,
   TAP_UNRECOGNISED,
+  tapCapturePaths,
   tapLane,
+  tapShape,
 } from "../lib/telegram-tap-gate.js";
 import webhook from "../agent/channels/telegram-webhook.js";
 
@@ -72,6 +74,9 @@ writeFileSync(joinPath(secretDir, "secret"), FIXTURE_SECRET);
 writeFileSync(joinPath(secretDir, "token"), "1:abc");
 process.env["TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE"] = joinPath(secretDir, "secret");
 process.env["TELEGRAM_BOT_TOKEN_FILE"] = joinPath(secretDir, "token");
+// The live probe's capture files live in the temp directory. A private one for this file, so a
+// capture requested here is never answered by a tap in another test file's worker.
+process.env["TMPDIR"] = mkdtempSync(joinPath(tmpdir(), "tap-capture-"));
 
 const OWNER = 111;
 const STRANGER = 222;
@@ -526,5 +531,144 @@ describe("the webhook front door, with the tap gate in it", () => {
     expect(secretMatches("", "fixture-secret")).toBe(false);
     expect(secretMatches(null, "fixture-secret")).toBe(false);
     expect(secretMatches("x", "")).toBe(false);
+  });
+});
+
+// ── The live probe's capture ─────────────────────────────────────────────────────────────
+//
+// `tests/live/telegram-approval-tap.live.mts` has to see a tap as Telegram really sends it, and
+// the door logs no update. The probe leaves a request file; the door answers it once with the
+// SHAPE of the next tap. What may be written is an allowlist, pinned here.
+describe("the live probe's capture: one tap's shape, on request, and nothing else", () => {
+  const SECRET_TEXT = "Send 4 000 kr to account 1234 — the card's own words";
+  const realTap = (fromId: number, data: string) =>
+    JSON.stringify({
+      update_id: 77,
+      callback_query: {
+        id: "cb-live",
+        from: { id: fromId, is_bot: false, first_name: "Firstname", last_name: "Lastname", username: "a_username", language_code: "nb" },
+        message: {
+          message_id: 7,
+          date: 1,
+          from: { id: 42, is_bot: true, first_name: "Bot", username: "example_bot" },
+          chat: { id: OWNER, type: "private", first_name: "Firstname", username: "a_username" },
+          text: SECRET_TEXT,
+          reply_markup: { inline_keyboard: [[{ text: "Approve", callback_data: "eve:1" }]] },
+        },
+        chat_instance: "ci",
+        data,
+      },
+    });
+
+  it("tapShape copies the ids, the chat type and the callback data — never text, names or usernames", () => {
+    const shape = tapShape(realTap(STRANGER, "eve:1"));
+    expect(shape).toEqual({
+      update_id: 77,
+      callback_query: {
+        id: "cb-live",
+        from: { id: STRANGER, is_bot: false },
+        message: { message_id: 7, chat: { id: OWNER, type: "private" } },
+        data: "eve:1",
+      },
+    });
+    const written = JSON.stringify(shape);
+    for (const leaked of [SECRET_TEXT, "Firstname", "Lastname", "a_username", "example_bot", "Approve", "reply_markup"]) {
+      expect(written, leaked).not.toContain(leaked);
+    }
+  });
+
+  it("tapShape drops a field that is not a plain value, and is null for anything that is not a tap", () => {
+    const odd = JSON.stringify({ callback_query: { id: { nested: SECRET_TEXT }, from: { id: [1] }, data: { text: SECRET_TEXT } } });
+    expect(JSON.stringify(tapShape(odd))).not.toContain(SECRET_TEXT);
+    expect(tapShape(JSON.stringify({ message: { chat: { id: OWNER }, text: SECRET_TEXT } }))).toBeNull();
+    expect(tapShape("{not json")).toBeNull();
+    expect(tapShape("null")).toBeNull();
+  });
+
+  it("the gate reaches the same verdict on the captured shape as on the update it came from", () => {
+    for (const [fromId, data] of [[OWNER, "eve:1"], [STRANGER, "eve:1"], [OWNER, "probe:tap"], [STRANGER, "np:a:61"]] as const) {
+      const raw = realTap(fromId, data);
+      expect(refusedTap(JSON.stringify(tapShape(raw)), env), `${fromId} ${data}`).toEqual(refusedTap(raw, env));
+    }
+  });
+
+  describe("at the front door", () => {
+    const route = webhook.routes.find((r) => r.method === "POST")!;
+    const handler = route.handler as unknown as (request: Request, args: { attachSession: () => { end: () => Promise<unknown> } }) => Promise<Response>;
+    const attachSession = () => ({ end: async () => ({}) });
+    const post = (body: string, secret: string | null = FIXTURE_SECRET) =>
+      new Request("http://127.0.0.1/eve/v1/telegram", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(secret === null ? {} : { "x-telegram-bot-api-secret-token": secret }) },
+        body,
+      });
+
+    beforeEach(() => {
+      bot.calls.length = 0;
+      bot.fails = false;
+      bot.refuses = false;
+      process.env["TELEGRAM_PRINCIPAL_ID"] = String(OWNER);
+      const { request, result } = tapCapturePaths();
+      rmSync(request, { force: true });
+      rmSync(result, { force: true });
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("ok"));
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+      delete process.env["TELEGRAM_PRINCIPAL_ID"];
+    });
+
+    it("writes nothing and logs nothing about a tap unless the probe asked", async () => {
+      const said = vi.spyOn(console, "log").mockImplementation(() => {});
+      await handler(post(realTap(OWNER, "eve:1")), { attachSession });
+      expect(existsSync(tapCapturePaths().result)).toBe(false);
+      expect(said).not.toHaveBeenCalled();
+    });
+
+    it("on request: writes the shape of the next tap once, removes the request, and logs none of the update", async () => {
+      const { request, result } = tapCapturePaths();
+      writeFileSync(request, "");
+      const said = vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await handler(post(realTap(OWNER, "eve:1")), { attachSession });
+
+      expect(JSON.parse(readFileSync(result, "utf8"))).toEqual(tapShape(realTap(OWNER, "eve:1")));
+      expect(readFileSync(result, "utf8")).not.toContain(SECRET_TEXT);
+      expect(existsSync(request)).toBe(false);
+      const logged = said.mock.calls.flat().map(String).join(" ");
+      for (const leaked of [SECRET_TEXT, "cb-live", String(OWNER), "eve:1", "Firstname"]) expect(logged, leaked).not.toContain(leaked);
+
+      // One shot: the next tap is not captured.
+      rmSync(result, { force: true });
+      await handler(post(realTap(OWNER, "eve:1")), { attachSession });
+      expect(existsSync(result)).toBe(false);
+    });
+
+    it("capturing changes nothing about the tap: a stranger's is still refused and not forwarded", async () => {
+      writeFileSync(tapCapturePaths().request, "");
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const response = await handler(post(realTap(STRANGER, "eve:1")), { attachSession });
+
+      expect(response.status).toBe(200);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(bot.calls.map((c) => c.method)).toEqual(["answerCallbackQuery"]);
+      expect(existsSync(tapCapturePaths().result)).toBe(true);
+    });
+
+    it("a message never answers the request, and a request Telegram did not send never does", async () => {
+      const { request, result } = tapCapturePaths();
+      writeFileSync(request, "");
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await handler(post(JSON.stringify({ update_id: 9, message: { message_id: 2, chat: { id: OWNER, type: "private" }, text: SECRET_TEXT } })), { attachSession });
+      await handler(post(realTap(OWNER, "eve:1"), null), { attachSession });
+      await handler(post(realTap(OWNER, "eve:1"), "not-the-secret"), { attachSession });
+
+      expect(existsSync(result)).toBe(false);
+      expect(existsSync(request)).toBe(true);
+    });
   });
 });

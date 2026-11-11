@@ -51,6 +51,8 @@
  * `TELEGRAM_PRINCIPAL_ID`, not a code change.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { isAllowedPrincipalId } from "./principals.js";
 import { parseProposalCallback } from "./proposal-buttons.js";
@@ -148,6 +150,63 @@ export function refusedTap(raw: string, env: NodeJS.ProcessEnv = process.env): T
   if (!isAllowedPrincipalId("telegram", tapper, env)) return refusal("not-allowed");
   if (lane === "unrecognised") return refusal("unrecognised");
   return null;
+}
+
+// ── The live probe's capture ────────────────────────────────────────────────────────────
+//
+// `tests/live/telegram-approval-tap.live.mts` has to see a tap as Telegram really sends it. A bot
+// with a webhook cannot ask Telegram for its updates, and this door logs no update, so the probe
+// asks the door for ONE: it leaves a request file in the container's temp directory, the door
+// writes the shape of the next tap beside it, and the request is gone. Nothing is logged, and
+// what is written is only what `tapShape` picks out.
+
+/** Where the probe leaves its request, and where the door answers it. Read at call time. */
+export function tapCapturePaths(): { request: string; result: string } {
+  return {
+    request: join(tmpdir(), "lares-telegram-tap-capture.request"),
+    result: join(tmpdir(), "lares-telegram-tap-capture.json"),
+  };
+}
+
+function primitive(value: unknown): string | number | boolean | undefined {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? value : undefined;
+}
+
+/**
+ * The fields of a button tap this gate reads, copied one by one, or `null` when the update is not
+ * a tap. An allowlist, not a redaction: the card's text, the tapper's name and username, and
+ * anything else Telegram put in the update are never copied, whatever they are. A field that is
+ * not a plain value is left out.
+ */
+export function tapShape(raw: string): Record<string, unknown> | null {
+  let update: unknown;
+  try {
+    update = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const envelope = asRecord(update);
+  const query = asRecord(envelope?.["callback_query"]);
+  if (envelope === undefined || query === undefined) return null;
+  const from = asRecord(query["from"]);
+  const message = asRecord(query["message"]);
+  const chat = asRecord(message?.["chat"]);
+  return {
+    update_id: primitive(envelope["update_id"]),
+    callback_query: {
+      id: primitive(query["id"]),
+      ...(from === undefined ? {} : { from: { id: primitive(from["id"]), is_bot: primitive(from["is_bot"]) } }),
+      ...(message === undefined
+        ? {}
+        : {
+            message: {
+              message_id: primitive(message["message_id"]),
+              ...(chat === undefined ? {} : { chat: { id: primitive(chat["id"]), type: primitive(chat["type"]) } }),
+            },
+          }),
+      data: primitive(query["data"]),
+    },
+  };
 }
 
 /**

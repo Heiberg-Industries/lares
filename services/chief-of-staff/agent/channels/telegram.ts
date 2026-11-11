@@ -18,7 +18,7 @@ import {assertDoorAuthority,managedIdentity} from '@lares/agent-kit/door-authori
  * card once it is decided.
  */
 import { readFileSync } from "node:fs";
-import { interaction, type ErrorInfo, type SessionView } from "eve/events";
+import { interaction, type SessionView } from "eve/events";
 import {
   defaultTelegramAuth,
   telegramChannel,
@@ -526,42 +526,18 @@ interface FailureContext {
   readonly channel: { readonly telegram: { post(message: string): Promise<unknown> } };
 }
 
-/** A turn's or a session's ending, as eve 1.0 reports it: an outcome and, on a failure, the error. */
+/** A turn's or a session's ending, as eve 1.0 reports it: an outcome and, on a failure, the
+ *  error. This is the event's `data`, and it is handed to `@lares/agent-kit/gateway-budget` as it
+ *  is: the kit reads `outcome` and `error: { code, message, id }` itself. */
 interface EndingEvent {
-  readonly data: { readonly outcome: string; readonly error?: ErrorInfo };
-}
-
-/**
- * eve 1.0's failure payload, in the shape `@lares/agent-kit/gateway-budget` reads.
- *
- * eve 1.0 reports a failure as `error: { code, message, id?, hint? }`. The kit's functions were
- * written for the older `{ code, message, details }`, where `details.name` was the label eve put
- * in front of the message and `details.errorId` the id it quoted. eve 1.0's own notice
- * (`failureNotice` in `eve/dist/src/public/channels/reply.js`) labels the message with the error
- * CODE and quotes `error.id`, so those are what goes where: the text the kit composes for an
- * ordinary failure is then exactly what eve 1.0 would have posted
- * (`tests/telegram-budget-refusal.test.ts` compares the two).
- *
- * A budget refusal is recognised from `message`, which carries the gateway's own sentence. The
- * gateway's `error.type` is no longer in the event at all.
- */
-function failureData(error: ErrorInfo | undefined): FailureEventData {
-  if (error === undefined) return {};
-  return {
-    code: error.code,
-    message: error.message,
-    details: {
-      ...(error.code ? { name: error.code } : {}),
-      ...(error.id ? { errorId: error.id } : {}),
-    },
-  };
+  readonly data: FailureEventData;
 }
 
 /** `turn.settled` — a turn that FAILED says so. Any other outcome posts nothing, as eve's default.
  *  EXPORTED for tests, the same convention as `onContentCompleted` below. */
 export async function onTurnSettled(event: EndingEvent, ctx: FailureContext): Promise<void> {
   if (event.data.outcome !== "failed") return;
-  const response = respondToTurnFailed(failureData(event.data.error), FAILURE_OPTIONS);
+  const response = respondToTurnFailed(event.data, FAILURE_OPTIONS);
   if (response.kind === "silent") return;
   if (response.kind === "budget-refusal") {
     console.warn("chief-of-staff telegram: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
@@ -574,21 +550,21 @@ export async function onTurnSettled(event: EndingEvent, ctx: FailureContext): Pr
  * boundary retiring it, a timeout) posts nothing, as eve's default.
  *
  * A budget refusal the gateway answers with a 400 is terminal, and in eve 1.0 a terminal failure
- * is reported HERE and nowhere else: the turn carries no error of its own. So this handler asks
+ * is reported HERE and nowhere else. `fail()` in eve's `harness/session-machine/transitions.js`
+ * emits EITHER `turn.settled` (failed) OR `session.ended` (failed), never both, and ending the
+ * session closes its open turn as `cancelled` with no error (`cascade.js`). So this handler asks
  * the kit the turn question first and answers a refusal itself. `respondToSessionFailed` stays
- * silent on a refusal — it was written for an eve that had already reported it on the turn — and
- * asking only that would leave a capped turn with no answer at all.
+ * silent on a refusal, and asking only that would leave a capped turn with no answer at all.
  */
 export async function onSessionEnded(event: EndingEvent, ctx: FailureContext): Promise<void> {
   if (event.data.outcome !== "failed") return;
-  const data = failureData(event.data.error);
-  const refusal = respondToTurnFailed(data, FAILURE_OPTIONS);
+  const refusal = respondToTurnFailed(event.data, FAILURE_OPTIONS);
   if (refusal.kind === "budget-refusal") {
     console.warn("chief-of-staff telegram: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
     await ctx.channel.telegram.post(refusal.text);
     return;
   }
-  const response = respondToSessionFailed(data, FAILURE_OPTIONS);
+  const response = respondToSessionFailed(event.data, FAILURE_OPTIONS);
   if (response.kind === "silent") return;
   await ctx.channel.telegram.post(response.text);
 }

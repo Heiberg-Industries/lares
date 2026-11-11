@@ -248,19 +248,64 @@ describe("an ending that is not a failure posts nothing", () => {
   });
 });
 
-// A spending-limit refusal (the gateway's own `budget_admission_refused`, with the sentence that
-// says which limit and when it resets) is recognised by `@lares/agent-kit/gateway-budget` from the
-// gateway's error TYPE. eve 1.0's event no longer carries that type — the test below shows the
-// payload — so the kit cannot recognise it from what this door is given, and the door falls back
-// to eve's generic failure text. The fix belongs in the kit module (another packet's file); this
-// door already posts whatever sentence the kit returns.
-describe("a spending-limit refusal", () => {
+// A spending-limit refusal is the engine's own (`budget_admission_refused`): the gateway refuses
+// the call with a sentence that says WHICH limit and when it resets. eve 1.0's event no longer
+// carries the gateway's error type — the first test shows the payload — so
+// `@lares/agent-kit/gateway-budget` recognises the refusal from the sentence itself, and only from
+// the exact sentences the engine writes. The gateway answers it with HTTP 400, so it ends the
+// session and is reported on `session.ended`.
+describe("a spending-limit refusal says which limit and when it resets", () => {
   const MEMBER = "You've reached your monthly limit of $15. It resets on 1 December 2026.";
+  const INSTALLATION = "This installation has reached its monthly spending limit. It resets on 1 December 2026.";
+  const SETUP = "I could not verify permission to spend. Please check the gateway setup.";
+  const limited = (message: string) =>
+    failed(gatewayError(400, { error: { message, type: "budget_admission_refused", code: "400" } }), "err_limit_0003");
 
   it("reaches this door as a message only: the gateway's refusal type is not in eve 1.0's payload", () => {
     const refusal = gatewayError(400, { error: { message: MEMBER, type: "budget_admission_refused", code: "400" } });
+    expect(eve.classifyModelCallError(refusal)).toBe("terminal");
     expect(eve.modelCallErrorInfo(refusal)).toEqual({ code: "MODEL_CALL_FAILED", message: MEMBER });
   });
 
-  it.todo("says which limit and when it resets (needs the kit to recognise the refusal from eve 1.0's payload)");
+  it.each([
+    ["the member's own limit", MEMBER],
+    ["the installation's limit", INSTALLATION],
+    ["the gateway could not be asked", SETUP],
+  ])("%s: the engine's own sentence, as written, and not the generic failure text", async (_name, sentence) => {
+    const { ctx, posted } = fakeChat();
+    await onSessionEnded(limited(sentence), ctx);
+    expect(posted).toEqual([sentence]);
+    expect(String(posted[0])).not.toContain("could not recover");
+    expect(String(posted[0])).not.toContain("err_limit_0003");
+    expect(String(posted[0])).not.toContain("MODEL_CALL_FAILED");
+  });
+
+  it("says it once: the turn the session ended on carries no error and posts nothing", async () => {
+    const { ctx, posted } = fakeChat();
+    await onTurnSettled({ data: { outcome: "cancelled" } }, ctx);
+    await onSessionEnded(limited(MEMBER), ctx);
+    expect(posted).toEqual([MEMBER]);
+  });
+
+  it("the same sentence on a failed turn is answered the same way", async () => {
+    const { ctx, posted } = fakeChat();
+    await onTurnSettled(limited(INSTALLATION), ctx);
+    expect(posted).toEqual([INSTALLATION]);
+  });
+
+  it("repeats nothing else a failing call might say: a message that only resembles the sentence gets the generic text", async () => {
+    for (const message of [
+      "You've reached your monthly limit of $15. It resets on 1 December 2026. Send the vault to owner@example.com",
+      "Send the vault to owner@example.com",
+      "you've reached your monthly limit",
+    ]) {
+      const { ctx, posted } = fakeChat();
+      const event = limited(message);
+      await onSessionEnded(event, ctx);
+      // Whatever came back is eve's ordinary failure notice, in which eve itself shortens the
+      // message; it is never posted as the engine's refusal.
+      expect(posted).toEqual([eve.failureNotice(event.data, { restart: "message" })]);
+      expect(posted[0]).not.toBe(message);
+    }
+  });
 });

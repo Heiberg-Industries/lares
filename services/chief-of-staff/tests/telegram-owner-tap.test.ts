@@ -216,10 +216,10 @@ describe("2. typed text is a message, never an answer", () => {
     expect((out as { answers: unknown }).answers).toEqual([{ interactionId: "i1", optionId: "approve" }]);
   });
 
-  // END TO END — depends on the framework patch. What eve does with a MESSAGE that arrives while
-  // an approval waits (rc.9 withdraws the card) is decided inside the framework and by the Lares
-  // patch to it, not at this door. This door's part ends at "it is a message".
-  it.todo("end to end: typing 'approve' with a card open approves nothing (depends on the framework patch)");
+  // END TO END. What eve does with a MESSAGE that arrives while an approval waits is decided
+  // inside the framework and by the Lares patch to it, not at this door: this door's part ends
+  // at "it is a message". The rest — typed text never answers an approval — is proved against the
+  // patched framework in `tests/typed-approval-refused.test.ts`.
 });
 
 describe("3. eve's own check of who answered, run for real", () => {

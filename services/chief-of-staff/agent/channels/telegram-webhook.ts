@@ -29,16 +29,48 @@
  * decides alone whether a message starts a turn. A button tap is the opposite: it can execute a
  * real action, so a tap the gate refuses is never forwarded, whatever else failed.
  */
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { defineChannel, POST } from "eve/channels";
 
 import { neutralizeBotReplyMarker } from "@lares/agent-kit/telegram-reply-fix";
 import { TELEGRAM_INNER_ROUTE, TELEGRAM_PUBLIC_ROUTE } from "@lares/agent-kit/telegram-routes";
 import { retirePriorDaySession } from "../../lib/telegram-rotation.js";
 import { callTelegramApi } from "../../lib/telegram-send.js";
-import { refusedTap, secretMatches, TAP_REFUSAL, TAP_UNRECOGNISED } from "../../lib/telegram-tap-gate.js";
+import {
+  refusedTap,
+  secretMatches,
+  TAP_REFUSAL,
+  TAP_UNRECOGNISED,
+  tapCapturePaths,
+  tapShape,
+} from "../../lib/telegram-tap-gate.js";
 import { telegramCredentials } from "./telegram.js";
 
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
+
+/**
+ * The live probe's capture (`tests/live/telegram-approval-tap.live.mts`): when the probe has left
+ * its request file, write the shape of this tap beside it, once. Off unless that file exists,
+ * which only somebody already inside the container can arrange. Writes the allowlisted fields
+ * `tapShape` picks and nothing else, logs no part of the update, changes nothing about what
+ * happens to the tap, and never throws.
+ */
+function captureTapForProbe(raw: string): void {
+  try {
+    const { request, result } = tapCapturePaths();
+    if (!existsSync(request)) return;
+    const shape = tapShape(raw);
+    if (shape === null) return; // Not a tap: the request waits for one.
+    // A fresh file every time, created exclusively: an older answer (or anything else that was
+    // put at this path) is removed first and never written through.
+    rmSync(result, { force: true });
+    writeFileSync(result, JSON.stringify(shape), { mode: 0o600, flag: "wx" });
+    rmSync(request, { force: true });
+    console.log("[telegram-webhook] live probe: wrote the shape of one button tap (ids and callback data only)");
+  } catch (err) {
+    console.error("[telegram-webhook] live probe capture failed —", err instanceof Error ? err.message : "unknown error");
+  }
+}
 
 function innerUrl(): string {
   const port = process.env["PORT"] ?? "3000";
@@ -66,6 +98,8 @@ export default defineChannel({
       } catch (err) {
         console.error("[telegram-webhook] could not read the webhook secret —", err);
       }
+
+      if (authentic) captureTapForProbe(raw);
 
       // The updates this door refuses: a tap by somebody who may not answer, and a tap the gate
       // does not recognise. Every message reads as null and falls straight through. The gate

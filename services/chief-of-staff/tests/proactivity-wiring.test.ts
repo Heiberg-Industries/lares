@@ -363,14 +363,17 @@ const advanceRung = vi.fn(async () => {});
 const readLadderEnabled = vi.fn(async () => true);
 vi.mock("../lib/deadlines-store.js", () => ({ listDeadlines, advanceRung, readLadderEnabled }));
 
-/** The raw send primitives `reminders.ts` uses — spied, so "the door was not knocked on" is a
- *  fact about the wire and not about a wrapper. */
-const sendTelegramMessage = vi.fn(async () => ({}));
+/** The raw send primitives the schedules use — spied, so "the door was not knocked on" is a fact
+ *  about the one call every raw send goes through and not about a schedule's own wrapper.
+ *  Telegram's is `lib/telegram-send.ts` (eve 1.0 no longer exports a sender of its own); what
+ *  that function puts on the wire is pinned in `tests/telegram-delivery.test.ts`. */
+const sendTelegramMessage = vi.fn(async () => ({ id: "1" }));
 const callSlackApi = vi.fn(async () => ({ ok: true, ts: "1" }));
-// PARTIAL, both of them: `agent/channels/{slack,telegram}.ts` import `slackChannel`/
-// `telegramChannel` from these same modules at import time, and a wholesale mock takes the whole
-// channel down before the schedule is even constructed.
-vi.mock("eve/channels/telegram", async (importOriginal) => ({
+// PARTIAL, both of them. The Telegram sender's module also holds the Bot API call the webhook
+// front door uses. `agent/channels/slack.ts` imports `slackChannel` from the same module as
+// `callSlackApi` at import time, and a wholesale mock takes the whole channel down before the
+// schedule is even constructed.
+vi.mock("../lib/telegram-send.js", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   sendTelegramMessage,
 }));
