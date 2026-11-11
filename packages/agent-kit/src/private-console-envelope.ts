@@ -1,9 +1,20 @@
 import { createHash } from 'node:crypto';
+import { APPROVE_OPTION_ID, DENY_OPTION_ID } from 'eve/events';
 
 /** Only the browser console's text and exact approval envelopes may enter private sessions.
- * Check the original request before Eve parses attachments or public callback destinations. */
+ * Check the original request before Eve parses attachments or public callback destinations.
+ *
+ * The accepted bodies are eve 1.0's own client shapes (the eve channel's `parseSessionMessageBody`,
+ * `parseCancelTurnBody`, `parseResetBody`), narrowed to what the console sends:
+ *   POST .../session            { message, operationId? }   (create)
+ *   POST .../session/:id        { message }  or  { answers: [{ interactionId, optionId }] }
+ *   POST .../session/:id/cancel { turnId? }
+ *   POST .../session/:id/end    { reason? }   (`/reset` is the same control, still served by eve)
+ *   POST .../session/:id/clear  {}   and   .../compact  {}
+ * `optionId` is `approve` or `deny`. Anything else, including eve 0.60's `inputResponses` /
+ * `requestId` / `cancel`, is refused. */
 // Only fully validated raw requests receive a minimal, immutable pre-dispatch receipt.
-const verifiedResponses = new WeakMap<Request,Readonly<{requestId:string;optionId:'approve'|'cancel';method:string;path:string;rawBodyHash:string;modelCapsule?:string}>>();
+const verifiedResponses = new WeakMap<Request,Readonly<{interactionId:string;optionId:'approve'|'deny';method:string;path:string;rawBodyHash:string;modelCapsule?:string}>>();
 const verifiedMessages = new WeakMap<Request, Readonly<{message:string;method:string;path:string;rawBodyHash:string;vaultCapsule?:string;modelCapsule?:string}>>();
 /** Opaque, console-signed authority capsule. Its contents are not trusted until Keeper verifies it. */
 export const PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER = 'x-lares-vault-capsule';
@@ -27,31 +38,32 @@ function modelCapsuleRequest(capsule:string):Record<string,unknown> {
 export function assertPrivateConsoleEnvelope(payload: unknown, path: string): void {
   if (!object(payload)) denied();
   const body = payload as Record<string, unknown>;
-  const control = /\/(cancel|clear|compact|reset)$/.exec(path)?.[1];
+  const control = /\/(cancel|clear|compact|end|reset)$/.exec(path)?.[1];
   if (control) {
-    keys(body, control === 'cancel' ? ['turnId'] : control === 'reset' ? ['reason'] : []);
+    keys(body, control === 'cancel' ? ['turnId'] : control === 'end' || control === 'reset' ? ['reason'] : []);
     for (const value of Object.values(body)) if (!nonempty(value)) denied();
     return;
   }
-  keys(body, ['message', 'inputResponses', 'operationId']);
+  keys(body, ['message', 'answers', 'operationId']);
   if ('operationId' in body && (!nonempty(body.operationId) || /\/session\/[^/]+$/.test(path))) denied();
-  if ('message' in body && 'inputResponses' in body) denied();
+  if ('message' in body && 'answers' in body) denied();
   if ('message' in body && !nonempty(body.message)) denied();
-  if ('inputResponses' in body) {
-    if (!/\/session\/[^/]+$/.test(path) || !Array.isArray(body.inputResponses) || body.inputResponses.length !== 1) denied();
-    for (const response of body.inputResponses as unknown[]) {
+  if ('answers' in body) {
+    if (!/\/session\/[^/]+$/.test(path) || !Array.isArray(body.answers) || body.answers.length !== 1) denied();
+    for (const response of body.answers as unknown[]) {
       if (!object(response)) denied();
       const answer = response as Record<string, unknown>;
-      keys(answer, ['requestId', 'optionId']);
-      if (!nonempty(answer.requestId) || !nonempty(answer.optionId)) denied();
+      keys(answer, ['interactionId', 'optionId']);
+      if (!nonempty(answer.interactionId) || !nonempty(answer.optionId)) denied();
+      if (answer.optionId !== APPROVE_OPTION_ID && answer.optionId !== DENY_OPTION_ID) denied();
     }
   }
-  if (!('message' in body) && !('inputResponses' in body) && /\/session\/[^/]+$/.test(path)) denied();
+  if (!('message' in body) && !('answers' in body) && /\/session\/[^/]+$/.test(path)) denied();
 }
 export async function assertPrivateConsoleRequest(request: Request): Promise<void> {
   if (request.method !== 'POST') return;
   const path = new URL(request.url).pathname;
-  if (!/\/session(?:\/[^/]+)?(?:\/(?:cancel|clear|compact|reset))?$/.test(path)) return;
+  if (!/\/session(?:\/[^/]+)?(?:\/(?:cancel|clear|compact|end|reset))?$/.test(path)) return;
   const rawBytes = Buffer.from(await request.clone().arrayBuffer());
   if (rawBytes.length > 262144) denied();
   const raw = rawBytes.toString('utf8');
@@ -60,10 +72,10 @@ export async function assertPrivateConsoleRequest(request: Request): Promise<voi
   assertPrivateConsoleEnvelope(body,path);
   const modelCapsule=request.headers.get(PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER)??undefined;
   if(modelCapsule!==undefined&&(modelCapsule.length>MAX_MODEL_CAPSULE_CHARS||!/^[A-Za-z0-9_.-]+$/.test(modelCapsule)))denied();
-  if(Array.isArray(body.inputResponses)){
-    const answer=body.inputResponses[0];
-    if(answer.optionId!=='approve'&&answer.optionId!=='cancel')denied();
-    verifiedResponses.set(request,Object.freeze({requestId:answer.requestId,optionId:answer.optionId,method:request.method,path,
+  if(Array.isArray(body.answers)){
+    const answer=body.answers[0];
+    if(answer.optionId!==APPROVE_OPTION_ID&&answer.optionId!==DENY_OPTION_ID)denied();
+    verifiedResponses.set(request,Object.freeze({interactionId:answer.interactionId,optionId:answer.optionId,method:request.method,path,
       rawBodyHash,...(modelCapsule===undefined?{}:{modelCapsule})}));
   }
   if (/\/session(?:\/[^/]+)?$/.test(path) && typeof body.message==='string') {
@@ -104,17 +116,18 @@ export function verifiedPrivateConsoleModelMessageReceipt(request:Request,messag
     requestId:requestId as string,purpose:'human',modelCapsule:receipt!.modelCapsule!});
 }
 
-/** Receipt for the exact validated approve/cancel body, including its original raw bytes. */
-export function verifiedPrivateConsoleModelResponseReceipt(request:Request):Readonly<{method:string;path:string;rawBodyHash:string;requestId:string;purpose:'resume';resume:{requestId:string;optionId:'approve'|'cancel'};modelCapsule:string}> {
+/** Receipt for the exact validated approve/deny body, including its original raw bytes. The capsule
+ * (signed by the console) keeps its `resume.requestId` key; its value is the answered interaction's id. */
+export function verifiedPrivateConsoleModelResponseReceipt(request:Request):Readonly<{method:string;path:string;rawBodyHash:string;requestId:string;purpose:'resume';resume:{requestId:string;optionId:'approve'|'deny'};modelCapsule:string}> {
   const receipt=verifiedResponses.get(request);
   if(!receipt?.modelCapsule)return denied();
   const modelRequest=modelCapsuleRequest(receipt.modelCapsule);
   if(modelRequest.purpose!=='resume'||typeof modelRequest.requestId!=='string'||!object(modelRequest.resume))return denied();
   const resume=modelRequest.resume;
-  if(resume.optionId!=='approve'&&resume.optionId!=='cancel')return denied();
-  if(resume.requestId!==receipt.requestId||resume.optionId!==receipt.optionId)return denied();
+  if(resume.optionId!==APPROVE_OPTION_ID&&resume.optionId!==DENY_OPTION_ID)return denied();
+  if(resume.requestId!==receipt.interactionId||resume.optionId!==receipt.optionId)return denied();
   return Object.freeze({method:receipt.method,path:receipt.path,rawBodyHash:receipt.rawBodyHash,requestId:modelRequest.requestId,
-    purpose:'resume',resume:Object.freeze({requestId:receipt.requestId,optionId:receipt.optionId}),modelCapsule:receipt.modelCapsule});
+    purpose:'resume',resume:Object.freeze({requestId:receipt.interactionId,optionId:receipt.optionId}),modelCapsule:receipt.modelCapsule});
 }
 
 /** Same Request object only, after strict raw-envelope validation. Browser-supplied attributes

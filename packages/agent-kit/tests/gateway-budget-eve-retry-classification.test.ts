@@ -28,10 +28,10 @@ interface ModelCallErrorModule {
 }
 
 async function loadInstalledClassifier(): Promise<ModelCallErrorModule["classifyModelCallError"]> {
-  const file = path.join(eveRoot(), "dist", "src", "harness", "model-call-error.js");
+  const file = path.join(eveRoot(), "dist", "src", "harness", "model-call", "errors.js");
   if (!existsSync(file)) {
     throw new Error(
-      `eve's model-call-error module is no longer at ${file}. eve moved its harness layout; ` +
+      `eve's model-call errors module is no longer at ${file}. eve moved its harness layout; ` +
         "re-check this test (and this file's header) before deleting it.",
     );
   }

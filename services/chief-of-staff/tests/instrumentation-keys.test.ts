@@ -1,23 +1,35 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+// The tool catalogue is not what this test reads; leaving it out keeps the test independent of the kit build.
+vi.mock("../catalogue/index.js", () => ({ CATALOGUE: {} }));
 import instrumentation from "../agent/instrumentation.js";
 
-// eve 0.60.0 removed `recordInputs`/`recordOutputs` from OTel DESTINATION options
-// (otelIntegration/managedOtelIntegration/agentRunsIntegration, which call
-// assertNoRemovedContentOptions and throw). It did NOT remove them from
-// defineInstrumentation's own config, which is the layout this service uses — they are still
-// documented at dist/src/public/instrumentation/index.d.ts:133,139.
-//
-// This test exists because eve's own docstring warns that excess-property checking on
-// defineInstrumentation is weak: "a misspelled key can reach `eve build` rather than failing at
-// tsc". A typo here would silently ship content-free traces. If a future eve really does remove
-// these keys, this test is where it surfaces — loudly, at the bump, not months later.
-describe("the instrumentation config keeps the keys eve still honours", () => {
-  it("records inputs and outputs", () => {
-    expect(instrumentation.recordInputs).toBe(true);
-    expect(instrumentation.recordOutputs).toBe(true);
+// eve 1.0's `defineInstrumentation` has no top-level `recordInputs` / `recordOutputs`: what a trace
+// carries is decided by `tracePolicy` alone (docs/guides/instrumentation/instrumentation.mdx,
+// "Control inputs and outputs"). eve's own docstring warns that excess-property checking on
+// defineInstrumentation is weak, so a leftover key could reach `eve build` rather than failing at
+// tsc. This test pins that the removed keys are gone and that the policy still does its job: a
+// private console conversation exports nothing; every other channel exports inputs and outputs.
+describe("the instrumentation config uses only what eve 1.0 honours", () => {
+  it("does not set the removed top-level content keys", () => {
+    const keys = Object.keys(instrumentation);
+    expect(keys).not.toContain("recordInputs");
+    expect(keys).not.toContain("recordOutputs");
   });
 
   it("declares a tracePolicy, so a private conversation is not silently content-free", () => {
     expect(typeof instrumentation.tracePolicy).toBe("function");
+  });
+
+  it("emits nothing for the private console channel, under either spelling", () => {
+    const policy = instrumentation.tracePolicy as (t: { channel: { kind: string } }) => unknown;
+    expect(policy({ channel: { kind: "channel:eve" } })).toEqual({ emit: false });
+    expect(policy({ channel: { kind: "http" } })).toEqual({ emit: false });
+  });
+
+  it("exports inputs and outputs for the doors and everything else", () => {
+    const policy = instrumentation.tracePolicy as (t: { channel: { kind: string } }) => unknown;
+    for (const kind of ["channel:slack", "channel:telegram", "schedule", "subagent", "unknown"]) {
+      expect(policy({ channel: { kind } })).toEqual({ emit: true, recordInputs: true, recordOutputs: true });
+    }
   });
 });
