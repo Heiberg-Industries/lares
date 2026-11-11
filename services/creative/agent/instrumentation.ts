@@ -40,6 +40,7 @@ import { defineInstrumentation } from "eve/instrumentation";
 
 import { isLangfuseConfigured, langfuseExporterConfig } from "@lares/agent-kit/langfuse-otel";
 import { registerApprovalSummary } from "@lares/agent-kit/approval-summary";
+import { installRefusingDefaultProvider } from "@lares/agent-kit/gateway-budget";
 import { installAttachmentHydration } from "@lares/agent-kit/attachment-hydration";
 import { registerAgent } from "@lares/agent-kit/agent-registry";
 import { grantedToolNames } from "@lares/agent-kit/catalogue";
@@ -63,6 +64,13 @@ if (workflowDatabaseUrl()) await releaseStaleWorkflowLocks();
 // every conversation. Same module-level placement and reason as the unlock above; the helper's
 // header has the argument. Only where a database exists — never at `eve build`.
 const boot = process.env.DATABASE_URL ? await bootDefinitionOrStop(() => thisAgent(BOOT)) : null;
+
+// FIRST, before anything else can ask for a model. The engine's model is a provider object on the
+// gateway, but eve keeps only its id between steps and, picking a session up cold (after a restart,
+// a between-turns compact), resolves that id again through the AI SDK's DEFAULT provider, which is
+// Vercel's AI Gateway: a model call outside admission and spending limits. This replaces the
+// default with one that refuses every request, and locks it. See `refusingDefaultProvider`.
+installRefusingDefaultProvider();
 
 export default defineInstrumentation({
   setup: ({ agentName }) => {

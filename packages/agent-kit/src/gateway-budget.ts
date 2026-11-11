@@ -495,3 +495,62 @@ export function respondToSessionFailed(
   if (isBudgetExceeded(data)) return { kind: "silent" };
   return { kind: "default", text: defaultSessionFailedText(data, options.dialect) };
 }
+
+// ── The default model provider refuses everything ───────────────────────────────────────
+
+/** What a model call made through the framework's default provider is told. */
+export const DEFAULT_PROVIDER_REFUSED =
+  "A model call was made outside the engine's gateway and is refused. Every model call must go through the gateway.";
+
+/**
+ * Why this exists. A model the engine hands eve is a provider OBJECT built on the gateway
+ * (`definition-model.ts`), wrapped so each call is admitted and counted. But eve keeps only the
+ * model's id between steps. When a session is picked up again without that object in memory
+ * (after a restart) and no step is running, eve reads the saved id and resolves it again itself:
+ * `harness/compaction/step.js` (`compactHistory`, the between-turns `POST …/compact`) calls
+ * `resolveEffectiveRuntimeModel`; `definitions/kernel.js` (`keepOne`, restore mode) falls back to
+ * the kept value when the model function refuses to run between turns; `config.resolveModel`
+ * turns the bare id into a string; and the AI SDK resolves a string id with
+ * `globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway`, which is Vercel's AI Gateway. That call
+ * would leave the engine's gateway, outside admission and spending limits.
+ *
+ * `AI_SDK_DEFAULT_PROVIDER` is the AI SDK's own seam for replacing that default. This provider
+ * answers every request for a model, of any kind, with a model that refuses to run. A call that
+ * goes through the gateway never asks it; anything that does is refused.
+ */
+export function refusingDefaultProvider(): Record<PropertyKey, unknown> {
+  const refuse = (): never => { throw new Error(DEFAULT_PROVIDER_REFUSED); };
+  const refusingModel = (kind: string, modelId: unknown) => ({
+    specificationVersion: "v4" as const,
+    provider: "lares-refused",
+    modelId: typeof modelId === "string" ? modelId : "refused",
+    supportedUrls: {},
+    maxEmbeddingsPerCall: 1,
+    supportsParallelCalls: false,
+    doGenerate: refuse, doStream: refuse, doEmbed: refuse, doRerank: refuse, doTranscribe: refuse,
+    doSpeak: refuse, doRerankDocuments: refuse, kind,
+  });
+  const base: Record<PropertyKey, unknown> = { specificationVersion: "v4" };
+  return new Proxy(base, {
+    get(target, property) {
+      if (property in target) return target[property];
+      // Promise machinery and symbols probe objects; they must not look like a provider method.
+      if (typeof property === "symbol" || property === "then") return undefined;
+      return (modelId?: unknown) => refusingModel(property, modelId);
+    },
+    has: () => true,
+  });
+}
+
+/**
+ * Installs {@link refusingDefaultProvider} as the AI SDK's default provider for this process, and
+ * locks it: nothing later can swap it for one that reaches a network. Idempotent. The target is a
+ * parameter so a test can use a plain object.
+ */
+export function installRefusingDefaultProvider(target: object = globalThis): void {
+  const existing = Object.getOwnPropertyDescriptor(target, "AI_SDK_DEFAULT_PROVIDER");
+  if (existing && existing.configurable === false && existing.writable === false) return;
+  Object.defineProperty(target, "AI_SDK_DEFAULT_PROVIDER", {
+    value: refusingDefaultProvider(), writable: false, configurable: false, enumerable: false,
+  });
+}

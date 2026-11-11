@@ -24,7 +24,7 @@ import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { defaultSessionFailedText, defaultTurnFailedText, respondToTurnFailed } from "../src/gateway-budget.js";
+import { defaultSessionFailedText, defaultTurnFailedText, respondToSessionFailed, respondToTurnFailed } from "../src/gateway-budget.js";
 
 const require = createRequire(import.meta.url);
 
@@ -127,4 +127,31 @@ describe("the installed eve carries the gateway's limit sentence into the failed
     expect(event.error.message).toBe(sentence);
     expect(respondToTurnFailed(event, { refusalText: "exhausted", dialect: "slack" })).toEqual({ kind: "budget-refusal", text: sentence });
   });
+
+  // The two doors (Slack, Telegram) answer a failed turn with `respondToTurnFailed(event.data, …)` and a
+  // failed session end with `respondToSessionFailed(event.data, …)`. For a monthly-limit refusal the person
+  // must read the keeper's own sentence, in either dialect, once: never eve's generic "I hit an error".
+  it("a spending-limit refusal reads as the keeper's own sentence on both doors, said once", async () => {
+    const file = path.join(eveRoot(), "dist", "src", "harness", "model-call", "errors.js");
+    const { extractUpstreamRejectionMessage } = (await import(file)) as {
+      extractUpstreamRejectionMessage(e: unknown): { message: string } | null;
+    };
+    const sentences = [
+      "You've reached your monthly limit of $15. It resets on 1 December 2026.",
+      "This installation has reached its monthly spending limit. It resets on 1 December 2026.",
+    ];
+    for (const sentence of sentences) {
+      const body = { error: { type: "budget_admission_refused", code: "budget_admission_refused", message: sentence } };
+      const error = Object.assign(new Error("Bad Request"), { name: "AI_APICallError", statusCode: 400, responseBody: JSON.stringify(body), data: body });
+      const error1 = { code: "MODEL_CALL_FAILED", message: extractUpstreamRejectionMessage(error)?.message, id: "err_x" };
+      const turnSettled = { turnId: "turn_0", outcome: "failed", error: error1 };
+      const sessionEnded = { outcome: "failed", error: error1 };
+      for (const dialect of ["slack", "telegram"] as const) {
+        const options = { refusalText: "The budget is exhausted.", dialect };
+        expect(respondToTurnFailed(turnSettled, options), `${dialect} turn`).toEqual({ kind: "budget-refusal", text: sentence });
+        expect(respondToSessionFailed(sessionEnded, options), `${dialect} session`).toEqual({ kind: "silent" });
+      }
+    }
+  });
 });
+
