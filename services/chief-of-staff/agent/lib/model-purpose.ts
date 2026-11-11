@@ -3,6 +3,8 @@ import { requestAndAttachModelPurposeClaim, type ModelInvocation } from '@lares/
 import { consoleAdmission, type ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { privateResumeAdmission, takeAcceptedAnswers } from '@lares/agent-kit/private-console-resume';
+import { APPROVAL_REPLY_REFUSED } from '@lares/agent-kit/approval-reply-sentence';
+import { turnAskedACard } from '../../lib/approval-card-turns.js';
 
 type Point = Readonly<{ sessionId: string; turnId: string; sequence: number; incarnation: string }>;
 /** The answer a continuation opens from: taken from the response policy's record, never from the
@@ -22,6 +24,11 @@ const MAX_CLOSED_POINTS = 65_536;
 const closedPoints = new Set<string>();
 const ACTIVE_MS = 5 * 60_000;
 const deny = () => new Error('Model purpose authority is not available');
+/** A refusal of the model call that continues a paused turn. When the turn asked a card (the
+ * durable mark, lib/approval-card-turns.ts), the person has just had their answer applied, so the
+ * doors show the one fixed sentence for it (`@lares/agent-kit/approval-reply-sentence`) instead of
+ * a broken conversation. Any other turn keeps the plain refusal. Both fail the turn the same way. */
+const refusedReply = (point: Point) => turnAskedACard({ turn: { id: point.turnId } }) ? new Error(APPROVAL_REPLY_REFUSED) : deny();
 const key = (point: Point) => `${point.sessionId}\0${point.turnId}\0${point.sequence}\0${point.incarnation}`;
 /** A continuation's own slot. It names the card it answers, so it never shares the paused point's
  * tombstone (the original message's receipt cannot reopen the point) and a card can resume once.
@@ -178,7 +185,7 @@ export function prepareModelPurposeInvocation(event: unknown, session: Session |
   prune();
   if (entries.get(key(point))?.active) return; // The human turn is still open.
   if (resumeEntryAt(point)) return;
-  beginResume(point, session);
+  try { beginResume(point, session); } catch { throw refusedReply(point); }
 }
 
 async function openEntry(point: Point, entry: Entry, pendingReceipt: string, session: Session): Promise<void> {
@@ -255,13 +262,21 @@ export async function claimModelPurposeForInvocation(invocation: ModelInvocation
     incarnation: own.incarnation,
   };
   const human = entries.get(key(point));
-  const entry = human?.active ? human : resumeEntryAt(point);
-  if (!entry?.active || entry.expiresAt <= Date.now()) throw deny();
-  if (entry.resume) {
+  if (human?.active) {
+    if (!human.capability || human.expiresAt <= Date.now()) throw deny();
+    await requestAndAttachModelPurposeClaim(invocation, human.capability, () => active(human));
+    return;
+  }
+  // Not the human turn's own call: the continuation of a paused turn after an answered card.
+  try {
+    const entry = resumeEntryAt(point);
+    if (!entry?.active || entry.expiresAt <= Date.now() || !entry.resume) throw deny();
     const asker = requester(invocation.session);
     if (asker.memberId !== entry.resume.memberId || asker.admissionNonce !== entry.resume.admissionNonce) throw deny();
     await openEntry(point, entry, entry.resume.receipt, invocation.session);
+    if (!entry.active || !entry.capability || entry.expiresAt <= Date.now()) throw deny();
+    await requestAndAttachModelPurposeClaim(invocation, entry.capability, () => active(entry));
+  } catch {
+    throw refusedReply(point);
   }
-  if (!entry.active || !entry.capability || entry.expiresAt <= Date.now()) throw deny();
-  await requestAndAttachModelPurposeClaim(invocation, entry.capability, () => active(entry));
 }

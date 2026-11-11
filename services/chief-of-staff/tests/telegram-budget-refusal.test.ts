@@ -115,6 +115,15 @@ describe("a capped turn answers with one fixed sentence, whichever event carries
     expect(posted).toEqual([REFUSAL_SENTENCE]);
   });
 
+  it("the refused reply after an approval answer posts its one fixed sentence, not eve's text, on either event", async () => {
+    const refused = { outcome: "failed", error: { code: "REACTION_FAILED", message: "DefinitionFailedError: The reply after an approval answer was refused", id: "err_1" } };
+    for (const handler of [onTurnSettled, onSessionEnded]) {
+      const { ctx, posted } = fakeChat();
+      await handler({ data: refused } as never, ctx);
+      expect(posted).toEqual(["Your answer was applied, but I could not finish my reply. Ask me what happened."]);
+    }
+  });
+
   it("the turn failed on the refusal (HTTP 429, after eve's retries): the same sentence", async () => {
     const { ctx, posted } = fakeChat();
     await onTurnSettled(failed(budgetRefusal(429)), ctx);

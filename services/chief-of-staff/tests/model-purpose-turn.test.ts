@@ -277,3 +277,27 @@ describe('model-purpose Eve turn hooks', () => {
     await expect(openModelPurposeTurn(event('late-turn', 9), session as never)).rejects.toThrow('Model purpose authority');
   });
 });
+
+// What the person sees when the reply after their answer is refused (here: the agent restarted
+// between the answer and the reply, so no accepted answer is in memory). A turn that asked a card
+// (the durable mark) fails with the seam's own refusal, which every door shows as one fixed
+// sentence; any other turn keeps the plain refusal.
+describe('the refused reply after an answered card', () => {
+  const asker = () => human({ lares_model_purpose_required: '1', lares_model_pending_receipt: receipt });
+  const step = (turnId: string, sequence: number) => ({ type: 'step.started' as const, data: { turnId, sequence, stepIndex: 11 } });
+  for (const [label, marked, expected] of [
+    ['a turn that asked a card fails with the fixed reply refusal', true, 'The reply after an approval answer was refused'],
+    ['a turn that asked no card keeps the plain refusal', false, 'Model purpose authority is not available'],
+  ] as const) {
+    it(label, async () => {
+      vi.stubEnv('LARES_AGENT_NAME', 'helper');
+      vi.stubEnv('LARES_AGENT_INCARNATION', incarnation);
+      if (marked) sessionState.set('lares.approval-card-turns', ['turn_4']);
+      const session = context('turn_4', 4, asker(), asker());
+      prepareModelPurposeInvocation(step('turn_4', 4), session as never);
+      const invocation = captureModelInvocation(step('turn_4', 4), session as never, 'lares-brain');
+      await expect(claimModelPurposeForInvocation(invocation)).rejects.toThrow(expected);
+      expect(requestMock).not.toHaveBeenCalled();
+    });
+  }
+});

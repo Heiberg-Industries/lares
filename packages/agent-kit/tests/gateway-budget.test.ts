@@ -325,6 +325,14 @@ describe("isBudgetExceeded — the over-rejection direction (nothing else may cl
 describe("respondToTurnFailed / respondToSessionFailed", () => {
   const options = { refusalText: "FIXED SENTENCE", dialect: "slack" } as const;
 
+  it("the refused reply after an approval answer gets its one fixed sentence on either event, never eve's text", () => {
+    const refused = { outcome: "failed", error: { code: "REACTION_FAILED", message: "DefinitionFailedError: The reply after an approval answer was refused" } };
+    const sentence = { kind: "approval-reply-refused", text: "Your answer was applied, but I could not finish my reply. Ask me what happened." };
+    expect(respondToTurnFailed(refused, options)).toEqual(sentence);
+    expect(respondToSessionFailed(refused, options)).toEqual(sentence);
+    expect(respondToTurnFailed({ ...refused, error: { ...refused.error, message: "DefinitionFailedError: Model purpose authority is not available" } }, options).kind).toBe("default");
+  });
+
   it("a capped turn answers with the door's fixed sentence and nothing else", () => {
     expect(respondToTurnFailed(EVE_TURN_FAILED_BUDGET, options)).toEqual({
       kind: "budget-refusal",
