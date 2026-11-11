@@ -941,7 +941,14 @@ fi
 
 # --- 10. from here on, things change ---------------------------------------------------------------------
 CHANGED="nothing yet"
+ONLY_AGENT_STORES_CHANGED=0
 midway() { # midway <what failed>
+  # While only agent stores have been replaced, this server still passes every fresh-install
+  # check above, so the same restore can be run again (and a damaged store file needs an earlier
+  # snapshot; a rebuilt server would fail on it the same way).
+  if [ "$ONLY_AGENT_STORES_CHANGED" = 1 ]; then
+    die "$1 This restore stopped while restoring the agent stores from snapshot $SNAPSHOT. Nothing outside the agent stores was changed, so this server still counts as a fresh install. Already changed: $CHANGED. The services that were stopped stay stopped. Run the same restore command again. If the backup file of an agent store is damaged it will stop here again: then list the snapshots with restic snapshots and restore an earlier one. The backup repository was never written to." "$EX_TEMPFAIL"
+  fi
   die "$1 This restore is only part done. Already changed: $CHANGED. The services that were stopped stay stopped. This server is no longer a fresh install, so do not simply run restore.sh again: rebuild a clean server, run install.sh, then restore. The backup repository was never written to." "$EX_TEMPFAIL"
 }
 # valid_name: the last guard in front of any database command.
@@ -983,12 +990,12 @@ if [ "$FINANCIAL_PREPARED" = 1 ];then
   say 'draining native custody and permanently freezing prepared financial custody before stopping any service'
   if [ "$ENGINE_MODE" = image ];then
     engine_restore_keeper_client financial-freeze </dev/null \
-      || die 'financial freeze was not durably acknowledged; no service was stopped and no database was replaced' "$EX_REFUSED"
+      || die 'financial freeze was not durably acknowledged; this run stopped no service and replaced no database (an earlier run of this same restore may already have stopped services and restored agent stores)' "$EX_REFUSED"
   else
     if ! keeper_dc exec -T lares-keeper \
       /app/services/keeper/node_modules/.bin/tsx /app/services/keeper/bin/budget-financial.ts freeze --host </dev/null;then
       pnpm -C "$BOX_DIR/../keeper" exec tsx bin/budget-financial.ts freeze --host "$KEEPER_JSON" </dev/null \
-        || die 'financial freeze was not durably acknowledged; no service was stopped and no database was replaced' "$EX_REFUSED"
+        || die 'financial freeze was not durably acknowledged; this run stopped no service and replaced no database (an earlier run of this same restore may already have stopped services and restored agent stores)' "$EX_REFUSED"
     fi
   fi
   CHANGED='financial custody is permanently frozen'
@@ -1054,8 +1061,23 @@ workflow_apply_one() { # KIND DATABASE ERRFILE
 # with its services stopped, and the same restore can simply be run again: it drops and restores
 # every agent store from the backup a second time.
 store_upgrade_stopped() {
-  die "$WORKFLOW_REASON. This restore stopped while upgrading the agent stores from the backup, before your main database, the model gateway's database, the Vault and the folders were replaced, so this server still counts as a fresh install. Already changed: $CHANGED. The services that were stopped stay stopped. Fix the cause and run the same restore command again: it restores every agent store from the backup again and upgrades it again. The backup repository was never written to." "$EX_TEMPFAIL"
+  die "$WORKFLOW_REASON. This restore stopped while upgrading the agent stores from snapshot $SNAPSHOT, before your main database, the model gateway's database, the Vault and the folders were replaced, so this server still counts as a fresh install. Already changed: $CHANGED. The services that were stopped stay stopped. Fix the cause and run the same restore command again: it restores every agent store from the backup again and upgrades it again. The backup repository was never written to." "$EX_TEMPFAIL"
 }
+# The check and the upgrade are NOT fixed restore jobs: like install.sh and update.sh, they run
+# through workflow_store_step (engine-run.sh), a short-lived `docker run --rm` of the installed
+# release's creative role image that this restore's trap does not track. Why that is safe here:
+#  - it reaches exactly one database, the store just restored (its address names that store; the
+#    provisioner login with the workflow owner role; the password read from a read-only file
+#    inside the container), and it never touches the main database, the Vault or the folders;
+#  - each upgrade is one transaction: stopped at any point, the store stays as the backup had it;
+#  - it is time-limited (two minutes for a check, LARES_WORKFLOW_UPGRADE_SECONDS, 15 minutes by
+#    default, for an upgrade) and removed by force when it runs out;
+#  - if this restore is killed while one runs, the container may finish or fail on its own, but
+#    only inside that one store, and a second run of this restore first drops that store with
+#    `dropdb --force`, which ends its session and rolls back whatever it had not committed. It
+#    holds no restore claim or run record, so it cannot keep a second run out.
+# The permissions step, which needs the agents' login as well, is the fixed restore job.
+ONLY_AGENT_STORES_CHANGED=1
 for db in "${DUMPS[@]}"; do
   [[ "$db" =~ ^lares_[a-f0-9]{32}$ ]] || continue
   restore_database "$db" 0
@@ -1074,6 +1096,7 @@ for db in "${DUMPS[@]}"; do
   CHANGED="$CHANGED; agent store $db upgraded"
 done
 rm -f -- "$WORKFLOW_UPGRADE_LIST" || midway 'Could not remove the record of the agent stores this run upgraded.'
+ONLY_AGENT_STORES_CHANGED=0
 
 if [ "$VAULT_TARGET_PRESENT" = 1 ];then
   PRESERVE_SCRATCH=1

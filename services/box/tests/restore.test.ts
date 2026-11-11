@@ -381,6 +381,8 @@ if [ "$1" = ps ]; then
   done
   exit 0
 fi
+# The keeper's own freeze; a stopped keeper (FREEZE_LIVE_FAIL) sends restore to the host fallback.
+case "$*" in *"exec -T lares-keeper"*"budget-financial.ts freeze"*) [ -z "\${FREEZE_LIVE_FAIL:-}" ] || exit 1; exit 0 ;; esac
 # The agent-store step (engine-run.sh, workflow_store_step): a role-image container fed the program.
 case "$*" in *"lares.maintenance=workflow-store"*)
   cat >/dev/null; mode="\${@: -2:1}"; db="\${@: -1}"; state="$WORKFLOW_STORE_DIR/$db"
@@ -1331,6 +1333,45 @@ describe("restore.sh: a backup from an older release", () => {
     expect(again.code, again.all).toBe(0);
     expect(idx(storeStep("upgrade"))).toBeGreaterThan(idx(new RegExp(`dropdb .*${workflowDatabase}`)));
     expect(idx(/compose --env-file \S+keeper\.env up -d$/)).toBeGreaterThan(-1);
+  });
+
+  it("a store whose backup file cannot be restored says the server is still fresh, and the same restore then succeeds", () => {
+    const failed = run(base(), { env: { PG_RESTORE_FAIL_DB: workflowDatabase } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain(`pg_restore could not create database ${workflowDatabase} with its archived ownership and grants. This restore stopped while restoring the agent stores from snapshot abc123. Nothing outside the agent stores was changed, so this server still counts as a fresh install.`);
+    expect(failed.all).toContain("Run the same restore command again. If the backup file of an agent store is damaged it will stop here again: then list the snapshots with restic snapshots and restore an earlier one.");
+    expect(failed.all).not.toContain("rebuild a clean server");
+    expect(logLines().filter((line) => /dropdb .*lares_state$|dropdb .*litellm$|^pnpm .*migrate| up -d$/.test(line))).toEqual([]);
+    writeFileSync(log, "");
+    expect(run(base()).code).toBe(0);
+  });
+
+  it("with prepared financial custody, a re-run after a failed upgrade freezes the ledger again through the host command and finishes", () => {
+    oldBackup();
+    write("etc/lares/keeper.json", keeperConfig({ budgetFinancial: financialBinding() }));
+    mkdirSync(join(prefix, "var/lib/lares/budget-financial"), { recursive: true });
+    const freezes = () => logLines().filter((line) => /budget-financial\.ts freeze --host/.test(line));
+    const failed = run(base(), { env: { STORE_UPGRADE_FAIL: "1" } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain("This restore stopped while upgrading the agent stores");
+    expect(freezes()).toHaveLength(1);
+    expect(freezes()[0]).toMatch(/^docker compose .*exec -T lares-keeper /);
+    // The keeper is stopped now, so the second run's freeze goes to the host command.
+    writeFileSync(log, "");
+    const again = run(base(), { env: { FREEZE_LIVE_FAIL: "1" } });
+    expect(again.code, again.all).toBe(0);
+    expect(freezes().map((line) => line.split(" ")[0])).toEqual(["docker", "pnpm"]);
+    expect(again.all).toContain("Financial recovery is required. Protected custody remains permanently frozen");
+    expect(idx(storeStep("upgrade"))).toBeGreaterThan(idx(/^pnpm .*budget-financial\.ts freeze --host/));
+  });
+
+  it("a refused freeze on a re-run does not claim the earlier run changed nothing", () => {
+    write("etc/lares/keeper.json", keeperConfig({ budgetFinancial: financialBinding() }));
+    mkdirSync(join(prefix, "var/lib/lares/budget-financial"), { recursive: true });
+    stub("pnpm", "exit 1");
+    const r = run(base(), { env: { FREEZE_LIVE_FAIL: "1" } });
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toContain("financial freeze was not durably acknowledged; this run stopped no service and replaced no database (an earlier run of this same restore may already have stopped services and restored agent stores)");
   });
 
   it("a store whose check after restoring is not the older layout stops the same re-runnable way", () => {
