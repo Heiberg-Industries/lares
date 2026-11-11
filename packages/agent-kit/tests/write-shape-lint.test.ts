@@ -544,7 +544,29 @@ describe("the depth rule", () => {
   });
 
   it("returns null for a disableTool() sentinel", () => {
-    expect(sourcesForTool(new URL("../../../services/chief-of-staff", import.meta.url).pathname, "bash")).toBeNull();
+    // A fixture, not a shipped role: neither role carries a sentinel under agent/tools/ any more.
+    // Both set `defaultTools: false`, which turns every framework default tool away with no file
+    // per tool. `edit_file` is a slot eve 1.0 really has, so this is a sentinel eve would accept.
+    const agentDir = mkdtempSync(join(tmpdir(), "write-shape-lint-sentinel-"));
+    try {
+      const tools = join(agentDir, "agent", "tools");
+      mkdirSync(tools, { recursive: true });
+      writeFileSync(join(tools, "edit_file.ts"), 'import { disableTool } from "eve/tools";\n\nexport default disableTool();\n');
+      expect(sourcesForTool(agentDir, "edit_file")).toBeNull();
+      // `null` means "a sentinel FILE is there". A name with no file at all is a different
+      // answer, an empty list, and the two must not be confused.
+      expect(sourcesForTool(agentDir, "bash")).toEqual([]);
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns an empty list, not null, for a framework tool the shipped roles no longer have a file for", () => {
+    // `agent/tools/bash.ts` used to be a sentinel in both roles and this call returned null.
+    // The file is gone, so there is nothing to read: no sentinel, no tool.
+    for (const role of ["chief-of-staff", "creative"]) {
+      expect(sourcesForTool(new URL(`../../../services/${role}`, import.meta.url).pathname, "bash"), role).toEqual([]);
+    }
   });
 
   it.each(["chief-of-staff", "creative"])(
