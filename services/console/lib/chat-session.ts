@@ -48,6 +48,15 @@ export function saveChatSession(
   }
 }
 
+/**
+ * The mark the chat proxy puts on a refusal it wrote itself (`refuse` in `lib/chat-proxy.ts`), so
+ * the page can tell the console's own sentence from anything an agent answered. The proxy relays
+ * only a fixed list of an agent's response headers, and this name is not on it, so an agent
+ * cannot set it. Here, with no imports, because both the server's proxy and the browser's chat
+ * page read it.
+ */
+export const CONSOLE_REFUSAL_HEADER = "x-lares-console-refusal";
+
 /** Why a conversation can take no more messages: an update ended it, or it ended some other way. */
 export type EndedConversation = "update" | "ended";
 

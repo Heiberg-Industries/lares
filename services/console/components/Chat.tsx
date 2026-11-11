@@ -28,6 +28,7 @@ import { agentNotRunning, notRunningSay } from "../lib/agent-reachability";
 import { limitReplyOf } from "../lib/limit-reply";
 import {
   chatSessionKey,
+  CONSOLE_REFUSAL_HEADER,
   ENDED_SAY,
   endedConversation,
   readChatSession,
@@ -43,13 +44,15 @@ function tabStorage(): Storage | null {
   }
 }
 
-/** The proxy's own refusals are plain text in the console's own words (`refuse` in
- *  `lib/chat-proxy.ts`); anything else a failed request carries was written by the agent's
- *  framework and is never shown. Returns the proxy's sentence, or null. */
+/** The proxy's own refusals are plain text in the console's own words, and carry the proxy's own
+ *  mark (`refuse` in `lib/chat-proxy.ts`). Anything else a failed request carries — plain text
+ *  included — was written by the agent or its framework and is never shown: an agent cannot set
+ *  the mark, because the proxy does not relay that header. Returns the proxy's sentence, or null. */
 function proxySentence(error: unknown): string | null {
   if (error === null || typeof error !== "object") return null;
-  const { body, headers } = error as { body?: unknown; headers?: { "content-type"?: unknown } };
-  const type = headers?.["content-type"];
+  const { body, headers } = error as { body?: unknown; headers?: Record<string, unknown> };
+  if (headers?.[CONSOLE_REFUSAL_HEADER] !== "1") return null;
+  const type = headers["content-type"];
   if (typeof body !== "string" || typeof type !== "string" || !type.startsWith("text/plain")) return null;
   return body.length > 0 && body.length <= 200 ? body : null;
 }

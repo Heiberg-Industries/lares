@@ -31,7 +31,9 @@ export interface ModelPurposeRequest {
   definitionHash: string;
   purpose: 'human' | 'resume';
   requestId: string;
-  resume?: { requestId: string; optionId: 'approve' | 'cancel' };
+  /** The card a resume answers, and the decision on it, in the agent framework's own two words.
+   *  `requestId` is the card's interaction id. Only an exact `approve` is an approval. */
+  resume?: { requestId: string; optionId: 'approve' | 'deny' };
 }
 
 /** Overrides are dependency seams for isolated socket/file tests. Production uses the fixed

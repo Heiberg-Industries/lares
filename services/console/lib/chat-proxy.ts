@@ -42,6 +42,7 @@ import type { Member } from "@lares/agent-kit/authority-contract";
  */
 import { isIP } from "node:net";
 import { chatSessionCapabilityCookie, hasChatSessionCapability, validChatSessionId } from "./chat-session-capability";
+import { CONSOLE_REFUSAL_HEADER } from "./chat-session";
 import { createHash } from "node:crypto";
 import { AGENT_STATE_HEADER, AGENT_NOT_RUNNING } from "./agent-reachability";
 import { signPrivateVaultRequest, PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER } from "./vault-capsule";
@@ -161,7 +162,7 @@ const isText = (value: unknown): value is string => typeof value === "string" &&
  *
  *   POST eve/v1/session                 {}  |  { message }  |  { message, operationId }
  *   POST eve/v1/session/<id>            { message }  |  { answers: [{ interactionId, optionId }] }
- *   POST eve/v1/session/<id>/cancel     {}  |  { turnId }
+ *   POST eve/v1/session/<id>/cancel     {}  |  { turnId }     (a `turnId` of null is sent as {})
  *   POST eve/v1/session/<id>/end|reset  {}  |  { reason }
  *   POST eve/v1/session/<id>/clear|compact   {}
  *
@@ -182,7 +183,10 @@ function outgoingBody(path: string, parsed: unknown): { body: Record<string, unk
     !only(parsed, name) ? null : !(name in parsed) ? {} : isText(parsed[name]) ? { [name]: parsed[name] } : null;
   const control = CONTROL.exec(path)?.[1];
   if (control !== undefined) {
-    const body = control === "cancel" ? optional("turnId") : control === "end" || control === "reset" ? optional("reason") : only(parsed) ? {} : null;
+    // The framework's store cancels "whatever is running" as `{ "turnId": null }` when it knows of
+    // no turn. That names no turn, so it goes on as the body that names none: {}.
+    const noTurnNamed = control === "cancel" && only(parsed, "turnId") && parsed.turnId === null;
+    const body = noTurnNamed ? {} : control === "cancel" ? optional("turnId") : control === "end" || control === "reset" ? optional("reason") : only(parsed) ? {} : null;
     return body === null ? unsupported : { body };
   }
   if (path === "eve/v1/session") {
@@ -223,6 +227,8 @@ export interface ChatDeps {
 function refuse(status: number, message: string, notRunning = false): Response {
   return new Response(message, { status, headers: {
     "content-type": "text/plain", "cache-control": "no-store",
+    // Marks the sentence as this console's own; see CONSOLE_REFUSAL_HEADER.
+    [CONSOLE_REFUSAL_HEADER]: "1",
     ...(notRunning ? { [AGENT_STATE_HEADER]: AGENT_NOT_RUNNING } : {}),
   } });
 }
@@ -437,11 +443,10 @@ export async function forwardChat(request: Request, name: string, path: string, 
       };
       try {
         headers.set(MODEL_PURPOSE_REQUIRED_HEADER, "1");
-        // The signer's own type (`ModelPurposeRequest` in `lib/model-purpose-capsule.ts`) still
-        // spells declining "cancel", as the keeper's broker does when it checks a challenge. Both
-        // are outside this file. Until they say "deny" too, the keeper refuses the challenge for
-        // a denied card and this request ends in the refusal just below: nothing is forwarded.
-        headers.set(PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER, await signPrivateModelPurposeRequest(modelRequest as unknown as Parameters<typeof signPrivateModelPurposeRequest>[0]));
+        // The keeper issues the challenge this signs. Until its own check of a resume says
+        // "deny" too, it refuses the challenge for a denied card, and this request ends in the
+        // refusal just below: nothing is forwarded, and nothing is approved.
+        headers.set(PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER, await signPrivateModelPurposeRequest(modelRequest));
       } catch {
         return refuse(503, "Private model authorization is unavailable.");
       }

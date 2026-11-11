@@ -431,7 +431,7 @@ it("an ordinary card asks for no personal mail review", async () => {
 
 it("a refused answer is said in the console's own words: the proxy's sentence, never the framework's", async () => {
   withConversation(waitingCard());
-  mock.respond.mockRejectedValueOnce(new ClientError(503, "Private model authorization is unavailable.", { "content-type": "text/plain" }));
+  mock.respond.mockRejectedValueOnce(new ClientError(503, "Private model authorization is unavailable.", { "content-type": "text/plain", "x-lares-console-refusal": "1" }));
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
   await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
   expect(await screen.findByText("Your answer did not reach the agent, so nothing has been done: Private model authorization is unavailable.")).toBeDefined();
@@ -445,6 +445,13 @@ it("a refused answer is said in the console's own words: the proxy's sentence, n
   await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
   expect(await screen.findByText("Your answer did not reach the agent, so nothing has been done.")).toBeDefined();
   expect(screen.queryByText(/HITL|schema|answers/)).toBeNull();
+  // Short plain text is not enough: without the proxy's own mark it is the agent's, and stays unseen.
+  cleanup();
+  mock.respond.mockRejectedValueOnce(new ClientError(400, "Text an agent wrote.", { "content-type": "text/plain" }));
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+  expect(await screen.findByText("Your answer did not reach the agent, so nothing has been done.")).toBeDefined();
+  expect(screen.queryByText(/Text an agent wrote/)).toBeNull();
 });
 
 it("a card in a conversation that has failed for any reason cannot be answered from it", async () => {
