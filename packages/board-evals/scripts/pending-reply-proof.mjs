@@ -1,20 +1,26 @@
 /**
- * pending-reply-proof.mjs — what does eve 0.60.1 do when a person types while an approval card is
- * still waiting?
+ * pending-reply-proof.mjs — what does eve do when a person types while an approval card is still
+ * waiting? (First measured on eve 0.60.1; this file is the same proof on eve 1.0.)
  *
  * Five questions, each answered by watching a real run, none by reading a doc:
  *   (a) a plain text reply during a pending card: does it run a turn, and what does the model see?
  *   (b) typed "approve" / "1" / "Approve" on the HTTP route (the route web chat uses): must NOT approve (asserted)
- *   (c) can our own code cancel a pending request with an `inputResponses` cancel, so the tool never runs?
+ *   (c) can our own code refuse a pending request with a "deny" answer, so the tool never runs?
  *   (d) a second card for the same tool while the first waits: does approving the first still run it?
  *   (e) with the REAL approval-record and approval-supersede hooks loaded: a revised proposal in a
- *       later turn raises a new card; is the older card cancelled by our hook (sent while that turn is
+ *       later turn raises a new card; is the older card denied by our hook (sent while that turn is
  *       still running), never executed, recorded cancelled/revised, with the new card live?
  *
- * REAL: an eve 0.60.1 process (`eve build` + `eve start`), a disposable Postgres, eve's own session
- * routes. SCRIPTED: the model (the package's `mockModel`, patched in a disposable copy). No
+ * REAL: an eve 1.0 process (`eve build` + `eve start`), a disposable Postgres, eve's own session
+ * routes driven with eve's own `Client`, the kit's real approval-record and approval-supersede
+ * hooks. SCRIPTED: the model (the package's `mockModel`, patched in a disposable copy). No
  * credential, no gateway, no network beyond loopback, no money. The Slack card repaint is NOT
  * observed here (no Slack in the fixture); that part can only be described from eve's docs/code.
+ *
+ * THE DOOR is eve's own HTTP door behind the route password, under the username the kit's deny
+ * call uses. It is NOT a copy of a role's door file any more: that file now needs a dozen of the
+ * role's own modules and cannot be lifted out alone. What this proof asks is about eve and the two
+ * hooks, not about who may pass the door; the web-chat proofs carry the production door.
  *
  * Run: `pnpm -C packages/board-evals run proof:pending-reply` (Docker running). Set
  * PENDING_REPLY_PROOF_OUT=<file> to write the raw evidence as JSON.
@@ -26,11 +32,13 @@ import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
+import { Client } from 'eve/client';
 import { makeApp, run, source } from './proof-harness.mjs';
 
 const AGENT = 'board-evals';
 const INCARNATION = '11111111-1111-4111-8111-111111111111';
-const TERMINAL = new Set(['session.completed', 'session.failed', 'session.waiting']);
+const ROUTE_USER = 'eve';
+const ROUTE_PASSWORD = 'disposable-fixture-only';
 
 const GATED_TOOL_SRC = `
 import { appendFileSync } from "node:fs";
@@ -72,20 +80,28 @@ if (msg.startsWith("pr:send ")) {
 }
 `;
 
-// The two real hooks, registered as the roles register them. The one difference: the cancel is
-// aimed at this run's loopback port (a role's eve listens on 3000 in its container).
+// The two real hooks, registered as the roles register them (services/*/agent/hooks/). The one
+// difference: the deny is aimed at this run's loopback port (a role's eve listens on 3000 in its
+// container).
 const hookSrc = (port) => ({
-  record: `import { defineHook } from "eve/hooks";
+  record: `import { defineHook, type HookContext } from "eve/hooks";
 import { makeApprovalRecord } from "@lares/agent-kit/approval-record-hook";
 const live = makeApprovalRecord();
-export default defineHook({ events: { "input.requested": live["input.requested"] as any, "input.resolved": live["input.resolved"] as any } });
+type Handler = (event: unknown, ctx: HookContext) => Promise<void>;
+export default defineHook({ events: { "interaction.opened": live["interaction.opened"] as Handler, "interaction.settled": live["interaction.settled"] as Handler } });
 `,
-  supersede: `import { defineHook } from "eve/hooks";
-import { makeApprovalSupersede, cancelApprovalRequest } from "@lares/agent-kit/approval-supersede-hook";
-const live = makeApprovalSupersede({ cancel: (s, r) => cancelApprovalRequest(s, r, { baseUrl: "http://127.0.0.1:${port}" }) });
-export default defineHook({ events: { "input.requested": live["input.requested"] as any } });
+  supersede: `import { defineHook, type HookContext } from "eve/hooks";
+import { makeApprovalSupersede, denyApprovalRequest } from "@lares/agent-kit/approval-supersede-hook";
+const live = makeApprovalSupersede({ deny: (s, r) => denyApprovalRequest(s, r, { baseUrl: "http://127.0.0.1:${port}" }) });
+type Handler = (event: unknown, ctx: HookContext) => Promise<void>;
+export default defineHook({ events: { "interaction.opened": live["interaction.opened"] as Handler } });
 `,
 });
+
+const DOOR_SRC = `import { eveChannel } from "eve/channels/eve";
+import { httpBasic } from "eve/channels/auth";
+export default eveChannel({ auth: [httpBasic({ username: "${ROUTE_USER}", password: "${ROUTE_PASSWORD}" })] });
+`;
 
 function fitOut(root, port) {
   const file = join(root, 'agent/agent.ts');
@@ -94,16 +110,10 @@ function fitOut(root, port) {
   assert.ok(text.includes(anchor), 'agent/agent.ts no longer dispatches on "write" — re-anchor the patch');
   text = text.replace(anchor, `${MODEL_PATCH}\n  ${anchor}`);
   writeFileSync(file, text);
-  // This proof does not use the probe extension, and building it needs `eve extension build`, which
-  // the pinned TypeScript 7 rejects (TS5112). Leave it out of the disposable copy.
+  // This proof does not use the probe extension. Leave it out of the disposable copy.
   rmSync(join(root, 'agent/extensions/probe'), { recursive: true, force: true });
-  // The REAL web-chat door (route password), copied byte for byte, so requests are authenticated
-  // exactly as the console's proxy authenticates them. Only the password-holder identity is used.
-  for (const [from, to] of [['services/chief-of-staff/agent/channels/eve.ts', 'agent/channels/eve.ts'], ['services/chief-of-staff/lib/approvals.ts', 'lib/approvals.ts'], ['services/chief-of-staff/lib/principals.ts', 'lib/principals.ts']]) {
-    const target = join(root, to);
-    mkdirSync(join(target, '..'), { recursive: true });
-    writeFileSync(target, readFileSync(resolve(source, '../..', from), 'utf8'));
-  }
+  mkdirSync(join(root, 'agent/channels'), { recursive: true });
+  writeFileSync(join(root, 'agent/channels/eve.ts'), DOOR_SRC);
   mkdirSync(join(root, 'agent/tools'), { recursive: true });
   writeFileSync(join(root, 'agent/tools/pr_send.ts'), GATED_TOOL_SRC);
   mkdirSync(join(root, 'agent/hooks'), { recursive: true });
@@ -124,59 +134,24 @@ async function seed(uri) {
 
 const readLines = (file) => { try { return readFileSync(file, 'utf8').split('\n').filter((l) => l.trim() !== ''); } catch { return []; } };
 let port;
-const AUTH = `Basic ${Buffer.from('eve:disposable-fixture-only').toString('base64')}`;
-const base = () => `http://127.0.0.1:${port}/eve/v1`;
+let client;
 
-async function readStream(response, timeoutMs = 30000) {
-  const out = [];
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  const deadline = setTimeout(() => void reader.cancel().catch(() => {}), timeoutMs);
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let cut;
-      while ((cut = buffer.indexOf('\n')) >= 0) {
-        const raw = buffer.slice(0, cut); buffer = buffer.slice(cut + 1);
-        if (raw.trim() === '') continue;
-        let event; try { event = JSON.parse(raw); } catch { event = { type: '<unparsed>', raw }; }
-        out.push(event);
-        if (TERMINAL.has(event.type)) return out;
-      }
-    }
-  } catch (error) { if (!/abort/i.test(String(error))) throw error; }
-  finally { clearTimeout(deadline); await reader.cancel().catch(() => {}); }
-  return out;
+/** Read one delivery to its end: every event its stream carried, and eve's own summary of it. A
+ *  refused request (an answer to a card that is no longer open, say) is evidence too, so it is
+ *  returned, not thrown. */
+async function read(start) {
+  let delivery;
+  try { delivery = await start(); }
+  catch (error) { return { refused: true, status: error?.status ?? null, code: error?.code ?? null, message: String(error?.message ?? error).slice(0, 300), events: [], result: null }; }
+  const events = [];
+  for await (const event of delivery.stream({ signal: AbortSignal.timeout(30000) })) events.push(event);
+  const result = await delivery.result({ signal: AbortSignal.timeout(30000) });
+  return { refused: false, status: 200, events, result };
 }
-
-async function follow(sessionId, startIndex, deadlineMs = 30000) {
-  const began = Date.now(); const events = []; let index = startIndex;
-  while (Date.now() - began < deadlineMs) {
-    const query = `?streamControlVersion=1${index === 0 ? '' : `&startIndex=${index}`}`;
-    let response;
-    for (let a = 0; a < 12; a += 1) {
-      response = await fetch(`${base()}/session/${sessionId}/stream${query}`, { headers: { authorization: AUTH } });
-      if (response.ok) break;
-      await response.text(); await new Promise((r) => setTimeout(r, 250 * (a + 1)));
-    }
-    if (!response.ok) break;
-    const batch = await readStream(response);
-    events.push(...batch); index += batch.length;
-    if (batch.length > 0 && TERMINAL.has(batch.at(-1).type)) break;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return { events, next: index };
-}
-
-const cardsIn = (events) => events.flatMap((e) => e.type === 'input.requested' ? (e.data?.requests ?? []).filter((r) => r.kind === 'tool-approval') : []);
+const cardsOf = (result) => (result?.interactions ?? []).filter((i) => i.request.kind === 'approval' && i.status === 'open');
 const types = (events) => events.map((e) => e.type);
-const post = async (sessionId, body) => {
-  const r = await fetch(`${base()}/session/${sessionId}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: AUTH }, body: JSON.stringify(body) });
-  return { status: r.status, text: (await r.text()).slice(0, 400) };
-};
+const sendText = (session, message) => read(() => session.send(message));
+const answer = (session, interactionId, optionId) => read(() => session.respond([{ interactionId, optionId }]));
 
 const evidence = {};
 const say = (item, text) => console.log(`OBSERVED  ${item}  ${text}`);
@@ -193,7 +168,7 @@ try {
   app = makeApp(uriFor('pendingreply'), '0');
   const { root: cwd, env, eve } = app;
   env.EVE_ROUTE_PASSWORD_FILE = join(cwd, 'route-password');
-  writeFileSync(env.EVE_ROUTE_PASSWORD_FILE, 'disposable-fixture-only\n');
+  writeFileSync(env.EVE_ROUTE_PASSWORD_FILE, `${ROUTE_PASSWORD}\n`);
   port = await new Promise((done) => {
     const probe = createNetServer();
     probe.listen(0, '127.0.0.1', () => { const { port: p } = probe.address(); probe.close(() => done(p)); });
@@ -204,7 +179,7 @@ try {
   let doorLog = '';
   door.stdout.on('data', (b) => { doorLog += b; }); door.stderr.on('data', (b) => { doorLog += b; });
   for (let i = 0; ; i += 1) {
-    try { if ((await fetch(`${base()}/health`)).ok) break; } catch {}
+    try { if ((await fetch(`http://127.0.0.1:${port}/eve/v1/health`)).ok) break; } catch {}
     if (i >= 150) throw new Error(`the door never answered\n${doorLog}`);
     await new Promise((r) => setTimeout(r, 200));
   }
@@ -212,15 +187,16 @@ try {
   const sent = () => readLines(env.BOARD_LOG).filter((l) => l.startsWith('sent:'));
   const modelCalls = () => readLines(env.PROOF_MODEL_LOG).filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
 
+  client = new Client({ baseUrl: `http://127.0.0.1:${port}`, auth: { basic: { username: ROUTE_USER, password: ROUTE_PASSWORD } } });
+
   async function park(message) {
-    const created = await fetch(`${base()}/session`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: AUTH }, body: JSON.stringify({ message }) });
-    const createdText = await created.text();
-    const sessionId = created.headers.get('x-eve-session-id');
-    assert.ok(sessionId, `no session id (${created.status}: ${createdText.slice(0, 300)})`);
-    const parked = await follow(sessionId, 0);
-    const cards = cardsIn(parked.events);
+    let session;
+    const parked = await read(async () => { const created = await client.sessions.create({ message }); session = created.session; return created.delivery; });
+    assert.ok(!parked.refused, `the first message was refused: ${parked.message}`);
+    const cards = cardsOf(parked.result);
     assert.ok(cards.length > 0, `no card parked\n${JSON.stringify(types(parked.events))}`);
-    return { sessionId, parked, card: cards[0] };
+    assert.equal(parked.result.status, 'awaiting-input', 'a parked card must leave the request awaiting input');
+    return { session, sessionId: session.id, parked, card: cards[0] };
   }
 
   // (a) a plain text reply while the card waits
@@ -229,71 +205,72 @@ try {
     evidence.cardShape = s.card;
     const callsBefore = modelCalls().length;
     const sentBefore = sent().length;
-    const reply = await post(s.sessionId, { message: 'pr:please change the subject line' });
-    const after = await follow(s.sessionId, s.parked.next);
+    const reply = await sendText(s.session, 'pr:please change the subject line');
     const newCalls = modelCalls().slice(callsBefore);
     const executedByReply = sent().length - sentBefore;
-    const approve = await post(s.sessionId, { inputResponses: [{ requestId: s.card.requestId, optionId: 'approve' }] });
-    const post2 = await follow(s.sessionId, after.next);
-    evidence.a = { sessionId: s.sessionId, replyStatus: reply.status, replyTypes: types(after.events), replyEvents: after.events, modelCallsForReply: newCalls.length, modelView: newCalls.at(-1), executedByReply, newCardsInReplyTurn: cardsIn(after.events).length, laterApproveStatus: approve.status, laterApproveTypes: types(post2.events), sentAfterApprove: sent() };
-    say('a', `reply POST ${reply.status}; stream after reply: ${JSON.stringify(types(after.events))}; model calls for the reply: ${newCalls.length}; executions caused by the reply: ${executedByReply}; original card then approved ${approve.status} -> log ${JSON.stringify(sent())}; session ${s.sessionId}`);
+    const approve = await answer(s.session, s.card.interactionId, 'approve');
+    evidence.a = { sessionId: s.sessionId, replyStatus: reply.status, replyTypes: types(reply.events), replyEvents: reply.events, replyResult: reply.result, modelCallsForReply: newCalls.length, modelView: newCalls.at(-1), executedByReply, newCardsInReplyTurn: cardsOf(reply.result).filter((c) => c.interactionId !== s.card.interactionId).length, laterApprove: { refused: approve.refused, status: approve.status, code: approve.code ?? null, types: types(approve.events) }, toolLogAfterApprove: sent() };
+    say('a', `reply ${reply.refused ? `REFUSED ${reply.status}` : `accepted, request ended "${reply.result.status}"`}; stream of the reply: ${JSON.stringify(types(reply.events))}; model calls for the reply: ${newCalls.length}; executions caused by the reply: ${executedByReply}; original card then approved: ${approve.refused ? `refused ${approve.status} ${approve.code ?? ''}` : 'accepted'} -> log ${JSON.stringify(sent())}; session ${s.sessionId}`);
   }
 
-  // (b) typed answers must NOT answer a tool-approval card (patched eve: resolveTextToResponse skips them)
+  // (b) typed answers must NOT answer a tool-approval card (patched eve: a typed reply is never
+  // read as the answer to an approval). ASSERTED.
   evidence.b = {};
   for (const typed of ['approve', '1', 'Approve']) {
     const s = await park(`pr:send typed-${typed}`);
     const callsBefore = modelCalls().length;
     const sentBefore = sent().length;
-    const reply = await post(s.sessionId, { message: typed });
-    const after = await follow(s.sessionId, s.parked.next);
+    const reply = await sendText(s.session, typed);
     const ranByText = sent().slice(sentBefore);
     const newCalls = modelCalls().slice(callsBefore);
-    // the card is still live: a button/console answer (inputResponses) approves it, exactly once
-    const approve = await post(s.sessionId, { inputResponses: [{ requestId: s.card.requestId, optionId: 'approve' }] });
-    const later = await follow(s.sessionId, after.next);
+    // What became of the card once text arrived, in eve's own words.
+    const settled = reply.events.filter((e) => e.type === 'interaction.settled' && e.data?.interactionId === s.card.interactionId).map((e) => e.data?.outcome);
+    // A button/console answer for the SAME card afterwards: it may approve it once, never twice.
+    const approve = await answer(s.session, s.card.interactionId, 'approve');
     const ranTotal = sent().slice(sentBefore);
-    evidence.b[typed] = { sessionId: s.sessionId, options: s.card.options, replyStatus: reply.status, types: types(after.events), modelCalls: newCalls.length, modelSawText: newCalls.some((c) => c.lastUserMessage === typed), executedByText: ranByText, approveStatus: approve.status, laterTypes: types(later.events), executedTotal: ranTotal };
-    say(`b "${typed}"`, `POST ${reply.status}; stream ${JSON.stringify(types(after.events))}; model calls: ${newCalls.length}; tool log after text ${JSON.stringify(ranByText)}; button approve ${approve.status} -> total ${JSON.stringify(ranTotal)}; session ${s.sessionId}`);
+    evidence.b[typed] = { sessionId: s.sessionId, options: s.card.request.options, replyStatus: reply.status, types: types(reply.events), replyResult: reply.result, cardSettledByText: settled, modelCalls: newCalls.length, modelSawText: newCalls.some((c) => c.lastUserMessage === typed), executedByText: ranByText, approve: { refused: approve.refused, status: approve.status, code: approve.code ?? null, types: types(approve.events) }, executedTotal: ranTotal };
+    say(`b "${typed}"`, `text ${reply.refused ? `REFUSED ${reply.status}` : 'accepted'}; stream ${JSON.stringify(types(reply.events))}; card after the text: ${settled.length ? `settled ${JSON.stringify(settled)}` : 'still open'}; model calls: ${newCalls.length}; tool log after text ${JSON.stringify(ranByText)}; button approve afterwards: ${approve.refused ? `refused ${approve.status} ${approve.code ?? ''}` : 'accepted'} -> total ${JSON.stringify(ranTotal)}; session ${s.sessionId}`);
+    assert.ok(!reply.refused, `typed "${typed}" was refused instead of arriving as a message: ${reply.message}`);
     assert.equal(ranByText.length, 0, `typed "${typed}" ran the tool`);
-    assert.ok(types(after.events).includes('message.received'), `typed "${typed}" was consumed instead of arriving as a message: ${JSON.stringify(types(after.events))}`);
+    assert.ok(!settled.includes('accepted'), `typed "${typed}" was taken as an approval: the card settled ${JSON.stringify(settled)}`);
+    assert.ok(types(reply.events).includes('delivery.consumed'), `typed "${typed}" was consumed instead of arriving as a message: ${JSON.stringify(types(reply.events))}`);
     assert.ok(newCalls.some((c) => c.lastUserMessage === typed), `the model never saw typed "${typed}"`);
-    assert.deepEqual(ranTotal, [`sent:typed-${typed}`], `button approve after typed "${typed}" should run the tool exactly once`);
+    // On eve 0.60.1 the card stayed open after text and a later button approve ran the tool exactly
+    // once. eve 1.0 may instead withdraw the card when text arrives; then the later approve is
+    // refused and nothing runs. Either way the tool runs AT MOST once, and only by a button answer.
+    if (settled.length === 0) assert.deepEqual(ranTotal, [`sent:typed-${typed}`], `button approve after typed "${typed}" should run the tool exactly once`);
+    else assert.deepEqual(ranTotal, [], `the card was settled ${JSON.stringify(settled)} by the text, yet the tool ran afterwards`);
   }
 
-  // (c) our own cancel through inputResponses
+  // (c) our own refusal through an answer
   {
     const s = await park('pr:send C');
     const sentBefore = sent().length;
-    const cancelOption = (s.card.options ?? []).find((o) => /cancel|deny|reject/i.test(`${o.id} ${o.label}`))?.id;
-    const cancel = await post(s.sessionId, { inputResponses: [{ requestId: s.card.requestId, optionId: cancelOption ?? 'cancel' }] });
-    const after = await follow(s.sessionId, s.parked.next);
-    const ranAfterCancel = sent().slice(sentBefore);
-    const lateApprove = await post(s.sessionId, { inputResponses: [{ requestId: s.card.requestId, optionId: 'approve' }] });
-    const late = await follow(s.sessionId, after.next, 8000);
-    evidence.c = { sessionId: s.sessionId, cancelOption, cancelStatus: cancel.status, cancelBody: cancel.text, types: types(after.events), cancelEvents: after.events.filter((e) => /input|tool/.test(e.type)), executedAfterCancel: ranAfterCancel, lateApproveStatus: lateApprove.status, lateApproveBody: lateApprove.text, lateTypes: types(late.events), executedAfterLateApprove: sent().slice(sentBefore) };
-    say('c', `cancel option "${cancelOption}" POST ${cancel.status}; stream ${JSON.stringify(types(after.events))}; executions after cancel: ${ranAfterCancel.length}; late approve of same card: ${lateApprove.status} -> executions in total ${sent().slice(sentBefore).length}; session ${s.sessionId}`);
+    const denyOption = (s.card.request.options ?? []).find((o) => /cancel|deny|reject/i.test(`${o.id} ${o.label}`))?.id;
+    const deny = await answer(s.session, s.card.interactionId, denyOption ?? 'deny');
+    const ranAfterDeny = sent().slice(sentBefore);
+    const lateApprove = await answer(s.session, s.card.interactionId, 'approve');
+    evidence.c = { sessionId: s.sessionId, denyOption, deny: { refused: deny.refused, status: deny.status, types: types(deny.events), result: deny.result }, settledEvents: deny.events.filter((e) => /interaction|call/.test(e.type)), executedAfterDeny: ranAfterDeny, lateApprove: { refused: lateApprove.refused, status: lateApprove.status, code: lateApprove.code ?? null, types: types(lateApprove.events) }, executedTotal: sent().slice(sentBefore) };
+    say('c', `deny option "${denyOption}": ${deny.refused ? `REFUSED ${deny.status}` : 'accepted'}; stream ${JSON.stringify(types(deny.events))}; executions after the deny: ${ranAfterDeny.length}; late approve of the same card: ${lateApprove.refused ? `refused ${lateApprove.status} ${lateApprove.code ?? ''}` : 'accepted'} -> executions in total ${sent().slice(sentBefore).length}; session ${s.sessionId}`);
   }
 
   // (d) a second card for the same tool while the first waits
   {
     const s = await park('pr:send first');
     const sentBefore = sent().length;
-    const second = await post(s.sessionId, { message: 'pr:send second' });
-    const after = await follow(s.sessionId, s.parked.next);
-    const cards = cardsIn(after.events);
-    const secondCard = cards.find((c) => c.requestId !== s.card.requestId) ?? null;
-    const firstApprove = await post(s.sessionId, { inputResponses: [{ requestId: s.card.requestId, optionId: 'approve' }] });
-    const afterFirst = await follow(s.sessionId, after.next);
+    const second = await sendText(s.session, 'pr:send second');
+    const cards = cardsOf(second.result);
+    const secondCard = cards.find((c) => c.interactionId !== s.card.interactionId) ?? null;
+    const firstSettledBySecond = second.events.filter((e) => e.type === 'interaction.settled' && e.data?.interactionId === s.card.interactionId).map((e) => e.data?.outcome);
+    const firstApprove = await answer(s.session, s.card.interactionId, 'approve');
     const ranFirst = sent().slice(sentBefore);
     let secondResult = null;
     if (secondCard) {
-      const r = await post(s.sessionId, { inputResponses: [{ requestId: secondCard.requestId, optionId: 'cancel' }] });
-      const f = await follow(s.sessionId, afterFirst.next, 10000);
-      secondResult = { status: r.status, types: types(f.events), executedTotal: sent().slice(sentBefore) };
+      const r = await answer(s.session, secondCard.interactionId, 'deny');
+      secondResult = { refused: r.refused, status: r.status, types: types(r.events), executedTotal: sent().slice(sentBefore) };
     }
-    evidence.d = { sessionId: s.sessionId, secondStatus: second.status, typesAfterSecond: types(after.events), cardsSeenAfterSecond: cards, firstApproveStatus: firstApprove.status, typesAfterFirstApprove: types(afterFirst.events), executedAfterFirstApprove: ranFirst, secondResult };
-    say('d', `second POST ${second.status}; cards after it: ${cards.length} (${cards.map((c) => c.requestId).join(', ')}); first approve ${firstApprove.status} -> executed ${JSON.stringify(ranFirst)}; second-card cancel: ${JSON.stringify(secondResult)}; session ${s.sessionId}`);
+    evidence.d = { sessionId: s.sessionId, second: { refused: second.refused, status: second.status }, typesAfterSecond: types(second.events), openCardsAfterSecond: cards, firstSettledBySecond, firstApprove: { refused: firstApprove.refused, status: firstApprove.status, code: firstApprove.code ?? null, types: types(firstApprove.events) }, executedAfterFirstApprove: ranFirst, secondResult };
+    say('d', `second message ${second.refused ? `REFUSED ${second.status}` : 'accepted'}; open cards after it: ${cards.length} (${cards.map((c) => c.interactionId).join(', ')}); first card after the second message: ${firstSettledBySecond.length ? `settled ${JSON.stringify(firstSettledBySecond)}` : 'still open'}; first approve ${firstApprove.refused ? `refused ${firstApprove.status} ${firstApprove.code ?? ''}` : 'accepted'} -> executed ${JSON.stringify(ranFirst)}; second-card deny: ${JSON.stringify(secondResult)}; session ${s.sessionId}`);
   }
 
   // (e) a revised proposal in a later turn, with the real hooks loaded
@@ -303,27 +280,26 @@ try {
     { const wipe = new Pool({ connectionString: uriFor('pendingreply') }); await wipe.query('TRUNCATE approval_asks'); await wipe.end(); }
     const s = await park('pr:send E1');
     const sentBefore = sent().length;
-    const revise = await post(s.sessionId, { message: 'pr:send E2' });
-    const after = await follow(s.sessionId, s.parked.next);
-    const newCard = cardsIn(after.events).find((c) => c.requestId !== s.card.requestId) ?? null;
-    // The cancel was sent while the revising turn was running; give eve a moment, then read on.
+    const revise = await sendText(s.session, 'pr:send E2');
+    const newCard = cardsOf(revise.result).find((c) => c.interactionId !== s.card.interactionId) ?? null;
+    // The deny was sent while the revising turn was running; give eve a moment, then read on.
     await new Promise((r) => setTimeout(r, 2500));
-    const settle = await follow(s.sessionId, after.next, 6000);
-    const resolved = [...after.events, ...settle.events].filter((e) => e.type === 'input.resolved' || e.type === 'approval.settled');
+    const tail = [];
+    try { for await (const event of s.session.stream({ follow: false, signal: AbortSignal.timeout(6000) })) tail.push(event); } catch (error) { if (!/abort|timeout/i.test(String(error))) throw error; }
+    const resolved = [...revise.events, ...tail].filter((e) => e.type === 'interaction.settled');
     const ledgerDb = new Pool({ connectionString: uriFor('pendingreply') });
     const ledger = (await ledgerDb.query("SELECT request_id, tool, session_id, turn_sequence, outcome, answered_via FROM approval_asks WHERE session_id = $1 ORDER BY asked_at", [s.sessionId])).rows;
     await ledgerDb.end();
     const ranBeforeApprove = sent().slice(sentBefore);
     let approveNew = null;
     if (newCard) {
-      const r = await post(s.sessionId, { inputResponses: [{ requestId: newCard.requestId, optionId: 'approve' }] });
-      const f = await follow(s.sessionId, settle.next, 15000);
-      approveNew = { status: r.status, types: types(f.events), executed: sent().slice(sentBefore) };
+      const r = await answer(s.session, newCard.interactionId, 'approve');
+      approveNew = { refused: r.refused, status: r.status, types: types(r.events), executed: sent().slice(sentBefore) };
     }
-    const lateOld = await post(s.sessionId, { inputResponses: [{ requestId: s.card.requestId, optionId: 'approve' }] });
+    const lateOld = await answer(s.session, s.card.interactionId, 'approve');
     await new Promise((r) => setTimeout(r, 1500));
-    evidence.e = { sessionId: s.sessionId, oldRequestId: s.card.requestId, newRequestId: newCard?.requestId ?? null, reviseStatus: revise.status, typesAfterRevise: types(after.events), typesAfterWait: types(settle.events), resolvedEvents: resolved, ledger, executedBeforeApprovingNew: ranBeforeApprove, approveNew, lateApproveOldStatus: lateOld.status, executedInTotal: sent().slice(sentBefore) };
-    say('e', `revise POST ${revise.status}; new card ${newCard?.requestId ?? 'NONE'}; resolutions seen: ${JSON.stringify(resolved.map((e) => [e.type, e.data?.resolutions ?? e.data]))}; ledger ${JSON.stringify(ledger)}; executed before approving the new card: ${JSON.stringify(ranBeforeApprove)}; approve new: ${JSON.stringify(approveNew)}; late approve of old ${lateOld.status}; executed in total ${JSON.stringify(sent().slice(sentBefore))}; session ${s.sessionId}`);
+    evidence.e = { sessionId: s.sessionId, oldInteractionId: s.card.interactionId, newInteractionId: newCard?.interactionId ?? null, revise: { refused: revise.refused, status: revise.status }, typesAfterRevise: types(revise.events), typesAfterWait: types(tail), settledEvents: resolved, ledger, executedBeforeApprovingNew: ranBeforeApprove, approveNew, lateApproveOld: { refused: lateOld.refused, status: lateOld.status, code: lateOld.code ?? null }, executedTotal: sent().slice(sentBefore) };
+    say('e', `revise ${revise.refused ? `REFUSED ${revise.status}` : 'accepted'}; new card ${newCard?.interactionId ?? 'NONE'}; settlements seen: ${JSON.stringify(resolved.map((e) => [e.data?.interactionId, e.data?.outcome]))}; ledger ${JSON.stringify(ledger)}; executed before approving the new card: ${JSON.stringify(ranBeforeApprove)}; approve new: ${JSON.stringify(approveNew)}; late approve of the old card: ${lateOld.refused ? `refused ${lateOld.status} ${lateOld.code ?? ''}` : 'accepted'} -> executed in total ${JSON.stringify(sent().slice(sentBefore))}; session ${s.sessionId}`);
   }
 
   evidence.elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);

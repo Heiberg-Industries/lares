@@ -4,7 +4,7 @@
 #
 # Usage: `source scripts/setup-eval-env.sh` from `packages/board-evals`. Sourcing (not executing)
 # is required: the exports must land in the CALLING shell, since every later step — `pnpm run
-# eval`, `eve invoke`, `eve start` — reads these as inherited environment, not as arguments.
+# eval`, `eve eval`, `eve start` — reads these as inherited environment, not as arguments.
 #
 # Starting state matches evals/board.eval.ts's own expectation: an empty grants list and an empty
 # level table, so a freshly-sourced environment does not itself change what any committed eval

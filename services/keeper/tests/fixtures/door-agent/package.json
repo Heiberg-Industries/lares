@@ -1,1 +1,1 @@
-{"name":"lares-door-proof","private":true,"type":"module"}
+{"name":"lares-door-proof","private":true,"type":"module","dependencies":{"eve":"1.0.0-rc.9","@lares/agent-kit":"workspace:*"}}

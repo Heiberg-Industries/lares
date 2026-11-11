@@ -2,12 +2,12 @@
  * web-chat-proof.mjs — does the console's chat proxy really carry a turn?
  *
  * `services/console/lib/chat-proxy.ts` was written against unit tests and against a reading of
- * eve 0.60.1's compiled client, and `useEveAgent` is wired to it. Nobody had seen either carry a
+ * eve's compiled client, and `useEveAgent` is wired to it. Nobody had seen either carry a
  * real turn. This script does not copy one line of that proxy: it IMPORTS `forwardChat` itself —
  * Node 24 strips the types off a `.ts` module on import, so `../../../services/console/lib/chat-proxy.ts`
  * is a plain import here with no build step and no second implementation to drift.
  *
- * What is real in this run: a real eve 0.60.1 process (`eve build` + `eve start`), its real HTTP
+ * What is real in this run: a real eve 1.0 process (`eve build` + `eve start`), its real HTTP
  * door with the same auth policy every role ships (`localDev()` + `withAuthChallenges(Basic, realm
  * "lares")` reading a real secret FILE), a real Postgres, eve's own browser `Client`, and the real
  * `forwardChat`. Only the model is scripted (the package's own `mockModel`) — no credential, no
@@ -34,7 +34,8 @@
  *
  * Run: `pnpm -C packages/board-evals run proof:web-chat` (Docker running). One eve process at a
  * time; the container, the process group and every temporary directory are disposed in `finally`.
- * Results: `packages/board-evals/proofs/web-chat-2026-09-20.md`.
+ * Results: one dated file per run under `packages/board-evals/proofs/` (`web-chat-2026-09-20.md`
+ * is this proof on eve 0.60.1).
  */
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -59,7 +60,16 @@ const REGISTRY_ADDRESS = '10.0.0.7';
 const PASSWORD = 'disposable-fixture-only';
 const INCARNATION = '11111111-1111-4111-8111-111111111111';
 const OWNER = 'owner@example.invalid';
-const TERMINAL = new Set(['session.completed', 'session.failed', 'session.waiting']);
+// eve 1.0's stream (version 27) is one JSON object per line: an EVENT LINE `{ at, facts: [...] }`
+// holding every event one state change produced, a PROGRESS record `{ progress: {...} }`, or a
+// transport record `{ "$eve": ... }` (a heartbeat, the end of a read) that is not stored and has
+// no position. A request is over for this proof when a line says its turn settled, paused for a
+// person, or the session ended.
+const factsOf = (line) => (Array.isArray(line?.facts) ? line.facts : []);
+const typesOf = (line) => (line?.progress ? [`progress:${line.progress.type}`] : line?.$eve ? [`$eve:${line.$eve}`] : factsOf(line).map((f) => f.type));
+const isTerminal = (line) => factsOf(line).some((f) => f.type === 'turn.settled' || f.type === 'turn.paused' || f.type === 'session.ended');
+const isStored = (line) => line !== undefined && !('$eve' in line) && line.type !== '<unparsed>' && line.type !== '<unterminated>';
+const lastTypes = (lines) => JSON.stringify(typesOf(lines.at(-1)?.event));
 
 // ─── the disposable fixture's own door, instrumentation and tools ──────────────────────────────
 
@@ -99,8 +109,12 @@ export default eveChannel({
 /** The same startup hook the chief of staff runs, so the approval card the browser sees is rendered
  *  by the REAL formatters — the point of item 7 is what those put on the wire, not a fixture's. */
 const INSTRUMENTATION_SRC = `
+import { installRefusingDefaultProvider } from "@lares/agent-kit/gateway-budget";
 import { defineInstrumentation } from "eve/instrumentation";
 import { registerApprovalSummary } from "@lares/agent-kit/approval-summary";
+
+// FIRST: no model call from this disposable agent can leave through the AI SDK's default provider.
+installRefusingDefaultProvider();
 
 export default defineInstrumentation({ setup: () => { registerApprovalSummary(); } });
 `;
@@ -185,7 +199,10 @@ function fitOut(root) {
   patchScriptedModel(root);
   mkdirSync(join(root, 'agent/channels'), { recursive: true });
   writeFileSync(join(root, 'agent/channels/eve.ts'), CHANNEL_SRC);
-  writeFileSync(join(root, 'agent/instrumentation.ts'), INSTRUMENTATION_SRC);
+  // eve 1.0 reads instrumentation from a directory, one file per provider; the fixture's own
+  // agent/instrumentation/model-guard.ts is already in the copy and stays.
+  mkdirSync(join(root, 'agent/instrumentation'), { recursive: true });
+  writeFileSync(join(root, 'agent/instrumentation/approval-summary.ts'), INSTRUMENTATION_SRC);
   writeFileSync(join(root, 'agent/tools/chat_probe_slow.ts'), SLOW_TOOL_SRC);
   writeFileSync(join(root, 'agent/tools/gmail_send.ts'), GATED_TOOL_SRC);
 }
@@ -284,7 +301,7 @@ async function readStream(response, { lines: wanted = Infinity, untilTerminal = 
         try { event = JSON.parse(raw); } catch { event = { type: '<unparsed>', raw }; }
         out.push({ at: Date.now() - started, raw, event });
         if (out.length >= wanted) break;
-        if (untilTerminal && TERMINAL.has(event.type)) return out;
+        if (untilTerminal && isTerminal(event)) return out;
       }
       if (out.length >= wanted) break;
     }
@@ -325,8 +342,8 @@ async function followProxiedStream(sessionId, startIndex, { deadlineMs = 60000 }
     if (!response.ok) { seenBodies.push(await response.text()); break; }
     const batch = await readStream(response, { timeoutMs: deadlineMs });
     for (const line of batch) lines.push({ ...line, at: Date.now() - began, connection });
-    index += batch.length;
-    if (batch.length > 0 && TERMINAL.has(batch.at(-1).event.type)) break;
+    index += batch.filter((l) => isStored(l.event)).length; // the cursor counts stored lines only
+    if (batch.some((l) => isTerminal(l.event))) break;
     await new Promise((r) => setTimeout(r, 100));
   }
   return lines;
@@ -347,7 +364,9 @@ function widestSingleConnectionSpan(lines) {
 }
 
 async function openProxiedStream(sessionId, { startIndex = 0, signal, includeTailIndex = true } = {}) {
-  const query = `?streamControlVersion=1${startIndex === 0 ? '' : `&startIndex=${startIndex}`}${includeTailIndex ? '&includeTailIndex=1' : ''}`;
+  // The two query parameters the console's proxy lets through, and nothing else.
+  const params = [startIndex === 0 ? null : `startIndex=${startIndex}`, includeTailIndex ? 'includeTailIndex=1' : null].filter(Boolean);
+  const query = params.length ? `?${params.join('&')}` : '';
   let last;
   for (let attempt = 0; attempt < 12; attempt += 1) {
     last = await viaProxy('GET', `eve/v1/session/${sessionId}/stream`, { query, signal });
@@ -427,12 +446,12 @@ try {
 
   const turn = await followProxiedStream(sessionId, 0);
   const turnText = turn.map((l) => l.raw).join('\n');
-  record('2b a full scripted turn comes back', turnText.includes('DONE:greet me') && TERMINAL.has(turn.at(-1)?.event.type), `${turn.length} events over ${new Set(turn.map((l) => l.connection)).size} connection(s), last ${turn.at(-1)?.event.type}, reply "DONE:greet me" seen`);
+  record('2b a full scripted turn comes back', turnText.includes('DONE:greet me') && turn.some((l) => isTerminal(l.event)), `${turn.length} lines over ${new Set(turn.map((l) => l.connection)).size} connection(s), last ${lastTypes(turn)}, reply "DONE:greet me" seen`);
 
   // ── 5. streaming is incremental (measured on a turn that takes real time) ─────────────────────
   // The stream is opened FIRST and held, then the message is sent: a reader that attaches after a
   // batch already exists is served that batch and the connection closes, which measures nothing.
-  const slowFrom = turn.length;
+  const slowFrom = turn.filter((l) => isStored(l.event)).length;
   const held = await openProxiedStream(sessionId, { startIndex: slowFrom, includeTailIndex: false });
   const heldOpenedAt = Date.now();
   const reading = readStream(held, { timeoutMs: 30000 });
@@ -441,7 +460,7 @@ try {
   const slowAccepted = await viaProxy('POST', `eve/v1/session/${sessionId}`, { body: JSON.stringify({ message: 'take your time' }) });
   seenBodies.push(await slowAccepted.text());
   const live = await reading;
-  const rest = live.length > 0 && TERMINAL.has(live.at(-1).event.type) ? [] : await followProxiedStream(sessionId, slowFrom + live.length);
+  const rest = live.some((l) => isTerminal(l.event)) ? [] : await followProxiedStream(sessionId, slowFrom + live.filter((l) => isStored(l.event)).length);
   const slow = [...live, ...rest];
   const firstLineAt = live.length > 0 ? heldOpenedAt + live[0].at - sentAt : -1;
   const turnEndedAt = Date.now() - sentAt;
@@ -453,20 +472,23 @@ try {
   // ── 4. a reconnecting stream ─────────────────────────────────────────────────────────────────
   // The session's stream is a replayable log, so the SAME turn can be read whole and then read in
   // two halves: that is an uninterrupted run to compare against, not a second turn.
-  const whole = await readStream(await openProxiedStream(sessionId, { startIndex: slowFrom }));
+  // Only STORED lines have a position and are compared; a transport record (a heartbeat, the note
+  // that a bounded read ended) is not part of the log and may differ between two reads.
+  const stored = (lines) => lines.filter((l) => isStored(l.event));
+  const whole = stored(await readStream(await openProxiedStream(sessionId, { startIndex: slowFrom })));
   const cut = Math.max(1, Math.floor(whole.length / 2));
   const dropped = new AbortController();
-  const head = await readStream(
+  const head = stored(await readStream(
     await openProxiedStream(sessionId, { startIndex: slowFrom, signal: dropped.signal }),
     { lines: cut, untilTerminal: false },
-  );
+  ));
   dropped.abort();
-  const tail = await readStream(await openProxiedStream(sessionId, { startIndex: slowFrom + head.length }));
+  const tail = stored(await readStream(await openProxiedStream(sessionId, { startIndex: slowFrom + head.length })));
   const rejoined = [...head, ...tail].map((l) => l.raw);
   const reference = whole.map((l) => l.raw);
   record('4 a dropped stream resumes with nothing lost or repeated',
-    head.length === cut && rejoined.length === reference.length && rejoined.every((line, i) => line === reference[i]),
-    `${reference.length} events whole · dropped after ${head.length} · resumed at startIndex=${slowFrom + head.length} · ${tail.length} more · sequences identical`);
+    head.length >= 1 && head.length <= cut && whole.length > head.length && rejoined.length === reference.length && rejoined.every((line, i) => line === reference[i]),
+    `${reference.length} stored lines whole · dropped after ${head.length} · resumed at startIndex=${slowFrom + head.length} · ${tail.length} more · sequences identical`);
 
   // ── 6. the refusals, each with ZERO upstream requests ─────────────────────────────────────────
   calls = [];
@@ -518,9 +540,9 @@ try {
   await new Promise((done) => bridge.listen(bridgePort, '127.0.0.1', done));
 
   calls = [];
-  const client = new Client({ host: `http://127.0.0.1:${bridgePort}${PREFIX.slice(0, -1)}` });
+  const client = new Client({ baseUrl: `http://127.0.0.1:${bridgePort}${PREFIX.slice(0, -1)}` });
   const opened = await client.sessions.create({ message: 'greet me' });
-  const answered = await opened.response.result();
+  const answered = await opened.delivery.result();
   const answeredText = JSON.stringify(answered);
   seenBodies.push(answeredText);
   record('3 eve\'s own Client completes a turn through the proxy', answeredText.includes('DONE:greet me'), `${calls.length} upstream call(s) · reply carried back to the client`);
@@ -531,19 +553,19 @@ try {
   const gatedId = gatedCreated.headers.get('x-eve-session-id');
   const gated = await followProxiedStream(gatedId, 0);
   for (const line of gated) {
-    const found = JSON.stringify(line.event).includes('"tool-approval"');
+    const found = factsOf(line.event).some((f) => f.type === 'interaction.opened' && f.data?.request?.kind === 'approval');
     if (found) wire.inputRequestEvents.push(line.event);
   }
   wire.terminalEvent = gated.at(-1)?.event ?? null;
   const gatedText = gated.map((l) => l.raw).join('\n');
   const titleOnWire = /Send email to first@example\.invalid and 1 more/.test(gatedText);
   // The DETAILS block is `mailDetails` — `*To:* …` mrkdwn. Tested for the RENDERED text, never for
-  // the body string, which also appears verbatim inside `action.input` and would read as a
+  // the body string, which also appears verbatim inside the call's `input` and would read as a
   // false positive.
   const detailsOnWire = /\*To:\*/.test(gatedText);
-  record('7 an approval reaches the browser as a tool-approval input request',
+  record('7 an approval reaches the browser as an approval interaction',
     wire.inputRequestEvents.length > 0 && titleOnWire,
-    `${wire.inputRequestEvents.length} event(s) carry kind "tool-approval" · one-line title on the wire: ${titleOnWire} · rendered DETAILS text on the wire: ${detailsOnWire}`);
+    `${wire.inputRequestEvents.length} line(s) carry an opened interaction of kind "approval" · one-line title on the wire: ${titleOnWire} · rendered DETAILS text on the wire: ${detailsOnWire}`);
   wire.detailsOnWire = detailsOnWire;
   wire.titleOnWire = titleOnWire;
 

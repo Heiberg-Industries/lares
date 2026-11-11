@@ -3,8 +3,8 @@
  *
  * `services/chief-of-staff/lib/approvals.ts`'s `assertApproval` refuses a gated tool call whose
  * `payloadFingerprint(toolName, input)` at execution time differs from the one the approval hook
- * recorded from eve's `input.requested` event. Every test of that check so far built BOTH sides by
- * hand. This script builds neither: it boots a REAL eve 0.60.1 runtime against a REAL Postgres,
+ * recorded from eve's `interaction.opened` event. Every test of that check so far built BOTH sides by
+ * hand. This script builds neither: it boots a REAL eve 1.0 runtime against a REAL Postgres,
  * parks a real approval card, answers it, and compares the two fingerprints that the real
  * framework produced — for six input shapes that schema parsing and a durable round-trip are each
  * capable of changing:
@@ -24,21 +24,18 @@
  * `agent/agent.ts`'s `mockModel` is scripted. This script patches exactly two anchors in that
  * scripted model inside the COPY (never in the source tree), adds six gated probe tools and one
  * hook to the copy, and drives park → approve → execute through eve's own eval harness
- * (`session.send` → one `inputRequest` → `session.respondAll("approve")`), the way
+ * (`session.send` → one open `interaction` → `session.respondAll("approve")`), the way
  * `evals/board.eval.ts` already drives a real approval. Both sides append a line to one file; the
  * comparison is over those lines, not over anything this script computed itself.
  *
- * WHY NOT `eve invoke --resume`, which `restart-proof.mjs` uses and which would add a real process
- * boundary: measured here, roughly one resume in five answers HTTP 409 `session_not_active` ("The
- * session is no longer active.", `dist/src/eve-channel/index.js`) — reproduced with a fresh app per
- * case AND a fresh database per case, so it is neither state accumulating in one app nor in one
- * database. That flake is a property of driving the local invoke server once per turn, not of the
- * binding, and it is reported as a separate observation. The eval harness runs the same runtime and
- * the same durable pending-input path in one process, and is stable.
+ * WHY THE EVAL HARNESS and not a process boundary per answer (which `restart-proof.mjs` adds): the
+ * binding is between the card and the execution, not across a restart; the eval harness runs the
+ * same runtime and the same durable pending-input path in one process, and is stable.
  *
  * Run: `node packages/board-evals/scripts/approval-binding-proof.mjs` (Docker running). One eve
  * process at a time; the container and every temporary directory are disposed in `finally`.
- * Results: `packages/board-evals/proofs/approval-binding-2026-09-20.md`.
+ * Results: `packages/board-evals/proofs/approval-binding-2026-11-11.md` (eve 1.0.0-rc.9); the
+ * 2026-09-20 record is the same proof on eve 0.60.1.
  */
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -112,36 +109,33 @@ export function canonicalForProof(value: unknown, seen: WeakSet<object> = new We
 }
 `;
 
-/** The hook: the ASK side. Reads `action.input` off eve's own `input.requested` event, exactly as
- *  `services/chief-of-staff/agent/hooks/approval-record.ts` does, and writes the fingerprint,
- *  the call id and the canonical string to a file instead of to Postgres. */
+/** The hook: the ASK side. Reads the card with `openedApproval`, the kit's own reader that
+ *  `services/chief-of-staff/agent/hooks/approval-record.ts` uses on eve's `interaction.opened`
+ *  event (eve 1.0 names only the call on the event; the tool name and input come from the
+ *  session view), and writes the fingerprint, the call id and the canonical string to a file
+ *  instead of to Postgres. */
 const HOOK_SRC = `
 import { appendFileSync } from "node:fs";
 import { defineHook, type HookContext } from "eve/hooks";
 import { payloadFingerprint } from "@lares/agent-kit/approval-ledger";
+import { openedApproval } from "@lares/agent-kit/approval-record-hook";
 import { canonicalForProof } from "../../lib/binding-canonical.js";
 
-async function onInputRequested(event: unknown, _ctx: HookContext): Promise<void> {
-  const requests = (event as { data?: { requests?: unknown } } | undefined)?.data?.requests;
-  if (!Array.isArray(requests)) return;
-  for (const req of requests) {
-    const r = req as { kind?: unknown; requestId?: unknown; action?: { callId?: unknown; toolName?: unknown; input?: unknown } };
-    if (r.kind !== "tool-approval") continue;
-    const toolName = r.action?.toolName;
-    if (typeof toolName !== "string" || !toolName.startsWith("bind_")) continue;
-    appendFileSync(process.env.BINDING_LOG!, JSON.stringify({
-      side: "ask",
-      tool: toolName,
-      callId: r.action?.callId ?? null,
-      requestId: r.requestId ?? null,
-      fingerprint: payloadFingerprint(toolName, r.action?.input),
-      canonical: canonicalForProof(r.action?.input),
-      keys: r.action?.input && typeof r.action.input === "object" ? Object.keys(r.action.input as object).sort() : null,
-    }) + "\\n");
-  }
+async function onInteractionOpened(event: unknown, ctx: HookContext): Promise<void> {
+  const card = openedApproval(event, ctx);
+  if (!card || !card.toolName.startsWith("bind_")) return;
+  appendFileSync(process.env.BINDING_LOG!, JSON.stringify({
+    side: "ask",
+    tool: card.toolName,
+    callId: card.callId ?? null,
+    interactionId: card.interactionId ?? null,
+    fingerprint: payloadFingerprint(card.toolName, card.input),
+    canonical: canonicalForProof(card.input),
+    keys: card.input && typeof card.input === "object" ? Object.keys(card.input as object).sort() : null,
+  }) + "\\n");
 }
 
-export default defineHook({ events: { "input.requested": onInputRequested } });
+export default defineHook({ events: { "interaction.opened": onInteractionOpened } });
 `;
 
 /** One probe tool per shape: `always()` so it parks on a card every time, and an `execute` that
@@ -163,7 +157,7 @@ export default defineTool({
     appendFileSync(process.env.BINDING_LOG!, JSON.stringify({
       side: "execute",
       tool: ${JSON.stringify(c.tool)},
-      // What the kit's helper reads (\`ctx.toolCallId\`) vs what eve 0.60.1's \`ToolContext\` declares.
+      // What the kit's helper reads vs what eve's \`ToolContext\` carries.
       callId: callIdFrom(ctx) ?? null,
       ctxCallId: typeof c?.callId === "string" ? c.callId : null,
       ctxToolCallId: typeof c?.toolCallId === "string" ? c.toolCallId : null,
@@ -210,9 +204,9 @@ export default defineEval({
     const session = await t.session();
     for (const c of CASES) {
       const parked = await session.send(c.message);
-      const requests = parked.inputRequests ?? [];
+      const requests = parked.interactions;
       if (requests.length !== 1) throw new Error(\`\${c.id}: expected exactly one card, got \${requests.length}\`);
-      if (requests[0]?.kind !== "tool-approval") throw new Error(\`\${c.id}: expected a tool approval, got \${requests[0]?.kind}\`);
+      if (requests[0]?.request.kind !== "approval") throw new Error(\`\${c.id}: expected a tool approval, got \${requests[0]?.request.kind}\`);
       await session.respondAll("approve");
       t.log(\`\${c.id} \${c.tool}: parked on one card, approved\`);
     }
@@ -283,7 +277,7 @@ try {
     const mine = recorded.filter((l) => l.tool === c.tool);
     const ask = mine.find((l) => l.side === 'ask');
     const exec = mine.find((l) => l.side === 'execute');
-    assert.ok(ask, `${c.id}: eve's input.requested carried no card for ${c.tool}`);
+    assert.ok(ask, `${c.id}: eve's interaction.opened carried no card for ${c.tool}`);
     assert.ok(exec, `${c.id}: the approved call never executed`);
     assert.equal(mine.length, 2, `${c.id}: expected exactly one ask and one execution, got ${mine.length} lines`);
     const verdict = {

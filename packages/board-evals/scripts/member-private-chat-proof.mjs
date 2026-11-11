@@ -134,7 +134,7 @@ const scripted=mockModel(({lastUserMessage,messages,tools,toolResults})=>{
   if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'track_create',input:JSON.parse(lastUserMessage.slice(13))}]};
   if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(13));return {toolCalls:[{id:uniqueCall(),name:'track_create',input:{...input,trackId:input.trackId+'-second'}},{id:uniqueCall(),name:'tracks_list',input:{}}]};}
   if(lastUserMessage==='VAULT_READ'&&!currentResults)return {toolCalls:[{name:'agent-kit__vault_read',input:{area:'private',path:'owner.md'}}]};
-  if(lastUserMessage?.startsWith('SKILL ')&&!toolResults.length)return {toolCalls:[{name:'load_skill',input:{skill:lastUserMessage.slice(6)}}]};
+  if(lastUserMessage?.startsWith('SKILL ')&&!toolResults.length)return {toolCalls:[{name:'eve__skill',input:{name:lastUserMessage.slice(6)}}]};
   if(lastUserMessage==='question')return 'Which topic would you like to discuss?';
   return 'ANSWER '+lastUserMessage+' '+JSON.stringify(toolResults);
 });
@@ -219,7 +219,7 @@ async function proveDurableBudget(app){
  const rows=async()=>(await db.query('SELECT id,invocation_hash FROM budget_attempts ORDER BY id')).rows;
  const before=await rows();assert.equal(before.length,scopes.length);assert.equal(receipts.length,scopes.length);
  assert.equal(new Set(before.map(row=>row.invocation_hash)).size,before.length);assert.deepEqual(new Set(receipts.map(row=>row.id)),new Set(before.map(row=>row.id)));
- const selected=[scopes.find(s=>s.session.auth.current.attributes.lares_purpose==='human'),...['approve','cancel'].map(option=>scopes.find(s=>s.event.data.turnId===''&&s.session.auth.current.attributes.lares_resume_option===option))];
+ const selected=[scopes.find(s=>s.session.auth.current.attributes.lares_purpose==='human'),...['approve','deny'].map(option=>scopes.find(s=>s.event.data.turnId===''&&s.session.auth.current.attributes.lares_resume_option===option))];
  assert.ok(selected.every(Boolean),'Missing actual human or exact blank approval/cancel invocation');
  const code=`import {Pool} from 'pg';
  import {PgBudgetAdmissionStore} from '${new URL('../../../packages/agent-kit/src/budget-admission-store.ts',import.meta.url).href}';
@@ -261,7 +261,7 @@ async function proveTracksCards(app,sa,sb,vault){
 
  // Cancelled: nothing written, and the conversation carries on.
  const cancelled=await card(a,sa,track('cancelled-one'));
- const afterCancel=await answer(a,sa,cancelled,'cancel');assert.ok(afterCancel.includes('ANSWER'),afterCancel);
+ const afterCancel=await answer(a,sa,cancelled,'deny');assert.ok(afterCancel.includes('ANSWER'),afterCancel);
  assert.equal((await ask(cancelled)).outcome,'cancelled');assert.equal(existsSync(file('cancelled-one')),false);
  assert.equal((await post(a,sa,cancelled,'approve')).ok,false,'A cancelled card was approved afterwards');
 
@@ -310,7 +310,7 @@ async function proveTracksCards(app,sa,sb,vault){
  const stale=await card(a,sa,track('stale-one'));const row=(await db.query('SELECT * FROM approval_asks WHERE call_id=$1',[stale.call_id])).rows[0];
  await db.query('DELETE FROM approval_asks WHERE call_id=$1',[stale.call_id]);
  await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,session_id,asked_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()-interval '25 hours')`,[row.call_id,row.request_id,row.agent,row.tool,row.payload_hash,row.original_authority,row.acting_member_id,row.session_id]);
- assert.equal((await post(a,sa,stale,'approve')).ok,false,'An expired card was approved');await answer(a,sa,stale,'cancel');assert.equal(existsSync(file('stale-one')),false);
+ assert.equal((await post(a,sa,stale,'approve')).ok,false,'An expired card was approved');await answer(a,sa,stale,'deny');assert.equal(existsSync(file('stale-one')),false);
 
  console.log('chief-of-staff: Tracks card approve/cancel/replay/cold-restart, two members, changed content, expiry and no new reads PASS (real Keeper broker and Git Vault)');
 }
@@ -336,7 +336,7 @@ function assertGatewayScopes(app){
     assert.equal(scope.session.auth.initiator.attributes.lares_purpose,'human');
     assert.ok(['human','resolver'].includes(scope.session.auth.current.attributes.lares_purpose));
   }
-  if(app.name==='proof-chief'&&withSend)for(const option of ['approve','cancel'])assert.ok(scopes().some(s=>s.session.auth.current.attributes.lares_purpose==='resolver'&&s.session.auth.current.attributes.lares_resume_option===option&&s.event.data.turnId===''),'Exact '+option+' resume did not preserve actual blank turn and resolver auth');
+  if(app.name==='proof-chief'&&withSend)for(const option of ['approve','deny'])assert.ok(scopes().some(s=>s.session.auth.current.attributes.lares_purpose==='resolver'&&s.session.auth.current.attributes.lares_resume_option===option&&s.event.data.turnId===''),'Exact '+option+' resume did not preserve actual blank turn and resolver auth');
   assert.equal(scopes().length,gateway.calls.filter(c=>c.role===app.name.replace(/^proof-/, '').replace(/^chief$/, 'chief-of-staff')).length,'Scoped model calls and actual HTTP requests differ');
 }
 async function proveGatewayInvocation(app){
@@ -428,7 +428,7 @@ try{
       assert.ok(response.ok,'exact answer '+response.status+' '+await response.clone().text());return stream(app,a,session);
     }
     sendProof={proposal,sendCount};
-    const cancelled=await proposal(sa,'SEND_ATTACK '+JSON.stringify({...input,subject:'Cancelled continuation attack'}));await answer(sa,cancelled,'cancel');assert.equal(sendCount(),0);
+    const cancelled=await proposal(sa,'SEND_ATTACK '+JSON.stringify({...input,subject:'Cancelled continuation attack'}));await answer(sa,cancelled,'deny');assert.equal(sendCount(),0);
     assert.equal((await db.query('SELECT state FROM personal_actions WHERE id=$1',[cancelled.id])).rows[0].state,'cancelled');
     const approved=await proposal(sa);const before=models(app).length;
     await stop();await start(app);assert.equal(hashOutput(app.cwd),outputHash);
@@ -446,14 +446,14 @@ try{
     for(const [member,session,requestId]of [[b,sa,pending.request_id],[a,sb,pending.request_id],[a,sa,'forged-request']]){
       const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId,optionId:'approve'}]},session.cookie);assert.equal(response.ok,false,'Wrong member/session/request reached runtime');
     }
-    assert.equal(models(app).length,beforeWrong);assert.equal(sendCount(),callsBeforeWrong);await answer(sa,pending,'cancel');
+    assert.equal(models(app).length,beforeWrong);assert.equal(sendCount(),callsBeforeWrong);await answer(sa,pending,'deny');
     const expired=await proposal(sa);
     const ask=(await db.query('SELECT * FROM approval_asks WHERE request_id=$1',[expired.request_id])).rows[0];
     await db.query('DELETE FROM approval_asks WHERE request_id=$1',[expired.request_id]);
     await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,session_id,asked_at)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()-interval '25 hours')`,[ask.call_id,ask.request_id,ask.agent,ask.tool,ask.payload_hash,ask.original_authority,ask.acting_member_id,ask.session_id]);
     const refused=await request(app,a,'POST',`eve/v1/session/${sa.id}`,{inputResponses:[{requestId:expired.request_id,optionId:'approve'}]},sa.cookie);assert.equal(refused.ok,false);assert.equal(sendCount(),callsBeforeWrong);
-    await answer(sa,expired,'cancel');
+    await answer(sa,expired,'deny');
     console.log('chief-of-staff: exact prepare/approve/cancel/replay/cold-restart and second-call refusal PASS');
   }
   const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['ask_question','lares_read_public_doc','load_skill','todo']:['ask_question','gmail_accounts','gmail_read','gmail_search','lares_read_public_doc','load_skill','todo',...(withSend?['personal_mailbox_accounts','personal_mailbox_list','personal_mailbox_read','personal_mailbox_send']:[]),...(withVault?['agent-kit__vault_list','agent-kit__vault_read']:[]),...(withTracks?['tracks_list','track_items','track_add_item','track_move_item','track_create','track_set_steps']:[])].sort());assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
