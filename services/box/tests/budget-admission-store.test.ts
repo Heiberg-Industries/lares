@@ -255,7 +255,8 @@ async function admitAcrossDeadline(p:Awaited<ReturnType<typeof prepared>>,validU
     await locker.query('ROLLBACK');locker.release();await pending;await other.end();
   }
 }
-async function resumeFixture(deadline:'action'|'approval',option:'approve'|'cancel'='approve'){
+// eve 1.0 names the decline option `deny` (the console and the supersede hook send only `approve` or `deny`).
+async function resumeFixture(deadline:'action'|'approval',option:'approve'|'deny'='approve'){
   const callId=randomUUID(),requestId=randomUUID(),actionId=randomUUID(),payloadHash=h('expiry-payload');
   const selection={actorMemberId:'member-a',agentId:'helper',incarnation,sessionId:context().session.id,originalTurnId:'turn-1',originalCallId:callId,accountId:'expiry-account',accountGeneration:0,resourceBindingId:'mailbox',connectorId:'example',kind:'mail.send' as const};
   const delay=option==='approve'?1500:-1000;
@@ -1914,7 +1915,7 @@ describe('inactive budget admission on real PostgreSQL',()=>{
     expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('retired');
   });
   it.each(['action','approval'] as const)('preserves model cancellation continuation after %s expiry',async deadline=>{
-    const p=await resumeFixture(deadline,'cancel');expect((await store.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
+    const p=await resumeFixture(deadline,'deny');expect((await store.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
   });
   it('gives the same generic reason for member and installation cap exhaustion, naming only which limit',async()=>{
     await db.query("UPDATE users SET org_role='member' WHERE id='member-b'");await freshConsoleSessions();

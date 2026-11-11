@@ -23,6 +23,7 @@ import { makeApprovalRecord } from '../../../packages/agent-kit/src/approval-rec
 import { tracksApprovalAdapter } from '../../chief-of-staff/lib/tracks-approval.js';
 import { vaultNoteApprovalAdapter } from '../../chief-of-staff/lib/vault-note-write.js';
 import { setVaultTurnCapability } from '../../chief-of-staff/agent/lib/vault-turn.js';
+import { eveSession } from '../../../packages/agent-kit/tests/helpers/eve-session.js';
 
 const ids = vi.hoisted(() => ({
   organisation: 'broker-org', member: 'broker-owner', area: '11111111-1111-4111-8111-111111111111',
@@ -275,11 +276,13 @@ it('scheduled routing can read only visible shared track files for the current o
   await expect(runtime('tracks.list-scheduled', { ownerMemberId: ids.member })).rejects.toThrow('Vault reader unavailable');
 });
 
+// eve 1.0 runs an approved call as the person who asked (`session.auth.current` stays the requester);
+// the person who answered is only `ctx.approval.responder`.
 function approvalContext(purpose: 'human'|'resolver', raw: unknown = trackInput, toolName = 'track_create') {
-  const current = memberAuth(purpose);
   return { callId: 'track-call-1', toolName, toolInput: raw, abortSignal: new AbortController().signal,
     approvedTools: new Set<string>(), session: { id: session, turn: { id: purpose === 'human' ? approvalTurnId : 'turn-track-resolver', sequence: purpose === 'human' ? approvalTurnSequence : approvalTurnSequence + 1 },
-      auth: { current, initiator: memberAuth('human') } } } as any;
+      auth: { current: memberAuth('human'), initiator: memberAuth('human') } },
+    ...(purpose === 'resolver' ? { approval: { responder: memberAuth('resolver') } } : {}) } as any;
 }
 
 it('accepts one exact approved Tracks write, rejects replay, and refuses after edit grant revocation', async () => {
@@ -314,8 +317,8 @@ async function approvedExactTrack(operation: string, input: unknown, adapter: an
   const human = approvalContext('human', input, operation);
   await reserveExactApproval(human, operation, { adapter, db: pool as never, env });
   await attachExactApproval({ requestId: 'track-request-1', callId: 'track-call-1', tool: operation, input }, pool as never);
-  await approveExactResponse({ request: { requestId: 'track-request-1', callId: 'track-call-1', toolName: operation, toolInput: input },
-    responder: answeredAuth('track-request-1'), session: { id: session, initiator: memberAuth('human'), turn: { id: 'turn-track-resolver', sequence: 31 } } },
+  await approveExactResponse({ request: { interactionId: 'track-request-1', callId: 'track-call-1', toolName: operation, toolInput: input },
+    response: { decision: 'approve', principal: answeredAuth('track-request-1') }, session: { id: session, initiator: memberAuth('human'), turn: { id: 'turn-track-resolver', sequence: 31 } } },
     { adapter, db: pool as never, env });
   return requireApprovedExecution(approvalContext('resolver', input, operation), operation, input, { adapter, db: pool as never, env });
 }
@@ -647,11 +650,14 @@ async function exactOutsideFixture(options:{answer?:boolean;receipts?:Pool}={}){
  const {turnId,opened}=await openTurn(80);
  const context={callId:call.callId,toolName,toolInput:input,session:{id:session,turn:{id:turnId,sequence:80},auth:{current:human,initiator:human}}};
  expect(await tool.approval.request(context)).toBe('user-approval');
- await makeApprovalRecord()['input.requested']({data:{requests:[{kind:'tool-approval',requestId,action:{callId:call.callId,toolName,input}}]}},context as never);
+ // The card opens as eve 1.0 does: the event names the call, the view holds its tool name and input.
+ const card=eveSession(turnId);card.call(call.callId,toolName,input);
+ await makeApprovalRecord()['interaction.opened'](card.open(requestId,call.callId),{...context,view:card.view} as never);
  await runtime('turn.close',{turnCapability:opened.turnCapability,turnId,sequence:80});
- const response={request:{requestId,callId:call.callId,toolName,toolInput:input},responder:resolver,
+ const response={request:{interactionId:requestId,callId:call.callId,toolName,toolInput:input},response:{decision:'approve',principal:resolver},
   session:{id:session,initiator:human,turn:{id:'answer-turn',sequence:81}}};
- const resumed={...context,session:{...context.session,turn:{id:'answer-turn',sequence:81},auth:{current:resolver,initiator:human}}};
+ // The approved call runs as the requester; the answerer is ctx.approval.responder.
+ const resumed={...context,approval:{responder:resolver},session:{...context.session,turn:{id:'answer-turn',sequence:81},auth:{current:human,initiator:human}}};
  if(options.answer!==false)expect(await tool.approval.response(response)).toEqual({status:'allowed'});
  const binding={sessionId:session,memberId:ids.member,admissionNonce};
  // Keep the receipt strictly secret-free: the production recorder rejects unknown keys.
@@ -671,7 +677,7 @@ async function exactOutsideFixture(options:{answer?:boolean;receipts?:Pool}={}){
    payloadHash:outsidePayloadHash(requested.toolName,requested.input)});
   return {content:[{type:'text',text:'Fixture result'}]};
  });
- return {tool,input,call,binding,response,resumed,context};
+ return {tool,input,call,binding,response,resumed,context,card};
 }
 it('resumes the real outside tool after original turn closure exactly once under concurrent responses',async()=>{
  const f=await exactOutsideFixture();
@@ -685,12 +691,12 @@ it.each(['rejection','different-responder','changed-payload','changed-member','c
  'outside tool refuses %s before custody/provider',async(kind)=>{
  const f=await exactOutsideFixture({answer:kind!=='rejection'&&kind!=='different-responder'});
  let ctx:any=f.resumed,input=f.input;
- if(kind==='rejection')await makeApprovalRecord()['input.resolved']({data:{resolutions:[{kind:'tool-approval',requestId:f.response.request.requestId,outcome:'denied'}]}},f.resumed as never);
+ if(kind==='rejection')await makeApprovalRecord()['interaction.settled'](f.card.settle(f.response.request.interactionId,'declined','deny'),{...f.resumed,view:f.card.view} as never);
  if(kind==='different-responder'){
-  await expect(f.tool.approval.response({...f.response,responder:{...memberAuth('resolver'),attributes:{...memberAuth('resolver').attributes,lares_member_id:'member-backup'}}})).rejects.toThrow();
+  await expect(f.tool.approval.response({...f.response,response:{...f.response.response,principal:{...memberAuth('resolver'),attributes:{...memberAuth('resolver').attributes,lares_member_id:'member-backup'}}}})).rejects.toThrow();
  }
  if(kind==='changed-payload')input={company:'Changed'};
- if(kind==='changed-member')ctx={...ctx,session:{...ctx.session,auth:{...ctx.session.auth,current:{...memberAuth('resolver'),attributes:{...memberAuth('resolver').attributes,lares_member_id:'member-backup'}}}}};
+ if(kind==='changed-member')ctx={...ctx,approval:{responder:{...memberAuth('resolver'),attributes:{...memberAuth('resolver').attributes,lares_member_id:'member-backup'}}}};
  if(kind==='changed-session')ctx={...ctx,session:{...ctx.session,id:'another-session'}};
  if(kind==='revocation')await pool.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE session_id=$1',[session]);
  if(kind==='human-resume')ctx=f.context;
@@ -726,7 +732,7 @@ it.each(['session-revoked','approval-cancelled','policy-changed','wrong-member',
  'an issued handle refuses %s before provider dispatch',async(kind)=>{
  const f=await exactOutsideFixture(),approved=await runtime('outside.approve',{...f.binding,call:f.call});
  if(kind==='session-revoked')await pool.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE session_id=$1',[session]);
- if(kind==='approval-cancelled')await makeApprovalRecord()['input.resolved']({data:{resolutions:[{kind:'tool-approval',requestId:f.response.request.requestId,outcome:'denied'}]}},f.resumed as never);
+ if(kind==='approval-cancelled')await makeApprovalRecord()['interaction.settled'](f.card.settle(f.response.request.interactionId,'declined','deny'),{...f.resumed,view:f.card.view} as never);
  if(kind==='policy-changed')await pool.query("INSERT INTO ratchet(agent,capability,action,level) VALUES($1,'outside','','never')",[agent]);
  const request={...f.binding,...approved,call:f.call};
  if(kind==='wrong-member')request.memberId='member-backup';
