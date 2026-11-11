@@ -6,7 +6,10 @@ import { modelPurposeDispatchRequest, modelPurposeRequest, MODEL_PURPOSE_DISPATC
  * Model calls that run outside any conversation: a scheduled job, or a tool that needs a model
  * while some member is chatting. They have no conversation step to claim, so they ask the Keeper
  * for one ticket per physical request instead. The Keeper charges that ticket to the installation
- * owner it has on record. Nothing here names the payer: not the agent, not its environment.
+ * owner it has on record, and only for an agent that owner owns and nobody else can use. On an
+ * agent another member can use, the call is refused until member jobs exist: the owner never pays
+ * for a call another person could have caused. Nothing here names the payer: not the agent, not
+ * its environment.
  *
  * This is deliberately its own context, separate from `model-invocation.ts`. A conversation step
  * can never become an owner job, and an owner job can never claim a conversation step.

@@ -12,8 +12,10 @@ import { payloadFingerprint } from './approval-ledger.js';
  * This is not registered capability: parsing JSON never authenticates the evidence.
  */
 export type ConversationBudgetAuthorityReference={kind:'human'|'resume';binding:ConsoleBinding;turnId:string;turnSequence:number;resume?:{requestId:string;optionId:'approve'|'cancel'}};
-/** A call outside any conversation, paid by the installation owner. The owner id comes from the
- * Keeper's own configuration, never from the agent. There is no session, turn or admission. */
+/** A call outside any conversation. The installation owner pays for it, and only on an agent the
+ * owner owns and nobody else can use; on any other agent it is refused until member jobs exist.
+ * The owner id comes from the Keeper's own configuration, never from the agent. There is no
+ * session, turn or admission. */
 export type OwnerJobBudgetAuthorityReference={kind:'owner-job';binding:{agent:string;incarnation:string;memberId:string;agentAccessRevision:number}};
 export type BudgetAuthorityReference=ConversationBudgetAuthorityReference|OwnerJobBudgetAuthorityReference;
 
@@ -34,7 +36,9 @@ export async function captureBudgetAuthorityReference(db:SourceDatabase,ctx:Cons
 }
 
 /** Capture the owner-job authority for the installation owner the Keeper has on record. The owner
- * must be an active organisation owner who can use this agent; nothing else grants it. */
+ * must be an active organisation owner who owns this agent, and no other member may be able to use
+ * it: the owner pays for these calls, so a call another person could have caused is refused until
+ * member jobs exist. Nothing else grants it. */
 export async function captureOwnerJobAuthorityReference(db:SourceDatabase,ownerId:string,env:NodeJS.ProcessEnv):Promise<OwnerJobBudgetAuthorityReference> {
   requireSourceTransactionOwner(db);
   const own=managedIdentity(env);
@@ -42,6 +46,7 @@ export async function captureOwnerJobAuthorityReference(db:SourceDatabase,ownerI
   await requireActiveOwner(db,ownerId);
   const grant=await new PgGrantStore().captureUseWithExpiry(ownerId,own.name,{db:db as unknown as import('pg').PoolClient});
   if(!grant)throw new Error('Stale grant');
+  await requireOwnerOnlyAgent(db,ownerId,own.name);
   return {kind:'owner-job',binding:{agent:own.name,incarnation:own.incarnation,memberId:ownerId,agentAccessRevision:grant.accessRevision}};
 }
 
@@ -50,6 +55,23 @@ async function requireActiveOwner(db:SourceDatabase,ownerId:string):Promise<void
   await gateConsoleOrganisation(db,ownerId,undefined,{lock:'share'});
   const owner=await db.query("SELECT 1 FROM users WHERE id=$1 AND status='active' AND org_role='owner' AND org_id IS NOT NULL",[ownerId]);
   if(owner.rows.length!==1)throw new Error('Stale authority');
+}
+
+/** The owner pays for an owner job, so the agent must be the owner's own and reach nobody else.
+ * Any current grant on it, to use or to edit, held by another member, or by an organisation with
+ * another active member who is not restricted, refuses the job. A missing agent row refuses too.
+ * The shared lock on the agent row holds the grants and the members' roles still until the
+ * transaction ends: changing either has to advance that row's revision first. A member who joins
+ * afterwards does not touch that row, and is seen when this runs again as the ticket is admitted. */
+async function requireOwnerOnlyAgent(db:SourceDatabase,ownerId:string,agentName:string):Promise<void> {
+  const own=await db.query(`SELECT 1 FROM agent_access a WHERE a.agent_name=$2 AND a.owner_member_id=$1
+    AND NOT EXISTS(SELECT 1 FROM resource_grants g WHERE g.resource_kind='agent' AND g.resource_id=a.agent_name
+      AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp())
+      AND ((g.principal_member_id IS NOT NULL AND g.principal_member_id<>$1)
+        OR (g.principal_organisation_id IS NOT NULL AND EXISTS(SELECT 1 FROM users u
+          WHERE u.org_id=g.principal_organisation_id AND u.id<>$1 AND u.status='active' AND u.org_role<>'restricted'))))
+    FOR SHARE OF a`,[ownerId,agentName]);
+  if(own.rows.length!==1)throw new Error('Stale authority');
 }
 
 /** Revalidate persisted authority using the same owned database transaction and locks. */
@@ -72,6 +94,7 @@ export async function validateBudgetAuthorityReference(db:SourceDatabase,ref:Bud
   // grant store's legacy type names PoolClient's overloaded query API more narrowly.
   const grant=await new PgGrantStore().captureUseWithExpiry(ref.binding.memberId,ref.binding.agent,{expectedRevision:ref.binding.agentAccessRevision,db:db as unknown as import('pg').PoolClient});
   if(!grant)throw new Error('Stale grant');
+  if(ref.kind==='owner-job')await requireOwnerOnlyAgent(db,ref.binding.memberId,ref.binding.agent);
   // All authority evidence is locked before budget locks. Only immutable time deadlines
   // cross the lock wait; the final transition compares them using the database clock.
   return (await db.query('SELECT LEAST($1::timestamptz,$2::timestamptz,$3::timestamptz)::text AS valid_until',[grant.validUntil,resumeValidUntil,await checkConsoleSourceDeadlines(db)])).rows[0].valid_until;
