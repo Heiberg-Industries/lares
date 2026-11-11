@@ -45,8 +45,19 @@ Each one boots a real eve runtime against a disposable Postgres with a scripted 
 
 | What it settles | Command | Results |
 | --- | --- | --- |
-| The hash on the approval card equals the hash at execution, and `ctx.callId` is the card's call id | `node scripts/approval-binding-proof.mjs` | `proofs/approval-binding-2026-09-20.md` |
-| A tainted turn raises a card and an untainted one does not, under the real turn ids | `node scripts/tainted-approval-proof.mjs` | `proofs/tainted-approval-2026-09-20.md` |
-| The console's chat proxy really carries a turn: the agent's own Basic-gated door, the real `forwardChat`, eve's own browser `Client`, a reconnecting stream, and the wire shape of an approval | `pnpm -C packages/board-evals run proof:web-chat` | `proofs/web-chat-2026-09-20.md` |
+| The hash on the approval card equals the hash at execution, and `ctx.callId` is the card's call id | `node scripts/approval-binding-proof.mjs` | `proofs/approval-binding-2026-11-11.md` (eve 1.0.0-rc.9), `proofs/approval-binding-2026-09-20.md` (0.60.1) |
+| A tainted turn raises a card and an untainted one does not, under the real turn ids | `node scripts/tainted-approval-proof.mjs` | `proofs/tainted-approval-2026-11-11.md` (eve 1.0.0-rc.9), `proofs/tainted-approval-2026-09-20.md` (0.60.1) |
+| Typed text never approves a waiting card, and what happens to the card when a person types | `pnpm -C packages/board-evals run proof:pending-reply` | `proofs/pending-reply-2026-11-11.md` (eve 1.0.0-rc.9), `proofs/pending-reply-2026-10-19.md` (0.60.1) |
+| A model call outside the scripted model is refused in a live run | `node scripts/model-guard-proof.mjs` | `proofs/model-guard-2026-11-11.md` |
+| The console's chat proxy really carries a turn: the agent's own Basic-gated door, the real `forwardChat`, eve's own browser `Client`, a reconnecting stream, and the wire shape of an approval | `pnpm -C packages/board-evals run proof:web-chat` | `proofs/web-chat-2026-09-20.md` (0.60.1). **Not runnable at present**, see below |
+| An approval through the console's proxy with the real approver check | `pnpm -C packages/board-evals run proof:web-chat-approval` | `proofs/web-chat-approval-2026-09-20.md` (0.60.1). **Not runnable at present**, see below |
+
+The two web-chat proofs import the console's `chat-proxy.ts` (and, for the approval one, three of a
+role's files) straight from the source tree with Node's own type stripping. Those files have since
+grown imports plain Node cannot follow (extensionless module paths, kit modules that name their
+neighbours as `.js`, a dozen role modules), and the proxy's contract now includes a bound session
+and signed requests. That happened before the eve 1.0 upgrade and is independent of it. Restoring
+them means rewriting both against the console's current proxy and running them under a TypeScript
+loader; until then the console's own tests are the evidence for the proxy.
 
 `seams.eval.ts` and `replay.eval.ts` remain separately available as measurements of eve's dynamic seams: `node scripts/all-evals.mjs --seams-only` runs both in a fixture with no mounted definition. They are not the required suite, and their file-driven `SEAM_GRANTS` is not definition authorization evidence. Neither hands eve a model id (the model-id routing probe an early version carried is gone; this project never gives eve a bare model id). `scripts/doors-probe.mjs` remains a standalone isolated supplemental probe.

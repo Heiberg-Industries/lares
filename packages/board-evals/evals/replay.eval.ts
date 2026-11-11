@@ -62,7 +62,7 @@ export default defineEval({
       const before = calls();
       const a = await t.send("seam call vault_list");
       check(a.interactions.length === 0, "autonomous: a card appeared — the approval in force is not the pool tool's own");
-      check(calls() === before + 1, "autonomous: the pool executor did not run");
+      check(calls() === before + 1, `autonomous: the pool executor did not run — reply ${JSON.stringify(a.reply ?? null)}, status ${a.status}, call ${JSON.stringify(a.toolCalls.find((c) => c.name === "vault_list") ?? null)}`);
       check((a.reply ?? "").includes('"from":"pool"'), `autonomous: the POOL's executor did not answer — ${a.reply ?? "<no message>"}`);
       t.log(`[replay] autonomous -> no card, the pool executor answered: ${a.reply ?? ""}`);
 
