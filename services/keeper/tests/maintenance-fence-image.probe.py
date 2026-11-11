@@ -1128,14 +1128,17 @@ def prove_update_history_client_lease() -> None:
                 pass
             else:
                 raise ProbeFailure("update-client-host-lease-fixture")
-            custody._acquire_normal_lease(fixture_prefix, os.geteuid())
+            # As update.sh does: the admission lease and the update's exclusive run lock, both handed
+            # to the launcher (which stands in for the update) and closed here.
+            custody._acquire_normal_lease(fixture_prefix, os.geteuid(), "update")
             try:
                 launcher = subprocess.Popen(["bash", "-ec", launch],
                     env=os.environ.copy(),
-                    pass_fds=(custody._LEASE_FD,), stdout=subprocess.DEVNULL,
+                    pass_fds=(custody._LEASE_FD, custody._RUN_FD), stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL, start_new_session=True)
             finally:
                 os.close(custody._LEASE_FD)
+                os.close(custody._RUN_FD)
 
             deadline = time.monotonic() + 45
             cidfiles: list[pathlib.Path] = []
