@@ -19,7 +19,9 @@
 # WHAT IT DOES, in this order. Nothing on this server changes until every check has passed:
 #   checks -> restic restore into a private scratch folder -> checks on the snapshot ->
 #   stop the keeper, then console, caddy and gateway (the database stays up) ->
-#   drop, recreate and pg_restore each database -> migrate -> copy the agents, retired, taste
+#   drop, recreate and pg_restore each agent store, upgrading one from the release before this
+#   one right after it is restored (ops/workflow-store-steps.sh, the steps `lares update` runs) ->
+#   drop, recreate and pg_restore every other database -> migrate -> copy the agents, retired, taste
 #   and installation folders from the snapshot -> start the base stack, then the keeper.
 #
 # WHY IT ASKS WHETHER THE OLD SERVER IS STOPPED. Two servers would both answer the chat
@@ -54,6 +56,10 @@ if [ -r "$HERE/engine-run.sh" ]; then
   . "$HERE/engine-run.sh"
   if engine_image_mode; then ENGINE_MODE=image; fi
 fi
+# The agent-store steps update.sh runs too (check, upgrade, check again, permissions), for a
+# store restored from an older release's backup. workflow_apply_one is defined further down.
+# shellcheck source=workflow-store-steps.sh
+. "$HERE/workflow-store-steps.sh"
 
 say() { printf 'restore: %s\n' "$1"; }
 die() { printf 'restore: %s\n' "$1" >&2; exit "$2"; }
@@ -434,6 +440,10 @@ cleanup() {
   if [ "$restore_client_uncertain" = 0 ]; then
     vault_storage_unlock || RESTORE_CLEANUP_FAILURES+=(vault-unlock)
   fi
+  # The record of agent stores this run restored for upgrade lives only as long as this run.
+  if [ -n "$RESTORE_WORK" ]; then
+    rm -f -- "$RESTORE_WORK/workflow-upgrade-stores" || RESTORE_CLEANUP_FAILURES+=(upgrade-record-removal)
+  fi
   if [ -n "$VAULT_SNAPSHOT_DB" ]; then
     if [ "$restore_client_uncertain" = 1 ]; then
       RESTORE_TEMP_DB_DROP_UNCERTAIN=1
@@ -731,6 +741,71 @@ if [ "$(printf '%s\n%s\n' "$SNAP_NEWEST" "$OWN_NEWEST" | LC_ALL=C sort | tail -1
   die "the snapshot comes from a newer release (its newest database change is $SNAP_NEWEST; this checkout only knows up to $OWN_NEWEST). Check out the same or a newer release, run install.sh with it, then restore. Nothing was changed." "$EX_REFUSED"
 fi
 
+# Each agent store's layout, read straight out of its dump like the record above (pg_restore
+# with -f - or -l never connects): exactly this release's (restored as it is), exactly what the
+# previous release left (restored, then upgraded by the same steps `lares update` runs), or
+# anything else, which is refused here, before anything has been dropped.
+read_workflow_password_file() {
+  python3 - "$KEEPER_JSON" <<'PYWORKFLOW'
+import json, sys
+try:
+    cfg=json.load(open(sys.argv[1]))
+    value=cfg['lifecycle']['runtime']['workflowPasswordFile']
+    if not isinstance(value,str) or not value.startswith('/'):
+        raise ValueError()
+    print(value)
+except Exception:
+    raise SystemExit(1)
+PYWORKFLOW
+}
+store_refused() { # store_refused <database> <what was found>
+  die "the agent store $1 in this snapshot cannot be restored by this release: $2. This release restores an agent store written by this release, or by the release before it (it upgrades those after restoring them). If a newer release wrote this backup, install that release or a newer one with install.sh, then restore. Otherwise restore with the release that wrote it, then update with lares update. Nothing has been changed." "$EX_REFUSED"
+}
+WORKFLOW_OLD_STORES=()
+for db in "${DUMPS[@]}"; do
+  # Other lares_ names are refused later, as before, by the same rules restore_database keeps.
+  [[ "$db" =~ ^lares_[a-f0-9]{32}$ ]] || continue
+  layout_toc="$SCRATCH/.workflow-layout-$db.toc"; layout_data="$SCRATCH/.workflow-layout-$db.data"
+  db_run pg_restore -l < "$DUMP_DIR/$db.dump" > "$layout_toc" 2>/dev/null \
+    || store_refused "$db" "its contents could not be read out of the backup file"
+  db_run pg_restore --data-only -n workflow_drizzle -n graphile_worker -t workflow_migrations -t migrations -f - \
+    < "$DUMP_DIR/$db.dump" > "$layout_data" 2>/dev/null \
+    || store_refused "$db" "its record of schema steps could not be read out of the backup file"
+  layout_code=0
+  layout=$(python3 "$HERE/workflow-backup-layout.py" "$BOX_DIR/lib/workflow-database-privileges.ts" "$HERE/workflow-store-migrate.mjs" \
+    "$layout_toc" "$layout_data" 2> "$SCRATCH/.workflow-layout.err") || layout_code=$?
+  [ "$layout_code" -ne 1 ] || die "this release's own list of agent store schema steps could not be read ($(workflow_reason_from "$SCRATCH/.workflow-layout.err")). Nothing has been changed." "$EX_REFUSED"
+  [ "$layout_code" -eq 0 ] || store_refused "$db" "$(workflow_reason_from "$SCRATCH/.workflow-layout.err")"
+  case "$layout" in
+    current) ;;
+    old) WORKFLOW_OLD_STORES+=("$db") ;;
+    *) store_refused "$db" "its layout could not be read" ;;
+  esac
+done
+ROLE_IMAGE=""
+WORKFLOW_PROVISIONER_PASSWORD_FILE="$ETC_LARES/secrets/workflow-provisioner-password"
+if [ "${#WORKFLOW_OLD_STORES[@]}" -gt 0 ]; then
+  # Upgrading needs the creative role image of the release installed here (the release file the
+  # installer was given), the provisioner login and the agents' login. All checked now.
+  INSTALLED_RELEASE="$OPT_LARES/current/release.json"
+  ROLE_IMAGE=$(python3 - "$INSTALLED_RELEASE" <<'PYIMAGE'
+import json,re,sys
+try:
+ value=json.load(open(sys.argv[1]))['images']['creative']
+except (OSError,ValueError,KeyError,TypeError):raise SystemExit(1)
+if not isinstance(value,str) or not re.fullmatch(r'[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}',value):raise SystemExit(1)
+print(value)
+PYIMAGE
+  ) || die "the snapshot holds ${#WORKFLOW_OLD_STORES[@]} agent store(s) from the release before this one, which this restore upgrades, but the installed release file ($INSTALLED_RELEASE) names no creative role image by digest to upgrade them with. Run install.sh with this release first. Nothing has been changed." "$EX_REFUSED"
+  if ! docker image inspect "$ROLE_IMAGE" >/dev/null 2>&1 && ! docker pull "$ROLE_IMAGE" >/dev/null; then
+    die "could not download the role image $ROLE_IMAGE, which upgrades the agent stores from the release before this one. Nothing has been changed." "$EX_REFUSED"
+  fi
+  [ -f "$WORKFLOW_PROVISIONER_PASSWORD_FILE" ] && [ ! -L "$WORKFLOW_PROVISIONER_PASSWORD_FILE" ] && [ -s "$WORKFLOW_PROVISIONER_PASSWORD_FILE" ] \
+    || die "the workflow provisioner credential ($WORKFLOW_PROVISIONER_PASSWORD_FILE), which upgrades the agent stores from the release before this one, is missing or unsafe. Run install.sh first. Nothing has been changed." "$EX_REFUSED"
+  WORKFLOW_PASSWORD_FILE=$(read_workflow_password_file) && [ -r "$WORKFLOW_PASSWORD_FILE" ] && [ ! -L "$WORKFLOW_PASSWORD_FILE" ] \
+    || die "the agents' workflow credential named in keeper.json is missing or unsafe, so upgraded agent stores could not be given their permissions. Nothing has been changed." "$EX_REFUSED"
+fi
+
 # The agents' token folder must have arrived with the secrets, or every door and outside tool
 # would have to be reconnected by hand.
 AGENT_NAMES=()
@@ -843,6 +918,9 @@ if [ "$DRY" = 1 ]; then
   say "dry run: nothing on this server was changed. With these answers I would:"
   say "  1. drain configured native cleanup and permanently freeze prepared financial custody, then stop the keeper, console, caddy and the model gateway (the database stays up)"
   say "  2. drop, recreate and restore these databases from the snapshot: ${DUMPS[*]}"
+  if [ "${#WORKFLOW_OLD_STORES[@]}" -gt 0 ]; then
+    say "     and, right after restoring them, upgrade these agent stores from the release before this one: ${WORKFLOW_OLD_STORES[*]}"
+  fi
   say "  3. apply any newer database changes (pnpm -C services/box migrate)"
   say "  4. copy the agents, retired, taste and installation folders from the snapshot, keeping owners and modes"
   say "  5. start the base stack, then the keeper"
@@ -863,7 +941,14 @@ fi
 
 # --- 10. from here on, things change ---------------------------------------------------------------------
 CHANGED="nothing yet"
+ONLY_AGENT_STORES_CHANGED=0
 midway() { # midway <what failed>
+  # While only agent stores have been replaced, this server still passes every fresh-install
+  # check above, so the same restore can be run again (and a damaged store file needs an earlier
+  # snapshot; a rebuilt server would fail on it the same way).
+  if [ "$ONLY_AGENT_STORES_CHANGED" = 1 ]; then
+    die "$1 This restore stopped while restoring the agent stores from snapshot $SNAPSHOT. Nothing outside the agent stores was changed, so this server still counts as a fresh install. Already changed: $CHANGED. The services that were stopped stay stopped. Run the same restore command again. If the backup file of an agent store is damaged it will stop here again: then list the snapshots with restic snapshots and restore an earlier one. The backup repository was never written to." "$EX_TEMPFAIL"
+  fi
   die "$1 This restore is only part done. Already changed: $CHANGED. The services that were stopped stay stopped. This server is no longer a fresh install, so do not simply run restore.sh again: rebuild a clean server, run install.sh, then restore. The backup repository was never written to." "$EX_TEMPFAIL"
 }
 # valid_name: the last guard in front of any database command.
@@ -905,12 +990,12 @@ if [ "$FINANCIAL_PREPARED" = 1 ];then
   say 'draining native custody and permanently freezing prepared financial custody before stopping any service'
   if [ "$ENGINE_MODE" = image ];then
     engine_restore_keeper_client financial-freeze </dev/null \
-      || die 'financial freeze was not durably acknowledged; no service was stopped and no database was replaced' "$EX_REFUSED"
+      || die 'financial freeze was not durably acknowledged; this run stopped no service and replaced no database (an earlier run of this same restore may already have stopped services and restored agent stores)' "$EX_REFUSED"
   else
     if ! keeper_dc exec -T lares-keeper \
       /app/services/keeper/node_modules/.bin/tsx /app/services/keeper/bin/budget-financial.ts freeze --host </dev/null;then
       pnpm -C "$BOX_DIR/../keeper" exec tsx bin/budget-financial.ts freeze --host "$KEEPER_JSON" </dev/null \
-        || die 'financial freeze was not durably acknowledged; no service was stopped and no database was replaced' "$EX_REFUSED"
+        || die 'financial freeze was not durably acknowledged; this run stopped no service and replaced no database (an earlier run of this same restore may already have stopped services and restored agent stores)' "$EX_REFUSED"
     fi
   fi
   CHANGED='financial custody is permanently frozen'
@@ -928,12 +1013,6 @@ SYNC_CONTAINERS=$(docker ps -a -q --filter "label=com.docker.compose.project=$PR
 # shellcheck disable=SC2086 # container ids, one word each
 [ -z "$SYNC_CONTAINERS" ] || docker rm -f $SYNC_CONTAINERS </dev/null >/dev/null || midway "Could not remove the Notion sync container."
 CHANGED="$CHANGED; the Notion sync is stopped"
-if [ "$VAULT_TARGET_PRESENT" = 1 ];then
-  PRESERVE_SCRATCH=1
-  vault_storage_stage_empty "${PREFIX%/}" "$SCRATCH" || midway 'Could not stage the exact empty target Vault stores.'
-  vault_storage_unlock
-  CHANGED="$CHANGED; exact empty target Vault stores retained in private staging"
-fi
 
 restore_database() { # restore_database <name> <already-exists: 0|1>
   local db="$1" existing="$2" owner
@@ -962,8 +1041,72 @@ restore_database() { # restore_database <name> <already-exists: 0|1>
     || midway "pg_restore of database $db failed."
   CHANGED="$CHANGED; database $db restored"
 }
+
+# The permissions half of upgrading one restored agent store (workflow-store-steps.sh calls it):
+# in image mode through the one fixed restore job for it (engine-run.sh), which runs only for a
+# store named in this run's own record; on a checkout through pnpm, as update.sh does.
+WORKFLOW_UPGRADE_LIST="$RESTORE_WORK/workflow-upgrade-stores"
+workflow_apply_one() { # KIND DATABASE ERRFILE
+  [ "$1" = store ] || { echo "a restore only applies permissions to an agent store it restored" > "$3"; return 1; }
+  if [ "$ENGINE_MODE" = image ]; then
+    engine_restore_keeper_client workflow-apply-database "$2" "${PGPORT:-5432}" </dev/null >/dev/null 2> "$3"
+  else
+    pnpm -C "$BOX_DIR" exec tsx bin/workflow-template.ts apply-database --host 127.0.0.1 --port "${PGPORT:-5432}" \
+      --database "$2" --provisioner-password-file "$WORKFLOW_PROVISIONER_PASSWORD_FILE" \
+      --runtime-password-file "$WORKFLOW_PASSWORD_FILE" </dev/null >/dev/null 2> "$3"
+  fi
+}
+# The agent stores are restored (and upgraded) before the main database, the gateway database
+# and the Vault stores are touched. A failed upgrade therefore leaves this server a fresh install
+# with its services stopped, and the same restore can simply be run again: it drops and restores
+# every agent store from the backup a second time.
+store_upgrade_stopped() {
+  die "$WORKFLOW_REASON. This restore stopped while upgrading the agent stores from snapshot $SNAPSHOT, before your main database, the model gateway's database, the Vault and the folders were replaced, so this server still counts as a fresh install. Already changed: $CHANGED. The services that were stopped stay stopped. Fix the cause and run the same restore command again: it restores every agent store from the backup again and upgrades it again. The backup repository was never written to." "$EX_TEMPFAIL"
+}
+# The check and the upgrade are NOT fixed restore jobs: like install.sh and update.sh, they run
+# through workflow_store_step (engine-run.sh), a short-lived `docker run --rm` of the installed
+# release's creative role image that this restore's trap does not track. Why that is safe here:
+#  - it reaches exactly one database, the store just restored (its address names that store; the
+#    provisioner login with the workflow owner role; the password read from a read-only file
+#    inside the container), and it never touches the main database, the Vault or the folders;
+#  - each upgrade is one transaction: stopped at any point, the store stays as the backup had it;
+#  - it is time-limited (two minutes for a check, LARES_WORKFLOW_UPGRADE_SECONDS, 15 minutes by
+#    default, for an upgrade) and removed by force when it runs out;
+#  - if this restore is killed while one runs, the container may finish or fail on its own, but
+#    only inside that one store, and a second run of this restore first drops that store with
+#    `dropdb --force`, which ends its session and rolls back whatever it had not committed. It
+#    holds no restore claim or run record, so it cannot keep a second run out.
+# The permissions step, which needs the agents' login as well, is the fixed restore job.
+ONLY_AGENT_STORES_CHANGED=1
+for db in "${DUMPS[@]}"; do
+  [[ "$db" =~ ^lares_[a-f0-9]{32}$ ]] || continue
+  restore_database "$db" 0
+  upgrade=0
+  for old_store in ${WORKFLOW_OLD_STORES[@]+"${WORKFLOW_OLD_STORES[@]}"}; do [ "$old_store" != "$db" ] || upgrade=1; done
+  [ "$upgrade" = 1 ] || continue
+  label="the agent store $db"
+  printf '%s\n' "$db" >> "$WORKFLOW_UPGRADE_LIST" || { WORKFLOW_REASON="$label: I could not write down that this run restored it"; store_upgrade_stopped; }
+  if ! state=$(workflow_store_state "$ROLE_IMAGE" "$db" 127.0.0.1 "${PGPORT:-5432}" "$WORKFLOW_PROVISIONER_PASSWORD_FILE" "$SCRATCH/.workflow-check.err"); then
+    WORKFLOW_REASON="$label: $(workflow_reason_from "$SCRATCH/.workflow-check.err")"
+    store_upgrade_stopped
+  fi
+  [ "$state" = old ] || { WORKFLOW_REASON="$label: after restoring it, its own check says '$state', not what the release before this one leaves"; store_upgrade_stopped; }
+  workflow_store_bring_current restore "$ROLE_IMAGE" 127.0.0.1 "${PGPORT:-5432}" "$WORKFLOW_PROVISIONER_PASSWORD_FILE" \
+    "$SCRATCH" store "$db" old "$label" || store_upgrade_stopped
+  CHANGED="$CHANGED; agent store $db upgraded"
+done
+rm -f -- "$WORKFLOW_UPGRADE_LIST" || midway 'Could not remove the record of the agent stores this run upgraded.'
+ONLY_AGENT_STORES_CHANGED=0
+
+if [ "$VAULT_TARGET_PRESENT" = 1 ];then
+  PRESERVE_SCRATCH=1
+  vault_storage_stage_empty "${PREFIX%/}" "$SCRATCH" || midway 'Could not stage the exact empty target Vault stores.'
+  vault_storage_unlock
+  CHANGED="$CHANGED; exact empty target Vault stores retained in private staging"
+fi
 for db in "${DUMPS[@]}"; do
   [ "$db" != postgres ] || continue
+  [[ ! "$db" =~ ^lares_[a-f0-9]{32}$ ]] || continue
   restore_database "$db" 0
 done
 # PostgreSQL roles are recreated by the fresh installer with the fixed role names and safe
@@ -1011,18 +1154,7 @@ CHANGED="$CHANGED; the Notion sync is switched off"
 WORKFLOW_ROWS=$(db_run psql -U "$DB_USER" -d "$DB_NAME" -F $'\t' -Atc \
   "SELECT a.workflow_database, a.ownership, a.ownership_token, COALESCE(pg_get_userbyid(d.datdba),''), COALESCE(shobj_description(d.oid,'pg_database'),'') FROM agent_resources a LEFT JOIN pg_database d ON d.datname=a.workflow_database WHERE a.workflow_database IS NOT NULL ORDER BY a.workflow_database") \
   || midway 'Could not verify restored workflow database ownership records.'
-WORKFLOW_PASSWORD_FILE=$(python3 - "$KEEPER_JSON" <<'PYWORKFLOW'
-import json, sys
-try:
-    cfg=json.load(open(sys.argv[1]))
-    value=cfg['lifecycle']['runtime']['workflowPasswordFile']
-    if not isinstance(value,str) or not value.startswith('/'):
-        raise ValueError()
-    print(value)
-except Exception:
-    raise SystemExit(1)
-PYWORKFLOW
-) || midway 'Keeper configuration has no explicit workflow runtime password file.'
+WORKFLOW_PASSWORD_FILE=$(read_workflow_password_file) || midway 'Keeper configuration has no explicit workflow runtime password file.'
 WORKFLOW_DATABASES=()
 while IFS=$'\t' read -r workflow_db ownership token db_owner marker; do
   [ -n "$workflow_db" ] || continue
