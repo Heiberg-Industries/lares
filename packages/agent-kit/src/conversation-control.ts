@@ -69,6 +69,21 @@ export interface ResetInput {sessionId:string;incarnation:string;confirm:boolean
 export interface ResetHandle {end(input:{reason:string}):Promise<{result():Promise<{sessionEnded:boolean}>}>}
 /** How long to wait for the end to be confirmed before reporting it as unconfirmed. */
 const END_CONFIRM_MS=15_000;
+/** eve 1.0's server-side `end()` receipt reads only the history recorded so far (`follow: false` in
+ * `channel/session.js`), so `result()` throws while the accepted end is not yet recorded, which is the
+ * usual case right after acceptance. Ask again until it is recorded, or report it unconfirmed. */
+async function confirmEnd(delivery:{result():Promise<{sessionEnded:boolean}>}):Promise<{sessionEnded:boolean}> {
+  const unconfirmed=new Error('Session end not confirmed');
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const expired=new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(unconfirmed),END_CONFIRM_MS);});
+  try {
+    for(let pause=50;;pause=Math.min(pause*2,1000)){
+      try { return await Promise.race([delivery.result(),expired]); }
+      catch(error) { if(error===unconfirmed)throw error; }
+      await Promise.race([new Promise(resolve=>setTimeout(resolve,pause)),expired]);
+    }
+  } finally { clearTimeout(timer); }
+}
 /** `session_not_active` (eve answers 409 for an ended or unknown session): nothing is left to end. */
 function notActive(error:unknown):boolean {
   return typeof error==='object'&&error!==null&&(error as {code?:unknown}).code==='session_not_active';
@@ -87,9 +102,7 @@ export async function resetConversation(input:ResetInput,attach:(id:string)=>Res
   let status:'reset'|'no_active_session';
   try {
     const delivery=await attach(input.sessionId).end({reason:'Owner requested a fresh conversation from the console'});
-    let timer:ReturnType<typeof setTimeout>|undefined;
-    const outcome=await Promise.race([delivery.result(),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Session end not confirmed')),END_CONFIRM_MS);})])
-      .finally(()=>clearTimeout(timer));
+    const outcome=await confirmEnd(delivery);
     if(outcome.sessionEnded!==true)throw new Error('Unexpected session end outcome');
     status='reset';
   } catch(error) {
