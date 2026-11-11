@@ -77,7 +77,7 @@ export const SIGN_IN_CALLBACK_PREFIX = "eve_auth:";
 
 /** What a refused tapper who may not answer is told, on the tap itself: a stranger, or a second
  *  allowed person tapping a card only the owner may answer. Names no payload. */
-export const TAP_REFUSAL = "Only this installation's owner can answer an approval. Nothing was done.";
+export const TAP_REFUSAL = "Only the owner of this bot can answer this. Nothing was done.";
 
 /** What anyone is told about a tap the gate does not recognise. Names no payload. */
 export const TAP_UNRECOGNISED = "This button is not recognised, so nothing was done.";
