@@ -85,9 +85,10 @@ MAX_IMPORT_BYTES = 240_000
 # so; this only keeps such a folder out of the count that the agent limit is checked against.
 RETIRED_ROLES = ("travel",)
 
-# USD per million tokens from the provider's pricing page, checked 2 November 2026. The owner
-# confirms them; any other model means typing prices in. A model whose price changes with prompt
-# length is left out, because the budget system has no way to express that.
+# USD per million tokens from the provider's pricing page, checked on the date in PRICES_CHECKED
+# (tests/price-table-fresh.test.ts fails when that date falls more than 14 days behind the newest
+# release). The owner confirms them; any other model means typing prices in. A model whose price
+# changes with prompt length is left out, because the budget system has no way to express that.
 PRICES_CHECKED = "3 November 2026"
 # Sources: Anthropic https://platform.claude.com/docs/en/about-claude/pricing (every Anthropic entry below);
 # OpenAI https://developers.openai.com/api/docs/pricing (standard tier, every OpenAI entry);

@@ -1,6 +1,6 @@
 "use server";
 import { cookies } from 'next/headers';
-import { keeper, KeeperRefusedError, KeeperUnavailableError } from '../../lib/keeper-client';
+import { keeper, keeperFailureText, keeperReferenceText, KeeperFailedError, KeeperRefusedError, KeeperUnavailableError, type KeeperFailureState } from '../../lib/keeper-client';
 import { verify } from '../../lib/auth';
 import type { Capacity, DefinitionResult, RetirementResult, Role, RuntimeState } from '../../lib/builder';
 import type { NotionSyncView } from '../../lib/notion-sync';
@@ -9,13 +9,23 @@ async function actor(): Promise<string> {
   if (!email) throw new Error('unauthenticated');
   return email;
 }
-export type DefinitionActionResult<T> = {ok:true;result:T}|{ok:false;error:{message:string;findings?:{check:string;message:string}[];outcomeMayBeUnknown:boolean}};
+type ActionError = {message:string;findings?:{check:string;message:string}[];state?:KeeperFailureState;reference?:string;outcomeMayBeUnknown:boolean};
+export type DefinitionActionResult<T> = {ok:true;result:T}|{ok:false;error:ActionError};
+/** The pages show `message` and nothing else, so the state the agent is left in and the reference to quote are
+ * written into it; `state` and `reference` are also passed on as they came. A failed action changed things on the
+ * box (the saved definition may have been put back), so the page is told to reload before another write. */
+function failedOrUnavailable(error:unknown):ActionError|undefined {
+  if(error instanceof KeeperFailedError) return {message:keeperFailureText(error),state:error.state,reference:error.reference,outcomeMayBeUnknown:true};
+  if(error instanceof KeeperUnavailableError) return {message:`${error.message}${keeperReferenceText(error.reference)}`,...(error.reference?{reference:error.reference}:{}),outcomeMayBeUnknown:error.outcomeMayBeUnknown};
+  return undefined;
+}
 async function call<T>(action:string,input:unknown,email:string,timeoutMs?:number):Promise<DefinitionActionResult<T>> {
   try { return {ok:true,result:await (timeoutMs ? keeper<T>(action,input,email,{timeoutMs}) : keeper<T>(action,input,email))}; }
   catch(error) {
     // A door switched on without its credentials is refused before anything is stored: say why, and say nothing changed.
     if(error instanceof KeeperRefusedError) return {ok:false,error:{message:error.message,findings:error.findings,outcomeMayBeUnknown:!error.findings?.length&&!error.message.endsWith('before it can be turned on. Save the credentials first.')}};
-    if(error instanceof KeeperUnavailableError) return {ok:false,error:{message:error.message,outcomeMayBeUnknown:error.outcomeMayBeUnknown}};
+    const known=failedOrUnavailable(error);
+    if(known) return {ok:false,error:known};
     return {ok:false,error:{message:'Keeper action failed; its outcome may be unknown. Inspect the current state before trying again.',outcomeMayBeUnknown:true}};
   }
 }
@@ -101,7 +111,8 @@ export async function setDoorEnabled(name:string,kind:'slack'|'telegram',enabled
   return call('definition.save',{name,definition,duties:saved.duties,voice:saved.voice},email);
   } catch(error) {
     if(error instanceof KeeperRefusedError)return {ok:false,error:{message:error.message,findings:error.findings,outcomeMayBeUnknown:!error.findings?.length}};
-    if(error instanceof KeeperUnavailableError)return {ok:false,error:{message:error.message,outcomeMayBeUnknown:error.outcomeMayBeUnknown}};
+    const known=failedOrUnavailable(error);
+    if(known)return {ok:false,error:known};
     return {ok:false,error:{message:'Could not read the current agent definition. Reload before changing this door.',outcomeMayBeUnknown:false}};
   }
 }

@@ -23,16 +23,17 @@
  * export a Google document and download a file, and nothing else; each use rechecks the choice first.
  * An account connected earlier has no such scope and gets `drive: null`.
  */
-import { google } from 'googleapis';
-import type { Pool } from 'pg';
+import { Common, google } from 'googleapis';
+import { DatabaseError, type Pool } from 'pg';
 import { z } from 'zod';
-import { PgAccountStore } from '@lares/agent-kit/account-store';
-import { rotateAccountCredential } from '@lares/agent-kit/account-credentials';
+import { AccountAccessError, PgAccountStore } from '@lares/agent-kit/account-store';
+import { AccountCredentialError, rotateAccountCredential } from '@lares/agent-kit/account-credentials';
 import { PgAgentMailboxStore, type AgentMailboxBinding, type AgentMailboxReason } from '@lares/agent-kit/agent-mailbox-store';
+import { SourceAuthorityUnavailable } from '@lares/agent-kit/console-source-transaction';
 import { getPool } from '@lares/agent-kit/db';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import type { AgentDefinition } from '@lares/agent-kit/definition';
-import { buildOAuth2Client, decryptSecret, readTokenEncKey } from '@lares/agent-kit/google-auth';
+import { buildOAuth2Client, decryptSecret, GoogleConfigError, readTokenEncKey } from '@lares/agent-kit/google-auth';
 import { validateGooglePersonalScopes } from '@lares/agent-kit/personal-consent';
 import { encryptSecret } from '@lares/agent-box/lib/crypto.js';
 import { thisAgent } from './definition.js';
@@ -126,6 +127,100 @@ export async function loadOwner(pool: Pool, agent: string, incarnation: string):
 
 const refuse = (what: string): never => { throw new AgentMailboxRefusedError(what); };
 
+/**
+ * Which kind of trouble stopped the mailbox being opened. Callers still receive `unavailable`
+ * and nothing more; this exists for the one log line an operator reads.
+ *
+ *   client-configuration  the Google client settings on this host are missing or malformed
+ *   token                 Lares holds no stored credential for the account
+ *   provider              Google answered with an error, whatever it said, or could not be reached in time
+ *   database              a lookup in Lares's own database failed, or no longer finds the account
+ *   unknown               none of the above could be told from the error's class, code or status
+ *
+ * `client-configuration` and `token` are decided by the engine alone, from its own error classes. What
+ * Google answers is printed (status and code) and never branched on: mapping a Google answer to either
+ * of them needs a live probe of that answer first.
+ */
+export type MailboxOpenFailureCategory = 'client-configuration' | 'token' | 'provider' | 'database' | 'unknown';
+
+/** RFC 6749 section 5.2: the error codes a token endpoint answers with. Nothing else is ever logged as one.
+ * Printed only; the category never depends on which one it is. */
+const OAUTH_ERROR_CODES = new Set(['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client',
+  'unsupported_grant_type', 'invalid_scope']);
+/** Connection failures as Node reports them. Every Google call goes through gaxios, which wraps these
+ * in a GaxiosError; one that arrives unwrapped can only have come from the database connection. */
+const CONNECTION_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'EHOSTUNREACH',
+  'ENETUNREACH', 'EPIPE']);
+/** The only shapes of code that may be logged: a Node or undici error code, or a Postgres SQLSTATE. */
+const SYSTEM_CODE = /^(?:E[A-Z][A-Z0-9_]{1,38}|UND_ERR_[A-Z_]{1,32})$/;
+const SQLSTATE = /^[0-9A-Z]{5}$/;
+const CLASS_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+
+/** `code` as a string, from the error itself or from the first cause that has one (undici keeps it there).
+ * Read from real errors only: a thrown plain object that happens to have a `code` proves nothing. */
+function systemCode(err: unknown): string | undefined {
+  let at: unknown = err;
+  for (let depth = 0; depth < 4 && at instanceof Error; depth++) {
+    const code = (at as { code?: unknown }).code;
+    if (typeof code === 'string' && SYSTEM_CODE.test(code)) return code;
+    at = (at as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+/** What a Google OAuth endpoint put in `error`, when it is one of the standard codes. For the log line only. */
+function oauthErrorCode(err: Common.GaxiosError): string | undefined {
+  const data: unknown = err.response?.data;
+  const code = typeof data === 'object' && data !== null ? (data as { error?: unknown }).error : undefined;
+  return typeof code === 'string' && OAUTH_ERROR_CODES.has(code) ? code : undefined;
+}
+const isTimeout = (err: unknown): boolean => err instanceof DOMException && err.name === 'TimeoutError';
+
+/**
+ * Error in, category out. Decided from the error's class, its code and its HTTP status only, never
+ * from its message. Anything that fits no rule is `unknown`; this never guesses.
+ */
+export function classifyMailboxOpenFailure(err: unknown): MailboxOpenFailureCategory {
+  try {
+    // The client id, client secret or token key file is missing or malformed on this host.
+    if (err instanceof GoogleConfigError) return 'client-configuration';
+    // No stored credential for the account, or it changed while a rotated one was being saved.
+    if (err instanceof AccountCredentialError) return 'token';
+    // Any answer from Google, from the token endpoint or an API call, and no answer at all (unreachable,
+    // timed out, cut off). Its status and code go in the log line; neither decides the category.
+    if (err instanceof Common.GaxiosError) return 'provider';
+    // The only deadlines in this file are the ones set on the Google calls.
+    if (isTimeout(err)) return 'provider';
+    // Postgres reported an error, the account store's lookup said no, or the transaction was not acknowledged.
+    if (err instanceof DatabaseError || err instanceof AccountAccessError || err instanceof SourceAuthorityUnavailable) return 'database';
+    const code = systemCode(err);
+    if (code !== undefined && CONNECTION_CODES.has(code)) return 'database';
+    return 'unknown';
+  } catch { return 'unknown'; }
+}
+
+/**
+ * The text of the log line: the category, the error's class name, and an HTTP status or error code when
+ * there is one. NEVER the error's message, and never anything read from it: a message can carry a
+ * token, a client secret, an address or an id. Every part is either one of our own words or matches a
+ * fixed pattern.
+ */
+export function describeMailboxOpenFailure(err: unknown): string {
+  const parts = [`category=${classifyMailboxOpenFailure(err)}`];
+  try {
+    const name: unknown = err instanceof Error ? err.constructor?.name : undefined;
+    parts.push(`class=${typeof name === 'string' && CLASS_NAME.test(name) ? name : err instanceof Error ? 'Error' : 'none'}`);
+    if (err instanceof Common.GaxiosError) {
+      if (typeof err.status === 'number' && Number.isInteger(err.status) && err.status >= 100 && err.status <= 599) parts.push(`status=${err.status}`);
+      const oauth = oauthErrorCode(err);
+      if (oauth !== undefined) { parts.push(`code=${oauth}`); return parts.join(' '); }
+    }
+    const sqlstate: unknown = err instanceof DatabaseError ? err.code : undefined;
+    const code = typeof sqlstate === 'string' && SQLSTATE.test(sqlstate) ? sqlstate : systemCode(err) ?? (isTimeout(err) ? 'TimeoutError' : undefined);
+    if (code !== undefined) parts.push(`code=${code}`);
+  } catch { /* the category alone is still worth a line */ }
+  return parts.join(' ');
+}
+
 export async function agentMailbox(job: string, deps: AgentMailboxDeps = {}): Promise<AgentMailboxResult> {
   const log = deps.log ?? console.log;
   const no = (reason: AgentMailboxRefusalReason): AgentMailboxResult => { sayOnce(job, reason, log); return { ok: false, reason }; };
@@ -181,8 +276,12 @@ export async function agentMailbox(job: string, deps: AgentMailboxDeps = {}): Pr
     sayOnce(job, null, log);
     return { ok: true, mailbox: opened.mailbox, ownerMemberId: owner, gmail, calendar, drive, recheck };
   } catch (err) {
-    // Provider, key, client-config or database trouble. Say it plainly, once; no stack, no detail.
-    void err;
+    // Provider, key, client-config or database trouble. Callers get `unavailable` and nothing more. The log
+    // gets one line naming the KIND of trouble (never the message), on the same once-per-change rule as the
+    // plain line: when the mailbox first becomes unavailable, and again only if the kind changes.
+    const detail = `${job}: agent mailbox could not be opened: ${describeMailboxOpenFailure(err)}`;
+    const detailKey = `${job}\u0000open-failure`;
+    if (lastSaid.get(job) !== 'unavailable' || lastSaid.get(detailKey) !== detail) { lastSaid.set(detailKey, detail); log(detail); }
     return no('unavailable');
   }
 }

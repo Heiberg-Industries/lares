@@ -626,9 +626,42 @@ fi
 
 # The owner may have saved OAuth credentials before running this installer. Validate the
 # public client ID while preflight can still refuse without writing installation secrets.
-if [ "$DRY_RUN" -eq 0 ] && [ -f "$PREFIX/etc/lares/console-oauth.env" ] && \
-   ! grep -Eq '^GOOGLE_CLIENT_ID_CONSOLE=[0-9]+-[A-Za-z0-9_-]+[.]apps[.]googleusercontent[.]com$' "$PREFIX/etc/lares/console-oauth.env"; then
-  problem "the Google console client ID is malformed" "save only the client_id value ending in .apps.googleusercontent.com in $PREFIX/etc/lares/console-oauth.env, without quotes or adjacent JSON fields"
+#
+# Three different mistakes used to share one message ("malformed"), which sent a person to the
+# value when the value was fine and the line's NAME had lost its first letter in a paste. They are
+# told apart here: a well-shaped line passes; a line with the exact name and another value is
+# malformed; a line whose name is a near miss is named; otherwise the line is missing.
+#
+# Only a NAME is ever printed, never a value. A near miss is a name that, ignoring letter case and
+# spaces or tabs around it, is the expected name or the expected name without some of its leading
+# "GOOGLE_" — so what is printed can only be made of the expected name's own characters. A line
+# with no "=" is never a near miss: the whole of it could be a pasted value.
+CONSOLE_OAUTH_FILE="$PREFIX/etc/lares/console-oauth.env"
+if [ "$DRY_RUN" -eq 0 ] && [ -f "$CONSOLE_OAUTH_FILE" ] && \
+   ! grep -Eq '^GOOGLE_CLIENT_ID_CONSOLE=[0-9]+-[A-Za-z0-9_-]+[.]apps[.]googleusercontent[.]com$' "$CONSOLE_OAUTH_FILE"; then
+  if grep -q '^GOOGLE_CLIENT_ID_CONSOLE=' "$CONSOLE_OAUTH_FILE"; then
+    problem "the Google console client ID is malformed" "save only the client_id value ending in .apps.googleusercontent.com in $CONSOLE_OAUTH_FILE, without quotes or adjacent JSON fields"
+  else
+    CONSOLE_OAUTH_NEAR_MISS=$(awk -v want="GOOGLE_CLIENT_ID_CONSOLE" -v shortest="CLIENT_ID_CONSOLE" '
+      index($0, "=") == 0 { next }
+      {
+        raw = substr($0, 1, index($0, "=") - 1)
+        name = raw
+        sub(/^[ \t]+/, "", name)
+        sub(/[ \t]+$/, "", name)
+        upper = toupper(name)
+        if (length(upper) < length(shortest) || length(upper) > length(want)) next
+        if (upper != substr(want, length(want) - length(upper) + 1)) next
+        if (name != raw) print name " with spaces around it"
+        else print name
+        exit
+      }' "$CONSOLE_OAUTH_FILE" 2>/dev/null) || CONSOLE_OAUTH_NEAR_MISS=""
+    if [ -n "$CONSOLE_OAUTH_NEAR_MISS" ]; then
+      problem "no line named GOOGLE_CLIENT_ID_CONSOLE in $CONSOLE_OAUTH_FILE (found $CONSOLE_OAUTH_NEAR_MISS)" "change the start of that line so it reads exactly GOOGLE_CLIENT_ID_CONSOLE= — all capitals, nothing in front of the name, no spaces around the = sign. The value after the = sign has not been checked yet; the next run checks it"
+    else
+      problem "the GOOGLE_CLIENT_ID_CONSOLE line is missing from $CONSOLE_OAUTH_FILE" "add one line to that file that starts with GOOGLE_CLIENT_ID_CONSOLE= followed by the client_id value ending in .apps.googleusercontent.com, without quotes or spaces"
+    fi
+  fi
 fi
 
 # --- report --------------------------------------------------------------------------------
