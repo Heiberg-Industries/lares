@@ -173,7 +173,10 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
 }
 export async function catalogueApprovalResponse(name: string, ctx: unknown): Promise<unknown> {
   assertPrivateConsoleTool(ctx,"creative",name);
-  if (!isExactApprovalResponse(ctx)) return {status:'allowed'};
+  // The response policy is only attached to a bound console conversation, and it is asked about a
+  // Deny as well as an Approve. Anyone who is not that conversation's own resolver is refused for
+  // both, and the card stays pending.
+  if (!isExactApprovalResponse(ctx)) return {status:'rejected',reason:'this person is not an allowed approver for this agent'};
   return approveExactResponse(ctx as ExactResponseContext,{});
 }
 export async function guardCatalogueExecution(ctx: unknown, name: string, input: unknown): Promise<void> {

@@ -8,6 +8,8 @@ import {
   coversApproval,
   detailsForApproval,
   registerApprovalSummary,
+  cardTitle,
+  withCardTitle,
   DETAILS_MAX_LENGTH,
   DETAILS_VALUES_SHORTENED,
   SUMMARY_SHORTENED,
@@ -637,5 +639,91 @@ describe("deadline_mint_statutory title", () => {
     const input = { entity: "Example Co", fiscalYear: 2999 };
     expect(summarizeApproval("deadline_mint_statutory", { ...input, omit: ["b"] })).toBe('Mint 1 statutory deadline for "Example Co" (fiscal year 2999)');
     expect(summarizeApproval("deadline_mint_statutory", input)).toBe('Mint 2 statutory deadlines for "Example Co" (fiscal year 2999)');
+  });
+});
+
+describe("cardTitle — eve 1.0's approval `prompt`, which must never throw into eve", () => {
+  const saved = { details: globalThis.__eveApprovalDetails, covers: globalThis.__eveApprovalCovers, summary: globalThis.__eveApprovalSummary };
+  afterEach(() => {
+    globalThis.__eveApprovalDetails = saved.details;
+    globalThis.__eveApprovalCovers = saved.covers;
+    globalThis.__eveApprovalSummary = saved.summary;
+  });
+  const call = (toolName: unknown, input: unknown) => cardTitle({ toolName, input, callId: "c1" });
+  const hostile = { get to(): never { throw new Error("getter"); }, toString(): never { throw new Error("string"); } };
+
+  it("returns the dedicated summary for a tool that has one", () => {
+    expect(call("gmail_send", { to: ["a@example.com"] })).toBe("Send email to a@example.com");
+    expect(call("gmail_send", { to: ["a@example.com"] })).toBe(summarizeApproval("gmail_send", { to: ["a@example.com"] }));
+  });
+
+  it("gives an outside tool its outside-tool title and any other gated tool the generic one", () => {
+    expect(call("some_new_tool", { a: "x" })).toBe("some_new_tool — a: x");
+    expect(call("some_new_tool", {})).toBe("Approve tool call: some_new_tool");
+  });
+
+  it("returns undefined (eve's own title) when there is nothing to say", () => {
+    expect(call(undefined, {})).toBeUndefined();
+    expect(call(7, {})).toBeUndefined();
+    expect(call("", {})).toBeUndefined();
+    expect(cardTitle(undefined as never)).toBeUndefined();
+    expect(cardTitle(null as never)).toBeUndefined();
+  });
+
+  it("never throws and only ever returns a string or undefined, for input that breaks the summariser", () => {
+    for (const input of [hostile, { to: hostile }, { to: [hostile] }, null, undefined, 3, "x", [hostile], Object.create(null)]) {
+      let out: unknown;
+      expect(() => { out = call("gmail_send", input); }).not.toThrow();
+      expect(out === undefined || typeof out === "string").toBe(true);
+    }
+    const throwing = new Proxy({}, { get() { throw new Error("proxy"); }, ownKeys() { throw new Error("keys"); } });
+    expect(() => call("gmail_send", throwing)).not.toThrow();
+    expect(() => call("some_new_tool", throwing)).not.toThrow();
+  });
+
+  it("uses the owner's clock that registerApprovalSummary installed, and the home clock if that reader throws", () => {
+    registerApprovalSummary({ tz: () => "America/New_York" });
+    expect(call("remind_set", { message: "x", dueAt: "2026-09-01T08:00:00Z" })).toContain("(America/New_York)");
+    registerApprovalSummary({ tz: () => { throw new Error("no pool"); } });
+    expect(call("remind_set", { message: "x", dueAt: "2026-09-01T08:00:00Z" })).toContain("(Europe/Berlin)");
+  });
+
+  it("keeps the globals the Slack and Telegram cards read", () => {
+    registerApprovalSummary();
+    expect(typeof globalThis.__eveApprovalDetails).toBe("function");
+    expect(typeof globalThis.__eveApprovalCovers).toBe("function");
+    expect(globalThis.__eveApprovalCovers!("gmail_send")).toBe(coversApproval("gmail_send"));
+  });
+});
+
+describe("withCardTitle — a gated tool's approval is always the object form with a prompt", () => {
+  const asObject = (v: unknown) => v as { request: unknown; response?: unknown; prompt: unknown };
+
+  it("wraps a bare policy function (which eve would give its default title) into { request, prompt }", () => {
+    const policy = () => "user-approval";
+    const a = asObject(withCardTitle(policy));
+    expect(a.request).toBe(policy);
+    expect(a.prompt).toBe(cardTitle);
+    expect(a.response).toBeUndefined();
+  });
+
+  it("keeps request and response of an object, adds the prompt, and keeps a prompt the tool already had", () => {
+    const request = () => "user-approval";
+    const response = () => ({ status: "allowed" });
+    const a = asObject(withCardTitle({ request, response }));
+    expect(a.request).toBe(request);
+    expect(a.response).toBe(response);
+    expect(a.prompt).toBe(cardTitle);
+    const own = () => "mine";
+    expect(asObject(withCardTitle({ request, prompt: own })).prompt).toBe(own);
+  });
+
+  it("an approval that is neither a function nor an object still asks (never silently no approval)", () => {
+    for (const odd of [undefined, null, "x", 3]) {
+      const a = asObject(withCardTitle(odd));
+      expect(typeof a.request).toBe("function");
+      expect((a.request as () => unknown)()).toBe("user-approval");
+      expect(a.prompt).toBe(cardTitle);
+    }
   });
 });

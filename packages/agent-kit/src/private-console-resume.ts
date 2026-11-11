@@ -10,21 +10,21 @@ import { authorityTransaction,consoleAdmission,requireConsoleSessionBinding,type
 import { managedIdentity } from './door-authority.js';
 export const PRIVATE_RESUME_REFUSED='Private approval continuation is unavailable or changed';
 const refuse=():never=>{throw new Error(PRIVATE_RESUME_REFUSED);};
-type ResumeReference={binding:ConsoleBindingInput;requestId:string;optionId:'approve'|'cancel'};
+type ResumeReference={binding:ConsoleBindingInput;requestId:string;optionId:'approve'|'deny'};
 /** The personal mail answer: resolver identity only, never a member or admission attribute. */
 export function privateResolverAdmission(auth:unknown){
   const a=auth as {authenticator?:string;attributes?:Record<string,unknown>}|undefined,v=a?.attributes;
   if(a?.authenticator!=='lares-console'||!v||typeof v.lares_resolver_member_id!=='string'||!v.lares_resolver_member_id||
     typeof v.lares_resume_request_id!=='string'||!v.lares_resume_request_id||v.lares_purpose!=='resolver'||
-    !['approve','cancel'].includes(String(v.lares_resume_option))||'lares_member_id' in v||'lares_admission_nonce' in v)return undefined;
-  return {memberId:v.lares_resolver_member_id,requestId:v.lares_resume_request_id,optionId:v.lares_resume_option as 'approve'|'cancel'};
+    !['approve','deny'].includes(String(v.lares_resume_option))||'lares_member_id' in v||'lares_admission_nonce' in v)return undefined;
+  return {memberId:v.lares_resolver_member_id,requestId:v.lares_resume_request_id,optionId:v.lares_resume_option as 'approve'|'deny'};
 }
 /** Any other card's answer: the original admission plus the one request and option it answered. */
 export function exactResolverAdmission(auth:unknown){
   const admission=consoleAdmission(auth),v=(auth as {attributes?:Record<string,unknown>}|undefined)?.attributes;
   if(!admission||admission.purpose!=='resolver'||!v||typeof v.lares_resume_request_id!=='string'||!v.lares_resume_request_id||
-    !['approve','cancel'].includes(String(v.lares_resume_option))||'lares_resolver_member_id' in v)return undefined;
-  return {memberId:admission.memberId,admissionNonce:admission.admissionNonce,requestId:v.lares_resume_request_id,optionId:v.lares_resume_option as 'approve'|'cancel'};
+    !['approve','deny'].includes(String(v.lares_resume_option))||'lares_resolver_member_id' in v)return undefined;
+  return {memberId:admission.memberId,admissionNonce:admission.admissionNonce,requestId:v.lares_resume_request_id,optionId:v.lares_resume_option as 'approve'|'deny'};
 }
 /** Either kind of answer. Only code that handles both kinds may use this. */
 export function privateResumeAdmission(auth:unknown){
@@ -59,7 +59,7 @@ export async function requirePersistedConsoleModelResume(reference:ResumeReferen
  * immutable reservation already proves member, session and admission; this adds the outcome. */
 async function requireExactResume(reference:ResumeReference,phase:'surface'|'model',options:{db?:AuthorityDatabase;env?:NodeJS.ProcessEnv}){
   const own=managedIdentity(options.env);
-  if(!own||own.name!==reference.binding.agent||own.incarnation!==reference.binding.incarnation||!['approve','cancel'].includes(reference.optionId))refuse();
+  if(!own||own.name!==reference.binding.agent||own.incarnation!==reference.binding.incarnation||!['approve','deny'].includes(reference.optionId))refuse();
   return authorityTransaction(options.db,async db=>{
     const binding=await requireConsoleSessionBinding(reference.binding,db,options.env);
     const member=await currentMember(db as never,reference.binding.memberId);if(!member)refuse();
@@ -70,15 +70,15 @@ async function requireExactResume(reference:ResumeReference,phase:'surface'|'mod
     if(reference.optionId==='approve'&&!card.alive)refuse();
     if(phase==='model'){
       if(reference.optionId==='approve'&&(card.outcome!=='approved'||card.resolvedByMemberId!==reference.binding.memberId))refuse();
-      if(reference.optionId==='cancel'&&!['cancelled','ignored','invalid'].includes(card.outcome??''))refuse();
+      if(reference.optionId==='deny'&&!['cancelled','ignored','invalid'].includes(card.outcome??''))refuse();
     }
     return {binding,validUntil:card.validUntil};
   });
 }
-async function requireResumeReference(reference:{binding:ConsoleBindingInput;requestId:string;optionId:'approve'|'cancel'},phase:'surface'|'response'|'model'|'action',
+async function requireResumeReference(reference:{binding:ConsoleBindingInput;requestId:string;optionId:'approve'|'deny'},phase:'surface'|'response'|'model'|'action',
   options:{db?:AuthorityDatabase;env?:NodeJS.ProcessEnv;callId?:string;toolName?:string;input?:unknown}){
   const own=managedIdentity(options.env),auth={memberId:reference.binding.memberId,requestId:reference.requestId,optionId:reference.optionId};
-  if(!own||own.name!==reference.binding.agent||own.incarnation!==reference.binding.incarnation||!['approve','cancel'].includes(auth.optionId))refuse();
+  if(!own||own.name!==reference.binding.agent||own.incarnation!==reference.binding.incarnation||!['approve','deny'].includes(auth.optionId))refuse();
   return authorityTransaction(options.db,async db=>{
     const binding=await requireConsoleSessionBinding(reference.binding,db,options.env);
     const member=await currentMember(db as never,auth!.memberId);if(!member)refuse();
@@ -91,7 +91,7 @@ async function requireResumeReference(reference:{binding:ConsoleBindingInput;req
     if(auth!.optionId==='approve'&&!current.alive)refuse();
     if(phase==='model'||phase==='action'){
       if(auth!.optionId==='approve'&&(current.approvalOutcome!=='approved'||current.resolvedByMemberId!==auth!.memberId))refuse();
-      if(auth!.optionId==='cancel'&&!['cancelled','ignored','invalid'].includes(current.approvalOutcome??''))refuse();
+      if(auth!.optionId==='deny'&&!['cancelled','ignored','invalid'].includes(current.approvalOutcome??''))refuse();
     }
     if(phase==='response'||phase==='action'){
       if((phase==='response'&&current.approvalOutcome!==null&&current.approvalOutcome!=='approved')||auth!.optionId!=='approve'||options.callId!==s.originalCallId||options.toolName!==PERSONAL_MAIL_SEND_TOOL)refuse();

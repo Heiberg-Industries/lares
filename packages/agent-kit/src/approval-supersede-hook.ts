@@ -3,27 +3,36 @@
  * when a NEW tool-approval card arrives, withdraw the older unanswered card it replaces
  * (`./approval-supersede.ts` decides which). Backs `services/box/sql/006_approval_session.sql`.
  *
- * WITHDRAWING A CARD, IN TWO STEPS, IN THIS ORDER.
- *   1. The ledger row is settled as `cancelled` with `answered_via = 'revised'`. From this moment
- *      `assertApprovedCall` (`./approval-ledger.ts`) refuses the old call even if someone still
- *      manages to approve it: a cancelled card is not an approval. This is the step that is safe on
- *      its own.
- *   2. eve is told to cancel the request: `POST /eve/v1/session/<id>` with
- *      `{ inputResponses: [{ requestId, optionId: "cancel" }] }`, the same call the console's chat
- *      makes for a Cancel tap. eve settles the card as "Cancelled" (outcome `denied`) and the tool
- *      never runs (`packages/board-evals/proofs/pending-reply-2026-10-19.md`, (c)). eve's later
- *      `input.resolved` then finds the ledger row already settled and writes nothing
- *      (`recordAnswer` is first-answer-wins), so the row keeps `revised`.
+ * WHAT eve 1.0 NOW DOES ITSELF. On eve 0.60 an older card stayed live while a later message ran an
+ * ordinary turn, and nothing withdrew it. On eve 1.0 a turn cannot end while an approval waits, and
+ * ordinary text from the person the turn serves withdraws every unanswered approval first (the
+ * interaction ends `withdrawn`, reason `superseded-by-message`; `docs/concepts/sessions-runs-and-
+ * streaming.md`, "Answering approvals"). So the case this hook was written for — a reply that
+ * changes a draft — is now ended by eve before the new card exists, and the ledger records that
+ * ending as "nobody decided" (`./approval-record-hook.ts`).
+ *
+ * WHAT THIS HOOK STILL DOES, AND WHY.
+ *   0. It writes each new card into the ledger with its session, turn and target. That is what lets
+ *      a later card find an older one, and it is the only recorder the creative role has.
+ *   1. The ledger row of an older card for the same tool and target, raised in an earlier turn, is
+ *      settled as `cancelled` with `answered_via = 'revised'`. From this moment `assertApprovedCall`
+ *      (`./approval-ledger.ts`) refuses the old call even if someone still manages to approve it: a
+ *      cancelled card is not an approval. This is the step that is safe on its own.
+ *   2. Only if eve's own view still shows that older card as OPEN, eve is told to deny it:
+ *      `POST /eve/v1/session/<id>` with `{ answers: [{ interactionId, optionId: "deny" }] }`.
+ *      A card eve has already ended is never answered again: eve would deliver a late answer to the
+ *      model as a new message. That request is made by the route identity, which is not an allowed
+ *      approver, so a tool whose response policy refuses any Deny from anyone but the person who
+ *      may approve it will refuse this one too and the card stays pending. That is intended: step 1
+ *      is what keeps the old call from running, and nothing here may decide a card for the owner.
  *
  * WHY HTTP AND NOT AN IN-PROCESS CALL. A hook receives `{ agent, channel, session }` and cannot
  * answer a request; only a channel route has `respond`/`attachSession` (eve docs, "Channels →
  * custom"). The agent's own session route is the way in, authenticated with the route password the
  * agent already holds (`/run/secrets/eve-route-password`, the same secret the console uses), over
- * loopback. That identity is a signed-in caller, which is what eve requires to accept a Cancel; it
- * is not an approver and it cannot approve anything (`lib/principals.ts` allows no `http-basic`
- * principal).
+ * loopback.
  *
- * The cancel request is NOT awaited: eve awaits hooks inside the turn, and the route may wait on
+ * The deny request is NOT awaited: eve awaits hooks inside the turn, and the route may wait on
  * that turn. A failure is logged once and is safe, because step 1 already made the old call refuse.
  *
  * BEST-EFFORT like every recorder here: a thrown hook becomes `turn.failed`, so each step swallows
@@ -34,6 +43,8 @@ import { readFileSync } from "node:fs";
 
 import { getPool } from "./db.js";
 import { payloadFingerprint } from "./approval-ledger.js";
+import { openedApproval } from "./approval-events.js";
+import { interaction as interactionOf } from "eve/events";
 import {
   selectSupersededAsks,
   targetFingerprint,
@@ -59,8 +70,10 @@ export interface ApprovalSupersedeDeps {
   openAsks?: (sessionId: string, exceptRequestIds: readonly string[]) => Promise<OpenAsk[]>;
   /** Settles one card as cancelled/revised. True only when this call changed the row. */
   markRevised?: (requestId: string) => Promise<boolean>;
-  /** Tells eve to cancel the request. */
-  cancel?: (sessionId: string, requestId: string) => Promise<void>;
+  /** Tells eve to deny the request. Only called for a card eve's own view still shows as open. */
+  deny?: (sessionId: string, requestId: string) => Promise<void>;
+  /** Whether eve's view of the session still shows this card as open. Unknown counts as not open. */
+  isOpen?: (ctx: unknown, requestId: string) => boolean;
 }
 
 let warnedOnce = false;
@@ -130,10 +143,10 @@ const DEFAULT_PASSWORD_FILE = "/run/secrets/eve-route-password";
 export const LOCAL_EVE_URL = "http://127.0.0.1:3000";
 
 /**
- * The cancel call. Reads the route password per call (never at import), the way the door's own
+ * The deny call. Reads the route password per call (never at import), the way the door's own
  * auth does. Throws on a refusal so the caller can log it.
  */
-export async function cancelApprovalRequest(
+export async function denyApprovalRequest(
   sessionId: string,
   requestId: string,
   opts: {
@@ -153,10 +166,10 @@ export async function cancelApprovalRequest(
       "content-type": "application/json",
       authorization: `Basic ${Buffer.from(`${ROUTE_USERNAME}:${password}`).toString("base64")}`,
     },
-    body: JSON.stringify({ inputResponses: [{ requestId, optionId: "cancel" }] }),
+    body: JSON.stringify({ answers: [{ interactionId: requestId, optionId: "deny" }] }),
     signal: AbortSignal.timeout(15_000),
   });
-  if (!res.ok) throw new Error(`eve answered ${res.status} to the cancel`);
+  if (!res.ok) throw new Error(`eve answered ${res.status} to the deny`);
 }
 
 /* --------------------------------- the handler --------------------------------- */
@@ -164,44 +177,45 @@ export async function cancelApprovalRequest(
 const asString = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
 const asTurn = (v: unknown): number | undefined => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : undefined);
 
-/** Builds the `input.requested` handler. Exported so tests can drive it with injected deps. */
+/** Whether eve's own view shows the interaction as open. Anything unreadable is "not open". */
+function viewShowsOpen(ctx: unknown, requestId: string): boolean {
+  try {
+    const view = (ctx as { view?: never } | null | undefined)?.view;
+    if (view === undefined) return false;
+    return interactionOf(view, requestId)?.status === "open";
+  } catch {
+    return false;
+  }
+}
+
+/** Builds the `interaction.opened` handler. Exported so tests can drive it with injected deps. */
 export function makeApprovalSupersede(deps: ApprovalSupersedeDeps = {}) {
   const record = deps.record ?? recordWithSession;
   const openAsks = deps.openAsks ?? openAsksForSession;
   const markRevised = deps.markRevised ?? settleAsRevised;
-  const cancel = deps.cancel ?? ((s: string, r: string) => cancelApprovalRequest(s, r));
+  const deny = deps.deny ?? ((s: string, r: string) => denyApprovalRequest(s, r));
+  const isOpen = deps.isOpen ?? viewShowsOpen;
 
-  async function onInputRequested(event: unknown, ctx: unknown): Promise<void> {
+  async function onInteractionOpened(event: unknown, ctx: unknown): Promise<void> {
     try {
-      const requests = ((event as { data?: { requests?: unknown } } | undefined)?.data?.requests);
-      if (!Array.isArray(requests)) return;
       const c = ctx as { agent?: { name?: unknown }; session?: { id?: unknown; turn?: { sequence?: unknown } } } | undefined;
       const sessionId = asString(c?.session?.id);
       const turn = asTurn(c?.session?.turn?.sequence);
       if (sessionId === undefined || turn === undefined) return;
       const agent = asString(c?.agent?.name) ?? "unknown";
 
-      const arrived: NewAsk[] = [];
-      for (const req of requests) {
-        if (typeof req !== "object" || req === null) continue;
-        const r = req as { kind?: unknown; requestId?: unknown; action?: { callId?: unknown; toolName?: unknown; input?: unknown } };
-        if (r.kind !== "tool-approval") continue;
-        const requestId = asString(r.requestId);
-        const callId = asString(r.action?.callId);
-        const tool = asString(r.action?.toolName);
-        if (requestId === undefined || callId === undefined || tool === undefined) continue;
-        arrived.push({
-          requestId,
-          callId,
-          agent,
-          tool,
-          payloadHash: payloadFingerprint(tool, r.action?.input),
-          sessionId,
-          turn,
-          targetHash: targetFingerprint(tool, r.action?.input),
-        });
-      }
-      if (arrived.length === 0) return;
+      const card = openedApproval(event, ctx);
+      if (card === undefined) return;
+      const arrived: NewAsk[] = [{
+        requestId: card.interactionId,
+        callId: card.callId,
+        agent,
+        tool: card.toolName,
+        payloadHash: payloadFingerprint(card.toolName, card.input),
+        sessionId,
+        turn,
+        targetHash: targetFingerprint(card.toolName, card.input),
+      }];
 
       for (const a of arrived) {
         try {
@@ -230,13 +244,16 @@ export function makeApprovalSupersede(deps: ApprovalSupersedeDeps = {}) {
             warn("settle as revised", err);
             continue;
           }
-          void cancel(sessionId, requestId).catch((err: unknown) => warn("cancel request", err));
+          // The ledger already refuses the old call. Asking eve to deny the card is only worth
+          // doing while eve still shows it as open; a card eve ended needs no answer.
+          if (!isOpen(ctx, requestId)) continue;
+          void deny(sessionId, requestId).catch((err: unknown) => warn("deny request", err));
         }
       }
     } catch (err) {
-      warn("input.requested", err);
+      warn("interaction.opened", err);
     }
   }
 
-  return { "input.requested": onInputRequested };
+  return { "interaction.opened": onInteractionOpened };
 }

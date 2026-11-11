@@ -46,17 +46,40 @@ export async function personalSendInputRequested(request:{requestId:string;callI
   if(!row||row.payload_hash!==payloadFingerprint('mail.send',payload)||payloadFingerprint('selection',selection)!==payloadFingerprint('selection',{accountId:row.account_id,generation:row.account_generation,resourceBindingId:row.resource_binding_id}))throw new Error('Personal mail proposal unavailable');
   await personalActions().attachApproval({actionId:row.id,actorMemberId:authority.actingMemberId!,approvalCallId:request.callId,requestId:request.requestId});
 }
-export async function personalSendApprovalResponse(ctx:{request:{requestId:string;callId:string;toolName:string;toolInput?:unknown};responder:unknown;session:{id:string;initiator:unknown}}){
-  const context={session:{id:ctx.session.id,auth:{current:ctx.responder,initiator:ctx.session.initiator}}};
+/** eve's response-policy context, as far as personal mail reads it. The person who answered is
+ *  `response.principal`; `request.interactionId` is the card's id (stored as the request id). */
+export interface PersonalSendResponseContext {
+  request:{interactionId:string;callId:string;toolName:string;toolInput?:unknown};
+  response:{decision:'approve'|'deny';principal:unknown};
+  session:{id:string;initiator:unknown};
+}
+/** eve asks this policy about a Deny as well as an Approve. One rule: only the person who may
+ *  approve this card may deny it. A Deny runs the same member, binding and policy checks as an
+ *  Approve, and then writes nothing; the Deny itself is recorded when eve settles the card
+ *  (`personalSendInputResolved`). Anyone else is refused the same way and the card stays pending. */
+export async function personalSendApprovalResponse(ctx:PersonalSendResponseContext){
+  const decision=ctx.response?.decision;
+  if(decision!=='approve'&&decision!=='deny')throw new Error('Approval answer changed');
+  const context={session:{id:ctx.session.id,auth:{current:ctx.response.principal,initiator:ctx.session.initiator}}};
+  const requestId=ctx.request.interactionId;
   return authorityTransaction(getPool(),async db=>{
+    if(decision==='deny'){
+      if(privateResolverAdmission(ctx.response.principal)?.optionId!=='deny')throw new Error('Approval answer changed');
+      const current=await requirePrivateConsoleResume(context,'surface',{db});
+      if(current.reference.requestId!==requestId||ctx.request.toolName!==PERSONAL_MAIL_SEND_TOOL||
+        ctx.request.callId!==current.reference.selection.originalCallId||current.approvalOutcome!==null)throw new Error('Approval request changed');
+      await requirePersonalSendApprovalPolicy(db as never,current.reference);
+      await requirePrivateConsoleResume(context,'surface',{db});
+      return {status:'allowed' as const};
+    }
     const options={db,callId:ctx.request.callId,toolName:ctx.request.toolName,input:ctx.request.toolInput};
     const current=await requirePrivateConsoleResume(context,'response',options);
-    if(current.reference.requestId!==ctx.request.requestId)throw new Error('Approval request changed');
+    if(current.reference.requestId!==requestId)throw new Error('Approval request changed');
     await requirePersonalSendApprovalPolicy(db as never,current.reference);
     await requirePrivateConsoleResume(context,'response',options);
     const updated=await db.query(`UPDATE approval_asks SET outcome='approved',answered_at=COALESCE(answered_at,clock_timestamp()),answered_via='console',resolved_by_member_id=$3
       WHERE call_id=$1 AND request_id=$2 AND (outcome IS NULL OR (outcome='approved' AND resolved_by_member_id=$3)) RETURNING call_id`,
-      [ctx.request.callId,ctx.request.requestId,current.binding.memberId]);
+      [ctx.request.callId,requestId,current.binding.memberId]);
     if(updated.rows.length!==1)throw new Error('Approval changed');return {status:'allowed' as const};
   });
 }
@@ -65,7 +88,7 @@ export async function personalSendInputResolved(requestId:string,outcome:string,
   const current=await requirePrivateConsoleResume(ctx,'surface');
   if(outcome==='approved')return true; // The independent response authorizer already wrote approval.
   if(!['cancelled','ignored','invalid'].includes(outcome))throw new Error('Unsupported personal approval outcome');
-  if(auth.optionId!=='cancel')throw new Error('Approval answer changed');
+  if(auth.optionId!=='deny')throw new Error('Approval answer changed');
   await personalActions().cancelApprovalRequest(auth.memberId,current.reference.requestId,outcome as 'cancelled'|'ignored'|'invalid');
   return true;
 }

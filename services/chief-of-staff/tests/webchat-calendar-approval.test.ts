@@ -20,18 +20,18 @@ import { quiet } from "./helpers/quiet-pool.js";
 const inc = "11111111-1111-4111-8111-111111111111";
 const MAILBOX = "owner@example.invalid";
 const env = { LARES_AGENT_NAME: "helper", LARES_AGENT_INCARNATION: inc };
-const auth = (purpose = "human", member = "member-a", nonce = "a".repeat(43)) => ({
+const auth = (purpose = "human", member = "member-a", nonce = "a".repeat(43), option = "approve") => ({
   authenticator: "lares-console", principalId: member, principalType: "user",
   attributes: { user_id: member, lares_member_id: member, lares_admission_nonce: nonce, lares_purpose: purpose,
-    ...(purpose === "resolver" ? { lares_resume_request_id: "request-1", lares_resume_option: "approve" } : {}) },
+    ...(purpose === "resolver" ? { lares_resume_request_id: "request-1", lares_resume_option: option } : {}) },
 });
 const context = (tool: string, raw: unknown, purpose = "human", member = "member-a") => ({
-  callId: "call-1", toolName: tool, toolInput: raw, abortSignal: new AbortController().signal, approvedTools: new Set<string>(),
+  callId: "call-1", toolName: tool, toolInput: raw, abortSignal: new AbortController().signal,
   session: { id: "wrun_exact", turn: { id: purpose === "human" ? "turn-original" : "turn-resolver", sequence: purpose === "human" ? 0 : 1 },
     auth: { current: auth(purpose, member), initiator: auth("human", member) } },
 });
-const answerCard = (tool: string, raw: unknown) => ({
-  request: { requestId: "request-1", callId: "call-1", toolName: tool, toolInput: raw }, responder: auth("resolver"),
+const answerCard = (tool: string, raw: unknown, decision: "approve" | "deny" = "approve", principal: unknown = auth("resolver", "member-a", "a".repeat(43), decision)) => ({
+  request: { interactionId: "request-1", callId: "call-1", toolName: tool, toolInput: raw }, response: { decision, principal },
   session: { id: "wrun_exact", initiator: auth(), turn: { id: "t", sequence: 1 } },
 });
 const def = { name: "helper", model: "fixture-brain", persona: "voice.md", role: "chief-of-staff", channels: [],
@@ -188,6 +188,23 @@ describe.each(CASES)("$tool in web chat", ({ tool, run, input, method }) => {
     await getPool().query("DELETE FROM agent_account_bindings");
     expect(await raise(tool, input)).toMatchObject({ type: "denied" });
     expect(await rows()).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("a Deny from anyone but the owner is refused like an Approve, and the card stays pending", async () => {
+    await raise(tool, input);
+    const refused = [
+      answerCard(tool, input, "deny", auth("resolver", "member-b", "a".repeat(43), "deny")),
+      answerCard(tool, input, "deny", auth("resolver", "member-a", "b".repeat(43), "deny")),
+      answerCard(tool, input, "deny", { authenticator: "slack-webhook", principalId: "U1", principalType: "user", attributes: { user_id: "U1" } }),
+      answerCard(tool, input, "deny", null),
+    ];
+    for (const card of refused) await expect(catalogueApprovalResponse(tool, card)).rejects.toThrow();
+    expect((await rows())[0].outcome).toBeNull();
+    // The owner's own Deny is allowed, writes no approval, and the write never happens.
+    await expect(catalogueApprovalResponse(tool, answerCard(tool, input, "deny"))).resolves.toEqual({ status: "allowed" });
+    expect((await rows())[0].outcome).toBeNull();
+    await expect((run as any).execute(input, running(tool, input))).rejects.toThrow();
     expect(calls).toEqual([]);
   });
 

@@ -1,10 +1,8 @@
-/** Real storage, pinned Eve approval coordinator and real durable catalogue callbacks.
+/** Real storage, eve's own session view and the real catalogue callbacks.
  * No model/provider credentials or installation data. */
 import { Pool } from 'pg';
-import { spawn } from 'node:child_process';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { getPool, closePool } from '@lares/agent-kit/db';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
@@ -18,19 +16,20 @@ import { makeApprovalRecord } from '@lares/agent-kit/approval-record-hook';
 import { deadlineApprovalAdapter, dismissExactDeadline } from '../lib/deadlines-store.js';
 import { twentyTracksApprovalAdapter } from '../lib/tracks-approval.js';
 import resolver from '../agent/tools/catalogue.js';
+import { eveSession } from '../../../packages/agent-kit/tests/helpers/eve-session.js';
+import { runDynamic, type MemoStore } from '../../../packages/agent-kit/tests/helpers/eve-dynamic.js';
 import { assertApproval, catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution, humanTurnRefusal, runApprovedTwentyTrackOnce } from '../lib/approvals.js';
 import { TwentyTracksHome } from '../lib/twenty-tracks.js';
 
 const inc='11111111-1111-4111-8111-111111111111';
 const env={LARES_AGENT_NAME:'helper',LARES_AGENT_INCARNATION:inc,AGENT_OWNER_USER_ID:'member-a'};
-const auth=(purpose='human',member='member-a',nonce='a'.repeat(43))=>({authenticator:'lares-console',principalId:member,principalType:'user',attributes:{user_id:member,lares_member_id:member,lares_admission_nonce:nonce,lares_purpose:purpose,...(purpose==='resolver'?{lares_resume_request_id:'request-1',lares_resume_option:'approve'}:{})}});
+const auth=(purpose='human',member='member-a',nonce='a'.repeat(43),option='approve')=>({authenticator:'lares-console',principalId:member,principalType:'user',attributes:{user_id:member,lares_member_id:member,lares_admission_nonce:nonce,lares_purpose:purpose,...(purpose==='resolver'?{lares_resume_request_id:'request-1',lares_resume_option:option}:{})}});
 const input={id:'11111111-2222-4333-8444-555555555555',reason:'Duplicate filing'};
-const context=(purpose='human',raw:unknown=input)=>({callId:'call-1',toolName:'deadline_dismiss',toolInput:raw,abortSignal:new AbortController().signal,approvedTools:new Set<string>(),session:{id:'wrun_exact',turn:{id:purpose==='human'?'turn-original':'turn-resolver',sequence:purpose==='human'?0:1},auth:{current:auth(purpose),initiator:auth()}}});
+const context=(purpose='human',raw:unknown=input)=>({callId:'call-1',toolName:'deadline_dismiss',toolInput:raw,abortSignal:new AbortController().signal,session:{id:'wrun_exact',turn:{id:purpose==='human'?'turn-original':'turn-resolver',sequence:purpose==='human'?0:1},auth:{current:auth(purpose),initiator:auth()}}});
 const def={name:'helper',model:'fixture-brain',persona:'voice.md',role:'chief-of-staff',channels:[],grants:[{capability:'deadline',scope:'write-with-confirm'}],autonomy:{deadline:'gated'},skills:[]};
 const opts=()=>({adapter:deadlineApprovalAdapter});
 let container:StartedPostgreSqlContainer;
 const sqlDir=new URL('../../box/sql/',import.meta.url);
-const eveDist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
 
 beforeAll(async()=>{
  container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
@@ -53,7 +52,7 @@ beforeEach(async()=>{
  await bindConsoleSession({agent:'helper',incarnation:inc,sessionId:'wrun_exact',memberId:'member-a',admissionNonce:'a'.repeat(43)});
 });
 async function reserved(raw:unknown=input){await reserveExactApproval(context('human',raw),'deadline_dismiss',opts());await attachExactApproval({requestId:'request-1',callId:'call-1',tool:'deadline_dismiss',input:raw});}
-const response=(raw:unknown=input)=>({request:{requestId:'request-1',callId:'call-1',toolName:'deadline_dismiss',toolInput:raw},responder:auth('resolver'),session:{id:'wrun_exact',initiator:auth(),turn:{id:'turn-resolver',sequence:1}}});
+const response=(raw:unknown=input,decision:'approve'|'deny'='approve',principal:unknown=auth('resolver','member-a','a'.repeat(43),decision))=>({request:{interactionId:'request-1',callId:'call-1',toolName:'deadline_dismiss',toolInput:raw},response:{decision,principal},session:{id:'wrun_exact',initiator:auth(),turn:{id:'turn-resolver',sequence:1}}});
 async function approved(raw:unknown=input){await reserved(raw);await approveExactResponse(response(raw),opts());}
 async function stillOpen(){expect((await getPool().query('SELECT status FROM deadlines WHERE id=$1',[input.id])).rows[0].status).toBe('open');}
 
@@ -107,10 +106,13 @@ describe('exact private approval execution',()=>{
  });
  it('strict input hook attaches synchronously and propagates storage failure',async()=>{
   await reserveExactApproval(context(),'deadline_dismiss',opts());
-  const hook=makeApprovalRecord();const event={data:{requests:[{kind:'tool-approval',requestId:'request-1',action:{callId:'call-1',toolName:'deadline_dismiss',input}}]}};
-  await hook['input.requested'](event,context());
+  const hook=makeApprovalRecord();
+  const card=(interactionId:string)=>{const e=eveSession();e.call('call-1','deadline_dismiss',input);return {event:e.open(interactionId,'call-1'),ctx:{...context(),view:e.view}};};
+  const good=card('request-1');
+  await hook['interaction.opened'](good.event,good.ctx);
   expect((await getPool().query("SELECT request_id FROM approval_asks WHERE call_id='call-1'")).rows[0].request_id).toBe('request-1');
-  await expect(hook['input.requested']({data:{requests:[{...event.data.requests[0],requestId:'wrong'}]}},context())).rejects.toThrow();
+  const wrong=card('wrong');
+  await expect(hook['interaction.opened'](wrong.event,wrong.ctx)).rejects.toThrow();
  });
  for(const [label,change] of [
   ['payload',async()=>undefined],
@@ -223,12 +225,12 @@ describe('exact private approval execution',()=>{
  it('refuses expiry, a different responder, an initiator fallback, wrong call, audience/place or nonce',async()=>{
   await reserved();const later={...opts(),now:new Date(Date.now()+24*3600_000)};
   await expect(approveExactResponse(response(),later)).rejects.toThrow();
-  await expect(approveExactResponse({...response(),responder:auth('resolver','member-b')},opts())).rejects.toThrow();
-  await expect(approveExactResponse({...response(),responder:null},opts())).rejects.toThrow();
-  await expect(approveExactResponse({...response(),responder:auth('resolver','member-a','b'.repeat(43))},opts())).rejects.toThrow();
+  await expect(approveExactResponse(response(input,'approve',auth('resolver','member-b')),opts())).rejects.toThrow();
+  await expect(approveExactResponse(response(input,'approve',null),opts())).rejects.toThrow();
+  await expect(approveExactResponse(response(input,'approve',auth('resolver','member-a','b'.repeat(43))),opts())).rejects.toThrow();
   await expect(approveExactResponse({...response(),session:{...response().session,id:'another-place'}},opts())).rejects.toThrow();
   await approveExactResponse(response(),opts());
-  await expect(requireApprovedExecution({...context('resolver'),callId:'different'},'deadline_dismiss',input,opts())).rejects.toThrow();
+  await expect(requireApprovedExecution({...context('resolver'),callId:'different'} as never,'deadline_dismiss',input,opts())).rejects.toThrow();
  });
  it('refuses an approval that expires between response and execution',async()=>{
   const past={...opts(),now:new Date(Date.now()-24*3600_000)};
@@ -256,44 +258,72 @@ describe('exact private approval execution',()=>{
   try{await expect(dismissExactDeadline(getPool(),context('resolver'),input)).rejects.toThrow();await stillOpen();}
   finally{await getPool().query('ALTER TABLE approval_asks_off RENAME TO approval_asks');}
  });
- it('cold replay refuses a persisted deadline descriptor removed from the private catalogue',async()=>{
-  const {ContextContainer}=await import(`${eveDist}context/container.js`);
-  const keys=await import(`${eveDist}context/keys.js`);
-  const {dispatchDynamicToolEvent}=await import(`${eveDist}context/dynamic-tool-lifecycle.js`);
-  // Persist an actual native descriptor, then attempt to replay it as private history.
-  const ctx=new ContextContainer();ctx.set(keys.StaticModelReferenceKey,null);ctx.set(keys.SessionIdKey,'wrun_exact');
-  const resolvers=[{slug:'catalogue',eventNames:['session.started'],events:resolver.events}];
-  await dispatchDynamicToolEvent({ctx,resolvers,event:{type:'session.started',data:{}},messages:[]});
-  const metadata=ctx.get(keys.SessionDynamicToolMetadataKey).filter((m:any)=>m.name==='deadline_dismiss');
-  expect(metadata).toHaveLength(1);
-  const payload={metadata:JSON.parse(JSON.stringify(metadata)),context:context('resolver'),input};
-  const result=await new Promise<any>((resolve,reject)=>{
-   const p=spawn(process.execPath,['--import','tsx',fileURLToPath(new URL('./helpers/exact-approval-process.mts',import.meta.url)),'refuse'],{
-    cwd:process.cwd(),env:{PATH:process.env.PATH,DATABASE_URL:process.env.DATABASE_URL,...env,EVE_TELEMETRY_DISABLED:'1'},stdio:['pipe','pipe','pipe']});
-   let out='',err='';p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);p.on('error',reject);
-   p.on('close',code=>code===0?resolve(JSON.parse(out)):reject(new Error(`Cold refusal exited ${code}: ${err} ${out}`)));
-   p.stdin.end(JSON.stringify(payload));
-  });
-  expect(result).toMatchObject({refused:true});expect(result.pid).not.toBe(process.pid);await stillOpen();
- },30_000);
- it('omits private deadlines and refuses reconstructed native approval and execution callbacks',async()=>{
-  const tools=await (resolver.events['session.started'] as any)({},context());
+ it('omits private deadlines from a private conversation, also after a cold start (a fresh memo), and refuses reconstructed native callbacks',async()=>{
+  const privateCtx={session:{id:'wrun_exact',auth:{current:auth('human'),initiator:auth('human')}}};
+  const store:MemoStore=new Map();
+  const tools=await runDynamic(resolver,privateCtx,store);
   expect(tools.deadline_dismiss).toBeUndefined();expect(tools.set_language).toBeUndefined();expect(tools.remember).toBeUndefined();
-  const native=await (resolver.events['session.started'] as any)({}, {session:{id:'wrun_exact'}});
+  // A new process has no memo: the decision is made again from the definition and comes out the same.
+  const cold=await runDynamic(resolver,privateCtx,new Map());
+  expect(Object.keys(cold).sort()).toEqual(Object.keys(tools).sort());
+  const native=await runDynamic(resolver,{session:{id:'wrun_exact',auth:{current:null,initiator:null}}});
   const tool=native.deadline_dismiss;
-  const {validateDurableDynamicToolCallbacks}=await import(`${eveDist}context/dynamic-tool-lifecycle.js`);
-  const owner={sessionId:'wrun_exact',scope:'session',resolverSlug:'catalogue',entryKey:'deadline_dismiss',name:'deadline_dismiss'};
-  const callbacks=validateDurableDynamicToolCallbacks('deadline_dismiss',tool,owner);
-  expect(callbacks.approvalRequest).toBeDefined();expect(callbacks.execute).toBeDefined();
+  expect(typeof tool.approval).toBe('object');expect(typeof tool.approval.request).toBe('function');expect(typeof tool.approval.prompt).toBe('function');
   await expect(tool.approval.request(context())).rejects.toThrow('Conversation authority');
   await expect(tool.execute(input,context())).rejects.toThrow('Conversation authority');
   await expect(tool.execute(input,context('resolver'))).rejects.toThrow('Conversation authority');
   await stillOpen();
  });
+ it('refuses a Deny from anyone but the person who may approve the card, and the card stays pending',async()=>{
+  await reserved();
+  const pending=async()=>(await getPool().query("SELECT outcome,resolved_by_member_id FROM approval_asks WHERE call_id='call-1'")).rows[0];
+  // Another member, another admission, no identity at all, another conversation: refused like an Approve.
+  await expect(approveExactResponse(response(input,'deny',auth('resolver','member-b','a'.repeat(43),'deny')),opts())).rejects.toThrow();
+  await expect(approveExactResponse(response(input,'deny',auth('resolver','member-a','b'.repeat(43),'deny')),opts())).rejects.toThrow();
+  await expect(approveExactResponse(response(input,'deny',null),opts())).rejects.toThrow();
+  await expect(approveExactResponse({...response(input,'deny'),session:{...response().session,id:'another-place'}},opts())).rejects.toThrow();
+  // A human turn (not a resolver answer) is not an answer at all.
+  await expect(approveExactResponse(response(input,'deny',auth('human')),opts())).rejects.toThrow();
+  expect(await pending()).toEqual({outcome:null,resolved_by_member_id:null});
+  // The decision eve is acting on and the option the console named must agree, both ways.
+  await expect(approveExactResponse(response(input,'deny',auth('resolver','member-a','a'.repeat(43),'approve')),opts())).rejects.toThrow();
+  await expect(approveExactResponse(response(input,'approve',auth('resolver','member-a','a'.repeat(43),'deny')),opts())).rejects.toThrow();
+  // A decision that is neither is refused.
+  await expect(approveExactResponse({...response(),response:{decision:'cancel' as never,principal:auth('resolver','member-a','a'.repeat(43),'deny')}},opts())).rejects.toThrow();
+  expect(await pending()).toEqual({outcome:null,resolved_by_member_id:null});
+  // The person who may approve may deny; a Deny writes no approval, and the card is still usable only through eve settling it.
+  await expect(approveExactResponse(response(input,'deny'),opts())).resolves.toEqual({status:'allowed'});
+  expect(await pending()).toEqual({outcome:null,resolved_by_member_id:null});
+  await stillOpen();
+ });
+ it('a Deny after the card was approved or settled is refused, and an expired card cannot be denied either',async()=>{
+  await approved();
+  await expect(approveExactResponse(response(input,'deny'),opts())).rejects.toThrow();
+  await getPool().query('DELETE FROM approval_asks');await reserved();
+  await expect(approveExactResponse(response(input,'deny'),{...opts(),now:new Date(Date.now()+24*3600_000)})).rejects.toThrow();
+ });
+ for(const [outcome,settledAs] of [['declined','cancelled'],['withdrawn','ignored'],['interrupted','ignored'],['expired','ignored'],['accepted-deny','invalid']] as const){
+  it(`nothing executes when the card ended ${outcome}, and the record says so`,async()=>{
+   await reserved();
+   const hook=makeApprovalRecord();const e=eveSession();e.call('call-1','deadline_dismiss',input);e.open('request-1','call-1');
+   const settled=outcome==='accepted-deny'?e.settle('request-1','accepted','deny'):e.settle('request-1',outcome,outcome==='declined'?'deny':undefined);
+   await hook['interaction.settled'](settled,{...context('resolver'),view:e.view});
+   expect((await getPool().query("SELECT outcome FROM approval_asks WHERE call_id='call-1'")).rows[0].outcome).toBe(settledAs);
+   await expect(requireApprovedExecution(context('resolver'),'deadline_dismiss',input,opts())).rejects.toThrow();
+   await expect(dismissExactDeadline(getPool(),context('resolver'),input)).rejects.toThrow();
+   await stillOpen();
+  });
+ }
+ it('records an accepted Approve only as the answer the response policy already wrote',async()=>{
+  await approved();
+  const hook=makeApprovalRecord();const e=eveSession();e.call('call-1','deadline_dismiss',input);e.open('request-1','call-1');
+  await hook['interaction.settled'](e.settle('request-1','accepted','approve'),{...context('resolver'),view:e.view});
+  expect((await getPool().query("SELECT outcome,resolved_by_member_id FROM approval_asks WHERE call_id='call-1'")).rows[0]).toEqual({outcome:'approved',resolved_by_member_id:'member-a'});
+ });
 });
 
 describe('answering an exact card through the private route',()=>{
- const body=(requestId='request-1',optionId='approve')=>JSON.stringify({inputResponses:[{requestId,optionId}]});
+ const body=(requestId='request-1',optionId='approve')=>JSON.stringify({answers:[{interactionId:requestId,optionId}]});
  async function answer(o:{member?:string;nonce?:string;session?:string;requestId?:string;optionId?:string}={}){
   const r=new Request(`http://runtime.invalid/eve/v1/session/${o.session??'wrun_exact'}`,{method:'POST',body:body(o.requestId,o.optionId),
    headers:{'x-lares-member-id':o.member??'member-a','x-lares-admission':o.nonce??'a'.repeat(43),'x-lares-purpose':'resolver'}});
@@ -328,19 +358,19 @@ describe('answering an exact card through the private route',()=>{
  it('takes no answer to a settled or spent card',async()=>{
   await approved();
   await expect(answer()).resolves.toMatchObject({lares_resume_request_id:'request-1'});
-  await expect(answer({optionId:'cancel'})).rejects.toThrow();
+  await expect(answer({optionId:'deny'})).rejects.toThrow();
   await getPool().query("UPDATE approval_asks SET used_at=clock_timestamp(),use_count=1 WHERE request_id='request-1'");
   await expect(answer()).rejects.toThrow();
-  await expect(answer({optionId:'cancel'})).rejects.toThrow();
+  await expect(answer({optionId:'deny'})).rejects.toThrow();
   await getPool().query("DELETE FROM approval_asks");await reserved();
   await settleExactInput('request-1','cancelled');
   await expect(answer()).rejects.toThrow();
-  await expect(answer({optionId:'cancel'})).rejects.toThrow();
+  await expect(answer({optionId:'deny'})).rejects.toThrow();
  });
- it('refuses an approval once the card has expired, and still lets it be cancelled',async()=>{
+ it('refuses an approval once the card has expired, and still lets it be denied',async()=>{
   await reserved();await backdate();
   await expect(answer()).rejects.toThrow();
-  await expect(answer({optionId:'cancel'})).resolves.toMatchObject({lares_resume_option:'cancel'});
+  await expect(answer({optionId:'deny'})).resolves.toMatchObject({lares_resume_option:'deny'});
  });
  it('uses the earlier of the two lifetimes the reservation carries',async()=>{
   await reserveExactApproval(context(),'deadline_dismiss',{...opts(),now:new Date(Date.now()-25*60*60_000)});
@@ -357,9 +387,9 @@ describe('answering an exact card through the private route',()=>{
  });
  it('approves only the card this answer named, and only an approve answer',async()=>{
   await reserved();
-  const respond=(responder:unknown)=>approveExactResponse({...response(),responder},opts());
+  const respond=(responder:unknown)=>approveExactResponse(response(input,'approve',responder),opts());
   await expect(respond(answered('another-request'))).rejects.toThrow();
-  await expect(respond(answered('request-1','cancel'))).rejects.toThrow();
+  await expect(respond(answered('request-1','deny'))).rejects.toThrow();
   await expect(respond(auth('human'))).rejects.toThrow();
   await expect(respond({authenticator:'lares-console',attributes:{lares_member_id:'member-a',lares_admission_nonce:'a'.repeat(43),lares_purpose:'resolver'}})).rejects.toThrow();
   await expect(respond(answered('request-1','approve','z'.repeat(43)))).rejects.toThrow();
@@ -370,24 +400,24 @@ describe('answering an exact card through the private route',()=>{
   await reserved();
   await expect(requireConsoleResume(resumed(answered()),'surface',{env})).resolves.toMatchObject({binding:{memberId:'member-a'}});
   await expect(requireConsoleResume(resumed(answered()),'model',{env})).rejects.toThrow();
-  await expect(requireConsoleResume(resumed(answered('request-1','cancel')),'model',{env})).rejects.toThrow();
+  await expect(requireConsoleResume(resumed(answered('request-1','deny')),'model',{env})).rejects.toThrow();
   await approveExactResponse(response(),opts());
   await expect(requireConsoleResume(resumed(answered()),'model',{env})).resolves.toMatchObject({validUntil:expect.any(String)});
   await expect(requireConsoleResume(resumed(answered('request-1','approve','z'.repeat(43))),'model',{env})).rejects.toThrow();
   await expect(requirePrivateConsoleResume(resumed(answered()),'action',{env})).rejects.toThrow();
   await settleExactInput('request-1','cancelled');
   await expect(requireConsoleResume(resumed(answered()),'model',{env})).rejects.toThrow();
-  await expect(requireConsoleResume(resumed(answered('request-1','cancel')),'model',{env})).resolves.toBeDefined();
+  await expect(requireConsoleResume(resumed(answered('request-1','deny')),'model',{env})).resolves.toBeDefined();
  });
  it('refuses a new card during an approval resume without failing the turn',async()=>{
   await approved();
   await expect(catalogueApprovalRequest('track_create',{...context('resolver'),callId:'another-call',toolName:'track_create'},()=>'user-approval')).resolves.toBe('denied');
   expect((await getPool().query("SELECT count(*)::int n FROM approval_asks")).rows[0].n).toBe(1);
  });
- it('runs nothing under a cancel answer, even a call approved earlier',async()=>{
+ it('runs nothing under a deny answer, even a call approved earlier',async()=>{
   await approved();
   const cancelling=context('resolver');
-  (cancelling.session.auth.current.attributes as Record<string,unknown>).lares_resume_option='cancel';
+  (cancelling.session.auth.current.attributes as Record<string,unknown>).lares_resume_option='deny';
   await expect(requireApprovedExecution(cancelling,'deadline_dismiss',input,opts())).rejects.toThrow();
   const unnamed=context('resolver');
   delete (unnamed.session.auth.current.attributes as Record<string,unknown>).lares_resume_option;
@@ -397,7 +427,7 @@ describe('answering an exact card through the private route',()=>{
  describe('a card that writes to the company CRM',()=>{
   const twenty={home:'twenty',trackId:'sales',who:{personId:'person-1'},step:'Open',note:'n',sourceSignal:'s'};
   const crm=(member='member-a')=>({...context('human',twenty),toolName:'track_add_item',session:{...context('human',twenty).session,auth:{current:auth('human',member),initiator:auth('human',member)}}});
-  const answerCard=(raw:unknown=twenty)=>({request:{requestId:'request-1',callId:'call-1',toolName:'track_add_item',toolInput:raw},responder:auth('resolver'),session:{id:'wrun_exact',initiator:auth(),turn:{id:'t',sequence:1}}});
+  const answerCard=(raw:unknown=twenty,decision:'approve'|'deny'='approve',principal:unknown=auth('resolver','member-a','a'.repeat(43),decision))=>({request:{interactionId:'request-1',callId:'call-1',toolName:'track_add_item',toolInput:raw},response:{decision,principal},session:{id:'wrun_exact',initiator:auth(),turn:{id:'t',sequence:1}}});
   const running=()=>({...context('resolver',twenty),toolName:'track_add_item'});
   let listTracks:ReturnType<typeof vi.spyOn>;
   beforeEach(async()=>{

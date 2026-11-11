@@ -84,10 +84,10 @@ const outsideDef = (url = 'https://mail.example.com/mcp') => ({
 const OPTS = { adapter: deadlineApprovalAdapter };
 const AREA_AUTHORITY = { designatedOwnerMemberId: 'member-a' };
 
-const auth = (purpose: 'human' | 'resolver', member: MemberId) => ({
+const auth = (purpose: 'human' | 'resolver', member: MemberId, option: 'approve' | 'deny' = 'approve') => ({
   authenticator: 'lares-console', principalId: member, principalType: 'user',
   attributes: { user_id: member, lares_member_id: member, lares_admission_nonce: NONCE[member], lares_purpose: purpose,
-    ...(purpose === 'resolver' ? { lares_resume_request_id: 'request-1', lares_resume_option: 'approve' } : {}) },
+    ...(purpose === 'resolver' ? { lares_resume_request_id: 'request-1', lares_resume_option: option } : {}) },
 });
 /** A tool-call context as eve hands it to the catalogue: who is speaking (current) and who opened
  *  the session (initiator) come from the authenticated console admission, never from content. */
@@ -95,7 +95,7 @@ function ctx(o: { raw: unknown; member?: MemberId; purpose?: 'human' | 'resolver
   const member = o.member ?? 'member-a', purpose = o.purpose ?? 'human';
   return {
     callId: o.callId ?? 'call-1', toolName: 'deadline_dismiss', toolInput: o.raw,
-    abortSignal: new AbortController().signal, approvedTools: new Set<string>(),
+    abortSignal: new AbortController().signal,
     session: {
       id: o.session ?? SESSION[member],
       turn: { id: purpose === 'human' ? 'turn-original' : 'turn-resolver', sequence: purpose === 'human' ? 0 : 1 },
@@ -103,9 +103,9 @@ function ctx(o: { raw: unknown; member?: MemberId; purpose?: 'human' | 'resolver
     },
   };
 }
-const response = (raw: unknown, o: { responder?: MemberId; initiator?: MemberId; purpose?: 'human' | 'resolver'; session?: string } = {}) => ({
-  request: { requestId: 'request-1', callId: 'call-1', toolName: 'deadline_dismiss', toolInput: raw },
-  responder: auth(o.purpose ?? 'resolver', o.responder ?? 'member-a'),
+const response = (raw: unknown, o: { responder?: MemberId; initiator?: MemberId; purpose?: 'human' | 'resolver'; session?: string; decision?: 'approve' | 'deny' } = {}) => ({
+  request: { interactionId: 'request-1', callId: 'call-1', toolName: 'deadline_dismiss', toolInput: raw },
+  response: { decision: o.decision ?? 'approve', principal: auth(o.purpose ?? 'resolver', o.responder ?? 'member-a', o.decision ?? 'approve') },
   session: { id: o.session ?? SESSION[o.initiator ?? 'member-a'], initiator: auth('human', o.initiator ?? 'member-a'), turn: { id: 'turn-resolver', sequence: 1 } },
 });
 const dismiss = (text: string, id = DEADLINE_A) => ({ id, reason: text });
@@ -189,6 +189,18 @@ describe('1. outside or quoted text claiming the user approved something', () =>
     expect(await statusOf(DEADLINE_A)).toBe('open');
   });
 
+  it.each(texts('replayed-request'))("$id: another member cannot DENY the owner's card either, and the card stays pending", async (c) => {
+    const raw = dismiss(c.text);
+    await share([use('member-b')]);
+    await bind('member-b');
+    await reserved(raw);
+    await expect(approveExactResponse(response(raw, { responder: 'member-b', initiator: 'member-b', decision: 'deny' }), OPTS)).rejects.toThrow();
+    await expect(approveExactResponse(response(raw, { responder: 'member-b', initiator: 'member-a', session: SESSION['member-a'], decision: 'deny' }), OPTS)).rejects.toThrow();
+    expect((await getPool().query("SELECT outcome FROM approval_asks WHERE call_id='call-1'")).rows[0].outcome).toBeNull();
+    await expect(execute(raw)).rejects.toThrow();
+    expect(await statusOf(DEADLINE_A)).toBe('open');
+  });
+
   it.each(texts('claimed-approval'))('$id: the same words sent as a chat turn are not an answer to the card', async (c) => {
     const raw = dismiss(c.text);
     await reserved(raw);
@@ -207,8 +219,8 @@ describe('1. outside or quoted text claiming the user approved something', () =>
     // An answer must arrive as a resolver request carrying a verified card response; a message,
     // or a message dressed up with the resolver purpose, is refused at the door.
     await expect(consoleRouteAdmission(post('resolver', { message: c.text }), getPool(), process.env)).rejects.toThrow();
-    await expect(consoleRouteAdmission(post('human', { inputResponses: [{ requestId: 'request-1', optionId: 'approve' }] }), getPool(), process.env)).rejects.toThrow();
-    await expect(consoleRouteAdmission(post('resolver', { inputResponses: [{ requestId: 'request-1', optionId: 'approve' }] }), getPool(), process.env)).rejects.toThrow();
+    await expect(consoleRouteAdmission(post('human', { answers: [{ interactionId: 'request-1', optionId: 'approve' }] }), getPool(), process.env)).rejects.toThrow();
+    await expect(consoleRouteAdmission(post('resolver', { answers: [{ interactionId: 'request-1', optionId: 'approve' }] }), getPool(), process.env)).rejects.toThrow();
   });
 
   it.each(texts('claimed-approval'))('$id: once the owner really answers the card, the action runs, whatever the text says', async (c) => {
