@@ -1,11 +1,11 @@
 """Disposable CI-image runtime proof. No production data or provider credentials."""
 import subprocess,json,pathlib,tempfile,time,urllib.request,http.server,threading,os,shutil,sys,uuid,secrets,importlib.util
 # Agent memory budget, in MB. One MB here is 1024*1024 bytes, the unit `docker stats` prints as MiB.
-# PROVISIONAL: 3000 was chosen on 2026-11-11, before this check had recorded a single reading, only
-# so that its first run records numbers instead of failing. It is not a target. Set the first real
-# budget from the `agent-memory:` lines of a run of the image workflow, and say here when it was set
-# and from which readings.
-AGENT_MEMORY_BUDGET_MB=3000
+# Set on 11 November 2026 from a run of the image workflow on the change that added this check:
+# 2733.5 MB after start and 2796.6 MB after turns, for the chief-of-staff role. The budget is the
+# highest reading plus about 25 percent, rounded. The creative role is not measured by this probe.
+# Raise or lower it only from new readings, and say here when and from which.
+AGENT_MEMORY_BUDGET_MB=3500
 # A reading is the highest of this many looks, this many seconds apart. The second reading is taken
 # after this many more scripted turns.
 AGENT_MEMORY_SAMPLES=4;AGENT_MEMORY_SAMPLE_GAP_SECONDS=2;AGENT_MEMORY_TURNS=3
