@@ -207,6 +207,20 @@ beforeEach(() => {
       '  *" pull"*|*" pull "*)',
       '    [ -z "${STUB_PULL_FAIL:-}" ] || { echo "docker: manifest unknown" >&2; exit 1; }',
       "    ;;",
+      // An agent's container, found by its compose labels. Every agent has one (its id is the
+      // service name in hex) until `docker rm` removes it, unless STUB_NO_CONTAINER names it.
+      '  *"ps --all --quiet --filter label=com.docker.compose.project="*)',
+      '    [ -z "${STUB_CONTAINER_PS_FAIL:-}" ] || exit 1',
+      '    service="${args##*com.docker.compose.service=}"',
+      '    case " ${STUB_NO_CONTAINER:-} " in *" $service "*) exit 0 ;; esac',
+      '    id=$(printf "%s" "$service" | od -An -tx1 | tr -d " \\n")',
+      '    if [ -z "${STUB_RM_LEAVES:-}" ] && [ -f "$STUB_LOG.removed" ] && grep -qx "$id" "$STUB_LOG.removed"; then exit 0; fi',
+      '    echo "$id"',
+      "    ;;",
+      '  "rm "*)',
+      '    [ -z "${STUB_RM_FAIL:-}" ] || { echo "Error response from daemon: cannot remove container: container is running" >&2; exit 1; }',
+      '    for id in ${args#rm }; do echo "$id" >> "$STUB_LOG.removed"; done',
+      "    ;;",
       '  *"up -d"*)',
       '    [ -z "${STUB_UP_FAIL:-}" ] || { echo "docker: could not start" >&2; exit 1; }',
       "    ;;",
@@ -278,7 +292,14 @@ beforeEach(() => {
   );
   // The macOS test host may not ship coreutils timeout; production installs run on Linux.
   // This pass-through keeps isolated Docker stubs fast without changing production behavior.
-  stub("timeout", 'if [[ "$1" == --kill-after=* ]]; then shift; elif [ "$1" = --kill-after ]; then shift 2; fi; shift; exec "$@"');
+  // timeout: runs the command, except that STUB_TIMEOUT_EXPIRES makes an agent-store upgrade run out of time.
+  stub("timeout", [
+    'if [[ "$1" == --kill-after=* ]]; then shift; elif [ "$1" = --kill-after ]; then shift 2; fi',
+    'printf "%s\\n" "$1" >> "$STUB_LOG.limits"; shift',
+    // Ran out of time: the command was started (so it is logged) and never answered.
+    'case "$*" in *" sh upgrade "*) [ -z "${STUB_TIMEOUT_EXPIRES:-}" ] || { printf "%s\\n" "$*" >> "$STUB_LOG"; exit 124; } ;; esac',
+    'exec "$@"',
+  ].join("\n"));
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -1050,6 +1071,7 @@ describe("upgrading the agent stores during an update", { timeout: 60_000 }, () 
     if (/update-plan/.test(line)) return /--require-quiet/.test(line) ? "look again, nothing else connected" : "look";
     if (/ sh check /.test(line)) return `check ${short(line)}`;
     if (/ sh upgrade /.test(line)) return `upgrade ${short(line)}`;
+    if (/^docker rm [0-9a-f]+$/.test(line)) return `remove container ${Buffer.from(line.slice(10), "hex").toString()}`;
     if (/keeper\.env stop lares-keeper/.test(line)) return "stop keeper";
     if (/keeper\.env start lares-keeper/.test(line)) return "start keeper";
     if (/compose\.lares-agents\.yaml ps /.test(line)) return "list agents";
@@ -1071,6 +1093,7 @@ describe("upgrading the agent stores during an update", { timeout: 60_000 }, () 
   const UNTIL_STORES = ["backup", "record begin", "pull", "box migrations"];
   const LOOK_AGAIN = ["look again, nothing else connected", "check template", "check A", "check B"];
   const VERIFY = ["verify template", "verify A", "verify B"];
+  const REMOVE = ["remove container lares-example-agent", "remove container lares-other-agent"];
   const START_AGAIN = ["start agents lares-example-agent lares-other-agent", "start keeper"];
 
   beforeEach(() => {
@@ -1089,12 +1112,17 @@ describe("upgrading the agent stores during an update", { timeout: 60_000 }, () 
       ...STOP,
       ...UNTIL_STORES,
       ...LOOK_AGAIN,
+      ...REMOVE,
       "upgrade template", "check template", "permissions template",
       "upgrade A", "check A", "permissions A",
       "upgrade B", "check B", "permissions B",
       ...VERIFY,
       "switch", "did they come up", "record finish",
     ]);
+    // The previous release's containers are found by the agents' own compose labels, removed
+    // without --force, and looked for again.
+    expect(calls()).toContain("docker ps --all --quiet --filter label=com.docker.compose.project=lares --filter label=com.docker.compose.service=lares-example-agent");
+    expect(calls()).not.toMatch(/^docker rm (-f|--force)/m);
     // The keeper is asked to stop by its own settings file; the agents are named by their own compose file.
     expect(calls()).toMatch(new RegExp(`^env -u COMPOSE_FILE docker compose --env-file ${prefix}/etc/lares/keeper\\.env stop lares-keeper$|^docker compose --env-file ${prefix}/etc/lares/keeper\\.env stop lares-keeper$`, "m"));
     expect(calls()).toContain(`docker compose --project-name lares --project-directory ${prefix}/srv/lares -f ${prefix}/srv/lares/compose.lares-agents.yaml stop`);
@@ -1136,7 +1164,7 @@ describe("upgrading the agent stores during an update", { timeout: 60_000 }, () 
       [{ ...ALL_OLD, STUB_CHECK_FAIL: STORE_B }, /I will not update this server: the store of agent other-agent: it was not left by the previous release: it has 19 schema steps recorded\. Nothing has been changed\./],
       [{ ...ALL_OLD, STUB_STORE_STATES: `empty_workflow=old ${STORE_A}=old ${STORE_B}=perhaps` }, /the store of agent other-agent: its check came back unreadable, and an unreadable check counts as a failing one/],
       [{ ...ALL_OLD, STUB_STORE_STATES: `empty_workflow=old ${STORE_A}=empty` }, /the store of agent example-agent: it has no workflow tables at all/],
-      [{ ...ALL_OLD, STUB_PLAN_FAIL: "the database is set to time zone Europe/Oslo; this update changes every stored time and is only safe on UTC" }, /I will not update this server: the database is set to time zone Europe\/Oslo; this update changes every stored time and is only safe on UTC\. Nothing has been changed\./],
+      [{ ...ALL_OLD, STUB_PLAN_FAIL: "the database is set to time zone Europe/Oslo, not UTC. This release only upgrades agent stores on UTC: the upgrade rewrites how every stored time is kept, and that is only proven on UTC. Stay on your current release for now, and do not change the database's time zone yourself: that would move the times already stored" }, /I will not update this server: the database is set to time zone Europe\/Oslo, not UTC\. .* do not change the database's time zone yourself: that would move the times already stored\. Nothing has been changed\./],
       [{ ...ALL_OLD, STUB_STORES: `${STORE_A}:Example ${STORE_B}:other-agent` }, /the list of agent stores came back unreadable/],
     ] as const) {
       writeFileSync(log, "");
@@ -1203,7 +1231,7 @@ describe("upgrading the agent stores during an update", { timeout: 60_000 }, () 
     const first = run(["--release", release, "--yes"], { ...ALL_OLD, STUB_STORE_MIGRATE_FAIL: STORE_B });
     expect(first.code).toBe(70);
     expect(steps()).toEqual([
-      ...LOOK, ...STOP, ...UNTIL_STORES, ...LOOK_AGAIN,
+      ...LOOK, ...STOP, ...UNTIL_STORES, ...LOOK_AGAIN, ...REMOVE,
       "upgrade template", "check template", "permissions template",
       "upgrade A", "check A", "permissions A",
       "upgrade B", "record finish failed",
@@ -1239,6 +1267,72 @@ describe("upgrading the agent stores during an update", { timeout: 60_000 }, () 
     // The backup written down is the one from before any store was touched, and the agents stopped
     // by the first run are still the ones to start.
     expect(note()).toMatchObject({ phase: "migrated", agents: ["example-agent", "other-agent"], snapshotId: "9f8e7d6c" });
+  });
+
+  it("removes the old container of every agent with a store, also one that was not running, before the first store changes", () => {
+    const r = run(["--release", release, "--yes"], { ...ALL_OLD, STUB_AGENTS_RUNNING: "lares-example-agent" });
+    expect(r.stderr).toBe("");
+    expect(r.code).toBe(0);
+    const order = steps();
+    expect(order.indexOf("remove container lares-other-agent")).toBeGreaterThan(-1);
+    expect(order.indexOf("remove container lares-example-agent")).toBeGreaterThan(order.indexOf("look again, nothing else connected"));
+    expect(order.indexOf("remove container lares-other-agent")).toBeLessThan(order.indexOf("upgrade template"));
+    // Only the running one is started again at the end; the other stays stopped, as before.
+    expect(note()).toMatchObject({ phase: "migrated", agents: ["example-agent"] });
+  });
+
+  it("upgrades no store while an old agent container cannot be removed or is still there, and starts nothing", () => {
+    for (const [env, reason] of [
+      [{ STUB_RM_FAIL: "1" }, /agent example-agent: its container of the previous release could not be removed \(Error response from daemon: cannot remove container: container is running\)/],
+      [{ STUB_RM_LEAVES: "1" }, /agent example-agent: a container of the previous release is still there after removing it/],
+      [{ STUB_CONTAINER_PS_FAIL: "1" }, /agent example-agent: I could not ask Docker for its container/],
+    ] as const) {
+      writeFileSync(log, "");
+      for (const sidecar of ["migrated", "agents-stopped", "removed"]) rmSync(`${log}.${sidecar}`, { force: true });
+      rmSync(noteFile(), { force: true });
+      const r = run(["--release", release, "--yes"], { ...ALL_OLD, ...env });
+      expect(r.code, r.stderr).toBe(70);
+      expect(r.stderr).toMatch(reason);
+      expect(r.stderr).toContain("your agents are stopped and will stay stopped");
+      expect(steps().join("\n")).not.toMatch(/upgrade |permissions |start |switch/);
+      expect(note().phase).toBe("migrating");
+    }
+    // Once the container can go, the same update carries on.
+    writeFileSync(log, "");
+    const again = run(["--release", release, "--yes"], ALL_OLD);
+    expect(again.stderr).toBe("");
+    expect(again.code).toBe(0);
+    expect(note().phase).toBe("migrated");
+  });
+
+  it("stops an upgrade that runs out of time, says how to allow more, and takes a longer limit from the operator", () => {
+    const first = run(["--release", release, "--yes"], { ...ALL_OLD, STUB_TIMEOUT_EXPIRES: "1" });
+    expect(first.code).toBe(70);
+    expect(readFileSync(`${log}.limits`, "utf8")).toContain("900\n");
+    // The container is found by its own name and removed, so it cannot finish after the update gave up.
+    const named = calls().match(/docker run --rm -i --name (lares-workflow-store-[a-f0-9]{16}) --label lares\.maintenance=workflow-store .* sh upgrade empty_workflow/);
+    expect(named).not.toBeNull();
+    expect(calls()).toContain(`docker rm --force ${named![1]}`);
+    expect(first.stderr).toContain("the template new agents are made from: the step ran out of its 900 seconds and was stopped; the store was left as it was. To allow more time, run the same command again with LARES_WORKFLOW_UPGRADE_SECONDS");
+    expect(steps().join("\n")).not.toMatch(/start |switch/);
+
+    writeFileSync(log, "");
+    rmSync(noteFile(), { force: true });
+    const bad = run(["--release", release, "--yes"], { ...ALL_OLD, LARES_WORKFLOW_UPGRADE_SECONDS: "forever" });
+    expect(bad.code).toBe(64);
+    expect(bad.stderr).toContain("LARES_WORKFLOW_UPGRADE_SECONDS must be a number of seconds from 60 to 86400. Nothing has been changed.");
+    expect(steps()).toEqual([]);
+
+    writeFileSync(log, "");
+    rmSync(`${log}.limits`, { force: true });
+    const longer = run(["--release", release, "--yes"], { ...ALL_OLD, LARES_WORKFLOW_UPGRADE_SECONDS: "7200" });
+    expect(longer.stderr).toBe("");
+    expect(longer.code).toBe(0);
+    // Upgrades get the operator's limit; the read-only checks keep their two minutes.
+    const limits = readFileSync(`${log}.limits`, "utf8").trim().split("\n");
+    expect(limits).toContain("7200");
+    expect(limits).toContain("120");
+    expect(limits).not.toContain("900");
   });
 
   it("leaves everything stopped when permissions or the final check fail, and never marks the stores verified", () => {

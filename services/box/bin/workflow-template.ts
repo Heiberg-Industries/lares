@@ -76,7 +76,8 @@ async function updatePlan(host: string, port: number): Promise<void> {
     for (const row of resources) {
       if (!AGENT.test(row.name) || !STORE.test(row.workflow_database))
         throw new Refused("an agent record names an agent or a store in a form this update does not know");
-      if (row.ownership !== "owned") throw new Refused(`agent ${row.name} has a store this installation does not own, so it will not be changed`);
+      if (row.ownership !== "owned")
+        throw new Refused(`agent ${row.name} has a store this installation does not own (${row.ownership}), so this update will not change it. An operator has to settle who owns that store before this server can take this release`);
       if (claimed.has(row.workflow_database)) throw new Refused(`two agent records name the same store (${row.workflow_database})`);
       claimed.add(row.workflow_database);
       const database = stores.get(row.workflow_database);
@@ -86,7 +87,8 @@ async function updatePlan(host: string, port: number): Promise<void> {
       }
       // A retired agent keeps its store so that it can be brought back; it is upgraded like any other.
       if (row.state !== "ready" && row.state !== "provisioning" && row.state !== "retired") throw new Refused(`agent ${row.name} is in a state this update does not know (${row.state})`);
-      if (!database) throw new Refused(`agent ${row.name} has no store on this server`);
+      if (!database)
+        throw new Refused(`agent ${row.name} has no store on this server: it was never finished. Finish it with: sudo lares agent start ${row.name}, or remove it in the console, then run the update again`);
       if (database.owner !== OWNER || database.is_template || !database.allow_connections || !row.ownership_token || database.marker !== `lares-owned:${row.ownership_token}`)
         throw new Refused(`the store of agent ${row.name} does not carry this installation's ownership marker`);
       planned.push({ database: row.workflow_database, agent: row.name });
@@ -114,7 +116,7 @@ async function updatePlan(host: string, port: number): Promise<void> {
     `, [targets, [OWNER, PROVISIONER, RUNTIME]])).rows;
     if (settings.length) {
       const first = settings[0]!;
-      throw new Refused(`a time zone setting (${first.setting}) is stored for ${first.database} and ${first.role}; this update changes every stored time and is only safe when no such setting exists and the database runs on UTC`);
+      throw new Refused(`a time zone setting (${first.setting}) is stored for ${first.database} and ${first.role}, so stored times may not be UTC. This release only upgrades agent stores on UTC: the upgrade rewrites how every stored time is kept, and that is only proven on UTC. Stay on your current release for now, and do not change the database's time zone yourself: that would move the times already stored`);
     }
     for (const database of targets) {
       const pool = open(database);
@@ -122,7 +124,7 @@ async function updatePlan(host: string, port: number): Promise<void> {
         const zone = (await pool.query<{ zone: string; legacy: string | null }>(
           "SELECT current_setting('TimeZone') AS zone,current_setting('workflow.legacy_timezone',true) AS legacy")).rows[0];
         if (!zone || (zone.zone !== "UTC" && zone.zone !== "Etc/UTC") || (zone.legacy ?? "") !== "")
-          throw new Refused(`the database is set to time zone ${zone?.legacy || zone?.zone || "unknown"}; this update changes every stored time and is only safe on UTC`);
+          throw new Refused(`the database is set to time zone ${zone?.legacy || zone?.zone || "unknown"}, not UTC. This release only upgrades agent stores on UTC: the upgrade rewrites how every stored time is kept, and that is only proven on UTC. Stay on your current release for now, and do not change the database's time zone yourself: that would move the times already stored`);
       } finally {
         await pool.end();
       }

@@ -105,7 +105,7 @@ async function check(database) {
     // The step that turns every stored time into "with time zone" reads this session's zone to
     // decide whether to move stored values. Only UTC leaves every stored moment as it is.
     if ((self.zone !== "UTC" && self.zone !== "Etc/UTC") || (self.legacy ?? "") !== "")
-      refuse(`the database is set to time zone ${self.legacy || self.zone}; this update changes every stored time and is only safe on UTC`);
+      refuse(`the database is set to time zone ${self.legacy || self.zone}, not UTC. This release only upgrades agent stores on UTC: the upgrade rewrites how every stored time is kept, and that is only proven on UTC. Stay on your current release for now, and do not change the database's time zone yourself: that would move the times already stored`);
 
     const objects = Number((await pool.query(`
       SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace

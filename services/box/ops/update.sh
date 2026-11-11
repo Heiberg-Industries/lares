@@ -32,7 +32,9 @@
 #   a. the keeper, then every agent, is stopped                  (before step 4's backup, so the
 #      backup is exactly the state the upgrade starts from)
 #   b. after step 7, with everything stopped and nothing else connected, every store is looked
-#      at again, upgraded by the release's own role image, given its permissions and verified
+#      at again; then the stopped container of every agent with a store is REMOVED (it would
+#      come back on the previous agent software); then each store is upgraded by the release's
+#      own role image, given its permissions and verified
 #   c. the agents stay stopped through step 8. `lares update` starts them on the new release
 #      after it has moved the keeper (install.sh --yes, then `lares agent refresh`).
 #
@@ -42,6 +44,10 @@
 # the same update again continues: stores already upgraded are skipped. The only way back to
 # before is the backup (a clean server, the previous release, `lares restore`); rollback.sh
 # does not undo it.
+#
+# The whole run holds maintenance custody's run lock exclusively (maintenance-custody.py): no
+# second update, backup, restore or rollback can start while this one runs, and this one does
+# not start while one of those runs.
 #
 # IT NEVER ROLLS THE DATABASE BACK, AND NEITHER DOES ANYTHING ELSE.
 # There are no down migrations, by decision (see services/box/lib/migration-runner.ts's own
@@ -185,6 +191,14 @@ if [ ! -f "$RELEASE_FILE" ]; then
   exit "$EX_USAGE"
 fi
 
+# How long one agent store's upgrade may take (ops/engine-run.sh, workflow_store_step). Checked
+# here too, so that a mistyped value stops the update before anything is stopped.
+if [ -n "${LARES_WORKFLOW_UPGRADE_SECONDS:-}" ] && { ! [[ "$LARES_WORKFLOW_UPGRADE_SECONDS" =~ ^[0-9]{2,5}$ ]] \
+    || [ "$LARES_WORKFLOW_UPGRADE_SECONDS" -lt 60 ] || [ "$LARES_WORKFLOW_UPGRADE_SECONDS" -gt 86400 ]; }; then
+  echo "update: LARES_WORKFLOW_UPGRADE_SECONDS must be a number of seconds from 60 to 86400. Nothing has been changed." >&2
+  exit "$EX_USAGE"
+fi
+
 # Validate the complete target before creating scratch files or contacting Docker/Postgres.
 if [ -r "$HERE/engine-run.sh" ]; then
   # shellcheck source=engine-run.sh
@@ -308,7 +322,7 @@ workflow_engine() {
 
 # The last line a program wrote on its way out, without that program's own name in front.
 workflow_reason_from() {
-  sed -e '/^[[:space:]]*$/d' -e 's/^workflow stores: //' -e 's/^workflow store: //' "$1" 2>/dev/null | tail -1 | cut -c1-300
+  sed -e '/^[[:space:]]*$/d' -e 's/^workflow stores: //' -e 's/^workflow store: //' "$1" 2>/dev/null | tail -1 | cut -c1-600
 }
 
 # The durable note (see WORKFLOW_STATE_FILE). One writer, whole-file replace, mode 0600.
@@ -403,11 +417,13 @@ keeper_compose() { env -u COMPOSE_FILE docker compose --env-file "$KEEPER_ENV_FI
 # The keeper renders the agents into one compose file of its own. Other services share its
 # project name (the Notion sync, from a second file), so agents are named by this FILE, never by
 # the project.
-agents_compose() {
+agents_project() {
   local project
   project=$(sed -n 's/.*"project" *: *"\([^"]*\)".*/\1/p' "$KEEPER_JSON_FILE" 2>/dev/null | head -1)
-  [ -n "$project" ] || project=lares
-  docker compose --project-name "$project" --project-directory "$AGENTS_DIR" -f "$AGENTS_COMPOSE_FILE" "$@" </dev/null
+  printf '%s' "${project:-lares}"
+}
+agents_compose() {
+  docker compose --project-name "$(agents_project)" --project-directory "$AGENTS_DIR" -f "$AGENTS_COMPOSE_FILE" "$@" </dev/null
 }
 
 # Which databases this update may touch, and what state each is in. Reads only.
@@ -566,6 +582,47 @@ workflow_stop() {
   return 0
 }
 
+# Step (b), first: remove the stopped container of every agent whose store is about to change,
+# and prove that none is left. A stopped container keeps the image it was created from, and the
+# keeper starts every stopped agent container by itself when it comes up, from the agents' compose
+# file as the previous keeper wrote it. Left in place, the previous agent software would start
+# on an upgraded store. With no container, nothing can start an agent except the keeper's own
+# start step, which writes the new release's compose file first (`lares agent refresh` and
+# `lares agent start` both end there). Returns 1 with WORKFLOW_REASON; nothing is started again.
+workflow_remove_agent_containers() {
+  local project agent names ids left
+  project=$(agents_project)
+  if ! names=$({ awk -F "$TAB" '$1 == "store" { print $3 }' "$WORK/workflow-plan.tsv" && workflow_state read agents; } | sort -u); then
+    WORKFLOW_REASON="I could not read which agents' containers to remove"
+    return 1
+  fi
+  for agent in $names; do
+    if ! [[ "$agent" =~ ^[a-z][a-z0-9-]{1,30}$ ]]; then
+      WORKFLOW_REASON="an agent name came back unreadable, so its container was not removed"
+      return 1
+    fi
+    if ! ids=$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project" \
+        --filter "label=com.docker.compose.service=lares-$agent" </dev/null 2> "$WORK/workflow-remove.err"); then
+      WORKFLOW_REASON="agent $agent: I could not ask Docker for its container"
+      return 1
+    fi
+    if [ -n "$ids" ]; then
+      # Without --force: a container that is somehow running again is refused, never killed here.
+      # shellcheck disable=SC2086 # container ids, one word each
+      if ! docker rm $ids >/dev/null 2> "$WORK/workflow-remove.err" </dev/null; then
+        WORKFLOW_REASON="agent $agent: its container of the previous release could not be removed ($(workflow_reason_from "$WORK/workflow-remove.err"))"
+        return 1
+      fi
+    fi
+    if ! left=$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project" \
+        --filter "label=com.docker.compose.service=lares-$agent" </dev/null 2> "$WORK/workflow-remove.err") || [ -n "$left" ]; then
+      WORKFLOW_REASON="agent $agent: a container of the previous release is still there after removing it"
+      return 1
+    fi
+  done
+  return 0
+}
+
 # Step (b), second half: the template first (it holds no conversations, so it is the safe first
 # try), then each store in name order. A store already at this release is not migrated again,
 # but its permissions are applied and checked like every other: an earlier run may have ended
@@ -574,6 +631,8 @@ workflow_upgrade_stores() {
   local kind database state label after applied
   workflow_state set phase migrating || { WORKFLOW_REASON="I could not write down that the upgrade has started"; return 1; }
   WORKFLOW_MOVED=1
+  # From here on nothing is started again by this update, so the containers can go.
+  workflow_remove_agent_containers || return 1
   while IFS="$TAB" read -r kind database state label <&3; do
     [ -n "$kind" ] || continue
     if [ "$state" = old ]; then

@@ -354,11 +354,17 @@ engine_normal_client() {
 # and counts as not finished; the caller checks the store again before trusting anything.
 workflow_store_step() {
   local role_image="${1:-}" mode="${2:-}" database="${3:-}" host="${4:-}" port="${5:-}" password_file="${6:-}"
-  local program="${HERE:?}/workflow-store-migrate.mjs" limit=120
+  local program="${HERE:?}/workflow-store-migrate.mjs" limit=120 name status=0
   local -a client=()
   case "$mode" in
     check) ;;
-    upgrade|create) limit=900 ;;
+    # An operator may allow a long upgrade more time (LARES_WORKFLOW_UPGRADE_SECONDS, from one
+    # minute to one day). Running out of time changes nothing: each store's step is one transaction.
+    upgrade|create)
+      limit="${LARES_WORKFLOW_UPGRADE_SECONDS:-900}"
+      [[ "$limit" =~ ^[0-9]{2,5}$ ]] && [ "$limit" -ge 60 ] && [ "$limit" -le 86400 ] \
+        || { echo "workflow store step: LARES_WORKFLOW_UPGRADE_SECONDS must be a number of seconds from 60 to 86400" >&2; return 78; }
+      ;;
     *) echo "workflow store step: unsupported mode" >&2; return 78 ;;
   esac
   printf '%s' "$role_image" | grep -Eq "$ENGINE_DIGEST_PATTERN" \
@@ -371,7 +377,13 @@ workflow_store_step() {
     || { echo "workflow store step: its program is missing from this release's files" >&2; return 78; }
   [ -f "$password_file" ] && [ ! -L "$password_file" ] && [ -s "$password_file" ] \
     || { echo "workflow store step: the provisioner credential is missing or unsafe" >&2; return 78; }
-  client=(docker run --rm -i --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges
+  # A name of its own, so that a step that outlives its time limit can be found and stopped:
+  # stopping the docker client alone would leave the container running.
+  name="lares-workflow-store-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  [[ "$name" =~ ^lares-workflow-store-[a-f0-9]{16}$ ]] \
+    || { echo "workflow store step: could not name its container" >&2; return 78; }
+  client=(docker run --rm -i --name "$name" --label lares.maintenance=workflow-store
+    --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges
     -w /app/services/creative
     -v "$password_file:/run/secrets/workflow-provisioner:ro"
     -e PGPASSWORD_FILE=/run/secrets/workflow-provisioner -e "PGOPTIONS=-c role=lares_workflow_owner"
@@ -380,10 +392,21 @@ workflow_store_step() {
     'PGPASSWORD="$(cat "$PGPASSWORD_FILE")"; export PGPASSWORD; unset PGPASSWORD_FILE; exec node --input-type=module - "$@"'
     sh "$mode" "$database")
   if command -v timeout >/dev/null 2>&1; then
-    timeout --kill-after=10 "$limit" "${client[@]}" < "$program"
+    timeout --kill-after=10 "$limit" "${client[@]}" < "$program" || status=$?
   else
-    "${client[@]}" < "$program"
+    "${client[@]}" < "$program" || status=$?
   fi
+  if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+    # Its database connection ends with the container, and an unfinished step is rolled back.
+    docker rm --force "$name" >/dev/null 2>&1 || true
+    if [ -n "$(docker ps --all --quiet --filter "name=^/${name}\$" 2>/dev/null)" ]; then
+      echo "workflow store: the step ran out of its $limit seconds and its container ($name) could not be stopped; stop it with: docker rm --force $name, then run the same command again" >&2
+    else
+      echo "workflow store: the step ran out of its $limit seconds and was stopped; the store was left as it was. To allow more time, run the same command again with LARES_WORKFLOW_UPGRADE_SECONDS set to more seconds (up to 86400)" >&2
+    fi
+    return 1
+  fi
+  return "$status"
 }
 
 # Restore clients retain the same baked admission entrypoint as update clients, but their

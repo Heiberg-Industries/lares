@@ -514,12 +514,19 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
       // The store program refuses on its own as well: the session that would migrate is not in UTC.
       const direct = await storeStep('upgrade', STORE_B);
       expect(direct.code).toBe(3);
-      expect(direct.stderr).toMatch(/only safe on UTC/);
+      expect(direct.stderr).toMatch(/only upgrades agent stores on UTC/);
+      expect(direct.stderr).toContain("do not change the database's time zone yourself");
       await admin.query(`ALTER DATABASE "${STORE_B}" RESET ALL`);
     }
-    await admin.query("ALTER ROLE lares_workflow_provisioner SET timezone='Europe/Oslo'");
-    await expect(upgradeStores()).rejects.toThrow(/time zone/);
-    await admin.query('ALTER ROLE lares_workflow_provisioner RESET ALL');
+    // The agents' own login wrote the stored times, so a setting on it is the one that matters most.
+    for (const role of ['lares_workflow_provisioner', 'lares_workflow']) {
+      await admin.query(`ALTER ROLE ${role} SET timezone='Europe/Oslo'`);
+      try {
+        await expect(upgradeStores()).rejects.toThrow(new RegExp(`a time zone setting \\(timezone\\) is stored for every database and ${role}, so stored times may not be UTC`, 'i'));
+      } finally {
+        await admin.query(`ALTER ROLE ${role} RESET ALL`);
+      }
+    }
     for (const database of ALL) {
       expect(await stepsOf(database)).toEqual(pinned(20));
       expect(await createdAtType(database)).toBe('timestamp without time zone');
@@ -631,7 +638,7 @@ describe('on a server whose time zone is not UTC', () => {
     await seedConversations(STORE_A);
     const untouched = await schemas();
     const before = await conversations(STORE_A);
-    await expect(upgradeStores()).rejects.toThrow('the database is set to time zone Europe/Oslo; this update changes every stored time and is only safe on UTC');
+    await expect(upgradeStores()).rejects.toThrow('the database is set to time zone Europe/Oslo, not UTC. This release only upgrades agent stores on UTC');
     for (const database of ALL) {
       for (const mode of ['check', 'upgrade']) {
         const direct = await storeStep(mode, database);
