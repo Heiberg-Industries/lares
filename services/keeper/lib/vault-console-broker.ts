@@ -20,6 +20,7 @@ import { outsidePayloadHash } from '@lares/agent-kit/outside-execution-receipts'
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
 import { turnAuthoritySchema, vaultWriteBindingSchema } from '@lares/agent-kit/authority-contract';
 import { VaultTracksHome, type TrackFileWriter } from '@lares/agent-kit/tracks';
+import { VAULT_BROKER_REFUSAL_REASONS } from '@lares/agent-kit/vault-broker-client';
 import { parseVaultNoteInput, vaultNoteFrontmatter, vaultNotePath, vaultNoteTargetFingerprint, VAULT_NOTE_WRITE_POLICY,
   VAULT_NOTE_WRITE_TOOL } from '@lares/agent-kit/vault-note-write';
 import type { OutsideCustodyStore, OutsideToolCallRequest } from './outside-custody.js';
@@ -39,9 +40,23 @@ const challenges=new Map<string,Challenge>(),pending=new Map<string,Pending>(),r
 const turns=new Map<string,Turn>();
 function object(v:unknown):Record<string,unknown>{if(!v||typeof v!=='object'||Array.isArray(v))throw new Error();return v as Record<string,unknown>}
 type SocketState={clients:Set<Socket>;inFlight:number};
+/** Every short code a request in this file fails with: the ones a reply may name, plus the ones only the log
+ *  may. Closed: the log prints a code only when it is on this list and the fixed word `error` otherwise, so a
+ *  message from the database, the file system or a library, which can carry a path or an id, is never logged. */
+const FAILURE_CODES:ReadonlySet<string>=new Set([...VAULT_BROKER_REFUSAL_REASONS,'identity','signature','not found','note exists','track path','track target changed','track target revision','vault read grant']);
+/** The operations the two sockets serve. Closed for the same reason: the log never copies text out of a request. */
+const OPERATIONS:ReadonlySet<unknown>=new Set(['challenge','request.admit','turn.open','turn.close','vault.read','vault.write','vault.scheduled','tracks.write','outside.tools','outside.approve','outside.execute']);
+function failedOperation(line:string):string{
+ try{const req=JSON.parse(line),kind=req?.input?.operation;if(!OPERATIONS.has(req?.op))return 'unknown';return req.op==='vault.read'&&(kind==='list'||kind==='read')?`vault.read ${kind}`:req.op;}catch{return 'unknown';}
+}
 export function createBoundedVaultBrokerServer(handler:(line:string,signal:AbortSignal)=>Promise<Record<string,unknown>>,state:SocketState,limit=CONSOLE_LIMIT,timeoutMs=2000){
  return createServer(socket=>{if(state.clients.size>=32||state.inFlight>=32){socket.destroy();return;}state.clients.add(socket);let handled=false,buffer=Buffer.alloc(0);const controller=new AbortController(),deadline=setTimeout(()=>{controller.abort();socket.destroy()},timeoutMs);socket.on('error',()=>{});socket.on('close',()=>{controller.abort();clearTimeout(deadline);state.clients.delete(socket)});socket.on('data',chunk=>{
-  if(handled){socket.destroy();return;}buffer=Buffer.concat([buffer,chunk]);if(buffer.length>limit){socket.destroy();return;}const end=buffer.indexOf(10);if(end<0)return;if(end!==buffer.length-1){socket.destroy();return;}handled=true;state.inFlight++;const line=buffer.subarray(0,end).toString('utf8');void handler(line,controller.signal).then(result=>{if(!controller.signal.aborted&&!socket.destroyed)socket.end(JSON.stringify({ok:true,...result})+'\n')}).catch(()=>{if(!controller.signal.aborted&&!socket.destroyed)socket.end('{"ok":false}\n')}).finally(()=>{state.inFlight--;});
+  if(handled){socket.destroy();return;}buffer=Buffer.concat([buffer,chunk]);if(buffer.length>limit){socket.destroy();return;}const end=buffer.indexOf(10);if(end<0)return;if(end!==buffer.length-1){socket.destroy();return;}handled=true;state.inFlight++;const line=buffer.subarray(0,end).toString('utf8'),started=Date.now();void handler(line,controller.signal).then(result=>{if(!controller.signal.aborted&&!socket.destroyed)socket.end(JSON.stringify({ok:true,...result})+'\n')}).catch((error:unknown)=>{
+   // One line per failed request: the operation, the code and how long it took. Never the request itself.
+   const message=error instanceof Error?error.message:'',code=FAILURE_CODES.has(message)?message:'error',answered=!controller.signal.aborted&&!socket.destroyed;
+   console.warn(`keeper: Vault request failed: ${failedOperation(line)}, ${code}, ${Date.now()-started} ms${answered?'':', no reply sent'}`);
+   if(answered)socket.end(VAULT_BROKER_REFUSAL_REASONS.has(code)?JSON.stringify({ok:false,reason:code})+'\n':'{"ok":false}\n');
+  }).finally(()=>{state.inFlight--;});
  });});
 }
 function isInput(v:unknown):v is Input {
