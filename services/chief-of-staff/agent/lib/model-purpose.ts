@@ -8,7 +8,7 @@ type Point = Readonly<{ sessionId: string; turnId: string; sequence: number; inc
 type ResumeBinding = Readonly<{
   resolverMemberId: string;
   requestId: string;
-  optionId: 'approve' | 'cancel';
+  optionId: 'approve' | 'deny';
   initiatorMemberId: string;
   admissionNonce: string;
   receipt: string;

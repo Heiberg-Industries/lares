@@ -150,11 +150,14 @@ export async function assertApproval(
     return;
   }
   await guardConsoleToolContext(ctx);
-  assertApprover(approverFrom(ctx?.session?.auth));
-  // eve 1.0: `session.auth.current` is the person who ASKED; the person who answered is
-  // `ctx.approval.responder`. When there is one it must be an allowed approver too.
+  // eve 1.0: `session.auth.current` is the person (or, for a scheduled turn, the app principal) who ASKED; the person
+  // who answered is `ctx.approval.responder`, present only when a card was answered. The approver of record is the
+  // answerer: it must be an allowed approver, and one that cannot be read is refused (`principalFromAuth` gives nothing).
+  // The requester is not asked to be an approver (a scheduled card's requester is the app). With no card (an
+  // autonomous call) the old rule stands: the session's own caller must be an allowed approver.
   const responder = approvalResponderOf(ctx);
   if (responder !== undefined) assertApprover(principalFromAuth(responder));
+  else assertApprover(approverFrom(ctx?.session?.auth));
   await assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName, input });
 }
 
@@ -182,11 +185,11 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
 export function nativeAnswerDecision(ctx: unknown): {status:'allowed'}|{status:'rejected';reason:string} {
   const refused = (reason: string) => ({status:'rejected' as const,reason});
   try {
-    const c = ctx as {request?:{principal?:unknown};response?:{decision?:unknown;principal?:unknown}};
+    const c = ctx as {response?:{decision?:unknown;principal?:unknown}};
     if (c?.response?.decision !== 'approve' && c?.response?.decision !== 'deny') return refused('this answer is neither Approve nor Deny');
-    const requester = c.request?.principal as {principalType?: unknown}|null|undefined;
-    if (requester === null || requester === undefined || typeof requester !== 'object' || requester.principalType === 'anonymous')
-      return refused('this card has no known requester');
+    // Only the agent's owner, identified by the door's verified sender (read from the authenticated principal eve
+    // hands the policy, never from message text), through the engine's own allow-list. The requester plays no part:
+    // it may be a person, the app principal of a scheduled turn, or missing, and none of those changes who may answer.
     const answerer = principalFromAuth(c.response.principal);
     if (answerer.absent === true || !isAllowedPrincipal(answerer.authenticator, answerer.userId)) return refused('this person is not an allowed approver for this agent');
     return {status:'allowed'};

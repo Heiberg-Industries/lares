@@ -47,6 +47,16 @@ describe('Keeper model-purpose broker state',()=>{
     const next=state.pendingReceipt(value,modelPurposeDigest(value));expect(state.consumePending(next.pendingReceipt,{agent:value.agent,incarnation:value.incarnation,session:value.session,member:value.member,admissionNonce:value.admissionNonce}).digest).toBe(modelPurposeDigest(value));
   });
 
+  it('takes the eve 1.0 option names only: approve and deny are valid, cancel and every near-miss is refused',()=>{
+    const attempt=(optionId:unknown)=>{
+      const state=new ModelPurposeBrokerState(()=>100),value=request({purpose:'resume',resume:{requestId:'resume-1',optionId:optionId as 'approve'}});
+      return ()=>state.challenge(value);
+    };
+    expect(attempt('approve')).not.toThrow();
+    expect(attempt('deny')).not.toThrow();
+    for(const bad of ['cancel','Approve','APPROVE',' approve','approve ','Deny','denied','',undefined,null,1,{}]) expect(attempt(bad),String(bad)).toThrow();
+  });
+
   it('allows only the authentic resume evidence to open the exact empty resume turn',()=>{
     const state=new ModelPurposeBrokerState(()=>100),value=request({purpose:'resume',resume:{requestId:'resume-1',optionId:'approve'}});
     const opened=state.registerTurn(value,reference('resume'),'',0,value.definitionHash,'lares-brain');

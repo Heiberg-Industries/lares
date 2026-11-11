@@ -88,9 +88,12 @@ describe("the console decides an approval that a Telegram session is waiting on"
       const r = await verdict(await doorAuth(OWNER), optionId);
       expect(r, JSON.stringify(r)).toMatchObject({ stage: "admitted" });
     });
-    it.each(["approve", "deny"])("another member's console %s, and a card with no requester, are refused", async (optionId) => {
-      expect((await verdict(await doorAuth("someone-else@example.com"), optionId)).stage).not.toBe("admitted");
-      expect((await verdict(await doorAuth(OWNER), optionId, null)).stage).not.toBe("admitted");
+    const app = { authenticator: "app", principalId: "eve:app", principalType: "runtime", attributes: {} };
+    it.each(["approve", "deny"])("the owner's console %s is admitted on a card a SCHEDULED turn raised (requester = the app) and on one with no requester", async (optionId) => {
+      for (const requester of [app, null]) expect((await verdict(await doorAuth(OWNER), optionId, requester)).stage).toBe("admitted");
+    });
+    it.each(["approve", "deny"])("another member's console %s is refused, on a person's card, a scheduled card and one with no requester", async (optionId) => {
+      for (const requester of [telegram, app, null]) expect((await verdict(await doorAuth("someone-else@example.com"), optionId, requester)).stage).not.toBe("admitted");
     });
   });
 

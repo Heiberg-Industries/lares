@@ -189,7 +189,7 @@ describe('budget model authority source proof', () => {
     expect(await consoleSourceTransaction(db,client=>validateBudgetAuthorityReference(client as never,reference,env))).toEqual(expect.any(String));
     await db.query("UPDATE approval_asks SET outcome='cancelled' WHERE request_id=$1",[requestId]);
     await expect(consoleSourceTransaction(db,client=>validateBudgetAuthorityReference(client as never,reference,env))).rejects.toThrow();
-    await expect(capture(answer('cancel'))).resolves.toMatchObject({resume:{requestId,optionId:'cancel'}});
+    await expect(capture(answer('deny'))).resolves.toMatchObject({resume:{requestId,optionId:'deny'}});
   });
 });
 

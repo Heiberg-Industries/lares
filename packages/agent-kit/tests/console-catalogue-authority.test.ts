@@ -43,15 +43,15 @@ describe('both catalogues guard their callbacks before underlying execution or a
       expect(fake.execute).not.toHaveBeenCalled(); expect(fake.approval).not.toHaveBeenCalled(); expect(fake.query).not.toHaveBeenCalled();
     });
 
-    it(`${role}: a native conversation gets a response policy too, which refuses a card with no requester and an unknown answerer, for Approve and for Deny`, async () => {
+    it(`${role}: a native conversation gets a response policy too, which refuses an unknown answerer whoever the requester is, for Approve and for Deny`, async () => {
       const t = (await runDynamic(resolver, nativeCtx)).fixture;
       expect(typeof t.approval.response).toBe('function');
-      const slack = { authenticator: 'slack-webhook', principalId: 'U-stranger', principalType: 'user', attributes: { user_id: 'U-stranger' } };
+      const stranger = { authenticator: 'slack-webhook', principalId: 'U-stranger', principalType: 'user', attributes: { user_id: 'U-stranger' } };
+      const app = { authenticator: 'app', principalId: 'eve:app', principalType: 'runtime', attributes: {} };
       for (const decision of ['approve', 'deny']) {
         const answer = (requester: unknown, principal: unknown) => ({ request: { interactionId: 'i1', callId: 'call-1', toolName: 'fixture', principal: requester }, response: { decision, principal }, session: { id: 'wrun_native', initiator: null } });
-        for (const requester of [null, undefined]) expect(await t.approval.response(answer(requester, slack)), decision).toMatchObject({ status: 'rejected' });
-        expect(await t.approval.response(answer(slack, slack)), decision).toMatchObject({ status: 'rejected' }); // known requester, answerer not an approver
-        expect(await t.approval.response(answer(slack, null)), decision).toMatchObject({ status: 'rejected' });
+        for (const requester of [null, undefined, app, stranger]) expect(await t.approval.response(answer(requester, stranger)), decision).toMatchObject({ status: 'rejected' });
+        expect(await t.approval.response(answer(app, null)), decision).toMatchObject({ status: 'rejected' });
       }
     });
 

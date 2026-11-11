@@ -37,41 +37,49 @@ const answer = async (o: { requester: unknown; responder: unknown; optionId: str
 
 const refused = (r: { stage: string }) => r.stage !== "admitted" && r.stage !== "admitted-without-policy";
 
+// The requester of a card raised by a SCHEDULED turn (a brief, a meeting follow-up, track routing) is the app principal.
+const app = { authenticator: "app", principalId: "eve:app", principalType: "runtime", attributes: {} };
+
 describe.each([["approve"], ["deny"]])("%s, at each door", (optionId) => {
   describe("Slack", () => {
     it("the owner's answer on a card they raised is admitted", async () => {
       expect((await answer({ requester: slack("U_OWNER"), responder: slack("U_OWNER"), optionId })).stage).toBe("admitted");
     });
-    it("somebody else in the channel is refused, and the card stays open", async () => {
-      const r = await answer({ requester: slack("U_OWNER"), responder: slack("U_STRANGER"), optionId });
-      expect(refused(r)).toBe(true);
-      expect(r).toMatchObject({ stage: "held-or-refused", types: [["response.settled", "refused"]] }); // eve's verdict: refused by the policy
+    it("the owner's answer on a card a SCHEDULED turn raised (requester = the app) is admitted", async () => {
+      expect((await answer({ requester: app, responder: slack("U_OWNER"), optionId })).stage).toBe("admitted");
     });
-    it("a card with no requester is refused even for the owner (eve's own default would let anyone answer it)", async () => {
-      expect(refused(await answer({ requester: null, responder: slack("U_OWNER"), optionId }))).toBe(true);
-      expect(refused(await answer({ requester: null, responder: slack("U_STRANGER"), optionId }))).toBe(true);
+    it("somebody else is refused, on a person's card, a scheduled card and a card with no requester; the card stays open", async () => {
+      for (const requester of [slack("U_OWNER"), app, null]) {
+        const r = await answer({ requester, responder: slack("U_STRANGER"), optionId });
+        expect(r).toMatchObject({ stage: "held-or-refused", types: [["response.settled", "refused"]] }); // eve's verdict: refused by the policy
+      }
+    });
+    it("a card with no requester is answered by the owner and by nobody else", async () => {
+      expect((await answer({ requester: null, responder: slack("U_OWNER"), optionId })).stage).toBe("admitted");
     });
     it("an answer with no identity is refused", async () => {
       expect(refused(await answer({ requester: slack("U_OWNER"), responder: null, optionId }))).toBe(true);
+      expect(refused(await answer({ requester: app, responder: null, optionId }))).toBe(true);
     });
   });
 
   describe("Telegram", () => {
-    it("a tap resumed with the owner's identity is admitted", async () => {
-      expect((await answer({ requester: telegram("100"), responder: telegram("100"), optionId })).stage).toBe("admitted");
+    it("a tap resumed with the owner's identity is admitted, on the owner's card, a scheduled card and a card with no requester", async () => {
+      for (const requester of [telegram("100"), app, null])
+        expect((await answer({ requester, responder: telegram("100"), optionId })).stage, String(requester?.authenticator)).toBe("admitted");
     });
-    it("a tap by anyone else (eve resumes it with no identity) is refused", async () => {
-      expect(refused(await answer({ requester: telegram("100"), responder: null, optionId }))).toBe(true);
-      expect(refused(await answer({ requester: telegram("100"), responder: telegram("999"), optionId }))).toBe(true);
-    });
-    it("a card with no requester is refused even for the owner", async () => {
-      expect(refused(await answer({ requester: null, responder: telegram("100"), optionId }))).toBe(true);
+    it("a tap by anyone else (eve resumes it with no identity, or with another id) is refused, on every kind of card", async () => {
+      for (const requester of [telegram("100"), app, null]) {
+        expect(refused(await answer({ requester, responder: null, optionId }))).toBe(true);
+        expect(refused(await answer({ requester, responder: telegram("999"), optionId }))).toBe(true);
+      }
     });
   });
 
-  describe("web chat (a native card, answered by a console identity that is not an allowed approver)", () => {
-    it("is refused", async () => {
-      expect(refused(await answer({ requester: slack("U_OWNER"), responder: consoleStranger, optionId }))).toBe(true);
+  describe("web chat conversation (a native card, answered by a console identity)", () => {
+    it("a console identity that is not an allowed approver is refused, on every kind of card", async () => {
+      for (const requester of [slack("U_OWNER"), app, null])
+        expect(refused(await answer({ requester, responder: consoleStranger, optionId }))).toBe(true);
     });
   });
 });
