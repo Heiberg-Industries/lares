@@ -41,19 +41,19 @@
  * `bash`/`web_search`, and only the latter are still framework-DEFAULTS a disableTool() sentinel
  * can shadow. The one place that draws that exact line is `dist/src/framework/sources/
  * registry.js` — the literal module the COMPILER itself reads to build the framework-default
- * candidate set (`eve:defaults`/`eve:root-defaults`). `frameworkToolNames()` below reads that
- * file's own two default-source blocks directly, verified against a real `eve build`'s compiled
- * manifest for all three roles (bash, read_file, write_file, todo, web_fetch, load_skill,
- * connection_search, ask_question, task_cancel, web_search, agent — 11 names, glob/grep
- * correctly absent). It is a deep import in spirit but a plain text read in practice — no public
- * API exists to ask this question at all, so there is no cleaner way to resolve the module and
- * inspect its internal registration objects without depending on eve's own compiler internals
- * (`createAgentSourceRegistry`'s returned shape), which is no more stable than the file it
- * would be reading anyway.
+ * candidate set (`eve:defaults`/`eve:root-defaults`). The last test reads that module through
+ * `installedFrameworkDefaultTools()` (packages/agent-kit/src/framework-default-tools.ts, shared
+ * with chief-of-staff), verified against a real `eve build`'s compiled manifest for all three
+ * roles (bash, read_file, write_file, todo, web_fetch, load_skill, connection_search,
+ * ask_question, task_cancel, web_search, agent — 11 names, glob/grep correctly absent). This
+ * file used to pattern-match the module's text; the shared reader imports its exported
+ * `frameworkAgentSourceRegistry` object instead — the data the compiler itself uses — because a
+ * text pattern can silently miss an entry it did not anticipate. No public API exists to ask
+ * this question, so it is still a deep import, and it throws if eve moves or reshapes it.
  *
  * ONE THING THIS FILE CANNOT SEE, and it is a real hole rather than a nitpick.
  * `connection_search` IS one of registry.js's `eve:defaults` entries (so it is not invisible to
- * `frameworkToolNames()` the way it was to the old `getAllFrameworkToolNames()`), but it is also
+ * `installedFrameworkDefaultTools()` the way it was to the old `getAllFrameworkToolNames()`), but it is also
  * eve's one REQUIRED framework tool (`compiler/default-tool-policy.js`'s
  * `REQUIRED_FRAMEWORK_TOOL_SLOTS`) — a disableTool() sentinel for it fails the build with its own
  * dedicated error, so it can never appear as a disabled sentinel here regardless. It is absent
@@ -61,10 +61,15 @@
  * (`connections: []`), not because anything here turns it off.
  */
 import { describe, it, expect } from "vitest";
-import { readdirSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { isDisabledToolSentinel } from "eve/tools";
+// By relative path: the kit's package exports name runtime modules, and this one is test
+// support only (the same way services/box's tests reach kit sources).
+import {
+  frameworkToolDecisionProblems,
+  installedFrameworkDefaultTools,
+} from "../../../packages/agent-kit/src/framework-default-tools.js";
 
 // Static importers, not a template-literal `import()`: Vite cannot resolve a fully dynamic
 // specifier, and a test that cannot import the thing it guards guards nothing.
@@ -101,17 +106,26 @@ const DISABLED: Record<string, () => Promise<{ default: unknown }>> = {
 //                  surface (behaviour still comes from the tools the agent already has). Creative
 //                  authors a narrow wrapper so its dynamic public-docs skill works without a
 //                  filesystem sandbox; the wrapper preserves Eve's loader for other native skills.
-const ENABLED = ["ask_question", "todo", "load_skill"] as const;
-
+//
 // `connection_search` is neither disabled nor a free choice to enable: it is eve's one REQUIRED
 // framework tool (`compiler/default-tool-policy.js`'s `REQUIRED_FRAMEWORK_TOOL_SLOTS`) — a
 // disableTool() sentinel for it fails `eve build` with its own dedicated error, so it can never
-// join DISABLED. It is a real `eve:defaults` registration (`frameworkToolNames()` below
+// join DISABLED. It is a real `eve:defaults` registration (`installedFrameworkDefaultTools()`
 // sees it, unlike the old `getAllFrameworkToolNames()` this file used before eve 0.60.1 — see
-// this file's header), so the "covers eve's whole harness" union below must name it explicitly
-// or go red on every build. Harmless for the creative agent today because it contributes no dynamic tool
+// this file's header), so the accepted list must name it explicitly or the last test goes red
+// on every run. Harmless for the creative agent today because it contributes no dynamic tool
 // without a declared eve connection (`connections: []`).
-const REQUIRED = ["connection_search"] as const;
+//
+// The accepted list: every built-in framework tool that is NOT switched off, each with its
+// one-line reason (the paragraphs above are the long form). Together with the sentinels this
+// has to account for every default tool the INSTALLED eve provides — see the last test. Adding
+// a name here is an owner decision, not a way to get green.
+const ACCEPTED: Record<string, string> = {
+  ask_question: "asks the owner a question and waits for the answer; reads no file, runs no command, reaches no network",
+  todo: "a task list kept for the session; reads no file, runs no command, reaches no network",
+  load_skill: "this slot holds the service's own agent/tools/load_skill.ts, which only loads the skills the agent declares",
+  connection_search: "eve's one required tool — it refuses a disableTool() sentinel for it; adds nothing while the agent declares no eve connection",
+};
 
 const TOOLS_DIR = join(import.meta.dirname, "..", "agent", "tools");
 
@@ -121,28 +135,14 @@ function toolFileSlugs(): string[] {
     .map((f) => f.replace(/\.ts$/, ""));
 }
 
-/**
- * eve's real framework-DEFAULT tool name set — the exact set a disableTool() sentinel can
- * shadow, both at `eve build` (`compiler/source-graph.js`) and here. Read out of the installed
- * package rather than copied into a literal, because a copied literal cannot notice an eve
- * upgrade — see this file's header for why this reads `framework/sources/registry.js` rather
- * than a directory listing.
- *
- * A plain text read, not a module import: `registry.js`'s `modules` arrays are closures inside
- * `defineProgrammaticAgentSource()` calls, not exposed on any exported value, so importing the
- * module and inspecting it would still need to reverse-engineer the same internal shape this
- * avoids depending on. If a future eve moves this file or drops the `logicalPath:` literal
- * syntax this regex reads, this test fails outright — which is the right failure, because the
- * harness contract has moved and this file's assumptions need re-reading.
- */
-function frameworkToolNames(): ReadonlySet<string> {
-  const eveRoot = dirname(createRequire(import.meta.url).resolve("eve/package.json"));
-  const registryPath = join(eveRoot, "dist", "src", "framework", "sources", "registry.js");
-  const source = readFileSync(registryPath, "utf8");
-  const names = new Set<string>();
-  for (const m of source.matchAll(/logicalPath:`tools\/([a-z_]+)\.ts`/gu)) names.add(m[1]!);
-  if (names.size === 0) throw new Error(`no tools/*.ts logicalPath found in ${registryPath} — the registry format has changed`);
-  return names;
+/** The tools actually switched off: every `agent/tools/*.ts` whose default export is a sentinel. */
+async function sentinelSlugs(): Promise<string[]> {
+  const disabled: string[] = [];
+  for (const file of readdirSync(TOOLS_DIR).filter((f) => f.endsWith(".ts"))) {
+    const mod = await import(join(TOOLS_DIR, file));
+    if (isDisabledToolSentinel(mod.default)) disabled.push(file.replace(/\.ts$/, ""));
+  }
+  return disabled.sort();
 }
 
 describe("tool harness lockdown", () => {
@@ -159,12 +159,7 @@ describe("tool harness lockdown", () => {
     // Guards both directions: a ninth disable file added without thought shows up here, and
     // so does one of these eight being quietly deleted — deleting one silently restores eve's
     // unrestricted version of that tool, with no error anywhere.
-    const disabled: string[] = [];
-    for (const file of readdirSync(TOOLS_DIR).filter((f) => f.endsWith(".ts"))) {
-      const mod = await import(join(TOOLS_DIR, file));
-      if (isDisabledToolSentinel(mod.default)) disabled.push(file.replace(/\.ts$/, ""));
-    }
-    expect(disabled.sort()).toEqual(Object.keys(DISABLED).sort());
+    expect(await sentinelSlugs()).toEqual(Object.keys(DISABLED).sort());
   });
 
   it("keeps ask_question and todo on framework defaults and guards the authored load_skill", async () => {
@@ -179,25 +174,41 @@ describe("tool harness lockdown", () => {
     expect(authored.events).toHaveProperty("session.started");
   });
 
-  it("every disable names a real framework tool, and the DISABLED+ENABLED+REQUIRED split covers eve's whole harness", () => {
-    const names = frameworkToolNames();
+  it("accounts for every built-in tool the installed framework provides — a new one is an owner decision", async () => {
+    // Reads eve's own default tool list out of the INSTALLED package and compares it with what
+    // this service has decided. The comparison reports three things, and any one fails here:
+    //
+    //   - a framework tool that is neither switched off by a sentinel nor named in ACCEPTED.
+    //     If an eve upgrade adds another default tool, this goes red, forcing a decision
+    //     instead of handing the creative agent a capability nobody chose to give it
+    //     (task_cancel was exactly this, on 0.60.1, until it got a sentinel of its own);
+    //   - a sentinel for a name the framework does not provide. `eve build` fails the same way
+    //     on 0.60.1 (see this file's header), but this is the fast one, and it still catches a
+    //     name that used to be a real framework tool and stopped being one (glob, grep: gone
+    //     since they left the default set at 0.39.0, which is exactly why their sentinel files
+    //     had to be retired rather than left in place);
+    //   - an ACCEPTED name the framework no longer provides, so the list cannot go stale.
+    //
+    // The comparison is proven able to fail in
+    // packages/agent-kit/tests/framework-default-tools.test.ts.
+    const problems = frameworkToolDecisionProblems({
+      frameworkTools: await installedFrameworkDefaultTools(import.meta.url),
+      disabled: await sentinelSlugs(),
+      accepted: ACCEPTED,
+    });
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
 
-    // Direction 1 — no typos. On eve 0.60.1 this is no longer the ONLY thing catching a typo —
-    // `eve build` itself now fails the same way (see this file's header) — but it is the fast
-    // one, and it still catches a name that used to be a real framework tool and stopped being
-    // one (glob, grep: gone from `names` since they left the default set at 0.39.0, which is
-    // exactly why their sentinel files had to be retired rather than left in place).
-    for (const slug of Object.keys(DISABLED)) {
-      expect(
-        [...names],
-        `agent/tools/${slug}.ts disables nothing — "${slug}" is not an eve framework-default tool`,
-      ).toContain(slug);
-    }
-
-    // Direction 2 — nothing arrives silently enabled. If an eve upgrade adds another default
-    // tool, it is in none of DISABLED/ENABLED/REQUIRED and this goes red, forcing a decision
-    // instead of handing the creative agent a capability nobody chose to give it (task_cancel was
-    // exactly this, on 0.60.1, until it got a sentinel of its own).
-    expect([...names].sort()).toEqual([...Object.keys(DISABLED), ...ENABLED, ...REQUIRED].sort());
+  it("would fail if the framework shipped one more built-in tool than this file knows about", () => {
+    // The check above has only ever been seen green on the installed eve. This feeds the same
+    // comparison this service's real decisions plus one made-up tool, to show it goes red.
+    const problems = frameworkToolDecisionProblems({
+      frameworkTools: [...Object.keys(DISABLED), ...Object.keys(ACCEPTED), "made_up_file_editor"],
+      disabled: Object.keys(DISABLED),
+      accepted: ACCEPTED,
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('"made_up_file_editor"');
+    expect(problems[0]).toContain("A new framework tool is an owner decision");
   });
 });
