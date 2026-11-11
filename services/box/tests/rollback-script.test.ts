@@ -126,6 +126,8 @@ beforeEach(() => {
   writeFileSync(appPasswordFile, "fixture-only-db-password\n", { mode: 0o440 });
   chownSync(appPasswordFile, process.getuid!(), process.getgid!());
   chmodSync(appPasswordFile, 0o440);
+  // The login the update's look at the agent stores uses, read inside a short-lived container.
+  writeFileSync(join(prefix, "etc", "lares", "secrets", "workflow-provisioner-password"), "fixture-only-workflow-password\n", { mode: 0o600 });
   composeFile = join(composeDir, "compose.yaml");
   writeFileSync(composeFile, composeYaml(CUR, prefix));
   state = join(dir, "update-history.tsv");
@@ -147,6 +149,8 @@ beforeEach(() => {
       'args="$*"',
       'case "$args" in',
       '  *"config --format json"*) printf \'{"services":{"db":{"image":"postgres:16-alpine"}}}\\n\'; exit 0 ;;',
+      // The update checks the template new agents are made from in the role image: it is current.
+      '  *"lares_workflow_provisioner@"*" sh check "*) echo current ;;',
       "  *psql*-tAc*)",
       '    printf "%s\\n" "${STUB_BACKUP_STATUS-t|3600}"',
       "    ;;",
@@ -167,7 +171,9 @@ beforeEach(() => {
   stub("stat", "echo 0:600");
 
   // pnpm: rollback.sh must never reach for it. Only update.sh does, for the migration runner.
-  stub("pnpm", [logLine, "exit 0"].join("\n"));
+  // The update's look at the agent stores is answered too: this installation has none yet, only
+  // the template new agents are made from.
+  stub("pnpm", [logLine, 'case "$*" in *"workflow-template.ts update-plan"*) printf "template\\tempty_workflow\\n" ;; esac', "exit 0"].join("\n"));
 
   // backup.sh: only update.sh takes a backup; a rollback takes none.
   stub("backup.sh", [logLine, 'echo "snapshot 9f8e7d6c saved"', "exit 0"].join("\n"), opsDir);
@@ -290,7 +296,7 @@ describe("putting the previous version back", () => {
     const release = join(dir, "release.json");
     writeFileSync(release, JSON.stringify({
       release: "2026-10-01",
-      images: { console: `${CONSOLE}@sha256:${CUR}`, "chief-of-staff": `${ROLE}@sha256:${CUR}`, "lares-keeper": KEEPER_CUR },
+      images: { console: `${CONSOLE}@sha256:${CUR}`, "chief-of-staff": `${ROLE}@sha256:${CUR}`, creative: `${ROLE}@sha256:${CUR}`, "lares-keeper": KEEPER_CUR },
       migrations: { box: "001_baseline.sql" }, breaking: [],
     }));
     const filesEnv = { UPDATE_COMPOSE_FILES: "compose.yaml keeper.yaml", STUB_RUNNING: "lares-console lares-chief-of-staff lares-keeper" };
@@ -430,7 +436,7 @@ describe("putting the previous version back", () => {
       release,
       JSON.stringify({
         release: "2026-10-01",
-        images: { console: `${CONSOLE}@sha256:${CUR}`, "chief-of-staff": `${ROLE}@sha256:${CUR}` },
+        images: { console: `${CONSOLE}@sha256:${CUR}`, "chief-of-staff": `${ROLE}@sha256:${CUR}`, creative: `${ROLE}@sha256:${CUR}` },
         migrations: { box: "001_baseline.sql" },
         breaking: [],
       }),

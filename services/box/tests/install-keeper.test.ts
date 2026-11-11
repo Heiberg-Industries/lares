@@ -15,7 +15,8 @@
 // Docker, no network, no server.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { keeperConfigDifferences, parseProvenanceRecord } from "../lib/doctor-parity.js";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync, realpathSync,
   symlinkSync,
@@ -238,6 +239,37 @@ describe("the keeper the installer configures and starts", () => {
     expect(r.code).toBe(78);
     expect(r.stderr).toMatch(/symbolic link/i);
     expect(existsSync(keeperConfigPath())).toBe(false);
+  });
+
+  // An update holds the maintenance run lock exclusively for its whole length while it stops the
+  // keeper and the agents and upgrades their stores (maintenance-custody.py). The installer starts
+  // and recreates the keeper, so it never runs then, and it holds the lock shared while it runs.
+  it("refuses to run while an update runs, changing nothing, and runs once the update has finished", async () => {
+    prepareFreshCustody();
+    const lock = join(prefix, "var", "lib", "lares-maintenance", "custody", "operation.lock");
+    const holder = spawn("python3", ["-c",
+      "import fcntl, os, sys\n" +
+      "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n" +
+      "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n" +
+      "print('held', flush=True)\n" +
+      "sys.stdin.read()\n", lock], { stdio: ["pipe", "pipe", "inherit"] });
+    try {
+      await once(holder.stdout!, "data");
+      const r = install();
+      expect(r.code, r.stderr).toBe(78);
+      expect(r.stderr).toContain("an update is running on this server, so this did not start and nothing was changed");
+      expect(r.stderr).toContain("Wait until the update has finished, then run this again");
+      // Only the root check ran: no container, no setting, no secret.
+      expect(calls()).not.toMatch(/^(docker|systemctl|pnpm|useradd|chown|chmod) /m);
+      expect(existsSync(keeperConfigPath())).toBe(false);
+      expect(existsSync(join(prefix, "etc", "lares", "installation.env"))).toBe(false);
+    } finally {
+      holder.stdin!.end();
+      await once(holder, "exit");
+    }
+    const after = install();
+    expect(after.code, after.stderr).toBe(0);
+    expect(existsSync(keeperConfigPath())).toBe(true);
   });
 
   it("brings the keeper up only after the owner it binds the agent to exists", () => {
@@ -661,7 +693,9 @@ describe("the keeper the installer configures and starts", () => {
         expect(existsSync(personalCompose()), label).toBe(false);
       }
       expect(before).toContain(block.tokenKeyFile);
-    });
+      // Four whole installer runs: about 10 seconds on a quiet machine, before and after the
+      // agent-store step and the update lock were added (measured), so a slow runner reaches 20.
+    }, 60_000);
 
     it("preserves explicit Microsoft-only runtime settings on installer rerun", () => {
       expect(install().code).toBe(0);
@@ -674,7 +708,8 @@ describe("the keeper the installer configures and starts", () => {
       setRuntime("microsoft", microsoft); keeperIsRunning();
       expect(install().code).toBe(0); expect(readKeeperConfig().lifecycle.runtime.microsoft).toEqual(microsoft); expect(recreates()).toBe(1);
       expect(install().code).toBe(0); expect(recreates()).toBe(1);
-    });
+      // Three whole installer runs, so it sits as close to 20 seconds as the case above on a slow runner.
+    }, 60_000);
 
     it("restarts a running keeper when its settings changed", () => {
       expect(install().code).toBe(0);
