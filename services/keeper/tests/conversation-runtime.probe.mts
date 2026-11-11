@@ -29,20 +29,20 @@ try {
  const host=`http://127.0.0.1:${port}`;
  for(let i=0;i<100;i++){try{if((await fetch(host+'/eve/v1/health')).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));if(i===99)throw new Error('Runtime did not start: '+logs);}
  const {Client}=await import(join(repo,'packages/board-evals/node_modules/eve/dist/src/client/index.js'));
- const client=new Client({host,auth:{basic:{username:'fixture',password:'disposable-fixture-only'}}});
+ const client=new Client({baseUrl:host,auth:{basic:{username:'fixture',password:'disposable-fixture-only'}}});
  const chat=async(message:string)=>{
    const reply=await fetch(host+'/proof/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message})});assert.equal(reply.status,200);
    const {sessionId,startIndex}=await reply.json();let text='',started=false;const events=[];
-   for await(const event of client.sessions.attach(sessionId).stream({startIndex,signal:AbortSignal.timeout(20000)})){events.push(event);if(event.type==='turn.started')started=true;if(event.type==='message.completed')text+=event.data.message;if(event.type==='session.waiting'&&started)break;}
+   for await(const event of client.sessions.attach(sessionId).stream({startIndex,signal:AbortSignal.timeout(20000)})){events.push(event);if(event.type==='turn.started')started=true;if(event.type==='content.completed'&&event.data.kind==='text'&&event.data.phase==='reply')text+=event.data.value;if(event.type==='turn.settled'&&started)break;}
    return {sessionId,text,events};
  };
  const addressed=await chat('show original chat duties');assert.match(addressed.text,/UNIQUE_OLD_DUTIES/);
- const one=await client.sessions.create({message:'show duties'});const first=await one.response.result();assert.match(first.message,/UNIQUE_OLD_DUTIES/);
+ const one=await client.sessions.create({message:'show duties'});const first=await one.delivery.result();assert.match(first.reply,/UNIQUE_OLD_DUTIES/);
  const id=one.session.state.sessionId;const projected=await db.query('SELECT * FROM agent_conversations');if(!projected.rows.length)console.error('Runtime logs:',logs);assert.equal(projected.rows.find(r=>r.session_id===id)?.session_id,id);assert.equal(projected.rows.find(r=>r.session_id===id)?.incarnation,incarnation);
  writeFileSync(join(root,'definition/duties.md'),'UNIQUE_NEW_DUTIES');
  writeFileSync(join(root,'definition/agent.json'),JSON.stringify({...definition,name:'example',model:'installation-writer'}));
- const same=await (await one.session.send('show duties again')).result();assert.match(same.message,/UNIQUE_OLD_DUTIES/);assert.doesNotMatch(same.message,/UNIQUE_NEW_DUTIES/);
- assert.match(same.message,/installation-brain/);assert.doesNotMatch(same.message,/installation-writer/);
+ const same=await (await one.session.send('show duties again')).result();assert.match(same.reply,/UNIQUE_OLD_DUTIES/);assert.doesNotMatch(same.reply,/UNIQUE_NEW_DUTIES/);
+ assert.match(same.reply,/installation-brain/);assert.doesNotMatch(same.reply,/installation-writer/);
  const sameAddress=await chat('still old chat duties');assert.equal(sameAddress.sessionId,addressed.sessionId);assert.match(sameAddress.text,/UNIQUE_OLD_DUTIES/);
  const endpoint=host+'/lares/runtime/conversations/reset';const body=JSON.stringify({sessionId:id,incarnation,confirm:true});
  assert.equal((await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body})).status,401);
@@ -55,21 +55,19 @@ try {
  await db.query('UPDATE agent_resources SET pending=false');
  const reset=await fetch(endpoint,{method:'POST',headers,body});assert.equal(reset.status,200);assert.equal((await reset.json()).status,'reset');
  await assert.rejects(()=>one.session.send('old id must refuse'));
- const two=await client.sessions.create({message:'show fresh duties'});const second=await two.response.result();assert.match(second.message,/UNIQUE_NEW_DUTIES/);assert.notEqual(two.session.state.sessionId,id);
+ const two=await client.sessions.create({message:'show fresh duties'});const second=await two.delivery.result();assert.match(second.reply,/UNIQUE_NEW_DUTIES/);assert.notEqual(two.session.state.sessionId,id);
  // The fixture's provider (agent.ts:6) echoes the alias it was CONSTRUCTED with as the message's
  // first line, so anchoring to the start proves the turn was served by exactly the alias the
  // edited definition pinned — no turn is ever served by a model other than the one the definition
- // pinned. This replaces a `doesNotMatch(/compiled-fallback-must-not-run/)` check: eve 0.33 removed
- // the compiled fallback that string named, so that string exists nowhere any more and the old
- // assertion could never fail.
- assert.match(second.message,/^installation-writer\n/,'turn served by a model other than the one the definition pinned');
+ // pinned.
+ assert.match(second.reply,/^installation-writer\n/,'turn served by a model other than the one the definition pinned');
  const duplicate=await fetch(endpoint,{method:'POST',headers,body});assert.equal((await duplicate.json()).status,'no_active_session');
- const untouched=await (await two.session.send('still here')).result();assert.match(untouched.message,/UNIQUE_NEW_DUTIES/);
+ const untouched=await (await two.session.send('still here')).result();assert.match(untouched.reply,/UNIQUE_NEW_DUTIES/);
  const resetAddress=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify({sessionId:addressed.sessionId,incarnation,confirm:true})});assert.equal((await resetAddress.json()).status,'reset');
  const newAddress=await chat('new chat duties');assert.notEqual(newAddress.sessionId,addressed.sessionId);assert.match(newAddress.text,/UNIQUE_NEW_DUTIES/);
- const parked=await client.sessions.create({message:'pending write'});const pending=await parked.response.result();assert.ok(pending.inputRequests.length>0);
+ const parked=await client.sessions.create({message:'pending write'});const pending=await parked.delivery.result();assert.equal(pending.status,'awaiting-input');assert.ok(pending.interactions.length>0);
  const cancelled=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify({sessionId:parked.session.state.sessionId,incarnation,confirm:true})});assert.equal((await cancelled.json()).status,'reset');
- await assert.rejects(()=>parked.session.respond([{requestId:pending.inputRequests[0].requestId,optionId:'approve'}]),(error:any)=>error.code==='session_not_active');
+ await assert.rejects(()=>parked.session.respond([{interactionId:pending.interactions[0].interactionId,optionId:'approve'}]),(error:any)=>error.code==='session_not_active');
  assert.equal(existsSync(join(root,'writes')),false);
  console.log('PASS: session-pinned direct provider aliases, new-session model edit, real eve hook projection, dedicated auth, runtime-control revocation and pending refusal, incarnation refusal, exact reset, old ID refusal, new session reads edited duties, delayed duplicate preserves new session, raw chat address releases and reads new duties, pending approval reset cannot execute write.');
 } catch(e){console.error('Probe artifact:',root);throw e;}

@@ -43,7 +43,7 @@ try {
   await new Promise(r=>setTimeout(r,350));return response.status;
  }
  async function approvalCallback() {
-  const payload={type:'block_actions',team:{id:'T_FIXTURE'},user:{id:'U_OWNER'},channel:{id:'D_FIXTURE'},message:{ts:'1.0'},actions:[{type:'button',action_id:'eve:input',value:'approve',action_ts:'1.1'}]};
+  const payload={type:'block_actions',team:{id:'T_FIXTURE'},user:{id:'U_OWNER'},channel:{id:'D_FIXTURE'},message:{ts:'1.0'},actions:[{type:'button',action_id:'eve_input:tool-approval:interaction-1:button:1',block_id:'b1',value:'approve',action_ts:'1.1'}]};
   const body=new URLSearchParams({payload:JSON.stringify(payload)}).toString(),ts=String(Math.floor(Date.now()/1000));
   const signature='v0='+createHmac('sha256',signing).update(`v0:${ts}:${body}`).digest('hex');
   return (await fetch(host+'/eve/v1/slack',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','x-slack-request-timestamp':ts,'x-slack-signature':signature},body})).status;
@@ -60,23 +60,23 @@ try {
  await send('accepted owner');for(let i=0;i<100&&!existsSync(model);i++)await new Promise(r=>setTimeout(r,100));
  assert.equal(existsSync(model),true,logs);const history=readFileSync(model,'utf8');assert.ok(history.includes('accepted owner'));assert.ok(!history.includes(code));assert.ok(!history.includes('wrong owner'));const tokenAttempts=existsSync(outbound)?readFileSync(outbound,'utf8'):'';
  const {Client}=await import(join(repo,'packages/board-evals/node_modules/eve/dist/src/client/index.js'));
- const client=new Client({host,auth:{basic:{username:'fixture',password:'disposable-fixture-only'}}});
+ const client=new Client({baseUrl:host,auth:{basic:{username:'fixture',password:'disposable-fixture-only'}}});
  // A neutral image must consult the installed agent's board, never its compiled role name.
  await db.query("INSERT INTO ratchet(agent,capability,action,level) VALUES('example','gmail','','never'),('creative','gmail','','autonomous')");
- const refused=await client.sessions.create({message:'pending write'});const refusal=await refused.response.result();
- assert.equal(refusal.inputRequests.length,0,'Managed board denial became an approval card');
+ const refused=await client.sessions.create({message:'pending write'});const refusal=await refused.delivery.result();
+ assert.equal(refusal.interactions.length,0,'Managed board denial became an approval card');
  assert.equal(existsSync(join(root,'writes')),false,'Managed board denial executed a write');
  assert.equal((await db.query("SELECT count(*)::int AS n FROM approval_events WHERE agent='example' AND tool='gmail_send' AND decision='denied'")).rows[0].n,1,'Denial not attributed to managed instance');
  assert.equal((await db.query("SELECT count(*)::int AS n FROM approval_events WHERE agent='creative'")).rows[0].n,0,'Neutral role received instance audit evidence');
  await db.query("DELETE FROM ratchet WHERE agent IN ('example','creative')");
  // Restart clears the documented 30-second policy cache before the existing approval cases.
  await stop();await start({LARES_SLACK_PRINCIPAL:'U_OWNER',LARES_SLACK_CLAIM_REVISION:c.revision});
- const control=await client.sessions.create({message:'pending write'});const controlPending=await control.response.result();assert.ok(controlPending.inputRequests.length>0);
- const approved=await control.session.respond([{requestId:controlPending.inputRequests[0].requestId,optionId:'approve'}]);await approved.result();
+ const control=await client.sessions.create({message:'pending write'});const controlPending=await control.delivery.result();assert.equal(controlPending.status,'awaiting-input');assert.ok(controlPending.interactions.length>0);
+ const approved=await control.session.respond([{interactionId:controlPending.interactions[0].interactionId,optionId:'approve'}]);await approved.result();
  assert.equal(existsSync(join(root,'writes')),true,'Current approved control did not execute');unlinkSync(join(root,'writes'));
- const parked=await client.sessions.create({message:'pending write'});const pending=await parked.response.result();assert.ok(pending.inputRequests.length>0);
+ const parked=await client.sessions.create({message:'pending write'});const pending=await parked.delivery.result();assert.equal(pending.status,'awaiting-input');assert.ok(pending.interactions.length>0);
  await db.query('UPDATE agent_resources SET pending=true');
- const resumed=await parked.session.respond([{requestId:pending.inputRequests[0].requestId,optionId:'approve'}]);await resumed.result();
+ const resumed=await parked.session.respond([{interactionId:pending.interactions[0].interactionId,optionId:'approve'}]);await resumed.result();
  assert.equal(existsSync(join(root,'writes')),false,'Stale HTTP approval executed a write');
  await db.query('UPDATE agent_resources SET pending=false');
  await db.query('UPDATE agent_doors SET enabled=false');assert.equal(await send('disabled owner'),401);assert.equal(await approvalCallback(),401);assert.equal(existsSync(outbound)?readFileSync(outbound,'utf8'):'',tokenAttempts);
