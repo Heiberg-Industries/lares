@@ -1,3 +1,4 @@
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {it,expect,vi} from 'vitest';
 import {observeConversation, resetConversation} from '../src/conversation-control.js';
 const env={LARES_AGENT_NAME:'example',LARES_AGENT_INCARNATION:'11111111-1111-4111-8111-111111111111'};
@@ -133,4 +134,76 @@ it('never projects tagged private lifecycle or approval events',async()=>{
  const ctx={session:{id:'private',auth:{initiator:auth}},channel:{kind:'channel:eve'}};
  for(const event of [{type:'session.started',data:{}},opened('approval'),settled,ended('completed'),ended('failed')])await observeConversation(event,ctx as never,db,env);
  expect(db.query).not.toHaveBeenCalled();
+});
+
+// The real eve 1.0 session handle (`attachSession` builds it with `createSession`) and eve's own fact
+// and line builders. Only storage and timing are stood in for: the runtime records the end a moment
+// after it accepts the request, as a running agent does, and serves recorded history as eve does.
+const eveDist=(path:string)=>pathToFileURL(fileURLToPath(new URL(`../node_modules/eve/dist/src/${path}`,import.meta.url))).href;
+type Line={at:string;facts:unknown[]};
+type Control={kind:string;deliveryId:string};
+async function eveSession(recordEnd:(control:Control)=>unknown[]|undefined) {
+ const {createSession}=await import(eveDist('channel/session.js'));
+ const {fact}=await import(eveDist('harness/facts.js'));
+ const {eventsOfLine}=await import(eveDist('protocol/session-lines.js'));
+ const lines:Line[]=[{at:new Date().toISOString(),facts:[fact('session.started',{})]}];
+ const runtime={
+  async dispatchSession({command,sessionId}:{command:Control;sessionId:string}) {
+   setTimeout(()=>{const facts=recordEnd(command);if(facts)lines.push({at:new Date().toISOString(),facts});},30);
+   return {status:'accepted',sessionId};
+  },
+  async getEventStream(_id:string,options:{follow?:boolean}={}) {
+   if(options.follow!==false)throw new Error('this stand-in serves recorded history only');
+   const events=lines.slice().flatMap((line,index)=>eventsOfLine(line,index,line.at));
+   return new ReadableStream({start(controller){for(const event of events)controller.enqueue(event);controller.close();}});
+  },
+ };
+ return (id:string)=>createSession(id,runtime);
+}
+it('the console reset reports success once eve records the end, with the real eve session handle',async()=>{
+ const {sessionEndedFacts}=await import(eveDist('harness/facts.js'));
+ const owned={query:vi.fn().mockResolvedValue({rows:[{session_id:'wrun_one'}]})};
+ const marked=()=>owned.query.mock.calls.some(call=>/UPDATE agent_conversations SET terminal=true/.test(String(call[0])));
+ const input={sessionId:'wrun_one',incarnation:env.LARES_AGENT_INCARNATION,confirm:true};
+ // What eve records when it applies an end: the request admitted and applied, then the session ended.
+ const attach=await eveSession(control=>sessionEndedFacts(undefined,{control:{deliveryId:control.deliveryId},outcome:'completed'}));
+ await expect(resetConversation(input,attach,owned,env)).resolves.toEqual({status:'reset'});
+ expect(marked()).toBe(true);
+});
+it('a refused end through the real eve session handle still answers an error and leaves the row open',async()=>{
+ const {controlSettled}=await import(eveDist('harness/facts.js'));
+ const owned={query:vi.fn().mockResolvedValue({rows:[{session_id:'wrun_one'}]})};
+ const marked=()=>owned.query.mock.calls.some(call=>/UPDATE agent_conversations/.test(String(call[0])));
+ const input={sessionId:'wrun_one',incarnation:env.LARES_AGENT_INCARNATION,confirm:true};
+ const attach=await eveSession(control=>controlSettled({control:{deliveryId:control.deliveryId},outcome:'refused',reason:'not allowed',source:'reset'}));
+ await expect(resetConversation(input,attach,owned,env)).rejects.toThrow('Unexpected session end outcome');
+ expect(marked()).toBe(false);
+});
+it('two resets at once: the one that finds the session already ended is told so, without waiting',async()=>{
+ const {sessionEndedFacts}=await import(eveDist('harness/facts.js'));
+ const owned={query:vi.fn().mockResolvedValue({rows:[{session_id:'wrun_one'}]})};
+ const marked=()=>owned.query.mock.calls.some(call=>/UPDATE agent_conversations SET terminal=true/.test(String(call[0])));
+ const input={sessionId:'wrun_one',incarnation:env.LARES_AGENT_INCARNATION,confirm:true};
+ // Another end (a second console tab) is applied first; this one is never admitted.
+ const attach=await eveSession(()=>sessionEndedFacts(undefined,{control:{deliveryId:'del_other'},outcome:'completed'}));
+ const started=Date.now();
+ await expect(resetConversation(input,attach,owned,env)).resolves.toEqual({status:'no_active_session'});
+ expect(Date.now()-started).toBeLessThan(2_000);
+ expect(marked()).toBe(true);
+});
+it('an end eve never records runs out of time: an error, one log line, and the row left open',async()=>{
+ const owned={query:vi.fn().mockResolvedValue({rows:[{session_id:'wrun_one'}]})};
+ const marked=()=>owned.query.mock.calls.some(call=>/UPDATE agent_conversations/.test(String(call[0])));
+ const input={sessionId:'wrun_one',incarnation:env.LARES_AGENT_INCARNATION,confirm:true};
+ const attach=await eveSession(()=>undefined);
+ const warn=vi.spyOn(console,'warn').mockImplementation(()=>undefined);
+ vi.useFakeTimers();
+ try {
+  const pending=resetConversation(input,attach,owned,env);
+  const assertion=expect(pending).rejects.toThrow(/not confirmed/);
+  await vi.advanceTimersByTimeAsync(11_000);await assertion;
+ } finally { vi.useRealTimers(); }
+ expect(warn).toHaveBeenCalledOnce();expect(String(warn.mock.calls[0]?.[0])).toMatch(/not recorded within 10 s/);
+ warn.mockRestore();
+ expect(marked()).toBe(false);
 });

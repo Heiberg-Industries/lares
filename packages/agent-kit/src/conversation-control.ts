@@ -67,8 +67,40 @@ export interface ResetInput {sessionId:string;incarnation:string;confirm:boolean
 /** The part of eve 1.0's session handle used here. `end()` resolves with a delivery receipt as soon as
  * the server accepts the request; the receipt's `result()` says whether the session did end. */
 export interface ResetHandle {end(input:{reason:string}):Promise<{result():Promise<{sessionEnded:boolean}>}>}
-/** How long to wait for the end to be confirmed before reporting it as unconfirmed. */
-const END_CONFIRM_MS=15_000;
+/** How long to wait for the end to be confirmed before reporting it as unconfirmed. Kept well under
+ * the keeper's 15 s limit on this route (`services/keeper/lib/conversations.ts`), which starts earlier:
+ * an end confirmed after the keeper gave up would mark the row finished while the console shows an error. */
+const END_CONFIRM_MS=10_000;
+/** eve 1.0's `deliveryEvents` (`client/delivery-events.js`): the history read so far does not yet hold
+ * the accepted end. The only error worth asking again for. */
+const NOT_RECORDED_YET='The stream ended before the accepted delivery settled.';
+/** Same file: the session ended before eve admitted this end (another end got there first). Final. */
+const ENDED_BEFORE_ADMITTED='The session ended before admitting the accepted delivery.';
+/** eve 1.0's server-side `end()` receipt reads only the history recorded so far (`follow: false` in
+ * `channel/session.js`), so `result()` throws while the accepted end is not yet recorded, which is the
+ * usual case right after acceptance. Ask again until it is recorded, or report it unconfirmed.
+ * `already_ended`: the session was ended by another request first. */
+async function confirmEnd(delivery:{result():Promise<{sessionEnded:boolean}>}):Promise<'ended'|'already_ended'> {
+  const unconfirmed=new Error('Session end not confirmed');
+  const giveUp=():never=>{console.warn(`[conversations] session end not recorded within ${END_CONFIRM_MS/1000} s`);throw unconfirmed;};
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const expired=new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(unconfirmed),END_CONFIRM_MS);});
+  try {
+    for(let pause=50;;pause=Math.min(pause*2,1000)){
+      try {
+        const outcome=await Promise.race([delivery.result(),expired]);
+        if(outcome.sessionEnded!==true)throw new Error('Unexpected session end outcome');
+        return 'ended';
+      } catch(error) {
+        if(error===unconfirmed)return giveUp();
+        const message=error instanceof Error?error.message:String(error);
+        if(message===ENDED_BEFORE_ADMITTED)return 'already_ended';
+        if(message!==NOT_RECORDED_YET)throw error;
+      }
+      await Promise.race([new Promise(resolve=>setTimeout(resolve,pause)),expired]).catch(giveUp);
+    }
+  } finally { clearTimeout(timer); }
+}
 /** `session_not_active` (eve answers 409 for an ended or unknown session): nothing is left to end. */
 function notActive(error:unknown):boolean {
   return typeof error==='object'&&error!==null&&(error as {code?:unknown}).code==='session_not_active';
@@ -87,11 +119,7 @@ export async function resetConversation(input:ResetInput,attach:(id:string)=>Res
   let status:'reset'|'no_active_session';
   try {
     const delivery=await attach(input.sessionId).end({reason:'Owner requested a fresh conversation from the console'});
-    let timer:ReturnType<typeof setTimeout>|undefined;
-    const outcome=await Promise.race([delivery.result(),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Session end not confirmed')),END_CONFIRM_MS);})])
-      .finally(()=>clearTimeout(timer));
-    if(outcome.sessionEnded!==true)throw new Error('Unexpected session end outcome');
-    status='reset';
+    status=await confirmEnd(delivery)==='ended'?'reset':'no_active_session';
   } catch(error) {
     if(!notActive(error))throw error;
     status='no_active_session';
