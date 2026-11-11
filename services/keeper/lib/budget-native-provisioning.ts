@@ -30,7 +30,7 @@ export function nativeProvisioningDeadline(startedAt=Date.now()):{deadlineAtMs:n
 const exact=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b));
 const uuidString=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 type Target=z.infer<typeof endpointSchema>;
-type Snapshot={installationId:string;memberAccountId:string;definitionHash:string;active:boolean;extra:boolean;brainBindingId:string|null;authority:string;monthEndsAt:string;grantValidUntil:string;monotonicDeadline:number};
+type Snapshot={installationId:string;memberAccountId:string;definitionHash:string;active:boolean;extra:boolean;joining:boolean;brainBindingId:string|null;authority:string;monthEndsAt:string;grantValidUntil:string;monotonicDeadline:number};
 /** Who may hold more than one key. The owner is the installation's configured owner, set by the host, never a request field. */
 export interface BudgetNativeProvisionerOptions {designatedOwnerId?:string}
 /** An owner's agent may hold its main key plus up to four more, one per other served model name. */
@@ -100,8 +100,8 @@ async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy
   const storedProviders=Array.isArray(member.provider_suppression_hashes)?[...member.provider_suppression_hashes].sort():[];
   if(!uuidString(member.id)||member.installation_id!==installation.installation_id||member.installation_account_id!==installation.id||member.live_member_id!==request.memberId||member.organisation_id!==userRows[0]!.org_id||
     member.canonical_suppression_hash!==suppression.canonicalSuppressionHash||!exact(storedProviders,suppression.providerSuppressionHashes)||member.selected_endpoint!==null||member.recovery_epoch!==null)throw refuse();
-  // A main key needs a closed account; an extra key needs an open one. Which of the two this is
-  // depends on the agent's own model name, so the state is judged after the definition is read.
+  // A person's first main key needs a closed account; an extra key, or a further agent's main key, needs an open
+  // one. Which this is depends on the agent's own model name, so the state is judged after the definition is read.
   const memberClosed=member.state==='closed'&&member.reason==='unreconciled',memberOpen=member.state==='open'&&member.reason==='approved';
   const windowsByAccount=new Map<string,DbRow>();
   for(const account of [installation,member]){
@@ -125,9 +125,14 @@ async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy
     row.ownership_token!==request.incarnation||row.runtime_control_token!==request.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
   // The agent's own model name gets the main key. Any other served name is an extra key.
   const extra=definition.model!==request.purposeAlias;
-  let brainBindingId:string|null=null;
+  let brainBindingId:string|null=null,joining=false;
   if(!extra){
-    if(applied.model!==request.purposeAlias||!policy.capability.aliases.includes(request.purposeAlias)||!memberClosed)throw refuse();
+    if(applied.model!==request.purposeAlias||!policy.capability.aliases.includes(request.purposeAlias))throw refuse();
+    // A person's first agent finds the account closed. A further agent of the same person finds it open under an
+    // open installation and joins it: same account, same month, same limit. The conflict check below still allows
+    // one main key per agent, incarnation and name.
+    if(memberOpen&&active)joining=true;
+    else if(!memberClosed)throw refuse();
   }else{
     // Only the installation's owner, only the chief-of-staff role, only a name the reviewed policy serves,
     // only on an account the main key already opened, and only under the same capability as the main key.
@@ -158,7 +163,7 @@ async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy
     definition:{definition,duties:row.duties,voice:row.voice,hash:row.hash,status:row.status,applied,ownership:row.ownership,ownershipToken:row.ownership_token,runtimeControlToken:row.runtime_control_token,state:row.state,pending:row.pending},
     grant:{accessRevision:grant.accessRevision,validUntil:grant.validUntil},month,endpoint:{origin:endpoint.origin,hash:endpoint.hash},reviewedPolicyDigest:gatewayHash(gatewayCanonical(policy))};
   const authorityText=gatewayCanonical(authority).toString('utf8');
-  if(expected&&(expected.installationId!==installation.id||expected.memberAccountId!==member.id||expected.definitionHash!==definitionHash||expected.authority!==authorityText||expected.active!==active||expected.extra!==extra||expected.brainBindingId!==brainBindingId||expected.monthEndsAt!==month.endsAt||expected.grantValidUntil!==(grant.validUntil??'')))throw refuse();
+  if(expected&&(expected.installationId!==installation.id||expected.memberAccountId!==member.id||expected.definitionHash!==definitionHash||expected.authority!==authorityText||expected.active!==active||expected.extra!==extra||expected.joining!==joining||expected.brainBindingId!==brainBindingId||expected.monthEndsAt!==month.endsAt||expected.grantValidUntil!==(grant.validUntil??'')))throw refuse();
   const deadlineObservedAt=performance.now();
   const remaining=(await db.query(`SELECT floor(LEAST(extract(epoch FROM ($1::timestamptz-clock_timestamp()))*1000,
       extract(epoch FROM ($2::timestamptz-clock_timestamp()))*1000))::text AS remaining_ms`,[month.endsAt,grant.validUntil??month.endsAt])).rows[0]?.remaining_ms;
@@ -168,7 +173,7 @@ async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy
   const monotonicDeadline=Math.min(dispatch.monotonicDeadline,expected?.monotonicDeadline??Number.POSITIVE_INFINITY,translated);
   if(performance.now()>=monotonicDeadline)throw refuse();
   dispatch.monotonicDeadline=monotonicDeadline;
-  return {installationId:installation.id,memberAccountId:member.id,definitionHash,active,extra,brainBindingId,authority:authorityText,monthEndsAt:month.endsAt,grantValidUntil:grant.validUntil??'',monotonicDeadline};
+  return {installationId:installation.id,memberAccountId:member.id,definitionHash,active,extra,joining,brainBindingId,authority:authorityText,monthEndsAt:month.endsAt,grantValidUntil:grant.validUntil??'',monotonicDeadline};
 }
 
 function teamRoster(team:ReturnType<NativeCustodyGate['reserveTeam']>,users:readonly unknown[],policy:BudgetNativeReviewedPolicy,excludeUnverifiedUserId?:string):NativeTeamRosterExpectation {
@@ -221,10 +226,12 @@ export class BudgetNativeProvisioner {
         try{first=await writer.run('provision',boundary=>sourceTransaction(db=>sourceState(db,this.journal,this.policy,request,this.endpoint,dispatch,this.options.designatedOwnerId),boundary));checkpointDeadline();}
         catch(error){if(isJournaledAbort(error,{journalId:writer.journalId,operation:'provision'}))return {kind:'initial-preflight-refused' as const,error};throw error;}
         const inventory=gate.inventory();
-        // A main key is made while every key of this person is still closed. An extra key is made beside
-        // active ones, so active keys count as settled and known; a half-finished one never does.
-        const settledPhases:readonly string[]=first.extra?['bound-closed','active','prepared']:['bound-closed','prepared'];
-        const knownPhases:readonly string[]=first.extra?['bound-closed','active']:['bound-closed'];
+        // A person's first main key is made while every key of this person is still closed. An extra key, or the main
+        // key of a further agent, is made beside active ones, so active keys count as settled and known; a
+        // half-finished one never does.
+        const besideActive=first.extra||first.joining;
+        const settledPhases:readonly string[]=besideActive?['bound-closed','active','prepared']:['bound-closed','prepared'];
+        const knownPhases:readonly string[]=besideActive?['bound-closed','active']:['bound-closed'];
         if(first.extra&&!inventory.operations.some(o=>o.kind==='operation'&&o.bindingId===first.brainBindingId&&o.phase==='active'))throw refuse();
         const prior=inventory.operations.find((o):o is NativeOperation=>o.kind==='operation'&&o.bindingId===request.bindingId&&o.credentialGeneration===request.credentialGeneration);
         if(inventory.operations.some(o=>o.kind==='operation'&&o.bindingId===request.bindingId&&o.credentialGeneration!==request.credentialGeneration))throw refuse();
@@ -235,6 +242,14 @@ export class BudgetNativeProvisioner {
         const existingUser=inventory.users.find((u):u is Extract<typeof u,{kind:'user'}>=>u.kind==='user'&&u.accountId===first.memberAccountId&&u.endpoint.hash===this.endpoint.hash);
         if(existingUser&&(existingUser.userCreateAttempt==='attempted'||existingUser.membershipCreateAttempt==='attempted'||
           inventory.operations.some(o=>o.kind==='operation'&&o.userOwnershipId===existingUser.ownershipId&&!settledPhases.includes(o.phase))))throw new Error('Native custody operation refused');
+        // An open account means an earlier agent's key of this person was switched on. If the key store does not show
+        // that, the two disagree: make nothing.
+        if(first.joining&&(!existingUser||!inventory.operations.some(o=>o.kind==='operation'&&o.userOwnershipId===existingUser.ownershipId&&o.phase==='active')))throw new Error('Native custody operation refused');
+        // Switching a key on refuses once the person already holds ten others, and a key that can never be switched
+        // on has no clean-up command. Count the same keys now and refuse before anything is made or recorded; this
+        // refusal leaves the key store open, as nothing is uncertain.
+        if(existingUser&&new Set(inventory.operations.filter(o=>o.kind==='operation'&&o.userOwnershipId===existingUser.ownershipId&&knownPhases.includes(o.phase)&&
+          !(o.bindingId===request.bindingId&&o.credentialGeneration===request.credentialGeneration)).map(o=>(o as NativeOperation).keyFingerprint)).size>=10)throw new Error('Native custody operation refused');
         const team=gate.reserveTeam(first.installationId,this.endpoint,this.policy),user=gate.reserveUser(first.memberAccountId,team.ownershipId,this.policy);
         if(team.createAttempt==='attempted'||user.userCreateAttempt==='attempted'||user.membershipCreateAttempt==='attempted'||inventory.operations.some(o=>o.kind==='operation'&&o.userOwnershipId===user.ownershipId&&!settledPhases.includes(o.phase)))throw new Error('Native custody operation refused');
         const targetMembershipVerified=user.userCreateAttempt==='verified'&&user.membershipCreateAttempt==='verified';

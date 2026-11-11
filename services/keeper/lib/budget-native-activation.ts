@@ -19,7 +19,7 @@ const exact=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b
 const uuidString=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{3,4}-[a-f0-9]{3,4}-[a-f0-9]{3,4}-[a-f0-9]{12}$/i.test(value);
 type Row=Record<string,any>;
 type Month={startsAt:string;endsAt:string};
-type Prepared={operation:NativeOperation;month:Month;installationWindowId:string;memberWindowId:string;endpointGeneration:string;recoveryEpoch:string;firstOpen:boolean;installationCap:string;memberWindowCap:string;extra:boolean;brainBindingId:string|null};
+type Prepared={operation:NativeOperation;month:Month;installationWindowId:string;memberWindowId:string;endpointGeneration:string;recoveryEpoch:string;firstOpen:boolean;installationCap:string;memberWindowCap:string;extra:boolean;joining:boolean;brainBindingId:string|null};
 /** The installation's configured owner, set by the host. Only that person may hold more than one key per agent. */
 export interface BudgetNativeActivatorOptions {designatedOwnerId?:string}
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
@@ -81,8 +81,8 @@ async function prepareSource(db:SourceDatabase,journal:HostFinancialJournal,op:N
   if(member.installation_account_id!==installation.id||member.live_member_id!==liveMemberId||member.canonical_suppression_hash!==suppression.canonicalSuppressionHash||
     !exact(storedProviders,suppression.providerSuppressionHashes)||member.selected_endpoint!==null||member.recovery_epoch!==null||
     !uuidString(member.id)||member.id!==memberAccountId)throw refuse();
-  // A main key opens a closed account; an extra key finds it already open. Which one this is depends on the
-  // agent's own model name, so the account state is judged once the definition is read.
+  // A person's first main key opens a closed account; an extra key, or a further agent's main key, finds it already
+  // open. Which one this is depends on the agent's own model name, so the account state is judged once the definition is read.
   const memberClosed=member.state==='closed'&&member.reason==='unreconciled',memberOpen=member.state==='open'&&member.reason==='approved';
   const firstOpen=installation.state==='closed'&&installation.reason==='unreconciled'&&installation.selected_endpoint===null&&installation.recovery_epoch===null;
   // Existing open installations are accepted only when their endpoint/epoch are the exact retained binding.
@@ -103,9 +103,13 @@ async function prepareSource(db:SourceDatabase,journal:HostFinancialJournal,op:N
   const definitionHash=hashOf({definition,dutiesMd:row.duties,voiceMd:row.voice});
   if(row.status!=='valid'||row.hash!==definitionHash||definitionHash!==op.association.definitionHash||row.ownership!=='owned'||
     row.ownership_token!==op.association.incarnation||row.runtime_control_token!==op.association.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
-  const extra=definition.model!==op.association.purposeAlias;let brainBindingId:string|null=null;
-  if(!extra){if(applied.model!==op.association.purposeAlias||!memberClosed)throw refuse();}
-  else{
+  const extra=definition.model!==op.association.purposeAlias;let brainBindingId:string|null=null,joining=false;
+  if(!extra){
+    if(applied.model!==op.association.purposeAlias)throw refuse();
+    // A further agent of a person whose account is already open joins that account: it opens nothing.
+    if(memberOpen&&!firstOpen&&policy.capability.aliases.includes(op.association.purposeAlias))joining=true;
+    else if(!memberClosed)throw refuse();
+  }else{
     // The same limits as when the key was made: the owner only, the chief-of-staff role only, a served name only,
     // on an open account, under the capability the main key was made for.
     if(designatedOwnerId===undefined||liveMemberId!==designatedOwnerId||definition.role!=='chief-of-staff'||applied.role!=='chief-of-staff'||applied.model!==definition.model||
@@ -126,7 +130,7 @@ async function prepareSource(db:SourceDatabase,journal:HostFinancialJournal,op:N
   if(cap==='0'||installWindow.openingCap!==cap)throw refuse();
   const endpointGeneration=firstOpen?'1':String(installation.endpoint_generation),recoveryEpoch=firstOpen?randomBytes(32).toString('base64url'):String(installation.recovery_epoch);
   if(Date.now()>=deadline)throw refuse();
-  return {operation:op,month:monthValue,installationWindowId:installWindow.id,memberWindowId:memberWindow.id,endpointGeneration,recoveryEpoch,firstOpen,installationCap:cap,memberWindowCap:memberWindow.openingCap,extra,brainBindingId};
+  return {operation:op,month:monthValue,installationWindowId:installWindow.id,memberWindowId:memberWindow.id,endpointGeneration,recoveryEpoch,firstOpen,installationCap:cap,memberWindowCap:memberWindow.openingCap,extra,joining,brainBindingId};
 }
 
 /** Trusted host adapter. It activates exactly one existing bound-closed key. */
@@ -151,12 +155,15 @@ export class BudgetNativeActivator {
         if(prepared.operation.operationId!==op.operationId||op.phase!=='bound-closed')throw refuse();
         checkDeadline(deadline,gate,op);await db.query("SELECT set_config('idle_in_transaction_session_timeout','6000ms',true)");
         const inventory=gate.inventory(),related=inventory.operations.filter((v):v is NativeOperation=>v.kind==='operation'&&v.userOwnershipId===op.userOwnershipId);
-        // An extra key is activated beside active ones: they are settled and their keys are known. The main key's
-        // activation still needs every other key of this person to be closed.
-        const settledPhases:readonly string[]=prepared.extra?['bound-closed','active','prepared']:['bound-closed','prepared'];
-        const knownPhases:readonly string[]=prepared.extra?['bound-closed','active']:['bound-closed'];
+        // An extra key, or a further agent's main key, is activated beside active ones: they are settled and their keys
+        // are known. A person's first main key still needs every other key of this person to be closed.
+        const besideActive=prepared.extra||prepared.joining;
+        const settledPhases:readonly string[]=besideActive?['bound-closed','active','prepared']:['bound-closed','prepared'];
+        const knownPhases:readonly string[]=besideActive?['bound-closed','active']:['bound-closed'];
         if(related.some(v=>v.operationId!==op.operationId&&!settledPhases.includes(v.phase)))throw refuse();
         if(prepared.extra&&!related.some(v=>v.bindingId===prepared.brainBindingId&&v.phase==='active'))throw refuse();
+        // An open account means an earlier key of this person is on; a key store that does not show one disagrees.
+        if(prepared.joining&&!related.some(v=>v.operationId!==op.operationId&&v.phase==='active'))throw refuse();
         const known=[...new Set(related.filter(v=>knownPhases.includes(v.phase)).map(v=>v.keyFingerprint))].filter(v=>v!==op.keyFingerprint).sort();
         if(known.length>=10)throw refuse();
         const afterRemote=async(expected:NativeOperation)=>{checkDeadline(deadline,gate,expected);await checkConsoleSourceDeadlines(db);};
@@ -185,8 +192,9 @@ export class BudgetNativeActivator {
           if(!updated)throw refuse();noteBudgetFinancialChange(db,'budget_accounts',installation.id);
         }else if(installation.state!=='open'||installation.reason!=='approved'||installation.selected_endpoint!==user.endpoint.hash||
           String(installation.endpoint_generation)!==prepared.endpointGeneration||installation.recovery_epoch!==prepared.recoveryEpoch)throw refuse();
-        if(prepared.extra){
-          // The account is already open. An extra key opens nothing: it only turns its own key on and records that.
+        if(prepared.extra||prepared.joining){
+          // The account is already open. An extra key or a further agent's key opens nothing: it only turns its own key on
+          // and records that. An account that has since been frozen or retired refuses here.
           if(member.state!=='open'||member.reason!=='approved'||member.installation_account_id!==installation.id)throw refuse();
           noteBudgetFinancialChange(db,'budget_gateway_bindings',op.bindingId);
         }else{
