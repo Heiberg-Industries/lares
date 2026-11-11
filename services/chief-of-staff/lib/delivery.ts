@@ -25,6 +25,7 @@ import {
 import { agentName } from "./agent-name.js";
 import { initiate, type DoorInitiate } from "./initiation.js";
 import { allowedSlackUserIds, doorId, ownerId, primaryTelegramChatId } from "./principals.js";
+import { slackDmChannelId } from "./slack-dm-channel.js";
 import { captureWebContinuityFence, putInbox, recordFallback, type WebContinuityFence } from "./web-inbox.js";
 
 /** The ledger's door string for web chat. One door: quiet hours and limits count it as one. */
@@ -34,8 +35,30 @@ export interface Routed {
   kind: DeliveryKind;
   label: string;
   door: DeliveryDoor;
-  /** Telegram chat id, Slack user/channel id, or the owner id for web chat. */
+  /**
+   * WHO the message is for on this door: the Telegram chat id, the Slack USER id, or the owner id
+   * for web chat. This is the id the ledger door (`doorId`), the conversation's continuity
+   * identity and a plain text post are keyed on, and it stays that.
+   *
+   * For Slack it is NOT the address to start a conversation at: use `conversationAddress()`.
+   */
   target: string;
+  /**
+   * WHERE a conversation on this door is started: what `to(channel, ...)` must be given.
+   *
+   * Telegram: the chat id, same as `target`. Web chat: the owner id (no conversation is started
+   * there). Slack: the owner's direct-message channel (`D...`), looked up once from the user id
+   * and cached (`lib/slack-dm-channel.ts`). A conversation started at the user id itself posts
+   * approval cards whose buttons reach nothing, because the tap carries `D...` and eve filed the
+   * conversation under `U...`.
+   *
+   * Rejects when the Slack lookup fails. It never falls back to the user id: the send has to
+   * stop, which the gate records as "not sent" so the item stays eligible.
+   *
+   * It is a second field, and asynchronous, because `routeDelivery` is called synchronously by
+   * every schedule and `target` is also the identity those callers key on.
+   */
+  conversationAddress(): Promise<string>;
   /** The ledger door this send is counted against. */
   doorId: string;
   /** "Morning brief went to web chat: Telegram is not connected", or null on a first-choice send. */
@@ -79,6 +102,8 @@ export interface RouteDeps {
   /** The gate, injectable for tests. Defaults to the real one bound to the schedule name. */
   initiate?: typeof initiate;
   db?: Parameters<typeof putInbox>[0];
+  /** The Slack direct-message lookup, injectable for tests. Defaults to the real, cached one. */
+  slackDmChannel?: (userId: string) => Promise<string>;
 }
 
 /**
@@ -105,6 +130,7 @@ export function routeDelivery(
   const send = deps.initiate ?? initiate;
   const db = () => deps.db ?? getPool();
   const note = route.fallbackNote;
+  const dmChannel = deps.slackDmChannel ?? ((userId: string) => slackDmChannelId(userId));
 
   // The item the gate is sending right now, so a callback that does not carry its own key (the
   // deadline ladder's `send(text)`) still writes its inbox row under the ledger's key.
@@ -118,6 +144,7 @@ export function routeDelivery(
 
   return {
     kind, label, door, target, doorId: ledgerDoor, note, gate, voiceMd: loaded.voiceMd,
+    conversationAddress: async () => (door === "slack" ? dmChannel(target) : target),
     inbox: (m) => putInbox(db(), { owner, agent, kind, ...m, itemKey: m.itemKey ?? current }),
     captureContinuityFence: () => captureWebContinuityFence(db(), owner, agent),
   };

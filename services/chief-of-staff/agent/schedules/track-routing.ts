@@ -30,6 +30,7 @@
 import { defineSchedule } from "eve/schedules";
 
 import slack from "../channels/slack.js";
+import { slackDmChannelId } from "../../lib/slack-dm-channel.js";
 import telegram from "../channels/telegram.js";
 import { getPool } from "@lares/agent-kit/db";
 import { managedIdentity } from "@lares/agent-kit/door-authority";
@@ -471,9 +472,13 @@ export default defineSchedule({
           ? { ...telegramPushAttributes("track-routing", target), ...continuityAuthAttributes(identity), lares_route_decline_request_id: question.requestId }
           : { lane: "track-routing", ...continuityAuthAttributes(identity), lares_route_decline_request_id: question.requestId };
         const prompt = buildRouteDeclineQuestionPrompt(question);
+        // Slack: the conversation is started at the owner's direct-message channel (`D...`), not
+        // at the user id, so a card it posts can be answered (lib/slack-dm-channel.ts). `target`
+        // stays the user id everywhere else: the identity above is keyed on it. A failed lookup
+        // throws here, before anything is posted.
         const task = question.door === "telegram"
           ? to(telegram, { chatId: target }).send(prompt, { auth: { ...appAuth, attributes } })
-          : to(slack, { channelId: target }).send(prompt, { auth: { ...appAuth, attributes } });
+          : to(slack, { channelId: await slackDmChannelId(target) }).send(prompt, { auth: { ...appAuth, attributes } });
         waitUntil(task);
         await task;
       },

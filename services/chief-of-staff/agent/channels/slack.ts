@@ -15,11 +15,14 @@ import { readFileSync } from "node:fs";
 import {
   callSlackApi,
   defaultSlackAuth,
+  defineSlackRenderer,
   slackChannel,
+  type SlackAnswerResult,
   type SlackBotToken,
+  type SlackChannelConfig,
   type SlackMessage,
 } from "eve/channels/slack";
-import type { SessionContext } from "eve/context";
+import type { SessionAuthContext } from "eve/context";
 
 import { isAllowedSlackUserId } from "../../lib/slack-allowlist.js";
 import { getPool } from "@lares/agent-kit/db";
@@ -27,11 +30,8 @@ import { installSlackProxyDispatcher } from "@lares/agent-kit/slack-dispatcher";
 import { slackUnreadableNote } from "@lares/agent-kit/unreadable-content";
 import { continuityAuthAttributes, nativeConversationContinuity } from "../../lib/conversation-continuity.js";
 import { markRouteDeclineQuestionSent } from "../../lib/route-decline.js";
-import {
-  respondToSessionFailed,
-  respondToTurnFailed,
-  type FailureEventData,
-} from "@lares/agent-kit/gateway-budget";
+import { respondToTurnFailed } from "@lares/agent-kit/gateway-budget";
+import { approvalCardRenderer } from "../../lib/slack-approval-card.js";
 
 const DEFAULT_BOT_TOKEN_FILE = "/run/secrets/eve-slack-bot-token";
 const DEFAULT_SIGNING_SECRET_FILE = "/run/secrets/eve-slack-signing-secret";
@@ -104,14 +104,39 @@ async function replyBeforeClaimApplied(channelId: string, text: string): Promise
  * a trap worth restating: principal ids are also channel addresses — canonicalise the
  * *person*, never rewrite channel addresses.
  *
- * This gates who may START a turn. It does NOT gate who may APPROVE one: eve handles HITL
- * button clicks before any authored inbound handler, so that check lives in the gated tool
- * itself (`agent/tools/echo_note.ts`), against the same list in `lib/slack-allowlist.ts`.
+ * This gates who may START a turn. Who may ANSWER a card is `authorizeSlackAnswer` below, and
+ * the gated tool itself checks a third time (`agent/tools/echo_note.ts`), all three against the
+ * same list in `lib/slack-allowlist.ts`.
  */
 export function isAllowedSlackUser(message: SlackMessage): boolean {
   const author = message.author;
   if (!author || author.isBot) return false;
   return isAllowedSlackUserId(author.userId);
+}
+
+/**
+ * Who may answer an approval or a question card: the same allowlist, and it fails closed the
+ * same way. eve calls this for every tap on one of its controls and every typed answer in its
+ * modal, before the conversation is resumed. Returning `null` refuses the answer: the action
+ * does not run, and the card stays open for someone who is allowed.
+ *
+ * Without it eve accepts any tap, from anyone who can see the card, with that person's own
+ * identity, and only the tool's own check stands between a stranger's Approve and the action.
+ * The tool's check stays. This one stops the tap at the door.
+ *
+ * Setting `onAnswers` also makes eve stop reading a typed Slack message as an answer to an open
+ * card. That is wanted, but it is not what turns typed approvals off: the framework patch does
+ * that for every door, and this door does not rely on the side effect.
+ */
+export function authorizeSlackAnswer(
+  ctx: { readonly defaultAuth: SessionAuthContext },
+  submission: { readonly user: { readonly id: string } },
+): SlackAnswerResult {
+  if (!isAllowedSlackUserId(submission.user.id)) {
+    console.warn("chief-of-staff slack: an answer from a Slack user who is not allowed was refused; nothing was executed");
+    return null;
+  }
+  return { auth: ctx.defaultAuth };
 }
 
 /**
@@ -137,38 +162,65 @@ const BUDGET_EXCEEDED_TEXT =
 
 const FAILURE_OPTIONS = { refusalText: BUDGET_EXCEEDED_TEXT, dialect: "slack" } as const;
 
-/** The thread surface these handlers need — eve's `SlackEventContext` satisfies it. */
-interface FailureThread {
-  readonly thread: { post(message: string): Promise<unknown> };
+/** eve 1.0's failure payload: `error` on a failed `turn.settled` or `session.ended`. */
+interface FailureError {
+  readonly code?: string;
+  readonly message?: string;
+  readonly id?: string;
+  readonly hint?: string;
+}
+
+/** What the two failure handlers read from the event and the channel. eve's own event and
+ *  `ctx` satisfy both; tests pass plain objects. */
+interface SettledEvent {
+  readonly data: { readonly outcome: string; readonly error?: FailureError };
+}
+interface ThreadContext {
+  readonly channel: { readonly thread: { post(message: string): Promise<unknown> } };
 }
 
 /**
- * `turn.failed` — EXPORTED for tests, the convention `agent/channels/telegram.ts`'s
- * `onMessageCompleted` established after an outage.
- *
- * Supplying this REPLACES eve's default handler (object spread in `slackChannel`), and the
- * default's text is what a non-budget failure must still say. That reproduction lives in
- * `@lares/agent-kit/gateway-budget` with a conformance test against the installed eve, so a
- * reworded eve breaks a test rather than a thread.
+ * The fixed sentence for a failure that is the gateway's spending cap, or `null` for any other
+ * failure. Recognition is the kit's (`@lares/agent-kit/gateway-budget`); this door only hands it
+ * eve 1.0's payload. That payload is `{ code, message, id?, hint? }` and no longer carries the
+ * gateway's error type or HTTP status, so the kit recognises a cap by the gateway's sentence in
+ * `message` alone.
  */
-export async function onTurnFailed(data: FailureEventData, channel: FailureThread): Promise<void> {
-  const response = respondToTurnFailed(data, FAILURE_OPTIONS);
-  if (response.kind === "silent") return;
-  if (response.kind === "budget-refusal") {
-    console.warn("chief-of-staff slack: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
-  }
-  await channel.thread.post(response.text);
+function budgetRefusalText(error: FailureError | undefined): string | null {
+  if (error === undefined) return null;
+  const response = respondToTurnFailed(error, FAILURE_OPTIONS);
+  return response.kind === "budget-refusal" ? response.text : null;
+}
+
+async function answerFailure(event: SettledEvent, ctx: ThreadContext, next: () => Promise<void>): Promise<void> {
+  const refusal = event.data.outcome === "failed" ? budgetRefusalText(event.data.error) : null;
+  // Anything that is not a spending cap is eve's to answer, in eve's own words.
+  if (refusal === null) return next();
+  console.warn("chief-of-staff slack: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
+  await ctx.channel.thread.post(refusal);
 }
 
 /**
- * `session.failed` — a budget refusal is terminal, so eve emits it right after `turn.failed`
- * for the same fault. `onTurnFailed` already answered; this stays quiet so a capped turn
- * produces exactly one sentence. Everything else keeps eve's default text.
+ * `turn.settled` — EXPORTED for tests. A failure the conversation can carry on from arrives
+ * here, as `outcome: "failed"` with the error. A capped turn gets the one fixed sentence; every
+ * other outcome goes to `next()`, which is eve's own handler and eve's own text. (On eve 0.60
+ * this door had to REPLACE eve's handler and reproduce its wording. A renderer wraps it instead,
+ * so there is nothing left to keep in step.)
  */
-export async function onSessionFailed(data: FailureEventData, channel: FailureThread): Promise<void> {
-  const response = respondToSessionFailed(data, FAILURE_OPTIONS);
-  if (response.kind === "silent") return;
-  await channel.thread.post(response.text);
+export async function onTurnSettled(event: SettledEvent, ctx: ThreadContext, next: () => Promise<void>): Promise<void> {
+  await answerFailure(event, ctx, next);
+}
+
+/**
+ * `session.ended` — EXPORTED for tests. A failure that ends the conversation arrives here and
+ * ONLY here: eve 1.0 writes the error on the session's end and settles the turn `cancelled`
+ * with no error of its own (`harness/session-machine/transitions.js`, `fail`). The gateway's cap
+ * is a plain 4xx, which eve treats as ending the conversation, so this is where a capped turn
+ * is normally answered. One fault produces one of the two events with the error, never both,
+ * so a capped turn still gets exactly one sentence.
+ */
+export async function onSessionEnded(event: SettledEvent, ctx: ThreadContext, next: () => Promise<void>): Promise<void> {
+  await answerFailure(event, ctx, next);
 }
 
 /**
@@ -211,77 +263,93 @@ export async function admitSlackDirectMessage(
   }
 }
 
-/** Replaces Eve's terminal Slack reply only to bind a scheduled decline question to its exact
- * root DM message. Other replies retain Eve's short-message and long-snippet behavior. */
-export async function onSlackMessageCompleted(
-  data: { finishReason: string; message?: string | null },
-  channel: {
-    state: { pendingToolCallMessage?: string | null; triggeringUserId?: string | null };
-    thread: {
-      post(message: string): Promise<{ id: string }>;
-      postDirectMessage(userId: string, message: string): Promise<{ id: string }>;
-      startTyping(message?: string): Promise<void>;
-    };
-    slack: {
-      threadTs: string;
-      uploadFiles(files: readonly { data: Blob; filename: string; mimeType: string }[], options: {
-        initialComment?: string; snippetType: "markdown";
-      }): Promise<unknown>;
-    };
-  },
-  ctx: SessionContext,
-): Promise<void> {
-  if (data.finishReason === "tool-calls") {
-    channel.state.pendingToolCallMessage = data.message?.split(/\r?\n/u).find((line) => line.trim())?.trim() ?? null;
-    return;
-  }
-  channel.state.pendingToolCallMessage = null;
-  if (!data.message) {
-    await channel.thread.startTyping();
-    return;
-  }
-
-  const attrs = ctx.session.auth.current?.attributes;
-  const requestId = attrs?.lares_route_decline_request_id;
-  if (typeof requestId === "string") {
-    const address = attrs?.lares_continuity_address;
-    const linkedUser = typeof address === "string" && address.startsWith("slack-user:")
-      ? address.slice("slack-user:".length) : undefined;
-    const userId = typeof attrs?.user_id === "string" ? attrs.user_id : linkedUser ?? channel.state.triggeringUserId;
-    if (!userId) throw new Error("track-routing decline question has no bound Slack recipient");
-    const posted = await channel.thread.postDirectMessage(userId, data.message);
-    if (posted.id) await markRouteDeclineQuestionSent(getPool(), requestId, `slack:${posted.id}`);
-    return;
-  }
-
-  const longResponseNotice = "Here's a snippet with the full response.";
-  if (data.message.length <= 12_000) {
-    await channel.thread.post(data.message);
-    return;
-  }
-  const alreadyThreaded = channel.slack.threadTs.length > 0;
-  if (!alreadyThreaded && (!(await channel.thread.post(longResponseNotice)).id || channel.slack.threadTs.length === 0)) {
-    throw new Error("Slack did not return a thread timestamp for the long response notice.");
-  }
-  await channel.slack.uploadFiles([{ data: new Blob([data.message], { type: "text/markdown" }),
-    filename: "eve-response.md", mimeType: "text/markdown" }], {
-    ...(alreadyThreaded ? { initialComment: longResponseNotice } : {}), snippetType: "markdown",
-  });
+/** What the reply handler reads from the event, the channel and the session. */
+interface CompletedEvent {
+  readonly data: { readonly kind: string; readonly phase: string; readonly value?: unknown };
 }
+interface ReplyContext {
+  readonly channel: {
+    readonly state: { triggeringUserId?: string | null };
+    readonly thread: { postDirectMessage(userId: string, message: string): Promise<{ id: string }> };
+  };
+  readonly session: { readonly auth: { readonly current: { readonly attributes?: Record<string, unknown> } | null } };
+}
+
+/**
+ * `content.completed` — EXPORTED for tests. Takes over one reply only: the question a scheduled
+ * track-routing conversation asks after the owner declined a route. That question is posted as
+ * its own direct message so its Slack timestamp can be saved as the anchor the owner's answer is
+ * matched to. Every other part (narration, reasoning, an ordinary reply, a long reply uploaded as
+ * a snippet) goes to `next()`, eve's own delivery.
+ */
+export async function onSlackContentCompleted(
+  event: CompletedEvent,
+  ctx: ReplyContext,
+  next: () => Promise<void>,
+): Promise<void> {
+  const { kind, phase, value } = event.data;
+  const attrs = ctx.session.auth.current?.attributes;
+  const requestId = attrs?.["lares_route_decline_request_id"];
+  if (kind !== "text" || phase !== "reply" || typeof value !== "string" || value.length === 0 || typeof requestId !== "string") {
+    return next();
+  }
+
+  const address = attrs?.["lares_continuity_address"];
+  const linkedUser = typeof address === "string" && address.startsWith("slack-user:")
+    ? address.slice("slack-user:".length) : undefined;
+  const authUser = attrs?.["user_id"];
+  const userId = typeof authUser === "string" ? authUser : linkedUser ?? ctx.channel.state.triggeringUserId;
+  if (!userId) throw new Error("track-routing decline question has no bound Slack recipient");
+  const posted = await ctx.channel.thread.postDirectMessage(userId, value);
+  if (posted.id) await markRouteDeclineQuestionSent(getPool(), requestId, `slack:${posted.id}`);
+}
+
+/**
+ * The door's own renderer. Each handler wraps eve's default for that event and calls `next()`
+ * for everything it does not answer itself.
+ */
+const doorRenderer = defineSlackRenderer({
+  events: {
+    "content.completed": onSlackContentCompleted,
+    "turn.settled": onTurnSettled,
+    "session.ended": onSessionEnded,
+  },
+});
 
 // Install the outbound proxy routing as this module loads. Safe on the build path: it
 // constructs a ProxyAgent (which connects to nothing until used) and reads no secret.
 installSlackProxyDispatcher();
 
-export default slackChannel({
+/**
+ * An edit to a message the owner already sent starts nothing.
+ *
+ * eve 1.0 can send an edit to the conversation as a new turn, and when a door says nothing about
+ * edits it asks the door's message handlers to decide. This door heard mentions and direct
+ * messages and nothing else before the upgrade, so it says so here: correcting a typo must not
+ * make the agent answer, or act, a second time. Because this handler exists, eve does not run the
+ * two message handlers for an edit at all. Letting edits through is a decision for the owner; it
+ * is this one line.
+ */
+export function ignoreSlackMessageEdit(): null {
+  return null;
+}
+
+/**
+ * The door's whole configuration, exported so a test can check what is installed. eve 1.0 says
+ * nothing about a configuration key or a handler name it does not know (the `events` block this
+ * door used on eve 0.60 was simply no longer heard); the type below rejects an unknown key, and
+ * the tests read this object.
+ */
+export const slackDoorConfig: SlackChannelConfig = {
   credentials: slackCredentials as { botToken: SlackBotToken; signingSecret: string },
   // Both enabled inbound handlers are overridden. Overriding only one would leave eve's
   // permissive default in place for the other — the documented footgun.
   onAppMention: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.channelId, text)) ? null : admitSlackMessage(ctx, message),
   onDirectMessage: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.channelId, text)) ? null : admitSlackDirectMessage(ctx, message),
-  events: {
-    "message.completed": onSlackMessageCompleted,
-    "turn.failed": onTurnFailed,
-    "session.failed": onSessionFailed,
-  },
-});
+  onMessageEdited: ignoreSlackMessageEdit,
+  // The third way in: a tap on a card. Same allowlist as the two above.
+  onAnswers: authorizeSlackAnswer,
+  renderers: [approvalCardRenderer, doorRenderer],
+};
+
+export default slackChannel(slackDoorConfig);
