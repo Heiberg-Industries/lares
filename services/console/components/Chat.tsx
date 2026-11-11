@@ -17,17 +17,22 @@ import {readPersonalSendCard} from '../app/actions/accounts';
 import type {PersonalSendCard} from '../lib/approval-text';
 import { useEveAgent } from "eve/react";
 import type { ClientSessionState } from "eve/client";
+import { session as sessionOf } from "eve/events";
 import {
   ChatTranscript,
   composerState,
-  expiredRequestIds,
+  expiredInteractionIds,
+  type AnswerOption,
 } from "./ChatTranscript";
 import { agentNotRunning, notRunningSay } from "../lib/agent-reachability";
 import { limitReplyOf } from "../lib/limit-reply";
 import {
   chatSessionKey,
+  ENDED_SAY,
+  endedConversation,
   readChatSession,
   saveChatSession,
+  type EndedConversation,
 } from "../lib/chat-session";
 
 function tabStorage(): Storage | null {
@@ -38,12 +43,23 @@ function tabStorage(): Storage | null {
   }
 }
 
+/** The proxy's own refusals are plain text in the console's own words (`refuse` in
+ *  `lib/chat-proxy.ts`); anything else a failed request carries was written by the agent's
+ *  framework and is never shown. Returns the proxy's sentence, or null. */
+function proxySentence(error: unknown): string | null {
+  if (error === null || typeof error !== "object") return null;
+  const { body, headers } = error as { body?: unknown; headers?: { "content-type"?: unknown } };
+  const type = headers?.["content-type"];
+  if (typeof body !== "string" || typeof type !== "string" || !type.startsWith("text/plain")) return null;
+  return body.length > 0 && body.length <= 200 ? body : null;
+}
+
 /**
  * The thin client half. All state and transport is eve's own `useEveAgent`; this
  * component only turns the hook's snapshot into the plain-style form the rest of the console uses,
  * and turns a submit into a `send`.
  *
- * `host` is a same-origin prefix, never an absolute address — `/api/chat/<name>` is the route
+ * `baseUrl` is a same-origin prefix, never an absolute address — `/api/chat/<name>` is the route
  * `services/console/app/api/chat/[name]/[...path]/route.ts` answers (`forwardChat`), so
  * this component never sees, holds, or sends the agent's own route password; the browser's only
  * credential is the console's own session cookie, exactly as every other page here.
@@ -51,16 +67,29 @@ function tabStorage(): Storage | null {
  * `prewarm` is left at its default (`false`): no session exists until the
  * first message is sent, so opening this page creates nothing.
  *
- * Answering an approval. `agent.respond([{ requestId, optionId }])` is eve's own call and
- * the only one that answers a card; the `requestId` comes from the card's own input request, NOT
- * from the tool call id (the two differ on the wire). Three rules live here rather
- * than in the transcript, because they are about time and the transcript is pure:
+ * What the hook reports. `status` is outstanding work only (`idle`, `busy`, `resuming`); a
+ * failure is `error`, beside it. `messages` is the conversation, `events` the session's own
+ * record, `session` the state to save for a reload — saved whole and handed back unchanged
+ * (`lib/chat-session.ts`).
  *
- *  - ONE answer per click. `answering` holds the request id while the POST is in flight; every
+ * A message sent while the agent works joins the turn it is in; that is the framework's default,
+ * so no option is passed with it and the request stays `{ message }`.
+ *
+ * An ENDED conversation. Every framework upgrade ends the conversations that were open, so this is
+ * an ordinary event, not a fault. A send or an answer into one is refused by the agent with a
+ * stable code; `endedConversation` reads it and the page says one plain sentence and offers a new
+ * conversation. Nothing is retried, and the framework's own error text is never shown.
+ *
+ * Answering an approval. `agent.respond([{ interactionId, optionId }])` is eve's own call and
+ * the only one that answers a card; the `interactionId` comes from the card's own request, NOT
+ * from the tool call id (the two differ on the wire), and `optionId` is `"approve"` or `"deny"`.
+ * Three rules live here rather than in the transcript, because they are about time and the
+ * transcript is pure:
+ *
+ *  - ONE answer per click. `answering` holds the interaction id while the POST is in flight; every
  *    button in the transcript is disabled while it is set, so a double click is one answer.
- *  - ONE request at a time. `respond` takes an array, and eve's own contract is that it rejects
- *    while a turn is in flight; sending a single element keeps the answer, the card and any
- *    refusal in one-to-one correspondence.
+ *  - ONE request at a time. `respond` takes an array; sending a single element keeps the answer,
+ *    the card and any refusal in one-to-one correspondence.
  *  - A card older than 24 hours shows its age instead of a button, because the agent would refuse
  *    it anyway (`StaleApprovalError`) and a button that cannot work is worse than a sentence.
  *    `Date.now()` is read HERE, at render, and handed down as a set.
@@ -128,7 +157,7 @@ function ChatSession({
     };
   }, []);
   const agent = useEveAgent({
-    host: `/api/chat/${name}`,
+    baseUrl: `/api/chat/${name}`,
     initialSession: initialSession ?? undefined,
     resume: initialSession !== null,
     onSessionChange(session) {
@@ -136,26 +165,40 @@ function ChatSession({
       if (storage && !failed.current) saveChatSession(storage, storageKey, session);
     },
   });
+  const hasError = agent.error !== undefined;
+  // Set when an answer was refused because the conversation is over; `agent.error` says the same
+  // for a message, and for a saved conversation that cannot be reopened.
+  const [endedByAnswer, setEndedByAnswer] = useState<EndedConversation | null>(null);
+  // Over, and why: the agent refused with an "ended" code, or the conversation's own record shows
+  // it has ended. Either way nothing more can be sent into it.
+  const recorded = sessionOf(agent.view);
+  const ended: EndedConversation | null =
+    endedConversation(agent.error) ?? endedByAnswer ?? (recorded.status === "ended" ? endedConversation(recorded.error) ?? "ended" : null);
   // A model call refused for a spending limit is not a broken conversation: the sentence is shown,
   // the session and the draft stay, and the member can write again (a new month resets the limit).
-  const limitReply = agent.status === "error" ? limitReplyOf(agent.events) : null;
+  const limitReply = hasError && ended === null ? limitReplyOf(agent.events) : null;
+  const broken = ended !== null || (hasError && limitReply === null);
   useEffect(() => {
-    if (agent.status === 'error' && limitReply === null) failed.current = true;
+    if (broken) failed.current = true;
     if (failed.current) for (const key of [storageKey, `${storageKey}:draft`, `${storageKey}:scroll`]) {
       if (preserveFailedDraft.current && key === `${storageKey}:draft`) continue;
       try { tabStorage()?.removeItem(key); } catch {}
     }
-  }, [agent.status, storageKey, limitReply]);
+  }, [broken, storageKey]);
   const [personalSendCards,setPersonalSendCards]=useState<Record<string,PersonalSendCard|null>>({});
   const fetchingCards=useRef(new Set<string>());
   useEffect(()=>{
-    for(const message of agent.data.messages)for(const part of message.parts){
-      if(part.type!=='dynamic-tool'||part.toolName!=='personal_mailbox_send')continue;
-      const request=part.toolMetadata?.eve?.inputRequest;if(!request||fetchingCards.current.has(request.requestId))continue;
-      fetchingCards.current.add(request.requestId);
-      void readPersonalSendCard(request.requestId).then(card=>setPersonalSendCards(previous=>({...previous,[request.requestId]:card})),()=>setPersonalSendCards(previous=>({...previous,[request.requestId]:null})));
+    for(const message of agent.messages)for(const part of message.parts){
+      if(part.type!=='tool'||part.name!=='personal_mailbox_send')continue;
+      // Keyed on the card's interaction id: the id the agent recorded for the proposal, and the
+      // one an answer names.
+      const card=part.interaction?.request.kind==='approval'?part.interaction:undefined;
+      if(!card||fetchingCards.current.has(card.interactionId))continue;
+      const id=card.interactionId;
+      fetchingCards.current.add(id);
+      void readPersonalSendCard(id).then(found=>setPersonalSendCards(previous=>({...previous,[id]:found})),()=>setPersonalSendCards(previous=>({...previous,[id]:null})));
     }
-  },[agent.data.messages]);
+  },[agent.messages]);
   const [text, updateText] = useState(() => {
     try {
       return tabStorage()?.getItem(`${storageKey}:draft`) ?? "";
@@ -195,7 +238,7 @@ function ChatSession({
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   useEffect(() => {
     const element = transcript.current;
-    if (!element || !agent.data.messages.length) return;
+    if (!element || !agent.messages.length) return;
     if (!restored.current) {
       restored.current = true;
       let saved: string | null = null;
@@ -211,9 +254,8 @@ function ChatSession({
       }
     }
     if (follow.current) element.scrollTop = element.scrollHeight;
-  }, [agent.data.messages, agent.status, storageKey]);
-  const isBusy = agent.status === "submitted" || agent.status === "streaming";
-  const unavailable = failed.current || (agent.status === "error" && limitReply === null);
+  }, [agent.messages, agent.status, storageKey]);
+  const unavailable = failed.current || broken;
   // Asked once when a conversation fails, never on a timer: is the agent itself down?
   const [notRunning, setNotRunning] = useState(false);
   useEffect(() => {
@@ -222,33 +264,43 @@ function ChatSession({
     void agentNotRunning(name).then((down) => { if (current) setNotRunning(down); });
     return () => { current = false; };
   }, [unavailable, name]);
-  const notRunningText = unavailable && notRunning ? notRunningSay(identity.displayName, name) : null;
+  // An ended conversation is not the agent being down: its own sentence wins.
+  const notRunningText = unavailable && ended === null && notRunning ? notRunningSay(identity.displayName, name) : null;
+  // The one sentence a failed conversation shows. Ours, always: never the framework's error text.
+  const unavailableSay = ended !== null
+    ? ENDED_SAY[ended]
+    : notRunningText ?? "This conversation is unavailable. Start a new conversation.";
   const composer = unavailable
-    ? { disabled: true, say: notRunningText ?? "Start a new conversation to continue." }
+    ? { disabled: true, say: ended !== null ? "" : notRunningText ?? "Start a new conversation to continue." }
     : composerState(agent.status);
-  const expired = expiredRequestIds(agent.events, Date.now());
+  const expired = expiredInteractionIds(agent.events, Date.now());
 
-  const answer = (requestId: string, optionId: string) => {
+  const answer = (interactionId: string, optionId: AnswerOption) => {
     // The guard is belt to the transcript's braces: its buttons are already disabled while an
     // answer is in flight, and this makes a stray call from anywhere else a no-op too.
-    if (answering !== null) return;
-    setAnswering(requestId);
+    if (answering !== null || unavailable) return;
+    setAnswering(interactionId);
     setAnswerError(null);
     void agent
-      .respond([{ requestId, optionId }])
+      .respond([{ interactionId, optionId }])
       .catch((error: unknown) => {
+        // The conversation is over: say that, once, and offer a new one. Nothing is retried.
+        const over = endedConversation(error);
+        if (over !== null) {
+          setEndedByAnswer(over);
+          return;
+        }
         // In our own words. eve's refusal can name a session id and a turn; what the owner needs
-        // to know is that nothing happened and the card is still there.
-        setAnswerError(
-          `Your answer did not reach the agent, so nothing has been done: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        // to know is that nothing happened and the card is still there. Only a sentence this
+        // console's own proxy wrote is repeated.
+        const why = proxySentence(error);
+        setAnswerError(`Your answer did not reach the agent, so nothing has been done${why === null ? "." : `: ${why}`}`);
       })
       .finally(() => setAnswering(null));
   };
 
   async function sendMessage(
     value: string,
-    options?: { turnPolicy: "steer" },
     submittedRevision?: number,
     onSendEntered?: () => void,
   ) {
@@ -273,11 +325,12 @@ function ChatSession({
     }
     if (!isCurrentSession()) return;
     try {
-      const sending = agent.send(value, options);
+      const sending = agent.send(value);
       onSendEntered?.();
       await sending;
     } catch {
-      // A send may already have been accepted. Eve owns the visible error state; never replay
+      // A send may already have been accepted. Eve owns the visible error state (a refusal
+      // because the conversation is over arrives there too, and is worded above); never replay
       // a message here or tell the user that it was not dispatched.
     }
   }
@@ -370,8 +423,9 @@ function ChatSession({
           } catch {}
         }}
       >
-        {agent.data.messages.length === 0 &&
-        agent.status !== "error" &&
+        {agent.messages.length === 0 &&
+        !unavailable &&
+        !hasError &&
         agent.status !== "resuming" ? (
           <div className="lares-chat-intro">
             <AgentAvatar
@@ -388,12 +442,13 @@ function ChatSession({
         ) : (
           <ChatTranscript
             status={agent.status}
-            messages={agent.data.messages}
-            error={limitReply ?? (unavailable ? notRunningText ?? "This conversation is unavailable. Start a new conversation." : null)}
+            messages={agent.messages}
+            error={limitReply ?? (unavailable ? unavailableSay : null)}
+            ended={ended !== null}
             notRunning={notRunningText}
             expired={expired}
             answering={answering}
-            onAnswer={answer}
+            {...(unavailable ? {} : { onAnswer: answer })}
             personalSendCards={personalSendCards}
             agentName={identity.displayName}
           />
@@ -423,13 +478,20 @@ function ChatSession({
           {composer.say}
         </p>
       ) : null}
+      {/* A conversation that is over or broken is not retried: the way on is a new one. An agent
+          that is not running is the one case where a new conversation would not help. */}
+      {unavailable && notRunningText === null ? (
+        <Button type="button" onClick={onFresh}>
+          Start a new conversation
+        </Button>
+      ) : null}
       {preparingFirstSession ? (
         <p role="status" className="mono lares-chat-note lares-status-muted">
           Preparing your conversation. Your draft is saved.
         </p>
       ) : null}
 
-      {agent.data.messages.length === 0 && (
+      {agent.messages.length === 0 && (
         <div className="lares-suggestions">
           {["What needs my attention?", "Help me plan the week"].map(
             (suggestion) => (
@@ -466,7 +528,6 @@ function ChatSession({
           };
           void sendMessage(
             value,
-            isBusy ? { turnPolicy: "steer" } : undefined,
             submittedRevision,
             releasePreparation,
           ).finally(releasePreparation);
