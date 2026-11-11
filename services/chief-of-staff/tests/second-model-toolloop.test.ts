@@ -114,7 +114,7 @@ describe.skipIf(!HAS_GATEWAY_KEY)("second-model tool-loop proof (mistral-small, 
     serverProcess.stdout.on("data", (chunk: Buffer) => (serverOutput += chunk.toString()));
     serverProcess.stderr.on("data", (chunk: Buffer) => (serverOutput += chunk.toString()));
 
-    const client = new Client({ host: `http://127.0.0.1:${port}` });
+    const client = new Client({ baseUrl: `http://127.0.0.1:${port}` });
     const deadline = Date.now() + 30_000;
     let lastError: unknown;
     for (;;) {
@@ -141,7 +141,7 @@ describe.skipIf(!HAS_GATEWAY_KEY)("second-model tool-loop proof (mistral-small, 
   it(
     "drives a real vault_search tool call through mistral-small and answers from its result",
     async () => {
-      const client = new Client({ host: `http://127.0.0.1:${port}` });
+      const client = new Client({ baseUrl: `http://127.0.0.1:${port}` });
       const { response } = await client.sessions.create({
         message:
           "Search the vault for the Lares agent roster and tell me the exact name of the " +
