@@ -376,7 +376,7 @@ workflow_store_step() {
   [ -f "$program" ] && [ ! -L "$program" ] \
     || { echo "workflow store step: its program is missing from this release's files" >&2; return 78; }
   [ -f "$password_file" ] && [ ! -L "$password_file" ] && [ -s "$password_file" ] \
-    || { echo "workflow store step: the provisioner credential is missing or unsafe" >&2; return 78; }
+    || { echo "workflow store step: the provisioner credential ($password_file) is missing, empty or a link. On a server on rc.13 or later, running its installer once creates it: sudo bash /opt/lares/current/services/box/ops/install.sh --yes --release /opt/lares/current/release.json. On an older release, update to rc.14 first. Then run this again" >&2; return 78; }
   # A name of its own, so that a step that outlives its time limit can be found and stopped:
   # stopping the docker client alone would leave the container running.
   name="lares-workflow-store-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
