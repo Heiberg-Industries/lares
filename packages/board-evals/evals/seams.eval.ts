@@ -177,7 +177,7 @@ export default defineEval({
       // gone: this project's rule (packages/agent-kit/src/definition-model.ts) is that eve must
       // never be handed a bare model id, because eve resolves one through a hosted model gateway
       // instead of the installation's own. Nothing in this fixture attempts that, and
-      // agent/instrumentation.ts makes the default provider refuse if anything ever did.
+      // agent/instrumentation/model-guard.ts makes the default provider refuse if anything ever did.
       //
       // The model resolver reads the same per-session definition the tools and instructions
       // resolvers read (`fixtureDefinition`), so `definition.eval.ts`'s repair-race proof

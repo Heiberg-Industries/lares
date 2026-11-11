@@ -181,11 +181,13 @@ for(const role of ['chief-of-staff','creative'])describe(`${role} tool resolvers
   const tools=await resolve(catalogue,native);
   expect(Object.keys(tools)).toContain('fixture');
  });
- it('outside tools are not offered in a private conversation and run no discovery',async()=>{
-  // What this pins, exactly. eve 1.0 has no live outside-connection discovery: the connections
-  // resolver offers nothing, for either role. Outside tools are ordinary tools now, built from the
-  // list Keeper has accepted (`agent/tools/outside-tools.ts`, chief-of-staff only); with a
-  // definition that declares none, as here, nothing is offered and Keeper's list is never read.
+ it('a private conversation gets no outside connection, and with none declared no outside tool and no read of the accepted list',async()=>{
+  // What this pins, exactly, and no more. (1) The connections resolver offers nothing in a private
+  // conversation, for either role: eve 1.0 has no live outside-connection discovery (main asserted
+  // the same `null`). (2) With a definition that declares no outside tools, as here, the
+  // chief-of-staff outside-tools resolver offers none and Keeper's accepted list is never read.
+  // It does NOT show that declared outside tools stay out of a private conversation: the current
+  // resolver (`agent/tools/outside-tools.ts`) offers them only in a verified private conversation.
   const connection=await load(`../../../services/${role}/agent/connections/outside-tools.ts`);
   expect(await resolve(connection,context)).toBeNull();
   if(role==='chief-of-staff')expect(await resolve(await load(`../../../services/${role}/agent/tools/outside-tools.ts`),context)).toBeNull();

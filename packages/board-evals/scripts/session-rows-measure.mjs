@@ -229,7 +229,7 @@ try {
     ].join('\n'),
   );
   writeFileSync(join(root, 'agent/instructions.md'), 'Disposable measurement fixture. No real instructions.\n');
-  // The model guard, first statement, as in every role service: the model above is a mock, but eve
+  // The model guard, first statement, the same call the role services make first: the model above is a mock, but eve
   // re-resolves a saved model id through the AI SDK's default provider on a cold pick-up, and that
   // default reaches a hosted gateway. This makes the default refuse. eve 1.0 reads instrumentation
   // from a directory, one file per provider.

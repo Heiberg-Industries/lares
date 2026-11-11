@@ -10,7 +10,7 @@
 // thing the model was handed, not a reconstruction.
 //
 // A scripted model is not, alone, a promise that no provider is reached: see
-// agent/instrumentation.ts for the guard that makes it one.
+// agent/instrumentation/model-guard.ts for the guard that makes it one.
 import { appendFileSync, existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { definitionModel, resolveDefinitionForModel } from "@lares/agent-kit/definition-model";
 import { fixtureDefinition } from "../lib/definition.js";
