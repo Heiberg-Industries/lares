@@ -100,7 +100,14 @@ export async function startServer(app) {
   const closed = new Promise(done => child.once('close', done));
   const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} };
   abort.signal.addEventListener('abort', kill, { once: true });
+  // A clean stop first (SIGTERM, as a container runtime sends), so the process boundary is the one
+  // a restart or an upgrade makes; the hard kill is only the fallback for a server that will not go.
+  // PROOF_HARD_KILL=1 skips the clean stop, to measure a crash instead.
   const stop = async () => {
+    if (!process.env.PROOF_HARD_KILL) {
+      try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+      await Promise.race([closed, new Promise(r => setTimeout(r, 15_000))]);
+    }
     kill(); await closed;
     for (let i = 0; i < 100; i += 1) {
       try { process.kill(-child.pid, 0); } catch { abort.signal.removeEventListener('abort', kill); return; }
