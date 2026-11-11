@@ -313,6 +313,13 @@ describe("chief-of-staff Slack channel", () => {
       expect(authorizeSlackAnswer({ defaultAuth }, { user: { id: "" } })).toBeNull();
     });
 
+    it("refuses an answer that names nobody, without throwing", async () => {
+      const { authorizeSlackAnswer } = await freshModule();
+      expect(authorizeSlackAnswer({ defaultAuth }, {})).toBeNull();
+      expect(authorizeSlackAnswer({ defaultAuth }, { user: {} })).toBeNull();
+      expect(authorizeSlackAnswer({ defaultAuth }, undefined as never)).toBeNull();
+    });
+
     it("refuses everybody when the owner id cannot be read", async () => {
       const { slackOwnerUserId } = await freshModule();
       const unreadable = new Proxy({}, { get() { throw new Error("environment not readable"); } }) as NodeJS.ProcessEnv;
@@ -410,11 +417,12 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
   }
 
   /** A tap on Approve (the default) or Deny, on a card in the thread `threadTs`. */
-  function tap(userId: string, answer: "approve" | "deny" = "approve", threadTs = "1700000000.000100"): Request {
+  function tap(userId: string | null, answer: "approve" | "deny" = "approve", threadTs = "1700000000.000100"): Request {
     const payload = {
       type: "block_actions",
       team: { id: "T0000000000" },
-      user: { id: userId, username: "someone", name: "someone" },
+      // `null`: a payload with no `user` object at all.
+      ...(userId === null ? {} : { user: { id: userId, username: "someone", name: "someone" } }),
       channel: { id: DM },
       message: { ts: "1700000000.000200", thread_ts: threadTs, blocks: [] },
       actions: [{
@@ -514,6 +522,31 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
     it("the second member can still talk to the agent: the answer rule is narrower than the message rule", async () => {
       const { sent, answered } = await deliver(directMessage(SECOND, "what is on today?"));
       expect(sent).toHaveLength(1);
+      expect(answered).toEqual([]);
+    });
+
+    // A payload Slack would not send, but the route must not fall open on. eve's own parsing
+    // gives such a tap a user with an empty id; the door's check refuses it. (Had the check thrown
+    // instead, eve catches that in `authorizeAnswer` and refuses too: see the next test.)
+    it.each(["approve", "deny"] as const)("a %s with no user on the payload is refused, and the route still answers 200", async (answer) => {
+      const { answered, sent, response } = await deliver(tap(null, answer));
+      expect(response.status).toBe(200);
+      expect(answered).toEqual([]);
+      expect(sent).toEqual([]);
+      expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+    });
+
+    it("if an answer check ever throws, eve refuses the answer: it never falls through to accepted", async () => {
+      // Pinned against eve's own code with a check that always throws, so the property does not
+      // depend on this door's check being the one installed.
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const { slackChannel } = await import("eve/channels/slack");
+      const throwing = slackChannel({
+        credentials: { botToken: async () => "xoxb-test", signingSecret: SECRET },
+        onAnswers: () => { throw new Error("answer check failed"); },
+      });
+      const { answered, response } = await deliverTo((throwing as never as { routes: Route[] }).routes[0]!, tap(OWNER));
+      expect(response.status).toBe(200);
       expect(answered).toEqual([]);
     });
 

@@ -144,10 +144,12 @@ export function slackOwnerUserId(env: NodeJS.ProcessEnv = process.env): string |
  */
 export function authorizeSlackAnswer(
   ctx: { readonly defaultAuth: SessionAuthContext },
-  submission: { readonly user: { readonly id: string } },
+  submission: { readonly user?: { readonly id?: string } },
 ): SlackAnswerResult {
   const owner = slackOwnerUserId();
-  if (owner === undefined || submission.user.id !== owner) {
+  // An answer that names nobody (no user on the payload, or no id) is not the owner's.
+  const answeredBy = submission?.user?.id;
+  if (owner === undefined || typeof answeredBy !== "string" || answeredBy !== owner) {
     console.warn("creative slack: an answer from someone other than the owner was refused; nothing was executed and the card is still pending");
     return null;
   }
@@ -189,21 +191,34 @@ interface ThreadContext {
 }
 
 /**
- * The fixed sentence for a failure that is the gateway's spending cap, or `null` for any other
- * failure. Recognition is the kit's (`@lares/agent-kit/gateway-budget`); this door only hands it
- * eve 1.0's payload. That payload is `{ code, message, id?, hint? }` and no longer carries the
- * gateway's error type or HTTP status, so the kit recognises a cap by the gateway's sentence in
- * `message` alone.
+ * What the door says itself about a failure, or `null` when the failure is eve's to answer.
+ *
+ * Recognition is the kit's (`@lares/agent-kit/gateway-budget`); this door hands it the event's
+ * `data` and posts what it is given. Two refusals are the door's:
+ *
+ *  - the gateway's spending cap, answered with this door's one fixed sentence;
+ *  - a monthly spending limit, answered with the sentence the engine itself wrote (which limit,
+ *    and when it resets), posted as written.
+ *
+ * eve 1.0's payload is `error: { code, message, id?, hint? }` and no longer carries the
+ * gateway's error type or HTTP status, so the kit recognises both by `message` alone: the cap by
+ * the gateway's opening words, the limit only when the message is exactly one of the sentences
+ * the engine writes.
+ *
+ * The kit's `respondToTurnFailed` is used for BOTH events on purpose. Its sibling for the
+ * session's end answers "say nothing" for these refusals, and on eve 1.0 a failure that ends the
+ * conversation is reported only there (see `onSessionEnded`), so that would leave a capped turn
+ * with no answer at all.
  */
-function budgetRefusalText(error: FailureError | undefined): string | null {
-  if (error === undefined) return null;
-  const response = respondToTurnFailed(error, FAILURE_OPTIONS);
+function refusalText(data: SettledEvent["data"]): string | null {
+  if (data.outcome !== "failed" || data.error === undefined) return null;
+  const response = respondToTurnFailed(data, FAILURE_OPTIONS);
   return response.kind === "budget-refusal" ? response.text : null;
 }
 
 async function answerFailure(event: SettledEvent, ctx: ThreadContext, next: () => Promise<void>): Promise<void> {
-  const refusal = event.data.outcome === "failed" ? budgetRefusalText(event.data.error) : null;
-  // Anything that is not a spending cap is eve's to answer, in eve's own words.
+  const refusal = refusalText(event.data);
+  // Anything that is not a spending refusal is eve's to answer, in eve's own words.
   if (refusal === null) return next();
   console.warn("creative slack: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
   await ctx.channel.thread.post(refusal);
