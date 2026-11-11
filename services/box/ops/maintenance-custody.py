@@ -476,6 +476,9 @@ def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None =
         _write_exclusive_at(auth_fd, "pg_hba.conf", hba, 0o644, uid)
         _write_exclusive_at(admission_fd, "service-gate.lock", b"", 0o444, uid)
         _write_exclusive_at(custody_fd, "command.lock", b"", 0o600, uid)
+        # Made here, with the rest, so that a maintenance run that is refused later leaves nothing
+        # behind. An installation prepared before this file existed gets it on its first run.
+        _write_exclusive_at(custody_fd, _RUN_LOCK, b"", 0o600, uid)
         _write_exclusive_at(admission_fd, "intent.json", _record(identity, epoch, "normal"), 0o444, uid)
         _assert_path_matches(requested, prefix_info, uid)
         _assert_path_matches(requested / "var/lib/lares-maintenance", os.fstat(root_fd), uid)
@@ -730,7 +733,8 @@ def _acquire_normal_lease(prefix: Path, uid: int, operation: str) -> None:
         except BlockingIOError as error:
             raise MaintenanceRunBusy(
                 "another maintenance run is still going (an update cannot run beside an update, a backup, "
-                "a restore or a rollback); wait until it has finished, then run this again") from error
+                "a restore, a rollback, the installer or an agent or budget command); wait until it has "
+                "finished, then run this again") from error
         if {_LEASE_FD, _RUN_FD} & {command_fd, gate_fd, run_fd}:
             raise ValueError("reserved maintenance descriptor collided")
         os.dup2(gate_fd, _LEASE_FD, inheritable=True)
@@ -745,6 +749,78 @@ def _acquire_normal_lease(prefix: Path, uid: int, operation: str) -> None:
                 os.close(fd)
         for fd in reversed(fds):
             os.close(fd)
+
+
+UPDATE_RUNNING = ("an update is running on this server, so this did not start and nothing was changed. "
+                  "Wait until the update has finished, then run this again.")
+
+
+class UpdateRunning(ValueError):
+    """An update holds the run lock, so a command that starts the keeper or an agent must not run."""
+
+
+class BesideUpdateUsage(ValueError):
+    """`beside-update` was called the wrong way; nothing was looked at or started."""
+
+
+class BesideUpdateDidNotStart(ValueError):
+    """The lock was taken, but the program could not be started."""
+
+
+def hold_beside_update(prefix: Path, uid: int) -> int | None:
+    """For the commands that start, restart or recreate the keeper or an agent without passing
+    through this gatekeeper (install.sh, and the agent and budget commands in budget-commands.py).
+
+    Takes the run lock SHARED and returns its descriptor: while it stays open no update can begin,
+    and it is refused at once while an update holds the lock (UpdateRunning). Backups, restores,
+    rollbacks and other such commands still run beside it, as before. Returns None when this server
+    has no maintenance custody folder at all: an update is only ever admitted through that folder,
+    so none can be running. Anything else that is wrong with the folder raises, so a caller never
+    takes "cannot tell" for "no update"."""
+    if not prefix.is_absolute() or ".." in prefix.parts:
+        raise ValueError("installation prefix must be absolute and normalized")
+    custody = prefix / "var/lib/lares-maintenance/custody"
+    try:
+        os.lstat(custody)
+    except FileNotFoundError:
+        return None
+    custody_fd, _ = _open_directory(custody, 0o700, uid)
+    try:
+        run_fd = _open_run_lock(custody_fd, uid)
+    finally:
+        os.close(custody_fd)
+    try:
+        fcntl.flock(run_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(run_fd)
+        raise UpdateRunning(UPDATE_RUNNING) from None
+    except BaseException:
+        os.close(run_fd)
+        raise
+    return run_fd
+
+
+def _run_beside_update(prefix: str, program: list[str]) -> None:
+    """`beside-update`: run one program (install.sh re-runs itself this way) holding the run lock
+    shared for its whole length; its children inherit the lock on descriptor 198."""
+    target = Path(prefix)
+    if not program or not target.is_absolute() or ".." in target.parts:
+        raise BesideUpdateUsage("usage: beside-update <absolute prefix> -- <program> [arguments]")
+    uid = os.geteuid() if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1" else 0
+    run_fd = hold_beside_update(target, uid)
+    if run_fd is not None:
+        if run_fd != _RUN_FD:
+            os.dup2(run_fd, _RUN_FD, inheritable=True)
+            os.close(run_fd)
+        else:
+            os.set_inheritable(_RUN_FD, True)
+    env = os.environ.copy()
+    # Tells install.sh it is already running under this lock, so it does not run itself again.
+    env["LARES_RUN_LOCK_HELD"] = "1"
+    try:
+        os.execvpe(program[0], program, env)
+    except OSError as error:
+        raise BesideUpdateDidNotStart(f"could not start {program[0]} ({error.strerror or error})") from None
 
 
 def _validate_inherited_normal(prefix: Path, uid: int, *, test_owner: bool) -> None:
@@ -988,6 +1064,10 @@ def main(argv: list[str]) -> int:
             if separator >= len(argv) or argv[separator] != "--":
                 raise ValueError("usage: run-normal <prefix> <operation-id> [--test-owner] -- [arguments]")
             _run_normal(argv[2], argv[3], argv[separator + 1:], test_owner=test_owner)
+        elif len(argv) >= 2 and argv[1] == "beside-update":
+            if len(argv) < 5 or argv[3] != "--":
+                raise BesideUpdateUsage("usage: beside-update <absolute prefix> -- <program> [arguments]")
+            _run_beside_update(argv[2], argv[4:])
         elif len(argv) in (4, 5) and argv[1] == "assert-normal-held":
             test_owner = len(argv) == 5 and argv[4] == "--test-owner"
             if len(argv) == 5 and not test_owner:
@@ -997,6 +1077,22 @@ def main(argv: list[str]) -> int:
             raise ValueError("unsupported maintenance custody command")
         return 0
     except (OSError, ValueError) as error:
+        if len(argv) > 1 and argv[1] == "beside-update":
+            if isinstance(error, UpdateRunning):
+                print(f"lares: {error}", file=sys.stderr)
+            elif isinstance(error, BesideUpdateUsage):
+                print(f"maintenance custody: {error}", file=sys.stderr)
+                return 64
+            elif isinstance(error, BesideUpdateDidNotStart):
+                print(f"lares: {error}, so nothing was changed. Check that this release's files are complete "
+                      "(run get-lares.sh again for it), then run this again.", file=sys.stderr)
+            else:
+                print(f"lares: I cannot tell whether an update is running ({error}), so this did not start and "
+                      "nothing was changed. The folder var/lib/lares-maintenance/custody must belong to root with "
+                      "mode 0700, the folders above it must not be writable by anyone else, the lock file "
+                      "operation.lock inside it must belong to root with mode 0600, and none of them may be a "
+                      "link; fix that, then run this again.", file=sys.stderr)
+            return 78
         if len(argv) > 1 and argv[1] in ("run-normal", "assert-normal-held", "validate-update-target"):
             if isinstance(error, MaintenanceRunBusy):
                 print(f"maintenance admission: refused: {error}", file=sys.stderr)

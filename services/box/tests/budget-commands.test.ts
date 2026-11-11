@@ -120,6 +120,117 @@ if len(names) != 5 or result.testsRun != 5 or not result.wasSuccessful():
     expect(result.status, result.stderr).toBe(0);
   }, 60_000);
 
+  // An update holds the maintenance run lock exclusively for its whole length while it stops the
+  // keeper and the agents and upgrades their stores (maintenance-custody.py). Every one of these
+  // commands can start, restart or recreate the keeper or an agent, so each holds the same lock
+  // shared: refused while an update runs, and no update can begin while it runs.
+  it("every agent and budget command is refused while an update runs, and holds off an update while it runs", () => {
+    const script = String.raw`
+import fcntl, importlib.util, os, sys, unittest
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("budget_commands_safety", sys.argv[1])
+safety = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(safety)
+ok = safety.ok
+
+COMMANDS = (
+    ("agent-start", "first"),
+    ("setup", "--installation-limit", "100", "--person-limit", "15", "--yes"),
+    ("recover",),
+    ("agent-refresh",),
+    ("agent-import", "/nonexistent-agent-folder"),
+    ("agent-provider-key", "remove", "first"),
+)
+
+class BesideAnUpdate(safety.BudgetCommandTests):
+    def run_lock(self) -> Path:
+        custody = self.prefix / "var/lib/lares-maintenance/custody"
+        custody.mkdir(mode=0o700, exist_ok=True)
+        custody.chmod(0o700)
+        return custody / "operation.lock"
+
+    def hold(self, mode: int) -> int:
+        """The lock as the gatekeeper holds it: exclusively for an update, shared for a backup."""
+        fd = os.open(self.run_lock(), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, mode | fcntl.LOCK_NB)
+        return fd
+
+    def listed(self) -> None:
+        self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64}])
+        self.keeper.answers["definition.refresh-image"] = ok({"moved": False, "state": "current", "reason": "already on this release"})
+
+    def test_each_command_is_refused_while_an_update_runs_and_changes_nothing(self) -> None:
+        update = self.hold(fcntl.LOCK_EX)
+        try:
+            for command in COMMANDS:
+                code, output = self.run_command(*command)
+                self.assertEqual(code, 78, (command, output))
+                self.assertIn("an update is running on this server, so this did not start and nothing was changed", output, command)
+                self.assertIn("Wait until the update has finished, then run this again", output, command)
+                self.assertEqual(self.docker_calls(), [], command)
+                self.assertEqual(self.keeper.requests, [], command)
+        finally:
+            os.close(update)
+        self.listed()
+        code, output = self.run_command("agent-refresh")
+        self.assertEqual(code, 0, output)
+
+    def test_a_backup_beside_it_changes_nothing(self) -> None:
+        backup = self.hold(fcntl.LOCK_SH)
+        try:
+            self.listed()
+            code, output = self.run_command("agent-refresh")
+            self.assertEqual(code, 0, output)
+        finally:
+            os.close(backup)
+
+    def test_an_update_cannot_begin_while_a_command_runs_and_can_once_it_has_ended(self) -> None:
+        tried = []
+        def refresh(request):
+            fd = os.open(self.run_lock(), os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                tried.append("admitted")
+            except BlockingIOError:
+                tried.append("refused")
+            finally:
+                os.close(fd)
+            return ok({"moved": False, "state": "current", "reason": "already on this release"})
+        self.run_lock()
+        self.listed()
+        self.keeper.answers["definition.refresh-image"] = refresh
+        code, output = self.run_command("agent-refresh")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(tried, ["refused"])
+        os.close(self.hold(fcntl.LOCK_EX))
+        self.assertEqual(stat_mode(self.run_lock()), 0o600)
+
+    def test_a_maintenance_folder_it_cannot_trust_starts_nothing(self) -> None:
+        self.run_lock().parent.chmod(0o755)
+        code, output = self.run_command("agent-start", "first")
+        self.assertEqual(code, 78, output)
+        self.assertIn("I cannot tell whether an update is running", output)
+        self.assertEqual(self.keeper.requests, [])
+
+    def test_a_server_without_a_maintenance_folder_runs_as_before(self) -> None:
+        self.listed()
+        code, output = self.run_command("agent-refresh")
+        self.assertEqual(code, 0, output)
+        self.assertFalse((self.prefix / "var/lib/lares-maintenance/custody").exists())
+
+def stat_mode(path: Path) -> int:
+    return path.stat().st_mode & 0o777
+
+names = [name for name in dir(BesideAnUpdate) if name.startswith("test_") and name not in dir(safety.BudgetCommandTests)]
+suite = unittest.TestSuite(BesideAnUpdate(name) for name in sorted(names))
+result = unittest.TextTestRunner(stream=sys.stderr, verbosity=1).run(suite)
+if len(names) != 5 or result.testsRun != 5 or not result.wasSuccessful():
+    sys.exit(1)
+`;
+    const result = spawnSync("python3", ["-B", "-c", script, join(here, "budget-commands-safety.py")], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+  }, 60_000);
+
   it("the lares command hands budget and agent commands the release's pinned image", () => {
     const root = mkdtempSync(join(tmpdir(), "lares-wrapper-"));
     try {
