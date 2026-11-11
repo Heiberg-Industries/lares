@@ -133,8 +133,12 @@ function resumeReceiptOf(principal:unknown){
   const v=(principal as {attributes?:Record<string,unknown>}|undefined)?.attributes?.lares_model_pending_receipt;
   return typeof v==='string'&&/^[A-Za-z0-9_-]{43}$/.test(v)?v:undefined;
 }
-/** Called by a response policy only after it has fully accepted the answer. A second accept of the
- *  same card (eve may ask again) replaces nothing: the first answer stands. */
+/** Called by a response policy only after it has fully accepted the answer. eve applies the LATEST
+ *  answer from the same responder (`harness/hitl/responders.js`, `revisedAnswers`): Deny then
+ *  Approve settles as Approve. So a later accepted answer from the same member and admission
+ *  replaces the earlier one, receipt included. An answer from anyone else for a card that already
+ *  has one removes both: nothing continues from a card two people answered. The settle hook then
+ *  keeps the entry only if it agrees with what eve actually applied (`settleAcceptedAnswer`). */
 export function rememberAcceptedAnswer(ctx:{request:{interactionId:string};response:{decision:'approve'|'deny';principal:unknown};session:{id:string;turn?:unknown}},
   who:{memberId:string;admissionNonce:string},env:NodeJS.ProcessEnv=process.env,now=Date.now()):void{
   const own=managedIdentity(env),turn=ctx.session?.turn as {id?:unknown;sequence?:unknown}|undefined;
@@ -143,11 +147,19 @@ export function rememberAcceptedAnswer(ctx:{request:{interactionId:string};respo
   pruneAccepted(now);
   const point={sessionId:ctx.session.id,turnId:turn.id,sequence:Number(turn.sequence),incarnation:own.incarnation};
   const id=pointKey(point)+ctx.request.interactionId;
-  if(accepted.has(id))return;
-  if(accepted.size>=MAX_ACCEPTED)return; // Full: this answer opens no continuation (refused, never guessed).
+  const earlier=accepted.get(id);
+  if(earlier&&(earlier.memberId!==who.memberId||earlier.admissionNonce!==who.admissionNonce)){accepted.delete(id);return;}
+  if(!earlier&&accepted.size>=MAX_ACCEPTED)return; // Full: this answer opens no continuation (refused, never guessed).
   const receipt=resumeReceiptOf(ctx.response.principal);
   accepted.set(id,Object.freeze({...point,requestId:ctx.request.interactionId,optionId:ctx.response.decision,memberId:who.memberId,
     admissionNonce:who.admissionNonce,principal:ctx.response.principal,...(receipt?{receipt}:{}),expiresAt:now+ACCEPTED_MS}));
+}
+/** The settle hook, once eve has settled a card: keep this card's accepted answer only if it is the
+ *  answer eve applied (`approve` for a person's Approve, `deny` for a person's Deny). Any other
+ *  ending, or a disagreement, removes it, so the continuation opens nothing for that card. */
+export function settleAcceptedAnswer(requestId:string,sessionId:unknown,applied:'approve'|'deny'|undefined,env:NodeJS.ProcessEnv=process.env):void{
+  const own=managedIdentity(env);if(!own)return;
+  for(const [k,v] of accepted)if(v.requestId===requestId&&v.incarnation===own.incarnation&&(v.sessionId!==sessionId||v.optionId!==applied))accepted.delete(k);
 }
 /** Read one card's accepted answer without using it up (the settle hook: who answered, and how). */
 export function acceptedAnswerFor(requestId:string,sessionId:string,env:NodeJS.ProcessEnv=process.env,now=Date.now()):AcceptedAnswer|undefined{

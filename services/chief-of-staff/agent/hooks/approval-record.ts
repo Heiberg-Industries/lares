@@ -15,6 +15,7 @@ import {personalSendInputRequested,personalSendInputResolved} from '../../lib/pe
 import { getPool } from "@lares/agent-kit/db";
 import { approverFrom, assertApprover, takeNativeAnswerer } from "../../lib/approvals.js";
 import { noteApprovalCardTurn } from "../../lib/approval-card-turns.js";
+import { settleAcceptedAnswer } from "@lares/agent-kit/private-console-resume";
 import { applyRouteProposalDecline, recordRouteApprovalLink, routeApprovalLinkAudience } from "../../lib/route-decline.js";
 import { withCurrentNativeContinuity } from "../../lib/conversation-continuity.js";
 const live = makeApprovalRecord({personalRequested:(r,c)=>personalSendInputRequested(r,c as never),personalResolved:(r,o,c)=>personalSendInputResolved(r,o,c as never)});
@@ -96,8 +97,14 @@ export default defineHook({
       try { await linkScheduledRouteRequests(getPool(), event, ctx); } catch (error) { warnRouteDecline(error); }
     },
     "interaction.settled": async (event: unknown, ctx: HookContext) => {
-      // Marked again on settle; a no-op when the opening hook already marked the turn.
-      if (settledApproval(event, ctx)) noteApprovalCardTurn(cardTurnOf(event, ctx));
+      const settled = settledApproval(event, ctx);
+      if (settled) {
+        // Marked again on settle; a no-op when the opening hook already marked the turn.
+        noteApprovalCardTurn(cardTurnOf(event, ctx));
+        // The turn continues only from the answer eve applied, never from an earlier one.
+        settleAcceptedAnswer(settled.interactionId, ctx?.session?.id,
+          settled.outcome === "approved" ? "approve" : settled.outcome === "cancelled" && settled.decidedByPerson ? "deny" : undefined);
+      }
       await live["interaction.settled"](event, ctx);
       try { await applyScheduledRouteDeclines(event, ctx); } catch (error) { warnRouteDecline(error); }
     },
