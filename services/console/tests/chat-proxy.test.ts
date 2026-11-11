@@ -13,11 +13,25 @@ import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { forwardChat, CHAT_PATHS, MEMBER_HEADER, ROUTE_USERNAME, type ChatDeps } from "../lib/chat-proxy";
 import { chatSessionCapabilityCookie } from "../lib/chat-session-capability";
 
+/**
+ * THE AGENT KIT'S ENVELOPE CHECK. The proxy shows every body it is about to send to
+ * `assertPrivateConsoleEnvelope` from the agent kit; the agent runs the same check on what
+ * arrives, and refuses any field it does not list. These tests run against the kit's REAL check.
+ * The wrapper below only records what the proxy showed it (`seen`), and lets one group of tests
+ * take the check out of the way (`check`) to prove the proxy's own rules do not lean on it.
+ */
+const envelope=vi.hoisted(()=>({check:undefined as undefined|((payload:unknown,path:string)=>void),seen:[] as {payload:unknown;path:string}[]}));
+vi.mock('@lares/agent-kit/private-console-envelope',async importOriginal=>{
+  const real=await importOriginal<typeof import('@lares/agent-kit/private-console-envelope')>();
+  return {...real,assertPrivateConsoleEnvelope:(payload:unknown,path:string)=>{envelope.seen.push({payload,path});(envelope.check??real.assertPrivateConsoleEnvelope)(payload,path);}};
+});
+beforeEach(()=>{envelope.check=undefined;envelope.seen.length=0;});
+
 const access=vi.hoisted(()=>({captureUse:vi.fn(async()=>1)}));
-const modelPurpose=vi.hoisted(()=>({configured:vi.fn(()=>false),sign:vi.fn(async()=>"signed-model-capsule")}));
+const modelPurpose=vi.hoisted(()=>({configured:vi.fn(()=>false),sign:vi.fn(async()=>"signed-model-capsule"),hashed:[] as Uint8Array[]}));
 vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class {captureUse=access.captureUse;async captureUseWithExpiry(){const revision=await access.captureUse();return revision===undefined?undefined:{accessRevision:revision,validUntil:null};}}}));
-vi.mock('../lib/model-purpose-capsule',()=>({modelPurposeSigningConfigured:modelPurpose.configured,signPrivateModelPurposeRequest:modelPurpose.sign,modelPurposeRawBodyHash:()=>"a".repeat(64)}));
-beforeEach(()=>{vi.stubEnv('AGENT_OWNER_USER_ID','Owner-ID');access.captureUse.mockResolvedValue(1);modelPurpose.configured.mockReturnValue(false);modelPurpose.sign.mockClear();});
+vi.mock('../lib/model-purpose-capsule',()=>({modelPurposeSigningConfigured:modelPurpose.configured,signPrivateModelPurposeRequest:modelPurpose.sign,modelPurposeRawBodyHash:(bytes:Uint8Array)=>{modelPurpose.hashed.push(bytes);return "a".repeat(64);}}));
+beforeEach(()=>{vi.stubEnv('AGENT_OWNER_USER_ID','Owner-ID');access.captureUse.mockResolvedValue(1);modelPurpose.configured.mockReturnValue(false);modelPurpose.sign.mockClear();modelPurpose.hashed.length=0;});
 afterAll(()=>vi.unstubAllEnvs());
 const PASSWORD = "disposable-fixture-only";
 
@@ -77,7 +91,7 @@ const sessionRequest = (path: string, method = "GET", cookie = capability()) =>
   new Request(`https://console.example.invalid/api/chat/helper/${path}`, {
     method,
     headers: { cookie: `lares_session=abc; ${cookie}` },
-    ...(method === "POST" ? { body: /\/(cancel|clear|compact|reset)$/.test(path) ? "{}" : '{"message":"hello"}' } : {}),
+    ...(method === "POST" ? { body: /\/(cancel|clear|compact|end|reset)$/.test(path) ? "{}" : '{"message":"hello"}' } : {}),
   });
 
 describe("the console's chat proxy", () => {
@@ -277,18 +291,94 @@ describe("the console's chat proxy", () => {
     expect(init!.signal!.aborted).toBe(true);
   });
 
-  it("carries only the stream parameters eve itself uses", async () => {
+  const STREAM = "eve/v1/session/wrun_A/stream";
+  const streamWith = (query: string) =>
+    new Request(`https://console.example.invalid/api/chat/helper/${STREAM}${query}`, { headers: { cookie: `lares_session=abc; ${capability()}` } });
+
+  it.each([
+    ["", ""],
+    ["?startIndex=12", "?startIndex=12"],
+    ["?includeTailIndex=1", "?includeTailIndex=1"],
+    ["?follow=false", "?follow=false"],
+    // The three together, in the order the framework's client writes them.
+    ["?startIndex=12&includeTailIndex=1&follow=false", "?startIndex=12&includeTailIndex=1&follow=false"],
+  ])("carries the stream parameters the framework's client sets, in the shape it sets them (%j)", async (query, upstream) => {
     const d = deps();
-    const get = new Request(
-      "https://console.example.invalid/api/chat/helper/eve/v1/session/wrun_A/stream" +
-        "?startIndex=12&includeTailIndex=1&streamControlVersion=1&host=evil.example.invalid&startIndex2=x",
-      { headers: { cookie: `lares_session=abc; ${capability()}` } },
-    );
-    await forwardChat(get, "helper", "eve/v1/session/wrun_A/stream", d);
-    const [url] = d.fetch.mock.calls[0]!;
-    expect(String(url)).toBe(
-      "http://172.29.0.10:3000/eve/v1/session/wrun_A/stream?streamControlVersion=1&startIndex=12&includeTailIndex=1",
-    );
+    expect((await forwardChat(streamWith(query), "helper", STREAM, d)).status).toBe(200);
+    expect(String(d.fetch.mock.calls[0]![0])).toBe(`http://172.29.0.10:3000/${STREAM}${upstream}`);
+  });
+
+  it.each([
+    "?host=evil.example.invalid",
+    "?startIndex=12&host=evil.example.invalid",
+    // The parameter the older client sent, which the new one does not.
+    "?streamControlVersion=1",
+    "?startIndex2=x",
+    // A known name in any other shape.
+    "?startIndex=-5",
+    "?startIndex=1e3",
+    "?startIndex=",
+    "?startIndex=1234567890123",
+    "?includeTailIndex=0",
+    "?includeTailIndex=true",
+    "?follow=true",
+    "?follow=0",
+    "?follow=FALSE",
+    // A known name twice.
+    "?startIndex=1&startIndex=2",
+    "?follow=false&follow=false",
+  ])("refuses a stream request with any other query parameter, rather than dropping it (%j)", async (query) => {
+    const d = deps();
+    const response = await forwardChat(streamWith(query), "helper", STREAM, d);
+    expect(response.status).toBe(400);
+    expect(d.fetch).not.toHaveBeenCalled();
+    // Refused before anything is looked up, read or opened.
+    expect(d.query).not.toHaveBeenCalled();
+    expect(d.routePassword).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["eve/v1/session", "POST"],
+    ["eve/v1/session/wrun_A", "POST"],
+    ["eve/v1/session/wrun_A/end", "POST"],
+    ["eve/v1/session/wrun_A/cancel", "POST"],
+    ["eve/v1/health", "GET"],
+  ])("takes no query parameter at all on any path but a stream (%s)", async (path, method) => {
+    for (const query of ["?startIndex=1", "?includeTailIndex=1", "?follow=false", "?anything=1"]) {
+      const d = deps();
+      const request = new Request(`https://console.example.invalid/api/chat/helper/${path}${query}`, {
+        method,
+        headers: { cookie: `lares_session=abc; ${capability()}` },
+        ...(method === "POST" ? { body: "{}" } : {}),
+      });
+      expect((await forwardChat(request, "helper", path, d)).status, query).toBe(400);
+      expect(d.fetch).not.toHaveBeenCalled();
+    }
+  });
+
+  it("relays only the two request headers the chat needs, and no event id from the older client", async () => {
+    const d = deps();
+    const get = streamWith("");
+    get.headers.set("accept", "application/x-ndjson");
+    get.headers.set("last-event-id", "evt_42");
+    get.headers.set("x-forwarded-for", "203.0.113.9");
+    await forwardChat(get, "helper", STREAM, d);
+    const headers = d.fetch.mock.calls[0]![1]!.headers as Headers;
+    expect(headers.get("accept")).toBe("application/x-ndjson");
+    expect(headers.has("last-event-id")).toBe(false);
+    expect(headers.has("x-forwarded-for")).toBe(false);
+  });
+
+  it("passes the stream's own headers back, so the framework's client accepts the response", async () => {
+    const d = deps();
+    d.fetch.mockResolvedValue(new Response('{"$eve":"heartbeat"}\n', { status: 200, headers: {
+      "content-type": "application/x-ndjson; charset=utf-8", "x-eve-stream-version": "27", "x-eve-stream-tail-index": "41",
+      "x-eve-session-id": "wrun_A", "set-cookie": "agent=1", "x-accel-buffering": "no",
+    } }));
+    const response = await forwardChat(streamWith("?includeTailIndex=1"), "helper", STREAM, d);
+    expect(response.headers.get("x-eve-stream-version")).toBe("27");
+    expect(response.headers.get("x-eve-stream-tail-index")).toBe("41");
+    expect(response.headers.has("set-cookie")).toBe(false);
   });
 
   it("does NOT require a claimed or enabled door — a fresh installation has none", async () => {
@@ -357,11 +447,130 @@ describe("the console's chat proxy", () => {
     for (const path of ["eve/v1/health"]) {
       expect((await forwardChat(get(path), "helper", path, d)).status).toBe(200);
     }
-    for (const verb of ["cancel", "clear", "compact", "reset"]) {
+    // `end` is how the framework's client closes a conversation; `reset` is the older name the
+    // agent still serves for it.
+    for (const verb of ["cancel", "clear", "compact", "end", "reset"]) {
       const path = `eve/v1/session/wrun_A/${verb}`;
-      expect((await forwardChat(sessionRequest(path, "POST"), "helper", path, d)).status).toBe(200);
+      expect((await forwardChat(sessionRequest(path, "POST"), "helper", path, d)).status, verb).toBe(200);
+      const [url, init] = d.fetch.mock.calls.at(-1)!;
+      expect(url).toBe(`http://172.29.0.10:3000/${path}`);
+      expect((init!.headers as Headers).get("x-lares-purpose")).toBe("control");
     }
     expect((await forwardChat(sessionRequest("eve/v1/session/wrun_A", "POST"), "helper", "eve/v1/session/wrun_A", d)).status).toBe(200);
+  });
+
+  it("ends a conversation with the body the framework's client sends: nothing, or a reason", async () => {
+    const path = "eve/v1/session/wrun_A/end";
+    for (const raw of ["{}", '{"reason":"Conversation finished"}']) {
+      const d = deps();
+      const request = new Request(`https://console.example.invalid/api/chat/helper/${path}`, {
+        method: "POST", body: raw, headers: { "content-type": "application/json", cookie: `lares_session=abc; ${capability()}` },
+      });
+      expect((await forwardChat(request, "helper", path, d)).status, raw).toBe(200);
+      expect(Buffer.from(d.fetch.mock.calls[0]![1]!.body as Uint8Array).toString("utf8")).toBe(raw);
+    }
+    const d = deps();
+    const unknown = new Request(`https://console.example.invalid/api/chat/helper/${path}`, {
+      method: "POST", body: '{"reason":"x","force":true}', headers: { cookie: `lares_session=abc; ${capability()}` },
+    });
+    expect((await forwardChat(unknown, "helper", path, d)).status).toBe(400);
+    expect(d.fetch).not.toHaveBeenCalled();
+  });
+
+  it("cancels with a turn named, or with none — and 'no turn' leaves the console as {}, never as a null", async () => {
+    const path = "eve/v1/session/wrun_A/cancel";
+    const cancel = (raw: string) => new Request(`https://console.example.invalid/api/chat/helper/${path}`, {
+      method: "POST", body: raw, headers: { "content-type": "application/json", cookie: `lares_session=abc; ${capability()}` },
+    });
+    for (const [raw, sent] of [
+      ['{"turnId":"turn_1"}', '{"turnId":"turn_1"}'],
+      ["{}", "{}"],
+      // What the framework's store sends when it knows of no running turn. The agent refuses a
+      // null; the body that names no turn is the empty one.
+      ['{"turnId":null}', "{}"],
+    ] as const) {
+      const d = deps();
+      expect((await forwardChat(cancel(raw), "helper", path, d)).status, raw).toBe(200);
+      const [, init] = d.fetch.mock.calls[0]!;
+      expect(Buffer.from(init!.body as Uint8Array).toString("utf8")).toBe(sent);
+      expect((init!.headers as Headers).get("x-lares-purpose")).toBe("control");
+    }
+    for (const raw of ['{"turnId":""}', '{"turnId":7}', '{"turnId":["turn_1"]}', '{"turnId":null,"force":true}', '{"turnId":"turn_1","reason":"x"}', '{"reason":null}']) {
+      const d = deps();
+      expect((await forwardChat(cancel(raw), "helper", path, d)).status, raw).toBe(400);
+      expect(d.fetch).not.toHaveBeenCalled();
+    }
+    // Only cancel reads a null that way: the other controls still refuse one.
+    for (const verb of ["end", "reset", "clear", "compact"]) {
+      const d = deps();
+      const other = `eve/v1/session/wrun_A/${verb}`;
+      const request = new Request(`https://console.example.invalid/api/chat/helper/${other}`, { method: "POST", body: '{"turnId":null}', headers: { cookie: `lares_session=abc; ${capability()}` } });
+      expect((await forwardChat(request, "helper", other, d)).status, verb).toBe(400);
+      expect((await forwardChat(new Request(request.url, { method: "POST", body: '{"reason":null}', headers: { cookie: `lares_session=abc; ${capability()}` } }), "helper", other, d)).status, verb).toBe(400);
+      expect(d.fetch).not.toHaveBeenCalled();
+    }
+  });
+
+  it("marks its own refusals, and never passes that mark on from an agent", async () => {
+    // Every sentence this proxy writes carries its mark, whatever the reason.
+    const signedOut = await forwardChat(post(), "helper", "eve/v1/session", deps(row, PASSWORD, null));
+    const badPath = await forwardChat(post(), "helper", "eve/v1/slack", deps());
+    const badBody = await forwardChat(post('{"message":"x","callback":{}}'), "helper", "eve/v1/session", deps());
+    const down = deps();
+    down.fetch.mockRejectedValue(new Error("connect ECONNREFUSED"));
+    const noAnswer = await forwardChat(post(), "helper", "eve/v1/session", down);
+    for (const refusal of [signedOut, badPath, badBody, noAnswer]) {
+      expect(refusal.ok).toBe(false);
+      expect(refusal.headers.get("x-lares-console-refusal")).toBe("1");
+      expect(refusal.headers.get("content-type")).toBe("text/plain");
+    }
+    // An agent answering in plain text, and claiming the mark, gets neither treated as ours.
+    const d = deps();
+    d.fetch.mockResolvedValue(new Response("Text an agent wrote.", { status: 400, headers: { "content-type": "text/plain", "x-lares-console-refusal": "1", "x-lares-agent-state": "not-running" } }));
+    const relayed = await forwardChat(sessionRequest("eve/v1/session/wrun_A", "POST"), "helper", "eve/v1/session/wrun_A", d);
+    expect(relayed.status).toBe(400);
+    expect(relayed.headers.has("x-lares-console-refusal")).toBe(false);
+    expect(relayed.headers.has("x-lares-agent-state")).toBe(false);
+  });
+
+  it.each([
+    ["eve/v1/session/wrun_A/end", "GET"],
+    ["eve/v1/session/wrun_A/end", "DELETE"],
+    ["eve/v1/session/wrun_A", "PUT"],
+    ["eve/v1/session/wrun_A", "PATCH"],
+    ["eve/v1/session/wrun_A", "DELETE"],
+    ["eve/v1/session", "PUT"],
+    ["eve/v1/session/wrun_A/stream", "PUT"],
+    ["eve/v1/health", "POST"],
+  ])("refuses a known path under a method the chat does not use (%s %s)", async (path, method) => {
+    const d = deps();
+    const request = new Request(`https://console.example.invalid/api/chat/helper/${path}`, {
+      method, headers: { cookie: `lares_session=abc; ${capability()}` }, ...(method === "GET" ? {} : { body: "{}" }),
+    });
+    expect((await forwardChat(request, "helper", path, d)).status).toBe(404);
+    expect(d.query).not.toHaveBeenCalled();
+    expect(d.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "eve/v1/session/wrun_A/restart",
+    "eve/v1/session/wrun_A/stubs",
+    "eve/v1/session/wrun_A/descendants/stream",
+    "eve/v1/session/wrun_A/end/now",
+    "eve/v1/session/wrun_A/ending",
+    "eve/v1/info",
+    "eve/v1/callback/token",
+    "eve/v1/connections/x/callback/a/b",
+  ])("refuses a route of the agent the chat has no use for (%j)", async (path) => {
+    for (const method of ["GET", "POST"]) {
+      const d = deps();
+      const request = new Request(`https://console.example.invalid/api/chat/helper/${path}`, {
+        method, headers: { cookie: `lares_session=abc; ${capability()}` }, ...(method === "POST" ? { body: "{}" } : {}),
+      });
+      expect((await forwardChat(request, "helper", path, d)).status, method).toBe(404);
+      expect(d.query).not.toHaveBeenCalled();
+      expect(d.fetch).not.toHaveBeenCalled();
+    }
   });
 
   it.each([
@@ -460,7 +669,7 @@ describe("the member the console vouches for", () => {
   });
 
   it("is answered on a POST only — a cross-site GET cannot reach the answer path at all", async () => {
-    // Answering a card is `POST eve/v1/session/<id>` with `inputResponses`. A cross-site <img> or
+    // Answering a card is `POST eve/v1/session/<id>` with `answers`. A cross-site <img> or
     // a link is a GET, and the allow-list has no GET rule for that path, so it never becomes a
     // request at all — before SameSite=Lax is even reached.
     const d = deps();
@@ -511,15 +720,15 @@ describe("stable console session binding", () => {
     const d = deps();
     const path = "eve/v1/session/wrun_A";
     const mixed = sessionRequest(path,"POST");
-    const request = new Request(mixed.url,{method:"POST",headers:mixed.headers,body:JSON.stringify({message:"hello",inputResponses:[]})});
+    const request = new Request(mixed.url,{method:"POST",headers:mixed.headers,body:JSON.stringify({message:"hello",answers:[{interactionId:"fixture-card",optionId:"approve"}]})});
     expect((await forwardChat(request,"helper",path,d)).status).toBe(400);
     expect(d.fetch).not.toHaveBeenCalled();
-    const resolver = new Request(mixed.url,{method:"POST",headers:mixed.headers,body:JSON.stringify({inputResponses:[{requestId:"fixture-card",optionId:"approve"}]})});
+    const resolver = new Request(mixed.url,{method:"POST",headers:mixed.headers,body:JSON.stringify({answers:[{interactionId:"fixture-card",optionId:"approve"}]})});
     expect((await forwardChat(resolver,"helper",path,d)).status).toBe(200);
     expect((d.fetch.mock.calls[0]![1]!.headers as Headers).get("x-lares-purpose")).toBe("resolver");
   });
   it("rechecks bindings before every stream and control operation", async () => {
-    for(const suffix of ["stream","cancel","clear","compact","reset"]){
+    for(const suffix of ["stream","cancel","clear","compact","end","reset"]){
       const d = deps();
       const query=d.query.getMockImplementation()!;d.query.mockImplementation(async(sql,values)=>sql.includes("console_session_bindings")?{rows:[]}:query(sql,values));
       const path = `eve/v1/session/wrun_A/${suffix}`;
@@ -539,4 +748,422 @@ it('refuses callback destinations, observers, unknown fields and attachments bef
  for(const payload of [{message:'hello',callback:{url:'https://example.invalid/output'}},{message:'hello',activityObserver:{}},{message:'hello',clientContext:'injected'},{message:'hello',mode:'task'},{message:'hello',outputSchema:{}},{message:'hello',unknown:true},{message:[{type:'file',mediaType:'text/plain',data:'https://example.invalid/file'}]}]){
   const d=deps();expect((await forwardChat(post(JSON.stringify(payload)),'helper','eve/v1/session',d)).status).toBe(400);expect(d.fetch).not.toHaveBeenCalled();
  }
+});
+
+/**
+ * Answering a card. The body is the framework client's own: `{ answers: [{ interactionId,
+ * optionId }] }`, with `optionId` "approve" or "deny". The proxy reads it — to decide the purpose
+ * it vouches for, and to name the card in the model-resume capsule — and relays the bytes untouched.
+ */
+describe("an answer to a card", () => {
+  const PATH = "eve/v1/session/wrun_A";
+  const answer = (body: unknown, cookie = capability()) =>
+    new Request(`https://console.example.invalid/api/chat/helper/${PATH}`, {
+      method: "POST",
+      body: typeof body === "string" ? body : JSON.stringify(body),
+      headers: { "content-type": "application/json", cookie: `lares_session=abc; ${cookie}` },
+    });
+
+  it.each(["approve", "deny"] as const)("relays %s exactly as sent, under the resolver purpose", async (optionId) => {
+    const d = deps();
+    const raw = JSON.stringify({ answers: [{ interactionId: "int_A", optionId }] });
+    expect((await forwardChat(answer(raw), "helper", PATH, d)).status).toBe(200);
+    const [url, init] = d.fetch.mock.calls[0]!;
+    expect(url).toBe("http://172.29.0.10:3000/eve/v1/session/wrun_A");
+    expect(Buffer.from(init!.body as Uint8Array).toString("utf8")).toBe(raw);
+    expect((init!.headers as Headers).get("x-lares-purpose")).toBe("resolver");
+    // An answer is not a human message: it never carries the private Vault reader's capsule.
+    expect((init!.headers as Headers).has("x-lares-vault-capsule")).toBe(false);
+  });
+
+  it("names the card by its interaction id in the model-resume capsule, with the same decision the body carries", async () => {
+    modelPurpose.configured.mockReturnValue(true);
+    for (const [optionId, capsuleOption] of [["approve", "approve"], ["deny", "deny"]] as const) {
+      modelPurpose.sign.mockClear();
+      const d = deps();
+      expect((await forwardChat(answer({ answers: [{ interactionId: "int_A", optionId }] }), "helper", PATH, d)).status).toBe(200);
+      expect(modelPurpose.sign).toHaveBeenCalledOnce();
+      expect(modelPurpose.sign).toHaveBeenCalledWith(expect.objectContaining({
+        session: "wrun_A", method: "POST", path: "/eve/v1/session/wrun_A", purpose: "resume",
+        // The capsule keeps its own key for the card, `requestId`; the value is the interaction id.
+        // The agent refuses a capsule whose two values are not exactly the body's.
+        resume: { requestId: "int_A", optionId: capsuleOption },
+      }));
+      const headers = d.fetch.mock.calls[0]![1]!.headers as Headers;
+      expect(headers.get("x-lares-model-capsule")).toBe("signed-model-capsule");
+      expect(headers.get("x-lares-model-purpose-required")).toBe("1");
+    }
+  });
+
+  it("refuses the answer, and calls nobody, when the capsule cannot be signed", async () => {
+    modelPurpose.configured.mockReturnValue(true);
+    modelPurpose.sign.mockRejectedValueOnce(new Error("signer down"));
+    const d = deps();
+    expect((await forwardChat(answer({ answers: [{ interactionId: "int_A", optionId: "approve" }] }), "helper", PATH, d)).status).toBe(503);
+    expect(d.fetch).not.toHaveBeenCalled();
+  });
+
+  it("carries a card a sub-agent relayed, whose id names the child conversation", async () => {
+    const d = deps();
+    expect((await forwardChat(answer({ answers: [{ interactionId: "wrun_child/int_B", optionId: "deny" }] }), "helper", PATH, d)).status).toBe(200);
+  });
+
+  it.each([
+    ["the older answer field", { inputResponses: [{ requestId: "int_A", optionId: "approve" }] }],
+    ["the older word for declining", { answers: [{ interactionId: "int_A", optionId: "cancel" }] }],
+    ["an option that is neither", { answers: [{ interactionId: "int_A", optionId: "always-allow" }] }],
+    ["no option", { answers: [{ interactionId: "int_A" }] }],
+    ["free text in place of an option", { answers: [{ interactionId: "int_A", text: "yes do it" }] }],
+    ["free text beside an option", { answers: [{ interactionId: "int_A", optionId: "approve", text: "and more" }] }],
+    ["an extra field", { answers: [{ interactionId: "int_A", optionId: "approve", requestId: "int_A" }] }],
+    ["two answers at once", { answers: [{ interactionId: "int_A", optionId: "approve" }, { interactionId: "int_B", optionId: "approve" }] }],
+    ["no answer", { answers: [] }],
+    ["an answer that is not a list", { answers: { interactionId: "int_A", optionId: "approve" } }],
+    ["no card named", { answers: [{ optionId: "approve" }] }],
+    ["an empty card id", { answers: [{ interactionId: "", optionId: "approve" }] }],
+    ["a card id that is not an id", { answers: [{ interactionId: "int A\n", optionId: "approve" }] }],
+    ["a card id that is not text", { answers: [{ interactionId: 7, optionId: "approve" }] }],
+    ["an answer with a message", { message: "hello", answers: [{ interactionId: "int_A", optionId: "approve" }] }],
+    ["nothing at all", {}],
+    ["an unknown top-level field", { answers: [{ interactionId: "int_A", optionId: "approve" }], turnPolicy: "steer" }],
+  ])("refuses %s before any upstream call", async (_name, body) => {
+    const d = deps();
+    const response = await forwardChat(answer(body), "helper", PATH, d);
+    expect(response.status).toBe(400);
+    expect(d.fetch).not.toHaveBeenCalled();
+    expect(modelPurpose.sign).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the older answer field", { inputResponses: [{ requestId: "int_A", optionId: "approve" }] }],
+    ["the older word for declining", { answers: [{ interactionId: "int_A", optionId: "cancel" }] }],
+    ["an option that is neither", { answers: [{ interactionId: "int_A", optionId: "always-allow" }] }],
+    ["no option", { answers: [{ interactionId: "int_A" }] }],
+    ["free text beside an option", { answers: [{ interactionId: "int_A", optionId: "approve", text: "and more" }] }],
+    ["an extra field", { answers: [{ interactionId: "int_A", optionId: "approve", requestId: "int_A" }] }],
+    ["two answers at once", { answers: [{ interactionId: "int_A", optionId: "approve" }, { interactionId: "int_B", optionId: "approve" }] }],
+    ["no answer", { answers: [] }],
+    ["an answer that is not a list", { answers: { interactionId: "int_A", optionId: "approve" } }],
+    ["an empty card id", { answers: [{ interactionId: "", optionId: "approve" }] }],
+    ["a card id that is not an id", { answers: [{ interactionId: "int A\n", optionId: "approve" }] }],
+    ["a card id that is not text", { answers: [{ interactionId: 7, optionId: "approve" }] }],
+    ["an answer with a message", { message: "hello", answers: [{ interactionId: "int_A", optionId: "approve" }] }],
+    ["neither a message nor an answer", { somethingElse: true }],
+  ])("refuses %s by its OWN reading, even if the envelope check let it through", async (_name, body) => {
+    // The envelope check is taken out of the way, so what refuses here is this proxy alone. Its
+    // reading of an answer must not lean on another module having looked first.
+    envelope.check = () => {};
+    for (const signing of [false, true]) {
+      modelPurpose.configured.mockReturnValue(signing);
+      const d = deps();
+      const response = await forwardChat(answer(body), "helper", PATH, d);
+      expect(response.status, String(signing)).toBe(400);
+      expect(d.fetch).not.toHaveBeenCalled();
+      expect(modelPurpose.sign).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses an answer sent to the create route: a card belongs to a conversation", async () => {
+    const d = deps();
+    const request = new Request("https://console.example.invalid/api/chat/helper/eve/v1/session", {
+      method: "POST", body: JSON.stringify({ answers: [{ interactionId: "int_A", optionId: "approve" }] }), headers: { cookie: "lares_session=abc" },
+    });
+    expect((await forwardChat(request, "helper", "eve/v1/session", d)).status).toBe(400);
+    expect(d.fetch).not.toHaveBeenCalled();
+  });
+
+  it("drops the inbox the framework's client adds by itself: it never leaves the console", async () => {
+    modelPurpose.configured.mockReturnValue(true);
+    for (const [raw, sent] of [
+      ['{"message":"second message","inbox":"v1.b3BhcXVl.c2ln"}', '{"message":"second message"}'],
+      ['{"answers":[{"interactionId":"int_A","optionId":"approve"}],"inbox":"v1.b3BhcXVl.c2ln"}', '{"answers":[{"interactionId":"int_A","optionId":"approve"}]}'],
+      // Whatever it holds: it is dropped unread, not validated.
+      ['{"inbox":{"not":"a string"},"message":"third"}', '{"message":"third"}'],
+    ] as const) {
+      const d = deps();
+      envelope.seen.length = 0;
+      expect((await forwardChat(answer(raw), "helper", PATH, d)).status, raw).toBe(200);
+      expect(Buffer.from(d.fetch.mock.calls[0]![1]!.body as Uint8Array).toString("utf8")).toBe(sent);
+      // The envelope check is shown what is SENT, not what arrived.
+      expect(envelope.seen.map((seen) => JSON.stringify(seen.payload))).toEqual([sent]);
+    }
+  });
+
+  it("sends its own rebuilt body, not the browser's bytes — and signs exactly what it sends", async () => {
+    modelPurpose.configured.mockReturnValue(true);
+    const d = deps();
+    // The same message, written the way no client library writes it.
+    const raw = '{ "inbox" : "x",\n  "message" : "spaced out" }';
+    expect((await forwardChat(answer(raw), "helper", PATH, d)).status).toBe(200);
+    const sent = d.fetch.mock.calls[0]![1]!.body as Uint8Array;
+    expect(Buffer.from(sent).toString("utf8")).toBe('{"message":"spaced out"}');
+    // The model capsule is asked for with a hash made over the outgoing bytes (the hash function
+    // is stubbed here; what matters is which bytes it was given).
+    expect(modelPurpose.hashed.map((bytes) => Buffer.from(bytes).toString("utf8"))).toEqual(['{"message":"spaced out"}']);
+  });
+});
+
+/**
+ * Who may talk to an agent, and into whose conversation. Exercised with the paths and bodies the
+ * new client sends, through the proxy's own checks (the agent kit's use and binding checks, and
+ * this proxy's signed conversation cookie).
+ */
+describe("a member who is not the conversation's own", () => {
+  const PATH = "eve/v1/session/wrun_A";
+  const APPROVE_BODY = JSON.stringify({ answers: [{ interactionId: "int_A", optionId: "approve" }] });
+  const requests = (cookie: string): [string, Request][] => [
+    [PATH, new Request(`https://console.example.invalid/api/chat/helper/${PATH}`, { method: "POST", body: APPROVE_BODY, headers: { cookie: `lares_session=abc; ${cookie}` } })],
+    [PATH, new Request(`https://console.example.invalid/api/chat/helper/${PATH}`, { method: "POST", body: '{"message":"hello"}', headers: { cookie: `lares_session=abc; ${cookie}` } })],
+    [`${PATH}/stream`, new Request(`https://console.example.invalid/api/chat/helper/${PATH}/stream?includeTailIndex=1`, { headers: { cookie: `lares_session=abc; ${cookie}` } })],
+    [`${PATH}/end`, new Request(`https://console.example.invalid/api/chat/helper/${PATH}/end`, { method: "POST", body: "{}", headers: { cookie: `lares_session=abc; ${cookie}` } })],
+    ["eve/v1/session", new Request("https://console.example.invalid/api/chat/helper/eve/v1/session", { method: "POST", headers: { cookie: `lares_session=abc; ${cookie}` } })],
+  ];
+
+  it("refuses every chat request for an agent the signed-in member may not use, before anything is read", async () => {
+    for (const [path, request] of requests(capability())) {
+      const d = deps();
+      access.captureUse.mockResolvedValueOnce(undefined as never);
+      const response = await forwardChat(request, "helper", path, d);
+      expect(response.status, path).toBe(403);
+      expect(await response.text()).toContain("Conversation access is unavailable");
+      expect(d.query.mock.calls.some(([sql]) => sql.includes("FROM agent_resources"))).toBe(false);
+      expect(d.routePassword).not.toHaveBeenCalled();
+      expect(d.fetch).not.toHaveBeenCalled();
+      expect(modelPurpose.sign).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses an answer posted into a conversation bound to another member, even with that member's cookie", async () => {
+    // The other member is signed in and may use the agent, and presents the OWNER's conversation
+    // cookie (copied, say). The cookie is signed for the owner's id, so it does not fit.
+    const d = deps(row, PASSWORD, "other@example.invalid");
+    for (const [path, request] of requests(capability("Owner-ID")).slice(0, 4)) {
+      const response = await forwardChat(request, "helper", path, d);
+      expect(response.status, path).toBe(403);
+      expect(await response.text()).toBe("This conversation is not available to this signed-in member.");
+    }
+    expect(d.fetch).not.toHaveBeenCalled();
+    expect(modelPurpose.sign).not.toHaveBeenCalled();
+  });
+
+  it("refuses it when the console's own record binds the conversation to someone else", async () => {
+    // The other member even holds a cookie signed for THEIR id; the binding the console stored
+    // when the conversation was created names the owner, so the kit's check finds none for them.
+    const d = deps(row, PASSWORD, "other@example.invalid");
+    const query = d.query.getMockImplementation()!;
+    d.query.mockImplementation(async (sql, values) => sql.includes("console_session_bindings") && values[3] !== "Owner-ID" ? { rows: [] } : query(sql, values));
+    for (const [path, request] of requests(capability("Other-ID")).slice(0, 4)) {
+      const response = await forwardChat(request, "helper", path, d);
+      expect(response.ok, path).toBe(false);
+      expect(response.status, path).toBe(502);
+    }
+    expect(d.fetch).not.toHaveBeenCalled();
+    expect(d.routePassword).not.toHaveBeenCalled();
+    expect(modelPurpose.sign).not.toHaveBeenCalled();
+  });
+
+  it("the owner, with the owner's cookie, is let through — so the refusals above are about who, not what", async () => {
+    for (const [path, request] of requests(capability())) {
+      const d = deps();
+      expect((await forwardChat(request, "helper", path, d)).status, path).toBe(200);
+      expect(d.fetch).toHaveBeenCalledOnce();
+    }
+  });
+});
+
+/**
+ * A conversation the agent's framework has ended. The agent answers with a status and a JSON code;
+ * the proxy must hand both back untouched, because the page words the ending from that code.
+ */
+describe("a conversation the agent has ended", () => {
+  const PATH = "eve/v1/session/wrun_A";
+  it.each([
+    ["ended by an update", { code: "session_stranded", error: "This session is no longer available.", ok: false, eveVersion: "0.60.1" }],
+    ["ended otherwise", { ok: false, code: "session_not_active", error: "The session is no longer active." }],
+  ])("%s: the refusal reaches the browser with its status and code, and nothing is retried", async (_name, refusal) => {
+    for (const [path, init] of [
+      [PATH, { method: "POST", body: '{"message":"hello"}' }],
+      [PATH, { method: "POST", body: JSON.stringify({ answers: [{ interactionId: "int_A", optionId: "approve" }] }) }],
+      [`${PATH}/stream`, {}],
+    ] as const) {
+      const d = deps();
+      d.fetch.mockResolvedValue(new Response(JSON.stringify(refusal), { status: 409, headers: { "content-type": "application/json", "cache-control": "no-store" } }));
+      const response = await forwardChat(new Request(`https://console.example.invalid/api/chat/helper/${path}`, { ...init, headers: { cookie: `lares_session=abc; ${capability()}` } }), "helper", path, d);
+      expect(response.status).toBe(409);
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(await response.json()).toEqual(refusal);
+      expect(d.fetch).toHaveBeenCalledOnce();
+    }
+  });
+});
+
+it("runs against the agent kit's own envelope check, which refuses a field it does not list", async () => {
+  // Earlier, while the kit on this branch still expected the older bodies, these tests used a
+  // stand-in for its check and printed which one they ran against. There is no stand-in any more.
+  // This is that line as an assertion: the check the proxy calls is the kit's real one, and it
+  // is the strict one — so a body the proxy sends on has passed the same lists the agent applies.
+  const kit = await vi.importActual<typeof import("@lares/agent-kit/private-console-envelope")>("@lares/agent-kit/private-console-envelope");
+  const takes = (payload: unknown, path: string) => { try { kit.assertPrivateConsoleEnvelope(payload, path); return true; } catch { return false; } };
+  const PATH = "/eve/v1/session/wrun_A";
+  expect(takes({ message: "x" }, PATH)).toBe(true);
+  expect(takes({ answers: [{ interactionId: "int_A", optionId: "deny" }] }, PATH)).toBe(true);
+  expect(takes({ reason: "done" }, `${PATH}/end`)).toBe(true);
+  for (const refused of [
+    { message: "x", inbox: "opaque" },
+    { message: "x", turnPolicy: "steer" },
+    { answers: [{ interactionId: "int_A", optionId: "cancel" }] },
+    { answers: [{ interactionId: "int_A", optionId: "approve", text: "t" }] },
+    { inputResponses: [{ requestId: "int_A", optionId: "approve" }] },
+  ]) expect(takes(refused, PATH), JSON.stringify(refused)).toBe(false);
+  expect(takes({ turnId: null }, `${PATH}/cancel`)).toBe(false);
+  // And with nothing overriding it, a request through the proxy is shown to that same check.
+  expect(envelope.check).toBeUndefined();
+  const d = deps();
+  expect((await forwardChat(sessionRequest("eve/v1/session/wrun_A", "POST"), "helper", "eve/v1/session/wrun_A", d)).status).toBe(200);
+  expect(envelope.seen).toEqual([{ payload: { message: "hello" }, path: PATH }]);
+});
+
+/**
+ * THE WHOLE OUTGOING SURFACE, driven by the framework's OWN client.
+ *
+ * Nothing here is written by hand: the framework's shipped `Client` makes every request the chat
+ * page can cause, each goes through `forwardChat`, and a stand-in agent records the body that
+ * reaches it. The agent refuses any field it does not list, so every recorded body must be one of
+ * the listed shapes exactly. If a later client library adds a field of its own — as this one adds
+ * `inbox` — this fails: either the proxy refuses the send (the call throws), or an unlisted field
+ * shows up in what was recorded.
+ */
+describe("what leaves the console when the framework's own client talks through it", () => {
+  const BASE = "https://console.example.invalid/api/chat/helper";
+  type Sent = { path: string; raw: string; body: unknown; purpose: string | null };
+
+  async function drive(run: (client: InstanceType<typeof import("eve/client").Client>, seen: { fromBrowser: Sent[]; toAgent: Sent[] }) => Promise<void>) {
+    const { Client } = await import("eve/client");
+    const d = deps();
+    const seen = { fromBrowser: [] as Sent[], toAgent: [] as Sent[] };
+    let delivery = 0;
+    // The agent: accepts, and — like an agent set up to issue them — hands back an `inbox`.
+    d.fetch.mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      const raw = init?.body === undefined ? "" : Buffer.from(init.body as Uint8Array).toString("utf8");
+      seen.toAgent.push({ path, raw, body: raw === "" ? undefined : JSON.parse(raw), purpose: new Headers(init?.headers).get("x-lares-purpose") });
+      const answer = path === "/eve/v1/session"
+        ? { ok: true, sessionId: "wrun_A" }
+        : { ok: true, sessionId: "wrun_A", deliveryId: `dlv_${++delivery}`, inbox: "v1.aW5ib3g.c2lnbmF0dXJl" };
+      return new Response(JSON.stringify(answer), { status: 202, headers: { "content-type": "application/json", "x-eve-session-id": "wrun_A" } });
+    });
+    // The browser: the client's requests, with the cookies a browser would send back.
+    const cookies = new Map<string, string>([["lares_session", "abc"]]);
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.href.startsWith(`${BASE}/`)).toBe(true);
+      const path = url.pathname.slice("/api/chat/helper/".length);
+      const raw = typeof init?.body === "string" ? init.body : "";
+      seen.fromBrowser.push({ path: `/${path}`, raw, body: raw === "" ? undefined : JSON.parse(raw), purpose: null });
+      const headers = new Headers(init?.headers);
+      headers.set("cookie", [...cookies].map(([name, value]) => `${name}=${value}`).join("; "));
+      const response = await forwardChat(new Request(url, { method: init?.method ?? "GET", headers, ...(raw === "" ? {} : { body: raw }) }), "helper", path, d);
+      const issued = response.headers.get("set-cookie")?.split(";")[0];
+      if (issued) cookies.set(issued.slice(0, issued.indexOf("=")), issued.slice(issued.indexOf("=") + 1));
+      return response;
+    });
+    try {
+      await run(new Client({ baseUrl: BASE }), seen);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    return seen;
+  }
+
+  /** The agent's lists, as a table: every body it will take from the console, and no other. */
+  function listed(sent: Sent): boolean {
+    const exact = (...shapes: string[][]) => sent.body !== undefined && shapes.some((keys) => JSON.stringify(Object.keys(sent.body as object).sort()) === JSON.stringify([...keys].sort()));
+    if (sent.path === "/eve/v1/session") return sent.raw === "" || exact([], ["message"], ["message", "operationId"]);
+    if (sent.path === "/eve/v1/session/wrun_A") {
+      if (exact(["message"])) return typeof (sent.body as { message: unknown }).message === "string";
+      if (!exact(["answers"])) return false;
+      const answers = (sent.body as { answers: unknown[] }).answers;
+      return answers.length === 1 && JSON.stringify(Object.keys(answers[0] as object).sort()) === '["interactionId","optionId"]'
+        && ["approve", "deny"].includes((answers[0] as { optionId: string }).optionId);
+    }
+    if (sent.path === "/eve/v1/session/wrun_A/cancel") return sent.raw === "" || exact([]) || (exact(["turnId"]) && typeof (sent.body as { turnId: unknown }).turnId === "string");
+    if (/^\/eve\/v1\/session\/wrun_A\/(end|reset)$/.test(sent.path)) return sent.raw === "" || exact([], ["reason"]);
+    if (/^\/eve\/v1\/session\/wrun_A\/(clear|compact)$/.test(sent.path)) return sent.raw === "" || exact([]);
+    return false;
+  }
+
+  it("every body is one the agent lists, exactly — the client's own inbox included in what is stripped", async () => {
+    const seen = await drive(async (client) => {
+      const { session } = await client.sessions.create();            // what the page does first
+      await session.send("first message");                           // the agent answers with an inbox
+      await session.send("second message");                          // the client now adds it by itself
+      await session.respond([{ interactionId: "int_A", optionId: "approve" }]);
+      await session.respond([{ interactionId: "int_B", optionId: "deny" }]);
+      await session.cancel({ turnId: "turn_1" });
+      await session.cancel();                                        // no turn named
+      await session.cancel({ turnId: null });                        // what the store sends with none running
+      await session.clear();
+      await session.compact();
+      await session.end({ reason: "Conversation finished" });
+      await session.end();
+    });
+
+    // The premise, checked: the client library really did add a field of its own on the way in.
+    const withInbox = seen.fromBrowser.filter((sent) => sent.body !== undefined && "inbox" in (sent.body as object));
+    expect(withInbox.map((sent) => sent.path)).toEqual(Array(3).fill("/eve/v1/session/wrun_A"));
+    expect(seen.fromBrowser[2]!.body).toEqual({ message: "second message", inbox: "v1.aW5ib3g.c2lnbmF0dXJl" });
+    // And that the client really does write a null turn id, which must not reach the agent.
+    expect(seen.fromBrowser.filter((sent) => sent.path.endsWith("/cancel")).map((sent) => sent.raw)).toEqual(['{"turnId":"turn_1"}', "{}", '{"turnId":null}']);
+    expect(seen.toAgent.some((sent) => sent.raw.includes("null"))).toBe(false);
+
+    // What reached the agent: the exact bytes, in order.
+    expect(seen.toAgent.map((sent) => [sent.path, sent.raw, sent.purpose])).toEqual([
+      ["/eve/v1/session", "", "human"],
+      ["/eve/v1/session/wrun_A", '{"message":"first message"}', "human"],
+      ["/eve/v1/session/wrun_A", '{"message":"second message"}', "human"],
+      ["/eve/v1/session/wrun_A", '{"answers":[{"interactionId":"int_A","optionId":"approve"}]}', "resolver"],
+      ["/eve/v1/session/wrun_A", '{"answers":[{"interactionId":"int_B","optionId":"deny"}]}', "resolver"],
+      ["/eve/v1/session/wrun_A/cancel", '{"turnId":"turn_1"}', "control"],
+      ["/eve/v1/session/wrun_A/cancel", "{}", "control"],
+      ["/eve/v1/session/wrun_A/cancel", "{}", "control"],
+      ["/eve/v1/session/wrun_A/clear", "{}", "control"],
+      ["/eve/v1/session/wrun_A/compact", "{}", "control"],
+      ["/eve/v1/session/wrun_A/end", '{"reason":"Conversation finished"}', "control"],
+      ["/eve/v1/session/wrun_A/end", "{}", "control"],
+    ]);
+    // And the rule itself, over everything recorded: no field outside the agent's lists, anywhere.
+    for (const sent of seen.toAgent) expect(listed(sent), `${sent.path} ${sent.raw}`).toBe(true);
+    expect(JSON.stringify(seen.toAgent)).not.toMatch(/inbox|idempotencyKey|clientContext|turnPolicy|inputResponses|requestId|"cancel"/);
+  });
+
+  it("the check above is not vacuous: it tells a listed body from one with a field added", () => {
+    const sent = (path: string, body: unknown): Sent => ({ path, raw: JSON.stringify(body), body, purpose: null });
+    expect(listed(sent("/eve/v1/session/wrun_A", { message: "x" }))).toBe(true);
+    for (const extra of ["inbox", "idempotencyKey", "clientContext", "turnPolicy", "outputSchema", "callback", "anything"]) {
+      expect(listed(sent("/eve/v1/session/wrun_A", { message: "x", [extra]: "y" })), extra).toBe(false);
+      expect(listed(sent("/eve/v1/session/wrun_A", { answers: [{ interactionId: "i", optionId: "approve" }], [extra]: "y" })), extra).toBe(false);
+    }
+    expect(listed(sent("/eve/v1/session/wrun_A", { answers: [{ interactionId: "i", optionId: "approve", text: "t" }] }))).toBe(false);
+    expect(listed(sent("/eve/v1/session/wrun_A", { answers: [{ interactionId: "i", optionId: "cancel" }] }))).toBe(false);
+    expect(listed(sent("/eve/v1/session/wrun_A", { inputResponses: [{ requestId: "i", optionId: "approve" }] }))).toBe(false);
+    expect(listed(sent("/eve/v1/session/wrun_A/end", { reason: "r", force: true }))).toBe(false);
+    expect(listed(sent("/eve/v1/session/wrun_A/cancel", { turnId: null }))).toBe(false);
+    expect(listed(sent("/eve/v1/session/wrun_A/cancel", { turnId: "t" }))).toBe(true);
+    expect(listed(sent("/eve/v1/session/wrun_A/clear", { reason: "r" }))).toBe(false);
+  });
+
+  it.each([
+    ["page context the client can attach to a turn", { clientContext: "the page says" }],
+    ["a turn policy", { turnPolicy: "queue" }],
+    ["an output schema", { outputSchema: { type: "object" } }],
+  ])("a client option that adds a field (%s) is refused at the console, not passed on and not quietly dropped", async (_name, option) => {
+    let thrown: unknown;
+    const seen = await drive(async (client) => {
+      const { session } = await client.sessions.create();
+      try { await session.send("with an option", option as never); } catch (error) { thrown = error; }
+    });
+    expect((thrown as { status?: number })?.status).toBe(400);
+    // Only the create reached the agent.
+    expect(seen.toAgent.map((sent) => sent.path)).toEqual(["/eve/v1/session"]);
+  });
 });

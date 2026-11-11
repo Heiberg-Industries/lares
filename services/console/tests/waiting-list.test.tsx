@@ -26,7 +26,7 @@ function item(ref: string, over: Partial<WaitingItem> = {}): WaitingItem {
     ],
     actions: [
       { id: "approve", label: "Approve", tone: "primary" },
-      { id: "cancel", label: "Cancel", tone: "neutral" },
+      { id: "deny", label: "Deny", tone: "neutral" },
     ],
     ref,
     ...over,
@@ -68,7 +68,7 @@ it("Approve: sends the item's id and the action, then shows the result in place 
   await userEvent.click(within(detail).getByRole("button", { name: "Approve" }));
   expect(onDecide).toHaveBeenCalledWith({ id: "approval:a", actionId: "approve" });
   expect(within(detail).getByText("Sending your answer…")).toBeTruthy();
-  expect((within(detail).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((within(detail).getByRole("button", { name: "Deny" }) as HTMLButtonElement).disabled).toBe(true);
   resolve({ ok: true, outcome: "approved", message: "Approved. example is carrying on." });
   await waitFor(() => expect(within(detail).getByRole("status").textContent).toBe("Approved. example is carrying on."));
   expect(within(detail).queryByRole("button", { name: "Approve" })).toBeNull();
@@ -77,7 +77,7 @@ it("Approve: sends the item's id and the action, then shows the result in place 
 it("already decided elsewhere: says so, and offers nothing more to press", async () => {
   const onDecide = vi.fn(async (): Promise<DecideResult> => ({ ok: false, reason: "decided-elsewhere", message: "This was already approved elsewhere. Nothing more was sent." }));
   const detail = setup([item("a")], onDecide);
-  await userEvent.click(within(detail).getByRole("button", { name: "Cancel" }));
+  await userEvent.click(within(detail).getByRole("button", { name: "Deny" }));
   await waitFor(() => expect(within(detail).getByRole("status").textContent).toContain("already approved elsewhere"));
   expect(within(detail).queryByRole("button")).toBeNull();
 });
@@ -100,7 +100,7 @@ it("a failure that can be retried keeps the buttons, with the reason beside them
 });
 
 it("an expired approval shows its note and only the actions it still has", () => {
-  const detail = setup([item("a", { note: "This was asked more than 24 hours ago.", actions: [{ id: "cancel", label: "Cancel", tone: "neutral" }] })], vi.fn());
+  const detail = setup([item("a", { note: "This was asked more than 24 hours ago.", actions: [{ id: "deny", label: "Deny", tone: "neutral" }] })], vi.fn());
   expect(within(detail).getByText("This was asked more than 24 hours ago.")).toBeTruthy();
   expect(within(detail).queryByRole("button", { name: "Approve" })).toBeNull();
 });

@@ -4,40 +4,43 @@ import { ChatTranscript } from "../components/ChatTranscript";
 import type { EveMessage } from "eve/react";
 
 const message = (role: "user" | "assistant", text: string): EveMessage =>
-  ({ id: "m", role, parts: [{ type: "text", text }] } as unknown as EveMessage);
+  ({ id: "m", role, parts: [{ type: "text", text }] });
 
 const render = (role: "user" | "assistant", text: string) =>
-  renderToStaticMarkup(<ChatTranscript status="ready" messages={[message(role, text)]} />);
+  renderToStaticMarkup(<ChatTranscript status="idle" messages={[message(role, text)]} />);
 
+/** An approval card as the framework reports it: the call's own part, carrying the approval it
+ *  waits on. */
 const cardWith = (input: unknown): EveMessage =>
   ({
     id: "c",
     role: "assistant",
     parts: [
       {
-        type: "dynamic-tool",
-        toolCallId: "call_1",
-        toolName: "gmail_send",
-        state: "approval-requested",
-        approval: { id: "appr_1" },
+        type: "tool",
+        callId: "call_1",
+        stepIndex: 0,
+        kind: "tool",
+        name: "gmail_send",
+        label: "Gmail send",
+        state: "approval",
         input,
-        toolMetadata: {
-          eve: {
-            kind: "tool-call",
-            name: "gmail_send",
-            inputRequest: {
-              requestId: "req_A",
-              kind: "tool-approval",
-              display: "confirmation",
-              allowFreeform: false,
-              prompt: "Send an email",
-              options: [{ id: "approve", label: "Approve" }],
-            },
+        interaction: {
+          interactionId: "int_A",
+          turnId: "t1",
+          stepIndex: 0,
+          status: "open",
+          request: {
+            kind: "approval",
+            display: "confirmation",
+            allowFreeform: false,
+            prompt: "Send an email",
+            options: [{ id: "approve", label: "Approve" }, { id: "deny", label: "Deny" }],
           },
         },
       },
     ],
-  }) as unknown as EveMessage;
+  }) satisfies EveMessage;
 
 describe("formatting in agent replies", () => {
   it("shows bold, a list and an https link as real elements", () => {
@@ -99,7 +102,7 @@ describe("formatting in agent replies", () => {
   it("keeps approval card fields plain text even when they contain markdown", () => {
     const html = renderToStaticMarkup(
       <ChatTranscript
-        status="ready"
+        status="idle"
         messages={[cardWith({ bodyText: "**bold** [x](https://example.com) <b>hi</b>", to: ["a@example.invalid"] })]}
         onAnswer={() => {}}
       />,
