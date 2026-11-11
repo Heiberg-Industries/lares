@@ -37,7 +37,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { isDisabledToolSentinel } from "eve/tools";
 import {
   assertClassMatchesScope,
   assertDeclarationIntegrity,
@@ -60,6 +59,11 @@ import { parseDefinition } from "@lares/agent-kit/definition";
 import { CATALOGUE } from "../catalogue/index.js";
 
 import manifest from "../agent.json";
+
+// eve 1.0 no longer exports a way to recognise a `disableTool()` value. It brands one with this
+// symbol (node_modules/eve/dist/src/tools/definition.js, `DISABLED_TOOL`).
+const isDisabledToolSentinel = (value: unknown): boolean =>
+  typeof value === "object" && value !== null && Reflect.get(value, Symbol.for("eve.disabled-tool")) === true;
 
 // The raw JSON module widens `scope` to `string`; the typed accessors want the parsed form.
 // This is also the assertion of check (1) above — a bad declaration throws right here, at
@@ -130,26 +134,21 @@ const AUTHORED_TOOLS = [
  *  THE DIRECTORY MOVED, THE CHECK DID NOT (ADR-0015 rule 3). The tools
  *  used to be files under agent/tools/ and were therefore always present; they are now a POOL that
  *  agent/tools/catalogue.ts picks from at session start against the resolved definition. What is
- *  left under agent/tools/ is the eight `disableTool()` sentinels plus that one resolver, which is
- *  a seam and not a tool — `tests/tool-harness.test.ts` is what guards that directory now, and
+ *  left under agent/tools/ is that resolver and its like, which are seams and not tools —
+ *  `tests/tool-harness.test.ts` is what guards that directory now, and
  *  `tests/catalogue-index.test.ts` holds the pool against catalogue/index.ts in both directions.
  *
  *  The sentinel drop below is kept even though the pool holds no sentinels: a `disableTool()` file
  *  appearing in catalogue/ would be a tool nothing can ever hand over, and it must not be able to
  *  satisfy `CAPABILITY_TOOLS` by merely existing.
  *
- *  A disable sentinel is dropped because of what it IS, not because of its name — so the day
- *  one of the eight framework disables stops being a sentinel it arrives here as an authored
- *  tool and the checks below turn red. That is the guard that matters: `agent/tools/bash.ts`
- *  edited back into eve's real `bash` would hand the agent an unsandboxed shell inside a container with
- *  the Atlas mounted.
+ *  A disable sentinel is dropped because of what it IS, not because of its name, so a catalogue
+ *  file that stops being a sentinel arrives here as an authored tool and the checks below turn
+ *  red.
  *
- *  This loader has no name-based skip for framework defaults re-enabled with an authored file
- *  (such as `web_search`). The creative agent re-enables none — its three
- *  surviving defaults (`ask_question`, `todo`, `load_skill`) have no file under `agent/tools/`
- *  at all, enabled by absence, and `tests/tool-harness.test.ts` guards that trio — so the skip
- *  is deliberately absent rather than present-and-empty. Whoever re-enables a default here
- *  adds it back, and its absence today means nothing is exempt from the inspection above. */
+ *  The framework's own default tools are a separate matter and no longer have files at all:
+ *  `defaultTools: false` in agent/agent.ts turns every one away, and `tests/tool-harness.test.ts`
+ *  guards that no file under `agent/tools/` takes one of their names. */
 async function loadLocalTools(): Promise<Map<string, { approval?: unknown }>> {
   const dir = join(import.meta.dirname, "..", "catalogue");
   const out = new Map<string, { approval?: unknown }>();
@@ -217,23 +216,22 @@ describe("creative agent agent.json", () => {
     expect(declaration.autonomy).toEqual({ studio: "gated", vault: "gated" });
   });
 
-  it("is resolved from the definition at one scope only — the step", async () => {
-    // `model` is a dynamic resolver — the definition picks the model per
-    // conversation, and there is no compiled fallback carrying a build-time alias any more
-    // (eve 0.33.0 removed it). Since eve 0.60 the only scope that may return a constructed
-    // provider is `step.started`; `session.started` and `turn.started` are resolved durably and
-    // would accept only a model-id STRING, which eve routes through the Vercel AI Gateway
-    // instead of the LiteLLM one. The alias is pinned on the first step, so this is still one
-    // model per conversation — the system prompt and the model are what the prompt cache keys
-    // on, and re-picking per turn re-bills the whole conversation.
+  it("is resolved from the definition by one function, never as a model-id string", async () => {
+    // `model` is dynamic — the definition picks the model per conversation, and there is no
+    // compiled fallback carrying a build-time alias. On eve 1.0 a dynamic model is one function
+    // eve calls before every model call (a `defineDynamic()` value keeps it under the symbol
+    // below); it returns a constructed provider, because a model-id STRING is routed through the
+    // Vercel AI Gateway instead of the LiteLLM one. The alias is pinned on the conversation's
+    // first call, so this is still one model per conversation — the system prompt and the model
+    // are what the prompt cache keys on, and re-picking per turn re-bills the whole conversation.
     //
     // That the alias actually is `declaration.model` is asserted in tests/boot.test.ts, which
     // stands in for eve session state so the real resolver can run.
-    const agent = (await import("../agent/agent.js")).default as {
-      model?: { fallback?: unknown; events?: Record<string, unknown> };
-    };
-    expect(Object.keys(agent.model?.events ?? {})).toEqual(["step.started"]);
-    expect(agent.model?.fallback).toBeUndefined();
+    const agent = (await import("../agent/agent.js")).default as { model?: unknown };
+    expect(typeof agent.model).toBe("object");
+    expect(typeof Reflect.get(agent.model as object, Symbol.for("eve.dynamic"))).toBe("function");
+    expect((agent.model as { fallback?: unknown; events?: unknown }).fallback).toBeUndefined();
+    expect((agent.model as { fallback?: unknown; events?: unknown }).events).toBeUndefined();
   });
 });
 
@@ -307,9 +305,8 @@ describe("creative agent declaration ↔ authored tools", () => {
     "has exactly the five authored tools this port gives the agent, by name",
     async () => {
       // By NAME, not by count (see the header). The five are the agent's whole surface: one gated
-      // studio run, three ungated Atlas reads, one gated Atlas write. A sixth file, a rename,
-      // or one of the eight framework disables being edited back into a real tool all land
-      // here first.
+      // studio run, three ungated Atlas reads, one gated Atlas write. A sixth file or a rename
+      // lands here first.
       const local = await loadLocalTools();
       expect([...local.keys()].sort()).toEqual([...AUTHORED_TOOLS].sort());
     },
@@ -471,8 +468,8 @@ describe("creative agent declaration ↔ authored tools", () => {
 // ---------------------------------------------------------------------------
 //
 // `framework_tools` names eve's OWN built-ins this agent keeps enabled. They are not
-// capabilities and not grants — `agent.json` does not govern them; an agent enables one by
-// authoring `agent/tools/<name>.ts` and disables it with a `disableTool()` sentinel. The field
+// capabilities and not grants — `agent.json` does not govern them; with `defaultTools: false`
+// an agent has one only by authoring `agent/tools/<name>.ts`. The field
 // exists only so the GENERATED "where I run" section can tell the truth about web search, which
 // can differ between agents. Left to itself that is a hand-set
 // flag, and a hand-set flag about a capability drifts. So it is asserted against the compiled manifest `eve build` writes, which is eve's own
@@ -484,15 +481,9 @@ describe("creative agent declaration ↔ authored tools", () => {
 // Read once for both checks below. `tools` is the compiled AUTHORED tool list — the same array
 // the baselines count.
 //
-// eve 0.60.1: `webSearchProvider`/`disabledFrameworkTools` are GONE — neither name
-// appears anywhere in the installed package any more. Confirmed empirically too: they were
-// always `undefined`/`[]` even with disable sentinels present, which made the check below pass
-// VACUOUSLY for the creative agent (framework_tools correctly omits web_search, and the always-`false`
-// computation from the dead fields agreed by coincidence — it would have stayed silently wrong
-// had the agent ever declared web_search). A disabled framework tool now shows up only as a
-// `kind: "disabled"` audit entry in `sourceComposition`, never in `tools` — the same unified
-// model every other framework tool (task_cancel, glob, grep) already uses. So "is web_search
-// live" is read off `tools` directly, like everything else.
+// "Is web_search live" is read off the compiled `tools` list directly, like everything else: a
+// framework tool that was turned away (by `defaultTools: false`, or by a sentinel) is simply not
+// in it. The manifest's older `webSearchProvider`/`disabledFrameworkTools` fields are gone.
 const compiledPath = join(import.meta.dirname, "..", ".output", ".eve", "compile", "compiled-agent-manifest.json");
 const compiled = existsSync(compiledPath)
   ? (JSON.parse(readFileSync(compiledPath, "utf8")) as {
@@ -526,14 +517,13 @@ describe("creative agent framework_tools matches the compiled manifest", () => {
 // capability — the generated section correctly says nothing about it, and the model is told
 // about it by its own tool description, not by this text. See ALWAYS_PRESENT_TOOLS above.
 //
-// `ask_question`, `todo` and `load_skill` join it: before eve 0.60.1 a CI blocker meant `.output` never existed, so this whole
-// describe block was always skipped, never actually exercised. All three are eve's own framework
-// built-ins the creative agent keeps with no sentinel of its own — see tests/tool-harness.test.ts's header
-// for why each stays enabled — so none of them belong in a capability doc.
+// `load_skill` joins it: it is the service's own agent/tools/load_skill.ts, always present and
+// not a capability. `ask_question` and `todo` used to be exempt here as framework built-ins the
+// agent kept. On eve 1.0 neither can be in a build of this agent: `todo` is gone from the
+// framework, `ask_question` is opt-in, and `defaultTools: false` turns every default away
+// (tests/tool-harness.test.ts). They are no longer exempt, so one turning up fails below.
 const FRAMEWORK_BUILTIN_TOOLS: ReadonlySet<string> = new Set<string>([
   "set_language",
-  "ask_question",
-  "todo",
   "load_skill",
 ]);
 

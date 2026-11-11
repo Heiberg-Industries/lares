@@ -15,11 +15,11 @@ export default defineAgent({
   // and not aspirational: the alias is pinned per SESSION, so an edit on the box is picked up by
   // the next conversation, with nothing rebuilt and no container restarted.
   //
-  // eve 0.60: the read happens on the session's FIRST STEP rather than at `session.started`, and
-  // the definition-level `modelContextWindowTokens` is gone — see `definitionModel`'s docblock
-  // in packages/agent-kit/src/definition-model.ts for why those are now the only legal shape,
-  // and why a model-id string at session scope would have put this agent on the Vercel AI
-  // Gateway. The window travels with each selection instead (`sessionGatewayModel`).
+  // eve 1.0: `definitionModel` is one function eve calls before every model call. It reads the
+  // definition on the conversation's FIRST call and pins the alias in session state; see its
+  // docblock in packages/agent-kit/src/definition-model.ts for why it returns a provider object
+  // with its context window on every call, and why a model-id string would have put this agent
+  // on the Vercel AI Gateway.
   model: definitionModel({
     // ONE read of the definition for this conversation, shared with the instructions resolver
     // and the approval fallback through `thisAgent`'s per-session pin (lib/definition.ts).
@@ -38,8 +38,28 @@ export default defineAgent({
     claimPurpose: claimModelPurposeForInvocation,
     provider: gatewayModel,
   }),
+  // No framework default tool reaches this agent. eve 1.0 hands every agent bash, read_file,
+  // write_file, edit_file, web_fetch and web_search, and the root agent the delegating `agent`
+  // tool; `false` drops every one of them that has no file under agent/tools/ (there is none:
+  // tests/tool-harness.test.ts). What the agent can do is what Lares adds, nothing else.
+  defaultTools: false,
+  // The delegating `agent` tool stays off by name as well, so it does not come back if
+  // `defaultTools` is ever relaxed. With it off and no subagents declared, eve has no tool that
+  // runs as a task, so its `eve__task_wait` / `eve__task_cancel` tools never appear either.
+  tool: false,
+  limits: {
+    // eve's own per-conversation token cap, written out so it is visible here: it is eve 1.0's
+    // documented default, not a Lares limit. Lares's budget stays the authority and stops a
+    // conversation long before this. At the cap eve pauses the turn and asks the person whether
+    // to continue; approving starts a new window.
+    sessionUsage: ({ window }) => window.inputTokens - window.cacheReadTokens >= 40_000_000,
+  },
   experimental: {
     workflow: {
+      // eve keeps its own copy of every conversation's run data, as it always has. Unset, eve
+      // 1.0 asks for that copy to be deleted when a private conversation ends (direct messages,
+      // private channels, web chat), which makes a finished conversation unreadable.
+      retention: "default",
       // Self-hosted on the box: session/turn/step state, queues, hooks, and streams persist
       // in the box's own Postgres instead of eve's default local-disk world. The world package
       // reads its connection string from DATABASE_URL (or WORKFLOW_POSTGRES_URL) at runtime —
