@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { applyWorkflowRuntimePrivileges } from '../lib/workflow-database-privileges.js';
+import { applyWorkflowRuntimePrivileges, WORKFLOW_SCHEMA_STEPS } from '../lib/workflow-database-privileges.js';
 import { engineDatabasePrivilegesMatch } from '../lib/database-privileges.js';
 import { quiet } from './helpers/quiet-pool.js';
 
@@ -100,22 +100,16 @@ it('sets up, finalizes, migrates, and restores the exact managed database roles 
   expect(setup.stdout.toString() + setup.stderr.toString()).not.toContain(password('operator'));
 
   const workflowUrl = `postgres://lares_workflow_provisioner@${env.PGHOST}:${env.PGPORT}/empty_workflow`;
-  const setupWorkflow = await exec(process.execPath, ['--input-type=module', '-e', `
-    import { readFileSync } from 'node:fs';
-    process.env.PGPASSWORD = readFileSync(process.env.PROVISIONER_PASSWORD_FILE, 'utf8').trim();
-    delete process.env.PROVISIONER_PASSWORD_FILE;
-    const { Pool } = await import('pg');
-    const { setupDatabase } = await import('@workflow/world-postgres/cli');
-    const pool = new Pool({ connectionString: process.env.WORKFLOW_POSTGRES_URL, max: 1 });
-    try {
-      const identity = await pool.query('SELECT current_user, session_user, current_database()');
-      if (identity.rows[0]?.current_user !== 'lares_workflow_owner' || identity.rows[0]?.session_user !== 'lares_workflow_provisioner' || identity.rows[0]?.current_database !== 'empty_workflow') throw new Error('workflow setup identity failed');
-    } finally { await pool.end(); }
-    await setupDatabase();
-  `], {
-    cwd: creative,
-    env: { ...env, WORKFLOW_POSTGRES_URL: workflowUrl, PROVISIONER_PASSWORD_FILE: secretPaths.get('provisioner')!, PGOPTIONS: '-c role=lares_workflow_owner' },
+  // The workflow package's own schema step, through the one program the installer and the updater
+  // share, fed to node on standard input from the role's folder as the role image runs it.
+  const storeProgram = readFileSync(join(box, 'ops/workflow-store-migrate.mjs'));
+  const storeStep = (mode: string) => exec(process.execPath, ['--input-type=module', '-', mode, 'empty_workflow'], {
+    cwd: creative, input: storeProgram,
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, WORKFLOW_POSTGRES_URL: workflowUrl, PGPASSWORD: password('provisioner'), PGOPTIONS: '-c role=lares_workflow_owner' },
   });
+  expect((await storeStep('check')).stdout.toString().trim()).toBe('empty');
+  const setupWorkflow = await storeStep('create');
+  expect((await storeStep('check')).stdout.toString().trim()).toBe('current');
   expect(setupWorkflow.stdout.toString()).toContain('Database schema created successfully');
   expect(setupWorkflow.stdout.toString() + setupWorkflow.stderr.toString()).not.toContain(password('provisioner'));
 
@@ -125,7 +119,16 @@ it('sets up, finalizes, migrates, and restores the exact managed database roles 
   const wrongWorkflowPassword = await failureMessage(exec(tsx, ['bin/workflow-template.ts', 'verify-database', '--host', env.PGHOST!, '--port', env.PGPORT!,
     '--database', 'empty_workflow', '--runtime-password-file', secretPaths.get('app')!], { cwd: box, env, timeout: 10_000 }));
   expect(wrongWorkflowPassword).toMatch(/authentication|password|failed/i);
+  // Before it is finalized the template is not a template yet, so the update's check refuses it.
+  const notYet = await failureMessage(exec(tsx, ['bin/database-setup.ts', '--verify-workflow-template', ...operatorArgs], { cwd: box, env, timeout: 20_000 }));
+  expect(notYet).toContain('workflow template owner or template state is unexpected');
   await exec(tsx, ['bin/database-setup.ts', '--finalize-workflow-template', ...operatorArgs], { cwd: box, env });
+  // Finalized: the update's check passes and changes nothing; finalizing twice is refused.
+  const verified = await exec(tsx, ['bin/database-setup.ts', '--verify-workflow-template', ...operatorArgs], { cwd: box, env });
+  expect(verified.stdout.toString()).toContain("workflow template verified: empty, owned, and at this release's workflow schema");
+  const twice = await failureMessage(exec(tsx, ['bin/database-setup.ts', '--finalize-workflow-template', ...operatorArgs], { cwd: box, env, timeout: 20_000 }));
+  expect(twice).toContain('workflow template owner or pre-finalized state is unexpected');
+  expect((await admin.query('SELECT datistemplate FROM pg_database WHERE datname=$1', ['empty_workflow'])).rows[0].datistemplate).toBe(true);
   await exec(tsx, ['migrate.ts', '--schema-owner'], {
     cwd: box,
     env: { ...env, PGUSER: 'lares_operator', PGDATABASE: 'lares_state', DATABASE_PASSWORD_FILE: secretPaths.get('operator')!, LARES_OPERATOR_PASSWORD_FILE: secretPaths.get('operator')! },
@@ -186,8 +189,20 @@ it('sets up, finalizes, migrates, and restores the exact managed database roles 
       has_database_privilege(current_user,current_database(),'TEMP') AS temp,
       current_user,session_user`);
     expect(acl.rows[0]).toEqual({ connect: true, create: false, temp: false, current_user: 'lares_workflow', session_user: 'lares_workflow' });
+    // A fresh install's store, after a dump and restore, is at this release's full list of schema
+    // steps, and the agent login has the new tables and the sequence one of them needs.
+    const steps = await runtime.query<{ hash: string; created_at: string }>('SELECT hash,created_at::text AS created_at FROM workflow_drizzle.workflow_migrations ORDER BY id');
+    expect(steps.rows.map((row) => [row.created_at, row.hash])).toEqual(WORKFLOW_SCHEMA_STEPS.map((step) => [...step]));
+    expect(steps.rows).toHaveLength(30);
+    for (const table of ['workflow_invocations', 'workflow_snapshots', 'workflow_start_hook_admissions']) {
+      const granted = await runtime.query(`SELECT has_table_privilege(current_user,'workflow.${table}','SELECT,INSERT,UPDATE,DELETE') AS use,
+        has_table_privilege(current_user,'workflow.${table}','TRUNCATE') AS truncate`);
+      expect(granted.rows[0], table).toEqual({ use: true, truncate: false });
+    }
+    await runtime.query("INSERT INTO workflow.workflow_invocations(run_id,request_id,payload,fingerprint) VALUES('run','request','\\x01','f')");
+    expect((await runtime.query('SELECT sequence FROM workflow.workflow_invocations')).rows).toHaveLength(1);
   } finally { await runtime.end(); }
-}, 60_000);
+}, 240_000);
 
 it('an update whose migration adds a table gives the engine logins that table\'s permissions', async () => {
   // The state an earlier release leaves behind: set up with the logins, then a newer migration

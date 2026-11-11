@@ -58,6 +58,9 @@ SERVICE_KEY_FILE = "/etc/lares/secrets/gateway-budget-service-key"
 OPERATOR_FILE = "/etc/lares/operator/database-password"
 STATE_FILE = "/etc/lares/budget-setup.json"
 STAGE_PARENT = "/var/lib/lares-budget-setup"
+# Written by update.sh when an update has to stop the agents to upgrade their stores: which
+# release, how far the upgrade got, and which agents it stopped (see update.sh, WORKFLOW_STATE_FILE).
+WORKFLOW_STEP_FILE = "/var/lib/lares-maintenance/update/workflow-step.json"
 BUDGET_ENV_LINES = (
     "LARES_GATEWAY_BUDGET_SERVICE_KEY_FILE",
     "LARES_NATIVE_POLICY_FILE",
@@ -1046,11 +1049,90 @@ def agent_provider_key(installation: Installation, options: argparse.Namespace) 
     return 0
 
 
+def read_workflow_step(installation: Installation) -> dict[str, Any] | None:
+    """The note update.sh leaves when it stops the agents, or None when there is none. A note that
+    cannot be read stops this command: it must never be taken for "nothing to do"."""
+    path = installation.at(WORKFLOW_STEP_FILE)
+    unreadable = Stop(f"The note the last update left about the agent stores ({path}) cannot be read, so no agent was started. "
+                      "Run the same update again; it checks every store before it does anything.")
+    if path.is_symlink():
+        raise unreadable
+    try:
+        note = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        raise unreadable from None
+    if (not isinstance(note, dict) or note.get("version") != 1 or not isinstance(note.get("release"), str)
+            or note.get("phase") not in ("stopping", "migrating", "migrated") or not isinstance(note.get("agents"), list)
+            or any(not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name) for name in note["agents"])):
+        raise unreadable
+    return note
+
+
+def start_agents_stopped_by_update(installation: Installation, note: dict[str, Any]) -> int:
+    """Start each agent the update stopped, on this release, and cross it off the note once it runs.
+    The keeper also starts stopped agents by itself when it comes up, so one that is already running is
+    simply crossed off. An agent that does not come up is named and stays on the note. Returns how many
+    were left."""
+    path = installation.at(WORKFLOW_STEP_FILE)
+    listed = {entry.get("name"): entry for entry in installation.host_action("definition.list", {}) if isinstance(entry.get("name"), str)}
+    left = 0
+    for name in list(note["agents"]):
+        entry = listed.get(name)
+        if not entry or entry.get("status") != "valid" or not entry.get("hash"):
+            say(f"{name} was stopped by the update and the keeper does not list it as ready to run, so it was not started. "
+                f"Start it with: sudo lares agent start {name}")
+            left += 1
+            continue
+        try:
+            running = (installation.host_action("definition.get", {"name": name}).get("runtime") or {}).get("running")
+            if running is False:
+                say(f"Starting {name} again on this release. This can take a minute.")
+                result = installation.host_action("definition.reconcile", {"name": name, "hash": entry["hash"]}, RECONCILE_TIMEOUT_SECONDS) or {}
+                if result.get("running") is not True or result.get("healthy") is not True:
+                    say(f"{name} did not start on this release: {result.get('reason') or 'it did not report healthy in time'}. "
+                        f"Start it with: sudo lares agent start {name}")
+                    left += 1
+                    continue
+                say(f"{name} is running again.")
+            elif running is not True:
+                say(f"The keeper cannot tell whether {name} is running, so it was not started. Start it with: sudo lares agent start {name}")
+                left += 1
+                continue
+        except KeeperRefused as error:
+            say(f"{name} did not start on this release: the keeper refused ({error}). Start it with: sudo lares agent start {name}")
+            left += 1
+            continue
+        except (KeeperUnclear, subprocess.TimeoutExpired):
+            say(f"{name}: the keeper could not confirm the start in time. Check it with: sudo lares agent start {name}")
+            left += 1
+            continue
+        # Crossed off one at a time, so an interruption never starts an agent twice or forgets one.
+        note["agents"] = [other for other in note["agents"] if other != name]
+        if note["agents"]:
+            write_atomic(path, (json.dumps(note, sort_keys=True) + "\n").encode(), 0o600)
+        else:
+            path.unlink()
+    return left
+
+
 def agent_refresh(installation: Installation, options: argparse.Namespace) -> int:
     """After an update: restart each running agent onto the software this release names. An agent with
-    changes waiting, or one the keeper cannot read, is left alone and named."""
+    changes waiting, or one the keeper cannot read, is left alone and named. Agents the update itself
+    stopped (to upgrade their stores) are started first, and only once every store was verified."""
+    note = read_workflow_step(installation)
+    if note is not None and note["phase"] != "migrated":
+        raise Stop(f"The update to {note['release']} stopped before every agent store was upgraded and verified, so no agent was "
+                   "started: an agent must never start on a half-upgraded store. Run the same update again; it continues from "
+                   "where it stopped.")
     wait_for_keeper(installation)
     left = 0
+    if note is not None:
+        if note["agents"]:
+            left += start_agents_stopped_by_update(installation, note)
+        else:
+            installation.at(WORKFLOW_STEP_FILE).unlink()
     for entry in installation.host_action("definition.list", {}):
         name = entry.get("name")
         if entry.get("status") != "valid" or not isinstance(name, str):
