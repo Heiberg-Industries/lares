@@ -2,10 +2,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock('@lares/agent-kit/model-purpose-client', () => ({ modelPurposeRequest: requestMock }));
+// The real model resolver keeps its pinned alias in eve session state and reads the stream
+// position off eve's session view; both exist only inside a live eve step. An in-memory store
+// and a view that carries its own position stand in. The private-console checks read the
+// database and are another module's subject.
+const sessionState = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('eve/context', () => ({ defineState: (key: string, initial: () => unknown) => ({
+  get: () => (sessionState.has(key) ? sessionState.get(key) : initial()),
+  update: (fn: (value: unknown) => unknown) => { sessionState.set(key, fn(sessionState.has(key) ? sessionState.get(key) : initial())); },
+}) }));
+vi.mock('eve/events', async (actual) => ({ ...(await actual<typeof import('eve/events')>()), position: (view: { line: number }) => view.line }));
+vi.mock('@lares/agent-kit/private-console-surface', () => ({ verifyPrivateConsoleModel: async () => undefined, verifyPrivateConsoleSession: async () => true }));
 
 import { claimModelPurposeForInvocation, closeModelPurposeTurn, openModelPurposeTurn, prepareModelPurposeInvocation } from '../agent/lib/model-purpose.js';
 import { captureModelInvocation } from '@lares/agent-kit/model-invocation';
-import { modelPurposeRequest } from '@lares/agent-kit/model-purpose-client';
 
 const incarnation = '123e4567-e89b-42d3-a456-426614174000';
 const receipt = 'r'.repeat(43);
@@ -17,7 +27,7 @@ const context = (turnId = 'eve-turn-1', sequence = 1, current: unknown = human()
 });
 const event = (turnId = 'eve-turn-1', sequence = 1) => ({ type: 'turn.started', data: { turnId, sequence } });
 
-afterEach(() => { requestMock.mockReset(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+afterEach(() => { requestMock.mockReset(); sessionState.clear(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('model-purpose Eve turn hooks', () => {
   it('leaves a tagged human turn alone when optional custody is absent', async () => {
@@ -46,7 +56,7 @@ describe('model-purpose Eve turn hooks', () => {
     requestMock.mockResolvedValue({ capability: 'c'.repeat(43), expiresAt: Date.now() + 30_000 });
     const initial = human(), current = { ...initial, attributes: { ...initial.attributes, marker: 'current' } };
     const session = context('human-turn', 3, current, initial);
-    session.auth.current.attributes = { ...session.auth.current.attributes, lares_model_purpose_required: '1', lares_model_pending_receipt: receipt };
+    current.attributes = { ...current.attributes, lares_model_purpose_required: '1', lares_model_pending_receipt: receipt } as typeof current.attributes;
     await openModelPurposeTurn(event('human-turn', 3), session as never);
     expect(requestMock).toHaveBeenCalledWith('turn.open', expect.objectContaining({
       pendingReceipt: receipt,
@@ -65,8 +75,8 @@ describe('model-purpose Eve turn hooks', () => {
       lares_resolver_member_id: 'member-1', lares_resume_request_id: 'approval-1', lares_resume_option: 'approve',
       lares_purpose: 'resolver', lares_model_purpose_required: '1', lares_model_pending_receipt: receipt,
     } };
-    // Eve's pinned approval coordinator emits an empty raw turnId but exposes its normalized
-    // session turn as turn_1. The adapter must retain the raw step event for Keeper.
+    // eve 0.60.1's approval coordinator emitted an empty raw turnId while its session turn read
+    // turn_1 (eve 1.0 does not). The adapter still retains the exact coordinates it is given.
     const session = { id: 'session-resume-proof', turn: { id: 'turn_1', sequence: 1 }, auth: { current: resolver, initiator: initial } };
     const step = (stepIndex: number) => ({ type: 'step.started', data: { turnId: '', sequence: 1, stepIndex } });
     prepareModelPurposeInvocation(step(0), session as never);
@@ -89,88 +99,92 @@ describe('model-purpose Eve turn hooks', () => {
     expect(requestMock).toHaveBeenLastCalledWith('turn.close', { turnCapability: 'c'.repeat(43), turnId: '', sequence: 1 });
   });
 
-  it('follows Eve 0.60.1 approval resume through its real coordinator and chief purpose adapter', async () => {
+  // eve 1.0's own turn events carry `turnId` and no `sequence`; the hook's session context
+  // carries the framework's turn. eve mints the id as `turn_<sequence>`.
+  it('opens and closes a human turn from eve 1.0 turn events, which carry no sequence', async () => {
+    vi.stubEnv('LARES_AGENT_NAME', 'helper');
+    vi.stubEnv('LARES_AGENT_INCARNATION', incarnation);
+    requestMock.mockImplementation(async (op: string) => op === 'turn.open'
+      ? { capability: 'c'.repeat(43), expiresAt: Date.now() + 30_000 } : { closed: true });
+    const auth = human({ lares_model_purpose_required: '1', lares_model_pending_receipt: receipt });
+    const session = { id: 'session-v27-human', turn: { id: 'turn_3', sequence: 3 }, auth: { current: auth, initiator: auth } };
+    await openModelPurposeTurn({ type: 'turn.started', data: { turnId: 'turn_3', cause: { deliveryId: 'delivery_3' }, follows: 'turn_2' } }, session as never);
+    expect(requestMock).toHaveBeenLastCalledWith('turn.open', expect.objectContaining({
+      context: { session: expect.objectContaining({ id: 'session-v27-human', turn: { id: 'turn_3', sequence: 3 } }) },
+    }));
+    // When the turn has settled, the hook's own session turn may already describe the next one:
+    // the position is taken from the event's turn id alone.
+    const after = { ...session, turn: { id: 'turn_4', sequence: 4 } };
+    await closeModelPurposeTurn({ type: 'turn.settled', data: { turnId: 'turn_3', outcome: 'completed' } }, after as never);
+    expect(requestMock).toHaveBeenLastCalledWith('turn.close', { turnCapability: 'c'.repeat(43), turnId: 'turn_3', sequence: 3 });
+  });
+
+  it('refuses a turn whose position cannot be read or does not agree with the framework context', async () => {
+    vi.stubEnv('LARES_AGENT_NAME', 'helper');
+    vi.stubEnv('LARES_AGENT_INCARNATION', incarnation);
+    const auth = human({ lares_model_purpose_required: '1', lares_model_pending_receipt: receipt });
+    const started = (turnId: string) => ({ type: 'turn.started', data: { turnId, cause: { deliveryId: 'delivery' }, follows: null } });
+    const session = (id: string, turn: unknown) => ({ id, turn, auth: { current: auth, initiator: auth } });
+    // An id eve does not mint, with no sequence beside it.
+    await expect(openModelPurposeTurn(started('not-an-eve-turn'), session('s-shape', { id: 'not-an-eve-turn', sequence: 0 }) as never)).rejects.toThrow('Model purpose authority');
+    // The id says turn 5; the framework context says another turn.
+    await expect(openModelPurposeTurn(started('turn_5'), session('s-disagree', { id: 'turn_6', sequence: 6 }) as never)).rejects.toThrow('Model purpose authority');
+    await expect(openModelPurposeTurn(started('turn_5'), session('s-sequence', { id: 'turn_5', sequence: 4 }) as never)).rejects.toThrow('Model purpose authority');
+    // No framework turn at all.
+    await expect(openModelPurposeTurn(started('turn_5'), session('s-missing', undefined) as never)).rejects.toThrow('Model purpose authority');
+    expect(requestMock).not.toHaveBeenCalled();
+  });
+
+  // This replaces a test that drove eve 0.60.1's internal tool loop
+  // (`dist/src/harness/tool-loop.js`, gone in 1.0) through an approval resume. What it pinned
+  // still holds on 1.0 shapes, proven here through the REAL model resolver and the real chief
+  // adapter: a purpose-bound approval resume is reserved before verification, opened once on
+  // Keeper, claimed per model call under the coordinates read off eve's session view, and
+  // closed by the turn's own settle event. Driving eve's own runtime through an approval needs
+  // a built agent; that proof belongs to the packet that can run one.
+  it('follows an eve 1.0 approval resume through the real model resolver and the chief purpose adapter', async () => {
     vi.stubEnv('LARES_AGENT_NAME', 'helper');
     vi.stubEnv('LARES_AGENT_INCARNATION', incarnation);
     requestMock.mockImplementation(async (op: string) => {
-      if (op === 'request.admit') return { pendingReceipt: receipt, expiresAt: Date.now() + 30_000 };
       if (op === 'turn.open') return { capability: 'c'.repeat(43), expiresAt: Date.now() + 30_000 };
       if (op === 'step.claim') return { claim: 'k'.repeat(43), expiresAt: Date.now() + 30_000 };
       return { closed: true };
     });
-    const admitted = await modelPurposeRequest<{ pendingReceipt?: string }>('request.admit', { capsule: 'verified-capsule', receipt: { kind: 'resume' } });
-    expect(admitted.pendingReceipt).toBe(receipt);
-
-    const eveRoot = new URL('../node_modules/eve/dist/src/', import.meta.url);
-    const [{ ContextContainer, contextStorage }, keys, { sessionProvider }, { createToolLoopHarness }] = await Promise.all([
-      import(new URL('context/container.js', eveRoot).href),
-      import(new URL('context/keys.js', eveRoot).href),
-      import(new URL('context/providers/session.js', eveRoot).href),
-      import(new URL('harness/tool-loop.js', eveRoot).href),
-    ]) as any;
     const initial = human();
     const resolver = { authenticator: 'lares-console', attributes: {
-      lares_resolver_member_id: 'member-1', lares_resume_request_id: 'approval-real-eve', lares_resume_option: 'approve',
-      lares_purpose: 'resolver', lares_model_purpose_required: '1', lares_model_pending_receipt: admitted.pendingReceipt,
+      lares_resolver_member_id: 'member-1', lares_resume_request_id: 'approval-eve-1', lares_resume_option: 'approve',
+      lares_purpose: 'resolver', lares_model_purpose_required: '1', lares_model_pending_receipt: receipt,
     } };
-    const context = new ContextContainer();
-    context.set(keys.AuthKey, resolver);
-    context.set(keys.InitiatorAuthKey, initial);
-    context.set(keys.SessionIdKey, 'session-real-eve-resume');
-    const session = {
-      agent: { dynamicModel: true, system: '', tools: [] },
-      compaction: { recentWindowSize: 10, threshold: 100_000 },
-      continuationToken: 'eve:real-resume-proof', history: [], sessionId: 'session-real-eve-resume',
-      state: {
-        'eve.harness.emission': { sessionStarted: true, sequence: 1, stepIndex: 0, turnId: '' },
-        'eve.runtime.pendingInputBatches': [{
-          event: { sequence: 0, stepIndex: 0, turnId: 'turn_0' },
-          requests: [{ kind: 'tool-approval', requestId: 'approval-real-eve', prompt: 'Fixture',
-            options: [{ id: 'approve', label: 'Approve' }, { id: 'cancel', label: 'Cancel' }],
-            action: { kind: 'tool-call', callId: 'call-real-eve', toolName: 'fixture', input: {} } }],
-          responseMessages: [], responseAuthRequiredRequestIds: ['approval-real-eve'],
-        }],
-      },
-    };
-    context.set(keys.SessionKey, sessionProvider.create(context, { state: session.state }).value);
-    const events: Array<{ type: string; data?: unknown }> = [];
-    let purposeSession: any;
-    const harness = createToolLoopHarness({
-      mode: 'conversation',
-      tools: new Map([['fixture', { description: 'Fixture', inputSchema: { type: 'object' }, approval: { response: async () => ({ status: 'allowed' }) } }]]),
-      handleEvent: async (event: { type: string; data?: unknown }) => {
-        events.push({ type: event.type, data: event.data });
-        if (['turn.completed', 'turn.failed', 'turn.cancelled'].includes(event.type)) {
-          await closeModelPurposeTurn(event, purposeSession);
-        }
-      },
-      resolveModel: async () => { throw new Error('No provider expected'); },
-      dispatchDynamicModelEvent: async ({ ctx, event }: { ctx: any; event: any }) => {
-        const frameworkSession = ctx.get(keys.SessionKey);
-        purposeSession = { id: frameworkSession.sessionId, turn: frameworkSession.turn,
-          auth: { current: ctx.get(keys.AuthKey), initiator: ctx.get(keys.InitiatorAuthKey) } };
-        prepareModelPurposeInvocation(event, purposeSession);
-        const invocation = captureModelInvocation(event, purposeSession, 'lares-brain');
-        await claimModelPurposeForInvocation(invocation);
-        // Stop at Eve's model-selection boundary so this regression makes no provider call.
-        throw new Error('Regression stops before model dispatch');
-      },
+    const { definitionModelResolver } = await import('@lares/agent-kit/definition-model');
+    const order: string[] = [];
+    const select = definitionModelResolver({
+      resolveAlias: async () => { order.push('definition'); return 'lares-brain'; },
+      preparePurpose: (event, session) => { prepareModelPurposeInvocation(event, session as never); order.push('reserved'); },
+      claimPurpose: async (invocation) => { await claimModelPurposeForInvocation(invocation); order.push('claimed'); },
+      provider: () => ({ specificationVersion: 'v3', provider: 'fixture', modelId: 'lares-brain' }) as never,
     });
-    const input = { attributedInputResponses: [{ auth: resolver, response: { requestId: 'approval-real-eve', optionId: 'approve' } }] };
-    const first = await contextStorage.run(context, () => harness(session, input));
-    expect(typeof first.next).toBe('function');
-    expect(events.map(event => event.type)).toContain('approval.candidate');
-    const second = await contextStorage.run(context, () => first.next!(first.session));
+    // What eve 1.0 hands a dynamic model: the session (id and both authentications), the latest
+    // turn, and the session view. The answered approval continues turn_1.
+    const modelContext = (line: number) => ({
+      session: { id: 'session-eve-1-resume', auth: { current: resolver, initiator: initial } },
+      turn: { id: 'turn_1', status: 'paused', input: [] }, view: { line },
+    }) as never;
+    await select(modelContext(14));
+    await select(modelContext(19));
+    expect(order).toEqual(['reserved', 'definition', 'claimed', 'reserved', 'claimed']);
 
-    expect(second.next).toMatchObject({ done: true });
-    expect(events.map(event => event.type)).toEqual(expect.arrayContaining(['approval.settled', 'input.resolved', 'step.failed', 'turn.failed']));
-    expect(purposeSession.turn).toEqual({ id: 'turn_1', sequence: 1 });
     const calls = requestMock.mock.calls;
-    expect(calls.map(([op]) => op)).toEqual(['request.admit', 'turn.open', 'step.claim', 'turn.close']);
-    expect(calls[1]![1]).toMatchObject({ context: { session: { turn: { id: '', sequence: 1 }, auth: { current: resolver, initiator: initial } } } });
-    expect(calls[2]![1]).toMatchObject({ event: { type: 'step.started', data: { turnId: '', sequence: 1, stepIndex: 0 } } });
-    expect(calls[3]![1]).toEqual({ turnCapability: 'c'.repeat(43), turnId: '', sequence: 1 });
-    expect(() => prepareModelPurposeInvocation({ type: 'step.started', data: { turnId: '', sequence: 1, stepIndex: 0 } }, purposeSession)).toThrow('Model purpose authority');
+    expect(calls.map(([op]) => op)).toEqual(['turn.open', 'step.claim', 'step.claim']);
+    expect(calls[0]![1]).toMatchObject({ pendingReceipt: receipt,
+      context: { session: { id: 'session-eve-1-resume', turn: { id: 'turn_1', sequence: 1 }, auth: { current: resolver, initiator: initial } } } });
+    expect(calls[1]![1]).toMatchObject({ purposeAlias: 'lares-brain', event: { type: 'step.started', data: { turnId: 'turn_1', sequence: 1, stepIndex: 14 } } });
+    expect(calls[2]![1]).toMatchObject({ purposeAlias: 'lares-brain', event: { type: 'step.started', data: { turnId: 'turn_1', sequence: 1, stepIndex: 19 } } });
+
+    const hookSession = { id: 'session-eve-1-resume', turn: { id: 'turn_1', sequence: 1 }, auth: { current: resolver, initiator: initial } };
+    await closeModelPurposeTurn({ type: 'turn.settled', data: { turnId: 'turn_1', outcome: 'failed' } }, hookSession as never);
+    expect(requestMock).toHaveBeenLastCalledWith('turn.close', { turnCapability: 'c'.repeat(43), turnId: 'turn_1', sequence: 1 });
+    // A closed turn's coordinates are burned: nothing can be reserved or selected on them again.
+    await expect(select(modelContext(23))).rejects.toThrow('Model purpose authority');
   });
 
   it('tombstones a marked resume closed while model authority verification is pending', async () => {

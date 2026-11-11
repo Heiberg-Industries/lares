@@ -109,16 +109,11 @@ export default defineInstrumentation({
   // Everything it reads is the owner's own material and Langfuse is the EU
   // region; revisit both if this agent is ever pointed at someone else's data.
   //
-  // eve 0.60.1 still honours these two keys on `defineInstrumentation`'s own config — the
-  // 0.60.0 removal (`assertNoRemovedContentOptions`, dist/src/tracing/otel-declaration.js)
-  // applies only to OTel DESTINATION options (otelIntegration/managedOtelIntegration/
-  // agentRunsIntegration, the experimental multi-file `instrumentationProviders` layout,
-  // which this file does not use and which no role enables). See
-  // tests/instrumentation-keys.test.ts for the regression pin.
-  recordInputs: true,
-  recordOutputs: true,
-
-  // eve 0.44/0.46 made trace CONTENT audience-dependent: without a policy, eve emits every
+  // eve 1.0 has no top-level `recordInputs` / `recordOutputs` on `defineInstrumentation` any more:
+  // what a trace carries is decided only by `tracePolicy` below, which names both directions
+  // (`tests/instrumentation-keys.test.ts` pins that nothing sets the removed keys).
+  //
+  // eve made trace CONTENT audience-dependent (0.44 on, unchanged in 1.0): without a policy, eve emits every
   // audience but includes content only for conversations it classes "public" (or when
   // `environment === "development"`) — so a private door's traces arrive in Langfuse as
   // metadata with no prompts or completions in them. That is not a failure anybody would

@@ -10,7 +10,6 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolContext } from "eve/tools";
-import type { DynamicResolveContext } from "eve/instructions";
 import { denylistPatterns } from "./helpers/denylist";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
@@ -40,8 +39,8 @@ import {
   standingFactsMarkdown,
   supersedeFact,
 } from "../lib/standing-facts.js";
-import remember from "../catalogue/remember.js";
-import forget from "../catalogue/forget.js";
+import rememberTool from "../catalogue/remember.js";
+import forgetTool from "../catalogue/forget.js";
 import standingFactsInstructions from "../agent/instructions/standing-facts.js";
 
 const boxSqlDir = join(import.meta.dirname, "../../box/sql");
@@ -64,6 +63,17 @@ const FORGET_LEDGER_SQL = `
   );
   CREATE UNIQUE INDEX forget_ledger_one_per_thing_idx ON forget_ledger (owner, kind, match_hash);
 `;
+
+/**
+ * eve 1.0 types every tool's `execute` as possibly streaming: one result, or an AsyncIterable of
+ * them. These two tools return one result. This is a view of the same objects that says so, for
+ * the assertions below; it changes nothing at runtime.
+ */
+type ReturnsOne<T extends { execute: (...args: never[]) => unknown }> = Omit<T, "execute"> & {
+  execute(...args: Parameters<T["execute"]>): Promise<Exclude<Awaited<ReturnType<T["execute"]>>, AsyncIterable<unknown>>>;
+};
+const remember = rememberTool as unknown as ReturnsOne<typeof rememberTool>;
+const forget = forgetTool as unknown as ReturnsOne<typeof forgetTool>;
 
 /**
  * WHO is in the turn. Both tools now require an allowlisted HUMAN on `ctx.session.auth.current`
@@ -107,29 +117,34 @@ const ctx = ctxFor(slackAuth(OWNER_SLACK));
 const CTX_TURN_KEY = { sessionId: "wrun_test", turnId: "turn_42" };
 
 /**
- * What eve calls when a conversation STARTS (the block is built once per session and
- * then held byte-stable for it, because eve merges every dynamic instruction into one cached
+ * What a conversation is given when it STARTS (the block is built once per conversation and
+ * then held byte-stable for it, because eve merges every system instruction into one cached
  * system message). Every call here therefore uses a FRESH session id: each assertion below is
  * about what a new conversation is given, which is exactly what the resolver answers. Holding
  * one id across calls would return the first block forever, which is the behaviour
  * `tests/memory-core.test.ts` pins on purpose.
  *
+ * Called the way eve 1.0 calls it: the function behind the `defineDynamic()` value (eve keeps it
+ * under this symbol), with the session, its latest turn and a memo. The memo runs its function,
+ * as eve does the first time it sees a key.
+ *
  * Loosely typed on purpose: the point of the call is the RUNTIME behaviour of the resolver (it
- * must resolve, and it must never throw), and pinning the framework's exact handler arity in a
+ * must resolve, and it must never throw), and pinning the framework's exact context type in a
  * cast here would break on an eve upgrade for no gain.
  */
 let sessionSeq = 0;
 async function injected(): Promise<string> {
-  const handler = standingFactsInstructions.events["session.started"] as unknown as
-    | ((event: unknown, ctx: unknown) => Promise<{ markdown: string }>)
+  const resolve = Reflect.get(standingFactsInstructions, Symbol.for("eve.dynamic")) as unknown as
+    | ((ctx: unknown) => Promise<{ content: string } | null>)
     | undefined;
-  if (!handler) throw new Error("session.started handler missing");
+  if (typeof resolve !== "function") throw new Error("standing-facts.ts does not export a dynamic resolver");
   const resolveCtx = {
-    session: { id: `wrun_test_${++sessionSeq}` },
+    session: { id: `wrun_test_${++sessionSeq}`, auth: { current: null, initiator: null } },
+    turn: { id: "turn_0", status: "running", input: [] },
     channel: {},
-    messages: [],
-  } as unknown as DynamicResolveContext;
-  return (await handler(undefined, resolveCtx)).markdown;
+    memo: async (_key: unknown, fn: (occurrence: unknown) => unknown) => fn({}),
+  };
+  return (await resolve(resolveCtx))?.content ?? "";
 }
 
 describe("standing facts", () => {
@@ -784,7 +799,7 @@ describe("standing facts", () => {
       (pool as unknown as { query: () => Promise<never> }).query = () => new Promise<never>(() => {});
       try {
         const facts = await withTimeout(
-          listActiveFacts(pool),
+          listActiveFacts(pool, configuredOwnerId()),
           STANDING_FACTS_TIMEOUT_MS,
           "test: standing facts",
         ).catch(() => []);
