@@ -25,6 +25,8 @@ export default defineTool({
     const notHim = humanTurnRefusal(
       ctx.session?.auth,
       "A ladder starts chasing again because the owner asked for it on this turn.",
+      process.env,
+      ctx.session,
     );
     if (notHim) return { reset: false as const, message: notHim };
 

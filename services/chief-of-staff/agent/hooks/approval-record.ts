@@ -13,7 +13,7 @@ export type { ApprovalRecordDeps } from "@lares/agent-kit/approval-record-hook";
 
 import {personalSendInputRequested,personalSendInputResolved} from '../../lib/personal-send-approval.js';
 import { getPool } from "@lares/agent-kit/db";
-import { approverFrom, assertApprover } from "../../lib/approvals.js";
+import { approverFrom, assertApprover, noteSettledCard, takeNativeAnswerer } from "../../lib/approvals.js";
 import { applyRouteProposalDecline, recordRouteApprovalLink, routeApprovalLinkAudience } from "../../lib/route-decline.js";
 import { withCurrentNativeContinuity } from "../../lib/conversation-continuity.js";
 const live = makeApprovalRecord({personalRequested:(r,c)=>personalSendInputRequested(r,c as never),personalResolved:(r,o,c)=>personalSendInputResolved(r,o,c as never)});
@@ -54,7 +54,9 @@ async function applyScheduledRouteDeclines(event: unknown, ctx: HookContext): Pr
   const requestId = settled.interactionId;
   const audience = await routeApprovalLinkAudience(getPool(), requestId);
   if (!audience) return;
-  const principal = approverFrom(ctx?.session?.auth);
+  // eve 1.0: `session.auth.current` is the scheduled job's app identity, not the person who tapped
+  // Deny. The owner's answer is the one the native response policy accepted for this card.
+  const principal = approverFrom({ current: takeNativeAnswerer(requestId) });
   assertApprover(principal);
   const auth = {
     authenticator: principal.authenticator,
@@ -79,6 +81,9 @@ export default defineHook({
       try { await linkScheduledRouteRequests(getPool(), event, ctx); } catch (error) { warnRouteDecline(error); }
     },
     "interaction.settled": async (event: unknown, ctx: HookContext) => {
+      // Any approval card that settles ends "the owner just said so" for the rest of its turn.
+      if (settledApproval(event, ctx)) noteSettledCard(ctx?.session?.id,
+        (event as { scope?: { turnId?: unknown } })?.scope?.turnId ?? ctx?.session?.turn?.id);
       await live["interaction.settled"](event, ctx);
       try { await applyScheduledRouteDeclines(event, ctx); } catch (error) { warnRouteDecline(error); }
     },

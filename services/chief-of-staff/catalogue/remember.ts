@@ -123,6 +123,8 @@ export default defineTool({
     const notHim = humanTurnRefusal(
       ctx.session?.auth,
       "A standing fact is something the owner said, in their own words, on this turn.",
+      process.env,
+      ctx.session,
     );
     if (notHim) return { remembered: false as const, message: notHim };
 

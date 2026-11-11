@@ -11,7 +11,7 @@ import { managedIdentity } from './door-authority.js';
 import { parseDefinition } from './definition.js';
 import { exactReservationSchema as reservationSchema, exactTargetSchema as targetSchema } from './exact-approval-request.js';
 import { autonomyOf, grantFor, scopeAtLeast } from './manifest.js';
-import { exactResolverAdmission } from './private-console-resume.js';
+import { exactResolverAdmission, rememberAcceptedAnswer } from './private-console-resume.js';
 
 export const EXACT_APPROVAL_REFUSED = 'Exact approval authority is unavailable or has changed';
 const refuse = (): never => { throw new Error(EXACT_APPROVAL_REFUSED); };
@@ -171,11 +171,14 @@ export async function approveExactResponse(ctx: ExactResponseContext, o: ExactAp
       (decision === 'approve' ? (row.outcome !== null && row.outcome !== 'approved') : row.outcome !== null)) refuse();
   await current(r,responder!.memberId,responder!.admissionNonce,ctx.session.id,ctx.request.toolName,ctx.request.toolInput,o,
     {toolName:ctx.request.toolName,session:{id:ctx.session.id,turn:ctx.session.turn as never,auth:{current:principal,initiator:ctx.session.initiator}}} as ConsoleAuthorityContext);
-  if (decision === 'deny') return {status:'allowed'};
+  // The turn continues as the person who asked; it finds this answer only through this record.
+  const who = {memberId:responder!.memberId,admissionNonce:responder!.admissionNonce};
+  if (decision === 'deny') { rememberAcceptedAnswer(ctx,who,o.env); return {status:'allowed'}; }
   const result = await db.query(`UPDATE approval_asks SET outcome='approved',answered_at=COALESCE(answered_at,now()),
     answered_via='console',resolved_by_member_id=$3 WHERE call_id=$1 AND request_id=$2 AND original_authority IS NOT NULL
     AND (outcome IS NULL OR (outcome='approved' AND resolved_by_member_id=$3)) RETURNING call_id`,[row.call_id,row.request_id,responder!.memberId]);
   if (result.rows.length !== 1) refuse();
+  rememberAcceptedAnswer(ctx,who,o.env);
   return {status:'allowed'};
 }
 /**

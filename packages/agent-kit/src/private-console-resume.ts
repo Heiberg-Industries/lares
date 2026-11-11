@@ -103,3 +103,65 @@ async function requireResumeReference(reference:{binding:ConsoleBindingInput;req
     return {...current,binding};
   });
 }
+
+/**
+ * THE ANSWER A TURN CONTINUES FROM (eve 1.0).
+ *
+ * On eve 1.0 an answered card starts no new turn: the paused turn carries on with the same turn id,
+ * and `session.auth.current` stays the person who ASKED. The person who answered is only
+ * `response.principal`, inside eve's response policy. So once that policy has accepted an answer,
+ * it hands the answer here, and the code that continues the turn (the model seam, the settle hook)
+ * reads it back. The turn's own identity and attributes never stand in for it.
+ *
+ * - One entry per card, keyed by conversation, turn, turn position, this run's incarnation and the
+ *   card's request id. A different turn, conversation, run or card finds nothing.
+ * - The continuation TAKES the entries of its own turn position: each answer opens at most one
+ *   continuation. The settle hook only reads.
+ * - In memory only, bounded, and gone after 30 seconds, the life of the Keeper resume receipt it
+ *   carries. A restart between the answer and the continuation finds nothing, so the continuation
+ *   is refused (fails closed).
+ */
+export type AcceptedAnswer=Readonly<{sessionId:string;turnId:string;sequence:number;incarnation:string;requestId:string;
+  optionId:'approve'|'deny';memberId:string;admissionNonce:string;principal:unknown;receipt?:string;expiresAt:number}>;
+export type AnswerPoint=Readonly<{sessionId:string;turnId:string;sequence:number;incarnation:string}>;
+const ACCEPTED_MS=30_000,MAX_ACCEPTED=512;
+const accepted=new Map<string,AcceptedAnswer>();
+const pointKey=(p:AnswerPoint)=>`${p.sessionId}\0${p.turnId}\0${p.sequence}\0${p.incarnation}\0`;
+function pruneAccepted(now:number){for(const [k,v] of accepted)if(v.expiresAt<=now)accepted.delete(k);}
+/** The Keeper resume receipt the console's answer was admitted with, if any. */
+function resumeReceiptOf(principal:unknown){
+  const v=(principal as {attributes?:Record<string,unknown>}|undefined)?.attributes?.lares_model_pending_receipt;
+  return typeof v==='string'&&/^[A-Za-z0-9_-]{43}$/.test(v)?v:undefined;
+}
+/** Called by a response policy only after it has fully accepted the answer. A second accept of the
+ *  same card (eve may ask again) replaces nothing: the first answer stands. */
+export function rememberAcceptedAnswer(ctx:{request:{interactionId:string};response:{decision:'approve'|'deny';principal:unknown};session:{id:string;turn?:unknown}},
+  who:{memberId:string;admissionNonce:string},env:NodeJS.ProcessEnv=process.env,now=Date.now()):void{
+  const own=managedIdentity(env),turn=ctx.session?.turn as {id?:unknown;sequence?:unknown}|undefined;
+  if(!own||typeof ctx.session?.id!=='string'||typeof turn?.id!=='string'||!turn.id||!Number.isSafeInteger(turn.sequence)||Number(turn.sequence)<0||
+    typeof ctx.request?.interactionId!=='string'||!ctx.request.interactionId||(ctx.response?.decision!=='approve'&&ctx.response?.decision!=='deny'))return;
+  pruneAccepted(now);
+  const point={sessionId:ctx.session.id,turnId:turn.id,sequence:Number(turn.sequence),incarnation:own.incarnation};
+  const id=pointKey(point)+ctx.request.interactionId;
+  if(accepted.has(id))return;
+  if(accepted.size>=MAX_ACCEPTED)return; // Full: this answer opens no continuation (refused, never guessed).
+  const receipt=resumeReceiptOf(ctx.response.principal);
+  accepted.set(id,Object.freeze({...point,requestId:ctx.request.interactionId,optionId:ctx.response.decision,memberId:who.memberId,
+    admissionNonce:who.admissionNonce,principal:ctx.response.principal,...(receipt?{receipt}:{}),expiresAt:now+ACCEPTED_MS}));
+}
+/** Read one card's accepted answer without using it up (the settle hook: who answered, and how). */
+export function acceptedAnswerFor(requestId:string,sessionId:string,env:NodeJS.ProcessEnv=process.env,now=Date.now()):AcceptedAnswer|undefined{
+  const own=managedIdentity(env);if(!own)return undefined;
+  pruneAccepted(now);
+  for(const v of accepted.values())if(v.requestId===requestId&&v.sessionId===sessionId&&v.incarnation===own.incarnation)return v;
+  return undefined;
+}
+/** Take (use up) every accepted answer for this exact turn position. */
+export function takeAcceptedAnswers(point:AnswerPoint,now=Date.now()):AcceptedAnswer[]{
+  pruneAccepted(now);
+  const prefix=pointKey(point),out:AcceptedAnswer[]=[];
+  for(const [k,v] of accepted)if(k.startsWith(prefix)){accepted.delete(k);out.push(v);}
+  return out.sort((a,b)=>a.requestId<b.requestId?-1:a.requestId>b.requestId?1:0);
+}
+/** Tests only. */
+export function clearAcceptedAnswersForTests(){accepted.clear();}

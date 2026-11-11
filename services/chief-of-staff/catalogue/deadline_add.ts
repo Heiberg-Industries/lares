@@ -62,6 +62,8 @@ export default defineTool({
     const notHim = humanTurnRefusal(
       ctx.session?.auth,
       "A deadline is added because the owner asked for it on this turn.",
+      process.env,
+      ctx.session,
     );
     if (notHim) return { added: false as const, message: notHim };
 

@@ -110,6 +110,54 @@ export function approverFrom(
 }
 
 /**
+ * THE TURN AFTER AN ANSWERED CARD (eve 1.0, every door).
+ *
+ * eve 1.0 continues a paused turn after a card is answered, as the person who ASKED: on Slack or
+ * Telegram that is the owner, so `auth.current` alone would let the continuation's model call an
+ * ungated write (`remember`, `forget`, `deadline_add`, `deadline_reset`) as if the owner had just
+ * said so. Once any approval card in a turn has settled, by any ending, the rest of that turn
+ * carries no new human instruction. The approval-record hook notes each settled card here from the
+ * `interaction.settled` event's own turn; the refusal reads it. In memory, bounded, kept for the
+ * life of a turn; if it is lost (restart), the continuation itself is refused elsewhere.
+ */
+const SETTLED_TURN_MS = 30 * 60_000, MAX_SETTLED_TURNS = 4096;
+const settledTurns = new Map<string, number>();
+const turnSlot = (sessionId: string, turnId: string) => `${sessionId}\0${turnId}`;
+export function noteSettledCard(sessionId: unknown, turnId: unknown, now = Date.now()): void {
+  if (typeof sessionId !== "string" || !sessionId || typeof turnId !== "string" || !turnId) return;
+  for (const [k, at] of settledTurns) if (at <= now) settledTurns.delete(k);
+  if (settledTurns.size >= MAX_SETTLED_TURNS) settledTurns.delete(settledTurns.keys().next().value as string);
+  settledTurns.set(turnSlot(sessionId, turnId), now + SETTLED_TURN_MS);
+}
+export function turnAnsweredACard(session?: { id?: unknown; turn?: { id?: unknown } | null } | null, now = Date.now()): boolean {
+  const id = session?.id, turnId = session?.turn?.id;
+  if (typeof id !== "string" || typeof turnId !== "string") return false;
+  const at = settledTurns.get(turnSlot(id, turnId));
+  return at !== undefined && at > now;
+}
+
+/**
+ * WHO ANSWERED A NATIVE CARD. On eve 1.0 the settle hook's `session.auth.current` is the turn's
+ * requester (for a scheduled job, the app). The person who answered is only `response.principal`
+ * in the response policy, so the policy keeps it here once it has accepted the answer, and the
+ * settle hook reads it (for example, to apply the owner's Deny as a track-routing veto).
+ */
+const NATIVE_ANSWER_MS = 10 * 60_000, MAX_NATIVE_ANSWERS = 1024;
+const nativeAnswers = new Map<string, { principal: unknown; expiresAt: number }>();
+function rememberNativeAnswer(requestId: unknown, principal: unknown, now = Date.now()): void {
+  if (typeof requestId !== "string" || !requestId) return;
+  for (const [k, v] of nativeAnswers) if (v.expiresAt <= now) nativeAnswers.delete(k);
+  if (nativeAnswers.size >= MAX_NATIVE_ANSWERS || nativeAnswers.has(requestId)) return;
+  nativeAnswers.set(requestId, { principal, expiresAt: now + NATIVE_ANSWER_MS });
+}
+/** The accepted answerer of one native card, used up on read. */
+export function takeNativeAnswerer(requestId: string, now = Date.now()): unknown {
+  const v = nativeAnswers.get(requestId);
+  nativeAnswers.delete(requestId);
+  return v && v.expiresAt > now ? v.principal : undefined;
+}
+
+/**
  * The check an UNGATED, model-called write needs when its authority is "the owner just said so".
  * Returns a refusal sentence, or null when this turn really is the owner's.
  *
@@ -129,8 +177,9 @@ export function humanTurnRefusal(
   auth: SessionAuthLike | null | undefined,
   lead: string,
   env: NodeJS.ProcessEnv = process.env,
+  session?: { id?: unknown; turn?: { id?: unknown } | null } | null,
 ): string | null {
-  if (consoleResolverOnly(auth?.current)) return `${lead} This turn answers an approval; it contains no new human instruction. Nothing changed.`;
+  if (consoleResolverOnly(auth?.current) || turnAnsweredACard(session)) return `${lead} This turn answers an approval; it contains no new human instruction. Nothing changed.`;
   const current = principalFromAuth(auth?.current);
   if (current.absent !== true && isAllowedPrincipal(current.authenticator, current.userId, env)) {
     return null;
@@ -321,6 +370,7 @@ export function nativeAnswerDecision(ctx: unknown): {status:'allowed'}|{status:'
     // it may be a person, the app principal of a scheduled turn, or missing, and none of those changes who may answer.
     const answerer = principalFromAuth(c.response.principal);
     if (answerer.absent === true || !isOwnerPrincipal(answerer.authenticator, answerer.userId)) return refused('only the agent\'s owner can answer this card');
+    rememberNativeAnswer((ctx as {request?:{interactionId?:unknown}}).request?.interactionId, c.response.principal);
     return {status:'allowed'};
   } catch { return refused('this answer could not be verified'); }
 }

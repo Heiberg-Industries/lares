@@ -57,7 +57,7 @@ function parseContext(value:unknown):ConsoleAuthorityContext{
   if(typeof session.id!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(session.id)||typeof turn.id!=='string'||(turn.id!==''&&!/^[A-Za-z0-9._:-]{1,128}$/.test(turn.id))||!Number.isSafeInteger(turn.sequence)||Number(turn.sequence)<0)throw deny();
   return {session:{id:session.id,turn:{id:turn.id,sequence:Number(turn.sequence)},auth:{current:auth.current,initiator:auth.initiator}}};
 }
-function stepEvent(value:unknown){const event=object(value),data=object(event.data);if(event.type!=='step.started'||typeof data.turnId!=='string'||(data.turnId!==''&&!/^[A-Za-z0-9._:-]{1,128}$/.test(data.turnId))||!Number.isSafeInteger(data.sequence)||Number(data.sequence)<0||!Number.isSafeInteger(data.stepIndex)||Number(data.stepIndex)<0)return undefined;return {turnId:data.turnId,sequence:Number(data.sequence),stepIndex:Number(data.stepIndex),digest:modelPurposeDigest(event),key:`${data.turnId}:${data.sequence}:${data.stepIndex}`};}
+function stepEvent(value:unknown){const event=object(value),data=object(event.data);if(event.type!=='step.started'||typeof data.turnId!=='string'||!/^[A-Za-z0-9._:-]{1,128}$/.test(data.turnId)||!Number.isSafeInteger(data.sequence)||Number(data.sequence)<0||!Number.isSafeInteger(data.stepIndex)||Number(data.stepIndex)<0)return undefined;return {turnId:data.turnId,sequence:Number(data.sequence),stepIndex:Number(data.stepIndex),digest:modelPurposeDigest(event),key:`${data.turnId}:${data.sequence}:${data.stepIndex}`};}
 function resumeMatches(request:ModelPurposeRequest,reference:BudgetAuthorityReference){
   return request.purpose==='resume'?reference.kind==='resume'&&reference.resume?.requestId===request.resume?.requestId&&reference.resume?.optionId===request.resume?.optionId:reference.kind==='human';
 }
@@ -131,8 +131,8 @@ export class ModelPurposeBrokerState {
   registerTurn(request:ModelPurposeRequest,reference:BudgetAuthorityReference,turnId:string,sequence:number,definitionHash:string,purposeAlias:string){
     this.capacity(this.turns);
     if(!resumeMatches(request,reference)||reference.turnId!==turnId||reference.turnSequence!==sequence||
-      !Number.isSafeInteger(sequence)||sequence<0||(request.purpose==='human'&&turnId==='')||
-      (turnId!==''&&!/^[A-Za-z0-9._:-]{1,128}$/.test(turnId))||definitionHash!==request.definitionHash||
+      !Number.isSafeInteger(sequence)||sequence<0||
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(turnId)||definitionHash!==request.definitionHash||
       !/^[a-z][a-z0-9-]{1,63}$/.test(purposeAlias))throw deny();
     const capability=randomBytes(32).toString('base64url');
     const turn:Turn={request,reference,turnId,sequence,definitionHash,purposeAlias,
@@ -331,16 +331,17 @@ export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurpo
       const handle=input.pendingReceipt;
       if(typeof handle!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(handle))throw deny();
       const context=parseContext(input.context),session=context.session!;
-      const admission=consoleAdmission(session.auth?.current)??consoleAdmission(session.auth?.initiator);
+      // eve 1.0: `current` is the member who asked, also when this turn continues after their answer.
+      const admission=consoleAdmission(session.auth?.current);
       if(!admission)throw deny();
       const pending=state.consumePending(handle,{agent:String(req.agent),incarnation:String(req.incarnation),session:String(session.id),member:admission.memberId,admissionNonce:admission.admissionNonce});
       if(session.id!==pending.request.session||admission.memberId!==pending.request.member||admission.admissionNonce!==pending.request.admissionNonce)throw deny();
       const turnId=session.turn!.id!,sequence=session.turn!.sequence!;
-      if(pending.request.purpose==='human'&&turnId==='')throw deny();
+      if(turnId==='')throw deny();
       let reference!:BudgetAuthorityReference,purposeAlias='';
       const env=runtimeEnv(String(req.agent),String(req.incarnation));
       await consoleSourceTransaction(pool,async db=>{
-        reference=await captureBudgetAuthorityReference(db as SourceDatabase,context,env);
+        reference=await captureBudgetAuthorityReference(db as SourceDatabase,context,env,{purpose:pending.request.purpose,...(pending.request.resume?{resume:{...pending.request.resume}}:{})});
         if(reference.binding.agent!==pending.request.agent||reference.binding.incarnation!==pending.request.incarnation||reference.binding.sessionId!==pending.request.session||reference.binding.memberId!==pending.request.member||reference.binding.admissionNonce!==pending.request.admissionNonce||!resumeMatches(pending.request,reference))throw deny();
         purposeAlias=await assertCurrentDefinition(db as SourceDatabase,pending.request);
       },undefined,{deadlineAtMs});

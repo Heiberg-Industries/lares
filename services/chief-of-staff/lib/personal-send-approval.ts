@@ -9,7 +9,7 @@ import {PgPersonalActionStore,personalMailPayloadSchema,PERSONAL_MAIL_SEND_TOOL}
 import {payloadFingerprint,callIdFrom} from '@lares/agent-kit/approval-ledger';
 import {authorityTransaction,consoleAdmission,requireConsoleTurnAuthority,type ConsoleAuthorityContext} from '@lares/agent-kit/console-turn-authority';
 import {isApprovalRecheck,approvalResponderOf} from '@lares/agent-kit/approval-execution';
-import {requirePrivateConsoleResume,privateResolverAdmission} from '@lares/agent-kit/private-console-resume';
+import {requirePrivateConsoleResume,privateResolverAdmission,rememberAcceptedAnswer,acceptedAnswerFor} from '@lares/agent-kit/private-console-resume';
 import {managedIdentity} from '@lares/agent-kit/door-authority';
 import {personalReadSelectionSchema} from './personal-reads.js';
 import {requirePersonalSendPolicy,requirePersonalSendApprovalPolicy,executeApprovedPersonalSend} from './personal-send.js';
@@ -74,7 +74,7 @@ export async function personalSendInputRequested(request:{requestId:string;callI
 export interface PersonalSendResponseContext {
   request:{interactionId:string;callId:string;toolName:string;toolInput?:unknown};
   response:{decision:'approve'|'deny';principal:unknown};
-  session:{id:string;initiator:unknown};
+  session:{id:string;initiator:unknown;turn?:unknown};
 }
 /** eve asks this policy about a Deny as well as an Approve. One rule: only the person who may
  *  approve this card may deny it. A Deny runs the same member, binding and policy checks as an
@@ -93,6 +93,7 @@ export async function personalSendApprovalResponse(ctx:PersonalSendResponseConte
         ctx.request.callId!==current.reference.selection.originalCallId||current.approvalOutcome!==null)throw new Error('Approval request changed');
       await requirePersonalSendApprovalPolicy(db as never,current.reference);
       await requirePrivateConsoleResume(context,'surface',{db});
+      rememberAcceptedAnswer(ctx,{memberId:current.binding.memberId,admissionNonce:current.binding.admissionNonce});
       return {status:'allowed' as const};
     }
     const options={db,callId:ctx.request.callId,toolName:ctx.request.toolName,input:ctx.request.toolInput};
@@ -103,12 +104,20 @@ export async function personalSendApprovalResponse(ctx:PersonalSendResponseConte
     const updated=await db.query(`UPDATE approval_asks SET outcome='approved',answered_at=COALESCE(answered_at,clock_timestamp()),answered_via='console',resolved_by_member_id=$3
       WHERE call_id=$1 AND request_id=$2 AND (outcome IS NULL OR (outcome='approved' AND resolved_by_member_id=$3)) RETURNING call_id`,
       [ctx.request.callId,requestId,current.binding.memberId]);
-    if(updated.rows.length!==1)throw new Error('Approval changed');return {status:'allowed' as const};
+    if(updated.rows.length!==1)throw new Error('Approval changed');
+    rememberAcceptedAnswer(ctx,{memberId:current.binding.memberId,admissionNonce:current.binding.admissionNonce});
+    return {status:'allowed' as const};
   });
 }
+/** The card settled. On eve 1.0 the settle hook's `session.auth.current` is the person who ASKED, so
+ *  the answer comes from what the response policy accepted for this card. A personal card that nobody
+ *  answered (expired, withdrawn, interrupted) has no accepted answer; the shared hook then closes the
+ *  card, and the prepared send can never be claimed because its card is not approved. */
 export async function personalSendInputResolved(requestId:string,outcome:string,ctx:ConsoleAuthorityContext):Promise<boolean>{
-  const auth=privateResolverAdmission(ctx.session?.auth?.current);if(!auth||auth.requestId!==requestId)return false;
-  const current=await requirePrivateConsoleResume(ctx,'surface');
+  const answer=typeof ctx.session?.id==='string'?acceptedAnswerFor(requestId,ctx.session.id):undefined;
+  const auth=privateResolverAdmission(answer?.principal);if(!answer||!auth||auth.requestId!==requestId)return false;
+  const answered={...ctx,session:{...ctx.session,auth:{current:answer.principal,initiator:ctx.session?.auth?.initiator}}} as ConsoleAuthorityContext;
+  const current=await requirePrivateConsoleResume(answered,'surface');
   if(outcome==='approved')return true; // The independent response authorizer already wrote approval.
   if(!['cancelled','ignored','invalid'].includes(outcome))throw new Error('Unsupported personal approval outcome');
   if(auth.optionId!=='deny')throw new Error('Approval answer changed');

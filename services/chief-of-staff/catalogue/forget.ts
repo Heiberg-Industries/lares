@@ -85,6 +85,8 @@ export default defineTool({
     const notHim = humanTurnRefusal(
       ctx.session?.auth,
       "Only the owner can retire a standing fact they stated.",
+      process.env,
+      ctx.session,
     );
     if (notHim) return { forgotten: false as const, message: notHim };
 
