@@ -476,6 +476,9 @@ def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None =
         _write_exclusive_at(auth_fd, "pg_hba.conf", hba, 0o644, uid)
         _write_exclusive_at(admission_fd, "service-gate.lock", b"", 0o444, uid)
         _write_exclusive_at(custody_fd, "command.lock", b"", 0o600, uid)
+        # Made here, with the rest, so that a maintenance run that is refused later leaves nothing
+        # behind. An installation prepared before this file existed gets it on its first run.
+        _write_exclusive_at(custody_fd, _RUN_LOCK, b"", 0o600, uid)
         _write_exclusive_at(admission_fd, "intent.json", _record(identity, epoch, "normal"), 0o444, uid)
         _assert_path_matches(requested, prefix_info, uid)
         _assert_path_matches(requested / "var/lib/lares-maintenance", os.fstat(root_fd), uid)

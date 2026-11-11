@@ -693,7 +693,9 @@ describe("the keeper the installer configures and starts", () => {
         expect(existsSync(personalCompose()), label).toBe(false);
       }
       expect(before).toContain(block.tokenKeyFile);
-    });
+      // Four whole installer runs: about 10 seconds on a quiet machine, before and after the
+      // agent-store step and the update lock were added (measured), so a slow runner reaches 20.
+    }, 60_000);
 
     it("preserves explicit Microsoft-only runtime settings on installer rerun", () => {
       expect(install().code).toBe(0);

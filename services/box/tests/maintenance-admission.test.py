@@ -953,7 +953,7 @@ while [ ! -e "$MARK.release" ]; do sleep 0.01; done
 
     def test_each_precommit_file_and_parent_sync_failure_stays_closed(self) -> None:
         for failed_name in ("preparation.pending", "pg_hba.conf", "service-gate.lock",
-                            "command.lock", "intent.json", "preparation.json"):
+                            "command.lock", "operation.lock", "intent.json", "preparation.json"):
             with self.subTest(stage=failed_name):
                 fresh = self.root / ("precommit-" + failed_name.replace(".", "-"))
                 fresh.mkdir()
