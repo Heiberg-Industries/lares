@@ -85,38 +85,32 @@ describe('classifyMailboxOpenFailure', () => {
       vi.stubEnv('TOKEN_ENC_KEY_FILE', '/nonexistent/mailbox-open-failure-test-key');
       expect(classifyMailboxOpenFailure(await thrownBy(() => readTokenEncKey()))).toBe('client-configuration');
     });
-    it.each(['invalid_client', 'unauthorized_client'])('Google does not accept the client itself (%s)', async code => {
-      const err = await refreshFailure(401, { error: code, error_description: LEAKY });
-      expect(err).toBeInstanceOf(Common.GaxiosError);
-      expect(describeMailboxOpenFailure(err)).toBe(`category=client-configuration class=GaxiosError status=401 code=${code}`);
-    });
   });
 
   describe('token', () => {
-    it('Google says the stored credential is expired or revoked', async () => {
-      const err = await refreshFailure(400, { error: 'invalid_grant', error_description: LEAKY });
-      expect(describeMailboxOpenFailure(err)).toBe('category=token class=GaxiosError status=400 code=invalid_grant');
-    });
-    it('a Google API call is refused for lack of valid credentials', async () => {
-      expect(describeMailboxOpenFailure(await apiFailure(401, apiError(401, 'UNAUTHENTICATED')))).toBe('category=token class=GaxiosError status=401');
-    });
     it('no credential is stored for the account', () => {
       expect(describeMailboxOpenFailure(new AccountCredentialError())).toBe('category=token class=AccountCredentialError');
     });
   });
 
   describe('provider', () => {
-    it.each([500, 503, 429, 403, 404])('Google answers an API call with %i', async status => {
+    // What Google answers is printed, never branched on: every answer is `provider`, whatever its code.
+    it.each<[number, string]>([
+      [400, 'invalid_grant'], [401, 'invalid_client'], [401, 'unauthorized_client'], [400, 'invalid_request'],
+    ])('the token endpoint answers %i %s: the code is printed, the category does not depend on it', async (status, code) => {
+      const err = await refreshFailure(status, { error: code, error_description: LEAKY });
+      expect(err).toBeInstanceOf(Common.GaxiosError);
+      expect(describeMailboxOpenFailure(err)).toBe(`category=provider class=GaxiosError status=${status} code=${code}`);
+    });
+    it('the token endpoint answers with a code that is not a standard one: it is not printed', async () => {
+      const err = await refreshFailure(401, { error: 'some_new_code', error_description: LEAKY });
+      expect(describeMailboxOpenFailure(err)).toBe('category=provider class=GaxiosError status=401');
+    });
+    it.each([401, 403, 404, 429, 500, 503])('Google answers an API call with %i', async status => {
       expect(describeMailboxOpenFailure(await apiFailure(status, apiError(status, 'FIXTURE')))).toBe(`category=provider class=GaxiosError status=${status}`);
     });
     it('the token endpoint answers with a server error', async () => {
       expect(describeMailboxOpenFailure(await refreshFailure(503, 'upstream unavailable'))).toBe('category=provider class=GaxiosError status=503');
-    });
-    it('the token endpoint answers with a code this does not know: it is not guessed at', async () => {
-      const unknownCode = await refreshFailure(401, { error: 'some_new_code', error_description: LEAKY });
-      expect(describeMailboxOpenFailure(unknownCode)).toBe('category=provider class=GaxiosError status=401');
-      const otherStandardCode = await refreshFailure(400, { error: 'invalid_request', error_description: LEAKY });
-      expect(describeMailboxOpenFailure(otherStandardCode)).toBe('category=provider class=GaxiosError status=400 code=invalid_request');
     });
     it('Google cannot be reached', async () => {
       const port = await closedPort();
@@ -202,6 +196,7 @@ describe('the log text', () => {
       Object.assign(new Error(LEAKY), { name: ADDRESS }),
       new NamedAfterAnAddress(LEAKY),
       new GoogleConfigError(LEAKY),
+      Object.assign(new AccountCredentialError(), { message: LEAKY }),
       new AgentMailboxRefusedError(LEAKY),
       new AggregateError([new Error(LEAKY)], LEAKY),
       new DOMException(LEAKY, 'TimeoutError'),

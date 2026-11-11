@@ -131,16 +131,20 @@ const refuse = (what: string): never => { throw new AgentMailboxRefusedError(wha
  * Which kind of trouble stopped the mailbox being opened. Callers still receive `unavailable`
  * and nothing more; this exists for the one log line an operator reads.
  *
- *   client-configuration  the Google client settings on this host are missing or malformed, or
- *                         Google does not accept the client itself
- *   token                 the stored credential is missing, expired, revoked or refused
- *   provider              Google answered with an error, or could not be reached in time
+ *   client-configuration  the Google client settings on this host are missing or malformed
+ *   token                 Lares holds no stored credential for the account
+ *   provider              Google answered with an error, whatever it said, or could not be reached in time
  *   database              a lookup in Lares's own database failed, or no longer finds the account
  *   unknown               none of the above could be told from the error's class, code or status
+ *
+ * `client-configuration` and `token` are decided by the engine alone, from its own error classes. What
+ * Google answers is printed (status and code) and never branched on: mapping a Google answer to either
+ * of them needs a live probe of that answer first.
  */
 export type MailboxOpenFailureCategory = 'client-configuration' | 'token' | 'provider' | 'database' | 'unknown';
 
-/** RFC 6749 section 5.2: the error codes a token endpoint answers with. Nothing else is ever logged as one. */
+/** RFC 6749 section 5.2: the error codes a token endpoint answers with. Nothing else is ever logged as one.
+ * Printed only; the category never depends on which one it is. */
 const OAUTH_ERROR_CODES = new Set(['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client',
   'unsupported_grant_type', 'invalid_scope']);
 /** Connection failures as Node reports them. Every Google call goes through gaxios, which wraps these
@@ -163,12 +167,11 @@ function systemCode(err: unknown): string | undefined {
   }
   return undefined;
 }
-/** What a Google OAuth endpoint put in `error`, when it is one of the standard codes. */
-function oauthErrorCode(err: Common.GaxiosError): { answered: boolean; code?: string } {
+/** What a Google OAuth endpoint put in `error`, when it is one of the standard codes. For the log line only. */
+function oauthErrorCode(err: Common.GaxiosError): string | undefined {
   const data: unknown = err.response?.data;
   const code = typeof data === 'object' && data !== null ? (data as { error?: unknown }).error : undefined;
-  if (typeof code !== 'string') return { answered: false };
-  return OAUTH_ERROR_CODES.has(code) ? { answered: true, code } : { answered: true };
+  return typeof code === 'string' && OAUTH_ERROR_CODES.has(code) ? code : undefined;
 }
 const isTimeout = (err: unknown): boolean => err instanceof DOMException && err.name === 'TimeoutError';
 
@@ -182,15 +185,9 @@ export function classifyMailboxOpenFailure(err: unknown): MailboxOpenFailureCate
     if (err instanceof GoogleConfigError) return 'client-configuration';
     // No stored credential for the account, or it changed while a rotated one was being saved.
     if (err instanceof AccountCredentialError) return 'token';
-    if (err instanceof Common.GaxiosError) {
-      const oauth = oauthErrorCode(err);
-      if (oauth.code === 'invalid_client' || oauth.code === 'unauthorized_client') return 'client-configuration';
-      if (oauth.code === 'invalid_grant') return 'token';
-      // An API call (not the token endpoint) that Google refused for lack of valid credentials.
-      if (!oauth.answered && err.status === 401) return 'token';
-      // Any other answer from Google, and no answer at all (unreachable, timed out, cut off).
-      return 'provider';
-    }
+    // Any answer from Google, from the token endpoint or an API call, and no answer at all (unreachable,
+    // timed out, cut off). Its status and code go in the log line; neither decides the category.
+    if (err instanceof Common.GaxiosError) return 'provider';
     // The only deadlines in this file are the ones set on the Google calls.
     if (isTimeout(err)) return 'provider';
     // Postgres reported an error, the account store's lookup said no, or the transaction was not acknowledged.
@@ -214,7 +211,7 @@ export function describeMailboxOpenFailure(err: unknown): string {
     parts.push(`class=${typeof name === 'string' && CLASS_NAME.test(name) ? name : err instanceof Error ? 'Error' : 'none'}`);
     if (err instanceof Common.GaxiosError) {
       if (typeof err.status === 'number' && Number.isInteger(err.status) && err.status >= 100 && err.status <= 599) parts.push(`status=${err.status}`);
-      const oauth = oauthErrorCode(err).code;
+      const oauth = oauthErrorCode(err);
       if (oauth !== undefined) { parts.push(`code=${oauth}`); return parts.join(' '); }
     }
     const sqlstate: unknown = err instanceof DatabaseError ? err.code : undefined;
