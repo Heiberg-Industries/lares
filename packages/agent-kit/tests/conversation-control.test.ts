@@ -176,6 +176,34 @@ it('a refused end through the real eve session handle still answers an error and
  const marked=()=>owned.query.mock.calls.some(call=>/UPDATE agent_conversations/.test(String(call[0])));
  const input={sessionId:'wrun_one',incarnation:env.LARES_AGENT_INCARNATION,confirm:true};
  const attach=await eveSession(control=>controlSettled({control:{deliveryId:control.deliveryId},outcome:'refused',reason:'not allowed',source:'reset'}));
- await expect(resetConversation(input,attach,owned,env)).rejects.toThrow();
+ await expect(resetConversation(input,attach,owned,env)).rejects.toThrow('Unexpected session end outcome');
+ expect(marked()).toBe(false);
+});
+it('two resets at once: the one that finds the session already ended is told so, without waiting',async()=>{
+ const {sessionEndedFacts}=await import(eveDist('harness/facts.js'));
+ const owned={query:vi.fn().mockResolvedValue({rows:[{session_id:'wrun_one'}]})};
+ const marked=()=>owned.query.mock.calls.some(call=>/UPDATE agent_conversations SET terminal=true/.test(String(call[0])));
+ const input={sessionId:'wrun_one',incarnation:env.LARES_AGENT_INCARNATION,confirm:true};
+ // Another end (a second console tab) is applied first; this one is never admitted.
+ const attach=await eveSession(()=>sessionEndedFacts(undefined,{control:{deliveryId:'del_other'},outcome:'completed'}));
+ const started=Date.now();
+ await expect(resetConversation(input,attach,owned,env)).resolves.toEqual({status:'no_active_session'});
+ expect(Date.now()-started).toBeLessThan(2_000);
+ expect(marked()).toBe(true);
+});
+it('an end eve never records runs out of time: an error, one log line, and the row left open',async()=>{
+ const owned={query:vi.fn().mockResolvedValue({rows:[{session_id:'wrun_one'}]})};
+ const marked=()=>owned.query.mock.calls.some(call=>/UPDATE agent_conversations/.test(String(call[0])));
+ const input={sessionId:'wrun_one',incarnation:env.LARES_AGENT_INCARNATION,confirm:true};
+ const attach=await eveSession(()=>undefined);
+ const warn=vi.spyOn(console,'warn').mockImplementation(()=>undefined);
+ vi.useFakeTimers();
+ try {
+  const pending=resetConversation(input,attach,owned,env);
+  const assertion=expect(pending).rejects.toThrow(/not confirmed/);
+  await vi.advanceTimersByTimeAsync(11_000);await assertion;
+ } finally { vi.useRealTimers(); }
+ expect(warn).toHaveBeenCalledOnce();expect(String(warn.mock.calls[0]?.[0])).toMatch(/not recorded within 10 s/);
+ warn.mockRestore();
  expect(marked()).toBe(false);
 });
