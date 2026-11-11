@@ -99,8 +99,12 @@ export default eveChannel({
 /** The same startup hook the chief of staff runs, so the approval card the browser sees is rendered
  *  by the REAL formatters — the point of item 7 is what those put on the wire, not a fixture's. */
 const INSTRUMENTATION_SRC = `
+import { installRefusingDefaultProvider } from "@lares/agent-kit/gateway-budget";
 import { defineInstrumentation } from "eve/instrumentation";
 import { registerApprovalSummary } from "@lares/agent-kit/approval-summary";
+
+// FIRST: no model call from this disposable agent can leave through the AI SDK's default provider.
+installRefusingDefaultProvider();
 
 export default defineInstrumentation({ setup: () => { registerApprovalSummary(); } });
 `;
@@ -185,7 +189,10 @@ function fitOut(root) {
   patchScriptedModel(root);
   mkdirSync(join(root, 'agent/channels'), { recursive: true });
   writeFileSync(join(root, 'agent/channels/eve.ts'), CHANNEL_SRC);
-  writeFileSync(join(root, 'agent/instrumentation.ts'), INSTRUMENTATION_SRC);
+  // eve 1.0 reads instrumentation from a directory, one file per provider; the fixture's own
+  // agent/instrumentation/model-guard.ts is already in the copy and stays.
+  mkdirSync(join(root, 'agent/instrumentation'), { recursive: true });
+  writeFileSync(join(root, 'agent/instrumentation/approval-summary.ts'), INSTRUMENTATION_SRC);
   writeFileSync(join(root, 'agent/tools/chat_probe_slow.ts'), SLOW_TOOL_SRC);
   writeFileSync(join(root, 'agent/tools/gmail_send.ts'), GATED_TOOL_SRC);
 }

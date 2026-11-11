@@ -4,10 +4,13 @@
 // loop, and the model instead remembers which messages it has already acted on.
 //
 // The `seam …` messages are the measurement surface for the dynamic-seams eval. eve's eval harness
-// exposes a turn's `.message`, `.toolCalls`, `.inputRequests` and `.events` but NOT the model's tool
+// exposes a turn's `.reply`, `.toolCalls`, `.interactions` and `.events` but NOT the model's tool
 // set or the resolved system prompt — so the model reports them back. `mockModel`'s request view
 // carries `tools` (name + description) and `messages` (including the system role), which is the real
 // thing the model was handed, not a reconstruction.
+//
+// A scripted model is not, alone, a promise that no provider is reached: see
+// agent/instrumentation.ts for the guard that makes it one.
 import { appendFileSync, existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { definitionModel, resolveDefinitionForModel } from "@lares/agent-kit/definition-model";
 import { fixtureDefinition } from "../lib/definition.js";
@@ -96,39 +99,21 @@ const scripted = mockModel(({ lastUserMessage, messages, tools, toolResults, use
 });
 
 // Model selection: the same control file the tool catalogue reads selects a different model.
-// A distinct mock is the only way to SEE a runtime selection in a fixture with no provider — its reply is unmistakable.
-//
-// eve 0.60.1 removed `defineDynamic({ fallback, events })`'s `fallback`, and confines a live
-// provider-object model selection to `step.started` — a `session.started`/`turn.started` selection
-// is "durable" and must be a serializable model-id string, or eve throws
-// ("Dynamic model selection returned a provider object, but durable model selections must be
-// serializable. Return a model id string, or use a \"step.started\" model resolver."). A declared
-// handler returning null now throws too ("Dynamic model resolver returned no model"), so there is no
-// scope left where a harmless no-op return is possible for a model resolver.
-//
-// This agent is shared by every eval file in the package (evals.config.ts: "one local dev process"),
-// so a `session.started` model handler — whatever it returned — would run on every session any eval
-// creates, not only this one's model-selection probe. Combined with the two throws above,
-// that leaves exactly one usable flag:
-//   alt_model_step  step.started returning a provider object (an AI SDK LanguageModel)
-// The 0.32-era `alt_model_object` and `alt_model_id` flags are retired, not ported — see the model-selection
-// comment in evals/seams.eval.ts for what each proved and why neither survives on 0.60.1.
-// In particular: a model-id STRING at session/turn scope is the one shape this project forbids
-// everywhere (eve would route it through the Vercel AI Gateway, bypassing the self-hosted LiteLLM
-// gateway — packages/agent-kit/src/definition-model.ts), so no code path here may ever hand eve one.
-// No flag ⇒ `resolveAlias` picks "scripted", the same default every other eval in this package relies
-// on.
+// A distinct mock is the only way to SEE a runtime selection in a fixture with no provider — its
+// reply is unmistakable. The selection is always a provider OBJECT. A model-id string is the one
+// shape this project forbids everywhere (eve would resolve it through a hosted model gateway,
+// bypassing the installation's own — packages/agent-kit/src/definition-model.ts), so no code path
+// here may ever hand eve one. No flag ⇒ `resolveAlias` picks "scripted", the default every other
+// eval in this package relies on.
 const alternate = mockModel(({ lastUserMessage }) => `ALT-MODEL:${lastUserMessage ?? ""}`);
 
 export default defineAgent({
-  // Ported to `definitionModel` — the same step.started-only helper the three role services use
-  // (packages/agent-kit/src/definition-model.ts). It pins one alias per session on the first step
-  // and reuses it for later steps, and it hands the chosen model to `guardDefinitionModel`
-  // internally, so `scripted`/`alternate` are gated on `resolveAlias` having actually completed —
-  // the same readiness gate the repair-race proof in definition.eval.ts depends on.
-  // `modelContextWindowTokens` is no longer a sibling here: `sessionGatewayModel` (agent-kit) bakes
-  // in 200_000 with every selection, which is what "the compaction model has no window of its own"
-  // used to require at this level.
+  // `definitionModel` is the helper the role services use (packages/agent-kit/src/definition-model.ts).
+  // eve 1.0 runs it before every model call; it pins one alias per conversation in session state on
+  // the first call and rebuilds the provider from the pin afterwards, and it hands the chosen model
+  // to `guardDefinitionModel`, so `scripted`/`alternate` are gated on `resolveAlias` having actually
+  // completed — the readiness gate the repair-race proof in definition.eval.ts depends on. It also
+  // supplies the context window with every selection.
   model: definitionModel({
     resolveAlias: async (sessionId) => {
       if (process.env.LARES_DEFINITION_DIR) {
