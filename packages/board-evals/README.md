@@ -49,6 +49,7 @@ Each one boots a real eve runtime against a disposable Postgres with a scripted 
 | A tainted turn raises a card and an untainted one does not, under the real turn ids | `node scripts/tainted-approval-proof.mjs` | `proofs/tainted-approval-2026-11-11.md` (eve 1.0.0-rc.9), `proofs/tainted-approval-2026-09-20.md` (0.60.1) |
 | Typed text never approves a waiting card, and what happens to the card when a person types | `pnpm -C packages/board-evals run proof:pending-reply` | `proofs/pending-reply-2026-11-11.md` (eve 1.0.0-rc.9), `proofs/pending-reply-2026-10-19.md` (0.60.1) |
 | In a live `eve start` server the guard refuses a bare model id handed to the AI SDK, while the scripted model still serves the turn; with the guard file deleted no default provider is installed | `node scripts/model-guard-proof.mjs` | `proofs/model-guard-2026-11-11.md` |
+| Two members' private conversations through the console's real proxy, on the actual compiled roles: isolation, refusals before the agent, cards, cold restart, revocation | `pnpm -C packages/board-evals exec tsx scripts/member-private-chat-proof.mjs` (lanes in the record) | `proofs/member-private-chat-2026-11-11.md` (eve 1.0.0-rc.9): default, Tracks and Vault lanes pass; the mail-send lane **fails** on a denied card |
 | The console's chat proxy really carries a turn: the agent's own Basic-gated door, the real `forwardChat`, eve's own browser `Client`, a reconnecting stream, and the wire shape of an approval | `pnpm -C packages/board-evals run proof:web-chat` | `proofs/web-chat-2026-09-20.md` (0.60.1). **Not runnable at present**, see below |
 | An approval through the console's proxy with the real approver check | `pnpm -C packages/board-evals run proof:web-chat-approval` | `proofs/web-chat-approval-2026-09-20.md` (0.60.1). **Not runnable at present**, see below |
 
@@ -56,7 +57,10 @@ The two web-chat proofs import the console's `chat-proxy.ts` (and, for the appro
 role's files) straight from the source tree with Node's own type stripping. Those files have since
 grown imports plain Node cannot follow (extensionless module paths, kit modules that name their
 neighbours as `.js`, a dozen role modules), and the proxy's contract now includes a bound session
-and signed requests. That happened before the eve 1.0 upgrade and is independent of it. Restoring
+and signed requests. That happened before the eve 1.0 upgrade and is independent of it (re-checked
+on 11 November 2026: both stop at load with `ERR_MODULE_NOT_FOUND` for
+`packages/agent-kit/src/console-source-transaction.js`, imported by `console-turn-authority.ts`).
+`member-private-chat-proof.mjs` runs the same proxy under `tsx` and is the current proxy evidence. Restoring
 them means rewriting both against the console's current proxy and running them under a TypeScript
 loader; until then the console's own tests are the evidence for the proxy.
 

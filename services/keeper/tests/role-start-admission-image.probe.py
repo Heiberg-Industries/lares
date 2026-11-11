@@ -65,6 +65,7 @@ proof = {
         "bakedGuardAndExplicitDefaultCommand": False, "compiledServerReady": False,
         "serverPid1HoldsHostGateInode": False,
         "noLauncherInImage": False,
+        "modelGuardActiveInBuiltImage": False,
         "exclusiveFlockBlockedLiveAndReleasedAfterStop": False,
         "restartReachedReadyAndRetainedAdmission": False,
         "enteringBlockedAndCommandOverrideRefusedBeforeSecretRead": False,
@@ -670,6 +671,46 @@ process.stdout.write("LARES_NO_LAUNCHER_EVIDENCE="+JSON.stringify({nodeVersion:p
     proof["claims"]["noLauncherInImage"] = True
 
 
+# Kept as its own constant so a local build can be checked with the same script
+# (services/<role>/.output, see model_guard_active_in_image).
+MODEL_GUARD_SCRIPT = r'''import{readFileSync}from"node:fs";import{pathToFileURL}from"node:url";
+const server=__SERVER__,entry=readFileSync(server+"/index.mjs","utf8");
+const loads=[...entry.matchAll(/await import\("(\.\/[^"]+)"\)/g)].map(match=>match[1]);
+const before=Object.getOwnPropertyDescriptor(globalThis,"AI_SDK_DEFAULT_PROVIDER");
+let loaded=null,refusal=null;
+if(loads.length===2&&loads[1]==="./_chunks/node-server.mjs"){loaded=loads[0];await import(pathToFileURL(server+"/"+loaded.slice(2)).href);}
+const after=Object.getOwnPropertyDescriptor(globalThis,"AI_SDK_DEFAULT_PROVIDER");
+try{after?.value?.languageModel("anthropic/guard-probe").doGenerate();refusal="";}catch(error){refusal=String(error?.message??error);}
+process.stdout.write("LARES_MODEL_GUARD_EVIDENCE="+JSON.stringify({entryLoads:loads,loadedAlone:loaded,installedBefore:before!==undefined,
+ installed:after?.value!==undefined,writable:after?.writable??null,configurable:after?.configurable??null,refuses:refusal.includes("outside the engine's gateway")})+"\n");'''
+
+
+def model_guard_active_in_image() -> None:
+    # `eve build` builds an agent with NO instrumentation when the instrumentation folder is missing
+    # or holds nothing it loads, and the agent then starts without the model guard and without the
+    # stop on an invalid definition. Each role's unit test (tests/model-guard-loaded.test.ts) checks
+    # the source; this checks the BUILT image. The built server's entry loads one module before the
+    # HTTP server (the instrumentation eve compiled); here a separate process in the running role
+    # container loads exactly that module, with an empty environment (so no database, no unlock, no
+    # definition load), and reports whether the AI SDK's default provider is installed, locked and
+    # refusing. The role's own process is not touched.
+    script = MODEL_GUARD_SCRIPT.replace("__SERVER__", json.dumps(f"/app/services/{ROLE}/.output/server"))
+    result = docker("exec", current_container_id(), "env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin",
+                    "node", "--input-type=module", "-e", script, check=False, timeout=30)
+    try:
+        line = next(line for line in reversed(result.stdout.splitlines()) if line.startswith("LARES_MODEL_GUARD_EVIDENCE="))
+        evidence = json.loads(line.removeprefix("LARES_MODEL_GUARD_EVIDENCE="))
+    except (StopIteration, json.JSONDecodeError):
+        raise ProbeFailure("model-guard-evidence") from None
+    proof["modelGuardInImage"] = evidence
+    if evidence.get("loadedAlone") is None:
+        raise ProbeFailure("model-guard-entry-shape")
+    if result.returncode != 0 or evidence.get("installedBefore") is not False or evidence.get("installed") is not True or \
+            evidence.get("writable") is not False or evidence.get("configurable") is not False or evidence.get("refuses") is not True:
+        raise ProbeFailure("model-guard-not-active")
+    proof["claims"]["modelGuardActiveInBuiltImage"] = True
+
+
 def contender(expected: int) -> None:
     result = docker("run", "--rm", "--network", "none", "--user", "10001:10001",
         "--mount", f"type=bind,src={admission_dir / 'service-gate.lock'},dst=/gate,readonly",
@@ -709,6 +750,7 @@ def main() -> None:
     proof["actualImageId"] = image_id
     container_process_and_gate()
     no_launcher_in_image()
+    model_guard_active_in_image()
     contender(1)
     proof["stages"]["exclusiveDeniedWhileLive"] = True
 
