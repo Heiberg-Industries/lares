@@ -33,6 +33,9 @@ import { defineState } from "eve/context";
 /** Recent turns only: the turn that matters is always the session's latest. */
 const MAX_TURNS = 64;
 const cardTurns = defineState<readonly string[]>("lares.approval-card-turns", () => []);
+/** The turns in which a person's answer to a card was applied (written at settle). Only says which
+ *  sentence is true when that turn's reply is refused; it widens nothing. */
+const answeredTurns = defineState<readonly string[]>("lares.approval-answered-turns", () => []);
 
 type TurnLike = { turn?: { id?: unknown } | null } | null | undefined;
 
@@ -51,5 +54,25 @@ export function turnAskedACard(session: TurnLike): boolean {
     return !Array.isArray(ids) || ids.includes(turnId);
   } catch {
     return true;
+  }
+}
+
+/** Record that a person's answer (Approve or Deny) to a card in `turnId` was applied. Throws when it
+ *  cannot, like {@link noteApprovalCardTurn}. */
+export function noteAnswerApplied(turnId: unknown): void {
+  if (typeof turnId !== "string" || !turnId) throw new Error("An approval card's turn could not be recorded");
+  answeredTurns.update((ids) => (ids.includes(turnId) ? ids : [...ids, turnId].slice(-MAX_TURNS)));
+}
+
+/** Whether a person's answer to a card was applied in this session's current turn; undefined when
+ *  that cannot be known (no turn id, unreadable state). */
+export function turnAppliedAnAnswer(session: TurnLike): boolean | undefined {
+  const turnId = session?.turn?.id;
+  if (typeof turnId !== "string" || !turnId) return undefined;
+  try {
+    const ids = answeredTurns.get();
+    return Array.isArray(ids) ? ids.includes(turnId) : undefined;
+  } catch {
+    return undefined;
   }
 }

@@ -333,6 +333,13 @@ describe("respondToTurnFailed / respondToSessionFailed", () => {
     expect(respondToTurnFailed({ ...refused, error: { ...refused.error, message: "DefinitionFailedError: Model purpose authority is not available" } }, options).kind).toBe("default");
   });
 
+  it("a turn whose card ended without an answer gets that sentence instead, never 'your answer was applied'", () => {
+    const unanswered = { outcome: "failed", error: { code: "REACTION_FAILED", message: "DefinitionFailedError: The approval in this turn ended without an answer" } };
+    const sentence = { kind: "approval-reply-refused", text: "That request ended without an answer; nothing was done." };
+    expect(respondToTurnFailed(unanswered, options)).toEqual(sentence);
+    expect(respondToSessionFailed(unanswered, options)).toEqual(sentence);
+  });
+
   it("a capped turn answers with the door's fixed sentence and nothing else", () => {
     expect(respondToTurnFailed(EVE_TURN_FAILED_BUDGET, options)).toEqual({
       kind: "budget-refusal",

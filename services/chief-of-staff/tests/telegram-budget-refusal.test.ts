@@ -124,6 +124,15 @@ describe("a capped turn answers with one fixed sentence, whichever event carries
     }
   });
 
+  it("a card that ended without an answer posts that sentence, never 'your answer was applied'", async () => {
+    const unanswered = { outcome: "failed", error: { code: "REACTION_FAILED", message: "DefinitionFailedError: The approval in this turn ended without an answer", id: "err_2" } };
+    for (const handler of [onTurnSettled, onSessionEnded]) {
+      const { ctx, posted } = fakeChat();
+      await handler({ data: unanswered } as never, ctx);
+      expect(posted).toEqual(["That request ended without an answer; nothing was done."]);
+    }
+  });
+
   it("the turn failed on the refusal (HTTP 429, after eve's retries): the same sentence", async () => {
     const { ctx, posted } = fakeChat();
     await onTurnSettled(failed(budgetRefusal(429)), ctx);

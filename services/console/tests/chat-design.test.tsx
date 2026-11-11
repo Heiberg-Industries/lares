@@ -343,6 +343,9 @@ it("shows the one fixed sentence, never the framework's text, when the reply aft
   expect(limitReplyOf([failedTurn("The reply after an approval answer was refused")])).toBe(sentence);
   expect(limitReplyOf([failedTurn("The reply after an approval answer was refused, and more")])).toBeNull();
   expect(limitReplyOf([failedTurn("DefinitionFailedError: Model purpose authority is not available")])).toBeNull();
+  // A card that ended without an answer (expired, or withdrawn by a typed message) says so instead.
+  expect(limitReplyOf([failedTurn("DefinitionFailedError: The approval in this turn ended without an answer")]))
+    .toBe("That request ended without an answer; nothing was done.");
 });
 
 // ---------------------------------------------------------------------------------------------

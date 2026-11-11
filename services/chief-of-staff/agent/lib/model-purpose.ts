@@ -3,8 +3,8 @@ import { requestAndAttachModelPurposeClaim, type ModelInvocation } from '@lares/
 import { consoleAdmission, type ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { privateResumeAdmission, takeAcceptedAnswers } from '@lares/agent-kit/private-console-resume';
-import { APPROVAL_REPLY_REFUSED } from '@lares/agent-kit/approval-reply-sentence';
-import { turnAskedACard } from '../../lib/approval-card-turns.js';
+import { APPROVAL_REPLY_REFUSED, APPROVAL_UNANSWERED } from '@lares/agent-kit/approval-reply-sentence';
+import { turnAppliedAnAnswer, turnAskedACard } from '../../lib/approval-card-turns.js';
 
 type Point = Readonly<{ sessionId: string; turnId: string; sequence: number; incarnation: string }>;
 /** The answer a continuation opens from: taken from the response policy's record, never from the
@@ -24,11 +24,19 @@ const MAX_CLOSED_POINTS = 65_536;
 const closedPoints = new Set<string>();
 const ACTIVE_MS = 5 * 60_000;
 const deny = () => new Error('Model purpose authority is not available');
-/** A refusal of the model call that continues a paused turn. When the turn asked a card (the
- * durable mark, lib/approval-card-turns.ts), the person has just had their answer applied, so the
- * doors show the one fixed sentence for it (`@lares/agent-kit/approval-reply-sentence`) instead of
- * a broken conversation. Any other turn keeps the plain refusal. Both fail the turn the same way. */
-const refusedReply = (point: Point) => turnAskedACard({ turn: { id: point.turnId } }) ? new Error(APPROVAL_REPLY_REFUSED) : deny();
+/** A refusal of the model call that continues a paused turn. The doors show a fixed sentence for
+ * it (`@lares/agent-kit/approval-reply-sentence`) instead of a broken conversation, and only one
+ * that is true, read from the durable marks (lib/approval-card-turns.ts): "your answer was applied"
+ * only when a person's answer to a card in this turn was applied; "ended without an answer" when the
+ * turn asked a card and nobody's answer was applied (it expired, or the person typed while it
+ * waited). A turn that asked no card, or whose marks cannot be read, keeps the plain refusal. All
+ * three fail the turn the same way. */
+function refusedReply(point: Point): Error {
+  const turn = { turn: { id: point.turnId } };
+  if (!turnAskedACard(turn)) return deny();
+  const applied = turnAppliedAnAnswer(turn);
+  return applied === true ? new Error(APPROVAL_REPLY_REFUSED) : applied === false ? new Error(APPROVAL_UNANSWERED) : deny();
+}
 const key = (point: Point) => `${point.sessionId}\0${point.turnId}\0${point.sequence}\0${point.incarnation}`;
 /** A continuation's own slot. It names the card it answers, so it never shares the paused point's
  * tombstone (the original message's receipt cannot reopen the point) and a card can resume once.
@@ -150,9 +158,11 @@ function resumeEntryAt(point: Point): Entry | undefined {
 }
 
 /** Opens the continuation slot for a paused point from the answers the response policy accepted
- * for it. Every answer settled in that step must be for the member who asked, under the same
- * admission, and carry a Keeper resume receipt (D5); otherwise nothing opens. All of them are used
- * up either way. The first card (by request id) opens the Keeper turn. */
+ * for it, once each card's settle hook has confirmed its answer against what eve applied (until
+ * then nothing is taken, so the LAST card's settle opens it; one disagreement refuses them all).
+ * Every answer must be for the member who asked, under the same admission, and carry a Keeper
+ * resume receipt (D5); otherwise nothing opens. All of them are used up either way. The first card
+ * (by request id) opens the Keeper turn. */
 function beginResume(point: Point, session: Session | undefined): Entry | undefined {
   const asker = requester(session);
   const answers = takeAcceptedAnswers(point);

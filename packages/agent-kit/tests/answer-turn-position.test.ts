@@ -24,7 +24,7 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { emptySessionView, foldEvents, type SessionView } from 'eve/events';
 import { modelStepCoordinates } from '../src/definition-model.js';
-import { clearAcceptedAnswersForTests, rememberAcceptedAnswer, takeAcceptedAnswers } from '../src/private-console-resume.js';
+import { clearAcceptedAnswersForTests, rememberAcceptedAnswer, settleAcceptedAnswer, takeAcceptedAnswers } from '../src/private-console-resume.js';
 
 const eveRoot = dirname(createRequire(import.meta.url).resolve('eve/package.json'));
 const internal = <T>(path: string): Promise<T> => import(pathToFileURL(join(eveRoot, 'dist/src', path)).href) as Promise<T>;
@@ -97,6 +97,7 @@ describe('the turn position an answer is recorded under', () => {
 
       // eve settles the card; the paused turn carries on (no new turn starts).
       s.settleCard(turnId, 'int_1');
+      settleAcceptedAnswer('int_1', SESSION, 'approve', ENV); // the settle hook confirms the answer eve applied
       const turn = latestTurn(sessionTables(s.view));
       expect(turn).toMatchObject({ id: turnId, status: 'running' });
 

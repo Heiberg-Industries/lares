@@ -115,14 +115,18 @@ async function requireResumeReference(reference:{binding:ConsoleBindingInput;req
  *
  * - One entry per card, keyed by conversation, turn, turn position, this run's incarnation and the
  *   card's request id. A different turn, conversation, run or card finds nothing.
+ * - Each entry is first `accepted` (by the response policy), then `confirmed` or `refused` by the
+ *   card's own settle hook, against the answer eve applied. Nothing is used before every card of
+ *   the turn position that has an answer has been settled (D5: several cards in one step).
  * - The continuation TAKES the entries of its own turn position: each answer opens at most one
- *   continuation. The settle hook only reads.
+ *   continuation, and one refused entry refuses them all. The settle hook only reads.
  * - In memory only, bounded, and gone after 30 seconds, the life of the Keeper resume receipt it
  *   carries. A restart between the answer and the continuation finds nothing, so the continuation
  *   is refused (fails closed).
  */
 export type AcceptedAnswer=Readonly<{sessionId:string;turnId:string;sequence:number;incarnation:string;requestId:string;
-  optionId:'approve'|'deny';memberId:string;admissionNonce:string;principal:unknown;receipt?:string;expiresAt:number}>;
+  optionId:'approve'|'deny';memberId:string;admissionNonce:string;principal:unknown;receipt?:string;expiresAt:number;
+  state:'accepted'|'confirmed'|'refused'}>;
 export type AnswerPoint=Readonly<{sessionId:string;turnId:string;sequence:number;incarnation:string}>;
 const ACCEPTED_MS=30_000,MAX_ACCEPTED=512;
 const accepted=new Map<string,AcceptedAnswer>();
@@ -137,8 +141,8 @@ function resumeReceiptOf(principal:unknown){
  *  answer from the same responder (`harness/hitl/responders.js`, `revisedAnswers`): Deny then
  *  Approve settles as Approve. So a later accepted answer from the same member and admission
  *  replaces the earlier one, receipt included. An answer from anyone else for a card that already
- *  has one removes both: nothing continues from a card two people answered. The settle hook then
- *  keeps the entry only if it agrees with what eve actually applied (`settleAcceptedAnswer`). */
+ *  has one refuses the card: nothing continues from a card two people answered. The settle hook then
+ *  confirms the entry only if it agrees with what eve actually applied (`settleAcceptedAnswer`). */
 export function rememberAcceptedAnswer(ctx:{request:{interactionId:string};response:{decision:'approve'|'deny';principal:unknown};session:{id:string;turn?:unknown}},
   who:{memberId:string;admissionNonce:string},env:NodeJS.ProcessEnv=process.env,now=Date.now()):void{
   const own=managedIdentity(env),turn=ctx.session?.turn as {id?:unknown;sequence?:unknown}|undefined;
@@ -148,32 +152,45 @@ export function rememberAcceptedAnswer(ctx:{request:{interactionId:string};respo
   const point={sessionId:ctx.session.id,turnId:turn.id,sequence:Number(turn.sequence),incarnation:own.incarnation};
   const id=pointKey(point)+ctx.request.interactionId;
   const earlier=accepted.get(id);
-  if(earlier&&(earlier.memberId!==who.memberId||earlier.admissionNonce!==who.admissionNonce)){accepted.delete(id);return;}
+  if(earlier?.state==='refused')return;
+  if(earlier&&(earlier.memberId!==who.memberId||earlier.admissionNonce!==who.admissionNonce)){accepted.set(id,Object.freeze({...earlier,state:'refused'}));return;}
   if(!earlier&&accepted.size>=MAX_ACCEPTED)return; // Full: this answer opens no continuation (refused, never guessed).
   const receipt=resumeReceiptOf(ctx.response.principal);
   accepted.set(id,Object.freeze({...point,requestId:ctx.request.interactionId,optionId:ctx.response.decision,memberId:who.memberId,
-    admissionNonce:who.admissionNonce,principal:ctx.response.principal,...(receipt?{receipt}:{}),expiresAt:now+ACCEPTED_MS}));
+    admissionNonce:who.admissionNonce,principal:ctx.response.principal,...(receipt?{receipt}:{}),expiresAt:now+ACCEPTED_MS,state:'accepted'}));
 }
-/** The settle hook, once eve has settled a card: keep this card's accepted answer only if it is the
- *  answer eve applied (`approve` for a person's Approve, `deny` for a person's Deny). Any other
- *  ending, or a disagreement, removes it, so the continuation opens nothing for that card. */
+/** The settle hook, once eve has settled a card: confirm this card's accepted answer only if it is
+ *  the answer eve applied (`approve` for a person's Approve, `deny` for a person's Deny). Any other
+ *  ending, or a disagreement, marks it refused, which refuses the whole turn position's
+ *  continuation (`takeAcceptedAnswers`). Another conversation's entry for the id is removed. */
 export function settleAcceptedAnswer(requestId:string,sessionId:unknown,applied:'approve'|'deny'|undefined,env:NodeJS.ProcessEnv=process.env):void{
   const own=managedIdentity(env);if(!own)return;
-  for(const [k,v] of accepted)if(v.requestId===requestId&&v.incarnation===own.incarnation&&(v.sessionId!==sessionId||v.optionId!==applied))accepted.delete(k);
+  for(const [k,v] of accepted){
+    if(v.requestId!==requestId||v.incarnation!==own.incarnation)continue;
+    if(v.sessionId!==sessionId){accepted.delete(k);continue;}
+    if(v.state==='accepted')accepted.set(k,Object.freeze({...v,state:v.optionId===applied?'confirmed':'refused'}));
+  }
 }
 /** Read one card's accepted answer without using it up (the settle hook: who answered, and how). */
 export function acceptedAnswerFor(requestId:string,sessionId:string,env:NodeJS.ProcessEnv=process.env,now=Date.now()):AcceptedAnswer|undefined{
   const own=managedIdentity(env);if(!own)return undefined;
   pruneAccepted(now);
-  for(const v of accepted.values())if(v.requestId===requestId&&v.sessionId===sessionId&&v.incarnation===own.incarnation)return v;
+  for(const v of accepted.values())if(v.requestId===requestId&&v.sessionId===sessionId&&v.incarnation===own.incarnation&&v.state!=='refused')return v;
   return undefined;
 }
-/** Take (use up) every accepted answer for this exact turn position. */
+/** Thrown by {@link takeAcceptedAnswers} when an answer of the turn position was refused at settle. */
+export class RefusedAnswersError extends Error{constructor(){super('An answer in this turn did not match what was applied');}}
+/** Take (use up) every answer for this exact turn position, once each one is confirmed.
+ *  - Some answer not yet settled: takes nothing and returns [] (the last card's settle opens).
+ *  - Some answer refused: takes them all and throws {@link RefusedAnswersError}: nothing opens.
+ *  - Otherwise: takes and returns them all, by request id. */
 export function takeAcceptedAnswers(point:AnswerPoint,now=Date.now()):AcceptedAnswer[]{
   pruneAccepted(now);
-  const prefix=pointKey(point),out:AcceptedAnswer[]=[];
-  for(const [k,v] of accepted)if(k.startsWith(prefix)){accepted.delete(k);out.push(v);}
-  return out.sort((a,b)=>a.requestId<b.requestId?-1:a.requestId>b.requestId?1:0);
+  const prefix=pointKey(point),mine=[...accepted].filter(([k])=>k.startsWith(prefix));
+  if(mine.some(([,v])=>v.state==='accepted'))return [];
+  for(const [k] of mine)accepted.delete(k);
+  if(mine.some(([,v])=>v.state!=='confirmed'))throw new RefusedAnswersError();
+  return mine.map(([,v])=>v).sort((a,b)=>a.requestId<b.requestId?-1:a.requestId>b.requestId?1:0);
 }
 /** Tests only. */
 export function clearAcceptedAnswersForTests(){accepted.clear();}

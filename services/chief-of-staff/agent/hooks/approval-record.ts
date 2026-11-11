@@ -14,7 +14,7 @@ export type { ApprovalRecordDeps } from "@lares/agent-kit/approval-record-hook";
 import {personalSendInputRequested,personalSendInputResolved} from '../../lib/personal-send-approval.js';
 import { getPool } from "@lares/agent-kit/db";
 import { approverFrom, assertApprover, takeNativeAnswerer } from "../../lib/approvals.js";
-import { noteApprovalCardTurn } from "../../lib/approval-card-turns.js";
+import { noteAnswerApplied, noteApprovalCardTurn } from "../../lib/approval-card-turns.js";
 import { settleAcceptedAnswer } from "@lares/agent-kit/private-console-resume";
 import { openContinuationAfterSettle } from "../lib/model-purpose.js";
 import { applyRouteProposalDecline, recordRouteApprovalLink, routeApprovalLinkAudience } from "../../lib/route-decline.js";
@@ -103,6 +103,8 @@ export default defineHook({
       if (settled) {
         // Marked again on settle; a no-op when the opening hook already marked the turn.
         noteApprovalCardTurn(cardTurnOf(event, ctx));
+        // Which sentence is true if this turn's reply is later refused (lib/model-purpose.ts).
+        if (settled.decidedByPerson) noteAnswerApplied(cardTurnOf(event, ctx));
         // The turn continues only from the answer eve applied, never from an earlier one.
         settleAcceptedAnswer(settled.interactionId, ctx?.session?.id,
           settled.outcome === "approved" ? "approve" : settled.outcome === "cancelled" && settled.decidedByPerson ? "deny" : undefined);

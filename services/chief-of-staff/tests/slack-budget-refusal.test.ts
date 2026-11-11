@@ -90,6 +90,16 @@ describe("the chief of staff's Slack door — a capped turn answers with one fix
     }
   });
 
+  it("a card that ended without an answer posts that sentence, never 'your answer was applied'", async () => {
+    const unanswered = { code: "REACTION_FAILED", message: "DefinitionFailedError: The approval in this turn ended without an answer", id: "err_2" };
+    for (const event of [turnSettledFailed(unanswered), sessionEndedFailed(unanswered)]) {
+      const { ctx, posted, next } = fakeDoor();
+      await (event.type === "turn.settled" ? onTurnSettled : onSessionEnded)(event as never, ctx, next);
+      expect(posted).toEqual(["That request ended without an answer; nothing was done."]);
+      expect(next).not.toHaveBeenCalled();
+    }
+  });
+
   it("posts the same sentence when the cap arrives as a failed turn instead", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { ctx, posted, next } = fakeDoor();
