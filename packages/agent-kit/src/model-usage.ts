@@ -3,7 +3,7 @@
  * Backs `services/box/sql/005_model_steps.sql`.
  *
  * WHY. The prompt cache only saves money if the provider actually reads from it. eve's
- * `step.completed` event carries `usage.{inputTokens, outputTokens, cacheReadTokens,
+ * `usage.recorded` event carries `usage.{inputTokens, outputTokens, cacheReadTokens,
  * cacheWriteTokens, costUsd}`; this module writes those numbers down so a later page can show the
  * hit rate. Numbers and ids only — never message text or tool input.
  *
@@ -21,7 +21,8 @@ import type { Queryable } from "@lares/vault-format/forget-ledger";
 export const MODEL_STEPS_RETENTION_DAYS = 90;
 
 export interface ModelStep {
-  /** eve's `meta.id` for the `step.completed` event. */
+  /** The `usage.recorded` event's place on the stream: `<sessionId>:<line>:<index>`, which never
+   *  changes, so reading the stream again cannot add a second row. */
   eventId: string;
   agent: string;
   sessionId: string;

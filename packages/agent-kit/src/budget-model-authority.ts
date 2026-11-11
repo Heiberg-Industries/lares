@@ -11,7 +11,7 @@ import { payloadFingerprint } from './approval-ledger.js';
  * Persisted evidence describing the console authority that created a budget intent.
  * This is not registered capability: parsing JSON never authenticates the evidence.
  */
-export type ConversationBudgetAuthorityReference={kind:'human'|'resume';binding:ConsoleBinding;turnId:string;turnSequence:number;resume?:{requestId:string;optionId:'approve'|'cancel'}};
+export type ConversationBudgetAuthorityReference={kind:'human'|'resume';binding:ConsoleBinding;turnId:string;turnSequence:number;resume?:{requestId:string;optionId:'approve'|'deny'}};
 /** A call outside any conversation, paid by the installation owner. The owner id comes from the
  * Keeper's own configuration, never from the agent. There is no session, turn or admission. */
 export type OwnerJobBudgetAuthorityReference={kind:'owner-job';binding:{agent:string;incarnation:string;memberId:string;agentAccessRevision:number}};
@@ -25,7 +25,7 @@ export async function captureBudgetAuthorityReference(db:SourceDatabase,ctx:Cons
   const resolver=privateResumeAdmission(session.auth?.current);
   if(resolver){
     const current=await requireConsoleResume(ctx,'model',{db,env});
-    return {kind:'resume',binding:current.binding,turnId:session.turn.id,turnSequence:session.turn.sequence!,resume:{requestId:resolver.requestId,optionId:resolver.optionId}};
+    return {kind:'resume',binding:current.binding,turnId:session.turn.id,turnSequence:session.turn.sequence!,resume:{requestId:resolver.requestId,optionId:resolver.optionId==='approve'?'approve':'deny'}};
   }
   await requireConsoleTurnAuthority(ctx,db,env);
   const admission=consoleAdmission(session.auth?.current)!;

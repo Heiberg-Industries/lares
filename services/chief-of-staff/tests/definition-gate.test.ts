@@ -1,6 +1,6 @@
 // THE GATE.
 //
-// This agent's instructions are now resolved at session start from its DEFINITION rather than
+// This agent's instructions are resolved once per conversation from its DEFINITION rather than
 // compiled from a file baked into its image. The whole plan rests on that being a change of
 // WHERE the persona comes from and not of WHAT it says: what `agent/instructions/aa-definition.ts`
 // hands the model must be byte-for-byte the committed `agent/persona.md`.
@@ -18,12 +18,29 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { isDisabledToolSentinel } from "eve/tools";
 
 import { assemblePersona, deployedToolsFor } from "@lares/agent-kit/persona";
 
 import manifest from "../agent.json";
 import { roleMdPath, thisAgent } from "../lib/definition.js";
+
+/**
+ * What agent/instructions/aa-definition.ts hands the model, called the way eve 1.0 calls it:
+ * the function behind a `defineDynamic()` value (eve keeps it under this symbol), given the
+ * session, its latest turn and a memo. `memo` here runs its function every time, which is what
+ * eve does the first time it sees a key; `keys` records what the resolver asked to be kept.
+ */
+async function personaFor(sessionId: string, keys: unknown[] = []): Promise<string> {
+  const resolver = (await import("../agent/instructions/aa-definition.js")).default;
+  const resolve = Reflect.get(resolver, Symbol.for("eve.dynamic")) as (ctx: unknown) => Promise<{ content: string } | null>;
+  const instructions = await resolve({
+    session: { id: sessionId, auth: { current: null, initiator: null } },
+    turn: { id: "turn_0", status: "running", input: [] },
+    memo: async (key: unknown, fn: (occurrence: unknown) => unknown) => { keys.push(key); return fn({}); },
+  });
+  if (instructions === null) throw new Error("aa-definition.ts returned no instructions");
+  return instructions.content;
+}
 
 describe("the definition gate", () => {
   /** Read through the declaration's own `persona` field, never a literal — the same property the
@@ -53,12 +70,18 @@ describe("the definition gate", () => {
   // The assertion above proves the PIECES compose correctly; this one proves the module eve
   // actually calls is wired to them. Without it a typo inside aa-definition.ts — the wrong role
   // path, voiceMd and dutiesMd swapped, a forgotten deployedTools — would ship green.
-  it("is what agent/instructions/aa-definition.ts hands the model at session start", async () => {
-    const resolver = (await import("../agent/instructions/aa-definition.js")).default as {
-      events: { "session.started": (event: unknown, ctx: unknown) => Promise<{ markdown: string }> };
-    };
-    const { markdown } = await resolver.events["session.started"](undefined, { session: { id: "gate-session" } });
-    expect(markdown).toBe(committed());
+  it("is what agent/instructions/aa-definition.ts hands the model", async () => {
+    expect(await personaFor("gate-session")).toBe(committed());
+  });
+
+  // eve 1.0 runs the resolver before every model call. The assembled text must be kept once per
+  // conversation, or the system prompt is rebuilt, and re-billed, on every call.
+  it("keeps the assembled persona in a memo keyed on the conversation, not rebuilt per call", async () => {
+    const keys: unknown[] = [];
+    await personaFor("gate-memo-session", keys);
+    expect(keys).toContainEqual(["persona", "gate-memo-session"]);
+    // Nothing the resolver keeps is keyed on anything narrower than the turn.
+    expect(keys).toEqual([["private-console", "turn_0"], ["persona", "gate-memo-session"]]);
   });
 
   // eve reads a root agent/instructions.md AND agent/instructions/ together, so the persona must
@@ -161,16 +184,13 @@ describe("a definition edited on the box reaches the next conversation, with no 
     expect(out).toMatch(/— role\n[\s\S]*\n\n# .+ — duties\nKeep the books\.\n\n# .+ — voice/u);
   });
 
-  it("an outside tool the owner connected reaches the session-start persona in the owner's words", async () => {
+  it("an outside tool the owner connected reaches the conversation's persona in the owner's words", async () => {
     edit({
       grants: [...((manifest as { grants: object[] }).grants), { capability: "outside", scope: "write-with-confirm" }],
       autonomy: { ...((manifest as { autonomy: object }).autonomy), outside: "gated" },
       outsideTools: [{ name: "registry", url: "https://tools.example.org/mcp", description: "Looks up companies by name.", tools: { allow: ["lookup"], read: ["lookup"] } }],
     });
-    const resolver = (await import("../agent/instructions/aa-definition.js")).default as {
-      events: { "session.started": (event: unknown, ctx: unknown) => Promise<{ markdown: string }> };
-    };
-    const { markdown } = await resolver.events["session.started"](undefined, { session: { id: "outside-persona" } });
+    const markdown = await personaFor("outside-persona");
     expect(markdown).toContain("**registry** — Looks up companies by name.");
   });
 
@@ -215,7 +235,10 @@ describe("set_language ships as this service's one new tool", () => {
   // and the catalogue resolver (agent/tools/catalogue.ts) hands it over unconditionally.
   it("catalogue/set_language.ts is a real, always-present tool — not a disabled sentinel", async () => {
     const mod = (await import("../catalogue/set_language.js")) as { default: unknown };
-    expect(isDisabledToolSentinel(mod.default)).toBe(false);
+    // eve 1.0 no longer exports a way to recognise a `disableTool()` value; it brands one with
+    // this symbol (node_modules/eve/dist/src/tools/definition.js).
+    expect(mod.default).toBeDefined();
+    expect(Reflect.get(mod.default as object, Symbol.for("eve.disabled-tool"))).toBeUndefined();
   });
 
   it("is on disk beside every other authored tool file, once", () => {
