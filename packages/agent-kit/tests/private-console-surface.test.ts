@@ -7,7 +7,7 @@ vi.mock('@lares/agent-kit/public-docs-runtime',()=>({publicDocsIndex:()=>'- inst
 vi.mock('../src/console-turn-authority.js',async original=>({...await original<typeof import('../src/console-turn-authority.js')>(),requireConsoleSessionBinding:fake.binding,guardConsoleToolContext:fake.turn}));
 const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
 import {definitionModelResolver} from '../src/definition-model.js';
-import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateOwnerTool,privateRoleInstructions,privateConsoleTracePolicy} from '../src/private-console-surface.js';
+import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateOwnerTool,privateRoleInstructions,privateConsoleTracePolicy,sharedRoomHiddenTool,startedInSharedSlackRoom} from '../src/private-console-surface.js';
 const inc='11111111-1111-4111-8111-111111111111';
 const auth=(member='member-a')=>({authenticator:'lares-console',principalType:'user',principalId:member,attributes:{lares_member_id:member,lares_admission_nonce:'a'.repeat(43),lares_purpose:'human'}});
 const ctx=()=>({session:{id:'private-test',auth:{current:auth(),initiator:auth()}}});
@@ -67,6 +67,36 @@ it('a chief of staff may propose a new private note in a private conversation; n
  expect(privateOnlyTool('agent-kit__vault_write')).toBe(false);
  expect(privateRoleInstructions('chief-of-staff')).not.toContain('general note writes are unavailable');
  expect(privateRoleInstructions('chief-of-staff')).toContain('new private note');
+});
+describe('a conversation started in a shared Slack room',()=>{
+ const slack=(channel_id?:string)=>({authenticator:'slack-webhook',attributes:{user_id:'U0OWNER',...(channel_id?{channel_id}:{})}});
+ const started=(initiator:unknown,current:unknown=initiator)=>({session:{auth:{initiator,current}}});
+ it('hides the private console lists plus note search and backlinks, and nothing that is not one person\'s own',()=>{
+  for(const n of ['gmail_accounts','gmail_read','gmail_search','agent-kit__vault_read','agent-kit__vault_list','agent-kit__vault_write','tracks_list','personal_mailbox_read','gmail_draft','read_url','calendar_list_events','calendar_create_event','agent-kit__vault_search','agent-kit__vault_backlinks'])expect(sharedRoomHiddenTool(n),n).toBe(true);
+  for(const n of ['gmail_send','gmail_signature','remember','set_language','lares_read_public_doc','agent-kit__vault_file','save_note'])expect(sharedRoomHiddenTool(n),n).toBe(false);
+  // Not a second definition: every console-private tool is hidden, and the console's own lists are unchanged.
+  expect(privateToolAllowed('chief-of-staff','agent-kit__vault_search',{callerIsOwner:true})).toBe(false);
+  expect(privateOnlyTool('agent-kit__vault_search')).toBe(false);
+ });
+ it('is read from the initiator, which an answered card does not change; a direct message is a D channel',()=>{
+  expect(startedInSharedSlackRoom(started(slack('C0ROOM')))).toBe(true);
+  expect(startedInSharedSlackRoom(started(slack('D0DIRECT')))).toBe(false);
+  expect(startedInSharedSlackRoom(started(slack('C0ROOM'),slack('D0DIRECT')))).toBe(true);
+  expect(startedInSharedSlackRoom(started(slack('D0DIRECT'),slack('C0ROOM')))).toBe(false);
+  // An approval answer carries the initiator as `session.initiator`.
+  expect(startedInSharedSlackRoom({session:{initiator:slack('C0ROOM')}})).toBe(true);
+ });
+ it('fails closed: no channel, a non-DM channel or a missing initiator on a Slack conversation is a room',()=>{
+  expect(startedInSharedSlackRoom(started(slack()))).toBe(true);
+  expect(startedInSharedSlackRoom(started(slack('G0GROUP')))).toBe(true);
+  expect(startedInSharedSlackRoom(started(null,slack('D0DIRECT')))).toBe(true);
+ });
+ it('a conversation started anywhere else is not a Slack room',()=>{
+  expect(startedInSharedSlackRoom(ctx())).toBe(false);
+  expect(startedInSharedSlackRoom(started({authenticator:'telegram-webhook',attributes:{user_id:'1001',chat_type:'private'}}))).toBe(false);
+  expect(startedInSharedSlackRoom(started({authenticator:'http-basic'}))).toBe(false);
+  expect(startedInSharedSlackRoom({})).toBe(false);
+ });
 });
 it('the private console channel exports no trace, under the 1.0 channel name and the old one; everything else keeps its content decision',async()=>{
  const {resolveTracePolicy}=await import(`${dist}shared/trace-policy.js`);

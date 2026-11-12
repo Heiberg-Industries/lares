@@ -1,5 +1,5 @@
 import {personalSendApprovalRequest,personalSendApprovalResponse,requirePersonalSendCall} from './personal-send-approval.js';
-import { assertPrivateConsoleTool as assertPrivateTool, privateOwnerTool, isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
+import { assertPrivateConsoleTool as assertPrivateTool, privateOwnerTool, isPrivateConsoleContext, sharedRoomHiddenTool, startedInSharedSlackRoom } from "@lares/agent-kit/private-console-surface";
 import { isExactApprovalContext, isExactApprovalResponse, isApprovalRecheck, reserveExactApprovalOrDeny, approveExactResponse,
   requireApprovedExecution, requireApprovedRecheck, approvalResponderOf, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
 import { callerIsAgentOwner } from "./webchat-owner.js";
@@ -7,7 +7,7 @@ import { deadlineApprovalAdapter } from "./deadlines-store.js";
 import { canApproveCompanyTrack, tracksApprovalAdapter, twentyTracksApprovalAdapter } from "./tracks-approval.js";
 import { calendarApprovalAdapter } from "./calendar-approval.js";
 import { vaultNoteApprovalAdapter } from "./vault-note-write.js";
-import { consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
+import { CONSOLE_AUTHORITY_REFUSED, consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
 /**
  * The approver re-check every gated write calls, on both channels.
  *
@@ -322,10 +322,13 @@ export async function runApprovedCalendarOnce<T>(approved: ApprovedExecution | u
   return write();
 }
 
-/** The private-surface check, with the owner question asked afresh for the tools only an owner may use. */
+/** The private-surface check, with the owner question asked afresh for the tools only an owner may use.
+ *  A conversation started in a shared Slack room is refused the tools its list leaves out, so a call
+ *  replayed or carried over from an older list is refused the same way. */
 async function assertPrivateConsoleTool(ctx: unknown, role: "chief-of-staff", name: string): Promise<void> {
   const callerIsOwner = privateOwnerTool(name) && isPrivateConsoleContext(ctx) ? await callerIsAgentOwner(ctx) : false;
   assertPrivateTool(ctx, role, name, { callerIsOwner });
+  if (!isPrivateConsoleContext(ctx) && sharedRoomHiddenTool(name) && startedInSharedSlackRoom(ctx)) throw new Error(CONSOLE_AUTHORITY_REFUSED);
 }
 
 /** Preserve the authored native policy; bound console calls additionally require exact authority. */

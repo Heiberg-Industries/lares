@@ -33,6 +33,33 @@ const PRIVATE_READS = new Set(['gmail_accounts', 'gmail_read', 'gmail_search', .
 // agent's own code), so nothing reaches Google before the owner approves.
 const PRIVATE_OWNER_TOOLS = new Set(['gmail_draft','gmail_draft_recipients','read_url','calendar_list_events','calendar_list_calendars','calendar_free_busy','calendar_conflicts','calendar_create_event','calendar_update_event','calendar_delete_event']);
 export function privateOwnerTool(name: string): boolean { return PRIVATE_OWNER_TOOLS.has(name); }
+// A Slack room reads along with every answer, so a conversation STARTED there is not offered what
+// the private console treats as one person's own (the three sets above). Note search and backlinks
+// are added here because they read one person's notes too; they are not in the console's lists
+// only because the console offers no note search at all (see `privateRoleInstructions`).
+const SHARED_ROOM_NOTE_SEARCH_TOOLS = new Set(['agent-kit__vault_search','agent-kit__vault_backlinks']);
+/** Not offered, and refused, in a conversation started in a shared Slack room. */
+export function sharedRoomHiddenTool(name: string): boolean {
+  return privateOnlyTool(name) || PRIVATE_READS.has(name) || PRIVATE_OWNER_TOOLS.has(name) || SHARED_ROOM_NOTE_SEARCH_TOOLS.has(name);
+}
+type DoorAuth = { authenticator?: unknown; attributes?: Record<string, unknown> } | null | undefined;
+const isSlackAuth = (auth: DoorAuth): boolean => auth?.authenticator === 'slack-webhook';
+/**
+ * Whether this conversation was STARTED in a Slack room (anything but a direct message). Read from
+ * the session's initiator, which never changes: `auth.current` becomes whoever answered a card.
+ * A direct message is a Slack channel id starting with `D` (eve's own test). Fails closed: a
+ * Slack conversation whose initiator is missing or names no direct-message channel is a room.
+ * A conversation started elsewhere (web chat, Telegram, a schedule) is not a Slack room.
+ */
+export function startedInSharedSlackRoom(ctx: unknown): boolean {
+  const session = (ctx as { session?: { initiator?: unknown; auth?: { initiator?: unknown; current?: unknown } | null } } | undefined)?.session;
+  // A tool or approval-request context carries `session.auth.initiator`; an approval answer carries `session.initiator`.
+  const initiator = (session?.auth?.initiator ?? session?.initiator) as DoorAuth;
+  if (initiator === null || initiator === undefined) return isSlackAuth(session?.auth?.current as DoorAuth);
+  if (!isSlackAuth(initiator)) return false;
+  const channel = initiator.attributes?.channel_id;
+  return !(typeof channel === 'string' && channel.startsWith('D'));
+}
 /** `callerIsOwner` must be exactly `true`; anything else (absent, unknown, lookup failed) is not the owner. */
 export interface PrivateCaller { callerIsOwner?: boolean }
 export function privateToolAllowed(role: PrivateRole, name: string, caller: PrivateCaller = {}): boolean {

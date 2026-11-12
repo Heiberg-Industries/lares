@@ -1,4 +1,4 @@
-import { verifyPrivateConsoleSession, privateToolAllowed, privateOnlyTool, isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
+import { verifyPrivateConsoleSession, privateToolAllowed, privateOnlyTool, isPrivateConsoleContext, sharedRoomHiddenTool, startedInSharedSlackRoom } from "@lares/agent-kit/private-console-surface";
 import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
 import { catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution } from "../../lib/approvals.js";
 // The one seam that turns a definition into a toolset (ADR-0015 rule 4).
@@ -62,12 +62,17 @@ export default defineDynamic(async (ctx) => {
   // the model, the approval fallback and this tool list all resolve from it (lib/definition.ts).
   // The key says which kind of conversation this is, so a session id that is later seen as a bound
   // console conversation (or the reverse) never reuses the other kind's tool list.
-  const decided: CatalogueDecision = await ctx.memo(["catalogue", ctx.session.id, isExactApprovalContext(ctx)], async () => {
+  // A conversation started in a shared Slack room (decided from the session's initiator, which never
+  // changes) gets its own key, so a list saved without that rule is never reused for it.
+  const sharedRoom = startedInSharedSlackRoom(ctx);
+  const decided: CatalogueDecision = await ctx.memo(["catalogue", ctx.session.id, isExactApprovalContext(ctx), ...(sharedRoom ? ["shared-room"] : [])], async () => {
     const privateSession = await verifyPrivateConsoleSession(ctx);
     const { loaded } = await thisAgent(ctx.session.id);
     // Decided once, here; the guard at execution asks again (ownership can change mid-conversation).
     const callerIsOwner = privateSession ? await callerIsAgentOwner(ctx) : false;
-    const names = grantedToolNames(CATALOGUE, loaded.definition).filter(name => privateSession ? privateToolAllowed("chief-of-staff", name, { callerIsOwner }) : !privateOnlyTool(name));
+    const names = grantedToolNames(CATALOGUE, loaded.definition).filter(name => privateSession
+      ? privateToolAllowed("chief-of-staff", name, { callerIsOwner })
+      : !privateOnlyTool(name) && !(sharedRoom && sharedRoomHiddenTool(name)));
     return { names };
   });
   return Object.fromEntries(
