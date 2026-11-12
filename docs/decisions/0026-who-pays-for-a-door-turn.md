@@ -49,7 +49,8 @@ eve has no notion of who pays (read in eve `1.0.0-rc.10`).
 2. **The agent asks Keeper `door.open` once per turn**, naming only the door, the claimed user id,
    the claim's revision and the turn's place (session, turn, position). It sends no member id, no
    email, no model and no copy of eve's identity. Keeper checks the claim and the door, finds the
-   payer itself (the installation owner it has on record, who must hold a use grant on the agent)
+   payer itself (the installation owner it has on record, who must still be an active member with
+   the owner role, at the address the claim was issued under, and hold a use grant on the agent)
    and answers with a turn capability. From there the turn uses the same per-step path as web
    chat; the payer's spending limit is checked when each call is spent.
 3. **A schedule-started conversation runs as an owner job.** Its model calls ask Keeper for an
