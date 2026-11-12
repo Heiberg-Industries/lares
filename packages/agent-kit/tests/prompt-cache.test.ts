@@ -1,6 +1,6 @@
 import { captureModelInvocation, runModelInvocation } from '../src/model-invocation.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateText, tool, type ModelMessage, type SystemModelMessage } from "ai";
@@ -18,8 +18,8 @@ import {
 
 const EPHEMERAL = { type: "ephemeral" };
 
-// What eve 0.60.1 puts on a message, a tool or the system prompt when it detects an Anthropic
-// provider (`harness/prompt-cache.js`, `ANTHROPIC_CACHE_MARKER`).
+// What eve puts on a message or a tool when it detects an Anthropic provider
+// (`harness/prompt-cache.js`, `ANTHROPIC_CACHE_MARKERS["5m"]`; unchanged through 1.0.0-rc.10).
 const EVE_MARKER = { anthropic: { cacheControl: EPHEMERAL }, bedrock: { cachePoint: { type: "default" } } };
 
 // Long enough to look like a persona; the exact size does not matter to the shaping.
@@ -27,15 +27,17 @@ const PERSONA = "# Persona\n\n" + "I keep the owner's week in order. ".repeat(20
 const FACTS = "## What the owner has told me\n\n- Prefers mornings.";
 
 /**
- * The system prompt exactly as eve builds it for one turn (read out of the 0.60.1 dist):
- * `buildDynamicInstructionMessages` puts every session-scoped block first and every turn-scoped
- * block after; `applySystemCacheBreakpoint` marks the LAST block; `mergeSystemInstructions`
- * then joins them all into ONE system message with "\n\n", keeping that marker.
+ * The system prompt as eve 1.0.0-rc.10 builds it for one turn of a door conversation (Slack,
+ * Telegram). Every instruction file of a role is its own section; the role has no static
+ * instructions, so eve sends them as ONE system message joined with "\n\n" and puts NO cache
+ * marker on it (`harness/model-call/request.js`, `modelInstructions`: it marks only the first,
+ * static section, which is empty here). The captured private-console requests further down
+ * show the same shape with an empty per-turn part.
  */
 function eveSystemFor(clock: string): SystemModelMessage {
   const sessionScoped = [PERSONA, FACTS, PROMPT_CACHE_BOUNDARY];
   const turnScoped = ["Answer in English.", clock];
-  return { role: "system", content: [...sessionScoped, ...turnScoped].join("\n\n"), providerOptions: EVE_MARKER };
+  return { role: "system", content: [...sessionScoped, ...turnScoped].join("\n\n") };
 }
 
 /** eve marks the last message and the most recent assistant message before it. */
@@ -97,6 +99,8 @@ describe("splitAtBoundary", () => {
 describe("shapeAnthropicBody", () => {
   const text = `stable\n\n${PROMPT_CACHE_BOUNDARY}\n\nvolatile`;
 
+  // The shape eve sent up to 1.0.0-rc.9 (one merged system message carrying eve's own marker).
+  // rc.10 no longer sends it; the code still handles it, so the case stays pinned.
   it("MOVES an existing system breakpoint to the end of the stable part — the count does not grow", () => {
     const body = {
       tools: [{ name: "a" }, { name: "b", cache_control: EPHEMERAL }],
@@ -138,6 +142,93 @@ describe("shapeAnthropicBody", () => {
   it("leaves a body without the marker as the very same object", () => {
     const body = { system: [{ type: "text", text: "plain", cache_control: EPHEMERAL }], messages: [] };
     expect(shapeAnthropicBody(body)).toBe(body);
+  });
+});
+
+/**
+ * Real request bodies, captured offline from the compiled chief-of-staff role on eve
+ * 1.0.0-rc.10 (`fixtures/prompt-cache-eve-rc10-capture.json` says how). Two turns of one
+ * conversation, the second with a tool call: `before` is what the AI SDK handed the gateway
+ * provider's fetch, `wire` is what left it.
+ */
+describe("eve 1.0.0-rc.10 request bodies, as captured from the real role", () => {
+  type Block = Record<string, unknown> & { type: string; text?: string; cache_control?: unknown };
+  type Captured = { label: string; before: Body & { tools: Block[] }; wire: Body & { tools: Block[] } };
+  const { requests } = JSON.parse(
+    readFileSync(new URL("./fixtures/prompt-cache-eve-rc10-capture.json", import.meta.url), "utf8"),
+  ) as { requests: Captured[] };
+
+  /** Where every cache_control sits, as readable paths. */
+  function markerPaths(body: Body & { tools: Block[] }): string[] {
+    const paths: string[] = [];
+    body.tools.forEach((t, i) => t.cache_control !== undefined && paths.push(`tools[${i}]`));
+    (body.system as Block[]).forEach((s, i) => s.cache_control !== undefined && paths.push(`system[${i}]`));
+    (body.messages as Array<{ content: Block[] }>).forEach((m, i) =>
+      m.content.forEach((p, j) => p.cache_control !== undefined && paths.push(`messages[${i}].content[${j}]`)),
+    );
+    return paths;
+  }
+
+  /** The cached prefix Anthropic keys the system breakpoint on: the tools, then the marked system block. */
+  const stablePrefix = (body: Body) => JSON.stringify({ tools: body["tools"], system: body.system?.[0] });
+
+  it("holds two turns with a tool call", () => {
+    expect(requests).toHaveLength(3);
+    const last = requests[2]!.wire.messages!;
+    expect(JSON.stringify(last)).toContain('"type":"tool_use"');
+    expect(JSON.stringify(last)).toContain('"type":"tool_result"');
+  });
+
+  it("eve sends ONE system block with no cache marker, ending at the boundary, and leaves room for one", () => {
+    for (const { before } of requests) {
+      const system = before.system as Block[];
+      expect(system).toHaveLength(1);
+      expect(system[0]!.cache_control).toBeUndefined();
+      expect(system[0]!.text!.endsWith(`\n\n${PROMPT_CACHE_BOUNDARY}`)).toBe(true);
+      expect(countCacheControl(before)).toBeLessThan(MAX_CACHE_BREAKPOINTS);
+    }
+  });
+
+  it("the shaping turns each captured body into exactly the captured wire body", () => {
+    for (const { before, wire } of requests) expect(shapeAnthropicBody(before)).toEqual(wire);
+  });
+
+  const shaped = () => requests.map(({ before }) => shapeAnthropicBody(before) as Body & { tools: Block[] });
+
+  it("on the wire: the last tool, the session-stable system block and eve's two conversation markers, never more than four", () => {
+    for (const wire of shaped()) {
+      const messages = wire.messages as Array<{ role: string; content: Block[] }>;
+      const at = (i: number) => `messages[${i}].content[${messages[i]!.content.length - 1}]`;
+      const lastAssistant = messages.map((m) => m.role).lastIndexOf("assistant");
+      expect(markerPaths(wire)).toEqual([
+        `tools[${wire.tools.length - 1}]`,
+        "system[0]",
+        ...(lastAssistant === -1 ? [] : [at(lastAssistant)]),
+        at(messages.length - 1),
+      ]);
+      expect(countCacheControl(wire)).toBeLessThanOrEqual(MAX_CACHE_BREAKPOINTS);
+      expect(JSON.stringify(wire)).not.toContain(PROMPT_CACHE_BOUNDARY);
+    }
+  });
+
+  it("the tools and the session-stable system block are byte-identical across both turns and every step", () => {
+    const [first, ...rest] = shaped().map(stablePrefix);
+    expect(JSON.parse(first!).system).toMatchObject({ type: "text", cache_control: EPHEMERAL });
+    for (const prefix of rest) expect(prefix).toBe(first);
+  });
+
+  it("a door turn's per-turn text after the boundary stays outside the cached prefix", () => {
+    // Same captured bodies with the per-turn tail a door conversation has (language line, clock),
+    // a different clock on each turn: the marked block is unchanged, the tail follows unmarked.
+    const shaped = requests.map(({ before, wire }, i) => {
+      const system = [{ ...(before.system as Block[])[0]!, text: `${(before.system as Block[])[0]!.text}\n\nAnswer in English.\n\nNow: 09:${10 + i}` }];
+      const body = shapeAnthropicBody({ ...before, system }) as Body & { tools: Block[] };
+      expect(body.system?.[0]).toEqual(wire.system?.[0]);
+      expect(body.system?.[1]).toEqual({ type: "text", text: `Answer in English.\n\nNow: 09:${10 + i}` });
+      expect(countCacheControl(body)).toBeLessThanOrEqual(MAX_CACHE_BREAKPOINTS);
+      return body;
+    });
+    for (const body of shaped) expect(stablePrefix(body)).toBe(stablePrefix(shaped[0]!));
   });
 });
 
