@@ -114,7 +114,8 @@ LIMITS = [
     "A scheduled brief sent into Slack or Telegram is not exercised here; that path is covered by unit tests only.",
     "Only a direct message is sent on Slack; a turn started by mentioning the agent in a room is not exercised.",
     "No refused door turn is exercised (another person, a Telegram group, a refusal by Keeper); the sentence a person then sees is covered by unit tests only.",
-    "Each door's Connect and Apply restart the agent, which changes the runner's network while the page waits; they have finished on the probe's retry (the attempts used are recorded under browserAttempts), so a single uninterrupted press is not shown here.",
+    "Each door's Connect and Apply restart the agent, which changes the runner's network while the page waits; the probe then tries the step again once the keeper has finished what the dropped attempt started, and the retry presses nothing that is already running or done (the attempts used are recorded under browserAttempts), so a single uninterrupted press is not shown here.",
+    "The keeper writes no log line for a door turn's door.open, step claim or step consume; the proof reads the budget rows, the keeper's audit of each Apply and the agent's own log instead.",
 ]
 
 proof: dict = {"format": 1, "status": "running", "stage": "start", "checks": {}, "limits": LIMITS, "commit": None}
@@ -489,19 +490,18 @@ def wait_for_quiet_network() -> None:
         time.sleep(1)
 
 
-def browser(step: str, settings_file: pathlib.Path, tls: dict[str, pathlib.Path], attempts: int = 3, settle_agent: bool = False) -> None:
+def browser(step: str, settings_file: pathlib.Path, tls: dict[str, pathlib.Path], attempts: int = 3, before_retry=None) -> None:
     """Tries again only when the browser itself reports that interface change, never on a page's answer,
     and at most `attempts` times. A step that restarts the agent (a door's Connect or Apply) changes the
-    runner's interfaces while its request is in flight, so it gets more attempts, and before each retry
-    waits until the agent answers again, so the retry does not land in the middle of the same restart.
+    runner's interfaces while its request is in flight, so it gets more attempts, and `before_retry` runs
+    before each retry: there it waits until the keeper has finished what the dropped attempt started, so
+    the retry finds the result and never starts the same Connect or Apply a second time.
     Every step's attempts are recorded in the proof file, so a pass on the last one is visible."""
     tries: list[str] = []
     proof.setdefault("browserAttempts", {})[step] = tries
     for attempt in range(attempts):
-        if attempt and settle_agent:
-            deadline = time.monotonic() + 180
-            while not agent_answers() and time.monotonic() < deadline:
-                time.sleep(3)
+        if attempt and before_retry:
+            before_retry()
         wait_for_quiet_network()
         result = run("node", str(HERE / "browser.mjs"), step, str(settings_file), timeout=420, cwd=str(HERE),
                      env={"NODE_EXTRA_CA_CERTS": str(tls["ca_cert"])}, check=False)
@@ -690,6 +690,82 @@ def agent_log_evidence() -> dict:
             "secretFileNotReadableLines": sum(1 for line in lines if "secret file not readable" in line)}
 
 
+def agent_container() -> dict | None:
+    """The proof agent's running container: its id and when it started. None when none runs."""
+    ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    if not ids:
+        return None
+    found = output("docker", "inspect", "--format", "{{.Id}} {{.State.StartedAt}}", ids[0]).split()
+    return {"id": found[0][:12], "startedAt": found[1]} if len(found) == 2 else None
+
+
+def keeper_busy(release: dict, mark: str) -> list[str]:
+    """Keeper actions on the proof agent begun after `mark` that have not finished. Each action's audit row is
+    written as `pending` before it runs, so an Apply still waiting for the keeper's lock is counted too."""
+    return read_only_query(f"SELECT action FROM keeper_audit WHERE id > {int(mark)} AND outcome = 'pending' AND input->>'name' = '{AGENT}' ORDER BY id",
+                           release).splitlines()
+
+
+def wait_for_keeper_idle(release: dict, mark: str) -> None:
+    """Before a door step is tried again: what the dropped attempt started has finished in the keeper,
+    and the agent answers (or waits for an Apply that never came). Bounded: the retry decides then."""
+    deadline = time.monotonic() + 240
+    while time.monotonic() < deadline:
+        pending = read_only_query(f"SELECT coalesce(pending::text, '') FROM agent_resources WHERE name = '{AGENT}'", release)
+        if not keeper_busy(release, mark) and (pending == "true" or agent_answers()):
+            return
+        time.sleep(3)
+
+
+def door_applies(release: dict, mark: str) -> list[dict]:
+    """Every Apply (`definition.reconcile`) of the proof agent after `mark`, with the keeper's own times."""
+    rows = read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('at', at, 'completedAt', completed_at, 'outcome', outcome) ORDER BY id), '[]') "
+        f"FROM keeper_audit WHERE id > {int(mark)} AND action = 'definition.reconcile' AND input->>'name' = '{AGENT}'", release)
+    return json.loads(rows or "[]")
+
+
+def agent_log_tail(lines: int = 150) -> dict:
+    """What survives the container: the running agent container's id, start time and its last log lines
+    (each through `redact` and cut), plus every line about Keeper's `door.open`, if the agent wrote one."""
+    container = agent_container()
+    if not container:
+        return {"container": None, "tail": [], "doorOpenLines": []}
+    logs = run("docker", "logs", container["id"], check=False, show=False)
+    every = [redact(line)[:300] for line in (logs.stdout + "\n" + logs.stderr).splitlines() if line.strip()]
+    return {"container": container, "tail": every[-lines:], "doorOpenLines": [line for line in every if "door.open" in line][:20]}
+
+
+def settled_agent(kind: str, record: dict, release: dict, mark: str) -> dict:
+    """Waits until the agent is settled before the door's message: the same container (id and start
+    time) twice about 10 seconds apart, answering, nothing waiting, its applied definition the saved one,
+    and no keeper action on it still running. A hard check: a message into a restarting agent proves nothing."""
+    query = ("SELECT json_build_object('pending', r.pending, 'appliedIsSaved', r.applied_definition = d.definition) "
+             f"FROM agent_resources r JOIN agent_definitions d ON d.name = r.name WHERE r.name = '{AGENT}'")
+    deadline = time.monotonic() + 240
+    seen: dict = {}
+    while True:
+        first = agent_container()
+        if first and agent_answers():
+            time.sleep(10)
+            state = json.loads(read_only_query(query, release) or "null") or {}
+            busy = keeper_busy(release, mark)
+            second = agent_container()
+            seen = {"first": first, "second": second, "answers": agent_answers(), "pending": state.get("pending"),
+                    "appliedIsSaved": state.get("appliedIsSaved"), "keeperBusy": busy}
+            if first == second and seen["answers"] and state.get("pending") is False and state.get("appliedIsSaved") is True and not busy:
+                record["settledBeforeMessage"] = {**seen, **agent_log_tail()}
+                save_proof()
+                return first
+        if time.monotonic() > deadline:
+            record["settledBeforeMessage"] = {**seen, **agent_log_tail()}
+            record["checks"][f"{kind}-agent-settled-before-the-message"] = False
+            proof["checks"][f"{kind}-agent-settled-before-the-message"] = False
+            save_proof()
+            raise RuntimeError(f"{kind}-agent-settled-before-the-message failed: the agent did not settle within 4 minutes: {seen}")
+        time.sleep(3)
+
+
 # The keeper's own reason when a save of a door, role, personal account or model stops a started agent
 # until Apply restarts it (Lares ADR-0027). That stop is the design; any other reason is not.
 DESIGNED_STOP = "takes effect when Apply restarts it"
@@ -771,7 +847,7 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
     stops_before = len(keeper_log_lines("was stopped after a save"))
     apply_failures_before = len(keeper_log_lines("Apply failed"))
     audit_mark = keeper_audit_mark(release)
-    browser(f"connect-{kind}", settings_file, tls, attempts=DOOR_STEP_ATTEMPTS, settle_agent=True)
+    browser(f"connect-{kind}", settings_file, tls, attempts=DOOR_STEP_ATTEMPTS, before_retry=lambda: wait_for_keeper_idle(release, audit_mark))
     check_door_enable_applied(kind, record, stops_before, apply_failures_before, audit_mark, release)
     code = (door_codes / kind).read_text().strip()
     if kind == "slack":
@@ -800,7 +876,21 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
         record["agentLog"] = agent_log_evidence()
         save_proof()
         raise RuntimeError(f"the {kind} claim was not recorded within 60 seconds (the door answered HTTP {record['claimStatus']})")
-    browser(f"finish-{kind}", settings_file, tls, attempts=DOOR_STEP_ATTEMPTS, settle_agent=True)
+    finish_mark = keeper_audit_mark(release)
+    browser(f"finish-{kind}", settings_file, tls, attempts=DOOR_STEP_ATTEMPTS, before_retry=lambda: wait_for_keeper_idle(release, audit_mark))
+
+    # The claim's Apply has finished and the agent it started is the one that will take the message.
+    container = settled_agent(kind, record, release, audit_mark)
+    applies = door_applies(release, finish_mark)
+    record["claimApplies"] = applies
+    save_proof()
+    if len(applies) != 1 or applies[0]["outcome"] != "ok":
+        record["checks"][f"{kind}-apply-pressed-once"] = False
+        proof["checks"][f"{kind}-apply-pressed-once"] = False
+        save_proof()
+        raise RuntimeError(f"{kind}-apply-pressed-once failed: the keeper ran {len(applies)} Apply(s) for this claim: {applies}")
+    record["checks"][f"{kind}-apply-pressed-once"] = True
+    passed(f"{kind}-apply-pressed-once")
 
     # The door is claimed by the owner and applied, and the claim was answered in the chat.
     row = json.loads(read_only_query(
@@ -882,7 +972,13 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
     def who(value: str | None) -> str | None:
         return None if value is None else "the claimer" if value == claimer else "another member"
 
+    # Evidence that outlives the container: who took the turn, what it logged, and every Apply since the claim.
+    at_end = agent_log_tail()
     record.update({
+        "containerAtMessage": container,
+        "agentAtTheEnd": at_end,
+        "sameContainerThroughTheTurn": at_end["container"] == container,
+        "keeperAppliesSinceTheClaim": door_applies(release, finish_mark),
         "modelCallsWithMarker": len(model_calls),
         "budgetAttemptsSinceMessage": [{"state": row["state"], "kind": row["kind"], "door": row["door"], "chargedTo": who(row["liveMember"]), "referenceKeys": row["keys"]}
                                        for row in rows],
