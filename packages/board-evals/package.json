@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "eval": "node scripts/all-evals.mjs",
-    "proof:web-chat": "node scripts/web-chat-proof.mjs",
+    "proof:web-chat": "tsx scripts/web-chat-proof.mjs",
     "proof:web-chat-approval": "node scripts/web-chat-approval-proof.mjs",
     "proof:pending-reply": "node scripts/pending-reply-proof.mjs",
     "snapshot:capture": "bash scripts/capture-snapshot.sh",
