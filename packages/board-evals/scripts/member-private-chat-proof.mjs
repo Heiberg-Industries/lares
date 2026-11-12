@@ -2,7 +2,7 @@
  * Only the model and Gmail API are fake. A preload maps fixed container secret paths to
  * disposable files; all grant, session, generation, custody and model guards stay real.
  * Use PRIVATE_CHAT_PROOF_ROLE=chief-of-staff or creative for a serial subset.
- * PRIVATE_CHAT_PROOF_BUDGET=1 adds inactive preparation/cold-replay proof to chief/Anthropic + SEND.
+ * PRIVATE_CHAT_PROOF_BUDGET=1 adds inactive preparation/cold-replay proof to chief + SEND on a gateway lane (anthropic or openai-compatible).
  * PRIVATE_CHAT_PROOF_TRACKS=1 adds the Tracks approval card for two members on the chief role, through
  * Keeper's real broker and a real Git Vault. Only the storage inventory's fixed path is mapped to a
  * file. Set TMPDIR to a real path with no symlink in it, as Vault paths refuse one.
@@ -44,7 +44,7 @@ const gatewayLane=process.env.PRIVATE_CHAT_PROOF_GATEWAY_LANE;
 const withBudget=process.env.PRIVATE_CHAT_PROOF_BUDGET==='1';
 const withVault=process.env.PRIVATE_CHAT_PROOF_VAULT==='1';
 const withTracks=process.env.PRIVATE_CHAT_PROOF_TRACKS==='1';
-if(withBudget)assert.ok(gatewayLane==='anthropic'&&process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&withSend,'Durable proof uses the bounded chief/Anthropic approval fixture');
+if(withBudget)assert.ok(['anthropic','openai-compatible'].includes(gatewayLane)&&process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&withSend,'Durable proof uses the bounded chief approval fixture on a gateway lane (anthropic or openai-compatible)');
 if(withVault)assert.equal(process.env.PRIVATE_CHAT_PROOF_ROLE,'chief-of-staff','Vault custody fixture is bounded to the chief-of-staff role');
 if(withTracks)assert.ok(process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&!withVault,'Tracks proof uses the real broker on the chief-of-staff role, not the recording Vault fixture');
 let gateway,trackVault;
