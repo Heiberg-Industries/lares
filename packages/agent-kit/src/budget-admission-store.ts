@@ -8,7 +8,7 @@ import { type ConsoleAuthorityContext } from './console-turn-authority.js';
 import { PgGrantStore } from './grant-store.js';
 import { payloadFingerprint } from './approval-ledger.js';
 import { currentModelInvocation, MODEL_INVOCATION_REFUSED } from './model-invocation.js';
-import { captureBudgetAuthorityReference, captureOwnerJobAuthorityReference, validateBudgetAuthorityReference, type BudgetAuthorityReference, type ConversationBudgetAuthorityReference } from './budget-model-authority.js';
+import { captureBudgetAuthorityReference, captureOwnerJobAuthorityReference, validateBudgetAuthorityReference, type BudgetAuthorityReference, type ConversationBudgetAuthorityReference, type DoorBudgetAuthorityReference } from './budget-model-authority.js';
 import {gatewayModelPath,GATEWAY_INSTALLATION_KEY} from './gateway-admission-protocol.js';
 
 const SCALE=10n**18n;
@@ -40,7 +40,7 @@ export interface GatewayModelRequestIdentity {method:'POST';path:string;requestH
 /** Internal source returned only by the constructor-bound Keeper claim resolver. The
  * object shape is not authority; callers must not accept or construct it from remote JSON. */
 export interface ModelPurposeClaimSource {
-  agent:string;incarnation:string;reference:ConversationBudgetAuthorityReference;definitionHash:string;purposeAlias:string;
+  agent:string;incarnation:string;reference:ConversationBudgetAuthorityReference|DoorBudgetAuthorityReference;definitionHash:string;purposeAlias:string;
   event:{turnId:string;sequence:number;stepIndex:number};expiresAt:number;isActive:()=>boolean;
 }
 export type ModelPurposeClaimResolver=(handle:object)=>ModelPurposeClaimSource|undefined;
@@ -231,9 +231,12 @@ export class PgBudgetAdmissionStore {
         b.agent!==source.agent||b.incarnation!==source.incarnation||b.purpose_alias!==source.purposeAlias||
         gatewayModelPath(format)!==request.path||b.endpoint_hash!==installation.selected_endpoint||!b.profile_hash||!b.key_fingerprint||
         !installation.recovery_epoch||!iCap||!mCap||!await this.ready(db,installation)||!await this.ready(db,member))throw new Error('Budget policy unavailable');
+      // One step of one conversation is charged once. A door turn has no admission nonce; its claim
+      // revision (a uuid, never 43 base64url characters like a nonce) takes that place in the same tuple.
+      const admissionOrClaim=reference.kind==='door'?reference.binding.claimRevision:reference.binding.admissionNonce;
       const invocationHash=createHmac('sha256',Buffer.from(member.canonical_suppression_hash,'hex')).update(JSON.stringify([
         'lares.budget.invocation.v1','conversation-step',installation.id,member.id,reference.binding.memberId,
-        source.agent,source.incarnation,reference.binding.sessionId,reference.binding.admissionNonce,event.turnId,event.sequence,event.stepIndex,
+        source.agent,source.incarnation,reference.binding.sessionId,admissionOrClaim,event.turnId,event.sequence,event.stepIndex,
       ])).digest('hex');
       const requestedExpiry=Math.min(Date.now()+this.intentLifetimeMs,source.expiresAt,
         authorityDeadlineMs===null?Number.POSITIVE_INFINITY:authorityDeadlineMs);

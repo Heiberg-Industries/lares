@@ -4,7 +4,7 @@ import { chmod, chown, lstat, mkdir, open, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type {Pool} from 'pg';
-import { captureBudgetAuthorityReference, validateBudgetAuthorityReference, type ConversationBudgetAuthorityReference as BudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
+import { captureBudgetAuthorityReference, captureDoorBudgetAuthorityReference, validateBudgetAuthorityReference, type ConversationBudgetAuthorityReference, type DoorBudgetAuthorityReference, type DoorTurnRequest } from '@lares/agent-kit/budget-model-authority';
 import {PgBudgetAdmissionStore,type BudgetFinancialWriter,type GatewayModelRequestIdentity,type ModelPurposeClaimSource} from '@lares/agent-kit/budget-admission-store';
 import {GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_OPENAI_MODEL_PATH} from '@lares/agent-kit/gateway-admission-protocol';
 import { checkConsoleSourceDeadlines, consoleSourceTransaction, retainSourceTransactionDeadline, type SourceDatabase, type SourcePool } from '@lares/agent-kit/console-source-transaction';
@@ -38,7 +38,11 @@ export interface ModelPurposeBrokerOptions {
 }
 type Challenge={request:ModelPurposeRequest;digest:string;challenge:string;expiresAt:number};
 type Pending={request:ModelPurposeRequest;digest:string;expiresAt:number};
-type Turn={request:ModelPurposeRequest;reference:BudgetAuthorityReference;turnId:string;sequence:number;definitionHash:string;purposeAlias:string;expiresAt:number;closed:boolean;steps:Set<string>};
+/** The authority a turn was opened with: web chat's (`human`/`resume`) or a chat door's (`door`). */
+type BudgetAuthorityReference=ConversationBudgetAuthorityReference|DoorBudgetAuthorityReference;
+/** One open turn. `agent`, `incarnation` and `definitionHash` are the turn's own, pinned when it opened;
+ * `request` is the console request behind a web-chat turn and absent on a door turn. */
+type Turn={agent:string;incarnation:string;request?:ModelPurposeRequest;reference:BudgetAuthorityReference;turnId:string;sequence:number;definitionHash:string;purposeAlias:string;expiresAt:number;closed:boolean;steps:Set<string>};
 type Claim={turn:Turn;stepId:string;event:{turnId:string;sequence:number;stepIndex:number};purposeAlias:string;expiresAt:number;handle:object;consumed:boolean};
 type MacFields=ModelPurposeMacFields;
 type RuntimeEnvelope={agent:unknown;incarnation:unknown;requestId:unknown;timestamp:unknown;op:unknown;input:unknown;outcomeDigest:unknown;payloadDigest:unknown;mac:unknown};
@@ -58,7 +62,7 @@ function parseContext(value:unknown):ConsoleAuthorityContext{
   return {session:{id:session.id,turn:{id:turn.id,sequence:Number(turn.sequence)},auth:{current:auth.current,initiator:auth.initiator}}};
 }
 function stepEvent(value:unknown){const event=object(value),data=object(event.data);if(event.type!=='step.started'||typeof data.turnId!=='string'||!/^[A-Za-z0-9._:-]{1,128}$/.test(data.turnId)||!Number.isSafeInteger(data.sequence)||Number(data.sequence)<0||!Number.isSafeInteger(data.stepIndex)||Number(data.stepIndex)<0)return undefined;return {turnId:data.turnId,sequence:Number(data.sequence),stepIndex:Number(data.stepIndex),digest:modelPurposeDigest(event),key:`${data.turnId}:${data.sequence}:${data.stepIndex}`};}
-function resumeMatches(request:ModelPurposeRequest,reference:BudgetAuthorityReference){
+function resumeMatches(request:ModelPurposeRequest,reference:BudgetAuthorityReference):reference is ConversationBudgetAuthorityReference{
   return request.purpose==='resume'?reference.kind==='resume'&&reference.resume?.requestId===request.resume?.requestId&&reference.resume?.optionId===request.resume?.optionId:reference.kind==='human';
 }
 
@@ -134,9 +138,24 @@ export class ModelPurposeBrokerState {
       !Number.isSafeInteger(sequence)||sequence<0||
       !/^[A-Za-z0-9._:-]{1,128}$/.test(turnId)||definitionHash!==request.definitionHash||
       !/^[a-z][a-z0-9-]{1,63}$/.test(purposeAlias))throw deny();
+    return this.openTurn({agent:request.agent,incarnation:request.incarnation,request,reference,turnId,sequence,definitionHash,purposeAlias});
+  }
+
+  /** A turn that came through a chat door. There is no console request: the reference Keeper
+   * captured from the door claim must name this runtime, this turn and this sequence. */
+  registerDoorTurn(agent:string,incarnation:string,reference:BudgetAuthorityReference,turnId:string,sequence:number,definitionHash:string,purposeAlias:string){
+    this.capacity(this.turns);
+    if(reference.kind!=='door'||reference.binding.agent!==agent||reference.binding.incarnation!==incarnation||
+      reference.turnId!==turnId||reference.turnSequence!==sequence||
+      !/^[a-z][a-z0-9-]{1,30}$/.test(agent)||!/^[a-f0-9-]{36}$/.test(incarnation)||
+      !Number.isSafeInteger(sequence)||sequence<0||!/^[A-Za-z0-9._:-]{1,128}$/.test(turnId)||
+      !/^[a-f0-9]{64}$/.test(definitionHash)||!/^[a-z][a-z0-9-]{1,63}$/.test(purposeAlias))throw deny();
+    return this.openTurn({agent,incarnation,reference,turnId,sequence,definitionHash,purposeAlias});
+  }
+
+  private openTurn(fields:Omit<Turn,'expiresAt'|'closed'|'steps'>){
     const capability=randomBytes(32).toString('base64url');
-    const turn:Turn={request,reference,turnId,sequence,definitionHash,purposeAlias,
-      expiresAt:this.clock()+TURN_MS,closed:false,steps:new Set()};
+    const turn:Turn={...fields,expiresAt:this.clock()+TURN_MS,closed:false,steps:new Set()};
     this.turns.set(capability,turn);
     return {capability,expiresAt:turn.expiresAt};
   }
@@ -144,8 +163,8 @@ export class ModelPurposeBrokerState {
   closeTurn(capability:string,identity:{agent:string;incarnation:string},turnId:string,sequence:number){
     this.prune();
     const turn=this.turns.get(capability);
-    if(!turn||turn.closed||turn.expiresAt<=this.clock()||turn.request.agent!==identity.agent||
-      turn.request.incarnation!==identity.incarnation||turn.turnId!==turnId||turn.sequence!==sequence)throw deny();
+    if(!turn||turn.closed||turn.expiresAt<=this.clock()||turn.agent!==identity.agent||
+      turn.incarnation!==identity.incarnation||turn.turnId!==turnId||turn.sequence!==sequence)throw deny();
     turn.closed=true;
     this.turns.delete(capability);
     for(const [token,claim] of this.claims)if(claim.turn===turn)this.claims.delete(token);
@@ -155,8 +174,8 @@ export class ModelPurposeBrokerState {
   reserveStep(capability:string,identity:{agent:string;incarnation:string},input:ModelPurposeStepInput){
     this.prune();
     const turn=this.turns.get(capability),event=stepEvent(input.event);
-    if(!turn||!event||turn.closed||turn.expiresAt<=this.clock()||turn.request.agent!==identity.agent||
-      turn.request.incarnation!==identity.incarnation||turn.turnId!==event.turnId||turn.sequence!==event.sequence||
+    if(!turn||!event||turn.closed||turn.expiresAt<=this.clock()||turn.agent!==identity.agent||
+      turn.incarnation!==identity.incarnation||turn.turnId!==event.turnId||turn.sequence!==event.sequence||
       turn.purposeAlias!==input.purposeAlias||turn.steps.size>=64||turn.steps.has(event.key))throw deny();
     this.capacity(this.claims);
     // Reserve synchronously before the source-authority transaction can await.
@@ -180,7 +199,7 @@ export class ModelPurposeBrokerState {
     this.prune();
     const claim=this.claims.get(token),turn=claim?.turn;
     if(!claim||claim.consumed||!turn||turn.closed||turn.expiresAt<=this.clock()||claim.expiresAt<=this.clock()||!this.turnsHas(turn)||
-      turn.request.agent!==identity.agent||turn.request.incarnation!==identity.incarnation||
+      turn.agent!==identity.agent||turn.incarnation!==identity.incarnation||
       request.method!=='POST'||!(/^[a-f0-9]{64}$/.test(request.requestHash))||
       (request.path!==GATEWAY_ANTHROPIC_MODEL_PATH&&request.path!==GATEWAY_OPENAI_MODEL_PATH))throw deny();
     // The claim is irreversibly consumed synchronously, before source or financial I/O.
@@ -191,7 +210,7 @@ export class ModelPurposeBrokerState {
   resolveConsumedClaim(handle:object):ModelPurposeClaimSource|undefined {
     const claim=this.claimHandles.get(handle),turn=claim?.turn,now=this.clock();
     if(!claim||!claim.consumed||!turn||turn.closed||turn.expiresAt<=now||claim.expiresAt<=now||!this.turnsHas(turn))return undefined;
-    return {agent:turn.request.agent,incarnation:turn.request.incarnation,reference:turn.reference,
+    return {agent:turn.agent,incarnation:turn.incarnation,reference:turn.reference,
       definitionHash:turn.definitionHash,purposeAlias:claim.purposeAlias,event:claim.event,expiresAt:claim.expiresAt,
       isActive:()=>{const current=this.claimHandles.get(handle);return current===claim&&claim.consumed&&!turn.closed&&turn.expiresAt>this.clock()&&claim.expiresAt>this.clock()&&this.turnsHas(turn);}};
   }
@@ -289,11 +308,17 @@ export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurpo
   // callback or remote object can establish source authority.
   const purposeStore=consumer?new PgBudgetAdmissionStore(consumer.pool,process.env,30_000,consumer.writer,handle=>state.resolveConsumedClaim(handle)):undefined;
   async function runtimeKey(agent:string){const path=join(options.runtimeSecretsDir,`${agent}-runtime-control`);return protectedKey(path,rootUid,runtimeKeyPolicy,()=>options.afterKeyOpenForTests?.(path));}
+  /** The running definition of this agent: its hash and its model name, the agent ready, current and not pending. */
+  async function currentDefinition(db:SourceDatabase,agent:string,incarnation:string){
+    const row=await db.query("SELECT d.hash,d.definition->>'model' AS purpose_alias FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid' FOR SHARE OF r,d",[agent,incarnation]);
+    const hash=row.rows[0]?.hash,alias=row.rows[0]?.purpose_alias;
+    if(row.rows.length!==1||typeof hash!=='string'||typeof alias!=='string'||! /^[a-z][a-z0-9-]{1,63}$/.test(alias))throw deny();
+    return {hash:hash as string,alias:alias as string};
+  }
   async function assertCurrentDefinition(db:SourceDatabase,request:ModelPurposeRequest){
-    const row=await db.query("SELECT d.hash,d.definition->>'model' AS purpose_alias FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid' FOR SHARE OF r,d",[request.agent,request.incarnation]);
-    const alias=row.rows[0]?.purpose_alias;
-    if(row.rows.length!==1||row.rows[0]!.hash!==request.definitionHash||typeof alias!=='string'||! /^[a-z][a-z0-9-]{1,63}$/.test(alias))throw deny();
-    return alias as string;
+    const current=await currentDefinition(db,request.agent,request.incarnation);
+    if(current.hash!==request.definitionHash)throw deny();
+    return current.alias;
   }
   const runtimeEnv=(agent:string,incarnation:string):NodeJS.ProcessEnv=>({...process.env,LARES_AGENT_NAME:agent,LARES_AGENT_INCARNATION:incarnation});
   async function consoleHandle(line:string,signal:AbortSignal){
@@ -355,8 +380,9 @@ export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurpo
       const env=runtimeEnv(String(req.agent),String(req.incarnation));let authorityDeadlineMs:number|null=null;
       await consoleSourceTransaction(pool,async db=>{
         const validUntil=await validateBudgetAuthorityReference(db as SourceDatabase,reserved.turn.reference,env);
-        const purposeAlias=await assertCurrentDefinition(db as SourceDatabase,reserved.turn.request);
-        if(purposeAlias!==reserved.turn.purposeAlias||purposeAlias!==step.purposeAlias)throw deny();
+        // The definition the turn opened under, for every kind of turn.
+        const current=await currentDefinition(db as SourceDatabase,reserved.turn.agent,reserved.turn.incarnation);
+        if(current.hash!==reserved.turn.definitionHash||current.alias!==reserved.turn.purposeAlias||current.alias!==step.purposeAlias)throw deny();
         if(validUntil!==null){
           retainSourceTransactionDeadline(db,validUntil);
           await checkConsoleSourceDeadlines(db);
@@ -391,6 +417,27 @@ export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurpo
         alias:input.alias,jobId:String(req.requestId),request:request as unknown as GatewayModelRequestIdentity},signal);
       if(signal.aborted||prepared.expiresAt<=now())throw deny();
       return signedAck(key,req,input,prepared);
+    }
+    if(req.op==='door.open'){
+      // A turn that came through a chat door. The agent names the door, the claim it speaks under and
+      // the turn; Keeper finds the payer itself (its configured owner, checked against the claim).
+      if(req.outcomeDigest!==EMPTY_DIGEST||req.payloadDigest!==modelPurposeDigest(input)||
+        Object.keys(input).sort().join(',')!=='claimRevision,door,principal,sequence,sessionId,turnId'||
+        (input.door!=='slack'&&input.door!=='telegram')||typeof input.principal!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(input.principal)||
+        typeof input.claimRevision!=='string'||!/^[a-f0-9-]{36}$/.test(input.claimRevision)||
+        typeof input.sessionId!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(input.sessionId)||
+        typeof input.turnId!=='string'||!/^[A-Za-z0-9._:-]{1,128}$/.test(input.turnId)||
+        !Number.isSafeInteger(input.sequence)||Number(input.sequence)<0)throw deny();
+      if(!options.designatedOwnerId)throw deny();
+      const door:DoorTurnRequest={door:input.door,principal:input.principal,claimRevision:input.claimRevision,sessionId:input.sessionId,turnId:input.turnId,sequence:Number(input.sequence)};
+      const agent=String(req.agent),incarnation=String(req.incarnation),env=runtimeEnv(agent,incarnation);
+      let reference!:DoorBudgetAuthorityReference,definition!:{hash:string;alias:string};
+      await consoleSourceTransaction(pool,async db=>{
+        reference=await captureDoorBudgetAuthorityReference(db as SourceDatabase,door,options.designatedOwnerId,env);
+        definition=await currentDefinition(db as SourceDatabase,agent,incarnation);
+      },undefined,{deadlineAtMs});
+      if(signal.aborted)throw deny();
+      return signedAck(key,req,input,state.registerDoorTurn(agent,incarnation,reference,door.turnId,door.sequence,definition.hash,definition.alias));
     }
     if(req.op==='turn.close'){
       if(typeof input.turnCapability!=='string'||typeof input.turnId!=='string'||!Number.isSafeInteger(input.sequence))throw deny();
