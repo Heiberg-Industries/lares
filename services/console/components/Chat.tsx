@@ -183,7 +183,7 @@ function ChatSession({
   const broken = ended !== null || (hasError && limitReply === null);
   // A conversation that has grown too long is broken (every later turn would fail the same way),
   // but its own sentence says why and how to go on, in place of "This conversation is unavailable."
-  const tooLong = broken && ended === null ? conversationTooLongOf(agent.events) : null;
+  const tooLong = broken && ended === null ? conversationTooLongOf(agent.events, agent.view) : null;
   useEffect(() => {
     if (broken) failed.current = true;
     if (failed.current) for (const key of [storageKey, `${storageKey}:draft`, `${storageKey}:scroll`]) {

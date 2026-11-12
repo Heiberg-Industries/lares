@@ -7,7 +7,7 @@ import { ClientError, ClientSessionStrandedError, SessionNotActiveError, convers
 import { emptySessionView } from "eve/events";
 import { chatSessionKey } from "../lib/chat-session";
 import { conversationTooLongOf, limitReplyOf } from "../lib/limit-reply";
-import { MODEL_COMPACTION_REFUSED } from "@lares/agent-kit/conversation-too-long";
+import { MODEL_CALLS_REFUSED_UNSCOPED, MODEL_COMPACTION_REFUSED } from "@lares/agent-kit/conversation-too-long";
 import { Chat } from "../components/Chat";
 /**
  * The framework's hook, stood in for: what it returns is the shape its own types give it —
@@ -360,6 +360,38 @@ it("says why when a conversation has grown too long, and keeps the way to a new 
   expect((screen.getByRole("textbox", { name: "Message Agent One" }) as HTMLTextAreaElement).disabled).toBe(true);
   expect(screen.getByRole("button", { name: "Start a new conversation" })).toBeDefined();
   await waitFor(() => expect(sessionStorage.getItem(KEY)).toBeNull());
+});
+it("the guard's degraded refusal is not 'too long': the ordinary unavailable text", async () => {
+  failWith(MODEL_CALLS_REFUSED_UNSCOPED);
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toContain("This conversation is unavailable. Start a new conversation.");
+  expect(screen.queryByText(TOO_LONG)).toBeNull();
+  expect(conversationTooLongOf([failedTurn(`Hook "context.started" failed: ${MODEL_CALLS_REFUSED_UNSCOPED}`)])).toBeNull();
+});
+it("after a turn that already completed a call, says that part may already be done", async () => {
+  const lines: Fact[][] = [
+    [{ type: "session.started", data: { runtime: { agentId: "agent", eveVersion: "1.0.0-rc.9" } } }],
+    [{ type: "delivery.admitted", data: { deliveryId: "d1", principal: { id: "member", type: "user" }, source: { channel: "eve" } } }],
+    [
+      { type: "turn.started", scope: T, data: { turnId: "t1", cause: { deliveryId: "d1" }, follows: null } },
+      { type: "delivery.consumed", scope: T, data: { deliveryId: "d1", turnId: "t1", parts: [{ kind: "text", text: "Send the note" }] } },
+    ],
+    [{ type: "model.requested", scope: T, data: { runId: "r1", owner: { turnId: "t1" } } }],
+    [{ type: "model.started", scope: RUN, data: { runId: "r1", modelId: "m", attempt: 0 } }],
+    [
+      { type: "call.requested", scope: RUN, data: { callId: "call_1", owner: { runId: "r1" }, capability: { kind: "tool", name: "gmail_send" }, input: {} } },
+      { type: "model.settled", scope: RUN, data: { runId: "r1", outcome: "completed", finishReason: "tool-calls" } },
+    ],
+    [{ type: "call.started", scope: RUN, data: { callId: "call_1" } }],
+    [{ type: "call.settled", scope: RUN, data: { callId: "call_1", outcome: "completed", output: "sent" } }],
+    [{ type: "turn.settled", scope: T, data: { turnId: "t1", outcome: "failed", error: { code: "MODEL_CALL_FAILED", message: MODEL_COMPACTION_REFUSED } } }],
+  ];
+  withConversation(lines);
+  mock.error = Object.assign(new Error(MODEL_COMPACTION_REFUSED), { name: "MODEL_CALL_FAILED" });
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toBe(`${TOO_LONG} Part of what you asked may already have been done, so check before asking again.`);
+  // The same failure with no completed call in its turn keeps the sentence alone.
+  expect(conversationTooLongOf(mock.events, emptySessionView())).toBe(TOO_LONG);
 });
 it("reads the too-long cause only from the newest ending of a turn, and never for anything else", () => {
   expect(conversationTooLongOf([failedTurn(MODEL_COMPACTION_REFUSED)])).toBe(TOO_LONG);
