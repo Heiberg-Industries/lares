@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { definitionSchema, outsideToolSchema, parseDefinition, hashOf, loadDefinition, readDefinitionFiles, doorsOf, type AgentDefinition } from '@lares/agent-kit/definition';
 import { currentSession } from '@lares/agent-kit/member-store';
 import { PgGrantStore, type GrantDatabase } from '@lares/agent-kit/grant-store';
-import { validateDefinition, doorSecretName } from '@lares/agent-kit/definition-validate';
+import { validateDefinition, doorSecretName, type ToolSources } from '@lares/agent-kit/definition-validate';
 import { rememberValid } from '@lares/agent-kit/definition-cache';
 import { KeeperFailedError, KeeperRefusedError, registerAction, type ActionContext } from './actions.js';
 import { DOOR_FILES } from './compose-agents.js';
@@ -81,6 +81,7 @@ export interface DefinitionOptions {
     roleInfo(role: DefinitionRole): {
         roleMd: string;
         deployedTools: string[];
+        toolSources?: ToolSources;
     };
 }
 function refused(message: string): never { throw new KeeperRefusedError(message); }

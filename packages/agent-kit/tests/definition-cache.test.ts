@@ -172,6 +172,20 @@ describe("resolveDefinition", () => {
     expect(code).toBe(UNUSABLE_DEFINITION_EXIT);
   });
 
+  // Two tools under one name is not a mistake in one definition's text: no definition can pass
+  // on that role, the remembered one included, so there is nothing safe to run on.
+  it("does not start on a role where a tool file and the pool share a name", async () => {
+    const agentName = "twonames";
+    const dir = folder({ ...GOOD, name: agentName }, "Books.\n");
+    await rememberValid(pool, await loadDefinition({ serviceDir: "/nowhere", env: { LARES_DEFINITION_DIR: dir } }));
+    const clean = { authored: ["public_doc"], catalogue: ["gmail_send"] };
+    expect((await resolveDefinition({ ...opts(dir, agentName), toolSources: clean })).usedFallback).toBe(false);
+    const err = await resolveDefinition({ ...opts(dir, agentName), toolSources: { authored: ["gmail_send"], catalogue: ["gmail_send"] } })
+      .then(() => null, (e: unknown) => e as Error);
+    expect(err?.message).toMatch(/tool-names.*"gmail_send".*is taken twice/s);
+    expect(err?.message).toMatch(/so is the last valid one/);
+  });
+
   it("does not consult the database at all when LARES_DEFINITION_DIR is unset", async () => {
     const svc = new URL("../../../services/creative", import.meta.url).pathname;
     const r = await resolveDefinition({ serviceDir: svc, roleMd: ROLE, deployedTools: [], agentName: "creative", pool: undefined, env: {} });
