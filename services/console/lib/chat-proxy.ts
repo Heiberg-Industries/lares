@@ -42,7 +42,7 @@ import type { Member } from "@lares/agent-kit/authority-contract";
  */
 import { isIP } from "node:net";
 import { chatSessionCapabilityCookie, hasChatSessionCapability, validChatSessionId } from "./chat-session-capability";
-import { CONSOLE_REFUSAL_HEADER } from "./chat-session";
+import { ANSWER_NOT_USED, ANSWER_UNCHECKED, CONSOLE_REFUSAL_HEADER } from "./chat-session";
 import { createHash } from "node:crypto";
 import { AGENT_STATE_HEADER, AGENT_NOT_RUNNING } from "./agent-reachability";
 import { signPrivateVaultRequest, PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER } from "./vault-capsule";
@@ -224,6 +224,67 @@ export interface ChatDeps {
   signedInMember(): Promise<Member | null>;
 }
 
+/**
+ * A SECOND ANSWER TO A CARD THAT IS ALREADY SETTLED is refused here, before it reaches the agent.
+ *
+ * Why: eve treats an answer to a card that is no longer waiting as a new message, and opens a new
+ * turn under the answer's identity. The agent refuses that turn, and the page then shows a dead
+ * conversation. A double click, a second tab, an old tab or a request sent again would do it.
+ *
+ * How the console knows: from the card's own record, `approval_asks`, which the agent writes. It
+ * finds the row by the card's four coordinates (the interaction id, this agent, this conversation,
+ * this member) — the same coordinates the agent's own route admission needs for any answer
+ * (`consoleRouteAdmission` in the agent kit), so a card that has none would be refused there too.
+ * The card is waiting only while the row has no outcome and was never used: the agent's response
+ * policy writes `approved` when it takes an Approve, and the card's settle writes a Deny, a
+ * withdrawal or an expiry. Anything else — no row, two rows, a row that cannot be read — is not a
+ * card this console can vouch is waiting, so the answer is not sent (fail closed).
+ *
+ * Two answers at the same moment (a double click). The agent takes a delivery at once and writes
+ * the outcome on its next step, so for a moment the record still says "waiting" to both. The
+ * console therefore also keeps, in memory, the cards it has just sent an answer to: the first
+ * answer claims its card, synchronously, and a second one for the same card is refused while the
+ * claim lasts. A claim is dropped at once when the answer did not reach the agent (no answer, or
+ * a refusal), so a person may try again; otherwise it lasts `ANSWER_CLAIM_MS`, long after the
+ * record has caught up. The claim is no record of answers: it decides nothing on its own beside
+ * the record, and it is lost on a restart, after which the record alone decides.
+ *
+ * Two known limits. The console runs as one process today; with two, each would keep its own
+ * claims, and only the agent's own checks would stop a double action. And an answer the agent
+ * takes at once but refuses a step later (its response policy) leaves the card waiting while the
+ * claim lasts: this console cannot see that refusal, which happens after the agent's reply.
+ */
+const ANSWER_CLAIM_MS = 10 * 60_000;
+const ANSWER_CLAIMS_MAX = 4096;
+const answerClaims = new Map<string, number>();
+
+/** Test-only: forget every claim. */
+export function resetAnswerClaimsForTests(): void {
+  answerClaims.clear();
+}
+
+/** Claims a card for one answer. Synchronous on purpose: two requests cannot both pass. */
+function claimAnswer(key: string, now: number): { release(): void } | "taken" | "full" {
+  for (const [claimed, until] of answerClaims) if (until <= now) answerClaims.delete(claimed);
+  if (answerClaims.has(key)) return "taken";
+  if (answerClaims.size >= ANSWER_CLAIMS_MAX) return "full";
+  const until = now + ANSWER_CLAIM_MS;
+  answerClaims.set(key, until);
+  // Drops this claim only, never a later one for the same card.
+  return { release: () => { if (answerClaims.get(key) === until) answerClaims.delete(key); } };
+}
+
+/** True only when the card's own record says it still waits for an answer. Throws when the record
+ *  cannot be read. */
+async function cardStillWaiting(deps: Pick<ChatDeps, "query">, card: { interactionId: string; agent: string; sessionId: string; memberId: string }): Promise<boolean> {
+  const { rows } = await deps.query(
+    `SELECT outcome, used_at FROM approval_asks
+      WHERE request_id = $1 AND agent = $2 AND session_id = $3 AND acting_member_id = $4`,
+    [card.interactionId, card.agent, card.sessionId, card.memberId],
+  );
+  return rows.length === 1 && rows[0]!.outcome === null && rows[0]!.used_at === null;
+}
+
 function refuse(status: number, message: string, notRunning = false): Response {
   return new Response(message, { status, headers: {
     "content-type": "text/plain", "cache-control": "no-store",
@@ -316,6 +377,9 @@ export async function forwardChat(request: Request, name: string, path: string, 
     ? request.signal
     : AbortSignal.any([request.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
 
+  // An answer's claim on its card (`claimAnswer`), and whether the agent took the answer.
+  let answerClaim: { release(): void } | undefined;
+  let answerDelivered = false;
   try {
     try { await requireConsoleAgentUse(name,stableMember.id,deps); }
     catch { return refuse(403,"Conversation access is unavailable. Start a new conversation after access has been granted."); }
@@ -377,6 +441,22 @@ export async function forwardChat(request: Request, name: string, path: string, 
     const purpose = isStream || request.method === "GET" ? "read" : CONTROL.test(path) ? "control" : answer ? "resolver" : "human";
     if (modelPurposeSigningConfigured() && body?.length && (purpose === "human" || purpose === "resolver") && !sessionId) {
       return refuse(409, "Create the conversation before sending a private message.");
+    }
+    // An answer goes on only to a card that still waits for one, and only once (see
+    // `cardStillWaiting` and `claimAnswer` above). Before anything is signed or sent: a refused
+    // answer asks for no model authority and opens nothing on the agent.
+    if (answer && sessionId) {
+      let waiting: boolean;
+      try {
+        waiting = await cardStillWaiting(deps, { interactionId: answer.interactionId, agent: name, sessionId, memberId: stableMember.id });
+      } catch {
+        return refuse(503, ANSWER_UNCHECKED);
+      }
+      if (!waiting) return refuse(409, ANSWER_NOT_USED);
+      const claim = claimAnswer(JSON.stringify([name, rows[0]!.incarnation, sessionId, stableMember.id, answer.interactionId]), Date.now());
+      if (claim === "taken") return refuse(409, ANSWER_NOT_USED);
+      if (claim === "full") return refuse(503, ANSWER_UNCHECKED);
+      answerClaim = claim;
     }
     const headers = new Headers();
     for (const key of REQUEST_HEADERS) {
@@ -443,9 +523,9 @@ export async function forwardChat(request: Request, name: string, path: string, 
       };
       try {
         headers.set(MODEL_PURPOSE_REQUIRED_HEADER, "1");
-        // The keeper issues the challenge this signs. Until its own check of a resume says
-        // "deny" too, it refuses the challenge for a denied card, and this request ends in the
-        // refusal just below: nothing is forwarded, and nothing is approved.
+        // The keeper issues the challenge this signs. It checks the conversation's binding and the
+        // agent's definition, not whether the card still waits: that is checked above, before this.
+        // A failure here ends in the refusal just below: nothing is forwarded, nothing is approved.
         headers.set(PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER, await signPrivateModelPurposeRequest(modelRequest));
       } catch {
         return refuse(503, "Private model authorization is unavailable.");
@@ -468,6 +548,8 @@ export async function forwardChat(request: Request, name: string, path: string, 
       // own words, and marked so the page can say the agent is not running.
       return refuse(502, "The agent did not answer.", !request.signal.aborted);
     }
+    // Taken by the agent: the card's claim stays. Refused: it is dropped (below) and may be sent again.
+    answerDelivered = upstream.ok;
 
     const out = new Headers({ "cache-control": "no-store" });
     for (const key of RESPONSE_HEADERS) {
@@ -490,5 +572,7 @@ export async function forwardChat(request: Request, name: string, path: string, 
     // request line carries the credential.
     if (error instanceof RangeError) return refuse(413, "Body too large");
     return refuse(502, "The agent did not answer.");
+  } finally {
+    if (!answerDelivered) answerClaim?.release();
   }
 }

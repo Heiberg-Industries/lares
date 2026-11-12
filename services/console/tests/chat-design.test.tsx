@@ -524,6 +524,43 @@ it("a refused answer is said in the console's own words: the proxy's sentence, n
   expect(screen.queryByText(/Text an agent wrote/)).toBeNull();
 });
 
+it.each([
+  ["a card that no longer waits", 409, "This request is no longer waiting, so this answer was not used."],
+  ["a card the console could not check just now", 503, "I could not check that request just now. Nothing was done. Try again in a moment."],
+])("an answer refused for %s: one plain sentence, and the conversation stays open", async (_name, status, sentence) => {
+  withConversation(waitingCard());
+  // The proxy refuses it before the agent. The framework's client throws, and reports the same
+  // refusal as the conversation's error.
+  const refusal = () => new ClientError(status, sentence, { "content-type": "text/plain", "x-lares-console-refusal": "1" });
+  mock.respond.mockImplementationOnce(async () => { mock.error = refusal(); throw mock.error; });
+  const view = render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+  view.rerender(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  const alerts = await screen.findAllByRole("alert");
+  expect(alerts.map((alert) => alert.textContent)).toEqual([sentence]);
+  expect(screen.queryByText(/conversation is unavailable|did not reach the agent|Start a new conversation|Nothing was sent/)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Start a new conversation" })).toBeNull();
+  // Still a conversation: the member's next ordinary message goes to the agent.
+  const box = screen.getByRole("textbox", { name: "Message Agent One" }) as HTMLTextAreaElement;
+  expect(box.disabled).toBe(false);
+  await userEvent.type(box, "What happened?");
+  await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(mock.send).toHaveBeenCalledOnce());
+  expect(JSON.stringify(mock.send.mock.calls[0])).toContain("What happened?");
+  // The same words WITHOUT the proxy's mark are an agent's, and stay a failure as before.
+  cleanup();
+  mock.error = new ClientError(status, sentence, { "content-type": "text/plain" });
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toContain("This conversation is unavailable. Start a new conversation.");
+});
+
+it("any other refusal of an answer by the console still marks the conversation failed", async () => {
+  withConversation(waitingCard());
+  mock.error = new ClientError(503, "Private model authorization is unavailable.", { "content-type": "text/plain", "x-lares-console-refusal": "1" });
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toContain("This conversation is unavailable. Start a new conversation.");
+});
+
 it("a card in a conversation that has failed for any reason cannot be answered from it", async () => {
   withConversation(waitingCard());
   // Not an ending: an ordinary refusal. The conversation is unavailable all the same.
