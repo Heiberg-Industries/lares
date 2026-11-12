@@ -10,7 +10,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
-import { forwardChat, CHAT_PATHS, MEMBER_HEADER, ROUTE_USERNAME, type ChatDeps } from "../lib/chat-proxy";
+import { forwardChat, CHAT_PATHS, MEMBER_HEADER, ROUTE_USERNAME, resetAnswerClaimsForTests, type ChatDeps } from "../lib/chat-proxy";
 import { chatSessionCapabilityCookie } from "../lib/chat-session-capability";
 
 /**
@@ -26,6 +26,8 @@ vi.mock('@lares/agent-kit/private-console-envelope',async importOriginal=>{
   return {...real,assertPrivateConsoleEnvelope:(payload:unknown,path:string)=>{envelope.seen.push({payload,path});(envelope.check??real.assertPrivateConsoleEnvelope)(payload,path);}};
 });
 beforeEach(()=>{envelope.check=undefined;envelope.seen.length=0;});
+// Each test starts with no card claimed by an earlier test's answer (`claimAnswer` in the proxy).
+beforeEach(()=>resetAnswerClaimsForTests());
 
 const access=vi.hoisted(()=>({captureUse:vi.fn(async()=>1)}));
 const modelPurpose=vi.hoisted(()=>({configured:vi.fn(()=>false),sign:vi.fn(async()=>"signed-model-capsule"),hashed:[] as Uint8Array[]}));
@@ -63,6 +65,8 @@ const deps = (
     if (sql.includes("AS organisation_id FROM users"))return {rows:[{organisation_id:"org"}]};
     if (sql.includes("FROM users WHERE"))return {rows:[{id:values[0],org_id:"org",org_role:"owner",status:"active",automation_mode:"draft-and-ask"}]};
     if (sql.includes("FROM orgs WHERE"))return {rows:[{id:"org"}]};
+    // A card still waiting for its answer, unless a test says otherwise.
+    if (sql.includes("FROM approval_asks")) return {rows:[{outcome:null,used_at:null}]};
     if (sql.includes("console_session_bindings")) return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:values[3],admission_nonce:values[4] ?? "a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:2,agent_access_revision:1,private_surface_revision:2,source_history_guard_revision:1}]};
     return {rows:value ? [value as Record<string,unknown>] : []};
   }),
@@ -779,6 +783,8 @@ describe("an answer to a card", () => {
   it("names the card by its interaction id in the model-resume capsule, with the same decision the body carries", async () => {
     modelPurpose.configured.mockReturnValue(true);
     for (const [optionId, capsuleOption] of [["approve", "approve"], ["deny", "deny"]] as const) {
+      // Two separate cards that share an id; the proxy would otherwise take the second for a repeat.
+      resetAnswerClaimsForTests();
       modelPurpose.sign.mockClear();
       const d = deps();
       expect((await forwardChat(answer({ answers: [{ interactionId: "int_A", optionId }] }), "helper", PATH, d)).status).toBe(200);
@@ -900,6 +906,152 @@ describe("an answer to a card", () => {
     // The model capsule is asked for with a hash made over the outgoing bytes (the hash function
     // is stubbed here; what matters is which bytes it was given).
     expect(modelPurpose.hashed.map((bytes) => Buffer.from(bytes).toString("utf8"))).toEqual(['{"message":"spaced out"}']);
+  });
+});
+
+/**
+ * A second answer to a card that is already settled: a double click, a second tab, an old tab, or
+ * a request sent again. eve turns an answer to a card that is no longer waiting into a new
+ * message and opens a new turn under the answer's identity, which the agent then refuses, and the
+ * page shows a dead conversation. The console refuses it first, from the card's own record
+ * (`approval_asks`, which the agent writes when it takes and settles an answer).
+ */
+describe("a second answer to a card that is already settled", () => {
+  const PATH = "eve/v1/session/wrun_A";
+  const NOT_WAITING = "This request is no longer waiting. Nothing was sent.";
+  const answer = (optionId: "approve" | "deny" = "approve", interactionId = "int_A") =>
+    new Request(`https://console.example.invalid/api/chat/helper/${PATH}`, {
+      method: "POST",
+      body: JSON.stringify({ answers: [{ interactionId, optionId }] }),
+      headers: { "content-type": "application/json", cookie: `lares_session=abc; ${capability()}` },
+    });
+  type Card = { outcome: string | null; used_at: Date | null };
+  /** The card's record as the agent keeps it, found only by its own coordinates. By default the
+   *  agent takes an answer and settles the card, as its response policy does. */
+  const recorded = (initial: Card | null = { outcome: null, used_at: null }) => {
+    const d = deps();
+    const card = { current: initial, asked: [] as unknown[][] };
+    const query = d.query.getMockImplementation()!;
+    d.query.mockImplementation(async (sql, values) => {
+      if (!sql.includes("FROM approval_asks")) return query(sql, values);
+      card.asked.push(values);
+      const mine = values.join("|") === ["int_A", "helper", "wrun_A", "Owner-ID"].join("|");
+      return { rows: mine && card.current ? [card.current] : [] };
+    });
+    d.fetch.mockImplementation(async () => {
+      card.current = { outcome: "approved", used_at: null };
+      return new Response('{"ok":true,"status":"accepted"}', { status: 202, headers: { "content-type": "application/json" } });
+    });
+    return { d, card };
+  };
+
+  it.each([["approve", "approve"], ["approve", "deny"], ["deny", "approve"], ["deny", "deny"]] as const)(
+    "%s, then %s: the first goes on as today; the second is refused before the agent, in one sentence",
+    async (first, second) => {
+      modelPurpose.configured.mockReturnValue(true);
+      const { d } = recorded();
+      expect((await forwardChat(answer(first), "helper", PATH, d)).status).toBe(202);
+      expect(d.fetch).toHaveBeenCalledOnce();
+      expect(modelPurpose.sign).toHaveBeenCalledOnce();
+      const again = await forwardChat(answer(second), "helper", PATH, d);
+      expect(again.status).toBe(409);
+      expect(await again.text()).toBe(NOT_WAITING);
+      expect(again.headers.get("x-lares-console-refusal")).toBe("1");
+      // Nothing reached the agent, and no model or budget authority was asked for it.
+      expect(d.fetch).toHaveBeenCalledOnce();
+      expect(modelPurpose.sign).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["approved", { outcome: "approved", used_at: null }],
+    ["approved and carried out", { outcome: "approved", used_at: new Date() }],
+    ["denied", { outcome: "cancelled", used_at: null }],
+    ["closed with nobody deciding", { outcome: "ignored", used_at: null }],
+    ["refused as invalid", { outcome: "invalid", used_at: null }],
+    ["expired", { outcome: "expired", used_at: null }],
+    ["changed after it was asked", { outcome: "payload-changed", used_at: null }],
+  ])("a card recorded as %s takes no answer: nothing is signed or sent", async (_name, settled) => {
+    modelPurpose.configured.mockReturnValue(true);
+    for (const optionId of ["approve", "deny"] as const) {
+      const { d } = recorded(settled);
+      const response = await forwardChat(answer(optionId), "helper", PATH, d);
+      expect(response.status, optionId).toBe(409);
+      expect(await response.text()).toBe(NOT_WAITING);
+      expect(d.fetch).not.toHaveBeenCalled();
+    }
+    expect(modelPurpose.sign).not.toHaveBeenCalled();
+  });
+
+  it("looks the card up by its own coordinates: this agent, this conversation, this member", async () => {
+    const { d, card } = recorded();
+    expect((await forwardChat(answer(), "helper", PATH, d)).status).toBe(202);
+    expect(card.asked).toEqual([["int_A", "helper", "wrun_A", "Owner-ID"]]);
+  });
+
+  it("fails closed: a card with no record of its own, or a record that cannot be read, is not answered", async () => {
+    const unknown = recorded(null);
+    const response = await forwardChat(answer(), "helper", PATH, unknown.d);
+    expect(response.status).toBe(409);
+    expect(await response.text()).toBe(NOT_WAITING);
+    // Another conversation's card of the same id is not this one.
+    const elsewhere = recorded();
+    expect((await forwardChat(answer("approve", "int_B"), "helper", PATH, elsewhere.d)).status).toBe(409);
+    const unreadable = recorded();
+    const query = unreadable.d.query.getMockImplementation()!;
+    unreadable.d.query.mockImplementation(async (sql, values) => {
+      if (sql.includes("FROM approval_asks")) throw new Error("database unavailable");
+      return query(sql, values);
+    });
+    const failed = await forwardChat(answer(), "helper", PATH, unreadable.d);
+    expect(failed.status).toBe(503);
+    expect(await failed.text()).toBe("The answer could not be checked, so it was not sent. Try again in a moment.");
+    for (const d of [unknown.d, elsewhere.d, unreadable.d]) expect(d.fetch).not.toHaveBeenCalled();
+    expect(modelPurpose.sign).not.toHaveBeenCalled();
+  });
+
+  it("a double click: two answers at the same moment, before the agent has settled the card — exactly one goes on", async () => {
+    const { d, card } = recorded();
+    let accept!: () => void;
+    d.fetch.mockImplementation(() => new Promise<Response>((resolve) => {
+      // The agent takes the delivery at once and settles the card on its next step, after both
+      // requests have read the record as still waiting.
+      accept = () => resolve(new Response('{"ok":true}', { status: 202, headers: { "content-type": "application/json" } }));
+    }));
+    const both = [forwardChat(answer("approve"), "helper", PATH, d), forwardChat(answer("approve"), "helper", PATH, d)];
+    await vi.waitFor(() => expect(d.fetch).toHaveBeenCalled());
+    accept();
+    const statuses = (await Promise.all(both)).map((response) => response.status).sort();
+    expect(statuses).toEqual([202, 409]);
+    expect(d.fetch).toHaveBeenCalledOnce();
+    // Still nothing more once the record says waiting no longer... and before it does.
+    expect(card.current).toEqual({ outcome: null, used_at: null });
+    expect((await forwardChat(answer("deny"), "helper", PATH, d)).status).toBe(409);
+    expect(d.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("an answer that never reached the agent may be sent again", async () => {
+    for (const lost of [
+      async () => { throw new TypeError("connection refused"); },
+      async () => new Response('{"ok":false,"code":"session_not_ready"}', { status: 409, headers: { "content-type": "application/json" } }),
+      async () => new Response("", { status: 401 }),
+    ]) {
+      resetAnswerClaimsForTests();
+      const { d } = recorded();
+      d.fetch.mockImplementationOnce(lost);
+      expect((await forwardChat(answer(), "helper", PATH, d)).ok).toBe(false);
+      expect((await forwardChat(answer(), "helper", PATH, d)).status).toBe(202);
+      expect(d.fetch).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it("a message is not an answer: it reads no card record", async () => {
+    const { d, card } = recorded();
+    const message = new Request(`https://console.example.invalid/api/chat/helper/${PATH}`, {
+      method: "POST", body: '{"message":"hello"}', headers: { cookie: `lares_session=abc; ${capability()}` },
+    });
+    expect((await forwardChat(message, "helper", PATH, d)).status).toBe(202);
+    expect(card.asked).toEqual([]);
   });
 });
 

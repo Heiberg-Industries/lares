@@ -57,6 +57,15 @@ export function saveChatSession(
  */
 export const CONSOLE_REFUSAL_HEADER = "x-lares-console-refusal";
 
+/**
+ * What a person is told when an answer names a card that is no longer waiting for one: it was
+ * already approved or denied, it expired, or it closed with nobody deciding. The chat proxy refuses
+ * such an answer before it reaches the agent (`lib/chat-proxy.ts`), and the chat page shows this
+ * sentence alone, with the conversation still open. The Waiting page says the same
+ * (`lib/waiting.ts`).
+ */
+export const ANSWER_NOT_WAITING = "This request is no longer waiting. Nothing was sent.";
+
 /** Why a conversation can take no more messages: an update ended it, or it ended some other way. */
 export type EndedConversation = "update" | "ended";
 

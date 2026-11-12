@@ -465,6 +465,28 @@ it("a refused answer is said in the console's own words: the proxy's sentence, n
   expect(screen.queryByText(/Text an agent wrote/)).toBeNull();
 });
 
+it("an answer to a card that no longer waits: one plain sentence, and the conversation stays open", async () => {
+  withConversation(waitingCard());
+  // The proxy refuses it before the agent (a second tab, an old tab). The framework's client throws,
+  // and reports the same refusal as the conversation's error.
+  const notWaiting = () => new ClientError(409, "This request is no longer waiting. Nothing was sent.", { "content-type": "text/plain", "x-lares-console-refusal": "1" });
+  mock.respond.mockImplementationOnce(async () => { mock.error = notWaiting(); throw mock.error; });
+  const view = render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+  view.rerender(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  const alerts = await screen.findAllByRole("alert");
+  expect(alerts.map((alert) => alert.textContent)).toEqual(["This request is no longer waiting. Nothing was sent."]);
+  expect(screen.queryByText(/conversation is unavailable|did not reach the agent|Start a new conversation/)).toBeNull();
+  // Still a conversation: the member can write in it.
+  expect((screen.getByRole("textbox", { name: "Message Agent One" }) as HTMLTextAreaElement).disabled).toBe(false);
+  expect(screen.queryByRole("button", { name: "Start a new conversation" })).toBeNull();
+  // The same words WITHOUT the proxy's mark are an agent's, and stay a failure as before.
+  cleanup();
+  mock.error = new ClientError(409, "This request is no longer waiting. Nothing was sent.", { "content-type": "text/plain" });
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toContain("This conversation is unavailable. Start a new conversation.");
+});
+
 it("a card in a conversation that has failed for any reason cannot be answered from it", async () => {
   withConversation(waitingCard());
   // Not an ending: an ordinary refusal. The conversation is unavailable all the same.
