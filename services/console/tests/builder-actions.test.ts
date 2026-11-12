@@ -13,7 +13,7 @@ it('verifies every mutation before keeper access',async()=>{
 });
 it('preserves backup and pending results and authenticated actor',async()=>{
  const result=await saveDefinition(input);
- expect(mocks.keeper).toHaveBeenCalledWith('definition.save',input,'owner@example.test');
+ expect(mocks.keeper).toHaveBeenCalledWith('definition.save',input,'owner@example.test',{timeoutMs:90_000});
  expect(JSON.parse(JSON.stringify(result))).toMatchObject({ok:true,result:{backup:{ok:false},runtime:{pending:true}}});
 });
 it('waits for slow first-agent lifecycle work before reporting an unknown outcome',async()=>{
@@ -45,6 +45,13 @@ it('serializes validation findings across the production server-action boundary'
  mocks.keeper.mockRejectedValue(new KeeperRefusedError('Skill requires a removed grant',[{check:'skills-within-grants',message:'A skill can never widen access'}]));
  const result=JSON.parse(JSON.stringify(await saveDefinition(input)));
  expect(result).toEqual({ok:false,error:{message:'Skill requires a removed grant',findings:[{check:'skills-within-grants',message:'A skill can never widen access'}],outcomeMayBeUnknown:false}});
+});
+
+it('gives a door switch the same wait as Apply, since it can stop the agent until Apply',async()=>{
+ mocks.keeper.mockResolvedValueOnce({definition:JSON.stringify({doors:[],channels:[]}),duties:'',voice:''});
+ await setDoorEnabled('example','telegram',true);
+ expect(mocks.keeper).toHaveBeenNthCalledWith(1,'definition.get',{name:'example'},'owner@example.test');
+ expect(mocks.keeper).toHaveBeenNthCalledWith(2,'definition.save',expect.objectContaining({name:'example'}),'owner@example.test',{timeoutMs:90_000});
 });
 
 it('tells the owner why a door cannot be turned on without its credentials, and that nothing changed',async()=>{

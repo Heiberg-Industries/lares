@@ -36,6 +36,7 @@ import {
   retireAgent,
   deleteAgent,
   applyConnections,
+  agentRuntime,
 } from "../app/actions/definition";
 import { ConversationControl } from "./ConversationControl";
 import { AutonomyControl } from "./AutonomyControl";
@@ -899,6 +900,12 @@ export function DefinitionForm(p: DefinitionFormProps) {
           onDefinitionChanged={(next) => {
             setHash(next);
             setUncertain(true);
+          }}
+          onRuntimeChanged={() => {
+            // Re-read, never assume: an unreadable state shows as unavailable rather than as the old "Running".
+            void agentRuntime(p.initial!.definition.name)
+              .then((read) => setRuntime(read.ok ? read.result : undefined))
+              .catch(() => setRuntime(undefined));
           }}
         />
       )}

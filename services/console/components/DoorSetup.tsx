@@ -11,7 +11,9 @@ export interface ConnectStep {kind:'slack'|'telegram';code:string;expiresAt:stri
 const SUPPORTED:Record<string,('slack'|'telegram')[]>={creative:['slack'],'chief-of-staff':['slack','telegram']};
 const LABEL:Record<string,string>={slack:'Slack',telegram:'Telegram'};
 const POLL_MS=3000;
-export function DoorSetup(p:{name:string;display:string;role:string;origin:string;hash:string;onDefinitionChanged?:(hash:string)=>void}) {
+export function DoorSetup(p:{name:string;display:string;role:string;origin:string;hash:string;onDefinitionChanged?:(hash:string)=>void;
+ /** Called after every door action, whether it worked or not: a door change can stop or start the agent. */
+ onRuntimeChanged?:()=>void}) {
  const [rows,setRows]=useState<DoorStatus[]>([]),[progress,setProgress]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState(''),[unknown,setUnknown]=useState(false),[connect,setConnect]=useState<ConnectStep|null>(null);
  const [tokens,setTokens]=useState<Record<string,string>>({}),[signing,setSigning]=useState('');
  const busy=Boolean(progress);
@@ -21,7 +23,7 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
  const reload=()=>{if(typeof window!=='undefined')window.location.reload();};
  useEffect(()=>{void refresh().catch(e=>setError(e.message));},[p.name]);
  useEffect(()=>{latestHash.current=p.hash;},[p.hash]);
- async function run(fn:()=>Promise<void>){setProgress('Working…');setError('');setMessage('');try{await fn();}catch(e){setError(e instanceof Error?e.message:'Door operation failed.');setUnknown(previous=>previous||!(e instanceof Error&&'unknown'in e&&e.unknown===false));}finally{setProgress('');try{await refresh();}catch{}}}
+ async function run(fn:()=>Promise<void>){setProgress('Working…');setError('');setMessage('');try{await fn();}catch(e){setError(e instanceof Error?e.message:'Door operation failed.');setUnknown(previous=>previous||!(e instanceof Error&&'unknown'in e&&e.unknown===false));}finally{setProgress('');try{await refresh();}catch{}p.onRuntimeChanged?.();}}
  /** Applies whatever is waiting, then reloads the page so every part of it shows the new state. */
  async function applyAndReload(label:string){setProgress(label);unwrap(await applyConnections({name:p.name,hash:latestHash.current}));reload();}
  // After the one-time step is shown: watch for the owner to arrive, then apply the claim by itself.
