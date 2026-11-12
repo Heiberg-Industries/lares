@@ -42,7 +42,7 @@ import type { Member } from "@lares/agent-kit/authority-contract";
  */
 import { isIP } from "node:net";
 import { chatSessionCapabilityCookie, hasChatSessionCapability, validChatSessionId } from "./chat-session-capability";
-import { ANSWER_NOT_WAITING, CONSOLE_REFUSAL_HEADER } from "./chat-session";
+import { ANSWER_NOT_USED, ANSWER_UNCHECKED, CONSOLE_REFUSAL_HEADER } from "./chat-session";
 import { createHash } from "node:crypto";
 import { AGENT_STATE_HEADER, AGENT_NOT_RUNNING } from "./agent-reachability";
 import { signPrivateVaultRequest, PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER } from "./vault-capsule";
@@ -248,11 +248,15 @@ export interface ChatDeps {
  * a refusal), so a person may try again; otherwise it lasts `ANSWER_CLAIM_MS`, long after the
  * record has caught up. The claim is no record of answers: it decides nothing on its own beside
  * the record, and it is lost on a restart, after which the record alone decides.
+ *
+ * Two known limits. The console runs as one process today; with two, each would keep its own
+ * claims, and only the agent's own checks would stop a double action. And an answer the agent
+ * takes at once but refuses a step later (its response policy) leaves the card waiting while the
+ * claim lasts: this console cannot see that refusal, which happens after the agent's reply.
  */
 const ANSWER_CLAIM_MS = 10 * 60_000;
 const ANSWER_CLAIMS_MAX = 4096;
 const answerClaims = new Map<string, number>();
-const ANSWER_UNCHECKED = "The answer could not be checked, so it was not sent. Try again in a moment.";
 
 /** Test-only: forget every claim. */
 export function resetAnswerClaimsForTests(): void {
@@ -448,9 +452,9 @@ export async function forwardChat(request: Request, name: string, path: string, 
       } catch {
         return refuse(503, ANSWER_UNCHECKED);
       }
-      if (!waiting) return refuse(409, ANSWER_NOT_WAITING);
+      if (!waiting) return refuse(409, ANSWER_NOT_USED);
       const claim = claimAnswer(JSON.stringify([name, rows[0]!.incarnation, sessionId, stableMember.id, answer.interactionId]), Date.now());
-      if (claim === "taken") return refuse(409, ANSWER_NOT_WAITING);
+      if (claim === "taken") return refuse(409, ANSWER_NOT_USED);
       if (claim === "full") return refuse(503, ANSWER_UNCHECKED);
       answerClaim = claim;
     }

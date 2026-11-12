@@ -27,7 +27,8 @@ import {
 import { agentNotRunning, notRunningSay } from "../lib/agent-reachability";
 import { limitReplyOf } from "../lib/limit-reply";
 import {
-  ANSWER_NOT_WAITING,
+  ANSWER_NOT_USED,
+  ANSWER_UNCHECKED,
   chatSessionKey,
   CONSOLE_REFUSAL_HEADER,
   ENDED_SAY,
@@ -56,6 +57,11 @@ function proxySentence(error: unknown): string | null {
   const type = headers["content-type"];
   if (typeof body !== "string" || typeof type !== "string" || !type.startsWith("text/plain")) return null;
   return body.length > 0 && body.length <= 200 ? body : null;
+}
+
+/** The proxy's two refusals of an answer that leave the conversation open (see `hasError`). */
+function answerKeptOpen(sentence: string | null): sentence is string {
+  return sentence === ANSWER_NOT_USED || sentence === ANSWER_UNCHECKED;
 }
 
 /**
@@ -169,11 +175,12 @@ function ChatSession({
       if (storage && !failed.current) saveChatSession(storage, storageKey, session);
     },
   });
-  // The framework's client reports every refused answer as the conversation's error. One refusal
-  // is not a fault of the conversation: the proxy's own "no longer waiting" for a card that was
-  // already answered (a double click, a second tab). That sentence is shown, and the conversation
-  // stays open.
-  const hasError = agent.error !== undefined && proxySentence(agent.error) !== ANSWER_NOT_WAITING;
+  // The framework's client reports every refused answer as the conversation's error. Two refusals
+  // are not a fault of the conversation, and both are the proxy's own, sent before anything reached
+  // the agent: an answer to a card that no longer waits (a double click, a second tab), and an
+  // answer it could not check just now. Their sentence is shown, and the conversation stays open.
+  // Every other failure still counts as one.
+  const hasError = agent.error !== undefined && !answerKeptOpen(proxySentence(agent.error));
   // Set when an answer was refused because the conversation is over; `agent.error` says the same
   // for a message, and for a saved conversation that cannot be reopened.
   const [endedByAnswer, setEndedByAnswer] = useState<EndedConversation | null>(null);
@@ -302,8 +309,8 @@ function ChatSession({
         // to know is that nothing happened and the card is still there. Only a sentence this
         // console's own proxy wrote is repeated.
         const why = proxySentence(error);
-        // A card that no longer waits: its own sentence says all of it.
-        setAnswerError(why === ANSWER_NOT_WAITING ? why : `Your answer did not reach the agent, so nothing has been done${why === null ? "." : `: ${why}`}`);
+        // A card that no longer waits, or one that could not be checked: its own sentence says all of it.
+        setAnswerError(answerKeptOpen(why) ? why : `Your answer did not reach the agent, so nothing has been done${why === null ? "." : `: ${why}`}`);
       })
       .finally(() => setAnswering(null));
   };

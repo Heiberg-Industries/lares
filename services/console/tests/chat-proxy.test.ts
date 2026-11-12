@@ -918,7 +918,7 @@ describe("an answer to a card", () => {
  */
 describe("a second answer to a card that is already settled", () => {
   const PATH = "eve/v1/session/wrun_A";
-  const NOT_WAITING = "This request is no longer waiting. Nothing was sent.";
+  const NOT_WAITING = "This request is no longer waiting, so this answer was not used.";
   const answer = (optionId: "approve" | "deny" = "approve", interactionId = "int_A") =>
     new Request(`https://console.example.invalid/api/chat/helper/${PATH}`, {
       method: "POST",
@@ -1005,7 +1005,7 @@ describe("a second answer to a card that is already settled", () => {
     });
     const failed = await forwardChat(answer(), "helper", PATH, unreadable.d);
     expect(failed.status).toBe(503);
-    expect(await failed.text()).toBe("The answer could not be checked, so it was not sent. Try again in a moment.");
+    expect(await failed.text()).toBe("I could not check that request just now. Nothing was done. Try again in a moment.");
     for (const d of [unknown.d, elsewhere.d, unreadable.d]) expect(d.fetch).not.toHaveBeenCalled();
     expect(modelPurpose.sign).not.toHaveBeenCalled();
   });
@@ -1043,6 +1043,19 @@ describe("a second answer to a card that is already settled", () => {
       expect((await forwardChat(answer(), "helper", PATH, d)).status).toBe(202);
       expect(d.fetch).toHaveBeenCalledTimes(2);
     }
+  });
+
+  it("after a refused second answer, the person's next message in the same conversation goes on", async () => {
+    const { d } = recorded();
+    expect((await forwardChat(answer(), "helper", PATH, d)).status).toBe(202);
+    expect((await forwardChat(answer(), "helper", PATH, d)).status).toBe(409);
+    const message = new Request(`https://console.example.invalid/api/chat/helper/${PATH}`, {
+      method: "POST", body: '{"message":"what happened?"}', headers: { cookie: `lares_session=abc; ${capability()}` },
+    });
+    expect((await forwardChat(message, "helper", PATH, d)).status).toBe(202);
+    expect(d.fetch).toHaveBeenCalledTimes(2);
+    expect(Buffer.from(d.fetch.mock.calls[1]![1]!.body as Uint8Array).toString("utf8")).toBe('{"message":"what happened?"}');
+    expect((d.fetch.mock.calls[1]![1]!.headers as Headers).get("x-lares-purpose")).toBe("human");
   });
 
   it("a message is not an answer: it reads no card record", async () => {

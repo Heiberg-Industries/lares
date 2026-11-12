@@ -90,8 +90,8 @@ to a card that is already settled (`cardStillWaiting` and `claimAnswer` in
 What changed:
 
 - **Failure 2 is gone.** The script's repeated answers to the spent send card (approve, deny, and
-  approve again after a second cold restart) are now refused by the console before the agent,
-  with "This request is no longer waiting. Nothing was sent." The proof checks that each one gets
+  approve again after a second cold restart) are now refused by the console before the agent (this run used an earlier wording of the sentence; it was changed afterwards and the lane was not run again),
+  with "This request is no longer waiting, so this answer was not used." The proof checks that each one gets
   that sentence, reaches neither the agent nor the model, and sends nothing. No new turn opens, so
   the budget recorder is never asked. Before this change the script expected those answers to be
   accepted. The run now reaches the same check as the runs without the budget recorder.

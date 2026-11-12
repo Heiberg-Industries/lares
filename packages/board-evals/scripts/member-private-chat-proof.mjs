@@ -459,7 +459,7 @@ try{
       const upstream=upstreamCalls,calls=models(app).length;
       const response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{answers:[{interactionId:row.request_id,optionId:option}]},session.cookie);
       assert.equal(response.status,409,'A repeated answer reached the agent: '+response.status+' '+await response.clone().text());
-      assert.equal(await response.text(),'This request is no longer waiting. Nothing was sent.');
+      assert.equal(await response.text(),'This request is no longer waiting, so this answer was not used.');
       assert.equal(upstreamCalls,upstream,'A repeated answer reached the agent');assert.equal(models(app).length,calls,'A repeated answer reached the model');
     }
     sendProof={proposal,sendCount};
