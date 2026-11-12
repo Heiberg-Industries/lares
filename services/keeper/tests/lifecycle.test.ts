@@ -62,6 +62,21 @@ it('credential reconciliation preserves applied definitions, grants, unrelated b
  await expect(l.reconcileCredential('bookkeeper',null)).rejects.toBeInstanceOf(AgentNotHealthyError);
  start.mockRestore();
 });
+it('applies a save at once when nothing in it needs a restart, and never while a change waits for Apply',async()=>{
+ const l=lifecycle(); await l.create('bookkeeper',definition);
+ const applied=async()=>(await l.storage.row('bookkeeper')).applied_definition;
+ // Without a budget key the model name is read again for each conversation too, so it is live like the rest.
+ const edited={...definition,description:'Edited without a restart',model:'another-model'};
+ events=[];expect(await l.saved('bookkeeper',edited)).toEqual({pending:false,reason:null});
+ expect(events).not.toContain('stop:bookkeeper');expect(await applied()).toEqual(edited);
+ // A change waiting for Apply (here: a recovery that failed) keeps the applied definition, and so does every
+ // save after it until Apply runs: a waiting change never takes effect early.
+ await pool.query("UPDATE agent_resources SET pending=true,pending_reason='Apply connection changes (restarts agent)' WHERE name='bookkeeper'");
+ const later={...edited,description:'Saved while a change waits'};
+ expect(await l.saved('bookkeeper',later)).toEqual({pending:true,reason:'Apply connection changes (restarts agent)'});
+ expect(await applied()).toEqual(edited);
+ await l.reconcile('bookkeeper',later);expect(await applied()).toEqual(later);
+});
 it('mounts the managed key only into a granted chief of staff, only when a key revision exists, and never invents a binding',async()=>{
  const chief:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/chief-of-staff/agent.json'),'utf8')),name:'bookkeeper',role:'chief-of-staff',doors:[],grants:[]};
  const notion=join(root,'secrets/notion-token'); writeFileSync(notion,'synthetic-notion');
@@ -139,10 +154,14 @@ it('stages rendered native runtimes without a legacy key and checks current auth
   // The installation owner ruled that a change to a started agent applies from the console alone, with the
   // monthly limits, the model name and its prices as the protection. So this save no longer stops the agent:
   // the instructions are read again for each conversation, and the budget key still covers it.
-  events=[];await l.saved('bookkeeper',chief);
+  const described={...chief,description:'Edited after the start'};
+  await pool.query('UPDATE agent_definitions SET definition=$1::jsonb,hash=$2 WHERE name=$3',[JSON.stringify(described),hashOf({definition:definitionSchema.parse(described),dutiesMd:'Changed duties',voiceMd:voice}),'bookkeeper']);
+  events=[];await l.saved('bookkeeper',described);
   expect(heldSave.mock.calls).toEqual([]);
   expect(events).not.toContain('stop:bookkeeper');
   expect(await l.status('bookkeeper')).toEqual({pending:false,reason:null});
+  // Nothing in it needs a restart, so it is applied as it is saved.
+  expect((await l.storage.row('bookkeeper')).applied_definition).toEqual(described);
   // A change to the model name is different: a key pays per model name, so it waits for Apply, and until then the
   // agent is stopped and says why.
   const otherModel={...chief,model:'lares-other-model'};
@@ -151,6 +170,8 @@ it('stages rendered native runtimes without a legacy key and checks current auth
   expect(heldSave.mock.calls.map(call=>String(call[0]))).toEqual(['keeper: agent bookkeeper was stopped after a save: the saved change (doors, role, personal accounts or model) takes effect when Apply restarts it']);
   expect(events).toContain('stop:bookkeeper');
   expect(await l.status('bookkeeper')).toEqual({pending:true,reason:'Apply connection changes (restarts agent)'});
+  // The model change waits for Apply, so the applied definition is still the one that runs.
+  expect((await l.storage.row('bookkeeper')).applied_definition).toEqual(described);
  }finally{heldSave.mockRestore();}
  // Put the saved model back and apply it, so the checks below start from a running agent.
  await pool.query('UPDATE agent_definitions SET definition=$1::jsonb,hash=$2 WHERE name=$3',[JSON.stringify(chief),changedHash,'bookkeeper']);

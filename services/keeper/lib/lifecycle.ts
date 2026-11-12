@@ -788,7 +788,11 @@ export class AgentLifecycle {
             throw error;
         }
         const reason = pending ? 'Apply connection changes (restarts agent)' : null;
-        await this.pool.query('UPDATE agent_resources SET pending=$2,pending_reason=$3,updated_at=now() WHERE name=$1', [name, pending, reason]);
+        // A save that changes nothing needing a restart, on an agent with nothing waiting, is applied as it is
+        // saved: the code that reads the applied definition (approvals, outside tools, mail, routing) sees the edit
+        // now, as the running agent does. A change that waits for Apply leaves the applied definition alone.
+        if (pending) await this.pool.query('UPDATE agent_resources SET pending=$2,pending_reason=$3,updated_at=now() WHERE name=$1', [name, pending, reason]);
+        else await this.pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=false,pending_reason=NULL,updated_at=now() WHERE name=$1', [name, JSON.stringify(d)]);
         return { pending, reason: nativeState.state === 'held' ? nativeState.reason : reason };
     }
     async reconcile(name: string, d: AgentDefinition) {

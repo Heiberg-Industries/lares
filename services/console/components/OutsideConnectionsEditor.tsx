@@ -59,7 +59,10 @@ export function OutsideConnectionsEditor({ initial }: { initial: OutsideConnecti
       });
       if (!result.ok) { setMessage(result.message); return; }
       setState(result.result); setDraft(null); setEditing(null);
-      setMessage("Saved. The agent will use the saved connection settings after they are applied.");
+      // A save with nothing waiting is applied as it is saved; new conversations use it at once.
+      setMessage(result.result.applicationStatus === "applied"
+        ? "Saved. New conversations with this agent use these connection settings."
+        : "Saved. The agent will use the saved connection settings after they are applied.");
     } catch {
       setMessage("The change could not be confirmed. Refresh this page before trying again.");
     } finally { setBusy(false); }

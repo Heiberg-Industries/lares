@@ -71,7 +71,21 @@ describe("OutsideConnectionsEditor", () => {
       name: "bookkeeper", expectedDefinitionHash: initial.definitionHash, expectedAccessRevision: 2,
       connections: [expect.objectContaining({ name: "rates", tools: { allow: ["find_rate"], read: [] } })],
     })));
-    await waitFor(() => expect(screen.getByText(/Saved\./)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Saved. The agent will use the saved connection settings after they are applied.")).toBeTruthy());
+  });
+
+  it("says a save is in use at once when the keeper applied it as it was saved", async () => {
+    mocks.save.mockImplementationOnce(async input => ({ ok: true, result: { ...initial, ...input, applicationStatus: "applied",
+      appliedConnections: input.connections, definitionHash: "b".repeat(64), accessRevision: 3 } }));
+    render(<OutsideConnectionsEditor initial={initial} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add connection" }));
+    fireEvent.change(screen.getByLabelText("Connection name"), { target: { value: "rates" } });
+    fireEvent.change(screen.getByLabelText("Server address"), { target: { value: "https://tools.example.org/mcp" } });
+    fireEvent.change(screen.getByLabelText("What this server is for"), { target: { value: "Look up rates" } });
+    fireEvent.change(screen.getByLabelText(/Tools this agent may use/), { target: { value: "find_rate" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save connections" }));
+    await screen.findByText("Saved. New conversations with this agent use these connection settings.");
+    expect(screen.getByText("The last applied runtime definition matches these saved declarations.")).toBeTruthy();
   });
 
   it("supports editing and removing a declaration through the same saved lifecycle", async () => {
