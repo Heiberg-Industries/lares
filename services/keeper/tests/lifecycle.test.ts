@@ -102,8 +102,10 @@ it('stages rendered native runtimes without a legacy key and checks current auth
  const digest=hashOf({definition:definitionSchema.parse(chief),dutiesMd:duties,voiceMd:voice});
  await pool.query('UPDATE agent_definitions SET definition=$1::jsonb,duties=$2,voice=$3,hash=$4,status=$5 WHERE name=$6',[JSON.stringify(chief),duties,voice,digest,'valid','bookkeeper']);
  const keyPath=config.runtime.gatewayKeys.bookkeeper!;writeFileSync(keyPath,'synthetic-legacy-key');
- const provisioned:string[]=[];let allow=false,reads=0,acceptedHash=digest;
- const authority={current:async(identity:any)=>{reads++;expect(identity).toMatchObject({agent:'bookkeeper',purposeAlias:chief.model});return allow&&identity.definitionHash===acceptedHash?{state:'active' as const}:{state:'held' as const,reason:'Native budget activation required' as const};}};
+ const provisioned:string[]=[];let allow=false,reads=0;
+ // The key belongs to the agent, its incarnation and its model name: the identity carries no definition hash to accept.
+ const keyed=new Set([chief.model,'lares-keyed-model']);
+ const authority={current:async(identity:any)=>{reads++;expect(identity).toEqual({agent:'bookkeeper',incarnation:expect.any(String),purposeAlias:expect.any(String)});return allow&&keyed.has(identity.purposeAlias)?{state:'active' as const}:{state:'held' as const,reason:'Native budget activation required' as const};}};
  const l=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},docker,path=>{provisioned.push(path);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,authority);
  await l.create('bookkeeper',chief);
  const staged=await l.storage.row('bookkeeper');
@@ -134,12 +136,29 @@ it('stages rendered native runtimes without a legacy key and checks current auth
  await pool.query('UPDATE agent_definitions SET duties=$1,hash=$2 WHERE name=$3',['Changed duties',changedHash,'bookkeeper']);
  const heldSave=vi.spyOn(console,'error').mockImplementation(()=>{});
  try{
+  // The installation owner ruled that a change to a started agent applies from the console alone, with the
+  // monthly limits, the model name and its prices as the protection. So this save no longer stops the agent:
+  // the instructions are read again for each conversation, and the budget key still covers it.
   events=[];await l.saved('bookkeeper',chief);
-  // The stop is by design of the budget activation; the keeper's log now says that it happened and why.
-  expect(heldSave.mock.calls.map(call=>String(call[0]))).toEqual(['keeper: agent bookkeeper was stopped after a save: its budget activation does not cover the saved definition']);
+  expect(heldSave.mock.calls).toEqual([]);
+  expect(events).not.toContain('stop:bookkeeper');
+  expect(await l.status('bookkeeper')).toEqual({pending:false,reason:null});
+  // A change to the model name is different: a key pays per model name, so it waits for Apply, and until then the
+  // agent is stopped and says why.
+  const otherModel={...chief,model:'lares-other-model'};
+  await pool.query('UPDATE agent_definitions SET definition=$1::jsonb,hash=$2 WHERE name=$3',[JSON.stringify(otherModel),hashOf({definition:definitionSchema.parse(otherModel),dutiesMd:'Changed duties',voiceMd:voice}),'bookkeeper']);
+  events=[];await l.saved('bookkeeper',otherModel);
+  expect(heldSave.mock.calls.map(call=>String(call[0]))).toEqual(['keeper: agent bookkeeper was stopped after a save: the saved change (doors, role, personal accounts or model) takes effect when Apply restarts it']);
+  expect(events).toContain('stop:bookkeeper');
+  expect(await l.status('bookkeeper')).toEqual({pending:true,reason:'Apply connection changes (restarts agent)'});
  }finally{heldSave.mockRestore();}
- expect(events).toContain('stop:bookkeeper');
- expect(await l.status('bookkeeper')).toEqual({pending:false,reason:'Native budget activation required'});
+ // Put the saved model back and apply it, so the checks below start from a running agent.
+ await pool.query('UPDATE agent_definitions SET definition=$1::jsonb,hash=$2 WHERE name=$3',[JSON.stringify(chief),changedHash,'bookkeeper']);
+ events=[];await l.reconcile('bookkeeper',chief);expect(events).toContain('start:bookkeeper');
+ expect(await l.status('bookkeeper')).toEqual({pending:false,reason:null});
+ // Before a model change is stored, a started agent must already hold a working key for the new name.
+ await expect(l.prepare('bookkeeper',{...chief,model:'lares-no-key'},false)).rejects.toThrow('This agent has no working spending key for the model name lares-no-key, so its model was not changed.');
+ await expect(l.prepare('bookkeeper',{...chief,model:'lares-keyed-model'},false)).resolves.toBeUndefined();
  const observedDocker:DockerBoundary={...docker,inspect:async()=>({id:'container',running:true,incarnation:'11111111-1111-4111-8111-111111111111',notionRevision:null,image,mounts:[],addresses:[]}),healthy:async()=>true};
  const heldAuthority={current:async()=>({state:'held' as const,reason:'Native budget activation required' as const})};
  const observed=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},observedDocker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,heldAuthority);
@@ -189,8 +208,8 @@ it('uses real native lifecycle outcomes during Apply fallback and refuses a rest
  const digest=hashOf({definition:definitionSchema.parse(chief),dutiesMd:duties,voiceMd:voice});
  await pool.query('UPDATE agent_definitions SET definition=$1::jsonb,duties=$2,voice=$3,hash=$4,status=$5 WHERE name=$6',[JSON.stringify(chief),duties,voice,digest,'valid','bookkeeper']);
  writeFileSync(config.runtime.gatewayKeys.bookkeeper!,'synthetic-legacy-key');
- let allow=true,acceptedHash=digest,starts=0;
- const authority={current:async(identity:any)=>allow&&identity.definitionHash===acceptedHash?{state:'active' as const}:{state:'held' as const,reason:'Native budget activation required' as const}};
+ let allow=true,starts=0;
+ const authority={current:async()=>allow?{state:'active' as const}:{state:'held' as const,reason:'Native budget activation required' as const}};
  const base=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir,secretsDir,modelPurposeRuntimeDir},docker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,authority);
  await base.create('bookkeeper',chief);
  const candidateLifecycleDocker:DockerBoundary={...docker,start:async(n,address)=>{starts++;started.push(address);await step('start:'+n);allow=false;}};
@@ -198,7 +217,7 @@ it('uses real native lifecycle outcomes during Apply fallback and refuses a rest
  resetActions();registerDefinitionActions({pool,agentsDir,retiredDir,secretsDir,ceiling:async()=>4,compose:attempt,storage:attempt,backup:{commit:async()=>{}},roleInfo:r=>({roleMd:readFileSync(join(repo,'packages/agent-kit/templates',r,'role.md'),'utf8'),deployedTools:deployedToolsFor(join(repo,'services',r))})});
  const candidate={...chief,description:'Candidate startup must be rolled back'};
  const saved:any=await runAction('definition.save',{name:'bookkeeper',definition:candidate,duties,voice},{actor:'owner@example.test',audit:async()=>{}});
- acceptedHash=saved.hash;allow=true;events=[];
+ allow=true;events=[];
  await expect(runAction('definition.reconcile',{name:'bookkeeper',hash:saved.hash},{actor:'owner@example.test',audit:async()=>{}})).rejects.toMatchObject({name:'KeeperFailedError',state:'restored-stopped',message:'Apply failed. The previous saved definition was restored, but runtime recovery failed; explicit recovery is required.'});
  expect(starts).toBe(1);expect(events.filter(x=>x==='start:bookkeeper')).toHaveLength(1);
  const restored=await loadDefinition({serviceDir:'unused',env:{LARES_DEFINITION_DIR:agentDir}});

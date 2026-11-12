@@ -25,14 +25,17 @@ const held=():NativeRuntimeState=>({state:'held',reason:'Native budget activatio
 export function createKeeperNativeRuntimeReader(sources:NativeRuntimeReaderSources):NativeRuntimeAuthority {
   // Every refusal reads the same to the console, so the log says which prerequisite it was: a
   // fixed phrase per step, never a value. Once per change, because the console asks often.
+  // Noted per agent and model name: a check for another model name (a model change being saved) must not
+  // read as the agent itself being held and released.
   const logged=new Map<string,string>();
-  const note=(agent:string,why:string|null)=>{
-    if((logged.get(agent)??null)===why)return;
-    if(why)logged.set(agent,why);else logged.delete(agent);
-    console.error(why?`keeper: ${agent} is held: ${why}`:`keeper: ${agent} is no longer held`);
+  const note=(identity:NativeRuntimeIdentity,why:string|null)=>{
+    const key=`${identity.agent}\n${identity.purposeAlias}`;
+    if((logged.get(key)??null)===why)return;
+    if(why)logged.set(key,why);else logged.delete(key);
+    console.error(why?`keeper: ${identity.agent} is held: ${why}`:`keeper: ${identity.agent} is no longer held`);
   };
   return Object.freeze({current:async(identity:NativeRuntimeIdentity):Promise<NativeRuntimeState>=>{
-    const hold=(why:string)=>{note(identity.agent,why);return held();};
+    const hold=(why:string,state:NativeRuntimeState=held())=>{note(identity,why);return state;};
     try{
       const custody=sources.custody(),journal=sources.journal(),pool=sources.pool(),ownerId=sources.designatedOwnerId();
       if(!sources.policyFile||!pool||!ownerId)return hold('the budget settings are incomplete');
@@ -48,8 +51,10 @@ export function createKeeperNativeRuntimeReader(sources:NativeRuntimeReaderSourc
       const reader=createNativeRuntimeAuthority({custody,journal,pool,designatedOwnerId:ownerId,gatewayOrigin,
         endpointHash:document.endpointHash,reviewedPolicy});
       const state=await reader.current(identity);
-      if(state.state!=='active')return hold('the budget authority check refused');
-      note(identity.agent,null);
+      if(state.state!=='active')return state.detail==='no-matching-key'
+        ?hold(`no spending key matches this agent, its incarnation and the model name ${identity.purposeAlias}`,state)
+        :hold('the budget authority check refused');
+      note(identity,null);
       return state;
     }catch{return hold('the budget authority check failed');}
   }});

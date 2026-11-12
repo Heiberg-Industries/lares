@@ -28,6 +28,7 @@ import { CONSOLE_ENVIRONMENT } from './agent-environment.js';
 import { effectiveGrantedAgents, type CredentialRecord } from './credential-state.js';
 import { requireDefinitionNamespace, withDefinitionNamespace } from './definition-namespace.js';
 import { clearFirstActivation, clearUnknownApplyBaseline, recordAppliedDefinition } from './definition-files.js';
+import { restartFingerprint, restartPartsApplied } from './restart-parts.js';
 function atomic(path: string, body: string, mode = 0o600) { const temp = `${path}.${randomUUID()}`; const fd = openSync(temp, 'wx', mode); try {
     writeFileSync(fd, body);
     fsyncSync(fd);
@@ -41,8 +42,10 @@ const INSTALLED_STAGE = 'installed-stage';
 const OUTSIDE_ROUTE_ATTEMPT = 'discovery-route-attempt';
 export type OutsideRouteReview = { readonly policyHash: string; readonly sourceAddress: string; readonly proxyUrl: string };
 export type OutsideRouteLease = { assertCurrent(): Promise<OutsideRouteReview> };
-export type NativeRuntimeIdentity = { agent: string; incarnation: string; definitionHash: string; purposeAlias: string };
-export type NativeRuntimeState = { state: 'active' } | { state: 'held'; reason: 'Native budget activation required' };
+/** A budget key belongs to the agent, its incarnation and its model name. It does not follow the rest of the
+ * definition: ordinary edits are live, and the money stays bound by the model name, the reviewed prices and the limits. */
+export type NativeRuntimeIdentity = { agent: string; incarnation: string; purposeAlias: string };
+export type NativeRuntimeState = { state: 'active' } | { state: 'held'; reason: 'Native budget activation required'; detail?: 'no-matching-key' };
 export type NativeRuntimeAuthority = { current(identity: NativeRuntimeIdentity): Promise<NativeRuntimeState> };
 const NATIVE_HELD = 'Native budget activation required' as const;
 function refusePendingRetirement(row: any): void {
@@ -50,13 +53,14 @@ function refusePendingRetirement(row: any): void {
         throw new KeeperRefusedError('Retry definition.retire to complete pending retirement');
 }
 function runtimeControlled(row: any): boolean { return !!row?.runtime_control_token && row.runtime_control_token === row.ownership_token; }
-function fingerprint(d: AgentDefinition) { return createHash('sha256').update(JSON.stringify({ role: d.role, doors: doorsOf(d), personalGoogle: personalGoogleEnabled(d), personalMicrosoft: personalMicrosoftEnabled(d) })).digest('hex'); }
 /** All callers run within the audited definition action AND namespace advisory lock.
  * Partial failures leave resources and pending state for an explicit reconcile; never auto replay. */
 export class AgentLifecycle {
     readonly storage: WorkflowStorage;
     private credentialState?: () => Promise<CredentialRecord>;
     private get nativeGuarded(): boolean { return this.paths.mode === 'rendered' || this.nativeAuthority !== undefined; }
+    /** The model name needs a restart only where a budget key pays for it. */
+    private get restartOptions() { return { model: this.nativeGuarded }; }
     setCredentialState(read: () => Promise<CredentialRecord>): void { this.credentialState = read; }
     private managedServices?: ManagedServices;
     /** Engine services that are not agents (the Notion sync): their sources join the firewall and proxy rules. */
@@ -139,16 +143,18 @@ export class AgentLifecycle {
             if (!row || !row.definition || typeof row.duties !== 'string' || typeof row.voice !== 'string' ||
                 row.status !== 'valid' || typeof row.ownership_token !== 'string' ||
                 row.runtime_control_token !== row.ownership_token || row.state !== 'ready' || row.pending !== false ||
-                !row.applied_definition || JSON.stringify(row.applied_definition) !== JSON.stringify(row.definition))
+                !row.applied_definition)
                 return { state: 'held', reason: NATIVE_HELD };
-            const definition = definitionSchema.parse(row.definition);
+            const definition = definitionSchema.parse(row.definition), applied = definitionSchema.parse(row.applied_definition);
             const definitionHash = hashOf({ definition, dutiesMd: row.duties, voiceMd: row.voice });
-            if (row.hash !== definitionHash || definition.role !== 'chief-of-staff' || typeof definition.model !== 'string')
+            // The saved definition must be the one on record, and every part of it that needs a restart must be
+            // the part the runtime was started with. Anything else in it is live without a restart.
+            if (row.hash !== definitionHash || definition.role !== 'chief-of-staff' || typeof definition.model !== 'string' ||
+                !restartPartsApplied(applied, definition, this.restartOptions))
                 return { state: 'held', reason: NATIVE_HELD };
             const identity: NativeRuntimeIdentity = {
                 agent: name,
                 incarnation: row.ownership_token,
-                definitionHash,
                 purposeAlias: definition.model,
             };
             const current = await this.nativeAuthority.current(identity);
@@ -717,11 +723,23 @@ export class AgentLifecycle {
             throw new KeeperRefusedError('Migrate existing resource ownership before saving');
         if (create && row)
             throw new KeeperRefusedError('Prior resources require reconciliation before name reuse');
+        if (!create && this.nativeGuarded) await this.refuseModelWithoutKey(name, row, d);
         const candidate=this.container(row ?? { name, address: '192.0.2.2', workflow_database: 'lares_preflight' }, d, await this.notionRevision(), await this.notionGranted());
         verifyBindingSources(candidate.bindings);
         verifyPersonalReadSecretSources(candidate);
         // Build the allow-list now so a refusal happens before the definition is stored. A new agent has no resource row yet.
         if (create) this.refuseUnknownGrants(name, d); else await this.plan({ name, definition: d });
+    }
+    /** A started agent's model name can change only to a name it already holds a working spending key for (the
+     * owner's extra keys from budget setup). An agent that is not running on a key yet is left alone: its next
+     * `lares agent start` makes the key for whatever model name it then has. */
+    private async refuseModelWithoutKey(name: string, row: any, d: AgentDefinition): Promise<void> {
+        if (!this.nativeAuthority || !row?.applied_definition || row.applied_definition.model === d.model ||
+            typeof row.ownership_token !== 'string' || typeof d.model !== 'string') return;
+        if ((await this.currentNative(name)).state !== 'active') return;
+        const target = await this.nativeAuthority.current({ agent: name, incarnation: row.ownership_token, purposeAlias: d.model });
+        if (target?.state !== 'active')
+            throw new KeeperRefusedError(`This agent has no working spending key for the model name ${d.model}, so its model was not changed. Run sudo lares agent start ${name} on the server first: it makes a key for each model name the gateway serves.`);
     }
     async create(name: string, d: AgentDefinition) {
         if (this.nativeGuarded && (d.role !== 'chief-of-staff' || !this.paths.modelPurposeRuntimeDir || typeof d.model !== 'string' || !/^[a-z][a-z0-9-]{1,63}$/.test(d.model)))
@@ -742,12 +760,15 @@ export class AgentLifecycle {
             if (!(error instanceof KeeperRefusedError)) await this.pool.query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'Egress list could not be built; nothing was changed']);
             throw error;
         });
+        const restartNeeded = !row.applied_definition || restartFingerprint(row.applied_definition, this.restartOptions) !== restartFingerprint(d, this.restartOptions);
         const nativeState = this.nativeGuarded ? await this.currentNative(name) : { state: 'active' as const };
         if (this.nativeGuarded && nativeState.state !== 'active') {
-            console.error(`keeper: agent ${name} was stopped after a save: its budget activation does not cover the saved definition`);
+            console.error(restartNeeded
+                ? `keeper: agent ${name} was stopped after a save: the saved change (doors, role, personal accounts or model) takes effect when Apply restarts it`
+                : `keeper: agent ${name} was stopped after a save: its budget activation does not cover the saved definition`);
             await this.docker.stop(name);
         }
-        const pending = row.pending || !row.applied_definition || fingerprint(row.applied_definition) !== fingerprint(d) || row.state === 'provisioning';
+        const pending = row.pending || restartNeeded || row.state === 'provisioning';
         await this.pool.query('UPDATE agent_resources SET pending=$2,pending_reason=$3,updated_at=now() WHERE name=$1', [name, true, 'Egress reconciliation in progress']);
         try {
             await this.apply(plan);
