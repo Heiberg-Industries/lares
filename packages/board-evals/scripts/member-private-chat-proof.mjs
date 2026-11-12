@@ -48,7 +48,7 @@ if(withBudget)assert.ok(gatewayLane==='anthropic'&&process.env.PRIVATE_CHAT_PROO
 if(withVault)assert.equal(process.env.PRIVATE_CHAT_PROOF_ROLE,'chief-of-staff','Vault custody fixture is bounded to the chief-of-staff role');
 if(withTracks)assert.ok(process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&!withVault,'Tracks proof uses the real broker on the chief-of-staff role, not the recording Vault fixture');
 let gateway,trackVault;
-const observedSteps=new Set(),startedTurns=new Set();
+const observedSteps=new Set(),startedTurns=new Set(),observedCards=new Map();
 const vaultCalls=[],vaultWire=[],vaultChallenges=new Map(),vaultTurns=new Map(),vaultServers=[];
 const snapshots=[],ownedSessionIds=new Set();
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -211,6 +211,10 @@ async function stream(app,member,session,stop=ends){const lines=[];for(let retry
    if(fact.type==='turn.started')startedTurns.add(JSON.stringify([session.id,fact.data.turnId]));
    const turnId=fact.scope?.turnId,sequence=/^turn_(0|[1-9]\d*)$/.exec(turnId??'')?.[1];
    if(fact.type==='model.requested'&&sequence!==undefined&&startedTurns.has(JSON.stringify([session.id,turnId])))observedSteps.add(JSON.stringify([session.id,turnId,Number(sequence),at]));
+   // Cards as the stream shows them: which turn opened each, and where and how it settled. The
+   // resume checks below tie the model call after an answer to the turn that asked the card.
+   if(fact.type==='interaction.opened')observedCards.set(fact.data.interactionId,{session:session.id,turnId:fact.scope?.turnId,openedAt:at});
+   if(fact.type==='interaction.settled'&&observedCards.has(fact.data?.interactionId))Object.assign(observedCards.get(fact.data.interactionId),{settledAt:at,settled:fact.data});
    if(stop(fact)){session.index=read;if(stop===ends)assert.notEqual(fact.data?.outcome,'failed',raw);return lines.join('\n');}}}
  assert.equal(read-1,tail,'Counted stored lines and the server tail index differ');session.index=read;
  await sleep(100);
@@ -242,7 +246,8 @@ async function proveDurableBudget(app){
  const rows=async()=>(await db.query('SELECT id,invocation_hash FROM budget_attempts ORDER BY id')).rows;
  const before=await rows();assert.equal(before.length,scopes.length);assert.equal(receipts.length,scopes.length);
  assert.equal(new Set(before.map(row=>row.invocation_hash)).size,before.length);assert.deepEqual(new Set(receipts.map(row=>row.id)),new Set(before.map(row=>row.id)));
- const selected=[scopes.find(s=>s.session.auth.current.attributes.lares_purpose==='human'),...['approve','deny'].map(option=>scopes.find(s=>s.event.data.turnId===''&&s.session.auth.current.attributes.lares_resume_option===option))];
+ const resumes=['approve','deny'].map(option=>resumeScope(scopes,option));resumes.forEach((scope,i)=>assertExactResume(scope,['approve','deny'][i]));
+ const selected=[scopes.find(s=>s.session.auth.current.attributes.lares_purpose==='human'&&!resumes.includes(s)),...resumes];
  assert.ok(selected.every(Boolean),'Missing actual human or exact blank approval/cancel invocation');
  const code=`import {Pool} from 'pg';
  import {PgBudgetAdmissionStore} from '${new URL('../../../packages/agent-kit/src/budget-admission-store.ts',import.meta.url).href}';
@@ -262,7 +267,7 @@ async function proveDurableBudget(app){
   assert.deepEqual(JSON.parse(result.stdout),{denied:true});
  }
  assert.deepEqual(await rows(),before,'Cold reconstruction changed retained invocation hashes or attempt count');
- console.log(app.name+': actual human and blank approve/cancel preparation, unchanged hashes/count after valid-authority cold replay PASS (preparation only)');
+ console.log(app.name+': actual human and continued-turn approve/deny preparation, unchanged hashes/count after valid-authority cold replay PASS (preparation only)');
 }
 /** A card that is not personal mail, end to end. Who may answer does not change: only the member who
  * started that conversation, on the same session and admission, for the exact unexpired card. */
@@ -350,6 +355,31 @@ async function proveTrackEditWithdrawn(app,vault){
  await vault.configure([{id:a,permissions:['use','edit']},{id:b,permissions:['use','edit']}]);
  console.log('chief-of-staff: withdrawn edit refuses the pending card before the runtime PASS (Keeper rechecks at write: its own suite)');
 }
+/** The model call that continues a turn after its card was answered with `option`.
+ * eve 0.60.1 ran it in a blank turn ('') with the resolver's identity as `current`. eve 1.0
+ * continues the PAUSED turn as the person who asked (merged "the turn after an answered approval
+ * card" change; `captureBudgetAuthorityReference` in packages/agent-kit/src/budget-model-authority.ts:
+ * "session.auth.current is always that person's human admission, also in the turn after an answered
+ * card"; the answer itself is read from the response policy's record, `takeAcceptedAnswers`, never
+ * from the session). So the intended value is: the turn id of the turn that asked the card (never
+ * blank), a stream position after the card settled with this option, and a human `current` that is
+ * the same member and admission as the initiator. The option is read off the stream's own
+ * `interaction.settled` fact. */
+function resumeScope(scopes,option){
+  for(const card of observedCards.values()){
+    if(card.settled?.response?.optionId!==option||!card.turnId||card.settledAt===undefined)continue;
+    const scope=scopes.find(s=>s.session.id===card.session&&s.event.data.turnId===card.turnId&&s.event.data.stepIndex>card.settledAt);
+    if(scope)return scope;
+  }
+}
+function assertExactResume(scope,option){
+  assert.ok(scope,'No model call continued the turn of a card answered '+option);
+  const current=scope.session.auth.current.attributes,initial=scope.session.auth.initiator.attributes;
+  assert.ok(scope.event.data.turnId.trim(),'The '+option+' resume ran in a blank turn');
+  assert.equal(current.lares_purpose,'human','The '+option+' resume did not run as the person who asked');
+  assert.equal(current.lares_member_id,initial.lares_member_id,'The '+option+' resume changed member');
+  assert.equal(current.lares_admission_nonce,initial.lares_admission_nonce,'The '+option+' resume changed admission');
+}
 function assertGatewayScopes(app){
   gateway.assertHealthy();
   const scopes=()=>readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
@@ -359,7 +389,7 @@ function assertGatewayScopes(app){
     assert.equal(scope.session.auth.initiator.attributes.lares_purpose,'human');
     assert.ok(['human','resolver'].includes(scope.session.auth.current.attributes.lares_purpose));
   }
-  if(app.name==='proof-chief'&&withSend)for(const option of ['approve','deny'])assert.ok(scopes().some(s=>s.session.auth.current.attributes.lares_purpose==='resolver'&&s.session.auth.current.attributes.lares_resume_option===option&&s.event.data.turnId===''),'Exact '+option+' resume did not preserve actual blank turn and resolver auth');
+  if(app.name==='proof-chief'&&withSend)for(const option of ['approve','deny'])assertExactResume(resumeScope(scopes(),option),option);
   assert.equal(scopes().length,gateway.calls.filter(c=>c.role===app.name.replace(/^proof-/, '').replace(/^chief$/, 'chief-of-staff')).length,'Scoped model calls and actual HTTP requests differ');
 }
 async function proveGatewayInvocation(app){
@@ -472,6 +502,14 @@ try{
     await repeated(sa,approved);await repeated(sa,approved,'deny');assert.equal(sendCount(),1);await stop();await start(app);await repeated(sa,approved);assert.equal(sendCount(),1);
     const attack=await proposal(sa,'SEND_ATTACK '+JSON.stringify(input));await answer(sa,attack);assert.equal(sendCount(),2);
     assert.equal((await db.query('SELECT count(*)::int AS n FROM personal_actions WHERE session_id=$1',[sa.id])).rows[0].n,3,'Resolver model created another proposal');
+    // Both continued turns (after the deny and after the approve of an attack card) asked for a new
+    // send, and each was refused with the role's own sentence (`NEW_SEND_AFTER_ANSWER_REFUSED` in
+    // services/chief-of-staff/lib/personal-send-approval.ts).
+    // (The scripted model sees tool results as objects with ids; the gateway fixture sees the wire's
+    // text only, so there a refusal is keyed by the message of the turn it answered.)
+    const NEW_SEND_REFUSED='A new send cannot be started in the reply to an answered request. Ask again in a new message.';
+    const refusedNew=new Set(models(app).flatMap(frame=>(frame.toolResults??[]).flatMap(r=>typeof r==='string'?(r.includes(NEW_SEND_REFUSED)?['text:'+frame.message]:[]):r.name==='personal_mailbox_send'&&r.isError&&String(r.output)===NEW_SEND_REFUSED?['id:'+r.id]:[])));
+    assert.equal(refusedNew.size,2,'The new send in a continued turn was not refused with the stated sentence');
     assert.equal(readFileSync(app.providerLog,'utf8').split('\n').filter(line=>line.includes('MAIL_CANARY')).length,2,'Resolver model read a private source');
     const wrongSelection=await create(app,a,'Wrong personal selection');await stream(app,a,wrongSelection);
     await send(app,a,wrongSelection,'SEND '+JSON.stringify({...input,selection:selections.get(b)})).catch(()=>{});

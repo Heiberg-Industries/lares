@@ -114,3 +114,76 @@ What did not change, and why:
   settles Failure 1.
 - `proveDurableBudget` and the gateway lane's two resume checks still look for model calls with a
   blank turn id, which eve 1.0 never makes. Not reached, not ported.
+
+## Later still on 12 November: the mail-send and budget lanes pass with both fixes
+
+Run against `eve-1.0` at `187a34ef` merged locally with two changes not yet on `eve-1.0`: no new send
+in the turn after an answered card (`newSendAfterAnswerRefusal` in
+`services/chief-of-staff/lib/personal-send-approval.ts`, reading the durable mark
+`turnAppliedAnAnswer` in `services/chief-of-staff/lib/approval-card-turns.ts`), and the console's
+refusal of a second answer to a settled card (the section above). Plus the proof change described
+below.
+
+| Run | Variables | Result |
+| --- | --- | --- |
+| Mail send, scripted model | `ROLE=chief-of-staff SEND=1` | **PASS** (29 model calls) |
+| Mail send, gateway (Anthropic wire) | `+ GATEWAY_LANE=anthropic` | **PASS** (37 model calls) |
+| Budget | `+ GATEWAY_LANE=anthropic SEND=1 BUDGET=1` | **PASS** (37 model calls); `proveDurableBudget` ran: "preparation only" |
+| Mail send with the send fix alone | `ROLE=chief-of-staff SEND=1`, without the console change | **PASS** |
+
+Observed on the real process:
+
+- an ordinary first send still gets its card (`awaiting_dispatch`, a card in front of the member);
+- exactly **3** prepared sends in the conversation, as the unchanged check expects (Failure 1 is
+  gone);
+- the new send in each continued turn (after the deny and after the approve of an attack card) is
+  refused with "A new send cannot be started in the reply to an answered request. Ask again in a new
+  message." The proof now asserts this: two such refusals;
+- the approved send is sent exactly once, through both cold restarts and the repeated answers;
+  two sends in all (the plain one and the approved attack), both approved.
+
+The mail-send lane needs only the send fix. The budget lane also needs the console change: without
+it, Failure 2 above stops the run.
+
+### The resume checks, ported
+
+The gateway lane's approve and deny resume checks and `proveDurableBudget`'s choice of those calls
+looked for eve 0.60.1's blank resume turn with the resolver's identity as `current`. On eve 1.0 the
+answered card's turn continues as the person who asked: the comment on
+`captureBudgetAuthorityReference` (`packages/agent-kit/src/budget-model-authority.ts`) says
+`session.auth.current` is that person's human admission also in the turn after an answered card, and
+the answer is read from the response policy's record, not from the session. The checks now require,
+for each of approve and deny: a model call whose turn id is the id of the turn that asked the card
+(never blank), at a stream position after that card's `interaction.settled` with that option, with
+a human `current` carrying the same member and admission as the initiator. Measured: the deny card
+of turn 4 settled at line 52 and the next model call was turn 4 at position 54; the same shape for
+the approved cards.
+
+### Still not proven
+
+- The budget recorder still charges through `prepareIntent` in the model call, not through Keeper's
+  path (unchanged from the section above); `proveDurableBudget` says "preparation only".
+- These runs are on a local merge; they need repeating once both fixes are on `eve-1.0`.
+
+## Re-run on `eve-1.0` at `0890e717`, with both fixes merged
+
+The section above was measured on a local merge. Both fixes are now on `eve-1.0` (`0890e717`); this
+section's runs are on that commit plus the two proof commits replayed on top of it (the resume-check
+port and the refusal-sentence check; unchanged from the local merge, no conflicts). The repeated
+answer step keeps `eve-1.0`'s sentence, "This request is no longer waiting, so this answer was not
+used."
+
+| Run | Variables | Result |
+| --- | --- | --- |
+| Mail send, scripted model | `ROLE=chief-of-staff SEND=1` | **PASS** (29 model calls, 4 mail-provider calls) |
+| Budget (gateway on the Anthropic wire, mail send, budget recorder) | `ROLE=chief-of-staff GATEWAY_LANE=anthropic SEND=1 BUDGET=1` | **PASS** (37 model calls); the gateway lane's ported resume checks and `proveDurableBudget` ran ("preparation only") |
+| Web chat (`proof:web-chat`) | none | **PASS**, 13/13 items |
+
+Not proven:
+
+- **Keeper-path charging.** The budget recorder still calls `PgBudgetAdmissionStore.prepareIntent`
+  inside the model call. Production charges through Keeper's model-purpose broker and gateway
+  socket. Not exercised here.
+- **The web-chat approval proof is still not ported** (`web-chat-approval-2026-11-12.md`).
+- The OpenAI-compatible wire was not re-run with mail send and budget on; it passed the gateway lane
+  alone earlier on 12 November.

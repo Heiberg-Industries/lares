@@ -72,3 +72,12 @@ On top of the default lane (which still passes inside each run), the gateway lan
 - A live gateway or provider: the fixture is what we believe the wire looks like.
 - Durable crash replay of a model call (the script's own line says so: "no durable crash-replay
   claim").
+
+## Later on 12 November: the approve and deny resume checks
+
+With the mail-send lane passing (see the last section of `member-private-chat-budget-2026-11-12.md`,
+same local merge), the gateway lane's two resume checks run and pass, on the Anthropic wire, after
+porting. They no longer look for a blank resume turn with the resolver's identity (eve 0.60.1); they
+require a model call that continues the turn that asked the card, after that card settled with the
+option, as the same member and admission as the initiator. The reasons and the code they follow are
+in that section.
