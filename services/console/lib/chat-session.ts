@@ -75,6 +75,15 @@ export const ANSWER_NOT_USED = "This request is no longer waiting, so this answe
  */
 export const ANSWER_UNCHECKED = "I could not check that request just now. Nothing was done. Try again in a moment.";
 
+/**
+ * What a person is told in chat when the console no longer vouches for a conversation (`lib/chat-proxy.ts`).
+ * Saving a change to the agent ends its open conversations, and so does a change to who may use it. The
+ * sentence is true for both and for a conversation that was never this member's, names no cause it cannot
+ * prove, and asks for no retry: nothing reached the agent, and only a new conversation goes on. The chat page
+ * puts it after "Your answer did not reach the agent, so nothing has been done" when it refuses an answer.
+ */
+export const CONVERSATION_GONE = "This conversation is no longer available. Start a new one.";
+
 /** Why a conversation can take no more messages: an update ended it, or it ended some other way. */
 export type EndedConversation = "update" | "ended";
 
