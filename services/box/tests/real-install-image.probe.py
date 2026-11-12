@@ -83,7 +83,7 @@ LIMITS = [
     "Who pays is checked for one person and Approve only: how the call after a Deny is booked, and booking to a second member, are covered by the box tests, not here.",
     "The update goes to a second build of the same code (a new label, so new digests): a release that changes code or adds migrations is not covered.",
     "Saving a definition in the console after the update is not exercised; agent start and the agent's restart are.",
-    "A started agent takes one edit on the console page (its description), before the update. Apply after a door or model change on a started agent is covered by keeper tests here and by the door stage of the door fix.",
+    "A started agent takes one edit on the console page (its description), before the update. Apply after a door or model change on a started agent is covered by keeper tests here, not by an image run yet; the door stage of the door fix will cover it.",
     "The conversation the edit ends is a plain one with one message; that an approval waiting in such a conversation cannot be answered afterwards is covered by the agent's tests, not here.",
     "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
@@ -298,11 +298,15 @@ def agent_started_at() -> str | None:
     return output("docker", "inspect", "--format", "{{.State.StartedAt}}", ids[0]) if ids else None
 
 
-def settled_conversation_calls(release: dict) -> list[tuple[str, str]]:
-    """(conversation, payer) for every settled call booked to a conversation, oldest first."""
-    rows = read_only_query("SELECT a.authority_reference#>>'{binding,sessionId}', coalesce(a.live_member_id, '') FROM budget_attempts a "
-                           "WHERE a.state = 'settled' AND a.authority_reference->>'kind' = 'human' ORDER BY a.created_at, a.id", release)
-    return [tuple(line.split("|", 1)) for line in rows.splitlines() if line]
+def conversation_calls(release: dict) -> list[dict]:
+    """Every call booked to a conversation: its conversation, state, payer, and whether it was made after the
+    agent's definition was last saved (`valid_at`, set by the save). A conversation the save ended takes no
+    call after it: the budget check refuses before any attempt is recorded."""
+    rows = read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('session', a.authority_reference#>>'{binding,sessionId}', 'state', a.state, "
+        "'payer', coalesce(a.live_member_id, ''), 'afterSave', a.created_at > d.valid_at) ORDER BY a.created_at, a.id), '[]') "
+        f"FROM budget_attempts a CROSS JOIN agent_definitions d WHERE d.name = '{AGENT}' AND a.authority_reference->>'kind' = 'human'", release)
+    return json.loads(rows or "[]")
 
 
 def agent_permission_denied_lines() -> list[str]:
@@ -1308,8 +1312,11 @@ def main(argv: list[str]) -> int:
         # The installation owner ruled that a change to a running agent applies from the console alone,
         # and that saving it may end the open web-chat conversations, with a warning on the page.
         started_before = agent_started_at()
-        calls_before = settled_conversation_calls(release)
+        sessions_before = {call["session"] for call in conversation_calls(release)}
         browser("edit-after-start", settings_file, tls)
+        # What the browser step itself checked: the warning, the save, the old conversation ended on the page with
+        # no further answer, and a new conversation answered.
+        passed("on-the-page-the-old-conversation-ended-unanswered-and-a-new-one-was-answered")
         if agent_started_at() != started_before or started_before is None:
             deferred.append(f"the agent's container was stopped or restarted by a description save (started {started_before}, now {agent_started_at()})")
         else:
@@ -1329,26 +1336,31 @@ def main(argv: list[str]) -> int:
             deferred.append(f"the keeper logged a stop after the save: {stopped[0]}")
         else:
             passed("the-keeper-log-has-no-stop-after-a-save")
+        # The browser step itself proves the old conversation was refused on the page and was not answered.
+        # Here the budget ledger says the same at the money layer, and that the new one was charged.
+        owner = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member'", release)
         deadline = time.monotonic() + 60
         while True:
-            calls_after = settled_conversation_calls(release)
-            new = calls_after[len(calls_before):]
-            old_sessions = {session for session, _ in calls_before}
-            around_edit = [call for call in new if call[0] not in old_sessions]
-            if len({session for session, _ in around_edit}) >= 2 or time.monotonic() > deadline:
+            calls = [call for call in conversation_calls(release) if call["session"] not in sessions_before]
+            old = {call["session"] for call in calls if not call["afterSave"]}
+            new = {call["session"] for call in calls if call["afterSave"]} - old
+            charged = [call for call in calls if call["session"] in new and call["state"] == "settled"]
+            if charged or time.monotonic() > deadline:
                 break
             time.sleep(3)
-        owner = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member'", release)
-        sessions = list(dict.fromkeys(session for session, _ in around_edit))
-        proof["editAfterStart"]["newSettledCalls"] = [{"conversation": sessions.index(session) + 1, "paidByOwner": payer == owner} for session, payer in around_edit]
+        sessions = list(dict.fromkeys(call["session"] for call in calls))
+        proof["editAfterStart"]["conversationCalls"] = [{"conversation": sessions.index(call["session"]) + 1, "state": call["state"],
+                                                         "afterTheSave": call["afterSave"], "paidByOwner": call["payer"] == owner} for call in calls]
         save_proof()
-        # The conversation from before the save, then the new one; once the new one has a call, the old one takes no more.
-        first_new = next((index for index, (session, _) in enumerate(around_edit) if len(sessions) == 2 and session == sessions[1]), None)
-        if (len(sessions) == 2 and first_new is not None and all(payer == owner for _, payer in around_edit)
-                and all(session == sessions[1] for session, _ in around_edit[first_new:])):
-            passed("after-the-edit-the-old-conversation-was-refused-and-a-new-one-was-answered-and-charged-to-the-owner")
+        late = [call for call in calls if call["session"] in old and call["afterSave"]]
+        if old and not late:
+            passed("the-conversation-from-before-the-save-took-no-call-after-it")
         else:
-            deferred.append(f"the calls around the description save were not as expected: {proof['editAfterStart']['newSettledCalls']}")
+            deferred.append(f"the conversation from before the save took {len(late)} call(s) after it, or none was found: {proof['editAfterStart']['conversationCalls']}")
+        if charged and all(call["payer"] == owner for call in calls if call["session"] in new):
+            passed("a-new-conversation-after-the-save-was-answered-and-charged-to-the-owner")
+        else:
+            deferred.append(f"no call of a new conversation after the save settled for the owner: {proof['editAfterStart']['conversationCalls']}")
 
         stage("sudo lares backups")
         run("apt-get", "update", "-qq", timeout=300, show=False)
