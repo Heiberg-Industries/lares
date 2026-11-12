@@ -428,8 +428,69 @@ def _receipt(identity: str, epoch: int, subnet: str, hba: bytes) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
 
 
-def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None = None) -> None:
-    """Create first-install authentication custody. Existing or partial state is never adopted."""
+# What an installation leaves on a machine: any of these means custody is not prepared fresh.
+_FRESH_EVIDENCE = (
+    ("srv", "lares"), ("srv", "taste"), ("srv", "vault"),
+    ("etc", "lares", "installation.env"), ("etc", "lares", "database-bootstrap-complete"),
+    ("etc", "lares", "operator"), ("etc", "lares", "secrets"),
+    ("var", "lib", "lares", "postgres"), ("var", "lib", "lares", "budget-financial"),
+    ("var", "lib", "lares", "budget-native"), ("var", "lib", "lares-vault-git"),
+    ("var", "lib", "lares-maintenance"),
+    ("opt", "lares", "compose.yaml"), ("opt", "lares", "compose.lares-keeper.yaml"),
+    ("opt", "lares", "database-bootstrap-complete"),
+)
+# The one exception, and its only definition (install.sh asks holds-only-restored-settings): the
+# settings and secrets a backup's encrypted bundle carries, which docs/install.md ("Restoring onto a
+# new server") has a person copy onto a new machine before installing. Exactly these entries of
+# etc/lares and srv/lares, and none of the other evidence above.
+_RESTORED_SETTINGS = {
+    ("etc", "lares"): {"installation.env": "file", "console-oauth.env": "file", "backup.env": "file",
+                       "restic-password": "file", "secrets": "directory"},
+    ("srv", "lares"): {"secrets": "directory"},
+}
+_RESTORED_SETTINGS_EVIDENCE = (("srv", "lares"), ("etc", "lares", "installation.env"), ("etc", "lares", "secrets"))
+
+
+def _holds_only_restored_settings(prefix_fd: int, uid: int) -> bool:
+    """True only for exactly the copied bundle on a machine with no other installation evidence.
+    Anything missing, extra, linked, of another kind or unreadable is not it."""
+    if any(_existing_path(prefix_fd, item) for item in _FRESH_EVIDENCE if item not in _RESTORED_SETTINGS_EVIDENCE):
+        return False
+    for folder, entries in _RESTORED_SETTINGS.items():
+        fd = os.dup(prefix_fd)
+        try:
+            for part in folder:
+                next_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+                os.close(fd)
+                fd = next_fd
+            info = os.fstat(fd)
+            if info.st_uid != uid or stat.S_IMODE(info.st_mode) & 0o022 or set(os.listdir(fd)) != set(entries):
+                return False
+            for name, kind in entries.items():
+                entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if not (stat.S_ISDIR(entry.st_mode) if kind == "directory" else stat.S_ISREG(entry.st_mode)):
+                    return False
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
+    return True
+
+
+def holds_only_restored_settings(prefix: str | Path, *, expected_uid: int | None = None) -> bool:
+    """Read-only: whether the machine holds exactly the copied backup settings and nothing else."""
+    uid = 0 if expected_uid is None else expected_uid
+    prefix_fd, _ = _open_safe_chain(Path(prefix), uid)
+    try:
+        return _holds_only_restored_settings(prefix_fd, uid)
+    finally:
+        os.close(prefix_fd)
+
+
+def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None = None,
+                  restored_settings: bool = False) -> None:
+    """Create first-install authentication custody. Existing or partial state is never adopted;
+    with restored_settings, the copied backup settings alone (and nothing else) are allowed."""
     requested = Path(prefix)
     if not requested.is_absolute() or ".." in requested.parts:
         raise ValueError("installation prefix must be absolute and normalized")
@@ -439,18 +500,9 @@ def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None =
     if expected_uid is not None and (uid != os.geteuid() or uid == 0):
         raise PermissionError("the internal test-owner seam is only available to a non-root test process")
     prefix_fd, prefix_info = _open_safe_chain(requested, uid)
-    evidence = (
-        ("srv", "lares"), ("srv", "taste"), ("srv", "vault"),
-        ("etc", "lares", "installation.env"), ("etc", "lares", "database-bootstrap-complete"),
-        ("etc", "lares", "operator"), ("etc", "lares", "secrets"),
-        ("var", "lib", "lares", "postgres"), ("var", "lib", "lares", "budget-financial"),
-        ("var", "lib", "lares", "budget-native"), ("var", "lib", "lares-vault-git"),
-        ("var", "lib", "lares-maintenance"),
-        ("opt", "lares", "compose.yaml"), ("opt", "lares", "compose.lares-keeper.yaml"),
-        ("opt", "lares", "database-bootstrap-complete"),
-    )
     try:
-        if any(_existing_path(prefix_fd, item) for item in evidence):
+        if (any(_existing_path(prefix_fd, item) for item in _FRESH_EVIDENCE) and
+                not (restored_settings and _holds_only_restored_settings(prefix_fd, uid))):
             raise ValueError("existing installation or maintenance evidence found; fresh custody cannot adopt it")
         # Parent directories are opened and pinned one component at a time. No realpath or
         # recursive mkdir can redirect writes through an unsafe prefix/var symlink.
@@ -1022,16 +1074,25 @@ def validate_update_target(prefix: str, compose_dir: str, compose_files: str,
 
 def main(argv: list[str]) -> int:
     try:
+        restored = len(argv) > 2 and argv[1] == "prepare-fresh" and argv[-1] == "--restored-settings"
+        if restored:
+            argv = argv[:-1]
+        if len(argv) == 3 and argv[1] == "holds-only-restored-settings":
+            if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1":
+                return 0 if holds_only_restored_settings(argv[2], expected_uid=os.geteuid()) else 1
+            if os.geteuid() != 0:
+                raise PermissionError("the restored-settings check requires root")
+            return 0 if holds_only_restored_settings(argv[2]) else 1
         if len(argv) == 5 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh":
             if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1":
-                prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid())
+                prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid(), restored_settings=restored)
             else:
-                prepare_fresh(argv[2], argv[3])
+                prepare_fresh(argv[2], argv[3], restored_settings=restored)
         elif len(argv) == 4 and argv[1] == "prepare-outside-custody-key" and argv[3] == "--confirm-fresh":
             print(json.dumps({"keyFingerprint": prepare_outside_custody_key(argv[2])}, separators=(",", ":")))
         elif (len(argv) == 6 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh" and
               argv[5] == "--test-owner" and os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
-            prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid())
+            prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid(), restored_settings=restored)
         elif len(argv) == 4 and argv[1] == "validate":
             if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") != "1":
                 raise PermissionError("maintenance custody validation requires root")

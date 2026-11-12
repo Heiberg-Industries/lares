@@ -114,6 +114,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# The snapshot this run reads (latest is looked up once, in step 6), how messages name it, and what
+# the advice to run again adds when the owner asked for latest.
+SNAPSHOT_ID="$SNAPSHOT"
+SNAPSHOT_SHOWN="$SNAPSHOT"
+RUN_AGAIN_TAIL=""
+# Set where a message tells the owner to run the same restore again (only agent stores changed).
+RERUN_ADVISED=0
+
 PREFIX="${PREFIX_ARG:-${LARES_PREFIX:-/}}"
 # P: where a logical path (/etc/lares/...) really lives, given the prefix.
 export LARES_PREFIX="${PREFIX%/}"
@@ -426,6 +434,29 @@ remove_scratch() {
   esac
 }
 
+# When a message has just told the owner to run the same restore again but this run could not
+# confirm its own cleanup, it keeps its claim, and the next run would be refused with no next step.
+# Say so, and what to check and remove by hand first.
+rerun_blocked_advice() {
+  [ "$RERUN_ADVISED" = 1 ] || return 0
+  echo "restore: the message above says to run the same restore again, but for now that run would be refused (\"could not create a private restore work record\"): this run could not confirm its own cleanup, so it kept its claim on restoring this server. Before running it again, by hand:" >&2
+  echo "restore:   - docker ps --all --filter name=lares-restore- --filter name=lares-workflow-store- must list nothing; remove anything it lists with docker rm --force <name>" >&2
+  if [ -n "$SCRATCH" ] && [ -d "$SCRATCH" ]; then
+    echo "restore:   - remove the private scratch folder, which holds decrypted backup files: rm -rf $SCRATCH" >&2
+  fi
+  echo "restore:   - remove this run's record and its claim: rm -rf $RESTORE_WORK $RESTORE_WORK_ROOT/restore-active.lock" >&2
+  # The Vault lock is kept too when a client's cleanup is uncertain (a Vault client may still run).
+  # The keeper, the only other writer, stays stopped, so once the docker check lists nothing the
+  # lock is this run's alone. The mark it holds proves that.
+  local entry lock_path lock_mark
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    lock_path="${entry%%$'\t'*}"; lock_mark="${entry#*$'\t'}"
+    echo "restore:   - once the docker check lists nothing, remove the Vault lock this run left: rm -f $lock_path (it holds this run's mark $lock_mark; if it holds anything else, something else is writing to the Vault: leave it and find out what)" >&2
+  done <<< "${VAULT_STORAGE_LOCKS:-}"
+  echo "restore: Then run the same restore again${RUN_AGAIN_TAIL}. Nothing else needs undoing: the services stay stopped, only agent stores were replaced, and the next run restores them from the backup again." >&2
+}
+
 cleanup() {
   local rc=$? cleanup_text='' restore_client_uncertain=0
   trap - EXIT INT TERM
@@ -464,6 +495,7 @@ cleanup() {
     cleanup_text=$(IFS=,; printf '%s' "${RESTORE_CLEANUP_FAILURES[*]}")
     write_restore_intent cleanup-required "$cleanup_text" || echo 'restore: cleanup state could not be durably updated; work evidence remains in place' >&2
     echo "restore: cleanup is uncertain (${cleanup_text}); durable run evidence retained at $RESTORE_WORK" >&2
+    rerun_blocked_advice
     [ "$rc" -ne 0 ] || rc=$EX_TEMPFAIL
   else
     if ! write_restore_intent cleanup-ready ''; then
@@ -477,6 +509,7 @@ cleanup() {
       cleanup_text=$(IFS=,; printf '%s' "${RESTORE_CLEANUP_FAILURES[*]}")
       write_restore_intent cleanup-required "$cleanup_text" || echo 'restore: cleanup state could not be durably updated; remaining evidence is retained' >&2
       echo "restore: cleanup is uncertain (${cleanup_text}); remaining durable evidence retained at $RESTORE_WORK" >&2
+      rerun_blocked_advice
       [ "$rc" -ne 0 ] || rc=$EX_TEMPFAIL
     elif remove_restore_work_record; then
       release_restore_claim || {
@@ -697,13 +730,38 @@ AVAIL_MB=$(( AVAIL_KB / 1024 ))
 SCRATCH=$(mktemp -d "$SCRATCH_ROOT/restore-snapshot.XXXXXX")
 chmod 0700 "$SCRATCH"
 write_restore_intent active '' || die 'could not durably record the private restore scratch path' "$EX_REFUSED"
-RESTORE_ARGS=("$SNAPSHOT")
-[ "$SNAPSHOT" != latest ] || RESTORE_ARGS+=(--tag nightly)
-say "reading snapshot $SNAPSHOT from the backup repository into a private scratch folder (removed when this ends). This can take a while."
-if ! "${RESTIC[@]}" restore "${RESTORE_ARGS[@]}" --target "$SCRATCH" \
+# "latest" is looked up once, here, and this run reads exactly that snapshot. Every message names
+# it by its id, so running the restore again reads the same backup even if a newer snapshot (say a
+# nightly backup on a server whose timer was switched on early) has been written in the meantime.
+if [ "$SNAPSHOT" = latest ]; then
+  RESOLVED_SNAPSHOT=$("${RESTIC[@]}" snapshots --json --tag nightly </dev/null | python3 -c '
+import datetime, json, re, sys
+def moment(snapshot):
+    value = re.sub(r"(\.\d{6})\d+", r"\1", snapshot["time"]).replace("Z", "+00:00")
+    return datetime.datetime.fromisoformat(value)
+try:
+    snapshots = json.load(sys.stdin)
+    if not isinstance(snapshots, list) or not snapshots:
+        raise ValueError()
+    newest = max(snapshots, key=moment)
+    full, short = newest["id"], newest.get("short_id") or newest["id"][:8]
+    if not re.fullmatch(r"[0-9a-f]{64}", full) or not re.fullmatch(r"[0-9a-f]{8,64}", short) or not full.startswith(short):
+        raise ValueError()
+    print(full, short)
+except Exception:
+    raise SystemExit(1)
+') || die "restic could not list the nightly snapshots in the backup repository, so I do not know which one is the newest (its message, if any, is above). Check the network and the repository password, or name a snapshot id instead of latest. Nothing on this server was changed." "$EX_REFUSED"
+  read -r SNAPSHOT_ID SNAPSHOT_SHOWN <<EOF
+$RESOLVED_SNAPSHOT
+EOF
+  RUN_AGAIN_TAIL=", with --snapshot $SNAPSHOT_SHOWN in place of latest, so that it reads this same snapshot even if a newer one has been written since"
+  say "the newest nightly snapshot is $SNAPSHOT_SHOWN; this run restores exactly that one."
+fi
+say "reading snapshot $SNAPSHOT_SHOWN from the backup repository into a private scratch folder (removed when this ends). This can take a while."
+if ! "${RESTIC[@]}" restore "$SNAPSHOT_ID" --target "$SCRATCH" \
      --include "$REQUIRED_PATH" --include /srv/lares/agents --include /srv/lares/retired \
      --include /srv/lares/installation --include /srv/taste --include /srv/vault --include /var/lib/lares-vault-git </dev/null; then
-  die "restic could not restore snapshot '$SNAPSHOT' (its message is above). Check the snapshot id, the network and the repository password. Nothing on this server was changed." "$EX_REFUSED"
+  die "restic could not restore snapshot '$SNAPSHOT_SHOWN' (its message is above). Check the snapshot id, the network and the repository password. Nothing on this server was changed." "$EX_REFUSED"
 fi
 
 # --- 7. the snapshot must hold what a restore needs -----------------------------------------------
@@ -762,9 +820,25 @@ store_refused() { # store_refused <database> <what was found>
   die "the agent store $1 in this snapshot cannot be restored by this release: $2. This release restores an agent store written by this release, or by the release before it (it upgrades those after restoring them). If a newer release wrote this backup, install that release or a newer one with install.sh, then restore. Otherwise restore with the release that wrote it, then update with lares update. Nothing has been changed." "$EX_REFUSED"
 }
 WORKFLOW_OLD_STORES=()
+# This release's full list of store schema steps is engine code. A checkout has it under lib/; an
+# installed server has only ops/ and sql/ of the box (ops/unpack-engine.sh), so it is read out of
+# the engine image, whose keeper checks every store against this same file. Only `cat` runs, with
+# no network and nothing mounted. A failed read leaves the copy empty, which refuses below.
+WORKFLOW_STEPS_LIB="$BOX_DIR/lib/workflow-database-privileges.ts"
+WORKFLOW_STEPS_READ=0
+read_workflow_steps_list() {
+  [ "$WORKFLOW_STEPS_READ" = 0 ] || return 0
+  WORKFLOW_STEPS_READ=1
+  [ "$ENGINE_MODE" = image ] || return 0
+  WORKFLOW_STEPS_LIB="$SCRATCH/.workflow-database-privileges.ts"
+  docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --entrypoint cat "$ENGINE_IMAGE" /app/services/box/lib/workflow-database-privileges.ts \
+    </dev/null > "$WORKFLOW_STEPS_LIB" 2>/dev/null || : > "$WORKFLOW_STEPS_LIB"
+}
 for db in "${DUMPS[@]}"; do
   # Other lares_ names are refused later, as before, by the same rules restore_database keeps.
   [[ "$db" =~ ^lares_[a-f0-9]{32}$ ]] || continue
+  read_workflow_steps_list
   layout_toc="$SCRATCH/.workflow-layout-$db.toc"; layout_data="$SCRATCH/.workflow-layout-$db.data"
   db_run pg_restore -l < "$DUMP_DIR/$db.dump" > "$layout_toc" 2>/dev/null \
     || store_refused "$db" "its contents could not be read out of the backup file"
@@ -772,7 +846,7 @@ for db in "${DUMPS[@]}"; do
     < "$DUMP_DIR/$db.dump" > "$layout_data" 2>/dev/null \
     || store_refused "$db" "its record of schema steps could not be read out of the backup file"
   layout_code=0
-  layout=$(python3 "$HERE/workflow-backup-layout.py" "$BOX_DIR/lib/workflow-database-privileges.ts" "$HERE/workflow-store-migrate.mjs" \
+  layout=$(python3 "$HERE/workflow-backup-layout.py" "$WORKFLOW_STEPS_LIB" "$HERE/workflow-store-migrate.mjs" \
     "$layout_toc" "$layout_data" 2> "$SCRATCH/.workflow-layout.err") || layout_code=$?
   [ "$layout_code" -ne 1 ] || die "this release's own list of agent store schema steps could not be read ($(workflow_reason_from "$SCRATCH/.workflow-layout.err")). Nothing has been changed." "$EX_REFUSED"
   [ "$layout_code" -eq 0 ] || store_refused "$db" "$(workflow_reason_from "$SCRATCH/.workflow-layout.err")"
@@ -913,6 +987,16 @@ if [ "$NATIVE_PREPARED" = 1 ];then
   say 'prepared native custody is recorded outside backups and will be drained before restore'
 fi
 
+# An agent store check or upgrade from an earlier attempt that is still running (its restore was
+# killed, or install or update left one behind) works on a store this run is about to drop and
+# restore again. Two of them on one store fail each other, so wait for it to end first.
+LEFTOVER_STORE_STEPS=$(docker ps --filter label=lares.maintenance=workflow-store --format '{{.Names}}' </dev/null) \
+  || die "I could not ask Docker whether an agent store step from an earlier attempt is still running. This run has changed nothing (an earlier run of this same restore may already have stopped services and restored agent stores)." "$EX_REFUSED"
+if [ -n "$LEFTOVER_STORE_STEPS" ]; then
+  LEFTOVER_STORE_NAMES=$(printf '%s\n' "$LEFTOVER_STORE_STEPS" | tr -d '\r' | grep -E '^[A-Za-z0-9][A-Za-z0-9_.-]*$' | head -5 | tr '\n' ' ' | sed 's/ *$//') || LEFTOVER_STORE_NAMES=""
+  die "an agent store step from an earlier attempt is still running (${LEFTOVER_STORE_NAMES:-a container labelled lares.maintenance=workflow-store}). It checks or upgrades one agent store, and this restore would drop and restore that store while it runs. Wait until it ends (docker ps --filter label=lares.maintenance=workflow-store lists it until then), or stop it with docker rm --force <name>, then run the same restore again. This run has changed nothing (an earlier run of this same restore may already have stopped services and restored agent stores)." "$EX_REFUSED"
+fi
+
 # --- 8. dry run stops here ----------------------------------------------------------------------------
 if [ "$DRY" = 1 ]; then
   say "dry run: nothing on this server was changed. With these answers I would:"
@@ -930,11 +1014,11 @@ fi
 
 # --- 9. the owner's last say --------------------------------------------------------------------------
 if [ "$ASSUME_YES" != 1 ]; then
-  say "This replaces EVERY database on this server with snapshot $SNAPSHOT, and copies the agents, retired, taste and installation folders over."
+  say "This replaces EVERY database on this server with snapshot $SNAPSHOT_SHOWN, and copies the agents, retired, taste and installation folders over."
   printf 'restore: is the OLD server switched off? Two live servers would both answer chat and both write to the backup repository. Type stopped to confirm: ' >&2
   ans=""; IFS= read -r ans || ans=""
   [ "$ans" = "stopped" ] || die "not confirmed, so nothing was changed." "$EX_REFUSED"
-  printf 'restore: replace this server with snapshot %s now? [y/N] ' "$SNAPSHOT" >&2
+  printf 'restore: replace this server with snapshot %s now? [y/N] ' "$SNAPSHOT_SHOWN" >&2
   ans=""; IFS= read -r ans || ans=""
   case "$ans" in y|Y|yes|YES) ;; *) die "not confirmed, so nothing was changed." "$EX_REFUSED" ;; esac
 fi
@@ -947,7 +1031,8 @@ midway() { # midway <what failed>
   # check above, so the same restore can be run again (and a damaged store file needs an earlier
   # snapshot; a rebuilt server would fail on it the same way).
   if [ "$ONLY_AGENT_STORES_CHANGED" = 1 ]; then
-    die "$1 This restore stopped while restoring the agent stores from snapshot $SNAPSHOT. Nothing outside the agent stores was changed, so this server still counts as a fresh install. Already changed: $CHANGED. The services that were stopped stay stopped. Run the same restore command again. If the backup file of an agent store is damaged it will stop here again: then list the snapshots with restic snapshots and restore an earlier one. The backup repository was never written to." "$EX_TEMPFAIL"
+    RERUN_ADVISED=1
+    die "$1 This restore stopped while restoring the agent stores from snapshot $SNAPSHOT_SHOWN. Nothing outside the agent stores was changed, so this server still counts as a fresh install. Already changed: $CHANGED. The services that were stopped stay stopped. Run the same restore command again${RUN_AGAIN_TAIL}. If the backup file of an agent store is damaged it will stop here again: then list the snapshots with restic snapshots and restore an earlier one. The backup repository was never written to." "$EX_TEMPFAIL"
   fi
   die "$1 This restore is only part done. Already changed: $CHANGED. The services that were stopped stay stopped. This server is no longer a fresh install, so do not simply run restore.sh again: rebuild a clean server, run install.sh, then restore. The backup repository was never written to." "$EX_TEMPFAIL"
 }
@@ -1061,7 +1146,8 @@ workflow_apply_one() { # KIND DATABASE ERRFILE
 # with its services stopped, and the same restore can simply be run again: it drops and restores
 # every agent store from the backup a second time.
 store_upgrade_stopped() {
-  die "$WORKFLOW_REASON. This restore stopped while upgrading the agent stores from snapshot $SNAPSHOT, before your main database, the model gateway's database, the Vault and the folders were replaced, so this server still counts as a fresh install. Already changed: $CHANGED. The services that were stopped stay stopped. Fix the cause and run the same restore command again: it restores every agent store from the backup again and upgrades it again. The backup repository was never written to." "$EX_TEMPFAIL"
+  RERUN_ADVISED=1
+  die "$WORKFLOW_REASON. This restore stopped while upgrading the agent stores from snapshot $SNAPSHOT_SHOWN, before your main database, the model gateway's database, the Vault and the folders were replaced, so this server still counts as a fresh install. Already changed: $CHANGED. The services that were stopped stay stopped. Fix the cause and run the same restore command again${RUN_AGAIN_TAIL}: it restores every agent store from the backup again and upgrades it again. The backup repository was never written to." "$EX_TEMPFAIL"
 }
 # The check and the upgrade are NOT fixed restore jobs: like install.sh and update.sh, they run
 # through workflow_store_step (engine-run.sh), a short-lived `docker run --rm` of the installed
@@ -1071,11 +1157,13 @@ store_upgrade_stopped() {
 #    inside the container), and it never touches the main database, the Vault or the folders;
 #  - each upgrade is one transaction: stopped at any point, the store stays as the backup had it;
 #  - it is time-limited (two minutes for a check, LARES_WORKFLOW_UPGRADE_SECONDS, 15 minutes by
-#    default, for an upgrade) and removed by force when it runs out;
+#    default, for an upgrade) and removed by force when it runs out, as long as the host
+#    `timeout` that watches it is still alive (a kill of the whole process group takes that too);
 #  - if this restore is killed while one runs, the container may finish or fail on its own, but
-#    only inside that one store, and a second run of this restore first drops that store with
-#    `dropdb --force`, which ends its session and rolls back whatever it had not committed. It
-#    holds no restore claim or run record, so it cannot keep a second run out.
+#    only inside that one store. A second run of this restore refuses, before it changes
+#    anything, while any such container is still running (the check above the dry run), so two
+#    of them never work on one store; once it has ended, the second run drops that store with
+#    `dropdb --force` and restores it again. It holds no restore claim or run record.
 # The permissions step, which needs the agents' login as well, is the fixed restore job.
 ONLY_AGENT_STORES_CHANGED=1
 for db in "${DUMPS[@]}"; do
@@ -1230,7 +1318,7 @@ CHANGED="$CHANGED; base stack started"
 keeper_dc up -d </dev/null || midway "Could not start the keeper."
 if [ "$FINANCIAL_PREPARED" = 1 ];then
   CHANGED="$CHANGED; keeper start requested (financial recovery required)"
-  say "restored snapshot $SNAPSHOT: ${#DUMPS[@]} database(s), ${#AGENT_NAMES[@]} agent folder(s)."
+  say "restored snapshot $SNAPSHOT_SHOWN: ${#DUMPS[@]} database(s), ${#AGENT_NAMES[@]} agent folder(s)."
   say 'Financial recovery is required. Protected custody remains permanently frozen; the keeper starts with spending closed.'
   say 'A detached compose start does not prove keeper, runtime or spending readiness. Keep agents stopped.'
   say 'Owner-directed reconciliation must preserve unknown liabilities and suppression, then invalidate restored console, resume and job authority before any fresh caps, keys or profiles.'
@@ -1240,7 +1328,7 @@ fi
 CHANGED="$CHANGED; keeper started"
 
 # --- 11. what is left for you -------------------------------------------------------------------------------
-say "restored snapshot $SNAPSHOT: ${#DUMPS[@]} database(s), ${#AGENT_NAMES[@]} agent folder(s). The agents themselves are NOT running yet; step 4 below starts them."
+say "restored snapshot $SNAPSHOT_SHOWN: ${#DUMPS[@]} database(s), ${#AGENT_NAMES[@]} agent folder(s). The agents themselves are NOT running yet; step 4 below starts them."
 say ""
 say "What is left, in this order:"
 step=1
