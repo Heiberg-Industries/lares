@@ -69,6 +69,8 @@ NOTE_REPLY = "PROOF_APPROVED_NOTE_SAVED"
 TOOL_REPLY = "PROOF_TOOL_RESULT_RECEIVED"
 FOLLOW_UP_REPLY = "PROOF_CONVERSATION_KEPT"
 MEMBER_LIMIT = "15"
+EDITED_DESCRIPTION = "PROOF_EDITED_DESCRIPTION written on the console page while the agent runs."
+SAVE_WARNING = "open web-chat conversations, and any approval waiting in them. Start a new conversation afterwards."
 INSTALL_TIMEOUT = 1500
 LIMITS = [
     "The model provider and the sign-in provider are stand-ins: a real provider's replies are copied, not called.",
@@ -81,6 +83,8 @@ LIMITS = [
     "Who pays is checked for one person and Approve only: how the call after a Deny is booked, and booking to a second member, are covered by the box tests, not here.",
     "The update goes to a second build of the same code (a new label, so new digests): a release that changes code or adds migrations is not covered.",
     "Saving a definition in the console after the update is not exercised; agent start and the agent's restart are.",
+    "A started agent takes one edit on the console page (its description), before the update. Apply after a door or model change on a started agent is covered by keeper tests here and by the door stage of the door fix.",
+    "The conversation the edit ends is a plain one with one message; that an approval waiting in such a conversation cannot be answered afterwards is covered by the agent's tests, not here.",
     "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
     "A real agent answer is not covered: the stand-in decides what the model says.",
@@ -277,6 +281,28 @@ def keeper_held_lines() -> list[str]:
         return ["the keeper is not running"]
     logs = run("docker", "logs", ids[0], check=False, show=False)
     return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line]
+
+
+def keeper_log_lines(phrase: str) -> list[str]:
+    """Lines of the keeper's log that contain a fixed phrase."""
+    ids = output("docker", "ps", "-q", "--filter", "label=com.docker.compose.service=lares-keeper").split()
+    if not ids:
+        return ["the keeper is not running"]
+    logs = run("docker", "logs", ids[0], check=False, show=False)
+    return [line.strip()[:300] for line in (logs.stdout + logs.stderr).splitlines() if phrase in line]
+
+
+def agent_started_at() -> str | None:
+    """When the proof agent's running container was started; None when it is not running."""
+    ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    return output("docker", "inspect", "--format", "{{.State.StartedAt}}", ids[0]) if ids else None
+
+
+def settled_conversation_calls(release: dict) -> list[tuple[str, str]]:
+    """(conversation, payer) for every settled call booked to a conversation, oldest first."""
+    rows = read_only_query("SELECT a.authority_reference#>>'{binding,sessionId}', coalesce(a.live_member_id, '') FROM budget_attempts a "
+                           "WHERE a.state = 'settled' AND a.authority_reference->>'kind' = 'human' ORDER BY a.created_at, a.id", release)
+    return [tuple(line.split("|", 1)) for line in rows.splitlines() if line]
 
 
 def agent_permission_denied_lines() -> list[str]:
@@ -1206,6 +1232,8 @@ def main(argv: list[str]) -> int:
             "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "notePrompt": NOTE_PROMPT, "noteReply": NOTE_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
             # Any message the stand-in does not recognise is answered with PROOF_OK.
             "afterUpdatePrompt": "PROOF_AFTER_THE_UPDATE", "afterUpdateReply": "PROOF_OK", "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
+            "beforeEditPrompt": "PROOF_BEFORE_THE_EDIT", "oldConversationPrompt": "PROOF_OLD_CONVERSATION_AFTER_THE_EDIT", "afterEditPrompt": "PROOF_AFTER_THE_EDIT",
+            "editedDescription": EDITED_DESCRIPTION, "saveWarning": SAVE_WARNING,
             "screenshotDir": str(shots),
         }))
         browser("discover-owner", settings_file, tls)
@@ -1275,6 +1303,52 @@ def main(argv: list[str]) -> int:
             deferred.append(f"the agent's log has {len(denied)} database permission errors, first: {denied[0]}")
         else:
             passed("the-agent-log-has-no-database-permission-errors")
+
+        stage("a started agent takes an edit")
+        # The installation owner ruled that a change to a running agent applies from the console alone,
+        # and that saving it may end the open web-chat conversations, with a warning on the page.
+        started_before = agent_started_at()
+        calls_before = settled_conversation_calls(release)
+        browser("edit-after-start", settings_file, tls)
+        if agent_started_at() != started_before or started_before is None:
+            deferred.append(f"the agent's container was stopped or restarted by a description save (started {started_before}, now {agent_started_at()})")
+        else:
+            passed("a-description-save-did-not-stop-or-restart-the-agent")
+        saved = read_only_query("SELECT json_build_object('description', d.definition->>'description', 'applied', r.applied_definition->>'description', "
+                                f"'pending', r.pending) FROM agent_definitions d JOIN agent_resources r ON r.name = d.name WHERE d.name = '{AGENT}'", release)
+        saved = json.loads(saved) if saved else {}
+        proof["editAfterStart"] = {"savedDescriptionEdited": saved.get("description") == EDITED_DESCRIPTION,
+                                   "appliedAtSave": saved.get("applied") == EDITED_DESCRIPTION, "pending": saved.get("pending")}
+        save_proof()
+        if saved.get("description") == EDITED_DESCRIPTION and saved.get("applied") == EDITED_DESCRIPTION and saved.get("pending") is False:
+            passed("the-saved-definition-carries-the-edit-applied-with-nothing-pending")
+        else:
+            deferred.append(f"after the description save the definition is {proof['editAfterStart']}")
+        stopped = keeper_log_lines("was stopped after a save")
+        if stopped:
+            deferred.append(f"the keeper logged a stop after the save: {stopped[0]}")
+        else:
+            passed("the-keeper-log-has-no-stop-after-a-save")
+        deadline = time.monotonic() + 60
+        while True:
+            calls_after = settled_conversation_calls(release)
+            new = calls_after[len(calls_before):]
+            old_sessions = {session for session, _ in calls_before}
+            around_edit = [call for call in new if call[0] not in old_sessions]
+            if len({session for session, _ in around_edit}) >= 2 or time.monotonic() > deadline:
+                break
+            time.sleep(3)
+        owner = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member'", release)
+        sessions = list(dict.fromkeys(session for session, _ in around_edit))
+        proof["editAfterStart"]["newSettledCalls"] = [{"conversation": sessions.index(session) + 1, "paidByOwner": payer == owner} for session, payer in around_edit]
+        save_proof()
+        # The conversation from before the save, then the new one; once the new one has a call, the old one takes no more.
+        first_new = next((index for index, (session, _) in enumerate(around_edit) if len(sessions) == 2 and session == sessions[1]), None)
+        if (len(sessions) == 2 and first_new is not None and all(payer == owner for _, payer in around_edit)
+                and all(session == sessions[1] for session, _ in around_edit[first_new:])):
+            passed("after-the-edit-the-old-conversation-was-refused-and-a-new-one-was-answered-and-charged-to-the-owner")
+        else:
+            deferred.append(f"the calls around the description save were not as expected: {proof['editAfterStart']['newSettledCalls']}")
 
         stage("sudo lares backups")
         run("apt-get", "update", "-qq", timeout=300, show=False)
