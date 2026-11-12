@@ -11,6 +11,12 @@ Run it from a clean checkout of the release branch, after `pnpm install`.
    whether a final exists.
 3. **Security.** `pnpm audit --prod`, and `gh api "advisories?ecosystem=npm&affects=<package>"` for
    the main ones. Check the gateway and the base images against their own advisories the same way.
+   A clean `pnpm audit` is not enough and is never cited as evidence either way: its database can
+   lag a project's own advisories. For every package with a newer version in the same major line,
+   also read that project's release notes and its published security advisories (the repository's
+   security advisories on GitHub) for every version between ours and the latest. On 12 November
+   2026 `pnpm audit --prod` listed neither `next` nor `undici`, yet next 16.4.5 fixed seven moderate
+   advisories affecting 16.4.1, and undici 8.12.4 fixed six, one of them high (GHSA-mqg3-3v4r-cm32).
 4. **Patches.** If a package is patched (`patches/`), compare the files the patch touches with the
    new upstream version. Identical means the patch still applies; otherwise cut it again.
 5. **Must update before the release ships:** a published security fix in the version line we use; a
