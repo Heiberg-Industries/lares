@@ -67,8 +67,8 @@ On top of the default lane (which still passes inside each run), the gateway lan
 
 ## Not proven here
 
-- The approve and deny resumes (`PRIVATE_CHAT_PROOF_SEND=1`) and the budget lane: see the lane 3
-  section of this pull request, recorded below when run.
+- The approve and deny resumes (`PRIVATE_CHAT_PROOF_SEND=1`) and the budget lane: both fail before
+  their gateway and budget checks; see `member-private-chat-budget-2026-11-12.md`.
 - A live gateway or provider: the fixture is what we believe the wire looks like.
 - Durable crash replay of a model call (the script's own line says so: "no durable crash-replay
   claim").
