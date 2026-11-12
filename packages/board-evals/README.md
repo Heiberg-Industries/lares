@@ -49,19 +49,19 @@ Each one boots a real eve runtime against a disposable Postgres with a scripted 
 | A tainted turn raises a card and an untainted one does not, under the real turn ids | `node scripts/tainted-approval-proof.mjs` | `proofs/tainted-approval-2026-11-11.md` (eve 1.0.0-rc.9), `proofs/tainted-approval-2026-09-20.md` (0.60.1) |
 | Typed text never approves a waiting card, and what happens to the card when a person types | `pnpm -C packages/board-evals run proof:pending-reply` | `proofs/pending-reply-2026-11-11.md` (eve 1.0.0-rc.9), `proofs/pending-reply-2026-10-19.md` (0.60.1) |
 | In a live `eve start` server the guard refuses a bare model id handed to the AI SDK, while the scripted model still serves the turn; with the guard file deleted no default provider is installed | `node scripts/model-guard-proof.mjs` | `proofs/model-guard-2026-11-11.md` |
-| Two members' private conversations through the console's real proxy, on the actual compiled roles: isolation, refusals before the agent, cards, cold restart, revocation | `pnpm -C packages/board-evals exec tsx scripts/member-private-chat-proof.mjs` (lanes in the record) | `proofs/member-private-chat-2026-11-11.md` (eve 1.0.0-rc.9): default, Tracks and Vault lanes pass; the mail-send lane **fails** on a denied card |
-| The console's chat proxy really carries a turn: the agent's own Basic-gated door, the real `forwardChat`, eve's own browser `Client`, a reconnecting stream, and the wire shape of an approval | `pnpm -C packages/board-evals run proof:web-chat` | `proofs/web-chat-2026-09-20.md` (0.60.1). **Not runnable at present**, see below |
-| An approval through the console's proxy with the real approver check | `pnpm -C packages/board-evals run proof:web-chat-approval` | `proofs/web-chat-approval-2026-09-20.md` (0.60.1). **Not runnable at present**, see below |
+| Two members' private conversations through the console's real proxy, on the actual compiled roles: isolation, refusals before the agent, cards, cold restart, revocation | `pnpm -C packages/board-evals exec tsx scripts/member-private-chat-proof.mjs` (lanes in the record) | `proofs/member-private-chat-2026-11-12.md` (eve 1.0.0-rc.10): Tracks lane, and mail send with and without the budget lane on both gateway wires, pass. Earlier lanes: `proofs/member-private-chat-2026-11-11.md` (default, creative, Vault), `proofs/member-private-chat-gateway-2026-11-12.md`, `proofs/member-private-chat-budget-2026-11-12.md` |
+| The console's chat proxy really carries a turn: the agent's own Basic-gated door, the real `forwardChat`, eve's own browser `Client`, a reconnecting stream, and the wire shape of an approval | `pnpm -C packages/board-evals run proof:web-chat` | `proofs/web-chat-2026-11-12.md` (eve 1.0.0-rc.9, 13/13; re-run 13/13 on rc.10, noted in `proofs/member-private-chat-2026-11-12.md`), `proofs/web-chat-2026-09-20.md` (0.60.1) |
+| An approval through the console's proxy with the real approver check | `pnpm -C packages/board-evals run proof:web-chat-approval` | **Retired on eve 1.0**: `proofs/web-chat-approval-2026-11-12.md` says why and what covers it, mainly the member proof's Tracks lane (and its mail-send lane). `proofs/web-chat-approval-2026-09-20.md` (0.60.1) is history |
 
-The two web-chat proofs import the console's `chat-proxy.ts` (and, for the approval one, three of a
-role's files) straight from the source tree with Node's own type stripping. Those files have since
-grown imports plain Node cannot follow (extensionless module paths, kit modules that name their
-neighbours as `.js`, a dozen role modules), and the proxy's contract now includes a bound session
-and signed requests. That happened before the eve 1.0 upgrade and is independent of it (re-checked
-on 11 November 2026: both stop at load with `ERR_MODULE_NOT_FOUND` for
-`packages/agent-kit/src/console-source-transaction.js`, imported by `console-turn-authority.ts`).
-`member-private-chat-proof.mjs` runs the same proxy under `tsx` and is the current proxy evidence. Restoring
-them means rewriting both against the console's current proxy and running them under a TypeScript
-loader; until then the console's own tests are the evidence for the proxy.
+The web-chat proof runs under `tsx` (plain Node cannot follow the console proxy's imports of
+agent-kit TypeScript through `.js` paths); it imports the real `forwardChat` and
+feeds it real member, grant and session rows; it does not answer a card. The web-chat approval proof
+cannot run on eve 1.0 and is not to be ported: it copied the chief of staff's door,
+`lib/approvals.ts` and `lib/principals.ts` byte for byte into a fixture, and those files now import
+the console admission, Vault broker and model-purpose modules and a dozen role modules, so the copy
+no longer builds. Its ground (only the person who started a conversation can answer its card, other
+members, sessions, forged ids and the route password alone are refused before the model, Approve
+acts exactly once across a cold restart) is covered by `member-private-chat-proof.mjs` against the
+real compiled role and the real proxy. The script and its `package.json` entry are still in place.
 
 `seams.eval.ts` and `replay.eval.ts` remain separately available as measurements of eve's dynamic seams: `node scripts/all-evals.mjs --seams-only` runs both in a fixture with no mounted definition. They are not the required suite, and their file-driven `SEAM_GRANTS` is not definition authorization evidence. Neither hands eve a model id (the model-id routing probe an early version carried is gone; this project never gives eve a bare model id). `scripts/doors-probe.mjs` remains a standalone isolated supplemental probe.
