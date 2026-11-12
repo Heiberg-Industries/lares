@@ -336,8 +336,13 @@ async function assertPrivateConsoleTool(ctx: unknown, role: "chief-of-staff", na
  *  (`outwardActionAfterAnswerRefusal`, lib/approval-card-turns.ts): calendar writes email the attendees,
  *  and the two door sends mail them. The personal mail send applies the same rule in its own policy. */
 const OUTWARD_AFTER_ANSWER_TOOLS: ReadonlySet<string> = new Set(['calendar_create_event','calendar_update_event','calendar_delete_event','gmail_send','meeting_followup_send']);
-/** eve's statuses that pause for a person (`"user-approval"`, or its boolean form). */
-const asksAPerson = (decision: unknown) => decision === 'user-approval' || decision === true;
+/** eve's approval statuses that raise NO card (docs/tools/human-in-the-loop.md, "Write your own
+ *  policy"): continue without a prompt (`"not-applicable"` / `false`), run without a person
+ *  (`"approved"`), or deny (`"denied"` / `{ type: "denied", reason }`). The forms that pause for a
+ *  person are `"user-approval"` / `true`. Anything else is unknown and is treated as asking (fails
+ *  closed): in the reply to an answered request it is refused like a card. */
+const raisesNoCard = (decision: unknown) => decision === 'not-applicable' || decision === false || decision === 'approved' || decision === 'denied' ||
+  (typeof decision === 'object' && decision !== null && (decision as { type?: unknown }).type === 'denied');
 /** The shared rule, for a call that is about to raise a card. Never for eve's recheck of a call that
  *  is already approved: that is the answered card's own action, and it runs as before. */
 const outwardRefusal = (name: string, ctx: unknown) => OUTWARD_AFTER_ANSWER_TOOLS.has(name) && !isApprovalRecheck(ctx)
@@ -353,7 +358,7 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
     // A tool the owner set to run on its own ("autonomous") raises no card and is left as it is; one
     // that would ask first is refused in the reply to an answered request. At "gated" the authored
     // policy answers from the definition and the permissions table alone, before any provider call.
-    return asksAPerson(decision) ? outwardRefusal(name, ctx) ?? decision : decision;
+    return raisesNoCard(decision) ? decision : outwardRefusal(name, ctx) ?? decision;
   }
   // Web chat: every call of these tools asks first, so the refusal comes before the reservation.
   const answered = outwardRefusal(name, ctx);
