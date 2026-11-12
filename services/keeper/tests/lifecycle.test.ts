@@ -178,7 +178,7 @@ it('stages rendered native runtimes without a legacy key and checks current auth
  events=[];await l.reconcile('bookkeeper',chief);expect(events).toContain('start:bookkeeper');
  expect(await l.status('bookkeeper')).toEqual({pending:false,reason:null});
  // Before a model change is stored, a started agent must already hold a working key for the new name.
- await expect(l.prepare('bookkeeper',{...chief,model:'lares-no-key'},false)).rejects.toThrow('This agent has no working spending key for the model name lares-no-key, so its model was not changed.');
+ await expect(l.prepare('bookkeeper',{...chief,model:'lares-no-key'},false)).rejects.toThrow('This agent has no working spending key for the model name lares-no-key, so its model was not changed. A key exists only for a model name the gateway serves and budget setup priced. While the agent is still on the model name budget setup was made for, sudo lares agent start bookkeeper on the server makes the keys for the other priced names.');
  await expect(l.prepare('bookkeeper',{...chief,model:'lares-keyed-model'},false)).resolves.toBeUndefined();
  const observedDocker:DockerBoundary={...docker,inspect:async()=>({id:'container',running:true,incarnation:'11111111-1111-4111-8111-111111111111',notionRevision:null,image,mounts:[],addresses:[]}),healthy:async()=>true};
  const heldAuthority={current:async()=>({state:'held' as const,reason:'Native budget activation required' as const})};

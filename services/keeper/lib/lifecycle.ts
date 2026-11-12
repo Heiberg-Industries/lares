@@ -46,7 +46,9 @@ export type OutsideRouteLease = { assertCurrent(): Promise<OutsideRouteReview> }
  * definition: ordinary edits are live, and the money stays bound by the model name, the reviewed prices and the limits. */
 export type NativeRuntimeIdentity = { agent: string; incarnation: string; purposeAlias: string };
 export type NativeRuntimeState = { state: 'active' } | { state: 'held'; reason: 'Native budget activation required'; detail?: 'no-matching-key' };
-export type NativeRuntimeAuthority = { current(identity: NativeRuntimeIdentity): Promise<NativeRuntimeState> };
+/** 'model-change': asked while a model change is being saved, about the new name; the running agent is not held by it. */
+export type NativeRuntimeCheck = 'runtime' | 'model-change';
+export type NativeRuntimeAuthority = { current(identity: NativeRuntimeIdentity, check?: NativeRuntimeCheck): Promise<NativeRuntimeState> };
 const NATIVE_HELD = 'Native budget activation required' as const;
 function refusePendingRetirement(row: any): void {
     if (row?.pending && row.pending_reason === RETIREMENT_PENDING)
@@ -737,9 +739,9 @@ export class AgentLifecycle {
         if (!this.nativeAuthority || !row?.applied_definition || row.applied_definition.model === d.model ||
             typeof row.ownership_token !== 'string' || typeof d.model !== 'string') return;
         if ((await this.currentNative(name)).state !== 'active') return;
-        const target = await this.nativeAuthority.current({ agent: name, incarnation: row.ownership_token, purposeAlias: d.model });
+        const target = await this.nativeAuthority.current({ agent: name, incarnation: row.ownership_token, purposeAlias: d.model }, 'model-change');
         if (target?.state !== 'active')
-            throw new KeeperRefusedError(`This agent has no working spending key for the model name ${d.model}, so its model was not changed. Run sudo lares agent start ${name} on the server first: it makes a key for each model name the gateway serves.`);
+            throw new KeeperRefusedError(`This agent has no working spending key for the model name ${d.model}, so its model was not changed. A key exists only for a model name the gateway serves and budget setup priced. While the agent is still on the model name budget setup was made for, sudo lares agent start ${name} on the server makes the keys for the other priced names.`);
     }
     async create(name: string, d: AgentDefinition) {
         if (this.nativeGuarded && (d.role !== 'chief-of-staff' || !this.paths.modelPurposeRuntimeDir || typeof d.model !== 'string' || !/^[a-z][a-z0-9-]{1,63}$/.test(d.model)))

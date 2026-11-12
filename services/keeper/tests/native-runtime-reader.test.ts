@@ -46,16 +46,18 @@ describe('Keeper native lifecycle reader composition',()=>{
    // No key at all for this agent, incarnation and model name is told apart from every other refusal.
    authority.current.mockResolvedValueOnce({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
    await expect(reader.current(identity)).resolves.toEqual({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
-   expect(log.mock.calls.at(-1)!.join(' ')).toBe('keeper: bookkeeper is held: no spending key matches this agent, its incarnation and the model name lares-main');
+   expect(log.mock.calls.at(-1)!.join(' ')).toBe('keeper: bookkeeper is held: no spending key matches this agent, its incarnation and its model name');
    await reader.current(identity);
-   // A check for another model name (a model change being saved) is noted on its own, and never reads as
-   // the agent itself being released or held again.
+   // A check made while a model change is saved is about the new name: it never says the running agent is
+   // held or released, only that the change was refused, in a fixed phrase. A passing check says nothing.
    authority.current.mockResolvedValueOnce({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
    const before=log.mock.calls.length;
-   await reader.current({...identity,purposeAlias:'lares-other'});await reader.current(identity);
-   expect(log.mock.calls.slice(before).map(call=>call.join(' '))).toEqual(['keeper: bookkeeper is held: no spending key matches this agent, its incarnation and the model name lares-other']);
+   await reader.current({...identity,purposeAlias:'lares-other'},'model-change');
+   await reader.current({...identity,purposeAlias:'lares-other'},'model-change');
+   await reader.current(identity);
+   expect(log.mock.calls.slice(before).map(call=>call.join(' '))).toEqual(['keeper: bookkeeper: a model change was refused: no spending key matches this agent, its incarnation and the new model name']);
    const all=log.mock.calls.flat().join(' ');
-   for(const secret of [identity.incarnation,'owner-id','/protected/reviewed-policy.json'])expect(all).not.toContain(secret);
+   for(const secret of [identity.incarnation,identity.purposeAlias,'lares-other','owner-id','/protected/reviewed-policy.json'])expect(all).not.toContain(secret);
   }finally{log.mockRestore();}
  });
 

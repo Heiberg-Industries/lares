@@ -4,7 +4,7 @@ import {trustedNativeGatewayOrigin} from './budget-native-cleanup.js';
 import {readBudgetNativePolicyDocument,selectBudgetNativeReviewedPolicy} from './budget-native-host.js';
 import {createNativeRuntimeAuthority} from './budget-native-runtime-authority.js';
 import type {HostFinancialJournal} from './financial-journal.js';
-import type {NativeRuntimeAuthority,NativeRuntimeIdentity,NativeRuntimeState} from './lifecycle.js';
+import type {NativeRuntimeAuthority,NativeRuntimeCheck,NativeRuntimeIdentity,NativeRuntimeState} from './lifecycle.js';
 
 /** Live Keeper dependencies for the guarded lifecycle's read-only authority check. Getters
  * deliberately resolve at each call: lifecycle construction precedes journal preparation. */
@@ -25,17 +25,20 @@ const held=():NativeRuntimeState=>({state:'held',reason:'Native budget activatio
 export function createKeeperNativeRuntimeReader(sources:NativeRuntimeReaderSources):NativeRuntimeAuthority {
   // Every refusal reads the same to the console, so the log says which prerequisite it was: a
   // fixed phrase per step, never a value. Once per change, because the console asks often.
-  // Noted per agent and model name: a check for another model name (a model change being saved) must not
-  // read as the agent itself being held and released.
+  // A check made for a model change being saved is about the new name, not the running agent: it never
+  // says the agent is held or released, and says once that the change was refused, and why.
   const logged=new Map<string,string>();
-  const note=(identity:NativeRuntimeIdentity,why:string|null)=>{
-    const key=`${identity.agent}\n${identity.purposeAlias}`;
-    if((logged.get(key)??null)===why)return;
-    if(why)logged.set(key,why);else logged.delete(key);
-    console.error(why?`keeper: ${identity.agent} is held: ${why}`:`keeper: ${identity.agent} is no longer held`);
+  const note=(agent:string,why:string|null)=>{
+    if((logged.get(agent)??null)===why)return;
+    if(why)logged.set(agent,why);else logged.delete(agent);
+    console.error(why?`keeper: ${agent} is held: ${why}`:`keeper: ${agent} is no longer held`);
   };
-  return Object.freeze({current:async(identity:NativeRuntimeIdentity):Promise<NativeRuntimeState>=>{
-    const hold=(why:string,state:NativeRuntimeState=held())=>{note(identity,why);return state;};
+  return Object.freeze({current:async(identity:NativeRuntimeIdentity,check:NativeRuntimeCheck='runtime'):Promise<NativeRuntimeState>=>{
+    const hold=(why:string,state:NativeRuntimeState=held())=>{
+      if(check==='model-change')console.error(`keeper: ${identity.agent}: a model change was refused: ${why}`);
+      else note(identity.agent,why);
+      return state;
+    };
     try{
       const custody=sources.custody(),journal=sources.journal(),pool=sources.pool(),ownerId=sources.designatedOwnerId();
       if(!sources.policyFile||!pool||!ownerId)return hold('the budget settings are incomplete');
@@ -52,9 +55,9 @@ export function createKeeperNativeRuntimeReader(sources:NativeRuntimeReaderSourc
         endpointHash:document.endpointHash,reviewedPolicy});
       const state=await reader.current(identity);
       if(state.state!=='active')return state.detail==='no-matching-key'
-        ?hold(`no spending key matches this agent, its incarnation and the model name ${identity.purposeAlias}`,state)
+        ?hold(check==='model-change'?'no spending key matches this agent, its incarnation and the new model name':'no spending key matches this agent, its incarnation and its model name',state)
         :hold('the budget authority check refused');
-      note(identity,null);
+      if(check==='runtime')note(identity.agent,null);
       return state;
     }catch{return hold('the budget authority check failed');}
   }});
