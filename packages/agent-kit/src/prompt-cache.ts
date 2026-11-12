@@ -5,23 +5,37 @@
  * provider can bill a repeated prefix at about a tenth of the price, but only up to a marked
  * point (a "breakpoint"), and only when every byte before that point is identical to last time.
  *
- * WHAT ALREADY HAPPENS (read out of the installed eve 0.60.1 dist, `harness/prompt-cache.js`,
- * `harness/tool-loop.js`, `harness/step-hooks.js`). eve marks breakpoints itself whenever the
- * model's `provider` contains "anthropic" — which `gatewayModel()` on the anthropic lane does
+ * WHAT ALREADY HAPPENS (read out of the installed eve 1.0.0-rc.10 dist,
+ * `harness/model-call/request.js`, `harness/prompt-cache.js`, `harness/step-hooks.js`,
+ * `definitions/definition.js`). eve marks breakpoints itself whenever the model's `provider`
+ * contains "anthropic" — which `gatewayModel()` on the anthropic lane does
  * ("anthropic.messages"). It marks the last tool, the last message and the last assistant
- * message, and the END of the system prompt. But it first glues every instruction block —
- * the session-stable persona and standing facts, then the per-turn language line and clock —
- * into ONE system string, so that one system breakpoint sits after the clock. The clock moves
- * every minute, so the persona never hits the cache across turns: it is re-written at the
- * cache-write price on every turn instead.
+ * message. For the system prompt it splits the instructions in two: the STATIC part (an
+ * `instructions.md`, static skills, workspace files) becomes a first system message carrying
+ * eve's breakpoint, and every instruction file's own section (`defineDynamic`) is joined, with
+ * "\n\n", into one second system message carrying none. That second message also holds eve's
+ * own sections: a recovery note first (only on the retry after an unsupported provider tool),
+ * and, after every instruction file, the tasks note and the pending-approvals note. Those two
+ * therefore sit after the boundary, in the per-turn part. A role has no static part: its persona,
+ * standing facts, language line and clock are all instruction files. So the first message is
+ * empty and dropped, and eve sends ONE system block with NO breakpoint, the per-turn text inside
+ * it. (Up to 1.0.0-rc.9 eve sent the same single block but with its breakpoint at the end, after
+ * the clock; the clock moves every minute, so that breakpoint never matched across turns.)
+ * Captured offline from the real role: `tests/fixtures/prompt-cache-eve-rc10-capture.json`.
  *
  * WHAT THIS MODULE DOES. Each role ends its session-scoped instructions with
  * {@link PROMPT_CACHE_BOUNDARY} (`agent/instructions/zz-cache-boundary.ts`). On the way out,
  * the gateway provider's fetch splits the system text block at that marker into two blocks and
- * MOVES eve's system breakpoint onto the first one: everything stable for the session is now
- * the cached prefix, and the per-turn text after it is billed normally. The marker itself never
- * reaches the model. Moving, not adding, keeps eve's request at Anthropic's limit of four
- * breakpoints (tools, system, two in the conversation).
+ * puts the breakpoint on the first one: everything stable for the session is now the cached
+ * prefix, and the per-turn text after it is billed normally. The marker itself never reaches the
+ * model. On rc.10 the block has no breakpoint, so one is ADDED; eve's own markers are at most
+ * three (last tool, last message, last assistant message), so there is always room under
+ * Anthropic's limit of four. A block that already carries a breakpoint (eve up to rc.9) has it
+ * MOVED instead. If a role ever gained a static part, eve's breakpoint would sit on that first
+ * block, the count would reach four on every call after the first, and the session-stable part
+ * would lose its breakpoint: that would need a change here. The offline gateway proof
+ * (`packages/board-evals/scripts/gateway-invocation-fixture.mjs`, `assertOneSystemMessage` and
+ * `cacheMarkerProblems`) fails when that happens.
  *
  * WHY THE FETCH AND NOT A `wrapLanguageModel` MIDDLEWARE. Both would work. The fetch is the one
  * seam every gateway request already passes (it already sets Accept-Encoding), it sees exactly

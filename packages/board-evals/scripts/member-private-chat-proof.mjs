@@ -32,7 +32,7 @@ import {PgAccountStore} from '@lares/agent-kit/account-store';
 import {loadDefinition} from '@lares/agent-kit/definition';
 import {forwardChat} from '../../../services/console/lib/chat-proxy.ts';
 import {run} from './proof-harness.mjs';
-import {compactionHookSource,gatewayModelSource,startGatewayFixture} from './gateway-invocation-fixture.mjs';
+import {assertOneSystemMessage,compactionHookSource,gatewayModelSource,startGatewayFixture} from './gateway-invocation-fixture.mjs';
 const repo=resolve(fileURLToPath(new URL('../../../',import.meta.url)));
 const root=mkdtempSync(join(tmpdir(),'lares-member-chat-proof-'));
 const password='disposable-fixture-only',incarnation='11111111-1111-4111-8111-111111111111';
@@ -156,7 +156,7 @@ async function makeRole(role){
  const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'},...(withVault?[{capability:'vault',scope:'read',areas:['private']}]:[]),...(withTracks?[{capability:'vault',scope:'write-with-confirm',areas:['shared']}]:[]),...(withSend?[{capability:'personal_mailbox',scope:'write-with-confirm'}]:[])],autonomy:role==='creative'?{}:{gmail:'autonomous',...(withVault?{vault:'autonomous'}:{}),...(withTracks?{vault:'gated'}:{}),...(withSend?{personal_mailbox:'autonomous'}:{})},skills:[]};
  writeFileSync(join(definition,'agent.json'),JSON.stringify(declaration));writeFileSync(join(definition,'voice.md'),canaries.owner);writeFileSync(join(definition,'duties.md'),canaries.owner);
  const modelLog=join(root,role+'-model.jsonl'),providerLog=join(root,role+'-provider.log');writeFileSync(modelLog,'');writeFileSync(providerLog,'');
- if(gatewayLane){gateway.setRole(role);writeFileSync(modelLog+'.scope','');writeFileSync(modelLog+'.compaction','');if(withBudget)writeFileSync(modelLog+'.budget','');
+ if(gatewayLane){gateway.setRole(role);writeFileSync(modelLog+'.scope','');writeFileSync(modelLog+'.system','');writeFileSync(modelLog+'.compaction','');if(withBudget)writeFileSync(modelLog+'.budget','');
    const hook=join(cwd,'agent/hooks/model-invocation.ts');writeFileSync(hook,compactionHookSource(readFileSync(hook,'utf8')));
  }
  writeFileSync(join(cwd,'lib/gateway-provider.ts'),modelSource(role));
@@ -382,6 +382,8 @@ function assertExactResume(scope,option){
 }
 function assertGatewayScopes(app){
   gateway.assertHealthy();
+  // Prompt cache: one unmarked system message from eve, and the markers where the shaping puts them.
+  if(gatewayLane==='anthropic'){assertOneSystemMessage(app.modelLog+'.system');gateway.assertCacheMarkers();}
   const scopes=()=>readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
   for(const scope of scopes()){
     assert.equal(scope.alias,'fixture-brain');assert.equal(scope.event.type,'step.started');

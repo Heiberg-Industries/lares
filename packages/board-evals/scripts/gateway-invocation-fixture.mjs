@@ -1,7 +1,7 @@
 /** Local HTTP provider for the compiled-role invocation proof. No external provider access. */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PROMPT_CACHE_BOUNDARY } from '@lares/agent-kit/prompt-cache';
 
@@ -29,9 +29,14 @@ async function record(method:string){
  }
 }
 export const gatewayModel=(alias:string)=>wrapLanguageModel({model:provider.gatewayModel(alias) as Exclude<ReturnType<typeof provider.gatewayModel>,string>,middleware:{
- wrapGenerate:async({doGenerate})=>{await record('generate');return doGenerate();},
- wrapStream:async({doStream})=>{await record('stream');return doStream();},
+ wrapGenerate:async({doGenerate,params})=>{await record('generate');recordSystem(params as never);return doGenerate();},
+ wrapStream:async({doStream,params})=>{await record('stream');recordSystem(params as never);return doStream();},
 }});
+// The system messages eve hands the model, BEFORE the gateway provider's prompt-cache shaping.
+function recordSystem(params:{prompt:Array<{role:string;providerOptions?:Record<string,unknown>}>}){
+ const system=params.prompt.filter(message=>message.role==='system');
+ appendFileSync(process.env.PROOF_MODEL_LOG+'.system',JSON.stringify({count:system.length,eveMarked:system.map(message=>message.providerOptions?.anthropic!==undefined)})+'\\n');
+}
 export const gatewayUrl=provider.gatewayUrl;
 export const gatewayKey=provider.gatewayKey;
 export const IDENTITY_ENCODING_HEADERS={'Accept-Encoding':'identity'};
@@ -64,10 +69,42 @@ export function fixtureInput(body) {
   const current=messages.slice(human+1).filter(m=>m.role==='tool');
   return {messages,message:messages[human]?.text??'',currentResults:current.length>0,toolResults:current.map(m=>m.text)};
 }
+/** Where the prompt-cache markers sit in one Anthropic request as it leaves the gateway provider.
+ * Expected (eve 1.0.0-rc.10 plus `@lares/agent-kit/prompt-cache`): the last tool, the first system
+ * block (the session-stable part), the last part of the last assistant message and of the last
+ * message; nothing else, never more than four. Returns what differs, in words. */
+export function cacheMarkerProblems(body) {
+  const problems=[];
+  const marked=blocks=>(blocks??[]).flatMap((block,i)=>block?.cache_control===undefined?[]:[i]);
+  const tools=body.tools??[],system=Array.isArray(body.system)?body.system:[],messages=body.messages??[];
+  const total=(JSON.stringify(body).match(/"cache_control"/g)??[]).length;
+  if(total>4)problems.push(`${total} cache markers (Anthropic refuses more than four)`);
+  if(JSON.stringify(marked(tools))!==JSON.stringify(tools.length?[tools.length-1]:[]))problems.push(`tool markers at ${JSON.stringify(marked(tools))}, expected only the last tool`);
+  if(JSON.stringify(marked(system))!=='[0]')problems.push(`system markers at ${JSON.stringify(marked(system))} of ${system.length} system blocks, expected only the first block (the session-stable part)`);
+  const lastAssistant=messages.map(m=>m.role).lastIndexOf('assistant');
+  const expected=new Set([messages.length-1,lastAssistant].filter(i=>i>=0).map(i=>`${i}.${(Array.isArray(messages[i].content)?messages[i].content.length:1)-1}`));
+  const actual=new Set(messages.flatMap((m,i)=>Array.isArray(m.content)?marked(m.content).map(j=>`${i}.${j}`):[]));
+  if([...expected].some(k=>!actual.has(k))||[...actual].some(k=>!expected.has(k)))problems.push(`message markers at ${JSON.stringify([...actual])}, expected ${JSON.stringify([...expected])}`);
+  return problems;
+}
+/** Every model call of the proof, before shaping: eve must hand the model ONE system message and no
+ * cache marker of its own on it. Two messages mean the role's image has a fixed instruction part. */
+export function assertOneSystemMessage(systemLog) {
+  const calls=readFileSync(systemLog,'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));
+  assert.ok(calls.length>0,'No model call recorded its system messages');
+  const bad=calls.filter(call=>call.count!==1||call.eveMarked.some(Boolean));
+  assert.equal(bad.length,0,
+    `PROMPT CACHE: ${bad.length} of ${calls.length} model calls did not hand the model ONE system message without a cache marker `+
+    `before shaping (first one: ${JSON.stringify(bad[0])}). `+
+    'eve 1.0 sends a second system message, with its own cache marker on the first, when the role image has a fixed instruction part '+
+    '(an agent/instructions.md, a static skill, workspace files, or an extension that ships instructions). Then, after the first call of '+
+    'every conversation, the persona and standing facts lose their cache marker, and they and the history are paid for in full on '+
+    'every turn, silently. Remove the fixed part, or change packages/agent-kit/src/prompt-cache.ts to handle two system messages.');
+}
 export async function startGatewayFixture(root, lane) {
   assert.ok(['anthropic','openai-compatible'].includes(lane));
   let role, count=0;
-  const attacked=new Set(), calls=[];
+  const attacked=new Set(), calls=[], cacheProblems=[];
   const server=createServer(async(req,res)=>{
     try {
       assert.equal(req.url,lane==='anthropic'?'/v1/messages':'/v1/chat/completions');
@@ -77,6 +114,7 @@ export async function startGatewayFixture(root, lane) {
       let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);
       assert.equal(body.model,'fixture-brain');
       assert.ok(!raw.includes(PROMPT_CACHE_BOUNDARY));
+      if(lane==='anthropic')for(const problem of cacheMarkerProblems(body))cacheProblems.push(`request ${count+1}: ${problem}`);
       const {messages,message,currentResults,toolResults}=fixtureInput(body);
       const tools=body.tools.map(t=>({name:t.name??t.function.name}));
       const frame={message,messages,tools,toolResults};
@@ -126,5 +164,6 @@ export async function startGatewayFixture(root, lane) {
     }catch(error){res.writeHead(500,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:'Synthetic fixture failed'}}));server.fixtureError=error;}
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  return {url:`http://127.0.0.1:${server.address().port}`,calls,setRole(value){role=value;},assertHealthy(){if(server.fixtureError)throw server.fixtureError;},close:()=>new Promise(resolve=>server.close(resolve))};
+  return {url:`http://127.0.0.1:${server.address().port}`,calls,setRole(value){role=value;},assertHealthy(){if(server.fixtureError)throw server.fixtureError;},
+    assertCacheMarkers(){assert.deepEqual(cacheProblems,[],'PROMPT CACHE: a request left with its cache markers in the wrong place, so part of the prompt is paid for in full on every turn. See packages/agent-kit/src/prompt-cache.ts.');},close:()=>new Promise(resolve=>server.close(resolve))};
 }
