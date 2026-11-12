@@ -416,7 +416,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 await db().query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'Apply failed; previous definition restored but runtime recovery failed']);
                 throw new KeeperFailedError('Apply failed. The previous saved definition was restored, but runtime recovery failed; explicit recovery is required.', 'restored-stopped', { cause: new AggregateError([applyError, rollbackError], 'apply and rollback both failed') });
             }
-            throw new KeeperFailedError('Apply failed. The previous working definition was restored; save the edit again before retrying.', 'previous-running', { cause: applyError });
+            throw new KeeperFailedError('Apply failed. The agent is back on the last definition that had taken effect; the changes that were waiting for Apply were undone. Save them again before retrying.', 'previous-running', { cause: applyError });
         }
     }
     registerAction({ name: 'outside.connections.apply', input: outsideConnectionsApplyInput, secretFields: ['sessionToken'],

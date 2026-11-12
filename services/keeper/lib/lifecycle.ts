@@ -27,7 +27,7 @@ import { readSetting } from './settings.js';
 import { CONSOLE_ENVIRONMENT } from './agent-environment.js';
 import { effectiveGrantedAgents, type CredentialRecord } from './credential-state.js';
 import { requireDefinitionNamespace, withDefinitionNamespace } from './definition-namespace.js';
-import { clearFirstActivation, clearUnknownApplyBaseline, recordAppliedDefinition } from './definition-files.js';
+import { appliedDefinitionGeneration, clearFirstActivation, clearUnknownApplyBaseline, forgetDefinitionGeneration, hasFirstActivation, preservedDefinitionGeneration, recordAppliedDefinition } from './definition-files.js';
 import { restartFingerprint, restartPartsApplied } from './restart-parts.js';
 function atomic(path: string, body: string, mode = 0o600) { const temp = `${path}.${randomUUID()}`; const fd = openSync(temp, 'wx', mode); try {
     writeFileSync(fd, body);
@@ -792,7 +792,17 @@ export class AgentLifecycle {
         // saved: the code that reads the applied definition (approvals, outside tools, mail, routing) sees the edit
         // now, as the running agent does. A change that waits for Apply leaves the applied definition alone.
         if (pending) await this.pool.query('UPDATE agent_resources SET pending=$2,pending_reason=$3,updated_at=now() WHERE name=$1', [name, pending, reason]);
-        else await this.pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=false,pending_reason=NULL,updated_at=now() WHERE name=$1', [name, JSON.stringify(d)]);
+        else {
+            await this.pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=false,pending_reason=NULL,updated_at=now() WHERE name=$1', [name, JSON.stringify(d)]);
+            // It is also the point a later failed Apply goes back to, so that only the change still waiting is
+            // undone. An agent that has never started keeps its first-activation path and has no such point yet.
+            const dir = join(this.paths.agentsDir, name), files = await this.definitionFiles(name);
+            if (files && appliedDefinitionGeneration(dir) && !hasFirstActivation(dir)) {
+                const previous = preservedDefinitionGeneration(dir);
+                recordAppliedDefinition(dir, files);
+                if (previous) forgetDefinitionGeneration(dir, previous);
+            }
+        }
         return { pending, reason: nativeState.state === 'held' ? nativeState.reason : reason };
     }
     async reconcile(name: string, d: AgentDefinition) {

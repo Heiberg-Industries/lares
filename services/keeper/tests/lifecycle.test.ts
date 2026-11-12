@@ -221,6 +221,42 @@ it('stages rendered native runtimes without a legacy key and checks current auth
  await expect(unhealthy.reconcile('bookkeeper',chief)).rejects.toThrow('could not be stopped');
  expect(events.slice(-2)).toEqual(['start:bookkeeper','stop:bookkeeper']);
 });
+it('keeps an edit that already took effect when a later Apply fails, and rolls back only the waiting change',async()=>{
+ const chief:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/chief-of-staff/agent.json'),'utf8')),name:'bookkeeper',role:'chief-of-staff',doors:[],grants:[],skills:[],autonomy:{}};
+ const agentsDir=join(root,'agents'),secretsDir=join(root,'secrets'),retiredDir=join(root,'retired'),agentDir=join(agentsDir,'bookkeeper'),modelPurposeRuntimeDir=join(root,'model-purpose');
+ mkdirSync(agentDir,{recursive:true});mkdirSync(retiredDir);config.bindings={bookkeeper:{role:'chief-of-staff',environment:{},mounts:[],secrets:{}}};
+ const duties='Started duties.\n',voice='Started voice.\n';writeFileSync(join(agentDir,'agent.json'),JSON.stringify(chief));writeFileSync(join(agentDir,'duties.md'),duties);writeFileSync(join(agentDir,'voice.md'),voice);
+ await pool.query('UPDATE agent_definitions SET definition=$1::jsonb,duties=$2,voice=$3,hash=$4,status=$5 WHERE name=$6',[JSON.stringify(chief),duties,voice,hashOf({definition:definitionSchema.parse(chief),dutiesMd:duties,voiceMd:voice}),'valid','bookkeeper']);
+ writeFileSync(config.runtime.gatewayKeys.bookkeeper!,'synthetic-legacy-key');
+ for(const file of ['telegram-token','telegram-webhook-secret'])writeFileSync(join(secretsDir,`bookkeeper-${file}`),'synthetic-door-secret');
+ const authority={current:async()=>({state:'active' as const})};
+ let failNextStart=false;
+ const flaky:DockerBoundary={...docker,start:async(n,address)=>{started.push(address);await step('start:'+n);if(failNextStart){failNextStart=false;throw new AgentNotHealthyError();}}};
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir,secretsDir,modelPurposeRuntimeDir},flaky,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,authority);
+ // Started healthy on A.
+ await l.create('bookkeeper',chief);
+ resetActions();registerDefinitionActions({pool,agentsDir,retiredDir,secretsDir,ceiling:async()=>4,compose:l,storage:l,backup:{commit:async()=>{}},roleInfo:r=>({roleMd:readFileSync(join(repo,'packages/agent-kit/templates',r,'role.md'),'utf8'),deployedTools:deployedToolsFor(join(repo,'services',r))})});
+ const ctx={actor:'owner@example.test',audit:async()=>{}};
+ // An instruction edit is saved and takes effect at once.
+ const live:any=await runAction('definition.save',{name:'bookkeeper',definition:chief,duties:'Edited duties that took effect.\n',voice},ctx);
+ expect(live.runtime).toEqual({pending:false,reason:null});
+ // A door change is saved; it waits for Apply.
+ const door={...chief,doors:[{kind:'telegram',enabled:true,settings:{}}],channels:['telegram']};
+ const waiting:any=await runAction('definition.save',{name:'bookkeeper',definition:door,duties:'Edited duties that took effect.\n',voice},ctx);
+ expect(waiting.runtime).toMatchObject({pending:true});
+ // Apply fails: the restart with the door does not come up healthy.
+ failNextStart=true;events=[];
+ await expect(runAction('definition.reconcile',{name:'bookkeeper',hash:waiting.hash},ctx)).rejects.toMatchObject({name:'KeeperFailedError',state:'previous-running',message:'Apply failed. The agent is back on the last definition that had taken effect; the changes that were waiting for Apply were undone. Save them again before retrying.'});
+ // The instruction edit is kept, the door change is rolled back, and the agent runs.
+ const kept=await loadDefinition({serviceDir:'unused',env:{LARES_DEFINITION_DIR:agentDir}});
+ expect(kept.dutiesMd).toBe('Edited duties that took effect.\n');
+ expect(kept.definition.doors?.some((d:any)=>d.enabled)??false).toBe(false);
+ const row=await l.storage.row('bookkeeper');
+ expect(row).toMatchObject({pending:false});expect(row.applied_definition.doors?.some((d:any)=>d.enabled)??false).toBe(false);
+ expect((await pool.query("SELECT duties FROM agent_definitions WHERE name='bookkeeper'")).rows[0].duties).toBe('Edited duties that took effect.\n');
+ expect(events.at(-1)).toBe('start:bookkeeper');
+ resetActions();
+},20000);
 it('uses real native lifecycle outcomes during Apply fallback and refuses a restart after authority is revoked',async()=>{
  const chief:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/chief-of-staff/agent.json'),'utf8')),name:'bookkeeper',role:'chief-of-staff',doors:[],grants:[],skills:[],autonomy:{}};
  const agentsDir=join(root,'agents'),secretsDir=join(root,'secrets'),retiredDir=join(root,'retired'),agentDir=join(agentsDir,'bookkeeper'),modelPurposeRuntimeDir=join(root,'model-purpose');
