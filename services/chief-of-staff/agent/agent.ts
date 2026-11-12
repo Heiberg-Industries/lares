@@ -1,4 +1,5 @@
 import { definitionModel, resolveDefinitionForModel } from "@lares/agent-kit/definition-model";
+import { doorModelAuthority, modelAuthorityRoute } from "@lares/agent-kit/door-model-authority";
 import { defineAgent } from "eve";
 import { gatewayModel } from "../lib/gateway-provider.js";
 import { thisAgent } from "../lib/definition.js";
@@ -29,13 +30,19 @@ export default defineAgent({
       const { loaded } = await resolveDefinitionForModel(() => thisAgent(sessionId));
       const attributes = (session?.auth?.current as { attributes?: Record<string, unknown> } | undefined)?.attributes;
       const purposeBound = attributes?.lares_model_purpose_required === '1' ||
-        typeof attributes?.lares_model_pending_receipt === 'string';
+        typeof attributes?.lares_model_pending_receipt === 'string' ||
+        // A Slack or Telegram turn of the claimed person, or a conversation a schedule started,
+        // on a managed runtime: Keeper checks the step's alias against the definition's model.
+        modelAuthorityRoute(session) !== 'none';
       // Only a request carrying verified model-purpose custody is pinned to the validated
       // session definition. Ordinary Console conversations preserve the AGENT_MODEL override.
       return purposeBound ? loaded.definition.model : process.env["AGENT_MODEL"] ?? loaded.definition.model;
     },
     preparePurpose: prepareModelPurposeInvocation,
     claimPurpose: claimModelPurposeForInvocation,
+    // Slack, Telegram and schedule-started conversations on a managed runtime (the kit's
+    // door-neutral authority; no door file takes part).
+    managedAuthority: doorModelAuthority,
     provider: gatewayModel,
   }),
   // No framework default tool reaches this agent. eve 1.0 hands every agent bash, read_file,

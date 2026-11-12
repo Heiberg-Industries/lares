@@ -34,6 +34,11 @@ vi.mock('../agent/lib/model-purpose.js', () => ({
   claimModelPurposeForInvocation: async () => undefined,
   prepareModelPurposeInvocation: () => undefined,
 }));
+// The door authority's route is real; its Keeper exchange is not part of this file's question.
+vi.mock('@lares/agent-kit/door-model-authority', async (actual) => ({
+  ...(await actual<typeof import('@lares/agent-kit/door-model-authority')>()),
+  doorModelAuthority: { prepare: () => undefined, claim: async () => 'none' },
+}));
 
 type Selection = { model: { modelId?: string }; modelContextWindowTokens: number };
 /** The function eve 1.0 calls before every model call: a `defineDynamic()` value keeps it under
@@ -128,6 +133,29 @@ describe("chief-of-staff agent config", () => {
     expect(configuredHuman.model.modelId).toBe(declaration.model);
     const configuredResume = await selectFor("custody-resume", { lares_resolver_member_id: "member-1", lares_model_pending_receipt: "p".repeat(43) });
     expect(configuredResume.model.modelId).toBe(declaration.model);
+  });
+
+  it("pins a door or schedule conversation to the validated definition on a managed runtime, never to AGENT_MODEL", async () => {
+    sessionState.clear();
+    process.env["AGENT_MODEL"] = "ordinary-override";
+    vi.stubEnv("LARES_MODEL_PURPOSE_RUNTIME_SOCKET", "/run/lares/model-purpose/model-purpose.sock");
+    vi.stubEnv("LARES_AGENT_NAME", "example-agent");
+    vi.stubEnv("LARES_AGENT_INCARNATION", "123e4567-e89b-42d3-a456-426614174000");
+    vi.stubEnv("LARES_SLACK_PRINCIPAL", "U0EXAMPLE");
+    vi.stubEnv("LARES_SLACK_CLAIM_REVISION", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    try {
+      const select = selectorOf((await freshAgentConfig()).model);
+      const slack = { authenticator: "slack-webhook", principalId: "slack:T0EXAMPLE:U0EXAMPLE", principalType: "user",
+        attributes: { author_type: "user", channel_id: "D0EXAMPLE", user_id: "U0EXAMPLE" } };
+      const app = { attributes: {}, authenticator: "app", principalId: "eve:app", principalType: "runtime" };
+      const selectFor = (name: string, current: unknown, initiator: unknown) => {
+        sessionState.clear();
+        return select({ ...modelContext(`agent-door-${name}`, 1), session: { id: `agent-door-${name}`, auth: { current, initiator } } });
+      };
+      expect((await selectFor("slack", slack, slack)).model.modelId).toBe(declaration.model);
+      expect((await selectFor("schedule", app, app)).model.modelId).toBe(declaration.model);
+      expect((await selectFor("console", { authenticator: "lares-console", attributes: { lares_member_id: "member-1" } }, null)).model.modelId).toBe("ordinary-override");
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("turns every framework default tool away, the delegating agent tool by name as well", async () => {

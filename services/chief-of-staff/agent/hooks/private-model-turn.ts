@@ -1,4 +1,5 @@
 import { defineHook, type HookContext, type HookEvent } from 'eve/hooks';
+import { closeDoorModelTurn } from '@lares/agent-kit/door-model-authority';
 import { closeModelPurposeTurn, openModelPurposeTurn } from '../lib/model-purpose.js';
 
 type SessionContext = HookContext & {
@@ -43,7 +44,11 @@ async function close(event: HookEvent<'turn.settled'> | HookEvent<'turn.paused'>
   if (typeof sessionId !== 'string' || typeof turnId !== 'string') return;
   const remembered = sequences.get(slot(sessionId, turnId));
   const sequence = remembered ?? sequenceFor(context, turnId);
-  await closeModelPurposeTurn(seamEvent(event.type, event.data, sequence), context.session);
+  const seam = seamEvent(event.type, event.data, sequence);
+  await closeModelPurposeTurn(seam, context.session);
+  // A Slack or Telegram turn's Keeper capability (the kit's door authority). Nothing opens one on
+  // turn.started: a door turn opens at its first model call. Never throws.
+  await closeDoorModelTurn(seam, context.session);
   if (event.type === 'turn.settled') sequences.delete(slot(sessionId, turnId));
 }
 

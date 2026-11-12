@@ -28,3 +28,4 @@ ADR-0009 is not part of this repository. ADR-0016 supersedes its runtime choice 
 | [ADR-0023](0023-member-authority-and-audiences.md) | Member authority and conversation audiences |
 | [ADR-0024](0024-tracks.md) | Owner-defined Tracks, their homes, and purpose-first routing |
 | [ADR-0025](0025-one-door-layer.md) | One door-neutral layer; a door is an adapter |
+| [ADR-0026](0026-who-pays-for-a-door-turn.md) | Who pays for a Slack or Telegram turn; a managed runtime never reads a key file |

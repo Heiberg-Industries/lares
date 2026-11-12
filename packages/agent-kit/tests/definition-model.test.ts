@@ -4,6 +4,7 @@ import { emptySessionView } from 'eve/events';
 import type { DynamicModelContext } from 'eve/models';
 import * as privateSurface from '../src/private-console-surface.js';
 import { currentModelInvocation, type ModelInvocationSession } from '../src/model-invocation.js';
+import { currentOwnerJob, hasOwnerJob } from '../src/owner-job.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS, guardDefinitionModel, resolveDefinitionForModel, assertModelDefinitionReady, pinSessionGatewayAlias, sessionGatewayModel, definitionModel, definitionModelResolver, modelStepCoordinates } from '../src/definition-model.js';
 
 const session = (id: string) => ({ id, auth: { current: null, initiator: null } });
@@ -231,6 +232,72 @@ describe('the agent model resolver', () => {
     const selection = await select(modelContext('session-four'));
     await expect((selection.model as MockLanguageModelV3).doGenerate({ prompt: [] })).rejects.toThrow('No valid session definition');
     expect(call).not.toHaveBeenCalled();
+  });
+});
+
+describe('a managed runtime authority for door and schedule conversations', () => {
+  it('reserves the point before any await and attaches the door claim before the provider is reached', async () => {
+    const order: string[] = [];
+    const providerCall = vi.fn(async () => {
+      order.push('provider');
+      expect(currentModelInvocation()).toMatchObject({ session: { id: 'door-session' }, alias: 'fixture-brain' });
+      expect(hasOwnerJob()).toBe(false);
+      throw new Error('door provider reached');
+    });
+    const managedAuthority = {
+      prepare: vi.fn((event: unknown, captured: unknown) => { order.push('prepare'); expect(event).toMatchObject({ data: { turnId: 'turn_1', sequence: 1, stepIndex: 4 } }); expect(captured).toEqual(session('door-session')); }),
+      claim: vi.fn(async (invocation: { session: { id: string }; alias: string }) => { order.push('claim'); expect(invocation).toMatchObject({ session: { id: 'door-session' }, alias: 'fixture-brain' }); return 'door' as const; }),
+    };
+    const select = definitionModelResolver({
+      resolveAlias: async () => { order.push('alias'); return 'fixture-brain'; },
+      preparePurpose: () => { order.push('purpose-prepare'); },
+      claimPurpose: async () => { order.push('purpose-claim'); },
+      managedAuthority,
+      provider: () => new MockLanguageModelV3({ doGenerate: providerCall }),
+    });
+    const selection = await select(modelContext('door-session', { id: 'turn_1' }, 4));
+    expect(order).toEqual(['purpose-prepare', 'prepare', 'alias', 'purpose-claim', 'claim']);
+    await expect((selection.model as MockLanguageModelV3).doGenerate({ prompt: [] })).rejects.toThrow('door provider reached');
+    expect(order.at(-1)).toBe('provider');
+  });
+
+  it('selects nothing when the managed authority refuses', async () => {
+    const provider = vi.fn((alias: string) => new MockLanguageModelV3({ modelId: alias }));
+    const select = definitionModelResolver({
+      resolveAlias: async () => 'fixture-brain', provider,
+      managedAuthority: { prepare: () => undefined, claim: async () => { throw new Error('door refused'); } },
+    });
+    await expect(select(modelContext('refused-door'))).rejects.toThrow('door refused');
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it('runs a schedule conversation\'s call as an owner job for the pinned alias, inside its own invocation', async () => {
+    const seen: unknown[] = [];
+    const providerCall = vi.fn(async () => {
+      seen.push(hasOwnerJob(), currentOwnerJob(), currentModelInvocation()?.alias);
+      throw new Error('owner job provider reached');
+    });
+    const select = definitionModelResolver({
+      resolveAlias: async () => 'fixture-brain',
+      managedAuthority: { prepare: () => undefined, claim: async () => 'owner-job' as const },
+      provider: () => new MockLanguageModelV3({ doGenerate: providerCall, doStream: providerCall }),
+    });
+    const selection = await select(modelContext('schedule-session', { id: 'turn_0' }, 2));
+    await expect((selection.model as MockLanguageModelV3).doStream({ prompt: [] })).rejects.toThrow('owner job provider reached');
+    expect(seen).toEqual([true, { alias: 'fixture-brain' }, 'fixture-brain']);
+    expect(hasOwnerJob()).toBe(false);
+  });
+
+  it('a call whose route is "none" is not an owner job', async () => {
+    const seen: boolean[] = [];
+    const select = definitionModelResolver({
+      resolveAlias: async () => 'fixture-brain',
+      managedAuthority: { prepare: () => undefined, claim: async () => 'none' as const },
+      provider: () => new MockLanguageModelV3({ doGenerate: async () => { seen.push(hasOwnerJob()); throw new Error('stop'); } }),
+    });
+    const selection = await select(modelContext('plain-session'));
+    await expect((selection.model as MockLanguageModelV3).doGenerate({ prompt: [] })).rejects.toThrow('stop');
+    expect(seen).toEqual([false]);
   });
 });
 

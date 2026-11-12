@@ -20,6 +20,8 @@ vi.mock("../lib/definition.js", () => ({ thisAgent: fake.agent }));
 import modelGuard from "../agent/hooks/private-model-turn.js";
 import vaultGuard from "../agent/hooks/private-vault-turn.js";
 import { vaultTurnCapability, clearSessionVaultTurnCapabilities } from "../agent/lib/vault-turn.js";
+import { doorModelAuthority } from "@lares/agent-kit/door-model-authority";
+import { captureModelInvocation } from "@lares/agent-kit/model-invocation";
 
 const INCARNATION = "11111111-1111-4111-8111-111111111111";
 const NONCE = "a".repeat(43);
@@ -130,6 +132,53 @@ describe("private-model-turn", () => {
     await expect(events(modelGuard)["turn.started"](started("t1"),
       ctxFor({ sessionId: "model-bad-3", turnId: "t1", turnOverride: undefined, auth: humanAuth({ lares_model_purpose_required: "1", lares_model_pending_receipt: RECEIPT }) }))).rejects.toThrow("Model purpose authority");
     expect(opens(fake.purpose)).toHaveLength(0);
+  });
+
+  describe("a Slack or Telegram turn on a managed runtime", () => {
+    const DOOR_CAPABILITY = "d".repeat(43);
+    const slack = { authenticator: "slack-webhook", principalId: "slack:T0EXAMPLE:U0EXAMPLE", principalType: "user",
+      attributes: { author_type: "user", channel_id: "D0EXAMPLE", user_id: "U0EXAMPLE" } };
+    const doorCtx = (sessionId: string, turn: number) => ctxFor({ sessionId, turnId: `turn_${turn}`, sequence: turn, auth: slack });
+    /** What the model resolver does at a door turn's model call (the kit's door authority). */
+    const modelCall = async (sessionId: string, turn: number, stepIndex: number) => {
+      const session = { id: sessionId, auth: { current: slack, initiator: slack } } as never;
+      const event = { type: "step.started" as const, data: { turnId: `turn_${turn}`, sequence: turn, stepIndex } };
+      doorModelAuthority.prepare(event, session);
+      return doorModelAuthority.claim(captureModelInvocation(event, session, "example-brain"));
+    };
+    const doorOpens = () => fake.purpose.mock.calls.filter(([op]) => op === "door.open");
+
+    beforeEach(() => {
+      vi.stubEnv("LARES_MODEL_PURPOSE_RUNTIME_SOCKET", "/run/lares/model-purpose/model-purpose.sock");
+      vi.stubEnv("LARES_SLACK_PRINCIPAL", "U0EXAMPLE");
+      vi.stubEnv("LARES_SLACK_CLAIM_REVISION", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+      fake.purpose.mockImplementation(async (op: string) =>
+        op === "door.open" ? { capability: DOOR_CAPABILITY, expiresAt: Date.now() + 60_000 }
+          : op === "step.claim" ? { claim: "k".repeat(43), expiresAt: Date.now() + 20_000 } : {});
+    });
+
+    it("turn.started opens nothing: the door opens at the first model call", async () => {
+      await events(modelGuard)["turn.started"](started("turn_0"), doorCtx("door-start", 0));
+      expect(fake.purpose).not.toHaveBeenCalled();
+    });
+
+    it("turn.paused closes the door capability, and the continuation opens it again", async () => {
+      await events(modelGuard)["turn.started"](started("turn_1"), doorCtx("door-pause", 1));
+      await expect(modelCall("door-pause", 1, 3)).resolves.toBe("door");
+      await events(modelGuard)["turn.paused"](paused("turn_1"), doorCtx("door-pause", 1));
+      expect(closes(fake.purpose).map(([, input]) => input)).toEqual([{ turnCapability: DOOR_CAPABILITY, turnId: "turn_1", sequence: 1 }]);
+      await expect(modelCall("door-pause", 1, 9)).resolves.toBe("door");
+      expect(doorOpens()).toHaveLength(2);
+    });
+
+    it("turn.settled closes the door capability and nothing reopens it", async () => {
+      await events(modelGuard)["turn.started"](started("turn_2"), doorCtx("door-settle", 2));
+      await expect(modelCall("door-settle", 2, 1)).resolves.toBe("door");
+      await events(modelGuard)["turn.settled"](settled("turn_2", "completed"), doorCtx("door-settle", 2));
+      expect(closes(fake.purpose).map(([, input]) => input)).toEqual([{ turnCapability: DOOR_CAPABILITY, turnId: "turn_2", sequence: 2 }]);
+      await expect(modelCall("door-settle", 2, 5)).rejects.toThrow("A door turn has no model permission");
+      expect(doorOpens()).toHaveLength(1);
+    });
   });
 
   it("a settle that arrives with nothing open closes nothing and does not throw", async () => {
