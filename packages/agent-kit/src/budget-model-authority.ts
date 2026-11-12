@@ -89,7 +89,7 @@ function validDoorTurnRequest(input:DoorTurnRequest):boolean {
 /** Capture the authority for one turn that came through a chat door. The payer is `ownerId`, the
  * owner in Keeper's own configuration (never a value from the agent). The door must be enabled and
  * applied on this very runtime, which must be ready and current; the claim on it must be exactly
- * the principal and revision the agent names, applied; the payer must be an active member of an
+ * the principal and revision the agent names, applied; the payer must be an active owner of an
  * organisation, hold a current use grant on the agent, and be the member who issued the claim.
  *
  * The claim row records who issued it only as an address (`owner_email`, the console owner's
@@ -110,7 +110,7 @@ export async function captureDoorBudgetAuthorityReference(db:SourceDatabase,inpu
     door:input.door,principal:input.principal,claimRevision:input.claimRevision},turnId:input.turnId,turnSequence:input.sequence};
 }
 
-/** The applied door claim is still exactly this one, and its payer is still an active member of an
+/** The applied door claim is still exactly this one, and its payer is still an active owner of an
  * organisation whose current address is the one the claim was issued by (compared trimmed and
  * case-insensitively). The organisation gate comes first, as for every other authority. */
 async function requireDoorClaim(db:SourceDatabase,claim:{door:ChatDoor;principal:string;claimRevision:string;memberId:string},env:NodeJS.ProcessEnv):Promise<void> {
@@ -119,7 +119,8 @@ async function requireDoorClaim(db:SourceDatabase,claim:{door:ChatDoor;principal
   const row=await currentDoor(claim.door,db,env);
   if(!row||typeof row.principal!=='string'||row.principal!==claim.principal||row.revision!==claim.claimRevision||row.applied_revision!==claim.claimRevision||
     typeof row.owner_email!=='string')throw new Error('Stale authority');
-  const payer=await db.query(`SELECT 1 FROM users WHERE id=$1 AND status='active' AND org_id IS NOT NULL AND primary_email IS NOT NULL
+  // The same owner rule as owner jobs (`requireActiveOwner`): a demoted owner no longer pays.
+  const payer=await db.query(`SELECT 1 FROM users WHERE id=$1 AND status='active' AND org_role='owner' AND org_id IS NOT NULL AND primary_email IS NOT NULL
     AND lower(btrim(primary_email))=lower(btrim($2))`,[claim.memberId,row.owner_email]);
   if(payer.rows.length!==1)throw new Error('Stale authority');
 }

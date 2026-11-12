@@ -431,6 +431,10 @@ describe('door turns: a Slack or Telegram message is paid for by the member behi
     // Other-ID is an active member, but did not issue the claim (address mismatch), and holds no grant.
     await expect(capture(doorInput(),'Other-ID')).rejects.toThrow('Stale authority');
     await db.query("UPDATE agent_door_connections SET owner_email='other@example.invalid' WHERE kind='slack'");
+    // Not an owner: refused before the grant is even read.
+    await expect(capture(doorInput(),'Other-ID')).rejects.toThrow('Stale authority');
+    // An owner who issued the claim but holds no grant on this agent.
+    await db.query("UPDATE users SET org_role='owner' WHERE id='Other-ID'");
     await expect(capture(doorInput(),'Other-ID')).rejects.toThrow('Stale grant');
     await expect(capture(doorInput(),'Owner-ID')).rejects.toThrow('Stale authority');
   });
@@ -489,6 +493,11 @@ describe('door turns: a Slack or Telegram message is paid for by the member behi
       await set("UPDATE agent_door_connections SET applied_revision=NULL WHERE kind='slack'");expect(await open()).toBe(false);
       await set("UPDATE agent_door_connections SET applied_revision=revision WHERE kind='slack'");expect(await open()).toBe(true);
       expect(await open(doorInput({claimRevision:telegramRevision}))).toBe(false);
+      // a new claim revision not yet applied, on an agent that is not pending: the applied revision alone is not enough
+      await set("UPDATE agent_door_connections SET revision=$1 WHERE kind='slack'",['44444444-4444-4444-8444-444444444444']);
+      expect((await db.query("SELECT pending FROM agent_resources WHERE name='helper'")).rows[0].pending).toBe(false);
+      expect(await open()).toBe(false);
+      await set("UPDATE agent_door_connections SET revision=applied_revision WHERE kind='slack'");expect(await open()).toBe(true);
       // pending agent
       await set("UPDATE agent_resources SET pending=true WHERE name='helper'");expect(await open()).toBe(false);
       await set("UPDATE agent_resources SET pending=false WHERE name='helper'");expect(await open()).toBe(true);
@@ -501,6 +510,9 @@ describe('door turns: a Slack or Telegram message is paid for by the member behi
       await set("UPDATE users SET org_role='owner' WHERE id='Other-ID'");
       await set("UPDATE users SET status='invited' WHERE id='Owner-ID'");expect(await open()).toBe(false);
       await set("UPDATE users SET status='active' WHERE id='Owner-ID'");expect(await open()).toBe(true);
+      // a demoted owner, still active, no longer pays (as for scheduled owner jobs)
+      await set("UPDATE users SET org_role='member' WHERE id='Owner-ID'");expect(await open()).toBe(false);
+      await set("UPDATE users SET org_role='owner' WHERE id='Owner-ID'");expect(await open()).toBe(true);
       await set("UPDATE users SET org_role='member' WHERE id='Other-ID'");
       // address mismatch; only case and surrounding spaces differing is the same address
       await set("UPDATE agent_door_connections SET owner_email='other@example.invalid' WHERE kind='slack'");expect(await open()).toBe(false);
@@ -538,6 +550,7 @@ describe('door turns: a Slack or Telegram message is paid for by the member behi
       expect((await socketRequest(running.runtimeSocket,runtimeEnvelope('door.open',doorInput(),files.runtimeKey))).ok).toBe(false);
       await stopBroker();stopBroker=undefined;
       await db.query("UPDATE agent_door_connections SET owner_email='other@example.invalid' WHERE kind='slack'");
+      await db.query("UPDATE users SET org_role='owner' WHERE id='Other-ID'");
       const other=await startBroker(db,files,db,{designatedOwnerId:'Other-ID'});stopBroker=other.stopBroker;
       expect((await socketRequest(other.runtimeSocket,runtimeEnvelope('door.open',doorInput(),files.runtimeKey))).ok).toBe(false);
     }finally{await stopBroker?.();rmSync(files.root,{recursive:true,force:true});}
@@ -563,6 +576,13 @@ describe('door turns: a Slack or Telegram message is paid for by the member behi
       await db.query("UPDATE users SET primary_email='changed@example.invalid' WHERE id='Owner-ID'");
       expect(await claim(capability)).toBe(false);
       await db.query("UPDATE users SET primary_email='owner@example.invalid' WHERE id='Owner-ID'");
+      capability=await openTurn();expect(await claim(capability)).toBe(true);
+      // the owner demoted while another owner keeps the organisation
+      await db.query("UPDATE users SET org_role='owner' WHERE id='Other-ID'");
+      await db.query("UPDATE users SET org_role='member' WHERE id='Owner-ID'");
+      expect(await claim(capability)).toBe(false);
+      await db.query("UPDATE users SET org_role='owner' WHERE id='Owner-ID'");
+      await db.query("UPDATE users SET org_role='member' WHERE id='Other-ID'");
       capability=await openTurn();expect(await claim(capability)).toBe(true);
       const grants=new PgGrantStore(db),access=await grants.agentAccess('Owner-ID','helper');
       await grants.updateAgentAccess('Owner-ID',{agentName:'helper',expectedRevision:access!.accessRevision,grants:[]});
