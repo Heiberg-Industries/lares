@@ -226,7 +226,7 @@ interface ThreadContext {
 function refusalText(data: SettledEvent["data"]): string | null {
   if (data.outcome !== "failed" || data.error === undefined) return null;
   const response = respondToTurnFailed(data, FAILURE_OPTIONS);
-  return response.kind === "budget-refusal" ? response.text : null;
+  return response.kind === "budget-refusal" || response.kind === "approval-reply-refused" ? response.text : null;
 }
 
 async function answerFailure(event: SettledEvent, ctx: ThreadContext, next: () => Promise<void>): Promise<void> {

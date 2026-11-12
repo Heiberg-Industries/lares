@@ -105,6 +105,7 @@
  */
 
 import { MEMBER_LIMIT_SENTENCE, INSTALLATION_LIMIT_SENTENCE } from "./gateway-admission-protocol.js";
+import { approvalReplySentence } from "./approval-reply-sentence.js";
 
 /** LiteLLM's `error.type` on a budget refusal. Measured 2026-09-01 (see this file's header). */
 export const LITELLM_BUDGET_EXCEEDED_TYPE = "budget_exceeded";
@@ -354,6 +355,9 @@ export type FailureDialect = "slack" | "telegram";
 export type FailureResponse =
   /** A capped turn: post `text` — the door's own fixed sentence — and log one line. */
   | { readonly kind: "budget-refusal"; readonly text: string }
+  /** The reply in a turn that asked a card was refused: post `text`, the fixed sentence every
+   *  door shows for it (`@lares/agent-kit/approval-reply-sentence`). */
+  | { readonly kind: "approval-reply-refused"; readonly text: string }
   /** An ordinary failure: post `text`, which is byte-for-byte what eve would have posted. */
   | { readonly kind: "default"; readonly text: string }
   /** Post nothing (the budget refusal was already answered on this turn). */
@@ -475,6 +479,8 @@ export function respondToTurnFailed(
   if (data.outcome !== undefined && data.outcome !== "failed") return { kind: "silent" };
   if (isBudgetAdmissionRefused(data)) return { kind: "budget-refusal", text: admissionRefusalText(data) };
   if (isBudgetExceeded(data)) return { kind: "budget-refusal", text: options.refusalText };
+  const sentence = approvalReplySentence(data.error?.message);
+  if (sentence !== undefined) return { kind: "approval-reply-refused", text: sentence };
   return { kind: "default", text: defaultTurnFailedText(data, options.dialect) };
 }
 
@@ -493,6 +499,8 @@ export function respondToSessionFailed(
   if (data.outcome !== undefined && data.outcome !== "failed") return { kind: "silent" };
   if (isBudgetAdmissionRefused(data)) return { kind: "silent" };
   if (isBudgetExceeded(data)) return { kind: "silent" };
+  const sentence = approvalReplySentence(data.error?.message);
+  if (sentence !== undefined) return { kind: "approval-reply-refused", text: sentence };
   return { kind: "default", text: defaultSessionFailedText(data, options.dialect) };
 }
 

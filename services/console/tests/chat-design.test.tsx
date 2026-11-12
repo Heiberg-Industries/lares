@@ -337,6 +337,17 @@ it("reads a limit reply only from the newest ending of a turn, in the framework'
   expect(limitReplyOf([])).toBeNull();
 });
 
+it("shows the one fixed sentence, never the framework's text, when the reply after an approval answer is refused", () => {
+  const sentence = "Your answer was applied, but I could not finish my reply. Ask me what happened.";
+  expect(limitReplyOf([failedTurn("DefinitionFailedError: The reply after an approval answer was refused")])).toBe(sentence);
+  expect(limitReplyOf([failedTurn("The reply after an approval answer was refused")])).toBe(sentence);
+  expect(limitReplyOf([failedTurn("The reply after an approval answer was refused, and more")])).toBeNull();
+  expect(limitReplyOf([failedTurn("DefinitionFailedError: Model purpose authority is not available")])).toBeNull();
+  // A card that ended without an answer (expired, or withdrawn by a typed message) says so instead.
+  expect(limitReplyOf([failedTurn("DefinitionFailedError: The approval in this turn ended without an answer")]))
+    .toBe("That request ended without an answer; nothing was done.");
+});
+
 // ---------------------------------------------------------------------------------------------
 // Cards in the live chat, and a conversation that is over. The messages are what the framework's
 // own reader makes of a recorded stream (`conversationOf`), not parts written by hand.

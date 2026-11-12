@@ -19,6 +19,7 @@ import { getPool } from "@lares/agent-kit/db";
 import type { ApprovedExecution } from "@lares/agent-kit/approval-execution";
 
 import { declaredApprover, isAllowedPrincipal, isOwnerPrincipal, principalFromAuth } from "./principals.js";
+import { turnAskedACard } from "./approval-card-turns.js";
 
 const companyHome = (input: unknown) => !!input && typeof input === 'object' && !Array.isArray(input) && (input as Record<string, unknown>).home === 'twenty';
 const adapterFor = (tool: string, input?: unknown) => {
@@ -110,6 +111,52 @@ export function approverFrom(
 }
 
 /**
+ * WHO ANSWERED A NATIVE CARD. On eve 1.0 the settle hook's `session.auth.current` is the turn's
+ * requester (for a scheduled job, the app). The person who answered is only `response.principal`
+ * in the response policy, so the policy keeps it here once it has accepted the answer, and the
+ * settle hook reads it (for example, to apply the owner's Deny as a track-routing veto).
+ *
+ * BOUNDED, AND FULL MEANS "NOT YET". An entry lives only from the answer to the card's settle: the
+ * settle hook takes the entry of EVERY card it settles, not only a scheduled one's, so the store
+ * holds answers eve has accepted but not yet applied (normally for a moment). It is capped per
+ * conversation and in total. When an answer cannot be kept, the policy refuses it: the card stays
+ * pending and the owner can answer again in a moment. It never accepts an answer whose answerer it
+ * would then forget (that silently dropped the owner's Deny veto on a scheduled card), and it never
+ * pushes out an answer already kept. The per-conversation cap means one busy conversation fills
+ * only its own share, never the whole store.
+ */
+const NATIVE_ANSWER_MS = 10 * 60_000, MAX_NATIVE_ANSWERS = 1024, MAX_NATIVE_ANSWERS_PER_SESSION = 16;
+const nativeAnswers = new Map<string, { sessionId: string; principal: unknown; expiresAt: number }>();
+/** Keeps one accepted answer; returns why it cannot, or null once kept. */
+function rememberNativeAnswer(requestId: unknown, sessionId: unknown, principal: unknown, now = Date.now()): string | null {
+  if (typeof requestId !== "string" || !requestId || typeof sessionId !== "string" || !sessionId) return "this answer is not tied to a card in a conversation";
+  for (const [k, v] of nativeAnswers) if (v.expiresAt <= now) nativeAnswers.delete(k);
+  const earlier = nativeAnswers.get(requestId);
+  if (earlier && earlier.sessionId !== sessionId) return "this answer is not tied to a card in a conversation";
+  if (!earlier) {
+    let mine = 0;
+    for (const v of nativeAnswers.values()) if (v.sessionId === sessionId) mine++;
+    if (mine >= MAX_NATIVE_ANSWERS_PER_SESSION || nativeAnswers.size >= MAX_NATIVE_ANSWERS) {
+      return "too many answers are waiting to be applied; please answer again in a moment";
+    }
+  }
+  // eve applies the latest answer from the same responder, so a later accepted answer replaces the earlier one.
+  nativeAnswers.set(requestId, { sessionId, principal, expiresAt: now + NATIVE_ANSWER_MS });
+  return null;
+}
+/** The accepted answerer of one native card in this conversation, used up on read (the settle hook
+ *  calls it for every card it settles, so nothing outlives its card). Another conversation's take
+ *  finds nothing and leaves the entry. */
+export function takeNativeAnswerer(requestId: string, sessionId: unknown, now = Date.now()): unknown {
+  const v = nativeAnswers.get(requestId);
+  if (!v || v.sessionId !== sessionId) return undefined;
+  nativeAnswers.delete(requestId);
+  return v.expiresAt > now ? v.principal : undefined;
+}
+/** Tests only. */
+export function clearNativeAnswersForTests(): void { nativeAnswers.clear(); }
+
+/**
  * The check an UNGATED, model-called write needs when its authority is "the owner just said so".
  * Returns a refusal sentence, or null when this turn really is the owner's.
  *
@@ -126,11 +173,14 @@ export function approverFrom(
  * telling the model why costs nothing; throwing would cost the owner the turn the owner is in.
  */
 export function humanTurnRefusal(
-  auth: SessionAuthLike | null | undefined,
+  session: { auth?: SessionAuthLike | null; turn?: { id?: unknown } | null } | null | undefined,
   lead: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  if (consoleResolverOnly(auth?.current)) return `${lead} This turn answers an approval; it contains no new human instruction. Nothing changed.`;
+  const auth = session?.auth;
+  // The whole session, never the auth alone: the turn after an answered card runs as the person
+  // who asked, so only the durable card mark (lib/approval-card-turns.ts) tells the two apart.
+  if (consoleResolverOnly(auth?.current) || turnAskedACard(session)) return `${lead} This turn answers an approval; it contains no new human instruction. Nothing changed.`;
   const current = principalFromAuth(auth?.current);
   if (current.absent !== true && isAllowedPrincipal(current.authenticator, current.userId, env)) {
     return null;
@@ -321,6 +371,10 @@ export function nativeAnswerDecision(ctx: unknown): {status:'allowed'}|{status:'
     // it may be a person, the app principal of a scheduled turn, or missing, and none of those changes who may answer.
     const answerer = principalFromAuth(c.response.principal);
     if (answerer.absent === true || !isOwnerPrincipal(answerer.authenticator, answerer.userId)) return refused('only the agent\'s owner can answer this card');
+    const notKept = rememberNativeAnswer((ctx as {request?:{interactionId?:unknown}}).request?.interactionId,
+      (ctx as {session?:{id?:unknown}}).session?.id, c.response.principal);
+    // An answer whose answerer cannot be kept until the card settles is not accepted (see the store above).
+    if (notKept) return refused(notKept);
     return {status:'allowed'};
   } catch { return refused('this answer could not be verified'); }
 }

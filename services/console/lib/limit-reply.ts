@@ -1,4 +1,5 @@
 import { MEMBER_LIMIT_SENTENCE, INSTALLATION_LIMIT_SENTENCE } from "@lares/agent-kit/limit-sentences";
+import { approvalReplySentence } from "@lares/agent-kit/approval-reply-sentence";
 
 /**
  * The plain spending-limit sentence the gateway wrote, when the newest turn on this session ended
@@ -8,6 +9,10 @@ import { MEMBER_LIMIT_SENTENCE, INSTALLATION_LIMIT_SENTENCE } from "@lares/agent
  * Read from the session's own events. A turn ends with one `turn.settled` event; a failed one has
  * `outcome: "failed"` and `error: { code, message }`. A session that is over ends with
  * `session.ended`, and that is never a limit reply: the member cannot write into it again.
+ *
+ * A refused reply in a turn that asked a card is answered the same way, with its fixed sentence
+ * (`@lares/agent-kit/approval-reply-sentence`): either the answer was applied, or the card ended
+ * without one. The conversation carries on, and the member can ask what happened.
  *
  * Only the newest ending counts, so a later, different failure is never hidden behind an older
  * limit refusal — and neither is a later turn that ended any other way.
@@ -22,6 +27,8 @@ export function limitReplyOf(events: readonly { type: string; data?: unknown }[]
     if (data?.outcome !== "failed") return null;
     const message = data.error?.message;
     if (typeof message !== "string") return null;
+    const sentence = approvalReplySentence(message);
+    if (sentence !== undefined) return sentence;
     return MEMBER_LIMIT_SENTENCE.test(message) || INSTALLATION_LIMIT_SENTENCE.test(message) ? message : null;
   }
   return null;

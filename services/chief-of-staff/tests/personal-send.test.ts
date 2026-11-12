@@ -3,9 +3,17 @@
  * Exact approval-response admission, catalogue enablement and model continuation are separate. */
 const {purposeRequestMock}=vi.hoisted(()=>({purposeRequestMock:vi.fn()}));
 vi.mock('@lares/agent-kit/model-purpose-client',()=>({modelPurposeRequest:purposeRequestMock}));
+// eve keeps Lares's per-session marks in its durable session state, which only a running eve session
+// can read; here those `lares.` states are held in memory (cleared by the tests that use them).
+const eveState=vi.hoisted(()=>new Map<string,unknown>());
+vi.mock('eve/context',async original=>{
+ const real=await original<typeof import('eve/context')>();
+ return {...real,defineState:(key:string,initial:()=>unknown)=>!key.startsWith('lares.')?(real.defineState as (k:string,i:()=>unknown)=>unknown)(key,initial):
+  {get:()=>(eveState.has(key)?eveState.get(key):initial()),update:(fn:(v:unknown)=>unknown)=>{eveState.set(key,fn(eveState.has(key)?eveState.get(key):initial()));}}};
+});
 vi.mock('@lares/agent-kit/google-auth',async original=>({...await original<typeof import('@lares/agent-kit/google-auth')>(),readTokenEncKey:()=> '1'.repeat(64)}));
 import { fileURLToPath,pathToFileURL } from 'node:url';
-import { beforeAll,beforeEach,afterAll,describe,it,expect,vi,type Mock } from 'vitest';
+import { beforeAll,beforeEach,afterAll,afterEach,describe,it,expect,vi,type Mock } from 'vitest';
 import { PostgreSqlContainer,type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { readFileSync,readdirSync } from 'node:fs';
 import { Pool } from 'pg';
@@ -16,11 +24,11 @@ import { bindConsoleSession,consoleRouteAdmission } from '@lares/agent-kit/conso
 import { PgPersonalActionStore,personalActionApprovalDescriptor,PERSONAL_MAIL_SEND_TOOL,type PersonalActionApprovedReference } from '@lares/agent-kit/personal-action-store';
 import { encryptSecret,decryptSecret } from '@lares/agent-box/lib/crypto.js';
 import {getPool,closePool} from '@lares/agent-kit/db';
-import { definitionModel } from '@lares/agent-kit/definition-model';
-import { markPrivateConsoleSurface } from '@lares/agent-kit/private-console-surface';
+import { definitionModelResolver } from '@lares/agent-kit/definition-model';
+import { emptySessionView } from 'eve/events';
 import {personalSendApprovalRequest,personalSendInputRequested,personalSendApprovalResponse,personalSendInputResolved,requirePersonalSendCall} from '../lib/personal-send-approval.js';
-import { claimModelPurposeForInvocation,closeModelPurposeTurn,prepareModelPurposeInvocation } from '../agent/lib/model-purpose.js';
-import {requirePrivateConsoleResume} from '@lares/agent-kit/private-console-resume';
+import { claimModelPurposeForInvocation,closeModelPurposeTurn,openContinuationAfterSettle,prepareModelPurposeInvocation } from '../agent/lib/model-purpose.js';
+import {requirePrivateConsoleResume,clearAcceptedAnswersForTests,settleAcceptedAnswer} from '@lares/agent-kit/private-console-resume';
 import {readPersonalResource} from '../lib/personal-reads.js';
 import { executeApprovedPersonalSend,requirePersonalSendPolicy,type PersonalSendRuntime } from '../lib/personal-send.js';
 import { quiet } from './helpers/quiet-pool.js';
@@ -291,15 +299,39 @@ describe('exact personal approval lifecycle through authenticated resolver refer
   await expect(personalSendApprovalResponse({...p.response,response:{decision:'deny',principal:resolverAuth(p.requestId,'approve')}})).rejects.toThrow();
   expect((await pool.query('SELECT outcome FROM approval_asks WHERE call_id=$1',[p.callId])).rows[0].outcome).toBeNull();
  });
- it.each(['ignored','invalid'] as const)('nothing is sent when the card ended with nobody deciding (%s)',async outcome=>{
-  const p=await proposed();p.resume.session.auth.current=resolverAuth(p.requestId,'deny');
-  expect(await personalSendInputResolved(p.requestId,outcome,p.resume)).toBe(true);
+ // eve 1.0: the settle hook runs in the original turn as the person who ASKED; the answer is only
+ // what the response policy recorded in memory, and nothing is recorded when nobody answered.
+ const settling=()=>({session:{id:'wrun_send',turn:{id:'original-human',sequence:0},auth:{current:auth(),initiator:auth()}}}) as never;
+ const denied=(p:Awaited<ReturnType<typeof proposed>>)=>({...structuredClone(p.response),response:{decision:'deny' as const,principal:resolverAuth(p.requestId,'deny')},
+   session:{...p.response.session,turn:{id:'original-human',sequence:0}}});
+ it.each(['ignored','invalid'] as const)('nothing is sent, and the prepared send closes, when the card ended with nobody deciding (%s)',async outcome=>{
+  clearAcceptedAnswersForTests();const p=await proposed();
+  expect(await personalSendInputResolved(p.requestId,outcome,settling())).toBe(true);
+  expect((await stored(p.row.id)).state).toBe('cancelled');
+  expect((await pool.query('SELECT outcome FROM approval_asks WHERE call_id=$1',[p.callId])).rows[0].outcome).toBe(outcome);
   await expect(requirePersonalSendCall({...p.run,approval:{responder:resolverAuth(p.requestId,'deny')}} as never,p.input)).rejects.toThrow();
   expect(sends).not.toHaveBeenCalled();
  });
+ it('a Deny closes the prepared send even when its recorded answer was lost to a restart',async()=>{
+  const p=await proposed();
+  expect(await personalSendApprovalResponse(denied(p))).toEqual({status:'allowed'});
+  clearAcceptedAnswersForTests(); // the restart
+  expect(await personalSendInputResolved(p.requestId,'cancelled',settling())).toBe(true);
+  expect((await stored(p.row.id)).state).toBe('cancelled');
+  expect(sends).not.toHaveBeenCalled();
+ });
+ it('leaves every other card, and another conversation, alone',async()=>{
+  clearAcceptedAnswersForTests();const p=await proposed();
+  expect(await personalSendInputResolved('some-other-card','cancelled',settling())).toBe(false);
+  expect(await personalSendInputResolved(p.requestId,'cancelled',{session:{id:'wrun_other',turn:{id:'turn_0',sequence:0},auth:{current:auth(),initiator:auth()}}} as never)).toBe(false);
+  expect(await personalSendInputResolved(p.requestId,'cancelled',{session:{id:'wrun_send',turn:{id:'turn_0',sequence:0},auth:{current:auth('human','member-b'),initiator:auth('human','member-b')}}} as never)).toBe(false);
+  expect(await personalSendInputResolved(p.requestId,'approved',settling())).toBe(false);
+  expect((await stored(p.row.id)).state).toBe('awaiting_dispatch');
+ });
  it('cancels exactly the unclaimed proposal and permits only its bounded model response',async()=>{
   const p=await proposed();p.resume.session.auth.current=resolverAuth(p.requestId,'deny');
-  expect(await personalSendInputResolved(p.requestId,'cancelled',p.resume)).toBe(true);
+  expect(await personalSendApprovalResponse(denied(p))).toEqual({status:'allowed'});
+  expect(await personalSendInputResolved(p.requestId,'cancelled',settling())).toBe(true);
   expect((await stored(p.row.id)).state).toBe('cancelled');await requirePrivateConsoleResume(p.resume,'model');
   await expect(requirePersonalSendCall({...p.run,approval:{responder:resolverAuth(p.requestId,'deny')}} as never,p.input)).rejects.toThrow();
   expect(await recheckOf({...p.human,callId:'cancel-second'})).toMatchObject({denied:true});await expect(readPersonalResource(p.resume,p.input.selection,{kind:'readMail',id:'mail'})).rejects.toThrow();expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
@@ -313,88 +345,88 @@ describe('exact personal approval lifecycle through authenticated resolver refer
  });
 });
 
-// SKIPPED ON eve 1.0: this drove eve 0.60's tool-loop harness (`harness/tool-loop.js`, pending input
-// batches, `attributedInputResponses`) through the model-purpose gate (`definitionModel`, owned by the agent-definition
-// and conversation-event packets). rc.9 has no such harness entry, so the proof must be rewritten with their model-selection
-// change. The rules it pinned that belong to approvals are covered above: the DB gate on the resume (`requirePrivateConsoleResume`),
-// the response policy, and that only an approved exact action runs.
-describe.skip('real Eve model selection for an approved private resume',()=>{
- it('runs the pinned response-resume coordinator through the actual definitionModel and DB authority gate',async()=>{
-   vi.stubEnv('LARES_AGENT_NAME',env.LARES_AGENT_NAME);vi.stubEnv('LARES_AGENT_INCARNATION',env.LARES_AGENT_INCARNATION);
-   purposeRequestMock.mockReset();
-   const {ref}=await ready();
-   const purposeReceipt='p'.repeat(43);
-   purposeRequestMock.mockImplementation(async(op:string)=>{
-     if(op==='request.admit')return {pendingReceipt:purposeReceipt,expiresAt:Date.now()+30_000} as never;
-     if(op==='turn.open')return {capability:'c'.repeat(43),expiresAt:Date.now()+30_000} as never;
-     if(op==='step.claim')return {claim:'k'.repeat(43),expiresAt:Date.now()+30_000} as never;
-     return {closed:true} as never;
-   });
-   const {modelPurposeRequest}=await import('@lares/agent-kit/model-purpose-client');
-   const admitted=await modelPurposeRequest<{pendingReceipt?:string}>('request.admit',{capsule:'verified-fixture-capsule',receipt:{kind:'resume'}});
-   expect(admitted.pendingReceipt).toBe(purposeReceipt);
-
-   const eveRoot=new URL('../node_modules/eve/dist/src/',import.meta.url);
-   const [{ContextContainer,contextStorage},keys,{sessionProvider},{createToolLoopHarness}]=await Promise.all([
-     import(new URL('context/container.js',eveRoot).href),import(new URL('context/keys.js',eveRoot).href),
-     import(new URL('context/providers/session.js',eveRoot).href),import(new URL('harness/tool-loop.js',eveRoot).href),
-   ]) as any;
-   const initial=auth();
-   const resolver={authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:ref.requestId,
-     lares_resume_option:'approve',lares_purpose:'resolver',lares_model_purpose_required:'1',lares_model_pending_receipt:admitted.pendingReceipt}};
-   const context=new ContextContainer();context.set(keys.AuthKey,resolver);context.set(keys.InitiatorAuthKey,initial);context.set(keys.SessionIdKey,'wrun_send');
-   const session={agent:{dynamicModel:true,system:'',tools:[]},compaction:{recentWindowSize:10,threshold:100_000},
-     continuationToken:'eve:db-backed-resume-proof',history:[],sessionId:'wrun_send',state:{
-       'eve.harness.emission':{sessionStarted:true,sequence:1,stepIndex:0,turnId:''},
-       'eve.runtime.pendingInputBatches':[{event:{sequence:0,stepIndex:0,turnId:'turn_0'},requests:[{kind:'tool-approval',requestId:ref.requestId,
-         prompt:'Fixture approval',options:[{id:'approve',label:'Approve'},{id:'cancel',label:'Cancel'}],
-         action:{kind:'tool-call',callId:ref.selection.originalCallId,toolName:PERSONAL_MAIL_SEND_TOOL,input:{}}}],responseMessages:[],responseAuthRequiredRequestIds:[ref.requestId]}],
-     }};
-   context.set(keys.SessionKey,sessionProvider.create(context,{state:session.state}).value);
-   await contextStorage.run(context,()=>markPrivateConsoleSurface());
-   const events:Array<{type:string;data?:unknown}>=[];let adapterSession:any,actualStepEvent:any,reservedBeforeVerification=false;
-   const model=definitionModel({resolveAlias:async()=>{expect(reservedBeforeVerification).toBe(true);return 'fixture-brain';},
-     preparePurpose:(event,session)=>{prepareModelPurposeInvocation(event,session);reservedBeforeVerification=true;},
-     claimPurpose:claimModelPurposeForInvocation,provider:()=>({} as never)});
-   const originalConnect=Pool.prototype.connect;
-   vi.spyOn(Pool.prototype,'connect').mockImplementation(function(this:Pool,...args:unknown[]){
-     expect(reservedBeforeVerification).toBe(true);
-     return originalConnect.apply(this,args as never);
-   } as never);
-   const harness=createToolLoopHarness({mode:'conversation',
-     tools:new Map([[PERSONAL_MAIL_SEND_TOOL,{description:'Fixture',inputSchema:{type:'object'},approval:{response:async()=>({status:'allowed'})}}]]),
-     handleEvent:async(event:{type:string;data?:unknown})=>{
-       events.push({type:event.type,data:event.data});
-       if(['turn.completed','turn.failed','turn.cancelled'].includes(event.type))await closeModelPurposeTurn(event,adapterSession);
-     },resolveModel:async()=>{throw new Error('No provider expected');},
-     dispatchDynamicModelEvent:async({ctx,event}:{ctx:any;event:any})=>{
-       const frameworkSession=ctx.get(keys.SessionKey);
-       actualStepEvent=event;
-       // Eve's public DynamicResolveContext exposes identity and auth, but no turn object.
-       // The real step.started event is the sole source of the raw empty turn coordinate.
-       adapterSession={id:frameworkSession.sessionId,auth:{current:ctx.get(keys.AuthKey),initiator:ctx.get(keys.InitiatorAuthKey)}};
-       await (model as any).events['step.started'](event,{session:adapterSession});
-       throw new Error('Regression stops before provider invocation');
-     }});
-   const input={attributedInputResponses:[{auth:resolver,response:{requestId:ref.requestId,optionId:'approve'}}]};
-   const first=await contextStorage.run(context,()=>harness(session,input));
-   expect(typeof first.next).toBe('function');
-   const second=await contextStorage.run(context,()=>first.next!(first.session));
-   expect(second.next).toMatchObject({done:true});
-   expect(events.map(event=>event.type)).toEqual(expect.arrayContaining(['approval.settled','input.resolved','step.failed','turn.failed']));
-   expect(sessionProvider.create(context,{state:session.state}).value.turn).toEqual({id:'turn_1',sequence:1});
-   const calls=purposeRequestMock.mock.calls;
-   expect(calls.map(([op])=>op)).toEqual(['request.admit','turn.open','step.claim','turn.close']);
-   expect(calls[1]![1]).toMatchObject({pendingReceipt:purposeReceipt,context:{session:{id:'wrun_send',turn:{id:'',sequence:1},auth:{current:resolver,initiator:initial}}}});
-   expect(calls[2]![1]).toMatchObject({event:{type:'step.started',data:{turnId:'',sequence:1,stepIndex:0}},purposeAlias:'fixture-brain'});
-   expect(calls[3]![1]).toEqual({turnCapability:'c'.repeat(43),turnId:'',sequence:1});
-   expect(adapterSession.auth.current).not.toBe(adapterSession.auth.initiator);
-   expect(adapterSession.auth.current.attributes.lares_resolver_member_id).toBe(adapterSession.auth.initiator.attributes.lares_member_id);
-   await expect((model as any).events['step.started'](actualStepEvent,{session:adapterSession} as never)).rejects.toThrow('Model purpose authority');
-   expect(purposeRequestMock.mock.calls.map(([op])=>op)).toEqual(['request.admit','turn.open','step.claim','turn.close']);
-   // This approval is checked by the real private-resume database gate before the broker's
-   // open/claim ACKs; the fixture row remains an approved exact action for this request.
-   expect((await pool.query('SELECT outcome,resolved_by_member_id FROM approval_asks WHERE request_id=$1',[ref.requestId])).rows[0])
-     .toEqual({outcome:'approved',resolved_by_member_id:'member-a'});
+// eve 1.0 starts no new turn after an answered card: the paused turn carries on as the member who
+// ASKED, and the answer is known only from what the response policy accepted. These drive the real
+// response policy, the settle step and the agent's real model resolver (`definitionModelResolver`)
+// with the real database gate; only the Keeper socket is a stub (its side is the box test
+// "charges the continuation after an answered card…" and Keeper's model-purpose-authority tests).
+describe('the reply after an answered personal-mail card (eve 1.0)',()=>{
+ const MESSAGE_RECEIPT='r'.repeat(43),ANSWER_RECEIPT='a'.repeat(43),CAPABILITY='c'.repeat(43),CLAIM='k'.repeat(43);
+ const asker={authenticator:'lares-console',attributes:{...auth().attributes,lares_model_purpose_required:'1',lares_model_pending_receipt:MESSAGE_RECEIPT}};
+ const session=(current:unknown=asker)=>({id:'wrun_send',turn:{id:turnId(),sequence:n},auth:{current,initiator:asker}});
+ const resolver=()=>definitionModelResolver({resolveAlias:async()=>'fixture-brain',preparePurpose:prepareModelPurposeInvocation,
+   claimPurpose:claimModelPurposeForInvocation,provider:()=>({} as never)});
+ /** The continuation's model call, as eve's resolver context gives it (no turn on the session). */
+ const modelCall=(current:unknown=asker)=>resolver()({session:{id:'wrun_send',auth:{current,initiator:asker}},turn:{id:turnId(),status:'running'},view:emptySessionView()} as never);
+ const ops=()=>purposeRequestMock.mock.calls.map(([op])=>op);
+ // Each test is its own turn of the conversation, as eve numbers them.
+ let n=0;const turnId=()=>`turn_${n}`;
+ beforeEach(()=>{
+  n++;
+  vi.stubEnv('LARES_AGENT_NAME',env.LARES_AGENT_NAME);vi.stubEnv('LARES_AGENT_INCARNATION',env.LARES_AGENT_INCARNATION);
+  clearAcceptedAnswersForTests();eveState.clear();purposeRequestMock.mockReset();
+  purposeRequestMock.mockImplementation(async(op:string)=>{
+   if(op==='turn.open')return {capability:CAPABILITY,expiresAt:Date.now()+30_000} as never;
+   if(op==='step.claim')return {claim:CLAIM,expiresAt:Date.now()+30_000} as never;
+   return {closed:true} as never;
+  });
+ });
+ // The turn settles after each test, as eve settles it: its continuation slot closes.
+ afterEach(async()=>{await closeModelPurposeTurn({type:'turn.settled',data:{turnId:turnId()}},session());vi.unstubAllEnvs();clearAcceptedAnswersForTests();});
+ const answered=async(decision:'approve'|'deny')=>{
+  const p=await proposed();
+  const principal={...resolverAuth(p.requestId,decision),attributes:{...resolverAuth(p.requestId,decision).attributes,lares_model_pending_receipt:ANSWER_RECEIPT}};
+  expect(await personalSendApprovalResponse({...p.response,response:{decision,principal},session:{id:'wrun_send',turn:{id:turnId(),sequence:n},initiator:asker}} as never)).toEqual({status:'allowed'});
+  return p;
+ };
+ /** What the settle hook does once eve has settled the card (agent/hooks/approval-record.ts). */
+ const settle=async(requestId:string,outcome:'approved'|'cancelled',applied:'approve'|'deny')=>{
+  expect(await personalSendInputResolved(requestId,outcome,{session:session()})).toBe(true);
+  settleAcceptedAnswer(requestId,'wrun_send',applied);
+  await openContinuationAfterSettle(turnId(),session());
+ };
+ it('an approved card opens the reply once, for the member who asked, under the answer\'s receipt',async()=>{
+  const p=await answered('approve');
+  await settle(p.requestId,'approved','approve');
+  expect(ops()).toEqual(['turn.open']);
+  expect(purposeRequestMock.mock.calls[0]![1]).toEqual({pendingReceipt:ANSWER_RECEIPT,context:{session:{id:'wrun_send',turn:{id:turnId(),sequence:n},auth:{current:asker,initiator:asker}}}});
+  await expect(modelCall()).resolves.toMatchObject({modelContextWindowTokens:expect.any(Number)});
+  expect(ops()).toEqual(['turn.open','step.claim']);
+  expect(purposeRequestMock.mock.calls[1]![1]).toEqual({turnCapability:CAPABILITY,purposeAlias:'fixture-brain',event:{type:'step.started',data:{turnId:turnId(),sequence:n,stepIndex:0}}});
+  // Another member in the same conversation gets nothing: the real database gate refuses them.
+  await expect(modelCall({...asker,attributes:{...asker.attributes,lares_member_id:'member-b'}})).rejects.toThrow();
+  // The answer was used up: a second settle opens nothing more.
+  await openContinuationAfterSettle(turnId(),session());
+  expect(ops()).toEqual(['turn.open','step.claim']);
+  expect((await pool.query('SELECT outcome,resolved_by_member_id FROM approval_asks WHERE request_id=$1',[p.requestId])).rows[0]).toEqual({outcome:'approved',resolved_by_member_id:'member-a'});
+ });
+ it('an answer eve did not apply opens nothing, and the reply is refused',async()=>{
+  const p=await answered('approve');
+  settleAcceptedAnswer(p.requestId,'wrun_send','deny');
+  await openContinuationAfterSettle(turnId(),session());
+  expect(ops()).toEqual([]);
+  await expect(modelCall()).rejects.toThrow();
+  expect(ops()).toEqual([]);
+ });
+ it('a Deny closes the prepared send and still opens the reply',async()=>{
+  const p=await answered('deny');
+  await settle(p.requestId,'cancelled','deny');
+  expect((await stored(p.row.id)).state).toBe('cancelled');
+  expect(ops()).toEqual(['turn.open']);
+  await expect(modelCall()).resolves.toBeDefined();
+  expect(ops()).toEqual(['turn.open','step.claim']);
+ });
+ it('a Deny closes the prepared send with the answer store empty (after a restart), and nothing reopens',async()=>{
+  const p=await proposed();
+  // Another member's conversation cannot close it.
+  const before=(await stored(p.row.id)).state;expect(before).not.toBe('cancelled');
+  const other={session:{id:'wrun_send',turn:{id:turnId(),sequence:n},auth:{current:auth('human','member-b'),initiator:auth('human','member-b')}}};
+  expect(await personalSendInputResolved(p.requestId,'cancelled',other)).toBe(false);
+  expect((await stored(p.row.id)).state).toBe(before);
+  expect(await personalSendInputResolved(p.requestId,'cancelled',{session:session()})).toBe(true);
+  expect((await stored(p.row.id)).state).toBe('cancelled');
+  await openContinuationAfterSettle(turnId(),session());
+  expect(ops()).toEqual([]);
+  await expect(modelCall()).rejects.toThrow();
  });
 });
