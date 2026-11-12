@@ -180,6 +180,16 @@ it('stages rendered native runtimes without a legacy key and checks current auth
  // Before a model change is stored, a started agent must already hold a working key for the new name.
  await expect(l.prepare('bookkeeper',{...chief,model:'lares-no-key'},false)).rejects.toThrow('This agent has no working spending key for the model name lares-no-key, so its model was not changed. A key exists only for a model name the gateway serves and budget setup priced. While the agent is still on the model name budget setup was made for, sudo lares agent start bookkeeper on the server makes the keys for the other priced names.');
  await expect(l.prepare('bookkeeper',{...chief,model:'lares-keyed-model'},false)).resolves.toBeUndefined();
+ // A save on an agent held for another reason still stops it, and the keeper's line names the cause.
+ const stopLines=vi.spyOn(console,'error').mockImplementation(()=>{});
+ try{
+  const rendered=(current:()=>Promise<any>)=>new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},docker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,{current});
+  await rendered(async()=>({state:'held',reason:'Native budget activation required',detail:'no-matching-key'})).saved('bookkeeper',chief);
+  await rendered(async()=>({state:'held',reason:'Native budget activation required'})).saved('bookkeeper',chief);
+  expect(stopLines.mock.calls.map(call=>String(call[0]))).toEqual([
+   'keeper: agent bookkeeper was stopped after a save: no spending key matches this agent, its incarnation and its model name (it has not been started with its key yet)',
+   'keeper: agent bookkeeper was stopped after a save: the budget check refused it; the keeper line saying why it is held names the step']);
+ }finally{stopLines.mockRestore();}
  const observedDocker:DockerBoundary={...docker,inspect:async()=>({id:'container',running:true,incarnation:'11111111-1111-4111-8111-111111111111',notionRevision:null,image,mounts:[],addresses:[]}),healthy:async()=>true};
  const heldAuthority={current:async()=>({state:'held' as const,reason:'Native budget activation required' as const})};
  const observed=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},observedDocker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,heldAuthority);

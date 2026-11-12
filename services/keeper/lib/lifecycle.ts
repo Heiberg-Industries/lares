@@ -45,7 +45,9 @@ export type OutsideRouteLease = { assertCurrent(): Promise<OutsideRouteReview> }
 /** A budget key belongs to the agent, its incarnation and its model name. It does not follow the rest of the
  * definition: ordinary edits are live, and the money stays bound by the model name, the reviewed prices and the limits. */
 export type NativeRuntimeIdentity = { agent: string; incarnation: string; purposeAlias: string };
-export type NativeRuntimeState = { state: 'active' } | { state: 'held'; reason: 'Native budget activation required'; detail?: 'no-matching-key' };
+/** `detail` says why a hold happened, for the keeper's own log: no key for this agent, its incarnation and its model
+ * name; or the saved definition is not in a state the check can accept (not valid, waiting, or not matching its files). */
+export type NativeRuntimeState = { state: 'active' } | { state: 'held'; reason: 'Native budget activation required'; detail?: 'no-matching-key' | 'definition-not-ready' };
 /** 'model-change': asked while a model change is being saved, about the new name; the running agent is not held by it. */
 export type NativeRuntimeCheck = 'runtime' | 'model-change';
 export type NativeRuntimeAuthority = { current(identity: NativeRuntimeIdentity, check?: NativeRuntimeCheck): Promise<NativeRuntimeState> };
@@ -146,21 +148,22 @@ export class AgentLifecycle {
                 row.status !== 'valid' || typeof row.ownership_token !== 'string' ||
                 row.runtime_control_token !== row.ownership_token || row.state !== 'ready' || row.pending !== false ||
                 !row.applied_definition)
-                return { state: 'held', reason: NATIVE_HELD };
+                return { state: 'held', reason: NATIVE_HELD, detail: 'definition-not-ready' };
             const definition = definitionSchema.parse(row.definition), applied = definitionSchema.parse(row.applied_definition);
             const definitionHash = hashOf({ definition, dutiesMd: row.duties, voiceMd: row.voice });
             // The saved definition must be the one on record, and every part of it that needs a restart must be
             // the part the runtime was started with. Anything else in it is live without a restart.
             if (row.hash !== definitionHash || definition.role !== 'chief-of-staff' || typeof definition.model !== 'string' ||
                 !restartPartsApplied(applied, definition, this.restartOptions))
-                return { state: 'held', reason: NATIVE_HELD };
+                return { state: 'held', reason: NATIVE_HELD, detail: 'definition-not-ready' };
             const identity: NativeRuntimeIdentity = {
                 agent: name,
                 incarnation: row.ownership_token,
                 purposeAlias: definition.model,
             };
             const current = await this.nativeAuthority.current(identity);
-            return current?.state === 'active' ? { state: 'active' } : { state: 'held', reason: NATIVE_HELD };
+            return current?.state === 'active' ? { state: 'active' }
+                : { state: 'held', reason: NATIVE_HELD, ...(current?.state === 'held' && current.detail === 'no-matching-key' ? { detail: 'no-matching-key' as const } : {}) };
         } catch {
             return { state: 'held', reason: NATIVE_HELD };
         }
@@ -765,9 +768,12 @@ export class AgentLifecycle {
         const restartNeeded = !row.applied_definition || restartFingerprint(row.applied_definition, this.restartOptions) !== restartFingerprint(d, this.restartOptions);
         const nativeState = this.nativeGuarded ? await this.currentNative(name) : { state: 'active' as const };
         if (this.nativeGuarded && nativeState.state !== 'active') {
-            console.error(restartNeeded
-                ? `keeper: agent ${name} was stopped after a save: the saved change (doors, role, personal accounts or model) takes effect when Apply restarts it`
-                : `keeper: agent ${name} was stopped after a save: its budget activation does not cover the saved definition`);
+            // One fixed phrase per cause, never a value; the reader's own "is held" line names the failed step.
+            const why = restartNeeded ? 'the saved change (doors, role, personal accounts or model) takes effect when Apply restarts it'
+                : nativeState.detail === 'no-matching-key' ? 'no spending key matches this agent, its incarnation and its model name (it has not been started with its key yet)'
+                : nativeState.detail === 'definition-not-ready' ? 'the saved definition is not valid, has a change waiting, or does not match its files'
+                : 'the budget check refused it; the keeper line saying why it is held names the step';
+            console.error(`keeper: agent ${name} was stopped after a save: ${why}`);
             await this.docker.stop(name);
         }
         const pending = row.pending || restartNeeded || row.state === 'provisioning';
