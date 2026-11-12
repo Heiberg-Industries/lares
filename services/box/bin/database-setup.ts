@@ -13,7 +13,7 @@ const WORKFLOW_TEMPLATE = "empty_workflow";
 const ROLE_PREFIX = "lares-rc13-database:v1:";
 const TEMPLATE_TABLES = [
   ["workflow", "workflow_event_slots"], ["workflow", "workflow_events"], ["workflow", "workflow_hooks"],
-  ["workflow", "workflow_invocations"], ["workflow", "workflow_runs"], ["workflow", "workflow_snapshots"],
+  ["workflow", "workflow_invocations"], ["workflow", "workflow_job_lock_holders"], ["workflow", "workflow_runs"], ["workflow", "workflow_snapshots"],
   ["workflow", "workflow_start_hook_admissions"], ["workflow", "workflow_steps"], ["workflow", "workflow_stream_chunks"],
   ["workflow", "workflow_waits"], ["graphile_worker", "_private_job_queues"], ["graphile_worker", "_private_jobs"],
   ["graphile_worker", "_private_known_crontabs"], ["graphile_worker", "_private_tasks"],

@@ -4,8 +4,9 @@ const RUNTIME = "lares_workflow";
 const PROVISIONER = "lares_workflow_provisioner";
 const SCHEMAS = ["workflow", "workflow_drizzle", "graphile_worker"] as const;
 const WORKFLOW_DML = [
-  "workflow_event_slots", "workflow_events", "workflow_hooks", "workflow_invocations", "workflow_runs",
-  "workflow_snapshots", "workflow_start_hook_admissions", "workflow_steps", "workflow_stream_chunks", "workflow_waits",
+  "workflow_event_slots", "workflow_events", "workflow_hooks", "workflow_invocations", "workflow_job_lock_holders",
+  "workflow_runs", "workflow_snapshots", "workflow_start_hook_admissions", "workflow_steps", "workflow_stream_chunks",
+  "workflow_waits",
 ] as const;
 // The one sequence the workflow package owns that the runtime needs: it is the default of
 // workflow_invocations.sequence, so an insert there fails without USAGE on it.
@@ -48,6 +49,7 @@ export const WORKFLOW_SCHEMA_STEPS: ReadonlyArray<readonly [string, string]> = [
   ["1790035200000", "a1951926f0ea05daeab8803dba636fa0bf01ac01ac168b6dcb7f7f9696bbc437"],
   ["1790121600000", "902cb40ad074e6c034524de6f8c2f3f3b163cb51453b6753709986ebfa1f86b3"],
   ["1790208000000", "542bfbe211b0d39d313a6de6cdffc9651e2726e776c0294e7349a85349a6329e"],
+  ["1790294400000", "c4b4ad63ed1d7076692e1d1b18a8db37cb74f6612cb23d40d5a2d43590210bbc"],
 ];
 /** How many of WORKFLOW_SCHEMA_STEPS the previous package version had applied. */
 export const WORKFLOW_SCHEMA_STEPS_BEFORE = 20;

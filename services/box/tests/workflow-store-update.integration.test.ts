@@ -33,7 +33,7 @@ const STORE_A = `lares_${'a'.repeat(32)}`;
 const STORE_B = `lares_${'b'.repeat(32)}`;
 const ALL = [TEMPLATE, STORE_A, STORE_B];
 const PREVIOUS_TABLES = ['workflow_event_slots', 'workflow_events', 'workflow_hooks', 'workflow_runs', 'workflow_steps', 'workflow_stream_chunks', 'workflow_waits'];
-const NEW_TABLES = ['workflow_invocations', 'workflow_snapshots', 'workflow_start_hook_admissions'];
+const NEW_TABLES = ['workflow_invocations', 'workflow_job_lock_holders', 'workflow_snapshots', 'workflow_start_hook_admissions'];
 const QUEUE_TABLES = ['_private_job_queues', '_private_jobs', '_private_known_crontabs', '_private_tasks'];
 
 const secretDir = mkdtempSync(join(tmpdir(), 'lares-store-update-'));
@@ -330,7 +330,7 @@ describe('the pinned lists of schema steps', () => {
     const journal = JSON.parse(readFileSync(join(folder, 'meta/_journal.json'), 'utf8')) as { entries: Array<{ tag: string; when: number }> };
     const packaged = journal.entries.map((entry) => [String(entry.when), createHash('sha256').update(readFileSync(join(folder, `${entry.tag}.sql`))).digest('hex')]);
     expect(packaged).toEqual(WORKFLOW_SCHEMA_STEPS.map((step) => [...step]));
-    expect(WORKFLOW_SCHEMA_STEPS).toHaveLength(30);
+    expect(WORKFLOW_SCHEMA_STEPS).toHaveLength(31);
     const inProgram = [...program.toString('utf8').matchAll(/"(\d{13}) ([0-9a-f]{64})"/g)].map((match) => [match[1], match[2]]);
     expect(inProgram).toEqual(WORKFLOW_SCHEMA_STEPS.slice(0, WORKFLOW_SCHEMA_STEPS_BEFORE).map((step) => [...step]));
     expect(WORKFLOW_SCHEMA_STEPS_BEFORE).toBe(20);
@@ -352,7 +352,7 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
     // The previous release's own check accepted these stores; this release's refuses them, which is
     // what stops a keeper from starting an agent on a store the updater has not upgraded.
     await asRuntime(STORE_A, async (runtime) => {
-      await expect(verifyWorkflowRuntimePrivileges(runtime)).rejects.toThrow('Workflow schema step record is not at the pinned head (20 recorded, 30 expected)');
+      await expect(verifyWorkflowRuntimePrivileges(runtime)).rejects.toThrow('Workflow schema step record is not at the pinned head (20 recorded, 31 expected)');
     });
   }, 240_000);
 
@@ -365,7 +365,7 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
     expect(await upgradeStores()).toEqual(ALL);
 
     for (const database of ALL) {
-      expect(await stepsOf(database)).toEqual(pinned(30));
+      expect(await stepsOf(database)).toEqual(pinned(31));
       expect(await queueSteps(database)).toBe(18);
       expect(await createdAtType(database)).toBe('timestamp with time zone');
       const owned = await asOwner(database, async (owner) => (await owner.query<{ name: string; kind: string; owner: string }>(`
@@ -374,6 +374,7 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
       expect(owned).toEqual([
         { name: 'workflow_invocations', kind: 'r', owner: 'lares_workflow_owner' },
         { name: 'workflow_invocations_sequence_seq', kind: 'S', owner: 'lares_workflow_owner' },
+        { name: 'workflow_job_lock_holders', kind: 'r', owner: 'lares_workflow_owner' },
         { name: 'workflow_snapshots', kind: 'r', owner: 'lares_workflow_owner' },
         { name: 'workflow_start_hook_admissions', kind: 'r', owner: 'lares_workflow_owner' },
       ]);
@@ -404,6 +405,10 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
       expect((await runtime.query("UPDATE workflow.workflow_start_hook_admissions SET decision='rejected' WHERE run_id='run_now'")).rowCount).toBe(1);
       expect((await runtime.query('SELECT decision FROM workflow.workflow_start_hook_admissions')).rows).toEqual([{ decision: 'rejected' }]);
       expect((await runtime.query("DELETE FROM workflow.workflow_start_hook_admissions WHERE run_id='run_now'")).rowCount).toBe(1);
+      await runtime.query("INSERT INTO workflow.workflow_job_lock_holders(worker_id) VALUES('worker-1') ON CONFLICT (worker_id) DO UPDATE SET renewed_at=excluded.renewed_at");
+      expect((await runtime.query("UPDATE workflow.workflow_job_lock_holders SET renewed_at=now() WHERE worker_id='worker-1'")).rowCount).toBe(1);
+      expect((await runtime.query('SELECT worker_id FROM workflow.workflow_job_lock_holders')).rows).toEqual([{ worker_id: 'worker-1' }]);
+      expect((await runtime.query("DELETE FROM workflow.workflow_job_lock_holders WHERE worker_id='worker-1'")).rowCount).toBe(1);
       for (const table of NEW_TABLES) await expect(runtime.query(`TRUNCATE workflow.${table}`)).rejects.toMatchObject({ code: '42501' });
       const sequence = (await runtime.query(`SELECT
         has_sequence_privilege(current_user,'workflow.workflow_invocations_sequence_seq','USAGE') AS usage,
@@ -442,11 +447,11 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
       ['20 steps, one with another hash', () => superuser("UPDATE workflow_drizzle.workflow_migrations SET hash=repeat('0',64) WHERE id=7"), /it has 20 schema steps recorded, and at least one is not a step this release knows/],
       ['20 steps, one with another date', () => superuser('UPDATE workflow_drizzle.workflow_migrations SET created_at=created_at+1 WHERE id=7'), /it has 20 schema steps recorded, and at least one is not a step this release knows/],
       ['21 steps', () => superuser('INSERT INTO workflow_drizzle.workflow_migrations(hash,created_at) VALUES($1,$2)', [WORKFLOW_SCHEMA_STEPS[20]![1], WORKFLOW_SCHEMA_STEPS[20]![0]]), /it has 21 schema steps recorded/],
-      ['30 steps, one with another hash', async () => {
+      ['31 steps, one with another hash', async () => {
         for (const [created_at, hash] of WORKFLOW_SCHEMA_STEPS.slice(20)) await superuser('INSERT INTO workflow_drizzle.workflow_migrations(hash,created_at) VALUES($1,$2)', [hash, created_at]);
         await superuser("UPDATE workflow_drizzle.workflow_migrations SET hash=repeat('0',64) WHERE id=(SELECT max(id) FROM workflow_drizzle.workflow_migrations)");
-      }, /it has 30 schema steps recorded, and at least one is not a step this release knows/],
-      ['30 correct steps beside the previous tables (a record somebody edited)', async () => {
+      }, /it has 31 schema steps recorded, and at least one is not a step this release knows/],
+      ['31 correct steps beside the previous tables (a record somebody edited)', async () => {
         for (const [created_at, hash] of WORKFLOW_SCHEMA_STEPS.slice(20)) await superuser('INSERT INTO workflow_drizzle.workflow_migrations(hash,created_at) VALUES($1,$2)', [hash, created_at]);
       }, /tables this release adds are missing/],
     ];
@@ -549,7 +554,7 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
     expect(await upgradeStores()).toEqual([STORE_B]);
 
     expect(await recorded(STORE_A)).toEqual(idsA);
-    for (const database of ALL) expect(await stepsOf(database)).toEqual(pinned(30));
+    for (const database of ALL) expect(await stepsOf(database)).toEqual(pinned(31));
     await asRuntime(STORE_A, async (runtime) => {
       await verifyWorkflowRuntimePrivileges(runtime);
       expect((await runtime.query('SELECT count(*)::int AS n FROM workflow.workflow_invocations')).rows[0].n).toBe(0);
@@ -600,7 +605,7 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
 
     expect(await upgradeStores()).toEqual(ALL);
     // The killed attempt used up record ids without leaving a row: ids are not what is pinned.
-    expect(await stepsOf(STORE_A)).toEqual(pinned(30));
+    expect(await stepsOf(STORE_A)).toEqual(pinned(31));
     expect((await recorded(STORE_A)).map((row) => row.id)).not.toEqual(Array.from({ length: 30 }, (_, at) => at + 1));
     expect((await conversations(STORE_A, before.columns)).rows).toEqual(before.rows);
   }, 600_000);
@@ -621,7 +626,7 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
     expect(fresh.code, fresh.stderr).toBe(0);
     expect(fresh.stdout + fresh.stderr).not.toContain(password('provisioner'));
     expect((await storeStep('check', TEMPLATE)).stdout.trim()).toBe('current');
-    expect(await stepsOf(TEMPLATE)).toEqual(pinned(30));
+    expect(await stepsOf(TEMPLATE)).toEqual(pinned(31));
     const again = await storeStep('create', TEMPLATE);
     expect(again.code).toBe(3);
     expect(again.stderr).toContain('a fresh install expects an empty database');

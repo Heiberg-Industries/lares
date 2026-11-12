@@ -165,7 +165,7 @@
     "@ai-sdk/anthropic": "4.0.102",
     "@ai-sdk/openai-compatible": "3.0.90",
     "@lares/vault-format": "workspace:*",
-    "ai": "7.0.169",
+    "ai": "7.0.170",
     "googleapis-common": "^9.1.0",
     "https-proxy-agent": "9.1.0",
     "jszip": "^3.10.2",
@@ -178,7 +178,7 @@
     "@testcontainers/postgresql": "^12.2.0",
     "@types/node": "24.x",
     "@types/pg": "^8.23.1",
-    "eve": "1.0.0-rc.9",
+    "eve": "1.0.0-rc.10",
     "typescript": "7.0.2",
     "vitest": "^5.0.3"
   },

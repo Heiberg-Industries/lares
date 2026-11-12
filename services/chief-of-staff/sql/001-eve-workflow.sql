@@ -1,4 +1,4 @@
--- chief of staff: @workflow/world-postgres@5.1.1 schema (extracted for manual box deploy)
+-- chief of staff: @workflow/world-postgres@5.2.0 schema (extracted for manual box deploy)
 --
 -- GENERATED BODY — do not hand-edit below the first `CREATE SCHEMA`. Everything from that
 -- line down is derived from the INSTALLED @workflow/world-postgres by replaying the package's
@@ -17,7 +17,7 @@
 -- WHAT THE CHECK COMPARES: statements, not bytes. This file wraps one statement — `ALTER
 -- TABLE ONLY workflow_drizzle.workflow_migrations ALTER COLUMN id SET DEFAULT nextval(...)`
 -- — over two lines where pg_dump emits it on one. That is layout, not schema, so the check
--- passes it: as of 2026-11-11 on @workflow/world-postgres@5.1.1 all 47 statements are
+-- passes it: as of 2026-11-12 on @workflow/world-postgres@5.2.0 all 49 statements are
 -- identical and `regen:eve-sql:check` exits 0. It exits 1 only when a statement's own text
 -- differs — a renamed column, a widened type, a dropped index. Left unregenerated on purpose:
 -- the file below is what has actually been applied to the box.
@@ -28,7 +28,7 @@
 -- run this DDL itself; only the bootstrap CLI does. This file is the hand-extracted
 -- equivalent, meant to be applied once by hand before the box's chief-of-staff container starts.
 --
--- First extracted 2026-08-11, regenerated 2026-11-11 for 5.1.1, by running the package's own `setupDatabase()` (from
+-- First extracted 2026-08-11, regenerated 2026-11-12 for 5.2.0, by running the package's own `setupDatabase()` (from
 -- `@workflow/world-postgres/cli`) against a disposable local Postgres, then
 -- `pg_dump --schema-only --schema=workflow --schema=workflow_drizzle` on the result — this is
 -- the real, final schema across all 30 of the package's internal migrations (0000-0029)
@@ -150,6 +150,11 @@ CREATE SEQUENCE IF NOT EXISTS workflow.workflow_invocations_sequence_seq
     CACHE 1;
 
 ALTER SEQUENCE workflow.workflow_invocations_sequence_seq OWNED BY workflow.workflow_invocations.sequence;
+
+CREATE TABLE IF NOT EXISTS workflow.workflow_job_lock_holders (
+    worker_id text NOT NULL,
+    renewed_at timestamp with time zone DEFAULT now() NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS workflow.workflow_runs (
     id character varying NOT NULL,
@@ -290,6 +295,15 @@ DO $$ BEGIN
     ) THEN
         ALTER TABLE ONLY workflow.workflow_invocations
             ADD CONSTRAINT workflow_invocations_pkey PRIMARY KEY (run_id, request_id);
+    END IF;
+END $$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'workflow_job_lock_holders_pkey' AND connamespace = 'workflow'::regnamespace
+    ) THEN
+        ALTER TABLE ONLY workflow.workflow_job_lock_holders
+            ADD CONSTRAINT workflow_job_lock_holders_pkey PRIMARY KEY (worker_id);
     END IF;
 END $$;
 
