@@ -7,8 +7,8 @@
  * Keeper's real broker and a real Git Vault. Only the storage inventory's fixed path is mapped to a
  * file. Set TMPDIR to a real path with no symlink in it, as Vault paths refuse one.
  * Run: pnpm -C packages/board-evals exec tsx scripts/member-private-chat-proof.mjs
- * On eve 1.0 the gateway lane (PRIVATE_CHAT_PROOF_GATEWAY_LANE) and the budget lane that needs it are
- * NOT PORTED: see proofs/member-private-chat-2026-11-11.md.
+ * The gateway lane (PRIVATE_CHAT_PROOF_GATEWAY_LANE) is ported to eve 1.0: see
+ * proofs/member-private-chat-gateway-2026-11-12.md, which also records the budget lane's state.
  */
 import assert from 'node:assert/strict';
 import fs,{mkdtempSync,cpSync,symlinkSync,writeFileSync,readFileSync,readdirSync,mkdirSync,rmSync,existsSync} from 'node:fs';
@@ -48,7 +48,7 @@ if(withBudget)assert.ok(gatewayLane==='anthropic'&&process.env.PRIVATE_CHAT_PROO
 if(withVault)assert.equal(process.env.PRIVATE_CHAT_PROOF_ROLE,'chief-of-staff','Vault custody fixture is bounded to the chief-of-staff role');
 if(withTracks)assert.ok(process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&!withVault,'Tracks proof uses the real broker on the chief-of-staff role, not the recording Vault fixture');
 let gateway,trackVault;
-const observedSteps=new Set();
+const observedSteps=new Set(),startedTurns=new Set();
 const vaultCalls=[],vaultWire=[],vaultChallenges=new Map(),vaultTurns=new Map(),vaultServers=[];
 const snapshots=[],ownedSessionIds=new Set();
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -191,18 +191,27 @@ async function create(app,member,message,operationId){const response=await reque
 // transport only and are not stored. `startIndex` counts stored lines. A read ends when the turn
 // settles (any outcome), pauses for a person, or the session ends.
 const ends=fact=>fact.type==='turn.settled'||fact.type==='turn.paused'||fact.type==='session.ended';
-async function stream(app,member,session){const lines=[];for(let retry=0;retry<80;retry++){
+// `stop` ends a read on a fact other than a turn's end: a manual compaction runs between turns on
+// eve 1.0, so it never settles, pauses or ends a turn; its control delivery settles instead.
+async function stream(app,member,session,stop=ends){const lines=[];for(let retry=0;retry<80;retry++){
  const response=await request(app,member,'GET',`eve/v1/session/${session.id}/stream?startIndex=${session.index}&includeTailIndex=1`,undefined,session.cookie);
  if(!response.ok){if([404,409,425,500,502,503,504].includes(response.status)){await sleep(100);continue;}throw new Error('stream '+response.status+' '+await response.text());}
  const tail=Number(response.headers.get('x-eve-stream-tail-index'));assert.ok(Number.isInteger(tail),'A catch-up read carried no tail index');
  const raw=await response.text();let read=session.index;
- for(const line of raw.split('\n').filter(Boolean)){const record=JSON.parse(line);if(record.$eve!==undefined)continue;lines.push(line);read++;
-  // NOT PORTED (gateway lane): the kit's model-invocation scope still keys a model call on 0.60's
-  // `step.started` coordinates (turn id, sequence, step index), which v27 streams do not carry, so
-  // this records nothing on eve 1.0 and the gateway lane's scope check fails. Kept in the shape
-  // that check (assertGatewayScopes) reads.
-  for(const fact of record.facts??[]){if(fact.type==='step.started')observedSteps.add(JSON.stringify([session.id,fact.data.turnId,fact.data.sequence,fact.data.stepIndex]));
-   if(ends(fact)){session.index=read;assert.notEqual(fact.data?.outcome,'failed',raw);return lines.join('\n');}}}
+ for(const line of raw.split('\n').filter(Boolean)){const record=JSON.parse(line);if(record.$eve!==undefined)continue;const at=read;lines.push(line);read++;
+  // The gateway lane's scope check (assertGatewayScopes) compares each model call's recorded
+  // coordinates with what the stream itself emitted. eve 0.60.1 emitted them as one `step.started`
+  // fact; eve 1.0 emits no such fact, and the kit builds the same record from eve's session view
+  // (`modelStepCoordinates`): the turn id, its sequence (the `n` of `turn_<n>`, eve's own rule),
+  // and the stream position of the next stored line. Measured on this stream, that next line is
+  // the one carrying the call's `model.requested` fact. So a step is observed here as: a
+  // `model.requested` fact AT stored position `at`, scoped to a turn whose `turn.started` this
+  // session's stream emitted.
+  for(const fact of record.facts??[]){
+   if(fact.type==='turn.started')startedTurns.add(JSON.stringify([session.id,fact.data.turnId]));
+   const turnId=fact.scope?.turnId,sequence=/^turn_(0|[1-9]\d*)$/.exec(turnId??'')?.[1];
+   if(fact.type==='model.requested'&&sequence!==undefined&&startedTurns.has(JSON.stringify([session.id,turnId])))observedSteps.add(JSON.stringify([session.id,turnId,Number(sequence),at]));
+   if(stop(fact)){session.index=read;if(stop===ends)assert.notEqual(fact.data?.outcome,'failed',raw);return lines.join('\n');}}}
  assert.equal(read-1,tail,'Counted stored lines and the server tail index differ');session.index=read;
  await sleep(100);
  }throw new Error('Turn never completed '+logs.slice(-1800));}
@@ -358,7 +367,10 @@ async function proveGatewayInvocation(app){
   const manual=await create(app,a,'Before manual compaction');await stream(app,a,manual);
   const beforeManual=gateway.calls.length,manualLogOffset=logs.length;
   const response=await request(app,a,'POST',`eve/v1/session/${manual.id}/compact`,{},manual.cookie);assert.ok(response.ok);
-  await stream(app,a,manual);await sleep(50);assert.equal(gateway.calls.length,beforeManual,'Manual compaction dispatched HTTP');
+  // eve 1.0: the compaction is a control delivery between turns, settled `failed` when refused.
+  const compacted=(await stream(app,a,manual,fact=>fact.type==='delivery.settled')).split('\n').map(JSON.parse).flatMap(r=>r.facts??[]).filter(f=>f.type==='delivery.settled').at(-1);
+  assert.equal(compacted?.data?.outcome,'failed','Refused manual compaction did not settle its delivery failed');
+  await sleep(50);assert.equal(gateway.calls.length,beforeManual,'Manual compaction dispatched HTTP');
   const manualLogs=logs.slice(manualLogOffset);
   assert.ok(manualLogs.includes('manual session compaction failed'),'Manual compaction did not report its failure');
   const manualCause=manualLogs.includes('Model compaction requires a fresh trusted invocation')?'authored-hook':manualLogs.includes('Dynamic model selection is required before model-dependent work begins')?'no-current-model-selection':null;
@@ -382,7 +394,7 @@ async function proveGatewayInvocation(app){
     if(gateway.calls.length===before){
       const receipts=readFileSync(app.modelLog+'.compaction','utf8').slice(receiptOffset).trim().split('\n').filter(Boolean).map(JSON.parse);
       assert.ok(receipts.length>0,'Automatic refusal did not reach awaited compaction hook');
-      assert.ok(receipts.every(r=>r.sessionId===long.id&&r.event.type==='compaction.requested'&&r.error==='Model compaction requires a fresh trusted invocation'),'Compaction receipt did not identify this actual attempt and exact refusal');
+      assert.ok(receipts.every(r=>r.sessionId===long.id&&r.event.type==='context.started'&&r.event.data?.kind!=='clear'&&r.error==='Model compaction requires a fresh trusted invocation'),'Compaction receipt did not identify this actual attempt and exact refusal');
       assert.ok(transcript.includes('"outcome":"failed"'),'Authored compaction refusal did not terminally stop the workflow');
       denied=true;break;
     }

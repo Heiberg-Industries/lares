@@ -37,8 +37,8 @@
  * Results: one dated file per run under `packages/board-evals/proofs/` (`web-chat-2026-09-20.md`
  * is this proof on eve 0.60.1).
  */
-import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawn, execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { join, resolve } from 'node:path';
@@ -46,6 +46,9 @@ import assert from 'node:assert/strict';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
 import { Client } from 'eve/client';
+import { PgMemberStore } from '@lares/agent-kit/member-store';
+import { PgGrantStore } from '@lares/agent-kit/grant-store';
+import { loadDefinition } from '@lares/agent-kit/definition';
 import { makeApp, run, source, abort, ensureProbeExtensionBuilt } from './proof-harness.mjs';
 // The REAL proxy. Not a copy, not a re-implementation — the file the console ships.
 import { forwardChat, ROUTE_USERNAME, CHAT_PATHS } from '../../../services/console/lib/chat-proxy.ts';
@@ -60,6 +63,10 @@ const REGISTRY_ADDRESS = '10.0.0.7';
 const PASSWORD = 'disposable-fixture-only';
 const INCARNATION = '11111111-1111-4111-8111-111111111111';
 const OWNER = 'owner@example.invalid';
+/** The signed-in console member: an opaque member id, the agent's owner. Since the console's
+ *  members-and-grants work the proxy asks the real member store who is signed in and the real
+ *  grant store whether they may use the agent, so both are real rows here, not a stub. */
+const MEMBER = 'proof-owner';
 // eve 1.0's stream (version 27) is one JSON object per line: an EVENT LINE `{ at, facts: [...] }`
 // holding every event one state change produced, a PROGRESS record `{ progress: {...} }`, or a
 // transport record `{ "$eve": ... }` (a heartbeat, the end of a read) that is not stored and has
@@ -142,6 +149,7 @@ const GATED_TOOL_SRC = `
 import { appendFileSync } from "node:fs";
 import { defineTool } from "eve/tools";
 import { always } from "eve/tools/approval";
+import { withCardTitle } from "@lares/agent-kit/approval-summary";
 import { z } from "zod";
 
 export default defineTool({
@@ -152,7 +160,10 @@ export default defineTool({
     subject: z.string(),
     bodyText: z.string(),
   }),
-  approval: always(),
+  // eve 1.0 takes a card's title from the OBJECT form of \`approval\`; every gated catalogue tool
+  // wraps its policy with \`withCardTitle\` (services/chief-of-staff/agent/tools/catalogue.ts), so the
+  // fixture does too. A bare \`always()\` gets eve's default title, "Approve Gmail send?".
+  approval: withCardTitle(always()),
   execute: async (input: unknown) => {
     appendFileSync(process.env.BOARD_LOG!, "sent\\n");
     return { sent: true };
@@ -207,19 +218,29 @@ function fitOut(root) {
   writeFileSync(join(root, 'agent/tools/gmail_send.ts'), GATED_TOOL_SRC);
 }
 
-/** The four box files and the two synthetic rows the other proofs install. */
-async function seed(uri) {
-  const pool = new Pool({ connectionString: uri });
-  try {
-    for (const name of ['001_baseline.sql'])
-      await pool.query(readFileSync(resolve(source, '../../services/box/sql', name), 'utf8'));
-    await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending)
-      VALUES ('${AGENT}','${REGISTRY_ADDRESS}','synthetic-unused','owned','${INCARNATION}','${INCARNATION}','ready',false)`);
-    await pool.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,applied_revision)
-      VALUES ('${AGENT}','slack','${INCARNATION}','22222222-2222-4222-8222-222222222222','${OWNER}','U_SYNTHETIC','22222222-2222-4222-8222-222222222222')`);
-  } finally {
-    await pool.end();
-  }
+/** Every box file in number order (as the image probe applies them: the console's member, grant
+ *  and conversation-binding tables are not in the baseline), the registry row, and the member and
+ *  grant rows the proxy now checks. Returns the signed-in member's session token. */
+async function seed(pool, loaded) {
+  const sql = resolve(source, '../../services/box/sql');
+  for (const name of readdirSync(sql).filter((n) => /^\d{3}.*\.sql$/.test(n)).sort())
+    await pool.query(readFileSync(join(sql, name), 'utf8'));
+  // The definition row is the one the agent itself records at its first turn (`rememberValid`):
+  // the same loader, the same hash. A different hash there is a changed definition, which bumps
+  // the agent's access revision and retires every console conversation, as it should.
+  const { definition, hash } = loaded;
+  await pool.query("INSERT INTO agent_definitions(name,definition,hash,status,duties,voice) VALUES($1,$2,$3,'valid',$4,$5)", [AGENT, definition, hash, loaded.dutiesMd, loaded.voiceMd]);
+  await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending,applied_definition)
+    VALUES ('${AGENT}','${REGISTRY_ADDRESS}','synthetic-unused','owned','${INCARNATION}','${INCARNATION}','ready',false,$1)`, [definition]);
+  await pool.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,applied_revision)
+    VALUES ('${AGENT}','slack','${INCARNATION}','22222222-2222-4222-8222-222222222222','${OWNER}','U_SYNTHETIC','22222222-2222-4222-8222-222222222222')`);
+  await pool.query("INSERT INTO orgs(id,display_name) VALUES('proof-org','Proof')");
+  await pool.query("INSERT INTO users(id,display_name,org_id,org_role) VALUES($1,'Owner','proof-org','owner')", [MEMBER]);
+  await pool.query('INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES($1,NULL)', [MEMBER]);
+  await pool.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$1,'')", [MEMBER]);
+  const session = await new PgMemberStore(pool).createSession({ identity: { issuer: 'https://identity.example.invalid', subject: MEMBER }, verifiedAt: new Date() }, new Date(Date.now() + 3600000));
+  await new PgGrantStore(pool).adoptAgent(MEMBER, { agentName: AGENT, expectedDefinitionHash: hash }, { designatedOwnerMemberId: MEMBER });
+  return session.token;
 }
 
 // ─── the proof's own instruments ───────────────────────────────────────────────────────────────
@@ -233,12 +254,34 @@ let calls = [];
 const seenHeaders = [];
 const seenBodies = [];
 let port;
+/** The signed-in member's console session token, the pool the proxy's checks read, and the
+ *  browser's cookie jar: path → `name=value` for each conversation cookie the proxy issued. */
+let memberToken, authDb, memberStore;
+const jar = new Map();
+const cookieFor = (urlPath) => [...jar].filter(([path]) => urlPath === path || urlPath.startsWith(`${path}/`)).map(([, pair]) => pair).join('; ');
 
+/**
+ * The proxy now sets ONE cookie of its own: on a successful create it issues the conversation's
+ * capability cookie (`chatSessionCapabilityCookie` in services/console/lib/chat-session-capability.ts),
+ * which a browser must show to continue that conversation. Any other `set-cookie` — on any other
+ * response, or of any other name or shape — is still a failure, and so is the password in it.
+ * (On eve 0.60 the proxy set no cookie at all, and this check was "no set-cookie anywhere".)
+ */
 function observe(response, where) {
   const headers = Object.fromEntries(response.headers);
-  seenHeaders.push({ where, headers });
+  const entry = { where, headers, capabilityCookie: false };
+  seenHeaders.push(entry);
   assert.equal(response.headers.get('www-authenticate'), null, `${where}: the door's challenge reached the browser`);
-  assert.equal(response.headers.get('set-cookie'), null, `${where}: the agent set a cookie in the console's origin`);
+  const cookie = response.headers.get('set-cookie');
+  if (cookie !== null) {
+    const sid = response.headers.get('x-eve-session-id');
+    assert.ok(/ eve\/v1\/session$/.test(where) && response.ok && sid, `${where}: a cookie was set on a response that is not a successful create`);
+    const path = `/api/chat/${AGENT}/eve/v1/session/${sid}`;
+    assert.match(cookie, new RegExp(`^lares_chat_${sid}=[A-Za-z0-9_-]{43}; Path=${path}; HttpOnly; SameSite=Lax; Max-Age=[0-9]+; Secure$`), `${where}: a cookie that is not the proxy's own conversation cookie: ${cookie}`);
+    assert.ok(!cookie.includes(PASSWORD), `${where}: the password is in a cookie`);
+    jar.set(path, cookie.split(';')[0]);
+    entry.capabilityCookie = true;
+  }
   return response;
 }
 
@@ -249,28 +292,39 @@ async function boundFetch(url, init) {
   const text = String(url);
   const headers = new Headers(init?.headers ?? {});
   calls.push({ url: text, method: init?.method, authorization: headers.get('authorization') });
-  assert.ok(text.startsWith(prefix), `the proxy addressed ${text}, not the registry's ${prefix}`);
-  assert.equal(headers.get('authorization'), `Basic ${Buffer.from(`${ROUTE_USERNAME}:${PASSWORD}`).toString('base64')}`, 'the upstream Authorization header is not the door credential');
-  assert.equal(init?.redirect, 'error', 'the proxy would follow a redirect');
-  return await fetch(`http://127.0.0.1:${port}/${text.slice(prefix.length)}`, init);
+  try {
+    assert.ok(text.startsWith(prefix), `the proxy addressed ${text}, not the registry's ${prefix}`);
+    assert.equal(headers.get('authorization'), `Basic ${Buffer.from(`${ROUTE_USERNAME}:${PASSWORD}`).toString('base64')}`, 'the upstream Authorization header is not the door credential');
+    assert.equal(init?.redirect, 'error', 'the proxy would follow a redirect');
+    return await fetch(`http://127.0.0.1:${port}/${text.slice(prefix.length)}`, init);
+  } catch (error) {
+    // The proxy reports any failure here as its own 502 and keeps the cause to itself, so a
+    // failed assertion above would otherwise read as a refusal. This is where it is made loud.
+    console.log(`upstream ${init?.method} ${text} failed: ${error?.cause?.message ?? error?.message ?? error}`);
+    if (error instanceof assert.AssertionError) process.exitCode = 1;
+    throw error;
+  }
 }
 
-function deps({ email = OWNER, known = true } = {}) {
+/** The proxy's own collaborators, all real: the member store answers who is signed in (or
+ *  nobody, for `signedIn: false`), and the registry and the grant checks read the real tables. */
+function deps({ signedIn = true } = {}) {
   return {
-    signedInEmail: async () => email,
+    signedInMember: async () => (signedIn ? (await memberStore.sessionMember(memberToken)) ?? null : null),
     routePassword: () => PASSWORD,
-    query: async (_sql, values) => ({
-      rows: known && values[0] === AGENT
-        ? [{ address: REGISTRY_ADDRESS, state: 'ready', status: 'valid', runtime_control_token: INCARNATION, incarnation: INCARNATION, role: 'creative' }]
-        : [],
-    }),
+    query: (sql, values) => authDb.query(sql, values),
+    connect: () => authDb.connect(),
     fetch: boundFetch,
   };
 }
 
-/** One browser request, through the real `forwardChat`. */
+/** One browser request, through the real `forwardChat`. The browser's cookie jar goes with it,
+ *  as a browser's would. */
 async function viaProxy(method, path, { body, query = '', signal, ...options } = {}) {
-  const init = { method, headers: body === undefined ? {} : { 'content-type': 'application/json' } };
+  const headers = body === undefined ? {} : { 'content-type': 'application/json' };
+  const cookie = cookieFor(`/api/chat/${AGENT}/${path}`);
+  if (cookie) headers.cookie = cookie;
+  const init = { method, headers };
   if (body !== undefined) init.body = body;
   if (signal !== undefined) init.signal = signal;
   const request = new Request(`https://console.example.invalid/api/chat/${AGENT}/${path}${query}`, init);
@@ -372,7 +426,10 @@ async function openProxiedStream(sessionId, { startIndex = 0, signal, includeTai
     last = await viaProxy('GET', `eve/v1/session/${sessionId}/stream`, { query, signal });
     if (last.ok) return last;
     if (!RETRYABLE.has(last.status)) break;
-    seenBodies.push(await last.text());
+    if (attempt === 11) break; // the last refusal goes back unread, as evidence for the caller
+    const said = await last.text();
+    seenBodies.push(said);
+    console.log(`stream ${sessionId}${query} → ${last.status} ${said.slice(0, 200)} (retrying)`);
     await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
   }
   return last;
@@ -396,10 +453,12 @@ try {
   db = new Pool({ connectionString: container.getConnectionUri() });
   const uriFor = (name) => container.getConnectionUri().replace(/\/[^/?]*(\?|$)/, `/${name}$1`);
   await db.query('CREATE DATABASE webchat');
-  await seed(uriFor('webchat'));
 
   app = makeApp(uriFor('webchat'), '0'); // schedules off: nothing here needs a tick
   const { root: cwd, env, eve } = app;
+  authDb = new Pool({ connectionString: uriFor('webchat') });
+  memberStore = new PgMemberStore(authDb);
+  memberToken = await seed(authDb, await loadDefinition({ serviceDir: cwd, env }));
   env.EVE_ROUTE_PASSWORD_FILE = join(cwd, 'route-password');
   writeFileSync(env.EVE_ROUTE_PASSWORD_FILE, `${PASSWORD}\n`);
   fitOut(cwd);
@@ -462,12 +521,17 @@ try {
   const live = await reading;
   const rest = live.some((l) => isTerminal(l.event)) ? [] : await followProxiedStream(sessionId, slowFrom + live.filter((l) => isStored(l.event)).length);
   const slow = [...live, ...rest];
-  const firstLineAt = live.length > 0 ? heldOpenedAt + live[0].at - sentAt : -1;
+  // Measured on STORED lines only. eve 1.0 opens a held stream with a `$eve` heartbeat, a transport
+  // record that is sent the moment the connection opens, before any message: it says nothing about
+  // whether the turn's own events are buffered, and counting it would make the first line arrive
+  // before the message was sent.
+  const liveStored = live.filter((l) => isStored(l.event));
+  const firstLineAt = liveStored.length > 0 ? heldOpenedAt + liveStored[0].at - sentAt : -1;
   const turnEndedAt = Date.now() - sentAt;
-  const span = live.length > 1 ? live.at(-1).at - live[0].at : 0;
+  const span = liveStored.length > 1 ? liveStored.at(-1).at - liveStored[0].at : 0;
   record('5 streaming is incremental, not buffered',
-    live.length > 1 && span > 500 && firstLineAt >= 0 && turnEndedAt - firstLineAt > 500,
-    `ONE held-open connection delivered ${live.length} lines spread over ${span}ms; its first line reached the reader +${firstLineAt}ms after the message was sent, the turn ended +${turnEndedAt}ms after it (a 1500ms tool ran in between)`);
+    liveStored.length > 1 && span > 500 && firstLineAt >= 0 && turnEndedAt - firstLineAt > 500,
+    `ONE held-open connection delivered ${liveStored.length} stored lines (plus ${live.length - liveStored.length} transport record(s), first ${JSON.stringify(typesOf(live[0]?.event))}) spread over ${span}ms; its first stored line reached the reader +${firstLineAt}ms after the message was sent, the turn ended +${turnEndedAt}ms after it (a 1500ms tool ran in between)`);
 
   // ── 4. a reconnecting stream ─────────────────────────────────────────────────────────────────
   // The session's stream is a replayable log, so the SAME turn can be read whole and then read in
@@ -492,15 +556,27 @@ try {
 
   // ── 6. the refusals, each with ZERO upstream requests ─────────────────────────────────────────
   calls = [];
-  const noSession = await viaProxy('POST', 'eve/v1/session', { body: JSON.stringify({ message: 'hello' }), email: null });
+  const noSession = await viaProxy('POST', 'eve/v1/session', { body: JSON.stringify({ message: 'hello' }), signedIn: false });
   seenBodies.push(await noSession.text());
   record('6a no console session', noSession.status === 401 && calls.length === 0, `${noSession.status} · ${calls.length} upstream call(s)`);
 
+  // An agent nobody granted this member is refused by the access check, which now runs BEFORE the
+  // registry lookup (`requireConsoleAgentUse`), so a name the console has never heard of answers
+  // 403, not 404 as on eve 0.60. The registry's own 404 is the next case: a granted agent whose
+  // registry row is not ready.
   calls = [];
-  const unknown = await forwardChat(new Request('https://console.example.invalid/api/chat/nobody/eve/v1/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"message":"hello"}' }), 'nobody', 'eve/v1/session', deps({ known: false }));
+  const unknown = await forwardChat(new Request('https://console.example.invalid/api/chat/nobody/eve/v1/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"message":"hello"}' }), 'nobody', 'eve/v1/session', deps());
   observe(unknown, 'POST unknown agent');
   seenBodies.push(await unknown.text());
-  record('6b an unknown agent name', unknown.status === 404 && calls.length === 0, `${unknown.status} · ${calls.length} upstream call(s)`);
+  const unknownCalls = calls.length;
+  calls = [];
+  await authDb.query('UPDATE agent_resources SET pending=true WHERE name=$1', [AGENT]);
+  const notReady = await viaProxy('POST', 'eve/v1/session', { body: JSON.stringify({ message: 'hello' }) });
+  seenBodies.push(await notReady.text());
+  await authDb.query('UPDATE agent_resources SET pending=false WHERE name=$1', [AGENT]);
+  record('6b an unknown agent name, and a granted agent the registry cannot vouch for',
+    unknown.status === 403 && unknownCalls === 0 && notReady.status === 404 && notReady.headers.get('x-lares-agent-state') !== null && calls.length === 0,
+    `unknown name → ${unknown.status}/${unknownCalls} call(s) · registered but not ready → ${notReady.status} (${notReady.headers.get('x-lares-agent-state')})/${calls.length} call(s)`);
 
   const offList = [];
   for (const path of ['eve/v1/mcp', 'eve/v1/dev/runtime-artifacts', 'eve/v1/dev/schedules/probe-tick', `eve/v1/session/${sessionId}/subagents/x/y/stream`]) {
@@ -524,6 +600,11 @@ try {
         for (const [key, value] of Object.entries(req.headers)) if (typeof value === 'string') headers.set(key, value);
         headers.delete('host');
         headers.delete('connection');
+        // This server stands in for the browser's cookie jar as well as the console route: eve's
+        // `Client` runs in Node here and keeps no cookies, where a browser would send the
+        // conversation cookie the proxy set on create.
+        const cookie = cookieFor(url.pathname);
+        if (cookie) headers.set('cookie', cookie);
         const chunks = [];
         if (req.method !== 'GET' && req.method !== 'HEAD') for await (const chunk of req) chunks.push(chunk);
         const request = new Request(url, { method: req.method, headers, ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}) });
@@ -570,11 +651,12 @@ try {
   wire.titleOnWire = titleOnWire;
 
   // ── 2c. nothing the browser ever sees carries the credential ──────────────────────────────────
-  const leakedHeader = seenHeaders.find((entry) => Object.values(entry.headers).some((value) => String(value).includes(PASSWORD)) || 'www-authenticate' in entry.headers || 'set-cookie' in entry.headers);
+  const leakedHeader = seenHeaders.find((entry) => Object.values(entry.headers).some((value) => String(value).includes(PASSWORD)) || 'www-authenticate' in entry.headers || ('set-cookie' in entry.headers && !entry.capabilityCookie));
   const leakedBody = seenBodies.find((body) => String(body).includes(PASSWORD));
-  record('2c no response carries the challenge, a cookie or the password',
+  const issued = seenHeaders.filter((entry) => entry.capabilityCookie);
+  record('2c no response carries the challenge, an upstream cookie or the password',
     leakedHeader === undefined && leakedBody === undefined,
-    `${seenHeaders.length} response header sets and ${seenBodies.length} body chunks checked`);
+    `${seenHeaders.length} response header sets and ${seenBodies.length} body chunks checked · the only set-cookie seen: the proxy's own conversation cookie, on ${issued.length} successful create(s) (${[...new Set(issued.map((e) => e.where))].join(', ')})`);
 
   // ── the results file ──────────────────────────────────────────────────────────────────────────
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(0);
@@ -609,8 +691,15 @@ try {
       await new Promise((r) => setTimeout(r, 300));
       if (!process.env.WEB_CHAT_PROOF_KEEP) app?.dispose();
       else console.log(`kept: ${app?.root}`);
+      // eve 1.0 may leave a session sandbox behind its server. Remove only this run's, by label.
+      for (const id of new Set(seenHeaders.map((e) => e.headers['x-eve-session-id']).filter(Boolean))) {
+        try {
+          const ids = execFileSync('docker', ['ps', '-aq', '--filter', 'label=eve.sandbox=1', '--filter', `label=eve.sandbox.tag.sessionId=${id}`], { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+          if (ids.length) execFileSync('docker', ['rm', '-f', ...ids], { stdio: 'ignore' });
+        } catch { console.warn(`sandbox cleanup needs attention for ${id}`); }
+      }
     } finally {
-      try { await db?.end(); } finally { await container?.stop(); }
+      try { await authDb?.end(); await db?.end(); } finally { await container?.stop(); }
     }
   }
 }
