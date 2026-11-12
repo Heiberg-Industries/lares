@@ -303,7 +303,7 @@ kill_after=5.0
 if args and args[0].startswith("--kill-after="): kill_after=float(args.pop(0).split("=",1)[1])
 if len(args)<2: sys.exit(125)
 duration=float(args.pop(0)); scale=float(os.environ.get("RESTORE_TEST_TIMEOUT_SCALE","1"))
-if duration==1800: duration*=scale; kill_after*=scale
+if duration in (1800,60): duration*=scale; kill_after*=scale
 if not math.isfinite(duration) or duration<=0 or not math.isfinite(kill_after) or kill_after<=0: sys.exit(125)
 process=subprocess.Popen(args,start_new_session=True)
 try: sys.exit(process.wait(timeout=duration))
@@ -402,7 +402,8 @@ case "$*" in *"exec -T lares-keeper"*"budget-financial.ts freeze"*) [ -z "\${FRE
 # The agent-store step (engine-run.sh, workflow_store_step): a role-image container fed the program.
 # The engine image's own copy of the store step list (restore reads it with cat, nothing else).
 case "$*" in *"run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint cat "*" /app/services/box/lib/workflow-database-privileges.ts")
-  [ -z "\${RESTORE_STEPS_LIST_FAIL:-}" ] || exit 1
+  [ -z "\${RESTORE_STEPS_LIST_FAIL:-}" ] || { printf 'Unable to find image locally\\ndocker: Error response from daemon: manifest unknown (stub)\\n' >&2; exit 125; }
+  [ -z "\${RESTORE_STEPS_LIST_HANG:-}" ] || exec sleep 30
   cat "$ENGINE_STEPS_LIST"; exit 0 ;;
 esac
 case "$*" in *"lares.maintenance=workflow-store"*)
@@ -1295,11 +1296,30 @@ describe("restore.sh from the files an installed server has", () => {
     expect(r.all).toContain(`restore: upgrading the agent store ${workflowDatabase}.`);
   }, 60_000);
 
-  it("refuses, changing nothing, when the engine image cannot give the list", () => {
+  it("refuses, changing nothing, when the engine image cannot give the list, and says Docker's reason", () => {
     const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_STEPS_LIST_FAIL: "1" }, script: shipped });
     expect(r.code, r.all).toBe(78);
-    expect(r.all).toContain("this release's own list of agent store schema steps could not be read");
-    expect(r.all).toContain("Nothing has been changed.");
+    expect(r.all).toContain(`this release's own list of agent store schema steps could not be read out of the engine image ${ENGINE} (docker: Error response from daemon: manifest unknown (stub)). Nothing has been changed.`);
+    expect(changes()).toEqual([]);
+  }, 60_000);
+
+  it("refuses, changing nothing, when Docker does not answer within its minute", () => {
+    const started = Date.now();
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_STEPS_LIST_HANG: "1", RESTORE_TEST_TIMEOUT_SCALE: "0.02" }, script: shipped });
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toContain("could not be read out of the engine image");
+    expect(r.all).toContain("(Docker did not answer within 60 seconds). Nothing has been changed.");
+    expect(logLines()).toContain(`timeout --kill-after=5 60 ${catLine}`);
+    expect(changes()).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(25_000);
+  }, 60_000);
+
+  it("refuses, changing nothing, when this server has no timeout command to bound the read", () => {
+    rmSync(join(binDir, "timeout"));
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE }, script: shipped });
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toContain("this server has no timeout command to bound that read");
+    expect(logLines().filter((line) => line === catLine)).toEqual([]);
     expect(changes()).toEqual([]);
   }, 60_000);
 });

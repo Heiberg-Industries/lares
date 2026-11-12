@@ -451,40 +451,86 @@ _RESTORED_SETTINGS = {
 _RESTORED_SETTINGS_EVIDENCE = (("srv", "lares"), ("etc", "lares", "installation.env"), ("etc", "lares", "secrets"))
 
 
-def _holds_only_restored_settings(prefix_fd: int, uid: int) -> bool:
-    """True only for exactly the copied bundle on a machine with no other installation evidence.
-    Anything missing, extra, linked, of another kind or unreadable is not it."""
-    if any(_existing_path(prefix_fd, item) for item in _FRESH_EVIDENCE if item not in _RESTORED_SETTINGS_EVIDENCE):
-        return False
+def _named(parts: tuple[str, ...]) -> str:
+    """A path for a message: its parts joined, anything not printable shown as '?'."""
+    return "/".join("".join(c if c.isprintable() else "?" for c in part)[:80] for part in parts)
+
+
+def _restored_settings_differences(prefix_fd: int, uid: int) -> list[str]:
+    """What keeps this machine from holding exactly the copied bundle and nothing else, by name
+    only (never anything a file holds). Empty only for exactly that bundle on a machine with no
+    other installation evidence; anything missing, extra, linked, of another kind or unreadable
+    is named."""
+    differences = []
+    for item in _FRESH_EVIDENCE:
+        if item in _RESTORED_SETTINGS_EVIDENCE:
+            continue
+        try:
+            if _existing_path(prefix_fd, item):
+                differences.append(f"{_named(item)} is here, and a backup's settings do not include it")
+        except OSError:
+            differences.append(f"{_named(item)} could not be checked")
     for folder, entries in _RESTORED_SETTINGS.items():
         fd = os.dup(prefix_fd)
         try:
-            for part in folder:
-                next_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
-                os.close(fd)
-                fd = next_fd
-            info = os.fstat(fd)
-            if info.st_uid != uid or stat.S_IMODE(info.st_mode) & 0o022 or set(os.listdir(fd)) != set(entries):
-                return False
-            for name, kind in entries.items():
-                entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                if not (stat.S_ISDIR(entry.st_mode) if kind == "directory" else stat.S_ISREG(entry.st_mode)):
-                    return False
-        except OSError:
-            return False
+            try:
+                for part in folder:
+                    next_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+                    os.close(fd)
+                    fd = next_fd
+            except FileNotFoundError:
+                differences.append(f"{_named(folder)} is missing")
+                continue
+            except OSError:
+                differences.append(f"{_named(folder)} is a link or not a folder, or could not be read")
+                continue
+            try:
+                info = os.fstat(fd)
+                if info.st_uid != uid:
+                    differences.append(f"{_named(folder)} does not belong to root")
+                if stat.S_IMODE(info.st_mode) & 0o022:
+                    differences.append(f"{_named(folder)} can be changed by others than its owner")
+                present = set(os.listdir(fd))
+                for name in sorted(set(entries) - present):
+                    differences.append(f"{_named(folder + (name,))} is missing")
+                for name in sorted(present - set(entries)):
+                    differences.append(f"{_named(folder + (name,))} is here, and a backup's settings do not include it")
+                for name, kind in entries.items():
+                    if name not in present:
+                        continue
+                    entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if not (stat.S_ISDIR(entry.st_mode) if kind == "directory" else stat.S_ISREG(entry.st_mode)):
+                        differences.append(f"{_named(folder + (name,))} is not a "
+                                           f"{'folder' if kind == 'directory' else 'plain file'} (a link is neither)")
+            except OSError:
+                differences.append(f"{_named(folder)} could not be read")
         finally:
             os.close(fd)
-    return True
+    return differences
 
 
-def holds_only_restored_settings(prefix: str | Path, *, expected_uid: int | None = None) -> bool:
-    """Read-only: whether the machine holds exactly the copied backup settings and nothing else."""
+def _holds_only_restored_settings(prefix_fd: int, uid: int) -> bool:
+    """True only for exactly the copied bundle on a machine with no other installation evidence.
+    Anything missing, extra, linked, of another kind or unreadable is not it."""
+    return not _restored_settings_differences(prefix_fd, uid)
+
+
+def restored_settings_differences(prefix: str | Path, *, expected_uid: int | None = None) -> list[str]:
+    """Read-only: what keeps the machine from holding exactly the copied backup settings and
+    nothing else (empty when it holds exactly them). Names only, never contents."""
     uid = 0 if expected_uid is None else expected_uid
     prefix_fd, _ = _open_safe_chain(Path(prefix), uid)
     try:
-        return _holds_only_restored_settings(prefix_fd, uid)
+        return _restored_settings_differences(prefix_fd, uid)
     finally:
         os.close(prefix_fd)
+
+
+def _restored_settings_partly_here(prefix: str | Path) -> bool:
+    """Whether any of the copied bundle's entries is on the machine. Only chooses whether a
+    message names what differs; it decides nothing."""
+    return any(os.path.lexists(os.path.join(prefix, *folder, name))
+               for folder, entries in _RESTORED_SETTINGS.items() for name in entries)
 
 
 def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None = None,
@@ -1079,10 +1125,19 @@ def main(argv: list[str]) -> int:
             argv = argv[:-1]
         if len(argv) == 3 and argv[1] == "holds-only-restored-settings":
             if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1":
-                return 0 if holds_only_restored_settings(argv[2], expected_uid=os.geteuid()) else 1
-            if os.geteuid() != 0:
+                differences = restored_settings_differences(argv[2], expected_uid=os.geteuid())
+            elif os.geteuid() != 0:
                 raise PermissionError("the restored-settings check requires root")
-            return 0 if holds_only_restored_settings(argv[2]) else 1
+            else:
+                differences = restored_settings_differences(argv[2])
+            if not differences:
+                return 0
+            # What differs, for the installer's refusal, and only where some of a backup's copied
+            # settings are here (on an empty machine there is nothing to name). Names only.
+            if _restored_settings_partly_here(argv[2]):
+                shown = differences[:6] + ([f"and {len(differences) - 6} more"] if len(differences) > 6 else [])
+                print("; ".join(shown))
+            return 1
         if len(argv) == 5 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh":
             if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1":
                 prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid(), restored_settings=restored)
