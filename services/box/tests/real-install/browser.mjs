@@ -97,11 +97,12 @@ const steps = {
     await page.goto(`${origin}/chat/${settings.agent}`);
     const box = page.getByPlaceholder(/^Message /);
     await page.waitForTimeout(3000);
-    if (!(await page.getByText("This conversation is unavailable").count()) && await box.isEnabled().catch(() => false)) {
+    if (!(await page.getByText(/This conversation (has ended|is unavailable)/).count()) && await box.isEnabled().catch(() => false)) {
       await box.fill(settings.oldConversationPrompt);
       await page.getByRole("button", { name: "Send message" }).click();
     }
-    await page.getByText("This conversation is unavailable").waitFor({ timeout: 60_000 });
+    // The console's own sentence for a conversation the save revoked: nothing reached the agent.
+    await page.getByText("This conversation has ended. Start a new one.").waitFor({ timeout: 60_000 });
     console.log(`the old conversation says: ${(await page.locator("main").innerText().catch(() => "")).split("\n").filter((line) => /conversation/i.test(line)).join(" | ")}`);
     if ((await agentReplies()) > 1) throw new Error("The old conversation was answered after the save");
     await page.getByRole("button", { name: "Start a new conversation" }).click();

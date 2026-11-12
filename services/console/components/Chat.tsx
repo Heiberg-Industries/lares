@@ -32,6 +32,7 @@ import {
   chatSessionKey,
   CONSOLE_REFUSAL_HEADER,
   ENDED_SAY,
+  CONVERSATION_GONE,
   endedConversation,
   readChatSession,
   saveChatSession,
@@ -187,8 +188,10 @@ function ChatSession({
   // Over, and why: the agent refused with an "ended" code, or the conversation's own record shows
   // it has ended. Either way nothing more can be sent into it.
   const recorded = sessionOf(agent.view);
+  // The console's own "no longer available" (a revoked conversation, `lib/chat-proxy.ts`) is an ending too.
   const ended: EndedConversation | null =
-    endedConversation(agent.error) ?? endedByAnswer ?? (recorded.status === "ended" ? endedConversation(recorded.error) ?? "ended" : null);
+    endedConversation(agent.error) ?? (proxySentence(agent.error) === CONVERSATION_GONE ? "ended" : null) ?? endedByAnswer ??
+    (recorded.status === "ended" ? endedConversation(recorded.error) ?? "ended" : null);
   // A model call refused for a spending limit is not a broken conversation: the sentence is shown,
   // the session and the draft stay, and the member can write again (a new month resets the limit).
   const limitReply = hasError && ended === null ? limitReplyOf(agent.events) : null;
@@ -304,7 +307,8 @@ function ChatSession({
       .respond([{ interactionId, optionId }])
       .catch((error: unknown) => {
         // The conversation is over: say that, once, and offer a new one. Nothing is retried.
-        const over = endedConversation(error);
+        // So is the console's own answer for a conversation that was revoked (a save to the agent ends them).
+        const over = endedConversation(error) ?? (proxySentence(error) === CONVERSATION_GONE ? "ended" : null);
         if (over !== null) {
           setEndedByAnswer(over);
           return;
