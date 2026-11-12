@@ -103,8 +103,16 @@ export default defineHook({
       if (settled) {
         // Marked again on settle; a no-op when the opening hook already marked the turn.
         noteApprovalCardTurn(cardTurnOf(event, ctx));
-        // Which sentence is true if this turn's reply is later refused (lib/model-purpose.ts).
-        if (settled.decidedByPerson) noteAnswerApplied(cardTurnOf(event, ctx));
+        // Which sentence is true if this turn's reply is later refused (lib/model-purpose.ts), and the
+        // mark the "nothing new that reaches other people" rule reads (lib/approval-card-turns.ts).
+        if (settled.decidedByPerson) {
+          noteAnswerApplied(cardTurnOf(event, ctx));
+          // That rule reads the mark under the approval check's own `session.turn.id`. Should eve ever
+          // give the settle event a different turn than the hook's session, mark that one too, so the
+          // rule refuses in either turn rather than silently in neither (fails closed).
+          const sessionTurn = ctx?.session?.turn?.id;
+          if (typeof sessionTurn === "string" && sessionTurn && sessionTurn !== cardTurnOf(event, ctx)) noteAnswerApplied(sessionTurn);
+        }
         // The turn continues only from the answer eve applied, never from an earlier one.
         settleAcceptedAnswer(settled.interactionId, ctx?.session?.id,
           settled.outcome === "approved" ? "approve" : settled.outcome === "cancelled" && settled.decidedByPerson ? "deny" : undefined);

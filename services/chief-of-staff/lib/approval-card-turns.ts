@@ -64,6 +64,33 @@ export function noteAnswerApplied(turnId: unknown): void {
   answeredTurns.update((ids) => (ids.includes(turnId) ? ids : [...ids, turnId].slice(-MAX_TURNS)));
 }
 
+/** What the model is told when an action that reaches other people is refused by
+ *  {@link outwardActionAfterAnswerRefusal}. It says nothing about the earlier card. */
+export const ANSWERED_TURN_REFUSED = "That cannot be started in the reply to an answered request. Ask again in a new message.";
+
+/**
+ * AN ACTION THAT REACHES OTHER PEOPLE CANNOT BE STARTED IN THE REPLY TO AN ANSWERED REQUEST.
+ * One rule, read by every approval check it covers (the owner's ruling): the personal mail send
+ * (lib/personal-send-approval.ts), and the calendar writes, `gmail_send` and `meeting_followup_send`
+ * (`catalogueApprovalRequest` in lib/approvals.ts). It is the same at every door.
+ *
+ * On eve 1.0 an answered card (Approve or Deny) does not start a new turn: the paused turn carries
+ * on as the person who ASKED, so that continuation could raise another card for another outward
+ * action. Nothing caps that chain, each round is model calls charged to that person, and a hurried
+ * Approve on the second card could do the same thing twice (the same mail, a second invitation or
+ * cancellation to the attendees). So in a turn in which a person's answer to a card was applied, a
+ * NEW such action is refused before its card, its draft or any provider call; the person asks again
+ * in a new message, which is a new turn. The approved action of the answered card itself never
+ * reaches this: eve re-asks its policy as a recheck, which every caller lets through first.
+ *
+ * Read from the durable answer mark below, written by the settle hook. FAILS CLOSED: a turn with no
+ * id, or state that cannot be read, is refused like an answered one. Returns eve's denial (the model
+ * reads `reason`), or undefined when the rule does not apply.
+ */
+export function outwardActionAfterAnswerRefusal(session: TurnLike, reason: string = ANSWERED_TURN_REFUSED): { type: "denied"; reason: string } | undefined {
+  return turnAppliedAnAnswer(session) === false ? undefined : { type: "denied", reason };
+}
+
 /** Whether a person's answer to a card was applied in this session's current turn; undefined when
  *  that cannot be known (no turn id, unreadable state). */
 export function turnAppliedAnAnswer(session: TurnLike): boolean | undefined {

@@ -62,7 +62,8 @@ async function load() {
   const store = await import("@lares/agent-kit/private-console-resume");
   const { captureModelInvocation } = await import("@lares/agent-kit/model-invocation");
   const send = await import("../lib/personal-send-approval.js");
-  return { hook, approvals, seam, store, captureModelInvocation, send };
+  const turns = await import("../lib/approval-card-turns.js");
+  return { hook, approvals, seam, store, captureModelInvocation, send, turns };
 }
 type Loaded = Awaited<ReturnType<typeof load>>;
 
@@ -293,7 +294,7 @@ describe("no new send in the reply to an answered request", () => {
   it("the next message is a new turn: the rule no longer applies (the send goes on to its usual checks)", async () => {
     const session = await answeredIn("sess_send_next", "approve");
     const next = sessionOf(session.id, member(), "turn_3");
-    expect(m.send.newSendAfterAnswerRefusal(next)).toBeUndefined();
+    expect(m.turns.outwardActionAfterAnswerRefusal(next)).toBeUndefined();
     // With no conversation binding here the usual authority check then refuses, not this rule.
     const error = await m.send.personalSendApprovalRequest(newSend(next) as never).then(() => undefined, (e: unknown) => e);
     expect(error).toBeInstanceOf(Error);
@@ -306,7 +307,7 @@ describe("no new send in the reply to an answered request", () => {
       const ctx = { session, agent: { name: "chief-of-staff" } };
       await m.hook.events["interaction.opened"]!(opened("turn_2", `int_${outcome}`), ctx);
       await m.hook.events["interaction.settled"]!(settled("turn_2", `int_${outcome}`, outcome), ctx);
-      expect(m.send.newSendAfterAnswerRefusal(session)).toBeUndefined();
+      expect(m.turns.outwardActionAfterAnswerRefusal(session)).toBeUndefined();
     }
   });
 
@@ -342,4 +343,137 @@ describe("no new send in the reply to an answered request", () => {
       expect(db.queries).toEqual([]);
     });
   }
+});
+
+/**
+ * THE SAME RULE FOR THE OTHER ACTIONS THAT REACH OTHER PEOPLE (the owner's ruling): calendar create,
+ * update and delete (they email the attendees), and `gmail_send` and `meeting_followup_send` on
+ * Slack and Telegram. In the turn an answer to a card was applied in, a call that would raise a card
+ * is refused with one sentence; a tool the owner set to "autonomous" is left as it is; eve's recheck
+ * of the answered card's own approved call still passes. Here through the real catalogue seam
+ * (`catalogueApprovalRequest`) with the authored policy as a recording stand-in for the permissions
+ * table at "gated", so nothing else (and no provider) is reached. Web chat calendar cards, which
+ * need the real owner check, are driven against a database in tests/webchat-calendar-approval.test.ts.
+ */
+describe("nothing that reaches other people in the reply to an answered request (Slack and Telegram)", () => {
+  const SENTENCE = "That cannot be started in the reply to an answered request. Ask again in a new message.";
+  const refusal = { type: "denied", reason: SENTENCE };
+  const TOOLS = {
+    gmail_send: { to: ["guest@example.invalid"], subject: "Hello", body: "Body" },
+    meeting_followup_send: { seriesKey: "", to: ["guest@example.invalid"], subject: "Notes", bodyText: "Body", meetingTitle: "Sync", meetingWhen: "today", from: "owner@example.invalid" },
+    calendar_create_event: { summary: "Sync", start: "2026-01-01T10:00:00Z", end: "2026-01-01T10:30:00Z", attendees: ["guest@example.invalid"] },
+    calendar_update_event: { eventId: "e1", start: "2026-01-02T10:00:00Z", end: "2026-01-02T10:30:00Z" },
+    calendar_delete_event: { eventId: "e1" },
+  } as const;
+  const call = (name: string, session: unknown, callId = `call_${name}`) => ({ session, callId, toolName: name, toolInput: structuredClone(TOOLS[name as keyof typeof TOOLS]) });
+  /** eve's own re-check of an approved call: the real evaluateApproval with recheck on. */
+  const evalUrl = new URL("../node_modules/eve/dist/src/approval/evaluation.js", import.meta.url).href;
+  const recheck = async (policy: (c: unknown) => unknown, ctx: unknown) =>
+    ((await import(evalUrl)) as { evaluateApproval: (p: unknown, c: unknown, o: unknown) => Promise<{ denied: boolean }> }).evaluateApproval(policy, ctx, { recheck: true });
+
+  async function ownerAnswered(door: keyof typeof DOORS, decision: "approve" | "deny", sessionId: string) {
+    const owner = DOORS[door].owner, session = sessionOf(sessionId, owner), ctx = { session, agent: { name: "chief-of-staff" } };
+    await m.hook.events["interaction.opened"]!(opened("turn_2", "int_out"), ctx);
+    expect(m.approvals.nativeAnswerDecision(nativeAnswer("int_out", session.id, owner, decision))).toEqual({ status: "allowed" });
+    await m.hook.events["interaction.settled"]!(decision === "approve"
+      ? settled("turn_2", "int_out", "accepted", "approve") : settled("turn_2", "int_out", "declined", "deny"), ctx);
+    db.queries.length = 0;
+    return session;
+  }
+
+  for (const door of Object.keys(DOORS) as (keyof typeof DOORS)[]) {
+    for (const decision of ["approve", "deny"] as const) {
+      it(`${door}, after ${decision === "approve" ? "Approve" : "Deny"}: each such tool at "gated" is refused with the sentence, before any card or provider call`, async () => {
+        const session = await ownerAnswered(door, decision, `sess_out_${door}_${decision}`);
+        for (const name of Object.keys(TOOLS)) {
+          const gated = vi.fn(() => "user-approval");
+          expect(await m.approvals.catalogueApprovalRequest(name, call(name, session), gated), name).toEqual(refusal);
+          expect(gated, name).toHaveBeenCalledOnce(); // only the level was read: nothing outward
+        }
+        expect(db.queries).toEqual([]);
+      });
+    }
+
+    it(`${door}: a tool the owner set to run on its own ("autonomous") is left as it is in that reply`, async () => {
+      const session = await ownerAnswered(door, "approve", `sess_out_${door}_auto`);
+      for (const name of Object.keys(TOOLS)) {
+        expect(await m.approvals.catalogueApprovalRequest(name, call(name, session), () => "not-applicable"), name).toBe("not-applicable");
+        expect(await m.approvals.catalogueApprovalRequest(name, call(name, session), () => "approved"), name).toBe("approved");
+      }
+    });
+
+    it(`${door}: the answered card's own approved call still passes eve's recheck, once per tool`, async () => {
+      const session = await ownerAnswered(door, "approve", `sess_out_${door}_recheck`);
+      for (const name of Object.keys(TOOLS)) {
+        const gated = vi.fn(() => "user-approval");
+        await expect(recheck((c) => m.approvals.catalogueApprovalRequest(name, c, gated), call(name, session)), name).resolves.toMatchObject({ denied: false });
+        expect(gated, name).toHaveBeenCalledOnce();
+      }
+    });
+
+    it(`${door}: the next message is a new turn, and each such tool raises its card as before`, async () => {
+      const session = await ownerAnswered(door, "approve", `sess_out_${door}_next`);
+      const next = sessionOf(session.id, DOORS[door].owner, "turn_3");
+      for (const name of Object.keys(TOOLS)) expect(await m.approvals.catalogueApprovalRequest(name, call(name, next), () => "user-approval"), name).toBe("user-approval");
+    });
+  }
+
+  it("a restart between the answer and the continued turn keeps the refusal", async () => {
+    const session = await ownerAnswered("Slack", "approve", "sess_out_restart");
+    vi.resetModules();
+    m = await load();
+    for (const name of Object.keys(TOOLS)) expect(await m.approvals.catalogueApprovalRequest(name, call(name, session), () => "user-approval"), name).toEqual(refusal);
+  });
+
+  it("fails closed: a turn with no id, or session state that cannot be read, is refused", async () => {
+    const owner = DOORS.Telegram.owner;
+    const noTurn = { id: "sess_out_noturn", auth: { current: owner, initiator: owner } };
+    for (const name of Object.keys(TOOLS)) expect(await m.approvals.catalogueApprovalRequest(name, call(name, noTurn), () => "user-approval"), name).toEqual(refusal);
+    durable.readable = false;
+    for (const name of Object.keys(TOOLS)) expect(await m.approvals.catalogueApprovalRequest(name, call(name, sessionOf("sess_out_unreadable", owner)), () => "user-approval"), name).toEqual(refusal);
+  });
+
+  it("other tools that ask first (a CRM note, a reminder) are not this rule's and still raise their card", async () => {
+    const session = await ownerAnswered("Slack", "approve", "sess_out_others");
+    for (const name of ["twenty_note", "remind_set", "notion_resolve_proposal"]) {
+      expect(await m.approvals.catalogueApprovalRequest(name, { session, callId: `call_${name}`, toolName: name, toolInput: {} }, () => "user-approval"), name).toBe("user-approval");
+    }
+  });
+
+  it("the settle hook marks the hook's own turn too, should eve ever give the event another turn: the rule then refuses in both", async () => {
+    const owner = DOORS.Slack.owner, session = sessionOf("sess_out_turns", owner, "turn_9"), ctx = { session, agent: { name: "chief-of-staff" } };
+    await m.hook.events["interaction.opened"]!(opened("turn_2", "int_turns"), ctx);
+    await m.hook.events["interaction.settled"]!(settled("turn_2", "int_turns", "accepted", "approve"), ctx);
+    for (const turnId of ["turn_2", "turn_9"]) {
+      expect(await m.approvals.catalogueApprovalRequest("gmail_send", call("gmail_send", sessionOf(session.id, owner, turnId)), () => "user-approval"), turnId).toEqual(refusal);
+    }
+    expect(await m.approvals.catalogueApprovalRequest("gmail_send", call("gmail_send", sessionOf(session.id, owner, "turn_10")), () => "user-approval")).toBe("user-approval");
+  });
+
+  // KNOWN GAP (Slack and Telegram). The answer mark is written only by the settle hook. If the agent
+  // stops after eve wrote the settle line but before that hook's state was saved, eve does not run the
+  // hook again, so the mark is lost and the continued turn is not recognised. Web chat is covered
+  // another way: after any restart the continuation's model call is refused (next test), so no new
+  // action can be proposed. On these doors a native turn needs no model capability, so the rule does
+  // not fire. This test says what should happen; it fails today, which `it.fails` records.
+  it.fails("Slack, a crash before the settle hook's mark was saved: a new gmail_send card in the continued turn is refused", async () => {
+    const owner = DOORS.Slack.owner, session = sessionOf("sess_out_lost", owner), ctx = { session, agent: { name: "chief-of-staff" } };
+    await m.hook.events["interaction.opened"]!(opened("turn_2", "int_lost"), ctx);
+    expect(m.approvals.nativeAnswerDecision(nativeAnswer("int_lost", session.id, owner, "approve"))).toEqual({ status: "allowed" });
+    // The settle hook never ran (lost to the crash); the restarted process continues the turn.
+    vi.resetModules();
+    m = await load();
+    expect(await m.approvals.catalogueApprovalRequest("gmail_send", call("gmail_send", session), () => "user-approval")).toEqual(refusal);
+  });
+
+  it("web chat, a crash before the settle hook's mark was saved: the continued turn's model call is refused, so nothing new can be proposed", async () => {
+    const session = sessionOf("sess_out_lost_web", member()), ctx = { session, agent: { name: "chief-of-staff" } };
+    await m.hook.events["interaction.opened"]!(opened("turn_2", "int_lost_web"), ctx);
+    webChatAnswer(m, session, "int_lost_web", "approve");
+    vi.resetModules();
+    m = await load();
+    m.seam.prepareModelPurposeInvocation(step("turn_2"), session as never);
+    await expect(m.seam.claimModelPurposeForInvocation(m.captureModelInvocation(step("turn_2"), session as never, "lares-brain"))).rejects.toThrow();
+    expect(requestMock.mock.calls.filter(([op]) => op === "turn.open")).toHaveLength(0);
+  });
 });
