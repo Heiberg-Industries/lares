@@ -279,6 +279,16 @@ def keeper_held_lines() -> list[str]:
     return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line]
 
 
+def agent_permission_denied_lines() -> list[str]:
+    """Lines of the proof agent's container log where the database refused it something. A chat can
+    still answer while its job queue is refused a call, so the answer alone does not show it."""
+    ids = output("docker", "ps", "-a", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    if not ids:
+        return ["the proof agent has no container"]
+    logs = run("docker", "logs", ids[0], check=False, show=False)
+    return [redact(line.strip())[:300] for line in (logs.stdout + logs.stderr).splitlines() if "permission denied" in line]
+
+
 def agent_answers() -> bool:
     """The proof agent's container is running and its health address says ok."""
     ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
@@ -1258,6 +1268,13 @@ def main(argv: list[str]) -> int:
         print(f"budget attempts by state:\n{attempts}", flush=True)
         passed("every-model-call-settled-in-the-budget-ledger")
         check_charges_after_answered_cards(release, deferred)
+        denied = agent_permission_denied_lines()
+        if denied:
+            proof["agentPermissionDenied"] = denied[:40]
+            save_proof()
+            deferred.append(f"the agent's log has {len(denied)} database permission errors, first: {denied[0]}")
+        else:
+            passed("the-agent-log-has-no-database-permission-errors")
 
         stage("sudo lares backups")
         run("apt-get", "update", "-qq", timeout=300, show=False)
