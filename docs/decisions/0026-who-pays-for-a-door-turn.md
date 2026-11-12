@@ -63,7 +63,11 @@ eve has no notion of who pays (read in eve `1.0.0-rc.10`).
    permission to answer this message here. Please try again later, or write to me in web chat."
 6. **Door-neutral.** The only door-aware part is one table in
    `packages/agent-kit/src/door-model-authority.ts`, keyed by eve's authenticator. A new door adds
-   one row there and nothing in its door file (ADR-0025).
+   one row there, plus its name in the checks that accept only known doors: the `ChatDoor` type
+   (`packages/agent-kit/src/door-authority.ts`), Keeper's `door.open` input check
+   (`services/keeper/lib/model-purpose-broker.ts`), and `validDoorTurnRequest` and
+   `requireDoorClaim` (`packages/agent-kit/src/budget-model-authority.ts`). Nothing in its door
+   file (ADR-0025).
 
 ## Consequences
 

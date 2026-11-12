@@ -80,6 +80,11 @@ DOOR_REPLY = "PROOF_DOOR_REPLY"
 DOOR_PERSON = {"slack": "U0PROOFOWNER", "telegram": "700000001"}
 DOOR_CHAT = {"slack": "D0PROOF", "telegram": "700000001"}
 CLAIM_REPLY = "Connected. Once setup finishes applying"
+# A door's Connect and Apply restart the agent, which changes the runner's network while the page waits;
+# in an earlier run each needed its last of three attempts.
+DOOR_STEP_ATTEMPTS = 6
+# Words of eve's error copy, which must never be what a door turn posts into the chat.
+ERROR_COPY = ("I hit an error", "MODEL_CALL_FAILED", "/run/secrets")
 MEMBER_LIMIT = "15"
 EDITED_DESCRIPTION = "PROOF_EDITED_DESCRIPTION written on the console page while the agent runs."
 SAVE_WARNING = "open web-chat conversations, and any approval waiting in them. Start a new conversation afterwards."
@@ -106,7 +111,10 @@ LIMITS = [
     "A door's claim is applied by pressing Apply on the agent's page after the claim was sent, not by the page's own watch-and-apply.",
     "One member connects both doors, so who pays when a second member connects a door is not covered.",
     "Web chat's approval cards are all answered before any door is claimed; how web-chat approvals behave once a door is claimed is not exercised.",
-    "A scheduled message into a chat door is not exercised.",
+    "A scheduled brief sent into Slack or Telegram is not exercised here; that path is covered by unit tests only.",
+    "Only a direct message is sent on Slack; a turn started by mentioning the agent in a room is not exercised.",
+    "No refused door turn is exercised (another person, a Telegram group, a refusal by Keeper); the sentence a person then sees is covered by unit tests only.",
+    "Each door's Connect and Apply restart the agent, which changes the runner's network while the page waits; they have finished on the probe's retry (the attempts used are recorded under browserAttempts), so a single uninterrupted press is not shown here.",
 ]
 
 proof: dict = {"format": 1, "status": "running", "stage": "start", "checks": {}, "limits": LIMITS, "commit": None}
@@ -481,18 +489,32 @@ def wait_for_quiet_network() -> None:
         time.sleep(1)
 
 
-def browser(step: str, settings_file: pathlib.Path, tls: dict[str, pathlib.Path]) -> None:
-    """Tries again only when the browser itself reports that interface change, never on a page's answer."""
-    for attempt in range(3):
+def browser(step: str, settings_file: pathlib.Path, tls: dict[str, pathlib.Path], attempts: int = 3, settle_agent: bool = False) -> None:
+    """Tries again only when the browser itself reports that interface change, never on a page's answer,
+    and at most `attempts` times. A step that restarts the agent (a door's Connect or Apply) changes the
+    runner's interfaces while its request is in flight, so it gets more attempts, and before each retry
+    waits until the agent answers again, so the retry does not land in the middle of the same restart.
+    Every step's attempts are recorded in the proof file, so a pass on the last one is visible."""
+    tries: list[str] = []
+    proof.setdefault("browserAttempts", {})[step] = tries
+    for attempt in range(attempts):
+        if attempt and settle_agent:
+            deadline = time.monotonic() + 180
+            while not agent_answers() and time.monotonic() < deadline:
+                time.sleep(3)
         wait_for_quiet_network()
         result = run("node", str(HERE / "browser.mjs"), step, str(settings_file), timeout=420, cwd=str(HERE),
                      env={"NODE_EXTRA_CA_CERTS": str(tls["ca_cert"])}, check=False)
         if result.returncode == 0:
+            tries.append("passed")
             passed(f"browser:{step}")
             return
-        if "ERR_NETWORK_CHANGED" not in result.stdout:
+        network_changed = "ERR_NETWORK_CHANGED" in result.stdout
+        tries.append("failed: the network changed" if network_changed else "failed")
+        save_proof()
+        if not network_changed:
             break
-    raise RuntimeError(f"the browser step {step} failed")
+    raise RuntimeError(f"the browser step {step} failed ({len(tries)} attempt(s): {tries})")
 
 
 def wait_for_sign_in_offer() -> None:
@@ -749,7 +771,7 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
     stops_before = len(keeper_log_lines("was stopped after a save"))
     apply_failures_before = len(keeper_log_lines("Apply failed"))
     audit_mark = keeper_audit_mark(release)
-    browser(f"connect-{kind}", settings_file, tls)
+    browser(f"connect-{kind}", settings_file, tls, attempts=DOOR_STEP_ATTEMPTS, settle_agent=True)
     check_door_enable_applied(kind, record, stops_before, apply_failures_before, audit_mark, release)
     code = (door_codes / kind).read_text().strip()
     if kind == "slack":
@@ -778,7 +800,7 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
         record["agentLog"] = agent_log_evidence()
         save_proof()
         raise RuntimeError(f"the {kind} claim was not recorded within 60 seconds (the door answered HTTP {record['claimStatus']})")
-    browser(f"finish-{kind}", settings_file, tls)
+    browser(f"finish-{kind}", settings_file, tls, attempts=DOOR_STEP_ATTEMPTS, settle_agent=True)
 
     # The door is claimed by the owner and applied, and the claim was answered in the chat.
     row = json.loads(read_only_query(
@@ -825,7 +847,8 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
 
     def attempts() -> list[dict]:
         return json.loads(read_only_query(
-            "SELECT coalesce(json_agg(json_build_object('state', a.state, 'kind', a.authority_reference->>'kind', 'liveMember', a.live_member_id, "
+            "SELECT coalesce(json_agg(json_build_object('state', a.state, 'kind', a.authority_reference->>'kind', 'door', a.authority_reference#>>'{binding,door}', "
+            "'liveMember', a.live_member_id, "
             "'keys', (SELECT coalesce(json_agg(k.key ORDER BY k.key), '[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(a.authority_reference) = 'object' "
             "THEN a.authority_reference ELSE '{}'::jsonb END) AS k(key))) ORDER BY a.created_at, a.id), '[]') "
             f"FROM budget_attempts a WHERE a.created_at >= '{t0}'::timestamptz", release))
@@ -834,26 +857,36 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
         # Schedules start once a door is claimed and may add owner-job rows; those never count.
         return [row for row in rows if row["kind"] != "owner-job"]
 
-    model_calls = [call for call in fake_calls(fixture)[calls_before:]
-                   if call["kind"] == "model" and (marker in (call.get("lastText") or "") or call.get("doorTurn") == marker)]
+    def marked_model_calls() -> list[dict]:
+        return [call for call in fake_calls(fixture)[calls_before:]
+                if call["kind"] == "model" and (marker in (call.get("lastText") or "") or call.get("doorTurn") == marker)]
+
     rows = attempts()
-    reached = bool(model_calls) and bool(turn_rows(rows))
     deadline = time.monotonic() + 60
     while True:
-        charged = bool(turn_rows(rows)) and all(row["state"] == "settled" and row["kind"] == "door" and row["liveMember"] == claimer for row in turn_rows(rows))
+        # Charged as a door turn of THIS door, to the claimer.
+        charged = bool(turn_rows(rows)) and all(row["state"] == "settled" and row["kind"] == "door" and row["door"] == kind and row["liveMember"] == claimer
+                                                for row in turn_rows(rows))
         if charged or time.monotonic() > deadline:
             break
         time.sleep(3)
         rows = attempts()
-    replies = [call for call in door_calls(calls_before)
-               if reply_methods(call["method"]) and call.get("channel", call.get("chat")) == chat and DOOR_REPLY in str(call.get("text", ""))]
+    # Read after the settle wait: a scheduled post into the same chat can end the reply wait above
+    # before the door turn's own model call has been made.
+    model_calls = marked_model_calls()
+    reached = bool(model_calls) and bool(turn_rows(rows))
+    posts = [call for call in door_calls(calls_before) if reply_methods(call["method"]) and call.get("channel", call.get("chat")) == chat]
+    replies = [call for call in posts if DOOR_REPLY in str(call.get("text", ""))]
+    error_posts = [call for call in posts if any(words in str(call.get("text", "")) for words in ERROR_COPY)]
 
     def who(value: str | None) -> str | None:
         return None if value is None else "the claimer" if value == claimer else "another member"
 
     record.update({
         "modelCallsWithMarker": len(model_calls),
-        "budgetAttemptsSinceMessage": [{"state": row["state"], "kind": row["kind"], "chargedTo": who(row["liveMember"]), "referenceKeys": row["keys"]} for row in rows],
+        "budgetAttemptsSinceMessage": [{"state": row["state"], "kind": row["kind"], "door": row["door"], "chargedTo": who(row["liveMember"]), "referenceKeys": row["keys"]}
+                                       for row in rows],
+        "errorCopiesPosted": len(error_posts),
         "standInCallsSinceMessage": [{"method": call["method"], "chat": call.get("channel", call.get("chat")), "text": str(call.get("text", ""))[:300]}
                                      for call in door_calls(calls_before)],
         "agentLog": agent_log_evidence(),
@@ -872,13 +905,19 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
         passed(f"{kind}-turn-settled-and-charged")
     else:
         failed(f"{kind}-turn-settled-and-charged",
-               f"the attempts since the message are not all settled as a door turn charged to the claimer: "
-               f"{[(row['state'], row['kind'], who(row['liveMember'])) for row in turn] or 'there are none'}")
+               f"the attempts since the message are not all settled as a {kind} door turn charged to the claimer: "
+               f"{[(row['state'], row['kind'], row['door'], who(row['liveMember'])) for row in turn] or 'there are none'}")
     if replies:
         record["checks"][f"{kind}-reply-posted"] = True
         passed(f"{kind}-reply-posted")
     else:
         failed(f"{kind}-reply-posted", f"no reply containing {DOOR_REPLY} was posted into {chat}")
+    if error_posts:
+        failed(f"{kind}-no-error-copy-posted", f"{len(error_posts)} post(s) into {chat} since the message carry an error copy, first: "
+               f"{redact(str(error_posts[0].get('text', '')))[:200]}")
+    else:
+        record["checks"][f"{kind}-no-error-copy-posted"] = True
+        passed(f"{kind}-no-error-copy-posted")
 
 
 def keeper_host_action(action: str, payload: dict) -> dict:
@@ -1768,11 +1807,14 @@ def main(argv: list[str]) -> int:
         # Everything above can pass while every model call is refused; only a chat shows it.
         stage("a chat after the update")
         calls_before = len([call for call in fake_calls(fixture) if call["kind"] == "model"])
+        # Only web-chat calls count: with a door claimed, a scheduled call (an owner job) may settle in the same window.
+        chat_settled = "SELECT count(*) FROM budget_attempts WHERE state = 'settled' AND authority_reference->>'kind' = 'human'"
+        chat_settled_before = int(read_only_query(chat_settled, update) or 0)
         browser("chat-after-update", settings_file, tls)
         if len([call for call in fake_calls(fixture) if call["kind"] == "model"]) <= calls_before:
             raise RuntimeError("the chat after the update answered without a model call reaching the provider")
         deadline = time.monotonic() + 60
-        while int(read_only_query("SELECT count(*) FROM budget_attempts WHERE state = 'settled'", update) or 0) <= int(settled_after or 0):
+        while int(read_only_query(chat_settled, update) or 0) <= chat_settled_before:
             if time.monotonic() > deadline:
                 raise RuntimeError("the model call after the update did not settle in the budget ledger")
             time.sleep(3)
