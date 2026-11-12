@@ -106,6 +106,11 @@
 
 import { MEMBER_LIMIT_SENTENCE, INSTALLATION_LIMIT_SENTENCE } from "./gateway-admission-protocol.js";
 import { approvalReplySentence } from "./approval-reply-sentence.js";
+import {
+  CONVERSATION_TOO_LONG_SLACK,
+  CONVERSATION_TOO_LONG_TELEGRAM,
+  isConversationTooLong,
+} from "./conversation-too-long.js";
 
 /** LiteLLM's `error.type` on a budget refusal. Measured 2026-09-01 (see this file's header). */
 export const LITELLM_BUDGET_EXCEEDED_TYPE = "budget_exceeded";
@@ -358,6 +363,10 @@ export type FailureResponse =
   /** The reply in a turn that asked a card was refused: post `text`, the fixed sentence every
    *  door shows for it (`@lares/agent-kit/approval-reply-sentence`). */
   | { readonly kind: "approval-reply-refused"; readonly text: string }
+  /** The conversation has grown too long: eve's summary of it was refused, so this turn failed and
+   *  every later one in it would too. Post `text`, the door's fixed sentence
+   *  (`@lares/agent-kit/conversation-too-long`), which says how to go on. */
+  | { readonly kind: "conversation-too-long"; readonly text: string }
   /** An ordinary failure: post `text`, which is byte-for-byte what eve would have posted. */
   | { readonly kind: "default"; readonly text: string }
   /** Post nothing (the budget refusal was already answered on this turn). */
@@ -481,6 +490,9 @@ export function respondToTurnFailed(
   if (isBudgetExceeded(data)) return { kind: "budget-refusal", text: options.refusalText };
   const sentence = approvalReplySentence(data.error?.message);
   if (sentence !== undefined) return { kind: "approval-reply-refused", text: sentence };
+  if (isConversationTooLong(data.error?.message)) {
+    return { kind: "conversation-too-long", text: options.dialect === "slack" ? CONVERSATION_TOO_LONG_SLACK : CONVERSATION_TOO_LONG_TELEGRAM };
+  }
   return { kind: "default", text: defaultTurnFailedText(data, options.dialect) };
 }
 

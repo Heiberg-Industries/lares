@@ -36,6 +36,30 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { composeSlackRenderers } from "../node_modules/eve/dist/src/public/channels/slack/renderers.js";
 
 import { onSessionEnded, onTurnSettled, slackDoorConfig } from "../agent/channels/slack.js";
+import { MODEL_CALLS_REFUSED_UNSCOPED, MODEL_COMPACTION_REFUSED } from "@lares/agent-kit/conversation-too-long";
+import type { SessionView } from "eve/events";
+
+const TOO_LONG_DM = "This thread has grown too long for me to continue. Please send your message again as a new message, not as a reply in this thread.";
+const TOO_LONG_ROOM = "This thread has grown too long for me to continue. Please send your message again as a new message that mentions me, not as a reply in this thread.";
+const PARTLY_DONE = "Part of what you asked may already have been done, so check before asking again.";
+
+/** A turn that called one tool, folded by eve's own fold with the retention a channel observer gets. */
+async function viewWithCall(turnId: string, outcome: string): Promise<SessionView> {
+  const projection = (file: string) => new URL(`../node_modules/eve/dist/src/protocol/session-projection/${file}`, import.meta.url).href;
+  const { emptySessionView, foldEvents } = await import(projection("fold.js")) as { emptySessionView(): object; foldEvents(v: object, e: unknown[], o: object): unknown };
+  const { snapshotOf } = await import(projection("session-view.js")) as { snapshotOf(v: object): SessionView };
+  const at = "2026-11-12T10:00:00.000Z";
+  let line = 0;
+  const fact = (type: string, data: Record<string, unknown>) => ({ type, scope: { turnId }, data, meta: { position: { line: line++, index: 0 }, at, endOfLine: true } });
+  const tables = emptySessionView();
+  foldEvents(tables, [
+    fact("turn.started", { turnId, cause: { deliveryId: "d1" }, follows: null }),
+    fact("call.requested", { callId: "call-1", owner: { turnId }, capability: { kind: "tool", name: "gmail_send" }, input: {} }),
+    fact("call.started", { callId: "call-1" }),
+    fact("call.settled", { callId: "call-1", outcome }),
+  ], { retention: "operational" });
+  return snapshotOf(tables);
+}
 
 const REFUSAL_SENTENCE =
   "I have hit my spending cap — nothing was done. It resets with the next budget period, or you can raise the cap.";
@@ -97,6 +121,50 @@ describe("the chief of staff's Slack door — a capped turn answers with one fix
       await (event.type === "turn.settled" ? onTurnSettled : onSessionEnded)(event as never, ctx, next);
       expect(posted).toEqual(["That request ended without an answer; nothing was done."]);
       expect(next).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a thread that has grown too long posts its one fixed sentence, not eve's text, and only for that cause", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const message of [MODEL_COMPACTION_REFUSED, `context.started failed: ${MODEL_COMPACTION_REFUSED}`]) {
+      const { ctx, posted, next } = fakeDoor();
+      await onTurnSettled(turnSettledFailed({ code: "MODEL_CALL_FAILED", message, id: "err_long" }), ctx, next);
+      // Nothing says where the conversation started: the room wording, true in a direct message too.
+      expect(posted).toEqual([TOO_LONG_ROOM]);
+      expect(next).not.toHaveBeenCalled();
+    }
+    expect(String(warn.mock.calls[0]![0])).toContain("grew too long");
+    // A lookalike, the guard's degraded refusal, or any other failure is still eve's to answer.
+    for (const error of [ORDINARY_ERROR, { code: "MODEL_CALL_FAILED", message: `${MODEL_COMPACTION_REFUSED}, and more`, id: "err_x" },
+      { code: "MODEL_CALL_FAILED", message: MODEL_CALLS_REFUSED_UNSCOPED, id: "err_d" },
+      { code: "HOOK_FAILED", message: `Hook "context.started" failed: ${MODEL_CALLS_REFUSED_UNSCOPED}`, id: "err_h" }]) {
+      const { ctx, posted, next } = fakeDoor();
+      await onTurnSettled(turnSettledFailed(error), ctx, next);
+      expect(posted).toEqual([]);
+      expect(next).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("too long: a direct message keeps the approved sentence, a room is told to mention the agent", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const started = (channel_id: string) => ({ authenticator: "slack-webhook", attributes: { channel_id } });
+    for (const [initiator, expected] of [[started("D0FIXTURE"), TOO_LONG_DM], [started("C0FIXTURE"), TOO_LONG_ROOM]] as const) {
+      const { ctx, posted, next } = fakeDoor();
+      await onTurnSettled(turnSettledFailed({ code: "MODEL_CALL_FAILED", message: MODEL_COMPACTION_REFUSED, id: "err_long" }),
+        { ...ctx, session: { auth: { initiator, current: started("D0FIXTURE") } } }, next);
+      expect(posted).toEqual([expected]);
+    }
+  });
+
+  it("too long after the turn already completed a call: one more sentence, since resending could repeat it", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dm = { auth: { initiator: { authenticator: "slack-webhook", attributes: { channel_id: "D0FIXTURE" } } } };
+    for (const [outcome, expected] of [["completed", `${TOO_LONG_DM} ${PARTLY_DONE}`], ["rejected", TOO_LONG_DM]] as const) {
+      const { ctx, posted, next } = fakeDoor();
+      await onTurnSettled(
+        { type: "turn.settled", data: { turnId: "turn_3", outcome: "failed", error: { code: "MODEL_CALL_FAILED", message: MODEL_COMPACTION_REFUSED } } } as never,
+        { ...ctx, session: dm, view: await viewWithCall("turn_3", outcome) }, next);
+      expect(posted).toEqual([expected]);
     }
   });
 

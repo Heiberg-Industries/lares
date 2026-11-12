@@ -31,6 +31,8 @@ import { slackUnreadableNote } from "@lares/agent-kit/unreadable-content";
 import { continuityAuthAttributes, nativeConversationContinuity } from "../../lib/conversation-continuity.js";
 import { markRouteDeclineQuestionSent } from "../../lib/route-decline.js";
 import { respondToTurnFailed } from "@lares/agent-kit/gateway-budget";
+import { anyCallCompleted, conversationTooLongSlackSentence, withPartlyDone } from "@lares/agent-kit/conversation-too-long";
+import { calls, type SessionView } from "eve/events";
 import { approvalCardRenderer } from "../../lib/slack-approval-card.js";
 
 const DEFAULT_BOT_TOKEN_FILE = "/run/secrets/eve-slack-bot-token";
@@ -208,10 +210,13 @@ interface FailureError {
 /** What the two failure handlers read from the event and the channel. eve's own event and
  *  `ctx` satisfy both; tests pass plain objects. */
 interface SettledEvent {
-  readonly data: { readonly outcome: string; readonly error?: FailureError };
+  readonly data: { readonly outcome: string; readonly turnId?: string; readonly error?: FailureError };
 }
 interface ThreadContext {
   readonly channel: { readonly thread: { post(message: string): Promise<unknown> } };
+  /** eve's event context carries both; tests that pass neither get the room sentence, alone. */
+  readonly session?: unknown;
+  readonly view?: SessionView;
 }
 
 /**
@@ -234,18 +239,41 @@ interface ThreadContext {
  * conversation is reported only there (see `onSessionEnded`), so that would leave a capped turn
  * with no answer at all.
  */
-function refusalText(data: SettledEvent["data"]): string | null {
+function refusalText(data: SettledEvent["data"]): { kind: string; text: string } | null {
   if (data.outcome !== "failed" || data.error === undefined) return null;
   const response = respondToTurnFailed(data, FAILURE_OPTIONS);
-  return response.kind === "budget-refusal" || response.kind === "approval-reply-refused" ? response.text : null;
+  return response.kind === "budget-refusal" || response.kind === "approval-reply-refused" || response.kind === "conversation-too-long"
+    ? { kind: response.kind, text: response.text }
+    : null;
 }
 
 async function answerFailure(event: SettledEvent, ctx: ThreadContext, next: () => Promise<void>): Promise<void> {
   const refusal = refusalText(event.data);
   // Anything that is not a spending refusal is eve's to answer, in eve's own words.
   if (refusal === null) return next();
-  console.warn("chief-of-staff slack: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
-  await ctx.channel.thread.post(refusal);
+  // A thread that has grown too long: eve's summary of it was refused, so every later turn in this
+  // thread would fail too. The sentence sends the person to a new top-level message, which opens a
+  // new thread and so a new conversation (in a direct message and in a room alike; in a room the new
+  // message has to mention the agent, and the room sentence says so).
+  if (refusal.kind === "conversation-too-long") console.warn("chief-of-staff slack: the thread grew too long — answered with the fixed sentence; nothing was summarised");
+  else console.warn("chief-of-staff slack: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
+  await ctx.channel.thread.post(refusal.kind === "conversation-too-long" ? tooLongText(event, ctx) : refusal.text);
+}
+
+/**
+ * The too-long sentence for THIS thread: the room wording unless the conversation is known to have
+ * started in a direct message (`conversationTooLongSlackSentence`), and one more sentence when the
+ * failed turn had already completed a call, since sending the message again could repeat it.
+ */
+function tooLongText(event: SettledEvent, ctx: ThreadContext): string {
+  const turnId = event.data.turnId;
+  let partlyDone = false;
+  try {
+    partlyDone = ctx.view !== undefined && typeof turnId === "string" && anyCallCompleted(calls(ctx.view, { turnId }));
+  } catch {
+    partlyDone = false;
+  }
+  return withPartlyDone(conversationTooLongSlackSentence(ctx), partlyDone);
 }
 
 /**

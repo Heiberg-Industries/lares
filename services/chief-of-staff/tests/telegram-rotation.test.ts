@@ -5,6 +5,7 @@ import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { closePool } from "@lares/agent-kit/db";
+import { MODEL_CALLS_REFUSED_UNSCOPED, MODEL_COMPACTION_REFUSED } from "@lares/agent-kit/conversation-too-long";
 
 import {
   homeDay,
@@ -17,6 +18,7 @@ import {
   completeRotation,
   pruneOldExchanges,
   recordServingSession,
+  markTooLongForRetirement,
   claimRolledOverSession,
   retirePriorDaySession,
   chatsThatTalkedOn,
@@ -544,6 +546,282 @@ describe("telegram-rotation", () => {
         [FIXTURE_CHAT],
       );
       expect(rows[0]).toEqual({ local_day: homeDay(), pending_context: null, handover_day: yesterday });
+    });
+  });
+
+  // ── A conversation that has grown too long ───────────────────────────────────────────────
+  //
+  // eve's summary of a long conversation is refused on purpose, so the turn fails and every later
+  // turn in that conversation would too. A Telegram private chat cannot be started over by hand,
+  // so the failed conversation is marked and the person's NEXT message retires it at the front
+  // door, the day boundary's own path. Nothing is summarised, so no model call is made anywhere.
+  describe("a conversation that has grown too long starts over at the next message", () => {
+    const FIXTURE_CHAT = "5550001";
+    const TOO_LONG = "This conversation has grown too long for me to continue, so your next message will start a new one. Please send your last message again.";
+    const message = JSON.stringify({ update_id: 1, message: { message_id: 7, chat: { id: Number(FIXTURE_CHAT), type: "private" }, text: "hei" } });
+    const tap = JSON.stringify({ update_id: 2, callback_query: { id: "q1", message: { chat: { id: Number(FIXTURE_CHAT) } }, data: "eve:0" } });
+    const tooLongTurn = (text = MODEL_COMPACTION_REFUSED) => ({ data: { outcome: "failed", error: { code: "MODEL_CALL_FAILED", message: text, id: "err_fixture" } } });
+
+    const TOO_LONG_SCHEDULED = "This conversation has grown too long for me to continue, so your next message will start a new one. A scheduled update was not delivered.";
+    const PARTLY_DONE = "Part of what you asked may already have been done, so check before asking again.";
+    /** eve's own schedule identity (`dist/src/channel/schedule-auth.js`), as a brief's turn carries it. */
+    const SCHEDULE_AUTH = { attributes: { lane: "morning-brief" }, authenticator: "app", principalId: "eve:app", principalType: "runtime" };
+    const PERSON_AUTH = { attributes: { user_id: Number(FIXTURE_CHAT) }, authenticator: "telegram-webhook", principalId: FIXTURE_CHAT, principalType: "user" };
+
+    function fakeChat(sessionId: string, chatType = "private", extra: { scheduled?: boolean; view?: unknown } = {}) {
+      const posted: unknown[] = [];
+      return {
+        posted,
+        ctx: {
+          channel: {
+            state: { chatId: FIXTURE_CHAT, chatType },
+            telegram: { post: async (m: unknown) => { posted.push(m); return {}; } },
+          },
+          session: { id: sessionId, auth: { current: extra.scheduled ? SCHEDULE_AUTH : PERSON_AUTH } },
+          ...(extra.view === undefined ? {} : { view: extra.view as never }),
+        },
+      };
+    }
+    function fakeAttach() {
+      const ended: string[] = [];
+      const reasons: (string | undefined)[] = [];
+      return { ended, reasons, attach: (id: string) => ({ end: async (options?: { reason?: string }) => { ended.push(id); reasons.push(options?.reason); return {}; } }) };
+    }
+    /** A turn that completed one tool call, folded by eve's own fold with a channel observer's retention. */
+    async function viewWithCall(turnId: string) {
+      const projection = (file: string) => new URL(`../node_modules/eve/dist/src/protocol/session-projection/${file}`, import.meta.url).href;
+      const { emptySessionView, foldEvents } = await import(projection("fold.js")) as { emptySessionView(): object; foldEvents(v: object, e: unknown[], o: object): unknown };
+      const { snapshotOf } = await import(projection("session-view.js")) as { snapshotOf(v: object): unknown };
+      const at = "2026-11-12T10:00:00.000Z";
+      let line = 0;
+      const fact = (type: string, data: Record<string, unknown>) => ({ type, scope: { turnId }, data, meta: { position: { line: line++, index: 0 }, at, endOfLine: true } });
+      const tables = emptySessionView();
+      foldEvents(tables, [
+        fact("turn.started", { turnId, cause: { deliveryId: "d1" }, follows: null }),
+        fact("call.requested", { callId: "call-1", owner: { turnId }, capability: { kind: "tool", name: "gmail_send" }, input: {} }),
+        fact("call.started", { callId: "call-1" }),
+        fact("call.settled", { callId: "call-1", outcome: "completed" }),
+      ], { retention: "operational" });
+      return snapshotOf(tables);
+    }
+    const row = async () => (await pool.query(
+      "SELECT session_id, session_day, local_day, pending_context FROM telegram_session_rotation WHERE chat_id = $1",
+      [FIXTURE_CHAT],
+    )).rows[0];
+
+    beforeEach(() => {
+      process.env["DATABASE_URL"] = container.getConnectionUri();
+      process.env["TELEGRAM_PRINCIPAL_ID"] = FIXTURE_CHAT;
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    it("a marked conversation is claimed on the SAME day, exactly once, and the anchor day and hand-over are left alone", async () => {
+      await getRotationState(pool, FIXTURE_CHAT, homeDay());
+      await completeRotation(pool, FIXTURE_CHAT, homeDay(), "waiting notes");
+      await markTooLongForRetirement(pool, FIXTURE_CHAT, homeDay(), "wrun_long");
+
+      await expect(claimRolledOverSession(pool, FIXTURE_CHAT, homeDay())).resolves.toBe("wrun_long");
+      await expect(claimRolledOverSession(pool, FIXTURE_CHAT, homeDay())).resolves.toBeNull();
+      expect(await row()).toEqual({ session_id: null, session_day: null, local_day: homeDay(), pending_context: "waiting notes" });
+    });
+
+    it("marking says whether THIS call marked the conversation, so a repeat can stay quiet", async () => {
+      // No row yet, then a row for another conversation, then the same conversation again.
+      await expect(markTooLongForRetirement(pool, FIXTURE_CHAT, homeDay(), "wrun_long")).resolves.toBe(true);
+      await expect(markTooLongForRetirement(pool, FIXTURE_CHAT, homeDay(), "wrun_long")).resolves.toBe(false);
+      await recordServingSession(pool, FIXTURE_CHAT, homeDay(), "wrun_other");
+      await claimRolledOverSession(pool, FIXTURE_CHAT, homeDay());
+      await recordServingSession(pool, FIXTURE_CHAT, homeDay(), "wrun_next");
+      await expect(markTooLongForRetirement(pool, FIXTURE_CHAT, homeDay(), "wrun_next")).resolves.toBe(true);
+      await expect(markTooLongForRetirement(pool, FIXTURE_CHAT, homeDay(), "wrun_next")).resolves.toBe(false);
+    });
+
+    it("a scheduled turn says a scheduled update was not delivered, never 'send your last message again', and only once per marked conversation", async () => {
+      const { onTurnSettled } = await import("../agent/channels/telegram.js");
+      const { gatewayComplete } = await import("../lib/llm-complete.js");
+      await getRotationState(pool, FIXTURE_CHAT, homeDay());
+      const logged = vi.mocked(console.warn);
+
+      const brief = fakeChat("wrun_long", "private", { scheduled: true });
+      await onTurnSettled(tooLongTurn(), brief.ctx);
+      expect(brief.posted).toEqual([TOO_LONG_SCHEDULED]);
+      expect(await row()).toMatchObject({ session_id: "wrun_long", session_day: null });
+
+      // The next pushes that morning fail in the same marked conversation: nothing more is posted.
+      logged.mockClear();
+      for (let i = 0; i < 3; i++) {
+        const push = fakeChat("wrun_long", "private", { scheduled: true });
+        await onTurnSettled(tooLongTurn(), push.ctx);
+        expect(push.posted).toEqual([]);
+      }
+      expect(logged.mock.calls.some((c) => String(c[0]).includes("already marked too long"))).toBe(true);
+
+      // Only the person's message retires it, as before, and the retirement says why.
+      const { ended, reasons, attach } = fakeAttach();
+      await retirePriorDaySession(tap, attach, { db: pool });
+      expect(ended).toEqual([]);
+      await retirePriorDaySession(message, attach, { db: pool });
+      expect(ended).toEqual(["wrun_long"]);
+      expect(reasons[0]).toMatch(/grew too long/);
+      expect(vi.mocked(gatewayComplete)).not.toHaveBeenCalled();
+    });
+
+    it("a scheduled turn in a conversation the person was already told about posts nothing", async () => {
+      const { onTurnSettled } = await import("../agent/channels/telegram.js");
+      await getRotationState(pool, FIXTURE_CHAT, homeDay());
+      const person = fakeChat("wrun_long");
+      await onTurnSettled(tooLongTurn(), person.ctx);
+      const push = fakeChat("wrun_long", "private", { scheduled: true });
+      await onTurnSettled(tooLongTurn(), push.ctx);
+
+      expect(person.posted).toEqual([TOO_LONG]);
+      expect(push.posted).toEqual([]);
+    });
+
+    it("after a turn that already completed a call, the person is told that part may be done; a scheduled turn is not", async () => {
+      const { onTurnSettled } = await import("../agent/channels/telegram.js");
+      await getRotationState(pool, FIXTURE_CHAT, homeDay());
+      const failed = { data: { turnId: "turn_4", outcome: "failed", error: { code: "MODEL_CALL_FAILED", message: MODEL_COMPACTION_REFUSED } } };
+
+      const person = fakeChat("wrun_long", "private", { view: await viewWithCall("turn_4") });
+      await onTurnSettled(failed, person.ctx);
+      expect(person.posted).toEqual([`${TOO_LONG} ${PARTLY_DONE}`]);
+
+      await claimRolledOverSession(pool, FIXTURE_CHAT, homeDay());
+      const brief = fakeChat("wrun_brief", "private", { scheduled: true, view: await viewWithCall("turn_4") });
+      await onTurnSettled(failed, brief.ctx);
+      expect(brief.posted).toEqual([TOO_LONG_SCHEDULED]);
+    });
+
+    it("the guard's degraded refusal is not 'too long': today's text on every turn, and nothing is marked", async () => {
+      const { onTurnSettled } = await import("../agent/channels/telegram.js");
+      await getRotationState(pool, FIXTURE_CHAT, homeDay());
+      await recordServingSession(pool, FIXTURE_CHAT, homeDay(), "wrun_live");
+      for (const [text, scheduled] of [[MODEL_CALLS_REFUSED_UNSCOPED, false], [`Hook "context.started" failed: ${MODEL_CALLS_REFUSED_UNSCOPED}`, true]] as const) {
+        const chat = fakeChat("wrun_live", "private", { scheduled });
+        await onTurnSettled(tooLongTurn(text), chat.ctx);
+        expect(chat.posted).toHaveLength(1);
+        expect(chat.posted[0]).toMatch(/^I hit an error while handling your request/);
+      }
+      expect(await row()).toMatchObject({ session_id: "wrun_live", session_day: homeDay() });
+      const { ended, attach } = fakeAttach();
+      await retirePriorDaySession(message, attach, { db: pool });
+      expect(ended).toEqual([]);
+    });
+
+    it("says the one sentence, once, and the next MESSAGE retires exactly that conversation, once", async () => {
+      const { onTurnSettled } = await import("../agent/channels/telegram.js");
+      await getRotationState(pool, FIXTURE_CHAT, homeDay());
+      await recordServingSession(pool, FIXTURE_CHAT, homeDay(), "wrun_long");
+      const chat = fakeChat("wrun_long");
+
+      await onTurnSettled(tooLongTurn(), chat.ctx);
+
+      expect(chat.posted).toEqual([TOO_LONG]);
+      expect(await row()).toMatchObject({ session_id: "wrun_long", session_day: null });
+
+      // A tap answers the live conversation and never retires it.
+      const { ended, attach } = fakeAttach();
+      await retirePriorDaySession(tap, attach, { db: pool });
+      expect(ended).toEqual([]);
+
+      // The next message, the same day, retires it before it is forwarded, so it opens a new one.
+      await retirePriorDaySession(message, attach, { db: pool });
+      expect(ended).toEqual(["wrun_long"]);
+      // And only once: the message after that lands in the new conversation, untouched.
+      await retirePriorDaySession(message, attach, { db: pool });
+      expect(ended).toEqual(["wrun_long"]);
+    });
+
+    it("the new conversation is not handed anything from the old one, and no model call is made", async () => {
+      const { onTurnSettled, onContentCompleted } = await import("../agent/channels/telegram.js");
+      const { gatewayComplete } = await import("../lib/llm-complete.js");
+      await getRotationState(pool, FIXTURE_CHAT, homeDay());
+      await recordExchange(pool, FIXTURE_CHAT, "user", "a long day of work");
+      await recordServingSession(pool, FIXTURE_CHAT, homeDay(), "wrun_long");
+
+      await onTurnSettled(tooLongTurn(), fakeChat("wrun_long").ctx);
+      await retirePriorDaySession(message, fakeAttach().attach, { db: pool });
+      // The new conversation's first reply: the rotation sees no day boundary, so it summarises
+      // nothing and leaves nothing waiting.
+      await onContentCompleted({ data: { kind: "text", phase: "reply", value: "ny samtale" } }, fakeChat("wrun_fresh").ctx);
+
+      expect(vi.mocked(gatewayComplete)).not.toHaveBeenCalled();
+      expect(await row()).toEqual({ session_id: "wrun_fresh", session_day: homeDay(), local_day: homeDay(), pending_context: null });
+    });
+
+    it("cannot loop: a new conversation whose first turn is also too long is told once and retired at most once per message", async () => {
+      const { onTurnSettled } = await import("../agent/channels/telegram.js");
+      const { gatewayComplete } = await import("../lib/llm-complete.js");
+      const { ended, attach } = fakeAttach();
+      await getRotationState(pool, FIXTURE_CHAT, homeDay());
+
+      const first = fakeChat("wrun_first");
+      await onTurnSettled(tooLongTurn(), first.ctx);
+      await retirePriorDaySession(message, attach, { db: pool });
+      // The new conversation's very first turn grows too long as well.
+      const second = fakeChat("wrun_second");
+      await onTurnSettled(tooLongTurn(`context.started failed: ${MODEL_COMPACTION_REFUSED}`), second.ctx);
+
+      expect(first.posted).toEqual([TOO_LONG]);
+      expect(second.posted).toEqual([TOO_LONG]);
+      // Nothing retires until the person sends another message, however often the door is asked.
+      for (let i = 0; i < 3; i++) await retirePriorDaySession(tap, attach, { db: pool });
+      expect(ended).toEqual(["wrun_first"]);
+      await retirePriorDaySession(message, attach, { db: pool });
+      await retirePriorDaySession(message, attach, { db: pool });
+      expect(ended).toEqual(["wrun_first", "wrun_second"]);
+      expect(vi.mocked(gatewayComplete)).not.toHaveBeenCalled();
+    });
+
+    it("a reply from another conversation in the chat meanwhile does not cancel the retirement", async () => {
+      const { onTurnSettled, onContentCompleted } = await import("../agent/channels/telegram.js");
+      const { ended, attach } = fakeAttach();
+      await getRotationState(pool, FIXTURE_CHAT, homeDay());
+      await onTurnSettled(tooLongTurn(), fakeChat("wrun_long").ctx);
+
+      await onContentCompleted({ data: { kind: "text", phase: "reply", value: "a scheduled note" } }, fakeChat("wrun_scheduled").ctx);
+      expect(await row()).toMatchObject({ session_id: "wrun_long", session_day: null });
+
+      await retirePriorDaySession(message, attach, { db: pool });
+      expect(ended).toEqual(["wrun_long"]);
+      // Once claimed, the next reply is recorded exactly as before.
+      await recordServingSession(pool, FIXTURE_CHAT, homeDay(), "wrun_fresh");
+      expect(await row()).toMatchObject({ session_id: "wrun_fresh", session_day: homeDay() });
+    });
+
+    it("a chat that has no rotation row yet (a first turn that failed before any reply) is marked too", async () => {
+      const { onTurnSettled } = await import("../agent/channels/telegram.js");
+      const chat = fakeChat("wrun_first_ever");
+      await onTurnSettled(tooLongTurn(), chat.ctx);
+
+      expect(chat.posted).toEqual([TOO_LONG]);
+      expect(await row()).toEqual({ session_id: "wrun_first_ever", session_day: null, local_day: homeDay(), pending_context: null });
+    });
+
+    it("only this cause: any other failure keeps today's text and marks nothing", async () => {
+      const { onTurnSettled } = await import("../agent/channels/telegram.js");
+      await getRotationState(pool, FIXTURE_CHAT, homeDay());
+      await recordServingSession(pool, FIXTURE_CHAT, homeDay(), "wrun_live");
+      for (const text of ["Model provider API request failed (HTTP 400).", `${MODEL_COMPACTION_REFUSED}, and more`]) {
+        const chat = fakeChat("wrun_live");
+        await onTurnSettled(tooLongTurn(text), chat.ctx);
+        expect(chat.posted).toHaveLength(1);
+        expect(chat.posted[0]).toMatch(/^I hit an error while handling your request/);
+      }
+      expect(await row()).toMatchObject({ session_id: "wrun_live", session_day: homeDay() });
+    });
+
+    it("outside the allowed private chat the sentence would not be true, so the ordinary text is posted and nothing is marked", async () => {
+      const { onTurnSettled } = await import("../agent/channels/telegram.js");
+      const chat = fakeChat("wrun_group", "group");
+      await onTurnSettled(tooLongTurn(), chat.ctx);
+
+      expect(chat.posted).toHaveLength(1);
+      expect(chat.posted[0]).toMatch(/^I hit an error while handling your request/);
+      const { rows } = await pool.query("SELECT count(*)::int AS n FROM telegram_session_rotation");
+      expect(rows[0].n).toBe(0);
     });
   });
 });

@@ -20,7 +20,8 @@ import {assertDoorAuthority,managedIdentity} from '@lares/agent-kit/door-authori
  */
 import { readFileSync } from "node:fs";
 import type { ChannelEvents } from "eve/channels";
-import { APPROVE_OPTION_ID, interaction, type SessionView } from "eve/events";
+import { APPROVE_OPTION_ID, calls, interaction, type SessionView } from "eve/events";
+import { anyCallCompleted, CONVERSATION_TOO_LONG_TELEGRAM_SCHEDULED, withPartlyDone } from "@lares/agent-kit/conversation-too-long";
 import {
   defaultTelegramAuth,
   telegramChannel,
@@ -42,6 +43,7 @@ import { answeredVia } from "@lares/agent-kit/approval-ledger";
 import { OFFICE_MEDIA_TYPES } from "@lares/agent-kit/attachment-hydration";
 import { telegramUnreadableNote } from "@lares/agent-kit/unreadable-content";
 import {
+  defaultTurnFailedText,
   respondToSessionFailed,
   respondToTurnFailed,
   type FailureEventData,
@@ -56,6 +58,7 @@ import {
   dayHasRolledOver,
   getRotationState,
   homeDay,
+  markTooLongForRetirement,
   pruneOldExchanges,
   recordExchange,
   recordServingSession,
@@ -693,16 +696,111 @@ interface EndingEvent {
   readonly data: FailureEventData;
 }
 
-/** `turn.settled` — a turn that FAILED says so. Any other outcome posts nothing, as eve's default.
- *  EXPORTED for tests, the same convention as `onContentCompleted` below. */
-export async function onTurnSettled(event: EndingEvent, ctx: FailureContext): Promise<void> {
+/** What `onTurnSettled` reads to start a too-long conversation over. eve's event context carries
+ *  both (`ctx.channel.state`, `ctx.session`); tests that pass neither get today's behaviour. */
+interface TurnFailureContext extends FailureContext {
+  readonly channel: FailureContext["channel"] & { readonly state?: { chatId?: string | null; chatType?: string | null } };
+  readonly session?: {
+    readonly id?: string;
+    readonly auth?: { readonly current?: { readonly authenticator?: unknown; readonly principalId?: unknown; readonly principalType?: unknown } | null } | null;
+  };
+  readonly view?: SessionView;
+}
+
+/**
+ * True when a SCHEDULE started this turn (a brief or a push run inside the person's chat), not the
+ * person. The same three fields eve's own schedule identity carries, read the way the turn log reads
+ * them (`agent/hooks/turn-capture.ts`, `laneOf`): `auth.current`, per turn, never `auth.initiator`.
+ */
+function startedBySchedule(ctx: TurnFailureContext): boolean {
+  const current = ctx.session?.auth?.current;
+  return !!current && current.authenticator === "app" && current.principalId === "eve:app" && current.principalType === "runtime";
+}
+
+/** Whether the failed turn had already completed a call, from eve's own call table for it. */
+function turnCompletedACall(event: EndingEvent, ctx: TurnFailureContext): boolean {
+  const turnId = (event.data as { turnId?: unknown }).turnId;
+  try {
+    return ctx.view !== undefined && typeof turnId === "string" && anyCallCompleted(calls(ctx.view, { turnId }));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `turn.settled` — a turn that FAILED says so. Any other outcome posts nothing, as eve's default.
+ * EXPORTED for tests, the same convention as `onContentCompleted` below.
+ *
+ * A CONVERSATION THAT HAS GROWN TOO LONG. eve's summary of it was refused, so this turn failed and
+ * every later turn in it would fail the same way, and a Telegram private chat is one conversation
+ * that a person cannot start over by hand. So this conversation is marked for retirement at the
+ * person's next message (`markTooLongForRetirement`, the day boundary's own front door), and the
+ * fixed sentence says so. No model call, no summary, nothing carried over.
+ *
+ * The sentence is posted only once the mark is stored, because only then is "your next message will
+ * start a new one" true. When it cannot be stored (not the allowed person's private chat, no session
+ * id, the database refused) the door posts eve's ordinary failure text instead, as it did before.
+ *
+ * It cannot loop. A mark is consumed only by a message the person sends (a tap never retires), and
+ * consumed once. If the first turn of the new conversation also grows too long, it is marked and
+ * told the same way, and the conversation after it starts empty again: one retirement per message
+ * the person chooses to send, never one that happens by itself.
+ *
+ * A TURN THE PERSON DID NOT START. Schedules (briefs, pushes) run inside the person's own chat, so in
+ * a too-long conversation each of them fails too. Such a turn says that a scheduled update was not
+ * delivered, never "send your last message again", and only when it is the one that marked this
+ * conversation: a scheduled failure in a conversation already marked posts nothing (one log line),
+ * so a morning of failing pushes is one sentence, not five. The mark and its rule are the same.
+ *
+ * When the failed turn had already completed a call (an email sent, an approved card carried out),
+ * the person's sentence gains one more: sending the message again could repeat it.
+ */
+export async function onTurnSettled(event: EndingEvent, ctx: TurnFailureContext): Promise<void> {
   if (event.data.outcome !== "failed") return;
   const response = respondToTurnFailed(event.data, FAILURE_OPTIONS);
   if (response.kind === "silent") return;
   if (response.kind === "budget-refusal") {
     console.warn("chief-of-staff telegram: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
   }
+  if (response.kind === "conversation-too-long") {
+    const scheduled = startedBySchedule(ctx);
+    const mark = await markTooLongConversation(ctx);
+    if (mark === "not-marked") {
+      await ctx.channel.telegram.post(defaultTurnFailedText(event.data, "telegram"));
+      return;
+    }
+    if (scheduled) {
+      if (mark === "already-marked") {
+        console.warn("telegram-rotation: a scheduled turn failed in a conversation already marked too long — not delivered, and the person was already told");
+        return;
+      }
+      await ctx.channel.telegram.post(CONVERSATION_TOO_LONG_TELEGRAM_SCHEDULED);
+      return;
+    }
+    await ctx.channel.telegram.post(withPartlyDone(response.text, turnCompletedACall(event, ctx)));
+    return;
+  }
   await ctx.channel.telegram.post(response.text);
+}
+
+/** Records the failed conversation for retirement at the next message: whether this call marked it,
+ *  found it already marked, or could not store the mark. Never throws: an event handler that throws
+ *  parks the session. */
+async function markTooLongConversation(ctx: TurnFailureContext): Promise<"marked" | "already-marked" | "not-marked"> {
+  const chatId = ctx.channel.state?.chatId;
+  const sessionId = ctx.session?.id;
+  if (ctx.channel.state?.chatType !== "private" || !chatId || !isAllowedPrincipalId("telegram", chatId) || !sessionId) {
+    console.warn("telegram-rotation: a conversation grew too long outside the allowed private chat — answered with the ordinary failure text");
+    return "not-marked";
+  }
+  try {
+    const newly = await markTooLongForRetirement(getPool(), chatId, homeDay(), sessionId);
+    console.warn("telegram-rotation: the conversation grew too long — the next message starts a new one; nothing was summarised");
+    return newly ? "marked" : "already-marked";
+  } catch (err) {
+    console.error("telegram-rotation: could not mark a too-long conversation — answered with the ordinary failure text", err);
+    return "not-marked";
+  }
 }
 
 /**
