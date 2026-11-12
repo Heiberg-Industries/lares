@@ -9,7 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { bindConsoleSession, requireConsoleSessionBinding } from '@lares/agent-kit/console-turn-authority';
 import { consoleSourceTransaction } from '@lares/agent-kit/console-source-transaction';
-import { captureBudgetAuthorityReference, validateBudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
+import { captureBudgetAuthorityReference, captureDoorBudgetAuthorityReference, validateBudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
 import { gatewayRawRequestHash } from '@lares/agent-kit/gateway-admission-protocol';
 import { assertPrivateConsoleRequest, PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER, verifiedPrivateConsoleModelMessageReceipt } from '@lares/agent-kit/private-console-envelope';
 import { PgPersonalActionStore } from '@lares/agent-kit/personal-action-store';
@@ -50,7 +50,7 @@ function brokerFiles(){
   chmodSync(consolePath,0o440);chmodSync(runtimePath,0o440);chmodSync(secrets,0o700);
   return {root,secrets,consolePath,runtimePath,consoleKey,runtimeKey};
 }
-async function startBroker(pool:Pool,files:ReturnType<typeof brokerFiles>,source:unknown=pool,extras:{afterListenForTests?:(which:'console'|'runtime')=>void|Promise<void>;afterKeyOpenForTests?:(path:string)=>void|Promise<void>}={}){
+async function startBroker(pool:Pool,files:ReturnType<typeof brokerFiles>,source:unknown=pool,extras:{afterListenForTests?:(which:'console'|'runtime')=>void|Promise<void>;afterKeyOpenForTests?:(path:string)=>void|Promise<void>;designatedOwnerId?:string}={}){
   const consoleSocket=join(files.root,'console.sock'),runtimeSocket=join(files.root,'runtime.sock');
   const uid=process.getuid?.()??0,gid=process.getgid?.()??0;
   const stopBroker=await serveModelPurposeBroker(source as never,{consoleSigningKeyFile:files.consolePath,runtimeSecretsDir:files.secrets,consoleSocket,runtimeSocket,
@@ -380,4 +380,193 @@ describe('Keeper model-purpose socket handlers',()=>{
       expect(retry.ok).toBe(false);
     }finally{await stopBroker?.();rmSync(files.root,{recursive:true,force:true});}
   },10_000);
+});
+
+// A Slack or Telegram message: the agent asks `door.open`; Keeper finds the payer itself.
+const slackRevision='22222222-2222-4222-8222-222222222222',telegramRevision='33333333-3333-4333-8333-333333333333';
+const doorInput=(overrides:Record<string,unknown>={})=>({door:'slack',principal:'U0EXAMPLE',claimRevision:slackRevision,sessionId:'slack_session_1',turnId:'turn_0',sequence:0,...overrides});
+async function seedDoors(){
+  await db.query(`ALTER TABLE agent_resources ADD COLUMN applied_definition jsonb;
+    CREATE TABLE agent_doors(agent text NOT NULL,kind text NOT NULL,enabled boolean DEFAULT false NOT NULL,PRIMARY KEY(agent,kind));
+    CREATE TABLE agent_door_connections(agent text NOT NULL,kind text NOT NULL,incarnation uuid NOT NULL,revision uuid NOT NULL,owner_email text NOT NULL,
+      principal text,claimed_at timestamptz,applied_revision uuid,PRIMARY KEY(agent,kind));
+    UPDATE agent_resources SET applied_definition='{"doors":[{"kind":"slack","enabled":true},{"kind":"telegram","enabled":true}]}' WHERE name='helper';
+    INSERT INTO agent_doors VALUES('helper','slack',true),('helper','telegram',true);
+    UPDATE users SET primary_email='owner@example.invalid' WHERE id='Owner-ID';
+    INSERT INTO users(id,display_name,primary_email,status,org_role,org_id) VALUES('Other-ID','Other','other@example.invalid','active','member','org');`);
+  await db.query(`INSERT INTO agent_door_connections VALUES('helper','slack',$1,$2,'owner@example.invalid','U0EXAMPLE',now(),$2)`,[incarnation,slackRevision]);
+}
+async function telegramClaim(principal='700000001'){
+  await db.query(`INSERT INTO agent_door_connections VALUES('helper','telegram',$1,$2,'owner@example.invalid',$3,now(),$2)`,[incarnation,telegramRevision,principal]);
+}
+function signedResult(envelope:Record<string,unknown>,reply:Record<string,unknown>,key:Buffer){
+  const {ok:_ok,responseMac,responseOutcomeDigest:_o,responsePayloadDigest:_p,responseRequestDigest:_r,...result}=reply;
+  expect(responseMac).toBe(modelPurposeMac(key,modelPurposeAckFields(envelope as never,result)).toString('base64url'));
+  return result;
+}
+
+describe('door turns: a Slack or Telegram message is paid for by the member behind the claim',()=>{
+  beforeEach(seedDoors);
+  const captureAs=(input:Record<string,unknown>,ownerId:string|undefined)=>consoleSourceTransaction(db,client=>captureDoorBudgetAuthorityReference(client as never,input as never,ownerId,env));
+  const capture=(input:Record<string,unknown>,ownerId='Owner-ID')=>captureAs(input,ownerId);
+  const validate=(reference:Awaited<ReturnType<typeof capture>>)=>consoleSourceTransaction(db,client=>validateBudgetAuthorityReference(client as never,reference,env));
+
+  it('captures the claimer as payer from Keeper configuration and revalidates the applied claim',async()=>{
+    const reference=await capture(doorInput());
+    expect(reference).toEqual({kind:'door',binding:{agent:'helper',incarnation,sessionId:'slack_session_1',memberId:'Owner-ID',agentAccessRevision:expect.any(Number),
+      door:'slack',principal:'U0EXAMPLE',claimRevision:slackRevision},turnId:'turn_0',turnSequence:0});
+    await expect(validate(reference)).resolves.toBeNull();
+    // The address is a consistency check: case and surrounding spaces do not matter.
+    await db.query("UPDATE agent_door_connections SET owner_email='  OWNER@Example.Invalid ' WHERE kind='slack'");
+    await expect(capture(doorInput())).resolves.toMatchObject({kind:'door'});
+    await expect(validate(reference)).resolves.toBeNull();
+    // A new claim revision, applied or not, ends the old reference.
+    await db.query("UPDATE agent_door_connections SET revision=$1,applied_revision=$1 WHERE kind='slack'",['44444444-4444-4444-8444-444444444444']);
+    await expect(validate(reference)).rejects.toThrow();
+  });
+
+  it('never takes a payer the configuration does not name, nor one the claim was not issued by',async()=>{
+    await expect(captureAs(doorInput(),undefined)).rejects.toThrow();
+    await expect(capture(doorInput(),'')).rejects.toThrow();
+    // Other-ID is an active member, but did not issue the claim (address mismatch), and holds no grant.
+    await expect(capture(doorInput(),'Other-ID')).rejects.toThrow('Stale authority');
+    await db.query("UPDATE agent_door_connections SET owner_email='other@example.invalid' WHERE kind='slack'");
+    await expect(capture(doorInput(),'Other-ID')).rejects.toThrow('Stale grant');
+    await expect(capture(doorInput(),'Owner-ID')).rejects.toThrow('Stale authority');
+  });
+
+  it('opens a door turn on the socket and claims, closes and reopens it like a web-chat turn',async()=>{
+    const files=brokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+    try{
+      const running=await startBroker(db,files,db,{designatedOwnerId:'Owner-ID'});stopBroker=running.stopBroker;
+      const open=runtimeEnvelope('door.open',doorInput(),files.runtimeKey),opened=await socketRequest(running.runtimeSocket,open);
+      expect(opened.ok).toBe(true);
+      const result=signedResult(open,opened,files.runtimeKey);
+      expect(Object.keys(result).sort()).toEqual(['capability','expiresAt']);
+      expect(result.capability).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(Number(result.expiresAt)).toBeGreaterThan(Date.now()+4*60_000);expect(Number(result.expiresAt)).toBeLessThanOrEqual(Date.now()+5*60_000);
+      const claim=(capability:unknown,stepIndex:number,purposeAlias='lares-brain')=>{const event={type:'step.started',data:{turnId:'turn_0',sequence:0,stepIndex}};
+        return socketRequest(running.runtimeSocket,runtimeEnvelope('step.claim',{turnCapability:capability,purposeAlias,event},files.runtimeKey,{payloadDigest:modelPurposeDigest(event)}));};
+      const claimed=await claim(result.capability,0);
+      expect(claimed.ok).toBe(true);expect(claimed.claim).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect((await claim(result.capability,0)).ok).toBe(false);
+      expect((await claim(result.capability,1,'other-model')).ok).toBe(false);
+      // Without a financial writer the claim is burnt and nothing is charged.
+      const rawBody=Buffer.from('{"model":"lares-brain","messages":[]}');
+      const gatewayRequest={method:'POST',path:'/v1/messages',requestHash:gatewayRawRequestHash('POST','/v1/messages',rawBody)};
+      expect((await socketRequest(running.runtimeSocket,runtimeEnvelope('step.consume',{claim:claimed.claim,request:gatewayRequest},files.runtimeKey))).ok).toBe(false);
+      // The same signed frame never opens twice.
+      expect((await socketRequest(running.runtimeSocket,open)).ok).toBe(false);
+      // A pause closes the turn; the continuation opens a fresh turn for the same point.
+      expect((await socketRequest(running.runtimeSocket,runtimeEnvelope('turn.close',{turnCapability:result.capability,turnId:'turn_0',sequence:0},files.runtimeKey))).ok).toBe(true);
+      expect((await claim(result.capability,2)).ok).toBe(false);
+      const reopened=await socketRequest(running.runtimeSocket,runtimeEnvelope('door.open',doorInput(),files.runtimeKey));
+      expect(reopened.ok).toBe(true);expect(reopened.capability).not.toBe(result.capability);
+      expect((await claim(reopened.capability,2)).ok).toBe(true);
+      // A changed definition stops the turn's next step.
+      await db.query("UPDATE agent_definitions SET hash=$1 WHERE name='helper'",['d'.repeat(64)]);
+      expect((await claim(reopened.capability,3)).ok).toBe(false);
+    }finally{await stopBroker?.();rmSync(files.root,{recursive:true,force:true});}
+  });
+
+  it('refuses every door turn that is not exactly the applied claim of the configured payer',async()=>{
+    const files=brokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+    try{
+      const running=await startBroker(db,files,db,{designatedOwnerId:'Owner-ID'});stopBroker=running.stopBroker;
+      const open=async(input:Record<string,unknown>=doorInput())=>{
+        const reply=await socketRequest(running.runtimeSocket,runtimeEnvelope('door.open',input,files.runtimeKey));
+        if(reply.ok!==true)expect(Object.keys(reply)).toEqual(['ok']);
+        return reply.ok===true;
+      };
+      const set=(sql:string,values:unknown[]=[])=>db.query(sql,values);
+      expect(await open()).toBe(true);
+      // unclaimed principal: another sender, no principal on the claim, no claim row
+      expect(await open(doorInput({principal:'U0SOMEONE'}))).toBe(false);
+      await set("UPDATE agent_door_connections SET principal=NULL WHERE kind='slack'");expect(await open()).toBe(false);
+      await set("UPDATE agent_door_connections SET principal='U0EXAMPLE' WHERE kind='slack'");expect(await open()).toBe(true);
+      // unapplied revision: a claim not yet applied, or a revision the claim does not have
+      await set("UPDATE agent_door_connections SET applied_revision=$1 WHERE kind='slack'",[telegramRevision]);expect(await open()).toBe(false);
+      await set("UPDATE agent_door_connections SET applied_revision=NULL WHERE kind='slack'");expect(await open()).toBe(false);
+      await set("UPDATE agent_door_connections SET applied_revision=revision WHERE kind='slack'");expect(await open()).toBe(true);
+      expect(await open(doorInput({claimRevision:telegramRevision}))).toBe(false);
+      // pending agent
+      await set("UPDATE agent_resources SET pending=true WHERE name='helper'");expect(await open()).toBe(false);
+      await set("UPDATE agent_resources SET pending=false WHERE name='helper'");expect(await open()).toBe(true);
+      // door disabled, or not in the applied definition
+      await set("UPDATE agent_doors SET enabled=false WHERE kind='slack'");expect(await open()).toBe(false);
+      await set("UPDATE agent_doors SET enabled=true WHERE kind='slack'");expect(await open()).toBe(true);
+      await set(`UPDATE agent_resources SET applied_definition='{"doors":[{"kind":"telegram","enabled":true}]}' WHERE name='helper'`);expect(await open()).toBe(false);
+      await set(`UPDATE agent_resources SET applied_definition='{"doors":[{"kind":"slack","enabled":true},{"kind":"telegram","enabled":true}]}' WHERE name='helper'`);expect(await open()).toBe(true);
+      // inactive member (the organisation keeps another active owner meanwhile)
+      await set("UPDATE users SET org_role='owner' WHERE id='Other-ID'");
+      await set("UPDATE users SET status='invited' WHERE id='Owner-ID'");expect(await open()).toBe(false);
+      await set("UPDATE users SET status='active' WHERE id='Owner-ID'");expect(await open()).toBe(true);
+      await set("UPDATE users SET org_role='member' WHERE id='Other-ID'");
+      // address mismatch; only case and surrounding spaces differing is the same address
+      await set("UPDATE agent_door_connections SET owner_email='other@example.invalid' WHERE kind='slack'");expect(await open()).toBe(false);
+      await set("UPDATE agent_door_connections SET owner_email=' Owner@EXAMPLE.invalid  ' WHERE kind='slack'");expect(await open()).toBe(true);
+      await set("UPDATE users SET primary_email=NULL WHERE id='Owner-ID'");expect(await open()).toBe(false);
+      await set("UPDATE users SET primary_email='owner@example.invalid' WHERE id='Owner-ID'");expect(await open()).toBe(true);
+      // mismatched door kinds: the Slack claim spoken as Telegram; then Slack while only Telegram is claimed
+      expect(await open(doorInput({door:'telegram'}))).toBe(false);
+      await telegramClaim();
+      expect(await open(doorInput({door:'telegram'}))).toBe(false);
+      expect(await open(doorInput({door:'telegram',principal:'700000001',claimRevision:telegramRevision}))).toBe(true);
+      await set("DELETE FROM agent_door_connections WHERE kind='slack'");
+      expect(await open()).toBe(false);
+      expect(await open(doorInput({door:'slack',principal:'700000001',claimRevision:telegramRevision}))).toBe(false);
+      // an email door is not a chat door
+      expect(await open(doorInput({door:'email',principal:'700000001',claimRevision:telegramRevision}))).toBe(false);
+      // extra or missing input keys, and a member id smuggled in
+      const good=doorInput({door:'telegram',principal:'700000001',claimRevision:telegramRevision});
+      expect(await open(good)).toBe(true);
+      expect(await open({...good,memberId:'Owner-ID'})).toBe(false);
+      expect(await open({...good,payer:'Other-ID'})).toBe(false);
+      const {sessionId:_sessionId,...missing}=good;expect(await open(missing)).toBe(false);
+      expect(await open({...good,sequence:-1})).toBe(false);
+      expect(await open({...good,sequence:'0'})).toBe(false);
+      // the payload digest must be the input's
+      const forged=runtimeEnvelope('door.open',good,files.runtimeKey,{payloadDigest:modelPurposeDigest({...good,principal:'U0SOMEONE'})});
+      expect((await socketRequest(running.runtimeSocket,forged)).ok).toBe(false);
+    }finally{await stopBroker?.();rmSync(files.root,{recursive:true,force:true});}
+  },20_000);
+
+  it('refuses a door turn when Keeper has no owner on record, or its owner holds no grant on the agent',async()=>{
+    const files=brokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+    try{
+      const running=await startBroker(db,files);stopBroker=running.stopBroker;
+      expect((await socketRequest(running.runtimeSocket,runtimeEnvelope('door.open',doorInput(),files.runtimeKey))).ok).toBe(false);
+      await stopBroker();stopBroker=undefined;
+      await db.query("UPDATE agent_door_connections SET owner_email='other@example.invalid' WHERE kind='slack'");
+      const other=await startBroker(db,files,db,{designatedOwnerId:'Other-ID'});stopBroker=other.stopBroker;
+      expect((await socketRequest(other.runtimeSocket,runtimeEnvelope('door.open',doorInput(),files.runtimeKey))).ok).toBe(false);
+    }finally{await stopBroker?.();rmSync(files.root,{recursive:true,force:true});}
+  });
+
+  it('checks the claim, the member and the grant again on every step of an open door turn',async()=>{
+    const files=brokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+    try{
+      const running=await startBroker(db,files,db,{designatedOwnerId:'Owner-ID'});stopBroker=running.stopBroker;
+      let step=0;
+      const openTurn=async()=>{const reply=await socketRequest(running.runtimeSocket,runtimeEnvelope('door.open',doorInput(),files.runtimeKey));expect(reply.ok).toBe(true);return reply.capability;};
+      const claim=async(capability:unknown)=>{const event={type:'step.started',data:{turnId:'turn_0',sequence:0,stepIndex:step++}};
+        return (await socketRequest(running.runtimeSocket,runtimeEnvelope('step.claim',{turnCapability:capability,purposeAlias:'lares-brain',event},files.runtimeKey,{payloadDigest:modelPurposeDigest(event)}))).ok;};
+      let capability=await openTurn();expect(await claim(capability)).toBe(true);
+      await db.query("UPDATE agent_door_connections SET revision=$1,applied_revision=$1 WHERE kind='slack'",['44444444-4444-4444-8444-444444444444']);
+      expect(await claim(capability)).toBe(false);
+      await db.query("UPDATE agent_door_connections SET revision=$1,applied_revision=$1 WHERE kind='slack'",[slackRevision]);
+      capability=await openTurn();expect(await claim(capability)).toBe(true);
+      await db.query("UPDATE agent_resources SET pending=true WHERE name='helper'");
+      expect(await claim(capability)).toBe(false);
+      await db.query("UPDATE agent_resources SET pending=false WHERE name='helper'");
+      capability=await openTurn();expect(await claim(capability)).toBe(true);
+      await db.query("UPDATE users SET primary_email='changed@example.invalid' WHERE id='Owner-ID'");
+      expect(await claim(capability)).toBe(false);
+      await db.query("UPDATE users SET primary_email='owner@example.invalid' WHERE id='Owner-ID'");
+      capability=await openTurn();expect(await claim(capability)).toBe(true);
+      const grants=new PgGrantStore(db),access=await grants.agentAccess('Owner-ID','helper');
+      await grants.updateAgentAccess('Owner-ID',{agentName:'helper',expectedRevision:access!.accessRevision,grants:[]});
+      expect(await claim(capability)).toBe(false);
+    }finally{await stopBroker?.();rmSync(files.root,{recursive:true,force:true});}
+  });
 });
