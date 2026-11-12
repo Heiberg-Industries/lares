@@ -31,6 +31,21 @@ const ids = vi.hoisted(() => ({
   backing: '22222222-2222-4222-8222-222222222222', readGate: undefined as (() => Promise<void>) | undefined, reads: 0, clock: Date.now(),
   inventory: undefined as any, trackFiles: new Map<string, { content: string; contentRevision: string }>(), writes: 0, lastBinding: undefined as any, useRealFiles: false, outsideDispatch: vi.fn(), outsideTools: vi.fn(), outsideApprove:vi.fn(),
 }));
+// This file calls the outside-tool approval policy directly, outside any eve session. In the agent eve
+// runs it inside the session, where Lares's per-session marks (which turn applied an answer to a card,
+// services/chief-of-staff/lib/approval-card-turns.ts) are readable; outside one, reading them throws and
+// the rule that refuses a new outward action in the reply to an answered request fails closed. So, as in
+// the agent's own tests, those `lares.` states are held in memory here (empty: no answer was applied).
+// Keeper has no `eve` dependency of its own, so the module is named by the file the agent's code loads
+// for `eve/context` (the package's `./context` export); a bare `eve/context` here would mock nothing.
+const eveState = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('../../chief-of-staff/node_modules/eve/dist/src/public/context/index.js', async (original) => {
+  const real = await original<Record<string, unknown>>();
+  return { ...real, defineState: (key: string, initial: () => unknown) => !key.startsWith('lares.')
+    ? (real.defineState as (k: string, i: () => unknown) => unknown)(key, initial)
+    : { get: () => (eveState.has(key) ? eveState.get(key) : initial()),
+        update: (fn: (v: unknown) => unknown) => { eveState.set(key, fn(eveState.has(key) ? eveState.get(key) : initial())); } } };
+});
 vi.mock('@lares/agent-box/lib/vault-storage.js', () => ({
   loadVaultStorageInventory: () => ids.inventory,
   verifyVaultStorageMetadata: async () => undefined,

@@ -19,7 +19,7 @@ import { getPool } from "@lares/agent-kit/db";
 import type { ApprovedExecution } from "@lares/agent-kit/approval-execution";
 
 import { declaredApprover, isAllowedPrincipal, isOwnerPrincipal, principalFromAuth } from "./principals.js";
-import { turnAskedACard } from "./approval-card-turns.js";
+import { outwardActionAfterAnswerRefusal, turnAskedACard } from "./approval-card-turns.js";
 
 const companyHome = (input: unknown) => !!input && typeof input === 'object' && !Array.isArray(input) && (input as Record<string, unknown>).home === 'twenty';
 const adapterFor = (tool: string, input?: unknown) => {
@@ -332,14 +332,40 @@ async function assertPrivateConsoleTool(ctx: unknown, role: "chief-of-staff", na
   assertPrivateTool(ctx, role, name, { callerIsOwner });
 }
 
+/** The catalogue tools that reach other people and are refused in the reply to an answered request
+ *  (`outwardActionAfterAnswerRefusal`, lib/approval-card-turns.ts): calendar writes email the attendees,
+ *  and the two door sends mail them. The personal mail send applies the same rule in its own policy. */
+const OUTWARD_AFTER_ANSWER_TOOLS: ReadonlySet<string> = new Set(['calendar_create_event','calendar_update_event','calendar_delete_event','gmail_send','meeting_followup_send']);
+/** Every approval status eve 1.0 accepts that raises NO card, as its own reader defines them
+ *  (`normalizeApprovalStatus` and `approvalDecision`, eve `dist/src/approval/status.js`): `undefined`
+ *  and `false` and `"not-applicable"` continue with no prompt, `"approved"` runs without a person,
+ *  `"denied"` denies, and the object forms `{ type }` of those three (`approved` and `denied` may
+ *  carry a reason). The forms that pause for a person are `"user-approval"`, `true` and
+ *  `{ type: "user-approval" }`. Anything else is not a status eve accepts; it is treated as asking
+ *  (fails closed), so in the reply to an answered request it is refused like a card. */
+const NO_CARD_TYPES: ReadonlySet<unknown> = new Set(['not-applicable', 'approved', 'denied']);
+const raisesNoCard = (decision: unknown) => decision === undefined || decision === false || NO_CARD_TYPES.has(decision) ||
+  (typeof decision === 'object' && decision !== null && NO_CARD_TYPES.has((decision as { type?: unknown }).type));
+/** The shared rule, for a call that is about to raise a card. Never for eve's recheck of a call that
+ *  is already approved: that is the answered card's own action, and it runs as before. */
+const outwardRefusal = (name: string, ctx: unknown) => OUTWARD_AFTER_ANSWER_TOOLS.has(name) && !isApprovalRecheck(ctx)
+  ? outwardActionAfterAnswerRefusal((ctx as ConsoleAuthorityContext | undefined)?.session as never) : undefined;
+
 /** Preserve the authored native policy; bound console calls additionally require exact authority. */
 export async function catalogueApprovalRequest(name: string, ctx: unknown, authored: unknown): Promise<unknown> {
   await assertPrivateConsoleTool(ctx,"chief-of-staff",name);
   if(name==='personal_mailbox_send')return personalSendApprovalRequest(ctx as never);
   if (!isExactApprovalContext(ctx)) {
     await guardConsoleToolContext(ctx);
-    return (authored as (ctx:unknown)=>unknown)(ctx);
+    const decision = await (authored as (ctx:unknown)=>unknown)(ctx);
+    // A tool the owner set to run on its own ("autonomous") raises no card and is left as it is; one
+    // that would ask first is refused in the reply to an answered request. At "gated" the authored
+    // policy answers from the definition and the permissions table alone, before any provider call.
+    return raisesNoCard(decision) ? decision : outwardRefusal(name, ctx) ?? decision;
   }
+  // Web chat: every call of these tools asks first, so the refusal comes before the reservation.
+  const answered = outwardRefusal(name, ctx);
+  if (answered) return answered;
   const c = ctx as ConsoleAuthorityContext & {callId?:string;toolInput?:unknown};
   // Refused before any card or provider read. The adapter repeats this at each later step.
   const asking = consoleAdmission(c.session?.auth?.current);

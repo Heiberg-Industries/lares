@@ -93,10 +93,18 @@ const fake = vi.hoisted(() => {
 
 // No matrix turn asks a card, and outside eve there is no session state to read (which the real
 // module treats as "a card was asked"). The durable mark itself: tests/approval-card-turns.test.ts.
-vi.mock("../lib/approval-card-turns.js", async (original) => ({
-  ...(await original<typeof import("../lib/approval-card-turns.js")>()),
-  turnAskedACard: (session: { turn?: { id?: unknown } | null } | null | undefined) => typeof session?.turn?.id !== "string" || !session.turn.id,
-}));
+// Likewise no matrix turn applied an answer to a card, so the rule that refuses an action reaching
+// other people in that reply does not apply (still refusing a turn with no id, as the real one does);
+// the rule itself: tests/turn-after-answered-card.test.ts.
+vi.mock("../lib/approval-card-turns.js", async (original) => {
+  const real = await original<typeof import("../lib/approval-card-turns.js")>();
+  return {
+    ...real,
+    turnAskedACard: (session: { turn?: { id?: unknown } | null } | null | undefined) => typeof session?.turn?.id !== "string" || !session.turn.id,
+    outwardActionAfterAnswerRefusal: (session: { turn?: { id?: unknown } | null } | null | undefined, reason = real.ANSWERED_TURN_REFUSED) =>
+      typeof session?.turn?.id === "string" && session.turn.id ? undefined : { type: "denied" as const, reason },
+  };
+});
 vi.mock("@lares/agent-kit/db", async (original) => ({
   ...(await original<typeof import("@lares/agent-kit/db")>()),
   getPool: () => fake.pool,

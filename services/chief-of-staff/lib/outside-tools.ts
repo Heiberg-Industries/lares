@@ -4,6 +4,7 @@ import { executeApprovedOutsideCall, vaultBrokerRequest } from '@lares/agent-kit
 import type { AcceptedOutsideTool } from '@lares/agent-kit/outside-connections';
 import { reserveExactApprovalOrDeny, approveExactResponse, requireApprovedExecution, requireApprovedRecheck, isApprovalRecheck, approvalResponderOf, type ExactResponseContext } from '@lares/agent-kit/approval-execution';
 import { outsideApprovalAdapter } from '@lares/agent-kit/outside-approval';
+import { outwardActionAfterAnswerRefusal } from './approval-card-turns.js';
 
 type Context={callId?:string;toolName?:string;approval?:{responder?:unknown};session?:{id?:string;turn?:{id?:string;sequence?:number};auth?:{current?:unknown;initiator?:unknown}|null}};
 function sessionIdentity(ctx:Context){
@@ -25,7 +26,13 @@ export async function requestOutsideApproval(connectionName:string,toolName:stri
  const options={adapter:outsideApprovalAdapter(connectionName,toolName)};
  if(isApprovalRecheck(c)){
   try{await requireApprovedRecheck(c,name,c.toolInput,options);}catch{return 'denied' as const;}
- }else{const refused=await reserveExactApprovalOrDeny(c,name,options);if(refused)return refused;}
+ }else{
+  // Every outside call asks first, and its effect is the outside tool's own: in the reply to an answered
+  // request it is refused before the reservation and before the tool or its connection is contacted
+  // (lib/approval-card-turns.ts). The answered card's own approved call is the recheck above.
+  const answered=outwardActionAfterAnswerRefusal(c.session as never);if(answered)return answered;
+  const refused=await reserveExactApprovalOrDeny(c,name,options);if(refused)return refused;
+ }
  return 'user-approval' as const;
 }
 export async function respondOutsideApproval(connectionName:string,toolName:string,ctx:unknown){
