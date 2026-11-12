@@ -149,7 +149,7 @@ vi.mock("../lib/conversation-continuity.js", async (original) => ({
 import { defaultTelegramAuth } from "eve/channels/telegram";
 import { setBoardDeps } from "@lares/agent-kit/board-approval";
 import { CONSOLE_AUTHORITY_REFUSED } from "@lares/agent-kit/console-turn-authority";
-import { SHARED_ROOM_REFUSED, sharedRoomHiddenTool } from "@lares/agent-kit/private-console-surface";
+import { SHARED_ROOM_REFUSED, SHARED_ROOM_UNAVAILABLE, sharedRoomHiddenTool } from "@lares/agent-kit/private-console-surface";
 import { parseDefinition } from "@lares/agent-kit/definition";
 import { interceptSlackClaim, interceptTelegramClaim } from "@lares/agent-kit/door-channels";
 
@@ -592,9 +592,11 @@ describe("what each door shows and allows", () => {
 
     it(`${title}: a tool it does not see is refused by the door's own rule, whatever the tool would have asked`, async () => {
       const { reasons } = await observe(key);
-      // A shared room says why in words for the room; every other door keeps the console's wording.
-      const rule = key === "slackRoom" ? SHARED_ROOM_REFUSED : CONSOLE_AUTHORITY_REFUSED;
-      for (const row of TABLE) if (row[column(key)] === H) expect(reasons[row[0]], row[0]).toBe(rule);
+      // A shared room says why in words for the room, and points to a direct message only for a
+      // tool the direct-message column shows; every other door keeps the console's wording.
+      const rule = (row: Row) => key !== "slackRoom" ? CONSOLE_AUTHORITY_REFUSED
+        : row[column("slackDm")] === H ? SHARED_ROOM_UNAVAILABLE : SHARED_ROOM_REFUSED;
+      for (const row of TABLE) if (row[column(key)] === H) expect(reasons[row[0]], row[0]).toBe(rule(row));
     });
 
     for (const [label, tool] of REPRESENTATIVE) {

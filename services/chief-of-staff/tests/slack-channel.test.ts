@@ -496,19 +496,27 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
   }
 
   /**
+   * The note is started after the refusal and never awaited, so a Slack call can still arrive
+   * after the expected ones. Wait this long once they are in, then read the whole list: a late
+   * extra call (a repaint, a room post) is in it and fails the test.
+   */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+  /**
    * The refused tappers were each told the one fixed sentence, privately, in the card's channel,
    * and NOTHING ELSE was sent to Slack: no repaint, no edit, no delete, no message the room sees.
    * The card itself is not touched, so its buttons are still there for the owner.
    */
-  async function expectOnlyRefusalNotices(tappers: string[], threadTs = "1700000000.000100"): Promise<void> {
+  async function expectOnlyRefusalNotices(tappers: string[], threadTs = "1700000000.000100", channel = DM): Promise<void> {
     const { SLACK_TAP_REFUSAL } = await import("../agent/channels/slack.js");
-    await vi.waitFor(() => expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(tappers.length));
+    await vi.waitFor(() => expect(vi.mocked(globalThis.fetch).mock.calls.length).toBeGreaterThanOrEqual(tappers.length));
+    await settle();
     const calls = slackCalls();
     expect(calls.map((c) => c.method), "an ephemeral note per refused tap, and no other Slack call").toEqual(tappers.map(() => "chat.postEphemeral"));
     expect(calls.map((c) => c.body["user"]), "each note goes to the person who tapped, and only them").toEqual(tappers);
     for (const { body } of calls) {
       // In the card's own channel and thread, with the sentence as its whole content.
-      expect(body["channel"]).toBe(DM);
+      expect(body["channel"]).toBe(channel);
       expect(body["thread_ts"]).toBe(threadTs);
       expect(body["markdown_text"]).toBe(SLACK_TAP_REFUSAL);
       expect(body).not.toHaveProperty("blocks");
@@ -516,14 +524,14 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
     }
   }
 
-  /** A tap on Approve (the default) or Deny, on a card in the thread `threadTs`. */
-  function tap(userId: string | null, answer: "approve" | "deny" = "approve", threadTs = "1700000000.000100"): Request {
+  /** A tap on Approve (the default) or Deny, on a card in the thread `threadTs` of `channel`. */
+  function tap(userId: string | null, answer: "approve" | "deny" = "approve", threadTs = "1700000000.000100", channel = DM): Request {
     const payload = {
       type: "block_actions",
       team: { id: "T0000000000" },
       // `null`: a payload with no `user` object at all.
       ...(userId === null ? {} : { user: { id: userId, username: "someone", name: "someone" } }),
-      channel: { id: DM },
+      channel: { id: channel },
       message: { ts: "1700000000.000200", thread_ts: threadTs, blocks: [] },
       actions: [{
         action_id: `eve_input:tool-approval:interaction-1:button:${answer === "approve" ? 1 : 0}`, block_id: "b1", type: "button",
@@ -643,10 +651,24 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
       expect(response.status).toBe(200);
       expect(answered).toEqual([]);
       expect(sent).toEqual([]);
-      await vi.waitFor(() => expect(
-        vi.mocked(console.warn).mock.calls.some(([line]) => String(line).includes("could not tell a person their tap")),
-      ).toBe(true));
+      const failures = () => vi.mocked(console.warn).mock.calls.filter(([line]) => String(line).includes("could not tell a person their tap"));
+      await vi.waitFor(() => expect(failures()).toHaveLength(1));
+      // Only Slack's error code is logged: never the error's text, which is not this log's to keep.
+      expect(failures()[0]!.slice(1)).toEqual(["channel_not_found"]);
+      await settle();
       expect(slackCalls().map((c) => c.method)).toEqual(["chat.postEphemeral"]);
+    });
+
+    // A card in a shared channel, where everyone in the room reads the thread. The note is still an
+    // ephemeral to the one person who tapped; nothing is posted that the room would see.
+    it("in a shared room, a refused tap is told only to the person who tapped, and nothing is posted to the room", async () => {
+      const ROOM = "C0000000000";
+      const { answered, sent, response } = await deliver(tap(SECOND, "approve", "1700000000.000100", ROOM));
+      expect(response.status).toBe(200);
+      expect(answered, "the approval was never delivered").toEqual([]);
+      expect(sent).toEqual([]);
+      await expectOnlyRefusalNotices([SECOND], "1700000000.000100", ROOM);
+      expect(slackCalls().filter((c) => c.method === "chat.postMessage"), "nothing the room sees").toEqual([]);
     });
 
     it("the second member can still talk to the agent: the answer rule is narrower than the message rule", async () => {
@@ -663,6 +685,7 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
       expect(response.status).toBe(200);
       expect(answered).toEqual([]);
       expect(sent).toEqual([]);
+      await settle();
       expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
     });
 

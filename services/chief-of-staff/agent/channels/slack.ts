@@ -1,4 +1,4 @@
-import {slackDoorVerifier,interceptSlackClaim} from '@lares/agent-kit/door-channels';
+import {slackDoorVerifier,interceptSlackClaim,tellRefusedSlackTapper,SLACK_TAP_REFUSAL,type SlackRefusalNoticeContext} from '@lares/agent-kit/door-channels';
 import {assertDoorAuthority,managedIdentity} from '@lares/agent-kit/door-authority';
 /**
  * The Slack door.
@@ -129,39 +129,13 @@ export function slackOwnerUserId(env: NodeJS.ProcessEnv = process.env): string |
 }
 
 /**
- * What a person who may not answer a card is told when they tap it: privately, in an ephemeral
- * reply only they see. One fixed sentence that is true for every card on this door (approval and
- * question alike are the owner's alone) and names nothing about the card, who asked, or the
- * tapper. Worded like the Telegram door's refusal on a tap (`TAP_REFUSAL`, `lib/telegram-tap-gate.ts`).
+ * What a person who may not answer a card is told when they tap it, privately (an ephemeral only
+ * they see): "Only the owner of this bot can answer this. Nothing was done." The sentence and the
+ * sending live in the kit (`@lares/agent-kit/door-channels`), shared with the creative role's
+ * Slack door. The Telegram door refuses a tap in its own words today (`TAP_REFUSAL`,
+ * `lib/telegram-tap-gate.ts`); the two doors' sentences are not the same.
  */
-export const SLACK_TAP_REFUSAL = "Only the owner of this bot can answer this. Nothing was done.";
-
-/** The part of eve's answer context the refusal notice uses: the card's own thread. */
-interface RefusalNoticeContext {
-  readonly thread?: { postEphemeral?(userId: string, message: string): Promise<unknown> };
-}
-
-/**
- * Tells the refused tapper, and only them, that nothing was done. Started, never awaited: the
- * refusal itself is already decided and returned, so this cannot change it, and it touches the card
- * not at all (an ephemeral is a new message; nothing is edited, repainted or deleted). It keeps no
- * state, so repeated taps send one note each and leave nothing behind. A failure to send is logged
- * in one line that names nobody, and the refusal stands.
- */
-function tellRefusedTapper(ctx: RefusalNoticeContext | undefined, tapper: unknown): void {
-  // A tap that names nobody has nobody to tell.
-  if (typeof tapper !== "string" || tapper.length === 0) return;
-  const thread = ctx?.thread;
-  if (typeof thread?.postEphemeral !== "function") return;
-  Promise.resolve()
-    .then(() => thread.postEphemeral!(tapper, SLACK_TAP_REFUSAL))
-    .catch((error: unknown) => {
-      console.warn(
-        "chief-of-staff slack: could not tell a person their tap on a card was not accepted; the card is unchanged and still pending",
-        error instanceof Error ? error.message : "unknown error",
-      );
-    });
-}
+export { SLACK_TAP_REFUSAL };
 
 /**
  * Who may answer an approval or a question card: THE OWNER, and nobody else. Approve and Deny
@@ -186,7 +160,7 @@ function tellRefusedTapper(ctx: RefusalNoticeContext | undefined, tapper: unknow
  * that for every door, and this door does not rely on the side effect.
  */
 export function authorizeSlackAnswer(
-  ctx: { readonly defaultAuth: SessionAuthContext } & RefusalNoticeContext,
+  ctx: { readonly defaultAuth: SessionAuthContext } & SlackRefusalNoticeContext,
   submission: { readonly user?: { readonly id?: string } },
 ): SlackAnswerResult {
   const owner = slackOwnerUserId();
@@ -194,7 +168,7 @@ export function authorizeSlackAnswer(
   const answeredBy = submission?.user?.id;
   if (owner === undefined || typeof answeredBy !== "string" || answeredBy !== owner) {
     console.warn("chief-of-staff slack: an answer from someone other than the owner was refused; nothing was executed and the card is still pending");
-    tellRefusedTapper(ctx, answeredBy);
+    tellRefusedSlackTapper(ctx, answeredBy, "chief-of-staff");
     return null;
   }
   return { auth: ctx.defaultAuth };

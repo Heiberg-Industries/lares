@@ -47,6 +47,13 @@ export function sharedRoomHiddenTool(name: string): boolean {
 }
 /** Why a tool is refused in a conversation started in a shared Slack room, in words for the room. */
 export const SHARED_ROOM_REFUSED = 'That is not available in a shared room. Ask me in a direct message.';
+/** The same refusal for a tool a direct message does not offer either, so it gives no advice. */
+export const SHARED_ROOM_UNAVAILABLE = 'That is not available in a shared room.';
+/** The room's refusal for one hidden tool. A direct message (a native door) never offers what
+ *  `privateOnlyTool` names, so for those the room does not send the person to one. */
+export function sharedRoomRefusal(name: string): string {
+  return privateOnlyTool(name) ? SHARED_ROOM_UNAVAILABLE : SHARED_ROOM_REFUSED;
+}
 type DoorAuth = { authenticator?: unknown; attributes?: Record<string, unknown> } | null | undefined;
 const isSlackAuth = (auth: DoorAuth): boolean => auth?.authenticator === 'slack-webhook';
 /**
