@@ -1,5 +1,5 @@
 import {personalSendApprovalRequest,personalSendApprovalResponse,requirePersonalSendCall} from './personal-send-approval.js';
-import { assertPrivateConsoleTool as assertPrivateTool, privateOwnerTool, isPrivateConsoleContext, sharedRoomHiddenTool, startedInSharedSlackRoom, SHARED_ROOM_REFUSED } from "@lares/agent-kit/private-console-surface";
+import { assertPrivateConsoleTool as assertPrivateTool, privateOwnerTool, isPrivateConsoleContext, sharedRoomHiddenTool, startedInSharedSlackRoom, sharedRoomRefusal } from "@lares/agent-kit/private-console-surface";
 import { isExactApprovalContext, isExactApprovalResponse, isApprovalRecheck, reserveExactApprovalOrDeny, approveExactResponse,
   requireApprovedExecution, requireApprovedRecheck, approvalResponderOf, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
 import { callerIsAgentOwner } from "./webchat-owner.js";
@@ -324,9 +324,10 @@ export async function runApprovedCalendarOnce<T>(approved: ApprovedExecution | u
 
 /** The private-surface check, with the owner question asked afresh for the tools only an owner may use.
  *  A conversation started in a shared Slack room is refused the tools its list leaves out, first and in
- *  words for the room, so a call replayed or carried over from an older list is refused the same way. */
+ *  words for the room, so a call replayed or carried over from an older list is refused the same way.
+ *  The room sends the person to a direct message only for a tool a direct message has. */
 async function assertPrivateConsoleTool(ctx: unknown, role: "chief-of-staff", name: string): Promise<void> {
-  if (!isPrivateConsoleContext(ctx) && sharedRoomHiddenTool(name) && startedInSharedSlackRoom(ctx)) throw new Error(SHARED_ROOM_REFUSED);
+  if (!isPrivateConsoleContext(ctx) && sharedRoomHiddenTool(name) && startedInSharedSlackRoom(ctx)) throw new Error(sharedRoomRefusal(name));
   const callerIsOwner = privateOwnerTool(name) && isPrivateConsoleContext(ctx) ? await callerIsAgentOwner(ctx) : false;
   assertPrivateTool(ctx, role, name, { callerIsOwner });
 }

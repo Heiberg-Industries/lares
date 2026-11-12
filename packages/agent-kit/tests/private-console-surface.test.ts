@@ -7,7 +7,7 @@ vi.mock('@lares/agent-kit/public-docs-runtime',()=>({publicDocsIndex:()=>'- inst
 vi.mock('../src/console-turn-authority.js',async original=>({...await original<typeof import('../src/console-turn-authority.js')>(),requireConsoleSessionBinding:fake.binding,guardConsoleToolContext:fake.turn}));
 const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
 import {definitionModelResolver} from '../src/definition-model.js';
-import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateOwnerTool,privateRoleInstructions,privateConsoleTracePolicy,sharedRoomHiddenTool,startedInSharedSlackRoom,SHARED_ROOM_REFUSED} from '../src/private-console-surface.js';
+import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateOwnerTool,privateRoleInstructions,privateConsoleTracePolicy,sharedRoomHiddenTool,startedInSharedSlackRoom,sharedRoomRefusal,SHARED_ROOM_REFUSED,SHARED_ROOM_UNAVAILABLE} from '../src/private-console-surface.js';
 const inc='11111111-1111-4111-8111-111111111111';
 const auth=(member='member-a')=>({authenticator:'lares-console',principalType:'user',principalId:member,attributes:{lares_member_id:member,lares_admission_nonce:'a'.repeat(43),lares_purpose:'human'}});
 const ctx=()=>({session:{id:'private-test',auth:{current:auth(),initiator:auth()}}});
@@ -80,6 +80,13 @@ describe('a conversation started in a shared Slack room',()=>{
   expect(privateToolAllowed('chief-of-staff','person_lookup',{callerIsOwner:true})).toBe(false);
   expect(privateOnlyTool('person_lookup')).toBe(false);
   expect(SHARED_ROOM_REFUSED).toBe('That is not available in a shared room. Ask me in a direct message.');
+ });
+ it('sends the person to a direct message only for a tool a direct message has',()=>{
+  expect(SHARED_ROOM_UNAVAILABLE).toBe('That is not available in a shared room.');
+  // A direct message offers these: the room says to ask there.
+  for(const n of ['gmail_read','gmail_draft','calendar_list_events','agent-kit__vault_write','agent-kit__vault_search','person_lookup'])expect(sharedRoomRefusal(n),n).toBe(SHARED_ROOM_REFUSED);
+  // A direct message never offers these (the console-only tools): no advice to use one.
+  for(const n of ['personal_mailbox_read','personal_calendar_events','agent-kit__vault_read','agent-kit__vault_list','tracks_list','track_add_item'])expect(sharedRoomRefusal(n),n).toBe(SHARED_ROOM_UNAVAILABLE);
  });
  it('is read from the initiator, which an answered card does not change; a direct message is a D channel',()=>{
   expect(startedInSharedSlackRoom(started(slack('C0ROOM')))).toBe(true);

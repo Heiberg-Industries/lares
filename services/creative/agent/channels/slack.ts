@@ -1,4 +1,4 @@
-import {slackDoorVerifier,interceptSlackClaim} from '@lares/agent-kit/door-channels';
+import {slackDoorVerifier,interceptSlackClaim,tellRefusedSlackTapper,SLACK_TAP_REFUSAL,type SlackRefusalNoticeContext} from '@lares/agent-kit/door-channels';
 import {assertDoorAuthority,managedIdentity} from '@lares/agent-kit/door-authority';
 /**
  * The creative role's Slack door.
@@ -121,6 +121,9 @@ export function slackOwnerUserId(env: NodeJS.ProcessEnv = process.env): string |
   }
 }
 
+/** What a refused tapper is told, privately: the kit's sentence, shared with the chief of staff's Slack door. */
+export { SLACK_TAP_REFUSAL };
+
 /**
  * Who may answer an approval or a question card: THE OWNER, and nobody else. Approve and Deny
  * alike.
@@ -133,7 +136,9 @@ export function slackOwnerUserId(env: NodeJS.ProcessEnv = process.env): string |
  * eve calls this for every tap on one of its controls and every typed answer in its modal, in
  * the webhook handler, BEFORE the answer is delivered to the conversation and so before eve's own
  * rule about who may answer is consulted. Returning `null` refuses the answer: nothing is
- * delivered, nothing runs, and the card stays as it is, still pending, for the owner.
+ * delivered, nothing runs, and the card stays as it is, still pending, for the owner. The person
+ * refused is told so privately (`SLACK_TAP_REFUSAL`, the kit's sentence, the same as the chief of
+ * staff's Slack door), so their tap is not met with silence.
  *
  * It fails closed. No owner id (an unset or blank list, or one that cannot be read) refuses
  * everybody.
@@ -143,7 +148,7 @@ export function slackOwnerUserId(env: NodeJS.ProcessEnv = process.env): string |
  * that for every door, and this door does not rely on the side effect.
  */
 export function authorizeSlackAnswer(
-  ctx: { readonly defaultAuth: SessionAuthContext },
+  ctx: { readonly defaultAuth: SessionAuthContext } & SlackRefusalNoticeContext,
   submission: { readonly user?: { readonly id?: string } },
 ): SlackAnswerResult {
   const owner = slackOwnerUserId();
@@ -151,6 +156,7 @@ export function authorizeSlackAnswer(
   const answeredBy = submission?.user?.id;
   if (owner === undefined || typeof answeredBy !== "string" || answeredBy !== owner) {
     console.warn("creative slack: an answer from someone other than the owner was refused; nothing was executed and the card is still pending");
+    tellRefusedSlackTapper(ctx, answeredBy, "creative");
     return null;
   }
   return { auth: ctx.defaultAuth };
