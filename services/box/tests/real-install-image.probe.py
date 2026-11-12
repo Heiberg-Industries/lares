@@ -77,7 +77,8 @@ LIMITS = [
     "The certificate is issued by Caddy's own authority, so getting a public certificate is not covered.",
     "The sync-jobs image is named but never started on a fresh install, so it is not built or pulled here. The Notion sync is only checked up to its gate (nothing starts without an accepted preview); reaching Notion is not covered.",
     "Backups go to the same machine, and the uptime address is a stand-in.",
-    "The approval step answers one card as the member who started the conversation; refusing other people's answers is covered by the private chat proof, not here.",
+    "The approval step answers two cards (a Track and a Vault note), both with Approve, as the member who started the conversation; refusing other people's answers is covered by the private chat proof, not here.",
+    "Who pays is checked for one person and Approve only: how the call after a Deny is booked, and booking to a second member, are covered by the box tests, not here.",
     "The update goes to a second build of the same code (a new label, so new digests): a release that changes code or adds migrations is not covered.",
     "Saving a definition in the console after the update is not exercised; agent start and the agent's restart are.",
     "The change of budget month is not covered: this run does not move the clock.",
@@ -463,6 +464,71 @@ def read_only_query(sql: str, release: dict) -> str:
     password = pathlib.Path("/etc/lares/secrets/financial-database-password").read_text().strip()
     return run("docker", "run", "--rm", "--network", "host", "-e", f"PGPASSWORD={password}", "-e", "PGOPTIONS=-c default_transaction_read_only=on",
                "--entrypoint", "psql", release["images"]["db"], "-h", "127.0.0.1", "-U", "lares_financial", "-d", "lares_state", "-Atc", sql, show=False).stdout.strip()
+
+
+def check_charges_after_answered_cards(release: dict, deferred: list[str]) -> None:
+    """Who paid for each call of the chat, and as what. Every call of the conversation is booked to
+    the one signed-in member; the call after each approved card is booked as the answer to that card
+    (`resume`, option `approve`), and those cards are exactly the ones approved in the conversation.
+    Read with the financial login, which can read the budget tables and approval_asks. A fault is
+    reported at the end, like the other checks of the chat, so it does not hide the stages after it."""
+    members = [line for line in read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member' ORDER BY id", release).splitlines()]
+    if len(members) != 1 or not members[0]:
+        deferred.append(f"who paid was not checked: expected one member budget account with a live member, found {len(members)}: {['set' if m else 'empty' for m in members]}")
+        return
+    member = members[0]
+    rows = json.loads(read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('state', a.state, 'liveMember', a.live_member_id, 'accountKind', m.kind, "
+        "'accountMember', m.live_member_id, 'hasReference', a.authority_reference IS NOT NULL, 'kind', a.authority_reference->>'kind', "
+        "'bindingMember', a.authority_reference#>>'{binding,memberId}', 'session', a.authority_reference#>>'{binding,sessionId}', "
+        "'requestId', a.authority_reference#>>'{resume,requestId}', 'option', a.authority_reference#>>'{resume,optionId}') "
+        "ORDER BY a.created_at, a.id), '[]') FROM budget_attempts a JOIN budget_accounts m ON m.id = a.member_account_id", release))
+    chat = [row for row in rows if row["kind"] in ("human", "resume")]
+    owner_jobs = [row for row in rows if row["kind"] == "owner-job"]
+    sessions = sorted({row["session"] for row in chat if row["session"]})
+    cards = json.loads(read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('requestId', request_id, 'tool', tool, 'outcome', outcome, 'askedBy', acting_member_id, "
+        "'answeredBy', resolved_by_member_id) ORDER BY asked_at), '[]') FROM approval_asks "
+        f"WHERE agent = '{AGENT}' AND session_id IN (SELECT authority_reference#>>'{{binding,sessionId}}' FROM budget_attempts "
+        "WHERE authority_reference->>'kind' IN ('human', 'resume'))", release))
+    approved = sorted({card["requestId"] for card in cards if card["outcome"] == "approved"})
+    resume_approved = sorted({row["requestId"] for row in chat if row["kind"] == "resume" and row["option"] == "approve" and row["state"] == "settled"})
+
+    def who(value: str | None) -> str | None:
+        return None if value is None else "the signed-in member" if value == member else "another member"
+
+    proof["charges"] = {
+        "attempts": [{"state": row["state"], "kind": row["kind"] if row["hasReference"] else None, "option": row["option"],
+                      "requestId": row["requestId"], "session": sessions.index(row["session"]) + 1 if row["session"] in sessions else None,
+                      "chargedTo": who(row["liveMember"]), "account": f"{row['accountKind']}: {who(row['accountMember'])}",
+                      "bookedFor": who(row["bindingMember"])} for row in rows],
+        "chatAttempts": len(chat), "ownerJobAttempts": len(owner_jobs), "sessions": len(sessions),
+        "approvedCards": [{"requestId": card["requestId"], "tool": card["tool"], "askedBy": who(card["askedBy"]), "answeredBy": who(card["answeredBy"])}
+                          for card in cards if card["outcome"] == "approved"],
+        "otherCards": [{"requestId": card["requestId"], "tool": card["tool"], "outcome": card["outcome"]} for card in cards if card["outcome"] != "approved"],
+        "resumeApproveRequestIds": len(resume_approved),
+    }
+    save_proof()
+    print(f"budget attempts, who paid and as what:\n{json.dumps(proof['charges'], indent=2)}", flush=True)
+    faults = []
+    unbooked = [row for row in rows if row["kind"] not in ("human", "resume", "owner-job")]
+    if unbooked:
+        faults.append(f"{len(unbooked)} attempt(s) carry no conversation or owner-job reference (kinds {sorted({str(row['kind']) for row in unbooked})})")
+    if not chat:
+        faults.append("no attempt is booked to the conversation")
+    strangers = [row for row in chat if not (row["liveMember"] == member and row["accountKind"] == "member" and row["accountMember"] == member and row["bindingMember"] == member)]
+    if strangers:
+        faults.append(f"{len(strangers)} chat attempt(s) are not charged to and booked for the signed-in member")
+    if any(row["kind"] == "resume" and row["option"] != "approve" for row in chat):
+        faults.append("a chat attempt is booked as the answer Deny (or no option), but every card was approved")
+    if len(resume_approved) < 2:
+        faults.append(f"settled calls are booked as the Approve answer of {len(resume_approved)} different card(s); two cards were approved")
+    if resume_approved != approved:
+        faults.append(f"the cards the calls were booked under ({resume_approved}) are not the cards approved in the conversation ({approved})")
+    if faults:
+        deferred.append("the calls of the chat were not charged as expected: " + "; ".join(faults))
+    else:
+        passed("the-call-after-each-answered-card-was-charged-to-the-asker-as-that-answer")
 
 
 def keeper_host_action(action: str, payload: dict) -> dict:
@@ -1191,6 +1257,7 @@ def main(argv: list[str]) -> int:
             time.sleep(3)
         print(f"budget attempts by state:\n{attempts}", flush=True)
         passed("every-model-call-settled-in-the-budget-ledger")
+        check_charges_after_answered_cards(release, deferred)
 
         stage("sudo lares backups")
         run("apt-get", "update", "-qq", timeout=300, show=False)
