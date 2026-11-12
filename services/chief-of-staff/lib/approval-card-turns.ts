@@ -71,8 +71,9 @@ export const ANSWERED_TURN_REFUSED = "That cannot be started in the reply to an 
 /**
  * AN ACTION THAT REACHES OTHER PEOPLE CANNOT BE STARTED IN THE REPLY TO AN ANSWERED REQUEST.
  * One rule, read by every approval check it covers (the owner's ruling): the personal mail send
- * (lib/personal-send-approval.ts), and the calendar writes, `gmail_send` and `meeting_followup_send`
- * (`catalogueApprovalRequest` in lib/approvals.ts). It is the same at every door.
+ * (lib/personal-send-approval.ts), the calendar writes, `gmail_send` and `meeting_followup_send`
+ * (`catalogueApprovalRequest` in lib/approvals.ts), and every outside (MCP) tool call
+ * (`requestOutsideApproval` in lib/outside-tools.ts). It is the same at every door.
  *
  * On eve 1.0 an answered card (Approve or Deny) does not start a new turn: the paused turn carries
  * on as the person who ASKED, so that continuation could raise another card for another outward

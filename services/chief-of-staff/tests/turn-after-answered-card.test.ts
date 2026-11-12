@@ -404,13 +404,22 @@ describe("nothing that reaches other people in the reply to an answered request 
 
     it(`${door}: every form of eve's approval status is recognised in that reply; an unknown form is refused (fails closed)`, async () => {
       const session = await ownerAnswered(door, "approve", `sess_out_${door}_forms`);
-      const denial = { type: "denied", reason: "Follow-ups are switched off." };
+      // eve's own reader of a policy's answer (`dist/src/approval/status.js`), to check the lists below against it.
+      const statusUrl = new URL("../node_modules/eve/dist/src/approval/status.js", import.meta.url).href;
+      const { approvalDecision } = (await import(statusUrl)) as { approvalDecision: (s: unknown) => { awaitsPerson?: boolean } };
+      const NO_CARD = [undefined, false, "not-applicable", "approved", "denied", { type: "not-applicable" }, { type: "approved" },
+        { type: "approved", reason: "Set to run on its own." }, { type: "denied" }, { type: "denied", reason: "Follow-ups are switched off." }];
+      const ASKS = ["user-approval", true, { type: "user-approval" }];
+      const UNKNOWN = ["ask-later", { type: "later" }, null, 0];
+      for (const decision of NO_CARD) expect(approvalDecision(decision).awaitsPerson, JSON.stringify(decision)).toBeUndefined();
+      for (const decision of ASKS) expect(approvalDecision(decision).awaitsPerson, JSON.stringify(decision)).toBe(true);
+      for (const decision of UNKNOWN) expect(() => approvalDecision(decision), JSON.stringify(decision)).toThrow();
       for (const name of Object.keys(TOOLS)) {
-        // No card: passed through unchanged.
-        for (const decision of ["not-applicable", false, "approved", "denied", denial] as const)
+        // No card: passed through unchanged, so a tool that needs no card is never refused by this rule.
+        for (const decision of NO_CARD)
           expect(await m.approvals.catalogueApprovalRequest(name, call(name, session), () => decision), `${name} ${JSON.stringify(decision)}`).toEqual(decision);
-        // Asks a person, in either form, or a form eve does not document: refused with the sentence.
-        for (const decision of ["user-approval", true, "ask-later", { type: "user-approval" }, undefined])
+        // Asks a person, in any form, or a form eve does not accept: refused with the sentence.
+        for (const decision of [...ASKS, ...UNKNOWN])
           expect(await m.approvals.catalogueApprovalRequest(name, call(name, session), () => decision), `${name} ${JSON.stringify(decision)}`).toEqual(refusal);
       }
     });

@@ -1,10 +1,20 @@
-import { beforeEach,afterEach,expect,it,vi } from 'vitest';
+import { beforeEach,afterEach,describe,expect,it,vi } from 'vitest';
 import { runDynamic } from '../../../packages/agent-kit/tests/helpers/eve-dynamic.js';
 const fake=vi.hoisted(()=>({broker:vi.fn(),execute:vi.fn(),privateSession:vi.fn(),definition:vi.fn(),reserve:vi.fn(),reserveOrDeny:vi.fn(),response:vi.fn(),approved:vi.fn(),recheck:vi.fn()}));
 vi.mock('@lares/agent-kit/vault-broker-client',()=>({vaultBrokerRequest:fake.broker,executeApprovedOutsideCall:fake.execute}));
 vi.mock('@lares/agent-kit/private-console-surface',()=>({verifyPrivateConsoleSession:fake.privateSession}));
 vi.mock('@lares/agent-kit/approval-execution',async orig=>({...(await orig<typeof import('@lares/agent-kit/approval-execution')>()),reserveExactApproval:fake.reserve,reserveExactApprovalOrDeny:fake.reserveOrDeny,approveExactResponse:fake.response,requireApprovedExecution:fake.approved,requireApprovedRecheck:fake.recheck}));
 vi.mock('../lib/definition.js',()=>({thisAgent:fake.definition}));
+// eve keeps Lares's per-session marks (which turn applied an answer to a card) in its durable session
+// state, which only a running eve session can read; here those `lares.` states are held in memory.
+const eveState=vi.hoisted(()=>({values:new Map<string,unknown>(),readable:true}));
+vi.mock('eve/context',async original=>{
+ const real=await original<typeof import('eve/context')>();
+ return {...real,defineState:(key:string,initial:()=>unknown)=>!key.startsWith('lares.')?(real.defineState as (k:string,i:()=>unknown)=>unknown)(key,initial):
+  {get:()=>{if(!eveState.readable)throw new Error('no active eve context');return eveState.values.has(key)?eveState.values.get(key):initial();},
+   update:(fn:(v:unknown)=>unknown)=>{eveState.values.set(key,fn(eveState.values.has(key)?eveState.values.get(key):initial()));}}};
+});
+import { noteAnswerApplied } from '../lib/approval-card-turns.js';
 import { clearSessionVaultTurnCapabilities } from '../agent/lib/vault-turn.js';
 import resolver from '../agent/tools/outside-tools.js';
 import hook from '../agent/hooks/private-vault-turn.js';
@@ -25,7 +35,7 @@ beforeEach(()=>{
   op==='outside.approve'?{outsideCapability:capability}:op==='outside.tools'?{tools:[{name:'lookup',description:'Accepted lookup',inputSchema:{type:'object',properties:{company:{type:'string'}}}}]}:{});
  fake.execute.mockResolvedValue({content:[{type:'text',text:'Example'}]});
 });
-afterEach(()=>{vi.unstubAllEnvs();vi.clearAllMocks();});
+afterEach(()=>{vi.unstubAllEnvs();vi.clearAllMocks();eveState.values.clear();eveState.readable=true;});
 const dyn=(sentinel:unknown,ctx:object=context,store?:Map<string,string>)=>runDynamic(sentinel,ctx as never,store);
 it('builds ordinary tools that still execute after the original admitted turn closes',async()=>{
  await hook.events['turn.started']!(started as never,context as never);
@@ -94,4 +104,50 @@ it('offers no direct connection in either role and no outside tools on native or
  fake.privateSession.mockResolvedValue(false);expect(await dyn(resolver)).toBeNull();
  fake.privateSession.mockResolvedValue(true);fake.broker.mockRejectedValue(Error('metadata unavailable'));
  expect(await dyn(resolver,{...context,session:{...context.session,id:'fresh'}})).toBeNull();expect(fake.execute).not.toHaveBeenCalled();
+});
+
+/** The owner's ruling: in the turn an answer to a card was applied in, a NEW outside-tool call (every one
+ *  asks first) is refused before its card, its reservation and any contact with the tool or its
+ *  connection; the answered card's own approved call still runs once; the next message works as before.
+ *  The settle hook's mark is written the way agent/hooks/approval-record.ts writes it (`noteAnswerApplied`;
+ *  Approve and Deny both set it); tests/turn-after-answered-card.test.ts drives the hooks themselves. */
+describe('outside tools in the reply to an answered request',()=>{
+ const refusal={type:'denied',reason:'That cannot be started in the reply to an answered request. Ask again in a new message.'};
+ const contacted=()=>fake.broker.mock.calls.filter(([op])=>op==='outside.approve').length+fake.execute.mock.calls.length;
+ const newCall=(session:object=context.session)=>({...context,session,callId:'call-new',toolName:'registry__lookup',toolInput:{company:'Other'}});
+ it.each(['Approve','Deny'])('after %s: a new outside-tool call in the continued turn is refused, with no card and no contact with the tool',async()=>{
+  const approval=(await dyn(resolver))['registry__lookup'].approval;
+  noteAnswerApplied(context.session.turn.id); // the settle hook marks the turn for an Approve and for a Deny alike
+  const before=contacted();
+  expect(await approval.request(newCall())).toEqual(refusal);
+  expect(fake.reserveOrDeny).not.toHaveBeenCalled(); // no reservation, so no card
+  expect(contacted()).toBe(before);
+ });
+ it('the answered card\'s own approved call still passes the recheck and runs exactly once',async()=>{
+  const tools=await dyn(resolver),approval=tools['registry__lookup'].approval;
+  noteAnswerApplied(context.session.turn.id);
+  const approved={...context,callId:'call-1',toolName:'registry__lookup',toolInput:{company:'Example'}};
+  fake.recheck.mockResolvedValueOnce(undefined);
+  expect(await approval.request({...approved,[Symbol.for('eve.approval-evaluation')]:{recheck:true}})).toBe('user-approval');
+  const responder={...auth,attributes:{...auth.attributes,lares_purpose:'resolver'}};
+  await expect(tools['registry__lookup'].execute({company:'Example'},{...approved,approval:{responder}})).resolves.toEqual({content:[{type:'text',text:'Example'}]});
+  expect(fake.execute).toHaveBeenCalledOnce();
+  expect(await approval.request(newCall())).toEqual(refusal); // and a new one next to it is refused
+  expect(fake.execute).toHaveBeenCalledOnce();
+ });
+ it('the next message is a new turn: the call reserves and asks as before',async()=>{
+  const approval=(await dyn(resolver))['registry__lookup'].approval;
+  noteAnswerApplied(context.session.turn.id);
+  fake.reserveOrDeny.mockResolvedValue(null);
+  expect(await approval.request(newCall({...context.session,turn:{id:'turn-2',sequence:2}}))).toBe('user-approval');
+  expect(fake.reserveOrDeny).toHaveBeenCalledOnce();
+ });
+ it('fails closed when the turn cannot be told: no turn id, or session state that cannot be read',async()=>{
+  const approval=(await dyn(resolver))['registry__lookup'].approval;
+  const {turn:_turn,...noTurn}=context.session;
+  expect(await approval.request(newCall(noTurn))).toEqual(refusal);
+  eveState.readable=false;
+  expect(await approval.request(newCall())).toEqual(refusal);
+  expect(fake.reserveOrDeny).not.toHaveBeenCalled();expect(contacted()).toBe(0);
+ });
 });

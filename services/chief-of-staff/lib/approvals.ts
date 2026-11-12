@@ -336,13 +336,16 @@ async function assertPrivateConsoleTool(ctx: unknown, role: "chief-of-staff", na
  *  (`outwardActionAfterAnswerRefusal`, lib/approval-card-turns.ts): calendar writes email the attendees,
  *  and the two door sends mail them. The personal mail send applies the same rule in its own policy. */
 const OUTWARD_AFTER_ANSWER_TOOLS: ReadonlySet<string> = new Set(['calendar_create_event','calendar_update_event','calendar_delete_event','gmail_send','meeting_followup_send']);
-/** eve's approval statuses that raise NO card (docs/tools/human-in-the-loop.md, "Write your own
- *  policy"): continue without a prompt (`"not-applicable"` / `false`), run without a person
- *  (`"approved"`), or deny (`"denied"` / `{ type: "denied", reason }`). The forms that pause for a
- *  person are `"user-approval"` / `true`. Anything else is unknown and is treated as asking (fails
- *  closed): in the reply to an answered request it is refused like a card. */
-const raisesNoCard = (decision: unknown) => decision === 'not-applicable' || decision === false || decision === 'approved' || decision === 'denied' ||
-  (typeof decision === 'object' && decision !== null && (decision as { type?: unknown }).type === 'denied');
+/** Every approval status eve 1.0 accepts that raises NO card, as its own reader defines them
+ *  (`normalizeApprovalStatus` and `approvalDecision`, eve `dist/src/approval/status.js`): `undefined`
+ *  and `false` and `"not-applicable"` continue with no prompt, `"approved"` runs without a person,
+ *  `"denied"` denies, and the object forms `{ type }` of those three (`approved` and `denied` may
+ *  carry a reason). The forms that pause for a person are `"user-approval"`, `true` and
+ *  `{ type: "user-approval" }`. Anything else is not a status eve accepts; it is treated as asking
+ *  (fails closed), so in the reply to an answered request it is refused like a card. */
+const NO_CARD_TYPES: ReadonlySet<unknown> = new Set(['not-applicable', 'approved', 'denied']);
+const raisesNoCard = (decision: unknown) => decision === undefined || decision === false || NO_CARD_TYPES.has(decision) ||
+  (typeof decision === 'object' && decision !== null && NO_CARD_TYPES.has((decision as { type?: unknown }).type));
 /** The shared rule, for a call that is about to raise a card. Never for eve's recheck of a call that
  *  is already approved: that is the answered card's own action, and it runs as before. */
 const outwardRefusal = (name: string, ctx: unknown) => OUTWARD_AFTER_ANSWER_TOOLS.has(name) && !isApprovalRecheck(ctx)
