@@ -453,6 +453,15 @@ try{
       const response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{answers:[{interactionId:row.request_id,optionId:option}]},session.cookie);
       assert.ok(response.ok,'exact answer '+response.status+' '+await response.clone().text());return stream(app,a,session);
     }
+    // A repeated answer to a card that is already settled is refused by the console before the
+    // agent (`cardStillWaiting` in services/console/lib/chat-proxy.ts): no turn, no model call.
+    async function repeated(session,row,option='approve'){
+      const upstream=upstreamCalls,calls=models(app).length;
+      const response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{answers:[{interactionId:row.request_id,optionId:option}]},session.cookie);
+      assert.equal(response.status,409,'A repeated answer reached the agent: '+response.status+' '+await response.clone().text());
+      assert.equal(await response.text(),'This request is no longer waiting. Nothing was sent.');
+      assert.equal(upstreamCalls,upstream,'A repeated answer reached the agent');assert.equal(models(app).length,calls,'A repeated answer reached the model');
+    }
     sendProof={proposal,sendCount};
     const cancelled=await proposal(sa,'SEND_ATTACK '+JSON.stringify({...input,subject:'Cancelled continuation attack'}));await answer(sa,cancelled,'deny');assert.equal(sendCount(),0);
     assert.equal((await db.query('SELECT state FROM personal_actions WHERE id=$1',[cancelled.id])).rows[0].state,'cancelled');
@@ -460,7 +469,7 @@ try{
     await stop();await start(app);assert.equal(hashOutput(app.cwd),outputHash);
     assert.ok((await answer(sa,approved)).includes('ANSWER'));assert.equal(sendCount(),1);assert.ok(models(app).length>before,'Approved call must continue to the actual model');
     assert.equal((await db.query('SELECT state FROM personal_actions WHERE id=$1',[approved.id])).rows[0].state,'accepted');
-    await answer(sa,approved);assert.equal(sendCount(),1);await stop();await start(app);await answer(sa,approved);assert.equal(sendCount(),1);
+    await repeated(sa,approved);await repeated(sa,approved,'deny');assert.equal(sendCount(),1);await stop();await start(app);await repeated(sa,approved);assert.equal(sendCount(),1);
     const attack=await proposal(sa,'SEND_ATTACK '+JSON.stringify(input));await answer(sa,attack);assert.equal(sendCount(),2);
     assert.equal((await db.query('SELECT count(*)::int AS n FROM personal_actions WHERE session_id=$1',[sa.id])).rows[0].n,3,'Resolver model created another proposal');
     assert.equal(readFileSync(app.providerLog,'utf8').split('\n').filter(line=>line.includes('MAIL_CANARY')).length,2,'Resolver model read a private source');

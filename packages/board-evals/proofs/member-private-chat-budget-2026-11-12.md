@@ -76,3 +76,41 @@ intended outcome.
   deny model call with a blank turn id. eve 0.60.1 emitted one after a pending action settled; eve
   1.0 does not (it continues the asker's turn). They need porting once the mail lane passes.
 - `proveDurableBudget` selects the same blank-turn resume calls. Same.
+
+## Later on 12 November: the repeated answer is now refused by the console
+
+Run again against `eve-1.0` at `2c5eac65` plus the change that makes the console refuse an answer
+to a card that is already settled (`cardStillWaiting` and `claimAnswer` in
+`services/console/lib/chat-proxy.ts`). Same command as above, with the budget recorder on.
+
+| Run | Variables | Result |
+| --- | --- | --- |
+| Budget | `ROLE=chief-of-staff GATEWAY_LANE=anthropic SEND=1 BUDGET=1` | **FAIL** at "Resolver model created another proposal" (5 rows, 3 expected), as Failure 1 above |
+
+What changed:
+
+- **Failure 2 is gone.** The script's repeated answers to the spent send card (approve, deny, and
+  approve again after a second cold restart) are now refused by the console before the agent,
+  with "This request is no longer waiting. Nothing was sent." The proof checks that each one gets
+  that sentence, reaches neither the agent nor the model, and sends nothing. No new turn opens, so
+  the budget recorder is never asked. Before this change the script expected those answers to be
+  accepted. The run now reaches the same check as the runs without the budget recorder.
+- **Failure 1 is unchanged and still blocks the lane.** Its check was not touched: whether a new
+  send card may be raised in the turn after an answered card is still an owner decision.
+
+What did not change, and why:
+
+- **The budget recorder still charges through a path production never calls.** It calls
+  `PgBudgetAdmissionStore.prepareIntent` from inside the model call. Production charges through
+  Keeper: the console signs each message and answer, Keeper's model-purpose broker admits it and
+  opens the turn, and each model call is charged by `step.consume` (`prepareModelPurposeIntent`)
+  and then dispatched through Keeper's gateway socket. Moving the proof onto that path needs, in
+  this offline script: Keeper's broker with a financial journal, the console's signing key (which
+  the console only accepts when owned by root, so the proof would have to fake that ownership),
+  the role's runtime key and sockets, the budget fixture written through the journal, and a
+  stand-in for Keeper's gateway socket in front of the fake model. That is a rework of the lane,
+  not a change to its recorder, and it could not be checked by running it here: the lane stops at
+  Failure 1 before its own budget checks (`proveDurableBudget`). It is left for the round that
+  settles Failure 1.
+- `proveDurableBudget` and the gateway lane's two resume checks still look for model calls with a
+  blank turn id, which eve 1.0 never makes. Not reached, not ported.
