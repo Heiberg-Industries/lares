@@ -320,6 +320,71 @@ describe("chief-of-staff Slack channel", () => {
       expect(authorizeSlackAnswer({ defaultAuth }, undefined as never)).toBeNull();
     });
 
+    describe("the person refused is told so, privately", () => {
+      /** eve's answer context, with the card's thread reduced to the one call the notice makes. */
+      function ctxWith(postEphemeral: (userId: string, message: string) => Promise<unknown>) {
+        return { defaultAuth, thread: { postEphemeral: vi.fn(postEphemeral) } };
+      }
+
+      it("sends a refused tapper exactly the one fixed sentence, to them alone, and still refuses at once", async () => {
+        const { authorizeSlackAnswer, SLACK_TAP_REFUSAL } = await freshModule();
+        for (const who of ["U_EXAMPLE_SECOND", "U0STRANGER"]) {
+          const ctx = ctxWith(async () => ({ id: "1700000000.000300" }));
+          expect(authorizeSlackAnswer(ctx, { user: { id: who } })).toBeNull();
+          await vi.waitFor(() => expect(ctx.thread.postEphemeral).toHaveBeenCalledTimes(1));
+          expect(ctx.thread.postEphemeral).toHaveBeenCalledWith(who, SLACK_TAP_REFUSAL);
+        }
+      });
+
+      it("the sentence says nothing about the card, who asked, or who tapped", async () => {
+        const { SLACK_TAP_REFUSAL } = await freshModule();
+        expect(SLACK_TAP_REFUSAL).toBe("Only the owner of this bot can answer this. Nothing was done.");
+        expect(SLACK_TAP_REFUSAL).not.toMatch(/U_EXAMPLE|U0|approv|deny/i);
+      });
+
+      it("the owner's accepted tap sends no note", async () => {
+        const { authorizeSlackAnswer } = await freshModule();
+        const ctx = ctxWith(async () => ({ id: "x" }));
+        expect(authorizeSlackAnswer(ctx, { user: { id: "U_EXAMPLE_OWNER" } })).toEqual({ auth: defaultAuth });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(ctx.thread.postEphemeral).not.toHaveBeenCalled();
+      });
+
+      it("a tap that names nobody has nobody to tell: no note is sent", async () => {
+        const { authorizeSlackAnswer } = await freshModule();
+        const ctx = ctxWith(async () => ({ id: "x" }));
+        expect(authorizeSlackAnswer(ctx, {})).toBeNull();
+        expect(authorizeSlackAnswer(ctx, { user: { id: "" } })).toBeNull();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(ctx.thread.postEphemeral).not.toHaveBeenCalled();
+      });
+
+      it("a note that cannot be sent is logged in one line that names nobody, and the refusal stands", async () => {
+        const { authorizeSlackAnswer } = await freshModule();
+        const rejecting = ctxWith(async () => { throw new Error("slack said: not_in_channel"); });
+        const throwing = { defaultAuth, thread: { postEphemeral: vi.fn(() => { throw new Error("boom"); }) } };
+        expect(authorizeSlackAnswer(rejecting, { user: { id: "U_EXAMPLE_SECOND" } })).toBeNull();
+        expect(authorizeSlackAnswer(throwing as never, { user: { id: "U0STRANGER" } })).toBeNull();
+        const warn = vi.mocked(console.warn);
+        const failures = () => warn.mock.calls.filter(([line]) => String(line).includes("could not tell a person their tap"));
+        await vi.waitFor(() => expect(failures()).toHaveLength(2));
+        for (const call of failures()) {
+          expect(call.join(" ")).not.toContain("U_EXAMPLE_SECOND");
+          expect(call.join(" ")).not.toContain("U0STRANGER");
+        }
+      });
+
+      it("repeated refused taps send one note each and keep nothing: the owner is still accepted after", async () => {
+        const { authorizeSlackAnswer } = await freshModule();
+        const ctx = ctxWith(async () => ({ id: "x" }));
+        for (let i = 0; i < 5; i++) expect(authorizeSlackAnswer(ctx, { user: { id: "U_EXAMPLE_SECOND" } })).toBeNull();
+        await vi.waitFor(() => expect(ctx.thread.postEphemeral).toHaveBeenCalledTimes(5));
+        expect(authorizeSlackAnswer(ctx, { user: { id: "U_EXAMPLE_OWNER" } })).toEqual({ auth: defaultAuth });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(ctx.thread.postEphemeral).toHaveBeenCalledTimes(5);
+      });
+    });
+
     it("refuses everybody when the owner id cannot be read", async () => {
       const { slackOwnerUserId } = await freshModule();
       const unreadable = new Proxy({}, { get() { throw new Error("environment not readable"); } }) as NodeJS.ProcessEnv;
@@ -416,6 +481,41 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
     return deliverTo((mod.default as never as { routes: Route[] }).routes[0]!, request, hasSession);
   }
 
+  /** Every Slack Web API call the door made, as the method name and the body it sent. */
+  function slackCalls(): { method: string; body: Record<string, unknown> }[] {
+    return vi.mocked(globalThis.fetch).mock.calls.map(([url, init]) => {
+      const raw = String((init as RequestInit | undefined)?.body ?? "");
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        body = Object.fromEntries(new URLSearchParams(raw));
+      }
+      return { method: String(url).split("/").pop()!, body };
+    });
+  }
+
+  /**
+   * The refused tappers were each told the one fixed sentence, privately, in the card's channel,
+   * and NOTHING ELSE was sent to Slack: no repaint, no edit, no delete, no message the room sees.
+   * The card itself is not touched, so its buttons are still there for the owner.
+   */
+  async function expectOnlyRefusalNotices(tappers: string[], threadTs = "1700000000.000100"): Promise<void> {
+    const { SLACK_TAP_REFUSAL } = await import("../agent/channels/slack.js");
+    await vi.waitFor(() => expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(tappers.length));
+    const calls = slackCalls();
+    expect(calls.map((c) => c.method), "an ephemeral note per refused tap, and no other Slack call").toEqual(tappers.map(() => "chat.postEphemeral"));
+    expect(calls.map((c) => c.body["user"]), "each note goes to the person who tapped, and only them").toEqual(tappers);
+    for (const { body } of calls) {
+      // In the card's own channel and thread, with the sentence as its whole content.
+      expect(body["channel"]).toBe(DM);
+      expect(body["thread_ts"]).toBe(threadTs);
+      expect(body["markdown_text"]).toBe(SLACK_TAP_REFUSAL);
+      expect(body).not.toHaveProperty("blocks");
+      expect(body).not.toHaveProperty("text");
+    }
+  }
+
   /** A tap on Approve (the default) or Deny, on a card in the thread `threadTs`. */
   function tap(userId: string | null, answer: "approve" | "deny" = "approve", threadTs = "1700000000.000100"): Request {
     const payload = {
@@ -495,8 +595,9 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
       expect(response.status).toBe(200);
       expect(answered, "the approval was never delivered").toEqual([]);
       expect(sent).toEqual([]);
-      // The card is left as it is, buttons and all, for the owner to answer.
-      expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+      // The card is left as it is, buttons and all, for the owner to answer. The only Slack call
+      // is the private note to the stranger who tapped.
+      await expectOnlyRefusalNotices([STRANGER]);
     });
 
     it("the owner's Deny is delivered too", async () => {
@@ -515,8 +616,37 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
       expect(response.status).toBe(200);
       expect(answered, "no answer reaches the conversation, so the request is still open").toEqual([]);
       expect(sent).toEqual([]);
-      // The card itself is not touched: no repaint, no notice. Its buttons are still there.
-      expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+      // The card itself is not touched: no repaint, no edit. Its buttons are still there. The
+      // second member is told privately that nothing was done, and nobody else sees that.
+      await expectOnlyRefusalNotices([SECOND]);
+    });
+
+    it("refused taps, again and again, each get one private note and leave the card answerable by the owner", async () => {
+      for (const who of [SECOND, SECOND, STRANGER, SECOND]) {
+        const { answered } = await deliver(tap(who, who === STRANGER ? "deny" : "approve"));
+        expect(answered).toEqual([]);
+      }
+      await expectOnlyRefusalNotices([SECOND, SECOND, STRANGER, SECOND]);
+      // Nothing piled up behind the refusals: the owner's answer is delivered exactly once.
+      vi.mocked(globalThis.fetch).mockClear();
+      const accepted = await deliver(tap(OWNER));
+      expect(accepted.answered).toHaveLength(1);
+      expect((accepted.answered[0]!.options["auth"] as { attributes: { user_id: string } }).attributes.user_id).toBe(OWNER);
+      expect(vi.mocked(globalThis.fetch), "the owner is not sent the refusal").not.toHaveBeenCalled();
+    });
+
+    it("if Slack refuses the private note, the refusal still stands and the request still answers 200", async () => {
+      globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ ok: false, error: "channel_not_found" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+      const { answered, sent, response } = await deliver(tap(SECOND));
+      expect(response.status).toBe(200);
+      expect(answered).toEqual([]);
+      expect(sent).toEqual([]);
+      await vi.waitFor(() => expect(
+        vi.mocked(console.warn).mock.calls.some(([line]) => String(line).includes("could not tell a person their tap")),
+      ).toBe(true));
+      expect(slackCalls().map((c) => c.method)).toEqual(["chat.postEphemeral"]);
     });
 
     it("the second member can still talk to the agent: the answer rule is narrower than the message rule", async () => {
@@ -604,7 +734,8 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
           expect(refused.answered, `${answer} from someone other than the owner`).toEqual([]);
         }
       }
-      expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+      // The card is not touched; each refused tapper is only told privately that nothing was done.
+      await expectOnlyRefusalNotices([SECOND, SECOND, STRANGER, STRANGER], POSTED_TS);
 
       // 4. The owner: delivered to that conversation, as the owner.
       const accepted = await deliver(tap(OWNER, "approve", POSTED_TS));
