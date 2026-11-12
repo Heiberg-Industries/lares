@@ -81,10 +81,17 @@ type LayerSentence = string & { readonly __fromTheLayer: true };
 Ask these questions in order. Write the answers in your pull request description.
 
 1. **Is the door needed now?** If not, stop.
-2. **Does a Chat SDK adapter exist for the platform that works fully self-hosted?** Then start
-   from eve's Chat SDK bridge, `eve/channels/chat-sdk`. Give it a state store that keeps its data
-   on the owner's server. Pass the tapper's identity on with the bridge's `resolveInputAuth`.
-3. **If not,** write a custom eve channel. It implements the same five functions.
+2. **Does eve already ship a channel for the platform?** Then consider it first, as the base.
+   Check that it works fully self-hosted (see below). It still gets the five functions; its own
+   card and answer rules do not replace the layer's.
+3. **If not: does a Chat SDK adapter exist for the platform that works fully self-hosted?** Then
+   start from eve's Chat SDK bridge, `eve/channels/chat-sdk`. Give it a state store that keeps
+   its data on the owner's server. Pass the tapper's identity on with the bridge's
+   `resolveInputAuth`.
+4. **If not, take one short, targeted look elsewhere** for that one platform (for example one
+   search for a maintained, self-hostable library). Not a survey of other ecosystems. Write what
+   you found in your pull request description.
+5. **Only then write a custom eve channel.** It implements the same five functions.
 
 An adapter that sends messages through a hosted relay service is not an option. Lares is
 self-hosted and nothing phones home. Some of eve's own channels reach a platform through a
@@ -107,7 +114,9 @@ An in-memory state store is for local development only. It forgets everything on
   `agent_door_connections` table, that is a migration, and a migration needs the manual
   image-probe run described in `AGENTS.md`.
 - [ ] **Allow-list.** The door admits only people on its allow-list. An empty or unreadable
-  list admits nobody.
+  list admits nobody. The check will be one shared function in the kit (the kit's allow-list
+  check); a door calls it and must not carry its own copy. Today each role service has its own
+  copy in `lib/principals.ts`; do not add a third.
 - [ ] **The shared contract test passes.** It runs your adapter against a fake platform and
   checks the rules in ADR-0025. You do not write rule tests of your own.
 - [ ] **A live probe.** `tests/live/<door>.live.mts`, run by hand against the real platform and

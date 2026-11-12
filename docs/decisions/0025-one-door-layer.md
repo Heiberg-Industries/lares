@@ -26,8 +26,10 @@ and a message id). The **kit** is the shared package `packages/agent-kit`.
 ## Context
 
 The owner decided on 12 November 2026 that every card rule lives once and that a door is only an
-adapter. This section records what the code does today on the framework branch (`eve-1.0`, eve
-pinned at `1.0.0-rc.9`), so the build starts from facts. Paths are from the repository root.
+adapter. This section records what the code does today on the framework branch (`eve-1.0`), so
+the build starts from facts. Statements about eve itself say which eve version they were read on
+(eve `1.0.0-rc.9` at the time of writing; the framework branch moves to `1.0.0-rc.10`, and those
+statements are not assumed to carry over). Paths are from the repository root.
 `cos` stands for `services/chief-of-staff`, `creative` for `services/creative`, `console` for
 `services/console`, `kit` for `packages/agent-kit/src`.
 
@@ -42,7 +44,7 @@ pinned at `1.0.0-rc.9`), so the build starts from facts. Paths are from the repo
 | Shared-room rule | Not needed: the door admits private chats only (`isAllowedTelegramMessage`). | Applied in `cos/agent/tools/catalogue.ts` and `cos/lib/approvals.ts`. No call site in the creative role. | Not needed: every conversation is private. | Yes, but written for Slack by name: `kit/private-console-surface.ts` (`startedInSharedSlackRoom`, `SHARED_ROOM_REFUSED`). |
 | Settled card (late or second tap) | The door removes the buttons (`onInteractionSettled`). A tap that still arrives is not checked by Lares. | eve repaints the card. No Lares check. | `cardStillWaiting` and `claimAnswer` in `console/lib/chat-proxy.ts`; the sentence `ANSWER_NOT_USED` in `console/lib/chat-session.ts`. | No. Only web chat has a guard, and part of it is a list held in the console's memory. |
 | Reply to an answered request | `cos/lib/approval-card-turns.ts`, the same at every door of that role. | The same file for the chief-of-staff role. The creative role has no such rule. | The same file for the chief-of-staff role. | No, it is local to one role. The two sentences for a refused reply are shared (`kit/approval-reply-sentence.ts`). |
-| Approval records | `kit/approval-ledger.ts` (table `approval_asks`), written by `kit/approval-record-hook.ts`. | The same. | The same, plus the exact-approval columns (`kit/approval-execution.ts`). | Yes. The table has no column for the door or the card address, and it lists approvals only, not questions. |
+| Approval records | `kit/approval-ledger.ts` (table `approval_asks`), written by `kit/approval-record-hook.ts`. | The same. | The same, plus the exact-approval columns (`kit/approval-execution.ts`). | Yes. The table has no column for the door a card was posted on or for the card address (its `answered_via` column says only how a card was answered), and it lists approvals only, not questions. |
 
 Four facts about the framework shape the decision:
 
@@ -51,8 +53,8 @@ Four facts about the framework shape the decision:
 - eve's documentation gives no such policy for a **question** (see also vercel/eve#6283).
 - eve treats an answer to a request that is already settled as a new message, and starts a turn
   for it. This happens in one door-neutral place, `deliver()` in `harness/hitl/delivery.js`
-  (`convertStaleResponsesToUserMessage`). The Lares patch already changes that file once, so that
-  typed text never answers an approval.
+  (`convertStaleResponsesToUserMessage`), as read on `rc.9`. It was not re-read on `rc.10`. The
+  Lares patch already changes that file once, so that typed text never answers an approval.
 - eve ships a bridge, `eve/channels/chat-sdk`, that turns any Chat SDK adapter into a door. The
   bridge takes the state store it is given and passes the tapper's identity on
   (`resolveInputAuth`).
@@ -115,8 +117,13 @@ Four facts about the framework shape the decision:
   room or a spending limit. A door passes the kit's sentence on; it never writes one.
 - The card record: every read and every write.
 - The rule about the reply to an answered request.
-- The claim flow and the allow-list check (`packages/agent-kit/src/door-authority.ts`,
-  `door-channels.ts`), which the kit already holds.
+- The claim flow (`packages/agent-kit/src/door-authority.ts`, `door-channels.ts`), which the kit
+  already holds.
+- The allow-list check. The kit does not hold it today: `allowedPrincipalIds` and
+  `isAllowedPrincipalId` are written once in each role's `lib/principals.ts`. The two copies run
+  the same code but cover different channels (the chief-of-staff copy knows Slack, Telegram and
+  web chat; the creative copy knows Slack and web chat only). The check moves into the kit,
+  once, and a door calls it.
 
 ## What stays per door
 
@@ -166,8 +173,9 @@ Slack (`services/chief-of-staff` and `services/creative`):
   question and changes.
 - `lib/slack-approval-card.ts`, twice: becomes one file in the kit.
 - `answerFailure` and the spending-cap sentence, twice: become one kit function per failure.
-- `nativeAnswerDecision` and `isOwnerPrincipal`, written in both roles: become one each, in the
-  kit. The answerer that one role keeps in process memory is kept in the card record instead.
+- `nativeAnswerDecision`, `isOwnerPrincipal` and the allow-list check (`allowedPrincipalIds`,
+  `isAllowedPrincipalId` in each role's `lib/principals.ts`), written in both roles: become one
+  each, in the kit. The answerer that one role keeps in process memory is kept in the card record instead.
 - `lib/approval-card-turns.ts` moves from the chief-of-staff role to the kit, so the creative
   role gets the rule too.
 
@@ -216,8 +224,9 @@ when the layer is built.
 6. Which Chat SDK adapters and state stores work fully self-hosted. This is checked per door,
    with a live probe, before the door is started.
 7. The four eve issues were read on eve's public tracker on 12 November 2026; all four were
-   open. #6280 describes the delivery step as of eve `rc.10`; the same function is present in
-   the pinned `rc.9`.
+   open. #6280 describes the delivery step as of eve `rc.10`. The function it names was read in
+   eve `rc.9`; it was not re-read in `rc.10`. When the framework branch is on `rc.10`, check
+   that the delivery step still looks as #6280 describes before the patch addition is written.
 
 ## Open questions
 
