@@ -820,9 +820,25 @@ store_refused() { # store_refused <database> <what was found>
   die "the agent store $1 in this snapshot cannot be restored by this release: $2. This release restores an agent store written by this release, or by the release before it (it upgrades those after restoring them). If a newer release wrote this backup, install that release or a newer one with install.sh, then restore. Otherwise restore with the release that wrote it, then update with lares update. Nothing has been changed." "$EX_REFUSED"
 }
 WORKFLOW_OLD_STORES=()
+# This release's full list of store schema steps is engine code. A checkout has it under lib/; an
+# installed server has only ops/ and sql/ of the box (ops/unpack-engine.sh), so it is read out of
+# the engine image, whose keeper checks every store against this same file. Only `cat` runs, with
+# no network and nothing mounted. A failed read leaves the copy empty, which refuses below.
+WORKFLOW_STEPS_LIB="$BOX_DIR/lib/workflow-database-privileges.ts"
+WORKFLOW_STEPS_READ=0
+read_workflow_steps_list() {
+  [ "$WORKFLOW_STEPS_READ" = 0 ] || return 0
+  WORKFLOW_STEPS_READ=1
+  [ "$ENGINE_MODE" = image ] || return 0
+  WORKFLOW_STEPS_LIB="$SCRATCH/.workflow-database-privileges.ts"
+  docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --entrypoint cat "$ENGINE_IMAGE" /app/services/box/lib/workflow-database-privileges.ts \
+    </dev/null > "$WORKFLOW_STEPS_LIB" 2>/dev/null || : > "$WORKFLOW_STEPS_LIB"
+}
 for db in "${DUMPS[@]}"; do
   # Other lares_ names are refused later, as before, by the same rules restore_database keeps.
   [[ "$db" =~ ^lares_[a-f0-9]{32}$ ]] || continue
+  read_workflow_steps_list
   layout_toc="$SCRATCH/.workflow-layout-$db.toc"; layout_data="$SCRATCH/.workflow-layout-$db.data"
   db_run pg_restore -l < "$DUMP_DIR/$db.dump" > "$layout_toc" 2>/dev/null \
     || store_refused "$db" "its contents could not be read out of the backup file"
@@ -830,7 +846,7 @@ for db in "${DUMPS[@]}"; do
     < "$DUMP_DIR/$db.dump" > "$layout_data" 2>/dev/null \
     || store_refused "$db" "its record of schema steps could not be read out of the backup file"
   layout_code=0
-  layout=$(python3 "$HERE/workflow-backup-layout.py" "$BOX_DIR/lib/workflow-database-privileges.ts" "$HERE/workflow-store-migrate.mjs" \
+  layout=$(python3 "$HERE/workflow-backup-layout.py" "$WORKFLOW_STEPS_LIB" "$HERE/workflow-store-migrate.mjs" \
     "$layout_toc" "$layout_data" 2> "$SCRATCH/.workflow-layout.err") || layout_code=$?
   [ "$layout_code" -ne 1 ] || die "this release's own list of agent store schema steps could not be read ($(workflow_reason_from "$SCRATCH/.workflow-layout.err")). Nothing has been changed." "$EX_REFUSED"
   [ "$layout_code" -eq 0 ] || store_refused "$db" "$(workflow_reason_from "$SCRATCH/.workflow-layout.err")"

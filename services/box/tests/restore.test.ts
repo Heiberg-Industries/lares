@@ -115,17 +115,18 @@ exec "$real_python" - "$@" <&3
   chmodSync(executable, 0o755);
 }
 
-function run(args: string[], opts: { env?: Record<string, string>; input?: string } = {}) {
+function run(args: string[], opts: { env?: Record<string, string>; input?: string; script?: string } = {}) {
   const mode = (rel: string) => {
     try { return (lstatSync(join(prefix, rel)).mode & 0o777).toString(8); }
     catch { return "0"; }
   };
-  const r = spawnSync("/bin/bash", [SCRIPT, "--prefix", prefix, ...args], {
+  const r = spawnSync("/bin/bash", [opts.script ?? SCRIPT, "--prefix", prefix, ...args], {
     encoding: "utf8",
     timeout: 20_000,
     input: opts.input ?? "",
     env: {
       PATH: binDir, STUB_LOG: log, HOME: dir, ARCHIVE_ROOT: archive, LEDGER_FILE: ledgerFile, NIGHTLY_SNAPSHOTS,
+      ENGINE_STEPS_LIST: join(BOX, "lib", "workflow-database-privileges.ts"),
       RESTORE_DB_STATE_FILE: restoreDbState,
       WORKFLOW_DATA_FILE: workflowData, WORKFLOW_TOC_FILE: workflowToc, WORKFLOW_STORE_DIR: workflowStoreDir,
       RESTORE_DB_QUERY_COUNT_FILE: restoreDbQueryCount,
@@ -399,6 +400,11 @@ fi
 # The keeper's own freeze; a stopped keeper (FREEZE_LIVE_FAIL) sends restore to the host fallback.
 case "$*" in *"exec -T lares-keeper"*"budget-financial.ts freeze"*) [ -z "\${FREEZE_LIVE_FAIL:-}" ] || exit 1; exit 0 ;; esac
 # The agent-store step (engine-run.sh, workflow_store_step): a role-image container fed the program.
+# The engine image's own copy of the store step list (restore reads it with cat, nothing else).
+case "$*" in *"run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint cat "*" /app/services/box/lib/workflow-database-privileges.ts")
+  [ -z "\${RESTORE_STEPS_LIST_FAIL:-}" ] || exit 1
+  cat "$ENGINE_STEPS_LIST"; exit 0 ;;
+esac
 case "$*" in *"lares.maintenance=workflow-store"*)
   cat >/dev/null; mode="\${@: -2:1}"; db="\${@: -1}"; state="$WORKFLOW_STORE_DIR/$db"
   case "$mode" in
@@ -1254,6 +1260,48 @@ it('reports prepared restored data as recovery-required without keeper or runtim
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
   const result=run(base());expect(result.code).toBe(0);expect(result.all).toContain('Financial recovery is required');expect(result.all).toContain('the keeper starts with spending closed');
   expect(result.all).not.toContain('Sign in to the console');expect(result.all).not.toContain('Apply each agent');expect(result.all).not.toContain('keeper started');expect(result.all).toContain('Keep agents stopped');
+});
+
+describe("restore.sh from the files an installed server has", () => {
+  // The tree ops/unpack-engine.sh writes on a server: the box's ops/ and sql/, no lib/, no bin/.
+  const ENGINE = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+  // Each case unpacks the engine files and runs one whole restore: 60 s, as on a busy machine.
+  let shipped: string;
+  beforeEach(() => {
+    rmSync(join(binDir, "pnpm"));
+    const out = join(dir, "unpacked");
+    const unpacked = spawnSync("bash", [join(BOX, "ops", "unpack-engine.sh"), "proof", ENGINE], {
+      encoding: "utf8", env: { PATH: process.env.PATH ?? "", APP_ROOT: join(BOX, "..", ".."), OUT_ROOT: out },
+    });
+    if (unpacked.status !== 0) throw new Error(`unpack-engine.sh failed: ${unpacked.stderr}`);
+    shipped = join(out, "proof", "services", "box", "ops", "restore.sh");
+    expect(existsSync(join(out, "proof", "services", "box", "lib"))).toBe(false);
+  }, 60_000);
+  const catLine = `docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint cat ${ENGINE} /app/services/box/lib/workflow-database-privileges.ts`;
+
+  it("reads the store step list out of the engine image and restores a store from this release", () => {
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE }, script: shipped });
+    expect(r.code, r.all).toBe(0);
+    expect(logLines().filter((line) => line === catLine)).toHaveLength(1);
+    expect(r.all).not.toContain("own list of agent store schema steps could not be read");
+  }, 60_000);
+
+  it("reads an older store as older from there too, and upgrades it", () => {
+    workflowLayout(WORKFLOW_SCHEMA_STEPS_BEFORE);
+    write("opt/lares/current/release.json", JSON.stringify({ images: { creative: `registry.example/lares-creative@sha256:${"c".repeat(64)}` } }));
+    write("etc/lares/secrets/workflow-provisioner-password", "not-a-real-provisioner-password\n", 0o600);
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE }, script: shipped });
+    expect(r.code, r.all).toBe(0);
+    expect(r.all).toContain(`restore: upgrading the agent store ${workflowDatabase}.`);
+  }, 60_000);
+
+  it("refuses, changing nothing, when the engine image cannot give the list", () => {
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_STEPS_LIST_FAIL: "1" }, script: shipped });
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toContain("this release's own list of agent store schema steps could not be read");
+    expect(r.all).toContain("Nothing has been changed.");
+    expect(changes()).toEqual([]);
+  }, 60_000);
 });
 
 describe("restore.sh: a backup from an older release", () => {
