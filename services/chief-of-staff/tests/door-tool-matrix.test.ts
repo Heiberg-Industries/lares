@@ -149,7 +149,7 @@ vi.mock("../lib/conversation-continuity.js", async (original) => ({
 import { defaultTelegramAuth } from "eve/channels/telegram";
 import { setBoardDeps } from "@lares/agent-kit/board-approval";
 import { CONSOLE_AUTHORITY_REFUSED } from "@lares/agent-kit/console-turn-authority";
-import { sharedRoomHiddenTool } from "@lares/agent-kit/private-console-surface";
+import { SHARED_ROOM_REFUSED, sharedRoomHiddenTool } from "@lares/agent-kit/private-console-surface";
 import { parseDefinition } from "@lares/agent-kit/definition";
 import { interceptSlackClaim, interceptTelegramClaim } from "@lares/agent-kit/door-channels";
 
@@ -164,7 +164,7 @@ import salesOutreachSkill from "../agent/skills/sales-outreach.js";
 import signalsSkill from "../agent/skills/signals.js";
 import { CATALOGUE } from "../catalogue/index.js";
 import { runDynamic, type MemoStore } from "../../../packages/agent-kit/tests/helpers/eve-dynamic.js";
-import { approverFrom, assertApprover, humanTurnRefusal } from "../lib/approvals.js";
+import { approverFrom, assertApprover, catalogueApprovalResponse, humanTurnRefusal } from "../lib/approvals.js";
 import { calendarApprovalAdapter } from "../lib/calendar-approval.js";
 import { tracksApprovalAdapter } from "../lib/tracks-approval.js";
 import { vaultNoteApprovalAdapter } from "../lib/vault-note-write.js";
@@ -241,7 +241,7 @@ const TABLE: readonly Row[] = [
   ["remind_cancel",                       C,       C,       C,       H,       H],
   ["obligation_dismiss",                  R,       R,       R,       H,       H],
   // People and the CRM
-  ["person_lookup",                       R,       R,       R,       H,       H],
+  ["person_lookup",                       R,       H,       R,       H,       H],
   ["identity_my_addresses",               R,       R,       R,       H,       H],
   ["twenty_lookup",                       R,       R,       R,       H,       H],
   ["twenty_get_person",                   R,       R,       R,       H,       H],
@@ -334,6 +334,7 @@ const SHARED_ROOM_HIDDEN: readonly string[] = [
   "calendar_list_events", "calendar_list_calendars", "calendar_free_busy", "calendar_conflicts",
   "calendar_create_event", "calendar_update_event", "calendar_delete_event",
   "agent-kit__vault_search", "agent-kit__vault_backlinks", "agent-kit__vault_write", "read_url",
+  "person_lookup",
 ];
 
 // ─── The doors, and the fake messages that knock on them ──────────────────────────────────────
@@ -591,7 +592,9 @@ describe("what each door shows and allows", () => {
 
     it(`${title}: a tool it does not see is refused by the door's own rule, whatever the tool would have asked`, async () => {
       const { reasons } = await observe(key);
-      for (const row of TABLE) if (row[column(key)] === H) expect(reasons[row[0]], row[0]).toBe(CONSOLE_AUTHORITY_REFUSED);
+      // A shared room says why in words for the room; every other door keeps the console's wording.
+      const rule = key === "slackRoom" ? SHARED_ROOM_REFUSED : CONSOLE_AUTHORITY_REFUSED;
+      for (const row of TABLE) if (row[column(key)] === H) expect(reasons[row[0]], row[0]).toBe(rule);
     });
 
     for (const [label, tool] of REPRESENTATIVE) {
@@ -749,7 +752,7 @@ describe("Found: what the table records today, and what should hold instead", ()
     const direct = await observe("slackDm");
     expect(direct.shown).toEqual(expect.arrayContaining([...SHARED_ROOM_HIDDEN]));
     expect(room.shown).toEqual(direct.shown.filter((tool) => !SHARED_ROOM_HIDDEN.includes(tool)));
-    for (const tool of SHARED_ROOM_HIDDEN) expect(room.reasons[tool], tool).toBe(CONSOLE_AUTHORITY_REFUSED);
+    for (const tool of SHARED_ROOM_HIDDEN) expect(room.reasons[tool], tool).toBe(SHARED_ROOM_REFUSED);
     const others = (calls: Record<string, Call>) => Object.fromEntries(Object.entries(calls).filter(([tool]) => !SHARED_ROOM_HIDDEN.includes(tool)));
     expect(others(room.calls)).toEqual(others(direct.calls));
   });
@@ -783,9 +786,45 @@ describe("Found: what the table records today, and what should hold instead", ()
 
     it("a call of a hidden tool after the answer is refused by the door's own rule", async () => {
       for (const tool of ["gmail_read", "calendar_list_events", "agent-kit__vault_search"]) {
-        expect((await attempt(after("matrix-room-card"), tool, undefined)).reason, tool).toBe(CONSOLE_AUTHORITY_REFUSED);
+        expect((await attempt(after("matrix-room-card"), tool, undefined)).reason, tool).toBe(SHARED_ROOM_REFUSED);
       }
     });
+
+    // A card for a hidden tool (raised before the room lost it, or replayed): the owner's Approve is
+    // refused, and the tool, called with a handle from a direct message's list, never runs its body.
+    it("answering a card for a hidden tool does not run the tool", async () => {
+      const tool = "calendar_create_event";
+      const answer = { session: { id: "matrix-room-card", initiator: roomOwner },
+        response: { decision: "approve", principal: roomOwner }, request: { interactionId: "interaction-1", toolInput: {} } };
+      await expect(catalogueApprovalResponse(tool, answer)).rejects.toThrow(SHARED_ROOM_REFUSED);
+
+      const body = vi.spyOn(CATALOGUE[tool]!.tool as unknown as { execute: (...args: unknown[]) => unknown }, "execute");
+      const handle = (await resolveCatalogue(sessionWith("matrix-dm-handle", answeredFromDm)))[tool] as unknown as
+        { execute(input: unknown, ctx: unknown): Promise<unknown> };
+      expect(handle).toBeDefined();
+      const approved = { ...after("matrix-room-card"), toolName: tool, toolInput: {}, callId: "call-room-card",
+        approval: { responder: roomOwner } };
+      await expect(handle.execute({}, approved)).rejects.toThrow(SHARED_ROOM_REFUSED);
+      expect(body).not.toHaveBeenCalled();
+      body.mockRestore();
+    });
+  });
+
+  // The people lookup reads, in one call, the mail with a person, the meetings with them and note excerpts.
+  it("people lookup: hidden and refused in a shared room; unchanged in a direct message, Telegram and web chat", async () => {
+    const room = await observe("slackRoom");
+    expect(room.shown).not.toContain("person_lookup");
+    expect(room.reasons["person_lookup"]).toBe(SHARED_ROOM_REFUSED);
+    for (const key of ["slackDm", "telegram"] as const) {
+      const { shown, calls } = await observe(key);
+      expect(shown, key).toContain("person_lookup");
+      expect(calls["person_lookup"], key).toBe(R);
+    }
+    for (const key of ["webOwner", "webMember"] as const) {
+      const { shown, reasons } = await observe(key);
+      expect(shown, key).not.toContain("person_lookup");
+      expect(reasons["person_lookup"], key).toBe(CONSOLE_AUTHORITY_REFUSED);
+    }
   });
 
   // Fails closed: a Slack conversation the code cannot place in a direct message is treated as a room.
@@ -797,14 +836,14 @@ describe("Found: what the table records today, and what should hold instead", ()
     it(`Slack · owner · ${label}: treated as a shared room`, async () => {
       const session = sessionWith(`matrix-unplaced-${label.length}`, auth);
       expect(Object.keys(await resolveCatalogue(session)).sort()).toEqual((await observe("slackRoom")).shown);
-      expect((await attempt(session, "gmail_read", undefined)).reason).toBe(CONSOLE_AUTHORITY_REFUSED);
+      expect((await attempt(session, "gmail_read", undefined)).reason).toBe(SHARED_ROOM_REFUSED);
     });
   }
   it("Slack · owner · no initiator on the session: treated as a shared room", async () => {
     const dm = { authenticator: "slack-webhook", attributes: { user_id: SLACK_OWNER, channel_id: "D0DIRECT" } };
     const session: Session = { session: { id: "matrix-no-initiator", turn: { id: "turn-1", sequence: 0 }, auth: { current: dm, initiator: null } } };
     expect(Object.keys(await resolveCatalogue(session)).sort()).toEqual((await observe("slackRoom")).shown);
-    expect((await attempt(session, "gmail_read", undefined)).reason).toBe(CONSOLE_AUTHORITY_REFUSED);
+    expect((await attempt(session, "gmail_read", undefined)).reason).toBe(SHARED_ROOM_REFUSED);
   });
 
   // Unchanged: a direct message, Telegram and the web chat keep the private tools their columns name.

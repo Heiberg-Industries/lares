@@ -7,7 +7,7 @@ vi.mock('@lares/agent-kit/public-docs-runtime',()=>({publicDocsIndex:()=>'- inst
 vi.mock('../src/console-turn-authority.js',async original=>({...await original<typeof import('../src/console-turn-authority.js')>(),requireConsoleSessionBinding:fake.binding,guardConsoleToolContext:fake.turn}));
 const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
 import {definitionModelResolver} from '../src/definition-model.js';
-import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateOwnerTool,privateRoleInstructions,privateConsoleTracePolicy,sharedRoomHiddenTool,startedInSharedSlackRoom} from '../src/private-console-surface.js';
+import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateOwnerTool,privateRoleInstructions,privateConsoleTracePolicy,sharedRoomHiddenTool,startedInSharedSlackRoom,SHARED_ROOM_REFUSED} from '../src/private-console-surface.js';
 const inc='11111111-1111-4111-8111-111111111111';
 const auth=(member='member-a')=>({authenticator:'lares-console',principalType:'user',principalId:member,attributes:{lares_member_id:member,lares_admission_nonce:'a'.repeat(43),lares_purpose:'human'}});
 const ctx=()=>({session:{id:'private-test',auth:{current:auth(),initiator:auth()}}});
@@ -71,12 +71,15 @@ it('a chief of staff may propose a new private note in a private conversation; n
 describe('a conversation started in a shared Slack room',()=>{
  const slack=(channel_id?:string)=>({authenticator:'slack-webhook',attributes:{user_id:'U0OWNER',...(channel_id?{channel_id}:{})}});
  const started=(initiator:unknown,current:unknown=initiator)=>({session:{auth:{initiator,current}}});
- it('hides the private console lists plus note search and backlinks, and nothing that is not one person\'s own',()=>{
-  for(const n of ['gmail_accounts','gmail_read','gmail_search','agent-kit__vault_read','agent-kit__vault_list','agent-kit__vault_write','tracks_list','personal_mailbox_read','gmail_draft','read_url','calendar_list_events','calendar_create_event','agent-kit__vault_search','agent-kit__vault_backlinks'])expect(sharedRoomHiddenTool(n),n).toBe(true);
+ it('hides the private console lists plus note search, backlinks and people lookup, and nothing that is not one person\'s own',()=>{
+  for(const n of ['gmail_accounts','gmail_read','gmail_search','agent-kit__vault_read','agent-kit__vault_list','agent-kit__vault_write','tracks_list','personal_mailbox_read','gmail_draft','read_url','calendar_list_events','calendar_create_event','agent-kit__vault_search','agent-kit__vault_backlinks','person_lookup'])expect(sharedRoomHiddenTool(n),n).toBe(true);
   for(const n of ['gmail_send','gmail_signature','remember','set_language','lares_read_public_doc','agent-kit__vault_file','save_note'])expect(sharedRoomHiddenTool(n),n).toBe(false);
   // Not a second definition: every console-private tool is hidden, and the console's own lists are unchanged.
   expect(privateToolAllowed('chief-of-staff','agent-kit__vault_search',{callerIsOwner:true})).toBe(false);
   expect(privateOnlyTool('agent-kit__vault_search')).toBe(false);
+  expect(privateToolAllowed('chief-of-staff','person_lookup',{callerIsOwner:true})).toBe(false);
+  expect(privateOnlyTool('person_lookup')).toBe(false);
+  expect(SHARED_ROOM_REFUSED).toBe('That is not available in a shared room. Ask me in a direct message.');
  });
  it('is read from the initiator, which an answered card does not change; a direct message is a D channel',()=>{
   expect(startedInSharedSlackRoom(started(slack('C0ROOM')))).toBe(true);

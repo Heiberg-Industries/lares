@@ -34,14 +34,19 @@ const PRIVATE_READS = new Set(['gmail_accounts', 'gmail_read', 'gmail_search', .
 const PRIVATE_OWNER_TOOLS = new Set(['gmail_draft','gmail_draft_recipients','read_url','calendar_list_events','calendar_list_calendars','calendar_free_busy','calendar_conflicts','calendar_create_event','calendar_update_event','calendar_delete_event']);
 export function privateOwnerTool(name: string): boolean { return PRIVATE_OWNER_TOOLS.has(name); }
 // A Slack room reads along with every answer, so a conversation STARTED there is not offered what
-// the private console treats as one person's own (the three sets above). Note search and backlinks
-// are added here because they read one person's notes too; they are not in the console's lists
-// only because the console offers no note search at all (see `privateRoleInstructions`).
-const SHARED_ROOM_NOTE_SEARCH_TOOLS = new Set(['agent-kit__vault_search','agent-kit__vault_backlinks']);
+// the private console treats as one person's own (the three sets above). The tools below are added
+// because they read one person's private material too; they are not in the console's lists only
+// because the console offers none of them at all (see `privateRoleInstructions`):
+//   - note search and backlinks read one person's notes;
+//   - `person_lookup` reads, in one call, the mail with a person, the meetings with them and
+//     excerpts of private notes.
+const SHARED_ROOM_EXTRA_TOOLS = new Set(['agent-kit__vault_search','agent-kit__vault_backlinks','person_lookup']);
 /** Not offered, and refused, in a conversation started in a shared Slack room. */
 export function sharedRoomHiddenTool(name: string): boolean {
-  return privateOnlyTool(name) || PRIVATE_READS.has(name) || PRIVATE_OWNER_TOOLS.has(name) || SHARED_ROOM_NOTE_SEARCH_TOOLS.has(name);
+  return privateOnlyTool(name) || PRIVATE_READS.has(name) || PRIVATE_OWNER_TOOLS.has(name) || SHARED_ROOM_EXTRA_TOOLS.has(name);
 }
+/** Why a tool is refused in a conversation started in a shared Slack room, in words for the room. */
+export const SHARED_ROOM_REFUSED = 'That is not available in a shared room. Ask me in a direct message.';
 type DoorAuth = { authenticator?: unknown; attributes?: Record<string, unknown> } | null | undefined;
 const isSlackAuth = (auth: DoorAuth): boolean => auth?.authenticator === 'slack-webhook';
 /**
