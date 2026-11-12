@@ -35,9 +35,11 @@ vi.mock('../agent/lib/model-purpose.js', () => ({
   prepareModelPurposeInvocation: () => undefined,
 }));
 // The door authority's route is real; its Keeper exchange is not part of this file's question.
+// The stand-in records its calls, so the wiring itself is asserted below.
+const doorAuthority = vi.hoisted(() => ({ prepare: vi.fn(() => undefined), claim: vi.fn(async () => 'none') }));
 vi.mock('@lares/agent-kit/door-model-authority', async (actual) => ({
   ...(await actual<typeof import('@lares/agent-kit/door-model-authority')>()),
-  doorModelAuthority: { prepare: () => undefined, claim: async () => 'none' },
+  doorModelAuthority: doorAuthority,
 }));
 
 type Selection = { model: { modelId?: string }; modelContextWindowTokens: number };
@@ -133,6 +135,17 @@ describe("chief-of-staff agent config", () => {
     expect(configuredHuman.model.modelId).toBe(declaration.model);
     const configuredResume = await selectFor("custody-resume", { lares_resolver_member_id: "member-1", lares_model_pending_receipt: "p".repeat(43) });
     expect(configuredResume.model.modelId).toBe(declaration.model);
+  });
+
+  it("hands the kit's door authority to the model resolver: every selection reserves and claims through it", async () => {
+    sessionState.clear();
+    doorAuthority.prepare.mockClear();
+    doorAuthority.claim.mockClear();
+    const select = selectorOf((await freshAgentConfig()).model);
+    await select(modelContext("agent-wiring", 4, null, "turn_2"));
+    expect(doorAuthority.prepare).toHaveBeenCalledExactlyOnceWith(
+      { type: "step.started", data: { turnId: "turn_2", sequence: 2, stepIndex: 4 } }, { id: "agent-wiring", auth: { current: null, initiator: null } });
+    expect(doorAuthority.claim).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ session: expect.objectContaining({ id: "agent-wiring" }) }));
   });
 
   it("pins a door or schedule conversation to the validated definition on a managed runtime, never to AGENT_MODEL", async () => {

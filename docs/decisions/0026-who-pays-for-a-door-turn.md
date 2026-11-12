@@ -36,9 +36,16 @@ eve has no notion of who pays (read in eve `1.0.0-rc.10`).
 
 1. **The agent vouches for the platform event; Keeper vouches for the person and the money.** The
    kit reads eve's verified identity and checks that the person speaking is the claimed person
-   on that door, in a private chat, not a bot, and that the conversation was started by that same
-   person or by a schedule. Anything that looks like a door turn but fails a check is refused,
-   never passed on.
+   on that door, not a bot, and that the conversation was started by that same person or by a
+   schedule. Per door:
+   - **Telegram:** only a private chat with the agent. A group chat is refused, even for the
+     claimed person.
+   - **Slack:** any conversation the claimed person starts with the agent: a direct message, or a
+     mention of the agent in a room. That person pays. Another person writing in the same room or
+     thread is refused, so nobody else can cause spending. (eve's Slack identity carries no
+     verified "kind of chat", so limiting Slack to direct messages would be a separate decision.)
+
+   Anything that looks like a door turn but fails a check is refused, never passed on.
 2. **The agent asks Keeper `door.open` once per turn**, naming only the door, the claimed user id,
    the claim's revision and the turn's place (session, turn, position). It sends no member id, no
    email, no model and no copy of eve's identity. Keeper checks the claim and the door, finds the

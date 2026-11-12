@@ -133,6 +133,11 @@ const slack = (user: unknown = 'U0EXAMPLE', over: { principalType?: string; auth
   principalType: over.principalType ?? 'user',
   attributes: { author_type: over.author_type ?? 'user', channel_id: 'D0EXAMPLE', user_id: user },
 });
+/** A mention of the agent in a Slack room: eve's identity has a room channel id and no verified
+ * kind of chat, so the claimed person is a door turn there too. */
+const slackRoom = (user = 'U0EXAMPLE') => ({
+  ...slack(user), attributes: { author_type: 'user', channel_id: 'C0EXAMPLE', thread_ts: '1700000000.000100', user_id: user },
+});
 const telegram = (user: unknown = '700000001', chatType = 'private') => ({
   authenticator: 'telegram-webhook', issuer: 'telegram', principalId: `telegram:${String(user)}`, principalType: 'user',
   attributes: { chat_id: String(user), chat_type: chatType, message_id: '1', user_id: user },
@@ -189,6 +194,27 @@ describe('which authority a model call needs', () => {
 
   it('a schedule-started call is an owner job and asks nothing here', async () => {
     await expect(selectModel(session(schedule(), schedule()))).resolves.toBe('owner-job');
+    expect(frames).toEqual([]);
+  });
+});
+
+describe('per door: Telegram only in a private chat, Slack wherever the claimed person speaks', () => {
+  it('the claimed person mentioning the agent in a Slack room is a door turn, and pays', async () => {
+    const s = session(slackRoom(), slackRoom());
+    expect(modelAuthorityRoute(s)).toBe('door');
+    await expect(selectModel(s)).resolves.toBe('door');
+    expect(ops('door.open')[0]!.input).toMatchObject({ door: 'slack', principal: 'U0EXAMPLE' });
+  });
+
+  it('another person writing in that Slack room thread is refused and causes no spending', async () => {
+    const s = session(slackRoom('U0OTHER'), slackRoom());
+    expect(() => modelAuthorityRoute(s)).toThrow(new Error(DOOR_MODEL_REFUSED));
+    await expect(selectModel(s)).rejects.toThrow(new Error(DOOR_MODEL_REFUSED));
+    expect(frames).toEqual([]);
+  });
+
+  it('the claimed person in a Telegram group chat is refused', () => {
+    expect(() => modelAuthorityRoute(session(telegram('700000001', 'group'), telegram('700000001', 'group')))).toThrow(new Error(DOOR_MODEL_REFUSED));
     expect(frames).toEqual([]);
   });
 });
