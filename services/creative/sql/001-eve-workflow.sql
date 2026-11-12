@@ -56,7 +56,7 @@
 -- First extracted 2026-08-11, regenerated 2026-11-12 for 5.2.0, by running the package's own `setupDatabase()` (from
 -- `@workflow/world-postgres/cli`) against a disposable local Postgres, then
 -- `pg_dump --schema-only --schema=workflow --schema=workflow_drizzle` on the result — this is
--- the real, final schema across all 30 of the package's internal migrations (0000-0029)
+-- the real, final schema across all 31 of the package's internal migrations (0000-0030)
 -- (services/chief-of-staff/node_modules/eve → .pnpm/@workflow+world-postgres@.../src/drizzle/migrations),
 -- not a hand-transcription of each incremental migration file. Every statement below is
 -- rewritten to be safe to re-run (IF NOT EXISTS, or a DO block catching duplicate_object for

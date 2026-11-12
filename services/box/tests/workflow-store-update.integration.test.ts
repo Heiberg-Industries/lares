@@ -606,7 +606,7 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
     expect(await upgradeStores()).toEqual(ALL);
     // The killed attempt used up record ids without leaving a row: ids are not what is pinned.
     expect(await stepsOf(STORE_A)).toEqual(pinned(31));
-    expect((await recorded(STORE_A)).map((row) => row.id)).not.toEqual(Array.from({ length: 30 }, (_, at) => at + 1));
+    expect((await recorded(STORE_A)).map((row) => row.id)).not.toEqual(Array.from({ length: WORKFLOW_SCHEMA_STEPS.length }, (_, at) => at + 1));
     expect((await conversations(STORE_A, before.columns)).rows).toEqual(before.rows);
   }, 600_000);
 
