@@ -605,8 +605,20 @@ fi
 # before /srv/lares exists, so its folder also marks a first install that stopped partway. A
 # re-run then validates that custody and carries on; it cannot be prepared fresh a second time.
 REPAIR_MODE=0
+RESTORED_SETTINGS=0
 if [ -d "$PREFIX/srv/lares" ] || [ -d "$PREFIX/var/lib/lares-maintenance" ]; then
   REPAIR_MODE=1
+  # One exception. Copying a backup's settings and secrets onto a new machine, as docs/install.md
+  # ("Restoring onto a new server") says, makes /srv/lares, but it is not an installation. Exactly
+  # those copied files and nothing else of an installation (maintenance-custody.py decides, and
+  # decides again when it prepares custody), and no container of one: then this is a first install
+  # that uses them. Anything else, or anything that cannot be read, stays an existing installation.
+  if python3 "$HERE/maintenance-custody.py" holds-only-restored-settings "${PREFIX:-/}" 2>/dev/null \
+      && containers=$(docker ps --all --quiet --filter label=com.docker.compose.project=lares 2>/dev/null) \
+      && [ -z "$containers" ]; then
+    REPAIR_MODE=0
+    RESTORED_SETTINGS=1
+  fi
 fi
 
 # Screen one only makes sense on a genuinely fresh box: an existing installation is repaired,
@@ -692,6 +704,8 @@ fi
 
 if [ "$REPAIR_MODE" -eq 1 ]; then
   say "found an existing or unfinished installation under ${PREFIX:-/} — this would update it in place, not start over."
+elif [ "$RESTORED_SETTINGS" -eq 1 ]; then
+  say "found settings copied from a backup on an otherwise empty machine — this would install fresh, using them."
 else
   say "found no existing installation under $PREFIX/srv/lares — this would start a fresh install."
 fi
@@ -741,7 +755,10 @@ LARES_SUBNET="${LARES_SUBNET:-172.30.0.0/24}"
 # created after screen one accepted a new installation; existing state is never repaired here.
 if [ "$DRY_RUN" -eq 0 ]; then
   if [ "$REPAIR_MODE" -eq 0 ]; then
-    python3 "$HERE/maintenance-custody.py" prepare-fresh "${PREFIX:-/}" "$LARES_SUBNET" --confirm-fresh || die "fresh database authentication custody could not be prepared; any partial evidence was retained." "$EX_REFUSED"
+    # Custody checks the copied settings again itself; the flag only lets it accept exactly them.
+    restored_flag=()
+    [ "$RESTORED_SETTINGS" -eq 0 ] || restored_flag=(--restored-settings)
+    python3 "$HERE/maintenance-custody.py" prepare-fresh "${PREFIX:-/}" "$LARES_SUBNET" --confirm-fresh ${restored_flag[@]+"${restored_flag[@]}"} || die "fresh database authentication custody could not be prepared; any partial evidence was retained." "$EX_REFUSED"
   else
     python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "this installation has missing or invalid database authentication custody; no repair was attempted." "$EX_REFUSED"
   fi

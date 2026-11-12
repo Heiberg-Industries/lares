@@ -1431,7 +1431,8 @@ describe("restore.sh: a backup from an older release", () => {
     rmSync(join(workflowStoreDir, workflowDatabase), { force: true });
     const again = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
     expect(again.code, again.all).toBe(0);
-  });
+    // Three whole restore runs, one with a Vault: past 15 s on a busy machine.
+  }, 60_000);
 
   it("says nothing about a refused next run when cleanup is uncertain but no message advised one", () => {
     const ENGINE = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
