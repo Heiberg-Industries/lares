@@ -5,21 +5,23 @@ Earlier proofs seed the database and start pieces by hand, so bugs on the real i
 reached them. This one runs get-lares.sh and install.sh from an ordinary folder, then signs in,
 runs `lares owner-bootstrap`, `lares budget setup`, creates and adopts an agent on the console's
 real pages, sets the member limit there, runs `lares agent start`, holds a chat where a tool runs,
-an approval card is answered and the conversation carries on, sets up `lares backups`, then runs a
+an approval card is answered and the conversation carries on, connects a Slack and a Telegram door on
+the agent's page and sends one message through each, sets up `lares backups`, then runs a
 real `lares update` to a second build, runs `lares doctor`, simulates a reboot and waits for the agent to come back by itself. Up to there nothing writes to the
 database or edits an installation file the installer owns. It finishes by restoring a backup whose agent store the release before this
 one left onto this machine wiped and installed again (the last stage, further down, says what it changes and why).
 
 WHAT IS NOT REAL, AND WHY. A CI server has no public address and cannot sign in to Google or spend
 on a model. So, outside the installation:
-  - the model provider and the sign-in provider are stand-ins (real-install/fake-internet.mjs) at
-    their real names, over TLS from a throwaway test authority;
+  - the model provider, the sign-in provider and Slack's and Telegram's APIs are stand-ins
+    (real-install/fake-internet.mjs) at their real names, over TLS from a throwaway test authority;
   - images come from a throwaway registry reached as ghcr.io, because the installer accepts only
     registry names without a port; nothing is published;
   - the domain ends in .internal, so Caddy issues its certificate from that authority (seeded into
     Caddy's data folder before the install) instead of from a public one;
-  - the console and gateway images are the built or pinned ones plus that one authority, so they
-    trust it. The compose files, settings and engine code are exactly what an owner gets.
+  - the console, gateway, keeper and chief-of-staff images are the built or pinned ones plus that
+    one authority, so they trust it. The compose files, settings and engine code are exactly what an
+    owner gets.
 Limits are also recorded in the proof file, so a green run cannot be read as more than it is.
 
 This changes the machine it runs on (hosts file, firewall redirect, trust store), so it refuses to
@@ -29,6 +31,8 @@ run anywhere but a GitHub-hosted runner.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import pathlib
@@ -53,7 +57,8 @@ NETWORK = "lares-network"
 REGISTRY_ADDRESS = "10.99.0.2"
 FAKE_ADDRESS = "172.30.0.240"
 ROUTE_ADDRESS = "172.30.0.241"
-FAKE_HOSTS = ("api.anthropic.com", "accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com", f"uptime.{DOMAIN}")
+FAKE_HOSTS = ("api.anthropic.com", "accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com", f"uptime.{DOMAIN}",
+              "slack.com", "api.telegram.org")
 TOOL_PROMPT = "PROOF_USE_A_TOOL please look at the tracks."
 FOLLOW_UP_PROMPT = "PROOF_CARRY_ON and what did you find?"
 APPROVAL_PROMPT = "PROOF_ASK_APPROVAL please make the track."
@@ -68,23 +73,34 @@ NOTE_INPUT = {"area": "private", "title": "Proof note", "body": "PROOF_NOTE_BODY
 NOTE_REPLY = "PROOF_APPROVED_NOTE_SAVED"
 TOOL_REPLY = "PROOF_TOOL_RESULT_RECEIVED"
 FOLLOW_UP_REPLY = "PROOF_CONVERSATION_KEPT"
+DOOR_PROMPT = "PROOF_DOOR_TURN"
+DOOR_REPLY = "PROOF_DOOR_REPLY"
+# Neutral ids for the person behind each door, and the private chat the door talks in.
+DOOR_PERSON = {"slack": "U0PROOFOWNER", "telegram": "700000001"}
+DOOR_CHAT = {"slack": "D0PROOF", "telegram": "700000001"}
+CLAIM_REPLY = "Connected. Once setup finishes applying"
 MEMBER_LIMIT = "15"
 INSTALL_TIMEOUT = 1500
 LIMITS = [
     "The model provider and the sign-in provider are stand-ins: a real provider's replies are copied, not called.",
     "Images come from a throwaway registry, so pulling from the real registry is not covered.",
-    "The console and gateway images carry one extra test certificate authority; a real server uses a public certificate.",
+    "The console, gateway, keeper and chief-of-staff images carry one extra test certificate authority; a real server uses a public certificate.",
     "The certificate is issued by Caddy's own authority, so getting a public certificate is not covered.",
     "The sync-jobs image is named but never started on a fresh install, so it is not built or pulled here. The Notion sync is only checked up to its gate (nothing starts without an accepted preview); reaching Notion is not covered.",
     "Backups go to the same machine, and the uptime address is a stand-in.",
     "The approval step answers two cards (a Track and a Vault note), both with Approve, as the member who started the conversation; refusing other people's answers is covered by the private chat proof, not here.",
     "Who pays is checked for one person and Approve only: how the call after a Deny is booked, and booking to a second member, are covered by the box tests, not here.",
+    "The check of who pays after an answered card reads web chat only; it does not exercise Slack or Telegram turns (the door stage checks those).",
     "The update goes to a second build of the same code (a new label, so new digests): a release that changes code or adds migrations is not covered.",
     "Saving a definition in the console after the update is not exercised; agent start and the agent's restart are.",
     "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
     "A real agent answer is not covered: the stand-in decides what the model says.",
     "A reboot is simulated by stopping Docker, deleting the keeper's folders under /run and starting Docker again; the kernel, the firewall tables and systemd units are not restarted, and the agent is only asked for its health answer.",
+    "Slack and Telegram are stand-ins at their real names: the probe signs the Slack event with the signing secret it pasted and sends the Telegram update with the secret the stand-in was given; a platform's retries, timing and payload variety are not covered.",
+    "A door's claim is applied by pressing Apply on the agent's page after the claim was sent, not by the page's own watch-and-apply.",
+    "One member connects both doors, so who pays when a second member connects a door is not covered.",
+    "A scheduled message into a chat door is not exercised.",
 ]
 
 proof: dict = {"format": 1, "status": "running", "stage": "start", "checks": {}, "limits": LIMITS, "commit": None}
@@ -321,6 +337,7 @@ def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixtur
         "toolPreference": ["tracks_list", "vault_list"],
         "approvalPrompt": "PROOF_ASK_APPROVAL", "approvalTool": APPROVAL_TOOL, "approvalInput": APPROVAL_INPUT, "approvalReply": APPROVAL_REPLY,
         "notePrompt": "PROOF_ASK_NOTE", "noteTool": NOTE_TOOL, "noteInput": NOTE_INPUT, "noteReply": NOTE_REPLY,
+        "doorPrompt": DOOR_PROMPT, "doorReply": DOOR_REPLY,
     }))
     run("docker", "run", "-d", "--name", "proof-fake", "--restart", "unless-stopped", "--user", "0:0", "--entrypoint", "node",
         "-v", f"{fixture}:/fixture", fixture_image, "/fixture/fake-internet.mjs", "serve", "/fixture")
@@ -529,6 +546,221 @@ def check_charges_after_answered_cards(release: dict, deferred: list[str]) -> No
         deferred.append("the calls of the chat were not charged as expected: " + "; ".join(faults))
     else:
         passed("the-call-after-each-answered-card-was-charged-to-the-asker-as-that-answer")
+
+
+# --- a message on a chat door -------------------------------------------------------------------
+
+def write_private(path: pathlib.Path, text: str | bytes) -> None:
+    """Readable by this root process only, from the moment it exists."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(text.encode() if isinstance(text, str) else text)
+    os.chmod(path, 0o600)
+
+
+def send_door_message(kind: str, text: str, work: pathlib.Path, fixture: pathlib.Path, door_values: dict) -> int:
+    """POSTs one message to the door's public address the way the platform does, and returns the final
+    HTTP status. Only a 404 (changes still pending) or a 502 (the agent restarting) is sent again, with
+    a fresh id and timestamp, for up to two minutes; nothing is sent again after a 2xx. Nothing about the
+    request is printed: it carries the Slack signature or the Telegram secret."""
+    url = f"https://{DOMAIN}/api/doors/{AGENT}/{kind}/events"
+    body_file, header_file = work / f"door-{kind}-body.json", work / f"door-{kind}-headers"
+    deadline = time.monotonic() + 120
+    while True:
+        if kind == "slack":
+            event = {"type": "event_callback", "team_id": "T0PROOF", "api_app_id": "A0PROOF", "event_id": f"Ev0PROOF{uuid.uuid4().hex[:12].upper()}",
+                     "event": {"type": "message", "channel": DOOR_CHAT["slack"], "channel_type": "im", "user": DOOR_PERSON["slack"], "text": text,
+                               "ts": f"{time.time():.6f}"}}
+            raw = json.dumps(event).encode()
+            stamp = str(int(time.time()))
+            signature = hmac.new(door_values["slackSigningSecret"].encode(), b"v0:" + stamp.encode() + b":" + raw, hashlib.sha256).hexdigest()
+            headers = f"content-type: application/json\nx-slack-request-timestamp: {stamp}\nx-slack-signature: v0={signature}\n"
+        else:
+            hook = json.loads((fixture / "telegram-webhook.json").read_text())
+            person = int(DOOR_PERSON["telegram"])
+            update = {"update_id": int.from_bytes(os.urandom(3), "big") + 100000,
+                      "message": {"message_id": int.from_bytes(os.urandom(2), "big") + 1, "date": int(time.time()),
+                                  "chat": {"id": person, "type": "private", "first_name": "Proof"},
+                                  "from": {"id": person, "is_bot": False, "first_name": "Proof"}, "text": text}}
+            raw = json.dumps(update).encode()
+            headers = f"content-type: application/json\nx-telegram-bot-api-secret-token: {hook['secretToken']}\n"
+        write_private(body_file, raw)
+        write_private(header_file, headers)
+        answer = run("curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "30", "-X", "POST", "-H", f"@{header_file}",
+                     "--data-binary", f"@{body_file}", url, check=False, show=False)
+        status = int(answer.stdout.strip()) if answer.stdout.strip().isdigit() else 0
+        if status in (404, 502) and time.monotonic() < deadline:
+            time.sleep(5)
+            continue
+        return status
+
+
+def agent_log_evidence() -> dict:
+    """The agent's own words about the gateway key file. The full path is matched: the doors' own
+    secret readers throw the same words with their own paths."""
+    ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    if not ids:
+        return {"gatewayKeyLines": [], "secretFileNotReadableLines": 0, "note": "the agent is not running"}
+    logs = run("docker", "logs", ids[0], check=False, show=False)
+    lines = (logs.stdout + "\n" + logs.stderr).splitlines()
+    return {"gatewayKeyLines": [redact(line)[:300] for line in lines if "/run/secrets/gateway-key" in line][:5],
+            "secretFileNotReadableLines": sum(1 for line in lines if "secret file not readable" in line)}
+
+
+def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_file: pathlib.Path, tls: dict[str, pathlib.Path],
+              door_values: dict, door_codes: pathlib.Path, release: dict, deferred: list[str]) -> None:
+    """Connects the door on the agent's page, claims it as the owner, applies the claim, then sends one
+    ordinary message and reads what happened: did it reach the model through the keeper, who was
+    charged and as what, and was the answer posted back into the chat. The door's setup is a hard
+    check; the three about the message are reported at the end, like the chat's."""
+    chat, person = DOOR_CHAT[kind], DOOR_PERSON[kind]
+    # A post into the chat; Telegram's typing indicator is not one.
+    reply_methods = ((lambda method: method.startswith("chat.")) if kind == "slack"
+                     else (lambda method: method.startswith(("send", "edit")) and method != "sendChatAction"))
+    record: dict = {"checks": {}}
+    proof.setdefault("doorTurns", {})[kind] = record
+
+    def door_calls(since: int) -> list[dict]:
+        return [call for call in fake_calls(fixture)[since:] if call["kind"] == kind]
+
+    def failed(check: str, why: str) -> None:
+        record["checks"][check] = False
+        proof["checks"][check] = False
+        save_proof()
+        print(f"FAIL (reported at the end): {check}: {why}", flush=True)
+        deferred.append(f"{check}: {why}")
+
+    # The owner connects the door, and sends the one-time step from the platform.
+    calls_at_connect = len(fake_calls(fixture))
+    browser(f"connect-{kind}", settings_file, tls)
+    code = (door_codes / kind).read_text().strip()
+    if kind == "slack":
+        if not re.fullmatch(r"claim [A-Z0-9]{24}", code):
+            raise RuntimeError(f"the Slack door page showed no one-time code in the expected form ({len(code)} characters)")
+        claim = code
+    else:
+        if not re.fullmatch(r"[A-Z0-9]{24}", code):
+            raise RuntimeError(f"the Telegram door page showed no tap-to-connect code in the expected form ({len(code)} characters)")
+        hook_url = json.loads((fixture / "telegram-webhook.json").read_text()).get("url") if (fixture / "telegram-webhook.json").exists() else None
+        if hook_url != f"https://{DOMAIN}/api/doors/{AGENT}/telegram/events":
+            raise RuntimeError(f"the keeper registered the Telegram webhook at {hook_url!r}, not at the door's public address")
+        claim = f"/start {code}"
+    record["claimStatus"] = send_door_message(kind, claim, work, fixture, door_values)
+    save_proof()
+    principal = ""
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        principal = read_only_query(f"SELECT coalesce(principal, '') FROM agent_door_connections WHERE agent = '{AGENT}' AND kind = '{kind}'", release)
+        if principal:
+            break
+        time.sleep(3)
+    if not principal:
+        record["standInCallsSinceConnect"] = [{"method": call["method"], "chat": call.get("channel", call.get("chat")), "text": call.get("text", "")[:300]}
+                                             for call in door_calls(calls_at_connect)]
+        record["agentLog"] = agent_log_evidence()
+        save_proof()
+        raise RuntimeError(f"the {kind} claim was not recorded within 60 seconds (the door answered HTTP {record['claimStatus']})")
+    browser(f"finish-{kind}", settings_file, tls)
+
+    # The door is claimed by the owner and applied, and the claim was answered in the chat.
+    row = json.loads(read_only_query(
+        "SELECT json_build_object('principal', c.principal, 'applied', coalesce(c.revision = c.applied_revision, false), 'owner', c.owner_email, "
+        "'pending', r.pending) FROM agent_door_connections c JOIN agent_resources r ON r.name = c.agent "
+        f"WHERE c.agent = '{AGENT}' AND c.kind = '{kind}'", release) or "null")
+    claim_replies = [call for call in door_calls(calls_at_connect)
+                     if call.get("channel", call.get("chat")) == chat and str(call.get("text", "")).startswith(CLAIM_REPLY)]
+    members = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member' ORDER BY id", release).splitlines()
+    owners = json.loads(read_only_query(f"SELECT coalesce(json_agg(id), '[]') FROM users WHERE lower(primary_email) = lower('{OWNER_EMAIL}')", release))
+    problems = []
+    if not row or row["principal"] != person:
+        problems.append(f"the door's owner is {row and row['principal']!r}, not {person!r}")
+    if not row or not row["applied"]:
+        problems.append("the claim's revision is not the applied one")
+    if not row or row["owner"] != OWNER_EMAIL:
+        problems.append("the claim is not held by the signed-in owner's address")
+    if not row or row["pending"] is not False:
+        problems.append("the agent still has changes waiting to be applied")
+    if not claim_replies:
+        problems.append(f"the stand-in recorded no claim reply into {chat}")
+    if len(owners) != 1 or len(members) != 1 or not members[0] or owners[0] != members[0]:
+        problems.append(f"the claimer is not exactly one member: {len(owners)} user(s) with the owner's address, {len(members)} member budget account(s), same member {owners[:1] == members[:1]}")
+    if problems:
+        record["claimProblems"] = problems
+        save_proof()
+        raise RuntimeError(f"{kind}-door-claimed-and-applied failed: " + "; ".join(problems))
+    claimer = members[0]
+    record["checks"][f"{kind}-door-claimed-and-applied"] = True
+    passed(f"{kind}-door-claimed-and-applied")
+
+    # One ordinary message, and what came of it.
+    t0 = read_only_query("SELECT now()", release)
+    calls_before = len(fake_calls(fixture))
+    marker = f"{DOOR_PROMPT} {kind}"
+    record["eventStatus"] = send_door_message(kind, f"{marker}: please answer", work, fixture, door_values)
+    save_proof()
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        if any(reply_methods(call["method"]) and call.get("channel", call.get("chat")) == chat for call in door_calls(calls_before)):
+            break
+        time.sleep(3)
+    time.sleep(10)
+
+    def attempts() -> list[dict]:
+        return json.loads(read_only_query(
+            "SELECT coalesce(json_agg(json_build_object('state', a.state, 'kind', a.authority_reference->>'kind', 'liveMember', a.live_member_id, "
+            "'keys', (SELECT coalesce(json_agg(k.key ORDER BY k.key), '[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(a.authority_reference) = 'object' "
+            "THEN a.authority_reference ELSE '{}'::jsonb END) AS k(key))) ORDER BY a.created_at, a.id), '[]') "
+            f"FROM budget_attempts a WHERE a.created_at >= '{t0}'::timestamptz", release))
+
+    def turn_rows(rows: list[dict]) -> list[dict]:
+        # Schedules start once a door is claimed and may add owner-job rows; those never count.
+        return [row for row in rows if row["kind"] != "owner-job"]
+
+    model_calls = [call for call in fake_calls(fixture)[calls_before:]
+                   if call["kind"] == "model" and (marker in (call.get("lastText") or "") or call.get("doorTurn") == marker)]
+    rows = attempts()
+    reached = bool(model_calls) and bool(turn_rows(rows))
+    deadline = time.monotonic() + 60
+    while True:
+        charged = bool(turn_rows(rows)) and all(row["state"] == "settled" and row["kind"] == "door" and row["liveMember"] == claimer for row in turn_rows(rows))
+        if charged or time.monotonic() > deadline:
+            break
+        time.sleep(3)
+        rows = attempts()
+    replies = [call for call in door_calls(calls_before)
+               if reply_methods(call["method"]) and call.get("channel", call.get("chat")) == chat and DOOR_REPLY in str(call.get("text", ""))]
+
+    def who(value: str | None) -> str | None:
+        return None if value is None else "the claimer" if value == claimer else "another member"
+
+    record.update({
+        "modelCallsWithMarker": len(model_calls),
+        "budgetAttemptsSinceMessage": [{"state": row["state"], "kind": row["kind"], "chargedTo": who(row["liveMember"]), "referenceKeys": row["keys"]} for row in rows],
+        "standInCallsSinceMessage": [{"method": call["method"], "chat": call.get("channel", call.get("chat")), "text": str(call.get("text", ""))[:300]}
+                                     for call in door_calls(calls_before)],
+        "agentLog": agent_log_evidence(),
+    })
+    save_proof()
+    print(f"the {kind} turn, as recorded:\n{json.dumps(record, indent=2)}", flush=True)
+    turn = turn_rows(rows)
+    if reached:
+        record["checks"][f"{kind}-turn-reached-the-model-through-keeper"] = True
+        passed(f"{kind}-turn-reached-the-model-through-keeper")
+    else:
+        failed(f"{kind}-turn-reached-the-model-through-keeper",
+               f"{len(model_calls)} model call(s) carried the marker and {len(turn)} budget attempt(s) other than owner jobs were made since the message (event HTTP {record['eventStatus']})")
+    if charged:
+        record["checks"][f"{kind}-turn-settled-and-charged"] = True
+        passed(f"{kind}-turn-settled-and-charged")
+    else:
+        failed(f"{kind}-turn-settled-and-charged",
+               f"the attempts since the message are not all settled as a door turn charged to the claimer: "
+               f"{[(row['state'], row['kind'], who(row['liveMember'])) for row in turn] or 'there are none'}")
+    if replies:
+        record["checks"][f"{kind}-reply-posted"] = True
+        passed(f"{kind}-reply-posted")
+    else:
+        failed(f"{kind}-reply-posted", f"no reply containing {DOOR_REPLY} was posted into {chat}")
 
 
 def keeper_host_action(action: str, payload: dict) -> dict:
@@ -1107,6 +1339,11 @@ def main(argv: list[str]) -> int:
         newest = json.loads(sorted((REPO / "releases").glob("*.json"))[-1].read_text())
         console_trusting, gateway_trusting = "proof/console-trusting:local", "proof/gateway-trusting:local"
         trusting_image(work, console, console_trusting, tls, node=True)
+        # The keeper checks a door's bot with Slack or Telegram itself, and the agent reaches them
+        # through the egress proxy with TLS ending in the agent: both trust the stand-ins' authority.
+        keeper_trusting, chief_trusting = "proof/keeper-trusting:local", "proof/chief-trusting:local"
+        trusting_image(work, keeper, keeper_trusting, tls, node=True)
+        trusting_image(work, chief, chief_trusting, tls, node=True)
         # Pulled from the real registry before the hosts file points that name at the throwaway one.
         trusting_image(work, newest["images"]["lares-gateway"], gateway_trusting, tls, node=False)
         # The release before this one, for the last stage's older store: also pulled while the
@@ -1134,11 +1371,11 @@ def main(argv: list[str]) -> int:
         # Release key -> (the local image, its name in the registry). The gateway is not rebuilt for
         # the update, so the update also proves it leaves an unchanged image alone.
         engine_images = {
-            "lares-keeper": (keeper, "heiberg-industries/lares-engine-keeper"),
+            "lares-keeper": (keeper_trusting, "heiberg-industries/lares-engine-keeper"),
             "lares-egress-proxy": (egress, "heiberg-industries/lares-engine-egress-proxy"),
             "lares-firewall-helper": (firewall, "heiberg-industries/lares-engine-firewall-helper"),
             "console": (console_trusting, "heiberg-industries/lares-engine-console"),
-            "chief-of-staff": (chief, "heiberg-industries/lares-engine-chief-of-staff-runtime"),
+            "chief-of-staff": (chief_trusting, "heiberg-industries/lares-engine-chief-of-staff-runtime"),
             "creative": (creative, "heiberg-industries/lares-engine-creative-runtime"),
         }
         release_file = write_release(work, {
@@ -1191,12 +1428,18 @@ def main(argv: list[str]) -> int:
         shots = pathlib.Path(proof_file).parent / "real-install-screenshots"
         shots.mkdir(exist_ok=True)
         settings_file = work / "browser.json"
-        settings_file.write_text(json.dumps({
+        # Test values for the doors, in the shapes the keeper accepts. Never printed.
+        door_values = {"slackBotToken": f"xoxb-proof-{uuid.uuid4().hex}", "slackSigningSecret": os.urandom(16).hex(),
+                       "telegramBotToken": f"123456789:PROOF{uuid.uuid4().hex}"}
+        remember_secrets(*door_values.values())
+        door_codes = work / "door-codes"
+        door_codes.mkdir(mode=0o700)
+        write_private(settings_file, json.dumps({
             "domain": DOMAIN, "agent": AGENT, "memberLimit": MEMBER_LIMIT, "toolPrompt": TOOL_PROMPT, "followUpPrompt": FOLLOW_UP_PROMPT,
             "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "notePrompt": NOTE_PROMPT, "noteReply": NOTE_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
             # Any message the stand-in does not recognise is answered with PROOF_OK.
             "afterUpdatePrompt": "PROOF_AFTER_THE_UPDATE", "afterUpdateReply": "PROOF_OK", "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
-            "screenshotDir": str(shots),
+            "screenshotDir": str(shots), "doorCodeDir": str(door_codes), **door_values,
         }))
         browser("discover-owner", settings_file, tls)
         owner_bootstrap((work / "receipt.json").read_text())
@@ -1258,6 +1501,10 @@ def main(argv: list[str]) -> int:
         print(f"budget attempts by state:\n{attempts}", flush=True)
         passed("every-model-call-settled-in-the-budget-ledger")
         check_charges_after_answered_cards(release, deferred)
+
+        stage("a Slack and a Telegram message reach the model through Keeper")
+        for kind in ("slack", "telegram"):
+            door_turn(kind, work, fixture, settings_file, tls, door_values, door_codes, release, deferred)
 
         stage("sudo lares backups")
         run("apt-get", "update", "-qq", timeout=300, show=False)

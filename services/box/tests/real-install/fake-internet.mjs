@@ -1,5 +1,6 @@
-// The outside world for real-install-image.probe.py: the model provider, the sign-in provider and an
-// uptime check, answering at their real names over TLS from a throwaway test authority. Nothing in
+// The outside world for real-install-image.probe.py: the model provider, the sign-in provider, Slack's
+// and Telegram's APIs and an uptime check, answering at their real names over TLS from a throwaway
+// test authority. Nothing in
 // the installation knows these are stand-ins. Provider replies copy a real provider's shape,
 // including `caller` on tool calls, which a real provider sends and earlier fixtures left out.
 //
@@ -8,7 +9,7 @@
 //                                                 a container reaches the public address the way a
 //                                                 real server does: out, and back in through Caddy.
 import { createHash, createSign, generateKeyPairSync, randomBytes } from "node:crypto";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import https from "node:https";
 import net from "node:net";
 
@@ -121,6 +122,7 @@ function serve(fixture) {
       const kept = everything.includes(settings.toolPrompt) && everything.includes(settings.toolReply);
       return { text: kept ? settings.followUpReply : "PROOF_HISTORY_LOST" };
     }
+    if (settings.doorPrompt && asked.includes(settings.doorPrompt)) return { text: settings.doorReply };
     return { text: "PROOF_OK" };
   }
 
@@ -134,6 +136,8 @@ function serve(fixture) {
     const toolResults = (Array.isArray(parsed.messages?.at(-1)?.content) ? parsed.messages.at(-1).content : []).filter((block) => block.type === "tool_result");
     record({ kind: "model", model: parsed.model, toolResults: toolResults.map((block) => ({ isError: Boolean(block.is_error), content: JSON.stringify(block.content).slice(0, 300) })), stream: Boolean(parsed.stream), messages: (parsed.messages ?? []).length,
       lastText: textOf(parsed.messages?.at(-1)).slice(-200), tools: (parsed.tools ?? []).map((tool) => tool.name),
+      // A door wraps the person's words in its own context, so the marker may sit outside the last 200 characters.
+      doorTurn: settings.doorPrompt ? (textOf(parsed.messages?.at(-1)).match(new RegExp(`${settings.doorPrompt} \\w+`))?.[0] ?? null) : null,
       returnedCallers: toolCalls.map((block) => block.caller ?? null), answer });
     const id = `msg_01${randomBytes(11).toString("hex")}`;
     const usage = { input_tokens: 120, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 18, service_tier: "standard" };
@@ -162,6 +166,83 @@ function serve(fixture) {
     response.end();
   }
 
+  // A platform request body: JSON, or a form whose fields may themselves hold JSON (Slack sends blocks that way).
+  function parseBody(request, body) {
+    const raw = body.toString("utf8");
+    if (!raw) return {};
+    if ((request.headers["content-type"] ?? "").includes("application/x-www-form-urlencoded")) {
+      const fields = Object.fromEntries(new URLSearchParams(raw));
+      for (const [key, value] of Object.entries(fields)) {
+        if (/^[[{]/.test(value)) { try { fields[key] = JSON.parse(value); } catch {} }
+      }
+      return fields;
+    }
+    try { const parsed = JSON.parse(raw); return parsed && typeof parsed === "object" ? parsed : {}; } catch { return {}; }
+  }
+
+  // Every `text` or `markdown_text` string in a value, in order: blocks, attachments and stream chunks flattened.
+  const textsIn = (value) => typeof value !== "object" || value === null ? []
+    : Array.isArray(value) ? value.flatMap(textsIn)
+    : Object.entries(value).flatMap(([key, inner]) => typeof inner === "string" ? (["text", "markdown_text"].includes(key) ? [inner] : []) : textsIn(inner));
+  const firstText = (body) => (typeof body.text === "string" ? body.text : typeof body.markdown_text === "string" ? body.markdown_text : textsIn(body).join(" ")).slice(0, 300);
+
+  let slackSequence = 0;
+  // Slack's Web API at https://slack.com/api/<method>. Recorded: the method, the conversation and the
+  // text; never the authorization header, a token field or a raw body.
+  function slack(request, response, url, body) {
+    const method = url.pathname.replace(/^\/api\//, "");
+    const fields = parseBody(request, body);
+    const channel = typeof fields.channel === "string" ? fields.channel : typeof fields.channel_id === "string" ? fields.channel_id : null;
+    record({ kind: "slack", method, channel, text: firstText(fields) });
+    const ts = `${Math.floor(Date.now() / 1000)}.${String(++slackSequence).padStart(6, "0")}`;
+    if (method === "auth.test")
+      return json(response, 200, { ok: true, url: "https://proof.invalid/", team: "Proof Workspace", user: "proof_door_bot", team_id: "T0PROOF", user_id: "U0PROOFBOT", bot_id: "B0PROOF" });
+    if (method === "conversations.open") return json(response, 200, { ok: true, channel: { id: "D0PROOF" } });
+    if (method === "conversations.info") return json(response, 200, { ok: true, channel: { id: channel ?? "D0PROOF", is_im: true, is_private: true, user: "U0PROOFOWNER" } });
+    if (method === "conversations.replies" || method === "conversations.history")
+      return json(response, 200, { ok: true, messages: [], has_more: false, response_metadata: { next_cursor: "" } });
+    if (method === "users.info") {
+      const user = typeof fields.user === "string" ? fields.user : "U0PROOFOWNER";
+      return json(response, 200, { ok: true, user: { id: user, team_id: "T0PROOF", name: "proof-owner", real_name: "Proof Owner", deleted: false, is_bot: false,
+        profile: { display_name: "Proof Owner", real_name: "Proof Owner" } } });
+    }
+    if (method.startsWith("chat."))
+      return json(response, 200, { ok: true, channel, ts, message: { type: "message", ts, text: typeof fields.text === "string" ? fields.text : "", user: "U0PROOFBOT", bot_id: "B0PROOF" } });
+    return json(response, 200, { ok: true });
+  }
+
+  let telegramSequence = 0;
+  // The Telegram Bot API at https://api.telegram.org/bot<token>/<method>. The path holds the bot token,
+  // so it is never recorded. The webhook's secret goes to its own file, never to calls.jsonl.
+  const webhookFile = `${fixture}/telegram-webhook.json`;
+  function telegram(request, response, url, body) {
+    const method = url.pathname.split("/").at(-1);
+    const fields = parseBody(request, body);
+    const chat = fields.chat_id === undefined || fields.chat_id === null ? null : String(fields.chat_id);
+    if (method === "setWebhook") {
+      record({ kind: "telegram", method, chat, text: "", url: typeof fields.url === "string" ? fields.url : null });
+      writeFileSync(webhookFile, JSON.stringify({ url: fields.url ?? null, secretToken: fields.secret_token ?? null }), { mode: 0o600 });
+      return json(response, 200, { ok: true, result: true });
+    }
+    record({ kind: "telegram", method, chat, text: typeof fields.text === "string" ? fields.text.slice(0, 300) : firstText(fields) });
+    if (method === "getMe")
+      return json(response, 200, { ok: true, result: { id: 7000000099, is_bot: true, first_name: "Proof door bot", username: "proof_door_bot",
+        can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false } });
+    if (method === "getWebhookInfo") {
+      const set = existsSync(webhookFile) ? JSON.parse(readFileSync(webhookFile, "utf8")) : {};
+      return json(response, 200, { ok: true, result: { url: typeof set.url === "string" ? set.url : "", has_custom_certificate: false, pending_update_count: 0 } });
+    }
+    // As the real API: a chat action answers true, not a message.
+    if (method === "sendChatAction") return json(response, 200, { ok: true, result: true });
+    if (/^(send|edit)/.test(method)) {
+      const chatId = /^-?\d+$/.test(chat ?? "") ? Number(chat) : chat;
+      return json(response, 200, { ok: true, result: { message_id: Number(fields.message_id) || ++telegramSequence + 100, date: Math.floor(Date.now() / 1000),
+        chat: { id: chatId, type: "private", first_name: "Proof" }, from: { id: 7000000099, is_bot: true, first_name: "Proof door bot", username: "proof_door_bot" },
+        text: typeof fields.text === "string" ? fields.text : "" } });
+    }
+    return json(response, 200, { ok: true, result: true });
+  }
+
   const tls = { key: readFileSync(`${fixture}/server-key.pem`), cert: readFileSync(`${fixture}/server.pem`) };
   https.createServer(tls, (request, response) => {
     const chunks = [];
@@ -173,6 +254,8 @@ function serve(fixture) {
       if (host === "api.anthropic.com" && url.pathname === "/v1/messages" && request.method === "POST") return provider(request, response, body);
       if (host === settings.uptimeHost) { record({ kind: "uptime", path: url.pathname }); return json(response, 200, { ok: true }); }
       if (["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"].includes(host)) return signIn(request, response, url, body);
+      if (host === "slack.com" && url.pathname.startsWith("/api/") && request.method === "POST") return slack(request, response, url, body);
+      if (host === "api.telegram.org" && /^\/bot[^/]+\/[A-Za-z]+$/.test(url.pathname) && request.method === "POST") return telegram(request, response, url, body);
       record({ kind: "unexpected", host, path: url.pathname, method: request.method });
       return json(response, 404, { type: "error", error: { type: "not_found_error", message: "not found" } });
     });
