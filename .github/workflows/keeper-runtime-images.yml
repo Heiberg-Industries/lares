@@ -24,6 +24,25 @@ env:
 # below run Docker and nftables on the runner itself, so a new runner image is a new host to prove
 # on, not a routine change. On ubuntu-26.04 (Docker 29.4) the configured outside discovery proof's
 # routed path to the MCP peer times out; move only after that is understood.
+#
+# Layer caching. Every image is still built in this workflow from this commit's sources; the cache
+# only lets BuildKit skip a build step whose inputs are unchanged, so a miss is slower, never
+# different.
+# - Only BUILD stages are cached (dependency install, compile). The real-install job is the one
+#   writer: its "Build and cache ..." steps build the stage named by `target:` and are the only
+#   steps with `cache-to`. No final stage (`runtime`, `run`) is ever written to the cache, so the
+#   operating-system updates those stages fetch are fetched again in every job, as before.
+# - The other builds read with `cache-from` and write nothing. The published Keeper, egress-proxy
+#   and firewall-helper builds read no cache at all.
+# - A cache is named for the image, the lockfile, `patches/` and that image's Dockerfile (which
+#   holds its base image tags), so a change to any of them starts from an empty cache. `pull: true`
+#   resolves each base tag again in every build, and BuildKit keys each layer on the content of the
+#   files it copies. The writer and its readers must spell a cache name identically.
+# - The cache is GitHub's Actions cache and nothing else. It is kept per branch: a run reads what
+#   its own branch or the default branch wrote. This workflow has no pull_request trigger, so a
+#   fork cannot run it, and a pull request's cache is never readable from a branch.
+# - `cleanup: false` on setup-buildx only skips removing the builder from a runner that is thrown
+#   away when the job ends.
 jobs:
   real-install:
     if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
@@ -62,18 +81,81 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/playwright" --no-audit --no-fund playwright@1.64.1
           (cd "$RUNNER_TEMP/playwright" && sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH" npx playwright install --with-deps chromium)
       - uses: docker/setup-buildx-action@v3
+        with: {cleanup: false}
+      - name: Build and cache the Keeper build stage
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/keeper/Dockerfile
+          target: build
+          pull: true
+          cache-from: type=gha,scope=keeper-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/keeper/Dockerfile') }}
+          cache-to: type=gha,mode=max,ignore-error=true,scope=keeper-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/keeper/Dockerfile') }}
       - uses: docker/build-push-action@v6
-        with: {context: ., file: services/keeper/Dockerfile, pull: true, load: true, tags: 'lares-keeper:test', cache-from: 'type=gha,scope=real-install-keeper', cache-to: 'type=gha,mode=min,scope=real-install-keeper'}
+        with:
+          context: .
+          file: services/keeper/Dockerfile
+          pull: true
+          load: true
+          tags: lares-keeper:test
+          cache-from: type=gha,scope=keeper-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/keeper/Dockerfile') }}
       - uses: docker/build-push-action@v6
         with: {context: ., file: images/egress-proxy/Dockerfile, pull: true, load: true, tags: 'lares-squid:test'}
       - uses: docker/build-push-action@v6
         with: {context: ., file: images/firewall-helper/Dockerfile, pull: true, load: true, tags: 'lares-nft:test'}
+      - name: Build and cache the console dependency stage
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/console/Dockerfile
+          target: deps
+          pull: true
+          cache-from: type=gha,scope=console-deps-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/console/Dockerfile') }}
+          cache-to: type=gha,mode=max,ignore-error=true,scope=console-deps-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/console/Dockerfile') }}
       - uses: docker/build-push-action@v6
-        with: {context: ., file: services/console/Dockerfile, pull: true, load: true, tags: 'lares-console:test', cache-from: 'type=gha,scope=real-install-console', cache-to: 'type=gha,mode=min,scope=real-install-console'}
+        with:
+          context: .
+          file: services/console/Dockerfile
+          pull: true
+          load: true
+          tags: lares-console:test
+          cache-from: type=gha,scope=console-deps-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/console/Dockerfile') }}
+      - name: Build and cache the chief-of-staff build stages
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/chief-of-staff/Dockerfile
+          target: compiled-runtime
+          pull: true
+          cache-from: type=gha,scope=chief-of-staff-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/chief-of-staff/Dockerfile') }}
+          cache-to: type=gha,mode=max,ignore-error=true,scope=chief-of-staff-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/chief-of-staff/Dockerfile') }}
       - uses: docker/build-push-action@v6
-        with: {context: ., file: services/chief-of-staff/Dockerfile, target: runtime, pull: true, load: true, tags: 'lares-chief:test', cache-from: 'type=gha,scope=real-install-chief', cache-to: 'type=gha,mode=min,scope=real-install-chief'}
+        with:
+          context: .
+          file: services/chief-of-staff/Dockerfile
+          target: runtime
+          pull: true
+          load: true
+          tags: lares-chief:test
+          cache-from: type=gha,scope=chief-of-staff-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/chief-of-staff/Dockerfile') }}
+      - name: Build and cache the creative build stages
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/creative/Dockerfile
+          target: compiled-runtime
+          pull: true
+          cache-from: type=gha,scope=creative-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/creative/Dockerfile') }}
+          cache-to: type=gha,mode=max,ignore-error=true,scope=creative-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/creative/Dockerfile') }}
       - uses: docker/build-push-action@v6
-        with: {context: ., file: services/creative/Dockerfile, target: runtime, pull: true, load: true, tags: 'lares-creative:test', cache-from: 'type=gha,scope=real-install-creative', cache-to: 'type=gha,mode=min,scope=real-install-creative'}
+        with:
+          context: .
+          file: services/creative/Dockerfile
+          target: runtime
+          pull: true
+          load: true
+          tags: lares-creative:test
+          cache-from: type=gha,scope=creative-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/creative/Dockerfile') }}
       - name: Install the real path on this server and use it
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
@@ -128,6 +210,7 @@ jobs:
           expected_hash="$(node -e 'const i=JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if(i.sourceCommit!==process.argv[2]||i.release!==process.argv[3]) process.exit(1); process.stdout.write(i.corpusSha256)' "$RUNNER_TEMP/public-docs-identity.json" "$GITHUB_SHA" "$PUBLIC_DOCS_RELEASE")"
           node --import tsx scripts/public-docs.ts verify --snapshot "$GITHUB_WORKSPACE/.public-docs-bake/snapshot" --expected-corpus "$expected_hash"
       - uses: docker/setup-buildx-action@v3
+        with: {cleanup: false}
       - name: Prove protected gateway authority staging and resolved Compose mount isolation
         if: matrix.role == 'chief-of-staff'
         run: |
@@ -144,6 +227,7 @@ jobs:
           pull: true
           load: true
           tags: lares-runtime:test
+          cache-from: type=gha,scope=${{ matrix.role }}-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', format('services/{0}/Dockerfile', matrix.role)) }}
       - name: Scan final runtime image
         run: scripts/scan-image.sh lares-runtime:test "$RUNNER_TEMP/image-scans/runtime"
       - uses: actions/upload-artifact@v4
@@ -185,9 +269,18 @@ jobs:
           name: gateway-admission-compatibility-proof
           path: ${{ runner.temp }}/gateway-admission-proof.json
           if-no-files-found: error
+      # The same build as before (`docker buildx build --pull --load`), run through the build
+      # action because only an action step can reach the Actions cache.
       - name: Build the matching Keeper image for the combined first-use proof
         if: matrix.role == 'chief-of-staff'
-        run: docker buildx build --pull --load --file services/keeper/Dockerfile --tag lares-keeper:combined .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/keeper/Dockerfile
+          pull: true
+          load: true
+          tags: lares-keeper:combined
+          cache-from: type=gha,scope=keeper-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/keeper/Dockerfile') }}
       - name: Prove first native activation through compiled Eve and production Keeper
         if: matrix.role == 'chief-of-staff'
         run: sudo env CI=true python3 -B services/keeper/tests/native-first-use-image.probe.py lares-runtime:test lares-keeper:combined "$GITHUB_SHA" "$RUNNER_TEMP/native-first-use-proof.json"
@@ -260,6 +353,7 @@ jobs:
             "DOCKER_CONFIG=$docker_config" "DOCKER_HOST=" "DOCKER_CONTEXT=" \
             python3 -B services/keeper/tests/outside-discovery-image.probe.py --prepare-image-store
       - uses: docker/setup-buildx-action@v3
+        with: {cleanup: false}
       - uses: docker/login-action@v3
         with: {registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}'}
       - uses: docker/build-push-action@v6
@@ -329,7 +423,8 @@ jobs:
         run: python3 services/keeper/tests/person-erasure-image.probe.py lares-keeper:test
       # The maintenance proof makes the workflow template with the installer's own step, which runs
       # inside the creative role image. It needs this commit's creative image, built exactly as the
-      # real-install job builds it (public docs baked in), reading that job's cache and writing none.
+      # real-install job builds it (public docs baked in), reading that job's build-stage cache and
+      # writing none.
       - name: Enable corepack and prepare pnpm 9.15.0
         run: corepack enable && corepack prepare pnpm@9.15.0 --activate
       - name: Setup Node 24 + pnpm
@@ -354,7 +449,14 @@ jobs:
           node --import tsx scripts/public-docs.ts verify --snapshot "$GITHUB_WORKSPACE/.public-docs-bake/snapshot" --expected-corpus "$expected_hash"
       - uses: docker/build-push-action@v6
         id: creative-image
-        with: {context: ., file: services/creative/Dockerfile, target: runtime, pull: true, load: true, tags: 'lares-creative:test', cache-from: 'type=gha,scope=real-install-creative'}
+        with:
+          context: .
+          file: services/creative/Dockerfile
+          target: runtime
+          pull: true
+          load: true
+          tags: lares-creative:test
+          cache-from: type=gha,scope=creative-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', 'services/creative/Dockerfile') }}
       - name: Prove disposable maintenance admission and external database HBA
         run: |
           proof="$RUNNER_TEMP/maintenance-fence-proof.json"

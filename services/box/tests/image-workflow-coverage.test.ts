@@ -376,3 +376,133 @@ describe("an image workflow's paths: filter covers what its Dockerfile COPIES", 
       .toContain("image CI must run the first-use config check after install and before image builds");
   });
 });
+
+// ── the layer cache of keeper-runtime-images.yml ───────────────────────────────────────────────
+// A cached layer is a build step that is not run again. That is only safe for a step whose inputs
+// are all pinned (the lockfile, `patches/`, this commit's sources). A final image stage fetches
+// operating-system updates with no pin, so it must be built again in every job: the workflow may
+// write only BUILD stages to the cache, and every reader must name a cache its one writer writes.
+
+interface CacheStep {
+  readonly job: string;
+  readonly label: string;
+  readonly step: any;
+  /** One entry per value the job's matrix gives the step (one entry, the step as written, when
+   *  it uses no matrix value). */
+  readonly reads: string[];
+  readonly writes: string[];
+}
+
+const IMAGE_WORKFLOW = "keeper-runtime-images.yml";
+
+/** The `scope=` of a `type=gha` cache argument, with `${{ matrix.role }}` and a
+ *  `format('…{0}…', matrix.role)` replaced by each role of the job's matrix, so a matrix job's
+ *  cache name can be compared with the name another job spells out. The scope is written last:
+ *  its expression holds commas of its own, so nothing after it could be told apart from it. */
+function cacheScopes(argument: unknown, job: any): string[] {
+  if (typeof argument !== "string") return [];
+  expect(argument.startsWith("type=gha,")).toBe(true);
+  const scope = argument.match(/,scope=(.+)$/)?.[1];
+  expect(scope, `a layer cache must name its scope, last: ${argument}`).toBeTruthy();
+  const roles: string[] = /matrix\.role/.test(scope!) ? job?.strategy?.matrix?.role ?? [] : [""];
+  return roles.map((role) => scope!
+    .replace(/format\('([^']*)\{0\}([^']*)',\s*matrix\.role\)/g, (_m, before, after) => `'${before}${role}${after}'`)
+    .replace(/\$\{\{\s*matrix\.role\s*\}\}/g, role));
+}
+
+function cacheSteps(): CacheStep[] {
+  const doc = parse(readFileSync(join(WORKFLOWS_DIR, IMAGE_WORKFLOW), "utf8"));
+  const out: CacheStep[] = [];
+  for (const [job, definition] of Object.entries<any>(doc.jobs ?? {})) {
+    for (const step of definition.steps ?? []) {
+      if (typeof step.uses !== "string" || !step.uses.startsWith("docker/build-push-action")) continue;
+      const reads = cacheScopes(step.with?.["cache-from"], definition);
+      const writes = cacheScopes(step.with?.["cache-to"], definition);
+      if (reads.length || writes.length) out.push({ job, label: step.name ?? step.uses, step, reads, writes });
+    }
+  }
+  return out;
+}
+
+/** The instructions of `stage` in a Dockerfile and of every stage it is built `FROM`, comments
+ *  left out. Null when the Dockerfile names no such stage. */
+function stageInstructions(dockerfile: string, stage: string): string[] | null {
+  const stages = new Map<string, { from: string; lines: string[] }>();
+  let current: { from: string; lines: string[] } | null = null;
+  for (const line of readFileSync(join(REPO_ROOT, dockerfile), "utf8").split("\n")) {
+    if (/^\s*#/.test(line)) continue;
+    const from = line.match(/^\s*FROM\s+(\S+)(?:\s+AS\s+(\S+))?/i);
+    if (from) {
+      current = { from: from[1]!, lines: [] };
+      if (from[2]) stages.set(from[2], current);
+      continue;
+    }
+    current?.lines.push(line);
+  }
+  const out: string[] = [];
+  for (let name: string | undefined = stage, first = true; name !== undefined; first = false) {
+    const found = stages.get(name);
+    if (!found) return first ? null : out; // a base image, not a stage of this file
+    out.push(...found.lines);
+    name = found.from;
+  }
+  return out;
+}
+
+describe("the image workflow's layer cache holds build stages only", () => {
+  it("has cache writers and readers to examine", () => {
+    const steps = cacheSteps();
+    expect(steps.filter((s) => s.writes.length).length).toBeGreaterThanOrEqual(4);
+    expect(steps.filter((s) => !s.writes.length).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("writes the cache only from a step that builds a stage with no operating-system package fetch and produces no image", () => {
+    const problems: string[] = [];
+    for (const { job, label, step, reads, writes } of cacheSteps().filter((s) => s.writes.length)) {
+      const where = `${job}: ${label}`;
+      const target = step.with?.target;
+      const instructions = typeof target === "string" ? stageInstructions(step.with.file, target) : null;
+      if (!instructions) { problems.push(`${where}: must name a build stage of its Dockerfile as target`); continue; }
+      if (instructions.some((line) => /\b(apt-get|apt|apk|dnf|yum)\b/.test(line)))
+        problems.push(`${where}: stage "${target}" fetches operating-system packages and must not be cached`);
+      for (const key of ["load", "push", "tags", "outputs"])
+        if (step.with?.[key] !== undefined) problems.push(`${where}: a cache-writing step must not set ${key}`);
+      if (step.with?.pull !== true) problems.push(`${where}: must resolve base image tags again (pull: true)`);
+      if (!/(^|,)mode=max(,|$)/.test(step.with["cache-to"])) problems.push(`${where}: must write every build stage (mode=max)`);
+      if (!/(^|,)ignore-error=true(,|$)/.test(step.with["cache-to"])) problems.push(`${where}: a failed cache write must not fail the build (ignore-error=true)`);
+      if (JSON.stringify(reads) !== JSON.stringify(writes)) problems.push(`${where}: must read the cache it writes`);
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it("names each cache for the lockfile, patches/ and the Dockerfile it builds", () => {
+    const problems: string[] = [];
+    for (const { job, label, step, reads, writes } of cacheSteps()) {
+      const files = resolveMatrixFile(step.with.file, parse(readFileSync(join(WORKFLOWS_DIR, IMAGE_WORKFLOW), "utf8")).jobs[job]);
+      [...reads, ...writes].forEach((scope, index) => {
+        const dockerfile = files[index % files.length];
+        if (!scope.includes(`hashFiles('pnpm-lock.yaml', 'patches/**', '${dockerfile}')`))
+          problems.push(`${job}: ${label}: cache "${scope}" is not named for pnpm-lock.yaml, patches/** and ${dockerfile}`);
+      });
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it("reads only a cache that one step of the workflow writes, spelled identically", () => {
+    const steps = cacheSteps();
+    const written = steps.flatMap((s) => s.writes);
+    expect(new Set(written).size).toBe(written.length); // one writer per cache
+    const unknown = steps.flatMap((s) => s.reads.filter((scope) => !written.includes(scope)).map((scope) => `${s.job}: ${s.label}: ${scope}`));
+    expect(unknown).toEqual([]);
+  });
+
+  it("refuses a final stage, a stage that installs system packages and a misspelled reader", () => {
+    expect(stageInstructions("services/keeper/Dockerfile", "runtime")!.some((line) => /\bapt-get\b/.test(line))).toBe(true);
+    expect(stageInstructions("services/keeper/Dockerfile", "build")!.some((line) => /\bapt-get\b/.test(line))).toBe(false);
+    expect(stageInstructions("services/creative/Dockerfile", "compiled-runtime")!.some((line) => line.includes("pnpm install"))).toBe(true);
+    expect(stageInstructions("services/keeper/Dockerfile", "no-such-stage")).toBeNull();
+    const job = { strategy: { matrix: { role: ["chief-of-staff", "creative"] } } };
+    expect(cacheScopes("type=gha,scope=${{ matrix.role }}-build-${{ hashFiles('a', format('services/{0}/Dockerfile', matrix.role)) }}", job))
+      .toEqual(["chief-of-staff-build-${{ hashFiles('a', 'services/chief-of-staff/Dockerfile') }}", "creative-build-${{ hashFiles('a', 'services/creative/Dockerfile') }}"]);
+  });
+});
