@@ -441,8 +441,9 @@ definition does not restart it. To restart it now, open **Settings** in the cons
 **Console address** enter the address you open the console at and press **Save**. Every
 running chief of staff restarts, which takes about a minute, and the page names the agents it
 restarted. An agent with changes waiting is not restarted then: press **Apply connection
-changes** on its page instead, which restarts it with the file too. The creative agent never
-gets it. If the calendar is a link or a folder rather than a plain file, the installer prints a
+changes** on its page instead, which restarts it with the file too. An agent that is held, for
+example one whose spending key has not been started yet, is not restarted by that save either; it
+picks the file up when it next starts. The creative agent never gets it. If the calendar is a link or a folder rather than a plain file, the installer prints a
 warning and leaves the agent without it.
 
 Once the chief of staff has the file, keep it in place. If you remove it, run the installer again
