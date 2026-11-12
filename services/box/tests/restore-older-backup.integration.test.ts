@@ -236,7 +236,7 @@ describe('restoring an agent store from the release before this one', () => {
     expect(done.stdout).toContain(`restore: upgrading the agent store ${STORE}.`);
     expect(done.stdout + done.stderr).not.toContain(password('provisioner'));
 
-    // restore.sh's own final check, as the agents' login: exactly this release's 30 steps and grants.
+    // restore.sh's own final check, as the agents' login: exactly this release's 31 steps and grants.
     const verified = engine(['bin/workflow-template.ts', 'verify-database', '--host', host, '--port', port, '--database', STORE,
       '--runtime-password-file', secret('workflow')]);
     expect(verified.status, verified.stderr).toBe(0);

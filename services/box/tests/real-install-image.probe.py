@@ -970,7 +970,7 @@ def older_backup_restores(work: pathlib.Path, home: pathlib.Path, tls: dict[str,
     if code != 0 or any(text not in said for text in expected):
         restore_failed("second-run", f"expected exit 0, got {code}; missing: {[text for text in expected if text not in said]}")
     after = store_contents("second-run:store-upgraded-with-its-rows", store)
-    if after["steps"] != 30 or after["runs"] != before["runs"] or after["events"] != before["events"]:
+    if after["steps"] != 31 or after["runs"] != before["runs"] or after["events"] != before["events"]:
         restore_failed("second-run:store-upgraded-with-its-rows", f"the store holds {after['steps']} steps; runs kept {after['runs'] == before['runs']}, events kept {after['events'] == before['events']}")
     passed("store-ends-on-this-release-with-its-rows")
     runtime = step("second-run:agents-login", "docker", "run", "--rm", "--network", "host", "--user", "0:0",
@@ -978,8 +978,8 @@ def older_backup_restores(work: pathlib.Path, home: pathlib.Path, tls: dict[str,
                    'export PGPASSWORD="$(cat /run/proof/runtime)"; exec psql -X -At -v ON_ERROR_STOP=1 -h 127.0.0.1 -U lares_workflow -d "$1" '
                    '-c "SELECT count(*) FROM workflow.workflow_runs" -c "SELECT count(*) FROM workflow.workflow_invocations" '
                    '-c "SELECT count(*) FROM workflow_drizzle.workflow_migrations"', "agents-login", store).stdout.split()
-    if runtime != ["2", "0", "30"]:
-        restore_failed("second-run:agents-login", f"the agents' login read {runtime}, expected 2 runs, the new table and 30 steps")
+    if runtime != ["2", "0", "31"]:
+        restore_failed("second-run:agents-login", f"the agents' login read {runtime}, expected 2 runs, the new table and 31 steps")
     passed("agents-login-reads-the-upgraded-store")
     # The keeper that restore starts may settle a row, so the live database is checked by key (no row
     # lost), and the exact rows restore put back are read from the snapshot's own dump, restored into

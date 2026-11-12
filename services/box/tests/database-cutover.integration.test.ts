@@ -193,8 +193,8 @@ it('sets up, finalizes, migrates, and restores the exact managed database roles 
     // steps, and the agent login has the new tables and the sequence one of them needs.
     const steps = await runtime.query<{ hash: string; created_at: string }>('SELECT hash,created_at::text AS created_at FROM workflow_drizzle.workflow_migrations ORDER BY id');
     expect(steps.rows.map((row) => [row.created_at, row.hash])).toEqual(WORKFLOW_SCHEMA_STEPS.map((step) => [...step]));
-    expect(steps.rows).toHaveLength(30);
-    for (const table of ['workflow_invocations', 'workflow_snapshots', 'workflow_start_hook_admissions']) {
+    expect(steps.rows).toHaveLength(31);
+    for (const table of ['workflow_invocations', 'workflow_job_lock_holders', 'workflow_snapshots', 'workflow_start_hook_admissions']) {
       const granted = await runtime.query(`SELECT has_table_privilege(current_user,'workflow.${table}','SELECT,INSERT,UPDATE,DELETE') AS use,
         has_table_privilege(current_user,'workflow.${table}','TRUNCATE') AS truncate`);
       expect(granted.rows[0], table).toEqual({ use: true, truncate: false });

@@ -70,7 +70,7 @@ function workflowLayout(steps: number, opts: { extra?: number; newTables?: boole
     ...(opts.noRecord ? [] : ["COPY workflow_drizzle.workflow_migrations (id, hash, created_at) FROM stdin;", ...rows, "\\."]),
     "", "COPY graphile_worker.migrations (id, ts, breaking) FROM stdin;", ...queue, "\\.", "",
   ].join("\n"));
-  const tables = ["workflow_runs", "workflow_events", ...((opts.newTables ?? steps >= WORKFLOW_SCHEMA_STEPS.length) ? ["workflow_invocations", "workflow_snapshots", "workflow_start_hook_admissions"] : [])];
+  const tables = ["workflow_runs", "workflow_events", ...((opts.newTables ?? steps >= WORKFLOW_SCHEMA_STEPS.length) ? ["workflow_invocations", "workflow_job_lock_holders", "workflow_snapshots", "workflow_start_hook_admissions"] : [])];
   writeFileSync(workflowToc, [";", "; Archive created at 2026-11-01", ";",
     ...tables.map((t, i) => `${200 + i}; 1259 ${16400 + i} TABLE workflow ${t} lares_workflow_owner`),
     ...((opts.newTables ?? steps >= WORKFLOW_SCHEMA_STEPS.length) ? ["300; 1259 16500 SEQUENCE workflow workflow_invocations_sequence_seq lares_workflow_owner"] : []),
@@ -1389,11 +1389,11 @@ describe("restore.sh: a backup from an older release", () => {
   };
   it("refuses a store written by a newer release before anything is stopped or dropped", () => {
     workflowLayout(WORKFLOW_SCHEMA_STEPS.length, { extra: 1 });
-    refusedBeforeAnything(run(base()), new RegExp(`agent store ${workflowDatabase} in this snapshot cannot be restored by this release: it was written by a newer release: it has 31 schema steps recorded, and this release knows 30\\. .*install that release or a newer one`));
+    refusedBeforeAnything(run(base()), new RegExp(`agent store ${workflowDatabase} in this snapshot cannot be restored by this release: it was written by a newer release: it has 32 schema steps recorded, and this release knows 31\\. .*install that release or a newer one`));
   });
   it("refuses a store with a step list it does not know", () => {
     workflowLayout(25);
-    refusedBeforeAnything(run(base()), /it has 25 schema steps recorded, and they are neither the 20 an older release leaves nor the 30 this release leaves/);
+    refusedBeforeAnything(run(base()), /it has 25 schema steps recorded, and they are neither the 20 an older release leaves nor the 31 this release leaves/);
   });
   it("refuses a store with no record of its steps", () => {
     workflowLayout(0, { noRecord: true });

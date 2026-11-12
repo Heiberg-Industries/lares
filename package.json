@@ -30,7 +30,7 @@
       "sass@<1.79.0": "1.105.1"
     },
     "patchedDependencies": {
-      "eve@1.0.0-rc.9": "patches/eve.patch"
+      "eve@1.0.0-rc.10": "patches/eve.patch"
     }
   },
   "devDependencies": {

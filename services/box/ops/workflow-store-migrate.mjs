@@ -67,7 +67,7 @@ const LEFT_BY_PREVIOUS_RELEASE = [
 // all of them, is a store somebody changed by hand.
 const ADDED_BY_THIS_RELEASE = [
   "workflow.workflow_invocations", "workflow.workflow_snapshots", "workflow.workflow_start_hook_admissions",
-  "workflow.workflow_invocations_sequence_seq",
+  "workflow.workflow_job_lock_holders", "workflow.workflow_invocations_sequence_seq",
 ];
 const QUEUE_STEPS = 18;
 
