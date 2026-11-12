@@ -1309,8 +1309,8 @@ def main(argv: list[str]) -> int:
             passed("the-agent-log-has-no-database-permission-errors")
 
         stage("a started agent takes an edit")
-        # The installation owner ruled that a change to a running agent applies from the console alone,
-        # and that saving it may end the open web-chat conversations, with a warning on the page.
+        # A change to a running agent applies from the console alone, and saving it ends the agent's open
+        # web-chat conversations, with a warning on the page first (Lares ADR-0027).
         started_before = agent_started_at()
         sessions_before = {call["session"] for call in conversation_calls(release)}
         browser("edit-after-start", settings_file, tls)

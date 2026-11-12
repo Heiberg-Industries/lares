@@ -151,7 +151,7 @@ it('stages rendered native runtimes without a legacy key and checks current auth
  await pool.query('UPDATE agent_definitions SET duties=$1,hash=$2 WHERE name=$3',['Changed duties',changedHash,'bookkeeper']);
  const heldSave=vi.spyOn(console,'error').mockImplementation(()=>{});
  try{
-  // The installation owner ruled that a change to a started agent applies from the console alone, with the
+  // A change to a started agent applies from the console alone (Lares ADR-0027), with the
   // monthly limits, the model name and its prices as the protection. So this save no longer stops the agent:
   // the instructions are read again for each conversation, and the budget key still covers it.
   const described={...chief,description:'Edited after the start'};

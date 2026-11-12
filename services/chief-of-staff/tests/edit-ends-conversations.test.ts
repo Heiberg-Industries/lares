@@ -1,6 +1,6 @@
-/** What saving a change to a running agent does to its open web-chat conversations. The installation owner
- * ruled on 12 Nov 2026 that a save may end them, with a warning on the page; the private-notes guard and the
- * access-revision rule below stay exactly as they are. Real storage and the real authority code, no fakes. */
+/** What saving a change to a running agent does to its open web-chat conversations (Lares ADR-0027 §6):
+ * a save ends them; the console warns before Save. The private-notes guard and the access-revision rule
+ * below stay exactly as they are. Real storage and the real authority code, no fakes. */
 import { readdirSync, readFileSync } from 'node:fs';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
