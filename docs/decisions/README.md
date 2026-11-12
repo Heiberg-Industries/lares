@@ -27,3 +27,4 @@ ADR-0009 is not part of this repository. ADR-0016 supersedes its runtime choice 
 | [ADR-0022](0022-the-tested-install-path.md) | The tested install path |
 | [ADR-0023](0023-member-authority-and-audiences.md) | Member authority and conversation audiences |
 | [ADR-0024](0024-tracks.md) | Owner-defined Tracks, their homes, and purpose-first routing |
+| [ADR-0025](0025-one-door-layer.md) | One door-neutral layer; a door is an adapter |
