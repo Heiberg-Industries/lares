@@ -26,7 +26,8 @@ import { encryptSecret,decryptSecret } from '@lares/agent-box/lib/crypto.js';
 import {getPool,closePool} from '@lares/agent-kit/db';
 import { definitionModelResolver } from '@lares/agent-kit/definition-model';
 import { emptySessionView } from 'eve/events';
-import {personalSendApprovalRequest,personalSendInputRequested,personalSendApprovalResponse,personalSendInputResolved,requirePersonalSendCall} from '../lib/personal-send-approval.js';
+import {personalSendApprovalRequest,personalSendInputRequested,personalSendApprovalResponse,personalSendInputResolved,requirePersonalSendCall,NEW_SEND_AFTER_ANSWER_REFUSED} from '../lib/personal-send-approval.js';
+import {noteAnswerApplied} from '../lib/approval-card-turns.js';
 import { claimModelPurposeForInvocation,closeModelPurposeTurn,openContinuationAfterSettle,prepareModelPurposeInvocation } from '../agent/lib/model-purpose.js';
 import {requirePrivateConsoleResume,clearAcceptedAnswersForTests,settleAcceptedAnswer} from '@lares/agent-kit/private-console-resume';
 import {readPersonalResource} from '../lib/personal-reads.js';
@@ -428,5 +429,50 @@ describe('the reply after an answered personal-mail card (eve 1.0)',()=>{
   await openContinuationAfterSettle(turnId(),session());
   expect(ops()).toEqual([]);
   await expect(modelCall()).rejects.toThrow();
+ });
+});
+/** The owner's ruling: in the turn an answer to a card was applied in, a NEW send is refused before
+ *  any draft, card or provider call; the answered card's own approved send still goes out once; the
+ *  next message (a new turn) sends as before. The settle hook's durable mark is written here the way
+ *  agent/hooks/approval-record.ts writes it (`noteAnswerApplied`); tests/turn-after-answered-card.test.ts
+ *  drives the hooks themselves, the restart and the doors. */
+describe('no new send in the reply to an answered request',()=>{
+ // The describe above ends each of its tests by removing every stubbed variable; put this agent's back.
+ beforeEach(()=>{for(const [k,v]of Object.entries(env))vi.stubEnv(k,v);vi.stubEnv('DATABASE_URL',container.getConnectionUri());eveState.clear();clearAcceptedAnswersForTests();});
+ const refusal={type:'denied',reason:NEW_SEND_AFTER_ANSWER_REFUSED};
+ const counts=async()=>(await pool.query('SELECT (SELECT count(*) FROM personal_actions)::int AS actions,(SELECT count(*) FROM approval_asks)::int AS asks')).rows[0];
+ /** The model asks for another send in the same (continued) turn, as the same member. */
+ const another=(p:Awaited<ReturnType<typeof proposed>>,session=p.human.session)=>({callId:`again-${++call}`,toolInput:{...structuredClone(p.input),subject:'Another send'},session});
+ const answer=async(p:Awaited<ReturnType<typeof proposed>>,decision:'approve'|'deny')=>{
+  expect(await personalSendApprovalResponse(decision==='approve'?p.response:{...p.response,response:{decision:'deny',principal:resolverAuth(p.requestId,'deny')}})).toEqual({status:'allowed'});
+  noteAnswerApplied(p.human.session.turn.id);
+ };
+ it.each(['approve','deny'] as const)('after %s: a new send in the continued turn is refused, with no draft, no card and no provider call',async decision=>{
+  const p=await proposed();await answer(p,decision);
+  const before=await counts();
+  expect(await personalSendApprovalRequest(another(p))).toEqual(refusal);
+  expect(await counts()).toEqual(before);
+  expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
+ });
+ it('the approved send of the answered card still goes out exactly once; a new send next to it is refused; the next message can send',async()=>{
+  const p=await proposed();await answer(p,'approve');
+  expect(await recheckOf(p.human)).toMatchObject({denied:false}); // eve's re-check of the approved call, same turn
+  const approved=await requirePersonalSendCall(p.run,p.input);expect(approved.reference.actionId).toBe(p.row.id);
+  await expect(executeApprovedPersonalSend(context(approved.reference),approved.reference,{pool,actions,runtime,env})).resolves.toMatchObject({state:'accepted'});
+  expect(sends).toHaveBeenCalledExactlyOnceWith({to:p.input.to,subject:p.input.subject,body:p.input.body});
+  const before=await counts();
+  expect(await personalSendApprovalRequest(another(p))).toEqual(refusal);
+  expect(await counts()).toEqual(before);expect(sends).toHaveBeenCalledOnce();
+  // A new message is a new turn: the send is prepared behind its own card, as before.
+  const next=another(p,{...p.human.session,turn:{id:'next-human',sequence:2}});
+  expect(await personalSendApprovalRequest(next)).toBe('user-approval');
+  expect((await pool.query('SELECT state FROM personal_actions WHERE original_call_id=$1',[next.callId])).rows[0].state).toBe('awaiting_approval');
+  expect(sends).toHaveBeenCalledOnce();
+ });
+ it('fails closed when the turn cannot be told: no turn id is refused, with nothing stored',async()=>{
+  const p=await proposed(),before=await counts();
+  const {turn:_turn,...noTurn}=p.human.session;
+  expect(await personalSendApprovalRequest(another(p,noTurn as never))).toEqual(refusal);
+  expect(await counts()).toEqual(before);
  });
 });

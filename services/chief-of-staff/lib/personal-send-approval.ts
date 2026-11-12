@@ -12,6 +12,7 @@ import {isApprovalRecheck,approvalResponderOf} from '@lares/agent-kit/approval-e
 import {requirePrivateConsoleResume,privateResolverAdmission,rememberAcceptedAnswer,acceptedAnswerFor} from '@lares/agent-kit/private-console-resume';
 import {managedIdentity} from '@lares/agent-kit/door-authority';
 import {personalReadSelectionSchema} from './personal-reads.js';
+import {turnAppliedAnAnswer} from './approval-card-turns.js';
 import {requirePersonalSendPolicy,requirePersonalSendApprovalPolicy,executeApprovedPersonalSend} from './personal-send.js';
 export const personalSendInputSchema=personalMailPayloadSchema.extend({selection:personalReadSelectionSchema});
 export function personalActions(){const key=readTokenEncKey();return new PgPersonalActionStore(getPool(),{encrypt:s=>encryptSecret(s,key),decrypt:s=>decryptSecret(s,key)});}
@@ -35,6 +36,31 @@ async function recheckContext(ctx:ConsoleAuthorityContext&{callId?:string}):Prom
   const stored={authenticator:'lares-console',attributes:{lares_resolver_member_id:requester.memberId,lares_purpose:'resolver',lares_resume_request_id:rows[0].request_id,lares_resume_option:'approve'}};
   return {...ctx,session:{...ctx.session,auth:{current:stored,initiator:ctx.session?.auth?.initiator}}} as ConsoleAuthorityContext;
 }
+/** What the model is told, to pass on to the person. It says nothing about the earlier card. */
+export const NEW_SEND_AFTER_ANSWER_REFUSED='A new send cannot be started in the reply to an answered request. Ask again in a new message.';
+/**
+ * NO NEW SEND IN THE REPLY TO AN ANSWERED REQUEST. A deliberate rule, the same at every door.
+ *
+ * On eve 1.0 an answered card (Approve or Deny) does not start a new turn: the paused turn carries
+ * on as the person who ASKED, so the console authority check alone would let that continuation
+ * prepare another send behind another card. Nothing caps that loop, each round is model calls
+ * charged to that person, and a hurried Approve on the second card could send the same mail twice.
+ * The older framework line could not do it (the continuation ran as the answerer, whom the console
+ * authority check refuses); the owner ruled that the new line refuses it too, on purpose.
+ *
+ * So in a turn in which a person's answer to a card was applied, a NEW send is refused before
+ * anything is read, stored or shown; the person asks again in a new message, which is a new turn.
+ * The approved send of the answered card itself never reaches this: eve re-asks the policy as a
+ * recheck (the branch above), which returns before this check.
+ *
+ * The turn is recognised from the durable mark the settle hook writes (`noteAnswerApplied`,
+ * lib/approval-card-turns.ts), kept in eve's per-session state: it survives a restart between the
+ * answer and the continuation, and it names one turn of one conversation only. FAILS CLOSED: a turn
+ * with no id, or state that cannot be read, is refused like an answered one.
+ */
+export function newSendAfterAnswerRefusal(session:Parameters<typeof turnAppliedAnAnswer>[0]):{type:'denied';reason:string}|undefined{
+  return turnAppliedAnAnswer(session)===false?undefined:{type:'denied',reason:NEW_SEND_AFTER_ANSWER_REFUSED};
+}
 export async function personalSendApprovalRequest(ctx:ConsoleAuthorityContext&{callId?:string;toolInput?:unknown}){
   const input=personalSendInputSchema.parse(ctx.toolInput),pool=getPool();
   if(isApprovalRecheck(ctx)){
@@ -47,6 +73,9 @@ export async function personalSendApprovalRequest(ctx:ConsoleAuthorityContext&{c
       });
     return 'user-approval' as const;}catch{return 'denied' as const;}
   }
+  // Before any authority read, credential, prepared draft or card.
+  const refused=newSendAfterAnswerRefusal(ctx.session);
+  if(refused)return refused;
   const authority=await requireConsoleTurnAuthority(ctx),own=managedIdentity();
   if(!own||!authority.actingMemberId||!ctx.callId)throw new Error('Personal mail approval unavailable');
   const actor=authority.actingMemberId;
