@@ -436,8 +436,12 @@ The backup, the export and the restore drill include `/srv/lares/installation` w
 
 The installer also gives your chief-of-staff agent the same file when it exists, read-only, and
 tells the agent where to find it. A chief of staff created after the re-run has it from the
-start. One that already runs gets it the next time its connections are applied: save a change to
-its definition in the console, then press Apply connection changes. The creative agent never
+start. One that already runs gets it the next time the keeper restarts it; saving its
+definition does not restart it. To restart it now, open **Settings** in the console, and under
+**Console address** enter the address you open the console at and press **Save**. Every
+running chief of staff restarts, which takes about a minute, and the page names the agents it
+restarted. An agent with changes waiting is not restarted then: press **Apply connection
+changes** on its page instead, which restarts it with the file too. The creative agent never
 gets it. If the calendar is a link or a folder rather than a plain file, the installer prints a
 warning and leaves the agent without it.
 
