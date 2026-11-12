@@ -11,19 +11,24 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const durable = vi.hoisted(() => ({ values: new Map<string, unknown>() }));
+const durable = vi.hoisted(() => ({ values: new Map<string, unknown>(), readable: true }));
 vi.mock("eve/context", () => ({
   defineState: (key: string, initial: () => unknown) => ({
-    get: () => (durable.values.has(key) ? durable.values.get(key) : initial()),
+    get: () => {
+      if (!durable.readable) throw new Error("no active eve context");
+      return durable.values.has(key) ? durable.values.get(key) : initial();
+    },
     update: (fn: (value: unknown) => unknown) => {
       durable.values.set(key, fn(durable.values.has(key) ? durable.values.get(key) : initial()));
     },
   }),
 }));
 // No database: every query finds nothing (no ledger row, no prepared personal send), which is not under test.
+// Each query is counted, so a refusal can be shown to come before any read or write.
+const db = vi.hoisted(() => ({ queries: [] as unknown[] }));
 vi.mock("@lares/agent-kit/db", async (original) => ({
   ...(await original<typeof import("@lares/agent-kit/db")>()),
-  getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
+  getPool: () => ({ query: async (...args: unknown[]) => { db.queries.push(args[0]); return { rows: [], rowCount: 0 }; } }),
 }));
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock("@lares/agent-kit/model-purpose-client", () => ({ modelPurposeRequest: requestMock }));
@@ -56,7 +61,8 @@ async function load() {
   const seam = await import("../agent/lib/model-purpose.js");
   const store = await import("@lares/agent-kit/private-console-resume");
   const { captureModelInvocation } = await import("@lares/agent-kit/model-invocation");
-  return { hook, approvals, seam, store, captureModelInvocation };
+  const send = await import("../lib/personal-send-approval.js");
+  return { hook, approvals, seam, store, captureModelInvocation, send };
 }
 type Loaded = Awaited<ReturnType<typeof load>>;
 
@@ -84,6 +90,8 @@ let m: Loaded;
 beforeEach(async () => {
   vi.resetModules();
   durable.values.clear();
+  durable.readable = true;
+  db.queries.length = 0;
   requestMock.mockReset();
   requestMock.mockImplementation(async (op: string) => op === "turn.open"
     ? { capability: "c".repeat(43), expiresAt: Date.now() + 5 * 60_000 }
@@ -240,4 +248,98 @@ describe("Slack and Telegram", () => {
     expect(session.auth.current).toBe(DOORS.Telegram.owner);
     expect(m.approvals.humanTurnRefusal(session, "Not saved.")).toContain(REFUSED);
   });
+});
+
+/**
+ * NO NEW SEND IN THE REPLY TO AN ANSWERED REQUEST (the owner's ruling, sends only). In the turn an
+ * answer to a card was applied in, `personal_mailbox_send`'s request policy refuses a new send with
+ * one fixed sentence, before any read, draft or card. Driven here through the real opening and
+ * settle hooks; the database-backed half (no row, no card, no provider call, the approved send
+ * still goes out once, the next turn sends) is in tests/personal-send.test.ts.
+ */
+describe("no new send in the reply to an answered request", () => {
+  const SENTENCE = "A new send cannot be started in the reply to an answered request. Ask again in a new message.";
+  const input = { selection: { accountId: "account-1", generation: 0, resourceBindingId: "binding-1" },
+    to: ["recipient@example.invalid"], subject: "Second send", body: "Body" };
+  const newSend = (session: unknown, callId = "call_new_send") =>
+    ({ session, callId, toolName: "personal_mailbox_send", toolInput: structuredClone(input) });
+  const refusal = { type: "denied", reason: SENTENCE };
+
+  /** The card opens in turn_2, the member answers it, eve settles it: what the hooks see. */
+  async function answeredIn(sessionId: string, decision: "approve" | "deny") {
+    const session = sessionOf(sessionId, member());
+    const ctx = { session, agent: { name: "chief-of-staff" } };
+    await m.hook.events["interaction.opened"]!(opened("turn_2", `int_${sessionId}`), ctx);
+    webChatAnswer(m, session, `int_${sessionId}`, decision);
+    await m.hook.events["interaction.settled"]!(decision === "approve"
+      ? settled("turn_2", `int_${sessionId}`, "accepted", "approve")
+      : settled("turn_2", `int_${sessionId}`, "declined", "deny"), ctx);
+    db.queries.length = 0;
+    return session;
+  }
+
+  for (const decision of ["approve", "deny"] as const) {
+    it(`web chat, after ${decision === "approve" ? "Approve" : "Deny"}: a new send in the continued turn is refused with the sentence, before any read`, async () => {
+      const session = await answeredIn(`sess_send_${decision}`, decision);
+      // Through the seam eve actually calls (the catalogue tool's request policy).
+      expect(await m.approvals.catalogueApprovalRequest("personal_mailbox_send", newSend(session), undefined)).toEqual(refusal);
+      expect(await m.send.personalSendApprovalRequest(newSend(session, "call_again") as never)).toEqual(refusal);
+      expect(db.queries).toEqual([]); // nothing read or stored, so no draft and no card
+      // The sentence says nothing about the earlier card.
+      expect(SENTENCE).not.toContain(`int_sess_send_${decision}`);
+    });
+  }
+
+  it("the next message is a new turn: the rule no longer applies (the send goes on to its usual checks)", async () => {
+    const session = await answeredIn("sess_send_next", "approve");
+    const next = sessionOf(session.id, member(), "turn_3");
+    expect(m.send.newSendAfterAnswerRefusal(next)).toBeUndefined();
+    // With no conversation binding here the usual authority check then refuses, not this rule.
+    const error = await m.send.personalSendApprovalRequest(newSend(next) as never).then(() => undefined, (e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain("answered request");
+  });
+
+  it("a card that ended without an answer (expired, withdrawn) is not this rule's: no answer was applied", async () => {
+    for (const outcome of ["expired", "withdrawn"]) {
+      const session = sessionOf(`sess_send_${outcome}`, member());
+      const ctx = { session, agent: { name: "chief-of-staff" } };
+      await m.hook.events["interaction.opened"]!(opened("turn_2", `int_${outcome}`), ctx);
+      await m.hook.events["interaction.settled"]!(settled("turn_2", `int_${outcome}`, outcome), ctx);
+      expect(m.send.newSendAfterAnswerRefusal(session)).toBeUndefined();
+    }
+  });
+
+  it("a restart between the answer and the continued turn keeps the refusal", async () => {
+    const session = await answeredIn("sess_send_restart", "approve");
+    vi.resetModules();
+    m = await load();
+    expect(await m.send.personalSendApprovalRequest(newSend(session) as never)).toEqual(refusal);
+    expect(db.queries).toEqual([]);
+  });
+
+  it("fails closed: a turn with no id, or session state that cannot be read, is refused", async () => {
+    const noTurn = { id: "sess_send_noturn", auth: { current: member(), initiator: member() } };
+    expect(await m.send.personalSendApprovalRequest(newSend(noTurn) as never)).toEqual(refusal);
+    expect(await m.send.personalSendApprovalRequest(newSend({ ...noTurn, turn: { id: "", sequence: 2 } }) as never)).toEqual(refusal);
+    durable.readable = false;
+    expect(await m.send.personalSendApprovalRequest(newSend(sessionOf("sess_send_unreadable", member())) as never)).toEqual(refusal);
+    expect(db.queries).toEqual([]);
+  });
+
+  for (const [door, who] of Object.entries(DOORS)) {
+    it(`${door}: after the owner answers a card, a send in the continued turn raises no card`, async () => {
+      const session = sessionOf(`sess_send_${door}`, who.owner);
+      const ctx = { session, agent: { name: "chief-of-staff" } };
+      await m.hook.events["interaction.opened"]!(opened("turn_2", "int_door"), ctx);
+      expect(m.approvals.nativeAnswerDecision(nativeAnswer("int_door", session.id, who.owner, "approve"))).toEqual({ status: "allowed" });
+      await m.hook.events["interaction.settled"]!(settled("turn_2", "int_door", "accepted", "approve"), ctx);
+      db.queries.length = 0;
+      // The send tool is never offered on this door; a replayed call is refused before its policy.
+      await expect(m.approvals.catalogueApprovalRequest("personal_mailbox_send", newSend(session), undefined)).rejects.toThrow();
+      // And the rule itself is not tied to a door: the policy refuses this turn with the sentence too.
+      expect(await m.send.personalSendApprovalRequest(newSend(session) as never)).toEqual(refusal);
+      expect(db.queries).toEqual([]);
+    });
+  }
 });
