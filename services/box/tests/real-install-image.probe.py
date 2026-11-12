@@ -5,8 +5,9 @@ Earlier proofs seed the database and start pieces by hand, so bugs on the real i
 reached them. This one runs get-lares.sh and install.sh from an ordinary folder, then signs in,
 runs `lares owner-bootstrap`, `lares budget setup`, creates and adopts an agent on the console's
 real pages, sets the member limit there, runs `lares agent start`, holds a chat where a tool runs,
-an approval card is answered and the conversation carries on, connects a Slack and a Telegram door on
-the agent's page and sends one message through each, sets up `lares backups`, then runs a
+an approval card is answered and the conversation carries on, edits the started agent's description on
+its page, then connects a Slack and a Telegram door on that page as the install guide orders it (the agent
+already started) and sends one message through each, sets up `lares backups`, then runs a
 real `lares update` to a second build, runs `lares doctor`, simulates a reboot and waits for the agent to come back by itself. Up to there nothing writes to the
 database or edits an installation file the installer owns. It finishes by restoring a backup whose agent store the release before this
 one left onto this machine wiped and installed again (the last stage, further down, says what it changes and why).
@@ -80,6 +81,8 @@ DOOR_PERSON = {"slack": "U0PROOFOWNER", "telegram": "700000001"}
 DOOR_CHAT = {"slack": "D0PROOF", "telegram": "700000001"}
 CLAIM_REPLY = "Connected. Once setup finishes applying"
 MEMBER_LIMIT = "15"
+EDITED_DESCRIPTION = "PROOF_EDITED_DESCRIPTION written on the console page while the agent runs."
+SAVE_WARNING = "open web-chat conversations, and any approval waiting in them. Start a new conversation afterwards."
 INSTALL_TIMEOUT = 1500
 LIMITS = [
     "The model provider and the sign-in provider are stand-ins: a real provider's replies are copied, not called.",
@@ -93,6 +96,8 @@ LIMITS = [
     "The check of who pays after an answered card reads web chat only; it does not exercise Slack or Telegram turns (the door stage checks those).",
     "The update goes to a second build of the same code (a new label, so new digests): a release that changes code or adds migrations is not covered.",
     "Saving a definition in the console after the update is not exercised; agent start and the agent's restart are.",
+    "A started agent takes one edit on the console page (its description) and, after it, a Slack and a Telegram door switched on and applied by Connect, before the update. Apply after a model change on a started agent is covered by keeper tests, not by an image run.",
+    "The conversation the edit ends is a plain one with one message; that an approval waiting in such a conversation cannot be answered afterwards is covered by the agent's tests, not here.",
     "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
     "A real agent answer is not covered: the stand-in decides what the model says.",
@@ -100,6 +105,7 @@ LIMITS = [
     "Slack and Telegram are stand-ins at their real names: the probe signs the Slack event with the signing secret it pasted and sends the Telegram update with the secret the stand-in was given; a platform's retries, timing and payload variety are not covered.",
     "A door's claim is applied by pressing Apply on the agent's page after the claim was sent, not by the page's own watch-and-apply.",
     "One member connects both doors, so who pays when a second member connects a door is not covered.",
+    "Web chat's approval cards are all answered before any door is claimed; how web-chat approvals behave once a door is claimed is not exercised.",
     "A scheduled message into a chat door is not exercised.",
 ]
 
@@ -293,6 +299,61 @@ def keeper_held_lines() -> list[str]:
         return ["the keeper is not running"]
     logs = run("docker", "logs", ids[0], check=False, show=False)
     return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line]
+
+
+def keeper_log_lines(phrase: str) -> list[str]:
+    """Lines of the keeper's log that contain a fixed phrase."""
+    ids = output("docker", "ps", "-q", "--filter", "label=com.docker.compose.service=lares-keeper").split()
+    if not ids:
+        return ["the keeper is not running"]
+    logs = run("docker", "logs", ids[0], check=False, show=False)
+    return [line.strip()[:300] for line in (logs.stdout + logs.stderr).splitlines() if phrase in line]
+
+
+def agent_started_at() -> str | None:
+    """When the proof agent's running container was started; None when it is not running."""
+    ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    return output("docker", "inspect", "--format", "{{.State.StartedAt}}", ids[0]) if ids else None
+
+
+def conversation_calls(release: dict, saved_at: str | None = None) -> list[dict]:
+    """Every call booked to a conversation: its conversation, state, payer, and whether it was made after
+    `saved_at`, a time the database gave (the keeper's audit row of one save). A conversation the save ended
+    takes no call after it: the budget check refuses before any attempt is recorded. Never compared with
+    `agent_definitions.valid_at`: the running agent moves that on at every fresh definition read."""
+    after = f"a.created_at >= '{saved_at}'::timestamptz" if saved_at else "false"
+    rows = read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('session', a.authority_reference#>>'{binding,sessionId}', 'state', a.state, "
+        f"'payer', coalesce(a.live_member_id, ''), 'afterSave', {after}) ORDER BY a.created_at, a.id), '[]') "
+        "FROM budget_attempts a WHERE a.authority_reference->>'kind' = 'human'", release)
+    return json.loads(rows or "[]")
+
+
+def keeper_audit_mark(release: dict) -> str:
+    """The newest row of the keeper's audit log now, so a later read finds only the rows written after it."""
+    return read_only_query("SELECT coalesce(max(id), 0) FROM keeper_audit", release) or "0"
+
+
+def this_save_started_at(release: dict, mark: str) -> tuple[str | None, int]:
+    """When the keeper began the one definition save made after `mark` for the proof agent, as the database
+    recorded it (`keeper_audit.at`, written once when the action starts), and how many such saves there were.
+    The save must be the one whose recorded hash is the definition's hash now."""
+    rows = read_only_query(
+        "SELECT k.at::text, k.detail = '{\"hash\":\"' || d.hash || '\"}' FROM keeper_audit k JOIN agent_definitions d ON d.name = k.input->>'name' "
+        f"WHERE k.id > {int(mark)} AND k.action = 'definition.save' AND k.outcome = 'ok' AND k.input->>'name' = '{AGENT}' ORDER BY k.id", release)
+    saves = [line.split("|") for line in rows.splitlines() if line]
+    current = [at for at, matches in saves if matches == "t"]
+    return (current[0] if len(saves) == 1 and len(current) == 1 else None), len(saves)
+
+
+def agent_permission_denied_lines() -> list[str]:
+    """Lines of the proof agent's container log where the database refused it something. A chat can
+    still answer while its job queue is refused a call, so the answer alone does not show it."""
+    ids = output("docker", "ps", "-a", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    if not ids:
+        return ["the proof agent has no container"]
+    logs = run("docker", "logs", ids[0], check=False, show=False)
+    return [redact(line.strip())[:300] for line in (logs.stdout + logs.stderr).splitlines() if "permission denied" in line]
 
 
 def agent_answers() -> bool:
@@ -607,12 +668,65 @@ def agent_log_evidence() -> dict:
             "secretFileNotReadableLines": sum(1 for line in lines if "secret file not readable" in line)}
 
 
+# The keeper's own reason when a save of a door, role, personal account or model stops a started agent
+# until Apply restarts it (Lares ADR-0027). That stop is the design; any other reason is not.
+DESIGNED_STOP = "takes effect when Apply restarts it"
+
+
+def check_door_enable_applied(kind: str, record: dict, stops_before: int, apply_failures_before: int, audit_mark: str, release: dict) -> None:
+    """Connect on a started agent saves the door switched on and applies it, which restarts the agent. A hard
+    check: afterwards the agent runs and answers, the applied definition has the door on, nothing is waiting,
+    and neither the keeper's log nor its audit shows a refused or failed save or Apply, or a stop for any
+    reason but the designed one. Before the change "a started agent takes an edit" this save stopped the
+    agent and Apply put the door back off."""
+    deadline = time.monotonic() + 90
+    while not agent_answers() and time.monotonic() < deadline:
+        time.sleep(3)
+    answers = agent_answers()
+    state = json.loads(read_only_query(
+        "SELECT json_build_object('pending', r.pending, 'doorOn', EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(r.applied_definition->'doors', '[]'::jsonb)) d "
+        f"WHERE d->>'kind' = '{kind}' AND (d->>'enabled')::boolean)) FROM agent_resources r WHERE r.name = '{AGENT}'", release) or "null") or {}
+    stops = keeper_log_lines("was stopped after a save")[stops_before:]
+    apply_failures = keeper_log_lines("Apply failed")[apply_failures_before:]
+    audits = [line.split("|") for line in read_only_query(
+        f"SELECT action, outcome FROM keeper_audit WHERE id > {int(audit_mark)} AND input->>'name' = '{AGENT}' "
+        "AND action IN ('definition.save', 'definition.reconcile') ORDER BY id", release).splitlines() if line]
+    record["enableAfterStart"] = {"agentAnswers": answers, "pending": state.get("pending"), "doorOnInAppliedDefinition": state.get("doorOn"),
+                                  "keeperStopsAfterASave": [redact(line) for line in stops], "keeperApplyFailedLines": [redact(line) for line in apply_failures],
+                                  "savesAndApplies": [{"action": action, "outcome": outcome} for action, outcome in audits]}
+    save_proof()
+    problems = []
+    if not answers:
+        problems.append("the agent is not running and answering")
+    if state.get("doorOn") is not True:
+        problems.append("the door is not on in the applied definition")
+    if state.get("pending") is not False:
+        problems.append("the agent still has changes waiting to be applied")
+    if [line for line in stops if DESIGNED_STOP not in line]:
+        problems.append(f"the keeper stopped the agent after a save for another reason than the door change: {[line for line in stops if DESIGNED_STOP not in line][0]}")
+    if apply_failures:
+        problems.append(f"the keeper logged a failed Apply: {apply_failures[0]}")
+    if not any(action == "definition.save" and outcome == "ok" for action, outcome in audits) or \
+            not any(action == "definition.reconcile" and outcome == "ok" for action, outcome in audits):
+        problems.append(f"the keeper's audit does not show the save and the Apply both done: {audits}")
+    if any(outcome != "ok" for _, outcome in audits):
+        problems.append(f"the keeper's audit shows a save or Apply that did not finish ok: {audits}")
+    if problems:
+        record["checks"]["door-enable-after-start-applied"] = False
+        proof["checks"]["door-enable-after-start-applied"] = False
+        save_proof()
+        raise RuntimeError(f"door-enable-after-start-applied failed for {kind}: " + "; ".join(problems))
+    record["checks"]["door-enable-after-start-applied"] = True
+    passed("door-enable-after-start-applied")
+
+
 def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_file: pathlib.Path, tls: dict[str, pathlib.Path],
               door_values: dict, door_codes: pathlib.Path, release: dict, deferred: list[str]) -> None:
-    """Connects the door on the agent's page, claims it as the owner, applies the claim, then sends one
-    ordinary message and reads what happened: did it reach the model through the keeper, who was
-    charged and as what, and was the answer posted back into the chat. The door's setup is a hard
-    check; the three about the message are reported at the end, like the chat's."""
+    """Connects the door on the started agent's page (which saves it switched on and applies it), claims it
+    as the owner, applies the claim, then sends one ordinary message and reads what happened: did it reach
+    the model through the keeper, who was charged and as what, and was the answer posted back into the
+    chat. The door's setup is a hard check; the three about the message are reported at the end, like
+    the chat's."""
     chat, person = DOOR_CHAT[kind], DOOR_PERSON[kind]
     # A post into the chat; Telegram's typing indicator is not one.
     reply_methods = ((lambda method: method.startswith("chat.")) if kind == "slack"
@@ -630,9 +744,13 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
         print(f"FAIL (reported at the end): {check}: {why}", flush=True)
         deferred.append(f"{check}: {why}")
 
-    # The owner connects the door, and sends the one-time step from the platform.
+    # The owner connects the door on the started agent, and sends the one-time step from the platform.
     calls_at_connect = len(fake_calls(fixture))
+    stops_before = len(keeper_log_lines("was stopped after a save"))
+    apply_failures_before = len(keeper_log_lines("Apply failed"))
+    audit_mark = keeper_audit_mark(release)
     browser(f"connect-{kind}", settings_file, tls)
+    check_door_enable_applied(kind, record, stops_before, apply_failures_before, audit_mark, release)
     code = (door_codes / kind).read_text().strip()
     if kind == "slack":
         if not re.fullmatch(r"claim [A-Z0-9]{24}", code):
@@ -1439,6 +1557,8 @@ def main(argv: list[str]) -> int:
             "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "notePrompt": NOTE_PROMPT, "noteReply": NOTE_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
             # Any message the stand-in does not recognise is answered with PROOF_OK.
             "afterUpdatePrompt": "PROOF_AFTER_THE_UPDATE", "afterUpdateReply": "PROOF_OK", "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
+            "beforeEditPrompt": "PROOF_BEFORE_THE_EDIT", "oldConversationPrompt": "PROOF_OLD_CONVERSATION_AFTER_THE_EDIT", "afterEditPrompt": "PROOF_AFTER_THE_EDIT",
+            "editedDescription": EDITED_DESCRIPTION, "saveWarning": SAVE_WARNING,
             "screenshotDir": str(shots), "doorCodeDir": str(door_codes), **door_values,
         }))
         browser("discover-owner", settings_file, tls)
@@ -1501,6 +1621,75 @@ def main(argv: list[str]) -> int:
         print(f"budget attempts by state:\n{attempts}", flush=True)
         passed("every-model-call-settled-in-the-budget-ledger")
         check_charges_after_answered_cards(release, deferred)
+        denied = agent_permission_denied_lines()
+        if denied:
+            proof["agentPermissionDenied"] = denied[:40]
+            save_proof()
+            deferred.append(f"the agent's log has {len(denied)} database permission errors, first: {denied[0]}")
+        else:
+            passed("the-agent-log-has-no-database-permission-errors")
+
+        stage("a started agent takes an edit")
+        # A change to a running agent applies from the console alone, and saving it ends the agent's open
+        # web-chat conversations, with a warning on the page first (Lares ADR-0027).
+        started_before = agent_started_at()
+        sessions_before = {call["session"] for call in conversation_calls(release)}
+        audit_mark = keeper_audit_mark(release)
+        browser("edit-after-start", settings_file, tls)
+        # What the browser step itself checked: the warning, the save, the old conversation ended on the page with
+        # no further answer, and a new conversation answered.
+        passed("on-the-page-the-old-conversation-ended-unanswered-and-a-new-one-was-answered")
+        if agent_started_at() != started_before or started_before is None:
+            deferred.append(f"the agent's container was stopped or restarted by a description save (started {started_before}, now {agent_started_at()})")
+        else:
+            passed("a-description-save-did-not-stop-or-restart-the-agent")
+        saved = read_only_query("SELECT json_build_object('description', d.definition->>'description', 'applied', r.applied_definition->>'description', "
+                                f"'pending', r.pending) FROM agent_definitions d JOIN agent_resources r ON r.name = d.name WHERE d.name = '{AGENT}'", release)
+        saved = json.loads(saved) if saved else {}
+        proof["editAfterStart"] = {"savedDescriptionEdited": saved.get("description") == EDITED_DESCRIPTION,
+                                   "appliedAtSave": saved.get("applied") == EDITED_DESCRIPTION, "pending": saved.get("pending")}
+        save_proof()
+        if saved.get("description") == EDITED_DESCRIPTION and saved.get("applied") == EDITED_DESCRIPTION and saved.get("pending") is False:
+            passed("the-saved-definition-carries-the-edit-applied-with-nothing-pending")
+        else:
+            deferred.append(f"after the description save the definition is {proof['editAfterStart']}")
+        stopped = keeper_log_lines("was stopped after a save")
+        if stopped:
+            deferred.append(f"the keeper logged a stop after the save: {stopped[0]}")
+        else:
+            passed("the-keeper-log-has-no-stop-after-a-save")
+        # The browser step itself proves the old conversation was refused on the page and was not answered.
+        # Here the budget ledger says the same at the money layer, and that the new one was charged.
+        owner = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member'", release)
+        # The save's own time, from the keeper's audit row for this one save (database clock, as created_at is).
+        saved_at, saves = this_save_started_at(release, audit_mark)
+        proof["editAfterStart"]["saveFoundInAudit"] = {"definitionSaves": saves, "found": saved_at is not None}
+        save_proof()
+        if saved_at is None:
+            deferred.append(f"the keeper's audit log does not show exactly one definition save for this edit ({saves} found), so the ledger was not checked")
+        if saved_at is not None:
+            deadline = time.monotonic() + 60
+            while True:
+                calls = [call for call in conversation_calls(release, saved_at) if call["session"] not in sessions_before]
+                old = {call["session"] for call in calls if not call["afterSave"]}
+                new = {call["session"] for call in calls if call["afterSave"]} - old
+                charged = [call for call in calls if call["session"] in new and call["state"] == "settled"]
+                if charged or time.monotonic() > deadline:
+                    break
+                time.sleep(3)
+            sessions = list(dict.fromkeys(call["session"] for call in calls))
+            proof["editAfterStart"]["conversationCalls"] = [{"conversation": sessions.index(call["session"]) + 1, "state": call["state"],
+                                                             "afterTheSave": call["afterSave"], "paidByOwner": call["payer"] == owner} for call in calls]
+            save_proof()
+            late = [call for call in calls if call["session"] in old and call["afterSave"]]
+            if old and not late:
+                passed("the-conversation-from-before-the-save-took-no-call-after-it")
+            else:
+                deferred.append(f"the conversation from before the save took {len(late)} call(s) after it, or none was found: {proof['editAfterStart']['conversationCalls']}")
+            if charged and all(call["payer"] == owner for call in calls if call["session"] in new):
+                passed("a-new-conversation-after-the-save-was-answered-and-charged-to-the-owner")
+            else:
+                deferred.append(f"no call of a new conversation after the save settled for the owner: {proof['editAfterStart']['conversationCalls']}")
 
         stage("a Slack and a Telegram message reach the model through Keeper")
         for kind in ("slack", "telegram"):

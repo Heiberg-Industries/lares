@@ -7,6 +7,7 @@ vi.mock("../app/actions/delivery", () => ({ saveDelivery: mocks.save }));
 vi.mock("../app/actions/inbox", () => ({ markRead: mocks.markRead }));
 
 import { DeliveryGrid } from "../components/DeliveryGrid";
+import { SAVE_ENDS_CONVERSATIONS } from "../components/SaveEndsConversations";
 import { InboxPanel } from "../components/InboxPanel";
 import { InboxDot } from "../components/InboxDot";
 
@@ -22,8 +23,16 @@ const select = (label: string) => screen.getByLabelText(label) as HTMLSelectElem
 describe("DeliveryGrid", () => {
   const props = { agent: "chief", connected: { slack: false, telegram: true } };
 
+  it("says before Save that saving ends open web-chat conversations when the agent runs", () => {
+    // Saving the grid is a definition save: on a running agent it ends open web-chat conversations.
+    render(<DeliveryGrid {...props} delivery={undefined} running />);
+    expect(screen.getByText(SAVE_ENDS_CONVERSATIONS)).toBeTruthy();
+  });
+
   it("is pre-filled with today's behaviour when nothing is saved, and says so", () => {
     render(<DeliveryGrid {...props} delivery={undefined} />);
+    // The save warning is for a running agent only.
+    expect(screen.queryByText(SAVE_ENDS_CONVERSATIONS)).toBeNull();
     expect(select("Morning brief via Telegram").value).toBe("1");
     expect(select("Morning brief via Slack").value).toBe("0");
     expect(select("Email triage via Slack").value).toBe("1");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ModelPurposeBrokerState, modelPurposeDigest, modelPurposeMac, signModelPurposeRequest, type ModelPurposeRequest, type ModelPurposeStepInput } from '../lib/model-purpose-broker.js';
-import type { ConversationBudgetAuthorityReference as BudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
+import type { ConversationBudgetAuthorityReference as BudgetAuthorityReference, DoorBudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
 import { createHash } from 'node:crypto';
 import { preparedModelPurposeConsumer } from '../lib/budget-financial-writer.js';
 import { parseModelPurposeAdmissionResponse } from '@lares/agent-kit/model-purpose-protocol';
@@ -135,5 +135,74 @@ describe('Keeper model-purpose broker state',()=>{
     const second=state.reserveStep(opened.capability,{agent:value.agent,incarnation:value.incarnation},next);now+=11;
     expect(()=>state.finishStep(second,now-1)).toThrow();
     expect(()=>state.reserveStep(opened.capability,{agent:value.agent,incarnation:value.incarnation},next)).toThrow();
+  });
+});
+
+// A Slack or Telegram turn: no console request, the payer found by Keeper from the door claim.
+const doorAgent='neutral-helper',doorIncarnation='123e4567-e89b-42d3-a456-426614174000',doorHash='c'.repeat(64);
+const doorIdentity={agent:doorAgent,incarnation:doorIncarnation};
+const doorReference=(overrides:Partial<DoorBudgetAuthorityReference>={},binding:Partial<DoorBudgetAuthorityReference['binding']>={}):DoorBudgetAuthorityReference=>({kind:'door',
+  binding:{agent:doorAgent,incarnation:doorIncarnation,sessionId:'slack_session_1',memberId:'member-a',agentAccessRevision:2,door:'slack',principal:'U0EXAMPLE',claimRevision:'22222222-2222-4222-8222-222222222222',...binding},
+  turnId:'turn_3',turnSequence:3,...overrides});
+const doorStep=(capability:string,stepIndex=0,overrides:Partial<ModelPurposeStepInput>={}):ModelPurposeStepInput=>({turnCapability:capability,purposeAlias:'lares-brain',event:{type:'step.started',data:{turnId:'turn_3',sequence:3,stepIndex}},...overrides});
+const openDoor=(state:ModelPurposeBrokerState,reference=doorReference())=>state.registerDoorTurn(doorAgent,doorIncarnation,reference,'turn_3',3,doorHash,'lares-brain');
+
+describe('Keeper model-purpose broker state: door turns',()=>{
+  it('registers a door turn only with a door reference whose turn, sequence, agent and incarnation match',()=>{
+    const state=new ModelPurposeBrokerState(()=>100);
+    const opened=openDoor(state);
+    expect(Object.keys(opened).sort()).toEqual(['capability','expiresAt']);
+    expect(opened.capability).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(opened.expiresAt).toBe(100+5*60_000);
+    // A web-chat reference never opens a door turn.
+    expect(()=>state.registerDoorTurn(doorAgent,doorIncarnation,reference('human','turn_3',3) as never,'turn_3',3,doorHash,'lares-brain')).toThrow();
+    // The reference must name the turn being opened.
+    expect(()=>state.registerDoorTurn(doorAgent,doorIncarnation,doorReference(),'turn_4',3,doorHash,'lares-brain')).toThrow();
+    expect(()=>state.registerDoorTurn(doorAgent,doorIncarnation,doorReference(),'turn_3',4,doorHash,'lares-brain')).toThrow();
+    // The reference must belong to the runtime asking.
+    expect(()=>state.registerDoorTurn('other-helper',doorIncarnation,doorReference(),'turn_3',3,doorHash,'lares-brain')).toThrow();
+    expect(()=>state.registerDoorTurn(doorAgent,'123e4567-e89b-42d3-a456-426614174001',doorReference(),'turn_3',3,doorHash,'lares-brain')).toThrow();
+    // A definition hash and a model name are pinned in their usual shapes.
+    expect(()=>state.registerDoorTurn(doorAgent,doorIncarnation,doorReference(),'turn_3',3,'fixture','lares-brain')).toThrow();
+    expect(()=>state.registerDoorTurn(doorAgent,doorIncarnation,doorReference(),'turn_3',3,doorHash,'Not An Alias')).toThrow();
+    // A door turn is not a console turn: the console path never takes a door reference.
+    expect(()=>state.registerTurn(request(),doorReference() as never,'turn_3',3,request().definitionHash,'lares-brain')).toThrow();
+  });
+
+  it('claims, consumes, resolves and closes a door turn like a web-chat turn, for its own runtime only',()=>{
+    const state=new ModelPurposeBrokerState(()=>100),opened=openDoor(state);
+    const other={agent:doorAgent,incarnation:'123e4567-e89b-42d3-a456-426614174001'};
+    expect(()=>state.reserveStep(opened.capability,other,doorStep(opened.capability))).toThrow();
+    expect(()=>state.reserveStep(opened.capability,{agent:'other-helper',incarnation:doorIncarnation},doorStep(opened.capability,1))).toThrow();
+    expect(()=>state.reserveStep(opened.capability,doorIdentity,doorStep(opened.capability,2,{purposeAlias:'other-model'}))).toThrow();
+    const token=state.finishStep(state.reserveStep(opened.capability,doorIdentity,doorStep(opened.capability,3))).claim;
+    const identity={method:'POST' as const,path:'/v1/chat/completions',requestHash:'f'.repeat(64)};
+    expect(()=>state.reserveClaimConsumption(token,other,identity)).toThrow();
+    const handle=state.reserveClaimConsumption(token,doorIdentity,identity);
+    expect(state.resolveConsumedClaim(handle)).toMatchObject({agent:doorAgent,incarnation:doorIncarnation,definitionHash:doorHash,purposeAlias:'lares-brain',
+      event:{turnId:'turn_3',sequence:3,stepIndex:3},reference:{kind:'door',binding:{memberId:'member-a',principal:'U0EXAMPLE'}}});
+    expect(()=>state.closeTurn(opened.capability,other,'turn_3',3)).toThrow();
+    expect(()=>state.closeTurn(opened.capability,doorIdentity,'turn_4',3)).toThrow();
+    expect(state.closeTurn(opened.capability,doorIdentity,'turn_3',3)).toEqual({closed:true});
+    expect(state.resolveConsumedClaim(handle)).toBeUndefined();
+  });
+
+  it('refuses a step claim on a door turn after the turn has expired',()=>{
+    let now=100;const state=new ModelPurposeBrokerState(()=>now),opened=openDoor(state);
+    expect(state.finishStep(state.reserveStep(opened.capability,doorIdentity,doorStep(opened.capability,0))).claim).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    now+=5*60_000;
+    expect(()=>state.reserveStep(opened.capability,doorIdentity,doorStep(opened.capability,1))).toThrow();
+    expect(state.sizes.turns).toBe(0);
+  });
+
+  it('refuses claims on a closed door turn and opens a fresh one for the same point after a pause',()=>{
+    const state=new ModelPurposeBrokerState(()=>100),first=openDoor(state);
+    expect(state.closeTurn(first.capability,doorIdentity,'turn_3',3)).toEqual({closed:true});
+    expect(()=>state.reserveStep(first.capability,doorIdentity,doorStep(first.capability,0))).toThrow();
+    expect(()=>state.closeTurn(first.capability,doorIdentity,'turn_3',3)).toThrow();
+    const second=openDoor(state);
+    expect(second.capability).not.toBe(first.capability);
+    expect(state.finishStep(state.reserveStep(second.capability,doorIdentity,doorStep(second.capability,0))).claim).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(()=>state.reserveStep(first.capability,doorIdentity,doorStep(first.capability,1))).toThrow();
   });
 });

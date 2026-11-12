@@ -830,6 +830,136 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
       }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
     });
   });
+  describe('door turns: a Slack or Telegram message, paid for by the member behind the door claim',{timeout:30_000},()=>{
+    const slackRevision='22222222-2222-4222-8222-222222222222',nextRevision='44444444-4444-4444-8444-444444444444';
+    let sessionId='',admissionNonce='',definitionHash='';
+    const doorInput=(overrides:Record<string,unknown>={})=>({door:'slack',principal:'U0EXAMPLE',claimRevision:slackRevision,sessionId,turnId:'turn-1',sequence:0,...overrides});
+    const chatRequest=(tag:string)=>{const body=Buffer.from(JSON.stringify({model:'standard',messages:[],tag}));return {method:'POST',path:'/v1/chat/completions',requestHash:gatewayRawRequestHash('POST','/v1/chat/completions',body)};};
+    const observed=(requestHash:string)=>({requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'standard'});
+    const attempts=async()=>(await db.query('SELECT state,live_member_id,member_account_id,invocation_hash,authority_reference FROM budget_attempts ORDER BY created_at,id')).rows;
+    const claimRow=(revision:string)=>db.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,claimed_at,applied_revision)
+      VALUES('helper','slack',$1,$2,'member-a@example.invalid','U0EXAMPLE',now(),$2) ON CONFLICT(agent,kind) DO UPDATE SET revision=EXCLUDED.revision,applied_revision=EXCLUDED.applied_revision`,[incarnation,revision]);
+    beforeEach(async()=>{
+      definitionHash=h('model-purpose-definition');
+      ({sessionId,admissionNonce}=await selectPurposeModel(definitionHash));
+      // The door tables have no foreign key to the agent, so the shared truncation leaves them alone.
+      await db.query(`DELETE FROM agent_door_connections;DELETE FROM agent_doors;
+        UPDATE agent_resources SET applied_definition='{"doors":[{"kind":"slack","enabled":true}]}' WHERE name='helper';
+        INSERT INTO agent_doors(agent,kind,enabled) VALUES('helper','slack',true);
+        UPDATE users SET primary_email='member-a@example.invalid' WHERE id='member-a';`);
+      await claimRow(slackRevision);
+    });
+    afterEach(async()=>{await db.query('DELETE FROM agent_door_connections;DELETE FROM agent_doors');});
+    async function doorStep(f:ReturnType<typeof purposeBrokerFiles>,input:Record<string,unknown>,stepIndex:number,request=chatRequest(`door-${stepIndex}-${randomUUID()}`)){
+      const opened=await purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('door.open',input,f.runtimeKey),f.runtimeKey);
+      if(opened.ok!==true)return {stage:'open' as const,request};
+      expect(Object.keys(opened).sort()).toEqual(['capability','expiresAt','ok','responseMac','responseOutcomeDigest','responsePayloadDigest','responseRequestDigest']);
+      const event={type:'step.started',data:{turnId:input.turnId,sequence:input.sequence,stepIndex}};
+      const claimed=await purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('step.claim',{turnCapability:opened.capability,purposeAlias:'standard',event},f.runtimeKey),f.runtimeKey);
+      if(claimed.ok!==true)return {stage:'claim' as const,request,capability:opened.capability};
+      const consumed=await purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request},f.runtimeKey),f.runtimeKey);
+      const close=()=>purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('turn.close',{turnCapability:opened.capability,turnId:input.turnId,sequence:input.sequence},f.runtimeKey),f.runtimeKey);
+      if(consumed.ok!==true)return {stage:'consume' as const,request,capability:opened.capability,close};
+      return {stage:'ticket' as const,ticket:String(consumed.ticket),request,capability:opened.capability,close};
+    }
+    /** The same step as a web-chat turn: the console's signed request opens the turn. */
+    async function webChatStep(f:ReturnType<typeof purposeBrokerFiles>,stepIndex:number){
+      const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());
+      const pendingReceipt=await purposeRequestAdmission(f,purposeRequest({session:sessionId,admissionNonce,policyRevision:bound.policyRevision,definitionHash}));
+      const original=context(),auth={...original.session.auth.current,attributes:{...original.session.auth.current.attributes,lares_admission_nonce:admissionNonce}};
+      const turn=await purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('turn.open',{pendingReceipt,context:{session:{...original.session,id:sessionId,auth:{current:auth,initiator:auth}}}},f.runtimeKey),f.runtimeKey);
+      expect(turn.ok).toBe(true);
+      const event={type:'step.started',data:{turnId:'turn-1',sequence:0,stepIndex}};
+      const claimed=await purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('step.claim',{turnCapability:turn.capability,purposeAlias:'standard',event},f.runtimeKey),f.runtimeKey);
+      expect(claimed.ok).toBe(true);
+      const consumed=await purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request:chatRequest(`chat-${stepIndex}`)},f.runtimeKey),f.runtimeKey);
+      expect(consumed.ok).toBe(true);
+    }
+    it('charges a door step once, to the member behind the claim, and the gateway admits it',async()=>{
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        const step=await doorStep(f,doorInput(),0);
+        expect(step.stage).toBe('ticket');if(step.stage!=='ticket')throw new Error('fixture');
+        const [attempt]=await attempts();
+        expect(attempt).toMatchObject({state:'prepared',live_member_id:'member-a',member_account_id:accounts['member-a']});
+        expect(attempt.authority_reference).toEqual({kind:'door',binding:{agent:'helper',incarnation,sessionId,memberId:'member-a',agentAccessRevision:expect.any(Number),
+          door:'slack',principal:'U0EXAMPLE',claimRevision:slackRevision},turnId:'turn-1',turnSequence:0});
+        expect((await db.query("SELECT count(*)::int n FROM budget_attempts WHERE authority_reference->>'kind'='door'")).rows[0].n).toBe(1);
+        const writerStore=new PgBudgetAdmissionStore(db,env(),30_000,files.writer);
+        const admitted=await writerStore.admit(step.ticket,observed(step.request.requestHash),recovery());
+        expect(admitted.state).toBe('allowed');
+        expect((await attempts()).map(row=>row.state)).toEqual(['admitted']);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+    it('never charges the same door step twice, and keeps door and web-chat steps apart',async()=>{
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        const first=await doorStep(f,doorInput(),0);
+        expect(first.stage).toBe('ticket');
+        if(first.stage==='ticket')expect((await first.close()).ok).toBe(true);
+        // The continuation after a pause opens a fresh turn at the same point; replaying step 0 makes no second row.
+        const replay=await doorStep(f,doorInput(),0);
+        expect(replay.stage).toBe('consume');
+        if(replay.stage==='consume')await replay.close();
+        expect(await attempts()).toHaveLength(1);
+        // A web-chat step with the same session, turn and step is a different charge.
+        await webChatStep(f,0);
+        const both=await attempts();
+        expect(both.map(row=>row.authority_reference.kind).sort()).toEqual(['door','human']);
+        expect(new Set(both.map(row=>row.invocation_hash)).size).toBe(2);
+        // A new claim revision at the same coordinates is a different charge too.
+        await claimRow(nextRevision);
+        const renewed=await doorStep(f,doorInput({claimRevision:nextRevision}),0);
+        expect(renewed.stage).toBe('ticket');
+        const all=await attempts();
+        expect(all).toHaveLength(3);expect(new Set(all.map(row=>row.invocation_hash)).size).toBe(3);
+        expect(all.filter(row=>row.authority_reference.kind==='door').map(row=>row.authority_reference.binding.claimRevision).sort()).toEqual([slackRevision,nextRevision]);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+    it('opens a door turn for a member without a key for the model, then refuses the step and writes nothing',async()=>{
+      await db.query('UPDATE agent_definitions SET definition=$1::jsonb WHERE name=$2',[JSON.stringify({model:'unbound',grants:[]}),'helper']);
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        const opened=await purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('door.open',doorInput(),f.runtimeKey),f.runtimeKey);
+        expect(opened.ok).toBe(true);
+        const event={type:'step.started',data:{turnId:'turn-1',sequence:0,stepIndex:0}};
+        const claimed=await purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('step.claim',{turnCapability:opened.capability,purposeAlias:'unbound',event},f.runtimeKey),f.runtimeKey);
+        expect(claimed.ok).toBe(true);
+        const consumed=await purposeSocketRequest(f.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request:chatRequest('unbound')},f.runtimeKey),f.runtimeKey);
+        expect(consumed.ok).toBe(false);
+        expect(await attempts()).toEqual([]);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+    it('refuses a door turn for anyone but the claimed sender, and retires a ticket whose claim changed before admission',async()=>{
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db,'member-a');
+        expect((await doorStep(f,doorInput({principal:'U0SOMEONE'}),0)).stage).toBe('open');
+        expect((await doorStep(f,doorInput({memberId:'member-b'}),0)).stage).toBe('open');
+        await db.query("UPDATE agent_door_connections SET owner_email='member-b@example.invalid'");
+        expect((await doorStep(f,doorInput(),0)).stage).toBe('open');
+        await db.query("UPDATE agent_door_connections SET owner_email='member-a@example.invalid'");
+        expect(await attempts()).toEqual([]);
+        const step=await doorStep(f,doorInput(),1);
+        expect(step.stage).toBe('ticket');if(step.stage!=='ticket')throw new Error('fixture');
+        await claimRow(nextRevision);
+        const writerStore=new PgBudgetAdmissionStore(db,env(),30_000,files.writer);
+        expect((await writerStore.admit(step.ticket,observed(step.request.requestHash),recovery())).state).toBe('denied');
+        expect((await attempts()).map(row=>row.state)).toEqual(['retired']);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+    it('refuses every door turn when Keeper has no owner on record',async()=>{
+      const f=purposeBrokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+      try{
+        stopBroker=await startPurposeBroker(f,files.writer,db);
+        expect((await doorStep(f,doorInput(),0)).stage).toBe('open');
+        expect(await attempts()).toEqual([]);
+      }finally{await stopBroker?.();rmSync(f.root,{recursive:true,force:true});}
+    });
+  });
   /** eve 1.0's own readers over a stream eve folds (as in agent-kit `tests/answer-turn-position.test.ts`).
    * Imported by file path because eve does not export them; if eve moves them, this fails with it. */
   async function eveConversation(sessionId:string,auth:Record<string,unknown>){

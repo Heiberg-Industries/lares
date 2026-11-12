@@ -96,9 +96,10 @@ Four facts about the framework shape the decision:
    length, button count); how "privately" is done; whether the door works in private chats only
    or also in shared rooms; when a conversation is replaced by a new one.
 
-7. **A new door starts from eve's Chat SDK bridge** (`eve/channels/chat-sdk`) with state kept on
-   the owner's server, when an adapter exists that works self-hosted. Otherwise it is a custom
-   eve channel with the same adapter contract. An adapter that routes messages through a hosted
+7. **A new door starts from eve's own channel where eve ships one for that platform** (use what
+   is already installed before adding a layer). Where eve has none, it starts from eve's Chat SDK
+   bridge (`eve/channels/chat-sdk`) with state kept on the owner's server, when an adapter exists
+   that works self-hosted. Otherwise it is a custom eve channel with the same adapter contract. An adapter that routes messages through a hosted
    relay service fails this project's rules (self-hosted only; nothing phones home) and is not
    used.
 

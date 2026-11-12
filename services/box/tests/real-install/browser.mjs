@@ -78,6 +78,39 @@ const steps = {
     await page.locator(".lares-message-agent", { hasText: settings.followUpReply }).first().waitFor({ timeout: STEP_MS });
     if (await page.getByText("This conversation is unavailable").count()) throw new Error("The conversation became unavailable");
   },
+  // A started agent takes an edit. One message in a new conversation; then the description is saved on
+  // the agent's own page, which says first that saving ends open conversations. Back in the same tab the
+  // old conversation is refused and reaches nothing; a new conversation is answered.
+  async "edit-after-start"(page) {
+    const agentReplies = () => page.locator(".lares-message-agent", { hasText: settings.afterUpdateReply }).count();
+    await page.goto(`${origin}/chat/${settings.agent}`);
+    await page.getByPlaceholder(/^Message /).fill(settings.beforeEditPrompt, { timeout: 60_000 });
+    await page.getByRole("button", { name: "Send message" }).click();
+    await page.locator(".lares-message-agent", { hasText: settings.afterUpdateReply }).first().waitFor({ timeout: STEP_MS });
+    await page.getByText("The agent is still answering").waitFor({ state: "hidden", timeout: STEP_MS });
+    await page.goto(`${origin}/agents/${settings.agent}/edit`);
+    await page.getByText(settings.saveWarning).first().waitFor({ timeout: 30_000 });
+    await page.getByLabel("Description").fill(settings.editedDescription);
+    await page.getByRole("button", { name: "Save definition" }).click();
+    await page.getByText("Definition saved.").waitFor({ timeout: STEP_MS });
+    // The same tab keeps the conversation it had: the chat page opens it again.
+    await page.goto(`${origin}/chat/${settings.agent}`);
+    const box = page.getByPlaceholder(/^Message /);
+    await page.waitForTimeout(3000);
+    if (!(await page.getByText(/This conversation (has ended|is unavailable)/).count()) && await box.isEnabled().catch(() => false)) {
+      await box.fill(settings.oldConversationPrompt);
+      await page.getByRole("button", { name: "Send message" }).click();
+    }
+    // The console's own sentence for a conversation the save revoked: nothing reached the agent.
+    await page.getByText("This conversation has ended. Start a new one.").waitFor({ timeout: 60_000 });
+    console.log(`the old conversation says: ${(await page.locator("main").innerText().catch(() => "")).split("\n").filter((line) => /conversation/i.test(line)).join(" | ")}`);
+    if ((await agentReplies()) > 1) throw new Error("The old conversation was answered after the save");
+    await page.getByRole("button", { name: "Start a new conversation" }).click();
+    await page.getByPlaceholder(/^Message /).fill(settings.afterEditPrompt, { timeout: 60_000 });
+    await page.getByRole("button", { name: "Send message" }).click();
+    await page.locator(".lares-message-agent", { hasText: settings.afterUpdateReply }).first().waitFor({ timeout: STEP_MS });
+    if (await page.getByText("This conversation is unavailable").count()) throw new Error("The new conversation became unavailable");
+  },
   // After `lares update`: the chat page opens a new conversation; one message there must get the
   // model's answer, not a refusal.
   async "chat-after-update"(page) {
@@ -110,7 +143,8 @@ async function doorGroup(page, kind) {
   return group;
 }
 
-// Waits for the wanted element, and fails at once with the page's own alert if one appears instead.
+// Waits for the wanted element, and fails at once with the page's own alert if one appears instead. The
+// sentence that saving ends open conversations is a plain note, not an alert, so it never trips this.
 async function waitForDoor(page, wanted, what) {
   const alert = page.locator('section[aria-label="Door setup"] [role="alert"]');
   const deadline = Date.now() + DOOR_MS;
@@ -149,7 +183,8 @@ async function finishDoor(page, kind) {
   const group = await doorGroup(page, kind);
   const connected = group.getByText("Connected", { exact: true });
   if (await connected.count()) return;
-  await page.getByRole("button", { name: "Apply connection changes (restarts agent)" }).click({ timeout: 60_000 });
+  // The page's Status box has a button with the same name; the door section's own one applies and reloads.
+  await page.locator('section[aria-label="Door setup"]').getByRole("button", { name: "Apply connection changes (restarts agent)" }).click({ timeout: 60_000 });
   // Applying reloads the page; the door then reads Connected.
   await waitForDoor(page, connected, `${DOOR_LABEL[kind]} as Connected`);
 }

@@ -58,14 +58,24 @@ const GRAPHILE_DML = [
 ] as const;
 const GRAPHILE_RLS = GRAPHILE_DML;
 const GRAPHILE_SEQUENCES = ["job_queues_id_seq", "jobs_id_seq1", "tasks_id_seq"] as const;
+// The job-queue functions the agent login runs, each because something in the agent calls it.
+// Graphile Worker 0.16.6 takes, finishes and fails its own jobs with plain SQL on the tables above;
+// these are the calls that go through a function instead. None is SECURITY DEFINER (checked
+// below), so each runs with the login's own table rights and adds no authority of its own.
+//   add_job, add_jobs: queueing a job (the workflow package's queue, Graphile's helpers; add_job
+//     calls add_jobs).
+//   force_unlock_workers: the agent kit's release of a dead worker's locks.
+//   complete_jobs: the workflow package (5.2.0) removing the run's jobs that a finished delivery
+//     already covered (WorkerUtils.completeJobs in its takeCoalescedJobs). Without it that delivery
+//     fails after its work and Graphile runs it again.
 const GRAPHILE_FUNCTIONS = [
   "add_job(text,json,text,timestamptz,integer,text,integer,text[],text)",
   "add_jobs(graphile_worker.job_spec[],boolean)",
+  "complete_jobs(bigint[])",
   "force_unlock_workers(text[])",
 ] as const;
 const GRAPHILE_FUNCTION_INVENTORY = [
   ...GRAPHILE_FUNCTIONS,
-  "complete_jobs(bigint[])",
   "permanently_fail_jobs(bigint[],text)",
   "remove_job(text)",
   "reschedule_jobs(bigint[],timestamptz,integer,integer,integer)",

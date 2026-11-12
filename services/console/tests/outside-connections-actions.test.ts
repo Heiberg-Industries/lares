@@ -30,7 +30,7 @@ describe("outside connection console actions", () => {
   it("sends only validated declaration metadata, never credential fields", async () => {
     expect(await saveOutsideConnections({ name: "bookkeeper", expectedDefinitionHash: "a".repeat(64), expectedAccessRevision: 2, connections: [connection] }))
       .toEqual({ ok: true, result: saved });
-    expect(mocks.keeper).toHaveBeenCalledWith("outside.connections.save", expect.objectContaining({ sessionToken: token, connections: [connection] }), "member@example.test");
+    expect(mocks.keeper).toHaveBeenCalledWith("outside.connections.save", expect.objectContaining({ sessionToken: token, connections: [connection] }), "member@example.test", { timeoutMs: 90_000 });
     await expect(saveOutsideConnections({ name: "bookkeeper", expectedDefinitionHash: "a".repeat(64), expectedAccessRevision: 2,
       connections: [{ ...connection, credential: "forbidden" }] })).rejects.toThrow("Connection details are invalid.");
   });

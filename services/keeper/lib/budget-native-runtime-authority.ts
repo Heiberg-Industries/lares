@@ -7,6 +7,7 @@ import {consoleSourceTransaction,gateConsoleOrganisation,requireConsoleSourceOwn
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
+import {restartPartsApplied} from './restart-parts.js';
 import {currentMember} from '@lares/agent-kit/member-store';
 import type {BudgetNativeReviewedPolicy,BudgetNativeCustodyStore,NativeOperation} from './budget-native-custody.js';
 import {budgetNativeReviewedPolicySchema} from './budget-native-custody.js';
@@ -14,11 +15,15 @@ import type {HostFinancialJournal,FinancialAtom} from './financial-journal.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
 
 const hash=z.string().regex(/^[a-f0-9]{64}$/),uuid=z.string().uuid();
-const identitySchema=z.object({agent:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),incarnation:uuid,definitionHash:hash,
+// A key belongs to the agent, its incarnation and its model name. The definition hash the key store recorded
+// when the key was made stays there unread: ordinary edits are live, and the money stays bound by the model
+// name, the reviewed prices and the limits checked below.
+const identitySchema=z.object({agent:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),incarnation:uuid,
   purposeAlias:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)}).strict();
 export type NativeRuntimeIdentity=z.infer<typeof identitySchema>;
-export type NativeRuntimeState={state:'active'}|{state:'held';reason:'Native budget activation required'};
+export type NativeRuntimeState={state:'active'}|{state:'held';reason:'Native budget activation required';detail?:'no-matching-key'};
 const held=():NativeRuntimeState=>({state:'held',reason:'Native budget activation required'});
+const noMatchingKey=():NativeRuntimeState=>({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
 const refuse=()=>new Error('Native budget activation required');
 const exact=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b));
 const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
@@ -61,8 +66,8 @@ export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptio
         const snapshot=gate.inventory();
         const matches=snapshot.operations.filter((row):row is NativeOperation=>row.kind==='operation'&&
           row.association.agent===identity.agent&&row.association.incarnation===identity.incarnation&&
-          row.association.definitionHash===identity.definitionHash&&row.association.purposeAlias===identity.purposeAlias);
-        if(matches.length===0)throw refuse();
+          row.association.purposeAlias===identity.purposeAlias);
+        if(matches.length===0)return noMatchingKey();
         const candidates=matches.map(op=>{
           const candidate=snapshot.users.find(row=>row.kind==='user'&&row.ownershipId===op.userOwnershipId);
           const user=candidate?.kind==='user'?candidate:undefined;
@@ -163,9 +168,10 @@ export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptio
           if(definitions.length!==1)throw refuse();const row=definitions[0]!;let definition,applied;
           try{definition=parseDefinition(definitionSchema.parse(row.definition));applied=parseDefinition(definitionSchema.parse(row.applied_definition));}catch{throw refuse();}
           const definitionHash=hashOf({definition,dutiesMd:row.duties,voiceMd:row.voice});
-          if(row.status!=='valid'||row.hash!==definitionHash||definitionHash!==identity.definitionHash||
+          if(row.status!=='valid'||row.hash!==definitionHash||
             definition.role!=='chief-of-staff'||applied.role!=='chief-of-staff'||
-            row.ownership!=='owned'||row.ownership_token!==identity.incarnation||row.runtime_control_token!==identity.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
+            row.ownership!=='owned'||row.ownership_token!==identity.incarnation||row.runtime_control_token!==identity.incarnation||row.state!=='ready'||row.pending!==false||
+            !restartPartsApplied(applied,definition,{model:true}))throw refuse();
           if(definition.model!==identity.purposeAlias){
             // An extra key (the owner's only) stands on the main key: the agent's own model name must be a served name
             // of the same reviewed capability, and its main key must be active under it.
