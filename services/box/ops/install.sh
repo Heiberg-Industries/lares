@@ -606,6 +606,7 @@ fi
 # re-run then validates that custody and carries on; it cannot be prepared fresh a second time.
 REPAIR_MODE=0
 RESTORED_SETTINGS=0
+RESTORED_SETTINGS_DOCKER=""
 if [ -d "$PREFIX/srv/lares" ] || [ -d "$PREFIX/var/lib/lares-maintenance" ]; then
   REPAIR_MODE=1
   # One exception. Copying a backup's settings and secrets onto a new machine, as docs/install.md
@@ -613,19 +614,40 @@ if [ -d "$PREFIX/srv/lares" ] || [ -d "$PREFIX/var/lib/lares-maintenance" ]; the
   # those copied files and nothing else of an installation (maintenance-custody.py decides, and
   # decides again when it prepares custody), and no container of one: then this is a first install
   # that uses them. Anything else, or anything that cannot be read, stays an existing installation.
-  if python3 "$HERE/maintenance-custody.py" holds-only-restored-settings "${PREFIX:-/}" 2>/dev/null \
-      && containers=$(docker ps --all --quiet --filter label=com.docker.compose.project=lares 2>/dev/null) \
-      && [ -z "$containers" ]; then
-    REPAIR_MODE=0
-    RESTORED_SETTINGS=1
+  if python3 "$HERE/maintenance-custody.py" holds-only-restored-settings "${PREFIX:-/}" >/dev/null 2>&1; then
+    if ! containers=$(docker ps --all --quiet --filter label=com.docker.compose.project=lares 2>/dev/null); then
+      RESTORED_SETTINGS_DOCKER="Docker could not be asked whether containers of an installation are on this machine (start Docker, then run this again)"
+    elif [ -n "$containers" ]; then
+      RESTORED_SETTINGS_DOCKER="containers of an installation are on this machine (docker ps --all --filter label=com.docker.compose.project=lares lists them)"
+    else
+      REPAIR_MODE=0
+      RESTORED_SETTINGS=1
+    fi
   fi
 fi
+# For a refusal that follows: when the machine has no custody yet and some of a backup's copied
+# settings are on it, what keeps them from being exactly what docs/install.md has a person copy.
+# Names only, never anything a file holds (maintenance-custody.py prints nothing else).
+restored_settings_hint() {
+  local difference
+  { [ -e "$PREFIX/var/lib/lares-maintenance" ] || [ -L "$PREFIX/var/lib/lares-maintenance" ]; } && return 0
+  if difference=$(python3 "$HERE/maintenance-custody.py" holds-only-restored-settings "${PREFIX:-/}" 2>/dev/null); then
+    difference=$RESTORED_SETTINGS_DOCKER
+  fi
+  difference=$(printf '%s' "$difference" | tr -cd '[:print:]' | cut -c1-900)
+  [ -n "$difference" ] || return 0
+  printf ' If you copied a backup'"'"'s settings onto this machine to restore it, they are not exactly what docs/install.md ("Restoring onto a new server") has you copy, so they were not used: %s.' "$difference"
+}
 
 # Screen one only makes sense on a genuinely fresh box: an existing installation is repaired,
 # never asked whether to "start fresh" (that would mean wiping it) or to restore over itself.
 # RESTORE_ARCHIVE is always empty here — an explicit --restore already exited above.
 if [ "$REPAIR_MODE" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-  say "this box has nothing here yet. Lares can start fresh, or check a backup archive first (docs/runbooks/export-and-teardown.md) so you can restore it by hand."
+  if [ "$RESTORED_SETTINGS" -eq 1 ]; then
+    say "this box holds only settings copied from a backup. Lares can start fresh with them, or check a backup archive first (docs/runbooks/export-and-teardown.md) so you can restore it by hand."
+  else
+    say "this box has nothing here yet. Lares can start fresh, or check a backup archive first (docs/runbooks/export-and-teardown.md) so you can restore it by hand."
+  fi
   say "  1) start fresh (the default)"
   say "  2) check a backup archive — or pass --restore <archive> next time to skip this question"
   if [ "$ASSUME_YES" != "1" ] && [ "$DRY_RUN" -eq 0 ]; then
@@ -704,8 +726,10 @@ fi
 
 if [ "$REPAIR_MODE" -eq 1 ]; then
   say "found an existing or unfinished installation under ${PREFIX:-/} — this would update it in place, not start over."
-elif [ "$RESTORED_SETTINGS" -eq 1 ]; then
+elif [ "$RESTORED_SETTINGS" -eq 1 ] && [ "$DRY_RUN" -eq 1 ]; then
   say "found settings copied from a backup on an otherwise empty machine — this would install fresh, using them."
+elif [ "$RESTORED_SETTINGS" -eq 1 ]; then
+  say "found settings copied from a backup on an otherwise empty machine — installing fresh, using them."
 else
   say "found no existing installation under $PREFIX/srv/lares — this would start a fresh install."
 fi
@@ -758,9 +782,9 @@ if [ "$DRY_RUN" -eq 0 ]; then
     # Custody checks the copied settings again itself; the flag only lets it accept exactly them.
     restored_flag=()
     [ "$RESTORED_SETTINGS" -eq 0 ] || restored_flag=(--restored-settings)
-    python3 "$HERE/maintenance-custody.py" prepare-fresh "${PREFIX:-/}" "$LARES_SUBNET" --confirm-fresh ${restored_flag[@]+"${restored_flag[@]}"} || die "fresh database authentication custody could not be prepared; any partial evidence was retained." "$EX_REFUSED"
+    python3 "$HERE/maintenance-custody.py" prepare-fresh "${PREFIX:-/}" "$LARES_SUBNET" --confirm-fresh ${restored_flag[@]+"${restored_flag[@]}"} || die "fresh database authentication custody could not be prepared; any partial evidence was retained.$(restored_settings_hint)" "$EX_REFUSED"
   else
-    python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "this installation has missing or invalid database authentication custody; no repair was attempted." "$EX_REFUSED"
+    python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "this installation has missing or invalid database authentication custody; no repair was attempted.$(restored_settings_hint)" "$EX_REFUSED"
   fi
 fi
 

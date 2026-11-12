@@ -823,17 +823,33 @@ WORKFLOW_OLD_STORES=()
 # This release's full list of store schema steps is engine code. A checkout has it under lib/; an
 # installed server has only ops/ and sql/ of the box (ops/unpack-engine.sh), so it is read out of
 # the engine image, whose keeper checks every store against this same file. Only `cat` runs, with
-# no network and nothing mounted. A failed read leaves the copy empty, which refuses below.
+# no network, nothing mounted and none of this server's environment, for at most a minute (a
+# Docker that does not answer must not hold restore here). A failed read refuses, changing nothing,
+# with Docker's last line of error as the reason: it can only be about the image or Docker, since
+# nothing of this server's settings reaches that command. An empty or cut-off copy is refused by
+# the parser below.
 WORKFLOW_STEPS_LIB="$BOX_DIR/lib/workflow-database-privileges.ts"
 WORKFLOW_STEPS_READ=0
+WORKFLOW_STEPS_SECONDS=60
 read_workflow_steps_list() {
   [ "$WORKFLOW_STEPS_READ" = 0 ] || return 0
   WORKFLOW_STEPS_READ=1
   [ "$ENGINE_MODE" = image ] || return 0
   WORKFLOW_STEPS_LIB="$SCRATCH/.workflow-database-privileges.ts"
-  docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
-    --entrypoint cat "$ENGINE_IMAGE" /app/services/box/lib/workflow-database-privileges.ts \
-    </dev/null > "$WORKFLOW_STEPS_LIB" 2>/dev/null || : > "$WORKFLOW_STEPS_LIB"
+  local err="$SCRATCH/.workflow-steps-read.err" code=0 why
+  command -v timeout >/dev/null 2>&1 \
+    || die "this release's own list of agent store schema steps could not be read out of the engine image: this server has no timeout command to bound that read (it comes with coreutils). Nothing has been changed." "$EX_REFUSED"
+  timeout --kill-after=5 "$WORKFLOW_STEPS_SECONDS" docker run --rm --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --entrypoint cat "$ENGINE_IMAGE" /app/services/box/lib/workflow-database-privileges.ts \
+    </dev/null > "$WORKFLOW_STEPS_LIB" 2> "$err" || code=$?
+  [ "$code" -eq 0 ] && return 0
+  if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+    why="Docker did not answer within $WORKFLOW_STEPS_SECONDS seconds"
+  else
+    why=$(tr -d '\r' < "$err" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -1 | tr -cd '[:print:]' | cut -c1-300)
+    [ -n "$why" ] || why="docker run ended with exit code $code"
+  fi
+  die "this release's own list of agent store schema steps could not be read out of the engine image $ENGINE_IMAGE ($why). Nothing has been changed." "$EX_REFUSED"
 }
 for db in "${DUMPS[@]}"; do
   # Other lares_ names are refused later, as before, by the same rules restore_database keeps.
