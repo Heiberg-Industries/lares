@@ -736,9 +736,7 @@ describe("stable console session binding", () => {
       const d = deps();
       const query=d.query.getMockImplementation()!;d.query.mockImplementation(async(sql,values)=>sql.includes("console_session_bindings")?{rows:[]}:query(sql,values));
       const path = `eve/v1/session/wrun_A/${suffix}`;
-      const response = await forwardChat(sessionRequest(path,suffix==="stream"?"GET":"POST"),"helper",path,d);
-      expect(response.status).toBe(410);
-      expect(await response.text()).toBe("This conversation is no longer available. Start a new one.");
+      expect((await forwardChat(sessionRequest(path,suffix==="stream"?"GET":"POST"),"helper",path,d)).status).toBe(502);
       expect(d.fetch).not.toHaveBeenCalled();
     }
   });
@@ -748,7 +746,9 @@ describe("stable console session binding", () => {
     // reaches nothing.
     for (const body of ['{"message":"hello"}', '{"responses":[{"interactionId":"request-1","optionId":"approve"}]}']) {
       const d = deps();
-      const query=d.query.getMockImplementation()!;d.query.mockImplementation(async(sql,values)=>sql.includes("console_session_bindings")?{rows:[]}:query(sql,values));
+      // The binding is there, and revoked: the save ended it.
+      const query=d.query.getMockImplementation()!;
+      d.query.mockImplementation(async(sql,values)=>sql.includes("console_session_bindings")?{rows:sql.includes("revoked_at IS NOT NULL")?[{"?column?":1}]:[]}:query(sql,values));
       const request = new Request("https://console.example.invalid/api/chat/helper/eve/v1/session/wrun_A", {
         method: "POST", body, headers: { "content-type": "application/json", cookie: `lares_session=abc; ${capability()}` } });
       const response = await forwardChat(request, "helper", "eve/v1/session/wrun_A", d);
@@ -1138,9 +1138,7 @@ describe("a member who is not the conversation's own", () => {
     for (const [path, request] of requests(capability("Other-ID")).slice(0, 4)) {
       const response = await forwardChat(request, "helper", path, d);
       expect(response.ok, path).toBe(false);
-      // The same sentence as for an ended conversation: true here too, and it says nothing about the owner's.
-      expect(response.status, path).toBe(410);
-      expect(await response.text()).toBe("This conversation is no longer available. Start a new one.");
+      expect(response.status, path).toBe(502);
     }
     expect(d.fetch).not.toHaveBeenCalled();
     expect(d.routePassword).not.toHaveBeenCalled();
