@@ -5,7 +5,7 @@
  * been bitten by). `services/box/sql/002_standing_facts.sql` is read from disk, so a migration that does not
  * apply cleanly fails here rather than on the box.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -42,6 +42,14 @@ import {
 import rememberTool from "../catalogue/remember.js";
 import forgetTool from "../catalogue/forget.js";
 import standingFactsInstructions from "../agent/instructions/standing-facts.js";
+
+// These tools run here outside eve, where there is no session state to read (which the real
+// module treats as "a card was asked"). No turn here asks a card; the durable mark itself is
+// tested in tests/approval-card-turns.test.ts.
+vi.mock("../lib/approval-card-turns.js", async (original) => ({
+  ...(await original<typeof import("../lib/approval-card-turns.js")>()),
+  turnAskedACard: (session: { turn?: { id?: unknown } | null } | null | undefined) => typeof session?.turn?.id !== "string" || !session.turn.id,
+}));
 
 const boxSqlDir = join(import.meta.dirname, "../../box/sql");
 

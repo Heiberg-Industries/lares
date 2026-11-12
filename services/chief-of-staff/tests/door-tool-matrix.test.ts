@@ -91,6 +91,12 @@ const fake = vi.hoisted(() => {
   };
 });
 
+// No matrix turn asks a card, and outside eve there is no session state to read (which the real
+// module treats as "a card was asked"). The durable mark itself: tests/approval-card-turns.test.ts.
+vi.mock("../lib/approval-card-turns.js", async (original) => ({
+  ...(await original<typeof import("../lib/approval-card-turns.js")>()),
+  turnAskedACard: (session: { turn?: { id?: unknown } | null } | null | undefined) => typeof session?.turn?.id !== "string" || !session.turn.id,
+}));
 vi.mock("@lares/agent-kit/db", async (original) => ({
   ...(await original<typeof import("@lares/agent-kit/db")>()),
   getPool: () => fake.pool,
@@ -698,8 +704,8 @@ describe("an unauthorised or unknown speaker", () => {
     const stranger = sessionWith("matrix-stranger", { authenticator: "slack-webhook", attributes: { user_id: SLACK_STRANGER, channel_id: "D0OTHER" } });
     expect(Object.keys(await resolveCatalogue(stranger)).sort()).toEqual((await observe("slackDm")).shown);
     expect(() => assertApprover(approverFrom(stranger.session.auth))).toThrow(/not an allowed approver/);
-    expect(humanTurnRefusal(stranger.session.auth, "Not saved.")).toContain("not as the owner");
-    expect(humanTurnRefusal((await observe("slackDm")).session.session.auth, "Not saved.")).toBeNull();
+    expect(humanTurnRefusal(stranger.session, "Not saved.")).toContain("not as the owner");
+    expect(humanTurnRefusal((await observe("slackDm")).session.session, "Not saved.")).toBeNull();
   });
 
   // The agent's route password is held by the console and the keeper. A request that carries it

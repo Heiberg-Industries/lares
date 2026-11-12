@@ -82,9 +82,15 @@ async function admittedRequest(consoleSocket:string,runtimeSocket:string,console
 function modelRequest(overrides:Partial<ModelPurposeRequest>={}):ModelPurposeRequest{
   return {agent:'helper',incarnation,session:sessionId,member:'Owner-ID',admissionNonce:nonce,method:'POST',path:'/eve/v1/session',rawBodyHash:'b'.repeat(64),policyRevision:2,definitionHash:'c'.repeat(64),purpose:'human',requestId:randomBytes(32).toString('base64url'),...overrides};
 }
-function resumeContext(requestId:string){
-  return {session:{id:sessionId,turn:{id:'',sequence:0},auth:{current:{authenticator:'lares-console',attributes:{lares_resolver_member_id:'Owner-ID',lares_resume_request_id:requestId,lares_resume_option:'approve',lares_purpose:'resolver'}},initiator:auth()}}};
+/** eve 1.0: the turn after an answered card is the card's own paused turn (`turn_0` here), and
+ * `current` is still the member who ASKED. Which card it answers comes only from the receipt. */
+function resumeContext(turn={id:'turn_0',sequence:0},current:Record<string,unknown>=auth()){
+  return {session:{id:sessionId,turn,auth:{current,initiator:auth()}}};
 }
+const resumeOf=(requestId:string,optionId:'approve'|'deny'='approve')=>({purpose:'resume' as const,resume:{requestId,optionId}});
+/** A resolver identity on `current`: the pre-eve-1.0 shape, refused outright now. */
+const resolverAuth=(requestId:string)=>({authenticator:'lares-console',attributes:{lares_member_id:'Owner-ID',lares_admission_nonce:nonce,lares_purpose:'resolver',
+  lares_resolver_member_id:'Owner-ID',lares_resume_request_id:requestId,lares_resume_option:'approve'}});
 async function prepareApprovedResume(requestId:string){
   const policyHash='e'.repeat(64),callId=`original-${requestId}`;
   const actions=new PgPersonalActionStore(db,{encrypt:value=>Buffer.from(value).toString('base64'),decrypt:value=>Buffer.from(value,'base64').toString()});
@@ -146,7 +152,7 @@ describe('budget model authority source proof', () => {
     await expect(consoleSourceTransaction(db, client => validateBudgetAuthorityReference(client as never, reference, env))).rejects.toThrow();
   });
 
-  it('captures and revalidates an approved resume with its exact empty runtime turn', async () => {
+  it('captures and revalidates an approved resume on the asker\'s own paused turn, only from the admitted answer', async () => {
     const policyHash = 'e'.repeat(64), callId = 'original-call-7', requestId = 'approval-request-7';
     const actions = new PgPersonalActionStore(db, { encrypt: value => Buffer.from(value).toString('base64'), decrypt: value => Buffer.from(value, 'base64').toString() });
     const action = await actions.prepareAction({
@@ -158,17 +164,24 @@ describe('budget model authority source proof', () => {
     await actions.attachApproval({ actionId: action.actionId, actorMemberId: 'Owner-ID', approvalCallId: callId, requestId });
     await db.query("UPDATE approval_asks SET outcome='approved',answered_at=clock_timestamp(),resolved_by_member_id='Owner-ID' WHERE request_id=$1", [requestId]);
 
-    const resumeAuth = { authenticator: 'lares-console', attributes: {
-      lares_resolver_member_id: 'Owner-ID', lares_resume_request_id: requestId, lares_resume_option: 'approve', lares_purpose: 'resolver',
-    } };
-    const context = { session: { id: sessionId, turn: { id: '', sequence: 0 }, auth: { current: resumeAuth, initiator: auth() } } };
-    const reference = await consoleSourceTransaction(db, client => captureBudgetAuthorityReference(client as never, context, env));
-    expect(reference).toMatchObject({ kind: 'resume', binding, turnId: '', turnSequence: 0, resume: { requestId, optionId: 'approve' } });
+    const capture = (context: unknown, admitted?: Parameters<typeof captureBudgetAuthorityReference>[3]) =>
+      consoleSourceTransaction(db, client => captureBudgetAuthorityReference(client as never, context as never, env, admitted));
+    const reference = await capture(resumeContext(), resumeOf(requestId));
+    expect(reference).toMatchObject({ kind: 'resume', binding, turnId: 'turn_0', turnSequence: 0, resume: { requestId, optionId: 'approve' } });
     expect(reference.binding).toMatchObject({ agent: 'helper', incarnation, sessionId, memberId: 'Owner-ID', admissionNonce: nonce });
     expect(await consoleSourceTransaction(db, client => validateBudgetAuthorityReference(client as never, reference, env))).toEqual(expect.any(String));
+    // Without an admitted answer the same context is only the asker's human turn.
+    await expect(capture(resumeContext())).resolves.toMatchObject({ kind: 'human', turnId: 'turn_0' });
+    // A resolver on `current` is refused, even with the admitted answer (S5); so is an empty turn id.
+    await expect(capture(resumeContext(undefined, resolverAuth(requestId)), resumeOf(requestId))).rejects.toThrow();
+    await expect(capture(resumeContext({ id: '', sequence: 0 }), resumeOf(requestId))).rejects.toThrow();
+    // S3: a Deny never satisfies an approved card.
+    await expect(capture(resumeContext(), resumeOf(requestId, 'deny'))).rejects.toThrow();
 
     await db.query("UPDATE approval_asks SET outcome='cancelled' WHERE request_id=$1", [requestId]);
     await expect(consoleSourceTransaction(db, client => validateBudgetAuthorityReference(client as never, reference, env))).rejects.toThrow();
+    // S3: an Approve never satisfies a cancelled card.
+    await expect(capture(resumeContext(), resumeOf(requestId))).rejects.toThrow();
   });
 
   it('captures and revalidates an approval resume for a card other than personal mail',async()=>{
@@ -178,18 +191,21 @@ describe('budget model authority source proof', () => {
       readTarget:async(_db:unknown,_input:unknown,memberId:string)=>({kind:'track-create' as const,id:'tracks/follow-up/track.md',ownerMemberId:memberId,fingerprint:'d'.repeat(64),approvedOrigin:'agent' as const})};
     await reserveExactApproval({...humanContext(),callId,toolInput:input} as never,'track_create',{adapter,db:db as never,env});
     await attachExactApproval({requestId,callId,tool:'track_create',input},db as never);
-    const answer=(optionId:string,admission=nonce)=>({session:{id:sessionId,turn:{id:'',sequence:0},auth:{initiator:auth(),current:{authenticator:'lares-console',attributes:{
-      lares_member_id:'Owner-ID',lares_admission_nonce:admission,lares_purpose:'resolver',lares_resume_request_id:requestId,lares_resume_option:optionId}}}}});
-    const capture=(context:unknown)=>consoleSourceTransaction(db,client=>captureBudgetAuthorityReference(client as never,context as never,env));
-    await expect(capture(answer('approve'))).rejects.toThrow();
+    // The asker's own turn; `admission` changes only `current`, as a different admission would.
+    const answer=(admission=nonce)=>resumeContext(undefined,{authenticator:'lares-console',attributes:{lares_member_id:'Owner-ID',lares_admission_nonce:admission,lares_purpose:'human'}});
+    const capture=(context:unknown,optionId:'approve'|'deny')=>consoleSourceTransaction(db,client=>captureBudgetAuthorityReference(client as never,context as never,env,resumeOf(requestId,optionId)));
+    await expect(capture(answer(),'approve')).rejects.toThrow();
     await db.query("UPDATE approval_asks SET outcome='approved',answered_at=clock_timestamp(),resolved_by_member_id='Owner-ID' WHERE request_id=$1",[requestId]);
-    await expect(capture(answer('approve','z'.repeat(43)))).rejects.toThrow();
-    const reference=await capture(answer('approve'));
-    expect(reference).toMatchObject({kind:'resume',binding,turnId:'',turnSequence:0,resume:{requestId,optionId:'approve'}});
+    await expect(capture(answer('z'.repeat(43)),'approve')).rejects.toThrow();
+    await expect(capture(answer(),'deny')).rejects.toThrow(); // S3: a Deny never satisfies an approved card.
+    await expect(capture(resumeContext(undefined,resolverAuth(requestId)),'approve')).rejects.toThrow(); // S5
+    const reference=await capture(answer(),'approve');
+    expect(reference).toMatchObject({kind:'resume',binding,turnId:'turn_0',turnSequence:0,resume:{requestId,optionId:'approve'}});
     expect(await consoleSourceTransaction(db,client=>validateBudgetAuthorityReference(client as never,reference,env))).toEqual(expect.any(String));
     await db.query("UPDATE approval_asks SET outcome='cancelled' WHERE request_id=$1",[requestId]);
     await expect(consoleSourceTransaction(db,client=>validateBudgetAuthorityReference(client as never,reference,env))).rejects.toThrow();
-    await expect(capture(answer('deny'))).resolves.toMatchObject({resume:{requestId,optionId:'deny'}});
+    await expect(capture(answer(),'approve')).rejects.toThrow(); // S3: an Approve never satisfies a cancelled card.
+    await expect(capture(answer(),'deny')).resolves.toMatchObject({resume:{requestId,optionId:'deny'}});
   });
 });
 
@@ -279,7 +295,7 @@ describe('Keeper model-purpose socket handlers',()=>{
     }finally{await stopBroker?.();rmSync(files.root,{recursive:true,force:true});}
   });
 
-  it('opens and claims the exact empty approval-resume turn, including a delayed-close race',async()=>{
+  it('opens and claims the continuation on the asker\'s paused turn, including a delayed-close race',async()=>{
     await prepareApprovedResume('approval-resume-socket');
     let blocked=false,entered!:()=>void,proceed!:()=>void;
     const reached=new Promise<void>(resolve=>{entered=resolve;}),release=new Promise<void>(resolve=>{proceed=resolve;});
@@ -289,24 +305,57 @@ describe('Keeper model-purpose socket handlers',()=>{
       const running=await startBroker(db,files,source);stopBroker=running.stopBroker;
       const request=modelRequest({purpose:'resume',resume:{requestId:'approval-resume-socket',optionId:'approve'}});
       const pending=await admittedRequest(running.consoleSocket,running.runtimeSocket,files.consoleKey,files.runtimeKey,request);
-      const open=await socketRequest(running.runtimeSocket,runtimeEnvelope('turn.open',{pendingReceipt:pending,context:resumeContext('approval-resume-socket')},files.runtimeKey));
+      const open=await socketRequest(running.runtimeSocket,runtimeEnvelope('turn.open',{pendingReceipt:pending,context:resumeContext()},files.runtimeKey));
       expect(open.ok).toBe(true);const capability=String(open.capability);
-      const reference=await consoleSourceTransaction(db,client=>captureBudgetAuthorityReference(client as never,resumeContext('approval-resume-socket'),env));
+      const reference=await consoleSourceTransaction(db,client=>captureBudgetAuthorityReference(client as never,resumeContext(),env,resumeOf('approval-resume-socket')));
       const authorityDeadline=await consoleSourceTransaction(db,client=>validateBudgetAuthorityReference(client as never,reference,env));
-      const firstEvent={type:'step.started',data:{turnId:'',sequence:0,stepIndex:0}};
+      const firstEvent={type:'step.started',data:{turnId:'turn_0',sequence:0,stepIndex:0}};
       const firstClaim=await socketRequest(running.runtimeSocket,runtimeEnvelope('step.claim',{turnCapability:capability,purposeAlias:'lares-brain',event:firstEvent},files.runtimeKey,{payloadDigest:modelPurposeDigest(firstEvent)}));
       expect(firstClaim.ok).toBe(true);expect(firstClaim.claim).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(Number(firstClaim.expiresAt)).toBeLessThanOrEqual(Date.parse(authorityDeadline!));
-      const event={type:'step.started',data:{turnId:'',sequence:0,stepIndex:1}};
+      const event={type:'step.started',data:{turnId:'turn_0',sequence:0,stepIndex:1}};
       blocked=true;
       const claimPromise=socketRequest(running.runtimeSocket,runtimeEnvelope('step.claim',{turnCapability:capability,purposeAlias:'lares-brain',event},files.runtimeKey,{payloadDigest:modelPurposeDigest(event)}));
       await reached;
-      const close=await socketRequest(running.runtimeSocket,runtimeEnvelope('turn.close',{turnCapability:capability,turnId:'',sequence:0},files.runtimeKey));
+      const close=await socketRequest(running.runtimeSocket,runtimeEnvelope('turn.close',{turnCapability:capability,turnId:'turn_0',sequence:0},files.runtimeKey));
       expect(close.ok).toBe(true);proceed();
       expect((await claimPromise).ok).toBe(false);
     }finally{if(blocked)proceed();await stopBroker?.();rmSync(files.root,{recursive:true,force:true});}
   },10_000);
 
+  it('opens a continuation only for the card and option its receipt names, on the asker\'s own turn (S1, S3, S5)',async()=>{
+    await prepareApprovedResume('card-a');await prepareApprovedResume('card-b');
+    const files=brokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+    try{
+      const running=await startBroker(db,files);stopBroker=running.stopBroker;
+      const receipt=(requestId:string,optionId:'approve'|'deny'='approve')=>admittedRequest(running.consoleSocket,running.runtimeSocket,files.consoleKey,files.runtimeKey,
+        modelRequest({purpose:'resume',resume:{requestId,optionId}}));
+      const open=async(pendingReceipt:string,context:unknown=resumeContext())=>socketRequest(running.runtimeSocket,runtimeEnvelope('turn.open',{pendingReceipt,context},files.runtimeKey));
+      const claim=(capability:string,stepIndex=0)=>{const event={type:'step.started',data:{turnId:'turn_0',sequence:0,stepIndex}};
+        return socketRequest(running.runtimeSocket,runtimeEnvelope('step.claim',{turnCapability:capability,purposeAlias:'lares-brain',event},files.runtimeKey,{payloadDigest:modelPurposeDigest(event)}));};
+      // S1: the Console signed card A; a receipt that names card B is refused at admission.
+      const signedForA=modelRequest({purpose:'resume',resume:{requestId:'card-a',optionId:'approve'}});
+      const challenge=await socketRequest(running.consoleSocket,{op:'request.challenge',input:signedForA});
+      const capsule=signModelPurposeRequest(files.consoleKey,signedForA,String(challenge.challenge),String(challenge.challengeMac),Number(challenge.expiresAt));
+      const forB={method:signedForA.method,path:signedForA.path,rawBodyHash:signedForA.rawBodyHash,requestId:signedForA.requestId,purpose:'resume',resume:{requestId:'card-b',optionId:'approve'}};
+      expect((await socketRequest(running.runtimeSocket,runtimeEnvelope('request.admit',{capsule,receipt:forB},files.runtimeKey))).ok).toBe(false);
+      // S5: a resolver identity on `current` never opens, even with a valid receipt; an empty turn id neither.
+      expect((await open(await receipt('card-b'),resumeContext(undefined,resolverAuth('card-b')))).ok).toBe(false);
+      expect((await open(await receipt('card-b'),resumeContext({id:'',sequence:0}))).ok).toBe(false);
+      // S3: a Deny receipt never opens for an approved card.
+      expect((await open(await receipt('card-b','deny'))).ok).toBe(false);
+      // Card A's own receipt opens; once card A is no longer approved, its turn claims nothing more,
+      // although card B is still approved (S1: card B's approval never passes card A's re-check).
+      const openedA=await open(await receipt('card-a'));expect(openedA.ok).toBe(true);
+      expect((await claim(String(openedA.capability))).ok).toBe(true);
+      await db.query("UPDATE approval_asks SET outcome='cancelled' WHERE request_id='card-a'");
+      expect((await db.query("SELECT outcome FROM approval_asks WHERE request_id='card-b'")).rows[0].outcome).toBe('approved');
+      expect((await claim(String(openedA.capability),1)).ok).toBe(false);
+      // S3: an Approve receipt never opens for a cancelled card; a Deny receipt does.
+      expect((await open(await receipt('card-a'))).ok).toBe(false);
+      expect((await open(await receipt('card-a','deny'))).ok).toBe(true);
+    }finally{await stopBroker?.();rmSync(files.root,{recursive:true,force:true});}
+  },10_000);
   it('withholds a claim when approved-resume authority expires during validation',async()=>{
     await prepareApprovedResume('approval-resume-expiry');
     await db.query('ALTER TABLE personal_actions DISABLE TRIGGER personal_action_guard');
@@ -322,9 +371,9 @@ describe('Keeper model-purpose socket handlers',()=>{
       const running=await startBroker(db,files,source);stopBroker=running.stopBroker;
       const request=modelRequest({purpose:'resume',resume:{requestId:'approval-resume-expiry',optionId:'approve'}});
       const pending=await admittedRequest(running.consoleSocket,running.runtimeSocket,files.consoleKey,files.runtimeKey,request);
-      const open=await socketRequest(running.runtimeSocket,runtimeEnvelope('turn.open',{pendingReceipt:pending,context:resumeContext('approval-resume-expiry')},files.runtimeKey));
+      const open=await socketRequest(running.runtimeSocket,runtimeEnvelope('turn.open',{pendingReceipt:pending,context:resumeContext()},files.runtimeKey));
       expect(open.ok).toBe(true);const capability=String(open.capability);
-      const event={type:'step.started',data:{turnId:'',sequence:0,stepIndex:0}};delayCommit=true;
+      const event={type:'step.started',data:{turnId:'turn_0',sequence:0,stepIndex:0}};delayCommit=true;
       const claim=await socketRequest(running.runtimeSocket,runtimeEnvelope('step.claim',{turnCapability:capability,purposeAlias:'lares-brain',event},files.runtimeKey,{payloadDigest:modelPurposeDigest(event)}));
       expect(claim.ok).toBe(false);
       const retry=await socketRequest(running.runtimeSocket,runtimeEnvelope('step.claim',{turnCapability:capability,purposeAlias:'lares-brain',event},files.runtimeKey,{payloadDigest:modelPurposeDigest(event)}));

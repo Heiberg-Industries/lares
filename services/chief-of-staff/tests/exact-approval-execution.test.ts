@@ -81,7 +81,7 @@ describe('exact private approval execution',()=>{
   expect(r.authority).toMatchObject({origin:'approval-resume',actingMemberId:'member-a',spokenByMemberId:'member-a',resolvedByMemberId:'member-a',turnId:'turn-original',requestId:'request-1'});
   expect(c.approval.responder.attributes.lares_purpose).toBe('resolver');
   expect(c.session.auth.current.attributes.lares_purpose).toBe('human');
-  expect(humanTurnRefusal({current:c.approval.responder,initiator:c.session.auth.initiator},'Refused')).toContain('no new human instruction');
+  expect(humanTurnRefusal({...c.session,auth:{current:c.approval.responder,initiator:c.session.auth.initiator}},'Refused')).toContain('no new human instruction');
   await dismissExactDeadline(getPool(),c,input);
   expect((await getPool().query('SELECT status,owner,status_reason FROM deadlines WHERE id=$1',[input.id])).rows[0]).toEqual({status:'dismissed',owner:'member-a',status_reason:input.reason});
  });

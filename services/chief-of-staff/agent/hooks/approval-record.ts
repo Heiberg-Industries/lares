@@ -13,7 +13,10 @@ export type { ApprovalRecordDeps } from "@lares/agent-kit/approval-record-hook";
 
 import {personalSendInputRequested,personalSendInputResolved} from '../../lib/personal-send-approval.js';
 import { getPool } from "@lares/agent-kit/db";
-import { approverFrom, assertApprover } from "../../lib/approvals.js";
+import { approverFrom, assertApprover, takeNativeAnswerer } from "../../lib/approvals.js";
+import { noteAnswerApplied, noteApprovalCardTurn } from "../../lib/approval-card-turns.js";
+import { settleAcceptedAnswer } from "@lares/agent-kit/private-console-resume";
+import { openContinuationAfterSettle } from "../lib/model-purpose.js";
 import { applyRouteProposalDecline, recordRouteApprovalLink, routeApprovalLinkAudience } from "../../lib/route-decline.js";
 import { withCurrentNativeContinuity } from "../../lib/conversation-continuity.js";
 const live = makeApprovalRecord({personalRequested:(r,c)=>personalSendInputRequested(r,c as never),personalResolved:(r,o,c)=>personalSendInputResolved(r,o,c as never)});
@@ -46,15 +49,16 @@ export async function linkScheduledRouteRequests(db: import("pg").Pool, event: u
   });
 }
 
-async function applyScheduledRouteDeclines(event: unknown, ctx: HookContext): Promise<void> {
+async function applyScheduledRouteDeclines(settled: ReturnType<typeof settledApproval>, answerer: unknown): Promise<void> {
   // Only a person's Deny is a veto. A card nobody answered (withdrawn, interrupted) or an invalid
   // answer creates neither a veto nor a learned fact.
-  const settled = settledApproval(event, ctx);
   if (!settled || settled.outcome !== "cancelled" || !settled.decidedByPerson) return;
   const requestId = settled.interactionId;
   const audience = await routeApprovalLinkAudience(getPool(), requestId);
   if (!audience) return;
-  const principal = approverFrom(ctx?.session?.auth);
+  // eve 1.0: `session.auth.current` is the scheduled job's app identity, not the person who tapped
+  // Deny. The owner's answer is the one the native response policy accepted for this card.
+  const principal = approverFrom({ current: answerer });
   assertApprover(principal);
   const auth = {
     authenticator: principal.authenticator,
@@ -62,6 +66,17 @@ async function applyScheduledRouteDeclines(event: unknown, ctx: HookContext): Pr
   };
   await withCurrentNativeContinuity(audience.door, auth, audience.identity,
     (db, identity) => applyRouteProposalDecline(db, requestId, identity));
+}
+
+/** The turn a card belongs to: the event's own scope, else the hook's current turn (the same turn
+ *  while it runs; packages/agent-kit/tests/answer-turn-position.test.ts). */
+/** Whether an opened interaction is an approval card, from the event alone: unlike
+ *  `openedApproval`, it does not need the call to be readable, so an unreadable call still marks. */
+function asksApproval(event: unknown): boolean {
+  return (event as { data?: { request?: { kind?: unknown } } } | undefined)?.data?.request?.kind === "approval";
+}
+function cardTurnOf(event: unknown, ctx: HookContext): unknown {
+  return (event as { scope?: { turnId?: unknown } } | undefined)?.scope?.turnId ?? ctx?.session?.turn?.id;
 }
 
 let routeDeclineWarned = false;
@@ -75,12 +90,30 @@ function warnRouteDecline(error: unknown): void {
 export default defineHook({
   events: {
     "interaction.opened": async (event: unknown, ctx: HookContext) => {
+      // A turn that asks a card carries no new human instruction from here on (durable; throws,
+      // failing the turn, when it cannot be recorded).
+      if (asksApproval(event)) noteApprovalCardTurn(cardTurnOf(event, ctx));
       await live["interaction.opened"](event, ctx);
       try { await linkScheduledRouteRequests(getPool(), event, ctx); } catch (error) { warnRouteDecline(error); }
     },
     "interaction.settled": async (event: unknown, ctx: HookContext) => {
+      const settled = settledApproval(event, ctx);
+      // Every settled card takes its native answerer, so the store never outlives its cards (lib/approvals.ts).
+      const answerer = settled ? takeNativeAnswerer(settled.interactionId, ctx?.session?.id) : undefined;
+      if (settled) {
+        // Marked again on settle; a no-op when the opening hook already marked the turn.
+        noteApprovalCardTurn(cardTurnOf(event, ctx));
+        // Which sentence is true if this turn's reply is later refused (lib/model-purpose.ts).
+        if (settled.decidedByPerson) noteAnswerApplied(cardTurnOf(event, ctx));
+        // The turn continues only from the answer eve applied, never from an earlier one.
+        settleAcceptedAnswer(settled.interactionId, ctx?.session?.id,
+          settled.outcome === "approved" ? "approve" : settled.outcome === "cancelled" && settled.decidedByPerson ? "deny" : undefined);
+      }
       await live["interaction.settled"](event, ctx);
-      try { await applyScheduledRouteDeclines(event, ctx); } catch (error) { warnRouteDecline(error); }
+      // After the card's own settle work, before eve runs the approved action: the answer's
+      // 30-second receipt becomes the continuation's Keeper turn now (lib/model-purpose.ts).
+      if (settled) await openContinuationAfterSettle(cardTurnOf(event, ctx), ctx?.session as never);
+      try { await applyScheduledRouteDeclines(settled, answerer); } catch (error) { warnRouteDecline(error); }
     },
   },
 });

@@ -2,7 +2,7 @@ import type { SourceDatabase } from './console-source-transaction.js';
 import { checkConsoleSourceDeadlines, gateConsoleOrganisation, requireSourceTransactionOwner } from './console-source-transaction.js';
 import { consoleAdmission, requireConsoleSessionBinding, requireConsoleTurnAuthority,
   type ConsoleAuthorityContext, type ConsoleBinding } from './console-turn-authority.js';
-import { privateResumeAdmission, requireConsoleResume, requirePersistedConsoleModelResume } from './private-console-resume.js';
+import { privateResumeAdmission, requirePersistedConsoleModelResume } from './private-console-resume.js';
 import { PgGrantStore } from './grant-store.js';
 import { managedIdentity } from './door-authority.js';
 import { payloadFingerprint } from './approval-ledger.js';
@@ -19,19 +19,35 @@ export type ConversationBudgetAuthorityReference={kind:'human'|'resume';binding:
 export type OwnerJobBudgetAuthorityReference={kind:'owner-job';binding:{agent:string;incarnation:string;memberId:string;agentAccessRevision:number}};
 export type BudgetAuthorityReference=ConversationBudgetAuthorityReference|OwnerJobBudgetAuthorityReference;
 
-/** Capture authority through the already-owned console source transaction. */
-export async function captureBudgetAuthorityReference(db:SourceDatabase,ctx:ConsoleAuthorityContext,env:NodeJS.ProcessEnv):Promise<ConversationBudgetAuthorityReference> {
+/** What Keeper itself admitted for the receipt that opens this turn: a person's message (`human`),
+ * or the answer to one card (`resume`, naming the card and the option). */
+export type AdmittedPurpose={purpose:'human'|'resume';resume?:{requestId:string;optionId:'approve'|'deny'}};
+
+/** Capture authority through the already-owned console source transaction.
+ *
+ * eve 1.0 continues a paused turn as the person who ASKED, so `session.auth.current` is always that
+ * person's human admission, also in the turn after an answered card. Whether this turn answers a
+ * card is never read from the session: only the receipt Keeper admitted says so (`admitted`), and
+ * then the card must be settled for that same member (an Approve approved by them; a Deny cancelled,
+ * ignored or invalid). A resolver identity on `current` is refused outright. Without `admitted`
+ * (the budget store's own captures) the turn is a human turn. */
+export async function captureBudgetAuthorityReference(db:SourceDatabase,ctx:ConsoleAuthorityContext,env:NodeJS.ProcessEnv,admitted?:AdmittedPurpose):Promise<ConversationBudgetAuthorityReference> {
   requireSourceTransactionOwner(db);
   const own=managedIdentity(env),session=ctx.session;
-  if(!own||!session?.id||typeof session.turn?.id!=='string'||(session.turn.id!==''&&!session.turn.id.trim())||!Number.isSafeInteger(session.turn.sequence)||session.turn.sequence!<0)throw new Error('Unsupported budget authority');
-  const resolver=privateResumeAdmission(session.auth?.current);
-  if(resolver){
-    const current=await requireConsoleResume(ctx,'model',{db,env});
-    return {kind:'resume',binding:current.binding,turnId:session.turn.id,turnSequence:session.turn.sequence!,resume:{requestId:resolver.requestId,optionId:resolver.optionId==='approve'?'approve':'deny'}};
+  if(!own||!session?.id||typeof session.turn?.id!=='string'||!session.turn.id.trim()||!Number.isSafeInteger(session.turn.sequence)||session.turn.sequence!<0)throw new Error('Unsupported budget authority');
+  if(privateResumeAdmission(session.auth?.current))throw new Error('Unsupported budget authority');
+  const admission=consoleAdmission(session.auth?.current),initial=consoleAdmission(session.auth?.initiator);
+  if(admitted?.purpose==='resume'){
+    const resume=admitted.resume;
+    if(!resume||!resume.requestId||(resume.optionId!=='approve'&&resume.optionId!=='deny')||!admission||admission.purpose!=='human'||
+      !initial||initial.purpose!=='human'||initial.memberId!==admission.memberId||initial.admissionNonce!==admission.admissionNonce)throw new Error('Unsupported budget authority');
+    const current=await requirePersistedConsoleModelResume({binding:{agent:own.name,incarnation:own.incarnation,sessionId:session.id,memberId:admission.memberId,admissionNonce:admission.admissionNonce},
+      requestId:resume.requestId,optionId:resume.optionId},{db,env});
+    return {kind:'resume',binding:current.binding,turnId:session.turn.id,turnSequence:session.turn.sequence!,resume:{requestId:resume.requestId,optionId:resume.optionId}};
   }
+  if(admitted!==undefined&&admitted.purpose!=='human')throw new Error('Unsupported budget authority');
   await requireConsoleTurnAuthority(ctx,db,env);
-  const admission=consoleAdmission(session.auth?.current)!;
-  const binding=await requireConsoleSessionBinding({agent:own.name,incarnation:own.incarnation,sessionId:session.id,...admission},db,env);
+  const binding=await requireConsoleSessionBinding({agent:own.name,incarnation:own.incarnation,sessionId:session.id,...admission!},db,env);
   return {kind:'human',binding,turnId:session.turn.id,turnSequence:session.turn.sequence!};
 }
 

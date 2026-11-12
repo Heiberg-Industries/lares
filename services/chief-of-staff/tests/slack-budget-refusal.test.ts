@@ -80,6 +80,26 @@ describe("the chief of staff's Slack door — a capped turn answers with one fix
     expect(next, "eve's generic failure text must not be posted as well").not.toHaveBeenCalled();
   });
 
+  it("the refused reply after an approval answer posts its one fixed sentence, not eve's text, on either event", async () => {
+    const refused = { code: "REACTION_FAILED", message: "DefinitionFailedError: The reply after an approval answer was refused", id: "err_1" };
+    for (const event of [turnSettledFailed(refused), sessionEndedFailed(refused)]) {
+      const { ctx, posted, next } = fakeDoor();
+      await (event.type === "turn.settled" ? onTurnSettled : onSessionEnded)(event as never, ctx, next);
+      expect(posted).toEqual(["Your answer was applied, but I could not finish my reply. Ask me what happened."]);
+      expect(next).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a card that ended without an answer posts that sentence, never 'your answer was applied'", async () => {
+    const unanswered = { code: "REACTION_FAILED", message: "DefinitionFailedError: The approval in this turn ended without an answer", id: "err_2" };
+    for (const event of [turnSettledFailed(unanswered), sessionEndedFailed(unanswered)]) {
+      const { ctx, posted, next } = fakeDoor();
+      await (event.type === "turn.settled" ? onTurnSettled : onSessionEnded)(event as never, ctx, next);
+      expect(posted).toEqual(["That request ended without an answer; nothing was done."]);
+      expect(next).not.toHaveBeenCalled();
+    }
+  });
+
   it("posts the same sentence when the cap arrives as a failed turn instead", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { ctx, posted, next } = fakeDoor();
