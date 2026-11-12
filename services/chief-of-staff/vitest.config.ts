@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 // Deep imports into eve's dist for the suites that pin patches/eve.patch (the pnpm patch on
-// eve@1.0.0-rc.9) and the framework behaviour the doors depend on. The package's exports map does
+// eve@1.0.0-rc.10) and the framework behaviour the doors depend on. The package's exports map does
 // not expose these internals, so the aliases point at the files directly (absolute paths: a bare
 // "eve/dist/..." specifier would be re-blocked by the exports map). An eve upgrade that moves one
 // of these files fails the importing suite at load, which is the signal to re-derive the patch.
