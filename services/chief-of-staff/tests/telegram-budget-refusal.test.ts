@@ -26,6 +26,7 @@ import { APICallError } from "ai";
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 
 import { onSessionEnded, onTurnSettled } from "../agent/channels/telegram.js";
+import { MODEL_COMPACTION_REFUSED } from "@lares/agent-kit/conversation-too-long";
 
 const REFUSAL_SENTENCE =
   "I have hit my spending cap — nothing was done. It resets with the next budget period, or you can raise the cap.";
@@ -325,5 +326,40 @@ describe("a spending-limit refusal says which limit and when it resets", () => {
       expect(posted).toEqual([eve.failureNotice(event.data, { restart: "message" })]);
       expect(posted[0]).not.toBe(message);
     }
+  });
+});
+
+describe("a conversation that has grown too long", () => {
+  const TOO_LONG = "This conversation has grown too long for me to continue, so your next message will start a new one. Please send your last message again.";
+
+  it("eve reports the refused summary as a failed turn the conversation survives, with the refusal as its message", () => {
+    const thrown = new Error(MODEL_COMPACTION_REFUSED);
+    expect(eve.modelCallErrorInfo(thrown)).toEqual({ code: "MODEL_CALL_FAILED", message: MODEL_COMPACTION_REFUSED });
+    expect(eve.classifyModelCallError(thrown)).toBe("recoverable");
+  });
+
+  it("with the rotation store unreachable the promise could not be kept, so the ordinary text is posted, once", async () => {
+    process.env["TELEGRAM_PRINCIPAL_ID"] = "5550001";
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const event = failed(new Error(MODEL_COMPACTION_REFUSED), "err_long_0001");
+      const posted: unknown[] = [];
+      await onTurnSettled(event, {
+        channel: { state: { chatId: "5550001", chatType: "private" }, telegram: { post: async (m: string) => { posted.push(m); return {}; } } },
+        session: { id: "wrun_long" },
+      });
+      expect(posted).toEqual([eve.failureNotice(event.data, "turn")]);
+      expect(posted[0]).not.toBe(TOO_LONG);
+      expect(errors).toHaveBeenCalledTimes(1);
+    } finally {
+      delete process.env["TELEGRAM_PRINCIPAL_ID"];
+    }
+  });
+
+  it("the session's end keeps eve's own text: the refusal never ends a conversation, and nothing is marked there", async () => {
+    const { ctx, posted } = fakeChat();
+    const event = failed(new Error(MODEL_COMPACTION_REFUSED));
+    await onSessionEnded(event, ctx);
+    expect(posted).toEqual([eve.failureNotice(event.data, { restart: "message" })]);
   });
 });

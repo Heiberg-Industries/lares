@@ -25,7 +25,7 @@ import {
   type AnswerOption,
 } from "./ChatTranscript";
 import { agentNotRunning, notRunningSay } from "../lib/agent-reachability";
-import { limitReplyOf } from "../lib/limit-reply";
+import { conversationTooLongOf, limitReplyOf } from "../lib/limit-reply";
 import {
   chatSessionKey,
   CONSOLE_REFUSAL_HEADER,
@@ -181,6 +181,9 @@ function ChatSession({
   // the session and the draft stay, and the member can write again (a new month resets the limit).
   const limitReply = hasError && ended === null ? limitReplyOf(agent.events) : null;
   const broken = ended !== null || (hasError && limitReply === null);
+  // A conversation that has grown too long is broken (every later turn would fail the same way),
+  // but its own sentence says why and how to go on, in place of "This conversation is unavailable."
+  const tooLong = broken && ended === null ? conversationTooLongOf(agent.events, agent.view) : null;
   useEffect(() => {
     if (broken) failed.current = true;
     if (failed.current) for (const key of [storageKey, `${storageKey}:draft`, `${storageKey}:scroll`]) {
@@ -268,11 +271,12 @@ function ChatSession({
     return () => { current = false; };
   }, [unavailable, name]);
   // An ended conversation is not the agent being down: its own sentence wins.
-  const notRunningText = unavailable && ended === null && notRunning ? notRunningSay(identity.displayName, name) : null;
+  // So is one that grew too long: the agent answered, and a new conversation is the way on.
+  const notRunningText = unavailable && ended === null && tooLong === null && notRunning ? notRunningSay(identity.displayName, name) : null;
   // The one sentence a failed conversation shows. Ours, always: never the framework's error text.
   const unavailableSay = ended !== null
     ? ENDED_SAY[ended]
-    : notRunningText ?? "This conversation is unavailable. Start a new conversation.";
+    : tooLong ?? notRunningText ?? "This conversation is unavailable. Start a new conversation.";
   const composer = unavailable
     ? { disabled: true, say: ended !== null ? "" : notRunningText ?? "Start a new conversation to continue." }
     : composerState(agent.status);

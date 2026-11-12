@@ -343,15 +343,59 @@ export async function runDayHandover(db: Pool, closingDay: string): Promise<DayH
 
 /** Writes down the durable session that just answered in this chat, and the home-zone day it
  *  answered on. The row is created by `getRotationState`, which the caller
- *  runs first on the same turn — this only ever updates it. */
+ *  runs first on the same turn — this only ever updates it.
+ *
+ *  A conversation marked too long (`markTooLongForRetirement`: a session with no day) is left
+ *  marked until the next message claims it, so a reply from any other conversation in the chat
+ *  meanwhile (a scheduled one, say) cannot quietly cancel the retirement the person was promised.
+ *  Without such a mark, nothing here changes. */
 export async function recordServingSession(
   db: Pool, chatId: string, today: string, sessionId: string,
 ): Promise<void> {
   await db.query(
     `UPDATE telegram_session_rotation SET session_id = $2, session_day = $3, updated_at = now()
-     WHERE chat_id = $1`,
+     WHERE chat_id = $1 AND NOT (session_id IS NOT NULL AND session_day IS NULL)`,
     [chatId, sessionId, today],
   );
+}
+
+/**
+ * Marks a conversation that has grown too long for retirement at the person's next message.
+ *
+ * The same front door as the day boundary, nothing new: the failed session is recorded as the one
+ * serving this chat, with NO day. `claimRolledOverSession` matches a missing day as "not today", so
+ * the next inbound MESSAGE (never a tap) claims it once and `retirePriorDaySession` ends it before
+ * that message is forwarded, which therefore opens a brand-new conversation.
+ *
+ * Nothing is summarised or carried over: the anchor day (`local_day`) and any waiting hand-over are
+ * left exactly as they are, so the next reply sees no day boundary and makes no model call. Nothing
+ * here starts a turn either; a retirement happens only when the person sends a message, so it can
+ * never repeat on its own. The row is created if this chat has none yet (a first turn that failed
+ * before any reply was recorded), anchored to `today` as `getRotationState` would anchor it.
+ *
+ * Returns true when THIS call marked it, false when that same conversation was already marked (a
+ * scheduled turn failing again in it, say). The check IS the UPDATE, as in `claimRolledOverSession`,
+ * so two failures landing together cannot both count as the first.
+ */
+export async function markTooLongForRetirement(
+  db: Pool, chatId: string, today: string, sessionId: string,
+): Promise<boolean> {
+  const mark = async () => ((await db.query(
+    `UPDATE telegram_session_rotation SET session_id = $2, session_day = NULL, updated_at = now()
+      WHERE chat_id = $1 AND NOT (session_id IS NOT DISTINCT FROM $2 AND session_day IS NULL)`,
+    [chatId, sessionId],
+  )).rowCount ?? 0) > 0;
+  if (await mark()) return true;
+  const inserted = await db.query(
+    `INSERT INTO telegram_session_rotation (chat_id, local_day, principal, session_id, session_day)
+     VALUES ($1, $2, $3, $4, NULL)
+     ON CONFLICT (chat_id) DO NOTHING`,
+    [chatId, today, configuredOwnerId(), sessionId],
+  );
+  if ((inserted.rowCount ?? 0) > 0) return true;
+  // The row exists: either already marked for this conversation, or created by a reply between the
+  // two statements. One more UPDATE tells them apart.
+  return mark();
 }
 
 /**
@@ -372,14 +416,23 @@ export async function recordServingSession(
 export async function claimRolledOverSession(
   db: Pool, chatId: string, today: string,
 ): Promise<string | null> {
-  const { rows } = await db.query<{ session_id: string | null }>(
-    `WITH prior AS (SELECT session_id FROM telegram_session_rotation WHERE chat_id = $1)
+  return (await claimRetirement(db, chatId, today))?.sessionId ?? null;
+}
+
+/** The same claim, also saying WHY: `tooLong` when the claimed conversation carried a too-long mark
+ *  (no day) rather than an earlier day. Only an explicit missing day counts as the mark. */
+async function claimRetirement(
+  db: Pool, chatId: string, today: string,
+): Promise<{ sessionId: string; tooLong: boolean } | null> {
+  const { rows } = await db.query<{ session_id: string | null; too_long?: boolean | null }>(
+    `WITH prior AS (SELECT session_id, session_day FROM telegram_session_rotation WHERE chat_id = $1)
      UPDATE telegram_session_rotation SET session_id = NULL, updated_at = now()
      WHERE chat_id = $1 AND session_id IS NOT NULL AND session_day IS DISTINCT FROM $2
-     RETURNING (SELECT session_id FROM prior) AS session_id`,
+     RETURNING (SELECT session_id FROM prior) AS session_id, (SELECT session_day IS NULL FROM prior) AS too_long`,
     [chatId, today],
   );
-  return rows[0]?.session_id ?? null;
+  const sessionId = rows[0]?.session_id;
+  return sessionId ? { sessionId, tooLong: rows[0]?.too_long === true } : null;
 }
 
 /** The subset of eve's `Session` the retirement needs — `attachSession(id)` returns one. The
@@ -413,6 +466,8 @@ export function telegramChatIdOfUpdate(raw: string): string | null {
 /** Recorded on the retirement so a day-boundary one is distinguishable, in the runtime's own
  *  logs, from the one the owner asks for from the console. */
 const DAY_BOUNDARY_REASON = "The home calendar day rolled over; the previous day's conversation is retired";
+/** The same for a conversation marked too long (`markTooLongForRetirement`). */
+const TOO_LONG_REASON = "The conversation grew too long to continue; it is retired at the person's next message";
 
 /** How long the whole day-boundary check may take before the update is forwarded regardless.
  *  Short on purpose: the door's standing contract is that the agent going deaf is worse than a
@@ -452,14 +507,16 @@ export async function retirePriorDaySession(
   try {
     const db = deps.db ?? getPool();
     const budget = deps.budgetMs ?? RETIREMENT_BUDGET_MS;
-    const sessionId = await withBudget(
-      claimRolledOverSession(db, chatId, homeDay(deps.now)), budget, "the day-boundary read",
+    const claimed = await withBudget(
+      claimRetirement(db, chatId, homeDay(deps.now)), budget, "the day-boundary read",
     );
-    if (sessionId === null) return;
+    if (claimed === null) return;
     await withBudget(
-      attachSession(sessionId).end({ reason: DAY_BOUNDARY_REASON }), budget, "ending the session",
+      attachSession(claimed.sessionId).end({ reason: claimed.tooLong ? TOO_LONG_REASON : DAY_BOUNDARY_REASON }), budget, "ending the session",
     );
-    console.log("[telegram-rotation] the day rolled over — the previous day's conversation is retired; this update starts a new one");
+    console.log(claimed.tooLong
+      ? "[telegram-rotation] the conversation had grown too long — it is retired; this update starts a new one"
+      : "[telegram-rotation] the day rolled over — the previous day's conversation is retired; this update starts a new one");
   } catch (err) {
     console.error("[telegram-rotation] day-boundary retirement failed — forwarding the update anyway", err);
   }

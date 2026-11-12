@@ -20,6 +20,7 @@
     "./gateway-admission-protocol": "./src/gateway-admission-protocol.ts",
     "./limit-sentences": "./src/limit-sentences.ts",
     "./approval-reply-sentence": "./src/approval-reply-sentence.ts",
+    "./conversation-too-long": "./src/conversation-too-long.ts",
     "./gateway-pricing": "./src/gateway-pricing.ts",
     "./vault-area-store": "./src/vault-area-store.ts",
     "./personal-action-store": "./src/personal-action-store.ts",

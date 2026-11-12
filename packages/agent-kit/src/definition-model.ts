@@ -5,6 +5,7 @@ import { position } from 'eve/events';
 import { defineDynamic, type DynamicModelContext } from 'eve/models';
 export { currentModelInvocation, currentModelPurposeClaim } from './model-invocation.js';
 import { captureModelInvocation, runModelInvocation, type ModelInvocation, type ModelInvocationSession } from './model-invocation.js';
+import { MODEL_CALLS_REFUSED_UNSCOPED, MODEL_COMPACTION_REFUSED } from './conversation-too-long.js';
 
 // A durable session marker, not a process-wide success flag. A repair on disk after a failed
 // resolver must not let that already-misconfigured turn run with its neutral compiled prompt.
@@ -12,7 +13,8 @@ const ready = defineState<boolean>('lares.definition-model-ready', () => false);
 const gatewayAlias = defineState<string | null>('lares.session-gateway-alias', () => null);
 
 export const SESSION_MODEL_CONTEXT_WINDOW_TOKENS = 200_000;
-export const MODEL_COMPACTION_REFUSED = 'Model compaction requires a fresh trusted invocation';
+// Defined beside the doors' recogniser so the two cannot drift (`conversation-too-long.ts`).
+export { MODEL_COMPACTION_REFUSED };
 export const MODEL_SELECTION_REFUSED = 'No running turn to select a model for';
 
 // Sessions whose history is being compacted RIGHT NOW, in this process. eve 1.0 awaits the
@@ -33,7 +35,9 @@ const MAX_COMPACTING_SESSIONS = 4_096;
 export function refuseModelCompaction(sessionId?: string): never {
   const scoped = typeof sessionId === 'string' && sessionId !== '' && compacting.size < MAX_COMPACTING_SESSIONS;
   compacting.add(scoped ? sessionId : '*');
-  throw new Error(MODEL_COMPACTION_REFUSED);
+  // Only a refusal scoped to its own conversation says that conversation is too long; the doors
+  // read this message (`conversation-too-long.ts`). The degraded one says nothing about length.
+  throw new Error(scoped ? MODEL_COMPACTION_REFUSED : MODEL_CALLS_REFUSED_UNSCOPED);
 }
 
 /** Registered on `context.settled`: the compaction is over, whatever its outcome. */
@@ -42,7 +46,11 @@ export function modelCompactionSettled(sessionId?: string): void {
 }
 
 function assertNotCompacting(sessionId: string | undefined): void {
-  if (compacting.has('*') || (sessionId !== undefined && compacting.has(sessionId))) throw new Error(MODEL_COMPACTION_REFUSED);
+  // The same calls are refused as before; only the message differs. A session marked as being
+  // compacted is refused as too long; every other call, in the degraded mode, with the message the
+  // doors do not read as "too long".
+  if (sessionId !== undefined && compacting.has(sessionId)) throw new Error(MODEL_COMPACTION_REFUSED);
+  if (compacting.has('*')) throw new Error(MODEL_CALLS_REFUSED_UNSCOPED);
 }
 
 /** Persist only the alias, never a provider object or credential. A bare model id is routed by
