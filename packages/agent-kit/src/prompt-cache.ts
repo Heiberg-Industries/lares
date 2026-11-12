@@ -13,7 +13,10 @@
  * message. For the system prompt it splits the instructions in two: the STATIC part (an
  * `instructions.md`, static skills, workspace files) becomes a first system message carrying
  * eve's breakpoint, and every instruction file's own section (`defineDynamic`) is joined, with
- * "\n\n", into one second system message carrying none. A role has no static part: its persona,
+ * "\n\n", into one second system message carrying none. That second message also holds eve's
+ * own sections: a recovery note first (only on the retry after an unsupported provider tool),
+ * and, after every instruction file, the tasks note and the pending-approvals note. Those two
+ * therefore sit after the boundary, in the per-turn part. A role has no static part: its persona,
  * standing facts, language line and clock are all instruction files. So the first message is
  * empty and dropped, and eve sends ONE system block with NO breakpoint, the per-turn text inside
  * it. (Up to 1.0.0-rc.9 eve sent the same single block but with its breakpoint at the end, after
@@ -30,7 +33,9 @@
  * Anthropic's limit of four. A block that already carries a breakpoint (eve up to rc.9) has it
  * MOVED instead. If a role ever gained a static part, eve's breakpoint would sit on that first
  * block, the count would reach four on every call after the first, and the session-stable part
- * would lose its breakpoint: that would need a change here.
+ * would lose its breakpoint: that would need a change here. The offline gateway proof
+ * (`packages/board-evals/scripts/gateway-invocation-fixture.mjs`, `assertOneSystemMessage` and
+ * `cacheMarkerProblems`) fails when that happens.
  *
  * WHY THE FETCH AND NOT A `wrapLanguageModel` MIDDLEWARE. Both would work. The fetch is the one
  * seam every gateway request already passes (it already sets Accept-Encoding), it sees exactly
