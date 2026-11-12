@@ -68,7 +68,7 @@ The tested path is:
 - a fresh Ubuntu 24.04 x86-64 server with at least 6 GiB of memory and 20 GiB free disk, root
   SSH access by key, and ports 80 and 443 free
 - a domain name whose A record points at that server
-- an Anthropic API key (a consumer chat subscription does not include API access)
+- an Anthropic API key (a consumer chat subscription does not include API access). In this release only Anthropic models are on the tested path; setting an OpenAI or other model by hand is not, and chat will be refused.
 - a Google OAuth client for signing in to the console; connecting Gmail and Calendar needs a
   second client with those scopes
 - Docker with Compose v2, Node.js 24 and pnpm 9.15.0 on the server
