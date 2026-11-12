@@ -164,3 +164,26 @@ the approved cards.
 - The budget recorder still charges through `prepareIntent` in the model call, not through Keeper's
   path (unchanged from the section above); `proveDurableBudget` says "preparation only".
 - These runs are on a local merge; they need repeating once both fixes are on `eve-1.0`.
+
+## Re-run on `eve-1.0` at `0890e717`, with both fixes merged
+
+The section above was measured on a local merge. Both fixes are now on `eve-1.0` (`0890e717`); this
+section's runs are on that commit plus the two proof commits replayed on top of it (the resume-check
+port and the refusal-sentence check; unchanged from the local merge, no conflicts). The repeated
+answer step keeps `eve-1.0`'s sentence, "This request is no longer waiting, so this answer was not
+used."
+
+| Run | Variables | Result |
+| --- | --- | --- |
+| Mail send, scripted model | `ROLE=chief-of-staff SEND=1` | **PASS** (29 model calls, 4 mail-provider calls) |
+| Budget (gateway on the Anthropic wire, mail send, budget recorder) | `ROLE=chief-of-staff GATEWAY_LANE=anthropic SEND=1 BUDGET=1` | **PASS** (37 model calls); the gateway lane's ported resume checks and `proveDurableBudget` ran ("preparation only") |
+| Web chat (`proof:web-chat`) | none | **PASS**, 13/13 items |
+
+Not proven:
+
+- **Keeper-path charging.** The budget recorder still calls `PgBudgetAdmissionStore.prepareIntent`
+  inside the model call. Production charges through Keeper's model-purpose broker and gateway
+  socket. Not exercised here.
+- **The web-chat approval proof is still not ported** (`web-chat-approval-2026-11-12.md`).
+- The OpenAI-compatible wire was not re-run with mail send and budget on; it passed the gateway lane
+  alone earlier on 12 November.
