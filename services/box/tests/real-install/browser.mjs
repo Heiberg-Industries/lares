@@ -183,7 +183,8 @@ async function finishDoor(page, kind) {
   const group = await doorGroup(page, kind);
   const connected = group.getByText("Connected", { exact: true });
   if (await connected.count()) return;
-  await page.getByRole("button", { name: "Apply connection changes (restarts agent)" }).click({ timeout: 60_000 });
+  // The page's Status box has a button with the same name; the door section's own one applies and reloads.
+  await page.locator('section[aria-label="Door setup"]').getByRole("button", { name: "Apply connection changes (restarts agent)" }).click({ timeout: 60_000 });
   // Applying reloads the page; the door then reads Connected.
   await waitForDoor(page, connected, `${DOOR_LABEL[kind]} as Connected`);
 }
