@@ -506,3 +506,93 @@ describe("the image workflow's layer cache holds build stages only", () => {
       .toEqual(["chief-of-staff-build-${{ hashFiles('a', 'services/chief-of-staff/Dockerfile') }}", "creative-build-${{ hashFiles('a', 'services/creative/Dockerfile') }}"]);
   });
 });
+
+// ── the rule behind the cache: one writer, and nothing published is built from it ───────────────
+// These checks take the parsed workflow as an argument so a test can hand them a broken copy and
+// watch them fail.
+
+const isBuildAction = (step: any): boolean => typeof step?.uses === "string" && step.uses.startsWith("docker/build-push-action");
+
+/** A build step is published when it sets `push:` to anything but a literal false. */
+const publishes = (step: any): boolean => isBuildAction(step) && step.with?.push !== undefined && step.with.push !== false && step.with.push !== "false";
+
+/** Every build step that publishes an image and reads the Actions cache, directly or through an
+ *  earlier build of the same Dockerfile in the same job (the builder keeps that build's layers,
+ *  cache-imported ones included, and the publishing build reuses them). It does NOT see a reuse
+ *  through a different Dockerfile; no Dockerfile here is built `FROM` another one of ours. */
+function publishedBuildsReadingTheCache(doc: any): string[] {
+  const problems: string[] = [];
+  for (const [job, definition] of Object.entries<any>(doc.jobs ?? {})) {
+    const steps: any[] = definition.steps ?? [];
+    steps.forEach((step, index) => {
+      if (!publishes(step)) return;
+      if (step.with["cache-from"] !== undefined) problems.push(`${job}: a publishing build of ${step.with.file} reads the cache`);
+      for (const earlier of steps.slice(0, index))
+        if (isBuildAction(earlier) && earlier.with?.file === step.with.file && earlier.with["cache-from"] !== undefined)
+          problems.push(`${job}: a publishing build of ${step.with.file} reuses the earlier build "${earlier.name ?? earlier.uses}", which reads the cache`);
+    });
+  }
+  return problems;
+}
+
+/** Every `run:` step that names a build cache on a command line. The cache is reachable only
+ *  through the build action, whose steps the checks above can read. */
+function runStepsNamingACache(doc: any): string[] {
+  return Object.entries<any>(doc.jobs ?? {}).flatMap(([job, definition]) =>
+    (definition.steps ?? [])
+      .filter((step: any) => typeof step.run === "string" && /--cache-(to|from)\b/.test(step.run))
+      .map((step: any) => `${job}: ${step.name ?? step.run.split("\n")[0]}`));
+}
+
+/** The jobs that hold a step with `cache-to`. */
+function cacheWritingJobs(doc: any): string[] {
+  return Object.entries<any>(doc.jobs ?? {})
+    .filter(([, definition]) => (definition.steps ?? []).some((step: any) => isBuildAction(step) && step.with?.["cache-to"] !== undefined))
+    .map(([job]) => job);
+}
+
+describe("an image that is published is never built from the cache, and one job writes it", () => {
+  const workflow = () => parse(readFileSync(join(WORKFLOWS_DIR, IMAGE_WORKFLOW), "utf8"));
+
+  it("publishes no image from a build that read the cache", () => {
+    const doc = workflow();
+    const published = Object.values<any>(doc.jobs).flatMap((job) => (job.steps ?? []).filter(publishes));
+    expect(published.length).toBeGreaterThanOrEqual(4); // Keeper, firewall helper, egress proxy, the role image (one step, two roles)
+    expect(publishedBuildsReadingTheCache(doc)).toEqual([]);
+  });
+
+  it("does not name a cache on any run: command line", () => {
+    expect(runStepsNamingACache(workflow())).toEqual([]);
+  });
+
+  it("writes the cache from the real-install job only", () => {
+    expect(cacheWritingJobs(workflow())).toEqual(["real-install"]);
+  });
+
+  it("fails on a publishing build that reads the cache, directly or through an earlier build", () => {
+    const direct = workflow();
+    const keeperPublish = direct.jobs.keeper.steps.filter(publishes).find((s: any) => s.with.file === "services/keeper/Dockerfile");
+    keeperPublish.with["cache-from"] = "type=gha,scope=keeper-build-x";
+    expect(publishedBuildsReadingTheCache(direct)).toEqual(["keeper: a publishing build of services/keeper/Dockerfile reads the cache"]);
+
+    const indirect = workflow();
+    const roleTest = indirect.jobs.runtime.steps.find((s: any) => isBuildAction(s) && s.with.tags === "lares-runtime:test");
+    roleTest.with["cache-from"] = "type=gha,scope=chief-of-staff-build-x";
+    const found = publishedBuildsReadingTheCache(indirect);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toContain("reuses the earlier build");
+  });
+
+  it("fails on a run: step that names a cache on a command line", () => {
+    const doc = workflow();
+    doc.jobs.runtime.steps.push({ name: "Hand-written build", run: "docker buildx build --target runtime --cache-to type=gha,mode=max ." });
+    expect(runStepsNamingACache(doc)).toEqual(["runtime: Hand-written build"]);
+  });
+
+  it("fails on a second job that writes the cache", () => {
+    const doc = workflow();
+    const writer = doc.jobs["real-install"].steps.find((s: any) => s.with?.["cache-to"] !== undefined);
+    doc.jobs.keeper.steps.push(structuredClone(writer));
+    expect(cacheWritingJobs(doc)).toEqual(["real-install", "keeper"]);
+  });
+});

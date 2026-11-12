@@ -32,8 +32,12 @@ env:
 #   writer: its "Build and cache ..." steps build the stage named by `target:` and are the only
 #   steps with `cache-to`. No final stage (`runtime`, `run`) is ever written to the cache, so the
 #   operating-system updates those stages fetch are fetched again in every job, as before.
-# - The other builds read with `cache-from` and write nothing. The published Keeper, egress-proxy
-#   and firewall-helper builds read no cache at all.
+# - The other builds that only feed a proof read with `cache-from` and write nothing.
+# - An image that is published is never built from the cache: Keeper, egress-proxy,
+#   firewall-helper and the two role images. Their builds read no cache, and neither does an
+#   earlier build in the same job that the publishing build reuses (the role image's
+#   `lares-runtime:test` build above all), because a layer it took from the cache would be
+#   published with it.
 # - A cache is named for the image, the lockfile, `patches/` and that image's Dockerfile (which
 #   holds its base image tags), so a change to any of them starts from an empty cache. `pull: true`
 #   resolves each base tag again in every build, and BuildKit keys each layer on the content of the
@@ -227,7 +231,6 @@ jobs:
           pull: true
           load: true
           tags: lares-runtime:test
-          cache-from: type=gha,scope=${{ matrix.role }}-build-${{ hashFiles('pnpm-lock.yaml', 'patches/**', format('services/{0}/Dockerfile', matrix.role)) }}
       - name: Scan final runtime image
         run: scripts/scan-image.sh lares-runtime:test "$RUNNER_TEMP/image-scans/runtime"
       - uses: actions/upload-artifact@v4
