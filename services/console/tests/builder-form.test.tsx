@@ -15,7 +15,7 @@ const base={startingPoints:startingPoints(),aliases:modelAliases('example'),timi
 it('keeps new-agent permission writes unavailable and gives every field its timing',()=>{
  render(<DefinitionForm {...base}/>);
  const html=document.body.innerHTML;
- expect(html).toContain('Create this agent first');expect(html).not.toContain('role="group" aria-label=');
+ expect(html).toContain('Create this agent first');expect(html).not.toContain('open web-chat conversations');expect(html).not.toContain('role="group" aria-label=');
  expect(html).toContain('What is this agent for? Write it the way you would tell a person.');
  expect(html).toContain('This box holds up to 6 agents. You have 3.');expect(html).toContain('Open Settings → Agents');
  expect(html).toContain('Access and skills');expect(html).toContain('Schedules');
@@ -25,6 +25,8 @@ it('prefills edit data, shows pending restart, and renders permission buttons as
  const definition={...base.startingPoints[0].definition,name:'example',model:'example-brain'};
  const html=renderToStaticMarkup(<DefinitionForm {...base} initial={{definition,duties:'Unique duties',voice:'Unique voice',hash:'a'.repeat(64),runtime:{pending:true,reason:'Changed doors'},status:'valid'}} permissions={[{agent:'example',displayName:'Example',capability:'twenty',action:'',actionLabel:null,scope:'write-with-confirm',level:'gated',source:{kind:'definition'},controllable:true,lockedTools:[{tool:'delete',reason:'Always asks'}],evidence:{asked:0,autonomous:0,denied:0,locked:0,failedClosed:0,lastAt:null},answers:{approved:0,cancelled:0,neverAnswered:0,rate:null},couldGraduate:false}]}/>);
  expect(html).toContain('Unique duties');expect(html).toContain('Unique voice');expect(html).not.toContain('name="startingPoint"');
+ // Saving an edit ends the agent's open web-chat conversations; the edit page says so before Save, and creation does not.
+ expect(html).toContain('open web-chat conversations, and any approval waiting in them. Start a new conversation afterwards.');
  expect(html).toContain('Apply connection changes (restarts agent)');expect(html).toMatch(/<button[^>]*type="button"[^>]*>Allow<\/button>/);expect(html).toContain('Always asks');expect(html).toContain('Start a fresh conversation now');
 });
 it('distinguishes unapproved capacity and a full box',()=>{

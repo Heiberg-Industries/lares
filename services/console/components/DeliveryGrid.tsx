@@ -11,6 +11,7 @@
  * CLIENT component: imports only the database-free `lib/delivery.ts`, never the server modules.
  */
 import { Button } from "@lares/ui/primitives/button";
+import { SaveEndsConversations } from "./SaveEndsConversations";
 import { Select } from "@lares/ui/primitives/select";
 import { useState, useTransition } from "react";
 import { saveDelivery } from "../app/actions/delivery";
@@ -102,6 +103,7 @@ export function DeliveryGrid({ agent, delivery, connected, notes = {} }: Deliver
           ))}
         </tbody>
       </table></div>
+      <SaveEndsConversations />
       <div className="lares-actions lares-row-actions">
         <Button type="button" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</Button>
         {msg && (

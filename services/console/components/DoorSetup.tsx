@@ -5,6 +5,7 @@ import {useEffect,useRef,useState} from 'react';
 import {slackClaimMessage,slackManifest,telegramConnectLink,telegramSteps,doorStateText,doorTouched} from '../lib/doors';
 import {connectDoor,doorStatus,claimCode,registerTelegram,setDoorEnabled,applyConnections,verifyDoor,type DefinitionActionResult} from '../app/actions/definition';
 import { Button } from '@lares/ui/primitives/button';
+import { SaveEndsConversations } from './SaveEndsConversations';
 export interface DoorStatus {kind:string;enabled:boolean;configured?:boolean;claimed:boolean;pending:boolean;pending_reason?:string;applied:boolean;webhook_set_at?:string}
 /** What the owner still has to do once a chat door is applied: tap the link (Telegram) or send the message (Slack). */
 export interface ConnectStep {kind:'slack'|'telegram';code:string;expiresAt:string;link?:string;message?:string;username?:string;who?:string}
@@ -67,6 +68,7 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
  const touchedPending=rows.some(r=>doorTouched(r)&&r.pending);
  return <section aria-label="Door setup" className="lares-door-setup"><h2>Connect doors</h2>
  <p>Paste your bot's credentials and press Connect. Saving, switching the door on, applying it to this agent and checking it all happen by themselves; at the end you confirm it is you with one tap or one message.</p>
+ <SaveEndsConversations/>
  {!createUrl&&<p role="alert">Configure the public HTTPS webhook address before creating new apps or connecting a chat door.</p>}
  {busy&&<p role="status" aria-live="polite" className="lares-door-progress"><strong>{progress}</strong> Keep this page open.</p>}
  {!busy&&touchedPending&&<p role="status" className="lares-door-progress"><strong>Changes are waiting to be applied.</strong> The agent restarts when you apply them.</p>}

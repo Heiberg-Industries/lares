@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 const mocks = vi.hoisted(() => ({ save: vi.fn(), apply: vi.fn() }));
 vi.mock("../app/actions/outside-connections", () => ({ saveOutsideConnections: mocks.save, applyOutsideConnections: mocks.apply }));
 import { OutsideConnectionsEditor } from "../components/OutsideConnectionsEditor";
+import { SAVE_ENDS_CONVERSATIONS } from "../components/SaveEndsConversations";
 
 const initial = { name: "bookkeeper", definitionHash: "a".repeat(64), accessRevision: 2, connections: [],
   applicationStatus: "pending" as const, appliedConnections: [] };
@@ -18,6 +19,7 @@ describe("OutsideConnectionsEditor", () => {
     const pending = { ...initial, connections: [{ ...active, name: "replacement" }], appliedConnections: [active] };
     render(<OutsideConnectionsEditor initial={pending} />);
     expect(screen.getByText(/pending Apply/)).toBeTruthy();
+    expect(screen.getByText(SAVE_ENDS_CONVERSATIONS)).toBeTruthy();
     expect(screen.getByText("previous — Last working")).toBeTruthy();
     mocks.apply.mockResolvedValueOnce({ ok: false, message: "Apply failed safely.", current: pending });
     fireEvent.click(screen.getByRole("button", { name: "Apply saved declarations" }));

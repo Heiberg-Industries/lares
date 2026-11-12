@@ -41,6 +41,7 @@ import {
 import { ConversationControl } from "./ConversationControl";
 import { AutonomyControl } from "./AutonomyControl";
 import { TakesEffect } from "./TakesEffect";
+import { SaveEndsConversations } from "./SaveEndsConversations";
 import { CeilingNotice } from "./CeilingNotice";
 import { scheduleExplanation, scheduleLabel } from "../lib/schedule-labels";
 import { afterCreationPath } from "../lib/first-conversation";
@@ -832,6 +833,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
             </section>
           )}
           <CeilingNotice capacity={p.capacity} />
+          {editing && active && <SaveEndsConversations />}
           {!(editing && uncertain) && (
           <div
             className={editing ? "lares-editor-actions lares-save-bar" : "lares-editor-actions"}

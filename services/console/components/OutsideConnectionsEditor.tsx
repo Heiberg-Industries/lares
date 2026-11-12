@@ -1,6 +1,7 @@
 "use client";
 import { Choice, Field, PageHeader } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
+import { SaveEndsConversations } from "./SaveEndsConversations";
 import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { Input } from "@lares/ui/primitives/input";
 import { Textarea } from "@lares/ui/primitives/textarea";
@@ -82,6 +83,7 @@ export function OutsideConnectionsEditor({ initial }: { initial: OutsideConnecti
   <section className="lares-surface lares-stack" aria-label="Outside connection settings">
     <p>Manage only this agent’s connection declarations. Connection credentials remain under their custodian’s control and are never entered here.</p>
     <p>Removing a declaration does not revoke or delete its separately held credential.</p>
+    <SaveEndsConversations />
     {state.applicationStatus === "applied" ? <p role="status">The last applied runtime definition matches these saved declarations.</p> : state.applicationStatus === "pending" ? <div className="lares-stack">
       <p role="status">Saved declarations are pending Apply. The last applied declaration set is shown below.</p>
       <Button type="button" disabled={busy} onClick={() => void apply()}>{busy ? "Applying…" : "Apply saved declarations"}</Button>

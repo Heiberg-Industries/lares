@@ -7,6 +7,7 @@ vi.mock("../app/actions/delivery", () => ({ saveDelivery: mocks.save }));
 vi.mock("../app/actions/inbox", () => ({ markRead: mocks.markRead }));
 
 import { DeliveryGrid } from "../components/DeliveryGrid";
+import { SAVE_ENDS_CONVERSATIONS } from "../components/SaveEndsConversations";
 import { InboxPanel } from "../components/InboxPanel";
 import { InboxDot } from "../components/InboxDot";
 
@@ -24,6 +25,8 @@ describe("DeliveryGrid", () => {
 
   it("is pre-filled with today's behaviour when nothing is saved, and says so", () => {
     render(<DeliveryGrid {...props} delivery={undefined} />);
+    // Saving the grid is a definition save: it ends open web-chat conversations, and says so before Save.
+    expect(screen.getByText(SAVE_ENDS_CONVERSATIONS)).toBeTruthy();
     expect(select("Morning brief via Telegram").value).toBe("1");
     expect(select("Morning brief via Slack").value).toBe("0");
     expect(select("Email triage via Slack").value).toBe("1");
