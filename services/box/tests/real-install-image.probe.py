@@ -298,15 +298,34 @@ def agent_started_at() -> str | None:
     return output("docker", "inspect", "--format", "{{.State.StartedAt}}", ids[0]) if ids else None
 
 
-def conversation_calls(release: dict) -> list[dict]:
-    """Every call booked to a conversation: its conversation, state, payer, and whether it was made after the
-    agent's definition was last saved (`valid_at`, set by the save). A conversation the save ended takes no
-    call after it: the budget check refuses before any attempt is recorded."""
+def conversation_calls(release: dict, saved_at: str | None = None) -> list[dict]:
+    """Every call booked to a conversation: its conversation, state, payer, and whether it was made after
+    `saved_at`, a time the database gave (the keeper's audit row of one save). A conversation the save ended
+    takes no call after it: the budget check refuses before any attempt is recorded. Never compared with
+    `agent_definitions.valid_at`: the running agent moves that on at every fresh definition read."""
+    after = f"a.created_at >= '{saved_at}'::timestamptz" if saved_at else "false"
     rows = read_only_query(
         "SELECT coalesce(json_agg(json_build_object('session', a.authority_reference#>>'{binding,sessionId}', 'state', a.state, "
-        "'payer', coalesce(a.live_member_id, ''), 'afterSave', a.created_at > d.valid_at) ORDER BY a.created_at, a.id), '[]') "
-        f"FROM budget_attempts a CROSS JOIN agent_definitions d WHERE d.name = '{AGENT}' AND a.authority_reference->>'kind' = 'human'", release)
+        f"'payer', coalesce(a.live_member_id, ''), 'afterSave', {after}) ORDER BY a.created_at, a.id), '[]') "
+        "FROM budget_attempts a WHERE a.authority_reference->>'kind' = 'human'", release)
     return json.loads(rows or "[]")
+
+
+def keeper_audit_mark(release: dict) -> str:
+    """The newest row of the keeper's audit log now, so a later read finds only the rows written after it."""
+    return read_only_query("SELECT coalesce(max(id), 0) FROM keeper_audit", release) or "0"
+
+
+def this_save_started_at(release: dict, mark: str) -> tuple[str | None, int]:
+    """When the keeper began the one definition save made after `mark` for the proof agent, as the database
+    recorded it (`keeper_audit.at`, written once when the action starts), and how many such saves there were.
+    The save must be the one whose recorded hash is the definition's hash now."""
+    rows = read_only_query(
+        "SELECT k.at::text, k.detail = '{\"hash\":\"' || d.hash || '\"}' FROM keeper_audit k JOIN agent_definitions d ON d.name = k.input->>'name' "
+        f"WHERE k.id > {int(mark)} AND k.action = 'definition.save' AND k.outcome = 'ok' AND k.input->>'name' = '{AGENT}' ORDER BY k.id", release)
+    saves = [line.split("|") for line in rows.splitlines() if line]
+    current = [at for at, matches in saves if matches == "t"]
+    return (current[0] if len(saves) == 1 and len(current) == 1 else None), len(saves)
 
 
 def agent_permission_denied_lines() -> list[str]:
@@ -1313,6 +1332,7 @@ def main(argv: list[str]) -> int:
         # web-chat conversations, with a warning on the page first (Lares ADR-0027).
         started_before = agent_started_at()
         sessions_before = {call["session"] for call in conversation_calls(release)}
+        audit_mark = keeper_audit_mark(release)
         browser("edit-after-start", settings_file, tls)
         # What the browser step itself checked: the warning, the save, the old conversation ended on the page with
         # no further answer, and a new conversation answered.
@@ -1339,28 +1359,35 @@ def main(argv: list[str]) -> int:
         # The browser step itself proves the old conversation was refused on the page and was not answered.
         # Here the budget ledger says the same at the money layer, and that the new one was charged.
         owner = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member'", release)
-        deadline = time.monotonic() + 60
-        while True:
-            calls = [call for call in conversation_calls(release) if call["session"] not in sessions_before]
-            old = {call["session"] for call in calls if not call["afterSave"]}
-            new = {call["session"] for call in calls if call["afterSave"]} - old
-            charged = [call for call in calls if call["session"] in new and call["state"] == "settled"]
-            if charged or time.monotonic() > deadline:
-                break
-            time.sleep(3)
-        sessions = list(dict.fromkeys(call["session"] for call in calls))
-        proof["editAfterStart"]["conversationCalls"] = [{"conversation": sessions.index(call["session"]) + 1, "state": call["state"],
-                                                         "afterTheSave": call["afterSave"], "paidByOwner": call["payer"] == owner} for call in calls]
+        # The save's own time, from the keeper's audit row for this one save (database clock, as created_at is).
+        saved_at, saves = this_save_started_at(release, audit_mark)
+        proof["editAfterStart"]["saveFoundInAudit"] = {"definitionSaves": saves, "found": saved_at is not None}
         save_proof()
-        late = [call for call in calls if call["session"] in old and call["afterSave"]]
-        if old and not late:
-            passed("the-conversation-from-before-the-save-took-no-call-after-it")
-        else:
-            deferred.append(f"the conversation from before the save took {len(late)} call(s) after it, or none was found: {proof['editAfterStart']['conversationCalls']}")
-        if charged and all(call["payer"] == owner for call in calls if call["session"] in new):
-            passed("a-new-conversation-after-the-save-was-answered-and-charged-to-the-owner")
-        else:
-            deferred.append(f"no call of a new conversation after the save settled for the owner: {proof['editAfterStart']['conversationCalls']}")
+        if saved_at is None:
+            deferred.append(f"the keeper's audit log does not show exactly one definition save for this edit ({saves} found), so the ledger was not checked")
+        if saved_at is not None:
+            deadline = time.monotonic() + 60
+            while True:
+                calls = [call for call in conversation_calls(release, saved_at) if call["session"] not in sessions_before]
+                old = {call["session"] for call in calls if not call["afterSave"]}
+                new = {call["session"] for call in calls if call["afterSave"]} - old
+                charged = [call for call in calls if call["session"] in new and call["state"] == "settled"]
+                if charged or time.monotonic() > deadline:
+                    break
+                time.sleep(3)
+            sessions = list(dict.fromkeys(call["session"] for call in calls))
+            proof["editAfterStart"]["conversationCalls"] = [{"conversation": sessions.index(call["session"]) + 1, "state": call["state"],
+                                                             "afterTheSave": call["afterSave"], "paidByOwner": call["payer"] == owner} for call in calls]
+            save_proof()
+            late = [call for call in calls if call["session"] in old and call["afterSave"]]
+            if old and not late:
+                passed("the-conversation-from-before-the-save-took-no-call-after-it")
+            else:
+                deferred.append(f"the conversation from before the save took {len(late)} call(s) after it, or none was found: {proof['editAfterStart']['conversationCalls']}")
+            if charged and all(call["payer"] == owner for call in calls if call["session"] in new):
+                passed("a-new-conversation-after-the-save-was-answered-and-charged-to-the-owner")
+            else:
+                deferred.append(f"no call of a new conversation after the save settled for the owner: {proof['editAfterStart']['conversationCalls']}")
 
         stage("sudo lares backups")
         run("apt-get", "update", "-qq", timeout=300, show=False)
