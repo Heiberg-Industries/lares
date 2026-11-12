@@ -42,6 +42,7 @@ import { answeredVia } from "@lares/agent-kit/approval-ledger";
 import { OFFICE_MEDIA_TYPES } from "@lares/agent-kit/attachment-hydration";
 import { telegramUnreadableNote } from "@lares/agent-kit/unreadable-content";
 import {
+  defaultTurnFailedText,
   respondToSessionFailed,
   respondToTurnFailed,
   type FailureEventData,
@@ -56,6 +57,7 @@ import {
   dayHasRolledOver,
   getRotationState,
   homeDay,
+  markTooLongForRetirement,
   pruneOldExchanges,
   recordExchange,
   recordServingSession,
@@ -693,16 +695,64 @@ interface EndingEvent {
   readonly data: FailureEventData;
 }
 
-/** `turn.settled` — a turn that FAILED says so. Any other outcome posts nothing, as eve's default.
- *  EXPORTED for tests, the same convention as `onContentCompleted` below. */
-export async function onTurnSettled(event: EndingEvent, ctx: FailureContext): Promise<void> {
+/** What `onTurnSettled` reads to start a too-long conversation over. eve's event context carries
+ *  both (`ctx.channel.state`, `ctx.session`); tests that pass neither get today's behaviour. */
+interface TurnFailureContext extends FailureContext {
+  readonly channel: FailureContext["channel"] & { readonly state?: { chatId?: string | null; chatType?: string | null } };
+  readonly session?: { readonly id?: string };
+}
+
+/**
+ * `turn.settled` — a turn that FAILED says so. Any other outcome posts nothing, as eve's default.
+ * EXPORTED for tests, the same convention as `onContentCompleted` below.
+ *
+ * A CONVERSATION THAT HAS GROWN TOO LONG. eve's summary of it was refused, so this turn failed and
+ * every later turn in it would fail the same way, and a Telegram private chat is one conversation
+ * that a person cannot start over by hand. So this conversation is marked for retirement at the
+ * person's next message (`markTooLongForRetirement`, the day boundary's own front door), and the
+ * fixed sentence says so. No model call, no summary, nothing carried over.
+ *
+ * The sentence is posted only once the mark is stored, because only then is "your next message will
+ * start a new one" true. When it cannot be stored (not the allowed person's private chat, no session
+ * id, the database refused) the door posts eve's ordinary failure text instead, as it did before.
+ *
+ * It cannot loop. A mark is consumed only by a message the person sends (a tap never retires), and
+ * consumed once. If the first turn of the new conversation also grows too long, it is marked and
+ * told the same way, once, and the conversation after it starts empty again: one retirement per
+ * message the person chooses to send, never one that happens by itself.
+ */
+export async function onTurnSettled(event: EndingEvent, ctx: TurnFailureContext): Promise<void> {
   if (event.data.outcome !== "failed") return;
   const response = respondToTurnFailed(event.data, FAILURE_OPTIONS);
   if (response.kind === "silent") return;
   if (response.kind === "budget-refusal") {
     console.warn("chief-of-staff telegram: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
   }
+  if (response.kind === "conversation-too-long") {
+    const marked = await markTooLongConversation(ctx);
+    await ctx.channel.telegram.post(marked ? response.text : defaultTurnFailedText(event.data, "telegram"));
+    return;
+  }
   await ctx.channel.telegram.post(response.text);
+}
+
+/** Records the failed conversation for retirement at the next message. True only when stored.
+ *  Never throws: an event handler that throws parks the session. */
+async function markTooLongConversation(ctx: TurnFailureContext): Promise<boolean> {
+  const chatId = ctx.channel.state?.chatId;
+  const sessionId = ctx.session?.id;
+  if (ctx.channel.state?.chatType !== "private" || !chatId || !isAllowedPrincipalId("telegram", chatId) || !sessionId) {
+    console.warn("telegram-rotation: a conversation grew too long outside the allowed private chat — answered with the ordinary failure text");
+    return false;
+  }
+  try {
+    await markTooLongForRetirement(getPool(), chatId, homeDay(), sessionId);
+    console.warn("telegram-rotation: the conversation grew too long — the next message starts a new one; nothing was summarised");
+    return true;
+  } catch (err) {
+    console.error("telegram-rotation: could not mark a too-long conversation — answered with the ordinary failure text", err);
+    return false;
+  }
 }
 
 /**

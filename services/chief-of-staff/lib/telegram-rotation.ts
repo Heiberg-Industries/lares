@@ -343,14 +343,45 @@ export async function runDayHandover(db: Pool, closingDay: string): Promise<DayH
 
 /** Writes down the durable session that just answered in this chat, and the home-zone day it
  *  answered on. The row is created by `getRotationState`, which the caller
- *  runs first on the same turn — this only ever updates it. */
+ *  runs first on the same turn — this only ever updates it.
+ *
+ *  A conversation marked too long (`markTooLongForRetirement`: a session with no day) is left
+ *  marked until the next message claims it, so a reply from any other conversation in the chat
+ *  meanwhile (a scheduled one, say) cannot quietly cancel the retirement the person was promised.
+ *  Without such a mark, nothing here changes. */
 export async function recordServingSession(
   db: Pool, chatId: string, today: string, sessionId: string,
 ): Promise<void> {
   await db.query(
     `UPDATE telegram_session_rotation SET session_id = $2, session_day = $3, updated_at = now()
-     WHERE chat_id = $1`,
+     WHERE chat_id = $1 AND NOT (session_id IS NOT NULL AND session_day IS NULL)`,
     [chatId, sessionId, today],
+  );
+}
+
+/**
+ * Marks a conversation that has grown too long for retirement at the person's next message.
+ *
+ * The same front door as the day boundary, nothing new: the failed session is recorded as the one
+ * serving this chat, with NO day. `claimRolledOverSession` matches a missing day as "not today", so
+ * the next inbound MESSAGE (never a tap) claims it once and `retirePriorDaySession` ends it before
+ * that message is forwarded, which therefore opens a brand-new conversation.
+ *
+ * Nothing is summarised or carried over: the anchor day (`local_day`) and any waiting hand-over are
+ * left exactly as they are, so the next reply sees no day boundary and makes no model call. Nothing
+ * here starts a turn either; a retirement happens only when the person sends a message, so it can
+ * never repeat on its own. The row is created if this chat has none yet (a first turn that failed
+ * before any reply was recorded), anchored to `today` as `getRotationState` would anchor it.
+ */
+export async function markTooLongForRetirement(
+  db: Pool, chatId: string, today: string, sessionId: string,
+): Promise<void> {
+  await db.query(
+    `INSERT INTO telegram_session_rotation (chat_id, local_day, principal, session_id, session_day)
+     VALUES ($1, $2, $3, $4, NULL)
+     ON CONFLICT (chat_id) DO UPDATE
+        SET session_id = EXCLUDED.session_id, session_day = NULL, updated_at = now()`,
+    [chatId, today, configuredOwnerId(), sessionId],
   );
 }
 

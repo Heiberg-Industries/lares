@@ -36,6 +36,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { composeSlackRenderers } from "../node_modules/eve/dist/src/public/channels/slack/renderers.js";
 
 import { onSessionEnded, onTurnSettled, slackDoorConfig } from "../agent/channels/slack.js";
+import { MODEL_COMPACTION_REFUSED } from "@lares/agent-kit/conversation-too-long";
 
 const REFUSAL_SENTENCE =
   "I have hit my spending cap — nothing was done. It resets with the next budget period, or you can raise the cap.";
@@ -97,6 +98,25 @@ describe("the chief of staff's Slack door — a capped turn answers with one fix
       await (event.type === "turn.settled" ? onTurnSettled : onSessionEnded)(event as never, ctx, next);
       expect(posted).toEqual(["That request ended without an answer; nothing was done."]);
       expect(next).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a thread that has grown too long posts its one fixed sentence, not eve's text, and only for that cause", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const TOO_LONG = "This thread has grown too long for me to continue. Please send your message again as a new message, not as a reply in this thread.";
+    for (const message of [MODEL_COMPACTION_REFUSED, `context.started failed: ${MODEL_COMPACTION_REFUSED}`]) {
+      const { ctx, posted, next } = fakeDoor();
+      await onTurnSettled(turnSettledFailed({ code: "MODEL_CALL_FAILED", message, id: "err_long" }), ctx, next);
+      expect(posted).toEqual([TOO_LONG]);
+      expect(next).not.toHaveBeenCalled();
+    }
+    expect(String(warn.mock.calls[0]![0])).toContain("grew too long");
+    // A lookalike, or any other failure, is still eve's to answer in eve's own words.
+    for (const error of [ORDINARY_ERROR, { code: "MODEL_CALL_FAILED", message: `${MODEL_COMPACTION_REFUSED}, and more`, id: "err_x" }]) {
+      const { ctx, posted, next } = fakeDoor();
+      await onTurnSettled(turnSettledFailed(error), ctx, next);
+      expect(posted).toEqual([]);
+      expect(next).toHaveBeenCalledTimes(1);
     }
   });
 

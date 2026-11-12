@@ -234,18 +234,24 @@ interface ThreadContext {
  * conversation is reported only there (see `onSessionEnded`), so that would leave a capped turn
  * with no answer at all.
  */
-function refusalText(data: SettledEvent["data"]): string | null {
+function refusalText(data: SettledEvent["data"]): { kind: string; text: string } | null {
   if (data.outcome !== "failed" || data.error === undefined) return null;
   const response = respondToTurnFailed(data, FAILURE_OPTIONS);
-  return response.kind === "budget-refusal" || response.kind === "approval-reply-refused" ? response.text : null;
+  return response.kind === "budget-refusal" || response.kind === "approval-reply-refused" || response.kind === "conversation-too-long"
+    ? { kind: response.kind, text: response.text }
+    : null;
 }
 
 async function answerFailure(event: SettledEvent, ctx: ThreadContext, next: () => Promise<void>): Promise<void> {
   const refusal = refusalText(event.data);
   // Anything that is not a spending refusal is eve's to answer, in eve's own words.
   if (refusal === null) return next();
-  console.warn("chief-of-staff slack: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
-  await ctx.channel.thread.post(refusal);
+  // A thread that has grown too long: eve's summary of it was refused, so every later turn in this
+  // thread would fail too. The sentence sends the person to a new top-level message, which opens a
+  // new thread and so a new conversation (in a direct message and in a room alike).
+  if (refusal.kind === "conversation-too-long") console.warn("chief-of-staff slack: the thread grew too long — answered with the fixed sentence; nothing was summarised");
+  else console.warn("chief-of-staff slack: gateway budget exceeded — answered with the fixed refusal; nothing was executed");
+  await ctx.channel.thread.post(refusal.text);
 }
 
 /**

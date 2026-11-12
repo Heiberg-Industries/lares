@@ -1,5 +1,6 @@
 import { MEMBER_LIMIT_SENTENCE, INSTALLATION_LIMIT_SENTENCE } from "@lares/agent-kit/limit-sentences";
 import { approvalReplySentence } from "@lares/agent-kit/approval-reply-sentence";
+import { CONVERSATION_TOO_LONG_WEB, isConversationTooLong } from "@lares/agent-kit/conversation-too-long";
 
 /**
  * The plain spending-limit sentence the gateway wrote, when the newest turn on this session ended
@@ -30,6 +31,27 @@ export function limitReplyOf(events: readonly { type: string; data?: unknown }[]
     const sentence = approvalReplySentence(message);
     if (sentence !== undefined) return sentence;
     return MEMBER_LIMIT_SENTENCE.test(message) || INSTALLATION_LIMIT_SENTENCE.test(message) ? message : null;
+  }
+  return null;
+}
+
+/**
+ * The fixed sentence for a conversation that has grown too long, when the newest ending on this
+ * session is a turn that failed because eve's summary of the history was refused
+ * (`@lares/agent-kit/conversation-too-long`); otherwise null. Unlike a limit reply this IS a broken
+ * conversation (every later turn in it would fail the same way), so the page keeps treating it as
+ * one, with its "Start a new conversation" control, and shows this sentence in place of
+ * "This conversation is unavailable." The same newest-ending rule as {@link limitReplyOf}.
+ */
+export function conversationTooLongOf(events: readonly { type: string; data?: unknown }[]): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (!event) continue;
+    if (event.type === "session.ended") return null;
+    if (event.type !== "turn.settled") continue;
+    const data = event.data as { outcome?: unknown; error?: { message?: unknown } | null } | undefined;
+    if (data?.outcome !== "failed") return null;
+    return isConversationTooLong(data.error?.message) ? CONVERSATION_TOO_LONG_WEB : null;
   }
   return null;
 }

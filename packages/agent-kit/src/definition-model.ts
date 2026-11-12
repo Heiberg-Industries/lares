@@ -5,6 +5,7 @@ import { position } from 'eve/events';
 import { defineDynamic, type DynamicModelContext } from 'eve/models';
 export { currentModelInvocation, currentModelPurposeClaim } from './model-invocation.js';
 import { captureModelInvocation, runModelInvocation, type ModelInvocation, type ModelInvocationSession } from './model-invocation.js';
+import { MODEL_COMPACTION_REFUSED } from './conversation-too-long.js';
 
 // A durable session marker, not a process-wide success flag. A repair on disk after a failed
 // resolver must not let that already-misconfigured turn run with its neutral compiled prompt.
@@ -12,7 +13,8 @@ const ready = defineState<boolean>('lares.definition-model-ready', () => false);
 const gatewayAlias = defineState<string | null>('lares.session-gateway-alias', () => null);
 
 export const SESSION_MODEL_CONTEXT_WINDOW_TOKENS = 200_000;
-export const MODEL_COMPACTION_REFUSED = 'Model compaction requires a fresh trusted invocation';
+// Defined beside the doors' recogniser so the two cannot drift (`conversation-too-long.ts`).
+export { MODEL_COMPACTION_REFUSED };
 export const MODEL_SELECTION_REFUSED = 'No running turn to select a model for';
 
 // Sessions whose history is being compacted RIGHT NOW, in this process. eve 1.0 awaits the

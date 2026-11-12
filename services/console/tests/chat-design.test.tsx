@@ -6,7 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { ClientError, ClientSessionStrandedError, SessionNotActiveError, conversationOf, type SessionStreamEvent } from "eve/client";
 import { emptySessionView } from "eve/events";
 import { chatSessionKey } from "../lib/chat-session";
-import { limitReplyOf } from "../lib/limit-reply";
+import { conversationTooLongOf, limitReplyOf } from "../lib/limit-reply";
+import { MODEL_COMPACTION_REFUSED } from "@lares/agent-kit/conversation-too-long";
 import { Chat } from "../components/Chat";
 /**
  * The framework's hook, stood in for: what it returns is the shape its own types give it —
@@ -346,6 +347,32 @@ it("shows the one fixed sentence, never the framework's text, when the reply aft
   // A card that ended without an answer (expired, or withdrawn by a typed message) says so instead.
   expect(limitReplyOf([failedTurn("DefinitionFailedError: The approval in this turn ended without an answer")]))
     .toBe("That request ended without an answer; nothing was done.");
+});
+
+const TOO_LONG = "This conversation has grown too long for me to continue. Start a new conversation and send your message again there.";
+it("says why when a conversation has grown too long, and keeps the way to a new one", async () => {
+  failWith(MODEL_COMPACTION_REFUSED);
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toBe(TOO_LONG);
+  expect(screen.queryByText(/unavailable/i)).toBeNull();
+  expect(screen.queryByText(MODEL_COMPACTION_REFUSED)).toBeNull();
+  // Still a broken conversation: nothing more can be sent into it, and a new one is offered.
+  expect((screen.getByRole("textbox", { name: "Message Agent One" }) as HTMLTextAreaElement).disabled).toBe(true);
+  expect(screen.getByRole("button", { name: "Start a new conversation" })).toBeDefined();
+  await waitFor(() => expect(sessionStorage.getItem(KEY)).toBeNull());
+});
+it("reads the too-long cause only from the newest ending of a turn, and never for anything else", () => {
+  expect(conversationTooLongOf([failedTurn(MODEL_COMPACTION_REFUSED)])).toBe(TOO_LONG);
+  expect(conversationTooLongOf([failedTurn(`context.started failed: ${MODEL_COMPACTION_REFUSED}`)])).toBe(TOO_LONG);
+  expect(conversationTooLongOf([failedTurn(`${MODEL_COMPACTION_REFUSED}, and more`)])).toBeNull();
+  expect(conversationTooLongOf([failedTurn("model exploded")])).toBeNull();
+  expect(conversationTooLongOf([failedTurn(MEMBER)])).toBeNull();
+  expect(conversationTooLongOf([failedTurn(MODEL_COMPACTION_REFUSED), failedTurn("model exploded", 14)])).toBeNull();
+  expect(conversationTooLongOf([failedTurn(MODEL_COMPACTION_REFUSED), { type: "session.ended", data: { outcome: "failed", error: { code: "x", message: MODEL_COMPACTION_REFUSED } } }])).toBeNull();
+  expect(conversationTooLongOf([{ type: "turn.settled", data: { turnId: "t", outcome: "completed", error: { code: "x", message: MODEL_COMPACTION_REFUSED } } }])).toBeNull();
+  expect(conversationTooLongOf([])).toBeNull();
+  // It is not a limit reply: the conversation is broken, not merely paused.
+  expect(limitReplyOf([failedTurn(MODEL_COMPACTION_REFUSED)])).toBeNull();
 });
 
 // ---------------------------------------------------------------------------------------------
