@@ -835,9 +835,11 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
             installation.host_action("budget.provision-native", {**binding, "memberId": member_id, "agent": name,
                                      "incarnation": status["agent"]["incarnation"], "purposeAlias": state["alias"]}, NATIVE_TIMEOUT_SECONDS)
         except KeeperRefused:
-            raise Stop("The keeper refused to create the key. If an earlier run was interrupted at this step, Lares cannot "
-                       "tell whether the key was made, so it will not try again. That key stays blocked and cannot spend. "
-                       "There is no clean-up command yet: on a test server, wipe it and install again.") from None
+            raise Stop("The keeper refused to create the key. First check the agent in the console: if it shows changes "
+                       "waiting, press Apply connection changes and run this again (the key is made only for the definition "
+                       "the agent runs). If an earlier run was interrupted at this step instead, Lares cannot tell whether the "
+                       "key was made, so it will not try again. That key stays blocked and cannot spend. There is no clean-up "
+                       "command yet: on a test server, wipe it and install again.") from None
         status = installation.host_action("budget.agent-start-status", request)
         if not status["binding"]:
             raise Stop("The keeper reported the key but it is not on record. Nothing else was changed. Run this command again.")

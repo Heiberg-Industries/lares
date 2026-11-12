@@ -58,7 +58,7 @@ export async function saveDelivery(input: { name: string; delivery: DeliveryMap 
       definition: { ...definition, delivery: input.delivery },
       duties: saved.duties,
       voice: saved.voice,
-    }, email);
+    }, email, { timeoutMs: 90_000 }); // The same wait as every other definition save (app/actions/definition.ts).
   } catch (error) {
     if (error instanceof KeeperRefusedError) {
       const detail = (error.findings ?? []).map((f) => f.message).join(" ");

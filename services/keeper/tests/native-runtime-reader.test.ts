@@ -9,7 +9,7 @@ vi.mock('../lib/budget-native-host.js',()=>({readBudgetNativePolicyDocument:vi.f
 vi.mock('../lib/budget-native-runtime-authority.js',()=>({createNativeRuntimeAuthority:vi.fn()}));
 
 describe('Keeper native lifecycle reader composition',()=>{
- const identity={agent:'bookkeeper',incarnation:'11111111-1111-4111-8111-111111111111',definitionHash:'a'.repeat(64),purposeAlias:'lares-main'};
+ const identity={agent:'bookkeeper',incarnation:'11111111-1111-4111-8111-111111111111',purposeAlias:'lares-main'};
  const custody={} as never,pool={} as never;
  let journal:any,policy:any,authority:any,sources:any;
  beforeEach(()=>{
@@ -43,8 +43,21 @@ describe('Keeper native lifecycle reader composition',()=>{
    expect(log.mock.calls.at(-1)!.join(' ')).toBe('keeper: bookkeeper is held: the budget authority check refused');
    await reader.current(identity);
    expect(log.mock.calls.at(-1)!.join(' ')).toBe('keeper: bookkeeper is no longer held');
+   // No key at all for this agent, incarnation and model name is told apart from every other refusal.
+   authority.current.mockResolvedValueOnce({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
+   await expect(reader.current(identity)).resolves.toEqual({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
+   expect(log.mock.calls.at(-1)!.join(' ')).toBe('keeper: bookkeeper is held: no spending key matches this agent, its incarnation and its model name');
+   await reader.current(identity);
+   // A check made while a model change is saved is about the new name: it never says the running agent is
+   // held or released, only that the change was refused, in a fixed phrase. A passing check says nothing.
+   authority.current.mockResolvedValueOnce({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
+   const before=log.mock.calls.length;
+   await reader.current({...identity,purposeAlias:'lares-other'},'model-change');
+   await reader.current({...identity,purposeAlias:'lares-other'},'model-change');
+   await reader.current(identity);
+   expect(log.mock.calls.slice(before).map(call=>call.join(' '))).toEqual(['keeper: bookkeeper: a model change was refused: no spending key matches this agent, its incarnation and the new model name']);
    const all=log.mock.calls.flat().join(' ');
-   for(const secret of [identity.incarnation,identity.definitionHash,'owner-id','/protected/reviewed-policy.json'])expect(all).not.toContain(secret);
+   for(const secret of [identity.incarnation,identity.purposeAlias,'lares-other','owner-id','/protected/reviewed-policy.json'])expect(all).not.toContain(secret);
   }finally{log.mockRestore();}
  });
 

@@ -78,6 +78,39 @@ const steps = {
     await page.locator(".lares-message-agent", { hasText: settings.followUpReply }).first().waitFor({ timeout: STEP_MS });
     if (await page.getByText("This conversation is unavailable").count()) throw new Error("The conversation became unavailable");
   },
+  // A started agent takes an edit. One message in a new conversation; then the description is saved on
+  // the agent's own page, which says first that saving ends open conversations. Back in the same tab the
+  // old conversation is refused and reaches nothing; a new conversation is answered.
+  async "edit-after-start"(page) {
+    const agentReplies = () => page.locator(".lares-message-agent", { hasText: settings.afterUpdateReply }).count();
+    await page.goto(`${origin}/chat/${settings.agent}`);
+    await page.getByPlaceholder(/^Message /).fill(settings.beforeEditPrompt, { timeout: 60_000 });
+    await page.getByRole("button", { name: "Send message" }).click();
+    await page.locator(".lares-message-agent", { hasText: settings.afterUpdateReply }).first().waitFor({ timeout: STEP_MS });
+    await page.getByText("The agent is still answering").waitFor({ state: "hidden", timeout: STEP_MS });
+    await page.goto(`${origin}/agents/${settings.agent}/edit`);
+    await page.getByText(settings.saveWarning).first().waitFor({ timeout: 30_000 });
+    await page.getByLabel("Description").fill(settings.editedDescription);
+    await page.getByRole("button", { name: "Save definition" }).click();
+    await page.getByText("Definition saved.").waitFor({ timeout: STEP_MS });
+    // The same tab keeps the conversation it had: the chat page opens it again.
+    await page.goto(`${origin}/chat/${settings.agent}`);
+    const box = page.getByPlaceholder(/^Message /);
+    await page.waitForTimeout(3000);
+    if (!(await page.getByText(/This conversation (has ended|is unavailable)/).count()) && await box.isEnabled().catch(() => false)) {
+      await box.fill(settings.oldConversationPrompt);
+      await page.getByRole("button", { name: "Send message" }).click();
+    }
+    // The console's own sentence for a conversation the save revoked: nothing reached the agent.
+    await page.getByText("This conversation has ended. Start a new one.").waitFor({ timeout: 60_000 });
+    console.log(`the old conversation says: ${(await page.locator("main").innerText().catch(() => "")).split("\n").filter((line) => /conversation/i.test(line)).join(" | ")}`);
+    if ((await agentReplies()) > 1) throw new Error("The old conversation was answered after the save");
+    await page.getByRole("button", { name: "Start a new conversation" }).click();
+    await page.getByPlaceholder(/^Message /).fill(settings.afterEditPrompt, { timeout: 60_000 });
+    await page.getByRole("button", { name: "Send message" }).click();
+    await page.locator(".lares-message-agent", { hasText: settings.afterUpdateReply }).first().waitFor({ timeout: STEP_MS });
+    if (await page.getByText("This conversation is unavailable").count()) throw new Error("The new conversation became unavailable");
+  },
   // After `lares update`: the chat page opens a new conversation; one message there must get the
   // model's answer, not a refusal.
   async "chat-after-update"(page) {

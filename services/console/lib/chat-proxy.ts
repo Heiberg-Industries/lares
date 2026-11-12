@@ -42,7 +42,7 @@ import type { Member } from "@lares/agent-kit/authority-contract";
  */
 import { isIP } from "node:net";
 import { chatSessionCapabilityCookie, hasChatSessionCapability, validChatSessionId } from "./chat-session-capability";
-import { ANSWER_NOT_USED, ANSWER_UNCHECKED, CONSOLE_REFUSAL_HEADER } from "./chat-session";
+import { ANSWER_NOT_USED, ANSWER_UNCHECKED, CONSOLE_REFUSAL_HEADER, CONVERSATION_GONE } from "./chat-session";
 import { createHash } from "node:crypto";
 import { AGENT_STATE_HEADER, AGENT_NOT_RUNNING } from "./agent-reachability";
 import { signPrivateVaultRequest, PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER } from "./vault-capsule";
@@ -399,7 +399,18 @@ export async function forwardChat(request: Request, name: string, path: string, 
     // Eve authenticates the route password, not the person who owns a session. A browser may
     // continue a session only with the cookie this proxy issued when that session was created.
     const sessionId = /^eve\/v1\/session\/([A-Za-z0-9_-]{1,64})(?:\/|$)/.exec(path)?.[1];
-    const tuple = sessionId ? await requireConsoleSessionBinding({agent:name,incarnation:rows[0]!.incarnation as string,sessionId,memberId:stableMember.id},deps) : undefined;
+    // A conversation that has been ended for good cannot take another message or answer: saving a change to
+    // the agent revokes its open conversations, and so does a change to who may use it. Say that, never "did
+    // not answer", which reads as a fault worth retrying. Any other refusal (a read that failed, a
+    // conversation that is not this member's) keeps its old answer below.
+    let tuple: Awaited<ReturnType<typeof requireConsoleSessionBinding>> | undefined;
+    try { tuple = sessionId ? await requireConsoleSessionBinding({agent:name,incarnation:rows[0]!.incarnation as string,sessionId,memberId:stableMember.id},deps) : undefined; }
+    catch (error) {
+      const revoked = await deps.query(`SELECT 1 FROM console_session_bindings WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3
+        AND member_id=$4 AND revoked_at IS NOT NULL`, [name, rows[0]!.incarnation, sessionId, stableMember.id]).catch(() => ({ rows: [] }));
+      if (revoked.rows.length === 1) return refuse(410, CONVERSATION_GONE);
+      throw error;
+    }
 
     // 4. The credential, read server-side, spent on one header and named nowhere else.
     const password = deps.routePassword();

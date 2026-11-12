@@ -54,7 +54,8 @@ export async function saveOutsideConnections(input: {
   }).safeParse(input);
   if (!parsed.success) throw new Error("Connection details are invalid.");
   try {
-    const result = resultSchema.parse(await keeper<unknown>("outside.connections.save", { ...parsed.data, sessionToken }, actor));
+    // A definition save like the others (app/actions/definition.ts): it can stop a held agent, so it waits as long as Apply.
+    const result = resultSchema.parse(await keeper<unknown>("outside.connections.save", { ...parsed.data, sessionToken }, actor, { timeoutMs: 90_000 }));
     return { ok: true, result };
   } catch (error) {
     if (error instanceof KeeperRefusedError) return { ok: false, message: "The definition or access changed, or current agent edit access is missing. Refresh and review the connection again." };

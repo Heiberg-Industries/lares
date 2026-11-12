@@ -615,6 +615,27 @@ it("an answer into a conversation an update ended: the same plain sentence, and 
   expect(screen.getByRole("button", { name: "Start a new conversation" })).toBeDefined();
 });
 
+it("an answer into a conversation a save to the agent ended: the ended sentence, and the card loses its buttons", async () => {
+  withConversation(waitingCard());
+  mock.respond.mockRejectedValueOnce(new ClientError(410, "This conversation is no longer available. Start a new one.", { "content-type": "text/plain", "x-lares-console-refusal": "1" }));
+  render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+  expect((await screen.findByRole("alert")).textContent).toBe(OVER);
+  expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Deny" })).toBeNull();
+  expect(screen.queryByText(/did not reach the agent/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Start a new conversation" })).toBeDefined();
+  // A message into such a conversation says the same, and the composer closes.
+  cleanup();
+  mock.session = { sessionId: "s1", streamIndex: 4 };
+  mock.send.mockImplementationOnce(async () => { mock.error = new ClientError(410, "This conversation is no longer available. Start a new one.", { "content-type": "text/plain", "x-lares-console-refusal": "1" }); throw mock.error; });
+  const view = render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Message Agent One" }), "Still there?");
+  await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+  view.rerender(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
+  expect((await screen.findByRole("alert")).textContent).toBe(OVER);
+});
+
 it("a saved conversation that an update ended says so when the page is opened again", async () => {
   sessionStorage.setItem(KEY, JSON.stringify({ sessionId: "old-session", streamIndex: 12, inbox: "opaque-inbox" }));
   mock.error = stranded();

@@ -69,6 +69,8 @@ NOTE_REPLY = "PROOF_APPROVED_NOTE_SAVED"
 TOOL_REPLY = "PROOF_TOOL_RESULT_RECEIVED"
 FOLLOW_UP_REPLY = "PROOF_CONVERSATION_KEPT"
 MEMBER_LIMIT = "15"
+EDITED_DESCRIPTION = "PROOF_EDITED_DESCRIPTION written on the console page while the agent runs."
+SAVE_WARNING = "open web-chat conversations, and any approval waiting in them. Start a new conversation afterwards."
 INSTALL_TIMEOUT = 1500
 LIMITS = [
     "The model provider and the sign-in provider are stand-ins: a real provider's replies are copied, not called.",
@@ -81,6 +83,8 @@ LIMITS = [
     "Who pays is checked for one person and Approve only: how the call after a Deny is booked, and booking to a second member, are covered by the box tests, not here.",
     "The update goes to a second build of the same code (a new label, so new digests): a release that changes code or adds migrations is not covered.",
     "Saving a definition in the console after the update is not exercised; agent start and the agent's restart are.",
+    "A started agent takes one edit on the console page (its description), before the update. Apply after a door or model change on a started agent is covered by keeper tests here, not by an image run yet; the door stage of the door fix will cover it.",
+    "The conversation the edit ends is a plain one with one message; that an approval waiting in such a conversation cannot be answered afterwards is covered by the agent's tests, not here.",
     "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
     "A real agent answer is not covered: the stand-in decides what the model says.",
@@ -277,6 +281,51 @@ def keeper_held_lines() -> list[str]:
         return ["the keeper is not running"]
     logs = run("docker", "logs", ids[0], check=False, show=False)
     return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line]
+
+
+def keeper_log_lines(phrase: str) -> list[str]:
+    """Lines of the keeper's log that contain a fixed phrase."""
+    ids = output("docker", "ps", "-q", "--filter", "label=com.docker.compose.service=lares-keeper").split()
+    if not ids:
+        return ["the keeper is not running"]
+    logs = run("docker", "logs", ids[0], check=False, show=False)
+    return [line.strip()[:300] for line in (logs.stdout + logs.stderr).splitlines() if phrase in line]
+
+
+def agent_started_at() -> str | None:
+    """When the proof agent's running container was started; None when it is not running."""
+    ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    return output("docker", "inspect", "--format", "{{.State.StartedAt}}", ids[0]) if ids else None
+
+
+def conversation_calls(release: dict, saved_at: str | None = None) -> list[dict]:
+    """Every call booked to a conversation: its conversation, state, payer, and whether it was made after
+    `saved_at`, a time the database gave (the keeper's audit row of one save). A conversation the save ended
+    takes no call after it: the budget check refuses before any attempt is recorded. Never compared with
+    `agent_definitions.valid_at`: the running agent moves that on at every fresh definition read."""
+    after = f"a.created_at >= '{saved_at}'::timestamptz" if saved_at else "false"
+    rows = read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('session', a.authority_reference#>>'{binding,sessionId}', 'state', a.state, "
+        f"'payer', coalesce(a.live_member_id, ''), 'afterSave', {after}) ORDER BY a.created_at, a.id), '[]') "
+        "FROM budget_attempts a WHERE a.authority_reference->>'kind' = 'human'", release)
+    return json.loads(rows or "[]")
+
+
+def keeper_audit_mark(release: dict) -> str:
+    """The newest row of the keeper's audit log now, so a later read finds only the rows written after it."""
+    return read_only_query("SELECT coalesce(max(id), 0) FROM keeper_audit", release) or "0"
+
+
+def this_save_started_at(release: dict, mark: str) -> tuple[str | None, int]:
+    """When the keeper began the one definition save made after `mark` for the proof agent, as the database
+    recorded it (`keeper_audit.at`, written once when the action starts), and how many such saves there were.
+    The save must be the one whose recorded hash is the definition's hash now."""
+    rows = read_only_query(
+        "SELECT k.at::text, k.detail = '{\"hash\":\"' || d.hash || '\"}' FROM keeper_audit k JOIN agent_definitions d ON d.name = k.input->>'name' "
+        f"WHERE k.id > {int(mark)} AND k.action = 'definition.save' AND k.outcome = 'ok' AND k.input->>'name' = '{AGENT}' ORDER BY k.id", release)
+    saves = [line.split("|") for line in rows.splitlines() if line]
+    current = [at for at, matches in saves if matches == "t"]
+    return (current[0] if len(saves) == 1 and len(current) == 1 else None), len(saves)
 
 
 def agent_permission_denied_lines() -> list[str]:
@@ -1206,6 +1255,8 @@ def main(argv: list[str]) -> int:
             "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "notePrompt": NOTE_PROMPT, "noteReply": NOTE_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
             # Any message the stand-in does not recognise is answered with PROOF_OK.
             "afterUpdatePrompt": "PROOF_AFTER_THE_UPDATE", "afterUpdateReply": "PROOF_OK", "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
+            "beforeEditPrompt": "PROOF_BEFORE_THE_EDIT", "oldConversationPrompt": "PROOF_OLD_CONVERSATION_AFTER_THE_EDIT", "afterEditPrompt": "PROOF_AFTER_THE_EDIT",
+            "editedDescription": EDITED_DESCRIPTION, "saveWarning": SAVE_WARNING,
             "screenshotDir": str(shots),
         }))
         browser("discover-owner", settings_file, tls)
@@ -1275,6 +1326,68 @@ def main(argv: list[str]) -> int:
             deferred.append(f"the agent's log has {len(denied)} database permission errors, first: {denied[0]}")
         else:
             passed("the-agent-log-has-no-database-permission-errors")
+
+        stage("a started agent takes an edit")
+        # A change to a running agent applies from the console alone, and saving it ends the agent's open
+        # web-chat conversations, with a warning on the page first (Lares ADR-0027).
+        started_before = agent_started_at()
+        sessions_before = {call["session"] for call in conversation_calls(release)}
+        audit_mark = keeper_audit_mark(release)
+        browser("edit-after-start", settings_file, tls)
+        # What the browser step itself checked: the warning, the save, the old conversation ended on the page with
+        # no further answer, and a new conversation answered.
+        passed("on-the-page-the-old-conversation-ended-unanswered-and-a-new-one-was-answered")
+        if agent_started_at() != started_before or started_before is None:
+            deferred.append(f"the agent's container was stopped or restarted by a description save (started {started_before}, now {agent_started_at()})")
+        else:
+            passed("a-description-save-did-not-stop-or-restart-the-agent")
+        saved = read_only_query("SELECT json_build_object('description', d.definition->>'description', 'applied', r.applied_definition->>'description', "
+                                f"'pending', r.pending) FROM agent_definitions d JOIN agent_resources r ON r.name = d.name WHERE d.name = '{AGENT}'", release)
+        saved = json.loads(saved) if saved else {}
+        proof["editAfterStart"] = {"savedDescriptionEdited": saved.get("description") == EDITED_DESCRIPTION,
+                                   "appliedAtSave": saved.get("applied") == EDITED_DESCRIPTION, "pending": saved.get("pending")}
+        save_proof()
+        if saved.get("description") == EDITED_DESCRIPTION and saved.get("applied") == EDITED_DESCRIPTION and saved.get("pending") is False:
+            passed("the-saved-definition-carries-the-edit-applied-with-nothing-pending")
+        else:
+            deferred.append(f"after the description save the definition is {proof['editAfterStart']}")
+        stopped = keeper_log_lines("was stopped after a save")
+        if stopped:
+            deferred.append(f"the keeper logged a stop after the save: {stopped[0]}")
+        else:
+            passed("the-keeper-log-has-no-stop-after-a-save")
+        # The browser step itself proves the old conversation was refused on the page and was not answered.
+        # Here the budget ledger says the same at the money layer, and that the new one was charged.
+        owner = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member'", release)
+        # The save's own time, from the keeper's audit row for this one save (database clock, as created_at is).
+        saved_at, saves = this_save_started_at(release, audit_mark)
+        proof["editAfterStart"]["saveFoundInAudit"] = {"definitionSaves": saves, "found": saved_at is not None}
+        save_proof()
+        if saved_at is None:
+            deferred.append(f"the keeper's audit log does not show exactly one definition save for this edit ({saves} found), so the ledger was not checked")
+        if saved_at is not None:
+            deadline = time.monotonic() + 60
+            while True:
+                calls = [call for call in conversation_calls(release, saved_at) if call["session"] not in sessions_before]
+                old = {call["session"] for call in calls if not call["afterSave"]}
+                new = {call["session"] for call in calls if call["afterSave"]} - old
+                charged = [call for call in calls if call["session"] in new and call["state"] == "settled"]
+                if charged or time.monotonic() > deadline:
+                    break
+                time.sleep(3)
+            sessions = list(dict.fromkeys(call["session"] for call in calls))
+            proof["editAfterStart"]["conversationCalls"] = [{"conversation": sessions.index(call["session"]) + 1, "state": call["state"],
+                                                             "afterTheSave": call["afterSave"], "paidByOwner": call["payer"] == owner} for call in calls]
+            save_proof()
+            late = [call for call in calls if call["session"] in old and call["afterSave"]]
+            if old and not late:
+                passed("the-conversation-from-before-the-save-took-no-call-after-it")
+            else:
+                deferred.append(f"the conversation from before the save took {len(late)} call(s) after it, or none was found: {proof['editAfterStart']['conversationCalls']}")
+            if charged and all(call["payer"] == owner for call in calls if call["session"] in new):
+                passed("a-new-conversation-after-the-save-was-answered-and-charged-to-the-owner")
+            else:
+                deferred.append(f"no call of a new conversation after the save settled for the owner: {proof['editAfterStart']['conversationCalls']}")
 
         stage("sudo lares backups")
         run("apt-get", "update", "-qq", timeout=300, show=False)
