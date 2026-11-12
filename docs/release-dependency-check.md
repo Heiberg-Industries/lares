@@ -24,6 +24,8 @@ Run it from a clean checkout of the release branch, after `pnpm install`.
    base image).
 6. **May wait:** everything else. Packages from one vendor move together as one set, followed by
    the session and database proofs. A major version that waits gets a written reason.
+   When eve, the AI SDK or `@ai-sdk/anthropic` changes version, run the offline gateway proof on the
+   Anthropic lane for both roles and record its PASS in the release notes.
 7. **Record.** Put a "Dependency version check" section in the release's notes under
    `docs/releases/`: a table of ours, latest and decision for each, the advisory ids, the result
    of step 4, and the reason for every item that waits.
