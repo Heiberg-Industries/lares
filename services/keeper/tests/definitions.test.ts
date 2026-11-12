@@ -303,7 +303,7 @@ it('restores the complete previous definition when Apply startup fails, then req
     await expect(runAction('definition.reconcile', { name: 'bookkeeper', hash: stale.hash }, ctx())).rejects.toThrow('changed');
     expect(compose.reconcile).not.toHaveBeenCalled();
     const log = await keeperLog(() => expectApplyFailure(c => runAction('definition.reconcile', { name: 'bookkeeper', hash: candidate.hash }, c), 'previous-running',
-        'Apply failed. The previous working definition was restored; save the edit again before retrying.', 'injected startup failure'));
+        'Apply failed. The agent is back on the last definition that had taken effect; the changes that were waiting for Apply were undone. Save them again before retrying.', 'injected startup failure'));
     // Running before, running after, and the failure is reported: the keeper's log has the real cause under the reference.
     expect(log.under(log.result)).toEqual([expect.stringMatching(/^keeper: definition\.reconcile failed \(previous-running\) for agent bookkeeper, reference \S+, \d+ ms; cause: Error "injected startup failure"$/)]);
     expect(compose.reconcile).toHaveBeenCalledTimes(2);
@@ -490,7 +490,7 @@ it('treats an Apply that came back held by the budget guard as failed, restores 
     register();
     const candidate: any = await runAction('definition.save', save('bookkeeper', { definition: { ...GOOD, description: 'held candidate' }, duties: 'Held duties.\n' }), ctx());
     const log = await keeperLog(() => expectApplyFailure(c => runAction('definition.reconcile', { name: 'bookkeeper', hash: candidate.hash }, c), 'previous-running',
-        'Apply failed. The previous working definition was restored; save the edit again before retrying.', 'Runtime held'));
+        'Apply failed. The agent is back on the last definition that had taken effect; the changes that were waiting for Apply were undone. Save them again before retrying.', 'Runtime held'));
     expect(log.under(log.result)).toEqual([expect.stringMatching(/^keeper: definition\.reconcile failed \(previous-running\) for agent bookkeeper, reference \S+, \d+ ms; cause: Error "Runtime held: native budget activation required"$/)]);
     expect(calls).toBe(2);
     expect(compose.reconcile!.mock.calls[1]![1]).toEqual(previous.definition);

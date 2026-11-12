@@ -33,8 +33,11 @@ export interface DefinitionInput { name: string; definition: unknown; duties: st
 export async function createAgent(input: DefinitionInput & { startingPoint: Role }): Promise<DefinitionActionResult<DefinitionResult>> {
   return call('definition.create', input, await actor(), 60_000);
 }
+/** A save that changes the doors, role, personal accounts or model of a started agent stops it until Apply, and the
+ * stop alone can take Docker's ten-second grace period: saves get the same wait as Apply. */
+const SAVE_TIMEOUT_MS = 90_000;
 export async function saveDefinition(input: DefinitionInput): Promise<DefinitionActionResult<DefinitionResult>> {
-  return call('definition.save', input, await actor());
+  return call('definition.save', input, await actor(), SAVE_TIMEOUT_MS);
 }
 export async function setAgentLimit(input: {ceiling: number}): Promise<DefinitionActionResult<Capacity>> {
   return call('definition.capacity_set', {ceiling: input.ceiling}, await actor());
@@ -88,6 +91,11 @@ export async function acceptOutsideDescriptions(input:{name:string;tool:string;e
   return call('outside.accept_fingerprint',{name:input.name,tool:input.tool,expectedHash:input.expectedHash},await actor());
 }
 
+/** The agent's runtime state as the keeper sees it now (pending, running, healthy), for the page's Status box. */
+export async function agentRuntime(name:string):Promise<DefinitionActionResult<RuntimeState|undefined>> {
+  const read=await call<{runtime?:RuntimeState}>('definition.get',{name},await actor());
+  return read.ok?{ok:true,result:read.result.runtime}:read;
+}
 export async function doorStatus(name:string):Promise<DefinitionActionResult<import('../../components/DoorSetup').DoorStatus[]>> {
   return call('door.status',{name},await actor());
 }
@@ -108,7 +116,7 @@ export async function setDoorEnabled(name:string,kind:'slack'|'telegram',enabled
   const doors=definition.doors??definition.channels.map((kind:string)=>({kind,enabled:true,settings:{}}));
   definition.doors=[...doors.filter((d:{kind:string})=>d.kind!==kind),{kind,enabled,settings:doors.find((d:{kind:string})=>d.kind===kind)?.settings??{}}];
   definition.channels=definition.doors.filter((d:{enabled:boolean})=>d.enabled).map((d:{kind:string})=>d.kind);
-  return call('definition.save',{name,definition,duties:saved.duties,voice:saved.voice},email);
+  return call('definition.save',{name,definition,duties:saved.duties,voice:saved.voice},email,SAVE_TIMEOUT_MS);
   } catch(error) {
     if(error instanceof KeeperRefusedError)return {ok:false,error:{message:error.message,findings:error.findings,outcomeMayBeUnknown:!error.findings?.length}};
     const known=failedOrUnavailable(error);

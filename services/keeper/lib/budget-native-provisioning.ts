@@ -5,6 +5,7 @@ import {performance} from 'node:perf_hooks';
 import {z} from 'zod';
 import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
+import {restartPartsApplied} from './restart-parts.js';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {consoleSourceTransaction,gateConsoleOrganisation,noteBudgetFinancialChange,requireConsoleSourceOwner,retainSourceTransactionDeadline,type SourceDatabase,type SourcePool,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
@@ -122,7 +123,8 @@ async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy
   let definition,applied;try{definition=parseDefinition(definitionSchema.parse(row.definition));applied=parseDefinition(definitionSchema.parse(row.applied_definition));}catch{throw refuse();}
   const definitionHash=hashOf({definition,dutiesMd:row.duties,voiceMd:row.voice});
   if(row.status!=='valid'||row.hash!==definitionHash||row.ownership!=='owned'||
-    row.ownership_token!==request.incarnation||row.runtime_control_token!==request.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
+    row.ownership_token!==request.incarnation||row.runtime_control_token!==request.incarnation||row.state!=='ready'||row.pending!==false||
+    !restartPartsApplied(applied,definition,{model:true}))throw refuse();
   // The agent's own model name gets the main key. Any other served name is an extra key.
   const extra=definition.model!==request.purposeAlias;
   let brainBindingId:string|null=null;

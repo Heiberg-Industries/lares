@@ -173,6 +173,46 @@ try {
 } finally { rmSync(folder, { recursive: true, force: true }); }
 `;
 
+// One job through the job queue, as the agent login and with the graphile-worker copy the workflow
+// package itself loads. Two jobs wait on one named queue; the first one's handler then does what
+// the package's coalescing does after a delivery (takeCoalescedJobs in its queue): it takes the
+// job waiting behind it and removes it with WorkerUtils.completeJobs. Prints one line of JSON.
+const QUEUE_JOB = `
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+const load = createRequire(fileURLToPath(import.meta.resolve('@workflow/world-postgres/cli')));
+const { Pool } = load('pg');
+const { Logger, makeWorkerUtils, run } = load('graphile-worker');
+const logger = new Logger(() => () => {});
+const pool = new Pool({ connectionString: process.env.WORKFLOW_POSTGRES_URL, max: 4 });
+const utils = await makeWorkerUtils({ pgPool: pool, logger });
+await utils.addJob('proof_flow', { n: 1 }, { queueName: 'proof_run' });
+await utils.addJob('proof_flow', { n: 2 }, { queueName: 'proof_run' });
+const handled = [], failures = [];
+let absorbed = 0, settle;
+const settled = new Promise((done) => { settle = done; });
+const runner = await run({ pgPool: pool, concurrency: 1, noHandleSignals: true, pollInterval: 200, logger, taskList: {
+  proof_flow: async (payload, helpers) => {
+    handled.push(payload.n);
+    const { rows } = await pool.query('SELECT id FROM graphile_worker._private_jobs WHERE id <> $1 AND locked_at IS NULL ORDER BY id', [helpers.job.id]);
+    absorbed += (await utils.completeJobs(rows.map((row) => String(row.id)))).length;
+  },
+} });
+runner.events.on('job:success', () => settle());
+runner.events.on('job:error', ({ error }) => { failures.push(String(error && error.message || error)); settle(); });
+const timer = setTimeout(() => { failures.push('no job finished within 60 s'); settle(); }, 60_000);
+await settled;
+clearTimeout(timer);
+// Long enough for a second job to be picked up, had one been left to run.
+await new Promise((next) => setTimeout(next, 1_000));
+await runner.stop();
+await utils.release();
+const user = (await pool.query('SELECT current_user AS user')).rows[0].user;
+const left = (await pool.query('SELECT count(*)::int AS n FROM graphile_worker._private_jobs')).rows[0].n;
+await pool.end();
+console.log(JSON.stringify({ user, handled, absorbed, failures, left }));
+`;
+
 /** The grants the previous release's box gave the agent login: its seven tables, nothing newer. */
 async function previousReleasePrivileges(database: string): Promise<void> {
   await asOwner(database, async (owner) => {
@@ -430,6 +470,25 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
     await admin.query(`CREATE DATABASE "${cloned}" WITH TEMPLATE "${TEMPLATE}" OWNER lares_workflow_owner`);
     expect((await storeStep('check', cloned)).stdout.trim()).toBe('current');
     await admin.query(`DROP DATABASE "${cloned}"`);
+  }, 600_000);
+
+  it('as the agent login, a job on the upgraded store runs through the job queue and completes exactly once', async () => {
+    await twoAgents();
+    await upgradeStores();
+    const worked = await run(process.execPath, ['--input-type=module', '-'], {
+      cwd: creative, input: QUEUE_JOB,
+      env: {
+        PATH: process.env.PATH, HOME: process.env.HOME, PGPASSWORD: password('workflow'),
+        WORKFLOW_POSTGRES_URL: `postgres://lares_workflow@${host}:${port}/${STORE_A}`,
+      },
+    });
+    expect(worked.code, worked.stderr).toBe(0);
+    const outcome = JSON.parse(worked.stdout.trim().split('\n').at(-1)!);
+    expect(outcome.user).toBe('lares_workflow');
+    // Without EXECUTE on complete_jobs the first job fails after its work and is queued again:
+    // failures holds 'permission denied for function complete_jobs' and two jobs are left.
+    expect(outcome.failures, JSON.stringify(outcome)).toEqual([]);
+    expect(outcome).toMatchObject({ handled: [1], absorbed: 1, left: 0 });
   }, 600_000);
 
   it('refuses a store whose record is not exactly what the previous release left, before anything is changed', async () => {

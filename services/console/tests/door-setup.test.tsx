@@ -24,6 +24,11 @@ function findAll(node:ReactNode,label:string,out:ReactElement<{onClick:()=>void;
 const ok=<T,>(result:T)=>({ok:true as const,result});
 const row=(kind:string,over:object={})=>({kind,enabled:false,configured:false,claimed:false,pending:false,applied:false,...over});
 beforeEach(()=>{vi.clearAllMocks();mocks.states=[];mocks.setters=[];});
+it('says before any door change that saving ends open web-chat conversations, for a running agent only',()=>{
+ expect(renderToStaticMarkup(DoorSetup({...cos,running:true}))).toContain('open web-chat conversations, and any approval waiting in them. Start a new conversation afterwards.');
+ mocks.setters=[];expect(renderToStaticMarkup(DoorSetup({...cos,running:false}))).not.toContain('open web-chat conversations');
+ mocks.setters=[];expect(renderToStaticMarkup(DoorSetup(cos))).not.toContain('open web-chat conversations');
+});
 it('offers only role adapters and describes pending changes without claiming connected',()=>{
  mocks.states[STATE.rows]=[row('slack',{enabled:true,configured:true,claimed:true,pending:true,pending_reason:'Apply connection changes'})];
  const html=renderToStaticMarkup(DoorSetup(props));expect(html).toContain('Pending:');expect(html).toContain('Signing secret');expect(html).not.toContain('BotFather');expect(html).not.toContain('Connect mailbox with Google');expect(html).not.toContain('Owner connection applied');
@@ -78,6 +83,21 @@ it('connects Telegram from the token alone: save, check, enable, apply, register
  expect(mocks.connect).toHaveBeenCalledWith({name:'example',kind:'telegram',secret:'123:abc'});
  expect(mocks.apply).toHaveBeenCalledWith({name:'example',hash:'b'.repeat(64)});
  await vi.waitFor(()=>{const calls=mocks.setters[STATE.connect].mock.calls;expect(calls.at(-1)?.[0]).toMatchObject({kind:'telegram',link:`https://t.me/example_bot?start=${'C'.repeat(24)}`});});
+});
+it('asks the page to re-read the agent status after a door action, whether it worked or not',async()=>{
+ // A door switch can stop the agent; the Status box must not keep saying "Running" from before it.
+ const onRuntimeChanged=vi.fn();
+ mocks.status.mockResolvedValue(ok([row('telegram',{configured:true})]));
+ mocks.connect.mockResolvedValue({ok:false,error:{message:'keeper did not respond before the timeout',outcomeMayBeUnknown:true}});
+ mocks.states[STATE.tokens]={telegram:'123:abc'};
+ findAll(DoorSetup({...cos,onRuntimeChanged}),'Connect')[1].props.onClick();
+ await vi.waitFor(()=>expect(onRuntimeChanged).toHaveBeenCalledTimes(1));
+ expect(mocks.setters[STATE.error].mock.calls.at(-1)?.[0]).toContain('keeper did not respond before the timeout');
+ mocks.setters=[];mocks.connect.mockResolvedValue(ok({}));mocks.verify.mockResolvedValue(ok({kind:'telegram',username:'example_bot'}));
+ mocks.status.mockResolvedValue(ok([row('telegram',{configured:true,enabled:true,applied:true})]));
+ mocks.webhook.mockResolvedValue(ok({registered:true}));mocks.claim.mockResolvedValue(ok({code:'C'.repeat(24),expiresAt:new Date().toISOString(),instruction:''}));
+ findAll(DoorSetup({...cos,onRuntimeChanged}),'Connect')[1].props.onClick();
+ await vi.waitFor(()=>expect(onRuntimeChanged).toHaveBeenCalledTimes(2));
 });
 it('keeps unknown outcome sticky after a failed step and offers a reload',async()=>{
  mocks.states[STATE.unknown]=true;mocks.states[STATE.rows]=[row('slack',{enabled:true,configured:true,pending:true})];

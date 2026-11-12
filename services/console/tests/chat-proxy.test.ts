@@ -740,6 +740,24 @@ describe("stable console session binding", () => {
       expect(d.fetch).not.toHaveBeenCalled();
     }
   });
+  it("tells a member that a conversation ended by a save to the agent has ended, for a message and for an answer", async () => {
+    // Saving a change to a running agent ends its open conversations (the binding is revoked). What the
+    // member writes next, a message or an answer to a card still on the screen, gets the plain sentence and
+    // reaches nothing.
+    for (const body of ['{"message":"hello"}', '{"responses":[{"interactionId":"request-1","optionId":"approve"}]}']) {
+      const d = deps();
+      // The binding is there, and revoked: the save ended it.
+      const query=d.query.getMockImplementation()!;
+      d.query.mockImplementation(async(sql,values)=>sql.includes("console_session_bindings")?{rows:sql.includes("revoked_at IS NOT NULL")?[{"?column?":1}]:[]}:query(sql,values));
+      const request = new Request("https://console.example.invalid/api/chat/helper/eve/v1/session/wrun_A", {
+        method: "POST", body, headers: { "content-type": "application/json", cookie: `lares_session=abc; ${capability()}` } });
+      const response = await forwardChat(request, "helper", "eve/v1/session/wrun_A", d);
+      expect(response.status).toBe(410);
+      expect(response.headers.get("x-lares-console-refusal")).toBe("1");
+      expect(await response.text()).toBe("This conversation is no longer available. Start a new one.");
+      expect(d.fetch).not.toHaveBeenCalled();
+    }
+  });
   it("stable member capability IDs remain case-sensitive", async () => {
     const d=deps();
     d.signedInMember.mockResolvedValue({id:"owner-id",organisationId:"org",role:"owner",status:"active",automationMode:"draft-and-ask"});

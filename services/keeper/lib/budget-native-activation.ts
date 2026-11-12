@@ -6,6 +6,7 @@ import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-p
 import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
+import {restartPartsApplied} from './restart-parts.js';
 import {HostFinancialJournal} from './financial-journal.js';
 import {JournalBudgetFinancialWriter} from './budget-financial-writer.js';
 import {BudgetNativeCredentialClient,type NativeKeyExpectation,type NativeRead,type NativeTeamExpectation,type NativeTeamPolicyExpectation,type NativeUserExpectation} from './budget-native-client.js';
@@ -101,8 +102,10 @@ async function prepareSource(db:SourceDatabase,journal:HostFinancialJournal,op:N
   if(rows.length!==1)throw refuse();const row=rows[0]!;let definition,applied;
   try{definition=parseDefinition(definitionSchema.parse(row.definition));applied=parseDefinition(definitionSchema.parse(row.applied_definition));}catch{throw refuse();}
   const definitionHash=hashOf({definition,dutiesMd:row.duties,voiceMd:row.voice});
-  if(row.status!=='valid'||row.hash!==definitionHash||definitionHash!==op.association.definitionHash||row.ownership!=='owned'||
-    row.ownership_token!==op.association.incarnation||row.runtime_control_token!==op.association.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
+  // The key follows the agent, its incarnation and its model name, not the rest of the definition (see the runtime authority).
+  if(row.status!=='valid'||row.hash!==definitionHash||row.ownership!=='owned'||
+    row.ownership_token!==op.association.incarnation||row.runtime_control_token!==op.association.incarnation||row.state!=='ready'||row.pending!==false||
+    !restartPartsApplied(applied,definition,{model:true}))throw refuse();
   const extra=definition.model!==op.association.purposeAlias;let brainBindingId:string|null=null;
   if(!extra){if(applied.model!==op.association.purposeAlias||!memberClosed)throw refuse();}
   else{

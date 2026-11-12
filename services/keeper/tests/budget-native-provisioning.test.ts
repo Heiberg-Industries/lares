@@ -23,6 +23,7 @@ import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import {createNativeTestCustody,nativeTestPolicy,nativeTestPolicyFor,nativeTestTarget,openNativeTestCustody} from './helpers/native-cleanup.js';
+import {restartPartsApplied} from '../lib/restart-parts.js';
 
 let container:StartedPostgreSqlContainer|undefined;
 let pool:Pool;
@@ -177,7 +178,7 @@ async function setCapThroughRegisteredAction(ownerId:string,targetMemberId:strin
   await runAction('member.set-initial-budget',{sessionToken,targetMemberId,monthlyLimit},{actor:'native test owner',audit:async()=>{}});
 }
 
-async function startActiveOwnerFixture(clockOffset?:string):Promise<{operator:Pool;financial:Pool;owner:string;org:string;incarnation:string;ownerAgent:string;ownerBinding:string;
+async function startActiveOwnerFixture(clockOffset?:string,beforeFirstKey?:(operator:Pool,agent:string)=>Promise<void>):Promise<{operator:Pool;financial:Pool;owner:string;org:string;incarnation:string;ownerAgent:string;ownerBinding:string;
   ownerAccountId:string;installationId:string;ownerNativeUserId:string;sessionToken:string;root:string;journal:HostFinancialJournal;
   custody:BudgetNativeCustodyStore;fake:ReturnType<typeof nativeFake>;provisioner:BudgetNativeProvisioner}>{
   await resetDatabase();
@@ -198,6 +199,7 @@ async function startActiveOwnerFixture(clockOffset?:string):Promise<{operator:Po
   if(typeof ownerAccountId!=='string'||typeof installationId!=='string')throw new Error('Active owner fixture accounts are missing');
   const custody=createNativeTestCustody(join(root,'native')),fake=nativeFake(),provisioner=new BudgetNativeProvisioner(financial,journal,custody,fake.native,nativeTestTarget,policy),ownerBinding=id();
   fixtureCustodies.push(custody);
+  await beforeFirstKey?.(operator,ownerAgent);
   await expect(provisioner.provision({bindingId:ownerBinding,credentialGeneration:'0',memberId:owner,agent:ownerAgent,incarnation,purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'bound-closed'});
   await expect(new BudgetNativeActivator(financial,journal,custody,fake.native).activate({bindingId:ownerBinding,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
   const ownerNativeUserId=(await custody.withGate(gate=>Promise.resolve(gate.inventory().users.find((row):row is Extract<typeof row,{kind:'user'}>=>row.kind==='user'&&row.accountId===ownerAccountId)?.nativeUserId)))!;
@@ -614,10 +616,9 @@ it('lets the runtime authority recognise the extra key of an owner whose main ke
   const fixture=await startActiveOwnerFixture(),writer=id();
   await extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'));
   await extraActivator(fixture).activate({bindingId:writer,credentialGeneration:'0'});
-  const definitionHash=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash as string;
   const authority=(alias:string)=>createNativeRuntimeAuthority({custody:fixture.custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:nativeTestPolicyFor(alias),
     designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
-  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,definitionHash,purposeAlias});
+  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,purposeAlias});
   await expect(authority('lares-brain').current(identity('lares-brain'))).resolves.toEqual({state:'active'});
   await expect(authority('lares-writer').current(identity('lares-writer'))).resolves.toEqual({state:'active'});
   // A name that has no key made for it is held.
@@ -626,10 +627,9 @@ it('lets the runtime authority recognise the extra key of an owner whose main ke
 
 it('freezes the whole key store on an uncertain extra key, and lifting the stop frees the main key but never the uncertain one',async()=>{
   const fixture=await startActiveOwnerFixture(),writer=id();
-  const definitionHash=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash as string;
   const authority=(custody:BudgetNativeCustodyStore,alias:string)=>createNativeRuntimeAuthority({custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:nativeTestPolicyFor(alias),
     designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
-  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,definitionHash,purposeAlias});
+  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,purposeAlias});
   await expect(authority(fixture.custody,'lares-brain').current(identity('lares-brain'))).resolves.toEqual({state:'active'});
   const bindingsBefore=(await fixture.financial.query('SELECT id,state FROM budget_gateway_bindings ORDER BY id')).rows;
   // The gateway cannot confirm the new extra key, so provisioning records it as uncertain.
@@ -942,14 +942,14 @@ it('keeps native runtime eligibility read-only across source, custody, journal, 
   const entries=[{member:owner,agent:chief},{member:creativeOwner,agent:creative},{member:missingOwner,agent:missing},{member:unknownOwner,agent:unknown},{member:capOwner,agent:capChief},{member:grantee,agent:delegated},{member:duplicateOwner,agent:duplicateAgent}];
   const bindings=new Map<string,string>();
   const emptyAuthority=createNativeRuntimeAuthority({custody,journal,pool:pool as never,reviewedPolicy:policy,designatedOwnerId:owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
-  await expect(emptyAuthority.current({agent:chief,incarnation,definitionHash:'a'.repeat(64),purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'held'});
+  await expect(emptyAuthority.current({agent:chief,incarnation,purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'held'});
   expect(JSON.parse(readFileSync(join(custodyPath,'control.json'),'utf8')).state).toBe('open');
   const readerFor=async(member:string,agent:string,selectedJournal=journal)=>{
     const inventory=await custody.withGate(gate=>Promise.resolve(gate.inventory()));
     const operation=inventory.operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.association.agent===agent);
     if(!operation)throw new Error('Test operation unavailable');
     return {authority:createNativeRuntimeAuthority({custody,journal:selectedJournal,pool:pool as never,reviewedPolicy:policy,designatedOwnerId:member,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash}),
-      identity:{...operation.association}};
+      identity:{agent:operation.association.agent,incarnation:operation.association.incarnation,purposeAlias:operation.association.purposeAlias}};
   };
   try{
     for(const entry of entries){
@@ -973,7 +973,7 @@ it('keeps native runtime eligibility read-only across source, custody, journal, 
     const duplicateOperation=await custody.withGate(gate=>Promise.resolve(gate.inventory().operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.bindingId===duplicateBinding)));
     expect(duplicateOperation).toBeDefined();
     await custody.withGate(gate=>{gate.prepareOperation({bindingId:id(),credentialGeneration:'0',userOwnershipId:duplicateOperation!.userOwnershipId,
-      association:duplicateReader.identity,reviewedPolicy:policy},`sk-${'x'.repeat(43)}`);return Promise.resolve();});
+      association:duplicateOperation!.association,reviewedPolicy:policy},`sk-${'x'.repeat(43)}`);return Promise.resolve();});
     await expect(duplicateReader.authority.current(duplicateReader.identity)).resolves.toMatchObject({state:'held'});
     expect(JSON.parse(readFileSync(join(custodyPath,'control.json'),'utf8')).state).toBe('open');
     const changedEndpointReader=createNativeRuntimeAuthority({custody,journal,pool:pool as never,reviewedPolicy:policy,designatedOwnerId:owner,
@@ -1116,9 +1116,8 @@ const coverage=(financial:Pool)=>financial.query(`SELECT a.kind,a.state,w.openin
     w.starts_at<=clock_timestamp() AND w.ends_at>clock_timestamp() AS covers_now
   FROM budget_accounts a JOIN budget_windows w ON w.id=a.active_window_id ORDER BY a.kind,a.id`).then(result=>result.rows);
 const activeOwnerReader=async(fixture:Awaited<ReturnType<typeof startActiveOwnerFixture>>)=>{
-  const definitionHash=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash as string;
   const reader=createNativeRuntimeAuthority({custody:fixture.custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:policy,designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
-  return ()=>reader.current({agent:fixture.ownerAgent,incarnation:fixture.incarnation,definitionHash,purposeAlias:'lares-brain'});
+  return ()=>reader.current({agent:fixture.ownerAgent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'});
 };
 const journalRecords=(root:string)=>readFileSync(join(root,'financial','journal.jsonl'),'utf8').trimEnd().split('\n').length;
 
@@ -1189,3 +1188,69 @@ it('opens the month by itself as the clock crosses it, and catches up after bein
   expect((await financial.query('SELECT count(*)::int AS n FROM budget_windows')).rows[0].n).toBe(6);
   await verifyFinancialContinuity(journal,financial as never);
 },120_000);
+
+/** What a console save does to the rows the budget key is checked against: definition.save publishes the new
+ * definition, and the keeper's saved() marks it waiting for Apply exactly when a part that needs a restart
+ * changed (the same shared rule, restart-parts.ts). */
+async function saveDefinition(operator:Pool,agent:string,edit:(definition:any)=>any,duties=''){
+  const row=(await operator.query('SELECT d.definition,d.voice,r.applied_definition FROM agent_definitions d JOIN agent_resources r ON r.name=d.name WHERE d.name=$1',[agent])).rows[0]!;
+  const definition=parseDefinition(definitionSchema.parse(edit(structuredClone(row.definition))));
+  await operator.query('UPDATE agent_definitions SET definition=$2::jsonb,duties=$3,hash=$4 WHERE name=$1',[agent,JSON.stringify(definition),duties,hashOf({definition,dutiesMd:duties,voiceMd:row.voice})]);
+  const pending=!restartPartsApplied(parseDefinition(definitionSchema.parse(row.applied_definition)),definition,{model:true});
+  await operator.query('UPDATE agent_resources SET pending=$2 WHERE name=$1',[agent,pending]);
+  return pending;
+}
+/** What Apply (definition.reconcile) records before it starts the agent: the saved definition is the applied one. */
+async function applySaved(operator:Pool,agent:string){
+  await operator.query('UPDATE agent_resources r SET applied_definition=d.definition,pending=false FROM agent_definitions d WHERE d.name=r.name AND r.name=$1',[agent]);
+}
+
+it('keeps a started agent on its key through an ordinary edit, and brings a door change in on Apply',async()=>{
+  const fixture=await startActiveOwnerFixture(),read=await activeOwnerReader(fixture);
+  await expect(read()).resolves.toEqual({state:'active'});
+  const recorded=async()=>(await fixture.custody.withGate(gate=>Promise.resolve(gate.inventory().operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.bindingId===fixture.ownerBinding))))!.association.definitionHash;
+  const atStart=await recorded();
+  // Description, instructions and schedules: live at once, no Apply, and the key still covers the agent.
+  await expect(saveDefinition(fixture.operator,fixture.ownerAgent,d=>({...d,description:'Edited after the start'}),'New instructions after the start.')).resolves.toBe(false);
+  await expect(read()).resolves.toEqual({state:'active'});
+  const current=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash;
+  // The key store still holds the hash from when the key was made. It is kept, and no longer compared.
+  expect(await recorded()).toBe(atStart);expect(current).not.toBe(atStart);
+  // Switching a door on needs a restart: it waits for Apply, and until then the key does not cover the agent.
+  await expect(saveDefinition(fixture.operator,fixture.ownerAgent,d=>({...d,doors:[{kind:'telegram',enabled:true,settings:{}}]}),'New instructions after the start.')).resolves.toBe(true);
+  await expect(read()).resolves.toMatchObject({state:'held'});
+  await applySaved(fixture.operator,fixture.ownerAgent);
+  await expect(read()).resolves.toEqual({state:'active'});
+  // A row whose recorded hash no longer matches its files is still refused.
+  await fixture.operator.query("UPDATE agent_definitions SET duties='changed without a save' WHERE name=$1",[fixture.ownerAgent]);
+  await expect(read()).resolves.toMatchObject({state:'held'});
+},60_000);
+
+it('lets a started agent change its model name only to one the owner holds a key for',async()=>{
+  const fixture=await startActiveOwnerFixture(),writer=id();
+  await extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'));
+  await extraActivator(fixture).activate({bindingId:writer,credentialGeneration:'0'});
+  const authority=(alias:string)=>createNativeRuntimeAuthority({custody:fixture.custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:nativeTestPolicyFor(alias),
+    designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
+  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,purposeAlias});
+  // Before the change, the key for the other name already stands on the agent's own key: this is what the
+  // keeper asks before it lets the save through (lifecycle refuseModelWithoutKey).
+  await expect(authority('lares-writer').current(identity('lares-writer'))).resolves.toEqual({state:'active'});
+  await expect(authority('lares-gate').current(identity('lares-gate'))).resolves.toEqual({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
+  // A model change waits for Apply; after it the agent runs on the key for its new model name.
+  await expect(saveDefinition(fixture.operator,fixture.ownerAgent,d=>({...d,model:'lares-writer'}))).resolves.toBe(true);
+  await expect(authority('lares-writer').current(identity('lares-writer'))).resolves.toMatchObject({state:'held'});
+  await applySaved(fixture.operator,fixture.ownerAgent);
+  await expect(authority('lares-writer').current(identity('lares-writer'))).resolves.toEqual({state:'active'});
+  // A name nobody made a key for stays held, and says that no key matches.
+  await saveDefinition(fixture.operator,fixture.ownerAgent,d=>({...d,model:'lares-gate'}));await applySaved(fixture.operator,fixture.ownerAgent);
+  await expect(authority('lares-gate').current(identity('lares-gate'))).resolves.toEqual({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
+},60_000);
+
+it('makes the first key after an edit saved between create and the first start',async()=>{
+  // The fixture's own provisioning and activation expectations are the proof: before this change the edit made key creation refuse.
+  const fixture=await startActiveOwnerFixture(undefined,async(operator,agent)=>{
+    await expect(saveDefinition(operator,agent,d=>({...d,description:'Edited before the first start'}),'Instructions written before the first start.')).resolves.toBe(false);
+  });
+  await expect((await activeOwnerReader(fixture))()).resolves.toEqual({state:'active'});
+},60_000);

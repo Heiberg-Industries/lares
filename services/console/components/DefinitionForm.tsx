@@ -36,10 +36,12 @@ import {
   retireAgent,
   deleteAgent,
   applyConnections,
+  agentRuntime,
 } from "../app/actions/definition";
 import { ConversationControl } from "./ConversationControl";
 import { AutonomyControl } from "./AutonomyControl";
 import { TakesEffect } from "./TakesEffect";
+import { SaveEndsConversations } from "./SaveEndsConversations";
 import { CeilingNotice } from "./CeilingNotice";
 import { scheduleExplanation, scheduleLabel } from "../lib/schedule-labels";
 import { afterCreationPath } from "../lib/first-conversation";
@@ -831,6 +833,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
             </section>
           )}
           <CeilingNotice capacity={p.capacity} />
+          {editing && active && <SaveEndsConversations running={runtime?.running} />}
           {!(editing && uncertain) && (
           <div
             className={editing ? "lares-editor-actions lares-save-bar" : "lares-editor-actions"}
@@ -896,9 +899,16 @@ export function DefinitionForm(p: DefinitionFormProps) {
           role={p.initial.definition.role ?? point.id}
           origin={p.publicDoorOrigin ?? ""}
           hash={hash}
+          running={runtime?.running}
           onDefinitionChanged={(next) => {
             setHash(next);
             setUncertain(true);
+          }}
+          onRuntimeChanged={() => {
+            // Re-read, never assume: an unreadable state shows as unavailable rather than as the old "Running".
+            void agentRuntime(p.initial!.definition.name)
+              .then((read) => setRuntime(read.ok ? read.result : undefined))
+              .catch(() => setRuntime(undefined));
           }}
         />
       )}
