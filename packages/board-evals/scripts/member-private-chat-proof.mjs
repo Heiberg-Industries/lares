@@ -267,7 +267,7 @@ async function proveDurableBudget(app){
   assert.deepEqual(JSON.parse(result.stdout),{denied:true});
  }
  assert.deepEqual(await rows(),before,'Cold reconstruction changed retained invocation hashes or attempt count');
- console.log(app.name+': actual human and blank approve/cancel preparation, unchanged hashes/count after valid-authority cold replay PASS (preparation only)');
+ console.log(app.name+': actual human and continued-turn approve/deny preparation, unchanged hashes/count after valid-authority cold replay PASS (preparation only)');
 }
 /** A card that is not personal mail, end to end. Who may answer does not change: only the member who
  * started that conversation, on the same session and admission, for the exact unexpired card. */
