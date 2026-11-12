@@ -24,8 +24,10 @@ function findAll(node:ReactNode,label:string,out:ReactElement<{onClick:()=>void;
 const ok=<T,>(result:T)=>({ok:true as const,result});
 const row=(kind:string,over:object={})=>({kind,enabled:false,configured:false,claimed:false,pending:false,applied:false,...over});
 beforeEach(()=>{vi.clearAllMocks();mocks.states=[];mocks.setters=[];});
-it('says before any door change that saving ends open web-chat conversations',()=>{
- expect(renderToStaticMarkup(DoorSetup(cos))).toContain('open web-chat conversations, and any approval waiting in them. Start a new conversation afterwards.');
+it('says before any door change that saving ends open web-chat conversations, for a running agent only',()=>{
+ expect(renderToStaticMarkup(DoorSetup({...cos,running:true}))).toContain('open web-chat conversations, and any approval waiting in them. Start a new conversation afterwards.');
+ mocks.setters=[];expect(renderToStaticMarkup(DoorSetup({...cos,running:false}))).not.toContain('open web-chat conversations');
+ mocks.setters=[];expect(renderToStaticMarkup(DoorSetup(cos))).not.toContain('open web-chat conversations');
 });
 it('offers only role adapters and describes pending changes without claiming connected',()=>{
  mocks.states[STATE.rows]=[row('slack',{enabled:true,configured:true,claimed:true,pending:true,pending_reason:'Apply connection changes'})];

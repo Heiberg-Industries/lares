@@ -833,7 +833,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
             </section>
           )}
           <CeilingNotice capacity={p.capacity} />
-          {editing && active && <SaveEndsConversations />}
+          {editing && active && <SaveEndsConversations running={runtime?.running} />}
           {!(editing && uncertain) && (
           <div
             className={editing ? "lares-editor-actions lares-save-bar" : "lares-editor-actions"}
@@ -899,6 +899,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
           role={p.initial.definition.role ?? point.id}
           origin={p.publicDoorOrigin ?? ""}
           hash={hash}
+          running={runtime?.running}
           onDefinitionChanged={(next) => {
             setHash(next);
             setUncertain(true);

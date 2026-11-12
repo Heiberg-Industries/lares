@@ -20,7 +20,8 @@ const draftOf = (connection?: OutsideToolDeclaration): Draft => ({
 });
 const listOf = (value: string) => [...new Set(value.split(",").map(item => item.trim()).filter(Boolean))];
 
-export function OutsideConnectionsEditor({ initial }: { initial: OutsideConnectionsState }) {
+/** `running`: whether the agent runs now, from its runtime state; the save warning shows only then. */
+export function OutsideConnectionsEditor({ initial, running }: { initial: OutsideConnectionsState; running?: boolean | null }) {
   const [state, setState] = useState(initial);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -86,7 +87,7 @@ export function OutsideConnectionsEditor({ initial }: { initial: OutsideConnecti
   <section className="lares-surface lares-stack" aria-label="Outside connection settings">
     <p>Manage only this agent’s connection declarations. Connection credentials remain under their custodian’s control and are never entered here.</p>
     <p>Removing a declaration does not revoke or delete its separately held credential.</p>
-    <SaveEndsConversations />
+    <SaveEndsConversations running={running} />
     {state.applicationStatus === "applied" ? <p role="status">The last applied runtime definition matches these saved declarations.</p> : state.applicationStatus === "pending" ? <div className="lares-stack">
       <p role="status">Saved declarations are pending Apply. The last applied declaration set is shown below.</p>
       <Button type="button" disabled={busy} onClick={() => void apply()}>{busy ? "Applying…" : "Apply saved declarations"}</Button>

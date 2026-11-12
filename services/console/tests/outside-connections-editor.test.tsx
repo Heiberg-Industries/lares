@@ -17,7 +17,7 @@ describe("OutsideConnectionsEditor", () => {
     const active = { name: "previous", url: "https://tools.example.org/mcp", description: "Last working", token: false,
       tools: { allow: ["read"], read: ["read"] }, trusted: false };
     const pending = { ...initial, connections: [{ ...active, name: "replacement" }], appliedConnections: [active] };
-    render(<OutsideConnectionsEditor initial={pending} />);
+    render(<OutsideConnectionsEditor initial={pending} running />);
     expect(screen.getByText(/pending Apply/)).toBeTruthy();
     expect(screen.getByText(SAVE_ENDS_CONVERSATIONS)).toBeTruthy();
     expect(screen.getByText("previous — Last working")).toBeTruthy();
@@ -29,6 +29,11 @@ describe("OutsideConnectionsEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Apply saved declarations" }));
     await screen.findByText("Applied. The saved declarations match the last applied runtime definition.");
     expect(screen.getByText("The last applied runtime definition matches these saved declarations.")).toBeTruthy();
+  });
+
+  it("shows the save warning only for a running agent", () => {
+    render(<OutsideConnectionsEditor initial={initial} running={false} />);
+    expect(screen.queryByText(SAVE_ENDS_CONVERSATIONS)).toBeNull();
   });
 
   it("does not retain stale application details or offer Apply when a failure cannot be refreshed", async () => {

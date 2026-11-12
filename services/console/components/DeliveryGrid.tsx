@@ -27,9 +27,11 @@ export interface DeliveryGridProps {
   connected: Record<"slack" | "telegram", boolean>;
   /** The last message of a kind that did not go where asked, e.g. "Morning brief went to web chat: Telegram is not connected". */
   notes?: Partial<Record<DeliveryKind, string>>;
+  /** Whether the agent runs now, from its runtime state; the save warning shows only then. */
+  running?: boolean | null;
 }
 
-export function DeliveryGrid({ agent, delivery, connected, notes = {} }: DeliveryGridProps) {
+export function DeliveryGrid({ agent, delivery, connected, notes = {}, running }: DeliveryGridProps) {
   const initial = gridFrom(delivery);
   const [ranks, setRanks] = useState<Record<string, Ranks>>(
     Object.fromEntries(initial.map((r) => [r.kind, ranksOf(r.doors)])),
@@ -103,7 +105,7 @@ export function DeliveryGrid({ agent, delivery, connected, notes = {} }: Deliver
           ))}
         </tbody>
       </table></div>
-      <SaveEndsConversations />
+      <SaveEndsConversations running={running} />
       <div className="lares-actions lares-row-actions">
         <Button type="button" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</Button>
         {msg && (

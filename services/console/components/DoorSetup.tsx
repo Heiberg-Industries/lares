@@ -13,6 +13,8 @@ const SUPPORTED:Record<string,('slack'|'telegram')[]>={creative:['slack'],'chief
 const LABEL:Record<string,string>={slack:'Slack',telegram:'Telegram'};
 const POLL_MS=3000;
 export function DoorSetup(p:{name:string;display:string;role:string;origin:string;hash:string;onDefinitionChanged?:(hash:string)=>void;
+ /** Whether the agent runs now (the page's runtime state); the save warning shows only then. */
+ running?:boolean|null;
  /** Called after every door action, whether it worked or not: a door change can stop or start the agent. */
  onRuntimeChanged?:()=>void}) {
  const [rows,setRows]=useState<DoorStatus[]>([]),[progress,setProgress]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState(''),[unknown,setUnknown]=useState(false),[connect,setConnect]=useState<ConnectStep|null>(null);
@@ -68,7 +70,7 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
  const touchedPending=rows.some(r=>doorTouched(r)&&r.pending);
  return <section aria-label="Door setup" className="lares-door-setup"><h2>Connect doors</h2>
  <p>Paste your bot's credentials and press Connect. Saving, switching the door on, applying it to this agent and checking it all happen by themselves; at the end you confirm it is you with one tap or one message.</p>
- <SaveEndsConversations/>
+ <SaveEndsConversations running={p.running}/>
  {!createUrl&&<p role="alert">Configure the public HTTPS webhook address before creating new apps or connecting a chat door.</p>}
  {busy&&<p role="status" aria-live="polite" className="lares-door-progress"><strong>{progress}</strong> Keep this page open.</p>}
  {!busy&&touchedPending&&<p role="status" className="lares-door-progress"><strong>Changes are waiting to be applied.</strong> The agent restarts when you apply them.</p>}
