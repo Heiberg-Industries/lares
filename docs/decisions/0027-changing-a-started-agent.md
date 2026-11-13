@@ -76,6 +76,11 @@ alone, with those checks as the protection.
 still holds where no budget key pays. Where one does, a model change waits for Apply (§4 above), and
 so do doors, role and personal accounts.
 
+**Known limit:** where a key pays, a Slack or Telegram conversation that was already running when a
+model change is applied is not answered afterwards (ADR-0026, Consequences). Only a new
+conversation uses the new model. This is a limit, not the intended end state, and a later release is
+planned to change it. Edits that are not a model change do not cause it.
+
 ## Cross-references
 
 - ADR-0015: definitions resolved at runtime.

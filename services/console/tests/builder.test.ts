@@ -19,7 +19,8 @@ describe('builder read model', () => {
   it('shows the required timing copy', () => {
     expect(takesEffect('autonomy')).toBe('Takes effect at its next action.');
     expect(takesEffect('schedules')).toBe('Takes effect the next time it runs.');
-    for (const field of ['duties','voice','model','grants','skills','language']) expect(takesEffect(field)).toBe('Takes effect at its next conversation. On a direct-message door a conversation lasts the day, so that usually means tomorrow — or start a fresh one now.');
+    expect(takesEffect('model')).toBe('Where the agent runs with spending set up, press Apply after saving. A Slack or Telegram conversation that is already running then stops answering until a new conversation starts. On a direct-message door a conversation lasts the day, so that usually means tomorrow — or start a fresh one now. Without spending set up, it takes effect at the next conversation and a running one carries on as before.');
+    for (const field of ['duties','voice','grants','skills','language']) expect(takesEffect(field)).toBe('Takes effect at its next conversation. On a direct-message door a conversation lasts the day, so that usually means tomorrow — or start a fresh one now.');
   });
   it('does not flag a fingerprint matching successful keeper evidence', async () => {
     query.mockResolvedValue({rows: []});

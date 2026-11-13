@@ -41,7 +41,9 @@ export function modelAliases(prefix: string, configuredAlias?: string): { alias:
   return selected;
 }
 const CONVERSATION = 'Takes effect at its next conversation. On a direct-message door a conversation lasts the day, so that usually means tomorrow — or start a fresh one now.';
+const MODEL = 'Where the agent runs with spending set up, press Apply after saving. A Slack or Telegram conversation that is already running then stops answering until a new conversation starts. On a direct-message door a conversation lasts the day, so that usually means tomorrow — or start a fresh one now. Without spending set up, it takes effect at the next conversation and a running one carries on as before.';
 export function takesEffect(field: string): string {
+  if(field === 'model') return MODEL;
   if(field === 'autonomy') return 'Takes effect at its next action.';
   if(field === 'schedules') return 'Takes effect the next time it runs.';
   if(field === 'doors') return 'Apply connection changes to activate saved connections. This restarts the agent.';
