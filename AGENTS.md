@@ -114,6 +114,27 @@ Internal planning, status, handoff notes and lessons live in the project tracker
 - **This repo is public.** Nothing committed here, this file included, names or describes any installation: no server names, hosts or addresses, no owner or agent ids, no personas, no secrets or references to where secrets live, no private trackers or internal tooling. Examples use neutral placeholders.
 - **Work reaches main through a pull request and the merge queue**, for maintainers and agents alike.
 
+### Before building anything
+
+- **Look before you build.** In this order: (1) is it needed now; (2) does something already in
+  the dependency tree do it; (3) does the framework's own open-source family (eve, the AI SDK,
+  Workflow, the Chat SDK and their siblings) provide it when run self-hosted; (4) one short,
+  targeted look elsewhere, for that one need; (5) only then build it, once, in the shared kit
+  (`packages/agent-kit`), with a thin adapter per door or per role service. State the answers to
+  1–4 in the pull request description. No broad surveys of other ecosystems.
+- **One solution for every door.** A door (web chat, Slack, Telegram, and any later one) is an
+  adapter. The rules, records and wording a person meets through a door live once, in the shared
+  kit. A change that puts the same logic into two door files or two role services is sent back. A
+  new shared layer ships with its decision record under `docs/decisions/`, in the same pull
+  request.
+- **Self-hosted still decides.** A library that needs a hosted service to process or store data,
+  or that reports usage with no switch to turn it off, is not an option. Money, custody of secrets
+  and approvals stay this project's own code.
+- **Every release candidate gets a dependency version check** before it is cut: pinned versus
+  latest for each SDK, framework and pinned image; security fixes and superseded pre-releases are
+  updated first; the result is recorded with the release. The steps are in
+  [docs/release-dependency-check.md](docs/release-dependency-check.md).
+
 ### Rules that already cost something
 
 - **A fixture is what we believe an API does. Only a live call is what it does.** Any branch on a third-party response ships with a committed live probe `tests/live/<api>.live.mts`, run by hand, named in the ticket.
