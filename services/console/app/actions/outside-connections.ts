@@ -74,6 +74,9 @@ export async function applyOutsideConnections(input: { name: string; expectedDef
   } catch (error) {
     const current = await getOutsideConnections(input.name).catch(() => undefined);
     const confirmed = current?.ok ? current.result : undefined;
+    // Keeper refused and said why (for example a busy spending-key store left the agent stopped with the change
+    // waiting): its own sentence is what happened, whatever the refreshed declarations look like.
+    if (error instanceof KeeperRefusedError && error.message) return { ok: false, message: error.message, ...(confirmed ? { current: confirmed } : {}) };
     if (error instanceof KeeperRefusedError) return { ok: false, message: confirmed?.applicationStatus === 'applied'
       ? "The refreshed state confirms these declarations are applied, although the Apply request was refused or interrupted."
       : confirmed?.applicationStatus === 'pending'

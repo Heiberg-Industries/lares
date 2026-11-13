@@ -300,7 +300,7 @@ it('never reads a busy spending-key store as a lost spending permission: Apply k
   const live:any=await runAction('definition.save',{name:'bookkeeper',definition:{...chief,description:'Saved while the store was busy'},duties,voice},ctx);
   expect(live.runtime).toEqual({pending:false,reason:null});expect(events).not.toContain('stop:bookkeeper');expect(waits.at(-1)).toBe(10_000);
   // A model change cannot be checked, so it is refused as busy: never as a missing key, never let through unchecked.
-  await expect(l.prepare('bookkeeper',{...chief,model:'lares-other-model'},false)).rejects.toThrow('The spending-key store was busy, so the model was not changed; try again.');
+  await expect(l.prepare('bookkeeper',{...chief,model:'lares-other-model'},false)).rejects.toThrow('The spending-key store was busy, so nothing was saved; try again.');
   // Credential checks refuse as busy, not as "activation required".
   await expect(l.credentialPreflight(['bookkeeper'])).rejects.toThrow('The spending-key store was busy, so the credential change was not finished; try again.');
   await expect(l.reconcileCredential('bookkeeper',null)).rejects.toThrow('The spending-key store was busy, so the credential change was not finished; try again.');

@@ -307,7 +307,8 @@ def keeper_held_lines() -> list[str]:
     if not ids:
         return ["the keeper is not running"]
     logs = run("docker", "logs", ids[0], check=False, show=False)
-    return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line]
+    return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line
+            or "the spending-key store was busy" in line or "the spending ledger was busy" in line]
 
 
 def keeper_log_lines(*phrases: str) -> list[str]:

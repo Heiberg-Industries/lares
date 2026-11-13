@@ -49,6 +49,12 @@ alone, with those checks as the protection.
    nothing waiting, is recorded as the applied definition when it is saved, and becomes the point a
    later failed Apply goes back to. A failed Apply then undoes only the changes that were waiting
    for it. A save while something is waiting changes neither.
+
+   A busy spending-key store, or a spending ledger in the middle of a write, is not a failed Apply.
+   A budget check waits a short, bounded time for it. If it is still busy, nothing is undone: the
+   agent stays stopped with the change waiting, and the next Apply starts it. A save does not stop
+   a running agent because the store was busy. Busy never lets a model call through, because every
+   model call is still checked on its own against the key store.
 6. **Every save ends the agent's open web-chat conversations.** A conversation holds the agent's
    access revision from when it began, and a new definition moves that revision on, which revokes
    every conversation of the agent. A conversation that read notes is also bound to the definition
@@ -80,6 +86,10 @@ so do doors, role and personal accounts.
 model change is applied is refused afterwards (ADR-0026, Consequences). Only a new
 conversation uses the new model. This is a limit, not the intended end state, and a later release is
 planned to change it. Edits that are not a model change do not cause it.
+
+**Known limit:** a save made while the spending-key store is busy does not stop an agent that has
+in fact lost its spending permission. The agent goes on running until a later check sees the loss.
+No money moves meanwhile, because each model call is refused on its own.
 
 ## Cross-references
 

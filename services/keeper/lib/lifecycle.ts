@@ -63,8 +63,9 @@ const NATIVE_DECISION_WAIT_MS = 10_000;
 const NATIVE_STATUS_WAIT_MS = 2_000;
 /** The pending reason, and the Apply refusal, when an Apply (or a settings restart) stopped the agent and the
  * spending-key store was still busy when it came to start it. */
-export const NATIVE_KEY_STORE_BUSY = 'The spending-key store was busy, so the agent was not started. Your changes are kept; press Apply connection changes to start it.';
-const NATIVE_KEY_STORE_BUSY_MODEL = 'The spending-key store was busy, so the model was not changed; try again.';
+export const NATIVE_KEY_STORE_BUSY = 'The spending-key store was busy, so the agent was not started. Your changes are kept; reload the page, then press Apply connection changes to start it.';
+/** Asked before anything of the save is written (prepare runs first), so nothing at all was saved. */
+const NATIVE_KEY_STORE_BUSY_MODEL = 'The spending-key store was busy, so nothing was saved; try again.';
 const NATIVE_KEY_STORE_BUSY_CREDENTIAL = 'The spending-key store was busy, so the credential change was not finished; try again.';
 const keyStoreBusy = (state: NativeRuntimeState) => state.state === 'held' && state.detail === 'key-store-busy';
 function refusePendingRetirement(row: any): void {
@@ -600,7 +601,8 @@ export class AgentLifecycle {
                             return result.running ? (result.healthy ? 'started' : 'started-unhealthy') : `held: ${result.reason}`;
                         });
                         if (outcome !== 'busy' || attempt >= this.bootBusyRetry.attempts) break;
-                        await new Promise(resolve => setTimeout(resolve, this.bootBusyRetry.delayMs));
+                        // Never keeps a stopping keeper alive.
+                        await new Promise(resolve => setTimeout(resolve, this.bootBusyRetry.delayMs).unref());
                     }
                     if (outcome === 'busy') console.error(`keeper: agent ${name} was not started at startup yet (the spending-key store was busy); start it with: sudo lares agent start ${name}`);
                     else if (outcome === 'started') console.log(`keeper: started agent ${name} after the server came up`);

@@ -612,6 +612,34 @@ it('leaves the main key working when an extra key is refused or its activation i
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },60_000);
 
+it('still records an activation that fails after its claim as uncertain, and stops the key store, while another caller waits in line',async()=>{
+  const fixture=await startActiveOwnerFixture(),writer=id();
+  await expect(extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'))).resolves.toMatchObject({state:'bound-closed'});
+  // The unblock is claimed and sent, then its readback disagrees: the activation fails after its claim.
+  fixture.fake.setRejectUnblockedReadback(true);
+  let release!:()=>void;const holding=new Promise<void>(resolve=>release=resolve);let waiter:Promise<void>|undefined;
+  const real=fixture.fake.native as unknown as Record<string,(...args:any[])=>Promise<unknown>>;
+  const native={...real,unblockKey:async(fingerprint:string)=>{
+    const answer=await real.unblockKey!(fingerprint);
+    // A page's status read arrives while the activation holds the gate, and waits its turn behind it.
+    waiter=fixture.custody.withGate(async()=>{await holding;},{waitMs:10_000});
+    return answer;
+  }};
+  const activating=new BudgetNativeActivator(fixture.financial,fixture.journal,fixture.custody,native as unknown as BudgetNativeCredentialClient,{designatedOwnerId:fixture.owner})
+    .activate({bindingId:writer,credentialGeneration:'0'});
+  let settled=false;activating.then(()=>{settled=true;},()=>{settled=true;});
+  await vi.waitFor(()=>expect(waiter).toBeDefined(),{timeout:20_000,interval:20});
+  // The gate passed to the waiter when the activation's work failed; the uncertain record waits behind it.
+  await new Promise(resolve=>setTimeout(resolve,200));
+  release();await waiter;
+  await expect(activating).rejects.toThrow('Native budget activation refused');expect(settled).toBe(true);
+  const directory=join(fixture.root,'native');
+  const snapshot=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')) as {operations:NativeOperation[]};
+  expect(snapshot.operations.find(row=>row.kind==='operation'&&row.bindingId===writer)?.phase).toBe('uncertain');
+  expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('uncertain');
+  await expect(fixture.custody.withGate(async()=>undefined)).rejects.toThrow('reconciliation');
+},120_000);
+
 it('lets the runtime authority recognise the extra key of an owner whose main key is active, and nobody else',async()=>{
   const fixture=await startActiveOwnerFixture(),writer=id();
   await extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'));

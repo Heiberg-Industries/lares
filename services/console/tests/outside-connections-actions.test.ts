@@ -54,4 +54,13 @@ describe("outside connection console actions", () => {
     await expect(applyOutsideConnections({ name: "bookkeeper", expectedDefinitionHash: "a".repeat(64), expectedAccessRevision: 2 }))
       .resolves.toEqual({ ok: false, message: "Apply did not return normally and its application state could not be confirmed. Refresh before trying again." });
   });
+  it("shows Keeper's own sentence when it refused an Apply, never \"applied\" from the refreshed declarations", async () => {
+    // A busy spending-key store: Keeper recorded the declarations as applied but left the agent stopped and waiting.
+    const applied = { ...saved, applicationStatus: "applied" as const, appliedConnections: [connection] };
+    const { KeeperRefusedError } = await import("../lib/keeper-client");
+    const sentence = "The spending-key store was busy, so the agent was not started. Your changes are kept; reload the page, then press Apply connection changes to start it.";
+    mocks.keeper.mockRejectedValueOnce(new KeeperRefusedError(sentence)).mockResolvedValueOnce(applied);
+    await expect(applyOutsideConnections({ name: "bookkeeper", expectedDefinitionHash: "a".repeat(64), expectedAccessRevision: 2 }))
+      .resolves.toEqual({ ok: false, message: sentence, current: applied });
+  });
 });

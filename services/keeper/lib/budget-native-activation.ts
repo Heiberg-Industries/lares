@@ -10,7 +10,7 @@ import {restartPartsApplied} from './restart-parts.js';
 import {HostFinancialJournal} from './financial-journal.js';
 import {JournalBudgetFinancialWriter} from './budget-financial-writer.js';
 import {BudgetNativeCredentialClient,type NativeKeyExpectation,type NativeRead,type NativeTeamExpectation,type NativeTeamPolicyExpectation,type NativeUserExpectation} from './budget-native-client.js';
-import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
+import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,NATIVE_CUSTODY_MAX_WAIT_MS,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
 
 const uuid=z.string().uuid(),generation=z.string().regex(/^(0|[1-9][0-9]{0,18})$/).refine(v=>BigInt(v)<=9_223_372_036_854_775_807n);
 const requestSchema=z.object({bindingId:uuid,credentialGeneration:generation}).strict();
@@ -211,7 +211,8 @@ export class BudgetNativeActivator {
       },boundary,{deadlineAtMs:deadline}),receipt=>{gate.recordActive(op.operationId,receipt);return undefined;});
       return committed.value;
     });}catch(error){
-      if(operationId&&unblockClaimed){try{await this.custody.withGate(gate=>{gate.recordUncertain(operationId);return Promise.resolve();});}catch{/* Keep the frozen or uncertain custody result. */}}
+      // Waits its turn: the gate may have passed straight to someone in line, and this record must not be turned away.
+      if(operationId&&unblockClaimed){try{await this.custody.withGate(gate=>{gate.recordUncertain(operationId);return Promise.resolve();},{waitMs:NATIVE_CUSTODY_MAX_WAIT_MS});}catch{/* Keep the frozen or uncertain custody result. */}}
       throw publicRefuse();
     }
   }

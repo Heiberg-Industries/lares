@@ -125,6 +125,12 @@ class Stop(Exception):
     """Stop here and tell the owner why. The message is written for them."""
 
 
+# The keeper's fixed sentence (services/keeper/lib/lifecycle.ts, NATIVE_KEY_STORE_BUSY) when it stopped an agent to apply
+# a change and the spending-key store stayed busy, so it did not start it again. The change is kept and waiting. Only a
+# refusal that starts with exactly this is told apart; tests/budget-commands-safety.py pins it to the keeper's constant.
+KEEPER_BUSY_NOT_STARTED = "The spending-key store was busy, so the agent was not started."
+
+
 class KeeperRefused(Exception):
     """The keeper answered and said no."""
 
@@ -1144,7 +1150,11 @@ def agent_refresh(installation: Installation, options: argparse.Namespace) -> in
         try:
             result = installation.host_action("definition.refresh-image", {"name": name}, RECONCILE_TIMEOUT_SECONDS) or {}
         except KeeperRefused as error:
-            say(f"{name} stays on the previous software: the keeper refused ({error}).")
+            if str(error).startswith(KEEPER_BUSY_NOT_STARTED):
+                say(f"{name} was stopped to move it onto this release and was not started again: the spending-key store was busy. "
+                    f"Start it with: sudo lares agent start {name}")
+            else:
+                say(f"{name} stays on the previous software: the keeper refused ({error}).")
             left += 1
             continue
         except KeeperReportedError:

@@ -10,7 +10,7 @@ import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-p
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {consoleSourceTransaction,gateConsoleOrganisation,noteBudgetFinancialChange,requireConsoleSourceOwner,retainSourceTransactionDeadline,type SourceDatabase,type SourcePool,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {BudgetNativeCredentialClient,MAX_BUDGET_NATIVE_REQUEST_BYTES,type NativeKeyExpectation,type NativeTeamExpectation,type NativeTeamPolicyExpectation,type NativeTeamRosterExpectation,type NativeTeamRosterMemberExpectation,type NativeUserExpectation} from './budget-native-client.js';
-import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
+import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,NATIVE_CUSTODY_MAX_WAIT_MS,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
 import {HostFinancialJournal,isJournaledAbort} from './financial-journal.js';
 import {JournalBudgetFinancialWriter} from './budget-financial-writer.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
@@ -327,7 +327,8 @@ export class BudgetNativeProvisioner {
       fresh();if(performance.now()>=dispatch.monotonicDeadline)throw refuse();
       return result.value;
     }catch(error){
-      if(operationId&&nativeWriteDispatched&&!bindingReceiptPublished){try{await this.custody.withGate(gate=>{gate.recordUncertain(operationId);return Promise.resolve();});}catch{/* Existing custody remains frozen or records the uncertainty. */}}
+      // Waits its turn: the gate may have passed straight to someone in line, and this record must not be turned away.
+      if(operationId&&nativeWriteDispatched&&!bindingReceiptPublished){try{await this.custody.withGate(gate=>{gate.recordUncertain(operationId);return Promise.resolve();},{waitMs:NATIVE_CUSTODY_MAX_WAIT_MS});}catch{/* Existing custody remains frozen or records the uncertainty. */}}
       throw error instanceof Error&&error.message==='Native budget provisioning refused; reconciliation may be required'?error:refuse();
     }
   }
