@@ -150,7 +150,7 @@ async function main(): Promise<void> {
         registerInitialMemberBudgetActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
         if(financialPool)registerBudgetAgentStartActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId,
             keyPhases:async ids=>nativeCustody?nativeCustody.withGate(gate=>Promise.resolve(new Map(gate.inventory().operations
-                .flatMap(row=>row.kind==='operation'&&ids.includes(row.bindingId)?[[row.bindingId,row.phase] as [string,string]]:[])))):undefined});
+                .flatMap(row=>row.kind==='operation'&&ids.includes(row.bindingId)?[[row.bindingId,row.phase] as [string,string]]:[]))),{waitMs:2_000}):undefined});
         registerAction({name:'budget.freeze',hostOnly:true,input:z.object({}).strict(),run:async()=>{
             if(!financialJournal)throw new Error('Financial custody is not configured');
             await nativeCustody?.drainForShutdown();

@@ -46,12 +46,27 @@ export type OutsideRouteLease = { assertCurrent(): Promise<OutsideRouteReview> }
  * definition: ordinary edits are live, and the money stays bound by the model name, the reviewed prices and the limits. */
 export type NativeRuntimeIdentity = { agent: string; incarnation: string; purposeAlias: string };
 /** `detail` says why a hold happened, for the keeper's own log: no key for this agent, its incarnation and its model
- * name; or the saved definition is not in a state the check can accept (not valid, waiting, or not matching its files). */
-export type NativeRuntimeState = { state: 'active' } | { state: 'held'; reason: 'Native budget activation required'; detail?: 'no-matching-key' | 'definition-not-ready' };
+ * name; or the saved definition is not in a state the check can accept (not valid, waiting, or not matching its files).
+ * `key-store-busy`: the check waited as long as it was allowed and the spending-key store (or the spending ledger)
+ * was still busy. Nothing was decided about the agent's permission; it stays `held`, so a caller that asks only
+ * for `active` still refuses, and each decision point below says what a busy check does instead of a hold. */
+export type NativeRuntimeState = { state: 'active' } | { state: 'held'; reason: 'Native budget activation required'; detail?: 'no-matching-key' | 'definition-not-ready' | 'key-store-busy' };
 /** 'model-change': asked while a model change is being saved, about the new name; the running agent is not held by it. */
 export type NativeRuntimeCheck = 'runtime' | 'model-change';
-export type NativeRuntimeAuthority = { current(identity: NativeRuntimeIdentity, check?: NativeRuntimeCheck): Promise<NativeRuntimeState> };
+/** `waitMs`: how long the check may wait for a busy key store or ledger before it answers `key-store-busy`. */
+export type NativeRuntimeAuthority = { current(identity: NativeRuntimeIdentity, check?: NativeRuntimeCheck, wait?: { waitMs?: number }): Promise<NativeRuntimeState> };
 const NATIVE_HELD = 'Native budget activation required' as const;
+/** A check that decides an agent's fate (start, save, settings, model change, credential) waits this long: the
+ * budget check's own transaction deadline, so a waiting check outlasts another check's whole hold. */
+const NATIVE_DECISION_WAIT_MS = 10_000;
+/** A status read only shows the page; it waits less, and shows the last known state when the store stays busy. */
+const NATIVE_STATUS_WAIT_MS = 2_000;
+/** The pending reason, and the Apply refusal, when an Apply (or a settings restart) stopped the agent and the
+ * spending-key store was still busy when it came to start it. */
+export const NATIVE_KEY_STORE_BUSY = 'The spending-key store was busy, so the agent was not started. Your changes are kept; press Apply connection changes to start it.';
+const NATIVE_KEY_STORE_BUSY_MODEL = 'The spending-key store was busy, so the model was not changed; try again.';
+const NATIVE_KEY_STORE_BUSY_CREDENTIAL = 'The spending-key store was busy, so the credential change was not finished; try again.';
+const keyStoreBusy = (state: NativeRuntimeState) => state.state === 'held' && state.detail === 'key-store-busy';
 function refusePendingRetirement(row: any): void {
     if (row?.pending && row.pending_reason === RETIREMENT_PENDING)
         throw new KeeperRefusedError('Retry definition.retire to complete pending retirement');
@@ -136,7 +151,16 @@ export class AgentLifecycle {
         if (this.config.runtime.gatewayMasterKeyFile) return join(this.paths.secretsDir, `${name}-gateway-key`);
         throw new KeeperRefusedError('Installation must supply or manage this agent gateway key');
     }
-    private async currentNative(name: string): Promise<NativeRuntimeState> {
+    /** The last answer per agent that was not "busy": what the console shows while the key store stays busy. */
+    private readonly lastNativeOutcome = new Map<string, 'active' | 'held'>();
+    /** Startup tries a busy agent this many times, this far apart, outside the definition namespace between tries. */
+    bootBusyRetry = { attempts: 3, delayMs: 30_000 };
+    private async currentNative(name: string, waitMs = 0): Promise<NativeRuntimeState> {
+        const state = await this.readNative(name, waitMs);
+        if (!keyStoreBusy(state)) this.lastNativeOutcome.set(name, state.state);
+        return state;
+    }
+    private async readNative(name: string, waitMs: number): Promise<NativeRuntimeState> {
         if (!this.nativeGuarded) return { state: 'active' };
         if (!this.nativeAuthority) return { state: 'held', reason: NATIVE_HELD };
         try {
@@ -161,9 +185,9 @@ export class AgentLifecycle {
                 incarnation: row.ownership_token,
                 purposeAlias: definition.model,
             };
-            const current = await this.nativeAuthority.current(identity);
+            const current = await this.nativeAuthority.current(identity, 'runtime', { waitMs });
             return current?.state === 'active' ? { state: 'active' }
-                : { state: 'held', reason: NATIVE_HELD, ...(current?.state === 'held' && current.detail === 'no-matching-key' ? { detail: 'no-matching-key' as const } : {}) };
+                : { state: 'held', reason: NATIVE_HELD, ...(current?.state === 'held' && (current.detail === 'no-matching-key' || current.detail === 'key-store-busy') ? { detail: current.detail } : {}) };
         } catch {
             return { state: 'held', reason: NATIVE_HELD };
         }
@@ -198,12 +222,15 @@ export class AgentLifecycle {
                 throw new KeeperRefusedError('Rendered native lifecycle cannot publish while an existing runtime needs a separate migration');
         }
     }
+    /** A busy key store is never read as a hold: the result says busy (`pending`, NATIVE_KEY_STORE_BUSY), the agent is
+     * not running, and the caller keeps the change waiting instead of undoing it. The row is the caller's to mark. */
     private async startWithCurrentAuthority(name: string, address: string, credential = false) {
         if (this.nativeGuarded) {
-            const before = await this.currentNative(name);
+            const before = await this.currentNative(name, NATIVE_DECISION_WAIT_MS);
             if (before.state !== 'active') {
-                if (credential) throw new KeeperRefusedError(NATIVE_HELD);
-                return { pending: false, reason: NATIVE_HELD, running: false, healthy: null } as const;
+                if (credential) throw new KeeperRefusedError(keyStoreBusy(before) ? NATIVE_KEY_STORE_BUSY_CREDENTIAL : NATIVE_HELD);
+                return keyStoreBusy(before) ? { pending: true, reason: NATIVE_KEY_STORE_BUSY, running: false, healthy: null } as const
+                    : { pending: false, reason: NATIVE_HELD, running: false, healthy: null } as const;
             }
         }
         let startError: unknown;
@@ -222,12 +249,14 @@ export class AgentLifecycle {
             }
         }
         if (this.nativeGuarded) {
-            const after = await this.currentNative(name);
+            const after = await this.currentNative(name, NATIVE_DECISION_WAIT_MS);
             if (after.state !== 'active') {
+                // Busy or held, a runtime the check did not confirm never stays up.
                 try { await this.docker.stop(name); }
                 catch (error) { throw new Error('Native runtime authority changed during start and the owned runtime could not be stopped', { cause: error }); }
-                if (credential) throw new KeeperRefusedError(NATIVE_HELD);
-                return { pending: false, reason: NATIVE_HELD, running: false, healthy: null } as const;
+                if (credential) throw new KeeperRefusedError(keyStoreBusy(after) ? NATIVE_KEY_STORE_BUSY_CREDENTIAL : NATIVE_HELD);
+                return keyStoreBusy(after) ? { pending: true, reason: NATIVE_KEY_STORE_BUSY, running: false, healthy: null } as const
+                    : { pending: false, reason: NATIVE_HELD, running: false, healthy: null } as const;
             }
         }
         if (startError !== undefined) {
@@ -555,18 +584,26 @@ export class AgentLifecycle {
                 WHERE r.state='ready' AND d.status='valid' ORDER BY r.name`)).rows;
             for (const { name } of rows) {
                 try {
-                    const outcome = await withDefinitionNamespace(this.pool, async () => {
-                        const row = await this.storage.row(name);
-                        if (!runtimeControlled(row) || row.state !== 'ready' || !row.applied_definition || isRetiredRole(row.applied_definition.role)) return 'skip';
-                        if (row.pending) return 'pending';
-                        let found;
-                        try { found = await this.docker.inspect!(name); }
-                        catch (error) { if (error instanceof NoOwnedContainerError) return 'never-started'; throw error; }
-                        if (found.running) return 'running';
-                        const result = await this.startWithCurrentAuthority(name, String(row.address).split('/')[0]);
-                        return result.running ? (result.healthy ? 'started' : 'started-unhealthy') : `held: ${result.reason}`;
-                    });
-                    if (outcome === 'started') console.log(`keeper: started agent ${name} after the server came up`);
+                    // A busy key store is tried again, not held; the namespace is free between tries.
+                    let outcome: string;
+                    for (let attempt = 1; ; attempt++) {
+                        outcome = await withDefinitionNamespace(this.pool, async () => {
+                            const row = await this.storage.row(name);
+                            if (!runtimeControlled(row) || row.state !== 'ready' || !row.applied_definition || isRetiredRole(row.applied_definition.role)) return 'skip';
+                            if (row.pending) return 'pending';
+                            let found;
+                            try { found = await this.docker.inspect!(name); }
+                            catch (error) { if (error instanceof NoOwnedContainerError) return 'never-started'; throw error; }
+                            if (found.running) return 'running';
+                            const result = await this.startWithCurrentAuthority(name, String(row.address).split('/')[0]);
+                            if (result.reason === NATIVE_KEY_STORE_BUSY) return 'busy';
+                            return result.running ? (result.healthy ? 'started' : 'started-unhealthy') : `held: ${result.reason}`;
+                        });
+                        if (outcome !== 'busy' || attempt >= this.bootBusyRetry.attempts) break;
+                        await new Promise(resolve => setTimeout(resolve, this.bootBusyRetry.delayMs));
+                    }
+                    if (outcome === 'busy') console.error(`keeper: agent ${name} was not started at startup yet (the spending-key store was busy); start it with: sudo lares agent start ${name}`);
+                    else if (outcome === 'started') console.log(`keeper: started agent ${name} after the server came up`);
                     else if (outcome === 'started-unhealthy') console.error(`keeper: agent ${name} was started after the server came up but did not report healthy in time; check it with: sudo lares agent start ${name}`);
                     else if (outcome === 'pending') console.error(`keeper: agent ${name} was not started at startup because it has changes waiting to be applied; apply them in the console`);
                     else if (outcome.startsWith('held')) console.error(`keeper: agent ${name} was not started at startup (${outcome.slice(6)})`);
@@ -620,13 +657,14 @@ export class AgentLifecycle {
     async applyInstallationSettings(name: string): Promise<'restarted' | 'waiting' | 'stopped'> {
         const row = await this.storage.row(name);
         if (!runtimeControlled(row) || row.state !== 'ready' || row.pending || !row.applied_definition) return 'waiting';
-        if (this.nativeGuarded && (await this.currentNative(name)).state !== 'active') return 'waiting';
+        // Held or busy, nothing has been touched yet.
+        if (this.nativeGuarded && (await this.currentNative(name, NATIVE_DECISION_WAIT_MS)).state !== 'active') return 'waiting';
         const plan = await this.plan();
         const definitionFiles = await this.definitionFiles(name);
         await this.publishCompose();
         if ((await this.imageState(name)) === 'stopped') return 'stopped';
         await this.docker.stop(name);
-        let result: { running: boolean; healthy: boolean | null };
+        let result: { running: boolean; healthy: boolean | null; reason: string | null };
         try {
             await this.apply(plan);
             result = await this.startWithCurrentAuthority(name, String(row.address).split('/')[0]);
@@ -646,8 +684,13 @@ export class AgentLifecycle {
             }
             throw error;
         }
-        // Held by the budget guard after the restart: stopped, and status() already says why.
-        if (result.running !== true) return 'stopped';
+        // Held by the budget guard after the restart: stopped, and status() already says why. A busy key store
+        // instead leaves it stopped and waiting for Apply, which starts it.
+        if (result.running !== true) {
+            if (result.reason === NATIVE_KEY_STORE_BUSY)
+                await this.pool.query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, NATIVE_KEY_STORE_BUSY]);
+            return 'stopped';
+        }
         // From here the agent is running. A failure in recording that start fails the caller, as it
         // always did, but never marks a running agent as one that could not start.
         await this.recordSuccessfulDefinitionStart(name, definitionFiles, result);
@@ -741,8 +784,12 @@ export class AgentLifecycle {
     private async refuseModelWithoutKey(name: string, row: any, d: AgentDefinition): Promise<void> {
         if (!this.nativeAuthority || !row?.applied_definition || row.applied_definition.model === d.model ||
             typeof row.ownership_token !== 'string' || typeof d.model !== 'string') return;
-        if ((await this.currentNative(name)).state !== 'active') return;
-        const target = await this.nativeAuthority.current({ agent: name, incarnation: row.ownership_token, purposeAlias: d.model }, 'model-change');
+        // A busy store answers neither check, so the change is refused rather than let through unchecked.
+        const running = await this.currentNative(name, NATIVE_DECISION_WAIT_MS);
+        if (keyStoreBusy(running)) throw new KeeperRefusedError(NATIVE_KEY_STORE_BUSY_MODEL);
+        if (running.state !== 'active') return;
+        const target = await this.nativeAuthority.current({ agent: name, incarnation: row.ownership_token, purposeAlias: d.model }, 'model-change', { waitMs: NATIVE_DECISION_WAIT_MS });
+        if (target && keyStoreBusy(target)) throw new KeeperRefusedError(NATIVE_KEY_STORE_BUSY_MODEL);
         if (target?.state !== 'active')
             throw new KeeperRefusedError(`This agent has no working spending key for the model name ${d.model}, so its model was not changed. A key exists only for a model name the gateway serves and budget setup priced. While the agent is still on the model name budget setup was made for, sudo lares agent start ${name} on the server makes the keys for the other priced names.`);
     }
@@ -766,8 +813,11 @@ export class AgentLifecycle {
             throw error;
         });
         const restartNeeded = !row.applied_definition || restartFingerprint(row.applied_definition, this.restartOptions) !== restartFingerprint(d, this.restartOptions);
-        const nativeState = this.nativeGuarded ? await this.currentNative(name) : { state: 'active' as const };
-        if (this.nativeGuarded && nativeState.state !== 'active') {
+        const nativeState = this.nativeGuarded ? await this.currentNative(name, NATIVE_DECISION_WAIT_MS) : { state: 'active' as const };
+        // A busy key store said nothing about this agent: it is not stopped for it, and the save goes on as for an
+        // active agent (the reader's line says the store was busy). Its model calls are still checked one by one.
+        const busy = keyStoreBusy(nativeState);
+        if (this.nativeGuarded && nativeState.state !== 'active' && !busy) {
             // One fixed phrase per cause, never a value; the reader's own "is held" line names the failed step.
             const why = restartNeeded ? 'the saved change (doors, role, personal accounts or model) takes effect when Apply restarts it'
                 : nativeState.detail === 'no-matching-key' ? 'no spending key matches this agent, its incarnation and its model name (it has not been started with its key yet)'
@@ -811,7 +861,7 @@ export class AgentLifecycle {
                 if (previous) forgetDefinitionGeneration(dir, previous);
             }
         }
-        return { pending, reason: nativeState.state === 'held' ? nativeState.reason : reason };
+        return { pending, reason: nativeState.state === 'held' && !busy ? nativeState.reason : reason };
     }
     async reconcile(name: string, d: AgentDefinition) {
         let row = await this.storage.row(name);
@@ -845,6 +895,9 @@ export class AgentLifecycle {
         await this.pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=false,pending_reason=NULL,updated_at=now() WHERE name=$1', [name, JSON.stringify(d)]);
         // A held native runtime remains fully staged and ready for the explicit provision/activate/reconcile flow.
         const result = await this.startWithCurrentAuthority(name, a.address);
+        // Busy: the new definition stays applied and waiting; the next Apply starts it. Nothing is rolled back.
+        if (result.reason === NATIVE_KEY_STORE_BUSY)
+            await this.pool.query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, NATIVE_KEY_STORE_BUSY]);
         await this.recordSuccessfulDefinitionStart(name, definitionFiles, result);
         return result;
     }
@@ -854,7 +907,10 @@ export class AgentLifecycle {
         await this.plan();
         this.verifySecrets(this.paths.secretsDir);
         for (const name of names) {
-            if (this.nativeGuarded && (await this.currentNative(name)).state !== 'active') throw new KeeperRefusedError(NATIVE_HELD);
+            if (this.nativeGuarded) {
+                const native = await this.currentNative(name, NATIVE_DECISION_WAIT_MS);
+                if (native.state !== 'active') throw new KeeperRefusedError(keyStoreBusy(native) ? NATIVE_KEY_STORE_BUSY_CREDENTIAL : NATIVE_HELD);
+            }
             const row = await this.storage.row(name);
             if (!runtimeControlled(row) || row.state !== 'ready' || row.pending || !row.applied_definition)
                 throw new KeeperRefusedError('Ready applied runtime required');
@@ -870,7 +926,10 @@ export class AgentLifecycle {
         }
     }
     async reconcileCredential(name: string, revision: string | null): Promise<void> {
-        if (this.nativeGuarded && (await this.currentNative(name)).state !== 'active') throw new KeeperRefusedError(NATIVE_HELD);
+        if (this.nativeGuarded) {
+            const native = await this.currentNative(name, NATIVE_DECISION_WAIT_MS);
+            if (native.state !== 'active') throw new KeeperRefusedError(keyStoreBusy(native) ? NATIVE_KEY_STORE_BUSY_CREDENTIAL : NATIVE_HELD);
+        }
         const record = await this.credentialState?.();
         const grantOp = !!record?.activationIntent?.grantChange;
         // A grant change keeps the active key and moves only who is bound; the per-agent revision is
@@ -925,7 +984,12 @@ export class AgentLifecycle {
         const row = await this.storage.row(name);
         if (!row) return { pending: true, reason: 'Ownership migration required' };
         // A pending agent reports its own reason: the native hold is only a consequence of the pending state.
-        if (!row.pending && this.nativeGuarded && (await this.currentNative(name)).state !== 'active') return { pending: false, reason: NATIVE_HELD };
+        if (!row.pending && this.nativeGuarded) {
+            const native = await this.currentNative(name, NATIVE_STATUS_WAIT_MS);
+            // Busy: show the last known state (display only), never "activation required" for a store that was busy.
+            if (native.state !== 'active' && (!keyStoreBusy(native) || this.lastNativeOutcome.get(name) === 'held'))
+                return { pending: false, reason: NATIVE_HELD };
+        }
         return { pending: row.pending, reason: row.pending_reason };
     }
     /** Whether a running agent still runs an older image than this keeper renders for its role, as

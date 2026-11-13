@@ -86,7 +86,34 @@ describe('Keeper native lifecycle reader composition',()=>{
   expect(selectBudgetNativeReviewedPolicy).toHaveBeenCalledTimes(2);
   expect(createNativeRuntimeAuthority).toHaveBeenNthCalledWith(1,expect.objectContaining({gatewayOrigin:'http://gateway.invalid:4000',endpointHash:'b'.repeat(64)}));
   expect(createNativeRuntimeAuthority).toHaveBeenNthCalledWith(2,expect.objectContaining({gatewayOrigin:'http://gateway.invalid:4000',endpointHash:'c'.repeat(64)}));
-  expect(authority.current).toHaveBeenCalledWith(identity);
+  expect(authority.current).toHaveBeenCalledWith(identity,{});
+  // A wait the lifecycle asks for reaches the authority as it is.
+  await reader.current(identity,'runtime',{waitMs:10_000});
+  expect(authority.current).toHaveBeenLastCalledWith(identity,{waitMs:10_000});
+ });
+
+ it('says a busy key store or ledger is busy, never that the agent is held, and keeps its held record as it was',async()=>{
+  const log=vi.spyOn(console,'error').mockImplementation(()=>{});
+  try{
+   const reader=createKeeperNativeRuntimeReader(sources);
+   const busy={state:'held',reason:'Native budget activation required',detail:'key-store-busy'};
+   authority.current.mockResolvedValueOnce({state:'held',reason:'Native budget activation required',detail:'key-store-busy'});
+   await expect(reader.current(identity,'runtime',{waitMs:10_000})).resolves.toEqual(busy);
+   authority.current.mockResolvedValueOnce({state:'held',reason:'Native budget activation required',detail:'ledger-busy'});
+   await expect(reader.current(identity,'runtime',{waitMs:10_000})).resolves.toEqual(busy);
+   authority.current.mockResolvedValueOnce({state:'held',reason:'Native budget activation required',detail:'key-store-busy'});
+   await expect(reader.current({...identity,purposeAlias:'lares-other'},'model-change',{waitMs:10_000})).resolves.toEqual(busy);
+   // A good check after them changes nothing either: the agent was never recorded as held.
+   await expect(reader.current(identity)).resolves.toEqual({state:'active'});
+   expect(log.mock.calls.map(call=>call.join(' '))).toEqual([
+    'keeper: bookkeeper: the budget check could not finish: the spending-key store was busy',
+    'keeper: bookkeeper: the budget check could not finish: the spending ledger was busy',
+    'keeper: bookkeeper: the budget check could not finish: the spending-key store was busy']);
+   // A real hold later is still logged, and released, as before.
+   authority.current.mockResolvedValueOnce({state:'held',reason:'Native budget activation required'});
+   await reader.current(identity);await reader.current(identity);
+   expect(log.mock.calls.slice(3).map(call=>call.join(' '))).toEqual(['keeper: bookkeeper is held: the budget authority check refused','keeper: bookkeeper is no longer held']);
+  }finally{log.mockRestore();}
  });
 
  it('rechecks live journal and transport state instead of retaining a prior reader',async()=>{

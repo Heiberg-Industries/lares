@@ -88,6 +88,12 @@ export type NativePublicationRecoveryResult=
   |{status:'recovery-required';runtimeReady:false};
 const unavailable=()=>new Error('Native custody unavailable; explicit reconciliation is required');
 const refused=()=>new Error('Native custody operation refused');
+/** A caller that asked to wait for the gate, and whose wait ran out: it did nothing and changed nothing. It is
+ * never a verdict about the store or about anyone's spending permission. */
+export class NativeCustodyBusy extends Error {constructor(){super('Native custody busy');this.name='NativeCustodyBusy';}}
+/** The longest a caller may wait in line for the gate. */
+export const NATIVE_CUSTODY_MAX_WAIT_MS=30_000;
+interface GateTurn {start:()=>void;refuse:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}
 const same=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b));
 const digest=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const clone=<T>(value:T):T=>JSON.parse(JSON.stringify(value));
@@ -142,9 +148,10 @@ export interface NativeCleanupRecoverySession {
 }
 
 /** One lifecycle owner holds all descriptors and the inherited Linux kernel lock. The
- * nonblocking gate is acquired before any later source/journal ownership. No timers/leases. */
+ * gate is acquired before any later source/journal ownership. No leases; the only timers bound a
+ * caller's wait in line for the gate. */
 export class BudgetNativeCustodyStore {
-  private frozen=false;private stopping=false;private closed=false;private busy=false;private idle=new Set<()=>void>();
+  private frozen=false;private stopping=false;private closed=false;private busy=false;private idle=new Set<()=>void>();private line:GateTurn[]=[];
   private snapshot!:Snapshot;private control!:Control;private lock!:Handle;private snapshotFile!:Handle;private controlFile!:Handle;
   private publicationIntent?:Handle;private publicationIntentRecord?:PublicationIntent;
   /** Retained only by the cleanup-recovery lifecycle; key paths are never reopened after awaits. */
@@ -421,8 +428,20 @@ export class BudgetNativeCustodyStore {
       owner.closed=true;if(owner.rootFd!==undefined)try{closeSync(owner.rootFd);}catch{}
     }
   }
-  async withGate<T>(work:(gate:NativeCustodyGate)=>Promise<T>):Promise<T>{
-    if(this.closed||this.frozen||this.stopping||this.busy)throw unavailable();this.busy=true;let active=true;const absenceChallenges=new Map<string,string>();
+  /** One holder at a time. With no wait (the default) a caller that finds the gate taken is refused at once, as
+   * a closed or frozen store is. With `waitMs` it waits in a first-in-first-out line: the gate passes straight
+   * to the first in line, so nothing overtakes it, and a wait that runs out throws `NativeCustodyBusy` having
+   * done nothing. A closed, frozen or stopping store refuses at once and refuses everyone waiting. */
+  async withGate<T>(work:(gate:NativeCustodyGate)=>Promise<T>,options:{waitMs?:number}={}):Promise<T>{
+    if(this.closed||this.frozen||this.stopping)throw unavailable();
+    if(this.busy||this.line.length){
+      const waitMs=options.waitMs??0;
+      if(!(waitMs>0)||!Number.isFinite(waitMs))throw unavailable();
+      // On success the gate was handed over already taken (`busy` stays true), so nothing can come between.
+      await new Promise<void>((resolve,reject)=>this.joinLine(Math.min(waitMs,NATIVE_CUSTODY_MAX_WAIT_MS),resolve,reject));
+      if(this.closed||this.frozen||this.stopping){this.releaseGate();throw unavailable();}
+    }else this.busy=true;
+    let active=true;const absenceChallenges=new Map<string,string>();
     const prepareAbsence=(id:string,erased:boolean):NativeAbsenceRequest=>{const target=this.absenceTarget(id,erased),challenge=randomBytes(32).toString('hex');absenceChallenges.set(target.fingerprint,challenge);return Object.freeze({...target,challenge});};
     const recordAbsence=(id:string,r:NativeHashAbsenceReceipt,erased:boolean)=>{const target=this.absenceTarget(id,erased),challenge=absenceChallenges.get(target.fingerprint);if(!challenge)throw refused();this.recordNativeAbsence(id,r,erased,challenge);absenceChallenges.delete(target.fingerprint);};
     const call=<T>(fn:()=>T):T=>{if(!active||this.closed||this.frozen)throw unavailable();try{this.verify();return fn();}catch(error){if(error instanceof Error&&error.message==='Native custody operation refused')throw error;this.freeze();throw unavailable();}};
@@ -445,9 +464,23 @@ export class BudgetNativeCustodyStore {
     };
     try{const value=await work(Object.freeze(gate));if(this.frozen)throw unavailable();this.verify();return value;}
     catch(error){if(!(error instanceof Error&&error.message==='Native custody operation refused'))this.freeze();throw error;}
-    finally{active=false;absenceChallenges.clear();this.busy=false;for(const resolve of this.idle)resolve();this.idle.clear();}
+    finally{active=false;absenceChallenges.clear();this.releaseGate();}
   }
-  async drainForShutdown():Promise<void>{this.stopping=true;if(this.busy)await new Promise<void>(resolve=>this.idle.add(resolve));}
+  private joinLine(waitMs:number,start:()=>void,refuse:(error:Error)=>void):void {
+    const turn:GateTurn={start,refuse,timer:setTimeout(()=>{const index=this.line.indexOf(turn);if(index>=0)this.line.splice(index,1);refuse(new NativeCustodyBusy());},waitMs)};
+    this.line.push(turn);
+  }
+  /** Passes the gate on synchronously to the first in line, or frees it. Shutdown waits only for a free gate. */
+  private releaseGate():void {
+    this.busy=false;
+    while(this.line.length&&!this.busy){
+      const turn=this.line.shift()!;clearTimeout(turn.timer);
+      if(this.closed||this.frozen||this.stopping)turn.refuse(unavailable());else{this.busy=true;turn.start();}
+    }
+    if(!this.busy){for(const resolve of this.idle)resolve();this.idle.clear();}
+  }
+  private refuseLine():void {for(const turn of this.line.splice(0)){clearTimeout(turn.timer);turn.refuse(unavailable());}}
+  async drainForShutdown():Promise<void>{this.stopping=true;this.refuseLine();if(this.busy)await new Promise<void>(resolve=>this.idle.add(resolve));}
   close():void {
     if(this.closed)return;if(this.busy)throw new Error('Native custody operation still owns the gate');
     try{if(!this.frozen){this.verify();this.publishControl({...this.control,state:'closed'});}}catch{this.freeze();throw unavailable();}finally{this.release();}
@@ -759,7 +792,7 @@ export class BudgetNativeCustodyStore {
   }
   private syncOwned(fd:number):void {this.sync(fd);this.assertOwner();}
   private syncRoot(skipIntentCheck=false):void {this.assertOwner(skipIntentCheck);this.sync(this.rootFd);this.assertOwner(skipIntentCheck);}
-  private freeze():void {if(this.closed||this.frozen)return;this.frozen=true;if(this.publicationIntent)return;try{this.publishControl({...this.control,state:'uncertain'});}catch{/* Writer-open/partial/mismatched files still refuse later adoption. */}}
+  private freeze():void {if(this.closed||this.frozen)return;this.frozen=true;this.refuseLine();if(this.publicationIntent)return;try{this.publishControl({...this.control,state:'uncertain'});}catch{/* Writer-open/partial/mismatched files still refuse later adoption. */}}
   private release():void {if(this.closed)return;this.closed=true;const files=new Set<Handle>([this.snapshotFile,this.controlFile,this.lock,this.publicationIntent,...(this.recoveryKeyFiles?.values()??[]),...(this.recoveryPartials?.values()??[]),...(this.recoveryDetached?.values()??[])].filter((file):file is Handle=>Boolean(file)));for(const file of files){file.bytes.fill(0);try{closeSync(file.fd);}catch{}}this.recoveryKeyFiles?.clear();this.recoveryPartials?.clear();this.recoveryDetached?.clear();if(this.rootFd!==undefined)try{closeSync(this.rootFd);}catch{}}
 }
 
