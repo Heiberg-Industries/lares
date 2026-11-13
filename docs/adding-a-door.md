@@ -119,6 +119,12 @@ An in-memory state store is for local development only. It forgets everything on
   copy in `lib/principals.ts`; do not add a third.
 - [ ] **The shared contract test passes.** It runs your adapter against a fake platform and
   checks the rules in ADR-0025. You do not write rule tests of your own.
+- [ ] **Model permission.** Add one row for the door's eve authenticator to the kit's door model
+  authority (`packages/agent-kit/src/door-model-authority.ts`), and the door's name to the checks
+  that accept only known doors: the `ChatDoor` type (`packages/agent-kit/src/door-authority.ts`),
+  Keeper's `door.open` input check (`services/keeper/lib/model-purpose-broker.ts`), and
+  `validDoorTurnRequest` and `requireDoorClaim` (`packages/agent-kit/src/budget-model-authority.ts`).
+  The door file adds nothing; the sentence a person sees when a turn is refused is the kit's.
 - [ ] **A live probe.** `tests/live/<door>.live.mts`, run by hand against the real platform and
   named in your pull request. A fixture is what we believe a platform does; only a live call is
   what it does.

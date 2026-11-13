@@ -137,6 +137,68 @@ describe("createGatewayProvider", () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
+  it("an owner job inside a conversation step dispatches once and refuses a second dispatch of the same step", async () => {
+    const { withOwnerJob } = await import("../src/owner-job.js");
+    const { gatewayModel } = createGatewayProvider({ defaultKeyFile: join(dir, "missing-gateway-key") });
+    const model = gatewayModel("fixture-utility") as unknown as { config: { fetch?: typeof globalThis.fetch } };
+    const legacyFetch = vi.fn(async () => new Response("legacy"));
+    vi.stubGlobal("fetch", legacyFetch);
+    const send = () => model.config.fetch!("https://gateway.example.test/v1/messages", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "fixture-utility", messages: [] }) });
+    try {
+      await scoped(() => withOwnerJob("fixture-utility", async () => {
+        expect((await send()).status).toBe(200);
+        await expect(send()).rejects.toThrow("A fresh trusted model invocation is required");
+      }));
+      expect(purposeTransport.request).toHaveBeenCalledTimes(1);
+      expect(purposeTransport.request).toHaveBeenCalledWith("job.consume", expect.anything());
+      expect(purposeTransport.dispatch).toHaveBeenCalledTimes(1);
+      expect(legacyFetch).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  describe("on a managed runtime (Keeper's socket configured)", () => {
+    beforeEach(() => { process.env["LARES_MODEL_PURPOSE_RUNTIME_SOCKET"] = "/run/lares/model-purpose/model-purpose.sock"; });
+    afterEach(() => { delete process.env["LARES_MODEL_PURPOSE_RUNTIME_SOCKET"]; });
+
+    it("the anthropic lane never reads a key file, even a readable one, when no permission is attached", async () => {
+      process.env["GATEWAY_KEY_FILE"] = keyPath;
+      const { gatewayModel, gatewayKey } = createGatewayProvider({ defaultKeyFile: keyPath });
+      const model = gatewayModel("fixture-brain") as unknown as { config: { headers: () => Record<string, string> } };
+      const legacyFetch = vi.fn(async () => new Response("legacy"));
+      vi.stubGlobal("fetch", legacyFetch);
+      try {
+        expect(() => model.config.headers()).toThrow("Model purpose authority is not available");
+        await expect(scoped(async () => model.config.headers())).rejects.toThrow("Model purpose authority is not available");
+        expect(() => gatewayKey()).toThrow("Model purpose authority is not available");
+        expect(legacyFetch).not.toHaveBeenCalled();
+        expect(purposeTransport.request).not.toHaveBeenCalled();
+      } finally { vi.unstubAllGlobals(); }
+      // Nothing was read or cached: off the managed runtime the same instance reads the file as it is now.
+      writeFileSync(keyPath, "key-written-later\n", "utf8");
+      delete process.env["LARES_MODEL_PURPOSE_RUNTIME_SOCKET"];
+      expect(gatewayKey()).toBe("key-written-later");
+    });
+
+    it("the openai-compatible lane never reads a key file either, and sends nothing", async () => {
+      process.env["GATEWAY_LANE"] = "openai-compatible";
+      process.env["GATEWAY_KEY_FILE"] = keyPath;
+      const { gatewayModel, gatewayKey } = createGatewayProvider({ defaultKeyFile: keyPath });
+      const model = gatewayModel("fixture-brain") as unknown as { config: { fetch?: typeof globalThis.fetch } };
+      const legacyFetch = vi.fn(async () => new Response("legacy"));
+      vi.stubGlobal("fetch", legacyFetch);
+      try {
+        await expect(scoped(() => model.config.fetch!("https://gw.example.test/v1/chat/completions", { method: "POST", body: "{}" })))
+          .rejects.toThrow("Model purpose authority is not available");
+        expect(legacyFetch).not.toHaveBeenCalled();
+        expect(purposeTransport.request).not.toHaveBeenCalled();
+      } finally { vi.unstubAllGlobals(); }
+      writeFileSync(keyPath, "key-written-later\n", "utf8");
+      delete process.env["LARES_MODEL_PURPOSE_RUNTIME_SOCKET"];
+      expect(gatewayKey()).toBe("key-written-later");
+    });
+  });
+
   it("still refuses a call outside any conversation and outside an owner job", async () => {
     const { gatewayModel } = createGatewayProvider({ defaultKeyFile: keyPath });
     const model = gatewayModel("fixture-utility") as unknown as { config: { fetch?: typeof globalThis.fetch } };

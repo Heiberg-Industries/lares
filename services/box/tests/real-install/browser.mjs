@@ -120,7 +120,123 @@ const steps = {
     await page.locator(".lares-message-agent", { hasText: settings.afterUpdateReply }).first().waitFor({ timeout: STEP_MS });
     if (await page.getByText("This conversation is unavailable").count()) throw new Error("The conversation became unavailable");
   },
+  // A chat door, on the agent's edit page as an owner does it: paste the credentials and press
+  // Connect. The page saves, has the keeper check the bot, switches the door on, applies it and then
+  // shows the one-time step, which is written down for the probe to send.
+  "connect-slack": (page) => connectDoor(page, "slack"),
+  "connect-telegram": (page) => connectDoor(page, "telegram"),
+  // The owner comes back to the page after the claim was sent and applies it.
+  "finish-slack": (page) => finishDoor(page, "slack"),
+  "finish-telegram": (page) => finishDoor(page, "telegram"),
 };
+
+const DOOR_LABEL = { slack: "Slack", telegram: "Telegram" };
+const DOOR_MS = 240_000;
+
+// Both doors have a "Bot token" field and a "Connect" button, so everything is found inside the door's own fieldset.
+async function doorGroup(page, kind) {
+  await page.goto(`${origin}/agents/${settings.agent}/edit`);
+  const group = page.getByRole("group", { name: DOOR_LABEL[kind], exact: true });
+  await group.waitFor({ timeout: 60_000 });
+  // The door's state is fetched after the page renders.
+  await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+  return group;
+}
+
+// Waits for the wanted element, and fails at once with the page's own alert if one appears instead. The
+// sentence that saving ends open conversations is a plain note, not an alert, so it never trips this.
+async function waitForDoor(page, wanted, what) {
+  const alert = page.locator('section[aria-label="Door setup"] [role="alert"]');
+  const deadline = Date.now() + DOOR_MS;
+  while (Date.now() < deadline) {
+    if (await wanted.count()) return;
+    if (await alert.count()) throw new Error(`The door page says: ${(await alert.first().innerText().catch(() => "")).slice(0, 500)}`);
+    await page.waitForTimeout(1000);
+  }
+  throw new Error(`The door page did not show ${what} within ${DOOR_MS / 1000} seconds`);
+}
+
+// The keeper's own reasons (`pending_reason`) the door's state line shows after "Pending: ".
+const APPLY_BUTTON = "Apply connection changes (restarts agent)";
+const CLAIM_WAITING = "Pending: Owner claimed door; apply connection changes (restarts agent)";
+// An Apply (or a save's firewall step) is running now; pressing anything would start a second one.
+const RUNNING = /^Pending: .*in progress/;
+
+// The door's state line (the first paragraph of its fieldset). It reads "Not set up" until the page has
+// fetched the doors, so a door that has been touched is read again for a little while.
+async function doorState(page, group) {
+  let state = "";
+  for (let tries = 0; tries < 10; tries++) {
+    state = (await group.locator("p").first().innerText().catch(() => "")).trim();
+    if (state && state !== "Not set up") break;
+    await page.waitForTimeout(1000);
+  }
+  return state;
+}
+
+// Reloads the page until no Apply is running for the door, and returns its state then.
+async function stateWhenNothingRuns(page, kind) {
+  const deadline = Date.now() + DOOR_MS;
+  for (;;) {
+    const group = await doorGroup(page, kind);
+    const state = await doorState(page, group);
+    if (!RUNNING.test(state)) return { group, state };
+    if (Date.now() > deadline) throw new Error(`The ${DOOR_LABEL[kind]} door still read "${state}" after ${DOOR_MS / 1000} seconds`);
+    await page.waitForTimeout(3000);
+  }
+}
+
+// The door section's own Apply: the page's Status box has a button with the same name. It applies and reloads.
+const pressApply = (page) => page.locator('section[aria-label="Door setup"]').getByRole("button", { name: APPLY_BUTTON }).click({ timeout: 60_000 });
+
+// A retry of this step (after the runner's network changed under the page) must never start a second
+// Connect or Apply while the first one is still running: it reads the door's state first and waits.
+async function connectDoor(page, kind) {
+  let { group, state } = await stateWhenNothingRuns(page, kind);
+  console.log(`the ${DOOR_LABEL[kind]} door reads: ${state}`);
+  const show = () => group.getByRole("button", { name: kind === "slack" ? "Show the one-time code" : "Show the tap-to-connect link" });
+  if (state.startsWith("Pending:") && await group.getByRole("button", { name: "Disable door" }).count()) {
+    // An earlier attempt saved the door switched on but its Apply never reached the keeper (the probe
+    // waits for the keeper to finish every action before a retry). Apply it once, as the owner would.
+    await pressApply(page);
+    await waitForDoor(page, show(), "the button to show the one-time step after Apply");
+    ({ group } = await stateWhenNothingRuns(page, kind));
+    await show().click();
+  } else if (await show().count()) {
+    // A retry: the door is already on, applied and unclaimed.
+    await show().click();
+  } else {
+    await group.getByLabel("Bot token").fill(kind === "slack" ? settings.slackBotToken : settings.telegramBotToken);
+    if (kind === "slack") await group.getByLabel("Signing secret").fill(settings.slackSigningSecret);
+    await group.getByRole("button", { name: /^(Connect|Replace credentials and connect)$/ }).click();
+  }
+  if (kind === "slack") {
+    const code = group.locator(".lares-door-connect code");
+    await waitForDoor(page, code, "the one-time code");
+    writeFileSync(`${settings.doorCodeDir}/slack`, (await code.first().innerText()).trim(), { mode: 0o600 });
+  } else {
+    const link = group.locator("a.lares-door-tap");
+    await waitForDoor(page, link, "the tap-to-connect link");
+    const start = new URL(await link.first().getAttribute("href")).searchParams.get("start") ?? "";
+    writeFileSync(`${settings.doorCodeDir}/telegram`, start, { mode: 0o600 });
+  }
+}
+
+// Apply is pressed only while the door waits for the claim's Apply. If an Apply from an earlier attempt is
+// still running, this waits for it; if it is done, the door reads Connected and nothing is pressed.
+async function finishDoor(page, kind) {
+  const { group, state } = await stateWhenNothingRuns(page, kind);
+  console.log(`the ${DOOR_LABEL[kind]} door reads: ${state}`);
+  if (state === "Connected") return;
+  if (state !== CLAIM_WAITING) throw new Error(`The ${DOOR_LABEL[kind]} door reads "${state}", not "${CLAIM_WAITING}"`);
+  await pressApply(page);
+  // Applying reloads the page; the door then reads Connected.
+  await waitForDoor(page, group.getByText("Connected", { exact: true }), `${DOOR_LABEL[kind]} as Connected`);
+}
+
+// The door credentials are test values, but are still never printed.
+const scrub = (text) => [settings.slackBotToken, settings.slackSigningSecret, settings.telegramBotToken]
+  .filter(Boolean).reduce((said, secret) => said.split(secret).join("<redacted>"), text ?? "");
 
 async function startSignIn(page) {
   await page.goto(`${origin}/sign-in`);
@@ -145,7 +261,7 @@ page.on("requestfailed", (request) => console.log(`request failed: ${request.url
 page.on("response", async (response) => {
   if (response.status() < 300) return;
   console.log(`${response.status()} ${response.url().split("?")[0]}`);
-  if (response.status() >= 400) console.log(`  sent ${response.request().postData()?.slice(0, 300)}\n  answered ${(await response.text().catch(() => "")).slice(0, 300)}`);
+  if (response.status() >= 400) console.log(`  sent ${scrub(response.request().postData())?.slice(0, 300)}\n  answered ${scrub(await response.text().catch(() => "")).slice(0, 300)}`);
 });
 let failed = null;
 try {

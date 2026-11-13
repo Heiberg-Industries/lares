@@ -6,6 +6,7 @@ import { defineDynamic, type DynamicModelContext } from 'eve/models';
 export { currentModelInvocation, currentModelPurposeClaim } from './model-invocation.js';
 import { captureModelInvocation, runModelInvocation, type ModelInvocation, type ModelInvocationSession } from './model-invocation.js';
 import { MODEL_CALLS_REFUSED_UNSCOPED, MODEL_COMPACTION_REFUSED } from './conversation-too-long.js';
+import { withOwnerJob } from './owner-job.js';
 
 // A durable session marker, not a process-wide success flag. A repair on disk after a failed
 // resolver must not let that already-misconfigured turn run with its neutral compiled prompt.
@@ -63,10 +64,10 @@ export function pinSessionGatewayAlias(alias: string): null {
 
 /** Reconstruct the provider for the already-pinned alias; never reread the definition
  * mid-conversation. */
-export function sessionGatewayModel(provider: (alias: string) => LanguageModel, verifyAuthority: () => Promise<unknown> = async () => {}, invocation?: ModelInvocation): { model: Exclude<LanguageModel, string>; modelContextWindowTokens: number } {
+export function sessionGatewayModel(provider: (alias: string) => LanguageModel, verifyAuthority: () => Promise<unknown> = async () => {}, invocation?: ModelInvocation, asOwnerJob = false): { model: Exclude<LanguageModel, string>; modelContextWindowTokens: number } {
   const alias = gatewayAlias.get();
   if (!alias) throw new Error('Session gateway alias is not pinned');
-  return { model: guardDefinitionModel(provider(alias), async () => { await assertModelDefinitionReady(); await verifyAuthority(); }, invocation), modelContextWindowTokens: SESSION_MODEL_CONTEXT_WINDOW_TOKENS };
+  return { model: guardDefinitionModel(provider(alias), async () => { await assertModelDefinitionReady(); await verifyAuthority(); }, invocation, asOwnerJob), modelContextWindowTokens: SESSION_MODEL_CONTEXT_WINDOW_TOKENS };
 }
 
 /** A model call's coordinates, in the record Keeper and the budget store already authenticate. */
@@ -114,6 +115,14 @@ export interface DefinitionModelInput {
   readonly preparePurpose?: (event: unknown, session: ModelInvocationSession | undefined) => void;
   /** Optional role-specific authority adapter. Roles without one retain their current path. */
   readonly claimPurpose?: (invocation: ModelInvocation) => Promise<void>;
+  /** Optional managed-runtime authority for conversations web chat's adapter does not cover
+   * (`door-model-authority.ts`): `prepare` reserves a door turn's point before any await, `claim`
+   * attaches a door turn's step claim, or answers `owner-job` for a conversation a schedule
+   * started, whose model calls then run as owner jobs. Roles that do not pass it are unchanged. */
+  readonly managedAuthority?: {
+    readonly prepare: (event: unknown, session: ModelInvocationSession | undefined) => void;
+    readonly claim: (invocation: ModelInvocation) => Promise<'door' | 'owner-job' | 'none'>;
+  };
   /** Builds the LiteLLM-backed provider for an alias. Never a bare id string. */
   readonly provider: (alias: string) => LanguageModel;
 }
@@ -147,6 +156,7 @@ export function definitionModelResolver(input: DefinitionModelInput) {
     const stepEvent = modelStepCoordinates(ctx);
     const authorityContext = structuredClone({ session: ctx.session });
     input.preparePurpose?.(stepEvent, authorityContext.session);
+    input.managedAuthority?.prepare(stepEvent, authorityContext.session);
     // Two checks, because eve 1.0 chooses the model BEFORE it evaluates the instructions
     // (`dist/src/definitions/step.js`, `evaluateStepValues`), where 0.60.1 resolved the persona
     // at session start, ahead of the first step. `verifyPrivateConsoleModel` also requires the
@@ -159,7 +169,8 @@ export function definitionModelResolver(input: DefinitionModelInput) {
     if (gatewayAlias.get() === null) pinSessionGatewayAlias(await input.resolveAlias(authorityContext.session?.id, authorityContext.session));
     const invocation = captureModelInvocation(stepEvent, authorityContext.session, gatewayAlias.get()!);
     await input.claimPurpose?.(invocation);
-    return sessionGatewayModel(input.provider, verifyAuthority, invocation);
+    const route = await input.managedAuthority?.claim(invocation);
+    return sessionGatewayModel(input.provider, verifyAuthority, invocation, route === 'owner-job');
   };
 }
 
@@ -202,8 +213,15 @@ export function guardDefinitionModel(
   model: LanguageModel,
   resolveReady: () => Promise<unknown> = assertModelDefinitionReady,
   invocation?: ModelInvocation,
+  asOwnerJob = false,
 ): Exclude<LanguageModel, string> {
   if (typeof model === 'string') throw new Error('Definition fallback requires a provider model object');
+  if (asOwnerJob && !invocation) throw new Error('An owner job model call needs its invocation');
+  // A conversation a schedule started runs as an owner job, nested INSIDE its invocation: the
+  // step's single-use claim is entered first, so the job gets exactly one dispatch
+  // (`gateway-provider.ts`), and it is charged to the owner as a job, never as a step.
+  const scoped = <T>(call: () => Promise<T>): Promise<T> =>
+    !invocation ? call() : runModelInvocation(invocation, asOwnerJob ? () => withOwnerJob(invocation.alias, call) : call);
   return wrapLanguageModel({
     model,
     middleware: {
@@ -211,13 +229,11 @@ export function guardDefinitionModel(
         params.maxOutputTokens === undefined ? { ...params, maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS } : params,
       wrapGenerate: async ({ doGenerate }) => {
         assertNotCompacting(invocation?.session.id);
-        const call = async () => { await resolveReady(); return doGenerate(); };
-        return invocation ? runModelInvocation(invocation, call) : call();
+        return scoped(async () => { await resolveReady(); return doGenerate(); });
       },
       wrapStream: async ({ doStream }) => {
         assertNotCompacting(invocation?.session.id);
-        const call = async () => { await resolveReady(); return doStream(); };
-        return invocation ? runModelInvocation(invocation, call) : call();
+        return scoped(async () => { await resolveReady(); return doStream(); });
       },
     },
   });
