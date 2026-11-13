@@ -189,6 +189,18 @@ async function stateWhenNothingRuns(page, kind) {
 // The door section's own Apply: the page's Status box has a button with the same name. It applies and reloads.
 const pressApply = (page) => page.locator('section[aria-label="Door setup"]').getByRole("button", { name: APPLY_BUTTON }).click({ timeout: 60_000 });
 
+// The page's own signal that its Apply call has returned: while the call runs, the door section shows the
+// progress line "Applying (restarts the agent, about a minute)…"; when the call returns the page reloads itself,
+// and when it fails the line goes and an alert shows. The door's own buttons come back earlier (as soon as the
+// keeper clears "pending", before it starts the agent), so they are not that signal. Nothing here reloads the
+// page or presses anything while the Apply it started is still running.
+async function pressApplyAndWaitForIt(page) {
+  const applying = page.locator('section[aria-label="Door setup"] .lares-door-progress', { hasText: "Applying" }).first();
+  await pressApply(page);
+  await applying.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
+  await applying.waitFor({ state: "detached", timeout: DOOR_MS });
+}
+
 // A retry of this step (after the runner's network changed under the page) must never start a second
 // Connect or Apply while the first one is still running: it reads the door's state first and waits.
 async function connectDoor(page, kind) {
@@ -198,7 +210,7 @@ async function connectDoor(page, kind) {
   if (state.startsWith("Pending:") && await group.getByRole("button", { name: "Disable door" }).count()) {
     // An earlier attempt saved the door switched on but its Apply never reached the keeper (the probe
     // waits for the keeper to finish every action before a retry). Apply it once, as the owner would.
-    await pressApply(page);
+    await pressApplyAndWaitForIt(page);
     await waitForDoor(page, show(), "the button to show the one-time step after Apply");
     ({ group } = await stateWhenNothingRuns(page, kind));
     await show().click();

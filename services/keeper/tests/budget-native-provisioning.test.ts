@@ -612,6 +612,34 @@ it('leaves the main key working when an extra key is refused or its activation i
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },60_000);
 
+it('still records an activation that fails after its claim as uncertain, and stops the key store, while another caller waits in line',async()=>{
+  const fixture=await startActiveOwnerFixture(),writer=id();
+  await expect(extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'))).resolves.toMatchObject({state:'bound-closed'});
+  // The unblock is claimed and sent, then its readback disagrees: the activation fails after its claim.
+  fixture.fake.setRejectUnblockedReadback(true);
+  let release!:()=>void;const holding=new Promise<void>(resolve=>release=resolve);let waiter:Promise<void>|undefined;
+  const real=fixture.fake.native as unknown as Record<string,(...args:any[])=>Promise<unknown>>;
+  const native={...real,unblockKey:async(fingerprint:string)=>{
+    const answer=await real.unblockKey!(fingerprint);
+    // A page's status read arrives while the activation holds the gate, and waits its turn behind it.
+    waiter=fixture.custody.withGate(async()=>{await holding;},{waitMs:10_000});
+    return answer;
+  }};
+  const activating=new BudgetNativeActivator(fixture.financial,fixture.journal,fixture.custody,native as unknown as BudgetNativeCredentialClient,{designatedOwnerId:fixture.owner})
+    .activate({bindingId:writer,credentialGeneration:'0'});
+  let settled=false;activating.then(()=>{settled=true;},()=>{settled=true;});
+  await vi.waitFor(()=>expect(waiter).toBeDefined(),{timeout:20_000,interval:20});
+  // The gate passed to the waiter when the activation's work failed; the uncertain record waits behind it.
+  await new Promise(resolve=>setTimeout(resolve,200));
+  release();await waiter;
+  await expect(activating).rejects.toThrow('Native budget activation refused');expect(settled).toBe(true);
+  const directory=join(fixture.root,'native');
+  const snapshot=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')) as {operations:NativeOperation[]};
+  expect(snapshot.operations.find(row=>row.kind==='operation'&&row.bindingId===writer)?.phase).toBe('uncertain');
+  expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('uncertain');
+  await expect(fixture.custody.withGate(async()=>undefined)).rejects.toThrow('reconciliation');
+},120_000);
+
 it('lets the runtime authority recognise the extra key of an owner whose main key is active, and nobody else',async()=>{
   const fixture=await startActiveOwnerFixture(),writer=id();
   await extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'));
@@ -1065,7 +1093,8 @@ it('keeps native runtime eligibility read-only across source, custody, journal, 
       expect(journal.aborted(operationId,'not-started')).toBeDefined();
       busyResult=await chiefReader.authority.current(chiefReader.identity);
     });
-    expect(busyResult).toMatchObject({state:'held'});
+    // Still held (never active), and told apart from a refusal: the ledger was only mid-write.
+    expect(busyResult).toEqual({state:'held',reason:'Native budget activation required',detail:'ledger-busy'});
     await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toEqual({state:'active'});
 
     const accountLookup=await pool.connect();let memberAccount:string;
@@ -1225,6 +1254,50 @@ it('keeps a started agent on its key through an ordinary edit, and brings a door
   await fixture.operator.query("UPDATE agent_definitions SET duties='changed without a save' WHERE name=$1",[fixture.ownerAgent]);
   await expect(read()).resolves.toMatchObject({state:'held'});
 },60_000);
+
+it('lets budget checks that meet wait their turn on the real key store and ledger, instead of reading as no permission',async()=>{
+  const fixture=await startActiveOwnerFixture();
+  const authority=createNativeRuntimeAuthority({custody:fixture.custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:policy,
+    designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
+  const identity={agent:fixture.ownerAgent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'};
+  const wait={waitMs:10_000},active={state:'active'},held={state:'held',reason:'Native budget activation required'};
+  const later=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+  // A page's status read and an Apply's start check at the same moment: each waits its turn and each passes.
+  await expect(Promise.all([authority.current(identity,wait),authority.current(identity,wait),authority.current(identity,wait)])).resolves.toEqual([active,active,active]);
+
+  // A model call holds the gate until its response headers, as the transport does.
+  let headers!:()=>void;const awaitingHeaders=new Promise<void>(resolve=>headers=resolve);
+  const dispatch=fixture.custody.withGate(async gate=>{gate.inventory();await awaitingHeaders;});
+  // A check that asks for no wait is turned away as before, and reads as a plain hold.
+  await expect(authority.current(identity)).resolves.toEqual(held);
+  // An Apply's check waits, and passes once the headers are in.
+  let settled=false;const apply=authority.current(identity,wait).finally(()=>{settled=true;});
+  await later(100);expect(settled).toBe(false);
+  headers();await dispatch;
+  await expect(apply).resolves.toEqual(active);
+
+  // A hold that outlasts the wait is busy: never active, never a plain hold, and the store stays open for the next check.
+  let release!:()=>void;const longHold=new Promise<void>(resolve=>release=resolve);
+  const holder=fixture.custody.withGate(async()=>{await longHold;});
+  await expect(authority.current(identity,{waitMs:200})).resolves.toEqual({...held,detail:'key-store-busy'});
+  release();await holder;
+  await expect(authority.current(identity,wait)).resolves.toEqual(active);
+
+  // The other way round: a model call that may wait gets the gate after a check that holds it.
+  const check=authority.current(identity);
+  await expect(fixture.custody.withGate(async gate=>gate.inventory().operations.length,{waitMs:10_000})).resolves.toBeGreaterThan(0);
+  await expect(check).resolves.toEqual(active);
+
+  // The spending ledger mid-write: a check whose wait runs out says the ledger was busy; one that may wait passes after it.
+  let finish!:()=>void;const writing=new Promise<void>(resolve=>finish=resolve);
+  const ledger=fixture.journal.operation('member-remove',async operationId=>{expect(fixture.journal.aborted(operationId,'not-started')).toBeDefined();await writing;});
+  await expect(authority.current(identity,{waitMs:200})).resolves.toEqual({...held,detail:'ledger-busy'});
+  settled=false;const afterLedger=authority.current(identity,wait).finally(()=>{settled=true;});
+  await later(150);expect(settled).toBe(false);
+  finish();await ledger;
+  await expect(afterLedger).resolves.toEqual(active);
+  expect(JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state).toBe('open');
+},120_000);
 
 it('lets a started agent change its model name only to one the owner holds a key for',async()=>{
   const fixture=await startActiveOwnerFixture(),writer=id();

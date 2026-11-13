@@ -15,6 +15,8 @@ import {readModelPurposeRuntimeControlKey} from './model-purpose-broker.js';
 export const DEFAULT_MODEL_PURPOSE_GATEWAY_SOCKET='/run/lares/model-purpose/gateway.sock';
 export const MODEL_PURPOSE_TRANSPORT_BODY_MAX=MODEL_PURPOSE_DISPATCH_BODY_MAX;
 const CLIENTS_MAX=8,QUEUE_MAX=4,NONCES_MAX=4096,HEADER_DEADLINE_MS=20_000,IDLE_TIMEOUT_MS=5_000,RESPONSE_BYTES_MAX=64*1024*1024;
+/** A dispatch may wait for a busy key store only while this much of its deadline is still left for the gateway. */
+const LEAVE_FOR_UPSTREAM_MS=5_000;
 const deny=()=>new Error('Model purpose dispatch is unavailable');
 const deniedBody=Buffer.from('{"error":"Model purpose dispatch is unavailable"}');
 const ROUTES=new Set<string>([GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_OPENAI_MODEL_PATH,GATEWAY_EMBEDDINGS_MODEL_PATH]);
@@ -238,6 +240,8 @@ export async function serveModelPurposeTransport(options:ModelPurposeTransportOp
     res.once('close',disconnect);
     let upstream:Response|undefined;
     try{
+      // A busy key store is waited for while enough of the deadline is left; a gate that does not come in time is
+      // refused with the same 503. matchNative reads the store once the gate comes, so a key revoked meanwhile is refused.
       upstream=await queue.run(fields.deadline,()=>options.custody.withGate(async gate=>{
         if(controller.signal.aborted||now()>=fields.deadline)return undefined;
         const native=matchNative(gate,ticket,fields.path as GatewayModelPath,raw.length);if(!native)return undefined;
@@ -250,7 +254,7 @@ export async function serveModelPurposeTransport(options:ModelPurposeTransportOp
           if(controller.signal.aborted||now()>=fields.deadline){await response.body?.cancel();return undefined;}
           return response;
         }catch{return undefined;}
-      }));
+      },{waitMs:Math.max(0,fields.deadline-now()-LEAVE_FOR_UPSTREAM_MS)}));
     }finally{clearTimeout(headerDeadline);res.off('close',disconnect);}
     if(!upstream){refuse(req,res,503);return;}
     recordStage(req,'upstream');

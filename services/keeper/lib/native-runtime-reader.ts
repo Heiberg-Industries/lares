@@ -33,11 +33,17 @@ export function createKeeperNativeRuntimeReader(sources:NativeRuntimeReaderSourc
     if(why)logged.set(agent,why);else logged.delete(agent);
     console.error(why?`keeper: ${agent} is held: ${why}`:`keeper: ${agent} is no longer held`);
   };
-  return Object.freeze({current:async(identity:NativeRuntimeIdentity,check:NativeRuntimeCheck='runtime'):Promise<NativeRuntimeState>=>{
+  return Object.freeze({current:async(identity:NativeRuntimeIdentity,check:NativeRuntimeCheck='runtime',wait:{waitMs?:number}={}):Promise<NativeRuntimeState>=>{
     const hold=(why:string,state:NativeRuntimeState=held())=>{
       if(check==='model-change')console.error(`keeper: ${identity.agent}: a model change was refused: ${why}`);
       else note(identity.agent,why);
       return state;
+    };
+    // A busy store or ledger decided nothing: it is not a hold, so it never says "is held", never changes the
+    // agent's held or released record, and so never leads to an "is no longer held" line either.
+    const busy=(why:string):NativeRuntimeState=>{
+      console.error(`keeper: ${identity.agent}: the budget check could not finish: ${why}`);
+      return {state:'held',reason:'Native budget activation required',detail:'key-store-busy'};
     };
     try{
       const custody=sources.custody(),journal=sources.journal(),pool=sources.pool(),ownerId=sources.designatedOwnerId();
@@ -53,9 +59,12 @@ export function createKeeperNativeRuntimeReader(sources:NativeRuntimeReaderSourc
       }catch{return hold('the reviewed budget policy could not be read for this model');}
       const reader=createNativeRuntimeAuthority({custody,journal,pool,designatedOwnerId:ownerId,gatewayOrigin,
         endpointHash:document.endpointHash,reviewedPolicy});
-      const state=await reader.current(identity);
+      const state=await reader.current(identity,wait);
+      if(state.state==='held'&&state.detail==='key-store-busy')return busy('the spending-key store was busy');
+      if(state.state==='held'&&state.detail==='ledger-busy')return busy('the spending ledger was busy');
       if(state.state!=='active')return state.detail==='no-matching-key'
-        ?hold(check==='model-change'?'no spending key matches this agent, its incarnation and the new model name':'no spending key matches this agent, its incarnation and its model name',state)
+        ?hold(check==='model-change'?'no spending key matches this agent, its incarnation and the new model name':'no spending key matches this agent, its incarnation and its model name',
+          {state:'held',reason:'Native budget activation required',detail:'no-matching-key'})
         :hold('the budget authority check refused');
       if(check==='runtime')note(identity.agent,null);
       return state;

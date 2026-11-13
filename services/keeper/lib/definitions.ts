@@ -20,6 +20,7 @@ import { ceilingFor, HEADROOM_BYTES, STACK_ESTIMATE_BYTES, PER_AGENT_ESTIMATE_BY
 import { normaliseNotionId, readSetting, writeSetting } from './settings.js';
 import { CONSOLE_ENVIRONMENT, CONSOLE_ENVIRONMENT_BY_KEY } from './agent-environment.js';
 import { withDefinitionNamespace } from './definition-namespace.js';
+import { NATIVE_KEY_STORE_BUSY } from './lifecycle.js';
 import { isRetiredRole } from './runtime-bindings.js';
 import { ProviderKeyFiles } from './provider-keys.js';
 const NAME_RE = /^[a-z][a-z0-9-]{1,30}$/;
@@ -365,6 +366,11 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             (result as { running?: unknown; reason?: unknown }).running === false &&
             (result as { reason?: unknown }).reason === 'Native budget activation required';
     }
+    function nativeBusy(result: unknown): boolean {
+        return !!result && typeof result === 'object' &&
+            (result as { running?: unknown }).running === false &&
+            (result as { reason?: unknown }).reason === NATIVE_KEY_STORE_BUSY;
+    }
     async function applyWithRecovery(name: string, d: AgentDefinition, beforeRecovery?: () => Promise<void>): Promise<unknown> {
         const path = active(name);
         const markedUnknown = hasUnknownApplyBaseline(path), knownApplied = appliedDefinitionGeneration(path);
@@ -385,6 +391,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         const firstActivation = hasFirstActivation(path) && typeof held?.running === 'boolean';
         if (!rollbackTarget && !firstActivation)
             refused('The previous complete applied definition is unknown; runtime was not stopped. Restore an owner-verified baseline before applying.');
+        let keyStoreBusy = false;
         try {
             const result = await o.compose.reconcile!(name, d);
             if (runtimeStarted(result)) {
@@ -393,8 +400,11 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 return result;
             }
             if (!rollbackTarget && firstActivation && nativeHeld(result)) return result;
+            // A busy key store is not a hold: the change stays applied and waiting (the lifecycle marked it pending),
+            // and nothing is rolled back. The rollback point is kept for the next Apply.
+            if (nativeBusy(result)) keyStoreBusy = true;
             // Only ever a cause: this text goes to the keeper's log, never to the caller.
-            throw new Error(nativeHeld(result) ? 'Runtime held: native budget activation required' : 'Runtime did not start healthy');
+            else throw new Error(nativeHeld(result) ? 'Runtime held: native budget activation required' : 'Runtime did not start healthy');
         } catch (applyError) {
             await beforeRecovery?.();
             if (!rollbackTarget) {
@@ -418,6 +428,9 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             }
             throw new KeeperFailedError('Apply failed. The agent is back on the last definition that had taken effect; the changes that were waiting for Apply were undone. Save them again before retrying.', 'previous-running', { cause: applyError });
         }
+        // The console reports any returned result as applied, so the waiting state is said as a refusal.
+        if (keyStoreBusy) refused(NATIVE_KEY_STORE_BUSY);
+        throw new Error('Apply ended without an outcome');
     }
     registerAction({ name: 'outside.connections.apply', input: outsideConnectionsApplyInput, secretFields: ['sessionToken'],
         run: async (input) => {

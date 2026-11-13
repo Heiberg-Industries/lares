@@ -307,16 +307,23 @@ def keeper_held_lines() -> list[str]:
     if not ids:
         return ["the keeper is not running"]
     logs = run("docker", "logs", ids[0], check=False, show=False)
-    return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line]
+    return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line
+            or "the spending-key store was busy" in line or "the spending ledger was busy" in line]
 
 
-def keeper_log_lines(phrase: str) -> list[str]:
-    """Lines of the keeper's log that contain a fixed phrase."""
+def keeper_log_lines(*phrases: str) -> list[str]:
+    """Lines of the keeper's log that contain any of these fixed phrases, each line once, in log order."""
     ids = output("docker", "ps", "-q", "--filter", "label=com.docker.compose.service=lares-keeper").split()
     if not ids:
         return ["the keeper is not running"]
     logs = run("docker", "logs", ids[0], check=False, show=False)
-    return [line.strip()[:300] for line in (logs.stdout + logs.stderr).splitlines() if phrase in line]
+    return [line.strip()[:300] for line in (logs.stdout + logs.stderr).splitlines() if any(phrase in line for phrase in phrases)]
+
+
+# A failed Apply as the keeper logs it: the caller's sentence ("Apply failed"), the action's own failure line
+# ("keeper: definition.reconcile failed (<state>) for agent ...; cause: ..."), and a budget check that found the
+# spending-key store or the spending ledger busy.
+APPLY_FAILURE_PHRASES = ("Apply failed", "definition.reconcile failed", "the spending-key store was busy", "the spending ledger was busy")
 
 
 def agent_started_at() -> str | None:
@@ -785,7 +792,7 @@ def check_door_enable_applied(kind: str, record: dict, stops_before: int, apply_
         "SELECT json_build_object('pending', r.pending, 'doorOn', EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(r.applied_definition->'doors', '[]'::jsonb)) d "
         f"WHERE d->>'kind' = '{kind}' AND (d->>'enabled')::boolean)) FROM agent_resources r WHERE r.name = '{AGENT}'", release) or "null") or {}
     stops = keeper_log_lines("was stopped after a save")[stops_before:]
-    apply_failures = keeper_log_lines("Apply failed")[apply_failures_before:]
+    apply_failures = keeper_log_lines(*APPLY_FAILURE_PHRASES)[apply_failures_before:]
     audits = [line.split("|") for line in read_only_query(
         f"SELECT action, outcome FROM keeper_audit WHERE id > {int(audit_mark)} AND input->>'name' = '{AGENT}' "
         "AND action IN ('definition.save', 'definition.reconcile') ORDER BY id", release).splitlines() if line]
@@ -803,7 +810,7 @@ def check_door_enable_applied(kind: str, record: dict, stops_before: int, apply_
     if [line for line in stops if DESIGNED_STOP not in line]:
         problems.append(f"the keeper stopped the agent after a save for another reason than the door change: {[line for line in stops if DESIGNED_STOP not in line][0]}")
     if apply_failures:
-        problems.append(f"the keeper logged a failed Apply: {apply_failures[0]}")
+        problems.append(f"the keeper logged a failed Apply or a busy budget check: {apply_failures[0]}")
     if not any(action == "definition.save" and outcome == "ok" for action, outcome in audits) or \
             not any(action == "definition.reconcile" and outcome == "ok" for action, outcome in audits):
         problems.append(f"the keeper's audit does not show the save and the Apply both done: {audits}")
@@ -845,7 +852,7 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
     # The owner connects the door on the started agent, and sends the one-time step from the platform.
     calls_at_connect = len(fake_calls(fixture))
     stops_before = len(keeper_log_lines("was stopped after a save"))
-    apply_failures_before = len(keeper_log_lines("Apply failed"))
+    apply_failures_before = len(keeper_log_lines(*APPLY_FAILURE_PHRASES))
     audit_mark = keeper_audit_mark(release)
     browser(f"connect-{kind}", settings_file, tls, attempts=DOOR_STEP_ATTEMPTS, before_retry=lambda: wait_for_keeper_idle(release, audit_mark))
     check_door_enable_applied(kind, record, stops_before, apply_failures_before, audit_mark, release)
