@@ -19,7 +19,7 @@ describe('builder read model', () => {
   it('shows the required timing copy', () => {
     expect(takesEffect('autonomy')).toBe('Takes effect at its next action.');
     expect(takesEffect('schedules')).toBe('Takes effect the next time it runs.');
-    expect(takesEffect('model')).toBe('Where the agent runs with spending set up, press Apply after saving. A Slack or Telegram conversation that is already running then stops answering until a new conversation starts. On a direct-message door a conversation lasts the day, so that usually means tomorrow — or start a fresh one now. Without spending set up, it takes effect at the next conversation and a running one carries on as before.');
+    expect(takesEffect('model')).toBe('Where the agent runs with spending set up, saving a new model stops the agent until you press Apply connection changes. After that, a Slack or Telegram conversation that was already running answers every message with "I could not get permission to answer this message here" until a new conversation starts. In Slack, a new message (not a reply in the old thread) starts one. In Telegram a conversation lasts the day, so that usually means tomorrow — or end it now under Start a fresh conversation now. Without spending set up, the new model takes effect at the next conversation, and a running Slack or Telegram conversation keeps the old one.');
     for (const field of ['duties','voice','grants','skills','language']) expect(takesEffect(field)).toBe('Takes effect at its next conversation. On a direct-message door a conversation lasts the day, so that usually means tomorrow — or start a fresh one now.');
   });
   it('does not flag a fingerprint matching successful keeper evidence', async () => {

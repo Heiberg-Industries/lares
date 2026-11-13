@@ -77,11 +77,10 @@ eve has no notion of who pays (read in eve `1.0.0-rc.10`).
 - An agent shared with a second member cannot run schedule-started conversations until member
   jobs exist (Keeper refuses them).
 - Known limit: after an owner changes an agent's model and presses Apply, a Slack or Telegram
-  conversation that was already running stops being answered, because that conversation keeps the
+  conversation that was already running is refused on every later message, because that conversation keeps the
   model it started with and Keeper only admits a turn on the agent's current model. A new
   conversation works. The person sees the sentence for a missing model permission, which does not
-  say why. This is a limit, not the intended end state; a change so that a running conversation
-  moves to the new model is planned for a later release. The console says so beside the model
+  say why. This is a limit, not the intended end state; a later release is planned to change it. The console says so beside the model
   field.
 - Left for later: several claimed people per door (a members stage, which needs a database
   change), and Keeper checking the platform event itself instead of trusting the agent's check.
