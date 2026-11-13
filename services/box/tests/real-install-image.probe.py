@@ -158,6 +158,24 @@ def output(*command: str, timeout: int = 120) -> str:
     return run(*command, timeout=timeout, show=False).stdout.strip()
 
 
+def apt_get(*arguments: str) -> None:
+    """apt-get on the runner: quiet when it works, never silent when it does not.
+
+    The runner's package mirrors fail now and then. apt retries each download itself. Whatever apt
+    wrote to stderr is shown even when it exits 0, because a mirror warning during `update` is the
+    usual reason an `install` then cannot find a package.
+    """
+    result = run("apt-get", "-o", "Acquire::Retries=3", *arguments, timeout=300, check=False, show=False)
+    if result.returncode != 0 or result.stderr.strip():
+        print(f"+ apt-get {' '.join(arguments)} (exit {result.returncode})", flush=True)
+        for text in (result.stdout, result.stderr):
+            if text.strip():
+                print(text.rstrip()[-3000:], flush=True)
+    if result.returncode != 0:
+        last = (result.stderr.strip() or result.stdout.strip() or "no output").splitlines()[-1][:300]
+        raise RuntimeError(f"apt-get {' '.join(arguments)} exited {result.returncode}: {last}")
+
+
 # --- the throwaway outside world ---------------------------------------------------------------
 
 def make_authority(work: pathlib.Path) -> dict[str, pathlib.Path]:
@@ -1838,8 +1856,8 @@ def main(argv: list[str]) -> int:
             door_turn(kind, work, fixture, settings_file, tls, door_values, door_codes, release, deferred)
 
         stage("sudo lares backups")
-        run("apt-get", "update", "-qq", timeout=300, show=False)
-        run("apt-get", "install", "-y", "-qq", "restic", "age", timeout=300, show=False)
+        apt_get("update", "-qq")
+        apt_get("install", "-y", "-qq", "restic", "age")
         age_key = run("age-keygen", show=False).stdout
         recipient = re.search(r"public key: (age1\S+)", age_key)
         # The owner keeps this key off the server; here it stays in the work folder for the restore stage.
