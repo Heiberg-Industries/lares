@@ -40,7 +40,7 @@ export function modelAliases(prefix: string, configuredAlias?: string): { alias:
   if (selected.length !== 1) throw new Error('The configured gateway model alias does not match models.alias_prefix.');
   return selected;
 }
-const CONVERSATION = 'Takes effect at its next conversation. On a direct-message door a conversation lasts the day, so that usually means tomorrow — or start a fresh one now.';
+const CONVERSATION = 'Takes effect at its next conversation. In Slack, a new message (not a reply in the old thread) starts one. In Telegram a conversation lasts the day, so that usually means tomorrow — or end it now under Start a fresh conversation now.';
 const MODEL = 'Where the agent runs with spending set up, saving a new model stops the agent until you press Apply connection changes. After that, a Slack or Telegram conversation that was already running answers every message with "I could not get permission to answer this message here" until a new conversation starts. In Slack, a new message (not a reply in the old thread) starts one. In Telegram a conversation lasts the day, so that usually means tomorrow — or end it now under Start a fresh conversation now. Without spending set up, the new model takes effect at the next conversation, and a running Slack or Telegram conversation keeps the old one.';
 export function takesEffect(field: string): string {
   if(field === 'model') return MODEL;
