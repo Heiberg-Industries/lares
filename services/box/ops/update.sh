@@ -26,8 +26,10 @@
 # template. The agent framework's package owns that schema, and a release that moves to a newer
 # package needs the package's own schema step run on the template and on every existing store.
 # Between steps 2 and 3 this script looks (changing nothing) at every store: one that is exactly
-# as the previous release left it is upgraded; one that is exactly at this release is left
-# alone; anything else is refused before a thing is changed. When at least one needs upgrading:
+# as the previous release left it is upgraded; one that is exactly at this release keeps its
+# tables (when none needs upgrading, each one's permissions are checked after step 7 and repaired,
+# with everything running, where they are not this release's); anything else is refused before a
+# thing is changed. When at least one needs upgrading:
 #
 #   a. the keeper, then every agent, is stopped                  (before step 4's backup, so the
 #      backup is exactly the state the upgrade starts from)
@@ -120,6 +122,7 @@ WORKFLOW_STOPPED=0   # 1: this run stopped the keeper and the agents and has not
 WORKFLOW_MOVED=0     # 1: at least one store may be on the new format
 WORKFLOW_SAID=0      # 1: a failure path has already told the operator what state this is in
 WORKFLOW_REASON=""
+WORKFLOW_REPAIRED=""  # the stores whose permissions this run already brought up to this release
 WORKFLOW_OLD=0
 ROLE_IMAGE=""
 if [ "${PGHOST+x}" = x ]; then UPDATE_PGHOST="$PGHOST"; else UPDATE_PGHOST=127.0.0.1; fi
@@ -661,21 +664,64 @@ workflow_verify_stores() {
   local kind database state label
   while IFS="$TAB" read -r kind database state label <&3; do
     [ -n "$kind" ] || continue
-    if [ "$kind" = template ]; then
-      if ! workflow_engine --ro "$OPERATOR_PASSWORD_FILE" --ro "$WORKFLOW_PASSWORD_FILE" bin/database-setup.ts --verify-workflow-template \
-          --operator-password-file "$OPERATOR_PASSWORD_FILE" --workflow-password-file "$WORKFLOW_PASSWORD_FILE" \
-          > /dev/null 2> "$WORK/workflow-verify.err"; then
-        WORKFLOW_REASON="$label: it did not pass its final check ($(workflow_reason_from "$WORK/workflow-verify.err"))"
-        return 1
-      fi
-    elif ! workflow_engine --ro "$WORKFLOW_PASSWORD_FILE" bin/workflow-template.ts verify-database \
-        --host "$UPDATE_PGHOST" --port "$UPDATE_PGPORT" --database "$database" \
-        --runtime-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$WORK/workflow-verify.err"; then
+    if ! workflow_check_one "$kind" "$database" "$WORK/workflow-verify.err"; then
       WORKFLOW_REASON="$label: it did not pass its final check ($(workflow_reason_from "$WORK/workflow-verify.err"))"
       return 1
     fi
   done 3< "$WORK/workflow-states.tsv"
   workflow_state set phase migrated || { WORKFLOW_REASON="I could not write down that every store passed its final check"; return 1; }
+  return 0
+}
+
+# One store's check, as the login the agents use; for the template also its own rules. Changes nothing.
+workflow_check_one() { # KIND DATABASE ERRFILE
+  if [ "$1" = template ]; then
+    workflow_engine --ro "$OPERATOR_PASSWORD_FILE" --ro "$WORKFLOW_PASSWORD_FILE" bin/database-setup.ts --verify-workflow-template \
+      --operator-password-file "$OPERATOR_PASSWORD_FILE" --workflow-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$3"
+  else
+    workflow_engine --ro "$WORKFLOW_PASSWORD_FILE" bin/workflow-template.ts verify-database \
+      --host "$UPDATE_PGHOST" --port "$UPDATE_PGPORT" --database "$2" \
+      --runtime-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$3"
+  fi
+}
+
+# Every update in which no store needs upgrading: the permissions half alone. A release can change
+# the list of permissions the agents' login needs without changing a store's tables (the framework
+# starts to call one more database function), and the new keeper will not start on a store whose
+# list is incomplete. So every store is checked; only one that fails gets this release's list and
+# is checked again. The keeper and the agents keep running: the list is applied in one transaction,
+# so a running agent sees the old list or the new one, never half of each. No note is written: no
+# store's tables change. The apply never takes away a TABLE right, so a release that drops a table
+# from the list keeps failing its check here and the update is refused, loudly, by design. It does
+# take away every function and type right that is not on this release's list (it revokes them all,
+# then grants the list back). So repairing while the previous release still runs is only safe when
+# this release's list adds to the previous one; a release that takes a function away must not rely
+# on this step, and its release note must say so. And the previous release's keeper checks its own
+# list exactly, so it refuses a repaired store the next time it starts: hence the warning on failure.
+#   $1  check (a dry run: nothing is applied) or repair
+# Returns 1 with WORKFLOW_REASON naming the store.
+workflow_refresh_permissions() {
+  local kind database state label found=0
+  echo "update: checking the permissions of every agent store against this release's list."
+  while IFS="$TAB" read -r kind database state label <&3; do
+    [ -n "$kind" ] || continue
+    workflow_check_one "$kind" "$database" "$WORK/workflow-verify.err" && continue
+    found=1
+    if [ "$1" = check ]; then
+      echo "update: $label did not pass its permissions check ($(workflow_reason_from "$WORK/workflow-verify.err")). The update would apply this release's list to it, with your agents running, and check it again."
+      continue
+    fi
+    if ! workflow_apply_one "$kind" "$database" "$WORK/workflow-apply.err"; then
+      WORKFLOW_REASON="$label: its permissions could not be brought up to this release's list ($(workflow_reason_from "$WORK/workflow-apply.err"))"
+      return 1
+    elif ! workflow_check_one "$kind" "$database" "$WORK/workflow-verify.err"; then
+      WORKFLOW_REASON="$label: it still did not pass its check after this release's permissions were applied ($(workflow_reason_from "$WORK/workflow-verify.err"))"
+      return 1
+    fi
+    WORKFLOW_REPAIRED="$WORKFLOW_REPAIRED${WORKFLOW_REPAIRED:+; }$label"
+    echo "update: $label did not have exactly this release's permissions. They were applied, and it passes its check now."
+  done 3< "$WORK/workflow-states.tsv"
+  [ "$found" = 1 ] || echo "update: every agent store has this release's permissions."
   return 0
 }
 
@@ -985,6 +1031,8 @@ fi
 
 # --- 5. a dry run stops here, having changed nothing ---------------------------------------
 if [ "$DRY_RUN" -eq 1 ]; then
+  # When the stores need upgrading, every one gets this release's permissions anyway (9b).
+  [ "$WORKFLOW_NEEDED" = 1 ] || workflow_refresh_permissions check
   echo "update: this was a dry run. Nothing has been changed."
   exit 0
 fi
@@ -1141,6 +1189,25 @@ if [ "$WORKFLOW_NEEDED" = 1 ]; then
     exit "$EX_FAILED"
   fi
   echo "update: every agent store is upgraded and verified."
+# --- 9c. no store needs upgrading: check every store's permissions, repair only what fails ---
+# With the keeper and the agents running (workflow_refresh_permissions). A failure here switches
+# nothing and stops nothing.
+elif ! workflow_refresh_permissions repair; then
+  restore_compose_files
+  close_record failed "$WORKFLOW_REASON"
+  echo "update: I stopped before starting the new images: $WORKFLOW_REASON." >&2
+  if [ "$WORKFLOW_PENDING" = migrated ]; then
+    # An earlier run of this update already upgraded the stores and left the keeper and the agents stopped.
+    workflow_say_moved
+  else
+    echo "update: nothing was switched and nothing was stopped for this: the software you were running is still running." >&2
+    if [ -n "$WORKFLOW_REPAIRED" ]; then
+      echo "update: before that, this update already gave this release's permissions to: $WORKFLOW_REPAIRED. Your server keeps running as it is now, but the keeper you are running checks for its own release's permissions exactly, so it would refuse these the next time it starts." >&2
+      echo "update: so do not restart the keeper or the server until this update has been run again and has finished." >&2
+    fi
+    echo "update: fix the cause and run the same update again." >&2
+  fi
+  exit "$EX_FAILED"
 fi
 
 # --- 10. the switch — the first moment anything changes -------------------------------------
