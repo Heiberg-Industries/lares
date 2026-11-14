@@ -40,8 +40,16 @@ import { recordSchedulePass, recordScheduleTick } from "@lares/agent-kit/schedul
 import { configuredOwnerId, listAliases } from "../../lib/identity-client.js";
 import { ownerId } from "../../lib/principals.js";
 import { alreadySentToday, type InitiationOutcome } from "../../lib/initiation.js";
-import { routeDelivery } from "../../lib/delivery.js";
-import { sendTurn } from "../../lib/delivery-send.js";
+import { routeDelivery, type Routed } from "../../lib/delivery.js";
+import { sendTurn, type TurnRuntime } from "../../lib/delivery-send.js";
+import {
+  TEST_BRIEF_LANE,
+  TEST_BRIEF_NOTHING_NEW_PROMPT,
+  TEST_BRIEF_PROMPT_MARKER,
+  type TestBriefDoor,
+  type TestBriefOutcome,
+} from "@lares/agent-kit/delivery";
+import { claimTestBrief, finishTestBrief, testBriefClaimable, type ClaimedTestBrief } from "../../lib/test-brief.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
 import { ownerTz } from "../../lib/owner-clock.js";
 import { homeTzFromEnv } from "@lares/agent-kit/owner-clock";
@@ -725,6 +733,511 @@ let running = false;
 /** — the row input-freshness.sh reads; pinned to this filename by the conformance test. */
 export const HEARTBEAT_KEY = "chief-of-staff/morning-brief";
 
+/** What one pass needs from the tick that runs it. */
+interface PassContext {
+  loaded: Awaited<ReturnType<typeof thisAgent>>["loaded"];
+  now: Date;
+  tz: string;
+  to: TurnRuntime["to"];
+  waitUntil: TurnRuntime["waitUntil"];
+  appAuth: object;
+}
+
+/**
+ * Which pass this is. `slot`: the real brief, at minute 0 of its hour, exactly as it always was.
+ * `test`: a test brief the owner asked for from the console (lib/test-brief.ts). The test pass
+ * differs from the real one only where `mode.kind` is read below: the chosen door with no web
+ * fallback; no once-a-day check; never silent; no proactivity gate and no ledger row (a reply, not
+ * an initiation, ADR-0014 rule 1); the marker prefix and its own lane; and none of the bookkeeping
+ * a real brief does afterwards (deadline candidates stamped, `brief-sent`, the schedule's pass
+ * heartbeat), so a test can never count as, or hide, the day's brief.
+ */
+type PassMode =
+  | { kind: "slot"; slot: string }
+  | { kind: "test"; door: TestBriefDoor; deadline: number; progress: { sendStarted: boolean } };
+
+/** What a test pass reports for the request row. A real pass reports nothing. */
+type TestPassResult = { outcome: TestBriefOutcome; sentAt?: string };
+
+/**
+ * One brief pass: gather, write, send. The real brief's whole body, moved here unchanged, so a test
+ * brief runs the very same gathering and prompt; see `PassMode` for where the two differ.
+ */
+async function briefPass(mode: PassMode, c: PassContext): Promise<TestPassResult | undefined> {
+  const { loaded, now, tz, to, waitUntil, appAuth } = c;
+  const slot = mode.kind === "slot" ? mode.slot : "test brief";
+  const pool = getPool();
+  const ownerToday = dateIn(now, tz);
+
+  // The hour can change MID-DAY now, and the ledger's dedupe is keyed on the
+  // SLOT (`morning-brief/<owner date>T<hour>`), not the day: a hour moved after today's
+  // brief already sent would give the new hour's tick a BRAND NEW key nobody has seen, and
+  // the gate would happily send a second brief. This guard holds "at most one per owner-day"
+  // across every hour, checked before any of the (expensive) gathering below — see
+  // `alreadySentToday`'s own doc-comment for why this is not the ledger's own dedupe key.
+  // A test brief is not today's brief: it skips this check, and never satisfies it (no ledger row).
+  if (mode.kind === "slot" && await alreadySentToday(pool, ownerId(), agentName(), "morning-brief", ownerToday)) {
+    console.log(
+      `morning-brief: already sent today (${ownerToday}) — skipping slot ${slot} ` +
+      "(the hour setting changed after today's brief went out)",
+    );
+    await recordSchedulePass(pool, HEARTBEAT_KEY);
+    return;
+  }
+
+  // Where this goes is the owner's choice (the definition's `delivery` map); without one, the
+  // Telegram chat it always went to. Null = no door can carry it.
+  // A test brief goes through the SAME routing, with the owner's chosen door as the only entry:
+  // `routeFor` then puts web chat after it, so anything but that door means it is not connected.
+  const routed = mode.kind === "slot"
+    ? routeDelivery("morning-brief", loaded)
+    : routeDelivery("morning-brief", { ...loaded, definition: { ...loaded.definition, delivery: { "morning-brief": [mode.door] } } });
+  if (mode.kind === "test" && routed?.door !== mode.door) return { outcome: "door-not-connected" };
+  if (!routed) {
+    if (!warnedNoPrincipal) {
+      warnedNoPrincipal = true;
+      console.warn("morning-brief: no door to deliver through (Telegram is not connected); skipping");
+    }
+    return;
+  }
+
+  await ensureObligationsTableOnce(pool);
+  const myAddresses = () => listAliases(pool, configuredOwnerId(), "email");
+
+  // A source that cannot be read no longer silences the brief: a fresh installation
+  // without Google would otherwise never receive one. The brief goes out with what could be
+  // read and NAMES what could not, in `unavailable`, so a missing source is never mistaken for
+  // an empty one (absent is not empty, the same rule `slackUnavailable` carries).
+  const unavailable: string[] = [];
+  let today: DayCalendar;
+  try {
+    today = await withTimeout(
+      (async () => {
+        const listEvents = (o: { timeMin: string; timeMax: string; max: number }) =>
+          listEventsEverywhere(
+            {
+              accounts: () => listEnrolledMailboxes(),
+              clientFor: (account) => googleClients().calendar(account),
+            },
+            o,
+          );
+        // — the SAME read that builds today's rows also feeds the conflict pass;
+        // `listTodayCalendar` fetches once and returns both. The rows are byte-for-byte
+        // what `listTodayMeetings` returned here before.
+        return listTodayCalendar({ listEvents, myAddresses }, now, { tz });
+      })(),
+      OBLIGATION_TIMEOUT_MS,
+      "morning-brief: today's calendar",
+    );
+  } catch (e) {
+    console.error(`morning-brief: could not read today's calendar (slot ${slot}) — the brief goes out without it`, e);
+    unavailable.push(sourceGapLine("Calendar", e));
+    today = { meetings: [], conflicts: [] };
+  }
+  const meetings: NightBeforeMeeting[] = today.meetings;
+
+  // Check today's overlapping-stay clashes against mail, best-effort. Bounded
+  // by `lib/conflict-resolution.ts`'s own caps: at most MAX_CLASHES_PER_PASS (3) clashes
+  // searched, CLASH_TIMEOUT_MS (10s) each, so at most ~30s added to this tick in the worst
+  // case — real, but a fixed ceiling, never an open-ended wait. `resolveConflicts` already
+  // documents itself as never throwing (a per-clash failure costs that clash its plain flag
+  // only, with one console.warn); the `.catch` here is belt-and-braces on top of that
+  // promise, not a load-bearing guard — either way, a search that cannot finish costs the owner
+  // the evidence for one morning, never the brief itself.
+  const resolvedConflicts = await resolveConflicts(today.conflicts, {
+    gmailFor: (account) => googleClients().gmail(account),
+  }).catch((e) => {
+    console.error(
+      "morning-brief: could not check today's clashes against mail — the brief goes out with the plain flags",
+      e,
+    );
+    return today.conflicts;
+  });
+
+  // — written by the Slack source on its way past gatherOpenObligations's
+  // best-effort catch; the only way "a whole source dropped out" survives that catch and
+  // reaches the prose below.
+  const slackScan = newSlackScanStatus();
+  // Filled once, by the pass, when a cross-channel lookup could not be
+  // read. It reaches the prompt below so a silent lookup failure never looks like a clean
+  // list; the same reasoning as 's `slackScan.failed`, one layer in.
+  let unreadableSources: string[] = [];
+  let obligations: Obligation[];
+  try {
+    obligations = await withTimeout(
+      (async () => {
+        const gmail = await googleClients().gmail();
+        // Built ONCE per tick, then reused for every candidate: the
+        // Gmail leg memoises the owner's address list, and both are shared verbatim with the
+        // evening pass (lib/obligation-lookups.ts) so the two briefs cannot drift.
+        const gmailSentAfter = makeGmailSentAfter(gmail, myAddresses);
+        const calendarEndedWith = makeCalendarEndedWith({
+          accounts: () => listEnrolledMailboxes(),
+          clientFor: (account) => googleClients().calendar(account),
+        });
+        return gatherOpenObligations(
+          {
+            myAddresses,
+            gmail: { searchThreadIds: gmail.searchThreadIds, readThread: gmail.readThread },
+            dismissed: () => dismissedThreads(pool),
+            upsertSeen: (o, seenAt) => upsertSeen(pool, o, seenAt, configuredOwnerId()),
+            // ─── Resolve elsewhere, read the last message, say why ──
+            // Every one of these is optional in `GatherObligationsDeps`, and every failure
+            // path inside the stage keeps the obligation. Nothing wired here can make the
+            // radar quieter than it would have been without it.
+            resolved: () => resolvedThreads(pool),
+            resolve: (o) =>
+              resolveElsewhere(
+                o,
+                {
+                  gmailSentAfter,
+                  calendarEndedWith,
+                  // In memory already — the scan above harvested it. `undefined` (a
+                  // Gmail-sourced obligation, or a Slack pass that failed) reads as "no
+                  // evidence", never as a resolution.
+                  slackOwnMessageAfter: (uid, since) => {
+                    const at = uid ? slackScan.ownLastMessageByUser.get(uid) : undefined;
+                    return at && at.getTime() > since.getTime() ? at : null;
+                  },
+                },
+                now,
+              ),
+            markResolved: (o, r) => markResolved(pool, o.threadId, { via: r.via, evidence: r.evidence, at: r.at }),
+            // Two deps, not one, because `INTENT_MAX_PER_PASS` bounds MODEL CALLS and a
+            // cache hit is not one. Served together, a hit spent a cap slot and the ninth-
+            // oldest obligation could never be read on any pass. `recordIntent` is UPDATE-only
+            // and lands on the row `upsertSeen` wrote earlier in the same pass.
+            cachedIntent: (o) => cachedIntent(pool, o.threadId, o.lastMessageAt),
+            classifyIntent: async (o) => {
+              // `maxRetries: 0` is what makes classifyIntent's "no retry, one bounded read"
+              // TRUE — the AI SDK defaults to 2 retries, which would have made
+              // INTENT_MAX_PER_PASS a ceiling of 24 model calls instead of 8.
+              const read = await classifyIntent(o, {
+                complete: (prompt, callOpts) => gatewayComplete(prompt, { ...callOpts, maxRetries: 0 }),
+              });
+              await recordIntent(pool, o.threadId, read, o.lastMessageAt);
+              return read;
+            },
+            onUnreadable: (sources) => { unreadableSources = sources; },
+            // The due notices the scan flagged, recorded before
+            // selection drops them. `ownerId`: this is the same key the deadline
+            // reads below use, and the two must never come apart — a candidate written under
+            // one key and read under the other is a sighting nobody is ever offered.
+            // (`upsertSeen` above belongs to the OBLIGATIONS store, which has its own key;
+            // this line is not it.) The store's own `ON CONFLICT DO NOTHING` makes a
+            // re-sighting a no-op, so this runs on every tick without ever re-offering a mail
+            // the owner already answered.
+            recordCandidate: (c) => upsertCandidate(pool, { ...c, owner: ownerId() }),
+            // Slack obligations reach the morning brief ONLY — this is the
+            // one and only call site across the three obligation schedules that supplies
+            // `slack`. gatherOpenObligations treats a Slack failure as best-effort (caught,
+            // logged, Gmail-only continues), so this can never take out the brief — and
+            // makes that degradation visible in the brief instead of silent.
+            slack: buildSlackObligationSource(pool, now, slackScan),
+          },
+          now,
+        );
+      })(),
+      OBLIGATION_TIMEOUT_MS,
+      "morning-brief: obligations",
+    );
+  } catch (e) {
+    console.error(`morning-brief: could not gather obligations (slot ${slot}) — the brief goes out without them`, e);
+    unavailable.push(sourceGapLine("Email", e));
+    obligations = [];
+  }
+
+  let deliveredLastNight: ReadonlySet<string>;
+  try {
+    // TODAY's date on the owner clock is exactly the day last night's 20:00 pass stamped: it
+    // computed "tomorrow" from ITS clock, which is "today" from this one — see
+    // lib/brief-content.ts's nightBeforeCoveredDay for why the two never drift (both
+    // on the owner clock now; one of them left at home would match nothing abroad).
+    deliveredLastNight = await nightBeforeDelivered(pool, ownerToday);
+  } catch (e) {
+    // Fail toward reporting: with no record of what last night covered, everything open is
+    // reported again, which can repeat a line but never hides one.
+    console.error(`morning-brief: could not read last night's delivery record (slot ${slot}) — reporting everything open`, e);
+    deliveredLastNight = new Set<string>();
+  }
+
+  const picks = readIngestedPicks(process.env["BRIEF_PICKS_DIR"], now);
+
+  // — the deadlines due today (or on a mention day) and the due-notice mails nobody
+  // has been offered yet, read under ONE budget of their OWN.
+  //
+  // DELIBERATELY OUTSIDE `OBLIGATION_TIMEOUT_MS`. That constant is already spent twice per
+  // tick (see its note), and adding a third leg to either race would make a slow deadline
+  // read able to blank the calendar or the obligations — the exact additive-budget bug
+  // was filed for. 5s is its own, and generous for two indexed reads against the
+  // local Postgres.
+  //
+  // AND IT CAN NEVER COST THE OWNER THE BRIEF. Deadlines are CONTEXT: a brief that goes out
+  // without them is a worse brief, a brief that does not go out is a missing morning. So the
+  // `.catch` logs and yields empty lists, which renders exactly the pre-prompt.
+  const { deadlines, deadlineCandidates } = await withTimeout(
+    (async () => {
+      const [rows, candidates] = await Promise.all([
+        listDeadlines(pool, ownerId(), { status: "open", dueWithinDays: 30, now, tz }),
+        unsurfacedCandidates(pool, ownerId()),
+      ]);
+      return {
+        // `mentionsToday` (the kit) is the rule for WHICH of the open rows the brief names
+        // today — a named list of mention days plus everything overdue, not a window. The
+        // 30-day read above is only the cheap pre-filter that keeps the query small; the
+        // rule is what decides.
+        deadlines: rows
+          .filter((r) => mentionsToday(
+            { id: r.id, title: r.title, source: r.source, dueDate: r.dueDate, rung: r.rung, status: r.status },
+            now,
+            tz,
+          ))
+          .map((r): DeadlineLine => ({
+            id: r.id,
+            entity: r.entity,
+            title: r.title,
+            dueDate: r.dueDate,
+            daysToDue: daysToDue(r.dueDate, now, tz),
+            consequence: r.consequence,
+            source: r.source,
+            vendor: r.vendor,
+            amount: r.amount,
+            currency: r.currency,
+          })),
+        // fix 1 — the cap is applied HERE, where the list is built, so the ids
+        // stamped below are exactly the ids rendered. The rest stay unstamped and drain on
+        // later mornings.
+        deadlineCandidates: briefCandidateLines(candidates),
+      };
+    })(),
+    5_000,
+    "morning-brief: deadlines",
+  ).catch((e) => {
+    console.error("morning-brief: could not read deadlines — the brief goes out without them", e);
+    return { deadlines: [] as DeadlineLine[], deadlineCandidates: [] as CandidateLine[] };
+  });
+
+  // — the persisted spine is read directly (plain sealed egress, no Telegram proxy).
+  // This is best-effort context: a spine outage is logged and must not cost the owner the rest of
+  // the brief. Only errors and warnings belong in this exception block; info events do not.
+  const signalClient = makeSignalsClient(() => ({
+    tokenFile: process.env["SIGNAL_READ_TOKEN_FILE"] ?? "/run/secrets/signal-read-token",
+    baseUrl: process.env["SIGNAL_SPINE_URL"],
+    fetch,
+  }));
+  const signals: SignalRow[] = await withTimeout(
+    signalClient.signalsRecent({ since: new Date(now.getTime() - 24 * 3600_000).toISOString(), limit: 100 }),
+    5_000,
+    "morning-brief: signals",
+  ).then((rows) => rows.filter((row) => row.severity === "error" || row.severity === "warn"))
+    .catch((error) => {
+      if (error instanceof SignalsNotConfiguredError) {
+        console.log("morning-brief: no signal source configured — the brief goes out without signals");
+        return [] as SignalRow[];
+      }
+      console.error("morning-brief: could not read signal spine — the brief goes out without signals", error);
+      return [] as SignalRow[];
+    });
+
+  const content = buildMorningBrief({
+    meetings,
+    obligations,
+    deliveredLastNight,
+    picks,
+    slackUnavailable: slackScan.failed,
+    unavailable,
+    conflicts: resolvedConflicts,
+    deadlines,
+    deadlineCandidates,
+    signals,
+  });
+  if (!content) {
+    // A test is never silent: the owner pressed a button and is watching the chat.
+    if (mode.kind === "test") return sendTestBrief(mode, routed, c, `${TEST_BRIEF_PROMPT_MARKER}\n\n${TEST_BRIEF_NOTHING_NEW_PROMPT}`);
+    console.log(`morning-brief: nothing new (slot ${slot}) — skipping send`);
+    await recordSchedulePass(pool, HEARTBEAT_KEY); // a quiet day IS a completed pass
+    return;
+  }
+
+  // Best-effort, and the `.catch` is the whole point: the standing facts are
+  // context, not content. A Postgres hiccup here must cost the agent the facts, never the brief.
+  // BOUNDED, because `.catch` only fires on a rejection: an unresponsive `db`
+  // container makes `pool.query` hang forever, and this brief's whole tick would hang with
+  // it. `withTimeout` is what turns that stall into the rejection this catch handles.
+  const facts = await withTimeout(
+    // CANONICAL_USER_ID, not a resolved principal — see standing-facts.ts's tool call sites;
+    // this schedule runs as the app principal, with no session user to resolve.
+    listActiveFacts(pool, configuredOwnerId()),
+    STANDING_FACTS_TIMEOUT_MS,
+    "morning-brief: standing facts",
+  ).catch((e) => {
+    console.error("morning-brief: could not read standing facts — the brief goes out without them", e);
+    return [];
+  });
+
+  // Read once per pass and handed to both `heldBackLine` and `buildMorningPrompt`
+  // below, so the one line about held-back messages and the rest of the prompt never disagree
+  // on language within the same brief. Never throws (see `readBriefLanguage`'s own contract),
+  // so a settings-table outage costs the owner nothing beyond an English brief.
+  const lang = await readBriefLanguage(pool, ownerId());
+
+  // — what the gate held back since the PREVIOUS morning slot: one owner-day back
+  // from this one. A DST boundary makes that an hour out at most, which cannot matter for a
+  // count of waiting items, and `deferredSince` also counts every hold still OPEN whatever
+  // its age — the 22:30 deferral released at 07:00 this morning is exactly the case this line
+  // exists for. Never throws (it logs and reports none), so the brief still goes out.
+  const heldBack = heldBackLine(
+    await deferredSince(pool, ownerId(), new Date(now.getTime() - 24 * 3600_000)),
+    lang,
+  );
+
+  const prompt = buildMorningPrompt(content, facts, unreadableSources, heldBack, { lang, tz, transit: isGranted(loaded.definition, "transit") });
+  // A test brief stops here: no gate, no ledger row, and none of the bookkeeping below.
+  if (mode.kind === "test") return sendTestBrief(mode, routed, c, `${TEST_BRIEF_PROMPT_MARKER}\n\n${prompt}`);
+  let initiation: InitiationOutcome;
+  try {
+    initiation = await routed.gate(
+      { cls: "scheduled", itemKey: `morning-brief/${slot}`, now, tz },
+      () => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, prompt, {
+        lane: "morning-brief", itemKey: `morning-brief/${slot}`, title: "Morning brief",
+      }),
+    );
+  } catch (err) {
+    console.error(`morning-brief: send FAILED (slot ${slot})`, err);
+    return;
+  }
+  // — a candidate is offered ONCE, and "once" means once a prompt carrying it was
+  // actually SENT. `candidatesToStamp` owns that rule and its docblock owns the argument for
+  // why this one write departs from ADR 0014's `handled`; an `alreadySeen` tick stamps
+  // nothing. Empty ids make `markCandidatesSurfaced` a no-op, so this is one guarded call
+  // rather than a branch.
+  //
+  // Best-effort, like every other bookkeeping write here: a failed stamp costs a repeated
+  // offer tomorrow, never the pass.
+  await markCandidatesSurfaced(
+    pool,
+    ownerId(),
+    candidatesToStamp(initiation, content.deadlineCandidates ?? []),
+    now,
+  ).catch((e) => {
+    console.error("morning-brief: could not stamp deadline candidates as surfaced — they will be offered again", e);
+  });
+
+  if (!initiation.sent) {
+    // Held back, or already sent for this slot — see evening-brief.ts's own note. The one
+    // per-item stamp this brief has is skipped on both of
+    // those outcomes by `candidatesToStamp`, so an offer nobody received is never marked
+    // offered. A completed pass either way.
+    await recordSchedulePass(pool, HEARTBEAT_KEY);
+    return;
+  }
+
+  console.log(
+    `morning-brief: delivered (slot ${slot}) — ${content.obligations.length} obligation(s), ` +
+    `${content.picks.length} pick(s), ${content.conflicts?.length ?? 0} clash(es), ` +
+    `${content.deadlines?.length ?? 0} deadline(s), ${content.deadlineCandidates?.length ?? 0} candidate(s)`,
+  );
+  await emitSignal("brief-sent", "Morning brief sent", undefined, {
+    kind: "event", severity: "info", key: "morning-brief",
+  });
+  await recordSchedulePass(pool, HEARTBEAT_KEY);
+}
+
+/**
+ * The whole test pass, from claim to the send, must end within this. A test is claimed no later
+ * than four minutes before the brief hour (`testBriefClaimable`), so with this budget the tick has
+ * returned well before minute 0. That matters because eve runs one tick of a schedule at a time and
+ * skips a tick that arrives while the previous one is still running: a test still in flight at
+ * minute 0 would cost the day's brief, which is never caught up.
+ */
+export const TEST_BRIEF_BUDGET_MS = 150_000;
+/** The send must start with at least this much of the budget left, or nothing is sent. */
+export const TEST_BRIEF_SEND_WAIT_MS = 20_000;
+
+let warnedTestBriefClaim = false;
+
+/**
+ * Hand the test brief to the chosen chat app. Straight to `sendTurn`, under the schedule's own
+ * identity, so it is an owner job like a real brief; no gate, so quiet hours and do-not-disturb do
+ * not hold it (the owner just asked). The pass awaits the hand-over itself, bounded by what is left
+ * of the budget, instead of registering it with the tick: so `run` returns on time whatever the
+ * chat app does. The send may still finish in the background after that; it is never retried.
+ */
+async function sendTestBrief(
+  mode: Extract<PassMode, { kind: "test" }>,
+  routed: Routed,
+  c: PassContext,
+  prompt: string,
+): Promise<TestPassResult> {
+  const left = mode.deadline - Date.now();
+  if (left < TEST_BRIEF_SEND_WAIT_MS) return { outcome: "too-slow" };
+  mode.progress.sendStarted = true;
+  const ownWait: TurnRuntime["waitUntil"] = () => {};
+  try {
+    await withTimeout(
+      sendTurn(routed, { to: c.to, waitUntil: ownWait, appAuth: c.appAuth, telegram, slack }, prompt, {
+        lane: TEST_BRIEF_LANE, title: "Test brief",
+      }),
+      left,
+      "morning-brief: test brief hand-over",
+    );
+  } catch (e) {
+    console.error(`morning-brief: test brief to ${mode.door} was not handed over`, e);
+    return { outcome: /timed out after/.test(String((e as Error)?.message)) ? "send-unknown" : "send-failed" };
+  }
+  console.log(`morning-brief: test brief handed to ${mode.door}`);
+  return { outcome: "sent", sentAt: new Date().toISOString() };
+}
+
+/** Run one claimed test request under the budget, and say what happened. Never throws. */
+async function runTestBrief(claimed: ClaimedTestBrief, c: PassContext): Promise<TestPassResult> {
+  const progress = { sendStarted: false };
+  const deadline = Date.now() + TEST_BRIEF_BUDGET_MS;
+  try {
+    const result = await withTimeout(
+      briefPass({ kind: "test", door: claimed.door, deadline, progress }, c),
+      TEST_BRIEF_BUDGET_MS,
+      "morning-brief: test brief",
+    );
+    return result ?? { outcome: "pass-failed" };
+  } catch (e) {
+    console.error("morning-brief: test brief did not finish", e);
+    if (progress.sendStarted) return { outcome: "send-unknown" };
+    return { outcome: /timed out after/.test(String((e as Error)?.message)) ? "too-slow" : "pass-failed" };
+  }
+}
+
+/**
+ * A tick outside the brief's minute: claim one test-brief request the owner asked for, if there is
+ * one and it is not too close to the real brief, and send it. Shares `running` with the real pass,
+ * never touches `lastSlot`, and writes its outcome into the request row, never anywhere a real
+ * brief is counted.
+ */
+async function testBriefTick(c: PassContext, hour: number): Promise<void> {
+  if (running || !testBriefClaimable(c.now, c.tz, hour)) return;
+  running = true;
+  try {
+    const pool = getPool();
+    let claimed: ClaimedTestBrief | null;
+    try {
+      claimed = await claimTestBrief(pool, agentName(), ownerId());
+    } catch (e) {
+      if (!warnedTestBriefClaim) {
+        warnedTestBriefClaim = true;
+        console.warn("morning-brief: could not look for a test-brief request", e);
+      }
+      return;
+    }
+    if (!claimed) return;
+    const result = await runTestBrief(claimed, c);
+    await finishTestBrief(pool, claimed.id, { ...result, door: claimed.door }).catch((e) => {
+      console.error("morning-brief: could not record the test brief's outcome", e);
+    });
+  } finally {
+    running = false;
+  }
+}
+
 export default defineSchedule({
   cron: "* * * * *",
   async run({ to, waitUntil, appAuth }) {
@@ -740,377 +1253,15 @@ export default defineSchedule({
     // not query Postgres for an answer that changes only a handful of times a year.
     const [hour] = await scheduleHours("morning-brief");
     const slot = slotIn(now, tz, hour);
-    if (!slot || slot === lastSlot) return;
+    // Not the brief's minute: the only other work a tick does is a test brief the owner asked for
+    // from the console. The real slot is checked first and always wins.
+    if (!slot || slot === lastSlot) return testBriefTick({ loaded, now, tz, to, waitUntil, appAuth }, hour);
     if (running) return;
 
     lastSlot = slot;
     running = true;
     try {
-      const pool = getPool();
-      const ownerToday = dateIn(now, tz);
-
-      // The hour can change MID-DAY now, and the ledger's dedupe is keyed on the
-      // SLOT (`morning-brief/<owner date>T<hour>`), not the day: a hour moved after today's
-      // brief already sent would give the new hour's tick a BRAND NEW key nobody has seen, and
-      // the gate would happily send a second brief. This guard holds "at most one per owner-day"
-      // across every hour, checked before any of the (expensive) gathering below — see
-      // `alreadySentToday`'s own doc-comment for why this is not the ledger's own dedupe key.
-      if (await alreadySentToday(pool, ownerId(), agentName(), "morning-brief", ownerToday)) {
-        console.log(
-          `morning-brief: already sent today (${ownerToday}) — skipping slot ${slot} ` +
-          "(the hour setting changed after today's brief went out)",
-        );
-        await recordSchedulePass(pool, HEARTBEAT_KEY);
-        return;
-      }
-
-      // Where this goes is the owner's choice (the definition's `delivery` map); without one, the
-      // Telegram chat it always went to. Null = no door can carry it.
-      const routed = routeDelivery("morning-brief", loaded);
-      if (!routed) {
-        if (!warnedNoPrincipal) {
-          warnedNoPrincipal = true;
-          console.warn("morning-brief: no door to deliver through (Telegram is not connected); skipping");
-        }
-        return;
-      }
-
-      await ensureObligationsTableOnce(pool);
-      const myAddresses = () => listAliases(pool, configuredOwnerId(), "email");
-
-      // A source that cannot be read no longer silences the brief: a fresh installation
-      // without Google would otherwise never receive one. The brief goes out with what could be
-      // read and NAMES what could not, in `unavailable`, so a missing source is never mistaken for
-      // an empty one (absent is not empty, the same rule `slackUnavailable` carries).
-      const unavailable: string[] = [];
-      let today: DayCalendar;
-      try {
-        today = await withTimeout(
-          (async () => {
-            const listEvents = (o: { timeMin: string; timeMax: string; max: number }) =>
-              listEventsEverywhere(
-                {
-                  accounts: () => listEnrolledMailboxes(),
-                  clientFor: (account) => googleClients().calendar(account),
-                },
-                o,
-              );
-            // — the SAME read that builds today's rows also feeds the conflict pass;
-            // `listTodayCalendar` fetches once and returns both. The rows are byte-for-byte
-            // what `listTodayMeetings` returned here before.
-            return listTodayCalendar({ listEvents, myAddresses }, now, { tz });
-          })(),
-          OBLIGATION_TIMEOUT_MS,
-          "morning-brief: today's calendar",
-        );
-      } catch (e) {
-        console.error(`morning-brief: could not read today's calendar (slot ${slot}) — the brief goes out without it`, e);
-        unavailable.push(sourceGapLine("Calendar", e));
-        today = { meetings: [], conflicts: [] };
-      }
-      const meetings: NightBeforeMeeting[] = today.meetings;
-
-      // Check today's overlapping-stay clashes against mail, best-effort. Bounded
-      // by `lib/conflict-resolution.ts`'s own caps: at most MAX_CLASHES_PER_PASS (3) clashes
-      // searched, CLASH_TIMEOUT_MS (10s) each, so at most ~30s added to this tick in the worst
-      // case — real, but a fixed ceiling, never an open-ended wait. `resolveConflicts` already
-      // documents itself as never throwing (a per-clash failure costs that clash its plain flag
-      // only, with one console.warn); the `.catch` here is belt-and-braces on top of that
-      // promise, not a load-bearing guard — either way, a search that cannot finish costs the owner
-      // the evidence for one morning, never the brief itself.
-      const resolvedConflicts = await resolveConflicts(today.conflicts, {
-        gmailFor: (account) => googleClients().gmail(account),
-      }).catch((e) => {
-        console.error(
-          "morning-brief: could not check today's clashes against mail — the brief goes out with the plain flags",
-          e,
-        );
-        return today.conflicts;
-      });
-
-      // — written by the Slack source on its way past gatherOpenObligations's
-      // best-effort catch; the only way "a whole source dropped out" survives that catch and
-      // reaches the prose below.
-      const slackScan = newSlackScanStatus();
-      // Filled once, by the pass, when a cross-channel lookup could not be
-      // read. It reaches the prompt below so a silent lookup failure never looks like a clean
-      // list; the same reasoning as 's `slackScan.failed`, one layer in.
-      let unreadableSources: string[] = [];
-      let obligations: Obligation[];
-      try {
-        obligations = await withTimeout(
-          (async () => {
-            const gmail = await googleClients().gmail();
-            // Built ONCE per tick, then reused for every candidate: the
-            // Gmail leg memoises the owner's address list, and both are shared verbatim with the
-            // evening pass (lib/obligation-lookups.ts) so the two briefs cannot drift.
-            const gmailSentAfter = makeGmailSentAfter(gmail, myAddresses);
-            const calendarEndedWith = makeCalendarEndedWith({
-              accounts: () => listEnrolledMailboxes(),
-              clientFor: (account) => googleClients().calendar(account),
-            });
-            return gatherOpenObligations(
-              {
-                myAddresses,
-                gmail: { searchThreadIds: gmail.searchThreadIds, readThread: gmail.readThread },
-                dismissed: () => dismissedThreads(pool),
-                upsertSeen: (o, seenAt) => upsertSeen(pool, o, seenAt, configuredOwnerId()),
-                // ─── Resolve elsewhere, read the last message, say why ──
-                // Every one of these is optional in `GatherObligationsDeps`, and every failure
-                // path inside the stage keeps the obligation. Nothing wired here can make the
-                // radar quieter than it would have been without it.
-                resolved: () => resolvedThreads(pool),
-                resolve: (o) =>
-                  resolveElsewhere(
-                    o,
-                    {
-                      gmailSentAfter,
-                      calendarEndedWith,
-                      // In memory already — the scan above harvested it. `undefined` (a
-                      // Gmail-sourced obligation, or a Slack pass that failed) reads as "no
-                      // evidence", never as a resolution.
-                      slackOwnMessageAfter: (uid, since) => {
-                        const at = uid ? slackScan.ownLastMessageByUser.get(uid) : undefined;
-                        return at && at.getTime() > since.getTime() ? at : null;
-                      },
-                    },
-                    now,
-                  ),
-                markResolved: (o, r) => markResolved(pool, o.threadId, { via: r.via, evidence: r.evidence, at: r.at }),
-                // Two deps, not one, because `INTENT_MAX_PER_PASS` bounds MODEL CALLS and a
-                // cache hit is not one. Served together, a hit spent a cap slot and the ninth-
-                // oldest obligation could never be read on any pass. `recordIntent` is UPDATE-only
-                // and lands on the row `upsertSeen` wrote earlier in the same pass.
-                cachedIntent: (o) => cachedIntent(pool, o.threadId, o.lastMessageAt),
-                classifyIntent: async (o) => {
-                  // `maxRetries: 0` is what makes classifyIntent's "no retry, one bounded read"
-                  // TRUE — the AI SDK defaults to 2 retries, which would have made
-                  // INTENT_MAX_PER_PASS a ceiling of 24 model calls instead of 8.
-                  const read = await classifyIntent(o, {
-                    complete: (prompt, callOpts) => gatewayComplete(prompt, { ...callOpts, maxRetries: 0 }),
-                  });
-                  await recordIntent(pool, o.threadId, read, o.lastMessageAt);
-                  return read;
-                },
-                onUnreadable: (sources) => { unreadableSources = sources; },
-                // The due notices the scan flagged, recorded before
-                // selection drops them. `ownerId`: this is the same key the deadline
-                // reads below use, and the two must never come apart — a candidate written under
-                // one key and read under the other is a sighting nobody is ever offered.
-                // (`upsertSeen` above belongs to the OBLIGATIONS store, which has its own key;
-                // this line is not it.) The store's own `ON CONFLICT DO NOTHING` makes a
-                // re-sighting a no-op, so this runs on every tick without ever re-offering a mail
-                // the owner already answered.
-                recordCandidate: (c) => upsertCandidate(pool, { ...c, owner: ownerId() }),
-                // Slack obligations reach the morning brief ONLY — this is the
-                // one and only call site across the three obligation schedules that supplies
-                // `slack`. gatherOpenObligations treats a Slack failure as best-effort (caught,
-                // logged, Gmail-only continues), so this can never take out the brief — and
-                // makes that degradation visible in the brief instead of silent.
-                slack: buildSlackObligationSource(pool, now, slackScan),
-              },
-              now,
-            );
-          })(),
-          OBLIGATION_TIMEOUT_MS,
-          "morning-brief: obligations",
-        );
-      } catch (e) {
-        console.error(`morning-brief: could not gather obligations (slot ${slot}) — the brief goes out without them`, e);
-        unavailable.push(sourceGapLine("Email", e));
-        obligations = [];
-      }
-
-      let deliveredLastNight: ReadonlySet<string>;
-      try {
-        // TODAY's date on the owner clock is exactly the day last night's 20:00 pass stamped: it
-        // computed "tomorrow" from ITS clock, which is "today" from this one — see
-        // lib/brief-content.ts's nightBeforeCoveredDay for why the two never drift (both
-        // on the owner clock now; one of them left at home would match nothing abroad).
-        deliveredLastNight = await nightBeforeDelivered(pool, ownerToday);
-      } catch (e) {
-        // Fail toward reporting: with no record of what last night covered, everything open is
-        // reported again, which can repeat a line but never hides one.
-        console.error(`morning-brief: could not read last night's delivery record (slot ${slot}) — reporting everything open`, e);
-        deliveredLastNight = new Set<string>();
-      }
-
-      const picks = readIngestedPicks(process.env["BRIEF_PICKS_DIR"], now);
-
-      // — the deadlines due today (or on a mention day) and the due-notice mails nobody
-      // has been offered yet, read under ONE budget of their OWN.
-      //
-      // DELIBERATELY OUTSIDE `OBLIGATION_TIMEOUT_MS`. That constant is already spent twice per
-      // tick (see its note), and adding a third leg to either race would make a slow deadline
-      // read able to blank the calendar or the obligations — the exact additive-budget bug
-      // was filed for. 5s is its own, and generous for two indexed reads against the
-      // local Postgres.
-      //
-      // AND IT CAN NEVER COST THE OWNER THE BRIEF. Deadlines are CONTEXT: a brief that goes out
-      // without them is a worse brief, a brief that does not go out is a missing morning. So the
-      // `.catch` logs and yields empty lists, which renders exactly the pre-prompt.
-      const { deadlines, deadlineCandidates } = await withTimeout(
-        (async () => {
-          const [rows, candidates] = await Promise.all([
-            listDeadlines(pool, ownerId(), { status: "open", dueWithinDays: 30, now, tz }),
-            unsurfacedCandidates(pool, ownerId()),
-          ]);
-          return {
-            // `mentionsToday` (the kit) is the rule for WHICH of the open rows the brief names
-            // today — a named list of mention days plus everything overdue, not a window. The
-            // 30-day read above is only the cheap pre-filter that keeps the query small; the
-            // rule is what decides.
-            deadlines: rows
-              .filter((r) => mentionsToday(
-                { id: r.id, title: r.title, source: r.source, dueDate: r.dueDate, rung: r.rung, status: r.status },
-                now,
-                tz,
-              ))
-              .map((r): DeadlineLine => ({
-                id: r.id,
-                entity: r.entity,
-                title: r.title,
-                dueDate: r.dueDate,
-                daysToDue: daysToDue(r.dueDate, now, tz),
-                consequence: r.consequence,
-                source: r.source,
-                vendor: r.vendor,
-                amount: r.amount,
-                currency: r.currency,
-              })),
-            // fix 1 — the cap is applied HERE, where the list is built, so the ids
-            // stamped below are exactly the ids rendered. The rest stay unstamped and drain on
-            // later mornings.
-            deadlineCandidates: briefCandidateLines(candidates),
-          };
-        })(),
-        5_000,
-        "morning-brief: deadlines",
-      ).catch((e) => {
-        console.error("morning-brief: could not read deadlines — the brief goes out without them", e);
-        return { deadlines: [] as DeadlineLine[], deadlineCandidates: [] as CandidateLine[] };
-      });
-
-      // — the persisted spine is read directly (plain sealed egress, no Telegram proxy).
-      // This is best-effort context: a spine outage is logged and must not cost the owner the rest of
-      // the brief. Only errors and warnings belong in this exception block; info events do not.
-      const signalClient = makeSignalsClient(() => ({
-        tokenFile: process.env["SIGNAL_READ_TOKEN_FILE"] ?? "/run/secrets/signal-read-token",
-        baseUrl: process.env["SIGNAL_SPINE_URL"],
-        fetch,
-      }));
-      const signals: SignalRow[] = await withTimeout(
-        signalClient.signalsRecent({ since: new Date(now.getTime() - 24 * 3600_000).toISOString(), limit: 100 }),
-        5_000,
-        "morning-brief: signals",
-      ).then((rows) => rows.filter((row) => row.severity === "error" || row.severity === "warn"))
-        .catch((error) => {
-          if (error instanceof SignalsNotConfiguredError) {
-            console.log("morning-brief: no signal source configured — the brief goes out without signals");
-            return [] as SignalRow[];
-          }
-          console.error("morning-brief: could not read signal spine — the brief goes out without signals", error);
-          return [] as SignalRow[];
-        });
-
-      const content = buildMorningBrief({
-        meetings,
-        obligations,
-        deliveredLastNight,
-        picks,
-        slackUnavailable: slackScan.failed,
-        unavailable,
-        conflicts: resolvedConflicts,
-        deadlines,
-        deadlineCandidates,
-        signals,
-      });
-      if (!content) {
-        console.log(`morning-brief: nothing new (slot ${slot}) — skipping send`);
-        await recordSchedulePass(pool, HEARTBEAT_KEY); // a quiet day IS a completed pass
-        return;
-      }
-
-      // Best-effort, and the `.catch` is the whole point: the standing facts are
-      // context, not content. A Postgres hiccup here must cost the agent the facts, never the brief.
-      // BOUNDED, because `.catch` only fires on a rejection: an unresponsive `db`
-      // container makes `pool.query` hang forever, and this brief's whole tick would hang with
-      // it. `withTimeout` is what turns that stall into the rejection this catch handles.
-      const facts = await withTimeout(
-        // CANONICAL_USER_ID, not a resolved principal — see standing-facts.ts's tool call sites;
-        // this schedule runs as the app principal, with no session user to resolve.
-        listActiveFacts(pool, configuredOwnerId()),
-        STANDING_FACTS_TIMEOUT_MS,
-        "morning-brief: standing facts",
-      ).catch((e) => {
-        console.error("morning-brief: could not read standing facts — the brief goes out without them", e);
-        return [];
-      });
-
-      // Read once per pass and handed to both `heldBackLine` and `buildMorningPrompt`
-      // below, so the one line about held-back messages and the rest of the prompt never disagree
-      // on language within the same brief. Never throws (see `readBriefLanguage`'s own contract),
-      // so a settings-table outage costs the owner nothing beyond an English brief.
-      const lang = await readBriefLanguage(pool, ownerId());
-
-      // — what the gate held back since the PREVIOUS morning slot: one owner-day back
-      // from this one. A DST boundary makes that an hour out at most, which cannot matter for a
-      // count of waiting items, and `deferredSince` also counts every hold still OPEN whatever
-      // its age — the 22:30 deferral released at 07:00 this morning is exactly the case this line
-      // exists for. Never throws (it logs and reports none), so the brief still goes out.
-      const heldBack = heldBackLine(
-        await deferredSince(pool, ownerId(), new Date(now.getTime() - 24 * 3600_000)),
-        lang,
-      );
-
-      const prompt = buildMorningPrompt(content, facts, unreadableSources, heldBack, { lang, tz, transit: isGranted(loaded.definition, "transit") });
-      let initiation: InitiationOutcome;
-      try {
-        initiation = await routed.gate(
-          { cls: "scheduled", itemKey: `morning-brief/${slot}`, now, tz },
-          () => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, prompt, {
-            lane: "morning-brief", itemKey: `morning-brief/${slot}`, title: "Morning brief",
-          }),
-        );
-      } catch (err) {
-        console.error(`morning-brief: send FAILED (slot ${slot})`, err);
-        return;
-      }
-      // — a candidate is offered ONCE, and "once" means once a prompt carrying it was
-      // actually SENT. `candidatesToStamp` owns that rule and its docblock owns the argument for
-      // why this one write departs from ADR 0014's `handled`; an `alreadySeen` tick stamps
-      // nothing. Empty ids make `markCandidatesSurfaced` a no-op, so this is one guarded call
-      // rather than a branch.
-      //
-      // Best-effort, like every other bookkeeping write here: a failed stamp costs a repeated
-      // offer tomorrow, never the pass.
-      await markCandidatesSurfaced(
-        pool,
-        ownerId(),
-        candidatesToStamp(initiation, content.deadlineCandidates ?? []),
-        now,
-      ).catch((e) => {
-        console.error("morning-brief: could not stamp deadline candidates as surfaced — they will be offered again", e);
-      });
-
-      if (!initiation.sent) {
-        // Held back, or already sent for this slot — see evening-brief.ts's own note. The one
-        // per-item stamp this brief has is skipped on both of
-        // those outcomes by `candidatesToStamp`, so an offer nobody received is never marked
-        // offered. A completed pass either way.
-        await recordSchedulePass(pool, HEARTBEAT_KEY);
-        return;
-      }
-
-      console.log(
-        `morning-brief: delivered (slot ${slot}) — ${content.obligations.length} obligation(s), ` +
-        `${content.picks.length} pick(s), ${content.conflicts?.length ?? 0} clash(es), ` +
-        `${content.deadlines?.length ?? 0} deadline(s), ${content.deadlineCandidates?.length ?? 0} candidate(s)`,
-      );
-      await emitSignal("brief-sent", "Morning brief sent", undefined, {
-        kind: "event", severity: "info", key: "morning-brief",
-      });
-      await recordSchedulePass(pool, HEARTBEAT_KEY);
+      await briefPass({ kind: "slot", slot }, { loaded, now, tz, to, waitUntil, appAuth });
     } catch (e) {
       console.error("morning-brief: tick failed", e);
       await emitSignal("schedule-tick-failed", "morning-brief: tick failed", errorDetail(e));

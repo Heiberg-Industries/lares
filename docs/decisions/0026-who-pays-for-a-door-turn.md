@@ -76,6 +76,10 @@ eve has no notion of who pays (read in eve `1.0.0-rc.10`).
 - An overlay install without Keeper's socket keeps its current path unchanged.
 - An agent shared with a second member cannot run schedule-started conversations until member
   jobs exist (Keeper refuses them).
+- A test brief the owner asks for from the console is a schedule-started owner job like any brief:
+  refused on a shared agent. The console asks the same owner-only condition first
+  (`packages/agent-kit/src/owner-only-agent.ts`) so the owner gets a sentence, not an error in the
+  chat; Keeper's refusal stays the guard.
 - Known limit: after an owner changes an agent's model and presses Apply, a Slack or Telegram
   conversation that was already running is refused on every later message, because that conversation keeps the
   model it started with and Keeper only admits a turn on the agent's current model. A new
