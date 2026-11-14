@@ -47,8 +47,11 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
   finally{setAsking(false);}
  }
  async function run(fn:()=>Promise<void>){setProgress('Working…');setError('');setMessage('');try{await fn();}catch(e){setError(e instanceof Error?e.message:'Door operation failed.');setUnknown(previous=>previous||!(e instanceof Error&&'unknown'in e&&e.unknown===false));}finally{setProgress('');try{await refresh();}catch{}p.onRuntimeChanged?.();}}
+ /** Applies whatever is waiting. A failed Apply can put the earlier definition back, door and "Where messages go"
+  * alike, so the "now go to" sentence goes with it rather than stay untrue next to the error. */
+ async function applyWaiting(){try{return unwrap(await applyConnections({name:p.name,hash:latestHash.current}));}catch(e){setFollows('');throw e;}}
  /** Applies whatever is waiting, then reloads the page so every part of it shows the new state. */
- async function applyAndReload(label:string){setProgress(label);unwrap(await applyConnections({name:p.name,hash:latestHash.current}));reload();}
+ async function applyAndReload(label:string){setProgress(label);await applyWaiting();reload();}
  // After the one-time step is shown: watch for the owner to arrive, then apply the claim by itself.
  useEffect(()=>{
   if(!connect)return;let stopped=false;
@@ -81,7 +84,7 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
    setProgress('Switching the door on…');const saved=unwrap(await setDoorEnabled(p.name,kind,true));
    latestHash.current=saved.hash;p.onDefinitionChanged?.(saved.hash);if(saved.messagesFollow)setFollows(messagesFollowText(saved.messagesFollow));current=await refresh();
   }
-  if(current.some(r=>r.pending)){setProgress('Applying (restarts the agent, about a minute)…');unwrap(await applyConnections({name:p.name,hash:latestHash.current}));}
+  if(current.some(r=>r.pending)){setProgress('Applying (restarts the agent, about a minute)…');await applyWaiting();}
   await showConnectStep(kind);
  }
  const copy=(text:string,note:string)=>{void (async()=>{try{await navigator.clipboard.writeText(text);setMessage(note);}catch{setError('Could not copy; select the text and copy it by hand.');}})();};

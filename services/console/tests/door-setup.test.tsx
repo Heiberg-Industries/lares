@@ -99,6 +99,24 @@ it('says where messages now go only when switching the door on also moved them t
  mocks.setters=[];mocks.states=[];mocks.states[STATE.follows]=sentence;
  expect(renderToStaticMarkup(DoorSetup(cos))).toContain(sentence);
 });
+it('takes the sentence back when the Apply after it fails and Keeper puts the earlier definition back',async()=>{
+ // Keeper restores the whole earlier definition, door and list alike (services/keeper/tests/definitions.test.ts).
+ const sentence='Briefs and other messages now go to Telegram first; change this under Where messages go.';
+ const rolledBack='Apply failed. The agent is back on the last definition that had taken effect; the changes that were waiting for Apply were undone. Save them again before retrying.';
+ let enabled=false;
+ mocks.status.mockImplementation(async()=>ok([row('telegram',{configured:true,enabled,pending:enabled})]));
+ mocks.connect.mockResolvedValue(ok({}));mocks.verify.mockResolvedValue(ok({kind:'telegram',username:'example_bot'}));
+ mocks.enable.mockImplementation(async()=>{enabled=true;return ok({hash:'b'.repeat(64),backup:{ok:true},messagesFollow:'telegram'});});
+ mocks.apply.mockImplementation(async()=>{enabled=false;return {ok:false,error:{message:rolledBack,state:'previous-running',outcomeMayBeUnknown:true}};});
+ mocks.states[STATE.tokens]={telegram:'123:abc'};
+ findAll(DoorSetup(cos),'Connect')[1].props.onClick();
+ await vi.waitFor(()=>expect(mocks.setters[STATE.error]).toHaveBeenCalledWith(rolledBack));
+ expect(mocks.apply).toHaveBeenCalledWith({name:'example',hash:'b'.repeat(64)});
+ expect(mocks.setters[STATE.follows].mock.calls.map((c:unknown[])=>c[0])).toEqual([sentence,'']);
+ expect(mocks.claim).not.toHaveBeenCalled();
+ mocks.setters=[];mocks.states=[];mocks.states[STATE.follows]='';
+ expect(renderToStaticMarkup(DoorSetup(cos))).not.toContain('now go to');
+});
 it('asks the page to re-read the agent status after a door action, whether it worked or not',async()=>{
  // A door switch can stop the agent; the Status box must not keep saying "Running" from before it.
  const onRuntimeChanged=vi.fn();
