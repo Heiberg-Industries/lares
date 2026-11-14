@@ -19,6 +19,7 @@ import {
 import { ownerJobsMayRun } from "@lares/agent-kit/owner-only-agent";
 import { loadSettings } from "@lares/agent-kit/proactivity";
 import { pool } from "./db";
+import { formatInOwnerTz, ownerDayIn } from "./proactivity";
 
 /** A pending request this old is shown as not picked up (the agent waits out the minutes before
  *  the brief hour, so a healthy pick-up can take about four minutes). */
@@ -136,17 +137,21 @@ export interface TestBriefView {
 
 const NOT_SENT: Record<Exclude<TestBriefOutcome, "sent" | "send-unknown">, (door: TestBriefDoor) => string> = {
   "door-not-connected": doorNotConnected,
-  "too-slow": () => "Not sent: the brief took too long to write, so nothing was sent. Try again.",
+  "too-slow": () => "Not sent: the brief took too long to prepare, so nothing was sent. Try again.",
   "send-failed": (door) => `Not sent: ${DOOR_LABEL[door]} did not accept it. Check the door above and try again.`,
   "pass-failed": () => "Not sent: something went wrong before it was sent. The agent's log says more.",
 };
 export const OUTCOME_UNKNOWN = "Outcome unknown. Check the chat; it will not be sent again.";
 export const ASKED = "Asked. It arrives within about two minutes.";
-export const NOT_PICKED_UP = "The agent did not pick this up. Its schedules may be switched off on this server; sudo lares doctor says.";
+export const NOT_PICKED_UP = "The agent did not pick this up, so nothing was sent. It may be stopped, or its schedules switched off on this server.";
 
 const minutesSince = (at: Date, now: Date) => (now.getTime() - at.getTime()) / 60_000;
-const clock = (at: Date, tz: string) =>
-  new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz }).format(at);
+/** "at 10:42" today on the owner's clock, "on 2026-09-09 at 10:42" on any other day: the console's
+ *  own ledger format (`formatInOwnerTz`, `YYYY-MM-DD HH:MM`), so an old line never reads as today's. */
+const when = (at: Date, now: Date, tz: string) => {
+  const [day, time] = formatInOwnerTz(at, tz).split(" ");
+  return day === ownerDayIn(now, tz) ? `at ${time}` : `on ${day} at ${time}`;
+};
 
 /** The one status line for the newest request. `tz` is the owner's clock for the time shown. */
 export function testBriefView(row: TestBriefRow | null, now: Date, tz: string): TestBriefView | null {
@@ -166,7 +171,7 @@ export function testBriefView(row: TestBriefRow | null, now: Date, tz: string): 
   const outcome = row.result?.outcome;
   if (row.status === "done" && outcome === "sent") {
     const at = row.result?.sentAt ? new Date(row.result.sentAt) : row.updatedAt;
-    return { door, waiting: false, text: `Sent to ${DOOR_LABEL[door]} at ${clock(at, tz)}.` };
+    return { door, waiting: false, text: `Sent to ${DOOR_LABEL[door]} ${when(at, now, tz)}.` };
   }
   if (outcome === "send-unknown" || !outcome || outcome === "sent") return { door, waiting: false, text: OUTCOME_UNKNOWN };
   const sentence = NOT_SENT[outcome](door);

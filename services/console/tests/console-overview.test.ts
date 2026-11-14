@@ -35,6 +35,42 @@ describe("console source coverage", () => {
     expect(workflowState(snapshot, "agent-one")).toBe("waiting");
     expect(workflowState(snapshot, "empty")).toBe("idle");
   });
+  /** The table as it would hold it, counted the way the reader's SQL asks (type filter included). */
+  function workflowTable(table: { agent: string; type: string; status: string }[]) {
+    list.mockResolvedValue([{ name: "agent-one" }, { name: "agent-two" }]);
+    query.mockImplementation(async (sql: string, params: unknown[] = []) => {
+      const excluded = /workflow_type <> \$1/.test(sql) ? params[0] : undefined;
+      const counts = new Map<string, { agent: string; status: string; n: string }>();
+      for (const r of table.filter((r) => r.type !== excluded)) {
+        const key = `${r.agent}/${r.status}`;
+        const c = counts.get(key) ?? { agent: r.agent, status: r.status, n: "0" };
+        c.n = String(Number(c.n) + 1);
+        counts.set(key, c);
+      }
+      return { rows: [...counts.values()] };
+    });
+  }
+  it("a test brief that was not sent (kept as failed) leaves the agent idle", async () => {
+    const { TEST_BRIEF_WORKFLOW_TYPE } = await import("@lares/agent-kit/delivery");
+    workflowTable([
+      { agent: "agent-one", type: TEST_BRIEF_WORKFLOW_TYPE, status: "failed" },
+      { agent: "agent-two", type: "some-workflow", status: "failed" },
+    ]);
+    const snapshot = await getFleetSnapshot();
+    expect(workflowState(snapshot, "agent-one")).toBe("idle");
+    expect(workflowState(snapshot, "agent-two")).toBe("failed"); // other work still shows
+    expect(query).toHaveBeenCalledWith(expect.stringMatching(/WHERE workflow_type <> \$1/), [TEST_BRIEF_WORKFLOW_TYPE]);
+  });
+  it("a test brief nobody picked up (stale, still pending) leaves the agent idle", async () => {
+    const { TEST_BRIEF_WORKFLOW_TYPE } = await import("@lares/agent-kit/delivery");
+    workflowTable([
+      { agent: "agent-one", type: TEST_BRIEF_WORKFLOW_TYPE, status: "pending" },
+      { agent: "agent-two", type: "some-workflow", status: "pending" },
+    ]);
+    const snapshot = await getFleetSnapshot();
+    expect(workflowState(snapshot, "agent-one")).toBe("idle");
+    expect(workflowState(snapshot, "agent-two")).toBe("running");
+  });
   it("filters in SQL before limiting, with a stable older-page cursor", async () => {
     query.mockResolvedValue({
       rows: [

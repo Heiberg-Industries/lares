@@ -169,6 +169,18 @@ describe("what the page shows", () => {
       .toEqual({ door: "telegram", waiting: false, text: "Sent to Telegram at 10:42." });
   });
 
+  it("a send from another day on the owner's clock shows its date, so it never reads as today's", () => {
+    const sent = (sentAt: string) => row({ status: "done", result: { outcome: "sent", sentAt } });
+    expect(testBriefView(sent("2026-09-09T08:42:05Z"), now, "Europe/Berlin")?.text).toBe("Sent to Telegram on 2026-09-09 at 10:42.");
+    // 23:30 the night before, in Berlin: yesterday there, though the same UTC date.
+    expect(testBriefView(sent("2026-09-15T21:30:00Z"), now, "Europe/Berlin")?.text).toBe("Sent to Telegram on 2026-09-15 at 23:30.");
+    expect(testBriefView(sent("2026-09-16T05:00:00Z"), now, "Europe/Berlin")?.text).toBe("Sent to Telegram at 07:00.");
+  });
+
+  it("the not-picked-up line says nothing was sent and names no check that does not exist", () => {
+    expect(NOT_PICKED_UP).toBe("The agent did not pick this up, so nothing was sent. It may be stopped, or its schedules switched off on this server.");
+  });
+
   it("not picked up after five minutes; outcome unknown after ten minutes claimed", () => {
     expect(testBriefView(row({ createdAt: ago(6) }), now, "UTC")?.text).toBe(NOT_PICKED_UP);
     expect(testBriefView(row({ createdAt: ago(11) }), now, "UTC")).toMatchObject({ waiting: false, text: NOT_PICKED_UP });
@@ -178,7 +190,7 @@ describe("what the page shows", () => {
   it("each outcome the agent writes has its sentence", () => {
     const failed = (outcome: string) => testBriefView(row({ status: "failed", result: { outcome } }), now, "UTC")?.text;
     expect(failed("door-not-connected")).toBe("Not sent: Telegram is not connected to this agent yet.");
-    expect(failed("too-slow")).toBe("Not sent: the brief took too long to write, so nothing was sent. Try again.");
+    expect(failed("too-slow")).toBe("Not sent: the brief took too long to prepare, so nothing was sent. Try again.");
     expect(failed("send-failed")).toBe("Not sent: Telegram did not accept it. Check the door above and try again.");
     expect(failed("pass-failed")).toBe("Not sent: something went wrong before it was sent. The agent's log says more.");
     expect(failed("send-unknown")).toBe(OUTCOME_UNKNOWN);
