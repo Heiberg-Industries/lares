@@ -1,8 +1,9 @@
-import { beforeEach, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(()=>({keeper:vi.fn(),verify:vi.fn(),cookies:vi.fn()}));
 vi.mock('next/headers',()=>({cookies:mocks.cookies}));
 vi.mock('../lib/auth',()=>({verify:mocks.verify}));
 vi.mock('../lib/keeper-client',async(importOriginal)=>({...await importOriginal<typeof import('../lib/keeper-client')>(),keeper:mocks.keeper}));
+import { DELIVERY_KIND_LIST } from '../lib/delivery';
 import { createAgent, saveDefinition, retireAgent, deleteAgent, connectDoor, applyConnections, listConversations, startFreshConversation, setDoorEnabled } from '../app/actions/definition';
 beforeEach(()=>{ vi.clearAllMocks(); mocks.cookies.mockResolvedValue({get:()=>({value:'cookie'})}); mocks.verify.mockResolvedValue('owner@example.test'); mocks.keeper.mockResolvedValue({hash:'abc',backup:{ok:false,message:'backup failed'},runtime:{pending:true,reason:'doors'}}); });
 const input={name:'example',definition:{},duties:'Duties',voice:'Voice'};
@@ -70,4 +71,36 @@ it('serializes door read failures before mutation, preserving findings without r
  mocks.keeper.mockResolvedValueOnce({definition:'invalid json'});
  expect(await setDoorEnabled('example','slack',true)).toMatchObject({ok:false,error:{outcomeMayBeUnknown:false}});
  expect(mocks.keeper).toHaveBeenCalledTimes(2);
+});
+
+describe('the first chat app a new chief of staff is connected to',()=>{
+ const starting=()=>Object.fromEntries(DELIVERY_KIND_LIST.map(k=>[k,['web']]));
+ const stored=(over:object={})=>({definition:JSON.stringify({role:'chief-of-staff',doors:[],channels:[],delivery:starting(),...over}),duties:'',voice:''});
+ const savedDefinition=()=>mocks.keeper.mock.calls.find(c=>c[0]==='definition.save')?.[1].definition;
+ it('moves the untouched starting list to that door first, web chat last, in the same save',async()=>{
+  mocks.keeper.mockResolvedValueOnce(stored());
+  const result=await setDoorEnabled('example','telegram',true);
+  expect(mocks.keeper.mock.calls.filter(c=>c[0]==='definition.save')).toHaveLength(1);
+  expect(savedDefinition().doors).toEqual([{kind:'telegram',enabled:true,settings:{}}]);
+  expect(Object.values(savedDefinition().delivery)).toEqual(DELIVERY_KIND_LIST.map(()=>['telegram','web']));
+  expect(result).toMatchObject({ok:true,result:{hash:'abc',messagesFollow:'telegram'}});
+ });
+ it('leaves an edited list, a second door and a door switched off alone, and says nothing',async()=>{
+  const cases:[object,'slack'|'telegram',boolean][]=[
+   [{delivery:{...starting(),'morning-brief':['web','slack']}},'telegram',true],
+   [{doors:[{kind:'slack',enabled:true,settings:{}}],channels:['slack']},'telegram',true],
+   [{doors:[{kind:'telegram',enabled:false,settings:{}}],channels:[]},'telegram',true],
+   [{doors:[{kind:'telegram',enabled:true,settings:{}}],channels:['telegram']},'telegram',false],
+   [{},'telegram',false],
+  ];
+  for(const [over,kind,enabled] of cases){
+   mocks.keeper.mockClear();
+   const before=JSON.parse(stored(over).definition).delivery;
+   mocks.keeper.mockResolvedValueOnce(stored(over));
+   const result=await setDoorEnabled('example',kind,enabled);
+   expect(savedDefinition().delivery).toEqual(before);
+   expect(result).toMatchObject({ok:true});
+   expect(result.ok&&result.result.messagesFollow).toBeUndefined();
+  }
+ });
 });

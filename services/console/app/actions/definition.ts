@@ -4,6 +4,7 @@ import { keeper, keeperFailureText, keeperReferenceText, KeeperFailedError, Keep
 import { verify } from '../../lib/auth';
 import type { Capacity, DefinitionResult, RetirementResult, Role, RuntimeState } from '../../lib/builder';
 import type { NotionSyncView } from '../../lib/notion-sync';
+import { deliveryFollowingFirstChatDoor } from '../../lib/delivery';
 async function actor(): Promise<string> {
   const email = await verify((await cookies()).get('lares_session')?.value);
   if (!email) throw new Error('unauthenticated');
@@ -108,15 +109,20 @@ export async function claimCode(name:string,kind:'slack'|'telegram'):Promise<Def
 export async function registerTelegram(name:string):Promise<DefinitionActionResult<{registered:boolean}>> {
   return call('telegram.webhook_set',{name},await actor());
 }
-export async function setDoorEnabled(name:string,kind:'slack'|'telegram',enabled:boolean):Promise<DefinitionActionResult<DefinitionResult>> {
+/** `messagesFollow` is set when this save also moved "Where messages go" to this door (the agent's first chat app). */
+export async function setDoorEnabled(name:string,kind:'slack'|'telegram',enabled:boolean):Promise<DefinitionActionResult<DefinitionResult&{messagesFollow?:'slack'|'telegram'}>> {
   const email=await actor();
   try {
   const saved=await keeper<{definition:string;duties:string;voice:string}>('definition.get',{name},email);
   const definition=JSON.parse(saved.definition);
+  // In the same save as the door: a new chief of staff's starting list follows its first chat app.
+  const followed=enabled?deliveryFollowingFirstChatDoor(definition,kind):undefined;
+  if(followed)definition.delivery=followed;
   const doors=definition.doors??definition.channels.map((kind:string)=>({kind,enabled:true,settings:{}}));
   definition.doors=[...doors.filter((d:{kind:string})=>d.kind!==kind),{kind,enabled,settings:doors.find((d:{kind:string})=>d.kind===kind)?.settings??{}}];
   definition.channels=definition.doors.filter((d:{enabled:boolean})=>d.enabled).map((d:{kind:string})=>d.kind);
-  return call('definition.save',{name,definition,duties:saved.duties,voice:saved.voice},email,SAVE_TIMEOUT_MS);
+  const result=await call<DefinitionResult>('definition.save',{name,definition,duties:saved.duties,voice:saved.voice},email,SAVE_TIMEOUT_MS);
+  return result.ok&&followed?{ok:true,result:{...result.result,messagesFollow:kind}}:result;
   } catch(error) {
     if(error instanceof KeeperRefusedError)return {ok:false,error:{message:error.message,findings:error.findings,outcomeMayBeUnknown:!error.findings?.length}};
     const known=failedOrUnavailable(error);
