@@ -143,6 +143,24 @@ async function upgradeStores(): Promise<string[]> {
   return migrated;
 }
 
+/** What update.sh's workflow_refresh_permissions does when no store needs upgrading: check every
+ * database; apply this release's list only to one that fails, then check it again. Returns which
+ * databases it applied the list to. */
+async function refreshPermissions(): Promise<string[]> {
+  const check = (database: string) => engine(database === TEMPLATE ? verifyTemplateArgs() : verifyArgs(database));
+  const repaired: string[] = [];
+  for (const { database, state } of await survey()) {
+    expect(state).toBe('current');
+    if ((await check(database)).code === 0) continue;
+    const applied = await engine(applyArgs(database));
+    expect(applied.code, applied.stderr).toBe(0);
+    const again = await check(database);
+    expect(again.code, again.stderr).toBe(0);
+    repaired.push(database);
+  }
+  return repaired;
+}
+
 // Builds the previous release's schema in one database: the package's own first 20 steps through
 // its own migrator, then its job queue, as its setupDatabase() did. Run like the store program.
 const PREVIOUS_SCHEMA = `
@@ -489,6 +507,62 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
     // failures holds 'permission denied for function complete_jobs' and two jobs are left.
     expect(outcome.failures, JSON.stringify(outcome)).toEqual([]);
     expect(outcome).toMatchObject({ handled: [1], absorbed: 1, left: 0 });
+  }, 600_000);
+
+  it('an update finds the one store already at this release that lacks a permission, repairs only it, and its job then completes exactly once', async () => {
+    await twoAgents();
+    await upgradeStores();
+    // What a release that changes only the list leaves behind: every store current, one grant missing.
+    await asOwner(STORE_A, (owner) => owner.query('REVOKE EXECUTE ON FUNCTION graphile_worker.complete_jobs(bigint[]) FROM lares_workflow'));
+    const broken = await engine(verifyArgs(STORE_A));
+    expect(broken.code).toBe(1);
+    expect(broken.stderr).toContain('Workflow runtime function privileges are incomplete');
+    const healthy = async () => ({ template: await schemaOf(TEMPLATE), other: await schemaOf(STORE_B) });
+    const untouched = await healthy();
+
+    expect(await refreshPermissions()).toEqual([STORE_A]);
+
+    // Where the check passed nothing was applied; the repaired store passes as the agent login.
+    expect(await healthy()).toEqual(untouched);
+    await asRuntime(STORE_A, (runtime) => verifyWorkflowRuntimePrivileges(runtime));
+    const worked = await run(process.execPath, ['--input-type=module', '-'], {
+      cwd: creative, input: QUEUE_JOB,
+      env: {
+        PATH: process.env.PATH, HOME: process.env.HOME, PGPASSWORD: password('workflow'),
+        WORKFLOW_POSTGRES_URL: `postgres://lares_workflow@${host}:${port}/${STORE_A}`,
+      },
+    });
+    expect(worked.code, worked.stderr).toBe(0);
+    const outcome = JSON.parse(worked.stdout.trim().split('\n').at(-1)!);
+    expect(outcome.failures, JSON.stringify(outcome)).toEqual([]);
+    expect(outcome).toMatchObject({ user: 'lares_workflow', handled: [1], absorbed: 1, left: 0 });
+    // The next update finds nothing to repair.
+    expect(await refreshPermissions()).toEqual([]);
+  }, 600_000);
+
+  it('an apply that fails part-way leaves every permission exactly as it was', async () => {
+    await twoAgents();
+    await upgradeStores();
+    // The first function the list grants is not there under its name, so the apply fails after it
+    // has already taken away every function right: only the transaction puts them back.
+    const signature = '(text,json,text,timestamptz,integer,text,integer,text[],text)';
+    await asOwner(STORE_A, (owner) => owner.query(`ALTER FUNCTION graphile_worker.add_job${signature} RENAME TO add_job_elsewhere`));
+    const before = await schemaOf(STORE_A);
+    const failed = await engine(applyArgs(STORE_A));
+    expect(failed.code).toBe(1);
+    expect(failed.stderr).toMatch(/function graphile_worker\.add_job\(.*\) does not exist/);
+    expect(await schemaOf(STORE_A)).toEqual(before);
+    await asRuntime(STORE_A, async (runtime) => {
+      expect((await runtime.query(`SELECT
+        has_function_privilege(current_user,'graphile_worker.add_jobs(graphile_worker.job_spec[],boolean)','EXECUTE') AS add_jobs,
+        has_function_privilege(current_user,'graphile_worker.complete_jobs(bigint[])','EXECUTE') AS complete_jobs,
+        has_function_privilege(current_user,'graphile_worker.force_unlock_workers(text[])','EXECUTE') AS force_unlock_workers`)).rows[0])
+        .toEqual({ add_jobs: true, complete_jobs: true, force_unlock_workers: true });
+    });
+    await asOwner(STORE_A, (owner) => owner.query(`ALTER FUNCTION graphile_worker.add_job_elsewhere${signature} RENAME TO add_job`));
+    const applied = await engine(applyArgs(STORE_A));
+    expect(applied.code, applied.stderr).toBe(0);
+    expect((await engine(verifyArgs(STORE_A))).code).toBe(0);
   }, 600_000);
 
   it('refuses a store whose record is not exactly what the previous release left, before anything is changed', async () => {
