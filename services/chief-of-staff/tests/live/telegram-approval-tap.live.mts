@@ -9,7 +9,7 @@
  *
  *   1. THE UPDATE SHAPE. The gate reads `callback_query.from.id`, `callback_query.id`,
  *      `callback_query.message.chat.id` and `callback_query.data` off the body Telegram POSTs.
- *      If `from.id` ever arrives as something `asId` refuses, an allowed approver's own tap is
+ *      If `from.id` ever arrives as something `asId` refuses, the owner's own tap is
  *      REFUSED — a false alarm the owner would meet as "you may not answer your own card". If the
  *      data on a real card is not what the gate recognises as an approval tap (`eve:` followed by
  *      a base-36 number), EVERY tap on a card is refused, the owner's included — the gate fails
