@@ -7,7 +7,7 @@
 // is not in Chromium's own trust store; only this browser ignores that, never the installation.
 // Chromium also refuses any stand-in for the sign-in provider's address outright, because that
 // address is pinned inside it, so this script carries those requests itself.
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const { chromium } = createRequire(`${process.env.PLAYWRIGHT_DIR}/`)("playwright");
@@ -128,6 +128,10 @@ const steps = {
   // The owner comes back to the page after the claim was sent and applies it.
   "finish-slack": (page) => finishDoor(page, "slack"),
   "finish-telegram": (page) => finishDoor(page, "telegram"),
+  // A connected door's "Send a test brief" button, pressed once, then the page's own status line
+  // read until it says how it ended.
+  "test-brief-slack": (page) => testBrief(page, "slack"),
+  "test-brief-telegram": (page) => testBrief(page, "telegram"),
 };
 
 const DOOR_LABEL = { slack: "Slack", telegram: "Telegram" };
@@ -244,6 +248,67 @@ async function finishDoor(page, kind) {
   await pressApply(page);
   // Applying reloads the page; the door then reads Connected.
   await waitForDoor(page, group.getByText("Connected", { exact: true }), `${DOOR_LABEL[kind]} as Connected`);
+}
+
+// The longest the page can still read as on its way: a request is claimed at the latest when it is
+// ten minutes old (the product's stale limit), and the test pass then ends within 150 seconds.
+const BRIEF_MS = 780_000;
+
+// The button is pressed at most once in the whole run, whatever happens to this step: never when an
+// earlier attempt pressed it (the `.pressed` file, written just before the press), when the probe found
+// a request row for this door (`.asked`, written by the probe before every attempt), or when the door
+// already shows a test-brief status line. Everything seen is written to `<door>.json` for the probe.
+async function testBrief(page, kind) {
+  const dir = settings.testBriefDir;
+  const file = `${dir}/${kind}.json`;
+  const earlier = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  const seen = { attempts: (earlier.attempts ?? 0) + 1, presses: earlier.presses ?? 0, sentences: earlier.sentences ?? [], final: null, overview: null };
+  const save = () => writeFileSync(file, JSON.stringify(seen, null, 2));
+  save();
+  const group = await doorGroup(page, kind);
+  const button = group.getByRole("button", { name: `Send a test brief to ${DOOR_LABEL[kind]}`, exact: true });
+  await button.waitFor({ timeout: 60_000 });
+  // The status line is fetched after the door rows; give it the same moment.
+  await page.waitForTimeout(3000);
+  const line = group.locator('.lares-test-brief [role="status"]');
+  const refusal = group.locator('.lares-test-brief [role="alert"]');
+  const said = async () => ((await refusal.count()) ? await refusal.first().innerText().catch(() => "")
+    : (await line.count()) ? await line.first().innerText().catch(() => "") : "").trim();
+  seen.statusBeforePress = await said();
+  const held = [`${dir}/${kind}.pressed`, `${dir}/${kind}.asked`].filter((path) => existsSync(path));
+  console.log(`the ${DOOR_LABEL[kind]} test brief reads: ${seen.statusBeforePress || "(no status line)"}; ${held.length ? `not pressing (${held.join(", ")})` : "pressing"}`);
+  if (!held.length && !seen.statusBeforePress) {
+    writeFileSync(`${dir}/${kind}.pressed`, new Date().toISOString());
+    seen.presses += 1;
+    seen.pressedAt = new Date().toISOString();
+    save();
+    await button.click({ timeout: 60_000 });
+  }
+  // The page keeps the button disabled while the request is on its way, so a status line with the
+  // button usable again is the page's own final word.
+  const deadline = Date.now() + BRIEF_MS;
+  let last = "";
+  for (;;) {
+    const now = await said();
+    if (now && now !== last) {
+      seen.sentences.push({ at: new Date().toISOString(), said: now });
+      last = now;
+      save();
+    }
+    if (now && await button.isEnabled().catch(() => false)) {
+      seen.final = now;
+      break;
+    }
+    if (Date.now() > deadline) break;
+    await page.waitForTimeout(2000);
+  }
+  console.log(`the ${DOOR_LABEL[kind]} test brief ended as: ${seen.final ?? `(still "${last}" after ${BRIEF_MS / 1000} seconds)`}`);
+  save();
+  // What the console's overview says about the agent's work afterwards.
+  await page.goto(`${origin}/agents`);
+  const cell = page.locator("tr", { has: page.locator(`a[href="/agents/${settings.agent}"]`) }).locator('td[data-label="Workflows"]');
+  seen.overview = (await cell.first().innerText({ timeout: 30_000 }).catch(() => "")).trim() || null;
+  save();
 }
 
 // The door credentials are test values, but are still never printed.

@@ -107,6 +107,9 @@ function serve(fixture) {
         : called?.name === settings.noteTool ? settings.noteReply : settings.toolReply };
     }
     const asked = textOf(last);
+    // A test brief: its prompt starts with the product's own marker block, and is followed by the
+    // brief's real material, which may quote earlier proof prompts. So it is decided first.
+    if (settings.briefMarker && asked.includes(settings.briefMarker)) return { text: settings.briefReply };
     if (asked.includes(settings.approvalPrompt)) {
       return toolNames.includes(settings.approvalTool) ? { tool: settings.approvalTool, input: settings.approvalInput } : { text: "PROOF_NO_USABLE_TOOL" };
     }
@@ -138,6 +141,10 @@ function serve(fixture) {
       lastText: textOf(parsed.messages?.at(-1)).slice(-200), tools: (parsed.tools ?? []).map((tool) => tool.name),
       // A door wraps the person's words in its own context, so the marker may sit outside the last 200 characters.
       doorTurn: settings.doorPrompt ? (textOf(parsed.messages?.at(-1)).match(new RegExp(`${settings.doorPrompt} \\w+`))?.[0] ?? null) : null,
+      // A test brief's call: the product's marker in the last message (what `decide` answers on), and,
+      // for a red run's triage, whether it sits anywhere else in the request.
+      briefTurn: Boolean(settings.briefMarker) && textOf(parsed.messages?.at(-1)).includes(settings.briefMarker),
+      briefMarkerAnywhere: Boolean(settings.briefMarker) && JSON.stringify([parsed.system ?? null, parsed.messages ?? []]).includes(JSON.stringify(settings.briefMarker).slice(1, -1)),
       returnedCallers: toolCalls.map((block) => block.caller ?? null), answer });
     const id = `msg_01${randomBytes(11).toString("hex")}`;
     const usage = { input_tokens: 120, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 18, service_tier: "standard" };
