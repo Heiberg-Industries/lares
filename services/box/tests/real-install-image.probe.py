@@ -128,7 +128,7 @@ LIMITS = [
     "One member owns, adopted and claimed everything, so for a test brief 'charged to the right payer' cannot be told apart "
     "from 'charged to the installation owner'; a shared agent's refused brief is covered by unit tests only.",
     "A test brief's budget rows carry no conversation, so they are found by their time window and the agent's chat model: "
-    "another owner job on that model in the same minutes (a real brief or a digest into web chat) cannot be told apart from "
+    "another owner job on that model in the same minutes (a real brief or a digest) cannot be told apart from "
     "it by the rows alone; the stand-in's record of the call carrying the product's marker is what ties the check to the test brief.",
     "What eve does when a real brief meets a Telegram conversation still busy with a test brief is not exercised.",
     "Only a direct message is sent on Slack; a turn started by mentioning the agent in a room is not exercised.",
