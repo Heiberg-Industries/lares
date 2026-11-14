@@ -6,6 +6,7 @@ import { privateResumeAdmission, requirePersistedConsoleModelResume } from './pr
 import { PgGrantStore } from './grant-store.js';
 import { currentDoor, managedIdentity, type ChatDoor } from './door-authority.js';
 import { payloadFingerprint } from './approval-ledger.js';
+import { ownerOnlyAgentStatement } from './owner-only-agent.js';
 
 /**
  * Persisted evidence describing the console authority that created a budget intent.
@@ -139,13 +140,7 @@ async function requireActiveOwner(db:SourceDatabase,ownerId:string):Promise<void
  * transaction ends: changing either has to advance that row's revision first. A member who joins
  * afterwards does not touch that row, and is seen when this runs again as the ticket is admitted. */
 async function requireOwnerOnlyAgent(db:SourceDatabase,ownerId:string,agentName:string):Promise<void> {
-  const own=await db.query(`SELECT 1 FROM agent_access a WHERE a.agent_name=$2 AND a.owner_member_id=$1
-    AND NOT EXISTS(SELECT 1 FROM resource_grants g WHERE g.resource_kind='agent' AND g.resource_id=a.agent_name
-      AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp())
-      AND ((g.principal_member_id IS NOT NULL AND g.principal_member_id<>$1)
-        OR (g.principal_organisation_id IS NOT NULL AND EXISTS(SELECT 1 FROM users u
-          WHERE u.org_id=g.principal_organisation_id AND u.id<>$1 AND u.status='active' AND u.org_role<>'restricted'))))
-    FOR SHARE OF a`,[ownerId,agentName]);
+  const own=await db.query(ownerOnlyAgentStatement('share'),[ownerId,agentName]);
   if(own.rows.length!==1)throw new Error('Stale authority');
 }
 
