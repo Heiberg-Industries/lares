@@ -91,6 +91,20 @@ const fake = vi.hoisted(() => {
   };
 });
 
+// No matrix turn asks a card, and outside eve there is no session state to read (which the real
+// module treats as "a card was asked"). The durable mark itself: tests/approval-card-turns.test.ts.
+// Likewise no matrix turn applied an answer to a card, so the rule that refuses an action reaching
+// other people in that reply does not apply (still refusing a turn with no id, as the real one does);
+// the rule itself: tests/turn-after-answered-card.test.ts.
+vi.mock("../lib/approval-card-turns.js", async (original) => {
+  const real = await original<typeof import("../lib/approval-card-turns.js")>();
+  return {
+    ...real,
+    turnAskedACard: (session: { turn?: { id?: unknown } | null } | null | undefined) => typeof session?.turn?.id !== "string" || !session.turn.id,
+    outwardActionAfterAnswerRefusal: (session: { turn?: { id?: unknown } | null } | null | undefined, reason = real.ANSWERED_TURN_REFUSED) =>
+      typeof session?.turn?.id === "string" && session.turn.id ? undefined : { type: "denied" as const, reason },
+  };
+});
 vi.mock("@lares/agent-kit/db", async (original) => ({
   ...(await original<typeof import("@lares/agent-kit/db")>()),
   getPool: () => fake.pool,
@@ -143,6 +157,7 @@ vi.mock("../lib/conversation-continuity.js", async (original) => ({
 import { defaultTelegramAuth } from "eve/channels/telegram";
 import { setBoardDeps } from "@lares/agent-kit/board-approval";
 import { CONSOLE_AUTHORITY_REFUSED } from "@lares/agent-kit/console-turn-authority";
+import { SHARED_ROOM_REFUSED, SHARED_ROOM_UNAVAILABLE, sharedRoomHiddenTool } from "@lares/agent-kit/private-console-surface";
 import { parseDefinition } from "@lares/agent-kit/definition";
 import { interceptSlackClaim, interceptTelegramClaim } from "@lares/agent-kit/door-channels";
 
@@ -151,10 +166,13 @@ import { admitSlackDirectMessage, admitSlackMessage } from "../agent/channels/sl
 import { hasDispatchableContent, isAllowedTelegramMessage } from "../agent/channels/telegram.js";
 import catalogueResolver from "../agent/tools/catalogue.js";
 import commercialResolver from "../agent/tools/commercial_who_to_contact.js";
-import loadSkillResolver from "../agent/tools/load_skill.js";
 import publicDocResolver from "../agent/tools/public_doc.js";
+import laresDocsSkill from "../agent/skills/lares-docs.js";
+import salesOutreachSkill from "../agent/skills/sales-outreach.js";
+import signalsSkill from "../agent/skills/signals.js";
 import { CATALOGUE } from "../catalogue/index.js";
-import { approverFrom, assertApprover, humanTurnRefusal } from "../lib/approvals.js";
+import { runDynamic, type MemoStore } from "../../../packages/agent-kit/tests/helpers/eve-dynamic.js";
+import { approverFrom, assertApprover, catalogueApprovalResponse, humanTurnRefusal } from "../lib/approvals.js";
 import { calendarApprovalAdapter } from "../lib/calendar-approval.js";
 import { tracksApprovalAdapter } from "../lib/tracks-approval.js";
 import { vaultNoteApprovalAdapter } from "../lib/vault-note-write.js";
@@ -176,40 +194,42 @@ type Row = readonly [tool: string, slackDm: Cell, slackRoom: Cell, telegram: Cel
 // baseline snapshot was captured against. On Slack and Telegram, tools that ask first follow that
 // definition ("gated"); no permissions-board row overrides it here. `read_url` runs because the
 // turn has not yet read anyone else's words; after it has, it asks first on those doors.
+// The Slack room column hides what the private console treats as one person's own, plus note
+// search and backlinks (`sharedRoomHiddenTool` in agent-kit): the room reads along with the answer.
 //
 //                                        Slack    Slack    Tele-    Web      Web
 //                                        owner    owner    gram     owner    member
 //                                        DM       room     owner
 const TABLE: readonly Row[] = [
   // Mail
-  ["gmail_read",                          R,       R,       R,       R,       R],
-  ["gmail_search",                        R,       R,       R,       R,       R],
+  ["gmail_read",                          R,       H,       R,       R,       R],
+  ["gmail_search",                        R,       H,       R,       R,       R],
   ["gmail_signature",                     R,       R,       R,       H,       H],
   ["gmail_send",                          C,       C,       C,       H,       H],
   // Found: web chat shows the owner these two and refuses every call (see the `it.fails` below).
-  ["gmail_draft",                         R,       R,       R,       X,       H],
-  ["gmail_draft_recipients",              R,       R,       R,       X,       H],
+  ["gmail_draft",                         R,       H,       R,       X,       H],
+  ["gmail_draft_recipients",              R,       H,       R,       X,       H],
   // Calendar
-  ["calendar_list_events",                R,       R,       R,       R,       H],
-  ["calendar_list_calendars",             R,       R,       R,       R,       H],
-  ["calendar_free_busy",                  R,       R,       R,       R,       H],
-  ["calendar_conflicts",                  R,       R,       R,       R,       H],
-  ["calendar_create_event",               C,       C,       C,       C,       H],
-  ["calendar_update_event",               C,       C,       C,       C,       H],
-  ["calendar_delete_event",               C,       C,       C,       C,       H],
+  ["calendar_list_events",                R,       H,       R,       R,       H],
+  ["calendar_list_calendars",             R,       H,       R,       R,       H],
+  ["calendar_free_busy",                  R,       H,       R,       R,       H],
+  ["calendar_conflicts",                  R,       H,       R,       R,       H],
+  ["calendar_create_event",               C,       H,       C,       C,       H],
+  ["calendar_update_event",               C,       H,       C,       C,       H],
+  ["calendar_delete_event",               C,       H,       C,       C,       H],
   // Notes (the Vault). Found: Slack and Telegram search notes but cannot read or list them.
   ["agent-kit__vault_read",               H,       H,       H,       R,       R],
   ["agent-kit__vault_list",               H,       H,       H,       R,       R],
-  ["agent-kit__vault_search",             R,       R,       R,       H,       H],
-  ["agent-kit__vault_backlinks",          R,       R,       R,       H,       H],
-  ["agent-kit__vault_write",              C,       C,       C,       C,       C],
+  ["agent-kit__vault_search",             R,       H,       R,       H,       H],
+  ["agent-kit__vault_backlinks",          R,       H,       R,       H,       H],
+  ["agent-kit__vault_write",              C,       H,       C,       C,       C],
   ["agent-kit__vault_file",               C,       C,       C,       H,       H],
   ["agent-kit__vault_drop",               C,       C,       C,       H,       H],
   ["save_note",                           R,       R,       R,       H,       H],
   ["atlas_proposals",                     R,       R,       R,       H,       H],
   ["atlas_resolve_proposal",              C,       C,       C,       H,       H],
   // Links. Found: same as the drafts, shown to the owner in web chat and always refused.
-  ["read_url",                            R,       R,       R,       X,       H],
+  ["read_url",                            R,       H,       R,       X,       H],
   // What the agent remembers
   ["remember",                            R,       R,       R,       H,       H],
   ["forget",                              C,       C,       C,       H,       H],
@@ -229,7 +249,7 @@ const TABLE: readonly Row[] = [
   ["remind_cancel",                       C,       C,       C,       H,       H],
   ["obligation_dismiss",                  R,       R,       R,       H,       H],
   // People and the CRM
-  ["person_lookup",                       R,       R,       R,       H,       H],
+  ["person_lookup",                       R,       H,       R,       H,       H],
   ["identity_my_addresses",               R,       R,       R,       H,       H],
   ["twenty_lookup",                       R,       R,       R,       H,       H],
   ["twenty_get_person",                   R,       R,       R,       H,       H],
@@ -255,7 +275,7 @@ const TABLE: readonly Row[] = [
   ["set_language",                        R,       R,       R,       H,       H],
   ["voice_guide",                         R,       R,       R,       H,       H],
   // Shown on a door but missing from the baseline snapshot (see NOT_IN_BASELINE).
-  ["gmail_accounts",                      R,       R,       R,       R,       R],
+  ["gmail_accounts",                      R,       H,       R,       R,       R],
   ["tracks_list",                         H,       H,       H,       R,       R],
   ["track_items",                         H,       H,       H,       R,       R],
   ["track_add_item",                      H,       H,       H,       C,       C],
@@ -272,19 +292,27 @@ type OwnCell = typeof S | typeof H;
 type OwnRow = readonly [tool: string, slackDm: OwnCell, slackRoom: OwnCell, telegram: OwnCell, webOwner: OwnCell, webMember: OwnCell];
 const OWN_RESOLVER: readonly OwnRow[] = [
   ["commercial_who_to_contact",           S,       S,       S,       H,       H],
-  ["load_skill",                          S,       S,       S,       S,       S],
   ["lares_read_public_doc",               S,       S,       S,       S,       S],
+  // The skills replace main's `load_skill` rows. On eve 1.0 a skill the conversation may not have is simply absent
+  // (there is no authored loader to refuse it), so what a door can load is what its skill files return.
+  ["skill lares-docs",                    S,       S,       S,       S,       S],
+  ["skill sales-outreach",                S,       S,       S,       H,       H],
+  ["skill signals",                       S,       S,       S,       H,       H],
 ];
 
 /** Baseline tools no door decides. Every other baseline tool must have a row above. */
 const NOT_DOOR_DEPENDENT: Readonly<Record<string, string>> = {
   ask_question: "eve's own tool for asking the person a question; no code in this repository adds, removes or guards it per door",
   todo: "eve's own task list for the model; no code in this repository adds, removes or guards it per door",
+  load_skill: "gone on eve 1.0: skills are loaded with eve's own eve__skill; the per-door rows `skill lares-docs`, `skill sales-outreach` and `skill signals` below replace it",
 };
 
 /** Rows for tools the baseline snapshot does not list, each with why. The snapshot is evidence
  *  of an earlier capture and is not regenerated here; this list makes the gap explicit. */
 const NOT_IN_BASELINE: Readonly<Record<string, string>> = {
+  "skill lares-docs": "an instruction skill, not a tool: the tool snapshot never lists skills (main's matrix reached it through load_skill)",
+  "skill sales-outreach": "an instruction skill, not a tool: the tool snapshot never lists skills (main's matrix reached it through load_skill)",
+  "skill signals": "an instruction skill, not a tool: the tool snapshot never lists skills (main's matrix reached it through load_skill)",
   gmail_accounts: "shown on every door today; the snapshot predates it",
   lares_read_public_doc: "shown on every door today; the snapshot predates it",
   tracks_list: "web chat only; the snapshot was captured from a session that was not web chat",
@@ -306,6 +334,15 @@ const REPRESENTATIVE: ReadonlyArray<readonly [label: string, tool: string]> = [
   ["the note search", "agent-kit__vault_search"],
   ["the note write", "agent-kit__vault_write"],
   ["the owner-only link read", "read_url"],
+];
+
+/** What a conversation started in a shared Slack room is not offered: the room's H cells that a DM shows. */
+const SHARED_ROOM_HIDDEN: readonly string[] = [
+  "gmail_accounts", "gmail_read", "gmail_search", "gmail_draft", "gmail_draft_recipients",
+  "calendar_list_events", "calendar_list_calendars", "calendar_free_busy", "calendar_conflicts",
+  "calendar_create_event", "calendar_update_event", "calendar_delete_event",
+  "agent-kit__vault_search", "agent-kit__vault_backlinks", "agent-kit__vault_write", "read_url",
+  "person_lookup",
 ];
 
 // ─── The doors, and the fake messages that knock on them ──────────────────────────────────────
@@ -376,7 +413,9 @@ const sessionWith = (id: string, auth: unknown): Session => ({ session: { id, tu
 
 type EmittedTool = { approval?: { request(ctx: unknown): Promise<unknown> } };
 const resolveCatalogue = async (session: Session): Promise<Record<string, EmittedTool>> =>
-  (await catalogueResolver.events["session.started"]!({} as never, session as never)) as unknown as Record<string, EmittedTool>;
+  // eve 1.0: the resolver is a `defineDynamic` function of the session (it was an `events["session.started"]` map);
+  // `runDynamic` calls it with a JSON-only `ctx.memo`, as eve does before a model call.
+  (await runDynamic(catalogueResolver, session as never)) as unknown as Record<string, EmittedTool>;
 
 /** Inputs for the tools whose own policy reads its input before it decides. */
 const INPUT: Readonly<Record<string, unknown>> = {
@@ -519,7 +558,7 @@ describe("the door opens a turn for the people it admits", () => {
     expect(auth).toMatchObject({ authenticator: "slack-webhook", attributes: { user_id: SLACK_OWNER, channel_id: "D0DIRECT" } });
   });
 
-  // Confirms the suspicion: the room is recorded on the session, and nothing downstream reads it.
+  // The room is recorded on the session; the tool list reads it from the session's initiator.
   it("Slack · owner · mention in a shared channel: opens a turn as the owner, the same as a direct message", async () => {
     const auth = await knockOnSlack(slackMessage({ user: SLACK_OWNER, room: true }));
     expect(auth).toMatchObject({ authenticator: "slack-webhook", attributes: { user_id: SLACK_OWNER, channel_id: "C0SHAREDROOM" } });
@@ -561,7 +600,11 @@ describe("what each door shows and allows", () => {
 
     it(`${title}: a tool it does not see is refused by the door's own rule, whatever the tool would have asked`, async () => {
       const { reasons } = await observe(key);
-      for (const row of TABLE) if (row[column(key)] === H) expect(reasons[row[0]], row[0]).toBe(CONSOLE_AUTHORITY_REFUSED);
+      // A shared room says why in words for the room, and points to a direct message only for a
+      // tool the direct-message column shows; every other door keeps the console's wording.
+      const rule = (row: Row) => key !== "slackRoom" ? CONSOLE_AUTHORITY_REFUSED
+        : row[column("slackDm")] === H ? SHARED_ROOM_UNAVAILABLE : SHARED_ROOM_REFUSED;
+      for (const row of TABLE) if (row[column(key)] === H) expect(reasons[row[0]], row[0]).toBe(rule(row));
     });
 
     for (const [label, tool] of REPRESENTATIVE) {
@@ -580,13 +623,14 @@ describe("what each door shows and allows", () => {
 // ─── Tools with their own resolver ────────────────────────────────────────────────────────────
 
 describe("tools with their own resolver", () => {
-  const started = async (resolver: { events: Record<string, unknown> }, session: Session): Promise<unknown> =>
-    (resolver.events["session.started"] as (event: unknown, ctx: unknown) => Promise<unknown>)({}, session);
+  const started = async (resolver: unknown, session: Session): Promise<unknown> => runDynamic(resolver, session as never);
   const SEEN: Readonly<Record<string, (session: Session) => Promise<boolean>>> = {
     commercial_who_to_contact: async (session) => (await started(commercialResolver, session)) !== null,
-    load_skill: async (session) => (await started(loadSkillResolver, session)) !== null,
     lares_read_public_doc: async (session) =>
       "lares_read_public_doc" in ((await started(publicDocResolver, session)) as Record<string, unknown>),
+    "skill lares-docs": async (session) => (await started(laresDocsSkill, session)) !== null,
+    "skill sales-outreach": async (session) => (await started(salesOutreachSkill, session)) !== null,
+    "skill signals": async (session) => (await started(signalsSkill, session)) !== null,
   };
 
   for (const { key, title } of DOORS) {
@@ -605,21 +649,24 @@ describe("tools with their own resolver", () => {
       await expect(native.execute({}, (await observe(key)).session)).rejects.toThrow(CONSOLE_AUTHORITY_REFUSED);
     });
 
-    it(`${door(key).title}: load_skill offers the public help skill only, and refuses the others`, async () => {
+    // Main's "load_skill offers the public help skill only, and refuses the others": on eve 1.0 the others are not there.
+    it(`${door(key).title}: offers the public help skill only; the others are absent, not refused`, async () => {
       const { session } = await observe(key);
-      const tool = (await started(loadSkillResolver, session)) as { description: string; execute(input: unknown, ctx: unknown): Promise<unknown> };
-      expect(tool.description).toContain("Available skills: lares-docs.");
-      await expect(tool.execute({ skill: "signals" }, session)).rejects.toThrow();
-      await expect(tool.execute({ skill: "lares-docs" }, session)).resolves.toContain("Public Lares documentation");
+      const docs = (await started(laresDocsSkill, session)) as { description?: string; content?: string } | null;
+      expect(docs).not.toBeNull();
+      expect(JSON.stringify(docs)).toContain("Public Lares documentation");
+      expect(await started(signalsSkill, session)).toBeNull();
+      expect(await started(salesOutreachSkill, session)).toBeNull();
     });
   }
 
+  // Main's "load_skill offers and loads the agent's own skills" for the chat doors.
   for (const key of ["slackDm", "slackRoom", "telegram"] as const) {
-    it(`${door(key).title}: load_skill offers and loads the agent's own skills`, async () => {
+    it(`${door(key).title}: offers the agent's own skills and their text`, async () => {
       const { session } = await observe(key);
-      const tool = (await started(loadSkillResolver, session)) as { description: string; execute(input: unknown, ctx: unknown): Promise<unknown> };
-      expect(tool.description).toContain("Available skills: lares-docs, sales-outreach, signals.");
-      await expect(tool.execute({ skill: "signals" }, session)).resolves.toContain("# Signals");
+      expect(JSON.stringify(await started(signalsSkill, session))).toContain("# Signals");
+      expect(await started(salesOutreachSkill, session)).not.toBeNull();
+      expect(await started(laresDocsSkill, session)).not.toBeNull();
     });
   }
 });
@@ -681,8 +728,8 @@ describe("an unauthorised or unknown speaker", () => {
     const stranger = sessionWith("matrix-stranger", { authenticator: "slack-webhook", attributes: { user_id: SLACK_STRANGER, channel_id: "D0OTHER" } });
     expect(Object.keys(await resolveCatalogue(stranger)).sort()).toEqual((await observe("slackDm")).shown);
     expect(() => assertApprover(approverFrom(stranger.session.auth))).toThrow(/not an allowed approver/);
-    expect(humanTurnRefusal(stranger.session.auth, "Not saved.")).toContain("not as the owner");
-    expect(humanTurnRefusal((await observe("slackDm")).session.session.auth, "Not saved.")).toBeNull();
+    expect(humanTurnRefusal(stranger.session, "Not saved.")).toContain("not as the owner");
+    expect(humanTurnRefusal((await observe("slackDm")).session.session, "Not saved.")).toBeNull();
   });
 
   // The agent's route password is held by the console and the keeper. A request that carries it
@@ -702,18 +749,121 @@ describe("an unauthorised or unknown speaker", () => {
 // ─── Found: what the table records today, and what should hold instead ────────────────────────
 
 describe("Found: what the table records today, and what should hold instead", () => {
-  // Found: a shared-channel mention gets the direct-message list; the resolver in agent/tools/catalogue.ts never reads the audience.
-  it.fails("Slack · owner · mention in a shared channel: does not see private mail, calendar or note reads the room would read along with", async () => {
+  // Fixed: a shared-channel mention no longer gets the direct-message list.
+  it("Slack · owner · mention in a shared channel: does not see private mail, calendar or note reads the room would read along with", async () => {
     const { shown } = await observe("slackRoom");
     expect(shown.filter((tool) => ["gmail_read", "gmail_search", "calendar_list_events", "agent-kit__vault_search"].includes(tool))).toEqual([]);
   });
 
-  // The same finding, as the difference it should make: today the two lists are identical.
-  it("Slack · owner · mention in a shared channel: today sees and may call exactly what a direct message does", async () => {
+  // The same fix, as the difference it makes: the room sees the direct-message list less exactly the
+  // private tools, and a call of one of those is refused; every other call goes as it does in a DM.
+  it("Slack · owner · mention in a shared channel: sees and may call what a direct message does, less the private tools", async () => {
     const room = await observe("slackRoom");
     const direct = await observe("slackDm");
-    expect(room.shown).toEqual(direct.shown);
-    expect(room.calls).toEqual(direct.calls);
+    expect(direct.shown).toEqual(expect.arrayContaining([...SHARED_ROOM_HIDDEN]));
+    expect(room.shown).toEqual(direct.shown.filter((tool) => !SHARED_ROOM_HIDDEN.includes(tool)));
+    for (const tool of SHARED_ROOM_HIDDEN) expect(room.reasons[tool], tool).toBe(SHARED_ROOM_REFUSED);
+    const others = (calls: Record<string, Call>) => Object.fromEntries(Object.entries(calls).filter(([tool]) => !SHARED_ROOM_HIDDEN.includes(tool)));
+    expect(others(room.calls)).toEqual(others(direct.calls));
+  });
+
+  it("the shared room hides exactly the DM tools the private-surface rule names", () => {
+    const dm = TABLE.filter((row) => row[column("slackDm")] !== H).map((row) => row[0]);
+    expect(dm.filter((tool) => sharedRoomHiddenTool(tool)).sort()).toEqual([...SHARED_ROOM_HIDDEN].sort());
+  });
+
+  // A card answered in the room makes the answerer the session's current identity (agent/channels/slack.ts).
+  // The room is read from the initiator, so neither the saved list, a rebuilt one, nor the guard changes.
+  describe("a card answered in a shared room cannot bring the hidden tools back", () => {
+    const roomOwner = { authenticator: "slack-webhook", attributes: { user_id: SLACK_OWNER, channel_id: "C0SHAREDROOM" } };
+    const answeredFromDm = { authenticator: "slack-webhook", attributes: { user_id: SLACK_OWNER, channel_id: "D0DIRECT" } };
+    const after = (id: string): Session => ({ session: { id, turn: { id: "turn-2", sequence: 1 },
+      auth: { current: answeredFromDm, initiator: roomOwner } } });
+
+    it("the saved list of the same conversation, evaluated again after the answer", async () => {
+      const store: MemoStore = new Map();
+      const before = Object.keys(await runDynamic(catalogueResolver, sessionWith("matrix-room-card", roomOwner) as never, store)).sort();
+      const later = Object.keys(await runDynamic(catalogueResolver, after("matrix-room-card") as never, store)).sort();
+      expect(later).toEqual(before);
+      expect(later.filter((tool) => SHARED_ROOM_HIDDEN.includes(tool))).toEqual([]);
+    });
+
+    it("a list rebuilt from nothing (a restart), and a new conversation in the same room", async () => {
+      const room = (await observe("slackRoom")).shown;
+      expect(Object.keys(await runDynamic(catalogueResolver, after("matrix-room-card") as never, new Map())).sort()).toEqual(room);
+      expect(Object.keys(await runDynamic(catalogueResolver, after("matrix-room-next") as never, new Map())).sort()).toEqual(room);
+    });
+
+    it("a call of a hidden tool after the answer is refused by the door's own rule", async () => {
+      for (const tool of ["gmail_read", "calendar_list_events", "agent-kit__vault_search"]) {
+        expect((await attempt(after("matrix-room-card"), tool, undefined)).reason, tool).toBe(SHARED_ROOM_REFUSED);
+      }
+    });
+
+    // A card for a hidden tool (raised before the room lost it, or replayed): the owner's Approve is
+    // refused, and the tool, called with a handle from a direct message's list, never runs its body.
+    it("answering a card for a hidden tool does not run the tool", async () => {
+      const tool = "calendar_create_event";
+      const answer = { session: { id: "matrix-room-card", initiator: roomOwner },
+        response: { decision: "approve", principal: roomOwner }, request: { interactionId: "interaction-1", toolInput: {} } };
+      await expect(catalogueApprovalResponse(tool, answer)).rejects.toThrow(SHARED_ROOM_REFUSED);
+
+      const body = vi.spyOn(CATALOGUE[tool]!.tool as unknown as { execute: (...args: unknown[]) => unknown }, "execute");
+      const handle = (await resolveCatalogue(sessionWith("matrix-dm-handle", answeredFromDm)))[tool] as unknown as
+        { execute(input: unknown, ctx: unknown): Promise<unknown> };
+      expect(handle).toBeDefined();
+      const approved = { ...after("matrix-room-card"), toolName: tool, toolInput: {}, callId: "call-room-card",
+        approval: { responder: roomOwner } };
+      await expect(handle.execute({}, approved)).rejects.toThrow(SHARED_ROOM_REFUSED);
+      expect(body).not.toHaveBeenCalled();
+      body.mockRestore();
+    });
+  });
+
+  // The people lookup reads, in one call, the mail with a person, the meetings with them and note excerpts.
+  it("people lookup: hidden and refused in a shared room; unchanged in a direct message, Telegram and web chat", async () => {
+    const room = await observe("slackRoom");
+    expect(room.shown).not.toContain("person_lookup");
+    expect(room.reasons["person_lookup"]).toBe(SHARED_ROOM_REFUSED);
+    for (const key of ["slackDm", "telegram"] as const) {
+      const { shown, calls } = await observe(key);
+      expect(shown, key).toContain("person_lookup");
+      expect(calls["person_lookup"], key).toBe(R);
+    }
+    for (const key of ["webOwner", "webMember"] as const) {
+      const { shown, reasons } = await observe(key);
+      expect(shown, key).not.toContain("person_lookup");
+      expect(reasons["person_lookup"], key).toBe(CONSOLE_AUTHORITY_REFUSED);
+    }
+  });
+
+  // Fails closed: a Slack conversation the code cannot place in a direct message is treated as a room.
+  const UNPLACED: ReadonlyArray<readonly [string, unknown]> = [
+    ["no channel on the session", { authenticator: "slack-webhook", attributes: { user_id: SLACK_OWNER } }],
+    ["a channel that is not a direct message", { authenticator: "slack-webhook", attributes: { user_id: SLACK_OWNER, channel_id: "G0PRIVATEROOM" } }],
+  ];
+  for (const [label, auth] of UNPLACED) {
+    it(`Slack · owner · ${label}: treated as a shared room`, async () => {
+      const session = sessionWith(`matrix-unplaced-${label.length}`, auth);
+      expect(Object.keys(await resolveCatalogue(session)).sort()).toEqual((await observe("slackRoom")).shown);
+      expect((await attempt(session, "gmail_read", undefined)).reason).toBe(SHARED_ROOM_REFUSED);
+    });
+  }
+  it("Slack · owner · no initiator on the session: treated as a shared room", async () => {
+    const dm = { authenticator: "slack-webhook", attributes: { user_id: SLACK_OWNER, channel_id: "D0DIRECT" } };
+    const session: Session = { session: { id: "matrix-no-initiator", turn: { id: "turn-1", sequence: 0 }, auth: { current: dm, initiator: null } } };
+    expect(Object.keys(await resolveCatalogue(session)).sort()).toEqual((await observe("slackRoom")).shown);
+    expect((await attempt(session, "gmail_read", undefined)).reason).toBe(SHARED_ROOM_REFUSED);
+  });
+
+  // Unchanged: a direct message, Telegram and the web chat keep the private tools their columns name.
+  it("Slack direct message, Telegram and web chat still see the private tools their columns name", async () => {
+    for (const key of ["slackDm", "telegram", "webOwner", "webMember"] as const) {
+      const { shown } = await observe(key);
+      const named = TABLE.filter((row) => row[column(key)] !== H && SHARED_ROOM_HIDDEN.includes(row[0])).map((row) => row[0]);
+      expect(named.length, key).toBeGreaterThan(0);
+      expect(shown, key).toEqual(expect.arrayContaining(named));
+    }
   });
 
   // Found: web chat sends every tool with an approval policy down the exact-card path, and `adapterFor` in lib/approvals.ts has no card adapter for these three.

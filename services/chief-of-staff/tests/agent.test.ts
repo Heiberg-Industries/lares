@@ -26,11 +26,32 @@ vi.mock('eve/context', () => ({
     update: (fn: (value: unknown) => unknown) => { sessionState.set(key, fn(sessionState.has(key) ? sessionState.get(key) : initial())); },
   }),
 }));
-vi.mock('@lares/agent-kit/private-console-surface', () => ({ verifyPrivateConsoleModel: async () => undefined }));
+vi.mock('@lares/agent-kit/private-console-surface', () => ({ verifyPrivateConsoleModel: async () => undefined, verifyPrivateConsoleSession: async () => false }));
+// The resolver reads the stream position off eve's session view, which only a live session has.
+// The stand-in view below carries its own position.
+vi.mock('eve/events', async (actual) => ({ ...(await actual<typeof import('eve/events')>()), position: (view: { line: number }) => view.line }));
 vi.mock('../agent/lib/model-purpose.js', () => ({
   claimModelPurposeForInvocation: async () => undefined,
   prepareModelPurposeInvocation: () => undefined,
 }));
+// The door authority's route is real; its Keeper exchange is not part of this file's question.
+// The stand-in records its calls, so the wiring itself is asserted below.
+const doorAuthority = vi.hoisted(() => ({ prepare: vi.fn(() => undefined), claim: vi.fn(async () => 'none') }));
+vi.mock('@lares/agent-kit/door-model-authority', async (actual) => ({
+  ...(await actual<typeof import('@lares/agent-kit/door-model-authority')>()),
+  doorModelAuthority: doorAuthority,
+}));
+
+type Selection = { model: { modelId?: string }; modelContextWindowTokens: number };
+/** The function eve 1.0 calls before every model call: a `defineDynamic()` value keeps it under
+ *  this symbol (node_modules/eve/dist/src/dynamic/definition.js). */
+const selectorOf = (model: unknown) => Reflect.get(model as object, Symbol.for("eve.dynamic")) as (ctx: unknown) => Promise<Selection>;
+/** What eve hands a dynamic model: the session, its latest turn and the session view. */
+const modelContext = (sessionId: string, line: number, current: unknown = null, turnId = "turn_0") => ({
+  session: { id: sessionId, auth: { current, initiator: null } },
+  turn: { id: turnId, status: "running", input: [] },
+  view: { line },
+});
 
 describe("chief-of-staff agent config", () => {
   let dir: string;
@@ -58,69 +79,134 @@ describe("chief-of-staff agent config", () => {
   });
 
   it("declares no agent-level modelContextWindowTokens — the window travels with the selection", async () => {
-    // eve 0.60 types this key as `never` beside a dynamic model
+    // eve types this key as `never` beside a dynamic model
     // (node_modules/eve/dist/src/shared/agent-definition.d.ts, the dynamic branch of
-    // PublicAgentDefinition) because a dynamic resolver returns metadata with each concrete
-    // selection instead. agent-kit's `sessionGatewayModel` supplies the 200k window per step;
+    // PublicAgentDefinition) because a dynamic model returns metadata with each concrete
+    // selection instead. agent-kit's `sessionGatewayModel` supplies the 200k window per call;
     // putting it back here is a compile error, and the reason is this test.
     const agent = await freshAgentConfig();
-    expect(agent.modelContextWindowTokens).toBeUndefined();
+    expect((agent as { modelContextWindowTokens?: number }).modelContextWindowTokens).toBeUndefined();
   });
 
-  // `model` is a dynamic resolver — the definition picks the model per
-  // conversation. The chief of staff is the owner's daily driver and, until this review, nothing touched the agent
-  // model wiring at all; every constraint below fails INVISIBLY if it regresses.
-  it("declares step.started and NOTHING else, so no scope can hand eve a routable model id", async () => {
-    // The whole safety argument of this wiring. eve resolves `session.started` and
-    // `turn.started` with `durability: "durable"`, which refuses a provider object and accepts
-    // only a model-id STRING — and a bare id string is routed through the Vercel AI Gateway,
-    // past the self-hosted LiteLLM gateway every model call here must use. `step.started` is
-    // the only scope that takes the constructed provider. Prompt caches are per model, and the
-    // alias is pinned for the conversation on the first step, so this is still one model per
-    // conversation — the $250 retry-loop incident's rule, not a tuning choice.
+  // `model` is dynamic — the definition picks the model per conversation. The chief of staff is
+  // the owner's daily driver; every constraint below fails INVISIBLY if it regresses.
+  it("the model is one function eve calls per model call, with no events map and no fallback", async () => {
+    // eve 1.0's dynamic form. The whole safety argument of this wiring is what that function
+    // returns: a constructed provider object, never a model-id string, because eve routes a bare
+    // id through the Vercel AI Gateway, past the self-hosted LiteLLM gateway every model call
+    // here must use. Prompt caches are per model, and the alias is pinned for the conversation
+    // on its first call, so this is still one model per conversation.
     const agent = await freshAgentConfig();
-    const model = agent.model as { events?: Record<string, unknown>; fallback?: unknown };
-    expect(Object.keys(model.events ?? {})).toEqual(["step.started"]);
-    // eve 0.33.0 removed `fallback`; a reintroduced one would be a silently-ignored key.
+    expect(typeof selectorOf(agent.model)).toBe("function");
+    const model = agent.model as { events?: unknown; fallback?: unknown };
+    expect(model.events).toBeUndefined();
     expect(model.fallback).toBeUndefined();
+    expect(typeof agent.model).not.toBe("string");
   });
 
-  it("pins the declared alias on the first step and returns a constructed provider, never an id", async () => {
+  it("pins the declared alias on the first model call and returns a constructed provider, never an id", async () => {
     sessionState.clear();
-    const agent = await freshAgentConfig();
-    const model = agent.model as {
-      events: { "step.started": (event: unknown, ctx: unknown) => Promise<{ model: { modelId?: string }; modelContextWindowTokens: number }> };
-    };
-    const first = await model.events["step.started"]({ type: "step.started", data: { turnId: "agent-a-model-test-turn", sequence: 0, stepIndex: 0 } }, { session: { id: "agent-a-model-test", auth: { current: null, initiator: null } } });
+    const select = selectorOf((await freshAgentConfig()).model);
+    const first = await select(modelContext("agent-a-model-test", 3));
     expect(first.model).not.toBeTypeOf("string");
     expect(first.modelContextWindowTokens).toBe(200_000);
     // The env override still wins, and `beforeEach` clears it — but this is spelled out rather
     // than assumed, so the case cannot go red on a machine that exports AGENT_MODEL.
     expect(first.model.modelId).toBe(process.env["AGENT_MODEL"] ?? declaration.model);
-    // ...and a second step reuses the pin: same alias, no second read of the definition folder.
-    const second = await model.events["step.started"]({ type: "step.started", data: { turnId: "agent-a-model-test-turn", sequence: 0, stepIndex: 1 } }, { session: { id: "agent-a-model-test", auth: { current: null, initiator: null } } });
+    // ...and a later call reuses the pin: same alias, even though the override has changed.
+    process.env["AGENT_MODEL"] = "changed-mid-conversation";
+    const second = await select(modelContext("agent-a-model-test", 8));
     expect(second.model.modelId).toBe(first.model.modelId);
+    const nextTurn = await select(modelContext("agent-a-model-test", 21, null, "turn_1"));
+    expect(nextTurn.model.modelId).toBe(first.model.modelId);
   });
 
   it("keeps ordinary Console chats on the env override but binds custody-tagged turns to the validated definition", async () => {
     sessionState.clear();
     process.env["AGENT_MODEL"] = "ordinary-override";
-    const agent = await freshAgentConfig();
-    const model = agent.model as {
-      events: { "step.started": (event: unknown, ctx: unknown) => Promise<{ model: { modelId?: string } }> };
+    const select = selectorOf((await freshAgentConfig()).model);
+    const selectFor = (name: string, attributes: Record<string, unknown>) => {
+      sessionState.clear(); // eve scopes this state per session; the fixture map is process-wide.
+      return select(modelContext(`agent-purpose-${name}`, 1, { attributes }));
     };
-    const select = (turnId: string, attributes: Record<string, unknown>) => {
-      sessionState.clear(); // Eve scopes this state per session; the fixture map is process-wide.
-      return model.events["step.started"](
-        { type: "step.started", data: { turnId, sequence: 0, stepIndex: 0 } },
-        { session: { id: `agent-purpose-${turnId}`, auth: { current: { attributes }, initiator: null } } },
-      );
-    };
-    const ordinary = await select("ordinary-console", { lares_member_id: "member-1" });
+    const ordinary = await selectFor("ordinary-console", { lares_member_id: "member-1" });
     expect(ordinary.model.modelId).toBe("ordinary-override");
-    const configuredHuman = await select("custody-human", { lares_member_id: "member-1", lares_model_purpose_required: "1" });
+    const configuredHuman = await selectFor("custody-human", { lares_member_id: "member-1", lares_model_purpose_required: "1" });
     expect(configuredHuman.model.modelId).toBe(declaration.model);
-    const configuredResume = await select("custody-resume", { lares_resolver_member_id: "member-1", lares_model_pending_receipt: "p".repeat(43) });
+    const configuredResume = await selectFor("custody-resume", { lares_resolver_member_id: "member-1", lares_model_pending_receipt: "p".repeat(43) });
     expect(configuredResume.model.modelId).toBe(declaration.model);
+  });
+
+  it("hands the kit's door authority to the model resolver: every selection reserves and claims through it", async () => {
+    sessionState.clear();
+    doorAuthority.prepare.mockClear();
+    doorAuthority.claim.mockClear();
+    const select = selectorOf((await freshAgentConfig()).model);
+    await select(modelContext("agent-wiring", 4, null, "turn_2"));
+    expect(doorAuthority.prepare).toHaveBeenCalledExactlyOnceWith(
+      { type: "step.started", data: { turnId: "turn_2", sequence: 2, stepIndex: 4 } }, { id: "agent-wiring", auth: { current: null, initiator: null } });
+    expect(doorAuthority.claim).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ session: expect.objectContaining({ id: "agent-wiring" }) }));
+  });
+
+  it("pins a door or schedule conversation to the validated definition on a managed runtime, never to AGENT_MODEL", async () => {
+    sessionState.clear();
+    process.env["AGENT_MODEL"] = "ordinary-override";
+    vi.stubEnv("LARES_MODEL_PURPOSE_RUNTIME_SOCKET", "/run/lares/model-purpose/model-purpose.sock");
+    vi.stubEnv("LARES_AGENT_NAME", "example-agent");
+    vi.stubEnv("LARES_AGENT_INCARNATION", "123e4567-e89b-42d3-a456-426614174000");
+    vi.stubEnv("LARES_SLACK_PRINCIPAL", "U0EXAMPLE");
+    vi.stubEnv("LARES_SLACK_CLAIM_REVISION", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    try {
+      const select = selectorOf((await freshAgentConfig()).model);
+      const slack = { authenticator: "slack-webhook", principalId: "slack:T0EXAMPLE:U0EXAMPLE", principalType: "user",
+        attributes: { author_type: "user", channel_id: "D0EXAMPLE", user_id: "U0EXAMPLE" } };
+      const app = { attributes: {}, authenticator: "app", principalId: "eve:app", principalType: "runtime" };
+      const selectFor = (name: string, current: unknown, initiator: unknown) => {
+        sessionState.clear();
+        return select({ ...modelContext(`agent-door-${name}`, 1), session: { id: `agent-door-${name}`, auth: { current, initiator } } });
+      };
+      expect((await selectFor("slack", slack, slack)).model.modelId).toBe(declaration.model);
+      expect((await selectFor("schedule", app, app)).model.modelId).toBe(declaration.model);
+      expect((await selectFor("console", { authenticator: "lares-console", attributes: { lares_member_id: "member-1" } }, null)).model.modelId).toBe("ordinary-override");
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("turns every framework default tool away, the delegating agent tool by name as well", async () => {
+    const agent = await freshAgentConfig();
+    expect(agent.defaultTools).toBe(false);
+    expect(agent.tool).toBe(false);
+  });
+
+  it("keeps eve's own copy of a finished conversation, private ones included", async () => {
+    // Unset, eve 1.0 asks for a private conversation's run data to be deleted when it ends
+    // (node_modules/eve/docs/agent-config.md, "Run data retention"). "default" is today's
+    // behaviour: the workflow world keeps it.
+    const agent = await freshAgentConfig();
+    expect(agent.experimental?.workflow?.retention).toBe("default");
+  });
+
+  it("states eve's per-conversation token cap in the open, at eve's documented default", async () => {
+    const agent = await freshAgentConfig();
+    const limit = agent.limits?.sessionUsage;
+    if (typeof limit !== "function") throw new Error("limits.sessionUsage is not a function");
+    const usage = (inputTokens: number, cacheReadTokens: number) => {
+      const window = { inputTokens, cacheReadTokens, cacheWriteTokens: 0, outputTokens: 0 };
+      return { window, total: window } as Parameters<typeof limit>[0];
+    };
+    // New input is what counts: input the provider replayed from its cache is subtracted.
+    expect(limit(usage(39_999_999, 0))).toBe(false);
+    expect(limit(usage(40_000_000, 0))).toBe(true);
+    expect(limit(usage(900_000_000, 870_000_000))).toBe(false);
+    expect(limit(usage(900_000_000, 860_000_000))).toBe(true);
+  });
+
+  it("selects eve's in-process sandbox by name, so an image built without Docker still has one", async () => {
+    // A production `eve build` with neither Vercel nor Docker records NO sandbox unless the
+    // agent names one (node_modules/eve/docs/sandbox/default.mdx). Only a real build shows what
+    // it records; what this pins is that the agent's sandbox file names the provider.
+    const sandbox = await import("../agent/sandbox.js");
+    expect(sandbox.environment.provider).toBe("just-bash");
+    expect(typeof sandbox.default).toBe("function");
+    expect(Object.getOwnPropertySymbols(sandbox.default).map(String)).toContain("Symbol(eve.sandbox-selector)");
   });
 });

@@ -7,18 +7,30 @@ import {consoleSourceTransaction,gateConsoleOrganisation,requireConsoleSourceOwn
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
+import {restartPartsApplied} from './restart-parts.js';
 import {currentMember} from '@lares/agent-kit/member-store';
 import type {BudgetNativeReviewedPolicy,BudgetNativeCustodyStore,NativeOperation} from './budget-native-custody.js';
-import {budgetNativeReviewedPolicySchema} from './budget-native-custody.js';
+import {budgetNativeReviewedPolicySchema,NativeCustodyBusy,NATIVE_CUSTODY_MAX_WAIT_MS} from './budget-native-custody.js';
 import type {HostFinancialJournal,FinancialAtom} from './financial-journal.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
 
 const hash=z.string().regex(/^[a-f0-9]{64}$/),uuid=z.string().uuid();
-const identitySchema=z.object({agent:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),incarnation:uuid,definitionHash:hash,
+// A key belongs to the agent, its incarnation and its model name. The definition hash the key store recorded
+// when the key was made stays there unread: ordinary edits are live, and the money stays bound by the model
+// name, the reviewed prices and the limits checked below.
+const identitySchema=z.object({agent:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),incarnation:uuid,
   purposeAlias:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)}).strict();
 export type NativeRuntimeIdentity=z.infer<typeof identitySchema>;
-export type NativeRuntimeState={state:'active'}|{state:'held';reason:'Native budget activation required'};
+/** `key-store-busy` and `ledger-busy`: the check waited as long as it was allowed and the spending-key store, or
+ * the spending ledger, was still busy. Nothing was decided about the agent's permission. They stay `held`, so
+ * every caller that only asks for `active` still refuses. */
+export type NativeRuntimeState={state:'active'}|{state:'held';reason:'Native budget activation required';detail?:'no-matching-key'|'key-store-busy'|'ledger-busy'};
 const held=():NativeRuntimeState=>({state:'held',reason:'Native budget activation required'});
+const noMatchingKey=():NativeRuntimeState=>({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
+const keyStoreBusy=():NativeRuntimeState=>({state:'held',reason:'Native budget activation required',detail:'key-store-busy'});
+const ledgerBusy=():NativeRuntimeState=>({state:'held',reason:'Native budget activation required',detail:'ledger-busy'});
+/** Between two looks at a busy ledger. Its operations are short (the gateway's own waits are one to two seconds). */
+const LEDGER_RETRY_MS=50;
 const refuse=()=>new Error('Native budget activation required');
 const exact=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b));
 const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
@@ -42,7 +54,7 @@ export interface NativeRuntimeAuthorityOptions {
 
 /** Constructed only from Keeper's verified native custody and prepared financial owner.
  * It exposes no action surface, native client, credential, or permission-bearing metadata. */
-export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptions):{current(raw:unknown):Promise<NativeRuntimeState>} {
+export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptions):{current(raw:unknown,wait?:{waitMs?:number}):Promise<NativeRuntimeState>} {
   const policy=budgetNativeReviewedPolicySchema.parse(options.reviewedPolicy);
   const ownerId=z.string().min(1).max(128).parse(options.designatedOwnerId);
   const gatewayOrigin=z.string().max(512).refine(value=>{
@@ -52,17 +64,38 @@ export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptio
   const endpointHash=hash.parse(options.endpointHash);
   if(!options.journal.prepared||!gatewayOrigin)throw refuse();
 
-  return Object.freeze({current:async(raw:unknown):Promise<NativeRuntimeState>=>{
+  /** `waitMs`: how long this check may wait in all for a busy key store or a busy ledger. Every look is the whole
+   * check from the start; a wait that runs out answers `key-store-busy` or `ledger-busy`, never `active`. */
+  return Object.freeze({current:async(raw:unknown,wait:{waitMs?:number}={}):Promise<NativeRuntimeState>=>{
     let identity:NativeRuntimeIdentity;
     try{identity=identitySchema.parse(raw);}catch{throw refuse();}
+    const waitMs=Number.isFinite(wait.waitMs)&&wait.waitMs!>0?Math.min(wait.waitMs!,NATIVE_CUSTODY_MAX_WAIT_MS):0;
+    const until=performance.now()+waitMs;
+    for(;;){
+      const look=await check(identity,waitMs>0?Math.max(1,Math.ceil(until-performance.now())):0);
+      if(look!=='ledger-busy')return look;
+      const left=until-performance.now();
+      if(left<=LEDGER_RETRY_MS)return ledgerBusy();
+      await new Promise(resolve=>setTimeout(resolve,LEDGER_RETRY_MS));
+    }
+  }});
+
+  /** One whole check. 'ledger-busy': it was refused only because the ledger was in the middle of an operation. */
+  async function check(identity:NativeRuntimeIdentity,gateWaitMs:number):Promise<NativeRuntimeState|'ledger-busy'> {
+    let ledgerWasBusy=false;
+    const observe=(reference:Pick<NonNullable<ReturnType<HostFinancialJournal['observeGatewayRecoveryReference']>>,'installationAccountId'|'epoch'|'endpointGeneration'>)=>{
+      const found=options.journal.observeGatewayRecoveryReference(reference);
+      if(!found&&options.journal.midOperation)ledgerWasBusy=true;
+      return found;
+    };
     try{
-      return await options.custody.withGate(async gate=>{
+      const state=await options.custody.withGate<NativeRuntimeState>(async gate=>{
         try{
         const snapshot=gate.inventory();
         const matches=snapshot.operations.filter((row):row is NativeOperation=>row.kind==='operation'&&
           row.association.agent===identity.agent&&row.association.incarnation===identity.incarnation&&
-          row.association.definitionHash===identity.definitionHash&&row.association.purposeAlias===identity.purposeAlias);
-        if(matches.length===0)throw refuse();
+          row.association.purposeAlias===identity.purposeAlias);
+        if(matches.length===0)return noMatchingKey();
         const candidates=matches.map(op=>{
           const candidate=snapshot.users.find(row=>row.kind==='user'&&row.ownershipId===op.userOwnershipId);
           const user=candidate?.kind==='user'?candidate:undefined;
@@ -74,7 +107,7 @@ export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptio
         let sourceDeadlineMono=Number.POSITIVE_INFINITY;
         const recoveryReferenceIsCurrent=()=>{
           if(!retainedReference)return false;
-          const current=options.journal.observeGatewayRecoveryReference({installationAccountId:retainedReference.installationAccountId,
+          const current=observe({installationAccountId:retainedReference.installationAccountId,
             epoch:retainedReference.epoch,endpointGeneration:retainedReference.endpointGeneration});
           return !!current&&exact(current,retainedReference);
         };
@@ -140,7 +173,7 @@ export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptio
           if(!now?.starts_at||!now?.ends_at)throw refuse();
           retainSourceTransactionDeadline(db,now.ends_at);
           const journalReference={installationAccountId:String(installation.id),epoch:String(installation.recovery_epoch),endpointGeneration:String(installation.endpoint_generation)};
-          retainedReference=options.journal.observeGatewayRecoveryReference(journalReference);
+          retainedReference=observe(journalReference);
           if(!retainedReference)throw refuse();
           for(const [account,windowId,cap] of [[installation,intent.installationWindowId,intent.installationCap],[member,intent.memberWindowId,intent.memberWindowCap]] as const){
             const windows=(await db.query(`SELECT *,${FINANCIAL_UTC_TIMESTAMP('starts_at')} AS starts_utc,${FINANCIAL_UTC_TIMESTAMP('ends_at')} AS ends_utc
@@ -163,9 +196,10 @@ export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptio
           if(definitions.length!==1)throw refuse();const row=definitions[0]!;let definition,applied;
           try{definition=parseDefinition(definitionSchema.parse(row.definition));applied=parseDefinition(definitionSchema.parse(row.applied_definition));}catch{throw refuse();}
           const definitionHash=hashOf({definition,dutiesMd:row.duties,voiceMd:row.voice});
-          if(row.status!=='valid'||row.hash!==definitionHash||definitionHash!==identity.definitionHash||
+          if(row.status!=='valid'||row.hash!==definitionHash||
             definition.role!=='chief-of-staff'||applied.role!=='chief-of-staff'||
-            row.ownership!=='owned'||row.ownership_token!==identity.incarnation||row.runtime_control_token!==identity.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
+            row.ownership!=='owned'||row.ownership_token!==identity.incarnation||row.runtime_control_token!==identity.incarnation||row.state!=='ready'||row.pending!==false||
+            !restartPartsApplied(applied,definition,{model:true}))throw refuse();
           if(definition.model!==identity.purposeAlias){
             // An extra key (the owner's only) stands on the main key: the agent's own model name must be a served name
             // of the same reviewed capability, and its main key must be active under it.
@@ -189,7 +223,8 @@ export function createNativeRuntimeAuthority(options:NativeRuntimeAuthorityOptio
         if(!result||performance.now()>=sourceDeadlineMono||!recoveryReferenceIsCurrent())return held();
         return {state:'active'};
         }catch{return held();}
-      });
-    }catch{return held();}
-  }});
+      },{waitMs:gateWaitMs});
+      return state.state==='held'&&state.detail===undefined&&ledgerWasBusy?'ledger-busy':state;
+    }catch(error){return error instanceof NativeCustodyBusy?keyStoreBusy():held();}
+  }
 }

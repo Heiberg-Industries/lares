@@ -40,7 +40,8 @@ export function preserveDefinitionGeneration(dir: string, target: string): void 
     renameSync(temp, marker);
     syncDefinitionDirectory(dir);
 }
-/** Record only files observed after a successful runtime start as the authoritative applied set. */
+/** Record the authoritative applied set: files observed after a successful runtime start, or the files of a
+ * save applied at once (nothing in it needs a restart and nothing was waiting; `saved()` in lifecycle.ts). */
 export function recordAppliedDefinition(dir: string, files: DefinitionFiles): string {
     const target = generation(dir, files);
     const temp = join(dir, `.applied-${randomUUID()}`);

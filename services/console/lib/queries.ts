@@ -1,3 +1,4 @@
+import { TEST_BRIEF_WORKFLOW_TYPE } from "@lares/agent-kit/delivery";
 import { pool } from "./db";
 import { listAgents } from "./agents";
 import type { AgentSummaryDTO, AgentStatus, AuditRowDTO } from "./contracts";
@@ -13,7 +14,9 @@ export async function getAgentSummaries(): Promise<AgentSummaryDTO[]> {
   const agents = await listAgents();
   const { rows } = await pool
     .query<{ agent: string; status: string; n: string }>(
-      `SELECT agent, status, count(*) n FROM workflow_jobs GROUP BY agent, status`,
+      // Test-brief request rows are not the agent's work (see console-overview.ts).
+      `SELECT agent, status, count(*) n FROM workflow_jobs WHERE workflow_type <> $1 GROUP BY agent, status`,
+      [TEST_BRIEF_WORKFLOW_TYPE],
     )
     .catch(() => ({ rows: [] as { agent: string; status: string; n: string }[] }));
   // confirmations → sessions join: schema 001_baseline.sql has confirmations.session_id → sessions.id

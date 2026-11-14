@@ -154,8 +154,9 @@ def status(**overrides: object) -> dict:
 
 class BudgetCommandTests(unittest.TestCase):
     def setUp(self) -> None:
-        # Short on purpose: a Unix socket path has a small length limit.
-        self.temporary = tempfile.TemporaryDirectory(prefix="lb-", dir="/tmp")
+        # Short on purpose: a Unix socket path has a small length limit. The real path, because the
+        # maintenance check walks the prefix without following links (/tmp is one on macOS).
+        self.temporary = tempfile.TemporaryDirectory(prefix="lb-", dir=os.path.realpath("/tmp"))
         self.prefix = Path(self.temporary.name)
         budget.ROOT_UID = os.geteuid()
         budget.ROOT_GID = os.getegid()
@@ -780,6 +781,25 @@ class BudgetCommandTests(unittest.TestCase):
         self.assertNotEqual(code, 0, output)
         self.assertIn("first stays on the previous software: the keeper reported an error. Check it with: sudo lares agent start first", output)
         self.assertNotIn("in time", output)
+
+    def test_agent_refresh_says_a_busy_key_store_left_the_agent_stopped_not_on_the_old_software(self) -> None:
+        import re
+        lifecycle = (Path(__file__).parents[2] / "keeper" / "lib" / "lifecycle.ts").read_text()
+        sentence = re.search(r"export const NATIVE_KEY_STORE_BUSY = '([^']+)';", lifecycle)
+        self.assertIsNotNone(sentence, "the keeper's busy sentence moved")
+        self.assertTrue(sentence.group(1).startswith(budget.KEEPER_BUSY_NOT_STARTED), sentence.group(1))
+        self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64},
+                                                     {"name": "second", "status": "valid", "hash": "b" * 64}])
+        answers = {"first": {"ok": False, "outcome": "refused", "error": sentence.group(1)},
+                   "second": {"ok": False, "outcome": "refused", "error": "Definition changed; refresh before applying connection changes"}}
+        self.keeper.answers["definition.refresh-image"] = lambda request: answers[request["input"]["name"]]
+        code, output = self.run_command("agent-refresh")
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("first was stopped to move it onto this release and was not started again: the spending-key store was busy. "
+                      "Start it with: sudo lares agent start first", output)
+        self.assertNotIn("first stays on the previous software", output)
+        # Every other refusal keeps its sentence.
+        self.assertIn("second stays on the previous software: the keeper refused (Definition changed; refresh before applying connection changes).", output)
 
     def test_agent_refresh_keeps_the_timeout_wording_for_a_real_timeout(self) -> None:
         self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64}])

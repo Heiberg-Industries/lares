@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { claimHash } from "../src/door-authority.js";
-import { CLAIM_REPLY_CONNECTED, CLAIM_REPLY_NOT_YET, interceptTelegramClaim } from "../src/door-channels.js";
+import { CLAIM_REPLY_CONNECTED, CLAIM_REPLY_NOT_YET, interceptTelegramClaim, SLACK_TAP_REFUSAL, slackFailureCode, tellRefusedSlackTapper } from "../src/door-channels.js";
 
 const env = { LARES_AGENT_NAME: "example-agent", LARES_AGENT_INCARNATION: "11111111-2222-3333-4444-555555555555" } as NodeJS.ProcessEnv;
 const privateHuman = (text: string, id = "42") => ({ text, chat: { type: "private" }, from: { id, isBot: false } });
@@ -79,5 +79,43 @@ describe("the door's fixed replies", () => {
     const reply = vi.fn(async () => {});
     expect(await interceptTelegramClaim(privateHuman("claim X"), fakeDb({}), {} as NodeJS.ProcessEnv, reply)).toBe(false);
     expect(reply).not.toHaveBeenCalled();
+  });
+});
+
+describe("the private note to a person whose tap on a Slack card was refused", () => {
+  const slackError = (message: string, extra: Record<string, unknown>) => Object.assign(new Error(message), { name: "SlackApiError", ...extra });
+
+  it("logs only Slack's error code, an HTTP status or the kind of error, never the error's text", () => {
+    expect(slackFailureCode(slackError("Slack chat.postEphemeral failed: channel_not_found", { response: { ok: false, error: "channel_not_found" } }))).toBe("channel_not_found");
+    expect(slackFailureCode(slackError("Slack chat.postEphemeral returned HTTP 502", { response: {}, status: 502 }))).toBe("http_502");
+    // An answer Slack could not parse quotes what came back; only the kind of error is kept.
+    expect(slackFailureCode(new SyntaxError(`Unexpected token '<', "<html>U0SOMEONE wrote ..." is not valid JSON`))).toBe("SyntaxError");
+    // Something in the code's place that is not shaped like Slack's codes is not trusted as one.
+    expect(slackFailureCode(slackError("x", { response: { error: "U0SOMEONE in C0ROOM" } }))).toBe("SlackApiError");
+    expect(slackFailureCode("boom")).toBe("unknown error");
+    expect(slackFailureCode(undefined)).toBe("unknown error");
+  });
+
+  it("a note that cannot be sent is logged with the door's name and the code, and names nobody", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failure = slackError("Slack chat.postEphemeral failed: user_not_in_channel U0SOMEONE", { response: { error: "user_not_in_channel" } });
+    tellRefusedSlackTapper({ thread: { postEphemeral: async () => { throw failure; } } }, "U0SOMEONE", "example-role");
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    expect(String(warn.mock.calls[0]![0])).toMatch(/^example-role slack: could not tell a person their tap/);
+    expect(warn.mock.calls[0]![1]).toBe("user_not_in_channel");
+    expect(warn.mock.calls[0]!.join(" ")).not.toContain("U0SOMEONE");
+    warn.mockRestore();
+  });
+
+  it("sends the one fixed sentence to the tapper, and nothing when the tap names nobody", async () => {
+    const postEphemeral = vi.fn(async () => ({}));
+    tellRefusedSlackTapper({ thread: { postEphemeral } }, "U0SOMEONE", "example-role");
+    tellRefusedSlackTapper({ thread: { postEphemeral } }, "", "example-role");
+    tellRefusedSlackTapper({ thread: { postEphemeral } }, undefined, "example-role");
+    tellRefusedSlackTapper(undefined, "U0SOMEONE", "example-role");
+    tellRefusedSlackTapper({ thread: {} }, "U0SOMEONE", "example-role");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(postEphemeral).toHaveBeenCalledExactlyOnceWith("U0SOMEONE", SLACK_TAP_REFUSAL);
+    expect(SLACK_TAP_REFUSAL).toBe("Only the owner of this bot can answer this. Nothing was done.");
   });
 });

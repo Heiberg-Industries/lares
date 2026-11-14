@@ -6,40 +6,49 @@
  * was and WHO spoke.
  *
  * WHY AN AGENT-LEVEL HOOK, NOT A CHANNEL `events` HANDLER
- * Two reasons, both structural.
- *   1. A channel `events` map cannot subscribe to `message.received` at all — `ChannelEvents`
- *      exposes a subset of the stream vocabulary and that event is not in it. Without it there
- *      is no input text, and `message.completed` alone carries only the reply.
- *   2. eve merges channel handlers as `{...defaultEvents, ...yourEvents}`, so supplying a key
- *      REPLACES the built-in default. On both doors the `message.completed` default is what
- *      posts the reply. That is exactly a past production failure (see the long comment
- *      in `agent/channels/telegram.ts`): an override shipped without the default's post, and
- *      every reply went silently undelivered. Hooks are a separate dispatch step, not a spread —
- *      "Both fire when both are registered" (eve docs, guides/hooks.md) — so this seam is
- *      incapable of repeating that, and it covers both doors (and any future door) from one file.
+ * eve merges channel handlers as `{...defaultEvents, ...yourEvents}`, so supplying a key
+ * REPLACES the built-in default. On both doors the reply-posting default is what posts the
+ * reply. That is exactly a past production failure (see the long comment in
+ * `agent/channels/telegram.ts`): an override shipped without the default's post, and every reply
+ * went silently undelivered. Hooks are a separate dispatch step, not a spread — "Both fire when
+ * both are registered" (eve docs, guides/hooks.md) — so this seam is incapable of repeating that,
+ * and it covers both doors (and any future door) from one file.
+ *
+ * THE EVENTS (eve 1.0 session events; `node_modules/eve/docs/guides/upgrade/session-events.md`)
+ *   delivery.consumed   the person's words (it was `message.received`); `data.parts` holds them.
+ *   call.requested      one per call; a tool call's name becomes a "proposal" (it was `actions.requested`).
+ *   interaction.opened  an approval card was raised (it was `input.requested`).
+ *   content.completed   text with `phase: "reply"` is the answer (it was a non-interim `message.completed`).
+ *   turn.settled        the turn ended: `data.outcome` is `completed`, `failed` or `cancelled`.
+ *   turn.paused         the turn waits for a person; the exchange is NOT over.
+ * Token usage is not read here at all (`usage.recorded` belongs to `model-usage.ts`).
  *
  * THE UNIT IS AN EXCHANGE, NOT A TURN
- * An exchange runs from the owner's message to the chief of staff's next terminal reply. eve's "turn" is a
- * smaller thing: when the model calls a tool behind an approval gate the turn PARKS,
- * `harness/tool-loop.js` emits the epilogue there, and the continuation arrives as a brand-new
- * turn id carrying no `message.received`. Keyed per turn, that produced TWO files for one
- * conversation — the first with the question and the proposals but no reply, the second with the
- * reply and an empty `**the owner:**` line. Observed live (two files, seconds
- * apart, one exchange), and a regression: the 160-file pre-outage corpus contains no
- * question-less file at all. It also actively harms the dream cycle, which would reflect on a
- * question with no answer and an answer with no question.
+ * An exchange runs from the owner's message to the chief of staff's next terminal reply. When the
+ * model calls a tool behind an approval gate the turn PAUSES (`turn.paused`) and, in eve 1.0, the
+ * SAME turn continues after the answer. (In 0.60 the turn ended at that park point and the
+ * continuation was a brand-new turn id carrying no message, which produced TWO files for one
+ * conversation: the first with the question and the proposals but no reply, the second with the
+ * reply and an empty `**the owner:**` line. Keyed per turn, that was a regression; the pre-outage
+ * corpus contains no question-less file at all, and such a file harms the dream cycle, which
+ * would reflect on a question with no answer and an answer with no question.)
  *
- * So the buffer is keyed by SESSION, `message.completed` (non-interim, with text) is what
- * flushes, and `turn.completed` no longer does — it cannot, because the exchange may not be over.
+ * So the buffer is keyed by SESSION, a reply (`content.completed`, phase `reply`) is what
+ * flushes, and a settled turn flushes only what is still open when it ends.
  *
- * `message.completed` fires more than once per turn (interim tool-call narration, then the
- * terminal reply), so nothing here keys off "an event arrived". `turn.failed` / `turn.cancelled`
- * discard: a failed exchange is never recorded as a finished one.
+ * `content.completed` fires more than once per turn (narration, then the reply), so nothing here
+ * keys off "an event arrived". A `failed` or `cancelled` `turn.settled` writes a reply-less file
+ * if the owner said something, and never a finished one.
+ *
+ * ONE ROW PER EXCHANGE, EVEN IF A LINE IS READ TWICE
+ * eve numbers every event by `ctx.position` = `{ line, index }`. The writes below are keyed on
+ * `(session, line, index)` of the event that caused them: an event seen a second time (the same
+ * line read again, a retried step) changes nothing.
  *
  * TOTALITY
- * eve turns a thrown hook into `turn.failed`, and escalates to `session.failed` if the handler
- * for that also throws. Capture is an artifact of the turn, not part of it: every handler is
- * total — it warns and returns rather than throwing, whatever the event or context looks like.
+ * eve 1.0 FAILS THE RUNNING TURN when a hook throws. Capture is an artifact of the turn, not part
+ * of it: every handler is total — it warns and returns rather than throwing, whatever the event
+ * or context looks like.
  *
  * MODULE SCOPE IS INERT. `eve build` evaluates every module with no secrets present; nothing
  * here reads the environment at import time. The vault root is resolved lazily inside
@@ -52,23 +61,19 @@
  * finished exchange carries when it is handed off.
  */
 import { isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
+import { interaction } from "eve/events";
 import { defineHook, type HookContext, type HookEvent } from "eve/hooks";
 
 import { configuredOwnerId } from "../../lib/identity-client.js";
 import { captureTurn, originForTurn, type TurnLogEntry } from "../../lib/turn-capture.js";
 
 /**
- * A HOOK context reports the adapter's bare kind — `"slack"` / `"telegram"` — because
- * `buildHookContext` (`dist/src/context/hook-lifecycle.js`) derives it via
- * `getAdapterKind(channel)`, which is a plain `channel.kind`, and `slackChannel.js` /
- * `telegramChannel.js` pass `kindHint: "slack"` / `"telegram"`.
- *
- * The `"channel:<name>"` spelling exists too, but it is the INSTRUMENTATION projection, stored
- * under a different context key that hooks never receive. An earlier revision of this file
- * matched only the prefixed form, so `doorOf` returned undefined for every real turn and nothing
- * was ever captured — silently, with no error and no warning. That is the exact failure mode to
- * avoid, so both spellings are accepted and the decision is made by the
- * known-door set below rather than by the prefix.
+ * A hook context's `ctx.channel.kind` is `"channel:<name>"` in eve 1.0 (`"channel:slack"`,
+ * `"channel:telegram"`); it was the adapter's bare kind before. Both spellings are accepted and
+ * the decision is made by the known-door set below rather than by the prefix. An earlier
+ * revision of this file matched only one spelling, so `doorOf` returned undefined for every real
+ * turn and nothing was ever captured — silently, with no error and no warning. That is the exact
+ * failure mode to avoid, and the one-line-per-kind warning in `doorOf` is its tripwire.
  */
 const CHANNEL_PREFIX = "channel:";
 
@@ -90,12 +95,10 @@ const DOORS = new Set(["slack", "telegram"]);
  * WHAT THE WINDOW BOUNDS is therefore residence time, not correctness: an unbounded `Map` in a
  * container that runs for weeks. It is NOT a timeout on the conversation.
  *
- * A PARKED HITL TURN IS NOT AN ORPHAN. `harness/tool-loop.js` calls `emitTurnEpilogue` at the
- * park point itself, on both the `input.requested` and `authorization.required` branches, guarded
- * by `mode === "conversation"` (the default: `channel/channel-address.js` does
- * `mode: o.mode ?? "conversation"`, and neither door nor any schedule's `to.send` passes a
- * mode). So a parked turn emits `turn.completed` and the continuation comes back as a NEW turn
- * id — which is precisely why the buffer is keyed by session and not by turn.
+ * A PAUSED HITL TURN IS NOT AN ORPHAN. A turn that waits for an approval emits `turn.paused`
+ * and, in eve 1.0, the SAME turn continues once a person answers. (In 0.60 the turn ended at the
+ * park point and the continuation came back as a NEW turn id; the buffer is keyed by session and
+ * not by turn so that neither version splits one conversation into two files.)
  *
  * WHY 24 HOURS rather than minutes: `evictStale` runs on event arrivals, not on a timer, so the
  * window does not drive how often eviction happens — only how long an unfinished exchange waits
@@ -171,7 +174,7 @@ function laneOf(ctx: HookContext): string | undefined {
 interface PendingExchange {
   startedAt: number;
   /**
-   * The turn that opened this exchange. A later `message.received` on a DIFFERENT turn is a new
+   * The turn that opened this exchange. A later `delivery.consumed` on a DIFFERENT turn is a new
    * exchange — possibly with a different speaker — and must not be merged into this one.
    */
   turnId: string;
@@ -229,39 +232,60 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
    */
   const warnedKinds = new Set<string>();
 
-  /** Persist the visible card at the park point. The card's rendered text is archive data; its
-   *  request id only lets the reader drop it as soon as the normal approval ledger settles it. */
-  async function onInputRequested(event: unknown, ctx: HookContext): Promise<void> {
+  /**
+   * Events already handled, by their place on the stream: `<session>:<line>:<index>`. eve gives
+   * every event a position that never changes, so an event seen again (a line read twice, a
+   * retried step) must change nothing. Bounded: positions only repeat close together.
+   */
+  const seen = new Set<string>();
+  const MAX_SEEN = 4096;
+  function firstSight(ctx: HookContext): boolean {
+    const sessionId = ctx?.session?.id;
+    const line = ctx?.position?.line;
+    const index = ctx?.position?.index;
+    // No usable position means no way to tell a repeat from a first sight. Handle it: dropping
+    // a real turn would be the worse mistake, and the buffer still writes each exchange once.
+    if (typeof sessionId !== "string" || !Number.isSafeInteger(line) || !Number.isSafeInteger(index)) return true;
+    const id = `${sessionId}:${String(line)}:${String(index)}`;
+    if (seen.has(id)) return false;
+    if (seen.size >= MAX_SEEN) seen.delete(seen.values().next().value as string);
+    seen.add(id);
+    return true;
+  }
+
+  /** Persist the visible approval card at the pause. The card's rendered text is archive data; its
+   *  interaction id only lets the reader drop it as soon as the normal approval ledger settles it. */
+  async function onInteractionOpened(event: HookEvent<"interaction.opened">, ctx: HookContext): Promise<void> {
     if (isPrivateConsoleContext(ctx)) return;
     try {
-      const data = (event as { data?: { requests?: unknown; turnId?: unknown } } | undefined)?.data;
-      const requests = data?.requests;
+      if (!firstSight(ctx)) return;
+      const data = event?.data;
       const key = keyOf(ctx);
-      const turnId = data?.turnId;
       const door = doorOf(ctx);
       const audience = audienceOf(ctx);
-      if (!Array.isArray(requests) || !key || typeof turnId !== "string" || !door || !audience.audienceMemberId) return;
-      for (const raw of requests) {
-        if (!raw || typeof raw !== "object") continue;
-        const req = raw as { kind?: unknown; requestId?: unknown; prompt?: unknown; options?: unknown; action?: { kind?: unknown; toolName?: unknown } };
-        if (req.kind !== "tool-approval" || req.action?.kind !== "tool-call" || typeof req.requestId !== "string" || typeof req.action.toolName !== "string" || typeof req.prompt !== "string") continue;
-        const detail = (globalThis as typeof globalThis & { __eveApprovalDetails?: (tool: unknown, input: unknown) => string | undefined })
-          .__eveApprovalDetails?.(req.action.toolName, (raw as { action?: { input?: unknown } }).action?.input);
-        const options = Array.isArray(req.options) ? req.options.flatMap((option) => {
-          if (!option || typeof option !== "object") return [];
-          const label = (option as { label?: unknown }).label;
-          return typeof label === "string" ? [label] : [];
-        }) : [];
-        const text = [req.prompt, detail?.trim(), `Action: ${req.action.toolName}`, options.length ? `Choices: ${options.join(" / ")}` : undefined]
-          .filter((part): part is string => typeof part === "string" && part.length > 0).join("\n");
-        await deps.capture({
-          at: new Date(now()).toISOString(), door, principal: configuredOwnerId(), ...audience,
-          sessionId: key, turnId, origin: "third_party", input: "", reply: text,
-          proposals: [req.action.toolName], approvalRequestId: req.requestId,
-        });
-      }
+      const req = data?.request;
+      if (!data || !req || !key || !door || !audience.audienceMemberId) return;
+      // Only an approval of a tool call is archived. Questions, sign-ins and budget prompts are not.
+      if (req.kind !== "approval" || typeof data.interactionId !== "string" || typeof req.prompt !== "string") return;
+      const asked = interaction(ctx.view, data.interactionId)?.call;
+      if (!asked || typeof asked.name !== "string") return;
+      const turnId = data.subject && "turnId" in data.subject ? data.subject.turnId : (event.scope?.turnId ?? ctx.session?.turn?.id);
+      if (typeof turnId !== "string" || turnId === "") return;
+      const detail = (globalThis as typeof globalThis & { __eveApprovalDetails?: (tool: unknown, input: unknown) => string | undefined })
+        .__eveApprovalDetails?.(asked.name, asked.input);
+      const options = Array.isArray(req.options) ? req.options.flatMap((option) => {
+        const label = (option as { label?: unknown } | null)?.label;
+        return typeof label === "string" ? [label] : [];
+      }) : [];
+      const text = [req.prompt, detail?.trim(), `Action: ${asked.name}`, options.length ? `Choices: ${options.join(" / ")}` : undefined]
+        .filter((part): part is string => typeof part === "string" && part.length > 0).join("\n");
+      await deps.capture({
+        at: new Date(now()).toISOString(), door, principal: configuredOwnerId(), ...audience,
+        sessionId: key, turnId, origin: "third_party", input: "", reply: text,
+        proposals: [asked.name], approvalRequestId: data.interactionId,
+      });
     } catch (err) {
-      warn("input.requested", err);
+      warn("interaction.opened", err);
     }
   }
 
@@ -306,7 +330,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
    * from the owner resolves to. So the morning brief runs INSIDE the owner's live session.
    *
    * One slot therefore holds the owner's exchanges and every scheduled push to that address, one at a
-   * time. What separates them is not the key but the seeding turn id — see `onMessageReceived`.
+   * time. What separates them is not the key but the seeding turn id — see `onDeliveryConsumed`.
    */
   function keyOf(ctx: HookContext): string | undefined {
     const sessionId = ctx?.session?.id;
@@ -413,23 +437,22 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
   /**
    * Where an exchange is first recognised.
    *
-   * `emitTurnPreamble` always emits `turn.started`, but emits `message.received` only when the
-   * delivery carried a message (`t.message !== undefined`) — a turn resumed by a proposal-button
-   * tap arrives as `inputResponses`, typed `message?: never`, and emits none. Door and lane are
-   * only reliably available here, and an entry seeded before its input arrives is fine:
-   * `message.received` fills it in a moment later, if there is one at all.
+   * `turn.started` always arrives, but a turn that carries no message of its own (a turn resumed
+   * from a button tap) has no `delivery.consumed` words. Door and lane are only reliably
+   * available here, and an entry seeded before its input arrives is fine: `delivery.consumed`
+   * fills it in a moment later, if there is one at all.
    *
-   * SEEDING HERE NO LONGER EXISTS TO CAPTURE TAPS — `flush` now drops any exchange with no input,
+   * SEEDING HERE NO LONGER EXISTS TO CAPTURE TAPS — `flush` drops any exchange with no input,
    * so a tap is never written. What it still buys is that the tap is OBSERVED: the slot exists, so
-   * the drop is logged with its door instead of passing silently. (`message.received` also seeds
-   * defensively, so an input-carrying turn would be captured either way.)
+   * the drop is logged with its door instead of passing silently.
    *
-   * Returns early when the session is already buffered: the SECOND `turn.started` of a
-   * tool-using exchange must not reset the question and proposals gathered by the first.
+   * Returns early when the session is already buffered: a later `turn.started` of a tool-using
+   * exchange must not reset the question and proposals gathered by the first.
    */
   async function onTurnStarted(event: HookEvent<"turn.started">, ctx: HookContext): Promise<void> {
     if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
+      if (!firstSight(ctx)) return;
       await evictStale();
       const key = keyOf(ctx);
       const turnId = event?.data?.turnId;
@@ -438,6 +461,17 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
     } catch (err) {
       warn("turn.started", err);
     }
+  }
+
+  /** The words a delivery carried: its text parts, unwrapped from any channel envelope. A file or
+   *  an unknown part kind adds nothing (the part kinds are an open set). */
+  function wordsOf(event: HookEvent<"delivery.consumed">): string {
+    const parts = event?.data?.parts;
+    if (!Array.isArray(parts)) return "";
+    return parts
+      .flatMap((part) => (part && part.kind === "text" && typeof part.text === "string" ? [spokenText(part.text)] : []))
+      .filter((text) => text.trim() !== "")
+      .join("\n");
   }
 
   /**
@@ -449,42 +483,37 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
    * whatever the slot already holds — its `door`, its `lane`, its `reply`, its `proposals` —
    * would be inherited by the wrong speaker.
    *
-   * This used to re-seed only when the slot's input was non-empty. Empty-input slots are not
-   * exotic: EVERY HITL button-tap turn seeds exactly one (`turn.started` with no
-   * `message.received`, which is why seeding lives on `turn.started` at all). A brief arriving
-   * into such a slot filled in its prompt text under the tap's laneless, human-attributed
-   * entry — producing `**the owner:** Write the morning brief for today.` in the vault, with the
-   * tap's proposal bled in. A later turn could then quote the owner saying a brief's prompt. That
-   * is the precise corruption this whole branch exists to prevent.
-   *
-   * So the test is the TURN, not the input: a `message.received` on a different turn than the one
+   * The test is the TURN, not the input: a `delivery.consumed` on a different turn than the one
    * that seeded the slot is a new exchange, gets the open one written out first, and is seeded
-   * fresh from the current `ctx` — inheriting nothing.
+   * fresh from the current `ctx` — inheriting nothing. (A brief arriving into a slot seeded by a
+   * button tap once produced `**the owner:** Write the morning brief for today.` in the vault,
+   * with the tap's proposal bled in.)
    *
-   * Read the id from `event.data.turnId`, never `ctx.session.turn.id`: `turnId` is required and
-   * non-nullable on both `turn.started` and `message.received` (`protocol/message.d.ts:128-149`),
-   * and the event is the thing that actually varies per turn.
+   * Read the id from `event.data.turnId`, never `ctx.session.turn.id`: it is required on
+   * `delivery.consumed`, and the event is the thing that actually varies per turn.
    *
-   * The tool-park continuation is untouched by this rule, because it emits no `message.received`
-   * at all — which is what keeps a tool-using exchange in one file.
+   * A second delivery on the SAME turn (a follow-up message, or the text answer to a question)
+   * is more of what the same sender said in this exchange; it is added after the first rather
+   * than replacing it. A delivery with no words (it only added context) changes nothing.
+   *
+   * The pause/resume continuation is untouched by this rule: it consumes no new delivery on a
+   * new turn, which is what keeps a tool-using exchange in one file.
    *
    * LATENT EDGE, unreachable today — read this before adding a schedule. The rule keys off
-   * `message.received`, so a schedule that started a turn WITHOUT sending a prompt would inherit
-   * whatever slot is open instead of starting its own exchange, and its turn would be attributed
-   * to whoever opened that slot. All six schedules send a prompt
-   * (`to(...).send(prompt, { auth: ... })`), so nothing hits this. A promptless one would need
-   * `turn.started` to carry the re-seed decision as well — which it cannot do safely today,
-   * because it fires for the tool-park continuation too.
+   * `delivery.consumed`, so a schedule that started a turn WITHOUT sending a prompt would inherit
+   * whatever slot is open instead of starting its own exchange. All six schedules send a prompt
+   * (`to(...).send(prompt, { auth: ... })`), so nothing hits this.
    */
-  async function onMessageReceived(event: HookEvent<"message.received">, ctx: HookContext): Promise<void> {
+  async function onDeliveryConsumed(event: HookEvent<"delivery.consumed">, ctx: HookContext): Promise<void> {
     if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
+      if (!firstSight(ctx)) return;
       const key = keyOf(ctx);
       if (!key) return;
       await evictStale();
       const turnId = event?.data?.turnId;
       if (typeof turnId !== "string" || turnId === "") return;
-      const input = spokenText(typeof event.data.message === "string" ? event.data.message : "");
+      const input = wordsOf(event);
 
       const open = pending.get(key);
       if (open && open.turnId !== turnId) {
@@ -497,118 +526,131 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
       }
 
       // Seeded by `turn.started` a moment ago; just fill in what was said.
-      if (open) open.input = input;
-      else seed(key, ctx, turnId, input);
+      if (open) {
+        if (input !== "") open.input = open.input === "" ? input : `${open.input}\n${input}`;
+      } else seed(key, ctx, turnId, input);
     } catch (err) {
-      warn("message.received", err);
+      warn("delivery.consumed", err);
     }
   }
 
-  /** Tool names accumulate across every turn of the exchange, not just the first. */
-  async function onActionsRequested(event: HookEvent<"actions.requested">, ctx: HookContext): Promise<void> {
+  /** Tool names accumulate across every turn of the exchange, not just the first. Only a TOOL call
+   *  is a proposal; skills, agents and the model's own task control are not. */
+  async function onCallRequested(event: HookEvent<"call.requested">, ctx: HookContext): Promise<void> {
     if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
+      if (!firstSight(ctx)) return;
       const key = keyOf(ctx);
       const entry = key ? pending.get(key) : undefined;
       if (!entry) return;
-      for (const action of event.data.actions ?? []) {
-        if (action.kind === "tool-call") entry.proposals.push(action.toolName);
+      const capability = event?.data?.capability;
+      if (capability?.kind === "tool" && typeof capability.name === "string" && capability.name !== "") {
+        entry.proposals.push(capability.name);
       }
     } catch (err) {
-      warn("actions.requested", err);
+      warn("call.requested", err);
     }
   }
 
   /**
-   * THE FLUSH POINT. A non-interim `message.completed` carrying text is the chief of staff's terminal reply, and
-   * that is what ends an exchange — not `turn.completed`, which also fires at a park boundary
-   * mid-conversation.
+   * THE FLUSH POINT. A completed text part with `phase: "reply"` is the chief of staff's terminal
+   * reply, and that is what ends an exchange — not `turn.paused`, which also fires at an approval
+   * pause mid-conversation.
    *
-   * `finishReason === "tool-calls"` marks interim narration: real text, but not the answer.
-   * A non-interim event with no text ends no exchange either — the entry stays buffered so it can
-   * still be written later as the reply-less file it legitimately is.
+   * `phase: "narration"` marks interim text: real words, but not the answer. A phase that is not
+   * `reply` (the set is open, and eve itself reads an unknown phase as narration) ends no
+   * exchange either. A reply with no inline text (a large value eve carries by reference) ends
+   * none here; the entry stays buffered and `turn.settled` writes it, reply-less.
    *
    * THE FIRST such event CLOSES THE EXCHANGE IRREVERSIBLY: the slot is deleted and the file
-   * written, so nothing arriving afterwards — a second reply, a `turn.failed` — can amend or
+   * written, so nothing arriving afterwards — a second reply, a failed settle — can amend or
    * unwrite it. That is deliberate; a reply the owner has already read is a fact.
-   *
-   * Note the gate is a BLACKLIST (`"tool-calls"` only) and not a `"stop"` whitelist. eve
-   * normalises any provider finish reason it does not recognise to `"other"`
-   * (`normalizeAssistantStepFinishReason`), so a whitelist would silently stop capturing the day
-   * a provider returns something new. Failing towards "this was the answer" is the safe
-   * direction here.
    */
-  async function onMessageCompleted(event: HookEvent<"message.completed">, ctx: HookContext): Promise<void> {
+  async function onContentCompleted(event: HookEvent<"content.completed">, ctx: HookContext): Promise<void> {
     if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
+      if (!firstSight(ctx)) return;
       const key = keyOf(ctx);
       const entry = key ? pending.get(key) : undefined;
       if (!key || !entry) return;
-      if (event.data.finishReason === "tool-calls") return;
-      if (typeof event.data.message !== "string" || event.data.message === "") return;
-      entry.reply = event.data.message;
+      const data = event?.data;
+      if (data?.kind !== "text" || data.phase !== "reply") return;
+      if (typeof data.value !== "string" || data.value === "") return;
+      entry.reply = data.value;
       pending.delete(key);
       await flush(key, entry, now());
     } catch (err) {
-      warn("message.completed", err);
+      warn("content.completed", err);
     }
   }
 
   /**
-   * NOT a flush point, and not a discard either.
+   * `turn.paused`: NOT a flush point, and not a discard either.
    *
-   * A turn can end at a park boundary with the exchange still going, and the continuation needs
-   * the buffered question. All this does now is give eviction a heartbeat.
+   * A turn pauses while a person is asked (an approval, a question), with the exchange still
+   * going; the same turn continues after the answer and the continuation needs the buffered
+   * question. All this does is give eviction a heartbeat.
    */
-  async function onTurnCompleted(event: HookEvent<"turn.completed">, ctx: HookContext): Promise<void> {
+  async function onTurnPaused(event: HookEvent<"turn.paused">, ctx: HookContext): Promise<void> {
     void event;
-    void ctx;
     if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
+      if (!firstSight(ctx)) return;
       await evictStale();
     } catch (err) {
-      warn("turn.completed", err);
+      warn("turn.paused", err);
     }
   }
 
   /**
-   * `turn.failed` / `turn.cancelled`: the exchange ends here, with whatever it has.
+   * `turn.settled`: the turn is over, whatever the outcome. One exchange is written once.
    *
-   * A blanket discard was right when the buffer was keyed per turn. It is too broad now that one
-   * slot spans a whole chat-day: a tool-using exchange whose CONTINUATION turn fails would lose
-   * the question and the proposals entirely — which the per-turn code had already written at the
-   * park boundary, and so did the pre-outage runtime — and, because schedules share the session,
-   * a failing scheduled turn would destroy an unrelated buffered human exchange.
-   *
-   * So: if the owner actually said something, it is written as a reply-less file (a shape the corpus
-   * already contains). Otherwise it is dropped. "A failed turn is never recorded as a finished
-   * one" still holds either way — there is no `**the chief of staff:**` line on it.
+   * A reply normally flushed the exchange already (`onContentCompleted`), so for a `completed`
+   * turn there is usually nothing open and this only gives eviction a heartbeat. What is open at
+   * the end of a turn is written as it stands:
+   *   - `failed` / `cancelled`: if the owner actually said something, a reply-less file (a shape
+   *     the corpus already contains); otherwise it is dropped. "A failed turn is never recorded as
+   *     a finished one" holds either way — there is no `**the chief of staff:**` line on it.
+   *   - `completed` with no reply text captured (the answer arrived by reference, or the turn
+   *     answered with something other than text): the same reply-less file, or the settled turn's
+   *     own `reply` parts when eve gives them.
+   * The slot is keyed by session, so a settle can only ever write the exchange of ITS turn: a
+   * failing scheduled turn does not touch an unrelated human exchange buffered on another turn.
    */
-  async function onTurnDiscarded(
-    event: HookEvent<"turn.failed"> | HookEvent<"turn.cancelled">,
-    ctx: HookContext,
-  ): Promise<void> {
-    void event;
+  async function onTurnSettled(event: HookEvent<"turn.settled">, ctx: HookContext): Promise<void> {
     if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
+      if (!firstSight(ctx)) return;
       const key = keyOf(ctx);
       const open = key ? pending.get(key) : undefined;
-      if (key) pending.delete(key);
-      if (key && open) await flush(key, open, open.startedAt, "the turn failed or was cancelled");
+      const turnId = event?.data?.turnId;
+      // Another turn's settle must not write this exchange. (The session slot belongs to the turn
+      // that seeded it; an exchange whose turn is still going stays open.)
+      if (key && open && typeof turnId === "string" && open.turnId === turnId) {
+        pending.delete(key);
+        const outcome = event.data.outcome;
+        if (outcome === "completed") {
+          const reply = Array.isArray(event.data.reply) ? event.data.reply.filter((p): p is string => typeof p === "string").join("\n") : "";
+          open.reply = reply;
+          await flush(key, open, reply === "" ? open.startedAt : now(), reply === "" ? "the turn settled without a text reply" : undefined);
+        } else {
+          await flush(key, open, open.startedAt, `the turn ${outcome === "cancelled" ? "was cancelled" : "failed"}`);
+        }
+      }
       await evictStale();
     } catch (err) {
-      warn("turn.failed/turn.cancelled", err);
+      warn("turn.settled", err);
     }
   }
 
   return {
     onTurnStarted,
-    onMessageReceived,
-    onActionsRequested,
-    onInputRequested,
-    onMessageCompleted,
-    onTurnCompleted,
-    onTurnDiscarded,
+    onDeliveryConsumed,
+    onCallRequested,
+    onInteractionOpened,
+    onContentCompleted,
+    onTurnPaused,
+    onTurnSettled,
   };
 }
 
@@ -617,12 +659,11 @@ const live = makeTurnCapture({ capture: captureTurn });
 export default defineHook({
   events: {
     "turn.started": live.onTurnStarted,
-    "message.received": live.onMessageReceived,
-    "actions.requested": live.onActionsRequested,
-    "input.requested": live.onInputRequested,
-    "message.completed": live.onMessageCompleted,
-    "turn.completed": live.onTurnCompleted,
-    "turn.failed": live.onTurnDiscarded,
-    "turn.cancelled": live.onTurnDiscarded,
+    "delivery.consumed": live.onDeliveryConsumed,
+    "call.requested": live.onCallRequested,
+    "interaction.opened": live.onInteractionOpened,
+    "content.completed": live.onContentCompleted,
+    "turn.paused": live.onTurnPaused,
+    "turn.settled": live.onTurnSettled,
   },
 });

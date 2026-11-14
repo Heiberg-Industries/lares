@@ -1,23 +1,17 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {MockLanguageModelV3} from 'ai/test';
-const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),source:vi.fn(),approval:vi.fn()}));
+import {viewAt} from './helpers/session-view.js';
+const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),source:vi.fn(),approval:vi.fn(),docsRead:vi.fn()}));
+vi.mock('@lares/agent-kit/public-docs-runtime',()=>({publicDocsIndex:()=>'- install: reviewed page',readBakedPublicDoc:fake.docsRead}));
 vi.mock('../src/console-turn-authority.js',async original=>({...await original<typeof import('../src/console-turn-authority.js')>(),requireConsoleSessionBinding:fake.binding,guardConsoleToolContext:fake.turn}));
 const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
-const {ContextContainer,contextStorage}=await import(`${dist}context/container.js`);
-const keys=await import(`${dist}context/keys.js`);
-const {dispatchDynamicToolEvent}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
-const {buildDynamicTools,replayDynamicTools}=await import(`${dist}context/build-dynamic-tools.js`);
-const {clearDurableDynamicCallbacks}=await import(`${dist}tools/durable-callbacks.js`);
-import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateOwnerTool,privateRoleInstructions,privateConsoleTracePolicy} from '../src/private-console-surface.js';
-import {definitionModel} from '../src/definition-model.js';
-import {defineDurableCallback,defineDurableSchema,defineDynamic,defineTool} from 'eve/tools';
-import {z} from 'zod';
-const stepEvent=(turnId:string,stepIndex=0)=>({type:'step.started',data:{turnId,sequence:0,stepIndex}});
+import {definitionModelResolver} from '../src/definition-model.js';
+import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConsoleTool,privateToolAllowed,privateOnlyTool,privateOwnerTool,privateRoleInstructions,privateConsoleTracePolicy,sharedRoomHiddenTool,startedInSharedSlackRoom,sharedRoomRefusal,SHARED_ROOM_REFUSED,SHARED_ROOM_UNAVAILABLE} from '../src/private-console-surface.js';
 const inc='11111111-1111-4111-8111-111111111111';
 const auth=(member='member-a')=>({authenticator:'lares-console',principalType:'user',principalId:member,attributes:{lares_member_id:member,lares_admission_nonce:'a'.repeat(43),lares_purpose:'human'}});
 const ctx=()=>({session:{id:'private-test',auth:{current:auth(),initiator:auth()}}});
-beforeEach(()=>{vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION',inc);fake.binding.mockResolvedValue({});fake.source.mockResolvedValue('read');fake.turn.mockResolvedValue(undefined);});
+beforeEach(()=>{fake.docsRead.mockImplementation((id:string)=>({markdown:`PUBLIC_DOC:${id}`}));vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION',inc);fake.binding.mockResolvedValue({});fake.source.mockResolvedValue('read');fake.turn.mockResolvedValue(undefined);});
 afterEach(()=>{vi.unstubAllEnvs();vi.clearAllMocks();});
 it('validates identical immutable admissions before any binding read; malformed tags never become native',async()=>{
  await expect(verifyPrivateConsoleSession(ctx())).resolves.toBe(true);
@@ -74,44 +68,108 @@ it('a chief of staff may propose a new private note in a private conversation; n
  expect(privateRoleInstructions('chief-of-staff')).not.toContain('general note writes are unavailable');
  expect(privateRoleInstructions('chief-of-staff')).toContain('new private note');
 });
-for(const method of ['doGenerate','doStream'] as const){
+describe('a conversation started in a shared Slack room',()=>{
+ const slack=(channel_id?:string)=>({authenticator:'slack-webhook',attributes:{user_id:'U0OWNER',...(channel_id?{channel_id}:{})}});
+ const started=(initiator:unknown,current:unknown=initiator)=>({session:{auth:{initiator,current}}});
+ it('hides the private console lists plus note search, backlinks and people lookup, and nothing that is not one person\'s own',()=>{
+  for(const n of ['gmail_accounts','gmail_read','gmail_search','agent-kit__vault_read','agent-kit__vault_list','agent-kit__vault_write','tracks_list','personal_mailbox_read','gmail_draft','read_url','calendar_list_events','calendar_create_event','agent-kit__vault_search','agent-kit__vault_backlinks','person_lookup'])expect(sharedRoomHiddenTool(n),n).toBe(true);
+  for(const n of ['gmail_send','gmail_signature','remember','set_language','lares_read_public_doc','agent-kit__vault_file','save_note'])expect(sharedRoomHiddenTool(n),n).toBe(false);
+  // Not a second definition: every console-private tool is hidden, and the console's own lists are unchanged.
+  expect(privateToolAllowed('chief-of-staff','agent-kit__vault_search',{callerIsOwner:true})).toBe(false);
+  expect(privateOnlyTool('agent-kit__vault_search')).toBe(false);
+  expect(privateToolAllowed('chief-of-staff','person_lookup',{callerIsOwner:true})).toBe(false);
+  expect(privateOnlyTool('person_lookup')).toBe(false);
+  expect(SHARED_ROOM_REFUSED).toBe('That is not available in a shared room. Ask me in a direct message.');
+ });
+ it('sends the person to a direct message only for a tool a direct message has',()=>{
+  expect(SHARED_ROOM_UNAVAILABLE).toBe('That is not available in a shared room.');
+  // A direct message offers these: the room says to ask there.
+  for(const n of ['gmail_read','gmail_draft','calendar_list_events','agent-kit__vault_write','agent-kit__vault_search','person_lookup'])expect(sharedRoomRefusal(n),n).toBe(SHARED_ROOM_REFUSED);
+  // A direct message never offers these (the console-only tools): no advice to use one.
+  for(const n of ['personal_mailbox_read','personal_calendar_events','agent-kit__vault_read','agent-kit__vault_list','tracks_list','track_add_item'])expect(sharedRoomRefusal(n),n).toBe(SHARED_ROOM_UNAVAILABLE);
+ });
+ it('is read from the initiator, which an answered card does not change; a direct message is a D channel',()=>{
+  expect(startedInSharedSlackRoom(started(slack('C0ROOM')))).toBe(true);
+  expect(startedInSharedSlackRoom(started(slack('D0DIRECT')))).toBe(false);
+  expect(startedInSharedSlackRoom(started(slack('C0ROOM'),slack('D0DIRECT')))).toBe(true);
+  expect(startedInSharedSlackRoom(started(slack('D0DIRECT'),slack('C0ROOM')))).toBe(false);
+  // An approval answer carries the initiator as `session.initiator`.
+  expect(startedInSharedSlackRoom({session:{initiator:slack('C0ROOM')}})).toBe(true);
+ });
+ it('fails closed: no channel, a non-DM channel or a missing initiator on a Slack conversation is a room',()=>{
+  expect(startedInSharedSlackRoom(started(slack()))).toBe(true);
+  expect(startedInSharedSlackRoom(started(slack('G0GROUP')))).toBe(true);
+  expect(startedInSharedSlackRoom(started(null,slack('D0DIRECT')))).toBe(true);
+ });
+ it('a conversation started anywhere else is not a Slack room',()=>{
+  expect(startedInSharedSlackRoom(ctx())).toBe(false);
+  expect(startedInSharedSlackRoom(started({authenticator:'telegram-webhook',attributes:{user_id:'1001',chat_type:'private'}}))).toBe(false);
+  expect(startedInSharedSlackRoom(started({authenticator:'http-basic'}))).toBe(false);
+  expect(startedInSharedSlackRoom({})).toBe(false);
+ });
+});
+it('the private console channel exports no trace, under the 1.0 channel name and the old one; everything else keeps its content decision',async()=>{
+ const {resolveTracePolicy}=await import(`${dist}shared/trace-policy.js`);
+ for(const kind of ['channel:eve','eve','http','channel:http']){
+  expect(privateConsoleTracePolicy({channel:{kind}}),kind).toEqual({emit:false});
+  expect(resolveTracePolicy(privateConsoleTracePolicy,{agentName:'helper',channel:{kind},audience:'private',principalType:'user',mode:'conversation',environment:'production'}),kind).toEqual({action:'drop'});
+ }
+ for(const kind of ['channel:slack','channel:telegram','slack','telegram','schedule','subagent','unknown'])expect(privateConsoleTracePolicy({channel:{kind}}),kind).toEqual({emit:true,recordInputs:true,recordOutputs:true});
+});
+const {ContextContainer,contextStorage}=await import(`${dist}context/container.js`);
+/** What eve 1.0 hands the agent's dynamic `model`: the session, its latest turn and the session view. */
+const modelCtx=(c:{session:unknown},turn:string,line:number)=>({session:c.session,turn:{id:turn,status:'running',input:[]},view:viewAt(line)}) as never;
+for(const [n,method] of (['doGenerate','doStream'] as const).entries()){
+ // A different turn per method: a repeated run for the same coordinates shares one single-use claim.
+ const turnA=`turn_${n}`,turnB=`turn_${n+2}`;
  it(`${method}: checks selection and real provider boundary, even after cached selection and resolver failure`,async()=>{
   const storage=new ContextContainer(),c=ctx();
   await contextStorage.run(storage,async()=>{
    markPrivateConsoleSurface();
    const call=vi.fn(async()=>{throw new Error('PROVIDER REACHED');});
-   const resolver=definitionModel({resolveAlias:async()=> 'private-alias',provider:()=>new MockLanguageModelV3({doGenerate:call,doStream:call})});
-   const selection=await resolver.events['step.started']!(stepEvent('surface-'+method),c as never);
+   const select=definitionModelResolver({resolveAlias:async()=> 'private-alias',provider:()=>new MockLanguageModelV3({doGenerate:call,doStream:call})});
+   const selection=await select(modelCtx(c,turnA,1));
    // Later resolver failure cannot authorize an already-constructed provider.
    fake.binding.mockRejectedValue(new Error('revoked'));
-   await expect(resolver.events['step.started']!(stepEvent('surface-'+method,1),c as never)).rejects.toThrow('revoked');
-   await expect(selection.model[method]({prompt:[]})).rejects.toThrow('revoked');expect(call).not.toHaveBeenCalled();
+   await expect(select(modelCtx(c,turnA,2))).rejects.toThrow('revoked');
+   await expect((selection.model as any)[method]({prompt:[]})).rejects.toThrow('revoked');expect(call).not.toHaveBeenCalled();
    fake.binding.mockResolvedValue({});
-   await expect(selection.model[method]({prompt:[]})).rejects.toThrow('fresh trusted model invocation');
-   const fresh=await resolver.events['step.started']!(stepEvent('surface-'+method,2),c as never);
+   await expect((selection.model as any)[method]({prompt:[]})).rejects.toThrow('fresh trusted model invocation');
+   const fresh=await select(modelCtx(c,turnA,3));
    // The provider closes over the original coordinates, not this mutable resolver object.
    c.session.auth.current=auth('member-b');
-   await expect(fresh.model[method]({prompt:[]})).rejects.toThrow('PROVIDER REACHED');
+   await expect((fresh.model as any)[method]({prompt:[]})).rejects.toThrow('PROVIDER REACHED');
    expect(fake.binding.mock.calls.at(-1)?.[0].memberId).toBe('member-a');
   });
  });
- it(`${method}: cold private history with an old cached prompt and no current surface proof fails closed`,async()=>{
-  const storage=new ContextContainer();storage.set(keys.SessionDynamicInstructionsKey,{old:[{role:'system',content:'OWNER_CANARY'}]});
+ it(`${method}: a private conversation without its private persona installed fails closed at the provider, whatever else is cached`,async()=>{
+  // eve 1.0 chooses the model BEFORE the instructions resolve, so the persona marker is proved at the
+  // provider boundary, after the instructions and before any request leaves (`guardDefinitionModel`).
+  const storage=new ContextContainer();
   await contextStorage.run(storage,async()=>{
-   const call=vi.fn();const resolver=definitionModel({resolveAlias:async()=>{throw new Error('prompt resolver failed');},provider:()=>new MockLanguageModelV3({doGenerate:call,doStream:call})});
-   await expect(resolver.events['step.started']!(stepEvent('cold-'+method),ctx() as never)).rejects.toThrow('Conversation authority');expect(call).not.toHaveBeenCalled();
+   const call=vi.fn();
+   const select=definitionModelResolver({resolveAlias:async()=> 'private-alias',provider:()=>new MockLanguageModelV3({doGenerate:call,doStream:call})});
+   const selection=await select(modelCtx(ctx(),turnB,1));
+   await expect((selection.model as any)[method]({prompt:[]})).rejects.toThrow('Conversation authority');
+   expect(call).not.toHaveBeenCalled();
   });
  });
 }
-it('installed Eve reconstructs a persisted unsafe descriptor but the live guard refuses before authored source',async()=>{
- const storage=new ContextContainer();storage.set(keys.SessionIdKey,'cold-surface');storage.set(keys.StaticModelReferenceKey,null);
- const resolver=defineDynamic({events:{'session.started':()=>({fixture:defineTool({description:'owner source',inputSchema:defineDurableSchema({closure:{},schema:()=>z.object({})}),execute:defineDurableCallback({closure:{name:'fixture'},callback:async(c: {name:string},input:unknown,context:unknown)=>{assertPrivateConsoleTool(context,'chief-of-staff',c.name);return fake.source(input);}})})})}});
- await contextStorage.run(storage,()=>dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'fixture',logicalPath:'fixture.ts',eventNames:['session.started'],events:resolver.events}],event:{type:'session.started',data:{},meta:{}},messages:[]}));
- const metadata=structuredClone(storage.get(keys.SessionDynamicToolMetadataKey));
- clearDurableDynamicCallbacks('cold-surface');
- // Rebind from the deployed implementation just as cold recovery does.
- await contextStorage.run(storage,()=>dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'fixture',logicalPath:'fixture.ts',eventNames:['session.started'],events:resolver.events}],event:{type:'session.started',data:{},meta:{}},messages:[]}));
- const tools=replayDynamicTools(metadata,{sessionId:'cold-surface',scope:'session'});
- storage.set(keys.SessionKey,{sessionId:'cold-surface',auth:ctx().session.auth,turn:{id:'turn-1',sequence:0}});
- await expect(contextStorage.run(storage,()=>tools[0].execute({},{toolCallId:'call-1'}))).rejects.toThrow('Conversation authority');expect(fake.source).not.toHaveBeenCalled();
+it('a tool resolved while the binding was good is refused after it is revoked, before any authored source runs',async()=>{
+ // eve 0.60 persisted each dynamic tool as a durable descriptor and rebuilt it cold; eve 1.0 has no such
+ // descriptor and re-runs the resolver before every model call. What that case guarded survives as this,
+ // on the REAL public reader tool of both roles: the executor checks the live binding on every call, so a
+ // handle resolved earlier cannot reach the source after the binding is revoked.
+ for(const role of ['chief-of-staff','creative']){
+  fake.docsRead.mockClear();
+  const module=await import(new URL(`../../../services/${role}/agent/tools/public_doc.ts`,import.meta.url).href);
+  const resolve=Reflect.get(module.default,Symbol.for('eve.dynamic')) as (ctx:unknown)=>Promise<Record<string,{execute(input:unknown,ctx:unknown):Promise<unknown>}>>;
+  const tools=await contextStorage.run(new ContextContainer(),()=>resolve({...ctx(),turn:{id:'turn_0',status:'running',input:[]},memo:(_k:unknown,fn:()=>unknown)=>fn()}));
+  const read=tools.lares_read_public_doc!;
+  await expect(read.execute({id:'install'},ctx())).resolves.toBe('PUBLIC_DOC:install');
+  fake.binding.mockRejectedValue(new Error('binding revoked'));
+  await expect(read.execute({id:'install'},ctx()),role).rejects.toThrow('unavailable or this conversation is no longer authorized');
+  expect(fake.docsRead,role).toHaveBeenCalledTimes(1);
+  fake.binding.mockResolvedValue({});
+ }
 });

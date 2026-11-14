@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WORKFLOW_SCHEMA_STEPS, WORKFLOW_SCHEMA_STEPS_BEFORE } from "../lib/workflow-database-privileges.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const BOX = join(here, "..");
@@ -28,6 +29,7 @@ const RESTORE_FIXTURE_CADDY_IMAGE = (JSON.parse(readFileSync(
 
 vi.setConfig({ testTimeout: 15_000 });
 
+let workflowData: string, workflowToc: string, workflowStoreDir: string;
 let dir: string, binDir: string, prefix: string, log: string, archive: string, scratchParent: string, ledgerFile: string, restoreDbState: string, restoreDbQueryCount: string, restoreClientState: string;
 const appDatabase = () => ({ host: '127.0.0.1', port: 5432, database: 'lares_state', user: 'lares_app', passwordFile: join(prefix, 'etc/lares/secrets/database-password') });
 const financialBinding = () => ({ directory: '/var/lib/lares/budget-financial', db: { ...appDatabase(), user: 'lares_financial', passwordFile: join(prefix, 'etc/lares/secrets/financial-database-password') } });
@@ -55,6 +57,25 @@ function writeArchive(rel: string, text: string, mode?: number) {
   writeFileSync(p, text);
   if (mode !== undefined) chmodSync(p, mode);
 }
+/**
+ * An agent store's layout as pg_restore prints it out of the store's dump: its record of schema
+ * steps and job queue steps (--data-only), and its table list (-l). `steps` is how many of the
+ * pinned steps it holds; `extra` adds steps this release does not know.
+ */
+function workflowLayout(steps: number, opts: { extra?: number; newTables?: boolean; queue?: number; noRecord?: boolean } = {}) {
+  const rows = WORKFLOW_SCHEMA_STEPS.slice(0, steps).map(([when, hash], i) => `${i + 1}\t${hash}\t${when}`);
+  for (let i = 0; i < (opts.extra ?? 0); i++) rows.push(`${steps + i + 1}\t${"e".repeat(64)}\t${1790300000000 + i}`);
+  const queue = Array.from({ length: opts.queue ?? 18 }, (_, i) => `${i + 1}\t2026-01-01 00:00:00+00\tf`);
+  writeFileSync(workflowData, [
+    ...(opts.noRecord ? [] : ["COPY workflow_drizzle.workflow_migrations (id, hash, created_at) FROM stdin;", ...rows, "\\."]),
+    "", "COPY graphile_worker.migrations (id, ts, breaking) FROM stdin;", ...queue, "\\.", "",
+  ].join("\n"));
+  const tables = ["workflow_runs", "workflow_events", ...((opts.newTables ?? steps >= WORKFLOW_SCHEMA_STEPS.length) ? ["workflow_invocations", "workflow_job_lock_holders", "workflow_snapshots", "workflow_start_hook_admissions"] : [])];
+  writeFileSync(workflowToc, [";", "; Archive created at 2026-11-01", ";",
+    ...tables.map((t, i) => `${200 + i}; 1259 ${16400 + i} TABLE workflow ${t} lares_workflow_owner`),
+    ...((opts.newTables ?? steps >= WORKFLOW_SCHEMA_STEPS.length) ? ["300; 1259 16500 SEQUENCE workflow workflow_invocations_sequence_seq lares_workflow_owner"] : []),
+    ...(opts.noRecord ? [] : ["301; 1259 16501 TABLE workflow_drizzle workflow_migrations lares_workflow_owner"]), ""].join("\n"));
+}
 function ledger(...names: string[]) {
   const rows = names.map((n, i) => `${n}\t${i + 1}\tchecksum\t2026-01-01 00:00:00+00\tapplied\t0\t${i + 1}`).join("\n");
   writeFileSync(
@@ -65,7 +86,7 @@ function ledger(...names: string[]) {
 
 /** System tools the script needs, linked into the stub directory so PATH holds nothing else. */
 const SYSTEM_TOOLS = ["bash", "sh", "env", "cat", "sed", "grep", "awk", "tr", "head", "tail", "sort", "ls", "basename", "dirname",
-  "mkdir", "cp", "mv", "rm", "rmdir", "mktemp", "chmod", "find", "wc", "cut", "date", "sleep", "python3", "cmp"];
+  "mkdir", "cp", "mv", "rm", "rmdir", "mktemp", "chmod", "find", "wc", "cut", "date", "sleep", "python3", "cmp", "od"];
 function linkSystemTools() {
   for (const t of SYSTEM_TOOLS) {
     const found = spawnSync("/bin/sh", ["-c", `command -v ${t}`], { encoding: "utf8" }).stdout.trim();
@@ -94,18 +115,20 @@ exec "$real_python" - "$@" <&3
   chmodSync(executable, 0o755);
 }
 
-function run(args: string[], opts: { env?: Record<string, string>; input?: string } = {}) {
+function run(args: string[], opts: { env?: Record<string, string>; input?: string; script?: string } = {}) {
   const mode = (rel: string) => {
     try { return (lstatSync(join(prefix, rel)).mode & 0o777).toString(8); }
     catch { return "0"; }
   };
-  const r = spawnSync("/bin/bash", [SCRIPT, "--prefix", prefix, ...args], {
+  const r = spawnSync("/bin/bash", [opts.script ?? SCRIPT, "--prefix", prefix, ...args], {
     encoding: "utf8",
     timeout: 20_000,
     input: opts.input ?? "",
     env: {
-      PATH: binDir, STUB_LOG: log, HOME: dir, ARCHIVE_ROOT: archive, LEDGER_FILE: ledgerFile,
+      PATH: binDir, STUB_LOG: log, HOME: dir, ARCHIVE_ROOT: archive, LEDGER_FILE: ledgerFile, NIGHTLY_SNAPSHOTS,
+      ENGINE_STEPS_LIST: join(BOX, "lib", "workflow-database-privileges.ts"),
       RESTORE_DB_STATE_FILE: restoreDbState,
+      WORKFLOW_DATA_FILE: workflowData, WORKFLOW_TOC_FILE: workflowToc, WORKFLOW_STORE_DIR: workflowStoreDir,
       RESTORE_DB_QUERY_COUNT_FILE: restoreDbQueryCount,
       RESTORE_CLIENT_STATE_DIR: restoreClientState,
       DRILL_SCRATCH_ROOT: scratchParent, DRILL_MIN_FREE_MB: "1",
@@ -122,6 +145,13 @@ function run(args: string[], opts: { env?: Record<string, string>; input?: strin
   return { code: r.status ?? -1, stdout: r.stdout, stderr: r.stderr, all: r.stdout + r.stderr };
 }
 const base = () => ["--snapshot", "abc123", "--yes", "--old-server-stopped"];
+const latest = () => ["--snapshot", "latest", "--yes", "--old-server-stopped"];
+// Two nightly snapshots, the newer one listed first, as restic snapshots --json prints them.
+const NEWER_SNAPSHOT = "b".repeat(64), OLDER_SNAPSHOT = "a".repeat(64);
+const NIGHTLY_SNAPSHOTS = JSON.stringify([
+  { id: NEWER_SNAPSHOT, short_id: NEWER_SNAPSHOT.slice(0, 8), time: "2026-11-11T02:00:00.123456789+01:00", tags: ["nightly"] },
+  { id: OLDER_SNAPSHOT, short_id: OLDER_SNAPSHOT.slice(0, 8), time: "2026-11-10T02:00:00.987654321+01:00", tags: ["nightly"] },
+]);
 function vaultInventory() {
   const areaId = randomUUID(), backingId = randomUUID(), planId = randomUUID();
   const inventory = {
@@ -195,6 +225,9 @@ beforeEach(() => {
   restoreDbQueryCount = join(dir, "restore-db-query-count"); writeFileSync(restoreDbQueryCount, "0");
   restoreClientState = join(dir, "restore-client-state"); mkdirSync(restoreClientState);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
+  workflowData = join(dir, "workflow-data.txt"); workflowToc = join(dir, "workflow-toc.txt");
+  workflowStoreDir = join(dir, "workflow-stores"); mkdirSync(workflowStoreDir);
+  workflowLayout(WORKFLOW_SCHEMA_STEPS.length);
   linkSystemTools();
   const helper = join(BOX, "ops", "maintenance-custody.py");
   const prepareArgs = [helper, "prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh"];
@@ -251,6 +284,10 @@ esac
   stub("restic", `
 if [ -n "\${RESTIC_FAIL:-}" ]; then echo "stub restic: boom" >&2; exit 1; fi
 case " $* " in
+  *" snapshots "*)
+    [ -z "\${RESTIC_SNAPSHOTS_FAIL:-}" ] || { echo "stub restic: cannot list" >&2; exit 1; }
+    printf '%s\\n' "\${RESTIC_SNAPSHOTS_JSON:-$NIGHTLY_SNAPSHOTS}"
+    ;;
   *" restore "*)
     target=""; prev=""
     for a in "$@"; do [ "$prev" = "--target" ] && target="$a"; prev="$a"; done
@@ -266,7 +303,7 @@ kill_after=5.0
 if args and args[0].startswith("--kill-after="): kill_after=float(args.pop(0).split("=",1)[1])
 if len(args)<2: sys.exit(125)
 duration=float(args.pop(0)); scale=float(os.environ.get("RESTORE_TEST_TIMEOUT_SCALE","1"))
-if duration==1800: duration*=scale; kill_after*=scale
+if duration in (1800,60): duration*=scale; kill_after*=scale
 if not math.isfinite(duration) or duration<=0 or not math.isfinite(kill_after) or kill_after<=0: sys.exit(125)
 process=subprocess.Popen(args,start_new_session=True)
 try: sys.exit(process.wait(timeout=duration))
@@ -302,7 +339,7 @@ if [ "$1" = create ]; then
   done
   id=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
   client_save "$id" "$owner" "$operation" "$name" false 0 false
-  if [ -z "\${RESTORE_CLIENT_CIDFILE_MISSING:-}" ]; then
+  if [ -z "\${RESTORE_CLIENT_CIDFILE_MISSING:-}" ] && [ "\${RESTORE_CLIENT_CIDFILE_MISSING_FOR:-@none@}" != "$operation" ]; then
     case "\${RESTORE_CLIENT_CIDFILE_FORMAT:-raw}" in
       raw) printf '%s' "$id" > "$cidfile" ;;
       newline) printf '%s\\n' "$id" > "$cidfile" ;;
@@ -344,6 +381,10 @@ fi
 if [ "$1" = rm ]; then
   id="\${@: -1}"; client_save "$id" "$(client_field "$id" 1)" "$(client_field "$id" 2)" "$(client_field "$id" 3)" false "$(client_field "$id" 5)" true; exit 0
 fi
+if [ "$1" = ps ] && case "$*" in *label=lares.maintenance=workflow-store*) true ;; *) false ;; esac; then
+  [ -z "\${RESTORE_LEFTOVER_STORE_STEP:-}" ] || printf '%s\\n' "$RESTORE_LEFTOVER_STORE_STEP"
+  exit "\${RESTORE_LEFTOVER_PS_RC:-0}"
+fi
 if [ "$1" = ps ] && case "$*" in *service=lares-notion-sync*) true ;; *) false ;; esac; then
   [ -z "\${RESTORE_SYNC_CONTAINER:-}" ] || printf '%s\\n' "$RESTORE_SYNC_CONTAINER"
   exit 0
@@ -356,6 +397,24 @@ if [ "$1" = ps ]; then
   done
   exit 0
 fi
+# The keeper's own freeze; a stopped keeper (FREEZE_LIVE_FAIL) sends restore to the host fallback.
+case "$*" in *"exec -T lares-keeper"*"budget-financial.ts freeze"*) [ -z "\${FREEZE_LIVE_FAIL:-}" ] || exit 1; exit 0 ;; esac
+# The agent-store step (engine-run.sh, workflow_store_step): a role-image container fed the program.
+# The engine image's own copy of the store step list (restore reads it with cat, nothing else).
+case "$*" in *"run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint cat "*" /app/services/box/lib/workflow-database-privileges.ts")
+  [ -z "\${RESTORE_STEPS_LIST_FAIL:-}" ] || { printf 'Unable to find image locally\\ndocker: Error response from daemon: manifest unknown (stub)\\n' >&2; exit 125; }
+  [ -z "\${RESTORE_STEPS_LIST_HANG:-}" ] || exec sleep 30
+  cat "$ENGINE_STEPS_LIST"; exit 0 ;;
+esac
+case "$*" in *"lares.maintenance=workflow-store"*)
+  cat >/dev/null; mode="\${@: -2:1}"; db="\${@: -1}"; state="$WORKFLOW_STORE_DIR/$db"
+  case "$mode" in
+    check) if [ -n "\${STORE_CHECK_FAIL:-}" ]; then echo "workflow store: the check was refused (stub)" >&2; exit 3; fi; cat "$state" 2>/dev/null || echo old ;;
+    upgrade) if [ -n "\${STORE_UPGRADE_FAIL:-}" ]; then echo "workflow store: the upgrade failed (stub)" >&2; exit 1; fi; echo current > "$state" ;;
+    *) exit 78 ;;
+  esac
+  exit 0 ;;
+esac
 case "$*" in *"compose"*"config --format json"*) printf '{"services":{"db":{"image":"postgres:16"}}}\\n'; exit 0 ;; esac
 case "$*" in
   *"verify-snapshot"*)
@@ -372,7 +431,8 @@ case " $* " in
   *" createdb "*) database="\${@: -1}"; if [ -n "\${RESTORE_CREATEDB_PARTIAL_FAIL:-}" ]; then printf '%s' "$database" > "$RESTORE_DB_STATE_FILE"; exit 1; fi; printf '%s' "$database" > "$RESTORE_DB_STATE_FILE"; exit 0 ;;
   *" dropdb "*) if [ -n "\${RESTORE_DROPDB_FAIL:-}" ]; then exit 1; fi; if [ -n "\${RESTORE_DROPDB_FAIL_FIRST_FILE:-}" ] && [ ! -e "$RESTORE_DROPDB_FAIL_FIRST_FILE" ]; then : > "$RESTORE_DROPDB_FAIL_FIRST_FILE"; exit 1; fi; : > "$RESTORE_DB_STATE_FILE"; exit 0 ;;
   *" psql "*) echo "\${FRESH_COUNTS:-0 0 0}"; exit 0 ;;
-  *" pg_restore "*" -f - "*) cat >/dev/null; cat "$LEDGER_FILE"; exit 0 ;;
+  *" pg_restore -l "*) input=$(cat); case "$input" in "dump of lares_"[0-9a-f]*) cat "$WORKFLOW_TOC_FILE" ;; esac; exit 0 ;;
+  *" pg_restore "*" -f - "*) input=$(cat); case "$input" in "dump of lares_"[0-9a-f]*) cat "$WORKFLOW_DATA_FILE" ;; *) cat "$LEDGER_FILE" ;; esac; exit 0 ;;
   *" pg_restore "*" drill_vault_restore_"*) cat >/dev/null; exit "\${RESTORE_TMP_PG_RESTORE_FAIL:-0}" ;;
   *" pg_restore "*) input=$(cat); [ "$input" != "dump of \${PG_RESTORE_FAIL_DB:-@none@}" ] || exit 1; exit 0 ;;
   *" ps -q"*) echo "\${AGENTS_RUNNING:-}"; exit 0 ;;
@@ -747,9 +807,29 @@ exit 0`);
     expect(readFileSync(seen, "utf8").trim()).toBe("drwx------");
   });
 
-  it("asks for \"latest\" among nightly snapshots only", () => {
-    expect(run(["--snapshot", "latest", "--yes", "--old-server-stopped"]).code).toBe(0);
-    expect(logLines().find((l) => l.startsWith("restic") && l.includes(" restore "))).toMatch(/restore latest --tag nightly --target /);
+  it("looks \"latest\" up once among nightly snapshots only, restores exactly that one and names it by its id", () => {
+    const r = run(latest());
+    expect(r.code, r.all).toBe(0);
+    expect(logLines().find((l) => l.startsWith("restic") && l.includes(" snapshots "))).toMatch(/ snapshots --json --tag nightly$/);
+    expect(logLines().find((l) => l.startsWith("restic") && l.includes(" restore "))).toMatch(new RegExp(` restore ${NEWER_SNAPSHOT} --target `));
+    expect(r.all).toContain(`the newest nightly snapshot is ${NEWER_SNAPSHOT.slice(0, 8)}; this run restores exactly that one.`);
+    expect(r.all).toContain(`restored snapshot ${NEWER_SNAPSHOT.slice(0, 8)}:`);
+    expect(r.all).not.toContain("snapshot latest");
+  });
+
+  it("refuses, changing nothing, when \"latest\" cannot be looked up", () => {
+    const lookups: Record<string, string>[] = [
+      { RESTIC_SNAPSHOTS_FAIL: "1" }, { RESTIC_SNAPSHOTS_JSON: "[]" }, { RESTIC_SNAPSHOTS_JSON: '[{"id":"not-hex","time":"2026-11-11T02:00:00Z"}]' },
+    ];
+    for (const env of lookups) {
+      writeFileSync(log, "");
+      const r = run(latest(), { env });
+      expect(r.code, r.all).toBe(78);
+      expect(r.all).toContain("restic could not list the nightly snapshots in the backup repository");
+      expect(logLines().filter((l) => l.startsWith("restic") && l.includes(" restore "))).toEqual([]);
+      expect(changes()).toEqual([]);
+      expect(scratchLeft()).toEqual([]);
+    }
   });
 
   it("does not print the gateway-key repair when every agent's key file came back", () => {
@@ -1166,7 +1246,7 @@ it('does not freeze prepared custody on dry-run',()=>{
 it('refuses a failed live and fallback financial freeze before service stop or drop',()=>{
   write('etc/lares/keeper.json',keeperConfig({budgetFinancial:financialBinding()}));
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
-  stub('docker',`case "$*" in *"config --format json"*) printf '{"services":{"db":{"image":"postgres:16"}}}\\n'; exit 0 ;; esac; case " $* " in *" budget-financial.ts "*|*" /app/services/keeper/bin/budget-financial.ts "*) exit 1 ;; *" psql "*) echo "0 0 0" ;; *" pg_restore "*" -f - "*) cat >/dev/null; cat "$LEDGER_FILE" ;; esac`);
+  stub('docker',`case "$*" in *"config --format json"*) printf '{"services":{"db":{"image":"postgres:16"}}}\\n'; exit 0 ;; esac; case " $* " in *" budget-financial.ts "*|*" /app/services/keeper/bin/budget-financial.ts "*) exit 1 ;; *" psql "*) echo "0 0 0" ;; *" pg_restore -l "*) cat >/dev/null; cat "$WORKFLOW_TOC_FILE" ;; *" pg_restore "*" -f - "*) input=$(cat); case "$input" in "dump of lares_"[0-9a-f]*) cat "$WORKFLOW_DATA_FILE" ;; *) cat "$LEDGER_FILE" ;; esac ;; esac`);
   stub('pnpm','exit 1');
   const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('not durably acknowledged');
   expect(logLines().filter(line=>/compose.* stop|dropdb|createdb|pg_restore.* -d /.test(line))).toEqual([]);
@@ -1181,4 +1261,342 @@ it('reports prepared restored data as recovery-required without keeper or runtim
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
   const result=run(base());expect(result.code).toBe(0);expect(result.all).toContain('Financial recovery is required');expect(result.all).toContain('the keeper starts with spending closed');
   expect(result.all).not.toContain('Sign in to the console');expect(result.all).not.toContain('Apply each agent');expect(result.all).not.toContain('keeper started');expect(result.all).toContain('Keep agents stopped');
+});
+
+describe("restore.sh from the files an installed server has", () => {
+  // The tree ops/unpack-engine.sh writes on a server: the box's ops/ and sql/, no lib/, no bin/.
+  const ENGINE = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+  // Each case unpacks the engine files and runs one whole restore: 60 s, as on a busy machine.
+  let shipped: string;
+  beforeEach(() => {
+    rmSync(join(binDir, "pnpm"));
+    const out = join(dir, "unpacked");
+    const unpacked = spawnSync("bash", [join(BOX, "ops", "unpack-engine.sh"), "proof", ENGINE], {
+      encoding: "utf8", env: { PATH: process.env.PATH ?? "", APP_ROOT: join(BOX, "..", ".."), OUT_ROOT: out },
+    });
+    if (unpacked.status !== 0) throw new Error(`unpack-engine.sh failed: ${unpacked.stderr}`);
+    shipped = join(out, "proof", "services", "box", "ops", "restore.sh");
+    expect(existsSync(join(out, "proof", "services", "box", "lib"))).toBe(false);
+  }, 60_000);
+  const catLine = `docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint cat ${ENGINE} /app/services/box/lib/workflow-database-privileges.ts`;
+
+  it("reads the store step list out of the engine image and restores a store from this release", () => {
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE }, script: shipped });
+    expect(r.code, r.all).toBe(0);
+    expect(logLines().filter((line) => line === catLine)).toHaveLength(1);
+    expect(r.all).not.toContain("own list of agent store schema steps could not be read");
+  }, 60_000);
+
+  it("reads an older store as older from there too, and upgrades it", () => {
+    workflowLayout(WORKFLOW_SCHEMA_STEPS_BEFORE);
+    write("opt/lares/current/release.json", JSON.stringify({ images: { creative: `registry.example/lares-creative@sha256:${"c".repeat(64)}` } }));
+    write("etc/lares/secrets/workflow-provisioner-password", "not-a-real-provisioner-password\n", 0o600);
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE }, script: shipped });
+    expect(r.code, r.all).toBe(0);
+    expect(r.all).toContain(`restore: upgrading the agent store ${workflowDatabase}.`);
+  }, 60_000);
+
+  it("refuses, changing nothing, when the engine image cannot give the list, and says Docker's reason", () => {
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_STEPS_LIST_FAIL: "1" }, script: shipped });
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toContain(`this release's own list of agent store schema steps could not be read out of the engine image ${ENGINE} (docker: Error response from daemon: manifest unknown (stub)). Nothing has been changed.`);
+    expect(changes()).toEqual([]);
+  }, 60_000);
+
+  it("refuses, changing nothing, when Docker does not answer within its minute", () => {
+    const started = Date.now();
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_STEPS_LIST_HANG: "1", RESTORE_TEST_TIMEOUT_SCALE: "0.02" }, script: shipped });
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toContain("could not be read out of the engine image");
+    expect(r.all).toContain("(Docker did not answer within 60 seconds). Nothing has been changed.");
+    expect(logLines()).toContain(`timeout --kill-after=5 60 ${catLine}`);
+    expect(changes()).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(25_000);
+  }, 60_000);
+
+  it("refuses, changing nothing, when this server has no timeout command to bound the read", () => {
+    rmSync(join(binDir, "timeout"));
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE }, script: shipped });
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toContain("this server has no timeout command to bound that read");
+    expect(logLines().filter((line) => line === catLine)).toEqual([]);
+    expect(changes()).toEqual([]);
+  }, 60_000);
+});
+
+describe("restore.sh: a backup from an older release", () => {
+  const ROLE_IMAGE = `registry.example/lares-creative@sha256:${"c".repeat(64)}`;
+  const oldBackup = () => {
+    workflowLayout(WORKFLOW_SCHEMA_STEPS_BEFORE);
+    write("opt/lares/current/release.json", JSON.stringify({ images: { creative: ROLE_IMAGE } }));
+    write("etc/lares/secrets/workflow-provisioner-password", "not-a-real-provisioner-password\n", 0o600);
+  };
+  const storeStep = (mode: string) => new RegExp(`^docker run .*lares\\.maintenance=workflow-store.* ${mode} ${workflowDatabase}$`);
+  const runsLeft = () => readdirSync(join(prefix, "var/lib/lares-maintenance/restore-runs"));
+
+  it("restores an older store, then checks, upgrades, checks again and applies its permissions before the main database is touched", () => {
+    oldBackup();
+    const r = run(base());
+    expect(r.code, r.all).toBe(0);
+    const restoreStore = idx(new RegExp(`dropdb .*${workflowDatabase}`));
+    const firstCheck = idx(storeStep("check"));
+    const upgrade = idx(storeStep("upgrade"));
+    const secondCheck = idx(storeStep("check"), upgrade);
+    const apply = idx(new RegExp(`^pnpm .*workflow-template\\.ts apply-database .*--database ${workflowDatabase} --provisioner-password-file \\S+/etc/lares/secrets/workflow-provisioner-password --runtime-password-file \\S+/etc/lares/secrets/workflow-database-password$`));
+    const mainDrop = idx(/dropdb .*lares_state$/);
+    const migrate = idx(/^pnpm .*migrate/);
+    const verify = idx(new RegExp(`^pnpm .*workflow-template\\.ts verify-database .*--database ${workflowDatabase}`));
+    expect([restoreStore, firstCheck, upgrade, secondCheck, apply].every((at) => at > -1), logLines().join("\n")).toBe(true);
+    expect(logLines()[upgrade]).toContain(ROLE_IMAGE);
+    expect(firstCheck).toBeGreaterThan(restoreStore);
+    expect(upgrade).toBeGreaterThan(firstCheck);
+    expect(secondCheck).toBeGreaterThan(upgrade);
+    expect(apply).toBeGreaterThan(secondCheck);
+    expect(mainDrop).toBeGreaterThan(apply);
+    expect(migrate).toBeGreaterThan(mainDrop);
+    expect(verify).toBeGreaterThan(migrate);
+    expect(r.all).toContain(`restore: upgrading the agent store ${workflowDatabase}.`);
+    // No password reaches a command line, and the run's record of upgraded stores is gone.
+    expect(logLines().join("\n")).not.toContain("not-a-real-provisioner-password");
+    expect(runsLeft()).toEqual([]);
+    expect(scratchLeft()).toEqual([]);
+  });
+
+  it("says in a dry run which stores it would upgrade, and changes nothing", () => {
+    oldBackup();
+    const r = run([...base(), "--dry-run"]);
+    expect(r.code, r.all).toBe(0);
+    expect(r.all).toContain(`upgrade these agent stores from the release before this one: ${workflowDatabase}`);
+    expect(changes()).toEqual([]);
+    expect(logLines().filter((line) => /^docker run .*workflow-store/.test(line))).toEqual([]);
+  });
+
+  it("restores a store from this release exactly as before: no store step and no permission step", () => {
+    const r = run(base());
+    expect(r.code, r.all).toBe(0);
+    expect(logLines().filter((line) => /^docker run .*lares\.maintenance=workflow-store|apply-database/.test(line))).toEqual([]);
+    expect(idx(/dropdb .*lares_state$/)).toBeGreaterThan(idx(new RegExp(`dropdb .*${workflowDatabase}`)));
+  });
+
+  const refusedBeforeAnything = (r: ReturnType<typeof run>, why: RegExp) => {
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toMatch(why);
+    expect(r.all).toContain("Nothing has been changed.");
+    expect(changes()).toEqual([]);
+    expect(logLines().filter((line) => /workflow-store|apply-database/.test(line))).toEqual([]);
+    expect(scratchLeft()).toEqual([]);
+    expect(runsLeft()).toEqual([]);
+  };
+  it("refuses a store written by a newer release before anything is stopped or dropped", () => {
+    workflowLayout(WORKFLOW_SCHEMA_STEPS.length, { extra: 1 });
+    refusedBeforeAnything(run(base()), new RegExp(`agent store ${workflowDatabase} in this snapshot cannot be restored by this release: it was written by a newer release: it has 32 schema steps recorded, and this release knows 31\\. .*install that release or a newer one`));
+  });
+  it("refuses a store with a step list it does not know", () => {
+    workflowLayout(25);
+    refusedBeforeAnything(run(base()), /it has 25 schema steps recorded, and they are neither the 20 an older release leaves nor the 31 this release leaves/);
+  });
+  it("refuses a store with no record of its steps", () => {
+    workflowLayout(0, { noRecord: true });
+    refusedBeforeAnything(run(base()), /it holds no record of the agent framework's schema steps/);
+  });
+  it("refuses a store whose record says older but already has this release's tables", () => {
+    workflowLayout(WORKFLOW_SCHEMA_STEPS_BEFORE, { newTables: true });
+    refusedBeforeAnything(run(base()), /its record says it was written by an older release, but it already has tables this release adds/);
+  });
+  it("refuses a store whose job queue is at an unknown version", () => {
+    workflowLayout(WORKFLOW_SCHEMA_STEPS.length, { queue: 19 });
+    refusedBeforeAnything(run(base()), /its job queue is at a version this release does not know \(19 steps recorded, 18 expected\)/);
+  });
+  it("refuses an older store when the installed release names no role image to upgrade it with", () => {
+    oldBackup();
+    write("opt/lares/current/release.json", JSON.stringify({ images: {} }));
+    refusedBeforeAnything(run(base()), /names no creative role image by digest/);
+  });
+  it("refuses an older store when the provisioner credential is missing", () => {
+    oldBackup();
+    rmSync(join(prefix, "etc/lares/secrets/workflow-provisioner-password"));
+    refusedBeforeAnything(run(base()), /workflow provisioner credential .* is missing or unsafe/);
+  });
+
+  it("an upgrade that fails stops before the main database is replaced, and the same restore then succeeds", () => {
+    oldBackup();
+    const failed = run(base(), { env: { STORE_UPGRADE_FAIL: "1" } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain(`the agent store ${workflowDatabase}: the upgrade failed (stub). This restore stopped while upgrading the agent stores`);
+    expect(failed.all).toContain("so this server still counts as a fresh install");
+    expect(failed.all).toContain("Fix the cause and run the same restore command again");
+    expect(logLines().filter((line) => /dropdb .*lares_state$|dropdb .*litellm$|^pnpm .*migrate| up -d$/.test(line))).toEqual([]);
+    expect(logLines().filter((line) => /apply-database/.test(line))).toEqual([]);
+    expect(readdirSync(join(prefix, "srv/lares/agents"))).toEqual([]);
+    expect(runsLeft()).toEqual([]);
+    expect(scratchLeft()).toEqual([]);
+
+    writeFileSync(log, "");
+    const again = run(base());
+    expect(again.code, again.all).toBe(0);
+    expect(idx(storeStep("upgrade"))).toBeGreaterThan(idx(new RegExp(`dropdb .*${workflowDatabase}`)));
+    expect(idx(/compose --env-file \S+keeper\.env up -d$/)).toBeGreaterThan(-1);
+  });
+
+  it("names the snapshot \"latest\" stood for, and says to run again with it, when an upgrade fails", () => {
+    oldBackup();
+    const short = NEWER_SNAPSHOT.slice(0, 8);
+    const failed = run(latest(), { env: { STORE_UPGRADE_FAIL: "1" } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain(`This restore stopped while upgrading the agent stores from snapshot ${short}, before`);
+    expect(failed.all).toContain(`Fix the cause and run the same restore command again, with --snapshot ${short} in place of latest, so that it reads this same snapshot even if a newer one has been written since: it restores every agent store`);
+    expect(failed.all).not.toContain("snapshot latest");
+    // The run then really does read the same snapshot by its id.
+    writeFileSync(log, "");
+    const again = run(["--snapshot", short, "--yes", "--old-server-stopped"]);
+    expect(again.code, again.all).toBe(0);
+    expect(logLines().find((l) => l.startsWith("restic") && l.includes(" restore "))).toMatch(new RegExp(` restore ${short} --target `));
+  });
+
+  it("a store whose backup file cannot be restored names the snapshot \"latest\" stood for", () => {
+    const short = NEWER_SNAPSHOT.slice(0, 8);
+    const failed = run(latest(), { env: { PG_RESTORE_FAIL_DB: workflowDatabase } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain(`This restore stopped while restoring the agent stores from snapshot ${short}. Nothing outside the agent stores was changed`);
+    expect(failed.all).toContain(`Run the same restore command again, with --snapshot ${short} in place of latest, so that it reads this same snapshot even if a newer one has been written since. If the backup file`);
+  });
+
+  it("when its cleanup is uncertain after a failed upgrade step, says the next run will be refused and what to check and remove first", () => {
+    oldBackup();
+    // A fresh install has target Vault stores, and restore holds their locks through the store loop.
+    const vaultLocks = addTargetVault();
+    rmSync(join(binDir, "pnpm"));
+    const ENGINE = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+    const failed = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_CLIENT_CIDFILE_MISSING_FOR: "keeper:workflow-apply-database" } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain("its permissions could not be applied and verified");
+    expect(failed.all).toContain("Fix the cause and run the same restore command again");
+    const runsRoot = join(prefix, "var/lib/lares-maintenance/restore-runs");
+    const [runName] = restoreRunNames(runsRoot);
+    const runDirectory = join(runsRoot, runName!);
+    const [scratch] = scratchLeft();
+    expect(failed.all).toContain('restore: the message above says to run the same restore again, but for now that run would be refused ("could not create a private restore work record")');
+    expect(failed.all).toContain("docker ps --all --filter name=lares-restore- --filter name=lares-workflow-store- must list nothing; remove anything it lists with docker rm --force <name>");
+    expect(failed.all).toContain(`remove the private scratch folder, which holds decrypted backup files: rm -rf ${join(scratchParent, scratch!)}`);
+    expect(failed.all).toContain(`remove this run's record and its claim: rm -rf ${runDirectory} ${runsRoot}/restore-active.lock`);
+    expect(vaultLocks.length).toBeGreaterThan(0);
+    for (const lock of vaultLocks) {
+      const real = lock;
+      const mark = readFileSync(real, "utf8");
+      expect(mark).toMatch(/^[a-f0-9]{32}$/);
+      expect(failed.all).toContain(`once the docker check lists nothing, remove the Vault lock this run left: rm -f ${real} (it holds this run's mark ${mark};`);
+    }
+    // The advice is right on both counts: refused as it says, then fine once everything it names
+    // is gone (left in place, the Vault locks would refuse it as "target Vault repositories are busy").
+    const refused = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
+    expect(refused.code).toBe(78);
+    expect(refused.all).toContain("could not create a private restore work record");
+    rmSync(join(scratchParent, scratch!), { recursive: true, force: true });
+    rmSync(runDirectory, { recursive: true, force: true });
+    rmSync(join(runsRoot, "restore-active.lock"));
+    for (const lock of vaultLocks) rmSync(lock);
+    // The stub's store was upgraded by the first run; the next run restores it from the backup again.
+    rmSync(join(workflowStoreDir, workflowDatabase), { force: true });
+    const again = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
+    expect(again.code, again.all).toBe(0);
+    // Three whole restore runs, one with a Vault: past 15 s on a busy machine.
+  }, 60_000);
+
+  it("says nothing about a refused next run when cleanup is uncertain but no message advised one", () => {
+    const ENGINE = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+    rmSync(join(binDir, "pnpm"));
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE, RESTORE_CLIENT_CIDFILE_MISSING: "1" } });
+    expect(r.code).toBe(75);
+    expect(r.all).toContain("cleanup is uncertain");
+    expect(r.all).not.toContain("the message above says to run the same restore again");
+  });
+
+  it("a store whose backup file cannot be restored says the server is still fresh, and the same restore then succeeds", () => {
+    const failed = run(base(), { env: { PG_RESTORE_FAIL_DB: workflowDatabase } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain(`pg_restore could not create database ${workflowDatabase} with its archived ownership and grants. This restore stopped while restoring the agent stores from snapshot abc123. Nothing outside the agent stores was changed, so this server still counts as a fresh install.`);
+    expect(failed.all).toContain("Run the same restore command again. If the backup file of an agent store is damaged it will stop here again: then list the snapshots with restic snapshots and restore an earlier one.");
+    expect(failed.all).not.toContain("rebuild a clean server");
+    expect(logLines().filter((line) => /dropdb .*lares_state$|dropdb .*litellm$|^pnpm .*migrate| up -d$/.test(line))).toEqual([]);
+    writeFileSync(log, "");
+    expect(run(base()).code).toBe(0);
+  });
+
+  it("with prepared financial custody, a re-run after a failed upgrade freezes the ledger again through the host command and finishes", () => {
+    oldBackup();
+    write("etc/lares/keeper.json", keeperConfig({ budgetFinancial: financialBinding() }));
+    mkdirSync(join(prefix, "var/lib/lares/budget-financial"), { recursive: true });
+    const freezes = () => logLines().filter((line) => /budget-financial\.ts freeze --host/.test(line));
+    const failed = run(base(), { env: { STORE_UPGRADE_FAIL: "1" } });
+    expect(failed.code, failed.all).toBe(75);
+    expect(failed.all).toContain("This restore stopped while upgrading the agent stores");
+    expect(freezes()).toHaveLength(1);
+    expect(freezes()[0]).toMatch(/^docker compose .*exec -T lares-keeper /);
+    // The keeper is stopped now, so the second run's freeze goes to the host command.
+    writeFileSync(log, "");
+    const again = run(base(), { env: { FREEZE_LIVE_FAIL: "1" } });
+    expect(again.code, again.all).toBe(0);
+    expect(freezes().map((line) => line.split(" ")[0])).toEqual(["docker", "pnpm"]);
+    expect(again.all).toContain("Financial recovery is required. Protected custody remains permanently frozen");
+    expect(idx(storeStep("upgrade"))).toBeGreaterThan(idx(/^pnpm .*budget-financial\.ts freeze --host/));
+  });
+
+  it("a refused freeze on a re-run does not claim the earlier run changed nothing", () => {
+    write("etc/lares/keeper.json", keeperConfig({ budgetFinancial: financialBinding() }));
+    mkdirSync(join(prefix, "var/lib/lares/budget-financial"), { recursive: true });
+    stub("pnpm", "exit 1");
+    const r = run(base(), { env: { FREEZE_LIVE_FAIL: "1" } });
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toContain("financial freeze was not durably acknowledged; this run stopped no service and replaced no database (an earlier run of this same restore may already have stopped services and restored agent stores)");
+  });
+
+  it("refuses, changing nothing, while a store step from an earlier attempt is still running, and goes ahead once it has ended", () => {
+    oldBackup();
+    write("etc/lares/keeper.json", keeperConfig({ budgetFinancial: financialBinding() }));
+    mkdirSync(join(prefix, "var/lib/lares/budget-financial"), { recursive: true });
+    const leftover = "lares-workflow-store-0123456789abcdef";
+    const refused = run(base(), { env: { RESTORE_LEFTOVER_STORE_STEP: leftover } });
+    expect(refused.code, refused.all).toBe(78);
+    expect(refused.all).toContain(`an agent store step from an earlier attempt is still running (${leftover}).`);
+    expect(refused.all).toContain("Wait until it ends (docker ps --filter label=lares.maintenance=workflow-store lists it until then), or stop it with docker rm --force <name>, then run the same restore again.");
+    expect(refused.all).toContain("This run has changed nothing (an earlier run of this same restore may already have stopped services and restored agent stores).");
+    expect(refused.all).not.toContain("Nothing has been changed.");
+    // Not even the financial freeze: nothing this run would do has started.
+    expect(changes()).toEqual([]);
+    expect(logLines().filter((line) => /budget-financial\.ts|workflow-store.* (check|upgrade) /.test(line))).toEqual([]);
+    expect(runsLeft()).toEqual([]);
+    expect(scratchLeft()).toEqual([]);
+
+    writeFileSync(log, "");
+    const again = run(base());
+    expect(again.code, again.all).toBe(0);
+    expect(idx(storeStep("upgrade"))).toBeGreaterThan(-1);
+  });
+
+  it("refuses, changing nothing, when Docker cannot say whether a store step is still running", () => {
+    oldBackup();
+    const r = run(base(), { env: { RESTORE_LEFTOVER_PS_RC: "1" } });
+    expect(r.code, r.all).toBe(78);
+    expect(r.all).toContain("I could not ask Docker whether an agent store step from an earlier attempt is still running. This run has changed nothing");
+    expect(changes()).toEqual([]);
+  });
+
+  it("a store whose check after restoring is not the older layout stops the same re-runnable way", () => {
+    oldBackup();
+    writeFileSync(join(workflowStoreDir, workflowDatabase), "current\n");
+    const r = run(base());
+    expect(r.code, r.all).toBe(75);
+    expect(r.all).toContain("its own check says 'current'");
+    expect(logLines().filter((line) => /dropdb .*lares_state$/.test(line))).toEqual([]);
+  });
+
+  it("a permission step that fails stops the same re-runnable way", () => {
+    oldBackup();
+    stub("pnpm", 'case "$*" in *apply-database*) echo "Workflow database contains an unknown row policy" >&2; exit 1 ;; esac; exit 0');
+    const r = run(base());
+    expect(r.code, r.all).toBe(75);
+    expect(r.all).toContain(`the agent store ${workflowDatabase}: its permissions could not be applied and verified (Workflow database contains an unknown row policy)`);
+    expect(logLines().filter((line) => /dropdb .*lares_state$/.test(line))).toEqual([]);
+    expect(runsLeft()).toEqual([]);
+  });
 });

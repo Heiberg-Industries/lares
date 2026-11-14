@@ -70,6 +70,7 @@ export default async function AgentPage({
             telegram: agent.doors.some((d) => d.kind === "telegram" && d.enabled),
           },
           notes: await fallbackNotes(name),
+          running: definition.status === "fulfilled" ? definition.value.initial?.runtime?.running : undefined,
         }
       : undefined;
   const access = await agentAccess.agentAccess(actor.id,name);

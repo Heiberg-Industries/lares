@@ -1,67 +1,168 @@
-import { fileURLToPath,pathToFileURL } from 'node:url';
-import { afterEach,describe,expect,it,vi } from 'vitest';
-const fake=vi.hoisted(()=>({query:vi.fn(),execute:vi.fn(),approval:vi.fn()}));
-vi.mock('../src/db.js',()=>({getPool:()=>fake}));
-vi.mock('../../../services/chief-of-staff/catalogue/index.js',()=>({CATALOGUE:{fixture:{capability:'fixture',tool:{description:'Fixture',inputSchema:{type:'object'},execute:fake.execute,approval:fake.approval}}}}));
-vi.mock('../../../services/creative/catalogue/index.js',()=>({CATALOGUE:{fixture:{capability:'fixture',tool:{description:'Fixture',inputSchema:{type:'object'},execute:fake.execute,approval:fake.approval}}}}));
-vi.mock('../../../services/chief-of-staff/lib/definition.js',()=>({thisAgent:async()=>({loaded:{definition:{}}})}));
-vi.mock('../../../services/creative/lib/definition.js',()=>({thisAgent:async()=>({loaded:{definition:{}}})}));
-vi.mock('../src/catalogue.js',()=>({grantedToolNames:()=>['fixture']}));
-const chiefPath=new URL('../../../services/chief-of-staff/agent/tools/catalogue.ts',import.meta.url).href;
-const chief=(await import(chiefPath)).default;
-const creativePath=new URL('../../../services/creative/agent/tools/catalogue.ts',import.meta.url).href;
-const creative=(await import(creativePath)).default;
-const approvalsPath=new URL('../../../services/chief-of-staff/lib/approvals.ts',import.meta.url).href;
-const {humanTurnRefusal}=await import(approvalsPath);
-const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
-const inc='11111111-1111-4111-8111-111111111111';
-const auth=(purpose='human')=>({authenticator:'lares-console',attributes:{user_id:'owner@example.invalid',lares_member_id:'Owner-ID',lares_admission_nonce:'a'.repeat(43),lares_purpose:purpose}});
-const context=(purpose='human')=>({session:{id:'wrun_test',turn:{id:'turn-1',sequence:0},auth:{current:auth(purpose),initiator:auth()}},abortSignal:new AbortController().signal,approvedTools:new Set(),callId:'call-1',toolInput:{},toolName:'fixture'});
-afterEach(()=>{vi.unstubAllEnvs();fake.query.mockReset();fake.execute.mockReset();fake.approval.mockReset();});
-describe('both catalogues guard real durable callbacks before underlying execution or approval policy',()=>{
- for (const [role,resolver] of [['chief',chief],['creative',creative]] as const) {
-  it(`${role}: an old native durable descriptor refuses private execution before source or policy`,async()=>{
-   const tool=(await (resolver.events['session.started'] as any)({}, {session:{id:'native',auth:{current:null,initiator:null}}})).fixture;
-   const {validateDurableDynamicToolCallbacks}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
-   const callbacks=validateDurableDynamicToolCallbacks('fixture',tool,{sessionId:'native',scope:'session',resolverSlug:'catalogue',entryKey:'fixture',name:'fixture'});
-   expect(callbacks.execute.closure).toEqual({name:'fixture'});
-   await expect(tool.execute({},context())).rejects.toThrow('Conversation authority');
-   await expect(tool.approval.request(context())).rejects.toThrow('Conversation authority');
-   expect(fake.execute).not.toHaveBeenCalled();expect(fake.approval).not.toHaveBeenCalled();expect(fake.query).not.toHaveBeenCalled();
-  });
- }
- for(const [role,resolver] of [['chief',chief],['creative',creative]] as const){
-  for(const optionId of ['approve','cancel']){
-   it(`${role}: native Telegram ${optionId} with auth:null reaches Eve's legacy input resolver`,async()=>{
-    const nativeAuth={current:null,initiator:{authenticator:'telegram',principalId:'fixture-owner',principalType:'user'}};
-    const nativeContext={session:{id:'wrun_native',auth:nativeAuth,turn:{id:'native-turn',sequence:1}}};
-    const tool=(await (resolver.events['session.started'] as any)({},nativeContext)).fixture;
-    const {validateDurableDynamicToolCallbacks}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
-    const callbacks=validateDurableDynamicToolCallbacks('fixture',tool,{sessionId:'wrun_native',scope:'session',resolverSlug:'catalogue',entryKey:'fixture',name:'fixture'});
-    expect(callbacks.approvalRequest).toBeDefined();expect(callbacks.approvalResponse).toBeUndefined();
-    expect(tool.approval.response).toBeUndefined();
-    const request={kind:'tool-approval',requestId:'native-request',prompt:'Fixture',options:[{id:'approve',label:'Approve'},{id:'cancel',label:'Cancel'}],action:{kind:'tool-call',callId:'native-call',toolName:'fixture',input:{}}};
-    // This is the marker Eve's tool loop derives from the resolved response descriptor.
-    const session={state:{'eve.runtime.pendingInputBatches':[{event:{sequence:0,stepIndex:0,turnId:'native-turn'},requests:[request],responseMessages:[],responseAuthRequiredRequestIds:tool.approval.response?['native-request']:[]}]}};
-    const stepInput={attributedInputResponses:[{auth:null,response:{requestId:'native-request',optionId}}]};
-    const {ContextContainer,contextStorage}=await import(`${dist}context/container.js`);
-    const {coordinateApprovalDelivery}=await import(`${dist}harness/approval-delivery-coordinator.js`);
-    const {resolvePendingInput}=await import(`${dist}harness/input-requests.js`);
-    const container=new ContextContainer();container.set({name:'eve.session'},{sessionId:'wrun_native',auth:nativeAuth,turn:nativeContext.session.turn});
-    const coordinated=await contextStorage.run(container,()=>coordinateApprovalDelivery({session,stepInput,tools:new Map([['fixture',tool]])}));
-    expect(coordinated.feedback).toEqual([]);expect(coordinated.stepInput.inputResponses).toEqual([{requestId:'native-request',optionId}]);
-    const resolved=resolvePendingInput({session:coordinated.session,stepInput:coordinated.stepInput,history:[]});
-    expect(resolved.outcome).toBe('resolved');
-    expect(resolved.resolvedInputs).toMatchObject([{inputs:[{request:{requestId:'native-request'},outcome:optionId==='approve'?'approved':'denied'}]}]);
-   });
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runDynamic } from './helpers/eve-dynamic.js';
+
+const fake = vi.hoisted(() => ({
+  query: vi.fn(), execute: vi.fn(), approval: vi.fn(), thisAgent: vi.fn(),
+  granted: [] as string[], verify: vi.fn(async (_ctx: unknown) => false),
+}));
+vi.mock('../src/db.js', () => ({ getPool: () => fake }));
+// The chief-of-staff's durable card marks (`lib/approval-card-turns.ts`) live in eve's per-session
+// state; outside a running eve session that state cannot be read, so every turn would count as
+// marked. Only those marks are held in memory here; every other eve state is the real one.
+const marks = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('eve/context', async (original) => {
+  const real = await original<typeof import('eve/context')>();
+  return { ...real, defineState: (key: string, initial: () => unknown) => !key.startsWith('lares.approval-')
+    ? (real.defineState as (k: string, i: () => unknown) => unknown)(key, initial)
+    : { get: () => (marks.has(key) ? marks.get(key) : initial()), update: (fn: (v: unknown) => unknown) => { marks.set(key, fn(marks.has(key) ? marks.get(key) : initial())); } } };
+});
+const tool = (gated: boolean) => ({ description: 'Fixture', inputSchema: { type: 'object' }, execute: fake.execute, ...(gated ? { approval: fake.approval } : {}) });
+const entries = () => ({
+  fixture: { capability: 'fixture', tool: tool(true) },
+  gmail_send: { capability: 'mail', tool: tool(true) },
+  gmail_search: { capability: 'mail', tool: tool(false) },
+  tracks_list: { capability: 'tracks', tool: tool(false) },
+  'agent-kit__vault_write': { capability: 'vault', tool: tool(true) },
+  lares_read_public_doc: { capability: 'docs', tool: tool(true) },
+});
+vi.mock('../../../services/chief-of-staff/catalogue/index.js', () => ({ CATALOGUE: entries() }));
+vi.mock('../../../services/creative/catalogue/index.js', () => ({ CATALOGUE: entries() }));
+vi.mock('../../../services/chief-of-staff/lib/definition.js', () => ({ thisAgent: (...a: unknown[]) => fake.thisAgent(...a) }));
+vi.mock('../../../services/creative/lib/definition.js', () => ({ thisAgent: (...a: unknown[]) => fake.thisAgent(...a) }));
+vi.mock('../src/catalogue.js', () => ({ grantedToolNames: () => fake.granted }));
+vi.mock('../src/private-console-surface.js', async (original) => ({ ...(await original<typeof import('../src/private-console-surface.js')>()), verifyPrivateConsoleSession: (ctx: unknown) => fake.verify(ctx) }));
+const chief = (await import(new URL('../../../services/chief-of-staff/agent/tools/catalogue.ts', import.meta.url).href)).default;
+const creative = (await import(new URL('../../../services/creative/agent/tools/catalogue.ts', import.meta.url).href)).default;
+const { humanTurnRefusal } = await import(new URL('../../../services/chief-of-staff/lib/approvals.ts', import.meta.url).href);
+const { noteApprovalCardTurn } = await import(new URL('../../../services/chief-of-staff/lib/approval-card-turns.ts', import.meta.url).href);
+const inc = '11111111-1111-4111-8111-111111111111';
+const auth = (purpose = 'human') => ({ authenticator: 'lares-console', attributes: { user_id: 'owner@example.invalid', lares_member_id: 'Owner-ID', lares_admission_nonce: 'a'.repeat(43), lares_purpose: purpose } });
+// What eve hands an approval policy / an executor: the session, the call, the input.
+const context = (purpose = 'human') => ({ session: { id: 'wrun_test', turn: { id: 'turn-1', sequence: 0 }, auth: { current: auth(purpose), initiator: auth() } }, abortSignal: new AbortController().signal, callId: 'call-1', toolInput: {}, toolName: 'fixture' });
+const consoleCtx = { session: { id: 'wrun_console', auth: { current: auth(), initiator: auth() } } };
+const nativeCtx = { session: { id: 'wrun_native', auth: { current: null, initiator: { authenticator: 'telegram', principalId: 'fixture-owner', principalType: 'user' } } } };
+
+beforeEach(() => { fake.thisAgent.mockResolvedValue({ loaded: { definition: {} } }); fake.granted = ['fixture']; fake.verify.mockImplementation(async (ctx: any) => ctx?.session?.auth?.current?.attributes?.lares_purpose !== undefined); });
+afterEach(() => { vi.unstubAllEnvs(); fake.query.mockReset(); fake.execute.mockReset(); fake.approval.mockReset(); fake.thisAgent.mockReset(); fake.verify.mockReset(); });
+
+describe('both catalogues guard their callbacks before underlying execution or approval policy', () => {
+  for (const [role, resolver] of [['chief', chief], ['creative', creative]] as const) {
+    it(`${role}: a tool built for a native conversation refuses private execution before source or policy`, async () => {
+      const t = (await runDynamic(resolver, nativeCtx)).fixture;
+      await expect(t.execute({}, context())).rejects.toThrow('Conversation authority');
+      await expect(t.approval.request(context())).rejects.toThrow('Conversation authority');
+      expect(fake.execute).not.toHaveBeenCalled(); expect(fake.approval).not.toHaveBeenCalled(); expect(fake.query).not.toHaveBeenCalled();
+    });
+
+    it(`${role}: a native conversation gets a response policy too, which refuses an unknown answerer whoever the requester is, for Approve and for Deny`, async () => {
+      const t = (await runDynamic(resolver, nativeCtx)).fixture;
+      expect(typeof t.approval.response).toBe('function');
+      const stranger = { authenticator: 'slack-webhook', principalId: 'U-stranger', principalType: 'user', attributes: { user_id: 'U-stranger' } };
+      const app = { authenticator: 'app', principalId: 'eve:app', principalType: 'runtime', attributes: {} };
+      for (const decision of ['approve', 'deny']) {
+        const answer = (requester: unknown, principal: unknown) => ({ request: { interactionId: 'i1', callId: 'call-1', toolName: 'fixture', principal: requester }, response: { decision, principal }, session: { id: 'wrun_native', initiator: null } });
+        for (const requester of [null, undefined, app, stranger]) expect(await t.approval.response(answer(requester, stranger)), decision).toMatchObject({ status: 'rejected' });
+        expect(await t.approval.response(answer(app, null)), decision).toMatchObject({ status: 'rejected' });
+      }
+    });
+
+    it(`${role}: on a native door only the OWNER (first id of the list) may answer; a second allowed person is refused, Approve and Deny`, async () => {
+      vi.stubEnv('SLACK_ALLOWED_USER_IDS', 'U_OWNER,U_SECOND');
+      vi.stubEnv('LARES_AGENT_INCARNATION', '');
+      const t = (await runDynamic(resolver, nativeCtx)).fixture;
+      const slack = (id: string) => ({ authenticator: 'slack-webhook', principalId: id, principalType: 'user', attributes: { user_id: id } });
+      const app = { authenticator: 'app', principalId: 'eve:app', principalType: 'runtime', attributes: {} };
+      for (const decision of ['approve', 'deny']) {
+        const answer = (requester: unknown, who: string) => ({ request: { interactionId: 'i1', callId: 'call-1', toolName: 'fixture', principal: requester }, response: { decision, principal: slack(who) }, session: { id: 'wrun_native', initiator: null } });
+        for (const requester of [slack('U_OWNER'), app, null]) {
+          expect(await t.approval.response(answer(requester, 'U_OWNER')), decision).toEqual({ status: 'allowed' });
+          expect(await t.approval.response(answer(requester, 'U_SECOND')), decision).toMatchObject({ status: 'rejected' });
+        }
+      }
+    });
+
+    it(`${role}: a bound console conversation gets a response policy that refuses an unbound answer, for Approve and for Deny`, async () => {
+      // The one gated tool each role may show in a private conversation.
+      const gated = role === 'chief' ? 'agent-kit__vault_write' : 'lares_read_public_doc';
+      fake.granted = [gated];
+      const t = (await runDynamic(resolver, consoleCtx))[gated];
+      expect(typeof t.approval.response).toBe('function');
+      for (const decision of ['approve', 'deny']) {
+        const answer = { request: { interactionId: 'i1', callId: 'call-1', toolName: gated }, response: { decision, principal: { authenticator: 'slack-webhook', attributes: { user_id: 'U1' } } }, session: { id: 'wrun_console', initiator: auth() } };
+        // A refusal is a `rejected` answer or a throw; either way eve keeps the card pending.
+        const refused = await t.approval.response(answer).then((r: any) => r.status === 'rejected', () => true);
+        expect(refused, decision).toBe(true);
+      }
+      // Nothing was recorded as a decision (a read of the card is all that may have happened).
+      expect(fake.query.mock.calls.filter(([sql]) => /^\s*(UPDATE|INSERT|DELETE)/i.test(String(sql)))).toEqual([]);
+    });
+
+    it(`${role}: malformed cold strict reconstruction fails before exposing tools`, async () => {
+      const c = { session: { id: 'wrun_cold', auth: { current: null as never, initiator: auth() } } };
+      fake.verify.mockRejectedValue(new Error('Conversation authority is not available'));
+      await expect(runDynamic(resolver, c)).rejects.toThrow('Conversation authority');
+      expect(fake.execute).not.toHaveBeenCalled(); expect(fake.approval).not.toHaveBeenCalled();
+    });
+
+    it(`${role}: the tool list is decided once per conversation and rebuilt from plain JSON`, async () => {
+      const store = new Map<string, string>();
+      const first = await runDynamic(resolver, nativeCtx, store);
+      fake.granted = [];                       // a grant change mid-conversation must not reach it
+      const second = await runDynamic(resolver, nativeCtx, store);
+      expect(Object.keys(second)).toEqual(Object.keys(first));
+      expect(fake.thisAgent).toHaveBeenCalledTimes(1);
+      expect([...store.values()].every((v) => { JSON.parse(v); return true; })).toBe(true);
+      // A new conversation decides again.
+      expect(Object.keys(await runDynamic(resolver, { session: { id: 'wrun_other', auth: nativeCtx.session.auth } }, store))).toEqual([]);
+    });
+
+    it(`${role}: a gated tool has the object form with a card title, an ungated tool has no approval at all`, async () => {
+      fake.granted = ['fixture', 'gmail_search'];
+      const tools = await runDynamic(resolver, nativeCtx);
+      expect(typeof tools.fixture.approval).toBe('object');
+      expect(typeof tools.fixture.approval.prompt).toBe('function');
+      expect(tools.gmail_search.approval).toBeUndefined();
+    });
+
+    it(`${role}: the card title is the tool's summary, falls back to the generic title, and never throws`, async () => {
+      fake.granted = ['gmail_send', 'fixture'];
+      const tools = await runDynamic(resolver, nativeCtx);
+      const prompt = tools.gmail_send.approval.prompt;
+      expect(prompt({ toolName: 'gmail_send', input: { to: ['a@x.example'] }, callId: 'c' })).toBe('Send email to a@x.example');
+      expect(tools.fixture.approval.prompt({ toolName: 'fixture', input: {}, callId: 'c' })).toBe('Approve tool call: fixture');
+      expect(() => prompt({ toolName: 'gmail_send', input: { get to() { throw new Error('boom'); } }, callId: 'c' })).not.toThrow();
+      expect(prompt({ toolName: 'gmail_send', input: { get to() { throw new Error('boom'); } }, callId: 'c' })).toSatisfy((v: unknown) => v === undefined || typeof v === 'string');
+      expect(prompt(undefined)).toBeUndefined();
+    });
   }
-  it(`${role}: malformed cold strict reconstruction fails before exposing tools`,async()=>{
-   const c=context('resolver');c.session.auth.current=null as never;
-   await expect((resolver.events['session.started'] as any)({},c)).rejects.toThrow('Conversation authority');
-   expect(fake.execute).not.toHaveBeenCalled();expect(fake.approval).not.toHaveBeenCalled();
+
+  it('chief: an ordinary conversation gets exactly the granted tools that are not private-only', async () => {
+    fake.granted = ['fixture', 'gmail_search', 'tracks_list'];
+    expect(Object.keys(await runDynamic(chief, nativeCtx)).sort()).toEqual(['fixture', 'gmail_search']);
   });
- }
- it('an approval resolver cannot become a new human instruction',()=>{
-  expect(humanTurnRefusal({current:auth('resolver'),initiator:auth()},'Refused.',{LARES_AGENT_INCARNATION:inc,LARES_CONSOLE_PRINCIPAL:'owner@example.invalid'})).toContain('no new human instruction');
- });
+
+  it('chief: a verified private console conversation gets the private subset, and nothing outside it', async () => {
+    fake.granted = ['fixture', 'gmail_search', 'tracks_list'];
+    expect(Object.keys(await runDynamic(chief, consoleCtx)).sort()).toEqual(['gmail_search', 'tracks_list']);
+  });
+
+  it('chief: an unverified private console conversation gets nothing private (the resolver refuses)', async () => {
+    fake.granted = ['fixture', 'gmail_search', 'tracks_list'];
+    fake.verify.mockRejectedValue(new Error('Conversation authority is not available'));
+    await expect(runDynamic(chief, consoleCtx)).rejects.toThrow('Conversation authority');
+  });
+
+  it('the turn after an answered card cannot become a new human instruction', () => {
+    // eve 1.0: that turn runs as the person who ASKED (`current` = their human admission); only
+    // the durable card mark tells it apart from their own new message.
+    const env = { LARES_AGENT_INCARNATION: inc, LARES_CONSOLE_PRINCIPAL: 'owner@example.invalid' };
+    const asker = { auth: { current: auth(), initiator: auth() }, turn: { id: 'turn_3' } };
+    expect(humanTurnRefusal(asker, 'Refused.', env)).toBeNull();
+    noteApprovalCardTurn('turn_3');
+    expect(humanTurnRefusal(asker, 'Refused.', env)).toContain('no new human instruction');
+    expect(humanTurnRefusal({ ...asker, turn: { id: 'turn_4' } }, 'Refused.', env)).toBeNull(); // the next message is new
+    // A resolver identity on `current`, or a turn with no id, is refused too (fails closed).
+    expect(humanTurnRefusal({ auth: { current: auth('resolver'), initiator: auth() }, turn: { id: 'turn_4' } }, 'Refused.', env)).toContain('no new human instruction');
+    expect(humanTurnRefusal({ auth: asker.auth }, 'Refused.', env)).toContain('no new human instruction');
+  });
 });

@@ -5,20 +5,25 @@ Earlier proofs seed the database and start pieces by hand, so bugs on the real i
 reached them. This one runs get-lares.sh and install.sh from an ordinary folder, then signs in,
 runs `lares owner-bootstrap`, `lares budget setup`, creates and adopts an agent on the console's
 real pages, sets the member limit there, runs `lares agent start`, holds a chat where a tool runs,
-an approval card is answered and the conversation carries on, sets up `lares backups`, then runs a
-real `lares update` to a second build, runs `lares doctor`, and finishes by simulating a reboot and waiting for the agent to come back by itself. Nothing here writes to the
-database or edits an installation file the installer owns.
+an approval card is answered and the conversation carries on, edits the started agent's description on
+its page, then connects a Slack and a Telegram door on that page as the install guide orders it (the agent
+already started) and sends one message through each, presses "Send a test brief" for each door on that page
+and follows each brief into its chat and onto the owner's bill, sets up `lares backups`, then runs a
+real `lares update` to a second build, runs `lares doctor`, simulates a reboot and waits for the agent to come back by itself. Up to there nothing writes to the
+database or edits an installation file the installer owns. It finishes by restoring a backup whose agent store the release before this
+one left onto this machine wiped and installed again (the last stage, further down, says what it changes and why).
 
 WHAT IS NOT REAL, AND WHY. A CI server has no public address and cannot sign in to Google or spend
 on a model. So, outside the installation:
-  - the model provider and the sign-in provider are stand-ins (real-install/fake-internet.mjs) at
-    their real names, over TLS from a throwaway test authority;
+  - the model provider, the sign-in provider and Slack's and Telegram's APIs are stand-ins
+    (real-install/fake-internet.mjs) at their real names, over TLS from a throwaway test authority;
   - images come from a throwaway registry reached as ghcr.io, because the installer accepts only
     registry names without a port; nothing is published;
   - the domain ends in .internal, so Caddy issues its certificate from that authority (seeded into
     Caddy's data folder before the install) instead of from a public one;
-  - the console and gateway images are the built or pinned ones plus that one authority, so they
-    trust it. The compose files, settings and engine code are exactly what an owner gets.
+  - the console, gateway, keeper and chief-of-staff images are the built or pinned ones plus that
+    one authority, so they trust it. The compose files, settings and engine code are exactly what an
+    owner gets.
 Limits are also recorded in the proof file, so a green run cannot be read as more than it is.
 
 This changes the machine it runs on (hosts file, firewall redirect, trust store), so it refuses to
@@ -28,6 +33,8 @@ run anywhere but a GitHub-hosted runner.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import pathlib
@@ -52,7 +59,8 @@ NETWORK = "lares-network"
 REGISTRY_ADDRESS = "10.99.0.2"
 FAKE_ADDRESS = "172.30.0.240"
 ROUTE_ADDRESS = "172.30.0.241"
-FAKE_HOSTS = ("api.anthropic.com", "accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com", f"uptime.{DOMAIN}")
+FAKE_HOSTS = ("api.anthropic.com", "accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com", f"uptime.{DOMAIN}",
+              "slack.com", "api.telegram.org")
 TOOL_PROMPT = "PROOF_USE_A_TOOL please look at the tracks."
 FOLLOW_UP_PROMPT = "PROOF_CARRY_ON and what did you find?"
 APPROVAL_PROMPT = "PROOF_ASK_APPROVAL please make the track."
@@ -67,22 +75,66 @@ NOTE_INPUT = {"area": "private", "title": "Proof note", "body": "PROOF_NOTE_BODY
 NOTE_REPLY = "PROOF_APPROVED_NOTE_SAVED"
 TOOL_REPLY = "PROOF_TOOL_RESULT_RECEIVED"
 FOLLOW_UP_REPLY = "PROOF_CONVERSATION_KEPT"
+DOOR_PROMPT = "PROOF_DOOR_TURN"
+DOOR_REPLY = "PROOF_DOOR_REPLY"
+# Neutral ids for the person behind each door, and the private chat the door talks in.
+DOOR_PERSON = {"slack": "U0PROOFOWNER", "telegram": "700000001"}
+DOOR_CHAT = {"slack": "D0PROOF", "telegram": "700000001"}
+CLAIM_REPLY = "Connected. Once setup finishes applying"
+# A door's Connect and Apply restart the agent, which changes the runner's network while the page waits;
+# in an earlier run each needed its last of three attempts.
+DOOR_STEP_ATTEMPTS = 6
+# Words of eve's error copy, which must never be what a door turn posts into the chat.
+ERROR_COPY = ("I hit an error", "MODEL_CALL_FAILED", "/run/secrets")
+# What the stand-in model answers to a test brief's prompt (the product asks it to begin "Test brief"),
+# and the part of it a post into the chat must carry.
+BRIEF_REPLY_MARK = "PROOF_BRIEF_REPLY"
+BRIEF_REPLY = f"Test brief. {BRIEF_REPLY_MARK}"
+DOOR_LABEL = {"slack": "Slack", "telegram": "Telegram"}
+# One attempt of a test-brief browser step: the page's own longest wait (13 minutes) plus loading it.
+BRIEF_STEP_TIMEOUT = 960
+# The module the console, the chief of staff and this check share the test brief's words from.
+TEST_BRIEF_MODULE = REPO / "packages/agent-kit/src/delivery.ts"
 MEMBER_LIMIT = "15"
+EDITED_DESCRIPTION = "PROOF_EDITED_DESCRIPTION written on the console page while the agent runs."
+SAVE_WARNING = "open web-chat conversations, and any approval waiting in them. Start a new conversation afterwards."
 INSTALL_TIMEOUT = 1500
 LIMITS = [
     "The model provider and the sign-in provider are stand-ins: a real provider's replies are copied, not called.",
     "Images come from a throwaway registry, so pulling from the real registry is not covered.",
-    "The console and gateway images carry one extra test certificate authority; a real server uses a public certificate.",
+    "The console, gateway, keeper and chief-of-staff images carry one extra test certificate authority; a real server uses a public certificate.",
     "The certificate is issued by Caddy's own authority, so getting a public certificate is not covered.",
     "The sync-jobs image is named but never started on a fresh install, so it is not built or pulled here. The Notion sync is only checked up to its gate (nothing starts without an accepted preview); reaching Notion is not covered.",
-    "Backups go to the same machine, and the uptime address is a stand-in: a real restore onto a new server is not covered.",
-    "The approval step answers one card as the member who started the conversation; refusing other people's answers is covered by the private chat proof, not here.",
+    "Backups go to the same machine, and the uptime address is a stand-in.",
+    "The approval step answers two cards (a Track and a Vault note), both with Approve, as the member who started the conversation; refusing other people's answers is covered by the private chat proof, not here.",
+    "Who pays is checked for one person and Approve only: how the call after a Deny is booked, and booking to a second member, are covered by the box tests, not here.",
+    "The check of who pays after an answered card reads web chat only; it does not exercise Slack or Telegram turns (the door stage checks those).",
     "The update goes to a second build of the same code (a new label, so new digests): a release that changes code or adds migrations is not covered.",
     "Saving a definition in the console after the update is not exercised; agent start and the agent's restart are.",
+    "A started agent takes one edit on the console page (its description) and, after it, a Slack and a Telegram door switched on and applied by Connect, before the update. Apply after a model change on a started agent is covered by keeper tests, not by an image run.",
+    "The conversation the edit ends is a plain one with one message; that an approval waiting in such a conversation cannot be answered afterwards is covered by the agent's tests, not here.",
     "The change of budget month is not covered: this run does not move the clock.",
     "One person only: a second member, and a real spending-limit refusal, are not covered.",
     "A real agent answer is not covered: the stand-in decides what the model says.",
     "A reboot is simulated by stopping Docker, deleting the keeper's folders under /run and starting Docker again; the kernel, the firewall tables and systemd units are not restarted, and the agent is only asked for its health answer.",
+    "Slack and Telegram are stand-ins at their real names: the probe signs the Slack event with the signing secret it pasted and sends the Telegram update with the secret the stand-in was given; a platform's retries, timing and payload variety are not covered.",
+    "A door's claim is applied by pressing Apply on the agent's page after the claim was sent, not by the page's own watch-and-apply.",
+    "One member connects both doors, so who pays when a second member connects a door is not covered.",
+    "Web chat's approval cards are all answered before any door is claimed; how web-chat approvals behave once a door is claimed is not exercised.",
+    "A brief started by the morning brief's own schedule run is sent into Slack and into Telegram by pressing the console's "
+    "'Send a test brief' button once for each, on the same route and payment as a scheduled brief (an owner job); the brief's "
+    "clock rule (only at minute 0 of its hour, no test in the three minutes before it) and its once-a-day rule are covered by "
+    "unit tests only, and a real brief at its hour is not waited for.",
+    "One member owns, adopted and claimed everything, so for a test brief 'charged to the right payer' cannot be told apart "
+    "from 'charged to the installation owner'; a shared agent's refused brief is covered by unit tests only.",
+    "A test brief's budget rows carry no conversation, so they are found by their time window and the agent's chat model: "
+    "another owner job on that model in the same minutes (a real brief or a digest into web chat) cannot be told apart from "
+    "it by the rows alone; the stand-in's record of the call carrying the product's marker is what ties the check to the test brief.",
+    "What eve does when a real brief meets a Telegram conversation still busy with a test brief is not exercised.",
+    "Only a direct message is sent on Slack; a turn started by mentioning the agent in a room is not exercised.",
+    "No refused door turn is exercised (another person, a Telegram group, a refusal by Keeper); the sentence a person then sees is covered by unit tests only.",
+    "Each door's Connect and Apply restart the agent, which changes the runner's network while the page waits; the probe then tries the step again once the keeper has finished what the dropped attempt started, and the retry presses nothing that is already running or done (the attempts used are recorded under browserAttempts), so a single uninterrupted press is not shown here.",
+    "The keeper writes no log line for a door turn's door.open, step claim or step consume; the proof reads the budget rows, the keeper's audit of each Apply and the agent's own log instead.",
 ]
 
 proof: dict = {"format": 1, "status": "running", "stage": "start", "checks": {}, "limits": LIMITS, "commit": None}
@@ -292,7 +344,69 @@ def keeper_held_lines() -> list[str]:
     if not ids:
         return ["the keeper is not running"]
     logs = run("docker", "logs", ids[0], check=False, show=False)
-    return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line]
+    return [line for line in (logs.stdout + logs.stderr).splitlines() if " is held: " in line or " is no longer held" in line
+            or "the spending-key store was busy" in line or "the spending ledger was busy" in line]
+
+
+def keeper_log_lines(*phrases: str) -> list[str]:
+    """Lines of the keeper's log that contain any of these fixed phrases, each line once, in log order."""
+    ids = output("docker", "ps", "-q", "--filter", "label=com.docker.compose.service=lares-keeper").split()
+    if not ids:
+        return ["the keeper is not running"]
+    logs = run("docker", "logs", ids[0], check=False, show=False)
+    return [line.strip()[:300] for line in (logs.stdout + logs.stderr).splitlines() if any(phrase in line for phrase in phrases)]
+
+
+# A failed Apply as the keeper logs it: the caller's sentence ("Apply failed"), the action's own failure line
+# ("keeper: definition.reconcile failed (<state>) for agent ...; cause: ..."), and a budget check that found the
+# spending-key store or the spending ledger busy.
+APPLY_FAILURE_PHRASES = ("Apply failed", "definition.reconcile failed", "the spending-key store was busy", "the spending ledger was busy")
+
+
+def agent_started_at() -> str | None:
+    """When the proof agent's running container was started; None when it is not running."""
+    ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    return output("docker", "inspect", "--format", "{{.State.StartedAt}}", ids[0]) if ids else None
+
+
+def conversation_calls(release: dict, saved_at: str | None = None) -> list[dict]:
+    """Every call booked to a conversation: its conversation, state, payer, and whether it was made after
+    `saved_at`, a time the database gave (the keeper's audit row of one save). A conversation the save ended
+    takes no call after it: the budget check refuses before any attempt is recorded. Never compared with
+    `agent_definitions.valid_at`: the running agent moves that on at every fresh definition read."""
+    after = f"a.created_at >= '{saved_at}'::timestamptz" if saved_at else "false"
+    rows = read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('session', a.authority_reference#>>'{binding,sessionId}', 'state', a.state, "
+        f"'payer', coalesce(a.live_member_id, ''), 'afterSave', {after}) ORDER BY a.created_at, a.id), '[]') "
+        "FROM budget_attempts a WHERE a.authority_reference->>'kind' = 'human'", release)
+    return json.loads(rows or "[]")
+
+
+def keeper_audit_mark(release: dict) -> str:
+    """The newest row of the keeper's audit log now, so a later read finds only the rows written after it."""
+    return read_only_query("SELECT coalesce(max(id), 0) FROM keeper_audit", release) or "0"
+
+
+def this_save_started_at(release: dict, mark: str) -> tuple[str | None, int]:
+    """When the keeper began the one definition save made after `mark` for the proof agent, as the database
+    recorded it (`keeper_audit.at`, written once when the action starts), and how many such saves there were.
+    The save must be the one whose recorded hash is the definition's hash now."""
+    rows = read_only_query(
+        "SELECT k.at::text, k.detail = '{\"hash\":\"' || d.hash || '\"}' FROM keeper_audit k JOIN agent_definitions d ON d.name = k.input->>'name' "
+        f"WHERE k.id > {int(mark)} AND k.action = 'definition.save' AND k.outcome = 'ok' AND k.input->>'name' = '{AGENT}' ORDER BY k.id", release)
+    saves = [line.split("|") for line in rows.splitlines() if line]
+    current = [at for at, matches in saves if matches == "t"]
+    return (current[0] if len(saves) == 1 and len(current) == 1 else None), len(saves)
+
+
+def agent_permission_denied_lines() -> list[str]:
+    """Lines of the proof agent's container log where the database refused it something. A chat can
+    still answer while its job queue is refused a call, so the answer alone does not show it."""
+    ids = output("docker", "ps", "-a", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    if not ids:
+        return ["the proof agent has no container"]
+    logs = run("docker", "logs", ids[0], check=False, show=False)
+    return [redact(line.strip())[:300] for line in (logs.stdout + logs.stderr).splitlines() if "permission denied" in line]
 
 
 def agent_answers() -> bool:
@@ -321,7 +435,7 @@ def host_address() -> str:
     return output("hostname", "-I").split()[0]
 
 
-def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixture_image: str, key_value: str) -> pathlib.Path:
+def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixture_image: str, key_value: str, brief_marker: str) -> pathlib.Path:
     fixture = work / "fake"
     fixture.mkdir()
     shutil.copy(HERE / "fake-internet.mjs", fixture / "fake-internet.mjs")
@@ -337,6 +451,8 @@ def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixtur
         "toolPreference": ["tracks_list", "vault_list"],
         "approvalPrompt": "PROOF_ASK_APPROVAL", "approvalTool": APPROVAL_TOOL, "approvalInput": APPROVAL_INPUT, "approvalReply": APPROVAL_REPLY,
         "notePrompt": "PROOF_ASK_NOTE", "noteTool": NOTE_TOOL, "noteInput": NOTE_INPUT, "noteReply": NOTE_REPLY,
+        "doorPrompt": DOOR_PROMPT, "doorReply": DOOR_REPLY,
+        "briefMarker": brief_marker, "briefReply": BRIEF_REPLY,
     }))
     run("docker", "run", "-d", "--name", "proof-fake", "--restart", "unless-stopped", "--user", "0:0", "--entrypoint", "node",
         "-v", f"{fixture}:/fixture", fixture_image, "/fixture/fake-internet.mjs", "serve", "/fixture")
@@ -404,6 +520,29 @@ def fake_calls(fixture: pathlib.Path) -> list[dict]:
     return [json.loads(line) for line in (fixture / "calls.jsonl").read_text().splitlines() if line.strip()]
 
 
+STRING_PART = re.compile(r'\s*("(?:[^"\\\n]|\\.)*")\s*([+;])')
+
+
+def product_constant(name: str) -> str:
+    """A string the product exports from packages/agent-kit/src/delivery.ts, read from that file as it is
+    (one double-quoted literal, or several joined with +), so this check never types the product's words a
+    second time. The images under test were built from the same checkout. Any other shape stops the probe
+    at its first stage: the stand-in could not recognise a test brief."""
+    source = TEST_BRIEF_MODULE.read_text()
+    start = re.search(rf"^export const {name}\s*=", source, re.MULTILINE)
+    if not start:
+        raise RuntimeError(f"{TEST_BRIEF_MODULE.relative_to(REPO)} exports no {name}")
+    rest, parts = source[start.end():], []
+    while True:
+        found = STRING_PART.match(rest)
+        if not found:
+            raise RuntimeError(f"{name} in {TEST_BRIEF_MODULE.relative_to(REPO)} is not a plain string")
+        parts.append(json.loads(found.group(1)))
+        rest = rest[found.end():]
+        if found.group(2) == ";":
+            return "".join(parts)
+
+
 # --- the owner's steps ---------------------------------------------------------------------------
 
 def wait_for_quiet_network() -> None:
@@ -419,18 +558,32 @@ def wait_for_quiet_network() -> None:
         time.sleep(1)
 
 
-def browser(step: str, settings_file: pathlib.Path, tls: dict[str, pathlib.Path]) -> None:
-    """Tries again only when the browser itself reports that interface change, never on a page's answer."""
-    for attempt in range(3):
+def browser(step: str, settings_file: pathlib.Path, tls: dict[str, pathlib.Path], attempts: int = 3, before_retry=None, timeout: int = 420) -> None:
+    """Tries again only when the browser itself reports that interface change, never on a page's answer,
+    and at most `attempts` times. A step that restarts the agent (a door's Connect or Apply) changes the
+    runner's interfaces while its request is in flight, so it gets more attempts, and `before_retry` runs
+    before each retry: there it waits until the keeper has finished what the dropped attempt started, so
+    the retry finds the result and never starts the same Connect or Apply a second time.
+    Every step's attempts are recorded in the proof file, so a pass on the last one is visible. `timeout` bounds
+    one attempt; a step that waits on the agent (a test brief) gets longer."""
+    tries: list[str] = []
+    proof.setdefault("browserAttempts", {})[step] = tries
+    for attempt in range(attempts):
+        if attempt and before_retry:
+            before_retry()
         wait_for_quiet_network()
-        result = run("node", str(HERE / "browser.mjs"), step, str(settings_file), timeout=420, cwd=str(HERE),
+        result = run("node", str(HERE / "browser.mjs"), step, str(settings_file), timeout=timeout, cwd=str(HERE),
                      env={"NODE_EXTRA_CA_CERTS": str(tls["ca_cert"])}, check=False)
         if result.returncode == 0:
+            tries.append("passed")
             passed(f"browser:{step}")
             return
-        if "ERR_NETWORK_CHANGED" not in result.stdout:
+        network_changed = "ERR_NETWORK_CHANGED" in result.stdout
+        tries.append("failed: the network changed" if network_changed else "failed")
+        save_proof()
+        if not network_changed:
             break
-    raise RuntimeError(f"the browser step {step} failed")
+    raise RuntimeError(f"the browser step {step} failed ({len(tries)} attempt(s): {tries})")
 
 
 def wait_for_sign_in_offer() -> None:
@@ -480,6 +633,691 @@ def read_only_query(sql: str, release: dict) -> str:
     password = pathlib.Path("/etc/lares/secrets/financial-database-password").read_text().strip()
     return run("docker", "run", "--rm", "--network", "host", "-e", f"PGPASSWORD={password}", "-e", "PGOPTIONS=-c default_transaction_read_only=on",
                "--entrypoint", "psql", release["images"]["db"], "-h", "127.0.0.1", "-U", "lares_financial", "-d", "lares_state", "-Atc", sql, show=False).stdout.strip()
+
+
+def check_charges_after_answered_cards(release: dict, deferred: list[str]) -> None:
+    """Who paid for each call of the chat, and as what. Every call of the conversation is booked to
+    the one signed-in member; the call after each approved card is booked as the answer to that card
+    (`resume`, option `approve`), and those cards are exactly the ones approved in the conversation.
+    Read with the financial login, which can read the budget tables and approval_asks. A fault is
+    reported at the end, like the other checks of the chat, so it does not hide the stages after it."""
+    members = [line for line in read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member' ORDER BY id", release).splitlines()]
+    if len(members) != 1 or not members[0]:
+        deferred.append(f"who paid was not checked: expected one member budget account with a live member, found {len(members)}: {['set' if m else 'empty' for m in members]}")
+        return
+    member = members[0]
+    rows = json.loads(read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('state', a.state, 'liveMember', a.live_member_id, 'accountKind', m.kind, "
+        "'accountMember', m.live_member_id, 'hasReference', a.authority_reference IS NOT NULL, 'kind', a.authority_reference->>'kind', "
+        "'bindingMember', a.authority_reference#>>'{binding,memberId}', 'session', a.authority_reference#>>'{binding,sessionId}', "
+        "'requestId', a.authority_reference#>>'{resume,requestId}', 'option', a.authority_reference#>>'{resume,optionId}') "
+        "ORDER BY a.created_at, a.id), '[]') FROM budget_attempts a JOIN budget_accounts m ON m.id = a.member_account_id", release))
+    chat = [row for row in rows if row["kind"] in ("human", "resume")]
+    owner_jobs = [row for row in rows if row["kind"] == "owner-job"]
+    sessions = sorted({row["session"] for row in chat if row["session"]})
+    cards = json.loads(read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('requestId', request_id, 'tool', tool, 'outcome', outcome, 'askedBy', acting_member_id, "
+        "'answeredBy', resolved_by_member_id) ORDER BY asked_at), '[]') FROM approval_asks "
+        f"WHERE agent = '{AGENT}' AND session_id IN (SELECT authority_reference#>>'{{binding,sessionId}}' FROM budget_attempts "
+        "WHERE authority_reference->>'kind' IN ('human', 'resume'))", release))
+    approved = sorted({card["requestId"] for card in cards if card["outcome"] == "approved"})
+    resume_approved = sorted({row["requestId"] for row in chat if row["kind"] == "resume" and row["option"] == "approve" and row["state"] == "settled"})
+
+    def who(value: str | None) -> str | None:
+        return None if value is None else "the signed-in member" if value == member else "another member"
+
+    proof["charges"] = {
+        "attempts": [{"state": row["state"], "kind": row["kind"] if row["hasReference"] else None, "option": row["option"],
+                      "requestId": row["requestId"], "session": sessions.index(row["session"]) + 1 if row["session"] in sessions else None,
+                      "chargedTo": who(row["liveMember"]), "account": f"{row['accountKind']}: {who(row['accountMember'])}",
+                      "bookedFor": who(row["bindingMember"])} for row in rows],
+        "chatAttempts": len(chat), "ownerJobAttempts": len(owner_jobs), "sessions": len(sessions),
+        "approvedCards": [{"requestId": card["requestId"], "tool": card["tool"], "askedBy": who(card["askedBy"]), "answeredBy": who(card["answeredBy"])}
+                          for card in cards if card["outcome"] == "approved"],
+        "otherCards": [{"requestId": card["requestId"], "tool": card["tool"], "outcome": card["outcome"]} for card in cards if card["outcome"] != "approved"],
+        "resumeApproveRequestIds": len(resume_approved),
+    }
+    save_proof()
+    print(f"budget attempts, who paid and as what:\n{json.dumps(proof['charges'], indent=2)}", flush=True)
+    faults = []
+    unbooked = [row for row in rows if row["kind"] not in ("human", "resume", "owner-job")]
+    if unbooked:
+        faults.append(f"{len(unbooked)} attempt(s) carry no conversation or owner-job reference (kinds {sorted({str(row['kind']) for row in unbooked})})")
+    if not chat:
+        faults.append("no attempt is booked to the conversation")
+    strangers = [row for row in chat if not (row["liveMember"] == member and row["accountKind"] == "member" and row["accountMember"] == member and row["bindingMember"] == member)]
+    if strangers:
+        faults.append(f"{len(strangers)} chat attempt(s) are not charged to and booked for the signed-in member")
+    if any(row["kind"] == "resume" and row["option"] != "approve" for row in chat):
+        faults.append("a chat attempt is booked as the answer Deny (or no option), but every card was approved")
+    if len(resume_approved) < 2:
+        faults.append(f"settled calls are booked as the Approve answer of {len(resume_approved)} different card(s); two cards were approved")
+    if resume_approved != approved:
+        faults.append(f"the cards the calls were booked under ({resume_approved}) are not the cards approved in the conversation ({approved})")
+    if faults:
+        deferred.append("the calls of the chat were not charged as expected: " + "; ".join(faults))
+    else:
+        passed("the-call-after-each-answered-card-was-charged-to-the-asker-as-that-answer")
+
+
+# --- a message on a chat door -------------------------------------------------------------------
+
+def write_private(path: pathlib.Path, text: str | bytes) -> None:
+    """Readable by this root process only, from the moment it exists."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(text.encode() if isinstance(text, str) else text)
+    os.chmod(path, 0o600)
+
+
+def send_door_message(kind: str, text: str, work: pathlib.Path, fixture: pathlib.Path, door_values: dict) -> int:
+    """POSTs one message to the door's public address the way the platform does, and returns the final
+    HTTP status. Only a 404 (changes still pending) or a 502 (the agent restarting) is sent again, with
+    a fresh id and timestamp, for up to two minutes; nothing is sent again after a 2xx. Nothing about the
+    request is printed: it carries the Slack signature or the Telegram secret."""
+    url = f"https://{DOMAIN}/api/doors/{AGENT}/{kind}/events"
+    body_file, header_file = work / f"door-{kind}-body.json", work / f"door-{kind}-headers"
+    deadline = time.monotonic() + 120
+    while True:
+        if kind == "slack":
+            event = {"type": "event_callback", "team_id": "T0PROOF", "api_app_id": "A0PROOF", "event_id": f"Ev0PROOF{uuid.uuid4().hex[:12].upper()}",
+                     "event": {"type": "message", "channel": DOOR_CHAT["slack"], "channel_type": "im", "user": DOOR_PERSON["slack"], "text": text,
+                               "ts": f"{time.time():.6f}"}}
+            raw = json.dumps(event).encode()
+            stamp = str(int(time.time()))
+            signature = hmac.new(door_values["slackSigningSecret"].encode(), b"v0:" + stamp.encode() + b":" + raw, hashlib.sha256).hexdigest()
+            headers = f"content-type: application/json\nx-slack-request-timestamp: {stamp}\nx-slack-signature: v0={signature}\n"
+        else:
+            hook = json.loads((fixture / "telegram-webhook.json").read_text())
+            person = int(DOOR_PERSON["telegram"])
+            update = {"update_id": int.from_bytes(os.urandom(3), "big") + 100000,
+                      "message": {"message_id": int.from_bytes(os.urandom(2), "big") + 1, "date": int(time.time()),
+                                  "chat": {"id": person, "type": "private", "first_name": "Proof"},
+                                  "from": {"id": person, "is_bot": False, "first_name": "Proof"}, "text": text}}
+            raw = json.dumps(update).encode()
+            headers = f"content-type: application/json\nx-telegram-bot-api-secret-token: {hook['secretToken']}\n"
+        write_private(body_file, raw)
+        write_private(header_file, headers)
+        answer = run("curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "30", "-X", "POST", "-H", f"@{header_file}",
+                     "--data-binary", f"@{body_file}", url, check=False, show=False)
+        status = int(answer.stdout.strip()) if answer.stdout.strip().isdigit() else 0
+        if status in (404, 502) and time.monotonic() < deadline:
+            time.sleep(5)
+            continue
+        return status
+
+
+def agent_log_evidence() -> dict:
+    """The agent's own words about the gateway key file. The full path is matched: the doors' own
+    secret readers throw the same words with their own paths."""
+    ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    if not ids:
+        return {"gatewayKeyLines": [], "secretFileNotReadableLines": 0, "note": "the agent is not running"}
+    logs = run("docker", "logs", ids[0], check=False, show=False)
+    lines = (logs.stdout + "\n" + logs.stderr).splitlines()
+    return {"gatewayKeyLines": [redact(line)[:300] for line in lines if "/run/secrets/gateway-key" in line][:5],
+            "secretFileNotReadableLines": sum(1 for line in lines if "secret file not readable" in line)}
+
+
+def agent_container() -> dict | None:
+    """The proof agent's running container: its id and when it started. None when none runs."""
+    ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
+    if not ids:
+        return None
+    found = output("docker", "inspect", "--format", "{{.Id}} {{.State.StartedAt}}", ids[0]).split()
+    return {"id": found[0][:12], "startedAt": found[1]} if len(found) == 2 else None
+
+
+def keeper_busy(release: dict, mark: str) -> list[str]:
+    """Keeper actions on the proof agent begun after `mark` that have not finished. Each action's audit row is
+    written as `pending` before it runs, so an Apply still waiting for the keeper's lock is counted too."""
+    return read_only_query(f"SELECT action FROM keeper_audit WHERE id > {int(mark)} AND outcome = 'pending' AND input->>'name' = '{AGENT}' ORDER BY id",
+                           release).splitlines()
+
+
+def wait_for_keeper_idle(release: dict, mark: str) -> None:
+    """Before a door step is tried again: what the dropped attempt started has finished in the keeper,
+    and the agent answers (or waits for an Apply that never came). Bounded: the retry decides then."""
+    deadline = time.monotonic() + 240
+    while time.monotonic() < deadline:
+        pending = read_only_query(f"SELECT coalesce(pending::text, '') FROM agent_resources WHERE name = '{AGENT}'", release)
+        if not keeper_busy(release, mark) and (pending == "true" or agent_answers()):
+            return
+        time.sleep(3)
+
+
+def door_applies(release: dict, mark: str) -> list[dict]:
+    """Every Apply (`definition.reconcile`) of the proof agent after `mark`, with the keeper's own times."""
+    rows = read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('at', at, 'completedAt', completed_at, 'outcome', outcome) ORDER BY id), '[]') "
+        f"FROM keeper_audit WHERE id > {int(mark)} AND action = 'definition.reconcile' AND input->>'name' = '{AGENT}'", release)
+    return json.loads(rows or "[]")
+
+
+def agent_log_tail(lines: int = 150) -> dict:
+    """What survives the container: the running agent container's id, start time and its last log lines
+    (each through `redact` and cut), plus every line about Keeper's `door.open`, if the agent wrote one."""
+    container = agent_container()
+    if not container:
+        return {"container": None, "tail": [], "doorOpenLines": []}
+    logs = run("docker", "logs", container["id"], check=False, show=False)
+    every = [redact(line)[:300] for line in (logs.stdout + "\n" + logs.stderr).splitlines() if line.strip()]
+    return {"container": container, "tail": every[-lines:], "doorOpenLines": [line for line in every if "door.open" in line][:20]}
+
+
+def settled_agent(kind: str, record: dict, release: dict, mark: str, check: str | None = None) -> dict:
+    """Waits until the agent is settled before the door's message: the same container (id and start
+    time) twice about 10 seconds apart, answering, nothing waiting, its applied definition the saved one,
+    and no keeper action on it still running. A hard check: a message into a restarting agent proves nothing.
+    With `check`, that is the check's name, and it is recorded as passed too (the test-brief stage)."""
+    name = check or f"{kind}-agent-settled-before-the-message"
+    query = ("SELECT json_build_object('pending', r.pending, 'appliedIsSaved', r.applied_definition = d.definition) "
+             f"FROM agent_resources r JOIN agent_definitions d ON d.name = r.name WHERE r.name = '{AGENT}'")
+    deadline = time.monotonic() + 240
+    seen: dict = {}
+    while True:
+        first = agent_container()
+        if first and agent_answers():
+            time.sleep(10)
+            state = json.loads(read_only_query(query, release) or "null") or {}
+            busy = keeper_busy(release, mark)
+            second = agent_container()
+            seen = {"first": first, "second": second, "answers": agent_answers(), "pending": state.get("pending"),
+                    "appliedIsSaved": state.get("appliedIsSaved"), "keeperBusy": busy}
+            if first == second and seen["answers"] and state.get("pending") is False and state.get("appliedIsSaved") is True and not busy:
+                record["settledBeforeMessage"] = {**seen, **agent_log_tail()}
+                save_proof()
+                if check:
+                    record["checks"][name] = True
+                    passed(name)
+                return first
+        if time.monotonic() > deadline:
+            record["settledBeforeMessage"] = {**seen, **agent_log_tail()}
+            record["checks"][name] = False
+            proof["checks"][name] = False
+            save_proof()
+            raise RuntimeError(f"{name} failed: the agent did not settle within 4 minutes: {seen}")
+        time.sleep(3)
+
+
+# The keeper's own reason when a save of a door, role, personal account or model stops a started agent
+# until Apply restarts it (Lares ADR-0027). That stop is the design; any other reason is not.
+DESIGNED_STOP = "takes effect when Apply restarts it"
+
+
+def check_door_enable_applied(kind: str, record: dict, stops_before: int, apply_failures_before: int, audit_mark: str, release: dict) -> None:
+    """Connect on a started agent saves the door switched on and applies it, which restarts the agent. A hard
+    check: afterwards the agent runs and answers, the applied definition has the door on, nothing is waiting,
+    and neither the keeper's log nor its audit shows a refused or failed save or Apply, or a stop for any
+    reason but the designed one. Before the change "a started agent takes an edit" this save stopped the
+    agent and Apply put the door back off."""
+    deadline = time.monotonic() + 90
+    while not agent_answers() and time.monotonic() < deadline:
+        time.sleep(3)
+    answers = agent_answers()
+    state = json.loads(read_only_query(
+        "SELECT json_build_object('pending', r.pending, 'doorOn', EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(r.applied_definition->'doors', '[]'::jsonb)) d "
+        f"WHERE d->>'kind' = '{kind}' AND (d->>'enabled')::boolean)) FROM agent_resources r WHERE r.name = '{AGENT}'", release) or "null") or {}
+    stops = keeper_log_lines("was stopped after a save")[stops_before:]
+    apply_failures = keeper_log_lines(*APPLY_FAILURE_PHRASES)[apply_failures_before:]
+    audits = [line.split("|") for line in read_only_query(
+        f"SELECT action, outcome FROM keeper_audit WHERE id > {int(audit_mark)} AND input->>'name' = '{AGENT}' "
+        "AND action IN ('definition.save', 'definition.reconcile') ORDER BY id", release).splitlines() if line]
+    record["enableAfterStart"] = {"agentAnswers": answers, "pending": state.get("pending"), "doorOnInAppliedDefinition": state.get("doorOn"),
+                                  "keeperStopsAfterASave": [redact(line) for line in stops], "keeperApplyFailedLines": [redact(line) for line in apply_failures],
+                                  "savesAndApplies": [{"action": action, "outcome": outcome} for action, outcome in audits]}
+    save_proof()
+    problems = []
+    if not answers:
+        problems.append("the agent is not running and answering")
+    if state.get("doorOn") is not True:
+        problems.append("the door is not on in the applied definition")
+    if state.get("pending") is not False:
+        problems.append("the agent still has changes waiting to be applied")
+    if [line for line in stops if DESIGNED_STOP not in line]:
+        problems.append(f"the keeper stopped the agent after a save for another reason than the door change: {[line for line in stops if DESIGNED_STOP not in line][0]}")
+    if apply_failures:
+        problems.append(f"the keeper logged a failed Apply or a busy budget check: {apply_failures[0]}")
+    if not any(action == "definition.save" and outcome == "ok" for action, outcome in audits) or \
+            not any(action == "definition.reconcile" and outcome == "ok" for action, outcome in audits):
+        problems.append(f"the keeper's audit does not show the save and the Apply both done: {audits}")
+    if any(outcome != "ok" for _, outcome in audits):
+        problems.append(f"the keeper's audit shows a save or Apply that did not finish ok: {audits}")
+    if problems:
+        record["checks"]["door-enable-after-start-applied"] = False
+        proof["checks"]["door-enable-after-start-applied"] = False
+        save_proof()
+        raise RuntimeError(f"door-enable-after-start-applied failed for {kind}: " + "; ".join(problems))
+    record["checks"]["door-enable-after-start-applied"] = True
+    passed("door-enable-after-start-applied")
+
+
+def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_file: pathlib.Path, tls: dict[str, pathlib.Path],
+              door_values: dict, door_codes: pathlib.Path, release: dict, deferred: list[str]) -> None:
+    """Connects the door on the started agent's page (which saves it switched on and applies it), claims it
+    as the owner, applies the claim, then sends one ordinary message and reads what happened: did it reach
+    the model through the keeper, who was charged and as what, and was the answer posted back into the
+    chat. The door's setup is a hard check; the three about the message are reported at the end, like
+    the chat's."""
+    chat, person = DOOR_CHAT[kind], DOOR_PERSON[kind]
+    # A post into the chat; Telegram's typing indicator is not one.
+    reply_methods = ((lambda method: method.startswith("chat.")) if kind == "slack"
+                     else (lambda method: method.startswith(("send", "edit")) and method != "sendChatAction"))
+    record: dict = {"checks": {}}
+    proof.setdefault("doorTurns", {})[kind] = record
+
+    def door_calls(since: int) -> list[dict]:
+        return [call for call in fake_calls(fixture)[since:] if call["kind"] == kind]
+
+    def failed(check: str, why: str) -> None:
+        record["checks"][check] = False
+        proof["checks"][check] = False
+        save_proof()
+        print(f"FAIL (reported at the end): {check}: {why}", flush=True)
+        deferred.append(f"{check}: {why}")
+
+    # The owner connects the door on the started agent, and sends the one-time step from the platform.
+    calls_at_connect = len(fake_calls(fixture))
+    stops_before = len(keeper_log_lines("was stopped after a save"))
+    apply_failures_before = len(keeper_log_lines(*APPLY_FAILURE_PHRASES))
+    audit_mark = keeper_audit_mark(release)
+    browser(f"connect-{kind}", settings_file, tls, attempts=DOOR_STEP_ATTEMPTS, before_retry=lambda: wait_for_keeper_idle(release, audit_mark))
+    check_door_enable_applied(kind, record, stops_before, apply_failures_before, audit_mark, release)
+    code = (door_codes / kind).read_text().strip()
+    if kind == "slack":
+        if not re.fullmatch(r"claim [A-Z0-9]{24}", code):
+            raise RuntimeError(f"the Slack door page showed no one-time code in the expected form ({len(code)} characters)")
+        claim = code
+    else:
+        if not re.fullmatch(r"[A-Z0-9]{24}", code):
+            raise RuntimeError(f"the Telegram door page showed no tap-to-connect code in the expected form ({len(code)} characters)")
+        hook_url = json.loads((fixture / "telegram-webhook.json").read_text()).get("url") if (fixture / "telegram-webhook.json").exists() else None
+        if hook_url != f"https://{DOMAIN}/api/doors/{AGENT}/telegram/events":
+            raise RuntimeError(f"the keeper registered the Telegram webhook at {hook_url!r}, not at the door's public address")
+        claim = f"/start {code}"
+    record["claimStatus"] = send_door_message(kind, claim, work, fixture, door_values)
+    save_proof()
+    principal = ""
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        principal = read_only_query(f"SELECT coalesce(principal, '') FROM agent_door_connections WHERE agent = '{AGENT}' AND kind = '{kind}'", release)
+        if principal:
+            break
+        time.sleep(3)
+    if not principal:
+        record["standInCallsSinceConnect"] = [{"method": call["method"], "chat": call.get("channel", call.get("chat")), "text": call.get("text", "")[:300]}
+                                             for call in door_calls(calls_at_connect)]
+        record["agentLog"] = agent_log_evidence()
+        save_proof()
+        raise RuntimeError(f"the {kind} claim was not recorded within 60 seconds (the door answered HTTP {record['claimStatus']})")
+    finish_mark = keeper_audit_mark(release)
+    browser(f"finish-{kind}", settings_file, tls, attempts=DOOR_STEP_ATTEMPTS, before_retry=lambda: wait_for_keeper_idle(release, audit_mark))
+
+    # The claim's Apply has finished and the agent it started is the one that will take the message.
+    container = settled_agent(kind, record, release, audit_mark)
+    applies = door_applies(release, finish_mark)
+    record["claimApplies"] = applies
+    save_proof()
+    if len(applies) != 1 or applies[0]["outcome"] != "ok":
+        record["checks"][f"{kind}-apply-pressed-once"] = False
+        proof["checks"][f"{kind}-apply-pressed-once"] = False
+        save_proof()
+        raise RuntimeError(f"{kind}-apply-pressed-once failed: the keeper ran {len(applies)} Apply(s) for this claim: {applies}")
+    record["checks"][f"{kind}-apply-pressed-once"] = True
+    passed(f"{kind}-apply-pressed-once")
+
+    # The door is claimed by the owner and applied, and the claim was answered in the chat.
+    row = json.loads(read_only_query(
+        "SELECT json_build_object('principal', c.principal, 'applied', coalesce(c.revision = c.applied_revision, false), 'owner', c.owner_email, "
+        "'pending', r.pending) FROM agent_door_connections c JOIN agent_resources r ON r.name = c.agent "
+        f"WHERE c.agent = '{AGENT}' AND c.kind = '{kind}'", release) or "null")
+    claim_replies = [call for call in door_calls(calls_at_connect)
+                     if call.get("channel", call.get("chat")) == chat and str(call.get("text", "")).startswith(CLAIM_REPLY)]
+    members = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member' ORDER BY id", release).splitlines()
+    owners = json.loads(read_only_query(f"SELECT coalesce(json_agg(id), '[]') FROM users WHERE lower(primary_email) = lower('{OWNER_EMAIL}')", release))
+    problems = []
+    if not row or row["principal"] != person:
+        problems.append(f"the door's owner is {row and row['principal']!r}, not {person!r}")
+    if not row or not row["applied"]:
+        problems.append("the claim's revision is not the applied one")
+    if not row or row["owner"] != OWNER_EMAIL:
+        problems.append("the claim is not held by the signed-in owner's address")
+    if not row or row["pending"] is not False:
+        problems.append("the agent still has changes waiting to be applied")
+    if not claim_replies:
+        problems.append(f"the stand-in recorded no claim reply into {chat}")
+    if len(owners) != 1 or len(members) != 1 or not members[0] or owners[0] != members[0]:
+        problems.append(f"the claimer is not exactly one member: {len(owners)} user(s) with the owner's address, {len(members)} member budget account(s), same member {owners[:1] == members[:1]}")
+    if problems:
+        record["claimProblems"] = problems
+        save_proof()
+        raise RuntimeError(f"{kind}-door-claimed-and-applied failed: " + "; ".join(problems))
+    claimer = members[0]
+    record["checks"][f"{kind}-door-claimed-and-applied"] = True
+    passed(f"{kind}-door-claimed-and-applied")
+
+    # One ordinary message, and what came of it.
+    t0 = read_only_query("SELECT now()", release)
+    calls_before = len(fake_calls(fixture))
+    marker = f"{DOOR_PROMPT} {kind}"
+    record["eventStatus"] = send_door_message(kind, f"{marker}: please answer", work, fixture, door_values)
+    save_proof()
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        if any(reply_methods(call["method"]) and call.get("channel", call.get("chat")) == chat for call in door_calls(calls_before)):
+            break
+        time.sleep(3)
+    time.sleep(10)
+
+    def attempts() -> list[dict]:
+        return json.loads(read_only_query(
+            "SELECT coalesce(json_agg(json_build_object('state', a.state, 'kind', a.authority_reference->>'kind', 'door', a.authority_reference#>>'{binding,door}', "
+            "'liveMember', a.live_member_id, "
+            "'keys', (SELECT coalesce(json_agg(k.key ORDER BY k.key), '[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(a.authority_reference) = 'object' "
+            "THEN a.authority_reference ELSE '{}'::jsonb END) AS k(key))) ORDER BY a.created_at, a.id), '[]') "
+            f"FROM budget_attempts a WHERE a.created_at >= '{t0}'::timestamptz", release))
+
+    def turn_rows(rows: list[dict]) -> list[dict]:
+        # Schedules start once a door is claimed and may add owner-job rows; those never count.
+        return [row for row in rows if row["kind"] != "owner-job"]
+
+    def marked_model_calls() -> list[dict]:
+        return [call for call in fake_calls(fixture)[calls_before:]
+                if call["kind"] == "model" and (marker in (call.get("lastText") or "") or call.get("doorTurn") == marker)]
+
+    rows = attempts()
+    deadline = time.monotonic() + 60
+    while True:
+        # Charged as a door turn of THIS door, to the claimer.
+        charged = bool(turn_rows(rows)) and all(row["state"] == "settled" and row["kind"] == "door" and row["door"] == kind and row["liveMember"] == claimer
+                                                for row in turn_rows(rows))
+        if charged or time.monotonic() > deadline:
+            break
+        time.sleep(3)
+        rows = attempts()
+    # Read after the settle wait: a scheduled post into the same chat can end the reply wait above
+    # before the door turn's own model call has been made.
+    model_calls = marked_model_calls()
+    reached = bool(model_calls) and bool(turn_rows(rows))
+    posts = [call for call in door_calls(calls_before) if reply_methods(call["method"]) and call.get("channel", call.get("chat")) == chat]
+    replies = [call for call in posts if DOOR_REPLY in str(call.get("text", ""))]
+    error_posts = [call for call in posts if any(words in str(call.get("text", "")) for words in ERROR_COPY)]
+
+    def who(value: str | None) -> str | None:
+        return None if value is None else "the claimer" if value == claimer else "another member"
+
+    # Evidence that outlives the container: who took the turn, what it logged, and every Apply since the claim.
+    at_end = agent_log_tail()
+    record.update({
+        "containerAtMessage": container,
+        "agentAtTheEnd": at_end,
+        "sameContainerThroughTheTurn": at_end["container"] == container,
+        "keeperAppliesSinceTheClaim": door_applies(release, finish_mark),
+        "modelCallsWithMarker": len(model_calls),
+        "budgetAttemptsSinceMessage": [{"state": row["state"], "kind": row["kind"], "door": row["door"], "chargedTo": who(row["liveMember"]), "referenceKeys": row["keys"]}
+                                       for row in rows],
+        "errorCopiesPosted": len(error_posts),
+        "standInCallsSinceMessage": [{"method": call["method"], "chat": call.get("channel", call.get("chat")), "text": str(call.get("text", ""))[:300]}
+                                     for call in door_calls(calls_before)],
+        "agentLog": agent_log_evidence(),
+    })
+    save_proof()
+    print(f"the {kind} turn, as recorded:\n{json.dumps(record, indent=2)}", flush=True)
+    turn = turn_rows(rows)
+    if reached:
+        record["checks"][f"{kind}-turn-reached-the-model-through-keeper"] = True
+        passed(f"{kind}-turn-reached-the-model-through-keeper")
+    else:
+        failed(f"{kind}-turn-reached-the-model-through-keeper",
+               f"{len(model_calls)} model call(s) carried the marker and {len(turn)} budget attempt(s) other than owner jobs were made since the message (event HTTP {record['eventStatus']})")
+    if charged:
+        record["checks"][f"{kind}-turn-settled-and-charged"] = True
+        passed(f"{kind}-turn-settled-and-charged")
+    else:
+        failed(f"{kind}-turn-settled-and-charged",
+               f"the attempts since the message are not all settled as a {kind} door turn charged to the claimer: "
+               f"{[(row['state'], row['kind'], row['door'], who(row['liveMember'])) for row in turn] or 'there are none'}")
+    if replies:
+        record["checks"][f"{kind}-reply-posted"] = True
+        passed(f"{kind}-reply-posted")
+    else:
+        failed(f"{kind}-reply-posted", f"no reply containing {DOOR_REPLY} was posted into {chat}")
+    if error_posts:
+        failed(f"{kind}-no-error-copy-posted", f"{len(error_posts)} post(s) into {chat} since the message carry an error copy, first: "
+               f"{redact(str(error_posts[0].get('text', '')))[:200]}")
+    else:
+        record["checks"][f"{kind}-no-error-copy-posted"] = True
+        passed(f"{kind}-no-error-copy-posted")
+
+
+# --- a test brief into each door, asked on the console ----------------------------------------------
+
+# The item key a real morning brief's ledger row carries (`morning-brief/<owner day>T<hour>`). A test brief
+# writes no ledger row at all; one that did would carry its own pass name instead of a slot.
+REAL_BRIEF_SLOT = re.compile(r"morning-brief/\d{4}-\d{2}-\d{2}T\d{1,2}")
+
+
+def agent_lines(*phrases: str, limit: int = 40) -> list[str]:
+    """Lines of the running proof agent's log with any of these fixed phrases, redacted and cut."""
+    container = agent_container()
+    if not container:
+        return ["the proof agent is not running"]
+    logs = run("docker", "logs", container["id"], check=False, show=False)
+    return [redact(line.strip())[:300] for line in (logs.stdout + "\n" + logs.stderr).splitlines() if any(phrase in line for phrase in phrases)][-limit:]
+
+
+def test_brief(kind: str, fixture: pathlib.Path, settings_file: pathlib.Path, tls: dict[str, pathlib.Path], brief_dir: pathlib.Path,
+               brief_type: str, release: dict, deferred: list[str]) -> None:
+    """Presses the door's "Send a test brief" button once on the agent's page, and follows the brief the
+    morning brief's own schedule run then sends: the request row the console wrote, the page's last
+    sentence, the model call carrying the product's marker at the stand-in, the budget rows of that window,
+    the post into the door's chat, and that nothing counted it as the day's brief. Every check is
+    reported at the end; none of them stops the probe, so a red run shows exactly which are false."""
+    chat = DOOR_CHAT[kind]
+    reply_methods = ((lambda method: method.startswith("chat.")) if kind == "slack"
+                     else (lambda method: method.startswith(("send", "edit")) and method != "sendChatAction"))
+    record: dict = {"checks": {}}
+    proof.setdefault("testBriefs", {})[kind] = record
+
+    def failed(check: str, why: str) -> None:
+        record["checks"][check] = False
+        proof["checks"][check] = False
+        save_proof()
+        print(f"FAIL (reported at the end): {check}: {why}", flush=True)
+        deferred.append(f"{check}: {why}")
+
+    def ok(check: str) -> None:
+        record["checks"][check] = True
+        passed(check)
+
+    # The agent is still before the press: the same container twice, nothing waiting or running in the keeper.
+    try:
+        record["containerAtPress"] = settled_agent(kind, record, release, keeper_audit_mark(release), check=f"test-brief-agent-settled-before-the-{kind}-press")
+    except RuntimeError as error:
+        record["containerAtPress"] = agent_container()
+        print(f"FAIL (reported at the end): {error}", flush=True)
+        deferred.append(str(error))
+    members = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member' ORDER BY id", release).splitlines()
+    owner = members[0] if len(members) == 1 and members[0] else None
+    t0 = read_only_query("SELECT now()", release)
+    calls_before = len(fake_calls(fixture))
+
+    def requests() -> list[dict]:
+        return json.loads(read_only_query(
+            "SELECT coalesce(json_agg(json_build_object('door', state->>'door', 'status', status, 'result', result, 'error', error, "
+            f"'byTheOwner', principal IN (SELECT id FROM users WHERE lower(primary_email) = lower('{OWNER_EMAIL}')), 'stepIndex', step_index, "
+            "'createdAt', created_at, 'lastStepAt', last_step_at, 'updatedAt', updated_at) ORDER BY created_at), '[]') FROM workflow_jobs "
+            f"WHERE workflow_type = '{brief_type}' AND agent = '{AGENT}' AND created_at >= '{t0}'::timestamptz", release))
+
+    def guard() -> None:
+        # Before every attempt of the browser step: a request row for this door means it was pressed.
+        if [row for row in requests() if row["door"] == kind]:
+            (brief_dir / f"{kind}.asked").write_text("a request row for this door exists\n")
+
+    guard()
+    try:
+        browser(f"test-brief-{kind}", settings_file, tls, before_retry=guard, timeout=BRIEF_STEP_TIMEOUT)
+    except (RuntimeError, subprocess.TimeoutExpired) as error:
+        failed(f"browser:test-brief-{kind}", str(error)[:300])
+    page_file = brief_dir / f"{kind}.json"
+    page = json.loads(page_file.read_text()) if page_file.exists() else {}
+
+    # The agent writes the outcome into the request row when its pass ends; the page has said so already.
+    deadline = time.monotonic() + 60
+    while True:
+        mine = [row for row in requests() if row["door"] == kind]
+        if (mine and all(row["status"] in ("done", "failed") for row in mine)) or time.monotonic() > deadline:
+            break
+        time.sleep(3)
+    handed_over = any(row["status"] == "done" and (row["result"] or {}).get("outcome") == "sent" for row in mine)
+
+    def posts() -> list[dict]:
+        return [call for call in fake_calls(fixture)[calls_before:]
+                if call["kind"] == kind and reply_methods(call["method"]) and call.get("channel", call.get("chat")) == chat]
+
+    # "Sent" means handed over: the turn, its model call and its post come after it.
+    deadline = time.monotonic() + (120 if handed_over else 0)
+    while not any(BRIEF_REPLY_MARK in str(call.get("text", "")) for call in posts()) and time.monotonic() < deadline:
+        time.sleep(3)
+    time.sleep(10)
+
+    def marked_calls() -> list[dict]:
+        return [call for call in fake_calls(fixture)[calls_before:] if call["kind"] == "model" and call.get("briefTurn")]
+
+    def attempts() -> list[dict]:
+        return json.loads(read_only_query(
+            "SELECT coalesce(json_agg(json_build_object('state', a.state, 'kind', a.authority_reference->>'kind', 'liveMember', a.live_member_id, "
+            "'accountKind', m.kind, 'bookedFor', a.authority_reference#>>'{binding,memberId}', 'agent', b.agent, 'alias', b.purpose_alias, "
+            f"'chatModel', b.purpose_alias = (SELECT d.definition->>'model' FROM agent_definitions d WHERE d.name = '{AGENT}'), "
+            "'at', a.created_at) ORDER BY a.created_at, a.id), '[]') FROM budget_attempts a "
+            "JOIN budget_accounts m ON m.id = a.member_account_id JOIN budget_gateway_bindings b ON b.id = a.binding_id "
+            f"WHERE a.created_at >= '{t0}'::timestamptz", release))
+
+    def brief_rows(rows: list[dict]) -> list[dict]:
+        # This agent's owner jobs on its chat model; embeddings and other agents' jobs are not the brief.
+        return [row for row in rows if row["kind"] == "owner-job" and row["agent"] == AGENT and row["chatModel"] is True]
+
+    def paid_problems(rows: list[dict], marked: list[dict]) -> list[str]:
+        mine_rows, problems = brief_rows(rows), []
+        if not marked:
+            problems.append("no model call carrying the test brief's marker reached the stand-in")
+        if len(mine_rows) < len(marked):
+            problems.append(f"{len(mine_rows)} owner-job attempt(s) on the agent's chat model for {len(marked)} marked call(s)")
+        unsettled = [row["state"] for row in mine_rows if row["state"] != "settled"]
+        if unsettled:
+            problems.append(f"owner-job attempt(s) not settled: {unsettled}")
+        if not owner or any(row["liveMember"] != owner or row["accountKind"] != "member" or row["bookedFor"] != owner for row in mine_rows):
+            problems.append("an owner-job attempt is not charged to and booked for the installation owner's member account")
+        others = sorted({str(row["kind"]) for row in rows if row["kind"] != "owner-job"})
+        if others:
+            problems.append(f"the window also holds attempts of another kind ({others}): the brief may have been paid as one")
+        return problems
+
+    rows = attempts()
+    deadline = time.monotonic() + 60
+    while paid_problems(rows, marked_calls()) and time.monotonic() < deadline:
+        time.sleep(3)
+        rows = attempts()
+    marked = marked_calls()
+    problems = paid_problems(rows, marked)
+    chat_posts = posts()
+    replies = [call for call in chat_posts if BRIEF_REPLY_MARK in str(call.get("text", ""))]
+    error_posts = [call for call in chat_posts if any(words in str(call.get("text", "")) for words in ERROR_COPY)]
+    ledger = json.loads(read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('itemKey', item_key, 'status', status, 'door', door) ORDER BY id), '[]') FROM initiations "
+        f"WHERE agent = '{AGENT}' AND item_key LIKE 'morning-brief/%' AND decided_at >= '{t0}'::timestamptz", release))
+    counted = [row for row in ledger if not REAL_BRIEF_SLOT.fullmatch(row["itemKey"])]
+
+    def who(value: str | None) -> str | None:
+        return None if value is None else "the installation owner" if value == owner else "another member"
+
+    # Evidence that outlives the container: the request, what the page said, the stand-in's calls and posts,
+    # the money rows, and the agent's own lines about it.
+    record.update({
+        "requests": mine,
+        "requestsForTheOtherDoor": len([row for row in requests() if row["door"] != kind]),
+        "page": page,
+        "modelCallsWithMarker": [{"at": call["at"], "model": call.get("model"), "messages": call.get("messages"), "tools": len(call.get("tools") or []),
+                                  "answer": call.get("answer")} for call in marked],
+        "otherModelCallsSinceThePress": [{"at": call["at"], "model": call.get("model"), "lastText": redact(str(call.get("lastText", "")))[-120:],
+                                          "briefMarkerAnywhere": call.get("briefMarkerAnywhere")}
+                                         for call in fake_calls(fixture)[calls_before:] if call["kind"] == "model" and not call.get("briefTurn")],
+        "budgetAttemptsSinceThePress": [{"at": row["at"], "state": row["state"], "kind": row["kind"], "agent": row["agent"], "alias": row["alias"],
+                                         "chatModel": row["chatModel"], "chargedTo": who(row["liveMember"]), "bookedFor": who(row["bookedFor"]),
+                                         "account": row["accountKind"]} for row in rows],
+        "standInCallsSinceThePress": [{"at": call["at"], "method": call["method"], "chat": call.get("channel", call.get("chat")), "text": redact(str(call.get("text", "")))[:300]}
+                                      for call in fake_calls(fixture)[calls_before:] if call["kind"] == kind],
+        "errorCopiesPosted": len(error_posts),
+        "briefLedgerRowsSinceThePress": ledger,
+        "agentAtTheEnd": agent_log_tail(),
+        "agentBriefLines": agent_lines("morning-brief"),
+        "agentLog": agent_log_evidence(),
+    })
+    save_proof()
+    print(f"the {kind} test brief, as recorded:\n{json.dumps({key: value for key, value in record.items() if key != 'agentAtTheEnd'}, indent=2, default=str)}", flush=True)
+
+    if len(mine) == 1 and mine[0]["byTheOwner"] and page.get("presses", 0) <= 1:
+        ok(f"{kind}-test-brief-asked-once")
+    else:
+        failed(f"{kind}-test-brief-asked-once", f"{len(mine)} request row(s) for {kind} since the press (by the owner: {[row['byTheOwner'] for row in mine]}), "
+               f"button pressed {page.get('presses', 0)} time(s)")
+    said = page.get("final") or ""
+    result = (mine[0]["result"] or {}) if len(mine) == 1 else {}
+    if re.match(rf"Sent to {DOOR_LABEL[kind]} (at|on) ", said) and len(mine) == 1 and mine[0]["status"] == "done" and \
+            result.get("outcome") == "sent" and result.get("door") == kind:
+        ok(f"{kind}-test-brief-page-reads-sent")
+    else:
+        failed(f"{kind}-test-brief-page-reads-sent", f"the page last said {said or page.get('sentences', [{}])[-1:] or 'nothing'!r}; "
+               f"the request row reads {[(row['status'], row['result'], row['error']) for row in mine]}")
+    if marked and brief_rows(rows):
+        ok(f"{kind}-test-brief-reached-the-model-through-keeper")
+    else:
+        failed(f"{kind}-test-brief-reached-the-model-through-keeper",
+               f"{len(marked)} model call(s) carried the marker and {len(brief_rows(rows))} owner-job attempt(s) on the agent's chat model were made since the press")
+    if not problems:
+        ok(f"{kind}-test-brief-paid-as-an-owner-job")
+    else:
+        failed(f"{kind}-test-brief-paid-as-an-owner-job", "; ".join(problems))
+    if replies:
+        ok(f"{kind}-test-brief-posted-into-the-chat")
+    else:
+        failed(f"{kind}-test-brief-posted-into-the-chat", f"no post containing {BRIEF_REPLY_MARK} into {chat} since the press ({len(chat_posts)} other post(s))")
+    if error_posts:
+        failed(f"{kind}-test-brief-no-error-copy-posted", f"{len(error_posts)} post(s) into {chat} since the press carry an error copy, first: "
+               f"{redact(str(error_posts[0].get('text', '')))[:200]}")
+    else:
+        ok(f"{kind}-test-brief-no-error-copy-posted")
+    overview = page.get("overview")
+    if not counted and overview == "No active work":
+        ok(f"{kind}-test-brief-not-counted-as-the-days-brief")
+    else:
+        failed(f"{kind}-test-brief-not-counted-as-the-days-brief",
+               f"morning-brief ledger rows that are not a real slot since the press: {counted}; the agents list reads {overview!r} for the agent's work")
+
+
+def test_briefs(fixture: pathlib.Path, settings_file: pathlib.Path, tls: dict[str, pathlib.Path], brief_dir: pathlib.Path, brief_type: str,
+                release: dict, deferred: list[str]) -> None:
+    """One test brief into Slack, then one into Telegram; then, once, that they restarted nothing and the
+    keeper logged no busy store or failed Apply meanwhile. All reported at the end."""
+    before = agent_container()
+    apply_failures_before = len(keeper_log_lines(*APPLY_FAILURE_PHRASES))
+    for kind in ("slack", "telegram"):
+        test_brief(kind, fixture, settings_file, tls, brief_dir, brief_type, release, deferred)
+    after = agent_container()
+    keeper_lines = keeper_log_lines(*APPLY_FAILURE_PHRASES)[apply_failures_before:]
+    proof.setdefault("testBriefs", {})["throughBoth"] = {"containerBefore": before, "containerAfter": after,
+                                                         "keeperBusyOrFailedApplyLines": [redact(line) for line in keeper_lines]}
+    save_proof()
+    for check, good, why in (
+            ("test-briefs-restarted-nothing", bool(before) and before == after, f"the agent was {before} before the test briefs and {after} after"),
+            ("test-briefs-keeper-logged-no-busy-store-or-failed-apply", not keeper_lines, f"the keeper logged: {keeper_lines[:1]}")):
+        if good:
+            passed(check)
+        else:
+            proof["checks"][check] = False
+            save_proof()
+            print(f"FAIL (reported at the end): {check}: {why}", flush=True)
+            deferred.append(f"{check}: {why}")
 
 
 def keeper_host_action(action: str, payload: dict) -> dict:
@@ -541,6 +1379,502 @@ def match_fresh_server_folders() -> None:
         raise RuntimeError(f"a new folder under /opt is still mode {mode:o}")
 
 
+# --- a backup from the release before, restored onto this server installed again -----------------
+#
+# The last stage. On the server the stages above built, the proof agent's store is rebuilt the way
+# the release before this one built every store, a real nightly backup is taken, the bundle of
+# settings the guide tells the owner to copy is taken out of it with the owner's age key, everything
+# Lares put on this machine is removed, the release is installed again from an ordinary folder, the
+# spending ledger is prepared, and `lares restore` is run three times: once failing on purpose at
+# the store upgrade, once beside a leftover store step (refused), once to the end. This stage writes
+# to the database by design (the old store, and a setting on the provisioner login that it removes
+# again); nothing above it does.
+
+# The release before this one, by name: its creative image still carries the workflow package that
+# leaves the 20 schema steps this release upgrades from, and its keeper image the grants it gave.
+# Not rc.12: whether its package left exactly those 20 steps was never checked. The newest file by
+# sort order is a test build of rc.14 with the same images, so the release itself is named.
+PREVIOUS_RELEASE_FILE = "2026-11-10-rc.14.json"
+BACKUP_REPOSITORY = "/var/backups/lares-proof"
+INSTALLED_OPS = "/opt/lares/current/services/box/ops"
+PROVISIONER_FILE = "/etc/lares/secrets/workflow-provisioner-password"
+BUNDLE_PATHS = ("etc/lares/installation.env", "etc/lares/console-oauth.env", "etc/lares/backup.env",
+                "etc/lares/restic-password", "etc/lares/secrets", "srv/lares/secrets")
+RESTORE_LIMITS = [
+    "The older backup comes from this release's server with its one agent store rebuilt the way the release before built stores (that release's creative image ran its own schema step, its keeper image gave its own grants); the main database, Vault and folders in it are this release's.",
+    "The new server is this machine with everything Lares put on it removed, then installed again: a second machine, and its own disk and network, are not covered.",
+    "The budget rows restore puts back are compared, row for row, from the snapshot's own dump restored into a private database; on the live server, where the restarted keeper may settle a row, only that no row is lost.",
+    "The first restore fails on purpose because the provisioner login is set to read-only transactions: the upgrade stops at its first change. An upgrade that dies after some of its steps relies on all of them being one transaction, which is proven by the integration test, not here.",
+]
+LIMITS.extend(RESTORE_LIMITS)
+
+proof_secrets: set[str] = set()
+SECRET_WORD = r"(?:password|passwd|secret|token|key)"
+SECRET_VALUE = r"""(?!['"]?/)('[^']*'|"[^"]*"|[^\s'"]+)"""
+REDACTED = "<redacted>"
+REDACTION_PATTERNS = (
+    (re.compile(r"([a-z][a-z0-9+.-]*://[^\s:/@]+):[^\s@]+@", re.IGNORECASE), r"\1:" + REDACTED + "@"),
+    (re.compile(r"(\bBearer\s+)[^\s'\"]+", re.IGNORECASE), r"\1" + REDACTED),
+    (re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"), REDACTED),
+    (re.compile(r"SCRAM-SHA-256\$[^\s'\"]+"), "SCRAM-SHA-256$" + REDACTED),
+    (re.compile(r"\bAGE-SECRET-KEY-[0-9A-Z]+"), REDACTED),
+    (re.compile(r"(?<![\w-])(--?[\w-]*" + SECRET_WORD + r"(?:=|\s+))(?!-)" + SECRET_VALUE, re.IGNORECASE), r"\1" + REDACTED),
+    (re.compile(r"(\b[\w.-]*" + SECRET_WORD + r"\w*\s*=\s*)" + SECRET_VALUE, re.IGNORECASE), r"\1" + REDACTED),
+)
+LOG_HEAD, LOG_TAIL = 1500, 4500
+
+
+def remember_secrets(*values: str) -> None:
+    """Every secret this stage can see, by value: what it was handed, every line of the secret folders
+    and the operator file, and the values of secret-named settings. Kept across the wipe."""
+    proof_secrets.update(value for value in values if value and len(value) >= 8)
+    for folder in ("/etc/lares/secrets", "/etc/lares/operator", "/srv/lares/secrets"):
+        for path in pathlib.Path(folder).rglob("*") if pathlib.Path(folder).is_dir() else []:
+            try:
+                if path.is_file() and not path.is_symlink() and path.stat().st_size <= 8192:
+                    proof_secrets.update(line.strip() for line in path.read_text(errors="replace").splitlines() if len(line.strip()) >= 8)
+            except OSError:
+                pass
+    for path in ("/etc/lares/restic-password", "/etc/lares/console-oauth.env", "/etc/lares/backup.env", "/etc/lares/installation.env"):
+        try:
+            lines = pathlib.Path(path).read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            name, separator, value = line.partition("=")
+            value = value.strip().strip("'\"")
+            if path.endswith("restic-password") and len(line.strip()) >= 8:
+                proof_secrets.add(line.strip())
+            elif separator and re.search(SECRET_WORD, name, re.IGNORECASE) and len(value) >= 8 and not value.startswith("/"):
+                proof_secrets.add(value)
+
+
+def redact(text: str) -> str:
+    """Known values first, by value; then the patterns as a second net."""
+    for value in sorted(proof_secrets, key=len, reverse=True):
+        text = text.replace(value, REDACTED)
+    for pattern, replacement in REDACTION_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def trimmed(text: str) -> str:
+    if len(text) <= LOG_HEAD + LOG_TAIL:
+        return text
+    return text[:LOG_HEAD] + f"\n[... {len(text) - LOG_HEAD - LOG_TAIL} characters omitted ...]\n" + text[-LOG_TAIL:]
+
+
+def restore_failed(substep: str, why: str, stdout: str | bytes | None = "", stderr: str | bytes | None = "") -> None:
+    """Prints the failing sub-step and what it printed, redacted and trimmed, then stops the probe."""
+    remember_secrets()
+    as_text = lambda value: value.decode(errors="replace") if isinstance(value, bytes) else (value or "")
+    print(f"\nRESTORE PROOF FAILED at sub-step '{substep}': {redact(why)}", flush=True)
+    for label, text in (("output", as_text(stdout)), ("errors", as_text(stderr))):
+        if text.strip():
+            print(f"--- {label} (redacted, trimmed) ---\n{trimmed(redact(text.rstrip()))}", flush=True)
+    raise RuntimeError(f"restore proof, {substep}: {redact(why)}"[:600])
+
+
+def step(substep: str, *command: str, timeout: int = 300, stdin: str | None = None, ok: tuple[int, ...] = (0,),
+         cwd: str | None = None, show: bool = False) -> subprocess.CompletedProcess:
+    """One command of this stage. Output is captured, and printed (redacted, trimmed) only when show
+    is set or the command fails. Never used for `docker inspect` or an environment listing."""
+    print(f"+ [{substep}] {redact(' '.join(command))[:240]}", flush=True)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, input=stdin, cwd=cwd)
+    except subprocess.TimeoutExpired as error:
+        restore_failed(substep, f"{command[0]} did not finish within {timeout} seconds", error.stdout, error.stderr)
+    if result.returncode not in ok:
+        restore_failed(substep, f"{command[0]} exited {result.returncode}", result.stdout, result.stderr)
+    if show:
+        said = (result.stdout + result.stderr).rstrip()
+        if said:
+            print(trimmed(redact(said)), flush=True)
+    return result
+
+
+def operator_sql(substep: str, database: str, sql: str) -> str:
+    """SQL as the offline operator, through the engine's own operator_db_run (a short-lived client
+    in the database image; the password is read inside it)."""
+    return step(substep, "bash", "-c", '. "$1/engine-run.sh"; shift; operator_db_run -f /opt/lares/compose.yaml -- "$@"', "operator-sql",
+                INSTALLED_OPS, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-At", "-F", "\t", "-d", database, stdin=sql).stdout.strip()
+
+
+def store_step(substep: str, image: str, mode: str, store: str) -> list[str]:
+    """The installed release's own store step (engine-run.sh, workflow_store_step), as install, update and restore run it."""
+    return step(substep, "bash", "-c", 'HERE="$1"; . "$HERE/engine-run.sh"; workflow_store_step "$2" "$3" "$4" 127.0.0.1 5432 "$5"',
+                "store-step", INSTALLED_OPS, image, mode, store, PROVISIONER_FILE, timeout=600).stdout.strip().splitlines()[-1:]
+
+
+def workflow_runtime_file() -> str:
+    return json.loads(pathlib.Path("/etc/lares/keeper.json").read_text())["lifecycle"]["runtime"]["workflowPasswordFile"]
+
+
+def store_contents(substep: str, store: str) -> dict:
+    """What the agents wrote into the store, and how many schema steps it records, read as the operator."""
+    said = operator_sql(substep, store, (
+        "SELECT 'step', count(*)::text FROM workflow_drizzle.workflow_migrations;"
+        "SELECT 'run', id || ' ' || extract(epoch FROM created_at)::text FROM workflow.workflow_runs ORDER BY 2;"
+        "SELECT 'event', id || ' ' || run_id FROM workflow.workflow_events ORDER BY 2;"))
+    found: dict = {"steps": None, "runs": [], "events": []}
+    for line in said.splitlines():
+        kind, _, value = line.partition("\t")
+        if kind == "step":
+            found["steps"] = int(value)
+        elif kind in ("run", "event"):
+            found[kind + "s"].append(value)
+    return found
+
+
+def budget_rows(substep: str, database: str = "lares_state", keys: bool = False) -> dict[str, list[str]]:
+    """Every row of the owner's budget tables, as a fingerprint per row, read as the operator. With
+    keys, only each row's primary key (the whole row where a table has none): a row the keeper
+    settles keeps its key, a lost row does not."""
+    columns = ("coalesce((SELECT string_agg(format('x.%I', a.attname), ',' ORDER BY k.ord) FROM pg_index i "
+               "CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum, ord) "
+               "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum "
+               "WHERE i.indrelid = c.oid AND i.indisprimary), 'x.*')") if keys else "'x.*'"
+    said = operator_sql(substep, database,
+        f"SELECT format('SELECT %L, md5(row(%s)::text) FROM public.%I x', c.relname, {columns}, c.relname) "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname LIKE 'budget%' ORDER BY c.relname \\gexec\n")
+    rows: dict[str, list[str]] = {}
+    for line in said.splitlines():
+        table, _, fingerprint = line.partition("\t")
+        rows.setdefault(table, []).append(fingerprint)
+    return {table: sorted(values) for table, values in rows.items()}
+
+
+def leftover_job_containers() -> list[str]:
+    said = step("leftover-containers", "docker", "ps", "--all", "--filter", "name=lares-workflow-store-", "--filter", "name=lares-restore-",
+                "--format", "{{.Names}}").stdout
+    return sorted(said.split())
+
+
+def restore_runs_left() -> list[str]:
+    root = pathlib.Path("/var/lib/lares-maintenance/restore-runs")
+    return sorted(path.name for path in root.iterdir()) if root.is_dir() else []
+
+
+def newest_nightly(substep: str) -> str:
+    said = step(substep, "restic", "-r", BACKUP_REPOSITORY, "--password-file", "/etc/lares/restic-password",
+                "snapshots", "--json", "--tag", "nightly", timeout=300).stdout
+    snapshots = json.loads(said)
+    if not snapshots:
+        restore_failed(substep, "the repository holds no nightly snapshot")
+    return max(snapshots, key=lambda snapshot: snapshot["time"])["id"]
+
+
+def previous_release_store(release: dict, previous: dict, store: str, token: str) -> None:
+    """The proof agent's store, built again the way the release before this one built every store:
+    its creative image runs its own package's schema step (that release's installer's own command, on
+    this store instead of the template it cloned stores from), its keeper image gives that release's
+    grants, and the agents' login writes rows into it."""
+    runtime_file = workflow_runtime_file()
+    operator_sql("old-store:recreate", "postgres",
+        f'DROP DATABASE IF EXISTS "{store}" WITH (FORCE);\n'
+        f'CREATE DATABASE "{store}" OWNER lares_workflow_owner;\n'
+        f"COMMENT ON DATABASE \"{store}\" IS 'lares-owned:{token}';\n")
+    step("old-store:previous-schema-step", "docker", "run", "--rm", "--network", "host", "--read-only", "--tmpfs", "/tmp", "--cap-drop", "ALL",
+         "--security-opt", "no-new-privileges", "-w", "/app/services/creative",
+         "-v", f"{PROVISIONER_FILE}:/run/secrets/workflow-provisioner:ro",
+         "-e", "PGPASSWORD_FILE=/run/secrets/workflow-provisioner", "-e", "PGOPTIONS=-c role=lares_workflow_owner",
+         "-e", f"WORKFLOW_POSTGRES_URL=postgres://lares_workflow_provisioner@127.0.0.1:5432/{store}",
+         "--entrypoint", "/bin/sh", previous["images"]["creative"], "-ec",
+         'PGPASSWORD="$(cat "$PGPASSWORD_FILE")"; export PGPASSWORD; exec node --input-type=module -e \''
+         'import { Pool } from "pg"; import { setupDatabase } from "@workflow/world-postgres/cli"; '
+         'const pool = new Pool({ connectionString: process.env.WORKFLOW_POSTGRES_URL, max: 1 }); '
+         'try { const r = await pool.query("SELECT current_user, session_user"); '
+         'if (r.rows[0]?.current_user !== "lares_workflow_owner" || r.rows[0]?.session_user !== "lares_workflow_provisioner") throw new Error("authority check failed"); } '
+         "finally { await pool.end(); } await setupDatabase();'", timeout=600)
+    # That release's own grant and check functions, from its keeper image, as its template step ran them.
+    grants = """
+(async () => {
+  const { readFileSync } = await import("node:fs");
+  const pg = (await import("pg")).default;
+  const lib = await import("/app/services/box/lib/workflow-database-privileges.ts");
+  const login = (user, file) => new pg.Pool({ host: "127.0.0.1", port: 5432, database: process.env.STORE, user, password: readFileSync(file, "utf8").trim(), max: 1 });
+  const owner = login("lares_workflow_provisioner", "/run/proof/provisioner");
+  const client = await owner.connect();
+  try { await client.query('SET ROLE "lares_workflow_owner"'); await lib.applyWorkflowRuntimePrivileges(client); }
+  finally { try { await client.query("RESET ROLE"); } finally { client.release(); } }
+  await owner.end();
+  const runtime = login("lares_workflow", "/run/proof/runtime");
+  try { await lib.verifyWorkflowRuntimePrivileges(runtime); } finally { await runtime.end(); }
+})().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exit(1); });
+"""
+    step("old-store:previous-grants", "docker", "run", "--rm", "--network", "host", "--user", "0:0", "-w", "/app/services/box",
+         "-v", f"{PROVISIONER_FILE}:/run/proof/provisioner:ro", "-v", f"{runtime_file}:/run/proof/runtime:ro", "-e", f"STORE={store}",
+         "--entrypoint", "/app/services/box/node_modules/.bin/tsx", previous["images"]["lares-keeper"], "-e", grants, timeout=300)
+    # Rows as the agents' login writes them: every required column filled by its type.
+    seed = """
+import pg from "pg";
+import { readFileSync } from "node:fs";
+const pool = new pg.Pool({ host: "127.0.0.1", port: 5432, database: process.env.STORE, user: "lares_workflow", password: readFileSync("/run/proof/runtime", "utf8").trim(), max: 1 });
+async function seedRow(table, fixed) {
+  const columns = (await pool.query(`SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type,
+      CASE WHEN t.typtype = 'e' THEN t.oid::regtype::text END AS enum_type
+    FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
+    WHERE a.attrelid = $1::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attnotnull AND NOT a.atthasdef AND a.attidentity = ''`, [`workflow.${table}`])).rows;
+  const values = { ...fixed };
+  for (const column of columns) {
+    if (column.name in values) continue;
+    if (column.enum_type) values[column.name] = (await pool.query(`SELECT (enum_range(NULL::${column.enum_type}))[1]::text AS label`)).rows[0].label;
+    else if (column.type === "bytea") values[column.name] = Buffer.from([1, 2, 3]);
+    else if (column.type.startsWith("timestamp")) values[column.name] = "2026-11-01T10:00:00.000Z";
+    else if (column.type === "boolean") values[column.name] = false;
+    else if (/int|numeric/.test(column.type)) values[column.name] = 1;
+    else if (column.type.startsWith("json")) values[column.name] = "{}";
+    else values[column.name] = `seed-${column.name}`;
+  }
+  const names = Object.keys(values);
+  await pool.query(`INSERT INTO workflow.${table}(${names.map((name) => `"${name}"`).join(",")}) VALUES(${names.map((_, at) => `$${at + 1}`).join(",")})`, names.map((name) => values[name]));
+}
+try {
+  await seedRow("workflow_runs", { id: "run_restore_proof_one" });
+  await seedRow("workflow_runs", { id: "run_restore_proof_two" });
+  await seedRow("workflow_events", { id: "evt_restore_proof", run_id: "run_restore_proof_one" });
+} finally { await pool.end(); }
+"""
+    step("old-store:agent-rows", "docker", "run", "--rm", "-i", "--network", "host", "--user", "0:0", "-w", "/app/services/creative",
+         "-v", f"{runtime_file}:/run/proof/runtime:ro", "-e", f"STORE={store}",
+         "--entrypoint", "node", previous["images"]["creative"], "--input-type=module", "-", stdin=seed, timeout=300)
+    said = store_step("old-store:this-release-sees-old", release["images"]["creative"], "check", store)
+    if said != ["old"]:
+        restore_failed("old-store:this-release-sees-old", f"this release's own check of the rebuilt store says {said}, not old")
+
+
+def wipe_server() -> None:
+    """Everything Lares put on this machine goes: what a new server does not have. The stand-ins, the
+    throwaway registry and the backup repository stay; they are the outside world."""
+    timers = ["lares-backup.timer", "lares-backup-verify.timer", "lares-restore-drill.timer"]
+    step("wipe:timers", "systemctl", "disable", "--now", *timers, ok=(0, 1, 5))
+    units = sorted(pathlib.Path("/etc/systemd/system").glob("lares-*"))
+    running = [unit.name for unit in units if unit.suffix in (".service", ".timer")]
+    if running:
+        step("wipe:units", "systemctl", "stop", *running, ok=(0, 1, 5))
+    if units:
+        step("wipe:units", "rm", "-rf", *map(str, units))
+    step("wipe:units", "systemctl", "daemon-reload")
+    keep = {"proof-registry", "proof-fake"}
+    names = step("wipe:containers", "docker", "ps", "--all", "--format", "{{.Names}}").stdout.split()
+    gone = [name for name in names if name not in keep and "buildkit" not in name]
+    if gone:
+        step("wipe:containers", "docker", "rm", "--force", *gone, timeout=300)
+    step("wipe:networks", "docker", "network", "disconnect", "--force", NETWORK, "proof-fake", ok=(0, 1))
+    step("wipe:networks", "docker", "network", "prune", "--force")
+    step("wipe:volumes", "docker", "volume", "prune", "--all", "--force", timeout=300)
+    if shutil.which("nft"):
+        step("wipe:firewall", "nft", "delete", "table", "inet", "lares_egress", ok=(0, 1))
+    paths = ["/etc/lares", "/opt/lares", "/srv/lares", "/srv/taste", "/srv/vault", "/var/lib/lares", "/var/backups/pg",
+             "/run/lares", "/run/lares-host", "/usr/local/bin/lares", *map(str, pathlib.Path("/var/lib").glob("lares-*"))]
+    step("wipe:files", "rm", "-rf", "--one-file-system", *paths, timeout=300)
+    left = [path for path in paths if os.path.lexists(path)]
+    if left:
+        restore_failed("wipe:files", f"still there after the wipe: {left}")
+
+
+def reinstall(home: pathlib.Path, console: str) -> None:
+    """The guide's step 5 on the new server: get-lares.sh with the release, reusing the copied files."""
+    connector = WorldConnector(console)
+    connector.start()
+    install = subprocess.Popen(["bash", "get-lares.sh", "--release-file", "update-release.json", "--yes"], cwd=home,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    said: list[str] = []
+
+    def pump_lines() -> None:
+        for count, line in enumerate(install.stdout):
+            if count % 25 == 0:
+                remember_secrets()
+            said.append(line)
+            print(redact(line), end="", flush=True)
+    pump = threading.Thread(target=pump_lines, daemon=True)
+    pump.start()
+    try:
+        code = install.wait(timeout=INSTALL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        install.kill()
+        code = -1
+    connector.stopping.set()
+    pump.join(timeout=5)
+    if connector.error:
+        restore_failed("reinstall:stand-ins", f"joining the stand-ins to the installation's network failed: {connector.error}")
+    if code != 0:
+        restore_failed("reinstall", f"the install on the wiped server exited {code}", "".join(said))
+    if not connector.joined.wait(timeout=30):
+        restore_failed("reinstall", "the install finished without the console ever running")
+
+
+def lares_restore(substep: str, *arguments: str) -> tuple[int, str]:
+    result = step(substep, "lares", "restore", *arguments, "--yes", "--old-server-stopped", timeout=1800, ok=(0, 64, 75, 77, 78))
+    said = result.stdout + result.stderr
+    print(f"--- {substep}: exit {result.returncode} (redacted, trimmed) ---\n{trimmed(redact(said.rstrip()))}", flush=True)
+    return result.returncode, said
+
+
+def older_backup_restores(work: pathlib.Path, home: pathlib.Path, tls: dict[str, pathlib.Path], console: str,
+                          update: dict, age_key_file: pathlib.Path) -> None:
+    remember_secrets(CLIENT_SECRET, pathlib.Path(home / "model-key").read_text().strip(), age_key_file.read_text())
+    previous = json.loads((REPO / "releases" / PREVIOUS_RELEASE_FILE).read_text())
+    project = json.loads(pathlib.Path("/etc/lares/keeper.json").read_text()).get("project") or "lares"
+
+    stage("an older backup: the proof agent's store as the release before left it")
+    stores = [line.split("\t") for line in operator_sql("old-store:find", "lares_state",
+              "SELECT workflow_database, ownership_token FROM agent_resources WHERE workflow_database IS NOT NULL ORDER BY 1;").splitlines()]
+    if len(stores) != 1 or not re.fullmatch(r"lares_[a-f0-9]{32}", stores[0][0]):
+        restore_failed("old-store:find", f"expected exactly one agent store, found {len(stores)}")
+    store, token = stores[0]
+    # As update.sh does before its backup: the keeper first, so it starts nothing, then the agents.
+    step("old-store:stop-keeper", "env", "-u", "COMPOSE_FILE", "docker", "compose", "--env-file", "/etc/lares/keeper.env", "stop", timeout=300)
+    step("old-store:stop-agents", "docker", "compose", "--project-name", project, "--project-directory", "/srv/lares",
+         "-f", "/srv/lares/compose.lares-agents.yaml", "stop", timeout=300)
+    previous_release_store(update, previous, store, token)
+    before = store_contents("old-store:contents", store)
+    if before["steps"] != 20 or len(before["runs"]) != 2 or len(before["events"]) != 1:
+        restore_failed("old-store:contents", f"the rebuilt store holds {before['steps']} steps, {len(before['runs'])} runs, {len(before['events'])} events")
+    budget_before = budget_rows("old-store:budget-records")
+    budget_keys_before = budget_rows("old-store:budget-records", keys=True)
+    if not budget_before.get("budget_attempts"):
+        restore_failed("old-store:budget-records", "the owner's budget records hold no model call")
+    passed("older-store-built-by-the-previous-release-and-seen-as-old")
+
+    stage("an older backup: a real nightly backup, and the owner's bundle out of it")
+    print("+ [backup] systemctl start lares-backup.service", flush=True)
+    backup = subprocess.run(["systemctl", "start", "lares-backup.service"], capture_output=True, text=True, timeout=1800)
+    if backup.returncode != 0:
+        journal = subprocess.run(["journalctl", "-u", "lares-backup.service", "-n", "80", "--no-pager"], capture_output=True, text=True, timeout=60)
+        restore_failed("backup", f"the nightly backup service exited {backup.returncode}", journal.stdout, backup.stderr)
+    snapshot = newest_nightly("backup:snapshot")
+    listing = step("backup:holds-the-store", "restic", "-r", BACKUP_REPOSITORY, "--password-file", "/etc/lares/restic-password",
+                   "ls", snapshot, "/var/backups/pg", timeout=300).stdout
+    if f"/var/backups/pg/{store}.dump" not in listing.split():
+        restore_failed("backup:holds-the-store", "the nightly snapshot has no dump of the agent store")
+    sealed, bundle = work / "bundle.tar.age", work / "bundle.tar"
+    with open(sealed, "wb") as out:
+        dumped = subprocess.run(["restic", "-r", BACKUP_REPOSITORY, "--password-file", "/etc/lares/restic-password", "dump", snapshot,
+                                 "/var/backups/pg/secrets/agent-box-secrets.tar.age"], stdout=out, stderr=subprocess.PIPE, timeout=300)
+    if dumped.returncode != 0:
+        restore_failed("backup:bundle", f"restic dump exited {dumped.returncode}", "", dumped.stderr)
+    step("backup:bundle", "age", "-d", "-i", str(age_key_file), "-o", str(bundle), str(sealed))
+    members = step("backup:bundle", "tar", "-tf", str(bundle)).stdout.split()
+    missing = [path for path in BUNDLE_PATHS if not any(member.rstrip("/") == path or member.startswith(path + "/") for member in members)]
+    if missing:
+        restore_failed("backup:bundle", f"the settings bundle lacks {missing}")
+    proof["restore"] = {"snapshot": snapshot[:8], "store": store, "previousRelease": previous["release"]}
+    save_proof()
+    passed("nightly-backup-holds-the-older-store-and-the-settings-bundle")
+
+    stage("a new server: everything removed, the owner's files copied, the release installed again")
+    remember_secrets()
+    wipe_server()
+    step("new-server:copy-the-bundle", "tar", "-C", "/", "-xf", str(bundle), *BUNDLE_PATHS)
+    seed_caddy_authority(tls)
+    reinstall(home, console)
+    if not pathlib.Path("/opt/lares/current/services/box/engine-image").is_file():
+        restore_failed("new-server:image-mode", "the installed engine has no engine-image file, so restore would not run its jobs from the images")
+    installed = json.loads(pathlib.Path("/opt/lares/current/release.json").read_text())
+    if installed["images"].get("creative") != update["images"]["creative"] or not re.search(r"@sha256:[a-f0-9]{64}$", installed["images"]["creative"]):
+        restore_failed("new-server:release-file", "/opt/lares/current/release.json does not name this release's creative image by digest")
+    step("new-server:prepare-custody", "lares", "budget", "setup", "--installation-limit", "30", "--person-limit", MEMBER_LIMIT, "--yes", timeout=600)
+    if not json.loads(pathlib.Path("/etc/lares/keeper.json").read_text()).get("budgetFinancial"):
+        restore_failed("new-server:prepare-custody", "budget setup finished without preparing the spending ledger")
+    remember_secrets()
+    passed("new-server-installed-again-with-prepared-custody")
+
+    stage("lares restore, failing on purpose at the store upgrade")
+    # Read-only transactions for the provisioner login only: the store check reads and passes, the
+    # upgrade's first change is refused inside the creative image's own step. Not in any backup.
+    operator_sql("first-run:read-only-provisioner", "postgres", "ALTER ROLE lares_workflow_provisioner SET default_transaction_read_only = on;")
+    code, said = lares_restore("first-run", "--snapshot", "latest")
+    short = snapshot[:8]
+    expected = [f"the newest nightly snapshot is {short}", "draining native custody and permanently freezing prepared financial custody",
+                f"restore: upgrading the agent store {store}.",
+                f"This restore stopped while upgrading the agent stores from snapshot {short}, before your main database",
+                "so this server still counts as a fresh install",
+                f"with --snapshot {short} in place of latest"]
+    if code != 75 or any(text not in said for text in expected):
+        restore_failed("first-run", f"expected exit 75 and the fresh-install wording, got exit {code}; missing: {[text for text in expected if text not in said]}")
+    after_failure = store_contents("first-run:store-as-the-backup-had-it", store)
+    if after_failure != before:
+        restore_failed("first-run:store-as-the-backup-had-it", f"the store changed: {after_failure['steps']} steps, {len(after_failure['runs'])} runs")
+    if operator_sql("first-run:main-database-untouched", "lares_state", "SELECT count(*) FROM agent_definitions;") != "0":
+        restore_failed("first-run:main-database-untouched", "the main database was replaced by a run that stopped at the agent stores")
+    if any(pathlib.Path("/srv/lares/agents").iterdir()) or leftover_job_containers() or restore_runs_left():
+        restore_failed("first-run:nothing-left", f"left behind: agents {sorted(p.name for p in pathlib.Path('/srv/lares/agents').iterdir())}, "
+                       f"containers {leftover_job_containers()}, run records {restore_runs_left()}")
+    passed("failed-upgrade-stops-with-the-server-still-fresh-and-the-store-as-backed-up")
+
+    stage("lares restore beside a store step that is still running")
+    leftover = "lares-workflow-store-" + os.urandom(8).hex()
+    step("leftover:start", "docker", "run", "-d", "--name", leftover, "--label", "lares.maintenance=workflow-store",
+         "--entrypoint", "sleep", update["images"]["db"], "600")
+    try:
+        code, said = lares_restore("leftover:refused", "--snapshot", short)
+    finally:
+        step("leftover:remove", "docker", "rm", "--force", leftover)
+    if code != 78 or f"an agent store step from an earlier attempt is still running ({leftover})" not in said or "This run has changed nothing" not in said \
+            or "draining native custody" in said:
+        restore_failed("leftover:refused", f"expected a refusal (exit 78) naming {leftover} before anything changed, got exit {code}")
+    passed("restore-refuses-beside-a-running-store-step")
+
+    stage("lares restore again, as the message said, to the end")
+    operator_sql("second-run:provisioner-as-installed", "postgres", "ALTER ROLE lares_workflow_provisioner RESET default_transaction_read_only;")
+    code, said = lares_restore("second-run", "--snapshot", short)
+    expected = ["draining native custody and permanently freezing prepared financial custody", f"restore: upgrading the agent store {store}.",
+                f"restored snapshot {short}:", "Financial recovery is required. Protected custody remains permanently frozen"]
+    if code != 0 or any(text not in said for text in expected):
+        restore_failed("second-run", f"expected exit 0, got {code}; missing: {[text for text in expected if text not in said]}")
+    after = store_contents("second-run:store-upgraded-with-its-rows", store)
+    if after["steps"] != 31 or after["runs"] != before["runs"] or after["events"] != before["events"]:
+        restore_failed("second-run:store-upgraded-with-its-rows", f"the store holds {after['steps']} steps; runs kept {after['runs'] == before['runs']}, events kept {after['events'] == before['events']}")
+    passed("store-ends-on-this-release-with-its-rows")
+    runtime = step("second-run:agents-login", "docker", "run", "--rm", "--network", "host", "--user", "0:0",
+                   "-v", f"{workflow_runtime_file()}:/run/proof/runtime:ro", "--entrypoint", "/bin/sh", update["images"]["db"], "-ec",
+                   'export PGPASSWORD="$(cat /run/proof/runtime)"; exec psql -X -At -v ON_ERROR_STOP=1 -h 127.0.0.1 -U lares_workflow -d "$1" '
+                   '-c "SELECT count(*) FROM workflow.workflow_runs" -c "SELECT count(*) FROM workflow.workflow_invocations" '
+                   '-c "SELECT count(*) FROM workflow_drizzle.workflow_migrations"', "agents-login", store).stdout.split()
+    if runtime != ["2", "0", "31"]:
+        restore_failed("second-run:agents-login", f"the agents' login read {runtime}, expected 2 runs, the new table and 31 steps")
+    passed("agents-login-reads-the-upgraded-store")
+    # The keeper that restore starts may settle a row, so the live database is checked by key (no row
+    # lost), and the exact rows restore put back are read from the snapshot's own dump, restored into
+    # a private database the keeper never opens: they must equal the old server's, row for row.
+    keys_after = budget_rows("second-run:budget-records-kept", keys=True)
+    lost = {table: len(set(rows) - set(keys_after.get(table, []))) for table, rows in budget_keys_before.items()
+            if set(rows) - set(keys_after.get(table, []))}
+    if lost:
+        restore_failed("second-run:budget-records-kept", f"budget rows missing after the restore: {lost}")
+    main_dump = work / "lares_state.dump"
+    with open(main_dump, "wb") as out:
+        dumped = subprocess.run(["restic", "-r", BACKUP_REPOSITORY, "--password-file", "/etc/lares/restic-password", "dump", snapshot,
+                                 "/var/backups/pg/lares_state.dump"], stdout=out, stderr=subprocess.PIPE, timeout=300)
+    if dumped.returncode != 0:
+        restore_failed("second-run:budget-records-restored", f"restic dump exited {dumped.returncode}", "", dumped.stderr)
+    scratch_db = "restore_proof_budget"
+    operator_sql("second-run:budget-records-restored", "postgres", f'CREATE DATABASE "{scratch_db}" OWNER lares_operator;')
+    try:
+        step("second-run:budget-records-restored", "bash", "-c",
+             '. "$1/engine-run.sh"; operator_db_run -f /opt/lares/compose.yaml -- pg_restore --exit-on-error -d "$2" < "$3"',
+             "operator-restore", INSTALLED_OPS, scratch_db, str(main_dump), timeout=600)
+        restored_rows = budget_rows("second-run:budget-records-restored", scratch_db)
+    finally:
+        operator_sql("second-run:budget-records-restored", "postgres", f'DROP DATABASE IF EXISTS "{scratch_db}" WITH (FORCE);')
+    if restored_rows != budget_before:
+        differ = sorted(table for table in set(budget_before) | set(restored_rows) if budget_before.get(table) != restored_rows.get(table))
+        restore_failed("second-run:budget-records-restored", f"the budget rows restore put back differ from the old server's in {differ}")
+    live_rows = budget_rows("second-run:budget-records-live")
+    changed_live = {table: len(set(rows) - set(live_rows.get(table, []))) for table, rows in budget_before.items()}
+    proof.setdefault("restore", {})["budgetRowsChangedSinceKeeperStart"] = {table: n for table, n in changed_live.items() if n}
+    passed("owner-budget-records-whole-after-the-restore")
+    if not (pathlib.Path("/srv/lares/agents") / AGENT).is_dir() or leftover_job_containers() or restore_runs_left():
+        restore_failed("second-run:nothing-left", f"agent folder restored {(pathlib.Path('/srv/lares/agents') / AGENT).is_dir()}, "
+                       f"containers {leftover_job_containers()}, run records {restore_runs_left()}")
+    proof["restore"].update({"stepsBefore": before["steps"], "stepsAfter": after["steps"], "agentRows": len(after["runs"]) + len(after["events"]),
+                             "budgetTables": {table: len(rows) for table, rows in budget_before.items()}})
+    save_proof()
+    passed("older-backup-restored-onto-a-reinstalled-server-in-image-mode")
+
+
 def main(argv: list[str]) -> int:
     global proof_path
     if len(argv) != 8 or os.environ.get("GITHUB_ACTIONS") != "true" or os.geteuid() != 0:
@@ -562,10 +1896,34 @@ def main(argv: list[str]) -> int:
         newest = json.loads(sorted((REPO / "releases").glob("*.json"))[-1].read_text())
         console_trusting, gateway_trusting = "proof/console-trusting:local", "proof/gateway-trusting:local"
         trusting_image(work, console, console_trusting, tls, node=True)
+        # The keeper checks a door's bot with Slack or Telegram itself, and the agent reaches them
+        # through the egress proxy with TLS ending in the agent: both trust the stand-ins' authority.
+        keeper_trusting, chief_trusting = "proof/keeper-trusting:local", "proof/chief-trusting:local"
+        trusting_image(work, keeper, keeper_trusting, tls, node=True)
+        trusting_image(work, chief, chief_trusting, tls, node=True)
         # Pulled from the real registry before the hosts file points that name at the throwaway one.
         trusting_image(work, newest["images"]["lares-gateway"], gateway_trusting, tls, node=False)
+        # The release before this one, for the last stage's older store: also pulled while the
+        # registry's name still points at the real one.
+        # A failed pull stops only that stage, which then counts as not proven.
+        previous = json.loads((REPO / "releases" / PREVIOUS_RELEASE_FILE).read_text())
+        previous_pull_failure: str | None = None
+        for key in ("creative", "lares-keeper"):
+            try:
+                pulled = run("docker", "pull", "-q", previous["images"][key], timeout=900, check=False)
+                failed_with = None if pulled.returncode == 0 else f"docker pull exited {pulled.returncode}"
+            except subprocess.TimeoutExpired:
+                failed_with = "docker pull did not finish within 900 seconds"
+            if failed_with:
+                previous_pull_failure = f"could not fetch the older release's images ({PREVIOUS_RELEASE_FILE}, {key}: {failed_with})"
+                print(previous_pull_failure, flush=True)
+                break
         model_key = "sk-ant-api03-" + base64.urlsafe_b64encode(os.urandom(40)).decode().rstrip("=")
-        fixture = start_fake_internet(work, tls, console, model_key)
+        # The test brief's words, as the product exports them: the stand-in answers its marker.
+        brief_marker, brief_type = product_constant("TEST_BRIEF_PROMPT_MARKER"), product_constant("TEST_BRIEF_WORKFLOW_TYPE")
+        if not brief_marker.strip() or not re.fullmatch(r"[a-z][a-z-]{1,40}", brief_type):
+            raise RuntimeError(f"the test brief's marker or workflow type in {TEST_BRIEF_MODULE.relative_to(REPO)} is not usable here")
+        fixture = start_fake_internet(work, tls, console, model_key, brief_marker)
         start_registry(work, tls)
         write_hosts(bridge_address("proof-fake"))
         wait_for_registry(tls)
@@ -574,11 +1932,11 @@ def main(argv: list[str]) -> int:
         # Release key -> (the local image, its name in the registry). The gateway is not rebuilt for
         # the update, so the update also proves it leaves an unchanged image alone.
         engine_images = {
-            "lares-keeper": (keeper, "heiberg-industries/lares-engine-keeper"),
+            "lares-keeper": (keeper_trusting, "heiberg-industries/lares-engine-keeper"),
             "lares-egress-proxy": (egress, "heiberg-industries/lares-engine-egress-proxy"),
             "lares-firewall-helper": (firewall, "heiberg-industries/lares-engine-firewall-helper"),
             "console": (console_trusting, "heiberg-industries/lares-engine-console"),
-            "chief-of-staff": (chief, "heiberg-industries/lares-engine-chief-of-staff-runtime"),
+            "chief-of-staff": (chief_trusting, "heiberg-industries/lares-engine-chief-of-staff-runtime"),
             "creative": (creative, "heiberg-industries/lares-engine-creative-runtime"),
         }
         release_file = write_release(work, {
@@ -631,12 +1989,22 @@ def main(argv: list[str]) -> int:
         shots = pathlib.Path(proof_file).parent / "real-install-screenshots"
         shots.mkdir(exist_ok=True)
         settings_file = work / "browser.json"
-        settings_file.write_text(json.dumps({
+        # Test values for the doors, in the shapes the keeper accepts. Never printed.
+        door_values = {"slackBotToken": f"xoxb-proof-{uuid.uuid4().hex}", "slackSigningSecret": os.urandom(16).hex(),
+                       "telegramBotToken": f"123456789:PROOF{uuid.uuid4().hex}"}
+        remember_secrets(*door_values.values())
+        door_codes = work / "door-codes"
+        door_codes.mkdir(mode=0o700)
+        brief_dir = work / "test-briefs"
+        brief_dir.mkdir(mode=0o700)
+        write_private(settings_file, json.dumps({
             "domain": DOMAIN, "agent": AGENT, "memberLimit": MEMBER_LIMIT, "toolPrompt": TOOL_PROMPT, "followUpPrompt": FOLLOW_UP_PROMPT,
             "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "notePrompt": NOTE_PROMPT, "noteReply": NOTE_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
             # Any message the stand-in does not recognise is answered with PROOF_OK.
             "afterUpdatePrompt": "PROOF_AFTER_THE_UPDATE", "afterUpdateReply": "PROOF_OK", "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
-            "screenshotDir": str(shots),
+            "beforeEditPrompt": "PROOF_BEFORE_THE_EDIT", "oldConversationPrompt": "PROOF_OLD_CONVERSATION_AFTER_THE_EDIT", "afterEditPrompt": "PROOF_AFTER_THE_EDIT",
+            "editedDescription": EDITED_DESCRIPTION, "saveWarning": SAVE_WARNING,
+            "screenshotDir": str(shots), "doorCodeDir": str(door_codes), "testBriefDir": str(brief_dir), **door_values,
         }))
         browser("discover-owner", settings_file, tls)
         owner_bootstrap((work / "receipt.json").read_text())
@@ -697,13 +2065,95 @@ def main(argv: list[str]) -> int:
             time.sleep(3)
         print(f"budget attempts by state:\n{attempts}", flush=True)
         passed("every-model-call-settled-in-the-budget-ledger")
+        check_charges_after_answered_cards(release, deferred)
+        denied = agent_permission_denied_lines()
+        if denied:
+            proof["agentPermissionDenied"] = denied[:40]
+            save_proof()
+            deferred.append(f"the agent's log has {len(denied)} database permission errors, first: {denied[0]}")
+        else:
+            passed("the-agent-log-has-no-database-permission-errors")
+
+        stage("a started agent takes an edit")
+        # A change to a running agent applies from the console alone, and saving it ends the agent's open
+        # web-chat conversations, with a warning on the page first (Lares ADR-0027).
+        started_before = agent_started_at()
+        sessions_before = {call["session"] for call in conversation_calls(release)}
+        audit_mark = keeper_audit_mark(release)
+        browser("edit-after-start", settings_file, tls)
+        # What the browser step itself checked: the warning, the save, the old conversation ended on the page with
+        # no further answer, and a new conversation answered.
+        passed("on-the-page-the-old-conversation-ended-unanswered-and-a-new-one-was-answered")
+        if agent_started_at() != started_before or started_before is None:
+            deferred.append(f"the agent's container was stopped or restarted by a description save (started {started_before}, now {agent_started_at()})")
+        else:
+            passed("a-description-save-did-not-stop-or-restart-the-agent")
+        saved = read_only_query("SELECT json_build_object('description', d.definition->>'description', 'applied', r.applied_definition->>'description', "
+                                f"'pending', r.pending) FROM agent_definitions d JOIN agent_resources r ON r.name = d.name WHERE d.name = '{AGENT}'", release)
+        saved = json.loads(saved) if saved else {}
+        proof["editAfterStart"] = {"savedDescriptionEdited": saved.get("description") == EDITED_DESCRIPTION,
+                                   "appliedAtSave": saved.get("applied") == EDITED_DESCRIPTION, "pending": saved.get("pending")}
+        save_proof()
+        if saved.get("description") == EDITED_DESCRIPTION and saved.get("applied") == EDITED_DESCRIPTION and saved.get("pending") is False:
+            passed("the-saved-definition-carries-the-edit-applied-with-nothing-pending")
+        else:
+            deferred.append(f"after the description save the definition is {proof['editAfterStart']}")
+        stopped = keeper_log_lines("was stopped after a save")
+        if stopped:
+            deferred.append(f"the keeper logged a stop after the save: {stopped[0]}")
+        else:
+            passed("the-keeper-log-has-no-stop-after-a-save")
+        # The browser step itself proves the old conversation was refused on the page and was not answered.
+        # Here the budget ledger says the same at the money layer, and that the new one was charged.
+        owner = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member'", release)
+        # The save's own time, from the keeper's audit row for this one save (database clock, as created_at is).
+        saved_at, saves = this_save_started_at(release, audit_mark)
+        proof["editAfterStart"]["saveFoundInAudit"] = {"definitionSaves": saves, "found": saved_at is not None}
+        save_proof()
+        if saved_at is None:
+            deferred.append(f"the keeper's audit log does not show exactly one definition save for this edit ({saves} found), so the ledger was not checked")
+        if saved_at is not None:
+            deadline = time.monotonic() + 60
+            while True:
+                calls = [call for call in conversation_calls(release, saved_at) if call["session"] not in sessions_before]
+                old = {call["session"] for call in calls if not call["afterSave"]}
+                new = {call["session"] for call in calls if call["afterSave"]} - old
+                charged = [call for call in calls if call["session"] in new and call["state"] == "settled"]
+                if charged or time.monotonic() > deadline:
+                    break
+                time.sleep(3)
+            sessions = list(dict.fromkeys(call["session"] for call in calls))
+            proof["editAfterStart"]["conversationCalls"] = [{"conversation": sessions.index(call["session"]) + 1, "state": call["state"],
+                                                             "afterTheSave": call["afterSave"], "paidByOwner": call["payer"] == owner} for call in calls]
+            save_proof()
+            late = [call for call in calls if call["session"] in old and call["afterSave"]]
+            if old and not late:
+                passed("the-conversation-from-before-the-save-took-no-call-after-it")
+            else:
+                deferred.append(f"the conversation from before the save took {len(late)} call(s) after it, or none was found: {proof['editAfterStart']['conversationCalls']}")
+            if charged and all(call["payer"] == owner for call in calls if call["session"] in new):
+                passed("a-new-conversation-after-the-save-was-answered-and-charged-to-the-owner")
+            else:
+                deferred.append(f"no call of a new conversation after the save settled for the owner: {proof['editAfterStart']['conversationCalls']}")
+
+        stage("a Slack and a Telegram message reach the model through Keeper")
+        for kind in ("slack", "telegram"):
+            door_turn(kind, work, fixture, settings_file, tls, door_values, door_codes, release, deferred)
+
+        # Before backups and the update: the update restarts the agent, and a test brief needs it still.
+        stage("a test brief into Slack and into Telegram, asked on the agent's page")
+        test_briefs(fixture, settings_file, tls, brief_dir, brief_type, release, deferred)
 
         stage("sudo lares backups")
         apt_get("update", "-qq")
         apt_get("install", "-y", "-qq", "restic", "age")
         age_key = run("age-keygen", show=False).stdout
         recipient = re.search(r"public key: (age1\S+)", age_key)
-        run("lares", "backups", "--yes", "--password-saved", "--accept-same-machine", "--repository", "/var/backups/lares-proof",
+        # The owner keeps this key off the server; here it stays in the work folder for the restore stage.
+        age_key_file = work / "backup-age.key"
+        age_key_file.write_text(age_key)
+        os.chmod(age_key_file, 0o600)
+        run("lares", "backups", "--yes", "--password-saved", "--accept-same-machine", "--repository", BACKUP_REPOSITORY,
             "--age-recipient", recipient.group(1), "--hc-url", f"https://uptime.{DOMAIN}/ping", timeout=900)
         passed("backup-restore-rehearsal-and-check-ran")
 
@@ -767,11 +2217,14 @@ def main(argv: list[str]) -> int:
         # Everything above can pass while every model call is refused; only a chat shows it.
         stage("a chat after the update")
         calls_before = len([call for call in fake_calls(fixture) if call["kind"] == "model"])
+        # Only web-chat calls count: with a door claimed, a scheduled call (an owner job) may settle in the same window.
+        chat_settled = "SELECT count(*) FROM budget_attempts WHERE state = 'settled' AND authority_reference->>'kind' = 'human'"
+        chat_settled_before = int(read_only_query(chat_settled, update) or 0)
         browser("chat-after-update", settings_file, tls)
         if len([call for call in fake_calls(fixture) if call["kind"] == "model"]) <= calls_before:
             raise RuntimeError("the chat after the update answered without a model call reaching the provider")
         deadline = time.monotonic() + 60
-        while int(read_only_query("SELECT count(*) FROM budget_attempts WHERE state = 'settled'", update) or 0) <= int(settled_after or 0):
+        while int(read_only_query(chat_settled, update) or 0) <= chat_settled_before:
             if time.monotonic() > deadline:
                 raise RuntimeError("the model call after the update did not settle in the budget ledger")
             time.sleep(3)
@@ -841,6 +2294,16 @@ def main(argv: list[str]) -> int:
                 raise RuntimeError(f"after the simulated reboot the agent was not running and answering within 7 minutes. Containers:\n{listing}")
             time.sleep(5)
         passed("agent-comes-back-after-a-reboot-without-agent-start")
+
+        # Last: it replaces this server. Faults recorded so far are kept in the proof file first.
+        proof["deferredFaults"] = deferred
+        save_proof()
+        if previous_pull_failure:
+            stage("an older backup: not run")
+            proof["restore"] = {"status": "not proven", "reason": previous_pull_failure}
+            deferred.append(f"{previous_pull_failure}; the older-backup restore stage did not run, so it is not proven")
+        else:
+            older_backup_restores(work, home, tls, console, update, age_key_file)
 
         stage("faults recorded along the way")
         if deferred:

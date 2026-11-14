@@ -268,7 +268,7 @@ describe("verifyEntry reporting", () => {
 describe("outside approvals on Telegram", () => {
   const ctx = (authenticator: string | null, slot: "current" | "initiator" = "initiator"): ApprovalContext =>
     ({
-      abortSignal: new AbortController().signal, approvedTools: new Set(), callId: "c1", toolName: "registry__create_note",
+      abortSignal: new AbortController().signal, callId: "c1", toolName: "registry__create_note",
       session: { id: "s1", turn: { id: "t1", sequence: 0 }, auth: { current: slot === "current" && authenticator ? { authenticator } : null, initiator: slot === "initiator" && authenticator ? { authenticator } : null } },
     }) as unknown as ApprovalContext;
 

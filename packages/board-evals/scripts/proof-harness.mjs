@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { mkdtempSync, cpSync, symlinkSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join, basename } from 'node:path';
@@ -59,9 +60,69 @@ export function makeApp(databaseUrl, live = '1') {
     writeFileSync(join(env.LARES_DEFINITION_DIR, 'agent.json'), JSON.stringify({ name: 'board-evals', model: 'fixture-brain', persona: 'voice.md', role: 'creative', grants: [{ capability: 'vault', scope: 'write-with-confirm', areas: ['shared'] }], autonomy: { vault: 'autonomous' }, schedules: { 'probe-tick': { on: true } } }));
     writeFileSync(join(env.LARES_DEFINITION_DIR, 'voice.md'), 'A synthetic voice.');
     writeFileSync(join(env.LARES_DEFINITION_DIR, 'duties.md'), 'Mind the synthetic shop.');
-    return { root, env, eve: join(root, 'node_modules/.bin/eve'), dispose: () => rmSync(root, { recursive: true, force: true }) };
+    // The launcher is addressed in the SOURCE tree: pnpm's launcher script finds eve by a path relative
+    // to its own location, which the copy's symlinked node_modules does not preserve.
+    return { root, env, eve: join(source, 'node_modules/.bin/eve'), dispose: () => rmSync(root, { recursive: true, force: true }) };
   } catch (error) {
     rmSync(root, { recursive: true, force: true });
     throw error;
   }
+}
+
+// The fixture has no HTTP door of its own (`eve eval` brings its own local one). A proof that
+// drives a BUILT server with `eve start` writes this one into its disposable copy before building:
+// eve's own door, behind a throwaway password that exists nowhere else.
+export const FIXTURE_DOOR = { username: 'fixture', password: 'disposable-fixture-only' };
+export const FIXTURE_DOOR_SRC = `import { eveChannel } from 'eve/channels/eve';
+import { httpBasic } from 'eve/channels/auth';
+export default eveChannel({ auth: [httpBasic({ username: '${FIXTURE_DOOR.username}', password: '${FIXTURE_DOOR.password}' })] });
+`;
+export function addFixtureDoor(root) {
+  mkdirSync(join(root, 'agent/channels'), { recursive: true });
+  writeFileSync(join(root, 'agent/channels/eve.ts'), FIXTURE_DOOR_SRC);
+}
+const freePort = () => new Promise((done, fail) => {
+  const probe = createServer();
+  probe.once('error', fail);
+  probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => done(port)); });
+});
+/**
+ * One `eve start` process for an already-built app, in its own process group. `stop()` kills the
+ * whole group and resolves only once the group is gone, so a caller that starts another server
+ * afterwards has a real process boundary between the two.
+ */
+export async function startServer(app) {
+  abort.signal.throwIfAborted();
+  const port = await freePort();
+  const child = spawn(app.eve, ['start', '--host', '127.0.0.1', '--port', String(port)], { cwd: app.root, env: app.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let log = '';
+  child.stdout.on('data', b => { log += b; }); child.stderr.on('data', b => { log += b; });
+  const closed = new Promise(done => child.once('close', done));
+  const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} };
+  abort.signal.addEventListener('abort', kill, { once: true });
+  // A clean stop first (SIGTERM, as a container runtime sends), so the process boundary is the one
+  // a restart or an upgrade makes; the hard kill is only the fallback for a server that will not go.
+  // PROOF_HARD_KILL=1 skips the clean stop, to measure a crash instead.
+  const stop = async () => {
+    if (!process.env.PROOF_HARD_KILL) {
+      try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+      await Promise.race([closed, new Promise(r => setTimeout(r, 15_000))]);
+    }
+    kill(); await closed;
+    for (let i = 0; i < 100; i += 1) {
+      try { process.kill(-child.pid, 0); } catch { abort.signal.removeEventListener('abort', kill); return; }
+      await new Promise(r => setTimeout(r, 50));
+    }
+    throw new Error(`eve start (pid ${child.pid}) left processes behind`);
+  };
+  const url = `http://127.0.0.1:${port}`;
+  try {
+    for (let i = 0; ; i += 1) {
+      if (child.exitCode !== null) throw new Error(`eve start exited ${child.exitCode}\n${log}`);
+      try { if ((await fetch(`${url}/eve/v1/health`)).ok) break; } catch {}
+      if (i >= 300) throw new Error(`eve start never answered\n${log}`);
+      await new Promise(r => setTimeout(r, 200));
+    }
+  } catch (error) { await stop().catch(() => {}); throw error; }
+  return { url, pid: child.pid, stop, log: () => log };
 }

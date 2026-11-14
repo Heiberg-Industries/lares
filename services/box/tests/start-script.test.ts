@@ -10,7 +10,7 @@ const REPO = join(here, "..", "..", "..");
 const SCRIPT = join(REPO, "images/agent-runtime/start.sh");
 const FRAGMENT = join(REPO, "images/agent-runtime/required-settings.sh");
 
-let dir: string, binDir: string, eveLog: string, secrets: string;
+let dir: string, binDir: string, serverLog: string, eveMarker: string, secrets: string;
 
 const FULL = () => ({
   DATABASE_URL: "postgres://proof@db/proof",
@@ -44,23 +44,44 @@ beforeEach(() => {
   writeFileSync(join(secrets, "database-password"), "app-fixture-password\n");
   writeFileSync(join(secrets, "workflow-password"), "workflow-fixture-password\n");
   writeFileSync(join(secrets, "gateway-key"), "gateway-fixture-key\n");
-  eveLog = join(dir, "eve.log");
+  // The script runs the built server itself, `exec node ./.output/server/index.mjs`, with no eve
+  // launcher in between. This stub stands where the built server would and records what it was
+  // started with; the stub `eve` only leaves a marker, so a start through the launcher is caught.
+  serverLog = join(dir, "server.log");
+  mkdirSync(join(dir, ".output", "server"), { recursive: true });
+  writeFileSync(join(dir, ".output", "server", "index.mjs"), `import { appendFileSync } from "node:fs";
+const e = process.env;
+appendFileSync(${JSON.stringify(serverLog)}, [
+  "PGPASSWORD=" + e.PGPASSWORD,
+  "WORKFLOW_POSTGRES_URL=" + e.WORKFLOW_POSTGRES_URL,
+  "LISTEN=" + [e.HOST, e.NITRO_HOST, e.PORT, e.NITRO_PORT].join(","),
+  "STRIPPED=" + ["CI", "TEST", "SERVER_SHUTDOWN_TIMEOUT", "NITRO_UNIX_SOCKET"].filter((name) => name in e).join(","),
+  "ARGS=" + process.argv.slice(2).join(","),
+  "",
+].join("\\n"));
+`);
+  eveMarker = join(dir, "eve-ran");
   mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });
   const eve = join(dir, "node_modules", ".bin", "eve");
-  writeFileSync(eve, `#!/bin/sh\nprintf 'PGPASSWORD=%s\\nWORKFLOW_POSTGRES_URL=%s\\n' "$PGPASSWORD" "$WORKFLOW_POSTGRES_URL" >> "${eveLog}"\nprintf '%s\\n' "$@" >> "${eveLog}"\nexit 0\n`);
+  writeFileSync(eve, `#!/bin/sh\nprintf ran > "${eveMarker}"\n`);
   chmodSync(eve, 0o755);
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("the runtime image's start script", () => {
-  it("starts eve when every required setting is there", () => {
-    const r = run(FULL());
+  it("starts the built server directly when every required setting is there", () => {
+    // A caller's environment may carry these in; the server must not see the first four, and
+    // must listen where the image says, not where the caller's HOST or PORT point.
+    const r = run({ ...FULL(), CI: "true", TEST: "1", SERVER_SHUTDOWN_TIMEOUT: "1", NITRO_UNIX_SOCKET: "/tmp/never.sock", HOST: "127.0.0.1", PORT: "9" });
     expect(r.code).toBe(0);
-    const log = readFileSync(eveLog, "utf8");
-    expect(log).toContain("start");
+    const log = readFileSync(serverLog, "utf8");
     expect(log).toContain("PGPASSWORD=app-fixture-password");
     expect(log).toContain("WORKFLOW_POSTGRES_URL=postgres://proof:workflow-fixture-password@db/proof");
+    expect(log).toContain("LISTEN=0.0.0.0,0.0.0.0,3000,3000\n");
+    expect(log).toContain("STRIPPED=\n");
+    expect(log).toContain("ARGS=\n");
     expect(log).not.toContain("gateway-fixture-key");
+    expect(existsSync(eveMarker)).toBe(false);
   });
 
   it("refuses with 78 and one line per missing setting, naming no value", () => {
@@ -69,7 +90,8 @@ describe("the runtime image's start script", () => {
     delete (env as Record<string, string>).LARES_AGENT_NAME;
     const r = run(env);
     expect(r.code).toBe(78);
-    expect(existsSync(eveLog)).toBe(false);
+    expect(existsSync(serverLog)).toBe(false);
+    expect(existsSync(eveMarker)).toBe(false);
     expect(r.stderr).toContain("GATEWAY_URL");
     expect(r.stderr).toContain("LARES_AGENT_NAME");
     expect(r.stderr).not.toContain("postgres://proof@db/proof");
@@ -81,7 +103,8 @@ describe("the runtime image's start script", () => {
     const env = { ...FULL(), GATEWAY_KEY_FILE: join(secrets, "missing-key") };
     const r = run(env);
     expect(r.code).not.toBe(0);
-    expect(existsSync(eveLog)).toBe(false);
+    expect(existsSync(serverLog)).toBe(false);
+    expect(existsSync(eveMarker)).toBe(false);
     expect(r.stderr).toContain("missing-key");
   });
 
@@ -99,7 +122,8 @@ describe("the runtime image's start script", () => {
     writeFileSync(empty, "");
     const r = run({ ...FULL(), GATEWAY_KEY_FILE: empty });
     expect(r.code).toBe(78);
-    expect(existsSync(eveLog)).toBe(false);
+    expect(existsSync(serverLog)).toBe(false);
+    expect(existsSync(eveMarker)).toBe(false);
     expect(r.stderr).toContain("empty-key");
     expect(r.stderr).not.toContain("app-fixture-password");
     expect(r.stderr).not.toContain("workflow-fixture-password");
@@ -121,7 +145,8 @@ describe("the runtime image's start script", () => {
       code = err.status; stderr = err.stderr;
     }
     expect(code).toBe(78);
-    expect(existsSync(eveLog)).toBe(false);
+    expect(existsSync(serverLog)).toBe(false);
+    expect(existsSync(eveMarker)).toBe(false);
     expect(stderr).toContain("LARES_AGENT_NAME");
   });
 });

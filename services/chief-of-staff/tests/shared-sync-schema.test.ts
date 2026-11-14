@@ -10,6 +10,7 @@ import { payloadFingerprint } from "@lares/agent-kit/approval-ledger";
 import { applyRouteProposalDecline, claimRouteDeclineQuestion, listPendingRouteDeclineQuestions, markRouteDeclineQuestionSent, recordRouteApprovalLink, routeDeclineAnswerForReply, routeDeclineAnswerScope } from "../lib/route-decline.js";
 import { listActiveFacts, rememberFact } from "../lib/standing-facts.js";
 import { linkScheduledRouteRequests } from "../agent/hooks/approval-record.js";
+import { eveSession } from "../../../packages/agent-kit/tests/helpers/eve-session.js";
 
 const SHARED_SYNC_SCHEMA_SQL = readFileSync(new URL("../../box/sql/027_shared_sync_schema.sql", import.meta.url), "utf8");
 const TRACK_ROUTING_MIGRATION_SQL = readFileSync(new URL("../../box/sql/032_track_routing.sql", import.meta.url), "utf8");
@@ -293,8 +294,11 @@ describe("offline shared sync and CRM schema", () => {
     const hash = payloadFingerprint("track_add_item", input);
     await schemaOwner.query(`INSERT INTO approval_asks(request_id,call_id,agent,tool,payload_hash)
       VALUES('request-delivered','call-delivered','chief-of-staff','track_add_item',$1)`, [hash]);
-    await linkScheduledRouteRequests(schemaOwner, { data: { requests: [{ kind: "tool-approval", requestId: "request-delivered",
-      action: { kind: "tool-call", callId: "call-delivered", toolName: "track_add_item", input } }] } }, {
+    // The card opens as eve 1.0 does: the event names the call, the session view holds its tool name and input.
+    const card = eveSession();
+    card.call("call-delivered", "track_add_item", input);
+    await linkScheduledRouteRequests(schemaOwner, card.open("request-delivered", "call-delivered"), {
+      view: card.view,
       session: { id: "private-session-delivered", turn: { sequence: 5 }, auth: { current: { authenticator: "app", attributes: {
         lane: "track-routing", lares_continuity_member_id: "member-1", lares_continuity_address: "slack-user:owner-1",
         lares_continuity_revision: "7",

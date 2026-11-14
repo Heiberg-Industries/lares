@@ -6,10 +6,11 @@ import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-p
 import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
+import {restartPartsApplied} from './restart-parts.js';
 import {HostFinancialJournal} from './financial-journal.js';
 import {JournalBudgetFinancialWriter} from './budget-financial-writer.js';
 import {BudgetNativeCredentialClient,type NativeKeyExpectation,type NativeRead,type NativeTeamExpectation,type NativeTeamPolicyExpectation,type NativeUserExpectation} from './budget-native-client.js';
-import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
+import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,NATIVE_CUSTODY_MAX_WAIT_MS,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
 
 const uuid=z.string().uuid(),generation=z.string().regex(/^(0|[1-9][0-9]{0,18})$/).refine(v=>BigInt(v)<=9_223_372_036_854_775_807n);
 const requestSchema=z.object({bindingId:uuid,credentialGeneration:generation}).strict();
@@ -101,8 +102,10 @@ async function prepareSource(db:SourceDatabase,journal:HostFinancialJournal,op:N
   if(rows.length!==1)throw refuse();const row=rows[0]!;let definition,applied;
   try{definition=parseDefinition(definitionSchema.parse(row.definition));applied=parseDefinition(definitionSchema.parse(row.applied_definition));}catch{throw refuse();}
   const definitionHash=hashOf({definition,dutiesMd:row.duties,voiceMd:row.voice});
-  if(row.status!=='valid'||row.hash!==definitionHash||definitionHash!==op.association.definitionHash||row.ownership!=='owned'||
-    row.ownership_token!==op.association.incarnation||row.runtime_control_token!==op.association.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
+  // The key follows the agent, its incarnation and its model name, not the rest of the definition (see the runtime authority).
+  if(row.status!=='valid'||row.hash!==definitionHash||row.ownership!=='owned'||
+    row.ownership_token!==op.association.incarnation||row.runtime_control_token!==op.association.incarnation||row.state!=='ready'||row.pending!==false||
+    !restartPartsApplied(applied,definition,{model:true}))throw refuse();
   const extra=definition.model!==op.association.purposeAlias;let brainBindingId:string|null=null,joining=false;
   if(!extra){
     if(applied.model!==op.association.purposeAlias)throw refuse();
@@ -216,7 +219,8 @@ export class BudgetNativeActivator {
       },boundary,{deadlineAtMs:deadline}),receipt=>{gate.recordActive(op.operationId,receipt);return undefined;});
       return committed.value;
     });}catch(error){
-      if(operationId&&unblockClaimed){try{await this.custody.withGate(gate=>{gate.recordUncertain(operationId);return Promise.resolve();});}catch{/* Keep the frozen or uncertain custody result. */}}
+      // Waits its turn: the gate may have passed straight to someone in line, and this record must not be turned away.
+      if(operationId&&unblockClaimed){try{await this.custody.withGate(gate=>{gate.recordUncertain(operationId);return Promise.resolve();},{waitMs:NATIVE_CUSTODY_MAX_WAIT_MS});}catch{/* Keep the frozen or uncertain custody result. */}}
       throw publicRefuse();
     }
   }

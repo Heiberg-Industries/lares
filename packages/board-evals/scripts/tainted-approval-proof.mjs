@@ -6,7 +6,7 @@
  * `origin-taint.ts`'s per-turn map, under the key `turnKeyFrom(ctx)` builds from eve's
  * `ApprovalContext`. The taint is WRITTEN under two other keys: one that a reading tool's own
  * `execute` builds from its `ToolContext` (`catalogue/read_url.ts`), and one that
- * `agent/hooks/origin-taint.ts` builds from an `action.result` event's `data.turnId`.
+ * `agent/hooks/origin-taint.ts` builds from a `call.settled` event's turn id.
  *
  * THREE KEYS, THREE DIFFERENT eve SURFACES, AND NOBODY HAS SEEN THEM AGREE. They were established
  * by reading eve's `dist/`, never observed. The failure mode is SILENT in the dangerous direction:
@@ -16,7 +16,7 @@
  * they all build their own contexts by hand. (The same class of mistake as `callIdFrom`, which
  * once read `ctx.toolCallId` where eve passes `ctx.callId`.)
  *
- * WHAT THIS RUNS. A real eve 0.60.1 runtime, a real Postgres, a scripted model, no credential —
+ * WHAT THIS RUNS. A real eve 1.0 runtime, a real Postgres, a scripted model, no credential —
  * the technique of `approval-binding-proof.mjs`: a disposable copy of this package, probe tools and
  * a hook written into the COPY only, one eval, ~40 s. The probes import the REAL
  * `asksAfterUntrustedText`, `taintTurn`, `turnKeyFrom` and `clearTurn` from `@lares/agent-kit` —
@@ -44,7 +44,8 @@
  *
  * Run: `node packages/board-evals/scripts/tainted-approval-proof.mjs` (Docker running). One eve
  * process at a time; the container and every temporary directory are disposed in `finally`.
- * Results: `packages/board-evals/proofs/tainted-approval-2026-09-20.md`.
+ * Results: `packages/board-evals/proofs/tainted-approval-2026-11-11.md` (eve 1.0.0-rc.9); the
+ * 2026-09-20 record is the same proof on eve 0.60.1.
  */
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -137,31 +138,48 @@ export function watched(tool: string): (ctx?: unknown) => Promise<ApprovalStatus
 `;
 
 /** The hook — `agent/hooks/origin-taint.ts` reduced to this proof's one tool, field for field:
- *  `action.result`, `data.result.kind === "tool-result"`, `turnKeyFrom(ctx, event.data.turnId)`.
- *  The turn-boundary clears are kept because production keeps them, and turn isolation is one of
- *  the questions. */
+ *  `call.settled`, the call's name read from the session view by its `callId`, and
+ *  `turnKeyFrom(ctx, <the event's turn id>)` with the turn id taken from `data` and then `scope`,
+ *  exactly as production's `keyOf` does. The turn-boundary clears are kept because production
+ *  keeps them (`turn.started` and `turn.settled`; eve 1.0 ends a turn with one event whatever the
+ *  outcome), and turn isolation is one of the questions. */
 const HOOK_SRC = `
+import { call as callOf } from "eve/events";
 import { defineHook, type HookContext, type HookEvent } from "eve/hooks";
 import { clearTurn, taintTurn, turnKeyFrom } from "@lares/agent-kit/origin-taint";
 import { note, shapeOf } from "../../lib/taint-probe.js";
 
 function turnIdOf(event: unknown): unknown {
-  const data = typeof event === "object" && event !== null ? (event as { data?: unknown }).data : undefined;
-  return typeof data === "object" && data !== null ? (data as { turnId?: unknown }).turnId : undefined;
+  const e = typeof event === "object" && event !== null ? (event as { data?: unknown; scope?: unknown }) : undefined;
+  const field = (v: unknown): unknown => (typeof v === "object" && v !== null ? (v as { turnId?: unknown }).turnId : undefined);
+  return field(e?.data) ?? field(e?.scope);
 }
 
-async function onActionResult(event: HookEvent<"action.result">, ctx: HookContext): Promise<void> {
+function callFromView(ctx: HookContext, callId: string): { name: string; kind?: string } | undefined {
   try {
-    const result = event?.data?.result as { kind?: unknown; toolName?: unknown } | undefined;
-    if (typeof result !== "object" || result === null) return;
-    if (result.kind !== "tool-result") return;
-    if (result.toolName !== "taint_reader") return;
+    const view = (ctx as unknown as { view?: never } | null | undefined)?.view;
+    if (view === undefined) return undefined;
+    const row = callOf(view, callId);
+    return row !== undefined && typeof row.name === "string" ? { name: row.name, kind: row.kind } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function onCallSettled(event: HookEvent<"call.settled">, ctx: HookContext): Promise<void> {
+  try {
+    const callId = (event?.data as { callId?: unknown } | undefined)?.callId;
+    if (typeof callId !== "string") return;
+    const asked = callFromView(ctx, callId);
+    if (asked === undefined) { note({ side: "hook-error", message: "call.settled named a call the view does not know: " + callId }); return; }
+    if (asked.kind !== undefined && asked.kind !== "tool") return;
+    if (asked.name !== "taint_reader") return;
     const eventTurnId = turnIdOf(event);
     const key = turnKeyFrom(ctx, eventTurnId);
     if (key) taintTurn(key, "third_party");
     note({
       side: "hook",
-      tool: result.toolName,
+      tool: asked.name,
       key: key ?? null,
       eventTurnId: typeof eventTurnId === "string" ? eventTurnId : null,
       ...shapeOf(ctx),
@@ -186,11 +204,9 @@ function boundary(name: string) {
 
 export default defineHook({
   events: {
-    "action.result": onActionResult,
+    "call.settled": onCallSettled,
     "turn.started": boundary("turn.started"),
-    "turn.completed": boundary("turn.completed"),
-    "turn.failed": boundary("turn.failed"),
-    "turn.cancelled": boundary("turn.cancelled"),
+    "turn.settled": boundary("turn.settled"),
   },
 });
 `;
@@ -287,17 +303,28 @@ export default defineEval({
     const session = await t.session();
     for (const turn of TURNS) {
       const sent = await session.send(turn.message);
-      const requests = sent.inputRequests ?? [];
+      const requests = sent.interactions;
       appendFileSync(process.env.TAINT_LOG!, JSON.stringify({
         pid: process.pid,
         side: "turn",
         id: turn.id,
         message: turn.message,
         cards: requests.length,
-        kinds: requests.map((r) => r.kind),
-        tools: requests.map((r) => (r as { action?: { toolName?: string } }).action?.toolName ?? null),
+        kinds: requests.map((r) => r.request.kind),
+        tools: requests.map((r) => r.call?.name ?? null),
       }) + "\\n");
-      if (requests.length > 0) await session.respondAll("approve");
+      if (requests.length > 0) {
+        const resumed = await session.respondAll("approve");
+        // A card still OPEN once the approval has been answered is a second card for the same call.
+        appendFileSync(process.env.TAINT_LOG!, JSON.stringify({
+          pid: process.pid,
+          side: "approved",
+          id: turn.id,
+          message: turn.message,
+          status: resumed.status,
+          openCardsAfter: session.pendingInteractions.length,
+        }) + "\\n");
+      }
       t.log(\`\${turn.id} "\${turn.message}": \${requests.length} card(s)\`);
     }
   },
@@ -386,7 +413,11 @@ try {
       origin,
       policy,
       park: policy.find((p) => p.ctxTurnId === origin) ?? null,
-      resume: policy.filter((p) => p.ctxTurnId !== origin),
+      // Every consult after the one that parked. eve 0.60.1 resumed an approved call in a NEW turn;
+      // eve 1.0 resumes it in the SAME turn, so a re-consult is told apart by order, not by turn id.
+      resume: policy.filter((p) => p !== (policy.find((q) => q.ctxTurnId === origin) ?? null)),
+      executions: recorded.filter((l) => l.side === 'gated-execute' && l.mark === t.message && l.tool === t.expectRan).length,
+      approved: recorded.find((l) => l.side === 'approved' && l.message === t.message) ?? null,
       hook: recorded.find((l) => l.side === 'hook' && l.key?.turnId === origin) ?? null,
       reader,
       exec,
@@ -454,11 +485,17 @@ try {
   });
   q.push({
     id: '4b',
-    question: 'the policy is consulted again on resume, in the new turn, and does not park a second time',
-    pass: t2.resume.length >= 1 && t2.resume.every((p) => p.verdict === 'not-applicable'),
-    detail: t2.resume.length === 0
-      ? 'no second consult was recorded'
-      : t2.resume.map((p) => `\`${p.ctxTurnId}\` → ${JSON.stringify(p.verdict)}`).join(', '),
+    // On eve 0.60.1 this read "the policy is consulted again on resume, in the new turn, and does
+    // not park a second time": the resumed call ran in a new turn, where the policy found no taint.
+    // eve 1.0 resumes the approved call in the SAME turn. What the question protects is unchanged
+    // and is asserted directly: one approval is enough. Whether eve consults the policy again on
+    // the way is recorded as evidence, not required.
+    question: 'one approval is enough: the approved call runs exactly once and no second card is raised',
+    pass: t2.executions === 1 && t2.approved !== null && t2.approved.openCardsAfter === 0 && t2.approved.status !== 'failed',
+    detail: `ran ${t2.executions} time(s) · open cards after the approval: ${t2.approved?.openCardsAfter ?? 'not recorded'} · request ended "${t2.approved?.status ?? 'not recorded'}" · ` +
+      (t2.resume.length === 0
+        ? 'the policy was NOT consulted again on resume'
+        : `the policy was consulted again on resume: ${t2.resume.map((p) => `\`${p.ctxTurnId}\` → ${JSON.stringify(p.verdict)}`).join(', ')}`),
   });
   q.push({
     id: '5',

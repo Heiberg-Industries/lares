@@ -5,11 +5,15 @@
 // NEVER THROWS, on purpose: a save shows the owner every reason at once instead of the first
 // one. `assertDefinitionValid` is the throwing form, for the session-start path where a single
 // joined message is what a log line wants.
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type { AgentDefinition } from "./definition.js";
 import { MODEL_ALIAS_RE, manifestViewOf } from "./definition.js";
 import { assertDeclarationIntegrity } from "./manifest.js";
+import { tsBasenames } from "./persona/deployed-tools.js";
 import { assertRoleToolsAreDeployed } from "./persona/index.js";
-import { assertNoUngatedWrites } from "./write-shape-lint.js";
+import { assertNoUngatedWrites, isDisabledSentinel } from "./write-shape-lint.js";
 import { deliveryFindings } from "./delivery.js";
 import { OUTSIDE_CAPABILITY, checkOutsideUrl, outsideSecretName } from "./outside-tools.js";
 
@@ -32,6 +36,75 @@ export interface ValidateOptions {
    *  Omitted entirely = skip the door check (the session-start path, where the secret's
    *  presence is the container's problem, not the definition's). */
   secretExists?: (name: string) => boolean;
+  /** The role's own tool names, from `toolSourcesFor(roleDir)`. When given, a name that two
+   *  sources both offer is refused (check 9). Omitted = that check is skipped. */
+  toolSources?: ToolSources;
+}
+
+// ONE TOOL PER NAME.
+//
+// eve 1.0 does not refuse two tools with the same name. Its merge keeps whichever source it met
+// first and writes one error line for the other (`definitions/combine.js`, `mergeTools`: "the
+// first keeps it"; a tool file comes before anything resolved at session start). So one of the
+// two is dropped without anyone deciding which — its description, its code and its approval rule
+// with it. Here the same situation is a refusal, with both sources named.
+export interface ToolSources {
+  /** The names the role's tool files take: `agent/tools/` and the agent-kit mount. */
+  authored: string[];
+  /** Every name the role's pool can hand a session: `catalogue/`. */
+  catalogue: string[];
+}
+
+export interface ToolNameCollision { name: string; sources: [string, string] }
+
+const AUTHORED_SOURCE = "a tool file of that name (agent/tools/ or the agent-kit mount)";
+const POOL_SOURCE = "the role's tool pool (catalogue/)";
+
+/** Every name offered twice: by a tool file and a session-resolved source, or by two
+ *  session-resolved sources. `dynamic` maps a source's plain description to its names. */
+export function toolNameCollisions(
+  authored: readonly string[],
+  dynamic: Readonly<Record<string, readonly string[]>>,
+): ToolNameCollision[] {
+  const owner = new Map<string, string>(authored.map((name) => [name, AUTHORED_SOURCE]));
+  const out: ToolNameCollision[] = [];
+  for (const [source, names] of Object.entries(dynamic)) {
+    for (const name of new Set(names)) {
+      const first = owner.get(name);
+      if (first === undefined) owner.set(name, source);
+      else out.push({ name, sources: [first, source] });
+    }
+  }
+  return out;
+}
+
+/** A role's tool names by source, read off its folder like `deployedToolsFor` (file names, and
+ *  each file's text — nothing is imported).
+ *
+ *  A file that is switched off takes no name and is left out: the `disableTool()` stub a role
+ *  keeps at a path its pool has taken over (`isDisabledSentinel`, the same test the write-shape
+ *  lint uses). Nothing else is exempt. A tool the agent-kit extension ships counts as live unless
+ *  the role's mount has such a stub for it — deleting the stub brings the extension's copy back.
+ *
+ *  WHAT IT CANNOT SEE: a name written inside a file. A resolver that hands over several tools
+ *  under names of its own is known here only by its file name.
+ *
+ *  `kitDir` defaults to where the kit sits beside a role in the repo and in every image. */
+export function toolSourcesFor(agentDir: string, kitDir = join(agentDir, "..", "..", "packages", "agent-kit")): ToolSources {
+  const isTool = (file: string): boolean => !isDisabledSentinel(readFileSync(file, "utf8"));
+  const tools = join(agentDir, "agent", "tools");
+  const mount = join(agentDir, "agent", "extensions", "agent-kit");
+  const overrides = tsBasenames(join(mount, "tools"));
+  const shipped = existsSync(mount) || existsSync(`${mount}.ts`) ? tsBasenames(join(kitDir, "extension", "tools")) : [];
+  return {
+    authored: [
+      ...tsBasenames(tools).filter((n) => isTool(join(tools, `${n}.ts`))),
+      ...[...new Set([...shipped, ...overrides])]
+        .filter((n) => !overrides.includes(n) || isTool(join(mount, "tools", `${n}.ts`)))
+        .map((n) => `agent-kit__${n}`),
+    ].sort(),
+    catalogue: tsBasenames(join(agentDir, "catalogue")).filter((n) => n !== "index").sort(),
+  };
 }
 
 /** How the keeper names a door's secret file under /etc/lares/secrets/. */
@@ -158,6 +231,20 @@ export function validateDefinition(opts: ValidateOptions): ValidationFinding[] {
 
   // 8. Delivery routing: known kinds, known doors, no empty or repeated list.
   for (const message of deliveryFindings(d.delivery)) out.push({ check: "delivery", message });
+
+  // 9. One tool per name. The pool is checked whole, not only what this definition is granted,
+  // and an outside tool by every name its allow list could produce (`<name>__<tool>`), so the
+  // answer does not change from one conversation to the next.
+  if (opts.toolSources) {
+    const dynamic: Record<string, readonly string[]> = { [POOL_SOURCE]: opts.toolSources.catalogue };
+    for (const t of outside) dynamic[`the outside tool "${t.name}" in this definition`] = t.tools.allow.map((x) => `${t.name}__${x}`);
+    for (const c of toolNameCollisions(opts.toolSources.authored, dynamic)) {
+      out.push({
+        check: "tool-names",
+        message: `the tool name "${c.name}" is taken twice: by ${c.sources[0]} and by ${c.sources[1]}. A name can belong to only one tool — rename one of them, or make the tool file a disableTool() stub if the other has replaced it`,
+      });
+    }
+  }
 
   return out;
 }

@@ -1,15 +1,17 @@
-// Not a behaviour test: a MEASUREMENT of eve 0.32's dynamic seams,
-// committed so it can be re-run against a later eve. Each question records a verdict and the eval
-// keeps going, so one run answers every question even when one is NO; any NO fails the run at the end.
+// Not a behaviour test: a MEASUREMENT of eve's dynamic seams, committed so it can be re-run against
+// a later eve (first measured on 0.32, re-measured on 0.60.1 and on 1.0.0-rc.9). Each question
+// records a verdict and the eval keeps going, so one run answers every question even when one is
+// NO; any NO fails the run at the end.
 //
 // The eval harness has no accessor for the model's tool set or the resolved system prompt (see
-// EveEvalTurn in eve/dist/src/evals/types.d.ts: message, data, events, inputRequests, toolCalls,
-// sessionId, status). So the fixture's mock model reports both back in its reply — mockModel's
-// request view carries `tools` and the system `messages` exactly as eve handed them over.
+// EveEvalTurn in eve/dist/src/evals/types.d.ts: reply, data, events, interactions, toolCalls,
+// sessionId, status, view). So the fixture's mock model reports both back in its reply —
+// mockModel's request view carries `tools` and the system `messages` exactly as eve handed them
+// over.
 //
-// Every question that depends on a `session.started` resolver uses its own `await t.session()`:
-// the grants file is read once per session, so a fresh session is the only way to change the
-// answer.
+// Every question that depends on the tool catalogue uses its own `await t.session()`: the catalogue
+// resolver decides once per conversation (a memo keyed on the session id), so a fresh session is
+// the only way to change the answer.
 import { writeFileSync } from "node:fs";
 import { defineEval } from "eve/evals";
 
@@ -33,12 +35,12 @@ export default defineEval({
 
     try {
       // ── Tool set and overrides ──────────────────────────────────────────────────────────────────────────────
-      // A session.started resolver returning a Record produces exactly those tools; an authored
+      // A dynamic tools resolver returning a Record produces exactly those tools; an authored
       // agent/tools/<name>.ts of the same name is overridden, not duplicated.
       grant(["cat_alpha", "vault_write"]);
       const s1 = await t.session();
-      const tools = (await s1.send("seam tools")).message ?? "";
-      const described = (await s1.send("seam describe vault_write")).message ?? "";
+      const tools = (await s1.send("seam tools")).reply ?? "";
+      const described = (await s1.send("seam describe vault_write")).reply ?? "";
       t.log(`Tool set: ${tools}`);
       t.log(`vault_write: ${described}`);
 
@@ -75,14 +77,14 @@ export default defineEval({
       // slot is a disableTool() sentinel.
       grant(["probe__probe_extension_tool"]);
       const s3 = await t.session();
-      const tools3 = (await s3.send("seam tools")).message ?? "";
+      const tools3 = (await s3.send("seam tools")).reply ?? "";
       t.log(`Prefixed-key tool set: ${tools3}`);
       record(
         "Prefixed key: the probe mount is live (control)",
         tools3.includes("probe__probe_live_tool"),
         `probe__probe_live_tool ${tools3.includes("probe__probe_live_tool") ? "present" : "ABSENT"}`,
       );
-      const described3 = (await s3.send("seam describe probe__probe_extension_tool")).message ?? "";
+      const described3 = (await s3.send("seam describe probe__probe_extension_tool")).reply ?? "";
       record(
         "Prefixed key: the prefixed catalogue key appears exactly once",
         described3.includes("count=1"),
@@ -99,13 +101,13 @@ export default defineEval({
       );
 
       // ── Session state ───────────────────────────────────────────────────────────────────────────────────
-      // A value written to eve session state in a tool call survives to the next turn's instruction
-      // resolver, and stays out of other sessions.
+      // A value written to eve session state in a tool call reaches the instruction resolver on
+      // the next turn, and stays out of other sessions.
       grant([]);
       const s4 = await t.session();
       const set = await s4.send("seam lang no");
-      t.log(`Session state set: ${set.message ?? ""}`);
-      const system = (await s4.send("seam system")).message ?? "";
+      t.log(`Session state set: ${set.reply ?? ""}`);
+      const system = (await s4.send("seam system")).reply ?? "";
       t.log(`Session state, system prompt on the NEXT turn: ${system}`);
       record(
         "Session state: the next turn's instruction resolver sees the stored value",
@@ -127,7 +129,7 @@ export default defineEval({
       const otherOut = JSON.stringify(
         other.toolCalls.find((c) => c.name === "seam_language")?.output ?? null,
       );
-      const otherSystem = (await s4b.send("seam system")).message ?? "";
+      const otherSystem = (await s4b.send("seam system")).reply ?? "";
       t.log(`Session state, other session system prompt: ${otherSystem}`);
       record(
         "Session state: the value does not leak to another session",
@@ -147,8 +149,8 @@ export default defineEval({
       grant([]);
       const s6 = await t.session();
       const setLang = await s6.send("seam setlang en");
-      t.log(`Language switch, set_language: ${setLang.message ?? ""}`);
-      const system6 = (await s6.send("seam system")).message ?? "";
+      t.log(`Language switch, set_language: ${setLang.reply ?? ""}`);
+      const system6 = (await s6.send("seam system")).reply ?? "";
       t.log(`Language switch, system prompt on the NEXT turn: ${system6}`);
       record(
         "Language switch: set_language's write reaches the NEXT turn's real language instruction",
@@ -157,7 +159,7 @@ export default defineEval({
       );
 
       const s6b = await t.session();
-      const system6b = (await s6b.send("seam system")).message ?? "";
+      const system6b = (await s6b.send("seam system")).reply ?? "";
       t.log(`Language switch, second session's system prompt: ${system6b}`);
       record(
         "Language switch: a second session never sees the first session's language switch",
@@ -169,46 +171,29 @@ export default defineEval({
       // `model: definitionModel({ resolveAlias, provider })` in agent.ts — does the selection take
       // effect at runtime? (Whether it COMPILES is answered by `pnpm exec eve build`.)
       //
-      // REWORKED for eve 0.60.1, not just re-run: the original three probes assumed `defineDynamic`
-      // still had a `fallback` and that `session.started` could return either a provider object or a
-      // model-id string. Neither is true any more, and the ground shifted enough that two of the
-      // three probes cannot be asked the same way:
+      // The selection is always a provider OBJECT, chosen by the dynamic model function eve runs
+      // before every model call and pinned per conversation by `definitionModel`, the helper the
+      // role services use. The 0.32-era probes that handed eve a model-id STRING are gone and stay
+      // gone: this project's rule (packages/agent-kit/src/definition-model.ts) is that eve must
+      // never be handed a bare model id, because eve resolves one through a hosted model gateway
+      // instead of the installation's own. Nothing in this fixture attempts that, and
+      // agent/instrumentation/model-guard.ts makes the default provider refuse if anything ever did.
       //
-      //   - `alt_model_object` ("session.started refuses a provider object, degrades to the
-      //     fallback") depended on a `session.started` model handler existing at all. It no longer
-      //     can: this package runs every eval file against ONE shared agent in one dev process
-      //     (evals.config.ts: "All required evals share one local dev process"), so a
-      //     `session.started` model handler — whatever it returned — would fire on every session any
-      //     eval in this suite creates, not just this probe's. And there is no safe "no-op" return at
-      //     that scope: eve's `resolve-model.js` throws on a returned provider object there
-      //     unconditionally ("durable model selections must be serializable"), and it throws on a
-      //     null/undefined return too ("Dynamic model resolver returned no model"). The ONE value
-      //     that scope tolerates is a string — which is `alt_model_id`'s case, below. So keeping a
-      //     `session.started` model handler at all, for any reason, would fail the earlier probes.
-      //   - `alt_model_id` ("session.started accepts a model ID string and routes the turn to it")
-      //     is the forbidden shape itself: this project's rule (packages/agent-kit/src/
-      //     definition-model.ts) is that eve must never be handed a bare model-id string, anywhere,
-      //     because eve resolves one through the Vercel AI Gateway, bypassing the self-hosted LiteLLM
-      //     gateway. Proving eve "still honors" that string would mean this codebase carries a live
-      //     path that does exactly the thing the rule exists to prevent — in a test fixture, but a
-      //     real attempted gateway call all the same. Kept only as a comment, not as running code.
-      //
-      // Both are DROPPED, not ported. What survives is `alt_model_step` — the one scope
-      // (`step.started`) a live provider object is legal in — now reached through `definitionModel`,
-      // the same step.started-only helper the three role services use. That also means the model
-      // resolver reads the same per-session definition the tools/instructions resolvers read
-      // (`fixtureDefinition`), so `definition.eval.ts`'s repair-race proof still exercises the model
-      // side exactly as it did before this rework.
+      // The model resolver reads the same per-session definition the tools and instructions
+      // resolvers read (`fixtureDefinition`), so `definition.eval.ts`'s repair-race proof
+      // exercises the model side too.
       const reply = async (flag: string): Promise<string> => {
         grant([flag]);
         const s = await t.session();
         try {
           const turn = await s.send("seam tools");
           const failures = turn.events.flatMap((e) =>
-            e.type === "turn.failed" ? [`${e.data.code} :: ${e.data.message}`] : [],
+            e.type === "turn.settled" && e.data.outcome === "failed"
+              ? [`${e.data.error?.code ?? "<no code>"} :: ${e.data.error?.message ?? "<no message>"}`]
+              : [],
           );
           const detail = failures.length === 0 ? "" : ` FAILED(${failures.join(" | ")})`;
-          return `[${turn.status}] ${turn.message ?? "<no message>"}${detail}`;
+          return `[${turn.status}] ${turn.reply ?? "<no message>"}${detail}`;
         } catch (error) {
           return `[threw] ${error instanceof Error ? error.message : String(error)}`;
         }
@@ -216,18 +201,18 @@ export default defineEval({
       const served = (r: string, by: "ALT-MODEL:" | "TOOLS ") => r.includes(by);
 
       const viaStep = await reply("alt_model_step");
-      t.log(`Model selection, step.started → provider object: ${viaStep.slice(0, 200)}`);
+      t.log(`Model selection, dynamic model → provider object: ${viaStep.slice(0, 200)}`);
       record(
-        "Model selection: step.started may return a provider object",
+        "Model selection: the dynamic model may return a provider object",
         served(viaStep, "ALT-MODEL:"),
         `reply = ${viaStep.slice(0, 200)}`,
       );
 
       grant([]);
       const s5b = await t.session();
-      const back = (await s5b.send("seam tools")).message ?? "";
+      const back = (await s5b.send("seam tools")).reply ?? "";
       record(
-        "Model selection: no override flag granted — step.started serves the default (scripted) model",
+        "Model selection: no override flag granted — the default (scripted) model serves",
         back.startsWith("TOOLS "),
         `reply = ${back.slice(0, 80)}`,
       );

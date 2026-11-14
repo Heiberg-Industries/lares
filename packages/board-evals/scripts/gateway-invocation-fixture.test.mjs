@@ -27,11 +27,15 @@ test('generated model scope record uses a runtime newline rather than a literal 
 });
 
 test('copied hook receipt preserves exact production error and actual event',()=>{
-  const source=compactionHookSource("export default defineHook({ events: { 'compaction.requested': refuseModelCompaction } });");
+  // The role hook's eve 1.0 shape (services/chief-of-staff/agent/hooks/model-invocation.ts).
+  const source=compactionHookSource("export default defineHook({ events: {\n  'context.started': (event, ctx) => { if (event.data.kind !== 'clear') refuseModelCompaction(ctx.session.id); },\n} });");
   const body=source.replace(/^import[^\n]+\n/,'').replace('export default','return').replace('PROOF_COMPACTION_LOG!','PROOF_COMPACTION_LOG');
-  const failure=new Error('Model compaction requires a fresh trusted invocation');let receipt;
-  const hook=new Function('defineHook','refuseModelCompaction','appendFileSync','process',body)(value=>value,()=>{throw failure;},(_path,line)=>{receipt=JSON.parse(line);},{env:{PROOF_COMPACTION_LOG:'fixture'}});
-  const event={type:'compaction.requested',data:{sequence:4,turnId:'turn-actual'}};
-  assert.throws(()=>hook.events['compaction.requested'](event,{session:{id:'actual-session'}}),error=>error===failure);
-  assert.deepEqual(receipt,{event,sessionId:'actual-session',error:failure.message});
+  const failure=new Error('Model compaction requires a fresh trusted invocation');let receipt,refusedFor;
+  const hook=new Function('defineHook','refuseModelCompaction','appendFileSync','process',body)(value=>value,id=>{refusedFor=id;throw failure;},(_path,line)=>{receipt=JSON.parse(line);},{env:{PROOF_COMPACTION_LOG:'fixture'}});
+  const event={type:'context.started',data:{kind:'compact'}};
+  assert.throws(()=>hook.events['context.started'](event,{session:{id:'actual-session'}}),error=>error===failure);
+  assert.deepEqual(receipt,{event,sessionId:'actual-session',error:failure.message});assert.equal(refusedFor,'actual-session');
+  receipt=undefined;refusedFor=undefined;
+  assert.equal(hook.events['context.started']({type:'context.started',data:{kind:'clear'}},{session:{id:'actual-session'}}),undefined);
+  assert.equal(receipt,undefined);assert.equal(refusedFor,undefined);
 });

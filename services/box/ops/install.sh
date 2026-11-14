@@ -121,6 +121,7 @@ writing anything, if something here is wrong. Fix what it prints and run it agai
 EOF
 }
 
+ORIGINAL_ARGS=("$@")
 DRY_RUN=0
 ASSUME_YES="${LARES_ASSUME_YES:-0}"
 RESTORE_ARCHIVE=""
@@ -315,6 +316,17 @@ do_or_say() {
 ROOT_ID=$(id -u 2>/dev/null) || ROOT_ID=""
 if [ "$ROOT_ID" != "0" ]; then
   die "this needs to run as root (found user id '${ROOT_ID:-unknown}'). Try again with: sudo $0 $*" "$EX_NOTROOT"
+fi
+
+# --- 0b. never beside an update ------------------------------------------------------
+# This script starts and recreates the keeper, which starts the agents. An update holds the
+# maintenance run lock for its whole length while it stops them and upgrades their stores, so this
+# script runs itself again under that lock, held shared (maintenance-custody.py beside-update): it
+# is refused while an update runs, and no update can begin until it has finished. Backups and
+# other runs still go beside it. On a server with no maintenance folder yet, nothing is held.
+if [ "${LARES_RUN_LOCK_HELD:-}" != 1 ]; then
+  exec python3 "$HERE/maintenance-custody.py" beside-update "${PREFIX:-/}" -- \
+    /bin/bash "$HERE/$(basename "$0")" ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}
 fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/lares-install-XXXXXX")
@@ -593,15 +605,49 @@ fi
 # before /srv/lares exists, so its folder also marks a first install that stopped partway. A
 # re-run then validates that custody and carries on; it cannot be prepared fresh a second time.
 REPAIR_MODE=0
+RESTORED_SETTINGS=0
+RESTORED_SETTINGS_DOCKER=""
 if [ -d "$PREFIX/srv/lares" ] || [ -d "$PREFIX/var/lib/lares-maintenance" ]; then
   REPAIR_MODE=1
+  # One exception. Copying a backup's settings and secrets onto a new machine, as docs/install.md
+  # ("Restoring onto a new server") says, makes /srv/lares, but it is not an installation. Exactly
+  # those copied files and nothing else of an installation (maintenance-custody.py decides, and
+  # decides again when it prepares custody), and no container of one: then this is a first install
+  # that uses them. Anything else, or anything that cannot be read, stays an existing installation.
+  if python3 "$HERE/maintenance-custody.py" holds-only-restored-settings "${PREFIX:-/}" >/dev/null 2>&1; then
+    if ! containers=$(docker ps --all --quiet --filter label=com.docker.compose.project=lares 2>/dev/null); then
+      RESTORED_SETTINGS_DOCKER="Docker could not be asked whether containers of an installation are on this machine (start Docker, then run this again)"
+    elif [ -n "$containers" ]; then
+      RESTORED_SETTINGS_DOCKER="containers of an installation are on this machine (docker ps --all --filter label=com.docker.compose.project=lares lists them)"
+    else
+      REPAIR_MODE=0
+      RESTORED_SETTINGS=1
+    fi
+  fi
 fi
+# For a refusal that follows: when the machine has no custody yet and some of a backup's copied
+# settings are on it, what keeps them from being exactly what docs/install.md has a person copy.
+# Names only, never anything a file holds (maintenance-custody.py prints nothing else).
+restored_settings_hint() {
+  local difference
+  { [ -e "$PREFIX/var/lib/lares-maintenance" ] || [ -L "$PREFIX/var/lib/lares-maintenance" ]; } && return 0
+  if difference=$(python3 "$HERE/maintenance-custody.py" holds-only-restored-settings "${PREFIX:-/}" 2>/dev/null); then
+    difference=$RESTORED_SETTINGS_DOCKER
+  fi
+  difference=$(printf '%s' "$difference" | tr -cd '[:print:]' | cut -c1-900)
+  [ -n "$difference" ] || return 0
+  printf ' If you copied a backup'"'"'s settings onto this machine to restore it, they are not exactly what docs/install.md ("Restoring onto a new server") has you copy, so they were not used: %s.' "$difference"
+}
 
 # Screen one only makes sense on a genuinely fresh box: an existing installation is repaired,
 # never asked whether to "start fresh" (that would mean wiping it) or to restore over itself.
 # RESTORE_ARCHIVE is always empty here — an explicit --restore already exited above.
 if [ "$REPAIR_MODE" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-  say "this box has nothing here yet. Lares can start fresh, or check a backup archive first (docs/runbooks/export-and-teardown.md) so you can restore it by hand."
+  if [ "$RESTORED_SETTINGS" -eq 1 ]; then
+    say "this box holds only settings copied from a backup. Lares can start fresh with them, or check a backup archive first (docs/runbooks/export-and-teardown.md) so you can restore it by hand."
+  else
+    say "this box has nothing here yet. Lares can start fresh, or check a backup archive first (docs/runbooks/export-and-teardown.md) so you can restore it by hand."
+  fi
   say "  1) start fresh (the default)"
   say "  2) check a backup archive — or pass --restore <archive> next time to skip this question"
   if [ "$ASSUME_YES" != "1" ] && [ "$DRY_RUN" -eq 0 ]; then
@@ -680,6 +726,10 @@ fi
 
 if [ "$REPAIR_MODE" -eq 1 ]; then
   say "found an existing or unfinished installation under ${PREFIX:-/} — this would update it in place, not start over."
+elif [ "$RESTORED_SETTINGS" -eq 1 ] && [ "$DRY_RUN" -eq 1 ]; then
+  say "found settings copied from a backup on an otherwise empty machine — this would install fresh, using them."
+elif [ "$RESTORED_SETTINGS" -eq 1 ]; then
+  say "found settings copied from a backup on an otherwise empty machine — installing fresh, using them."
 else
   say "found no existing installation under $PREFIX/srv/lares — this would start a fresh install."
 fi
@@ -729,9 +779,12 @@ LARES_SUBNET="${LARES_SUBNET:-172.30.0.0/24}"
 # created after screen one accepted a new installation; existing state is never repaired here.
 if [ "$DRY_RUN" -eq 0 ]; then
   if [ "$REPAIR_MODE" -eq 0 ]; then
-    python3 "$HERE/maintenance-custody.py" prepare-fresh "${PREFIX:-/}" "$LARES_SUBNET" --confirm-fresh || die "fresh database authentication custody could not be prepared; any partial evidence was retained." "$EX_REFUSED"
+    # Custody checks the copied settings again itself; the flag only lets it accept exactly them.
+    restored_flag=()
+    [ "$RESTORED_SETTINGS" -eq 0 ] || restored_flag=(--restored-settings)
+    python3 "$HERE/maintenance-custody.py" prepare-fresh "${PREFIX:-/}" "$LARES_SUBNET" --confirm-fresh ${restored_flag[@]+"${restored_flag[@]}"} || die "fresh database authentication custody could not be prepared; any partial evidence was retained.$(restored_settings_hint)" "$EX_REFUSED"
   else
-    python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "this installation has missing or invalid database authentication custody; no repair was attempted." "$EX_REFUSED"
+    python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "this installation has missing or invalid database authentication custody; no repair was attempted.$(restored_settings_hint)" "$EX_REFUSED"
   fi
 fi
 
@@ -1590,12 +1643,11 @@ if not re.fullmatch(r'[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}',value):raise Sy
 print(value)
 PYIMAGE
   ) || die "the release does not name the creative role image by digest, so the workflow template cannot be prepared." "$EX_REFUSED"
-  docker run --rm --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-    -w /app/services/creative \
-    -v "$SECRETS_DIR/workflow-provisioner-password:/run/secrets/workflow-provisioner:ro" \
-    -e PGPASSWORD_FILE=/run/secrets/workflow-provisioner -e PGOPTIONS='-c role=lares_workflow_owner' \
-    -e "WORKFLOW_POSTGRES_URL=postgres://lares_workflow_provisioner@${db_host}:${db_port}/empty_workflow" \
-    --entrypoint /bin/sh "$role_image" -ec 'PGPASSWORD="$(cat "$PGPASSWORD_FILE")"; export PGPASSWORD; exec node --input-type=module -e '\''import { Pool } from "pg"; import { setupDatabase } from "@workflow/world-postgres/cli"; const pool = new Pool({ connectionString: process.env.WORKFLOW_POSTGRES_URL, max: 1 }); try { const r = await pool.query("SELECT current_user, session_user, current_database()"); if (r.rows[0]?.current_user !== "lares_workflow_owner" || r.rows[0]?.session_user !== "lares_workflow_provisioner" || r.rows[0]?.current_database !== "empty_workflow") throw new Error("workflow template authority check failed"); } finally { await pool.end(); } await setupDatabase();'\'' ' \
+  # The same step the updater runs on existing stores (engine-run.sh, workflow_store_step), in
+  # its fresh-install mode: it refuses a template that is not empty. That the template then
+  # holds exactly this release's full list of schema steps is checked by the next program, as
+  # the login the agents use (lib/workflow-database-privileges.ts pins the list).
+  workflow_store_step "$role_image" create empty_workflow "$db_host" "$db_port" "$SECRETS_DIR/workflow-provisioner-password" \
     || die "the pinned workflow package could not prepare its owned template migrations." "$EX_REFUSED"
 
   engine_run --ro "$SECRETS_DIR/workflow-provisioner-password" --ro "$SECRETS_DIR/workflow-password" \
@@ -2085,7 +2137,7 @@ run_finish() {
 
 if [ "$DRY_RUN" -eq 1 ]; then
   say "the four questions (domain, e-mail, name, model key) would be asked next, and the answers written to $INSTALL_ENV and $SECRETS_DIR/model-provider-key."
-  say "then the release given with --release would be rendered, the database prepared and verified offline, and Console and Caddy started. The owner would sign in to confirm this host and finish explicit model budget setup before creating an agent. No model call or conversation would be tested. A real run needs --release <file>; a dry run asks nothing and writes nothing."
+  say "then the release given with --release would be rendered, the database prepared and verified offline, and Console and Caddy started. The owner would sign in to confirm this host and finish explicit model budget setup before creating an agent. No model call or conversation would be tested. A real run needs --release <file>; a dry run asks nothing and writes nothing (on a server prepared before this release, the first run of any lares command, a dry run included, leaves one empty lock file under /var/lib/lares-maintenance)."
 else
   # Preserve the offline database boundary before starting the owner-facing services. Owner,
   # organisation and keeper setup complete before the truthful infrastructure-ready handoff.

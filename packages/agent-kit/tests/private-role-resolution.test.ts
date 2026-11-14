@@ -1,200 +1,196 @@
-/** Trusted synthetic private contexts; admission remains designated-owner-only. */
+/** Trusted synthetic private contexts; admission remains designated-owner-only.
+ *
+ * Each role's real instruction, tool and skill resolvers are called the way eve 1.0 calls them:
+ * a `defineDynamic()` value is an opaque brand holding ONE function, `(ctx) => value`, run before
+ * every model call with the session, the latest turn and a `memo`. The old version of this file
+ * drove eve 0.60's internal lifecycle modules, which are gone.
+ */
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {fileURLToPath,pathToFileURL} from 'node:url';
+import {fileURLToPath} from 'node:url';
 import {readFileSync} from 'node:fs';
-const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),resume:vi.fn(),docsRead:vi.fn(),docsIndex:vi.fn(),definition:vi.fn(),connections:vi.fn(),clock:vi.fn(),source:vi.fn(),outside:vi.fn(),granted:['fixture','gmail_accounts','gmail_read','gmail_search']}));
+import {pathToFileURL} from 'node:url';
+const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),resume:vi.fn(),docsRead:vi.fn(),docsIndex:vi.fn(),definition:vi.fn(),connections:vi.fn(),clock:vi.fn(),source:vi.fn(),facts:vi.fn(),outside:vi.fn(),granted:['fixture','gmail_accounts','gmail_read','gmail_search']}));
 vi.mock('../src/console-turn-authority.js',async original=>({...await original<typeof import('../src/console-turn-authority.js')>(),requireConsoleSessionBinding:fake.binding,guardConsoleToolContext:fake.turn}));
 vi.mock('../src/private-console-resume.js',async original=>({...await original<typeof import('../src/private-console-resume.js')>(),
  privateResolverAdmission:(auth:any)=>auth?.attributes?.lares_purpose==='resolver'?{memberId:auth.attributes.lares_resolver_member_id,requestId:auth.attributes.lares_resume_request_id,optionId:auth.attributes.lares_resume_option}:undefined,
  requirePrivateConsoleResume:fake.resume,requireConsoleResume:fake.resume}));
 vi.mock('@lares/agent-kit/public-docs-runtime',()=>({publicDocsIndex:fake.docsIndex,readBakedPublicDoc:fake.docsRead}));
-vi.mock('../src/catalogue.js',()=>({grantedToolNames:()=>fake.granted}));
-vi.mock('../src/outside-connections.js',()=>({checkedOutsideConnections:fake.outside,descriptionChecks:vi.fn()}));
+vi.mock('../src/catalogue.js',async original=>({...await original<typeof import('../src/catalogue.js')>(),grantedToolNames:()=>fake.granted}));
+vi.mock('../../../services/chief-of-staff/lib/outside-tools.js',()=>({acceptedOutsideTools:fake.outside,runOutsideTool:vi.fn(),requestOutsideApproval:vi.fn(),respondOutsideApproval:vi.fn()}));
+vi.mock('../../../services/chief-of-staff/catalogue/index.js',()=>({CATALOGUE:Object.fromEntries(['fixture','gmail_accounts','gmail_read','gmail_search'].map(name=>[name,{capability:'fixture',tool:{description:name==='fixture'?'OWNER_TOOL_CANARY':'Personal mail read',inputSchema:{type:'object'},execute:fake.source}}]))}));
+vi.mock('../../../services/creative/catalogue/index.js',()=>({CATALOGUE:Object.fromEntries(['fixture','gmail_accounts','gmail_read','gmail_search'].map(name=>[name,{capability:'fixture',tool:{description:'OWNER_TOOL_CANARY',inputSchema:{type:'object'},execute:fake.source}}]))}));
 vi.mock('../../../services/chief-of-staff/lib/definition.js',()=>({thisAgent:fake.definition,roleMdPath:()=>fileURLToPath(new URL('../templates/chief-of-staff/role.md',import.meta.url))}));
 vi.mock('../../../services/creative/lib/definition.js',()=>({thisAgent:fake.definition,roleMdPath:()=>fileURLToPath(new URL('../templates/creative/role.md',import.meta.url))}));
 vi.mock('../../../services/chief-of-staff/lib/connections.js',()=>({readConnections:fake.connections,connectionsMarkdown:()=> 'OWNER_CONNECTION_CANARY'}));
 vi.mock('../../../services/chief-of-staff/lib/owner-clock.js',()=>({ownerTz:fake.clock}));
-vi.mock('../../../services/chief-of-staff/catalogue/index.js',()=>({CATALOGUE:Object.fromEntries(['fixture','gmail_accounts','gmail_read','gmail_search'].map(name=>[name,{capability:'fixture',tool:{description:name==='fixture'?'OWNER_TOOL_CANARY':'Personal mail read',inputSchema:{type:'object'},execute:fake.source}}]))}));
-vi.mock('../../../services/creative/catalogue/index.js',()=>({CATALOGUE:Object.fromEntries(['fixture','gmail_accounts','gmail_read','gmail_search'].map(name=>[name,{capability:'fixture',tool:{description:'OWNER_TOOL_CANARY',inputSchema:{type:'object'},execute:fake.source}}]))}));
 import {parseDefinition} from '../src/definition.js';
-const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
-const {ContextContainer,contextStorage}=await import(`${dist}context/container.js`);
-const keys=await import(`${dist}context/keys.js`);
-const {dispatchDynamicInstructionEvent,buildDynamicInstructionMessages}=await import(`${dist}context/dynamic-instruction-lifecycle.js`);
-const {dispatchDynamicToolEvent}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
-const {buildDynamicTools}=await import(`${dist}context/build-dynamic-tools.js`);
 const auth={authenticator:'lares-console',principalType:'user',principalId:'synthetic',attributes:{lares_member_id:'synthetic',lares_admission_nonce:'a'.repeat(43),lares_purpose:'human'}};
 const context={session:{id:'private',turn:{id:'turn-1',sequence:0},auth:{current:auth,initiator:auth}}};
-const event={type:'session.started',data:{},meta:{}};
+const native={session:{id:'native',auth:{current:null,initiator:null}}};
+/** The context eve 1.0 gives a dynamic value: the session, its latest turn, and a memo (here: no cache, run the function). */
+const dynamicCtx=(base:{session:Record<string,unknown>})=>({...base,turn:{id:'turn_0',status:'running',input:[]},now:new Date(),memo:(_key:unknown,fn:(o:unknown)=>unknown)=>fn({idempotencyKey:'k',abortSignal:new AbortController().signal}),view:{}}) as never;
+/** Runs a dynamic value's one function. */
+const resolve=async(module:any,base:{session:Record<string,unknown>})=>{
+ const fn=Reflect.get(module.default,Symbol.for('eve.dynamic'));
+ expect(typeof fn,'a defineDynamic() value').toBe('function');
+ return contextStorage.run(new ContextContainer(),()=>fn(dynamicCtx(base)));
+};
 const load=(path:string)=>import(new URL(path,import.meta.url).href);
-beforeEach(()=>{vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION','11111111-1111-4111-8111-111111111111');fake.binding.mockResolvedValue({});fake.turn.mockResolvedValue(undefined);fake.resume.mockResolvedValue({});fake.docsRead.mockImplementation((id:string)=>({markdown:`PUBLIC_DOC:${id}`}));fake.docsIndex.mockReturnValue('- install: reviewed page');fake.source.mockResolvedValue('mail result');fake.granted=['fixture','gmail_accounts','gmail_read','gmail_search'];fake.definition.mockResolvedValue({loaded:{definition:{}}});});
+// `defineState` (the private-surface marker) needs the container eve runs authored code in.
+const {ContextContainer,contextStorage}=await import(pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/context/container.js',import.meta.url))).href);
+const nativeDefinition=(role:string)=>({loaded:{definition:parseDefinition(JSON.parse(readFileSync(new URL(`../../../services/${role}/agent.json`,import.meta.url),'utf8'))),voiceMd:'OWNER_VOICE_CANARY',dutiesMd:'OWNER_DUTIES_CANARY'}});
+beforeEach(()=>{vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION','11111111-1111-4111-8111-111111111111');fake.binding.mockResolvedValue({});fake.turn.mockResolvedValue(undefined);fake.resume.mockResolvedValue({});fake.docsRead.mockImplementation((id:string)=>({markdown:`PUBLIC_DOC:${id}`}));fake.docsIndex.mockReturnValue('- install: reviewed page');fake.source.mockResolvedValue('mail result');fake.definition.mockResolvedValue({loaded:{definition:{}}});});
 afterEach(()=>{vi.unstubAllEnvs();vi.clearAllMocks();});
+
 for(const role of ['chief-of-staff','creative'])describe(`${role} real resolvers`,()=>{
- it('installed Eve assembles neutral private instructions and only the safe intersection, with no installation canary',async()=>{
-  const instructions=(await load(`../../../services/${role}/agent/instructions/aa-definition.ts`)).default;
-  const catalogue=(await load(`../../../services/${role}/agent/tools/catalogue.ts`)).default;
-  const outside=(await load(`../../../services/${role}/agent/connections/outside-tools.ts`)).default;
-  const storage=new ContextContainer();storage.set(keys.SessionIdKey,'private');storage.set(keys.StaticModelReferenceKey,null);storage.set(keys.AuthKey,auth);storage.set(keys.InitiatorAuthKey,auth);storage.set(keys.SessionKey,{sessionId:'private',auth:context.session.auth,turn:context.session.turn});
-  await contextStorage.run(storage,async()=>{
-   await dispatchDynamicInstructionEvent({ctx:storage,resolvers:[{slug:'aa-definition',logicalPath:'aa-definition.ts',eventNames:['session.started'],events:instructions.events}],event,messages:[]});
-   await dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'catalogue',logicalPath:'catalogue.ts',eventNames:['session.started'],events:catalogue.events}],event,messages:[]});
-   const prompt=buildDynamicInstructionMessages(storage);expect(JSON.stringify(prompt)).not.toMatch(/OWNER_|outside tool inventory/);
-   expect(JSON.stringify(prompt)).toContain('private conversation');
-   const tools=buildDynamicTools(storage);
-   expect(tools.map((t:any)=>t.name).sort()).toEqual(role==='creative'?[]:['gmail_accounts','gmail_read','gmail_search']);
-   expect(JSON.stringify(tools)).not.toContain('OWNER_TOOL_CANARY');
-   if(role!=='creative'){await tools.find((t:any)=>t.name==='gmail_read').execute({},context);expect(fake.turn).toHaveBeenCalled();expect(fake.source).toHaveBeenCalledOnce();}
-   await expect(outside.events['session.started']({},context)).resolves.toBeNull();expect(fake.outside).not.toHaveBeenCalled();
-  });
-  // Private prompt/MCP resolution performs no definition, owner-source or discovery reads.
-  expect(fake.definition).toHaveBeenCalledTimes(1); // catalogue grant intersection only
+ it('assembles neutral private instructions with no installation canary, and reads no definition, owner source or discovery',async()=>{
+  const persona=await load(`../../../services/${role}/agent/instructions/aa-definition.ts`);
+  const prompt=await resolve(persona,context);
+  expect(JSON.stringify(prompt)).not.toMatch(/OWNER_|outside tool inventory/);
+  expect(JSON.stringify(prompt)).toContain('private conversation');
+  // The private persona comes from the bound surface alone: the definition is never read.
+  expect(fake.definition).not.toHaveBeenCalled();
+  expect(fake.connections).not.toHaveBeenCalled();
  });
- it('native owner keeps custom persona and native source tool surface',async()=>{
-  const declaration=JSON.parse(readFileSync(new URL(`../../../services/${role}/agent.json`,import.meta.url),'utf8'));
-  fake.definition.mockResolvedValue({loaded:{definition:parseDefinition(declaration),voiceMd:'OWNER_VOICE_CANARY',dutiesMd:'OWNER_DUTIES_CANARY'}});
-  const instructions=(await load(`../../../services/${role}/agent/instructions/aa-definition.ts`)).default;
-  const catalogue=(await load(`../../../services/${role}/agent/tools/catalogue.ts`)).default;
-  const native={session:{id:'native',auth:{current:null,initiator:null}}};
-  const prompt=await instructions.events['session.started']({},native);
+ it('native owner keeps the custom persona',async()=>{
+  fake.definition.mockResolvedValue(nativeDefinition(role));
+  const persona=await load(`../../../services/${role}/agent/instructions/aa-definition.ts`);
+  const prompt=await resolve(persona,native);
   expect(JSON.stringify(prompt)).toContain('OWNER_VOICE_CANARY');expect(JSON.stringify(prompt)).toContain('OWNER_DUTIES_CANARY');
-  const tools=await catalogue.events['session.started']({},native);expect(Object.keys(tools)).toContain('fixture');
+ });
+ it('a conversation that claims to be private but cannot prove it fails the turn instead of being offered anything',async()=>{
+  fake.binding.mockRejectedValue(new Error('binding revoked'));
+  for(const file of ['instructions/aa-definition.ts','tools/public_doc.ts','skills/lares-docs.ts']){
+   await expect(resolve(await load(`../../../services/${role}/agent/${file}`),context),file).rejects.toThrow('binding revoked');
+  }
  });
 });
+
 it('chief private automatic source resolvers and native skills cannot expose owner context',async()=>{
- for(const name of ['ac-connections','standing-facts','clock']){
-  const resolver=(await load(`../../../services/chief-of-staff/agent/instructions/${name}.ts`)).default;
-  for(const handler of Object.values(resolver.events) as any[])await expect(handler({},context)).resolves.toMatchObject({markdown:''});
+ for(const name of ['ac-connections','standing-facts']){
+  const module=await load(`../../../services/chief-of-staff/agent/instructions/${name}.ts`);
+  expect(await resolve(module,context),name).toBeNull();
  }
+ // The clock is built after the cache marker by zz-cache-boundary; the resolver itself contributes nothing.
+ expect(await resolve(await load('../../../services/chief-of-staff/agent/instructions/clock.ts'),context)).toBeNull();
  for(const name of ['signals','sales-outreach']){
-  const resolver=(await load(`../../../services/chief-of-staff/agent/skills/${name}.ts`)).default;
-  await expect(resolver.events['session.started']({},context)).resolves.toBeNull();
-  const native=await resolver.events['session.started']({},{});expect(native.description.length).toBeGreaterThan(0);expect(native.markdown.length).toBeGreaterThan(20);
+  const skill=await load(`../../../services/chief-of-staff/agent/skills/${name}.ts`);
+  expect(await resolve(skill,context),name).toBeNull();
  }
  expect(fake.connections).not.toHaveBeenCalled();expect(fake.clock).not.toHaveBeenCalled();
 });
-it('both usage hooks omit private counts, including tagged initiator-only resumes',async()=>{
- const event={data:{turnId:'turn',stepIndex:0,usage:{inputTokens:12}},meta:{id:'usage',at:'2026-01-01'}};
+it('native chief skills are offered with their exact text, and the private one differs',async()=>{
+ fake.definition.mockResolvedValue(nativeDefinition('chief-of-staff'));
+ const signals=await load('../../../services/chief-of-staff/agent/skills/signals.ts');
+ const offered=await resolve(signals,native);
+ expect(offered).not.toBeNull();
+ expect(JSON.stringify(offered)).toContain('agent-kit__signals_recent');
+ expect(await resolve(signals,context)).toBeNull();
+});
+it('the native sales-outreach skill is offered where the definition grants it, with its exact text, and never in a private conversation',async()=>{
+ const outreach=await load('../../../services/chief-of-staff/agent/skills/sales-outreach.ts');
+ fake.definition.mockResolvedValue(nativeDefinition('chief-of-staff'));
+ const offered=await resolve(outreach,native);
+ // The shipped chief declares the commercial skill, so it is offered natively.
+ expect(offered).not.toBeNull();
+ expect(JSON.stringify(offered)).toContain('# Sales outreach');
+ expect(await resolve(outreach,context)).toBeNull();
+ // A definition that grants nothing does not get it: an unreadable one is "no", not "yes".
+ fake.definition.mockResolvedValue({loaded:{definition:{}}});
+ expect(await resolve(outreach,native)).toBeNull();
+ fake.definition.mockRejectedValue(new Error('definition unreadable'));
+ expect(await resolve(outreach,native)).toBeNull();
+});
+it('private skills resolve only the reviewed docs skill, natively and privately alike',async()=>{
  for(const role of ['chief-of-staff','creative']){
-  const {makeModelUsage}=await load(`../../../services/${role}/agent/hooks/model-usage.ts`);const record=vi.fn();const hook=makeModelUsage({record});
-  await hook['step.completed'](event,context);await hook['step.completed'](event,{session:{auth:{initiator:auth,current:null}}});expect(record).not.toHaveBeenCalled();
-  await hook['step.completed'](event,{session:{id:'native'}});expect(record).toHaveBeenCalledOnce();
+  const docs=await load(`../../../services/${role}/agent/skills/lares-docs.ts`);
+  const privateDocs=await resolve(docs,context);
+  expect(privateDocs,role).not.toBeNull();
+  expect(JSON.stringify(privateDocs)).toContain('Public Lares documentation');
+  expect(JSON.stringify(privateDocs)).not.toMatch(/OWNER_/);
+  expect(await resolve(docs,native),role).not.toBeNull();
+  fake.binding.mockRejectedValueOnce(new Error('binding revoked'));
+  await expect(resolve(docs,context),role).rejects.toThrow('binding revoked');
  }
 });
-
-it('private load_skill resolves only reviewed docs; native chief loader preserves its exact skills',async()=>{
- const {dispatchDynamicSkillEvent}=await import(`${dist}context/dynamic-skill-lifecycle.js`);
- const {executeLoadSkill}=await import(`${dist}execution/tools/load-skill.js`);
- const {BundleKey}=await import(`${dist}runtime/sessions/runtime-context-keys.js`);
- const storage=new ContextContainer();storage.set(keys.StaticModelReferenceKey,null);storage.set(keys.AuthKey,auth);storage.set(keys.InitiatorAuthKey,auth);storage.set(keys.SessionIdKey,'private-skill');storage.set(keys.SandboxKey,{get:async()=>null});storage.set(BundleKey,{resolvedAgent:{skills:[]}});
- const skills=await Promise.all(['signals','sales-outreach'].map(async slug=>({slug,logicalPath:slug+'.ts',eventNames:['session.started'],events:(await load(`../../../services/chief-of-staff/agent/skills/${slug}.ts`)).default.events})));
- await contextStorage.run(storage,async()=>{
-  await dispatchDynamicSkillEvent({ctx:storage,resolvers:skills,event,messages:[]});
-  expect(storage.get(keys.DynamicSkillManifestKey)).toEqual({});
-  await expect(executeLoadSkill({skill:'signals'})).rejects.toThrow('No skill named "signals".');
-  await expect(executeLoadSkill({skill:'sales-outreach'})).rejects.toThrow('No skill named "sales-outreach".');
- });
- const loader=(await load('../../../services/chief-of-staff/agent/tools/load_skill.ts')).default;
- const privateTool=await loader.events['session.started']({},context);
- await expect(privateTool.execute({skill:'signals'},context)).rejects.toThrow('No skill named "lares-docs".');
- await expect(privateTool.execute({skill:'lares-docs'},context)).resolves.toContain('Public Lares documentation');
- const native={session:{id:'native',auth:{current:null,initiator:null}}};
- const tool=await loader.events['session.started']({},native);
- for(const name of ['signals','sales-outreach']){
-  const definition=(await load(`../../../services/chief-of-staff/agent/skills/${name}.ts`)).default;
-  const skill=await definition.events['session.started']({},native);
-  await expect(tool.execute({skill:name},native)).resolves.toBe(skill.markdown);
- }
- await expect(tool.execute({skill:'signals'},context)).rejects.toThrow('No skill named "lares-docs".');
-});
-it('installed session-local todo state cannot cross between private sessions or into native sessions',async()=>{
- const {executeTodoTool}=await import(`${dist}execution/tools/todo.js`);
- const a=new ContextContainer(),b=new ContextContainer();
- contextStorage.run(a,()=>executeTodoTool({todos:[{content:'PRIVATE_TODO_CANARY',status:'pending',priority:'low'}]}));
- expect(JSON.stringify(contextStorage.run(a,()=>executeTodoTool({})))).toContain('PRIVATE_TODO_CANARY');
- expect(JSON.stringify(contextStorage.run(b,()=>executeTodoTool({})))).not.toContain('PRIVATE_TODO_CANARY');
- const replay=new ContextContainer();for(const [key,value] of a.entries())replay.set(key,structuredClone(value));
- expect(JSON.stringify(contextStorage.run(replay,()=>executeTodoTool({})))).toContain('PRIVATE_TODO_CANARY');
-});
-
-it('installed Eve resolves the native load_skill override with durable callbacks and refuses its private cold replay',async()=>{
- const loader=(await load('../../../services/chief-of-staff/agent/tools/load_skill.ts')).default;
- const native=new ContextContainer();native.set(keys.SessionIdKey,'native-loader');native.set(keys.StaticModelReferenceKey,null);native.set(keys.SessionKey,{sessionId:'native-loader',auth:{current:null,initiator:null},turn:{id:'native-turn',sequence:0}});
- await contextStorage.run(native,async()=>{
-  await dispatchDynamicToolEvent({ctx:native,resolvers:[{slug:'load_skill',logicalPath:'tools/load_skill.ts',eventNames:['session.started'],events:loader.events}],event,messages:[]});
-  const tools=buildDynamicTools(native);expect(tools.map((t:any)=>t.name)).toEqual(['load_skill']);
-  const expected=(await load('../../../services/chief-of-staff/agent/skills/signals.ts')).default;
-  await expect(tools[0].execute({skill:'signals'},{toolCallId:'native-load'})).resolves.toBe((await expected.events['session.started']({},{})).markdown);
-  native.set(keys.SessionKey,{sessionId:'native-loader',auth:context.session.auth,turn:context.session.turn});
-  await expect(tools[0].execute({skill:'signals'},{toolCallId:'private-load'})).rejects.toThrow('No skill named "lares-docs".');
- });
-});
-it('creative load_skill delegates native requests to Eve’s installed loader',async()=>{
- const loader=(await load('../../../services/creative/agent/tools/load_skill.ts')).default;
- const docsSkill=(await load('../../../services/creative/agent/skills/lares-docs.ts')).default;
- const native={session:{id:'creative-native',auth:{current:null,initiator:null}}};
- const expected={markdown:'Native overlay skill exact text.'};
- const {BundleKey}=await import(`${dist}runtime/sessions/runtime-context-keys.js`);
- const storage=new ContextContainer();
- storage.set(keys.SessionIdKey,'creative-native');storage.set(keys.StaticModelReferenceKey,null);
- storage.set(keys.SessionKey,{sessionId:'creative-native',auth:native.session.auth,turn:{id:'native-turn',sequence:0}});
- storage.set(keys.SandboxKey,{get:async()=>null});
- storage.set(BundleKey,{resolvedAgent:{skills:[{name:'overlay-skill',markdown:expected.markdown}]}});
- await contextStorage.run(storage,async()=>{
-  const {dispatchDynamicSkillEvent}=await import(`${dist}context/dynamic-skill-lifecycle.js`);
-  await dispatchDynamicSkillEvent({ctx:storage,resolvers:[{slug:'lares-docs',logicalPath:'skills/lares-docs.ts',eventNames:['session.started'],events:docsSkill.events}],event,messages:[]});
-  expect(storage.get(keys.DynamicSkillManifestKey)).toHaveProperty('lares-docs');
-  await dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'load_skill',logicalPath:'tools/load_skill.ts',eventNames:['session.started'],events:loader.events}],event,messages:[]});
-  const tools=buildDynamicTools(storage);expect(tools.map((tool:any)=>tool.name)).toEqual(['load_skill']);
-  await expect(tools[0].execute({skill:'overlay-skill'},{toolCallId:'creative-native-signal'})).resolves.toBe(expected.markdown);
-  await expect(tools[0].execute({skill:'lares-docs'},{toolCallId:'creative-native-docs'})).resolves.toContain('Public Lares documentation');
- });
-});
-it('creative private load_skill accepts only the public documentation skill',async()=>{
- const loader=(await load('../../../services/creative/agent/tools/load_skill.ts')).default;
- const {load_skill:tool}=await loader.events['session.started']({},context);
- await expect(tool.execute({skill:'signals'},context)).rejects.toThrow('No skill named "lares-docs".');
- await expect(tool.execute({skill:'lares-docs'},context)).resolves.toContain('Public Lares documentation');
- fake.binding.mockRejectedValueOnce(new Error('binding revoked'));
- await expect(tool.execute({skill:'lares-docs'},context)).rejects.toThrow('binding revoked');
-});
-it('both roles expose only the fixed public reader and recheck private or resumed authority on durable execution',async()=>{
- const {ContextContainer}=await import(`${dist}context/container.js`);
- const {dispatchDynamicToolEvent}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
- const {buildDynamicTools}=await import(`${dist}context/build-dynamic-tools.js`);
- const {SessionIdKey,StaticModelReferenceKey,AuthKey,InitiatorAuthKey,SessionKey}=keys;
+it('both roles expose only the fixed public reader and recheck private or resumed authority on execution',async()=>{
  for(const role of ['chief-of-staff','creative']){
   fake.docsRead.mockClear();
-  const resolver=(await load(`../../../services/${role}/agent/tools/public_doc.ts`)).default;
-  const storage=new ContextContainer();
-  storage.set(SessionIdKey,'public-doc-'+role);storage.set(StaticModelReferenceKey,null);storage.set(AuthKey,auth);storage.set(InitiatorAuthKey,auth);
-  storage.set(SessionKey,{sessionId:'public-doc-'+role,auth:context.session.auth,turn:context.session.turn});
-  await contextStorage.run(storage,async()=>{
-   await dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'public_doc',logicalPath:'tools/public_doc.ts',eventNames:['session.started'],events:resolver.events}],event,messages:[]});
-   const tools=buildDynamicTools(storage);expect(tools.map((tool:any)=>tool.name)).toEqual(['lares_read_public_doc']);
-   await expect(tools[0].execute({id:'install'},{toolCallId:'public-doc'})).resolves.toBe('PUBLIC_DOC:install');
-   expect(fake.docsRead).toHaveBeenCalledTimes(1);
-
-   fake.binding.mockRejectedValueOnce(new Error('binding revoked'));
-   await expect(tools[0].execute({id:'install'},{toolCallId:'revoked-doc'})).rejects.toThrow('unavailable or this conversation is no longer authorized');
-   expect(fake.docsRead).toHaveBeenCalledTimes(1);
-  });
+  const tools=await resolve(await load(`../../../services/${role}/agent/tools/public_doc.ts`),context);
+  expect(Object.keys(tools),role).toEqual(['lares_read_public_doc']);
+  const tool=tools.lares_read_public_doc;
+  await expect(tool.execute({id:'install'},context)).resolves.toBe('PUBLIC_DOC:install');
+  expect(fake.docsRead).toHaveBeenCalledTimes(1);
+  fake.binding.mockRejectedValueOnce(new Error('binding revoked'));
+  await expect(tool.execute({id:'install'},context)).rejects.toThrow('unavailable or this conversation is no longer authorized');
+  expect(fake.docsRead).toHaveBeenCalledTimes(1);
  }
-
- const resolver=(await load('../../../services/creative/agent/tools/public_doc.ts')).default;
+ // A resumed (resolver) conversation re-checks the resume surface, not the human binding.
  const resumeAuth={authenticator:'lares-console',attributes:{lares_resolver_member_id:'synthetic',lares_resume_request_id:'request-1',lares_resume_option:'approve',lares_purpose:'resolver'}};
  const resumed={session:{id:'resumed-public-doc',turn:{id:'turn-resumed',sequence:0},auth:{current:resumeAuth,initiator:auth}}};
- const storage=new ContextContainer();storage.set(SessionIdKey,'resumed-public-doc');storage.set(StaticModelReferenceKey,null);storage.set(AuthKey,resumeAuth);storage.set(InitiatorAuthKey,auth);storage.set(SessionKey,{sessionId:'resumed-public-doc',auth:resumed.session.auth,turn:resumed.session.turn});
- await contextStorage.run(storage,async()=>{
-  await dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'public_doc',logicalPath:'tools/public_doc.ts',eventNames:['session.started'],events:resolver.events}],event,messages:[]});
-  const tools=buildDynamicTools(storage);
-  await expect(tools[0].execute({id:'install'},{toolCallId:'resumed-doc'})).resolves.toBe('PUBLIC_DOC:install');
- });
- expect(fake.resume).toHaveBeenCalledTimes(2);
+ fake.docsRead.mockClear();
+ const tools=await resolve(await load('../../../services/creative/agent/tools/public_doc.ts'),resumed);
+ await expect(tools.lares_read_public_doc.execute({id:'install'},resumed)).resolves.toBe('PUBLIC_DOC:install');
+ expect(fake.resume.mock.calls.length).toBeGreaterThanOrEqual(2);
  expect(fake.resume.mock.calls.every(([ctx,phase])=>ctx.session.id==='resumed-public-doc'&&phase==='surface')).toBe(true);
- expect(fake.docsRead).toHaveBeenCalledTimes(2);
+ expect(fake.docsRead).toHaveBeenCalledTimes(1);
 });
-it('installed Eve trace policy drops HTTP content and metadata exports',async()=>{
- const {resolveTracePolicy}=await import(`${dist}shared/trace-policy.js`);
- const {privateConsoleTracePolicy}=await import('../src/private-console-surface.js');
- expect(resolveTracePolicy(privateConsoleTracePolicy,{agentName:'helper',channel:{kind:'http'},audience:'private',principalType:'user',mode:'conversation',environment:'production'})).toEqual({action:'drop'});
+it('the framework todo tool is off in both roles, so no per-session todo state exists to cross between private sessions',async()=>{
+ // eve 0.60 kept todo state in the session container; eve 1.0 has `defaultTools: false`, which drops every
+ // framework tool that has no file of its own. The cross-session property this case guarded rests on the
+ // agent not being handed that tool: checked on the REAL agent definition and the INSTALLED framework's own
+ // list of default tools, not on source text.
+ const {installedFrameworkDefaultTools}=await import('../src/framework-default-tools.js');
+ const {existsSync}=await import('node:fs');
+ const defaults=await installedFrameworkDefaultTools(import.meta.url);
+ for(const role of ['chief-of-staff','creative']){
+  const module=await load(`../../../services/${role}/agent/agent.ts`);
+  expect((module.default as {defaultTools?:unknown}).defaultTools,`${role} defaultTools`).toBe(false);
+  // The only way a dropped default tool survives is a file of its own in agent/tools/.
+  for(const tool of defaults.filter(name=>/todo/i.test(name)))
+   expect(existsSync(new URL(`../../../services/${role}/agent/tools/${tool}.ts`,import.meta.url)),`${role} must not re-add ${tool}`).toBe(false);
+  expect(existsSync(new URL(`../../../services/${role}/agent/tools/todo.ts`,import.meta.url)),role).toBe(false);
+ }
+});
+describe('usage hooks never count a private conversation',()=>{
+ // eve 1.0: usage is the `usage.recorded` fact, its place on the stream is `ctx.position`, its turn is `scope.turnId`.
+ const event={type:'usage.recorded',scope:{turnId:'turn'},data:{kind:'model',owner:{runId:'run_1'},usage:{inputTokens:12,outputTokens:3,cacheReadTokens:0,cacheWriteTokens:0}}};
+ const position={line:4,index:0};
+ for(const role of ['chief-of-staff','creative'])it(`${role}: private (including tagged initiator-only resumes) is omitted, a native session is counted once`,async()=>{
+  const {makeModelUsage}=await load(`../../../services/${role}/agent/hooks/model-usage.ts`);const record=vi.fn();const hook=makeModelUsage({record});
+  await hook['usage.recorded'](event,{...context,position});
+  await hook['usage.recorded'](event,{session:{id:'private-resume',auth:{initiator:auth,current:null}},position});
+  expect(record).not.toHaveBeenCalled();
+  await hook['usage.recorded'](event,{session:{id:'native'},position});expect(record).toHaveBeenCalledOnce();
+ });
+});
+
+for(const role of ['chief-of-staff','creative'])describe(`${role} tool resolvers`,()=>{
+ it('private tools are only the safe intersection of the grant, with no owner-tool description, and run the turn check on execution',async()=>{
+  const catalogue=await load(`../../../services/${role}/agent/tools/catalogue.ts`);
+  const tools=await resolve(catalogue,context);
+  expect(Object.keys(tools).sort()).toEqual(role==='creative'?[]:['gmail_accounts','gmail_read','gmail_search']);
+  expect(JSON.stringify(tools)).not.toContain('OWNER_TOOL_CANARY');
+  if(role!=='creative'){await tools.gmail_read.execute({},context);expect(fake.turn).toHaveBeenCalled();expect(fake.source).toHaveBeenCalledOnce();}
+  // The tool list is decided from the definition's grant alone: one read, no owner source or discovery.
+  expect(fake.definition).toHaveBeenCalledTimes(1);
+ });
+ it('native owner keeps the full native source tool surface',async()=>{
+  fake.definition.mockResolvedValue(nativeDefinition(role));
+  const catalogue=await load(`../../../services/${role}/agent/tools/catalogue.ts`);
+  const tools=await resolve(catalogue,native);
+  expect(Object.keys(tools)).toContain('fixture');
+ });
+ it('a private conversation gets no outside connection, and with none declared no outside tool and no read of the accepted list',async()=>{
+  // What this pins, exactly, and no more. (1) The connections resolver offers nothing in a private
+  // conversation, for either role: eve 1.0 has no live outside-connection discovery (main asserted
+  // the same `null`). (2) With a definition that declares no outside tools, as here, the
+  // chief-of-staff outside-tools resolver offers none and Keeper's accepted list is never read.
+  // It does NOT show that declared outside tools stay out of a private conversation: the current
+  // resolver (`agent/tools/outside-tools.ts`) offers them only in a verified private conversation.
+  const connection=await load(`../../../services/${role}/agent/connections/outside-tools.ts`);
+  expect(await resolve(connection,context)).toBeNull();
+  if(role==='chief-of-staff')expect(await resolve(await load(`../../../services/${role}/agent/tools/outside-tools.ts`),context)).toBeNull();
+  expect(fake.outside).not.toHaveBeenCalled();
+ });
 });

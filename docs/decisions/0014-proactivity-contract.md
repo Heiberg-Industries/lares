@@ -250,3 +250,15 @@ The gap "two lanes bill a model on every retry of a held item" is closed by movi
   `meeting-followup/<pageId>#<attempt>` key (`meetingFollowupItemKey`, shared rather than restated)
   so the two are provably asking about the same row.
 
+
+## Amendment — a test brief the owner asks for is a reply
+
+Under rule 1, beside the on-demand `digest_run`: **a test brief the owner asks for from the console**
+("Send a test brief to Slack / Telegram" on the agent's edit page) is a reply, not an initiation. The
+morning brief's own run sends it straight through `sendTurn`, without the gate: quiet hours and
+do-not-disturb do not hold it, no `initiations` row is written, and it is never counted as the day's
+brief (`alreadySentToday` cannot see it). It also leaves out everything a real brief records afterwards
+(deadline candidates stamped as offered, `brief-sent`, the schedule's pass heartbeat). Its record is
+its request row in `workflow_jobs` and its conversation lane, `morning-brief-test`. The real brief's
+slot is checked first and always wins, and no test is picked up in the three minutes before the
+morning-brief hour.

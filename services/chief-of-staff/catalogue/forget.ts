@@ -83,7 +83,7 @@ export default defineTool({
   approval: approvalFor("forget"),
   async execute({ id }, ctx) {
     const notHim = humanTurnRefusal(
-      ctx.session?.auth,
+      ctx.session,
       "Only the owner can retire a standing fact they stated.",
     );
     if (notHim) return { forgotten: false as const, message: notHim };

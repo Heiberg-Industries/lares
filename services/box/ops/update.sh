@@ -21,6 +21,36 @@
 # saying 'failed' with a one-sentence reason. It never leaves a half-switched installation
 # that the record calls 'ok'.
 #
+# THE AGENT STORES ARE THE ONE EXCEPTION TO "STILL RUNNING", AND THEY FAIL CLOSED. Each agent
+# keeps its conversations in a database of its own (its store), all made from one empty
+# template. The agent framework's package owns that schema, and a release that moves to a newer
+# package needs the package's own schema step run on the template and on every existing store.
+# Between steps 2 and 3 this script looks (changing nothing) at every store: one that is exactly
+# as the previous release left it is upgraded; one that is exactly at this release keeps its
+# tables (when none needs upgrading, each one's permissions are checked after step 7 and repaired,
+# with everything running, where they are not this release's); anything else is refused before a
+# thing is changed. When at least one needs upgrading:
+#
+#   a. the keeper, then every agent, is stopped                  (before step 4's backup, so the
+#      backup is exactly the state the upgrade starts from)
+#   b. after step 7, with everything stopped and nothing else connected, every store is looked
+#      at again; then the stopped container of every agent with a store is REMOVED (it would
+#      come back on the previous agent software); then each store is upgraded by the release's
+#      own role image, given its permissions and verified
+#   c. the agents stay stopped through step 8. `lares update` starts them on the new release
+#      after it has moved the keeper (install.sh --yes, then `lares agent refresh`).
+#
+# A failure before (b) changes no store: what was stopped is started again. A failure during or
+# after (b) leaves the keeper and the agents STOPPED: an agent started on a half-upgraded store
+# could lose conversations, and the previous software cannot run on an upgraded one. Running
+# the same update again continues: stores already upgraded are skipped. The only way back to
+# before is the backup (a clean server, the previous release, `lares restore`); rollback.sh
+# does not undo it.
+#
+# The whole run holds maintenance custody's run lock exclusively (maintenance-custody.py): no
+# second update, backup, restore or rollback can start while this one runs, and this one does
+# not start while one of those runs.
+#
 # IT NEVER ROLLS THE DATABASE BACK, AND NEITHER DOES ANYTHING ELSE.
 # There are no down migrations, by decision (see services/box/lib/migration-runner.ts's own
 # header). Once step 7 has run, ops/rollback.sh puts the SOFTWARE back and the database stays
@@ -76,6 +106,25 @@ MAX_AGE_HOURS="${UPDATE_BACKUP_MAX_AGE_HOURS:-26}"
 PG_USER="${PGUSER:-lares_app}"
 if [ "${LARES_OPERATOR_PASSWORD_FILE+x}" = x ]; then OPERATOR_PASSWORD_FILE="$LARES_OPERATOR_PASSWORD_FILE"; else OPERATOR_PASSWORD_FILE="${ADMISSION_PREFIX%/}/etc/lares/operator/database-password"; fi
 SECRETS_DIR="${ADMISSION_PREFIX%/}/etc/lares/secrets"
+# The agent stores: the logins that may change and use them, the keeper and the agents that
+# must be stopped while they change, and the one durable note of how far that got. The note
+# lives beside the other maintenance records: root only, in no backup, outside the scratch
+# folder that is deleted when this script ends.
+WORKFLOW_PROVISIONER_PASSWORD_FILE="$SECRETS_DIR/workflow-provisioner-password"
+WORKFLOW_PASSWORD_FILE="$SECRETS_DIR/workflow-password"
+WORKFLOW_STATE_FILE="${ADMISSION_PREFIX%/}/var/lib/lares-maintenance/update/workflow-step.json"
+KEEPER_ENV_FILE="${ADMISSION_PREFIX%/}/etc/lares/keeper.env"
+KEEPER_JSON_FILE="${ADMISSION_PREFIX%/}/etc/lares/keeper.json"
+AGENTS_DIR="${ADMISSION_PREFIX%/}/srv/lares"
+AGENTS_COMPOSE_FILE="$AGENTS_DIR/compose.lares-agents.yaml"
+WORKFLOW_NEEDED=0    # 1: at least one store must be upgraded, or an earlier run must be finished
+WORKFLOW_STOPPED=0   # 1: this run stopped the keeper and the agents and has not started them again
+WORKFLOW_MOVED=0     # 1: at least one store may be on the new format
+WORKFLOW_SAID=0      # 1: a failure path has already told the operator what state this is in
+WORKFLOW_REASON=""
+WORKFLOW_REPAIRED=""  # the stores whose permissions this run already brought up to this release
+WORKFLOW_OLD=0
+ROLE_IMAGE=""
 if [ "${PGHOST+x}" = x ]; then UPDATE_PGHOST="$PGHOST"; else UPDATE_PGHOST=127.0.0.1; fi
 if [ "${PGPORT+x}" = x ]; then UPDATE_PGPORT="$PGPORT"; else UPDATE_PGPORT=5432; fi
 if [ "${PGDATABASE+x}" = x ]; then UPDATE_PGDATABASE="$PGDATABASE"; else UPDATE_PGDATABASE=lares_state; fi
@@ -145,6 +194,14 @@ if [ ! -f "$RELEASE_FILE" ]; then
   exit "$EX_USAGE"
 fi
 
+# How long one agent store's upgrade may take (ops/engine-run.sh, workflow_store_step). Checked
+# here too, so that a mistyped value stops the update before anything is stopped.
+if [ -n "${LARES_WORKFLOW_UPGRADE_SECONDS:-}" ] && { ! [[ "$LARES_WORKFLOW_UPGRADE_SECONDS" =~ ^[0-9]{2,5}$ ]] \
+    || [ "$LARES_WORKFLOW_UPGRADE_SECONDS" -lt 60 ] || [ "$LARES_WORKFLOW_UPGRADE_SECONDS" -gt 86400 ]; }; then
+  echo "update: LARES_WORKFLOW_UPGRADE_SECONDS must be a number of seconds from 60 to 86400. Nothing has been changed." >&2
+  exit "$EX_USAGE"
+fi
+
 # Validate the complete target before creating scratch files or contacting Docker/Postgres.
 if [ -r "$HERE/engine-run.sh" ]; then
   # shellcheck source=engine-run.sh
@@ -185,7 +242,13 @@ if [ "$?" -ne 0 ]; then
 fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/lares-update-XXXXXX")
-trap 'client_status=$?; trap - EXIT; if engine_normal_client_cleanup; then rm -rf "$WORK"; else client_status=78; echo "update: client cleanup is uncertain; evidence retained at $WORK" >&2; fi; exit "$client_status"' EXIT
+trap 'client_status=$?; trap - EXIT; workflow_last_word "$client_status"; if engine_normal_client_cleanup; then rm -rf "$WORK"; else client_status=78; echo "update: client cleanup is uncertain; evidence retained at $WORK" >&2; fi; exit "$client_status"' EXIT
+# If this script ends for a reason none of its own messages covered while the agents are stopped,
+# say so: a silent exit must never leave someone guessing why nothing answers.
+workflow_last_word() {
+  [ "$1" -ne 0 ] && [ "$WORKFLOW_STOPPED" = 1 ] && [ "$WORKFLOW_SAID" = 0 ] || return 0
+  echo "update: this update ended unexpectedly after it stopped your agents. They are still stopped. Run the same update again: it continues from where this one ended." >&2
+}
 
 TAB=$(printf '\t')
 
@@ -245,6 +308,447 @@ run_migrations() {
       PGHOST="$UPDATE_PGHOST" PGPORT="$UPDATE_PGPORT" PGDATABASE="$PG_DATABASE" PGUSER=lares_operator \
       pnpm -C "$BOX_DIR" migrate -- --schema-owner
   fi
+}
+
+# --- the agent stores -----------------------------------------------------------------------
+# One of the box's fixed agent-store programs: in the target release's engine image, or (on a
+# checkout) through pnpm. Leading `--ro FILE` pairs name the credential files it may read.
+workflow_engine() {
+  local -a mounts=()
+  while [ "$#" -gt 1 ] && [ "$1" = --ro ]; do mounts+=(--ro "$2"); shift 2; done
+  if [ "$ENGINE_MODE" = image ]; then
+    engine_normal_client update ${mounts[@]+"${mounts[@]}"} --env "PGHOST=$UPDATE_PGHOST" --env "PGPORT=$UPDATE_PGPORT" "$@" </dev/null
+  else
+    PGHOST="$UPDATE_PGHOST" PGPORT="$UPDATE_PGPORT" pnpm -C "$BOX_DIR" exec tsx "$@" </dev/null
+  fi
+}
+
+# The per-store steps restore.sh runs too: workflow_reason_from, workflow_store_state and
+# workflow_store_bring_current. They call workflow_apply_one below for the permissions.
+# shellcheck source=workflow-store-steps.sh
+. "$HERE/workflow-store-steps.sh"
+
+# The permissions half of a store's step, through this update's own engine client.
+workflow_apply_one() { # KIND DATABASE ERRFILE
+  if [ "$1" = template ]; then
+    workflow_engine --ro "$WORKFLOW_PROVISIONER_PASSWORD_FILE" --ro "$WORKFLOW_PASSWORD_FILE" bin/workflow-template.ts apply \
+      --host "$UPDATE_PGHOST" --port "$UPDATE_PGPORT" --provisioner-password-file "$WORKFLOW_PROVISIONER_PASSWORD_FILE" \
+      --runtime-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$3"
+  else
+    workflow_engine --ro "$WORKFLOW_PROVISIONER_PASSWORD_FILE" --ro "$WORKFLOW_PASSWORD_FILE" bin/workflow-template.ts apply-database \
+      --host "$UPDATE_PGHOST" --port "$UPDATE_PGPORT" --database "$2" \
+      --provisioner-password-file "$WORKFLOW_PROVISIONER_PASSWORD_FILE" \
+      --runtime-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$3"
+  fi
+}
+
+# The durable note (see WORKFLOW_STATE_FILE). One writer, whole-file replace, mode 0600.
+#   read FIELD            print release, updateId, snapshotId or phase; `agents` prints one per line
+#   begin RELEASE         create it for this release (phase stopping), or keep the one for it
+#   agents NAME...        add agent names; names already there are kept
+#   set FIELD VALUE       phase or updateId
+#   keep-first FIELD VALUE  snapshotId: only when none is written down yet
+#   clear                 remove it
+# Exit 3: the note is there and unreadable. Exit 4: it belongs to a different release.
+workflow_state() {
+  python3 - "$WORKFLOW_STATE_FILE" "$@" <<'PYSTATE'
+import json, os, re, sys, tempfile
+path, op, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+PHASES = ("stopping", "migrating", "migrated")
+NAME = re.compile(r"[a-z][a-z0-9-]{1,30}")
+def load():
+    if os.path.islink(path):
+        raise SystemExit(3)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        raise SystemExit(3)
+    if (not isinstance(value, dict) or value.get("version") != 1 or not isinstance(value.get("release"), str) or not value["release"]
+            or value.get("phase") not in PHASES or not isinstance(value.get("agents"), list)
+            or any(not isinstance(name, str) or not NAME.fullmatch(name) for name in value["agents"])
+            or any(not isinstance(value.get(key), str) for key in ("updateId", "snapshotId"))):
+        raise SystemExit(3)
+    return value
+def save(value):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=".workflow-step-")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except BaseException:
+        try: os.unlink(temporary)
+        except OSError: pass
+        raise
+    folder = os.open(directory, os.O_RDONLY)
+    try: os.fsync(folder)
+    finally: os.close(folder)
+state = load()
+if op == "read":
+    if state is not None:
+        value = state[args[0]]
+        print("\n".join(value) if isinstance(value, list) else value)
+elif op == "begin":
+    if state is None:
+        save({"version": 1, "release": args[0], "updateId": "", "snapshotId": "", "phase": "stopping", "agents": []})
+    elif state["release"] != args[0]:
+        # A finished earlier update may still list agents that did not start afterwards. That
+        # must not block the next update: the names are kept, the rest starts over.
+        if state["phase"] != "migrated":
+            raise SystemExit(4)
+        save({"version": 1, "release": args[0], "updateId": "", "snapshotId": "", "phase": "stopping", "agents": state["agents"]})
+elif op == "clear":
+    if state is not None:
+        os.unlink(path)
+elif state is None:
+    raise SystemExit(3)
+elif op == "agents":
+    if any(not NAME.fullmatch(name) for name in args):
+        raise SystemExit(2)
+    state["agents"] = sorted(set(state["agents"]) | set(args))
+    save(state)
+elif op == "set" and args[0] == "phase" and args[1] in PHASES:
+    state["phase"] = args[1]
+    save(state)
+elif op == "set" and args[0] == "updateId":
+    state["updateId"] = args[1]
+    save(state)
+elif op == "keep-first" and args[0] == "snapshotId":
+    if not state["snapshotId"] and args[1]:
+        state["snapshotId"] = args[1]
+        save(state)
+else:
+    raise SystemExit(2)
+PYSTATE
+}
+
+keeper_compose() { env -u COMPOSE_FILE docker compose --env-file "$KEEPER_ENV_FILE" "$@" </dev/null; }
+# The keeper renders the agents into one compose file of its own. Other services share its
+# project name (the Notion sync, from a second file), so agents are named by this FILE, never by
+# the project.
+agents_project() {
+  local project
+  project=$(sed -n 's/.*"project" *: *"\([^"]*\)".*/\1/p' "$KEEPER_JSON_FILE" 2>/dev/null | head -1)
+  printf '%s' "${project:-lares}"
+}
+agents_compose() {
+  docker compose --project-name "$(agents_project)" --project-directory "$AGENTS_DIR" -f "$AGENTS_COMPOSE_FILE" "$@" </dev/null
+}
+
+# Which databases this update may touch, and what state each is in. Reads only.
+#   $1  --require-quiet to also prove that nothing else is connected to any of them
+# Writes kind<TAB>database<TAB>state<TAB>what-to-call-it per database to workflow-states.tsv and
+# counts the ones still as the previous release left them in WORKFLOW_OLD. Returns 1 with a plain
+# sentence in WORKFLOW_REASON for anything that is not exactly `old` or `current`. An unreadable
+# answer counts as a refusal, never as a pass.
+workflow_survey() {
+  local kind database agent state label reason lines=0
+  local -a plan_args=()
+  [ -z "${1:-}" ] || plan_args=("$1")
+  WORKFLOW_REASON=""
+  WORKFLOW_OLD=0
+  : > "$WORK/workflow-states.tsv"
+  if ! workflow_engine --ro "$OPERATOR_PASSWORD_FILE" bin/workflow-template.ts update-plan \
+      --host "$UPDATE_PGHOST" --port "$UPDATE_PGPORT" --operator-password-file "$OPERATOR_PASSWORD_FILE" \
+      ${plan_args[@]+"${plan_args[@]}"} > "$WORK/workflow-plan.tsv" 2> "$WORK/workflow-plan.err"; then
+    WORKFLOW_REASON=$(workflow_reason_from "$WORK/workflow-plan.err")
+    [ -n "$WORKFLOW_REASON" ] || WORKFLOW_REASON="I could not read which agent stores this server has"
+    return 1
+  fi
+  while IFS="$TAB" read -r kind database agent <&3; do
+    lines=$(( lines + 1 ))
+    case "$kind" in
+      template)
+        if [ "$lines" -ne 1 ] || [ "$database" != empty_workflow ] || [ -n "$agent" ]; then kind=""; fi
+        label="the template new agents are made from"
+        ;;
+      store)
+        if [ "$lines" -eq 1 ] || ! [[ "$database" =~ ^lares_[a-f0-9]{32}$ ]] || ! [[ "$agent" =~ ^[a-z][a-z0-9-]{1,30}$ ]]; then kind=""; fi
+        label="the store of agent $agent"
+        ;;
+      *) kind="" ;;
+    esac
+    if [ -z "$kind" ]; then
+      WORKFLOW_REASON="the list of agent stores came back unreadable, and an unreadable check counts as a failing one"
+      return 1
+    fi
+    if ! state=$(workflow_store_state "$ROLE_IMAGE" "$database" "$UPDATE_PGHOST" "$UPDATE_PGPORT" \
+        "$WORKFLOW_PROVISIONER_PASSWORD_FILE" "$WORK/workflow-check.err"); then
+      reason=$(workflow_reason_from "$WORK/workflow-check.err")
+      WORKFLOW_REASON="$label: ${reason:-it could not be checked}"
+      return 1
+    fi
+    case "$state" in
+      old) WORKFLOW_OLD=$(( WORKFLOW_OLD + 1 )) ;;
+      current) ;;
+      empty) WORKFLOW_REASON="$label: it has no workflow tables at all, so it was not left by the previous release"; return 1 ;;
+      *) WORKFLOW_REASON="$label: its check came back unreadable, and an unreadable check counts as a failing one"; return 1 ;;
+    esac
+    printf '%s\t%s\t%s\t%s\n' "$kind" "$database" "$state" "$label" >> "$WORK/workflow-states.tsv"
+  done 3< "$WORK/workflow-plan.tsv"
+  if [ "$lines" -lt 1 ]; then
+    WORKFLOW_REASON="the list of agent stores came back empty, and an unreadable check counts as a failing one"
+    return 1
+  fi
+  return 0
+}
+
+# Start again what this update stopped. ONLY for a failure before any store was changed: the
+# agents come back on the previous software and the previous schema, which still match.
+# Agents first, then the keeper: the keeper starts any stopped agent by itself when it comes up,
+# and must find them already running instead of racing this.
+workflow_start_again() {
+  local names name failed="" phase
+  local -a services=()
+  # `stopping` is the only phase in which every store is still as the previous release left it.
+  # An earlier run of this same update may have upgraded some already; then nothing is started.
+  phase=$(workflow_state read phase 2>/dev/null) || phase=""
+  if [ "$phase" != stopping ]; then
+    echo "update: your agents stay stopped: an earlier run of this update already started upgrading their stores, and an agent must never start on a half-upgraded store. Fix the cause and run the same update again." >&2
+    return 1
+  fi
+  names=$(workflow_state read agents 2>/dev/null) || names=""
+  for name in $names; do services+=("lares-$name"); done
+  if [ "${#services[@]}" -gt 0 ] && [ -f "$AGENTS_COMPOSE_FILE" ]; then
+    agents_compose start "${services[@]}" >/dev/null 2>&1 || failed="your agents"
+  fi
+  if ! keeper_compose start lares-keeper >/dev/null 2>&1; then
+    if [ -n "$failed" ]; then failed="$failed and the keeper"; else failed="the keeper"; fi
+  fi
+  if [ -n "$failed" ]; then
+    echo "update: I could not start $failed again. Start the keeper with: env -u COMPOSE_FILE docker compose --env-file $KEEPER_ENV_FILE start lares-keeper" >&2
+    echo "update: then start each agent that is still stopped with: sudo lares agent start <name>" >&2
+    return 1
+  fi
+  workflow_state clear || true
+  WORKFLOW_STOPPED=0
+  return 0
+}
+
+# For every failure between stopping the agents and changing the first store.
+workflow_put_back() {
+  [ "$WORKFLOW_STOPPED" = 1 ] || return 0
+  WORKFLOW_SAID=1
+  if workflow_start_again; then
+    echo "update: no agent store was changed by this run, and your agents are running again on the previous release." >&2
+  else
+    echo "update: no agent store was changed by this run. Your agents are still stopped; the lines above say why and what to do." >&2
+  fi
+}
+
+# Step (a): the keeper first, so nothing can start an agent again; then every agent.
+workflow_stop() {
+  local running service names="" code=0
+  workflow_state begin "$TO_RELEASE" || code=$?
+  if [ "$code" -ne 0 ]; then
+    echo "update: I could not write down that this update is about to stop your agents, so I have not stopped anything. Nothing has been changed." >&2
+    return 2
+  fi
+  WORKFLOW_STOPPED=1
+  echo "update: stopping the keeper and your agents while their stores are upgraded."
+  if ! keeper_compose stop lares-keeper >/dev/null 2> "$WORK/workflow-stop.err"; then
+    WORKFLOW_SAID=1
+    echo "update: I could not stop the keeper. No agent store was changed." >&2
+    sed 's/^/update: /' "$WORK/workflow-stop.err" >&2
+    workflow_start_again || true
+    echo "update: once the keeper is running again, run the update again." >&2
+    return 1
+  fi
+  [ -f "$AGENTS_COMPOSE_FILE" ] || return 0
+  if ! running=$(agents_compose ps --services --filter status=running 2> "$WORK/workflow-stop.err"); then
+    WORKFLOW_SAID=1
+    echo "update: I could not ask Docker which agents are running, so I have not stopped any. No agent store was changed." >&2
+    workflow_start_again || true
+    return 1
+  fi
+  for service in $running; do
+    if ! [[ "$service" =~ ^lares-[a-z][a-z0-9-]{1,30}$ ]]; then
+      WORKFLOW_SAID=1
+      echo "update: the agents' compose file lists something that is not an agent ($service), so I have not stopped anything in it. No agent store was changed." >&2
+      workflow_start_again || true
+      return 1
+    fi
+    names="$names ${service#lares-}"
+  done
+  if [ -n "$names" ]; then
+    # shellcheck disable=SC2086 # agent names, one word each, checked above
+    if ! workflow_state agents $names; then
+      WORKFLOW_SAID=1
+      echo "update: I could not write down which agents were running, so I have not stopped them. No agent store was changed." >&2
+      workflow_start_again || true
+      return 1
+    fi
+  fi
+  if ! agents_compose stop >/dev/null 2> "$WORK/workflow-stop.err"; then
+    WORKFLOW_SAID=1
+    echo "update: I could not stop your agents. No agent store was changed." >&2
+    sed 's/^/update: /' "$WORK/workflow-stop.err" >&2
+    workflow_start_again || true
+    echo "update: once they are running again, run the update again." >&2
+    return 1
+  fi
+  return 0
+}
+
+# Step (b), first: remove the stopped container of every agent whose store is about to change,
+# and prove that none is left. A stopped container keeps the image it was created from, and the
+# keeper starts every stopped agent container by itself when it comes up, from the agents' compose
+# file as the previous keeper wrote it. Left in place, the previous agent software would start
+# on an upgraded store. With no container, nothing can start an agent except the keeper's own
+# start step, which writes the new release's compose file first (`lares agent refresh` and
+# `lares agent start` both end there). Returns 1 with WORKFLOW_REASON; nothing is started again.
+workflow_remove_agent_containers() {
+  local project agent names ids left
+  project=$(agents_project)
+  if ! names=$({ awk -F "$TAB" '$1 == "store" { print $3 }' "$WORK/workflow-plan.tsv" && workflow_state read agents; } | sort -u); then
+    WORKFLOW_REASON="I could not read which agents' containers to remove"
+    return 1
+  fi
+  for agent in $names; do
+    if ! [[ "$agent" =~ ^[a-z][a-z0-9-]{1,30}$ ]]; then
+      WORKFLOW_REASON="an agent name came back unreadable, so its container was not removed"
+      return 1
+    fi
+    if ! ids=$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project" \
+        --filter "label=com.docker.compose.service=lares-$agent" </dev/null 2> "$WORK/workflow-remove.err"); then
+      WORKFLOW_REASON="agent $agent: I could not ask Docker for its container"
+      return 1
+    fi
+    if [ -n "$ids" ]; then
+      # Without --force: a container that is somehow running again is refused, never killed here.
+      # shellcheck disable=SC2086 # container ids, one word each
+      if ! docker rm $ids >/dev/null 2> "$WORK/workflow-remove.err" </dev/null; then
+        WORKFLOW_REASON="agent $agent: its container of the previous release could not be removed ($(workflow_reason_from "$WORK/workflow-remove.err"))"
+        return 1
+      fi
+    fi
+    if ! left=$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project" \
+        --filter "label=com.docker.compose.service=lares-$agent" </dev/null 2> "$WORK/workflow-remove.err") || [ -n "$left" ]; then
+      WORKFLOW_REASON="agent $agent: a container of the previous release is still there after removing it"
+      return 1
+    fi
+  done
+  return 0
+}
+
+# Step (b), second half: the template first (it holds no conversations, so it is the safe first
+# try), then each store in name order. A store already at this release is not migrated again,
+# but its permissions are applied and checked like every other: an earlier run may have ended
+# between the two. Returns 1 with WORKFLOW_REASON naming the store.
+workflow_upgrade_stores() {
+  local kind database state label
+  workflow_state set phase migrating || { WORKFLOW_REASON="I could not write down that the upgrade has started"; return 1; }
+  WORKFLOW_MOVED=1
+  # From here on nothing is started again by this update, so the containers can go.
+  workflow_remove_agent_containers || return 1
+  while IFS="$TAB" read -r kind database state label <&3; do
+    [ -n "$kind" ] || continue
+    workflow_store_bring_current update "$ROLE_IMAGE" "$UPDATE_PGHOST" "$UPDATE_PGPORT" \
+      "$WORKFLOW_PROVISIONER_PASSWORD_FILE" "$WORK" "$kind" "$database" "$state" "$label" || return 1
+  done 3< "$WORK/workflow-states.tsv"
+  return 0
+}
+
+# Step (b), last: every one of them again, as the login the agents use, and the template's own
+# rules (still a template, still empty). Only after this is the note marked `migrated`, which is
+# what lets `lares agent refresh` start the agents.
+workflow_verify_stores() {
+  local kind database state label
+  while IFS="$TAB" read -r kind database state label <&3; do
+    [ -n "$kind" ] || continue
+    if ! workflow_check_one "$kind" "$database" "$WORK/workflow-verify.err"; then
+      WORKFLOW_REASON="$label: it did not pass its final check ($(workflow_reason_from "$WORK/workflow-verify.err"))"
+      return 1
+    fi
+  done 3< "$WORK/workflow-states.tsv"
+  workflow_state set phase migrated || { WORKFLOW_REASON="I could not write down that every store passed its final check"; return 1; }
+  return 0
+}
+
+# One store's check, as the login the agents use; for the template also its own rules. Changes nothing.
+workflow_check_one() { # KIND DATABASE ERRFILE
+  if [ "$1" = template ]; then
+    workflow_engine --ro "$OPERATOR_PASSWORD_FILE" --ro "$WORKFLOW_PASSWORD_FILE" bin/database-setup.ts --verify-workflow-template \
+      --operator-password-file "$OPERATOR_PASSWORD_FILE" --workflow-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$3"
+  else
+    workflow_engine --ro "$WORKFLOW_PASSWORD_FILE" bin/workflow-template.ts verify-database \
+      --host "$UPDATE_PGHOST" --port "$UPDATE_PGPORT" --database "$2" \
+      --runtime-password-file "$WORKFLOW_PASSWORD_FILE" > /dev/null 2> "$3"
+  fi
+}
+
+# Every update in which no store needs upgrading: the permissions half alone. A release can change
+# the list of permissions the agents' login needs without changing a store's tables (the framework
+# starts to call one more database function), and the new keeper will not start on a store whose
+# list is incomplete. So every store is checked; only one that fails gets this release's list and
+# is checked again. The keeper and the agents keep running: the list is applied in one transaction,
+# so a running agent sees the old list or the new one, never half of each. No note is written: no
+# store's tables change. The apply never takes away a TABLE right, so a release that drops a table
+# from the list keeps failing its check here and the update is refused, loudly, by design. It does
+# take away every function and type right that is not on this release's list (it revokes them all,
+# then grants the list back). So repairing while the previous release still runs is only safe when
+# this release's list adds to the previous one; a release that takes a function away must not rely
+# on this step, and its release note must say so. And the previous release's keeper checks its own
+# list exactly, so it refuses a repaired store the next time it starts: hence the warning on failure.
+#   $1  check (a dry run: nothing is applied) or repair
+# Returns 1 with WORKFLOW_REASON naming the store.
+workflow_refresh_permissions() {
+  local kind database state label found=0
+  echo "update: checking the permissions of every agent store against this release's list."
+  while IFS="$TAB" read -r kind database state label <&3; do
+    [ -n "$kind" ] || continue
+    workflow_check_one "$kind" "$database" "$WORK/workflow-verify.err" && continue
+    found=1
+    if [ "$1" = check ]; then
+      echo "update: $label did not pass its permissions check ($(workflow_reason_from "$WORK/workflow-verify.err")). The update would apply this release's list to it, with your agents running, and check it again."
+      continue
+    fi
+    if ! workflow_apply_one "$kind" "$database" "$WORK/workflow-apply.err"; then
+      WORKFLOW_REASON="$label: its permissions could not be brought up to this release's list ($(workflow_reason_from "$WORK/workflow-apply.err"))"
+      return 1
+    elif ! workflow_check_one "$kind" "$database" "$WORK/workflow-verify.err"; then
+      WORKFLOW_REASON="$label: it still did not pass its check after this release's permissions were applied ($(workflow_reason_from "$WORK/workflow-verify.err"))"
+      return 1
+    fi
+    WORKFLOW_REPAIRED="$WORKFLOW_REPAIRED${WORKFLOW_REPAIRED:+; }$label"
+    echo "update: $label did not have exactly this release's permissions. They were applied, and it passes its check now."
+  done 3< "$WORK/workflow-states.tsv"
+  [ "$found" = 1 ] || echo "update: every agent store has this release's permissions."
+  return 0
+}
+
+# What to say when the upgrade of the stores did not finish. The keeper and the agents stay
+# stopped: this is the fail-closed half of the rule at the top of this file.
+workflow_say_stuck() {
+  local snapshot
+  snapshot=$(workflow_state read snapshotId 2>/dev/null) || snapshot=""
+  [ -n "$snapshot" ] || snapshot="${SNAPSHOT_ID:-}"
+  [ -n "$snapshot" ] || snapshot="ID (the snapshot id the backup step printed)"
+  WORKFLOW_SAID=1
+  echo "update: the update stopped while upgrading the agent stores: $WORKFLOW_REASON." >&2
+  echo "update: your agents are stopped and will stay stopped, because starting them on a half-upgraded store could lose conversations." >&2
+  echo "update: you can (1) fix the cause and run the same update again; stores already upgraded are skipped. Or (2) go back to before the update: build a clean server, install the previous release, and run: sudo lares restore --snapshot $snapshot" >&2
+  echo "update: do not use rollback.sh for this: the previous software cannot run on upgraded stores." >&2
+}
+
+# For a failure of the switch after the stores were upgraded: rollback.sh puts the software back,
+# and the previous software cannot run on upgraded stores.
+workflow_say_moved() {
+  local snapshot
+  [ "$(workflow_state read phase 2>/dev/null || true)" = migrated ] || return 0
+  snapshot=$(workflow_state read snapshotId 2>/dev/null) || snapshot=""
+  [ -n "$snapshot" ] || snapshot="ID (the snapshot id the backup step printed)"
+  WORKFLOW_SAID=1
+  echo "update: your agent stores are already on the new format, and your agents are stopped. Fix the cause and run the same update again." >&2
+  echo "update: going back to the previous software needs a restore (a clean server, the previous release, then: sudo lares restore --snapshot $snapshot), not rollback.sh." >&2
 }
 
 # In image mode the engine is the TARGET release's keeper image. It is fetched now, before
@@ -408,6 +912,68 @@ if [ -s "$WORK/not-pinned.txt" ]; then
   echo "update: left alone, because their images are not named by digest and so cannot be put back: $(tr '\n' ' ' < "$WORK/not-pinned.txt")"
 fi
 
+# --- 3b. the agent stores: look, and change nothing ----------------------------------------
+# Every store must be exactly as the previous release left it, or exactly at this release.
+# This is decided here, before the backup and before anything is stopped, by the release's own
+# role image; the same look is repeated with everything stopped before any store is changed.
+WORKFLOW_PENDING=""
+WORKFLOW_PENDING_RELEASE=""
+state_code=0
+WORKFLOW_PENDING_RELEASE=$(workflow_state read release 2>/dev/null) || state_code=$?
+if [ "$state_code" -ne 0 ]; then
+  echo "update: the note an earlier update left about your agent stores ($WORKFLOW_STATE_FILE) cannot be read, so I cannot tell how far that update got. Nothing has been changed." >&2
+  exit "$EX_REFUSED"
+fi
+if [ -n "$WORKFLOW_PENDING_RELEASE" ]; then
+  WORKFLOW_PENDING=$(workflow_state read phase 2>/dev/null) || WORKFLOW_PENDING=""
+  if [ "$WORKFLOW_PENDING_RELEASE" != "$TO_RELEASE" ]; then
+    # A finished store upgrade for another release only still lists agents that did not start
+    # afterwards; that never blocks a later update. An unfinished one does.
+    if [ "$WORKFLOW_PENDING" != migrated ]; then
+      echo "update: an earlier update to $WORKFLOW_PENDING_RELEASE did not finish. Finish it first: run that same update again. Nothing has been changed." >&2
+      exit "$EX_REFUSED"
+    fi
+    WORKFLOW_PENDING=""
+  fi
+fi
+ROLE_IMAGE=$(awk -F'\t' '$1 == "creative" { print $2 }' "$WORK/release-images.tsv" | head -1)
+if ! is_digest_reference "$ROLE_IMAGE"; then
+  echo "update: this release names no creative role image (images.creative as a full digest), so the agent stores cannot be checked against it. Nothing has been changed." >&2
+  exit "$EX_REFUSED"
+fi
+if ! docker image inspect "$ROLE_IMAGE" >/dev/null 2>&1 && ! docker pull "$ROLE_IMAGE" >/dev/null; then
+  echo "update: could not download the role image $ROLE_IMAGE, so the agent stores could not be checked. Nothing has been changed." >&2
+  exit "$EX_REFUSED"
+fi
+if ! workflow_survey; then
+  echo "update: I will not update this server: $WORKFLOW_REASON. Nothing has been changed." >&2
+  if [ -n "$WORKFLOW_PENDING" ]; then
+    echo "update: your agents are still stopped from the earlier run of this update." >&2
+  else
+    echo "update: your agents are still running." >&2
+  fi
+  exit "$EX_REFUSED"
+fi
+if [ "$WORKFLOW_OLD" -gt 0 ] || { [ -n "$WORKFLOW_PENDING" ] && [ "$WORKFLOW_PENDING" != migrated ]; }; then
+  WORKFLOW_NEEDED=1
+  if [ ! -f "$KEEPER_ENV_FILE" ]; then
+    echo "update: the agent stores need upgrading, but I cannot find the keeper's settings ($KEEPER_ENV_FILE) to stop it first. Nothing has been changed." >&2
+    exit "$EX_REFUSED"
+  fi
+  if [ -n "$WORKFLOW_PENDING" ]; then
+    echo "update: an earlier run of this update stopped your agents and did not finish. This run continues it: stores already upgraded are skipped, and every store is checked again."
+  else
+    echo "update: your agents will be stopped during this update, and started again on the new release at the end."
+  fi
+  if [ "$WORKFLOW_OLD" -gt 0 ]; then
+    echo "update: $WORKFLOW_OLD of $(awk 'END { print NR }' "$WORK/workflow-states.tsv") agent stores (counting the template new agents are made from) get the new workflow tables."
+  fi
+elif [ "$WORKFLOW_PENDING" = migrated ]; then
+  echo "update: an earlier run of this update already upgraded and verified every agent store. Your agents are stopped until this update finishes."
+else
+  echo "update: every agent store already has this release's workflow tables, so nothing is stopped for that."
+fi
+
 # --- 4. has a backup been taken AND verified? ----------------------------------------------
 # backup-verify.sh is the single owner of that verdict (sql/001_baseline.sql). An
 # unreadable check counts as failing, never as passing — the same rule backup-verify.sh
@@ -465,6 +1031,8 @@ fi
 
 # --- 5. a dry run stops here, having changed nothing ---------------------------------------
 if [ "$DRY_RUN" -eq 1 ]; then
+  # When the stores need upgrading, every one gets this release's permissions anyway (9b).
+  [ "$WORKFLOW_NEEDED" = 1 ] || workflow_refresh_permissions check
   echo "update: this was a dry run. Nothing has been changed."
   exit 0
 fi
@@ -483,11 +1051,23 @@ if [ "$ASSUME_YES" -ne 1 ]; then
   fi
 fi
 
+# --- 5b. stop the keeper and the agents, when their stores are about to change --------------
+# Before the backup, so that nothing is written between the backup and the upgrade: the backup
+# is then exactly what the upgrade started from.
+# undo: workflow_put_back starts them again, for as long as no store has been changed.
+if [ "$WORKFLOW_NEEDED" = 1 ]; then
+  stop_code=0
+  workflow_stop || stop_code=$?
+  [ "$stop_code" -ne 2 ] || exit "$EX_REFUSED"
+  [ "$stop_code" -eq 0 ] || exit "$EX_FAILED"
+fi
+
 # --- 6. a fresh backup, before anything else -----------------------------------------------
 # undo: none needed — a backup adds a snapshot and changes nothing on this box.
 echo "update: taking a backup first."
 if ! "$OPS_DIR/backup.sh" 2>&1 | tee "$WORK/backup.out"; then
   echo "update: the backup did not finish, so nothing else has been done. The message above says why. Nothing has been changed." >&2
+  workflow_put_back
   exit "$EX_BACKUP"
 fi
 # restic prints "snapshot <id> saved" on success. Best effort only: the record's own list of
@@ -506,9 +1086,20 @@ IMAGES_JSON=$(awk -F'\t' '
 if ! UPDATE_ID=$(recorder begin "$FROM_RELEASE" "$TO_RELEASE" "$IMAGES_JSON" "$SNAPSHOT_ID"); then
   echo "update: I could not write down what is running, so I cannot promise to put it back. Nothing has been changed." >&2
   echo "update: if this installation's database has not had services/box/sql/001_baseline.sql applied yet, that is why. Apply it with: pnpm -C services/box migrate" >&2
+  workflow_put_back
   exit "$EX_REFUSED"
 fi
 UPDATE_ID=$(printf '%s' "$UPDATE_ID" | tr -d '\r' | head -1)
+if [ "$WORKFLOW_NEEDED" = 1 ]; then
+  # The snapshot written down is the one taken before any store was touched: a later run of an
+  # unfinished update keeps the first one and never replaces it with its own, newer backup.
+  if ! { workflow_state set updateId "$UPDATE_ID" && workflow_state keep-first snapshotId "$SNAPSHOT_ID"; }; then
+    recorder finish "$UPDATE_ID" failed "could not write down the backup this update's store upgrade starts from" || true
+    echo "update: I could not write down which backup the store upgrade starts from, so I have not gone on." >&2
+    workflow_put_back
+    exit "$EX_FAILED"
+  fi
+fi
 
 close_record() {
   local outcome="$1" detail="$2"
@@ -546,6 +1137,7 @@ if ! docker compose ${COMPOSE_ARGS[@]+"${COMPOSE_ARGS[@]}"} pull; then
   restore_compose_files
   close_record failed "the new images could not be pulled"
   echo "update: the new images could not be pulled, so nothing was switched. The images that were running before are still running." >&2
+  workflow_put_back
   exit "$EX_FAILED"
 fi
 # The keeper runs these outside any compose file this script pulls: the agents from a compose file
@@ -559,6 +1151,7 @@ for role in chief-of-staff creative lares-firewall-helper lares-egress-proxy; do
     restore_compose_files
     close_record failed "the $role image could not be pulled"
     echo "update: the $role image could not be pulled, so nothing was switched. The images that were running before are still running." >&2
+    workflow_put_back
     exit "$EX_FAILED"
   fi
 done
@@ -572,6 +1165,48 @@ if ! run_migrations; then
   close_record failed "the migrations were refused"
   echo "update: the migrations were refused, so the new images have not been started and the software you were running is still running." >&2
   echo "update: nothing needs putting back. If you do find this installation on the new images, $OPS_DIR/rollback.sh puts the previous ones back." >&2
+  workflow_put_back
+  exit "$EX_FAILED"
+fi
+
+# --- 9b. the agent stores, with everything stopped -------------------------------------------
+# There is no way back from this except the backup taken in step 6. So: look again first, now
+# that nothing can change underneath; a refusal here still changes nothing and starts the agents
+# again. From the first store onwards a failure leaves the keeper and the agents stopped.
+if [ "$WORKFLOW_NEEDED" = 1 ]; then
+  echo "update: checking the agent stores again, now that everything is stopped."
+  if ! workflow_survey --require-quiet; then
+    restore_compose_files
+    close_record failed "the agent stores were refused before any was changed"
+    echo "update: something changed while I was stopping your agents: $WORKFLOW_REASON." >&2
+    workflow_put_back
+    exit "$EX_REFUSED"
+  fi
+  if ! workflow_upgrade_stores || ! workflow_verify_stores; then
+    restore_compose_files
+    close_record failed "stopped while upgrading the agent stores; the keeper and the agents are stopped"
+    workflow_say_stuck
+    exit "$EX_FAILED"
+  fi
+  echo "update: every agent store is upgraded and verified."
+# --- 9c. no store needs upgrading: check every store's permissions, repair only what fails ---
+# With the keeper and the agents running (workflow_refresh_permissions). A failure here switches
+# nothing and stops nothing.
+elif ! workflow_refresh_permissions repair; then
+  restore_compose_files
+  close_record failed "$WORKFLOW_REASON"
+  echo "update: I stopped before starting the new images: $WORKFLOW_REASON." >&2
+  if [ "$WORKFLOW_PENDING" = migrated ]; then
+    # An earlier run of this update already upgraded the stores and left the keeper and the agents stopped.
+    workflow_say_moved
+  else
+    echo "update: nothing was switched and nothing was stopped for this: the software you were running is still running." >&2
+    if [ -n "$WORKFLOW_REPAIRED" ]; then
+      echo "update: before that, this update already gave this release's permissions to: $WORKFLOW_REPAIRED. Your server keeps running as it is now, but the keeper you are running checks for its own release's permissions exactly, so it would refuse these the next time it starts." >&2
+      echo "update: so do not restart the keeper or the server until this update has been run again and has finished." >&2
+    fi
+    echo "update: fix the cause and run the same update again." >&2
+  fi
   exit "$EX_FAILED"
 fi
 
@@ -581,6 +1216,7 @@ echo "update: starting the new images."
 if ! docker compose ${COMPOSE_ARGS[@]+"${COMPOSE_ARGS[@]}"} up -d; then
   close_record failed "the new images could not be started"
   echo "update: the new images could not be started. Put the previous ones back with: $OPS_DIR/rollback.sh" >&2
+  workflow_say_moved
   exit "$EX_FAILED"
 fi
 
@@ -603,6 +1239,7 @@ if [ -n "$MISSING" ]; then
   close_record failed "did not come up after the switch:$MISSING"
   echo "update: these did not come up after the switch:$MISSING" >&2
   echo "update: the new images are in place and they are not running. This command will not put them back on its own — you decide that, with: $OPS_DIR/rollback.sh" >&2
+  workflow_say_moved
   exit "$EX_FAILED"
 fi
 
@@ -610,3 +1247,8 @@ close_record ok "updated to $TO_RELEASE"
 echo "update: $TO_RELEASE is in place."
 echo "update: the images that were running before are written down. $OPS_DIR/rollback.sh puts them back — the software, not the database."
 echo "update: if any of these images is rendered into a compose file by the keeper from its own configuration, change that configuration too, or the keeper puts its configured image back the next time it reconciles."
+if { [ "$WORKFLOW_NEEDED" = 1 ] || [ "$WORKFLOW_PENDING" = migrated ]; } && [ "$(workflow_state read phase 2>/dev/null || true)" = migrated ]; then
+  WORKFLOW_SAID=1
+  echo "update: your agents are stopped. They start again when this update finishes: the keeper moves to the new release, then each agent is started on it."
+  echo "update: lares update does both next. If you ran update.sh on its own, run: $HERE/install.sh --yes --release $RELEASE_FILE, then: sudo lares agent refresh"
+fi

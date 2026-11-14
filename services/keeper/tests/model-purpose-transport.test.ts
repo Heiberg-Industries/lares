@@ -25,6 +25,7 @@ let calls:Array<{url:string;headers:Headers;body:Buffer}>;
 let responseMode:'ok'|'credential-error'|'bad-request'|'held-stream'|'compressed'|'backpressure'='ok';
 let heldStream:ReadableStreamDefaultController<Uint8Array>|undefined;
 let upstreamCancelled=false;
+let heldHeaders:Promise<void>|undefined;
 async function readFirstRequestDiagnostic(path:string){
   const deadline=Date.now()+1_000;
   while(Date.now()<deadline){
@@ -41,16 +42,32 @@ const installationAccountId='123e4567-e89b-42d3-a456-426614174005';
 const snapshot={operations:[operation],users:[{kind:'user',ownershipId:operation.userOwnershipId,teamOwnershipId:'123e4567-e89b-42d3-a456-426614174004',installationAccountId,endpoint:{origin:'https://gateway.fixture.invalid',hash:endpointHash}}],
   teams:[{kind:'team',ownershipId:'123e4567-e89b-42d3-a456-426614174004',installationAccountId,capabilityHash:profileHash,endpoint:{origin:'https://gateway.fixture.invalid',hash:endpointHash}}]};
 const gate={inventory:()=>snapshot,readKey:()=>nativeKey} as unknown as NativeCustodyGate;
-const custody={withGate:async<T>(work:(value:NativeCustodyGate)=>Promise<T>):Promise<T>=>{
-  if(gateBusy)throw new Error('Native custody unavailable; explicit reconciliation is required');
-  gateBusy=true;try{return await work(gate);}finally{gateBusy=false;}
+// Models the real gate: no wait refuses at once; a wait queues first in first out, takes the gate straight from
+// the holder, and runs out with the busy error having done nothing.
+let gateLine:Array<()=>void>=[],gateWaits:Array<number|undefined>=[];
+const custody={withGate:async<T>(work:(value:NativeCustodyGate)=>Promise<T>,options:{waitMs?:number}={}):Promise<T>=>{
+  gateWaits.push(options.waitMs);
+  if(gateBusy){
+    const waitMs=options.waitMs??0;
+    if(!(waitMs>0))throw new Error('Native custody unavailable; explicit reconciliation is required');
+    await new Promise<void>((resolve,reject)=>{
+      const turn=()=>{clearTimeout(timer);resolve();};
+      const timer=setTimeout(()=>{gateLine=gateLine.filter(other=>other!==turn);reject(new Error('Native custody busy'));},waitMs);
+      gateLine.push(turn);
+    });
+  }else gateBusy=true;
+  try{return await work(gate);}finally{const next=gateLine.shift();if(next)next();else gateBusy=false;}
 }} as BudgetNativeCustodyStore;
+/** Holds the gate the way another check does, until released. */
+const holdGate=()=>{let release!:()=>void;const released=new Promise<void>(resolve=>release=resolve);
+  const held=custody.withGate(async()=>{await released;});return {release:async()=>{release();await held;}};};
+let sendDeadlineMs=10_000;
 
 function send(path='/v1/messages',body=Buffer.from('{"model":"fixture-brain"}'),nonce=randomBytes(32).toString('base64url'),headersOnly=false,
   extraHeaders:Record<string,string>={},omitHeader?:string){
   const signedPath=path.split('?',1)[0]??path;
   const safePath=(signedPath==='/v1/messages'||signedPath==='/v1/chat/completions'||signedPath==='/v1/embeddings'?signedPath:'/v1/messages') as '/v1/messages'|'/v1/chat/completions'|'/v1/embeddings';
-  const deadline=Date.now()+10_000,requestHash=gatewayRawRequestHash('POST',safePath,body);
+  const deadline=Date.now()+sendDeadlineMs,requestHash=gatewayRawRequestHash('POST',safePath,body);
   const fields:ModelPurposeDispatchFields={method:'POST',path:safePath,requestHash,ticket,agent,incarnation,nonce,deadline};
   const headers:Record<string,string>={'content-type':'application/json','content-length':String(body.length),
     'x-lares-budget-intent':ticket,'x-lares-purpose-agent':agent,'x-lares-purpose-incarnation':incarnation,
@@ -69,12 +86,13 @@ function send(path='/v1/messages',body=Buffer.from('{"model":"fixture-brain"}'),
 beforeEach(async()=>{
   root=await mkdtemp(join(tmpdir(),'lares-model-purpose-transport-'));await chmod(root,0o750);socketPath=join(root,'gateway.sock');
   vi.stubEnv('CI','true');vi.stubEnv('LARES_GATEWAY_PROBE_DIAGNOSTICS','1');vi.stubEnv('TMPDIR',root);
-  operation.phase='active';gateBusy=false;calls=[];responseMode='ok';heldStream=undefined;upstreamCancelled=false;
+  operation.phase='active';gateBusy=false;gateLine=[];gateWaits=[];sendDeadlineMs=10_000;calls=[];responseMode='ok';heldStream=undefined;upstreamCancelled=false;heldHeaders=undefined;
   fixture.runtimeKey.mockImplementation(async()=>Buffer.from(fixture.key));
   fixture.fetch.mockImplementation(async(input:URL,init:RequestInit)=>{
     const headers=new Headers(init.headers);const body=Buffer.from(init.body as Uint8Array);
     calls.push({url:input.href,headers,body});
     if(gateBusy!==true)throw new Error('native gate was not held during response headers');
+    if(heldHeaders)await heldHeaders;
     if(responseMode==='credential-error')return new Response(`secret=${nativeKey}`,{status:401,headers:{'set-cookie':nativeKey,'x-api-key':nativeKey}});
     if(responseMode==='bad-request')return new Response(`private=${nativeKey}`,{status:400,headers:{'x-api-key':nativeKey}});
     if(responseMode==='held-stream')return new Response(new ReadableStream<Uint8Array>({start(controller){heldStream=controller;}}),{status:200,headers:{'content-type':'text/event-stream'}});
@@ -256,15 +274,53 @@ describe('Keeper model-purpose dispatch transport',()=>{
     expect(calls).toHaveLength(0);
   });
 
-  it('uses the same native gate for dispatch and lets an already-held mutation fail dispatch closed',async()=>{
-    gateBusy=true;
+  it('uses the same native gate for dispatch and fails dispatch closed when the gate does not come in time',async()=>{
+    // Five and a half seconds to the deadline leaves half a second to wait: five are kept for the gateway.
+    sendDeadlineMs=5_500;
+    const holder=holdGate();
     const response=await send();
     expect(response.status).toBe(503);expect(calls).toHaveLength(0);
-    gateBusy=false;
+    expect(gateWaits.at(-1)).toBeGreaterThan(0);expect(gateWaits.at(-1)).toBeLessThanOrEqual(500);
+    await holder.release();
     // The host burns the ticket before attempting the native-gated dispatch, so a busy-gate
     // refusal cannot be retried with the same ticket after mutation completes.
     expect((await send()).status).toBe(409);
     expect(gateBusy).toBe(false);
+  });
+
+  it('does not wait for the gate at all with less than the gateway\'s five seconds left',async()=>{
+    sendDeadlineMs=4_000;const holder=holdGate();
+    const started=Date.now();expect((await send()).status).toBe(503);expect(Date.now()-started).toBeLessThan(1_000);
+    expect(gateWaits.at(-1)).toBe(0);expect(calls).toHaveLength(0);
+    await holder.release();
+  });
+
+  it('waits for a key store busy with another check and then delivers the dispatch',async()=>{
+    // Another budget check (an Apply's start check, a page's status read) holds the gate.
+    const holder=holdGate();
+    const pending=send();
+    await new Promise(resolve=>setTimeout(resolve,200));
+    expect(calls).toHaveLength(0);
+    await holder.release();
+    const response=await pending;
+    expect(response.status).toBe(200);expect(response.body.toString()).toBe('stream-ok');expect(calls).toHaveLength(1);
+    // It waited while five seconds of its deadline stay for the gateway.
+    expect(gateWaits.at(-1)).toBeGreaterThan(4_000);expect(gateWaits.at(-1)).toBeLessThanOrEqual(5_000);
+    expect(gateBusy).toBe(false);
+  });
+
+  it('lets a budget check wait behind a dispatch that holds the gate until response headers',async()=>{
+    let headers!:()=>void;heldHeaders=new Promise<void>(resolve=>headers=resolve);
+    const pending=send();
+    const deadline=Date.now()+2_000;while(calls.length===0&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+    expect(calls).toHaveLength(1);expect(gateBusy).toBe(true);
+    // A check that asks for no wait is still turned away; one that waits gets the gate when the headers come.
+    await expect(custody.withGate(async()=>'no-wait')).rejects.toThrow('reconciliation');
+    let checked=false;const check=custody.withGate(async()=>{checked=true;return 'checked';},{waitMs:5_000});
+    await new Promise(resolve=>setTimeout(resolve,100));expect(checked).toBe(false);
+    headers();
+    await expect(check).resolves.toBe('checked');
+    expect((await pending).status).toBe(200);expect(gateBusy).toBe(false);
   });
 
   it('releases the native gate after response headers so a later mutation can proceed while streaming',async()=>{

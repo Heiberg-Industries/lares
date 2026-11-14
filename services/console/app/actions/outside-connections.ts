@@ -54,7 +54,8 @@ export async function saveOutsideConnections(input: {
   }).safeParse(input);
   if (!parsed.success) throw new Error("Connection details are invalid.");
   try {
-    const result = resultSchema.parse(await keeper<unknown>("outside.connections.save", { ...parsed.data, sessionToken }, actor));
+    // A definition save like the others (app/actions/definition.ts): it can stop a held agent, so it waits as long as Apply.
+    const result = resultSchema.parse(await keeper<unknown>("outside.connections.save", { ...parsed.data, sessionToken }, actor, { timeoutMs: 90_000 }));
     return { ok: true, result };
   } catch (error) {
     if (error instanceof KeeperRefusedError) return { ok: false, message: "The definition or access changed, or current agent edit access is missing. Refresh and review the connection again." };
@@ -73,6 +74,9 @@ export async function applyOutsideConnections(input: { name: string; expectedDef
   } catch (error) {
     const current = await getOutsideConnections(input.name).catch(() => undefined);
     const confirmed = current?.ok ? current.result : undefined;
+    // Keeper refused and said why (for example a busy spending-key store left the agent stopped with the change
+    // waiting): its own sentence is what happened, whatever the refreshed declarations look like.
+    if (error instanceof KeeperRefusedError && error.message) return { ok: false, message: error.message, ...(confirmed ? { current: confirmed } : {}) };
     if (error instanceof KeeperRefusedError) return { ok: false, message: confirmed?.applicationStatus === 'applied'
       ? "The refreshed state confirms these declarations are applied, although the Apply request was refused or interrupted."
       : confirmed?.applicationStatus === 'pending'
