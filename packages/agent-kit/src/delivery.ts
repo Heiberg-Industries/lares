@@ -136,3 +136,45 @@ export function defaultDelivery(chatDoors: readonly DeliveryDoor[]): Record<Deli
   const list: DeliveryDoor[] = first ? [first, "web"] : ["web"];
   return Object.fromEntries(Object.keys(DELIVERY_KINDS).map((k) => [k, [...list]])) as Record<DeliveryKind, DeliveryDoor[]>;
 }
+
+// ── A test brief the owner asks for from the console ───────────────────────────────────────────
+//
+// The console writes one request row (`workflow_jobs`, this workflow type); the morning brief's own
+// every-minute run claims it and sends the brief into the chosen door under the schedule's own
+// identity, so it is paid as an owner job exactly like a real brief. It is a reply to the owner,
+// not an initiation: no gate, no ledger row, never counted as the day's brief (ADR-0014 rule 1).
+// These strings are shared by the console, the chief of staff and the real-install check.
+
+/** `workflow_jobs.workflow_type` of a test-brief request. No other runner may claim this type. */
+export const TEST_BRIEF_WORKFLOW_TYPE = "test-brief";
+/** The conversation lane the test brief's session carries (`attributes.lane`). */
+export const TEST_BRIEF_LANE = "morning-brief-test";
+/** The chat doors a test brief can be asked for. Never web chat. */
+export const TEST_BRIEF_DOORS = ["slack", "telegram"] as const;
+export type TestBriefDoor = (typeof TEST_BRIEF_DOORS)[number];
+/** The fixed block that starts every test-brief prompt. */
+export const TEST_BRIEF_PROMPT_MARKER =
+  "[test brief — the owner pressed 'Send a test brief' in the console to check this chat. " +
+  "Begin your message with the words 'Test brief'. Everything below is today's real material.]";
+/** The prompt after the marker on a morning with nothing to say: a test is never silent. */
+export const TEST_BRIEF_NOTHING_NEW_PROMPT =
+  "There is nothing new today; a real brief would stay silent. Say so in one line.";
+/** At most this many requests per agent in any 24 hours. */
+export const TEST_BRIEF_DAILY_MAX = 10;
+/** A pending request older than this is never claimed; a running one older than this is "outcome unknown". */
+export const TEST_BRIEF_STALE_MINUTES = 10;
+/**
+ * What the agent writes into the request row's `result.outcome`:
+ *  - `sent`: handed to the chat app's conversation (`result.sentAt`). Not "answered": eve's send
+ *    resolves when the message is accepted, not when the agent's turn settles;
+ *  - `door-not-connected`: the chosen door is not connected, claimed and applied on this agent;
+ *  - `too-slow`: the brief was not ready within the test's time budget; nothing was sent;
+ *  - `send-failed`: the chat app refused the hand-over; nothing was sent;
+ *  - `send-unknown`: the hand-over did not finish within the budget; it may still arrive;
+ *  - `pass-failed`: something else went wrong before the hand-over; nothing was sent.
+ */
+export const TEST_BRIEF_OUTCOMES = ["sent", "door-not-connected", "too-slow", "send-failed", "send-unknown", "pass-failed"] as const;
+export type TestBriefOutcome = (typeof TEST_BRIEF_OUTCOMES)[number];
+export function isTestBriefDoor(x: unknown): x is TestBriefDoor {
+  return typeof x === "string" && (TEST_BRIEF_DOORS as readonly string[]).includes(x);
+}

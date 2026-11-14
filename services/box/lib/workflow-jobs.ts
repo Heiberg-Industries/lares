@@ -1,5 +1,8 @@
 // Durable workflow jobs: one row per running multi-step job. Mirrors the reminders
 // data-layer style (snake_case columns mapped to camelCase via AS "...").
+// Job types are disjoint: each `workflow_type` has exactly one runner, and a runner must filter on its
+// own type (the chief of staff's test brief, `test-brief`, is claimed only by the morning brief).
+// `reclaimStalledJobs` below filters on neither agent nor type; it must take both before it gets a caller.
 import type { Queryable } from "./db.js";
 export type { Queryable } from "./db.js";
 
