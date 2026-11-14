@@ -122,6 +122,7 @@ WORKFLOW_STOPPED=0   # 1: this run stopped the keeper and the agents and has not
 WORKFLOW_MOVED=0     # 1: at least one store may be on the new format
 WORKFLOW_SAID=0      # 1: a failure path has already told the operator what state this is in
 WORKFLOW_REASON=""
+WORKFLOW_REPAIRED=""  # the stores whose permissions this run already brought up to this release
 WORKFLOW_OLD=0
 ROLE_IMAGE=""
 if [ "${PGHOST+x}" = x ]; then UPDATE_PGHOST="$PGHOST"; else UPDATE_PGHOST=127.0.0.1; fi
@@ -690,8 +691,13 @@ workflow_check_one() { # KIND DATABASE ERRFILE
 # list is incomplete. So every store is checked; only one that fails gets this release's list and
 # is checked again. The keeper and the agents keep running: the list is applied in one transaction,
 # so a running agent sees the old list or the new one, never half of each. No note is written: no
-# store's tables change. The apply never takes away a table right, so a release that drops a table
-# from the list keeps failing its check here and the update is refused, loudly, by design.
+# store's tables change. The apply never takes away a TABLE right, so a release that drops a table
+# from the list keeps failing its check here and the update is refused, loudly, by design. It does
+# take away every function and type right that is not on this release's list (it revokes them all,
+# then grants the list back). So repairing while the previous release still runs is only safe when
+# this release's list adds to the previous one; a release that takes a function away must not rely
+# on this step, and its release note must say so. And the previous release's keeper checks its own
+# list exactly, so it refuses a repaired store the next time it starts: hence the warning on failure.
 #   $1  check (a dry run: nothing is applied) or repair
 # Returns 1 with WORKFLOW_REASON naming the store.
 workflow_refresh_permissions() {
@@ -712,6 +718,7 @@ workflow_refresh_permissions() {
       WORKFLOW_REASON="$label: it still did not pass its check after this release's permissions were applied ($(workflow_reason_from "$WORK/workflow-verify.err"))"
       return 1
     fi
+    WORKFLOW_REPAIRED="$WORKFLOW_REPAIRED${WORKFLOW_REPAIRED:+; }$label"
     echo "update: $label did not have exactly this release's permissions. They were applied, and it passes its check now."
   done 3< "$WORK/workflow-states.tsv"
   [ "$found" = 1 ] || echo "update: every agent store has this release's permissions."
@@ -1189,8 +1196,17 @@ elif ! workflow_refresh_permissions repair; then
   restore_compose_files
   close_record failed "$WORKFLOW_REASON"
   echo "update: I stopped before starting the new images: $WORKFLOW_REASON." >&2
-  echo "update: nothing was switched and nothing was stopped for this: the software you were running is still running." >&2
-  echo "update: fix the cause and run the same update again." >&2
+  if [ "$WORKFLOW_PENDING" = migrated ]; then
+    # An earlier run of this update already upgraded the stores and left the keeper and the agents stopped.
+    workflow_say_moved
+  else
+    echo "update: nothing was switched and nothing was stopped for this: the software you were running is still running." >&2
+    if [ -n "$WORKFLOW_REPAIRED" ]; then
+      echo "update: before that, this update already gave this release's permissions to: $WORKFLOW_REPAIRED. Your server keeps running as it is now, but the keeper you are running checks for its own release's permissions exactly, so it would refuse these the next time it starts." >&2
+      echo "update: so do not restart the keeper or the server until this update has been run again and has finished." >&2
+    fi
+    echo "update: fix the cause and run the same update again." >&2
+  fi
   exit "$EX_FAILED"
 fi
 

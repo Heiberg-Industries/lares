@@ -169,6 +169,9 @@ async function run(): Promise<void> {
         // One transaction: the list first takes away every function right, then gives the listed ones
         // back, and an agent running meanwhile (an update) must see the old list or the new one.
         await owner.query("BEGIN");
+        // An agent's transaction can hold a queue table the list needs (a missing row policy is
+        // created with a lock no reader may share): wait at most this long, then give up unchanged.
+        await owner.query("SET LOCAL lock_timeout = '10s'");
         const ownership = await owner.query<{ owner: string }>("SELECT pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname=current_database()");
         if (ownership.rows[0]?.owner !== OWNER) throw new Error("workflow template: this database is not owned by the workflow owner role");
         await owner.query(`SET ROLE "${OWNER}"`);
@@ -179,6 +182,8 @@ async function run(): Promise<void> {
         await owner.query("COMMIT");
       } catch (error) {
         await owner.query("ROLLBACK").catch(() => undefined);
+        if ((error as { code?: string }).code === "55P03")
+          throw new Refused("the store was busy: something held a table this change needs for more than 10 seconds, so nothing was changed on it. Run the same command again");
         throw error;
       } finally {
         // Never return a role-switched connection to pg's pool.

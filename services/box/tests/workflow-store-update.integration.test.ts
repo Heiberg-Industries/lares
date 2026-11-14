@@ -565,6 +565,39 @@ describe('on a server in UTC, as a fresh install leaves it', () => {
     expect((await engine(verifyArgs(STORE_A))).code).toBe(0);
   }, 600_000);
 
+  it('an apply that would have to wait behind an agent gives up after its lock timeout and changes nothing', async () => {
+    await twoAgents();
+    await upgradeStores();
+    // A queue table without its row policy: the apply creates it, with a lock no reader may share.
+    await asOwner(STORE_A, (owner) => owner.query('DROP POLICY "runtime__private_known_crontabs" ON graphile_worker."_private_known_crontabs"'));
+    const before = await schemaOf(STORE_A);
+    // An agent in the middle of a transaction that has read that table.
+    const agent = login('lares_workflow', 'workflow', STORE_A);
+    const held = await agent.connect();
+    try {
+      await held.query('BEGIN');
+      await held.query('SELECT count(*) FROM graphile_worker._private_known_crontabs');
+      const started = Date.now();
+      const busy = await engine(applyArgs(STORE_A));
+      const waited = Date.now() - started;
+      expect(busy.code).toBe(1);
+      expect(busy.stderr).toContain('workflow stores: the store was busy: something held a table this change needs for more than 10 seconds, so nothing was changed on it. Run the same command again');
+      expect(waited).toBeGreaterThanOrEqual(10_000);
+      expect(waited).toBeLessThan(60_000);
+      // The agent was never interrupted, and the store is exactly as it was.
+      expect((await held.query('SELECT 1 AS still')).rows[0].still).toBe(1);
+      await held.query('COMMIT');
+    } finally {
+      held.release();
+      await agent.end();
+    }
+    expect(await schemaOf(STORE_A)).toEqual(before);
+    // Once the agent's transaction has ended, the same apply goes through.
+    const applied = await engine(applyArgs(STORE_A));
+    expect(applied.code, applied.stderr).toBe(0);
+    expect((await engine(verifyArgs(STORE_A))).code).toBe(0);
+  }, 600_000);
+
   it('refuses a store whose record is not exactly what the previous release left, before anything is changed', async () => {
     await twoAgents();
     const untouched = await schemas();

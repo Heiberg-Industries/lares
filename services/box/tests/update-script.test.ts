@@ -1214,6 +1214,40 @@ describe("upgrading the agent stores during an update", { timeout: 60_000 }, () 
     }
   });
 
+  it("when a later store fails after an earlier one was repaired, says which ones already changed and not to restart the keeper", () => {
+    const r = run(["--release", release, "--yes"], { STUB_STORES: STORES, STUB_PERMISSIONS_STALE: `${STORE_A} ${STORE_B}`, STUB_APPLY_FAIL: STORE_B });
+    expect(r.code, r.stderr).toBe(70);
+    expect(steps()).toEqual([...LOOK, ...UNTIL_STORES, "verify template", "verify A", "permissions A", "verify A", "verify B", "permissions B", "record finish failed"]);
+    expect(r.stderr).toContain("update: I stopped before starting the new images: the store of agent other-agent: its permissions could not be brought up to this release's list (Workflow runtime table privileges are incomplete).");
+    expect(r.stderr).toContain("update: nothing was switched and nothing was stopped for this: the software you were running is still running.");
+    expect(r.stderr).toContain("update: before that, this update already gave this release's permissions to: the store of agent example-agent. Your server keeps running as it is now, but the keeper you are running checks for its own release's permissions exactly, so it would refuse these the next time it starts.");
+    expect(r.stderr).toContain("update: so do not restart the keeper or the server until this update has been run again and has finished.");
+    expect(r.stderr).toContain("update: fix the cause and run the same update again.");
+    expect(steps().join("\n")).not.toMatch(/stop|start |switch/);
+    expect(compose()).toBe(composeYaml());
+    // A failure with nothing repaired before it gives no such warning.
+    writeFileSync(log, "");
+    rmSync(`${log}.applied`, { force: true });
+    const first = run(["--release", release, "--yes"], { STUB_STORES: STORES, STUB_PERMISSIONS_STALE: STORE_A, STUB_APPLY_FAIL: STORE_A });
+    expect(first.code).toBe(70);
+    expect(first.stderr).not.toContain("do not restart the keeper");
+  });
+
+  it("on a re-run after an earlier run upgraded every store, a failing repair says the agents are stopped, never that they run", () => {
+    writeNote({ release: "2026-10-01", phase: "migrated", agents: ["example-agent", "other-agent"], snapshotId: "9f8e7d6c", updateId: "40" });
+    const r = run(["--release", release, "--yes"], { STUB_STORES: STORES, STUB_VERIFY_FAIL: STORE_A });
+    expect(r.code, r.stderr).toBe(70);
+    expect(steps()).toEqual([...LOOK, ...UNTIL_STORES, "verify template", "verify A", "permissions A", "verify A", "record finish failed"]);
+    expect(r.stderr).toContain("update: I stopped before starting the new images: the store of agent example-agent: it still did not pass its check after this release's permissions were applied");
+    expect(r.stderr).toContain("update: your agent stores are already on the new format, and your agents are stopped. Fix the cause and run the same update again.");
+    expect(r.stderr).toContain("sudo lares restore --snapshot 9f8e7d6c), not rollback.sh");
+    expect(r.stderr).not.toContain("nothing was stopped");
+    expect(r.stderr).not.toContain("still running");
+    expect(r.stderr).not.toContain("do not restart the keeper");
+    expect(steps().join("\n")).not.toMatch(/stop|start |switch/);
+    expect(note()).toMatchObject({ phase: "migrated", agents: ["example-agent", "other-agent"] });
+  });
+
   it("a dry run with every store at this release checks their permissions, says what it would repair, and applies nothing", () => {
     const r = run(["--release", release, "--dry-run"], { STUB_STORES: STORES, STUB_PERMISSIONS_STALE: STORE_B });
     expect(r.stderr).toBe("");
