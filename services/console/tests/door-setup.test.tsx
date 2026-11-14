@@ -6,8 +6,8 @@ const mocks=vi.hoisted(()=>({
   status:vi.fn(),connect:vi.fn(),verify:vi.fn(),enable:vi.fn(),apply:vi.fn(),webhook:vi.fn(),claim:vi.fn(),
   states:[] as any[],setters:[] as any[],
 }));
-// Order of useState calls in DoorSetup: rows, progress, message, error, unknown, connect, tokens, signing.
-const STATE={rows:0,progress:1,message:2,error:3,unknown:4,connect:5,tokens:6,signing:7};
+// Order of useState calls in DoorSetup: rows, progress, message, error, unknown, connect, tokens, signing, follows.
+const STATE={rows:0,progress:1,message:2,error:3,unknown:4,connect:5,tokens:6,signing:7,follows:8};
 vi.mock('react',async original=>({...await original<typeof import('react')>(),useEffect:()=>{},useRef:(v:unknown)=>({current:v}),useState:(initial:unknown)=>{const i=mocks.setters.length,set=vi.fn();mocks.setters.push(set);return [mocks.states[i]??initial,set];}}));
 vi.mock('../app/actions/definition',()=>({doorStatus:mocks.status,connectDoor:mocks.connect,verifyDoor:mocks.verify,setDoorEnabled:mocks.enable,applyConnections:mocks.apply,registerTelegram:mocks.webhook,claimCode:mocks.claim}));
 import {DoorSetup} from '../components/DoorSetup';
@@ -83,6 +83,21 @@ it('connects Telegram from the token alone: save, check, enable, apply, register
  expect(mocks.connect).toHaveBeenCalledWith({name:'example',kind:'telegram',secret:'123:abc'});
  expect(mocks.apply).toHaveBeenCalledWith({name:'example',hash:'b'.repeat(64)});
  await vi.waitFor(()=>{const calls=mocks.setters[STATE.connect].mock.calls;expect(calls.at(-1)?.[0]).toMatchObject({kind:'telegram',link:`https://t.me/example_bot?start=${'C'.repeat(24)}`});});
+ expect(mocks.setters[STATE.follows]).not.toHaveBeenCalled();
+});
+it('says where messages now go only when switching the door on also moved them there',async()=>{
+ const sentence='Briefs and other messages now go to Telegram first; change this under Where messages go.';
+ let enabled=false;
+ mocks.status.mockImplementation(async()=>ok([row('telegram',{configured:true,enabled,applied:enabled})]));
+ mocks.connect.mockResolvedValue(ok({}));mocks.verify.mockResolvedValue(ok({kind:'telegram',username:'example_bot'}));
+ mocks.enable.mockImplementation(async()=>{enabled=true;return ok({hash:'b'.repeat(64),backup:{ok:true},messagesFollow:'telegram'});});
+ mocks.webhook.mockResolvedValue(ok({registered:true}));mocks.claim.mockResolvedValue(ok({code:'C'.repeat(24),expiresAt:new Date().toISOString(),instruction:''}));
+ mocks.states[STATE.tokens]={telegram:'123:abc'};
+ findAll(DoorSetup(cos),'Connect')[1].props.onClick();
+ await vi.waitFor(()=>expect(mocks.claim).toHaveBeenCalled());
+ expect(mocks.setters[STATE.follows]).toHaveBeenCalledWith(sentence);
+ mocks.setters=[];mocks.states=[];mocks.states[STATE.follows]=sentence;
+ expect(renderToStaticMarkup(DoorSetup(cos))).toContain(sentence);
 });
 it('asks the page to re-read the agent status after a door action, whether it worked or not',async()=>{
  // A door switch can stop the agent; the Status box must not keep saying "Running" from before it.

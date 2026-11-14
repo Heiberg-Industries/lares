@@ -8,7 +8,7 @@
  * today's behaviour when nothing is saved, and the conversion back to the definition's map.
  */
 import {
-  DELIVERY_DOORS, DELIVERY_KINDS, DELIVERY_KIND_LABEL, configuredDoors, defaultDelivery,
+  DELIVERY_DOORS, DELIVERY_KINDS, DELIVERY_KIND_LABEL, DOOR_LABEL, configuredDoors, defaultDelivery,
   type DeliveryDoor, type DeliveryKind, type DeliveryMap,
 } from "@lares/agent-kit/delivery";
 
@@ -110,4 +110,29 @@ export function withStartingDelivery<D extends { delivery?: DeliveryMap; doors?:
     .map((d) => d.kind)
     .filter((k): k is "slack" | "telegram" => k === "slack" || k === "telegram");
   return { ...definition, delivery: defaultDelivery(chatDoors) };
+}
+
+/**
+ * The list to save when a chat door is switched on: a chief of staff that has never had a chat door,
+ * and whose list is still the one it was created with (every kind to web chat alone), follows its
+ * first chat app - every kind to that door first, then web chat. Undefined means "leave the list as
+ * it is": another role, a second door, a door switched off, or a list that differs in any way. A
+ * starting list the owner deliberately kept cannot be told apart from an untouched one; that is accepted.
+ */
+export function deliveryFollowingFirstChatDoor(
+  definition: { role?: string; delivery?: DeliveryMap; doors?: { kind: string }[]; channels?: string[] },
+  door: string,
+): Record<DeliveryKind, DeliveryDoor[]> | undefined {
+  if (definition.role !== "chief-of-staff" || (door !== "slack" && door !== "telegram")) return undefined;
+  const hadChatDoor = (definition.doors ?? (definition.channels ?? []).map((kind) => ({ kind })))
+    .some((d) => d.kind === "slack" || d.kind === "telegram");
+  const saved = Object.entries(definition.delivery ?? {});
+  const starting = saved.length === DELIVERY_KIND_LIST.length
+    && saved.every(([kind, doors]) => DELIVERY_KIND_LIST.includes(kind as DeliveryKind) && doors.length === 1 && doors[0] === "web");
+  return !hadChatDoor && starting ? defaultDelivery([door]) : undefined;
+}
+
+/** What the "Connect doors" section says when the list followed the first chat app. */
+export function messagesFollowText(door: "slack" | "telegram"): string {
+  return `Briefs and other messages now go to ${DOOR_LABEL[door]} first; change this under Where messages go.`;
 }

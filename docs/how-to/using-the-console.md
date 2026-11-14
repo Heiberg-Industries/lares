@@ -109,7 +109,9 @@ Slack, Telegram). Number the doors 1st, 2nd and 3rd for each row. The message tr
 order, skipping any door that is not connected, and **web chat is always the last resort**, so
 nothing is dropped. A door that is not connected is labelled "(not connected)". Rows you have not
 saved are filled in with what happens today and marked "today"; **Save** writes every row, and it
-applies the next time that message is sent.
+applies the next time that message is sent. A new chief of staff starts with every row on web chat
+and switches to its first connected chat app by itself ("Briefs and other messages now go to
+Telegram first"); after that, only you change the grid.
 
 When a message went somewhere other than you asked, the page says so ("Morning brief went to web
 chat: Telegram is not connected"), and so does the Proactivity ledger. The sentence goes away when
