@@ -245,11 +245,17 @@ beforeEach(() => {
       '    printf "template\\tempty_workflow\\n"',
       '    for pair in ${STUB_STORES:-}; do printf "store\\t%s\\t%s\\n" "${pair%%:*}" "${pair#*:}"; done',
       "    ;;",
+      // Permissions: STUB_PERMISSIONS_STALE names databases (or `template`) whose check fails until
+      // their permissions have been applied, as a store missing one grant does.
       '  *"workflow-template.ts apply"*)',
       '    for database in ${STUB_APPLY_FAIL:-}; do case "$*" in *"$database"*) echo "Workflow runtime table privileges are incomplete" >&2; exit 1 ;; esac; done',
+      '    all="$*"; target=template; case "$all" in *"--database "*) target="${all#*--database }"; target="${target%% *}" ;; esac',
+      '    echo "$target" >> "$STUB_LOG.applied"',
       "    ;;",
       '  *"workflow-template.ts verify-database"*|*--verify-workflow-template*)',
       '    for database in ${STUB_VERIFY_FAIL:-}; do case "$*" in *"$database"*) echo "Workflow schema step record is not at the pinned head (20 recorded, 30 expected)" >&2; exit 1 ;; esac; done',
+      '    all="$*"; target=template; case "$all" in *"--database "*) target="${all#*--database }"; target="${target%% *}" ;; esac',
+      '    case " ${STUB_PERMISSIONS_STALE:-} " in *" $target "*) grep -qx "$target" "$STUB_LOG.applied" 2>/dev/null || { echo "Workflow runtime function privileges are incomplete" >&2; exit 1; } ;; esac',
       "    ;;",
       "  *migrate*)",
       '    [ -z "${STUB_MIGRATE_FAIL:-}" ] || { echo "migrations: 052 is out of order" >&2; exit 1; }',
@@ -422,6 +428,7 @@ describe("updating this installation", { timeout: 30_000 }, () => {
         if (/update-plan/.test(line)) return "list the agent stores";
         if (/ sh check /.test(line)) return "check a store";
         if (/psql/.test(line)) return "read backup status";
+        if (/--verify-workflow-template|workflow-template\.ts verify-database/.test(line)) return "check a store's permissions";
         if (PULL.test(line)) return "docker compose pull";
         if (/^docker pull /.test(line)) return "docker pull";
         if (UP.test(line)) return "docker compose up -d";
@@ -444,6 +451,9 @@ describe("updating this installation", { timeout: 30_000 }, () => {
       "docker pull",
       "docker pull",
       "migrate",
+      // No store needed upgrading, so each one's permissions are checked (here only the template's)
+      // before the switch; they pass, so nothing is applied.
+      "check a store's permissions",
       "docker compose up -d",
       "docker compose ps",
       "record finish",
@@ -825,6 +835,7 @@ describe("updating a box whose engine is an image", { timeout: 60_000 }, () => {
       "bin/update-record.ts", // previous-release
       "bin/update-record.ts", // begin
       "migrate.ts",
+      "bin/database-setup.ts", // --verify-workflow-template: no store needs upgrading, so the permissions are checked
       "bin/update-record.ts", // finish
     ]);
     for (const line of runs) {
@@ -913,7 +924,12 @@ describe("updating a box whose engine is an image", { timeout: 60_000 }, () => {
     expect(plan).toContain(`src=${operatorPasswordFile},dst=${operatorPasswordFile},readonly`);
     expect(plan).toContain(`--operator-password-file ${operatorPasswordFile}`);
     expect(plan).not.toContain("PGPASSWORD");
-    const dbRuns = engineRuns().filter((l) => !/update-record\.ts release|workflow-template\.ts/.test(l));
+    // So does the check of the template's permissions, with the agents' login file beside it.
+    const permissions = engineRuns().find((l) => /database-setup\.ts --verify-workflow-template/.test(l))!;
+    expect(permissions).toContain(`src=${operatorPasswordFile},dst=${operatorPasswordFile},readonly`);
+    expect(permissions).toContain(`src=${secrets}/workflow-password,dst=${secrets}/workflow-password,readonly`);
+    expect(permissions).not.toContain("PGPASSWORD");
+    const dbRuns = engineRuns().filter((l) => !/update-record\.ts release|workflow-template\.ts|database-setup\.ts/.test(l));
     expect(dbRuns).toHaveLength(4);
     const migration = dbRuns.find((line) => /migrate\.ts/.test(line))!;
     expect(migration).toContain(`src=${operatorPasswordFile},dst=${operatorPasswordFile},readonly`);
@@ -1142,13 +1158,106 @@ describe("upgrading the agent stores during an update", { timeout: 60_000 }, () 
     expect(r.stdout).toContain("sudo lares agent refresh");
   });
 
-  it("stops nothing when every store is already at this release", () => {
+  it("stops nothing when every store is already at this release, and only checks their permissions", () => {
     const r = run(["--release", release, "--yes"], { STUB_STORES: STORES });
+    expect(r.stderr).toBe("");
     expect(r.code).toBe(0);
-    expect(steps()).toEqual([...LOOK, ...UNTIL_STORES, "switch", "did they come up", "record finish"]);
+    // Checked after the migrations and before the switch; every check passes, so nothing is applied.
+    expect(steps()).toEqual([...LOOK, ...UNTIL_STORES, ...VERIFY, "switch", "did they come up", "record finish"]);
     expect(existsSync(noteFile())).toBe(false);
     expect(r.stdout).toContain("every agent store already has this release's workflow tables, so nothing is stopped for that");
+    expect(r.stdout).toContain("update: checking the permissions of every agent store against this release's list.");
+    expect(r.stdout).toContain("update: every agent store has this release's permissions.");
     expect(r.stdout).not.toContain("your agents are stopped");
+  });
+
+  it("repairs only the store whose permissions fail its check, with everything running, checks it again, then switches", () => {
+    for (const [stale, name, label] of [
+      [STORE_A, "A", "the store of agent example-agent"],
+      ["template", "template", "the template new agents are made from"],
+    ] as const) {
+      writeFileSync(log, "");
+      rmSync(`${log}.applied`, { force: true });
+      writeFileSync(composeFile, composeYaml());
+      const r = run(["--release", release, "--yes"], { STUB_STORES: STORES, STUB_PERMISSIONS_STALE: stale });
+      expect(r.stderr).toBe("");
+      expect(r.code).toBe(0);
+      const repaired = VERIFY.flatMap((step) => step === `verify ${name}` ? [step, `permissions ${name}`, step] : [step]);
+      expect(steps()).toEqual([...LOOK, ...UNTIL_STORES, ...repaired, "switch", "did they come up", "record finish"]);
+      expect(steps().join("\n")).not.toMatch(/stop|start |remove container/);
+      expect(existsSync(noteFile())).toBe(false);
+      expect(r.stdout).toContain(`update: ${label} did not have exactly this release's permissions. They were applied, and it passes its check now.`);
+      expect(r.stdout).not.toContain("every agent store has this release's permissions");
+      expect(calls()).toMatch(stale === "template" ? /workflow-template\.ts apply --host/ : new RegExp(`workflow-template\\.ts apply-database .*--database ${STORE_A} `));
+    }
+  });
+
+  it("stops before the switch when the repair fails: nothing stopped, the compose file back, the record failed", () => {
+    for (const [env, applied, reason] of [
+      [{ STUB_PERMISSIONS_STALE: STORE_B, STUB_APPLY_FAIL: STORE_B }, ["verify template", "verify A", "verify B", "permissions B"],
+        "the store of agent other-agent: its permissions could not be brought up to this release's list (Workflow runtime table privileges are incomplete)"],
+      [{ STUB_VERIFY_FAIL: STORE_A }, ["verify template", "verify A", "permissions A", "verify A"],
+        "the store of agent example-agent: it still did not pass its check after this release's permissions were applied (Workflow schema step record is not at the pinned head (20 recorded, 30 expected))"],
+    ] as const) {
+      writeFileSync(log, "");
+      rmSync(`${log}.applied`, { force: true });
+      const r = run(["--release", release, "--yes"], { STUB_STORES: STORES, ...env });
+      expect(r.code, r.stderr).toBe(70);
+      expect(steps()).toEqual([...LOOK, ...UNTIL_STORES, ...applied, "record finish failed"]);
+      expect(calls()).toContain(`record finish 41 failed ${reason}`);
+      expect(r.stderr).toContain(`update: I stopped before starting the new images: ${reason}.`);
+      expect(r.stderr).toContain("update: nothing was switched and nothing was stopped for this: the software you were running is still running.");
+      expect(r.stderr).toContain("update: fix the cause and run the same update again.");
+      expect(steps().join("\n")).not.toMatch(/stop|start |switch|remove container/);
+      expect(compose()).toBe(composeYaml());
+      expect(existsSync(noteFile())).toBe(false);
+    }
+  });
+
+  it("when a later store fails after an earlier one was repaired, says which ones already changed and not to restart the keeper", () => {
+    const r = run(["--release", release, "--yes"], { STUB_STORES: STORES, STUB_PERMISSIONS_STALE: `${STORE_A} ${STORE_B}`, STUB_APPLY_FAIL: STORE_B });
+    expect(r.code, r.stderr).toBe(70);
+    expect(steps()).toEqual([...LOOK, ...UNTIL_STORES, "verify template", "verify A", "permissions A", "verify A", "verify B", "permissions B", "record finish failed"]);
+    expect(r.stderr).toContain("update: I stopped before starting the new images: the store of agent other-agent: its permissions could not be brought up to this release's list (Workflow runtime table privileges are incomplete).");
+    expect(r.stderr).toContain("update: nothing was switched and nothing was stopped for this: the software you were running is still running.");
+    expect(r.stderr).toContain("update: before that, this update already gave this release's permissions to: the store of agent example-agent. Your server keeps running as it is now, but the keeper you are running checks for its own release's permissions exactly, so it would refuse these the next time it starts.");
+    expect(r.stderr).toContain("update: so do not restart the keeper or the server until this update has been run again and has finished.");
+    expect(r.stderr).toContain("update: fix the cause and run the same update again.");
+    expect(steps().join("\n")).not.toMatch(/stop|start |switch/);
+    expect(compose()).toBe(composeYaml());
+    // A failure with nothing repaired before it gives no such warning.
+    writeFileSync(log, "");
+    rmSync(`${log}.applied`, { force: true });
+    const first = run(["--release", release, "--yes"], { STUB_STORES: STORES, STUB_PERMISSIONS_STALE: STORE_A, STUB_APPLY_FAIL: STORE_A });
+    expect(first.code).toBe(70);
+    expect(first.stderr).not.toContain("do not restart the keeper");
+  });
+
+  it("on a re-run after an earlier run upgraded every store, a failing repair says the agents are stopped, never that they run", () => {
+    writeNote({ release: "2026-10-01", phase: "migrated", agents: ["example-agent", "other-agent"], snapshotId: "9f8e7d6c", updateId: "40" });
+    const r = run(["--release", release, "--yes"], { STUB_STORES: STORES, STUB_VERIFY_FAIL: STORE_A });
+    expect(r.code, r.stderr).toBe(70);
+    expect(steps()).toEqual([...LOOK, ...UNTIL_STORES, "verify template", "verify A", "permissions A", "verify A", "record finish failed"]);
+    expect(r.stderr).toContain("update: I stopped before starting the new images: the store of agent example-agent: it still did not pass its check after this release's permissions were applied");
+    expect(r.stderr).toContain("update: your agent stores are already on the new format, and your agents are stopped. Fix the cause and run the same update again.");
+    expect(r.stderr).toContain("sudo lares restore --snapshot 9f8e7d6c), not rollback.sh");
+    expect(r.stderr).not.toContain("nothing was stopped");
+    expect(r.stderr).not.toContain("still running");
+    expect(r.stderr).not.toContain("do not restart the keeper");
+    expect(steps().join("\n")).not.toMatch(/stop|start |switch/);
+    expect(note()).toMatchObject({ phase: "migrated", agents: ["example-agent", "other-agent"] });
+  });
+
+  it("a dry run with every store at this release checks their permissions, says what it would repair, and applies nothing", () => {
+    const r = run(["--release", release, "--dry-run"], { STUB_STORES: STORES, STUB_PERMISSIONS_STALE: STORE_B });
+    expect(r.stderr).toBe("");
+    expect(r.code).toBe(0);
+    expect(steps()).toEqual([...LOOK, ...VERIFY]);
+    expect(r.stdout).toContain("update: the store of agent other-agent did not pass its permissions check (Workflow runtime function privileges are incomplete). The update would apply this release's list to it, with your agents running, and check it again.");
+    expect(r.stdout).not.toContain("every agent store has this release's permissions");
+    expect(r.stdout).toContain("update: this was a dry run. Nothing has been changed.");
+    expect(existsSync(`${log}.applied`)).toBe(false);
+    expect(compose()).toBe(composeYaml());
   });
 
   it("a dry run shows what would happen to the stores and stops nothing", () => {
@@ -1378,7 +1487,7 @@ describe("upgrading the agent stores during an update", { timeout: 60_000 }, () 
     writeFileSync(log, "");
     const again = run(["--release", release, "--yes"], ALL_OLD);
     expect(again.code).toBe(0);
-    expect(steps()).toEqual([...LOOK, ...UNTIL_STORES, "switch", "did they come up", "record finish"]);
+    expect(steps()).toEqual([...LOOK, ...UNTIL_STORES, ...VERIFY, "switch", "did they come up", "record finish"]);
     expect(again.stdout).toContain("an earlier run of this update already upgraded and verified every agent store");
     expect(again.stdout).toContain("update: your agents are stopped. They start again when this update finishes");
     expect(note()).toMatchObject({ phase: "migrated", agents: ["example-agent", "other-agent"], snapshotId: "9f8e7d6c" });
