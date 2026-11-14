@@ -7,6 +7,7 @@ import {connectDoor,doorStatus,claimCode,registerTelegram,setDoorEnabled,applyCo
 import { Button } from '@lares/ui/primitives/button';
 import { SaveEndsConversations } from './SaveEndsConversations';
 import {sendTestBrief,testBriefStatus,type TestBriefStatus} from '../app/actions/delivery';
+import {messagesFollowText} from '../lib/delivery';
 export interface DoorStatus {kind:string;enabled:boolean;configured?:boolean;claimed:boolean;pending:boolean;pending_reason?:string;applied:boolean;webhook_set_at?:string}
 /** What the owner still has to do once a chat door is applied: tap the link (Telegram) or send the message (Slack). */
 export interface ConnectStep {kind:'slack'|'telegram';code:string;expiresAt:string;link?:string;message?:string;username?:string;who?:string}
@@ -20,6 +21,8 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
  onRuntimeChanged?:()=>void}) {
  const [rows,setRows]=useState<DoorStatus[]>([]),[progress,setProgress]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState(''),[unknown,setUnknown]=useState(false),[connect,setConnect]=useState<ConnectStep|null>(null);
  const [tokens,setTokens]=useState<Record<string,string>>({}),[signing,setSigning]=useState('');
+ /** Set once a door switch also moved "Where messages go" to that door; stays until the page reloads. */
+ const [follows,setFollows]=useState('');
  const [brief,setBrief]=useState<TestBriefStatus|null>(null),[briefRefusal,setBriefRefusal]=useState<{kind:string;text:string}|null>(null),[asking,setAsking]=useState(false);
  const busy=Boolean(progress);
  const testsBrief=p.role==='chief-of-staff';
@@ -44,8 +47,11 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
   finally{setAsking(false);}
  }
  async function run(fn:()=>Promise<void>){setProgress('Working…');setError('');setMessage('');try{await fn();}catch(e){setError(e instanceof Error?e.message:'Door operation failed.');setUnknown(previous=>previous||!(e instanceof Error&&'unknown'in e&&e.unknown===false));}finally{setProgress('');try{await refresh();}catch{}p.onRuntimeChanged?.();}}
+ /** Applies whatever is waiting. A failed Apply can put the earlier definition back, door and "Where messages go"
+  * alike, so the "now go to" sentence goes with it rather than stay untrue next to the error. */
+ async function applyWaiting(){try{return unwrap(await applyConnections({name:p.name,hash:latestHash.current}));}catch(e){setFollows('');throw e;}}
  /** Applies whatever is waiting, then reloads the page so every part of it shows the new state. */
- async function applyAndReload(label:string){setProgress(label);unwrap(await applyConnections({name:p.name,hash:latestHash.current}));reload();}
+ async function applyAndReload(label:string){setProgress(label);await applyWaiting();reload();}
  // After the one-time step is shown: watch for the owner to arrive, then apply the claim by itself.
  useEffect(()=>{
   if(!connect)return;let stopped=false;
@@ -76,9 +82,9 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
   let current=await refresh();
   if(!current.find(r=>r.kind===kind)?.enabled){
    setProgress('Switching the door on…');const saved=unwrap(await setDoorEnabled(p.name,kind,true));
-   latestHash.current=saved.hash;p.onDefinitionChanged?.(saved.hash);current=await refresh();
+   latestHash.current=saved.hash;p.onDefinitionChanged?.(saved.hash);if(saved.messagesFollow)setFollows(messagesFollowText(saved.messagesFollow));current=await refresh();
   }
-  if(current.some(r=>r.pending)){setProgress('Applying (restarts the agent, about a minute)…');unwrap(await applyConnections({name:p.name,hash:latestHash.current}));}
+  if(current.some(r=>r.pending)){setProgress('Applying (restarts the agent, about a minute)…');await applyWaiting();}
   await showConnectStep(kind);
  }
  const copy=(text:string,note:string)=>{void (async()=>{try{await navigator.clipboard.writeText(text);setMessage(note);}catch{setError('Could not copy; select the text and copy it by hand.');}})();};
@@ -108,9 +114,10 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
  {kind==='telegram'&&row?.enabled&&!row.pending&&createUrl&&<Button variant="outline" type="button" onClick={()=>void run(async()=>{unwrap(await registerTelegram(p.name));setMessage('Webhook registered.');})}>Register Telegram webhook</Button>}
  {step?.link&&<div role="status" className="lares-door-connect"><p><strong>Last step:</strong> open Telegram with this link and press Start.</p><p><a className="lares-door-tap" href={step.link} target="_blank" rel="noreferrer">Tap to connect</a></p><p>This page notices by itself and finishes applying. The link works once, for 10 minutes{Number.isFinite(expiredAt)&&expiredAt<Date.now()?' (it has expired; ask for a new one above)':''}.</p></div>}
  {step?.message&&<div role="status" className="lares-door-connect"><p><strong>Last step:</strong> {step.who?`open a direct message with ${step.who}`:'open a direct message with the app'} in Slack and send exactly:</p><p><code>{step.message}</code> <Button variant="outline" type="button" onClick={()=>copy(step.message!,'Copied. Paste it into the direct message with the app.')}>Copy</Button></p><p>This page notices by itself and finishes applying. The code works once, for 10 minutes{Number.isFinite(expiredAt)&&expiredAt<Date.now()?' (it has expired; ask for a new one above)':''}.</p></div>}</>
- {touched&&<Button variant="outline" type="button" onClick={()=>void run(async()=>{const result=unwrap(await setDoorEnabled(p.name,kind,!row?.enabled));latestHash.current=result.hash;p.onDefinitionChanged?.(result.hash);setMessage(`Door ${row?.enabled?'disabled':'enabled'} in the saved definition.${result.backup.ok?'':` ${result.backup.message??'Git backup failed; definition remains saved.'}`} Apply connection changes to update runtime mounts.`);})}>{row?.enabled?'Disable door':'Enable door'}</Button>}
+ {touched&&<Button variant="outline" type="button" onClick={()=>void run(async()=>{const result=unwrap(await setDoorEnabled(p.name,kind,!row?.enabled));latestHash.current=result.hash;p.onDefinitionChanged?.(result.hash);if(result.messagesFollow)setFollows(messagesFollowText(result.messagesFollow));setMessage(`Door ${row?.enabled?'disabled':'enabled'} in the saved definition.${result.backup.ok?'':` ${result.backup.message??'Git backup failed; definition remains saved.'}`} Apply connection changes to update runtime mounts.`);})}>{row?.enabled?'Disable door':'Enable door'}</Button>}
  </FieldGroup>;})}
  {touchedPending&&<Button variant="outline" type="button" disabled={busy||unknown} onClick={()=>void run(()=>applyAndReload('Applying (restarts the agent, about a minute)…'))}>Apply connection changes (restarts agent)</Button>}
+ {follows&&<p role="status">{follows}</p>}
  {message&&<p role="status">{message}</p>}{error&&<p role="alert">{error}{unknown?' Some changes may already have taken effect. Inspect current state before retrying.':''}</p>}
  {unknown&&<p><a href={`/agents/${encodeURIComponent(p.name)}/edit`}>Reload this agent’s current state</a> before trying again.</p>}
  </section>;

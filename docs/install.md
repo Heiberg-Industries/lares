@@ -547,8 +547,10 @@ is a grid: a row per kind of message, a column per door (web chat, Slack, Telegr
 doors 1st, 2nd and 3rd per row. The message tries them in order and skips doors that are not
 connected. **Web chat is always the last resort**, so a message is never dropped: if nothing you
 chose is connected, it lands in web chat and the Proactivity page records why ("Morning brief went
-to web chat: Telegram is not connected"). An agent with nothing saved keeps its usual door, and
-falls back to web chat the same way. Quiet hours, do-not-disturb and daily limits apply to
+to web chat: Telegram is not connected"). A chief of staff made in the console starts with every
+row on web chat; when you connect its first chat app, every row switches to that app first, then
+web chat, and the "Connect doors" section says so. A second app changes nothing; number it in the
+grid. An agent with nothing saved keeps its usual door, and falls back to web chat the same way. Quiet hours, do-not-disturb and daily limits apply to
 whichever door is used. Saving a brief hour or a routing that would put a brief inside the chosen
 door's quiet hours is refused, with the fix in the message.
 
