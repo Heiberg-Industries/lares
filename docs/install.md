@@ -530,6 +530,14 @@ Then:
 E-mail triage tells you about new mail on a chat door; where those messages go is your choice (next
 subsection).
 
+**A test brief.** Once a chief of staff's Slack or Telegram door reads "Connected", a button beside
+it, "Send a test brief to Slack" (or Telegram), has the agent write this morning's brief now and send
+it into that chat, starting with "Test brief". It arrives within about two minutes. It costs about one
+normal brief from your own monthly limit, goes out even in quiet hours or do-not-disturb, and never
+counts as the day's real brief. It is refused, with a sentence, when the agent is not running, the
+door is not connected, the agent is shared with someone else, the morning brief is off, a test is
+already on its way, or after ten in a day. Built and unit-tested, not yet seen on a real install.
+
 ### Choosing where messages go
 
 Each agent starts some conversations itself: the morning and evening brief, the weekly summary,

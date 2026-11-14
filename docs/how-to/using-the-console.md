@@ -92,6 +92,14 @@ schedules, where messages go, outside tools) takes effect when you save, with no
 change ends the agent's open web-chat conversations, and any approval waiting in them; the page says
 so before you save. Start a new conversation afterwards.
 
+For a chief of staff, each door that reads "Connected" has **Send a test brief to Slack** (or
+Telegram): the agent writes this morning's brief now and sends it there, starting with "Test brief",
+within about two minutes. The line below the button says "Sent to Telegram at 10:42", or why it was
+not sent. It costs about one normal brief from your own monthly limit, ignores quiet hours and
+do-not-disturb because you asked, and never counts as the day's brief. It is refused when the agent
+is not running, the door is not connected, the agent is shared, the morning brief is off, a test is
+already on its way, or after ten in a day. Built and unit-tested, not yet seen on a real install.
+
 ### Where messages go
 
 On the Schedules tab. A grid with one row per kind of message the agent starts by itself (morning
