@@ -7,7 +7,8 @@ runs `lares owner-bootstrap`, `lares budget setup`, creates and adopts an agent 
 real pages, sets the member limit there, runs `lares agent start`, holds a chat where a tool runs,
 an approval card is answered and the conversation carries on, edits the started agent's description on
 its page, then connects a Slack and a Telegram door on that page as the install guide orders it (the agent
-already started) and sends one message through each, sets up `lares backups`, then runs a
+already started) and sends one message through each, presses "Send a test brief" for each door on that page
+and follows each brief into its chat and onto the owner's bill, sets up `lares backups`, then runs a
 real `lares update` to a second build, runs `lares doctor`, simulates a reboot and waits for the agent to come back by itself. Up to there nothing writes to the
 database or edits an installation file the installer owns. It finishes by restoring a backup whose agent store the release before this
 one left onto this machine wiped and installed again (the last stage, further down, says what it changes and why).
@@ -85,6 +86,15 @@ CLAIM_REPLY = "Connected. Once setup finishes applying"
 DOOR_STEP_ATTEMPTS = 6
 # Words of eve's error copy, which must never be what a door turn posts into the chat.
 ERROR_COPY = ("I hit an error", "MODEL_CALL_FAILED", "/run/secrets")
+# What the stand-in model answers to a test brief's prompt (the product asks it to begin "Test brief"),
+# and the part of it a post into the chat must carry.
+BRIEF_REPLY_MARK = "PROOF_BRIEF_REPLY"
+BRIEF_REPLY = f"Test brief. {BRIEF_REPLY_MARK}"
+DOOR_LABEL = {"slack": "Slack", "telegram": "Telegram"}
+# One attempt of a test-brief browser step: the page's own longest wait (13 minutes) plus loading it.
+BRIEF_STEP_TIMEOUT = 960
+# The module the console, the chief of staff and this check share the test brief's words from.
+TEST_BRIEF_MODULE = REPO / "packages/agent-kit/src/delivery.ts"
 MEMBER_LIMIT = "15"
 EDITED_DESCRIPTION = "PROOF_EDITED_DESCRIPTION written on the console page while the agent runs."
 SAVE_WARNING = "open web-chat conversations, and any approval waiting in them. Start a new conversation afterwards."
@@ -111,7 +121,16 @@ LIMITS = [
     "A door's claim is applied by pressing Apply on the agent's page after the claim was sent, not by the page's own watch-and-apply.",
     "One member connects both doors, so who pays when a second member connects a door is not covered.",
     "Web chat's approval cards are all answered before any door is claimed; how web-chat approvals behave once a door is claimed is not exercised.",
-    "A scheduled brief sent into Slack or Telegram is not exercised here; that path is covered by unit tests only.",
+    "A brief started by the morning brief's own schedule run is sent into Slack and into Telegram by pressing the console's "
+    "'Send a test brief' button once for each, on the same route and payment as a scheduled brief (an owner job); the brief's "
+    "clock rule (only at minute 0 of its hour, no test in the three minutes before it) and its once-a-day rule are covered by "
+    "unit tests only, and a real brief at its hour is not waited for.",
+    "One member owns, adopted and claimed everything, so for a test brief 'charged to the right payer' cannot be told apart "
+    "from 'charged to the installation owner'; a shared agent's refused brief is covered by unit tests only.",
+    "A test brief's budget rows carry no conversation, so they are found by their time window and the agent's chat model: "
+    "another owner job on that model in the same minutes (a real brief or a digest into web chat) cannot be told apart from "
+    "it by the rows alone; the stand-in's record of the call carrying the product's marker is what ties the check to the test brief.",
+    "What eve does when a real brief meets a Telegram conversation still busy with a test brief is not exercised.",
     "Only a direct message is sent on Slack; a turn started by mentioning the agent in a room is not exercised.",
     "No refused door turn is exercised (another person, a Telegram group, a refusal by Keeper); the sentence a person then sees is covered by unit tests only.",
     "Each door's Connect and Apply restart the agent, which changes the runner's network while the page waits; the probe then tries the step again once the keeper has finished what the dropped attempt started, and the retry presses nothing that is already running or done (the attempts used are recorded under browserAttempts), so a single uninterrupted press is not shown here.",
@@ -416,7 +435,7 @@ def host_address() -> str:
     return output("hostname", "-I").split()[0]
 
 
-def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixture_image: str, key_value: str) -> pathlib.Path:
+def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixture_image: str, key_value: str, brief_marker: str) -> pathlib.Path:
     fixture = work / "fake"
     fixture.mkdir()
     shutil.copy(HERE / "fake-internet.mjs", fixture / "fake-internet.mjs")
@@ -433,6 +452,7 @@ def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixtur
         "approvalPrompt": "PROOF_ASK_APPROVAL", "approvalTool": APPROVAL_TOOL, "approvalInput": APPROVAL_INPUT, "approvalReply": APPROVAL_REPLY,
         "notePrompt": "PROOF_ASK_NOTE", "noteTool": NOTE_TOOL, "noteInput": NOTE_INPUT, "noteReply": NOTE_REPLY,
         "doorPrompt": DOOR_PROMPT, "doorReply": DOOR_REPLY,
+        "briefMarker": brief_marker, "briefReply": BRIEF_REPLY,
     }))
     run("docker", "run", "-d", "--name", "proof-fake", "--restart", "unless-stopped", "--user", "0:0", "--entrypoint", "node",
         "-v", f"{fixture}:/fixture", fixture_image, "/fixture/fake-internet.mjs", "serve", "/fixture")
@@ -500,6 +520,29 @@ def fake_calls(fixture: pathlib.Path) -> list[dict]:
     return [json.loads(line) for line in (fixture / "calls.jsonl").read_text().splitlines() if line.strip()]
 
 
+STRING_PART = re.compile(r'\s*("(?:[^"\\\n]|\\.)*")\s*([+;])')
+
+
+def product_constant(name: str) -> str:
+    """A string the product exports from packages/agent-kit/src/delivery.ts, read from that file as it is
+    (one double-quoted literal, or several joined with +), so this check never types the product's words a
+    second time. The images under test were built from the same checkout. Any other shape stops the probe
+    at its first stage: the stand-in could not recognise a test brief."""
+    source = TEST_BRIEF_MODULE.read_text()
+    start = re.search(rf"^export const {name}\s*=", source, re.MULTILINE)
+    if not start:
+        raise RuntimeError(f"{TEST_BRIEF_MODULE.relative_to(REPO)} exports no {name}")
+    rest, parts = source[start.end():], []
+    while True:
+        found = STRING_PART.match(rest)
+        if not found:
+            raise RuntimeError(f"{name} in {TEST_BRIEF_MODULE.relative_to(REPO)} is not a plain string")
+        parts.append(json.loads(found.group(1)))
+        rest = rest[found.end():]
+        if found.group(2) == ";":
+            return "".join(parts)
+
+
 # --- the owner's steps ---------------------------------------------------------------------------
 
 def wait_for_quiet_network() -> None:
@@ -515,20 +558,21 @@ def wait_for_quiet_network() -> None:
         time.sleep(1)
 
 
-def browser(step: str, settings_file: pathlib.Path, tls: dict[str, pathlib.Path], attempts: int = 3, before_retry=None) -> None:
+def browser(step: str, settings_file: pathlib.Path, tls: dict[str, pathlib.Path], attempts: int = 3, before_retry=None, timeout: int = 420) -> None:
     """Tries again only when the browser itself reports that interface change, never on a page's answer,
     and at most `attempts` times. A step that restarts the agent (a door's Connect or Apply) changes the
     runner's interfaces while its request is in flight, so it gets more attempts, and `before_retry` runs
     before each retry: there it waits until the keeper has finished what the dropped attempt started, so
     the retry finds the result and never starts the same Connect or Apply a second time.
-    Every step's attempts are recorded in the proof file, so a pass on the last one is visible."""
+    Every step's attempts are recorded in the proof file, so a pass on the last one is visible. `timeout` bounds
+    one attempt; a step that waits on the agent (a test brief) gets longer."""
     tries: list[str] = []
     proof.setdefault("browserAttempts", {})[step] = tries
     for attempt in range(attempts):
         if attempt and before_retry:
             before_retry()
         wait_for_quiet_network()
-        result = run("node", str(HERE / "browser.mjs"), step, str(settings_file), timeout=420, cwd=str(HERE),
+        result = run("node", str(HERE / "browser.mjs"), step, str(settings_file), timeout=timeout, cwd=str(HERE),
                      env={"NODE_EXTRA_CA_CERTS": str(tls["ca_cert"])}, check=False)
         if result.returncode == 0:
             tries.append("passed")
@@ -761,10 +805,12 @@ def agent_log_tail(lines: int = 150) -> dict:
     return {"container": container, "tail": every[-lines:], "doorOpenLines": [line for line in every if "door.open" in line][:20]}
 
 
-def settled_agent(kind: str, record: dict, release: dict, mark: str) -> dict:
+def settled_agent(kind: str, record: dict, release: dict, mark: str, check: str | None = None) -> dict:
     """Waits until the agent is settled before the door's message: the same container (id and start
     time) twice about 10 seconds apart, answering, nothing waiting, its applied definition the saved one,
-    and no keeper action on it still running. A hard check: a message into a restarting agent proves nothing."""
+    and no keeper action on it still running. A hard check: a message into a restarting agent proves nothing.
+    With `check`, that is the check's name, and it is recorded as passed too (the test-brief stage)."""
+    name = check or f"{kind}-agent-settled-before-the-message"
     query = ("SELECT json_build_object('pending', r.pending, 'appliedIsSaved', r.applied_definition = d.definition) "
              f"FROM agent_resources r JOIN agent_definitions d ON d.name = r.name WHERE r.name = '{AGENT}'")
     deadline = time.monotonic() + 240
@@ -781,13 +827,16 @@ def settled_agent(kind: str, record: dict, release: dict, mark: str) -> dict:
             if first == second and seen["answers"] and state.get("pending") is False and state.get("appliedIsSaved") is True and not busy:
                 record["settledBeforeMessage"] = {**seen, **agent_log_tail()}
                 save_proof()
+                if check:
+                    record["checks"][name] = True
+                    passed(name)
                 return first
         if time.monotonic() > deadline:
             record["settledBeforeMessage"] = {**seen, **agent_log_tail()}
-            record["checks"][f"{kind}-agent-settled-before-the-message"] = False
-            proof["checks"][f"{kind}-agent-settled-before-the-message"] = False
+            record["checks"][name] = False
+            proof["checks"][name] = False
             save_proof()
-            raise RuntimeError(f"{kind}-agent-settled-before-the-message failed: the agent did not settle within 4 minutes: {seen}")
+            raise RuntimeError(f"{name} failed: the agent did not settle within 4 minutes: {seen}")
         time.sleep(3)
 
 
@@ -1039,6 +1088,236 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
     else:
         record["checks"][f"{kind}-no-error-copy-posted"] = True
         passed(f"{kind}-no-error-copy-posted")
+
+
+# --- a test brief into each door, asked on the console ----------------------------------------------
+
+# The item key a real morning brief's ledger row carries (`morning-brief/<owner day>T<hour>`). A test brief
+# writes no ledger row at all; one that did would carry its own pass name instead of a slot.
+REAL_BRIEF_SLOT = re.compile(r"morning-brief/\d{4}-\d{2}-\d{2}T\d{1,2}")
+
+
+def agent_lines(*phrases: str, limit: int = 40) -> list[str]:
+    """Lines of the running proof agent's log with any of these fixed phrases, redacted and cut."""
+    container = agent_container()
+    if not container:
+        return ["the proof agent is not running"]
+    logs = run("docker", "logs", container["id"], check=False, show=False)
+    return [redact(line.strip())[:300] for line in (logs.stdout + "\n" + logs.stderr).splitlines() if any(phrase in line for phrase in phrases)][-limit:]
+
+
+def test_brief(kind: str, fixture: pathlib.Path, settings_file: pathlib.Path, tls: dict[str, pathlib.Path], brief_dir: pathlib.Path,
+               brief_type: str, release: dict, deferred: list[str]) -> None:
+    """Presses the door's "Send a test brief" button once on the agent's page, and follows the brief the
+    morning brief's own schedule run then sends: the request row the console wrote, the page's last
+    sentence, the model call carrying the product's marker at the stand-in, the budget rows of that window,
+    the post into the door's chat, and that nothing counted it as the day's brief. Every check is
+    reported at the end; none of them stops the probe, so a red run shows exactly which are false."""
+    chat = DOOR_CHAT[kind]
+    reply_methods = ((lambda method: method.startswith("chat.")) if kind == "slack"
+                     else (lambda method: method.startswith(("send", "edit")) and method != "sendChatAction"))
+    record: dict = {"checks": {}}
+    proof.setdefault("testBriefs", {})[kind] = record
+
+    def failed(check: str, why: str) -> None:
+        record["checks"][check] = False
+        proof["checks"][check] = False
+        save_proof()
+        print(f"FAIL (reported at the end): {check}: {why}", flush=True)
+        deferred.append(f"{check}: {why}")
+
+    def ok(check: str) -> None:
+        record["checks"][check] = True
+        passed(check)
+
+    # The agent is still before the press: the same container twice, nothing waiting or running in the keeper.
+    try:
+        record["containerAtPress"] = settled_agent(kind, record, release, keeper_audit_mark(release), check=f"test-brief-agent-settled-before-the-{kind}-press")
+    except RuntimeError as error:
+        record["containerAtPress"] = agent_container()
+        print(f"FAIL (reported at the end): {error}", flush=True)
+        deferred.append(str(error))
+    members = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member' ORDER BY id", release).splitlines()
+    owner = members[0] if len(members) == 1 and members[0] else None
+    t0 = read_only_query("SELECT now()", release)
+    calls_before = len(fake_calls(fixture))
+
+    def requests() -> list[dict]:
+        return json.loads(read_only_query(
+            "SELECT coalesce(json_agg(json_build_object('door', state->>'door', 'status', status, 'result', result, 'error', error, "
+            f"'byTheOwner', principal IN (SELECT id FROM users WHERE lower(primary_email) = lower('{OWNER_EMAIL}')), 'stepIndex', step_index, "
+            "'createdAt', created_at, 'lastStepAt', last_step_at, 'updatedAt', updated_at) ORDER BY created_at), '[]') FROM workflow_jobs "
+            f"WHERE workflow_type = '{brief_type}' AND agent = '{AGENT}' AND created_at >= '{t0}'::timestamptz", release))
+
+    def guard() -> None:
+        # Before every attempt of the browser step: a request row for this door means it was pressed.
+        if [row for row in requests() if row["door"] == kind]:
+            (brief_dir / f"{kind}.asked").write_text("a request row for this door exists\n")
+
+    guard()
+    try:
+        browser(f"test-brief-{kind}", settings_file, tls, before_retry=guard, timeout=BRIEF_STEP_TIMEOUT)
+    except (RuntimeError, subprocess.TimeoutExpired) as error:
+        failed(f"browser:test-brief-{kind}", str(error)[:300])
+    page_file = brief_dir / f"{kind}.json"
+    page = json.loads(page_file.read_text()) if page_file.exists() else {}
+
+    # The agent writes the outcome into the request row when its pass ends; the page has said so already.
+    deadline = time.monotonic() + 60
+    while True:
+        mine = [row for row in requests() if row["door"] == kind]
+        if (mine and all(row["status"] in ("done", "failed") for row in mine)) or time.monotonic() > deadline:
+            break
+        time.sleep(3)
+    handed_over = any(row["status"] == "done" and (row["result"] or {}).get("outcome") == "sent" for row in mine)
+
+    def posts() -> list[dict]:
+        return [call for call in fake_calls(fixture)[calls_before:]
+                if call["kind"] == kind and reply_methods(call["method"]) and call.get("channel", call.get("chat")) == chat]
+
+    # "Sent" means handed over: the turn, its model call and its post come after it.
+    deadline = time.monotonic() + (120 if handed_over else 0)
+    while not any(BRIEF_REPLY_MARK in str(call.get("text", "")) for call in posts()) and time.monotonic() < deadline:
+        time.sleep(3)
+    time.sleep(10)
+
+    def marked_calls() -> list[dict]:
+        return [call for call in fake_calls(fixture)[calls_before:] if call["kind"] == "model" and call.get("briefTurn")]
+
+    def attempts() -> list[dict]:
+        return json.loads(read_only_query(
+            "SELECT coalesce(json_agg(json_build_object('state', a.state, 'kind', a.authority_reference->>'kind', 'liveMember', a.live_member_id, "
+            "'accountKind', m.kind, 'bookedFor', a.authority_reference#>>'{binding,memberId}', 'agent', b.agent, 'alias', b.purpose_alias, "
+            f"'chatModel', b.purpose_alias = (SELECT d.definition->>'model' FROM agent_definitions d WHERE d.name = '{AGENT}'), "
+            "'at', a.created_at) ORDER BY a.created_at, a.id), '[]') FROM budget_attempts a "
+            "JOIN budget_accounts m ON m.id = a.member_account_id JOIN budget_gateway_bindings b ON b.id = a.binding_id "
+            f"WHERE a.created_at >= '{t0}'::timestamptz", release))
+
+    def brief_rows(rows: list[dict]) -> list[dict]:
+        # This agent's owner jobs on its chat model; embeddings and other agents' jobs are not the brief.
+        return [row for row in rows if row["kind"] == "owner-job" and row["agent"] == AGENT and row["chatModel"] is True]
+
+    def paid_problems(rows: list[dict], marked: list[dict]) -> list[str]:
+        mine_rows, problems = brief_rows(rows), []
+        if not marked:
+            problems.append("no model call carrying the test brief's marker reached the stand-in")
+        if len(mine_rows) < len(marked):
+            problems.append(f"{len(mine_rows)} owner-job attempt(s) on the agent's chat model for {len(marked)} marked call(s)")
+        unsettled = [row["state"] for row in mine_rows if row["state"] != "settled"]
+        if unsettled:
+            problems.append(f"owner-job attempt(s) not settled: {unsettled}")
+        if not owner or any(row["liveMember"] != owner or row["accountKind"] != "member" or row["bookedFor"] != owner for row in mine_rows):
+            problems.append("an owner-job attempt is not charged to and booked for the installation owner's member account")
+        others = sorted({str(row["kind"]) for row in rows if row["kind"] != "owner-job"})
+        if others:
+            problems.append(f"the window also holds attempts of another kind ({others}): the brief may have been paid as one")
+        return problems
+
+    rows = attempts()
+    deadline = time.monotonic() + 60
+    while paid_problems(rows, marked_calls()) and time.monotonic() < deadline:
+        time.sleep(3)
+        rows = attempts()
+    marked = marked_calls()
+    problems = paid_problems(rows, marked)
+    chat_posts = posts()
+    replies = [call for call in chat_posts if BRIEF_REPLY_MARK in str(call.get("text", ""))]
+    error_posts = [call for call in chat_posts if any(words in str(call.get("text", "")) for words in ERROR_COPY)]
+    ledger = json.loads(read_only_query(
+        "SELECT coalesce(json_agg(json_build_object('itemKey', item_key, 'status', status, 'door', door) ORDER BY id), '[]') FROM initiations "
+        f"WHERE agent = '{AGENT}' AND item_key LIKE 'morning-brief/%' AND decided_at >= '{t0}'::timestamptz", release))
+    counted = [row for row in ledger if not REAL_BRIEF_SLOT.fullmatch(row["itemKey"])]
+
+    def who(value: str | None) -> str | None:
+        return None if value is None else "the installation owner" if value == owner else "another member"
+
+    # Evidence that outlives the container: the request, what the page said, the stand-in's calls and posts,
+    # the money rows, and the agent's own lines about it.
+    record.update({
+        "requests": mine,
+        "requestsForTheOtherDoor": len([row for row in requests() if row["door"] != kind]),
+        "page": page,
+        "modelCallsWithMarker": [{"at": call["at"], "model": call.get("model"), "messages": call.get("messages"), "tools": len(call.get("tools") or []),
+                                  "answer": call.get("answer")} for call in marked],
+        "otherModelCallsSinceThePress": [{"at": call["at"], "model": call.get("model"), "lastText": redact(str(call.get("lastText", "")))[-120:],
+                                          "briefMarkerAnywhere": call.get("briefMarkerAnywhere")}
+                                         for call in fake_calls(fixture)[calls_before:] if call["kind"] == "model" and not call.get("briefTurn")],
+        "budgetAttemptsSinceThePress": [{"at": row["at"], "state": row["state"], "kind": row["kind"], "agent": row["agent"], "alias": row["alias"],
+                                         "chatModel": row["chatModel"], "chargedTo": who(row["liveMember"]), "bookedFor": who(row["bookedFor"]),
+                                         "account": row["accountKind"]} for row in rows],
+        "standInCallsSinceThePress": [{"at": call["at"], "method": call["method"], "chat": call.get("channel", call.get("chat")), "text": redact(str(call.get("text", "")))[:300]}
+                                      for call in fake_calls(fixture)[calls_before:] if call["kind"] == kind],
+        "errorCopiesPosted": len(error_posts),
+        "briefLedgerRowsSinceThePress": ledger,
+        "agentAtTheEnd": agent_log_tail(),
+        "agentBriefLines": agent_lines("morning-brief"),
+        "agentLog": agent_log_evidence(),
+    })
+    save_proof()
+    print(f"the {kind} test brief, as recorded:\n{json.dumps({key: value for key, value in record.items() if key != 'agentAtTheEnd'}, indent=2, default=str)}", flush=True)
+
+    if len(mine) == 1 and mine[0]["byTheOwner"] and page.get("presses", 0) <= 1:
+        ok(f"{kind}-test-brief-asked-once")
+    else:
+        failed(f"{kind}-test-brief-asked-once", f"{len(mine)} request row(s) for {kind} since the press (by the owner: {[row['byTheOwner'] for row in mine]}), "
+               f"button pressed {page.get('presses', 0)} time(s)")
+    said = page.get("final") or ""
+    result = (mine[0]["result"] or {}) if len(mine) == 1 else {}
+    if re.match(rf"Sent to {DOOR_LABEL[kind]} (at|on) ", said) and len(mine) == 1 and mine[0]["status"] == "done" and \
+            result.get("outcome") == "sent" and result.get("door") == kind:
+        ok(f"{kind}-test-brief-page-reads-sent")
+    else:
+        failed(f"{kind}-test-brief-page-reads-sent", f"the page last said {said or page.get('sentences', [{}])[-1:] or 'nothing'!r}; "
+               f"the request row reads {[(row['status'], row['result'], row['error']) for row in mine]}")
+    if marked and brief_rows(rows):
+        ok(f"{kind}-test-brief-reached-the-model-through-keeper")
+    else:
+        failed(f"{kind}-test-brief-reached-the-model-through-keeper",
+               f"{len(marked)} model call(s) carried the marker and {len(brief_rows(rows))} owner-job attempt(s) on the agent's chat model were made since the press")
+    if not problems:
+        ok(f"{kind}-test-brief-paid-as-an-owner-job")
+    else:
+        failed(f"{kind}-test-brief-paid-as-an-owner-job", "; ".join(problems))
+    if replies:
+        ok(f"{kind}-test-brief-posted-into-the-chat")
+    else:
+        failed(f"{kind}-test-brief-posted-into-the-chat", f"no post containing {BRIEF_REPLY_MARK} into {chat} since the press ({len(chat_posts)} other post(s))")
+    if error_posts:
+        failed(f"{kind}-test-brief-no-error-copy-posted", f"{len(error_posts)} post(s) into {chat} since the press carry an error copy, first: "
+               f"{redact(str(error_posts[0].get('text', '')))[:200]}")
+    else:
+        ok(f"{kind}-test-brief-no-error-copy-posted")
+    overview = page.get("overview")
+    if not counted and overview == "No active work":
+        ok(f"{kind}-test-brief-not-counted-as-the-days-brief")
+    else:
+        failed(f"{kind}-test-brief-not-counted-as-the-days-brief",
+               f"morning-brief ledger rows that are not a real slot since the press: {counted}; the agents list reads {overview!r} for the agent's work")
+
+
+def test_briefs(fixture: pathlib.Path, settings_file: pathlib.Path, tls: dict[str, pathlib.Path], brief_dir: pathlib.Path, brief_type: str,
+                release: dict, deferred: list[str]) -> None:
+    """One test brief into Slack, then one into Telegram; then, once, that they restarted nothing and the
+    keeper logged no busy store or failed Apply meanwhile. All reported at the end."""
+    before = agent_container()
+    apply_failures_before = len(keeper_log_lines(*APPLY_FAILURE_PHRASES))
+    for kind in ("slack", "telegram"):
+        test_brief(kind, fixture, settings_file, tls, brief_dir, brief_type, release, deferred)
+    after = agent_container()
+    keeper_lines = keeper_log_lines(*APPLY_FAILURE_PHRASES)[apply_failures_before:]
+    proof.setdefault("testBriefs", {})["throughBoth"] = {"containerBefore": before, "containerAfter": after,
+                                                         "keeperBusyOrFailedApplyLines": [redact(line) for line in keeper_lines]}
+    save_proof()
+    for check, good, why in (
+            ("test-briefs-restarted-nothing", bool(before) and before == after, f"the agent was {before} before the test briefs and {after} after"),
+            ("test-briefs-keeper-logged-no-busy-store-or-failed-apply", not keeper_lines, f"the keeper logged: {keeper_lines[:1]}")):
+        if good:
+            passed(check)
+        else:
+            proof["checks"][check] = False
+            save_proof()
+            print(f"FAIL (reported at the end): {check}: {why}", flush=True)
+            deferred.append(f"{check}: {why}")
 
 
 def keeper_host_action(action: str, payload: dict) -> dict:
@@ -1640,7 +1919,11 @@ def main(argv: list[str]) -> int:
                 print(previous_pull_failure, flush=True)
                 break
         model_key = "sk-ant-api03-" + base64.urlsafe_b64encode(os.urandom(40)).decode().rstrip("=")
-        fixture = start_fake_internet(work, tls, console, model_key)
+        # The test brief's words, as the product exports them: the stand-in answers its marker.
+        brief_marker, brief_type = product_constant("TEST_BRIEF_PROMPT_MARKER"), product_constant("TEST_BRIEF_WORKFLOW_TYPE")
+        if not brief_marker.strip() or not re.fullmatch(r"[a-z][a-z-]{1,40}", brief_type):
+            raise RuntimeError(f"the test brief's marker or workflow type in {TEST_BRIEF_MODULE.relative_to(REPO)} is not usable here")
+        fixture = start_fake_internet(work, tls, console, model_key, brief_marker)
         start_registry(work, tls)
         write_hosts(bridge_address("proof-fake"))
         wait_for_registry(tls)
@@ -1712,6 +1995,8 @@ def main(argv: list[str]) -> int:
         remember_secrets(*door_values.values())
         door_codes = work / "door-codes"
         door_codes.mkdir(mode=0o700)
+        brief_dir = work / "test-briefs"
+        brief_dir.mkdir(mode=0o700)
         write_private(settings_file, json.dumps({
             "domain": DOMAIN, "agent": AGENT, "memberLimit": MEMBER_LIMIT, "toolPrompt": TOOL_PROMPT, "followUpPrompt": FOLLOW_UP_PROMPT,
             "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "notePrompt": NOTE_PROMPT, "noteReply": NOTE_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
@@ -1719,7 +2004,7 @@ def main(argv: list[str]) -> int:
             "afterUpdatePrompt": "PROOF_AFTER_THE_UPDATE", "afterUpdateReply": "PROOF_OK", "receiptFile": str(work / "receipt.json"), "stateFile": str(work / "browser-state.json"),
             "beforeEditPrompt": "PROOF_BEFORE_THE_EDIT", "oldConversationPrompt": "PROOF_OLD_CONVERSATION_AFTER_THE_EDIT", "afterEditPrompt": "PROOF_AFTER_THE_EDIT",
             "editedDescription": EDITED_DESCRIPTION, "saveWarning": SAVE_WARNING,
-            "screenshotDir": str(shots), "doorCodeDir": str(door_codes), **door_values,
+            "screenshotDir": str(shots), "doorCodeDir": str(door_codes), "testBriefDir": str(brief_dir), **door_values,
         }))
         browser("discover-owner", settings_file, tls)
         owner_bootstrap((work / "receipt.json").read_text())
@@ -1854,6 +2139,10 @@ def main(argv: list[str]) -> int:
         stage("a Slack and a Telegram message reach the model through Keeper")
         for kind in ("slack", "telegram"):
             door_turn(kind, work, fixture, settings_file, tls, door_values, door_codes, release, deferred)
+
+        # Before backups and the update: the update restarts the agent, and a test brief needs it still.
+        stage("a test brief into Slack and into Telegram, asked on the agent's page")
+        test_briefs(fixture, settings_file, tls, brief_dir, brief_type, release, deferred)
 
         stage("sudo lares backups")
         apt_get("update", "-qq")
