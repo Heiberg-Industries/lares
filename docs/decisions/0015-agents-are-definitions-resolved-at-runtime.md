@@ -123,14 +123,9 @@ the engine does; the clock and the standing-facts correction are still built for
 persona (the duties, the personality and the saved language) is assembled once when a conversation
 begins and kept for it, and the saved language default is read from the definition that conversation
 pinned when it began. So a saved change to duties, personality or language reaches a Slack or
-Telegram conversation that is already running only when a new one starts. Two things bring it in
-sooner: an engine upgrade re-assembles the persona of a running conversation, and after the agent
-restarts, or after many newer conversations, the saved language default is read again at its next
-message. A web-chat conversation is ended by a save (ADR-0027 rule 6), so the next one starts on the
-new definition. A scheduled run's own code reads the definition afresh each time it runs. The message
-it asks the agent to write is written in a conversation: in Telegram that is the person's running
-chat, so it uses the duties, personality and language that chat began with; a new conversation the
-run starts begins on the saved definition. Switching language inside a conversation because someone
-asked is a different thing: it is not a saved change and does hold from the next message. ADR-0027
+Telegram conversation that is already running only when a new one starts. Two things can bring it in sooner. After the agent restarts, or after many newer conversations,
+the saved language default is read again at its next message. And the code's comments record that
+eve discards a saved persona when the engine image changes, so an engine upgrade should re-assemble
+a running conversation's persona from the saved definition; this has not been tested. ADR-0027
 rule 3 calls these parts "live at Save": that means they need no Apply, not that a running
 conversation sees them. Tools and model are unchanged, with ADR-0027's amendment for the model.
