@@ -11,7 +11,7 @@ export function slackManifest(agent: {name:string;display:string}, consoleUrl:st
   const manifest={
     display_information:{name:agent.display},
     features:{bot_user:{display_name:agent.display,always_online:false},app_home:{home_tab_enabled:false,messages_tab_enabled:true,messages_tab_read_only_enabled:false}},
-    oauth_config:{scopes:{bot:['chat:write','im:history']}},
+    oauth_config:{scopes:{bot:['chat:write','im:history','im:write']}},
     settings:{event_subscriptions:{request_url:`${origin}/api/doors/${agent.name}/slack/events`,bot_events:['message.im']},
       interactivity:{is_enabled:true,request_url:`${origin}/api/doors/${agent.name}/slack/events`},org_deploy_enabled:false,socket_mode_enabled:false,token_rotation_enabled:false},
   };

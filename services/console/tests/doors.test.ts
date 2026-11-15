@@ -10,7 +10,7 @@ describe('door setup', () => {
   });
   it('requests only scopes needed for direct messages', () => {
     const {manifest}=slackManifest({name:'b',display:'B'},'https://c.example.com');
-    expect(manifest.oauth_config.scopes.bot).toEqual(['chat:write','im:history']);
+    expect(manifest.oauth_config.scopes.bot).toEqual(['chat:write','im:history','im:write']);
   });
   it('gives ordered BotFather instructions naming the agent', () => {
     const steps=telegramSteps('Bookkeeper');

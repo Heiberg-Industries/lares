@@ -4,6 +4,8 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
+- The Slack app the console sets up now asks for one more permission, `im:write`, which lets it open the direct-message conversation with you. The chief of staff needs it for the messages it starts on a schedule (the morning, evening and test briefs, the weekly summary, deadlines, follow-ups and track proposals) and for their buttons to arrive in your direct messages; without it Slack refuses and those messages are not sent. A Slack app made before this change does not get it by itself: in the app's settings on Slack, add the bot permission `im:write` under OAuth & Permissions, then install the app to your workspace again, because Slack applies a new permission to an existing install only after a reinstall.
+
 - The docs and the settings list now say plainly that only Anthropic models are on the tested path in this release. Setting an OpenAI or other model by hand is not, and chat will be refused. The `GATEWAY_LANE` entry no longer presents itself as an owner setting: an installer-made installation does not pass it to its agents.
 
 - An agent no longer runs with two tools under one name. Until now the framework kept one of the two and dropped the other with only a line in the log, so the copy in use, and its approval rule, was decided by load order. Saving a definition whose outside tool would take the name of a tool the agent already has is now refused, with a message that names the tool and both places it comes from. A hand-edited definition like that falls back to the last valid one, and a role whose own tool files clash does not start.
