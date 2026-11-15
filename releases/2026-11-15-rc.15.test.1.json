@@ -1,0 +1,32 @@
+{
+  "release": "2026-11-15-rc.15.test.1",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:a54a294b45c3f4153ea615802685bd841d694677c18fef141a28aa4111869b32",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:ee90364942827e0f373d614e13c048501146c717ec7e8735baab917e2eaa3f06",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:a679be2ca2c92b6a4ced1971f076a34b33d0402259bea9228f8ad3521cebcbd9",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:6407889d349123c8b9a2b56b38110155a62ca985f7ee0e4aba5a59854a5632b3",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:1ff8b8b7f8d1580f0161934e1d01d5df1c880255a17f4f62c4b5bd4a14e77176",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:e8a9a34cb3fd02201db23479b28da2c5f202c5c6159ba56969219beb78a26967",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:7754810e9d2884558655452a73fdb9ff953c33f7c6a8eac3b64084d61553399a"
+  },
+  "migrations": {
+    "box": "036_agent_account_bindings.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "This is a test release, not a finished rc.15. Use it only to test it on a test server; see docs/releases/rc.15.test.1-notes.md for what is unfinished.",
+    "A server on rc.12 or earlier cannot update to this release in place: the update refuses it before changing anything, because it lacks the operator database password file (/etc/lares/operator/database-password) that the update checks first, and says that the Compose, credentials, or database do not match one installed Lares target. This follows from the code; it has not been run against a real rc.12 server, and moving such a server to this release has not been tested.",
+    "Put this test release on a test server by a fresh install followed by a restore of a backup made on rc.14 (or an rc.14 test release). An in-place lares update from rc.14 is written and covered by script and database tests, but has not been run on real images.",
+    "A backup made on rc.14 restores onto this release; a backup in any other layout is refused with nothing changed. Restore right after the install, before lares budget setup: a restore onto a server whose spending limits are already set up finishes with spending closed and says to keep the agents stopped, and this release has no command that reopens it.",
+    "This update ends open web-chat conversations, and so does every later save of a change to a running agent. It stops the Keeper and the agents while it upgrades their stores; if it fails after it has begun upgrading the stores they stay stopped until the same update is run again, and a failure before that starts them again on the previous release.",
+    "Before changing anything, the update refuses a server where any agent store is neither exactly as rc.14 left it nor already at this release (it names the store and how many schema steps it found), and one whose database is not set to UTC.",
+    "On an agent another member can use, or one that the installation's owner does not own, model calls outside a conversation (scheduled briefs, mail triage, a tool's own model call) are now refused; only an agent that the installation's owner owns and nobody else can use makes them.",
+    "The e-mail door is gone. An agent definition that still has an email door is refused, and the agent keeps its last valid definition: delete the door from agent.json, then choose the agent's mailbox on its Access tab.",
+    "A chief of staff's Slack app made before this release needs the bot permission im:write added under OAuth & Permissions in Slack, and the app installed to the workspace again; until then its messages that start on a schedule are expected to be refused by Slack.",
+    "Only Anthropic models are on the tested path in this release. Setting an OpenAI or other model by hand is not, and chat will be refused.",
+    "Selective import from an older installation can only preview; it cannot write anything yet."
+  ]
+}
