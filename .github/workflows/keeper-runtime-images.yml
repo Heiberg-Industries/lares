@@ -37,6 +37,9 @@ env:
 # base to compare with, a commit git does not know, an answer that fails or cannot be read in full:
 # every flag is 'true' and everything is built. Nothing is reported for an image that was kept; the
 # summary of the `select` job is the record of what this run built and what it left alone.
+# The `keeper` job runs when any image of the keeper family is affected, and also when the creative
+# runtime image is: its maintenance proofs run inside this commit's creative image, so a change to
+# that image must not skip them. It pushes only what its own per-image flags allow, as before.
 jobs:
   select:
     if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
@@ -335,7 +338,7 @@ jobs:
           labels: org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares
   keeper:
     needs: select
-    if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only && needs.select.outputs.anyKeeperFamily != 'false' }}
+    if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only && (needs.select.outputs.anyKeeperFamily != 'false' || needs.select.outputs.creativeRuntime != 'false') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

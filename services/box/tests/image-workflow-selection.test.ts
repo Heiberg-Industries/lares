@@ -106,8 +106,11 @@ describe("the image workflow asks which images a change affects before it builds
       `\${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only && (${any(["chiefRuntime", "creativeRuntime"])}) }}`,
     );
     expect(workflow.jobs.keeper.if).toBe(
-      `\${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only && ${any(["anyKeeperFamily"])} }}`,
+      `\${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only && (${any(["anyKeeperFamily", "creativeRuntime"])}) }}`,
     );
+    // A change that affects the creative runtime image only still runs the keeper job: its maintenance
+    // proofs run inside that image. The keeper family flag alone would have skipped it.
+    expect(workflow.jobs.keeper.if).toContain("needs.select.outputs.creativeRuntime != 'false'");
   });
 
   it("leaves a role out of the runtime job only when its flag says exactly 'false'", () => {
