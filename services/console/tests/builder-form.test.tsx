@@ -11,10 +11,12 @@ import {startingPoints,modelAliases,takesEffect} from '../lib/builder';
 vi.mock('next/navigation',()=>({useRouter:()=>({refresh:vi.fn(),push:vi.fn()})}));
 vi.mock('../app/actions/definition',()=>({createAgent:vi.fn(),saveDefinition:vi.fn(),retireAgent:vi.fn(),deleteAgent:vi.fn(),applyConnections:vi.fn(),listConversations:vi.fn(),startFreshConversation:vi.fn()}));
 vi.mock('../app/actions/autonomy',()=>({setAutonomy:vi.fn()}));
+const NOTE='A label for your own reference. Only this page shows it; the agent does not read it.';
 const base={startingPoints:startingPoints(),aliases:modelAliases('example'),timing:Object.fromEntries(['name','gender','description','startingPoint','duties','voice','language','model','grants','skills','autonomy','schedules','doors'].map(f=>[f,takesEffect(f)])),capacity:{ceiling:6,activeCount:3,approved:true,creationAvailable:true,canChange:true}};
 it('keeps new-agent permission writes unavailable and gives every field its timing',()=>{
  render(<DefinitionForm {...base}/>);
  const html=document.body.innerHTML;
+ expect(html.split(NOTE).length-1).toBe(1);
  expect(html).toContain('Create this agent first');expect(html).not.toContain('open web-chat conversations');expect(html).not.toContain('role="group" aria-label=');
  expect(html).toContain('What is this agent for? Write it the way you would tell a person.');
  expect(html).toContain('This box holds up to 6 agents. You have 3.');expect(html).toContain('Open Settings → Agents');
@@ -29,12 +31,14 @@ it('prefills edit data, shows pending restart, and renders permission buttons as
  expect(html).not.toContain('open web-chat conversations');
  expect(html).toContain('Apply connection changes (restarts agent)');expect(html).toMatch(/<button[^>]*type="button"[^>]*>Allow<\/button>/);expect(html).toContain('Always asks');expect(html).toContain('Start a fresh conversation now');
 });
-it('shows no timing note under Description, which nothing reads when the agent runs, and the access note under Access and skills',()=>{
+it('shows the plain label note and no timing note under Description, which nothing reads when the agent runs, and the access note under Access and skills',()=>{
  const definition={...base.startingPoints[0].definition,name:'example',model:'example-brain'};
  const html=renderToStaticMarkup(<DefinitionForm {...base} initial={{definition,duties:'d',voice:'v',hash:'a'.repeat(64),runtime:{pending:false,reason:null,running:false,healthy:null},status:'valid'}}/>);
  const afterDescription=html.slice(html.indexOf('Description'),html.indexOf('Instructions and language'));
  expect(afterDescription.length).toBeGreaterThan(0);
  expect(afterDescription).not.toContain('Takes effect');
+ expect(afterDescription).toContain(NOTE);
+ expect(html.split(NOTE).length-1).toBe(1);
  expect(html).toContain('On a chief of staff, switching gmail on or off also needs Apply connection changes');
 });
 it('distinguishes unapproved capacity and a full box',()=>{
