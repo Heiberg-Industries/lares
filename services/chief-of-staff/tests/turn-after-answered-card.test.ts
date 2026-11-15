@@ -43,8 +43,8 @@ const DOORS = {
     second: { authenticator: "slack-webhook", principalType: "user", principalId: "U0SECOND", attributes: { user_id: "U0SECOND", channel_id: "D0OWNER" } },
   },
   Telegram: {
-    owner: { authenticator: "telegram-webhook", principalType: "user", principalId: "4242", attributes: { user_id: 4242 } },
-    second: { authenticator: "telegram-webhook", principalType: "user", principalId: "4343", attributes: { user_id: 4343 } },
+    owner: { authenticator: "telegram-webhook", principalType: "user", principalId: "4242", attributes: { user_id: 4242, chat_type: "private" } },
+    second: { authenticator: "telegram-webhook", principalType: "user", principalId: "4343", attributes: { user_id: 4343, chat_type: "private" } },
   },
 } as const;
 /** A scheduled job's own identity: the requester of a scheduled card. */

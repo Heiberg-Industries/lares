@@ -16,11 +16,12 @@
 // THIS SKILL composes mail, the CRM, the voice guide, the address registry, page reads and
 // outreach tracking. It exists only where the definition grants every one of them at the scope
 // its tools need (the list is INSTRUCTION_SKILLS in @lares/agent-kit/skill-grants, held against
-// this text by tests/skills.test.ts), and never in a private console conversation.
+// this text by tests/skills.test.ts), never in a private console conversation, and never in one started in a shared room.
 import { defineDynamic, defineSkill } from "eve/skills";
 import { manifestViewOf } from "@lares/agent-kit/definition";
 import { instructionSkillOffered } from "@lares/agent-kit/manifest";
 import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-surface";
+import { hiddenInSharedRoom } from "@lares/agent-kit/shared-room";
 
 import { thisAgent } from "../../lib/definition.js";
 
@@ -30,6 +31,8 @@ const content = "# Sales outreach\n\nThe whole loop is yours: research \u2192 dr
 
 export default defineDynamic(async (ctx) => {
   const privateConsole = await verifyPrivateConsoleSession(ctx);
+  // Not in a conversation started in a shared room: the room rule does not list this skill.
+  if (hiddenInSharedRoom(ctx, "sales-outreach")) return null;
   const offered = await instructionSkillOffered("sales-outreach", {
     privateConsole,
     memo: (key, fn) => ctx.memo(key, fn),

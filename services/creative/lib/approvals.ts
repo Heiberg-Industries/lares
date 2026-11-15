@@ -1,4 +1,5 @@
-import { assertPrivateConsoleTool } from "@lares/agent-kit/private-console-surface";
+import { assertPrivateConsoleTool as assertPrivateTool, isPrivateConsoleContext, privateOnlyTool } from "@lares/agent-kit/private-console-surface";
+import { assertSharedRoomAllows } from "@lares/agent-kit/shared-room";
 import { isExactApprovalContext, isExactApprovalResponse, isApprovalRecheck, reserveExactApproval, approveExactResponse,
   requireApprovedExecution, requireApprovedRecheck, approvalResponderOf, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
 import { consoleAdmission, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
@@ -173,6 +174,14 @@ export async function assertApproval(
   if (responder !== undefined) assertOwnerAnswerer(principalFromAuth(responder));
   else assertApprover(approverFrom(ctx?.session?.auth));
   await assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName, input });
+}
+
+/** The private-surface check. A conversation started in a shared room is refused every tool the room
+ *  rule does not list, first and in words for the room, before any card or execution, so a call replayed
+ *  or carried over from an older list is refused the same way. */
+function assertPrivateConsoleTool(ctx: unknown, role: "creative", name: string): void {
+  if (!isPrivateConsoleContext(ctx)) assertSharedRoomAllows(ctx, name, !privateOnlyTool(name));
+  assertPrivateTool(ctx, role, name);
 }
 
 /** Preserve the authored native policy; bound console calls additionally require exact authority. */

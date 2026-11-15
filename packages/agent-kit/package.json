@@ -127,6 +127,7 @@
     "./agent-registry": "./src/agent-registry.ts",
     "./catalogue": "./src/catalogue.ts",
     "./private-console-surface": "./src/private-console-surface.ts",
+    "./shared-room": "./src/shared-room.ts",
     "./vault-broker-client": "./src/vault-broker-client.ts",
     "./scheduled-vault-policy": "./src/scheduled-vault-policy.ts",
     "./model-purpose-protocol": "./src/model-purpose-protocol.ts",

@@ -1,6 +1,7 @@
 /**
- * WHAT A PERSON SEES WHEN A CONVERSATION HAS GROWN TOO LONG TO CONTINUE. No imports on purpose:
- * the console's browser code reads it too.
+ * WHAT A PERSON SEES WHEN A CONVERSATION HAS GROWN TOO LONG TO CONTINUE. No imports on purpose,
+ * except the shared-room rule's door table, which has none itself: the console's browser code
+ * reads this file too.
  *
  * When a conversation nears the model's context window, eve 1.0 tries to summarise ("compact") its
  * history before the next model call. The engine refuses that on purpose: the summary call has no
@@ -16,6 +17,8 @@
  *
  * Nothing on this path calls a model, and nothing is summarised or carried over.
  */
+import { chatKindOf } from './shared-room.js';
+
 export const MODEL_COMPACTION_REFUSED = 'Model compaction requires a fresh trusted invocation';
 
 /**
@@ -69,19 +72,15 @@ export function withPartlyDone(sentence: string, partlyDone: boolean): string {
   return partlyDone ? `${sentence} ${CONVERSATION_TOO_LONG_PARTLY_DONE}` : sentence;
 }
 
-type DoorAuth = { readonly authenticator?: unknown; readonly attributes?: Readonly<Record<string, unknown>> } | null | undefined;
-
 /**
  * Which Slack sentence is true: the direct-message one only when the conversation is known to have
- * STARTED in a direct message, read the way the shared-room rule reads it
- * (`private-console-surface.ts`, `startedInSharedSlackRoom`): from the session's initiator, a
- * `slack-webhook` auth whose channel id starts with `D`. Anything else (a room, a conversation a
- * schedule started, no session to read) gets the room sentence, which is also true in a direct
- * message: mentioning the agent there does no harm.
+ * STARTED in a direct message, read by the shared-room rule's own door table (`shared-room.ts`,
+ * `chatKindOf`) from the session's initiator, or from the current identity when there is none.
+ * Anything else (a room, a conversation a schedule started, no session to read) gets the room
+ * sentence, which is also true in a direct message: mentioning the agent there does no harm.
  */
 export function conversationTooLongSlackSentence(ctx: unknown): string {
   const session = (ctx as { session?: { initiator?: unknown; auth?: { initiator?: unknown; current?: unknown } | null } } | undefined)?.session;
-  const initiator = (session?.auth?.initiator ?? session?.initiator ?? session?.auth?.current) as DoorAuth;
-  const channel = initiator?.authenticator === 'slack-webhook' ? initiator.attributes?.['channel_id'] : undefined;
-  return typeof channel === 'string' && channel.startsWith('D') ? CONVERSATION_TOO_LONG_SLACK : CONVERSATION_TOO_LONG_SLACK_ROOM;
+  const identity = (session?.auth?.initiator ?? session?.initiator ?? session?.auth?.current) as Parameters<typeof chatKindOf>[0];
+  return chatKindOf(identity) === 'private-chat' ? CONVERSATION_TOO_LONG_SLACK : CONVERSATION_TOO_LONG_SLACK_ROOM;
 }

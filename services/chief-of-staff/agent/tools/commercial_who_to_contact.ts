@@ -13,6 +13,7 @@
 // `TwentyUnavailableError` propagates out of this tool rather than silently returning an
 // empty or wrong result.
 import { verifyPrivateConsoleSession, assertPrivateConsoleTool } from "@lares/agent-kit/private-console-surface";
+import { assertSharedRoomAllows, hiddenInSharedRoom } from "@lares/agent-kit/shared-room";
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 
@@ -80,6 +81,7 @@ const tool = defineTool({
     "Read-only, ungated.",
   inputSchema: z.object({ brand: z.string().optional() }),
   async execute({ brand }, ctx): Promise<Record<string, SurfacedContact[]>> {
+    assertSharedRoomAllows(ctx, "commercial_who_to_contact", true);
     assertPrivateConsoleTool(ctx, "chief-of-staff", "commercial_who_to_contact");
     const allByBrand = await surfaceCommercial(liveDeps(), "subset");
     if (brand === undefined) return allByBrand;
@@ -100,7 +102,7 @@ const OFFERED_MEMO_KEY = "lares.commercial-skill-offered";
 // switched off `twenty`, kept this tool anyway.
 //
 // Three things about the shape below are deliberate:
-//  - The private console line comes first and is not caught. A claim that cannot be verified
+//  - The private console line comes first and is not caught; the shared-room line follows it. A claim that cannot be verified
 //    throws, which fails the turn; it is checked again on every run and never kept.
 //  - Only the yes/no is kept in the memo, so the definition is read once per conversation and a
 //    definition edit reaches the next conversation (ADR-0015).
@@ -109,6 +111,8 @@ const OFFERED_MEMO_KEY = "lares.commercial-skill-offered";
 //    is not kept, so the next model call asks again.
 export default defineDynamic(async (ctx) => {
   if (await verifyPrivateConsoleSession(ctx)) return null;
+  // A conversation started in a shared room is not offered the CRM ranking (the room rule does not list it).
+  if (hiddenInSharedRoom(ctx, "commercial_who_to_contact")) return null;
   try {
     const offered: unknown = await ctx.memo(OFFERED_MEMO_KEY, async () => {
       const { loaded } = await thisAgent(ctx.session?.id);

@@ -21,9 +21,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { driveAnswer } from "./helpers/answer-check.js";
 import { eveDynamicFor } from "./helpers/catalogue-tool.js";
 
-const slack = (id: string) => ({ authenticator: "slack-webhook", issuer: "slack", principalId: id, principalType: "user", attributes: { user_id: id } });
+const slack = (id: string) => ({ authenticator: "slack-webhook", issuer: "slack", principalId: id, principalType: "user", attributes: { user_id: id, channel_id: "D0OWNER" } });
 // The identity eve 1.0's Telegram channel gives a tap (`defaultTelegramAuth` shape); `null` stands for a tap with no identity.
-const telegram = (id: string) => ({ authenticator: "telegram-webhook", issuer: "telegram", principalId: id, principalType: "user", attributes: { user_id: id } });
+const telegram = (id: string) => ({ authenticator: "telegram-webhook", issuer: "telegram", principalId: id, principalType: "user", attributes: { user_id: id, chat_type: "private" } });
 // A web chat answer by a console member whose admission is not the conversation's own.
 const consoleStranger = { authenticator: "lares-console", principalId: "member-x", principalType: "user", attributes: { user_id: "member-x" } };
 

@@ -40,7 +40,7 @@ const auth = (purpose = 'human') => ({ authenticator: 'lares-console', attribute
 // What eve hands an approval policy / an executor: the session, the call, the input.
 const context = (purpose = 'human') => ({ session: { id: 'wrun_test', turn: { id: 'turn-1', sequence: 0 }, auth: { current: auth(purpose), initiator: auth() } }, abortSignal: new AbortController().signal, callId: 'call-1', toolInput: {}, toolName: 'fixture' });
 const consoleCtx = { session: { id: 'wrun_console', auth: { current: auth(), initiator: auth() } } };
-const nativeCtx = { session: { id: 'wrun_native', auth: { current: null, initiator: { authenticator: 'telegram', principalId: 'fixture-owner', principalType: 'user' } } } };
+const nativeCtx = { session: { id: 'wrun_native', auth: { current: null, initiator: { authenticator: 'telegram-webhook', principalId: 'fixture-owner', principalType: 'user', attributes: { user_id: 'fixture-owner', chat_type: 'private' } } } } };
 
 beforeEach(() => { fake.thisAgent.mockResolvedValue({ loaded: { definition: {} } }); fake.granted = ['fixture']; fake.verify.mockImplementation(async (ctx: any) => ctx?.session?.auth?.current?.attributes?.lares_purpose !== undefined); });
 afterEach(() => { vi.unstubAllEnvs(); fake.query.mockReset(); fake.execute.mockReset(); fake.approval.mockReset(); fake.thisAgent.mockReset(); fake.verify.mockReset(); });
