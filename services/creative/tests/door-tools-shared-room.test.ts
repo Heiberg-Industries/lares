@@ -26,6 +26,7 @@ import laresDocsSkill from "../agent/skills/lares-docs.js";
 import { CATALOGUE } from "../catalogue/index.js";
 import { catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution } from "../lib/approvals.js";
 import { runDynamic, type MemoStore } from "../../../packages/agent-kit/tests/helpers/eve-dynamic.js";
+import { offeredBy, ownResolverFiles } from "../../../packages/agent-kit/tests/helpers/own-resolvers.js";
 
 fake.definition = parseDefinition(JSON.parse(readFileSync(new URL("../agent.json", import.meta.url), "utf8")));
 
@@ -142,6 +143,17 @@ describe("a conversation started in a shared room", () => {
   it("fails closed: a Slack conversation with no initiator, or a private channel, is a room", async () => {
     expect(await shownIn(sessionWith("no-initiator", null, DM))).toEqual(expected(2));
     expect(await shownIn(sessionWith("private-channel", slack("G0PRIVATEROOM")))).toEqual(expected(2));
+  });
+
+  // Read from disk: a tool, skill or connection file added under agent/ is asked here without any
+  // edit to this test, and fails it if it offers a shared room anything the room rule does not list.
+  it("every own-resolver tool, skill and connection file offers only what the room rule lists", async () => {
+    const files = ownResolverFiles(new URL("../agent/", import.meta.url));
+    expect(files.map((file) => `${file.kind}/${file.name}`)).toEqual(expect.arrayContaining(
+      ["tools/public_doc", "skills/lares-docs", "connections/outside-tools"]));
+    for (const file of files) {
+      expect((await offeredBy(file, sessionWith(`room-${file.name}`, ROOM))).filter((name) => !sharedRoomAllows(name)), `${file.kind}/${file.name}`).toEqual([]);
+    }
   });
 
   it("is given the public docs tool and the public help skill", async () => {

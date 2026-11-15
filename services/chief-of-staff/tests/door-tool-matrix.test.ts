@@ -172,6 +172,7 @@ import salesOutreachSkill from "../agent/skills/sales-outreach.js";
 import signalsSkill from "../agent/skills/signals.js";
 import { CATALOGUE } from "../catalogue/index.js";
 import { runDynamic, type MemoStore } from "../../../packages/agent-kit/tests/helpers/eve-dynamic.js";
+import { offeredBy, ownResolverFiles } from "../../../packages/agent-kit/tests/helpers/own-resolvers.js";
 import { approverFrom, assertApprover, catalogueApprovalResponse, humanTurnRefusal } from "../lib/approvals.js";
 import { calendarApprovalAdapter } from "../lib/calendar-approval.js";
 import { tracksApprovalAdapter } from "../lib/tracks-approval.js";
@@ -654,6 +655,23 @@ describe("what each door shows and allows", () => {
 
 describe("tools with their own resolver", () => {
   const started = async (resolver: unknown, session: Session): Promise<unknown> => runDynamic(resolver, session as never);
+
+  // Read from disk: a tool, skill or connection file added under agent/ is asked here without any
+  // edit to this test, and fails it if it offers a shared room anything the room rule does not list.
+  it("Slack · owner · mention in a shared channel: every own-resolver tool, skill and connection file offers only what the room rule lists", async () => {
+    const room = (await observe("slackRoom")).session;
+    const direct = (await observe("slackDm")).session;
+    const files = ownResolverFiles(new URL("../agent/", import.meta.url));
+    expect(files.map((file) => `${file.kind}/${file.name}`)).toEqual(expect.arrayContaining(
+      ["tools/commercial_who_to_contact", "tools/public_doc", "tools/outside-tools", "skills/lares-docs", "skills/sales-outreach", "skills/signals", "connections/outside-tools"]));
+    const inDirect = new Set<string>();
+    for (const file of files) {
+      expect((await offeredBy(file, room)).filter((name) => !sharedRoomAllows(name)), `${file.kind}/${file.name}`).toEqual([]);
+      for (const name of await offeredBy(file, direct)) inDirect.add(name);
+    }
+    // Not an empty check: the same files offer a direct message names the room rule does not list.
+    expect([...inDirect].filter((name) => !sharedRoomAllows(name))).toEqual(expect.arrayContaining(["commercial_who_to_contact", "sales-outreach", "signals"]));
+  });
   const SEEN: Readonly<Record<string, (session: Session) => Promise<boolean>>> = {
     commercial_who_to_contact: async (session) => (await started(commercialResolver, session)) !== null,
     lares_read_public_doc: async (session) =>

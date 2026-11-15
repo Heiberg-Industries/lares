@@ -3,9 +3,15 @@
  *
  * Everyone in a shared room (a Slack channel, a private channel, a group chat) reads the agent's
  * answers. So a conversation STARTED in one is limited to what the room may read along with: the
- * names on {@link SHARED_ROOM_ALLOWED}, and nothing else. A tool, an own-resolver tool or a skill
- * that is not on the list is not offered there and is refused before any approval or execution.
- * A new tool is therefore hidden in a room until someone lists it here.
+ * names on {@link SHARED_ROOM_ALLOWED}, and nothing else of the role's own (eve's built-in
+ * `ask_question` and `todo` are not decided per door). How each kind is kept to the list:
+ *   - a catalogue tool: each role's catalogue resolver leaves out what is not listed, and its
+ *     approval policy, answer check and execution guard refuse it before any card or execution, so
+ *     a new catalogue tool is hidden in a room until someone lists it here;
+ *   - an own-resolver tool, a skill or a connection: each file decides for itself (with
+ *     {@link hiddenInSharedRoom}, or by offering nothing outside the private console). Each role's
+ *     tests read those files from disk and fail on one that offers a room a name this list does
+ *     not hold, so a new file that forgets the rule does not pass them.
  *
  * Where a conversation started is read from the session's initiator, which never changes
  * (`auth.current` becomes whoever answered a card), through one row per door. It fails closed:
@@ -31,7 +37,11 @@ const PRIVATE_CHAT_WHEN: Readonly<Record<string, (attributes: Readonly<Record<st
 };
 
 /** The conversations that are not a door: web chat (the console's member stamp, or the route
- *  password alone) and a conversation a schedule started. Every other authenticator is a door. */
+ *  password alone) and a conversation a schedule started. Every other authenticator is a door.
+ *  eve's `local-dev` (its development server's own sign-in) is left a door on purpose: eve grants
+ *  it from an environment flag read at run time (`EVE_DEV=1`, `isLocalDevelopmentServer`), not
+ *  from how the image was built, so a built image could produce it too. It fails closed: a
+ *  conversation started that way gets the room list. */
 const NOT_A_DOOR: ReadonlySet<string> = new Set(['lares-console', 'http-basic', 'app']);
 
 /** What one verified identity says about the chat it came from. No identity is not a door. */

@@ -48,6 +48,8 @@ describe('where a conversation started', () => {
       expect(startedIn(started({ authenticator, attributes: { user_id: 'U0OWNER' } })), authenticator).toBe('shared-room');
     }
     expect(startedIn(started({ attributes: {} }))).toBe('shared-room');
+    // eve's development-server sign-in is granted from a run-time flag, not from the build, so it fails closed too.
+    expect(startedIn(started({ authenticator: 'local-dev', principalId: 'local-dev', principalType: 'local-dev', attributes: {} }))).toBe('shared-room');
   });
 
   it('web chat and a schedule-started conversation are not a door', () => {
