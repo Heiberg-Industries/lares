@@ -29,6 +29,14 @@ it('prefills edit data, shows pending restart, and renders permission buttons as
  expect(html).not.toContain('open web-chat conversations');
  expect(html).toContain('Apply connection changes (restarts agent)');expect(html).toMatch(/<button[^>]*type="button"[^>]*>Allow<\/button>/);expect(html).toContain('Always asks');expect(html).toContain('Start a fresh conversation now');
 });
+it('shows no timing note under Description, which nothing reads when the agent runs, and the access note under Access and skills',()=>{
+ const definition={...base.startingPoints[0].definition,name:'example',model:'example-brain'};
+ const html=renderToStaticMarkup(<DefinitionForm {...base} initial={{definition,duties:'d',voice:'v',hash:'a'.repeat(64),runtime:{pending:false,reason:null,running:false,healthy:null},status:'valid'}}/>);
+ const afterDescription=html.slice(html.indexOf('Description'),html.indexOf('Instructions and language'));
+ expect(afterDescription.length).toBeGreaterThan(0);
+ expect(afterDescription).not.toContain('Takes effect');
+ expect(html).toContain('Switching Gmail, a personal mailbox or a personal calendar on or off can be different');
+});
 it('distinguishes unapproved capacity and a full box',()=>{
  expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:null,activeCount:3,approved:false,creationAvailable:false}}/>)).toContain('not been measured and approved');
  expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:0,activeCount:0,approved:true,creationAvailable:false}}/>)).toContain('Ask the installation owner to review Settings → Agents');

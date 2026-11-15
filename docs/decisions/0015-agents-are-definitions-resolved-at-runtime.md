@@ -114,3 +114,17 @@ per-conversation language and the permissions board.
 - **How an older installation moves over:** first the byte-identical gate (rule 11), then its agents' definitions
   generated from its overlay's agent folders, then its overlay images retired.
 - **Overlay mode in the releases design:** dropped. The releases design is built only for the definitions shape.
+
+## Amendment 2026-11-15 — instructions and language reach a conversation when it begins
+
+Rule 4 says "Instructions per turn" and the Consequences say a change applies at "the next turn
+(instructions, language)". That is not what the engine does. The persona (the duties, the personality
+and the saved language) is assembled once when a conversation begins and kept for it, and the saved
+language default is read from the definition that conversation pinned when it began. So a saved change
+to duties, personality or language reaches a Slack or Telegram conversation that is already running
+only when a new one starts, and a web-chat conversation is ended by the save (ADR-0027 rule 6), so the
+next one starts on the new definition. A scheduled run reads the definition afresh each time it runs,
+and a conversation it opens reads it when that conversation begins. Switching language inside a
+conversation because someone asked is a different thing: it is not a saved change and does hold from
+the next message. Tools and model are unchanged, with ADR-0027's amendment for the model.
+

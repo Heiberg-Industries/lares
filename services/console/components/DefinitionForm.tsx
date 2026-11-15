@@ -459,7 +459,6 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 onChange={(e) => patch({ description: e.target.value })}
               />
             </Field>
-            {timing("description")}
             {group(
               <>Instructions and language</>,
               "Instructions and language",
