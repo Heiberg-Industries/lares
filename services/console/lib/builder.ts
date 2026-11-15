@@ -41,7 +41,7 @@ export function modelAliases(prefix: string, configuredAlias?: string): { alias:
   return selected;
 }
 const CONVERSATION = 'Takes effect at its next conversation. In Slack, a new message (not a reply in the old thread) starts one. In Telegram a conversation lasts the day, so that usually means tomorrow — or end it now under Start a fresh conversation now.';
-const ACCESS = CONVERSATION + ' Switching Gmail, a personal mailbox or a personal calendar on or off can be different: when it changes which personal accounts the agent connects to, it waits for Apply connection changes, which restarts the agent.';
+const ACCESS = CONVERSATION + ' On a chief of staff, switching gmail on or off also needs Apply connection changes, which restarts the agent. Until then, Status at the top of the page says connection changes are pending.';
 const MODEL = 'Where the agent runs with spending set up, saving a new model stops the agent until you press Apply connection changes. After that, a Slack or Telegram conversation that was already running answers every message with "I could not get permission to answer this message here" until a new conversation starts. In Slack, a new message (not a reply in the old thread) starts one. In Telegram a conversation lasts the day, so that usually means tomorrow — or end it now under Start a fresh conversation now. Without spending set up, the new model takes effect at the next conversation, and a running Slack or Telegram conversation keeps the old one.';
 export function takesEffect(field: string): string {
   if(field === 'model') return MODEL;

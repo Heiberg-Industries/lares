@@ -35,7 +35,7 @@ it('shows no timing note under Description, which nothing reads when the agent r
  const afterDescription=html.slice(html.indexOf('Description'),html.indexOf('Instructions and language'));
  expect(afterDescription.length).toBeGreaterThan(0);
  expect(afterDescription).not.toContain('Takes effect');
- expect(html).toContain('Switching Gmail, a personal mailbox or a personal calendar on or off can be different');
+ expect(html).toContain('On a chief of staff, switching gmail on or off also needs Apply connection changes');
 });
 it('distinguishes unapproved capacity and a full box',()=>{
  expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:null,activeCount:3,approved:false,creationAvailable:false}}/>)).toContain('not been measured and approved');
