@@ -20,7 +20,9 @@ describe('builder read model', () => {
     expect(takesEffect('autonomy')).toBe('Takes effect at its next action.');
     expect(takesEffect('schedules')).toBe('Takes effect the next time it runs.');
     expect(takesEffect('model')).toBe('Where the agent runs with spending set up, saving a new model stops the agent until you press Apply connection changes. After that, a Slack or Telegram conversation that was already running answers every message with "I could not get permission to answer this message here" until a new conversation starts. In Slack, a new message (not a reply in the old thread) starts one. In Telegram a conversation lasts the day, so that usually means tomorrow — or end it now under Start a fresh conversation now. Without spending set up, the new model takes effect at the next conversation, and a running Slack or Telegram conversation keeps the old one.');
-    for (const field of ['duties','voice','grants','skills','language']) expect(takesEffect(field)).toBe('Takes effect at its next conversation. In Slack, a new message (not a reply in the old thread) starts one. In Telegram a conversation lasts the day, so that usually means tomorrow — or end it now under Start a fresh conversation now.');
+    const conversation = 'Takes effect at its next conversation. In Slack, a new message (not a reply in the old thread) starts one. In Telegram a conversation lasts the day, so that usually means tomorrow — or end it now under Start a fresh conversation now.';
+    for (const field of ['duties','voice','language']) expect(takesEffect(field)).toBe(conversation);
+    for (const field of ['grants','skills']) expect(takesEffect(field)).toBe(conversation + ' On a chief of staff, switching gmail on or off also needs Apply connection changes, which restarts the agent. Until then, Status at the top of the page says connection changes are pending.');
   });
   it('does not flag a fingerprint matching successful keeper evidence', async () => {
     query.mockResolvedValue({rows: []});

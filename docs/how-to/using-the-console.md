@@ -87,8 +87,7 @@ the chief of staff, the e-mail door
 ([`install.md`, section 8](../install.md#8-doors-outside-tools-and-integrations)). Changes to
 doors and credentials reach the running agent when you press **Apply connection changes**; that
 restarts the agent for about a minute. So does a change of role, personal accounts or, where
-spending is set up, model. Every other change (description, instructions, personality, language,
-schedules, where messages go, outside tools) takes effect when you save, with no restart. Saving a
+spending is set up, model. Every other change needs no restart. Instructions, personality, language and outside tools reach the agent at its next conversation; schedules and where messages go, the next time a schedule runs. The description is a label; the agent does not read it. Saving a
 change ends the agent's open web-chat conversations, and any approval waiting in them; the page says
 so before you save. Start a new conversation afterwards.
 
