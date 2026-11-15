@@ -157,7 +157,7 @@ vi.mock("../lib/conversation-continuity.js", async (original) => ({
 import { defaultTelegramAuth } from "eve/channels/telegram";
 import { setBoardDeps } from "@lares/agent-kit/board-approval";
 import { CONSOLE_AUTHORITY_REFUSED } from "@lares/agent-kit/console-turn-authority";
-import { SHARED_ROOM_REFUSED, SHARED_ROOM_UNAVAILABLE, sharedRoomAllows } from "@lares/agent-kit/shared-room";
+import { SHARED_ROOM_REFUSED, SHARED_ROOM_UNAVAILABLE, sharedRoomAllows, startedIn } from "@lares/agent-kit/shared-room";
 import { parseDefinition } from "@lares/agent-kit/definition";
 import { interceptSlackClaim, interceptTelegramClaim } from "@lares/agent-kit/door-channels";
 
@@ -173,6 +173,7 @@ import signalsSkill from "../agent/skills/signals.js";
 import { CATALOGUE } from "../catalogue/index.js";
 import { runDynamic, type MemoStore } from "../../../packages/agent-kit/tests/helpers/eve-dynamic.js";
 import { offeredBy, ownResolverFiles } from "../../../packages/agent-kit/tests/helpers/own-resolvers.js";
+import { frameworkMentionAuth } from "./helpers/slack-mention.js";
 import { approverFrom, assertApprover, catalogueApprovalResponse, humanTurnRefusal } from "../lib/approvals.js";
 import { calendarApprovalAdapter } from "../lib/calendar-approval.js";
 import { tracksApprovalAdapter } from "../lib/tracks-approval.js";
@@ -406,7 +407,10 @@ const knockOnWebChat = async (envelope: Request): Promise<SessionAuth | null> =>
 interface Door { readonly key: DoorKey; readonly title: string; knock(): Promise<SessionAuth | null> }
 const DOORS: readonly Door[] = [
   { key: "slackDm", title: "Slack · owner · direct message", knock: () => knockOnSlack(slackMessage({ user: SLACK_OWNER })) },
-  { key: "slackRoom", title: "Slack · owner · mention in a shared channel", knock: () => knockOnSlack(slackMessage({ user: SLACK_OWNER, room: true })) },
+  // The room column is read from the identity eve itself builds for a signed `app_mention` pushed
+  // through the door's real route (`helpers/slack-mention.ts`), not from a hand-made message.
+  { key: "slackRoom", title: "Slack · owner · mention in a shared channel", knock: async () =>
+    (await frameworkMentionAuth("C0SHAREDROOM", { keepModules: true, user: SLACK_OWNER })) as unknown as SessionAuth },
   { key: "telegram", title: "Telegram · owner · private chat", knock: () => knockOnTelegram(telegramMessage({ user: TELEGRAM_OWNER })) },
   { key: "webOwner", title: "Web chat · owner · private", knock: () => knockOnWebChat(webEnvelope({ member: WEB_OWNER })) },
   { key: "webMember", title: "Web chat · non-owner member · private", knock: () => knockOnWebChat(webEnvelope({ member: WEB_MEMBER })) },
@@ -593,6 +597,19 @@ describe("the door opens a turn for the people it admits", () => {
   it("Slack · owner · mention in a shared channel: opens a turn as the owner, the same as a direct message", async () => {
     const auth = await knockOnSlack(slackMessage({ user: SLACK_OWNER, room: true }));
     expect(auth).toMatchObject({ authenticator: "slack-webhook", attributes: { user_id: SLACK_OWNER, channel_id: "C0SHAREDROOM" } });
+  });
+
+  // The hand-made message above stands for a mention in the cells and tests that still use it
+  // (`roomOwner` and the like). This holds it to what eve builds: in every field the room rule, the
+  // approvals and the model-authority check read, the two identities are the same.
+  it("Slack · owner · mention in a shared channel: the hand-made identity matches the one eve builds", async () => {
+    const handMade = (await knockOnSlack(slackMessage({ user: SLACK_OWNER, room: true })))!;
+    const built = await frameworkMentionAuth("C0SHAREDROOM", { keepModules: true, user: SLACK_OWNER });
+    expect(built.authenticator).toBe(handMade.authenticator);
+    expect((handMade as { principalType?: unknown }).principalType).toBe(built.principalType);
+    for (const field of ["user_id", "channel_id", "author_type"]) expect(built.attributes[field], field).toBe(handMade.attributes[field]);
+    expect(startedIn({ session: { auth: { initiator: built, current: built } } })).toBe("shared-room");
+    expect(startedIn({ session: { auth: { initiator: handMade, current: handMade } } })).toBe("shared-room");
   });
 
   it("Telegram · owner · private chat: opens a turn as that Telegram user", async () => {

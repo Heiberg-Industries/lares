@@ -10,7 +10,7 @@
 // The Slack identities are the shape eve's Slack channel builds (`authenticator: "slack-webhook"`,
 // the channel id in `attributes`).
 import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const fake = vi.hoisted(() => ({ definition: undefined as unknown }));
 vi.mock("../lib/definition.js", async (original) => ({
@@ -19,7 +19,8 @@ vi.mock("../lib/definition.js", async (original) => ({
 }));
 
 import { parseDefinition } from "@lares/agent-kit/definition";
-import { SHARED_ROOM_REFUSED, sharedRoomAllows } from "@lares/agent-kit/shared-room";
+import { SHARED_ROOM_REFUSED, sharedRoomAllows, startedIn } from "@lares/agent-kit/shared-room";
+import { frameworkMentionAuth, type SentAuth } from "./helpers/slack-mention.js";
 import catalogueResolver from "../agent/tools/catalogue.js";
 import publicDocResolver from "../agent/tools/public_doc.js";
 import laresDocsSkill from "../agent/skills/lares-docs.js";
@@ -161,5 +162,53 @@ describe("a conversation started in a shared room", () => {
     expect(JSON.stringify(await runDynamic(laresDocsSkill, sessionWith("room-skill", ROOM) as never))).toContain("Public Lares documentation");
     expect(sharedRoomAllows("lares_read_public_doc")).toBe(true);
     expect(sharedRoomAllows("lares-docs")).toBe(true);
+  });
+});
+
+// The identities above are written by hand in eve's shape. This one is what eve builds: a signed
+// `app_mention` from the owner, pushed through the door's real route (`helpers/slack-mention.ts`).
+describe("a conversation started by the owner's mention, on the identity eve builds", () => {
+  let built: SentAuth;
+  beforeAll(async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    built = await frameworkMentionAuth("C0EXAMPLE", { keepModules: true });
+    vi.restoreAllMocks();
+  });
+
+  it("matches the hand-made room identity in every field the room rule and the approvals read", () => {
+    expect(built.authenticator).toBe(ROOM.authenticator);
+    expect(built.principalType).toBe(ROOM.principalType);
+    for (const field of ["user_id", "author_type"]) expect(built.attributes[field], field).toBe((ROOM.attributes as Record<string, unknown>)[field] ?? "user");
+    expect(built.attributes["channel_id"]).toBe("C0EXAMPLE");
+    expect(startedIn({ session: { auth: { initiator: built, current: built } } })).toBe("shared-room");
+  });
+
+  it("is given exactly the room's tools; the note tools are not among them", async () => {
+    const shown = await shownIn(sessionWith("built-room", built));
+    expect(shown).toEqual(expected(2));
+    for (const tool of ["vault_list", "vault_read", "vault_search", "vault_write"]) expect(shown, tool).not.toContain(tool);
+  });
+
+  it("refuses a call of vault_list, vault_read, vault_search and vault_write before any card or execution", async () => {
+    const ctx = { ...sessionWith("built-room", built), toolInput: {}, callId: "call-built" };
+    for (const tool of ["vault_list", "vault_read", "vault_search", "vault_write"]) {
+      const authored = vi.fn(async () => "user-approval");
+      await expect(catalogueApprovalRequest(tool, { ...ctx, toolName: tool }, authored), tool).rejects.toThrow(SHARED_ROOM_REFUSED);
+      expect(authored, tool).not.toHaveBeenCalled();
+      await expect(guardCatalogueExecution({ ...ctx, toolName: tool }, tool, {}), tool).rejects.toThrow(SHARED_ROOM_REFUSED);
+    }
+    const answer = { session: { id: "built-room", initiator: built }, response: { decision: "approve", principal: built },
+      request: { interactionId: "interaction-1", toolInput: {} } };
+    await expect(catalogueApprovalResponse("vault_write", answer)).rejects.toThrow(SHARED_ROOM_REFUSED);
+  });
+
+  it("for contrast: the same owner's direct message, built by eve, is given the note tools", async () => {
+    const { deliverSlackEvent, directMessageBody, SLACK } = await import("./helpers/slack-mention.js");
+    const { sent } = await deliverSlackEvent(directMessageBody({ user: SLACK.owner, channel: "D0EXAMPLE" }), { keepModules: true });
+    const dm = sent[0]!.options.auth!;
+    expect(startedIn({ session: { auth: { initiator: dm, current: dm } } })).toBe("private-chat");
+    const shown = await shownIn(sessionWith("built-dm", dm));
+    expect(shown).toEqual(expected(1));
+    for (const tool of ["vault_list", "vault_read", "vault_search", "vault_write"]) expect(shown, tool).toContain(tool);
   });
 });
