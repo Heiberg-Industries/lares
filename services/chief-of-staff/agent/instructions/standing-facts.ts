@@ -51,6 +51,7 @@
  * restated here, so they can never disagree with the store.
  */
 import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-surface";
+import { startedIn } from "@lares/agent-kit/shared-room";
 import { defineDynamic, defineInstructions } from "eve/instructions";
 
 import { getPool } from "@lares/agent-kit/db";
@@ -268,6 +269,10 @@ export async function standingFactsCorrectionBlock(sessionId: string): Promise<s
 
 export default defineDynamic(async (ctx) => {
   if (await ctx.memo(["private-console", ctx.turn?.id ?? null], () => verifyPrivateConsoleSession(ctx))) return null;
+  // What the owner asked the agent to remember is the likeliest thing to be quoted into a channel
+  // everyone reads. A conversation started in a shared room gets none of it: nothing is read from the
+  // store and no "what was read" row is written (that write is inside `forSession`).
+  if (startedIn(ctx) === "shared-room") return null;
   const content = await ctx.memo(["standing-facts", ctx.session.id], () => memoryCore.forSession(ctx.session.id));
   return defineInstructions({ content });
 });

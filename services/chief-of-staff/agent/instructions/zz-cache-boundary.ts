@@ -18,6 +18,7 @@
 // The gateway provider removes the marker before the request leaves, on both lanes; the model
 // never sees it.
 import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-surface";
+import { startedIn } from "@lares/agent-kit/shared-room";
 import { defineDynamic, defineInstructions } from "eve/instructions";
 
 import { PROMPT_CACHE_BOUNDARY } from "@lares/agent-kit/prompt-cache";
@@ -31,6 +32,9 @@ export default defineDynamic(async (ctx) => {
     // A private console conversation gets the language line and nothing else after the marker:
     // no clock, no memory. An unauthorized one throws, and the turn fails.
     if (await verifyPrivateConsoleSession(ctx)) return [await languageBlock(ctx.session.id, true)];
+    // A conversation started in a shared room has no standing-facts block (`standing-facts.ts`), so it
+    // gets no correction to one either. The language line and the clock are not private.
+    if (startedIn(ctx) === "shared-room") return [await languageBlock(ctx.session.id, false), await clockBlock()];
     return [
       await languageBlock(ctx.session.id, false),
       await clockBlock(),

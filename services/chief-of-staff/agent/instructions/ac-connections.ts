@@ -11,12 +11,16 @@
  * persona is then all the agent has, which is where the agent was before this existed.
  */
 import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-surface";
+import { startedIn } from "@lares/agent-kit/shared-room";
 import { defineDynamic, defineInstructions } from "eve/instructions";
 
 import { connectionsMarkdown, readConnections } from "../../lib/connections.js";
 
 export default defineDynamic(async (ctx) => {
   if (await ctx.memo(["private-console", ctx.turn?.id ?? null], () => verifyPrivateConsoleSession(ctx))) return null;
+  // Everyone in a shared room reads the answers, and this block names the owner's services. The room
+  // is told only where it is (`SHARED_ROOM_INSTRUCTIONS`); the tools it has describe themselves.
+  if (startedIn(ctx) === "shared-room") return null;
   const content = await ctx.memo(["connections", ctx.session.id], async () => {
     try {
       return connectionsMarkdown(await readConnections());

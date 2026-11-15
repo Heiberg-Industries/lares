@@ -94,6 +94,20 @@ export function sharedRoomRefusal(offeredInDirectMessage: boolean): string {
   return offeredInDirectMessage ? SHARED_ROOM_REFUSED : SHARED_ROOM_UNAVAILABLE;
 }
 
+/** What a conversation started in a shared room is told about where it is, appended to the
+ *  persona by each role's `agent/instructions/aa-definition.ts`. One fixed text for every role, so
+ *  it names no tool: it speaks of "the tools you have here". "The people you work for" and not "the
+ *  owner" alone, because a door may admit several allowed people (the Slack door admits everyone on
+ *  its list). It ends with {@link SHARED_ROOM_REFUSED}, so that sentence is written once. */
+export const SHARED_ROOM_INSTRUCTIONS = [
+  'This conversation is in a shared channel. Everyone in the channel reads your answers.',
+  'Only the people you work for can ask you things here.',
+  'Answer from general knowledge and the tools you have here.',
+  'If you are asked for something one of those tools looks up, you may say what it finds; remember that everyone in the channel reads it.',
+  'Do not repeat or guess anything else private about the owner or other people: mail, calendar, notes, what the owner asked you to remember, or details of your own duties.',
+  `If you are asked for something you cannot do here, say: ${SHARED_ROOM_REFUSED}`,
+].join(' ');
+
 /** Whether this name is kept from this conversation by the room rule. */
 export function hiddenInSharedRoom(ctx: unknown, name: string): boolean {
   return !sharedRoomAllows(name) && startedIn(ctx) === 'shared-room';
