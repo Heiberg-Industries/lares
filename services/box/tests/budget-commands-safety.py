@@ -541,8 +541,8 @@ class BudgetCommandTests(unittest.TestCase):
         self.keeper.answers["budget.provision-native"] = {"ok": False, "outcome": "refused", "error": budget.KEEPER_BUSY_KEY_NOT_MADE}
         code, output = self.run_command("agent-start", "my-agent")
         self.assertEqual(code, budget.EX_REFUSED, output)
-        self.assertIn("lares: The spending-key store was busy with other work, so the key for my-agent was not made. Nothing needs "
-                      "repair. Run this command again in a minute: it continues from where it stopped.", output)
+        self.assertIn("lares: The spending-key store was busy with other work, so the key for my-agent was not made. Nothing from this "
+                      "try needs repair. Run this command again in a minute: it continues from where it stopped.", output)
         self.assertNotIn("cannot spend", output)
         self.assertNotIn("outcome is not known", output)
         self.assertNotIn("budget.activate-native", self.keeper.actions())
@@ -565,7 +565,8 @@ class BudgetCommandTests(unittest.TestCase):
         code, output = self.run_command("agent-start", "my-agent")
         self.assertEqual(code, budget.EX_REFUSED, output)
         self.assertIn("lares: The spending-key store was busy with other work, so the key for my-agent was made but is not switched "
-                      "on yet: it stays blocked and cannot spend. Nothing needs repair. Run this command again in a minute: it "
+                      "on yet: it stays blocked and cannot spend. Nothing from this try needs repair. Run this command again in a "
+                      "minute: it "
                       "continues from where it stopped.", output)
         self.assertNotIn("budget.provision-native", self.keeper.actions())
         self.assertNotIn("definition.reconcile", self.keeper.actions())
@@ -694,7 +695,7 @@ class BudgetCommandTests(unittest.TestCase):
         self.keeper.answers["budget.provision-native"] = lambda request: busy if request["input"]["purposeAlias"] == "lares-utility" else made(request)
         code, output = self.run_command("agent-start", "my-agent")
         self.assertEqual(code, budget.EX_REFUSED, output)
-        self.assertIn("The spending-key store was busy with other work, so the key for lares-utility was not made. Nothing needs repair. "
+        self.assertIn("The spending-key store was busy with other work, so the key for lares-utility was not made. Nothing from this try needs repair. "
                       "my-agent keeps working on its own model name. Run sudo lares agent start my-agent again in a minute to finish "
                       "the other keys: it continues from where it stopped.", output)
         self.assertNotIn("The keeper refused", output)
@@ -709,7 +710,7 @@ class BudgetCommandTests(unittest.TestCase):
         code, output = self.run_command("agent-start", "my-agent")
         self.assertEqual(code, budget.EX_REFUSED, output)
         self.assertIn("The spending-key store was busy with other work, so the key for lares-utility was made but is not switched on yet. "
-                      "Nothing needs repair. my-agent keeps working", output)
+                      "Nothing from this try needs repair. my-agent keeps working", output)
         self.assertEqual(self.native_calls(), [("make", "lares-utility"), ("open", "lares-utility")])
         self.keeper.requests.clear()
         self.keeper.answers["budget.activate-native"] = opened

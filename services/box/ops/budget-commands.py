@@ -806,9 +806,9 @@ def start_extra_keys(installation: Installation, state: dict[str, Any], name: st
                                      "credentialGeneration": have[alias]["credentialGeneration"]}, NATIVE_TIMEOUT_SECONDS)
         except KeeperRefused as error:
             if str(error) == KEEPER_BUSY_KEY_NOT_MADE:
-                return f"{KEY_STORE_BUSY}, so the key for {alias} was not made. Nothing needs repair."
+                return f"{KEY_STORE_BUSY}, so the key for {alias} was not made. Nothing from this try needs repair."
             if str(error) == KEEPER_BUSY_KEY_NOT_SWITCHED_ON:
-                return f"{KEY_STORE_BUSY}, so the key for {alias} was made but is not switched on yet. Nothing needs repair."
+                return f"{KEY_STORE_BUSY}, so the key for {alias} was made but is not switched on yet. Nothing from this try needs repair."
             return f"The keeper refused the key for {alias} ({error})."
         except KeeperUnclear as error:
             return f"The keeper did not confirm the key for {alias} ({error})."
@@ -853,7 +853,7 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
                                      "incarnation": status["agent"]["incarnation"], "purposeAlias": state["alias"]}, NATIVE_TIMEOUT_SECONDS)
         except KeeperRefused as error:
             if str(error) == KEEPER_BUSY_KEY_NOT_MADE:
-                raise Stop(f"{KEY_STORE_BUSY}, so the key for {name} was not made. Nothing needs repair. Run this command "
+                raise Stop(f"{KEY_STORE_BUSY}, so the key for {name} was not made. Nothing from this try needs repair. Run this command "
                            "again in a minute: it continues from where it stopped.") from None
             raise Stop("The keeper refused to create the key. First check the agent in the console: if it shows changes "
                        "waiting, press Apply connection changes and run this again (the key is made only for the definition "
@@ -873,7 +873,7 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
             if str(error) != KEEPER_BUSY_KEY_NOT_SWITCHED_ON:
                 raise
             raise Stop(f"{KEY_STORE_BUSY}, so the key for {name} was made but is not switched on yet: it stays blocked and "
-                       "cannot spend. Nothing needs repair. Run this command again in a minute: it continues from where it "
+                       "cannot spend. Nothing from this try needs repair. Run this command again in a minute: it continues from where it "
                        "stopped.") from None
 
     # Only the installation's owner gets a key for each of the other model names; everyone else uses the agent's own.

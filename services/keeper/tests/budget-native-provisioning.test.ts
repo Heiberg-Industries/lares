@@ -1670,7 +1670,7 @@ it('gives back a turn at the key store that came too late to finish in time, as 
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },120_000);
 
-it('keeps the ordinary refusal, never busy, when the key store stops while a key call waits its turn',async()=>{
+it('keeps the ordinary refusal, never busy, when the key store freezes while a key call waits its turn',async()=>{
   const fixture=await startActiveOwnerFixture(),second='neutral-native-frozen-wait',third='neutral-native-frozen-after',binding=id();
   for(const agent of [second,third])await seedAgent(fixture.operator,agent,fixture.incarnation,fixture.owner,fixture.org);
   await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,binding,second))).resolves.toMatchObject({state:'bound-closed'});
@@ -1690,4 +1690,24 @@ it('keeps the ordinary refusal, never busy, when the key store stops while a key
   await expect(ownerActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'})).rejects.toThrow(ACTIVATION_REFUSED);
   expect(fixture.fake.calls.key).toBe(keys);expect(fixture.fake.activationCalls.unblock).toBe(unblocks);
   expect(JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state).toBe('uncertain');
+},120_000);
+
+it('keeps the ordinary refusal, never busy, when the key store shuts down while a key call waits its turn',async()=>{
+  const fixture=await startActiveOwnerFixture(),second='neutral-native-shutdown-wait',third='neutral-native-shutdown-made',binding=id(),made=id();
+  for(const agent of [second,third])await seedAgent(fixture.operator,agent,fixture.incarnation,fixture.owner,fixture.org);
+  await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,made,third))).resolves.toMatchObject({state:'bound-closed'});
+  const before=await untouched(fixture),release=holdKeyStore(fixture);
+  const making=ownerProvisioner(fixture).provision(mainRequest(fixture,binding,second)),switching=ownerActivator(fixture).activate({bindingId:made,credentialGeneration:'0'});
+  await pause(100);
+  // The keeper begins to shut down: everyone waiting is refused as a fault, and the holder finishes.
+  const draining=fixture.custody.drainForShutdown();
+  for(const [attempt,refused] of [[making,PROVISION_REFUSED],[switching,ACTIVATION_REFUSED]] as const){
+    const error=await attempt.then(()=>undefined,(value:unknown)=>value);
+    expect(error).not.toBeInstanceOf(KeeperRefusedError);expect((error as Error).message).toMatch(refused);
+  }
+  await release();await draining;
+  expect({calls:{...fixture.fake.calls},activation:{...fixture.fake.activationCalls},journal:journalRecords(fixture.root),
+    store:readFileSync(join(fixture.root,'native','snapshot.json'),'utf8'),control:JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state,
+    bindings:(await fixture.financial.query('SELECT * FROM budget_gateway_bindings ORDER BY id')).rows,rows:await financialRows(fixture)})
+    .toEqual({calls:before.calls,activation:before.activation,journal:before.journal,store:before.store,control:before.control,bindings:before.bindings,rows:before.rows});
 },120_000);
