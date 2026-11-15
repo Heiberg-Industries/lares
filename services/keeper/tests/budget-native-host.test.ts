@@ -3,10 +3,12 @@ import {createServer} from 'node:net';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {afterEach,expect,it} from 'vitest';
-import {BudgetNativeProvisioner,nativeProvisioningDeadline} from '../lib/budget-native-provisioning.js';
+import {BudgetNativeProvisioner,nativeKeyGateWait,nativeProvisioningDeadline,NATIVE_KEY_STORE_BUSY_NOT_MADE} from '../lib/budget-native-provisioning.js';
+import {NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON} from '../lib/budget-native-activation.js';
+import {failureReply} from '../lib/socket-server.js';
 import {BudgetNativeCredentialClient} from '../lib/budget-native-client.js';
 import {createNativeCredentialClient,parseBudgetNativePolicyDocument,readBudgetNativePolicyDocument,selectBudgetNativeReviewedPolicy,registerBudgetNativeHostActions} from '../lib/budget-native-host.js';
-import {resetActions,runAction} from '../lib/actions.js';
+import {KeeperRefusedError,resetActions,runAction} from '../lib/actions.js';
 import {requestNativeActivation,requestNativeProvision} from '../bin/budget-financial.js';
 import {nativeTestPolicy,nativeTestPolicyFor,nativeTestTarget} from './helpers/native-cleanup.js';
 import type {HostFinancialJournal} from '../lib/financial-journal.js';
@@ -23,6 +25,16 @@ it('enforces the native provisioning deadline at the 20-second boundary',()=>{
   expect(deadline.deadlineAtMs).toBe(21_000);
   expect(()=>deadline.check(20_999)).not.toThrow();
   expect(()=>deadline.check(21_000)).toThrow('Native budget provisioning refused');
+});
+
+it('waits at the key store at most ten seconds, and never so long that less than nine of the twenty are left for the work',()=>{
+  const deadline=nativeProvisioningDeadline(1_000).deadlineAtMs;
+  expect(nativeKeyGateWait(deadline,undefined,1_000)).toBe(10_000);
+  expect(nativeKeyGateWait(deadline,60_000,1_000)).toBe(10_000);
+  expect(nativeKeyGateWait(deadline,200,1_000)).toBe(200);
+  expect(nativeKeyGateWait(deadline,undefined,3_500)).toBe(8_500);
+  // Too little left to wait at all: the shortest wait, so a busy store answers busy at once rather than as a fault.
+  expect(nativeKeyGateWait(deadline,undefined,15_000)).toBe(1);
 });
 
 it('rejects duplicate JSON keys, extra policy fields, duplicate aliases and unmatched aliases',()=>{
@@ -85,6 +97,19 @@ it('keeps native provisioning and activation on the root host socket and redacts
   await expect(runAction('budget.activate-native',{bindingId:request.bindingId,credentialGeneration:'0'},context,{host:true})).resolves.toEqual({state:'active',bindingId:request.bindingId,credentialGeneration:'0'});
   expect(calls).toEqual([`provision:${request.bindingId}`,`activate:${request.bindingId}`]);
   expect(JSON.stringify(audits)).not.toContain(request.memberId);
+});
+
+it('sends a busy key store to the host command as a refusal in the keeper\'s own words, and a fault as an unknown outcome, as before',async()=>{
+  const answers:{provision:Error;activate:Error}={provision:new KeeperRefusedError(NATIVE_KEY_STORE_BUSY_NOT_MADE),activate:new KeeperRefusedError(NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON)};
+  registerBudgetNativeHostActions({provision:async()=>{throw answers.provision;},activate:async()=>{throw answers.activate;}});
+  const context={actor:'host',audit:async()=>{}},activation={bindingId:request.bindingId,credentialGeneration:'0'};
+  const reply=(action:string,input:unknown)=>runAction(action,input,context,{host:true}).then(()=>undefined,failureReply);
+  await expect(reply('budget.provision-native',request)).resolves.toEqual({ok:false,outcome:'refused',error:'The spending-key store was busy, so the key was not made.'});
+  await expect(reply('budget.activate-native',activation)).resolves.toEqual({ok:false,outcome:'refused',error:'The spending-key store was busy, so the key was not switched on.'});
+  answers.provision=new Error('Native budget provisioning refused; reconciliation may be required');
+  answers.activate=new Error('Native budget activation refused; reconciliation may be required');
+  for(const [action,input] of [['budget.provision-native',request],['budget.activate-native',activation]] as const)
+    await expect(reply(action,input)).resolves.toMatchObject({ok:false,outcome:'unknown',error:'keeper could not confirm the action outcome'});
 });
 
 async function withSocket(handler:(socket:import('node:net').Socket,request:Record<string,unknown>)=>void):Promise<{path:string;close:()=>Promise<void>}> {

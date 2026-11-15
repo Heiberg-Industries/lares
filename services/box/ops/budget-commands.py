@@ -129,6 +129,13 @@ class Stop(Exception):
 # a change and the spending-key store stayed busy, so it did not start it again. The change is kept and waiting. Only a
 # refusal that starts with exactly this is told apart; tests/budget-commands-safety.py pins it to the keeper's constant.
 KEEPER_BUSY_NOT_STARTED = "The spending-key store was busy, so the agent was not started."
+# The keeper's fixed answers (services/keeper/lib/budget-native-provisioning.ts and budget-native-activation.ts) when
+# making or switching on a key waited its turn at the spending-key store and the store stayed busy: that call read and
+# changed nothing in the store or at the gateway. Only these exact refusals are told apart; any other refusal or error
+# keeps its own message. tests/budget-commands-safety.py pins them to the keeper's constants.
+KEEPER_BUSY_KEY_NOT_MADE = "The spending-key store was busy, so the key was not made."
+KEEPER_BUSY_KEY_NOT_SWITCHED_ON = "The spending-key store was busy, so the key was not switched on."
+KEY_STORE_BUSY = "The spending-key store was busy with other work"
 
 
 class KeeperRefused(Exception):
@@ -798,6 +805,10 @@ def start_extra_keys(installation: Installation, state: dict[str, Any], name: st
             installation.host_action("budget.activate-native", {"bindingId": have[alias]["id"],
                                      "credentialGeneration": have[alias]["credentialGeneration"]}, NATIVE_TIMEOUT_SECONDS)
         except KeeperRefused as error:
+            if str(error) == KEEPER_BUSY_KEY_NOT_MADE:
+                return f"{KEY_STORE_BUSY}, so the key for {alias} was not made. Nothing from this try needs repair."
+            if str(error) == KEEPER_BUSY_KEY_NOT_SWITCHED_ON:
+                return f"{KEY_STORE_BUSY}, so the key for {alias} was made but is not switched on yet. Nothing from this try needs repair."
             return f"The keeper refused the key for {alias} ({error})."
         except KeeperUnclear as error:
             return f"The keeper did not confirm the key for {alias} ({error})."
@@ -840,7 +851,10 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
         try:
             installation.host_action("budget.provision-native", {**binding, "memberId": member_id, "agent": name,
                                      "incarnation": status["agent"]["incarnation"], "purposeAlias": state["alias"]}, NATIVE_TIMEOUT_SECONDS)
-        except KeeperRefused:
+        except KeeperRefused as error:
+            if str(error) == KEEPER_BUSY_KEY_NOT_MADE:
+                raise Stop(f"{KEY_STORE_BUSY}, so the key for {name} was not made. Nothing from this try needs repair. Run this command "
+                           "again in a minute: it continues from where it stopped.") from None
             raise Stop("The keeper refused to create the key. First check the agent in the console: if it shows changes "
                        "waiting, press Apply connection changes and run this again (the key is made only for the definition "
                        "the agent runs). If an earlier run was interrupted at this step instead, Lares cannot tell whether the "
@@ -852,14 +866,24 @@ def agent_start(installation: Installation, options: argparse.Namespace) -> int:
 
     if status["account"]["state"] == "closed":
         say("Opening spending for this person and agent.")
-        installation.host_action("budget.activate-native", {"bindingId": status["binding"]["id"],
-                                 "credentialGeneration": status["binding"]["credentialGeneration"]}, NATIVE_TIMEOUT_SECONDS)
+        try:
+            installation.host_action("budget.activate-native", {"bindingId": status["binding"]["id"],
+                                     "credentialGeneration": status["binding"]["credentialGeneration"]}, NATIVE_TIMEOUT_SECONDS)
+        except KeeperRefused as error:
+            if str(error) != KEEPER_BUSY_KEY_NOT_SWITCHED_ON:
+                raise
+            raise Stop(f"{KEY_STORE_BUSY}, so the key for {name} was made but is not switched on yet: it stays blocked and "
+                       "cannot spend. Nothing from this try needs repair. Run this command again in a minute: it continues from where it "
+                       "stopped.") from None
 
     # Only the installation's owner gets a key for each of the other model names; everyone else uses the agent's own.
     extra_problem = None
     if status.get("owner"):
         extra_problem = start_extra_keys(installation, state, name, request)
-        if extra_problem:
+        if extra_problem and extra_problem.startswith(KEY_STORE_BUSY):
+            say(f"{extra_problem} {name} keeps working on its own model name. Run sudo lares agent start {name} again in a minute "
+                "to finish the other keys: it continues from where it stopped.")
+        elif extra_problem:
             say(f"{extra_problem} {name} keeps working on its own model name. Run sudo lares agent start {name} again to finish the other keys.")
     code = EX_REFUSED if extra_problem else 0
 
