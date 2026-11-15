@@ -98,7 +98,9 @@ within about two minutes. The line below the button says "Sent to Telegram at 10
 not sent. It costs about one normal brief from your own monthly limit, ignores quiet hours and
 do-not-disturb because you asked, and never counts as the day's brief. It is refused when the agent
 is not running, the door is not connected, the agent is shared, the morning brief is off, a test is
-already on its way, or after ten in a day. Built and unit-tested, not yet seen on a real install.
+already on its way, or after ten in a day. On the tested path, the real-install check presses it
+once for Slack and once for Telegram (stand-ins for both apps) and sees each brief arrive in its
+chat and charged to you as an owner job.
 
 ### Where messages go
 

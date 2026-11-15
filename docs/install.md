@@ -536,7 +536,9 @@ it into that chat, starting with "Test brief". It arrives within about two minut
 normal brief from your own monthly limit, goes out even in quiet hours or do-not-disturb, and never
 counts as the day's real brief. It is refused, with a sentence, when the agent is not running, the
 door is not connected, the agent is shared with someone else, the morning brief is off, a test is
-already on its way, or after ten in a day. Built and unit-tested, not yet seen on a real install.
+already on its way, or after ten in a day. On the tested path, the real-install check presses it
+once for Slack and once for Telegram (stand-ins for both apps) and sees each brief arrive in its
+chat and charged to you as an owner job.
 
 ### Choosing where messages go
 
