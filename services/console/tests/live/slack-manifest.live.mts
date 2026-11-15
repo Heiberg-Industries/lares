@@ -1,6 +1,7 @@
 /** Manual probe only; never creates an app. With SLACK_CONFIGURATION_TOKEN_FILE, validates
  * through apps.manifest.validate. Without it, prints the create URL; a human must create
  * one real app by hand. Printing a URL is NOT live validation.
+ * SLACK_PROBE_ROLE picks whose permissions the manifest asks for (default chief-of-staff, the widest).
  * LARES_PUBLIC_DOOR_ORIGIN=https://doors.example.com pnpm -C services/console exec tsx tests/live/slack-manifest.live.mts
  * Source: https://docs.slack.dev/reference/methods/apps.manifest.validate/
  */
@@ -8,7 +9,7 @@ import {readFileSync} from 'node:fs';
 import {slackManifest} from '../../lib/doors.ts';
 const origin=process.env.LARES_PUBLIC_DOOR_ORIGIN;
 if(!origin) throw new Error('Set LARES_PUBLIC_DOOR_ORIGIN to the explicit public HTTPS origin.');
-const {manifest,createUrl}=slackManifest({name:process.env.SLACK_PROBE_AGENT??'door-probe',display:'Door probe'},origin);
+const {manifest,createUrl}=slackManifest({name:process.env.SLACK_PROBE_AGENT??'door-probe',display:'Door probe',role:process.env.SLACK_PROBE_ROLE??'chief-of-staff'},origin);
 const file=process.env.SLACK_CONFIGURATION_TOKEN_FILE;
 if(!file) {
   console.log('LIVE VALIDATION PENDING: no configuration token supplied. Human app creation acceptance required.');
