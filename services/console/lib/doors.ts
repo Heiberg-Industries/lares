@@ -5,13 +5,21 @@ export function publicDoorOrigin(value: string): string {
     throw new Error('Configure an HTTPS public door origin without credentials, path, query or fragment.');
   return url.origin;
 }
-export function slackManifest(agent: {name:string;display:string}, consoleUrl:string) {
+/** The Slack app's bot permissions, by role. Every role reads and answers direct messages. Only a
+ * role that starts conversations on a schedule (the chief of staff) also gets `im:write`: Slack's
+ * `conversations.open`, which looks up the owner's direct-message channel before such a
+ * conversation starts, needs it. Any other role, including one added later, does not. */
+export function slackBotScopes(role:string):string[] {
+  const base=['chat:write','im:history'];
+  return role==='chief-of-staff'?[...base,'im:write']:base;
+}
+export function slackManifest(agent: {name:string;display:string;role:string}, consoleUrl:string) {
   if (!/^[a-z][a-z0-9-]{0,30}$/.test(agent.name)) throw new Error('Invalid agent name');
   const origin=publicDoorOrigin(consoleUrl);
   const manifest={
     display_information:{name:agent.display},
     features:{bot_user:{display_name:agent.display,always_online:false},app_home:{home_tab_enabled:false,messages_tab_enabled:true,messages_tab_read_only_enabled:false}},
-    oauth_config:{scopes:{bot:['chat:write','im:history','im:write']}},
+    oauth_config:{scopes:{bot:slackBotScopes(agent.role)}},
     settings:{event_subscriptions:{request_url:`${origin}/api/doors/${agent.name}/slack/events`,bot_events:['message.im']},
       interactivity:{is_enabled:true,request_url:`${origin}/api/doors/${agent.name}/slack/events`},org_deploy_enabled:false,socket_mode_enabled:false,token_rotation_enabled:false},
   };

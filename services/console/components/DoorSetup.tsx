@@ -88,7 +88,7 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
   await showConnectStep(kind);
  }
  const copy=(text:string,note:string)=>{void (async()=>{try{await navigator.clipboard.writeText(text);setMessage(note);}catch{setError('Could not copy; select the text and copy it by hand.');}})();};
- let createUrl='',manifestText='';try{const m=slackManifest({name:p.name,display:p.display},p.origin);createUrl=m.createUrl;manifestText=JSON.stringify(m.manifest,null,2);}catch{}
+ let createUrl='',manifestText='';try{const m=slackManifest({name:p.name,display:p.display,role:p.role},p.origin);createUrl=m.createUrl;manifestText=JSON.stringify(m.manifest,null,2);}catch{}
  const expiredAt=connect?Date.parse(connect.expiresAt):NaN;
  const touchedPending=rows.some(r=>doorTouched(r)&&r.pending);
  return <section aria-label="Door setup" className="lares-door-setup"><h2>Connect doors</h2>
