@@ -10,11 +10,11 @@ import {HostFinancialJournal} from '../lib/financial-journal.js';
 import {prepareFinancialCustody} from '../lib/financial-continuity.js';
 import {openBudgetMonth,provisionBudgetAccounts,startBudgetMonthOpening} from '../lib/budget-account-provisioning.js';
 import {registerInitialMemberBudgetActions} from '../lib/initial-member-budget.js';
-import {resetActions,runAction} from '../lib/actions.js';
+import {KeeperRefusedError,resetActions,runAction} from '../lib/actions.js';
 import {provisionEngineDatabasePrivileges} from '../../box/lib/database-privileges.js';
 import {verifyFinancialContinuity} from '../lib/financial-continuity.js';
-import {BudgetNativeProvisioner} from '../lib/budget-native-provisioning.js';
-import {BudgetNativeActivator} from '../lib/budget-native-activation.js';
+import {BudgetNativeProvisioner,NATIVE_KEY_STORE_BUSY_NOT_MADE} from '../lib/budget-native-provisioning.js';
+import {BudgetNativeActivator,NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON} from '../lib/budget-native-activation.js';
 import {createNativeRuntimeAuthority} from '../lib/budget-native-runtime-authority.js';
 import {BudgetNativeCredentialClient} from '../lib/budget-native-client.js';
 import {BudgetNativeCustodyStore,type NativeCustodyGate,type NativeOperation} from '../lib/budget-native-custody.js';
@@ -1528,17 +1528,16 @@ it('makes and switches on no further key for a person while one of their agent k
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },60_000);
 
-it('takes two further agents of one person one at a time: the second caller is turned away without anything frozen, and done on a later run',async()=>{
+it('takes two further agents of one person one at a time: the second caller waits its turn, and nothing is made twice',async()=>{
   const fixture=await startActiveOwnerFixture(),agents=['neutral-native-together-b','neutral-native-together-c'],bindings=[id(),id()];
   for(const agent of agents)await seedAgent(fixture.operator,agent,fixture.incarnation,fixture.owner,fixture.org);
   const rows=await financialRows(fixture);
   const settle=async(work:(index:number)=>Promise<unknown>)=>{
-    // The key store lets one caller in at a time. The second is turned away at once, before it reads or makes
-    // anything, with the ordinary refusal; this does not show two callers overlapping inside the work.
+    // The key store lets one caller in at a time. The second waits in line, reading and making nothing, until the
+    // first is done; this does not show two callers overlapping inside the work.
     const results=await Promise.allSettled([work(0),work(1)]);
-    expect(results.map(result=>result.status).sort()).toEqual(['fulfilled','rejected']);
+    expect(results.map(result=>result.status)).toEqual(['fulfilled','fulfilled']);
     await keyStoreOpen(fixture.custody);
-    for(const [index,result] of results.entries())if(result.status==='rejected')await work(index);
   };
   await settle(index=>ownerProvisioner(fixture).provision(mainRequest(fixture,bindings[index]!,agents[index]!)));
   await expect(keyPhases(fixture)).resolves.toEqual([{agent:fixture.ownerAgent,phase:'active'},{agent:agents[0],phase:'bound-closed'},{agent:agents[1],phase:'bound-closed'}]);
@@ -1589,3 +1588,106 @@ it('refuses a further agent key, freezing nothing, when the ledger says the acco
   await keyStoreOpen(fixture.custody);
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },60_000);
+
+// Making and switching on a key wait their turn at the key store for a bounded time. A wait that runs out, or a turn
+// that comes too late to finish inside the call's deadline, gives the keeper's busy answer having changed nothing; a
+// closed or frozen store keeps the ordinary refusal.
+/** Everything a busy answer must leave exactly as it was: gateway calls, the key store's records and stop state, the
+ * money journal, and every binding, account and window row. Read only while nobody holds the key store. */
+const untouched=async(fixture:OwnerFixture)=>({calls:{...fixture.fake.calls},activation:{...fixture.fake.activationCalls},phases:await keyPhases(fixture),
+  store:readFileSync(join(fixture.root,'native','snapshot.json'),'utf8'),control:JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state,
+  journal:journalRecords(fixture.root),bindings:(await fixture.financial.query('SELECT * FROM budget_gateway_bindings ORDER BY id')).rows,rows:await financialRows(fixture)});
+/** Takes the key store as a long model call does, until released. */
+const holdKeyStore=(fixture:OwnerFixture)=>{
+  let release!:()=>void;const held=new Promise<void>(resolve=>release=resolve);
+  const holder=fixture.custody.withGate(async()=>{await held;});
+  return async()=>{release();await holder;};
+};
+const pause=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+const busyAnswer=async(attempt:Promise<unknown>,sentence:string)=>{
+  const error=await attempt.then(()=>undefined,(value:unknown)=>value);
+  expect(error).toBeInstanceOf(KeeperRefusedError);expect((error as Error).message).toBe(sentence);
+};
+const laterProvisioner=(fixture:OwnerFixture,gateWaitMs?:number)=>new BudgetNativeProvisioner(fixture.financial,fixture.journal,fixture.custody,fixture.fake.native,nativeTestTarget,policy,
+  {designatedOwnerId:fixture.owner,...(gateWaitMs===undefined?{}:{gateWaitMs})});
+const laterActivator=(fixture:OwnerFixture,gateWaitMs?:number)=>new BudgetNativeActivator(fixture.financial,fixture.journal,fixture.custody,fixture.fake.native,
+  {designatedOwnerId:fixture.owner,...(gateWaitMs===undefined?{}:{gateWaitMs})});
+
+it('makes and switches on a person\'s first key once a busy key store frees within the wait, and says busy, changing nothing, when it stays busy',async()=>{
+  const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture);await grantLaterAgentUse(fixture,later);
+  const binding=id(),request=mainRequest(fixture,binding,later.agent,later.member);
+  const before=await untouched(fixture);
+  // Held past the wait: the busy answer, and the key store open for the next caller.
+  let release=holdKeyStore(fixture);
+  await busyAnswer(laterProvisioner(fixture,200).provision(request),NATIVE_KEY_STORE_BUSY_NOT_MADE);
+  await release();
+  expect(await untouched(fixture)).toEqual(before);
+  // Held for a moment: the call waits its turn, then makes the key, once, under the same binding id.
+  release=holdKeyStore(fixture);let settled=false;
+  const making=laterProvisioner(fixture).provision(request).finally(()=>{settled=true;});
+  await pause(300);expect(settled).toBe(false);
+  await release();
+  await expect(making).resolves.toEqual({state:'bound-closed',bindingId:binding,credentialGeneration:'0'});
+  expect(fixture.fake.calls.key).toBe(before.calls.key+1);
+
+  // Switching it on, the same two ways. A busy answer leaves the key made and blocked, the account closed.
+  const made=await untouched(fixture);
+  expect(made.phases).toContainEqual({agent:later.agent,phase:'bound-closed'});
+  release=holdKeyStore(fixture);
+  await busyAnswer(laterActivator(fixture,200).activate({bindingId:binding,credentialGeneration:'0'}),NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON);
+  await release();
+  expect(await untouched(fixture)).toEqual(made);
+  expect((await fixture.financial.query('SELECT state FROM budget_accounts WHERE id=$1',[later.accountId])).rows[0]).toEqual({state:'closed'});
+  release=holdKeyStore(fixture);settled=false;
+  const switching=laterActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'}).finally(()=>{settled=true;});
+  await pause(300);expect(settled).toBe(false);
+  await release();
+  await expect(switching).resolves.toEqual({state:'active',bindingId:binding,credentialGeneration:'0'});
+  expect(fixture.fake.activationCalls.unblock).toBe(made.activation.unblock+1);
+  await expect(keyPhases(fixture)).resolves.toContainEqual({agent:later.agent,phase:'active'});
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},120_000);
+
+it('gives back a turn at the key store that came too late to finish in time, as busy, changing nothing',async()=>{
+  const fixture=await startActiveOwnerFixture(),second='neutral-native-late-turn',binding=id();
+  await seedAgent(fixture.operator,second,fixture.incarnation,fixture.owner,fixture.org);
+  const now=Date.now.bind(Date),before=await untouched(fixture);
+  const lateTurn=async(attempt:()=>Promise<unknown>,sentence:string)=>{
+    const release=holdKeyStore(fixture),pending=attempt();
+    await pause(100);
+    // The gate comes back 15 of the call's 20 seconds in: too little left to finish, so nothing is started.
+    const clock=vi.spyOn(Date,'now').mockImplementation(()=>now()+15_000);
+    try{await release();await busyAnswer(pending,sentence);}finally{clock.mockRestore();}
+  };
+  await lateTurn(()=>ownerProvisioner(fixture).provision(mainRequest(fixture,binding,second)),NATIVE_KEY_STORE_BUSY_NOT_MADE);
+  expect(await untouched(fixture)).toEqual(before);
+  // Run again, the same call makes the key.
+  await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,binding,second))).resolves.toMatchObject({state:'bound-closed'});
+  const made=await untouched(fixture);
+  await lateTurn(()=>ownerActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'}),NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON);
+  expect(await untouched(fixture)).toEqual(made);
+  await expect(ownerActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},120_000);
+
+it('keeps the ordinary refusal, never busy, when the key store stops while a key call waits its turn',async()=>{
+  const fixture=await startActiveOwnerFixture(),second='neutral-native-frozen-wait',third='neutral-native-frozen-after',binding=id();
+  for(const agent of [second,third])await seedAgent(fixture.operator,agent,fixture.incarnation,fixture.owner,fixture.org);
+  await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,binding,second))).resolves.toMatchObject({state:'bound-closed'});
+  const keys=fixture.fake.calls.key,unblocks=fixture.fake.activationCalls.unblock;
+  let fail!:(error:Error)=>void;const failing=new Promise<void>((_,reject)=>fail=reject);
+  const broken=fixture.custody.withGate(async()=>{await failing;});
+  const making=ownerProvisioner(fixture).provision(mainRequest(fixture,id(),third)),switching=ownerActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'});
+  await pause(100);
+  // Something inside the gate fails: the store stops, and everyone waiting is refused as a fault.
+  fail(new Error('injected failure inside the key store'));
+  await expect(broken).rejects.toThrow('injected failure');
+  for(const [attempt,refused] of [[making,PROVISION_REFUSED],[switching,ACTIVATION_REFUSED]] as const){
+    const error=await attempt.then(()=>undefined,(value:unknown)=>value);
+    expect(error).not.toBeInstanceOf(KeeperRefusedError);expect((error as Error).message).toMatch(refused);
+  }
+  // A stopped store refuses at once, as before, with the same words.
+  await expect(ownerActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'})).rejects.toThrow(ACTIVATION_REFUSED);
+  expect(fixture.fake.calls.key).toBe(keys);expect(fixture.fake.activationCalls.unblock).toBe(unblocks);
+  expect(JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state).toBe('uncertain');
+},120_000);
