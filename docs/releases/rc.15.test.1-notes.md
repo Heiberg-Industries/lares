@@ -57,7 +57,9 @@ a conversation.
   (a scheduled brief, mail triage, voice embeddings, or a model call a tool makes while someone chats)
   is charged to the installation's owner, so it is now allowed only on an agent that owner owns and
   nobody else can use. On an agent granted to another member, or to an organisation with another
-  active member, such a call is refused and nothing is sent.
+  active member who is not restricted, such a call is refused and nothing is sent. The console's Send a
+  test brief button then says: "This agent is shared with someone else, or not adopted by you, so it
+  sends no briefs: a brief is always paid by you."
 
 ## Also new since rc.14
 
@@ -88,12 +90,13 @@ a conversation.
 - **Restore right after the install, before `sudo lares budget setup`.** A restore onto a server whose
   spending limits are already set up finishes with spending closed and says to keep the agents
   stopped; this release has no command that reopens it.
-- **A server on rc.12 or earlier cannot update to this test release in place.** `lares update` refuses
-  it before changing anything. The message says that the Compose, credentials, or database do not
-  match one installed Lares target; it does not say the server is too old. The reason is that such a
-  server lacks the operator database password file and the maintenance custody that the update checks
-  first. Moving from rc.12 or earlier to this release has not been tested; the rc.14 notes describe a
-  fresh install with the agents brought across.
+- **A server on rc.12 or earlier cannot update to this test release in place.** The update refuses it
+  before changing anything. The message says that the Compose, credentials, or database do not match
+  one installed Lares target; it does not say the server is too old. The reason is that such a server
+  lacks the operator database password file (`/etc/lares/operator/database-password`), which the
+  update checks before anything else. This follows from the code and has not been run against a real
+  rc.12 server. Moving from rc.12 or earlier to this release has not been tested; the rc.14 notes
+  describe a fresh install with the agents brought across.
 - **Before changing anything, the update also refuses** a server where any agent store is neither
   exactly as rc.14 left it nor already at this release (it names the store and says how many schema
   steps it found), a store that has no workflow tables at all, and a database that is not set to UTC.
