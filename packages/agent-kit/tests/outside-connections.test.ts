@@ -28,7 +28,7 @@ const def = (over: Record<string, unknown> = {}) =>
   });
 const allowAll = { isAllowedApprover: () => true };
 const ctx = (toolName: string, turn = "t1"): ApprovalContext =>
-  ({ abortSignal: new AbortController().signal, approvedTools: new Set(), callId: "c1", toolName, session: { id: "s1", turn: { id: turn, sequence: 0 } } }) as unknown as ApprovalContext;
+  ({ abortSignal: new AbortController().signal, callId: "c1", toolName, session: { id: "s1", turn: { id: turn, sequence: 0 } } }) as unknown as ApprovalContext;
 
 afterEach(() => { resetTaintForTests(); resetOutsideConnectionsForTests(); });
 
@@ -67,20 +67,42 @@ describe("the request policy", () => {
 });
 
 describe("the response policy (approver re-check)", () => {
-  const rctx = (responder: unknown) => ({ responder }) as unknown as ApprovalResponseContext;
+  // eve 1.0: the person who answered is `response.principal`, and the policy is asked about a Deny too.
+  const rctx = (principal: unknown, decision: unknown = "approve") =>
+    ({ request: { interactionId: "i1", callId: "c1", toolName: "registry__create_note", principal: null }, response: { decision, principal } }) as unknown as ApprovalResponseContext;
+  const owner = (r: unknown) => (r as { principalId?: string }).principalId === "owner";
 
   it("allows a responder the allowlist accepts and rejects every other", () => {
-    const policy = outsideResponsePolicy((r) => (r as { principalId?: string }).principalId === "owner");
+    const policy = outsideResponsePolicy(owner);
     expect(policy(rctx({ principalId: "owner" }))).toEqual({ status: "allowed" });
     expect(policy(rctx({ principalId: "someone-else" }))).toMatchObject({ status: "rejected" });
   });
 
-  it("fails closed when the check itself throws", () => {
-    const policy = outsideResponsePolicy(() => { throw new Error("boom"); });
-    expect(policy(rctx({}))).toMatchObject({ status: "rejected" });
+  it("a non-owner's Deny is refused exactly like their Approve, and the owner's Deny is allowed", () => {
+    const policy = outsideResponsePolicy(owner);
+    expect(policy(rctx({ principalId: "someone-else" }, "deny"))).toMatchObject({ status: "rejected", reason: "this person is not an allowed approver for this agent" });
+    expect(policy(rctx({ principalId: "someone-else" }, "deny"))).toEqual(policy(rctx({ principalId: "someone-else" }, "approve")));
+    expect(policy(rctx({ principalId: "owner" }, "deny"))).toEqual({ status: "allowed" });
   });
 
+  it("rejects a decision that is neither approve nor deny, and a missing principal", () => {
+    const policy = outsideResponsePolicy(owner);
+    expect(policy(rctx({ principalId: "owner" }, "cancel"))).toMatchObject({ status: "rejected" });
+    expect(policy(rctx({ principalId: "owner" }, null))).toMatchObject({ status: "rejected" });
+    expect(policy(rctx(undefined, "deny"))).toMatchObject({ status: "rejected" });
+    expect(policy({} as unknown as ApprovalResponseContext)).toMatchObject({ status: "rejected" });
+  });
 
+  it("does not read the old `responder` field: an allowed principal there approves nothing", () => {
+    const policy = outsideResponsePolicy(() => true);
+    expect(policy({ responder: { principalId: "owner" } } as unknown as ApprovalResponseContext)).toMatchObject({ status: "rejected" });
+  });
+
+  it("fails closed when the check itself throws, for Approve and for Deny", () => {
+    const policy = outsideResponsePolicy(() => { throw new Error("boom"); });
+    expect(policy(rctx({}))).toMatchObject({ status: "rejected" });
+    expect(policy(rctx({}, "deny"))).toMatchObject({ status: "rejected" });
+  });
 });
 
 describe("the taint rule", () => {
@@ -97,10 +119,12 @@ describe("the taint rule", () => {
     expect(outsideResultTaint("registry_lookup", def())).toBeUndefined();
   });
 
-  it("treats connection_search output as outside text only while an untrusted connection is present", () => {
-    expect(outsideResultTaint("connection_search", def())).toBe("third_party");
-    expect(outsideResultTaint("connection_search", def({ outsideTools: [entry({ trusted: true })] }))).toBeUndefined();
-    expect(outsideResultTaint("connection_search", def({ outsideTools: undefined }))).toBeUndefined();
+  it("treats eve's search output (eve__search) as outside text only while an untrusted connection is present", () => {
+    expect(outsideResultTaint("eve__search", def())).toBe("third_party");
+    expect(outsideResultTaint("eve__search", def({ outsideTools: [entry({ trusted: true })] }))).toBeUndefined();
+    expect(outsideResultTaint("eve__search", def({ outsideTools: undefined }))).toBeUndefined();
+    // The model may also reach an entry through eve__tool; the hook sees the entry's own name.
+    expect(outsideResultTaint("registry__lookup", def())).toBe("third_party");
   });
 
   it("taints nothing when the connections are switched off", () => {
@@ -147,29 +171,29 @@ describe("the approval card", () => {
 });
 
 describe("outsideProblems", () => {
-  it("reads eve's real connection_search error shape", () => {
+  it("reads the connection search error shape", () => {
     const out = [
       { connection: "registry", description: "x", error: "Failed to load tools for registry: connect ECONNREFUSED" },
       { connection: "other", description: "x", error: "Failed to load tools for other" },
     ];
-    expect(outsideProblems({ toolName: "connection_search", output: out }, "completed", def())).toEqual([{ connection: "registry", kind: "unreachable" }]);
+    expect(outsideProblems({ toolName: "eve__search", output: out }, "completed", def())).toEqual([{ connection: "registry", kind: "unreachable" }]);
     const auth = [{ connection: "registry", description: "x", error: "Authorization failed for registry: token file is empty" }];
-    expect(outsideProblems({ toolName: "connection_search", output: auth }, "completed", def())).toEqual([{ connection: "registry", kind: "key-refused" }]);
+    expect(outsideProblems({ toolName: "eve__search", output: auth }, "completed", def())).toEqual([{ connection: "registry", kind: "key-refused" }]);
   });
 
   it("reports a refused key from connection_search, once per connection", () => {
     const out = [{ connection: "registry", description: "x", needsAuthorization: true }, { connection: "registry", needsAuthorization: true }, { connection: "ghost", needsAuthorization: true }];
-    expect(outsideProblems({ toolName: "connection_search", output: out }, "completed", def())).toEqual([{ connection: "registry", kind: "key-refused" }]);
+    expect(outsideProblems({ toolName: "eve__search", output: out }, "completed", def())).toEqual([{ connection: "registry", kind: "key-refused" }]);
   });
 
   it("finds it inside a JSON string or a wrapped output", () => {
     const json = JSON.stringify([{ connection: "registry", needsAuthorization: true }]);
-    expect(outsideProblems({ toolName: "connection_search", output: json }, "completed", def())).toHaveLength(1);
-    expect(outsideProblems({ toolName: "connection_search", output: { type: "json", value: JSON.parse(json) } }, "completed", def())).toHaveLength(1);
+    expect(outsideProblems({ toolName: "eve__search", output: json }, "completed", def())).toHaveLength(1);
+    expect(outsideProblems({ toolName: "eve__search", output: { type: "json", value: JSON.parse(json) } }, "completed", def())).toHaveLength(1);
   });
 
   it("reports nothing for a healthy search", () => {
-    expect(outsideProblems({ toolName: "connection_search", output: [{ connection: "registry", tools: [] }] }, "completed", def())).toEqual([]);
+    expect(outsideProblems({ toolName: "eve__search", output: [{ connection: "registry", tools: [] }] }, "completed", def())).toEqual([]);
   });
 
   it("reports an unreachable server when its tool call failed, not when it ran and said no", () => {
@@ -209,4 +233,58 @@ describe('Keeper-proxied ordinary tools',()=>{
   expect(await resolveOutsideTools(def(),{acceptedTools:async()=>{throw Error('stale');},executor:()=>{throw Error('unreachable');}})).toBeNull();
   expect(await resolveOutsideTools(def({grants:[]}),{acceptedTools:async()=>{throw Error('unreachable');},executor:()=>{throw Error('unreachable');}})).toBeNull();
  });
+});
+
+describe("the approval form of an outside tool (card title and policies)", () => {
+  const catalog = async (): Promise<AcceptedOutsideTool[]> => [
+    { name: "lookup", inputSchema: { type: "object", properties: {} } },
+    { name: "create_note", inputSchema: { type: "object", properties: {} } },
+  ];
+  const executor = () => async () => ({ content: [] });
+  const approvalOf = (tool: unknown) => (tool as { approval: { request: unknown; response?: unknown; prompt: (c: unknown) => unknown } }).approval;
+
+  it("is always the object form with a card title, with or without the role's own policies", async () => {
+    registerOutsideConnections(["registry"]);
+    const bare = await resolveOutsideTools(def(), { acceptedTools: catalog, executor });
+    for (const name of ["registry__lookup", "registry__create_note"]) {
+      const a = approvalOf(bare![name]);
+      expect(typeof a).toBe("object");
+      expect(typeof a.request).toBe("function");
+      expect(typeof a.prompt).toBe("function");
+      expect(await (a.request as () => Promise<unknown>)()).toBe("user-approval");
+    }
+    const request = async () => "user-approval" as const;
+    const response = async () => ({ status: "allowed" as const });
+    const full = await resolveOutsideTools(def(), { acceptedTools: catalog, executor, approval: () => ({ request, response }) });
+    const a = approvalOf(full!["registry__lookup"]);
+    expect(a.request).toBe(request);
+    expect(a.response).toBe(response);
+    expect(typeof a.prompt).toBe("function");
+  });
+
+  it("the card title names the connection, the tool and the arguments", async () => {
+    registerOutsideConnections(["registry"]);
+    const tools = await resolveOutsideTools(def(), { acceptedTools: catalog, executor });
+    const title = approvalOf(tools!["registry__create_note"]).prompt({ toolName: "registry__create_note", input: { company: "Acme" }, callId: "c1" });
+    expect(title).toBe('Ask outside tool registry: create_note — company: "Acme"');
+  });
+
+  it("the card title never throws and is a string or undefined, whatever the input", async () => {
+    registerOutsideConnections(["registry"]);
+    const tools = await resolveOutsideTools(def(), { acceptedTools: catalog, executor });
+    const prompt = approvalOf(tools!["registry__create_note"]).prompt;
+    const hostile = { get boom() { throw new Error("getter"); }, toString() { throw new Error("string"); } };
+    for (const input of [undefined, null, 7, "x", [], hostile, { a: hostile }]) {
+      let title: unknown;
+      expect(() => { title = prompt({ toolName: "registry__create_note", input, callId: "c1" }); }).not.toThrow();
+      expect(title === undefined || typeof title === "string").toBe(true);
+    }
+    expect(() => prompt(undefined)).not.toThrow();
+    expect(prompt({ toolName: 7, input: {}, callId: "c1" })).toBeUndefined();
+  });
+
+  it("leaves out a connection eve reserves, so one bad entry cannot drop the whole resolver result", async () => {
+    const tools = await resolveOutsideTools(def({ outsideTools: [entry({ name: "eve" }), entry()] }), { acceptedTools: catalog, executor });
+    expect(Object.keys(tools!)).toEqual(["registry__lookup", "registry__create_note"]);
+  });
 });

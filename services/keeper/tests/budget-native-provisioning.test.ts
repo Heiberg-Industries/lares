@@ -10,11 +10,11 @@ import {HostFinancialJournal} from '../lib/financial-journal.js';
 import {prepareFinancialCustody} from '../lib/financial-continuity.js';
 import {openBudgetMonth,provisionBudgetAccounts,startBudgetMonthOpening} from '../lib/budget-account-provisioning.js';
 import {registerInitialMemberBudgetActions} from '../lib/initial-member-budget.js';
-import {resetActions,runAction} from '../lib/actions.js';
+import {KeeperRefusedError,resetActions,runAction} from '../lib/actions.js';
 import {provisionEngineDatabasePrivileges} from '../../box/lib/database-privileges.js';
 import {verifyFinancialContinuity} from '../lib/financial-continuity.js';
-import {BudgetNativeProvisioner} from '../lib/budget-native-provisioning.js';
-import {BudgetNativeActivator} from '../lib/budget-native-activation.js';
+import {BudgetNativeProvisioner,NATIVE_KEY_STORE_BUSY_NOT_MADE} from '../lib/budget-native-provisioning.js';
+import {BudgetNativeActivator,NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON} from '../lib/budget-native-activation.js';
 import {createNativeRuntimeAuthority} from '../lib/budget-native-runtime-authority.js';
 import {BudgetNativeCredentialClient} from '../lib/budget-native-client.js';
 import {BudgetNativeCustodyStore,type NativeCustodyGate,type NativeOperation} from '../lib/budget-native-custody.js';
@@ -26,6 +26,7 @@ import {JournalBudgetFinancialWriter} from '../lib/budget-financial-writer.js';
 import {registerMemberRemovalAction} from '../lib/member-removal.js';
 import {consoleSourceTransaction,noteBudgetFinancialChange,type SourcePool} from '@lares/agent-kit/console-source-transaction';
 import {createNativeTestCustody,nativeTestPolicy,nativeTestPolicyFor,nativeTestTarget,openNativeTestCustody} from './helpers/native-cleanup.js';
+import {restartPartsApplied} from '../lib/restart-parts.js';
 
 let container:StartedPostgreSqlContainer|undefined;
 let pool:Pool;
@@ -182,7 +183,7 @@ async function setCapThroughRegisteredAction(ownerId:string,targetMemberId:strin
   await runAction('member.set-initial-budget',{sessionToken,targetMemberId,monthlyLimit},{actor:'native test owner',audit:async()=>{}});
 }
 
-async function startActiveOwnerFixture(clockOffset?:string):Promise<{operator:Pool;financial:Pool;owner:string;org:string;incarnation:string;ownerAgent:string;ownerBinding:string;
+async function startActiveOwnerFixture(clockOffset?:string,beforeFirstKey?:(operator:Pool,agent:string)=>Promise<void>):Promise<{operator:Pool;financial:Pool;owner:string;org:string;incarnation:string;ownerAgent:string;ownerBinding:string;
   ownerAccountId:string;installationId:string;ownerNativeUserId:string;sessionToken:string;root:string;journal:HostFinancialJournal;
   custody:BudgetNativeCustodyStore;fake:ReturnType<typeof nativeFake>;provisioner:BudgetNativeProvisioner}>{
   await resetDatabase();
@@ -203,6 +204,7 @@ async function startActiveOwnerFixture(clockOffset?:string):Promise<{operator:Po
   if(typeof ownerAccountId!=='string'||typeof installationId!=='string')throw new Error('Active owner fixture accounts are missing');
   const custody=createNativeTestCustody(join(root,'native')),fake=nativeFake(),provisioner=new BudgetNativeProvisioner(financial,journal,custody,fake.native,nativeTestTarget,policy),ownerBinding=id();
   fixtureCustodies.push(custody);
+  await beforeFirstKey?.(operator,ownerAgent);
   await expect(provisioner.provision({bindingId:ownerBinding,credentialGeneration:'0',memberId:owner,agent:ownerAgent,incarnation,purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'bound-closed'});
   await expect(new BudgetNativeActivator(financial,journal,custody,fake.native).activate({bindingId:ownerBinding,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
   const ownerNativeUserId=(await custody.withGate(gate=>Promise.resolve(gate.inventory().users.find((row):row is Extract<typeof row,{kind:'user'}>=>row.kind==='user'&&row.accountId===ownerAccountId)?.nativeUserId)))!;
@@ -615,14 +617,41 @@ it('leaves the main key working when an extra key is refused or its activation i
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },60_000);
 
+it('still records an activation that fails after its claim as uncertain, and stops the key store, while another caller waits in line',async()=>{
+  const fixture=await startActiveOwnerFixture(),writer=id();
+  await expect(extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'))).resolves.toMatchObject({state:'bound-closed'});
+  // The unblock is claimed and sent, then its readback disagrees: the activation fails after its claim.
+  fixture.fake.setRejectUnblockedReadback(true);
+  let release!:()=>void;const holding=new Promise<void>(resolve=>release=resolve);let waiter:Promise<void>|undefined;
+  const real=fixture.fake.native as unknown as Record<string,(...args:any[])=>Promise<unknown>>;
+  const native={...real,unblockKey:async(fingerprint:string)=>{
+    const answer=await real.unblockKey!(fingerprint);
+    // A page's status read arrives while the activation holds the gate, and waits its turn behind it.
+    waiter=fixture.custody.withGate(async()=>{await holding;},{waitMs:10_000});
+    return answer;
+  }};
+  const activating=new BudgetNativeActivator(fixture.financial,fixture.journal,fixture.custody,native as unknown as BudgetNativeCredentialClient,{designatedOwnerId:fixture.owner})
+    .activate({bindingId:writer,credentialGeneration:'0'});
+  let settled=false;activating.then(()=>{settled=true;},()=>{settled=true;});
+  await vi.waitFor(()=>expect(waiter).toBeDefined(),{timeout:20_000,interval:20});
+  // The gate passed to the waiter when the activation's work failed; the uncertain record waits behind it.
+  await new Promise(resolve=>setTimeout(resolve,200));
+  release();await waiter;
+  await expect(activating).rejects.toThrow('Native budget activation refused');expect(settled).toBe(true);
+  const directory=join(fixture.root,'native');
+  const snapshot=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')) as {operations:NativeOperation[]};
+  expect(snapshot.operations.find(row=>row.kind==='operation'&&row.bindingId===writer)?.phase).toBe('uncertain');
+  expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('uncertain');
+  await expect(fixture.custody.withGate(async()=>undefined)).rejects.toThrow('reconciliation');
+},120_000);
+
 it('lets the runtime authority recognise the extra key of an owner whose main key is active, and nobody else',async()=>{
   const fixture=await startActiveOwnerFixture(),writer=id();
   await extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'));
   await extraActivator(fixture).activate({bindingId:writer,credentialGeneration:'0'});
-  const definitionHash=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash as string;
   const authority=(alias:string)=>createNativeRuntimeAuthority({custody:fixture.custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:nativeTestPolicyFor(alias),
     designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
-  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,definitionHash,purposeAlias});
+  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,purposeAlias});
   await expect(authority('lares-brain').current(identity('lares-brain'))).resolves.toEqual({state:'active'});
   await expect(authority('lares-writer').current(identity('lares-writer'))).resolves.toEqual({state:'active'});
   // A name that has no key made for it is held.
@@ -631,10 +660,9 @@ it('lets the runtime authority recognise the extra key of an owner whose main ke
 
 it('freezes the whole key store on an uncertain extra key, and lifting the stop frees the main key but never the uncertain one',async()=>{
   const fixture=await startActiveOwnerFixture(),writer=id();
-  const definitionHash=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash as string;
   const authority=(custody:BudgetNativeCustodyStore,alias:string)=>createNativeRuntimeAuthority({custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:nativeTestPolicyFor(alias),
     designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
-  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,definitionHash,purposeAlias});
+  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,purposeAlias});
   await expect(authority(fixture.custody,'lares-brain').current(identity('lares-brain'))).resolves.toEqual({state:'active'});
   const bindingsBefore=(await fixture.financial.query('SELECT id,state FROM budget_gateway_bindings ORDER BY id')).rows;
   // The gateway cannot confirm the new extra key, so provisioning records it as uncertain.
@@ -947,14 +975,14 @@ it('keeps native runtime eligibility read-only across source, custody, journal, 
   const entries=[{member:owner,agent:chief},{member:creativeOwner,agent:creative},{member:missingOwner,agent:missing},{member:unknownOwner,agent:unknown},{member:capOwner,agent:capChief},{member:grantee,agent:delegated},{member:duplicateOwner,agent:duplicateAgent}];
   const bindings=new Map<string,string>();
   const emptyAuthority=createNativeRuntimeAuthority({custody,journal,pool:pool as never,reviewedPolicy:policy,designatedOwnerId:owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
-  await expect(emptyAuthority.current({agent:chief,incarnation,definitionHash:'a'.repeat(64),purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'held'});
+  await expect(emptyAuthority.current({agent:chief,incarnation,purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'held'});
   expect(JSON.parse(readFileSync(join(custodyPath,'control.json'),'utf8')).state).toBe('open');
   const readerFor=async(member:string,agent:string,selectedJournal=journal)=>{
     const inventory=await custody.withGate(gate=>Promise.resolve(gate.inventory()));
     const operation=inventory.operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.association.agent===agent);
     if(!operation)throw new Error('Test operation unavailable');
     return {authority:createNativeRuntimeAuthority({custody,journal:selectedJournal,pool:pool as never,reviewedPolicy:policy,designatedOwnerId:member,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash}),
-      identity:{...operation.association}};
+      identity:{agent:operation.association.agent,incarnation:operation.association.incarnation,purposeAlias:operation.association.purposeAlias}};
   };
   try{
     for(const entry of entries){
@@ -978,7 +1006,7 @@ it('keeps native runtime eligibility read-only across source, custody, journal, 
     const duplicateOperation=await custody.withGate(gate=>Promise.resolve(gate.inventory().operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.bindingId===duplicateBinding)));
     expect(duplicateOperation).toBeDefined();
     await custody.withGate(gate=>{gate.prepareOperation({bindingId:id(),credentialGeneration:'0',userOwnershipId:duplicateOperation!.userOwnershipId,
-      association:duplicateReader.identity,reviewedPolicy:policy},`sk-${'x'.repeat(43)}`);return Promise.resolve();});
+      association:duplicateOperation!.association,reviewedPolicy:policy},`sk-${'x'.repeat(43)}`);return Promise.resolve();});
     await expect(duplicateReader.authority.current(duplicateReader.identity)).resolves.toMatchObject({state:'held'});
     expect(JSON.parse(readFileSync(join(custodyPath,'control.json'),'utf8')).state).toBe('open');
     const changedEndpointReader=createNativeRuntimeAuthority({custody,journal,pool:pool as never,reviewedPolicy:policy,designatedOwnerId:owner,
@@ -1070,7 +1098,8 @@ it('keeps native runtime eligibility read-only across source, custody, journal, 
       expect(journal.aborted(operationId,'not-started')).toBeDefined();
       busyResult=await chiefReader.authority.current(chiefReader.identity);
     });
-    expect(busyResult).toMatchObject({state:'held'});
+    // Still held (never active), and told apart from a refusal: the ledger was only mid-write.
+    expect(busyResult).toEqual({state:'held',reason:'Native budget activation required',detail:'ledger-busy'});
     await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toEqual({state:'active'});
 
     const accountLookup=await pool.connect();let memberAccount:string;
@@ -1121,9 +1150,8 @@ const coverage=(financial:Pool)=>financial.query(`SELECT a.kind,a.state,w.openin
     w.starts_at<=clock_timestamp() AND w.ends_at>clock_timestamp() AS covers_now
   FROM budget_accounts a JOIN budget_windows w ON w.id=a.active_window_id ORDER BY a.kind,a.id`).then(result=>result.rows);
 const activeOwnerReader=async(fixture:Awaited<ReturnType<typeof startActiveOwnerFixture>>)=>{
-  const definitionHash=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash as string;
   const reader=createNativeRuntimeAuthority({custody:fixture.custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:policy,designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
-  return ()=>reader.current({agent:fixture.ownerAgent,incarnation:fixture.incarnation,definitionHash,purposeAlias:'lares-brain'});
+  return ()=>reader.current({agent:fixture.ownerAgent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'});
 };
 const journalRecords=(root:string)=>readFileSync(join(root,'financial','journal.jsonl'),'utf8').trimEnd().split('\n').length;
 
@@ -1195,6 +1223,116 @@ it('opens the month by itself as the clock crosses it, and catches up after bein
   await verifyFinancialContinuity(journal,financial as never);
 },120_000);
 
+/** What a console save does to the rows the budget key is checked against: definition.save publishes the new
+ * definition, and the keeper's saved() marks it waiting for Apply exactly when a part that needs a restart
+ * changed (the same shared rule, restart-parts.ts). */
+async function saveDefinition(operator:Pool,agent:string,edit:(definition:any)=>any,duties=''){
+  const row=(await operator.query('SELECT d.definition,d.voice,r.applied_definition FROM agent_definitions d JOIN agent_resources r ON r.name=d.name WHERE d.name=$1',[agent])).rows[0]!;
+  const definition=parseDefinition(definitionSchema.parse(edit(structuredClone(row.definition))));
+  await operator.query('UPDATE agent_definitions SET definition=$2::jsonb,duties=$3,hash=$4 WHERE name=$1',[agent,JSON.stringify(definition),duties,hashOf({definition,dutiesMd:duties,voiceMd:row.voice})]);
+  const pending=!restartPartsApplied(parseDefinition(definitionSchema.parse(row.applied_definition)),definition,{model:true});
+  await operator.query('UPDATE agent_resources SET pending=$2 WHERE name=$1',[agent,pending]);
+  return pending;
+}
+/** What Apply (definition.reconcile) records before it starts the agent: the saved definition is the applied one. */
+async function applySaved(operator:Pool,agent:string){
+  await operator.query('UPDATE agent_resources r SET applied_definition=d.definition,pending=false FROM agent_definitions d WHERE d.name=r.name AND r.name=$1',[agent]);
+}
+
+it('keeps a started agent on its key through an ordinary edit, and brings a door change in on Apply',async()=>{
+  const fixture=await startActiveOwnerFixture(),read=await activeOwnerReader(fixture);
+  await expect(read()).resolves.toEqual({state:'active'});
+  const recorded=async()=>(await fixture.custody.withGate(gate=>Promise.resolve(gate.inventory().operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.bindingId===fixture.ownerBinding))))!.association.definitionHash;
+  const atStart=await recorded();
+  // Description, instructions and schedules: live at once, no Apply, and the key still covers the agent.
+  await expect(saveDefinition(fixture.operator,fixture.ownerAgent,d=>({...d,description:'Edited after the start'}),'New instructions after the start.')).resolves.toBe(false);
+  await expect(read()).resolves.toEqual({state:'active'});
+  const current=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[fixture.ownerAgent])).rows[0]!.hash;
+  // The key store still holds the hash from when the key was made. It is kept, and no longer compared.
+  expect(await recorded()).toBe(atStart);expect(current).not.toBe(atStart);
+  // Switching a door on needs a restart: it waits for Apply, and until then the key does not cover the agent.
+  await expect(saveDefinition(fixture.operator,fixture.ownerAgent,d=>({...d,doors:[{kind:'telegram',enabled:true,settings:{}}]}),'New instructions after the start.')).resolves.toBe(true);
+  await expect(read()).resolves.toMatchObject({state:'held'});
+  await applySaved(fixture.operator,fixture.ownerAgent);
+  await expect(read()).resolves.toEqual({state:'active'});
+  // A row whose recorded hash no longer matches its files is still refused.
+  await fixture.operator.query("UPDATE agent_definitions SET duties='changed without a save' WHERE name=$1",[fixture.ownerAgent]);
+  await expect(read()).resolves.toMatchObject({state:'held'});
+},60_000);
+
+it('lets budget checks that meet wait their turn on the real key store and ledger, instead of reading as no permission',async()=>{
+  const fixture=await startActiveOwnerFixture();
+  const authority=createNativeRuntimeAuthority({custody:fixture.custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:policy,
+    designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
+  const identity={agent:fixture.ownerAgent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'};
+  const wait={waitMs:10_000},active={state:'active'},held={state:'held',reason:'Native budget activation required'};
+  const later=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+  // A page's status read and an Apply's start check at the same moment: each waits its turn and each passes.
+  await expect(Promise.all([authority.current(identity,wait),authority.current(identity,wait),authority.current(identity,wait)])).resolves.toEqual([active,active,active]);
+
+  // A model call holds the gate until its response headers, as the transport does.
+  let headers!:()=>void;const awaitingHeaders=new Promise<void>(resolve=>headers=resolve);
+  const dispatch=fixture.custody.withGate(async gate=>{gate.inventory();await awaitingHeaders;});
+  // A check that asks for no wait is turned away as before, and reads as a plain hold.
+  await expect(authority.current(identity)).resolves.toEqual(held);
+  // An Apply's check waits, and passes once the headers are in.
+  let settled=false;const apply=authority.current(identity,wait).finally(()=>{settled=true;});
+  await later(100);expect(settled).toBe(false);
+  headers();await dispatch;
+  await expect(apply).resolves.toEqual(active);
+
+  // A hold that outlasts the wait is busy: never active, never a plain hold, and the store stays open for the next check.
+  let release!:()=>void;const longHold=new Promise<void>(resolve=>release=resolve);
+  const holder=fixture.custody.withGate(async()=>{await longHold;});
+  await expect(authority.current(identity,{waitMs:200})).resolves.toEqual({...held,detail:'key-store-busy'});
+  release();await holder;
+  await expect(authority.current(identity,wait)).resolves.toEqual(active);
+
+  // The other way round: a model call that may wait gets the gate after a check that holds it.
+  const check=authority.current(identity);
+  await expect(fixture.custody.withGate(async gate=>gate.inventory().operations.length,{waitMs:10_000})).resolves.toBeGreaterThan(0);
+  await expect(check).resolves.toEqual(active);
+
+  // The spending ledger mid-write: a check whose wait runs out says the ledger was busy; one that may wait passes after it.
+  let finish!:()=>void;const writing=new Promise<void>(resolve=>finish=resolve);
+  const ledger=fixture.journal.operation('member-remove',async operationId=>{expect(fixture.journal.aborted(operationId,'not-started')).toBeDefined();await writing;});
+  await expect(authority.current(identity,{waitMs:200})).resolves.toEqual({...held,detail:'ledger-busy'});
+  settled=false;const afterLedger=authority.current(identity,wait).finally(()=>{settled=true;});
+  await later(150);expect(settled).toBe(false);
+  finish();await ledger;
+  await expect(afterLedger).resolves.toEqual(active);
+  expect(JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state).toBe('open');
+},120_000);
+
+it('lets a started agent change its model name only to one the owner holds a key for',async()=>{
+  const fixture=await startActiveOwnerFixture(),writer=id();
+  await extraProvisioner(fixture,'lares-writer').provision(extraRequest(fixture,writer,'lares-writer'));
+  await extraActivator(fixture).activate({bindingId:writer,credentialGeneration:'0'});
+  const authority=(alias:string)=>createNativeRuntimeAuthority({custody:fixture.custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:nativeTestPolicyFor(alias),
+    designatedOwnerId:fixture.owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
+  const identity=(purposeAlias:string)=>({agent:fixture.ownerAgent,incarnation:fixture.incarnation,purposeAlias});
+  // Before the change, the key for the other name already stands on the agent's own key: this is what the
+  // keeper asks before it lets the save through (lifecycle refuseModelWithoutKey).
+  await expect(authority('lares-writer').current(identity('lares-writer'))).resolves.toEqual({state:'active'});
+  await expect(authority('lares-gate').current(identity('lares-gate'))).resolves.toEqual({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
+  // A model change waits for Apply; after it the agent runs on the key for its new model name.
+  await expect(saveDefinition(fixture.operator,fixture.ownerAgent,d=>({...d,model:'lares-writer'}))).resolves.toBe(true);
+  await expect(authority('lares-writer').current(identity('lares-writer'))).resolves.toMatchObject({state:'held'});
+  await applySaved(fixture.operator,fixture.ownerAgent);
+  await expect(authority('lares-writer').current(identity('lares-writer'))).resolves.toEqual({state:'active'});
+  // A name nobody made a key for stays held, and says that no key matches.
+  await saveDefinition(fixture.operator,fixture.ownerAgent,d=>({...d,model:'lares-gate'}));await applySaved(fixture.operator,fixture.ownerAgent);
+  await expect(authority('lares-gate').current(identity('lares-gate'))).resolves.toEqual({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
+},60_000);
+
+it('makes the first key after an edit saved between create and the first start',async()=>{
+  // The fixture's own provisioning and activation expectations are the proof: before this change the edit made key creation refuse.
+  const fixture=await startActiveOwnerFixture(undefined,async(operator,agent)=>{
+    await expect(saveDefinition(operator,agent,d=>({...d,description:'Edited before the first start'}),'Instructions written before the first start.')).resolves.toBe(false);
+  });
+  await expect((await activeOwnerReader(fixture))()).resolves.toEqual({state:'active'});
+},60_000);
+
 // One person, several agents, one monthly limit. A person whose account is already open gets a main key for each
 // further agent; switching it on opens nothing new, so every agent of theirs spends from the same account and month.
 const ownerProvisioner=(fixture:OwnerFixture,native=fixture.fake.native,custody=fixture.custody)=>
@@ -1209,11 +1347,9 @@ const financialRows=async(fixture:OwnerFixture)=>({
 });
 const keyPhases=(fixture:OwnerFixture,custody=fixture.custody)=>custody.withGate(gate=>Promise.resolve(gate.inventory().operations
   .filter((row):row is NativeOperation=>row.kind==='operation').map(row=>({agent:row.association.agent,phase:row.phase})).sort((a,b)=>a.agent.localeCompare(b.agent))));
-const runtimeState=async(fixture:OwnerFixture,agent:string,custody=fixture.custody)=>{
-  const definitionHash=(await fixture.operator.query('SELECT hash FROM agent_definitions WHERE name=$1',[agent])).rows[0]!.hash as string;
-  return createNativeRuntimeAuthority({custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:policy,designatedOwnerId:fixture.owner,
-    gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash}).current({agent,incarnation:fixture.incarnation,definitionHash,purposeAlias:'lares-brain'});
-};
+const runtimeState=(fixture:OwnerFixture,agent:string,custody=fixture.custody)=>
+  createNativeRuntimeAuthority({custody,journal:fixture.journal,pool:fixture.financial as never,reviewedPolicy:policy,designatedOwnerId:fixture.owner,
+    gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash}).current({agent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'});
 /** Moves an account to a state through the money journal, as the keeper's own writers do, so the ledger stays continuous. */
 const journaledAccountState=(fixture:OwnerFixture,accountId:string,state:string,reason:string)=>new JournalBudgetFinancialWriter(fixture.journal).run('provision',boundary=>
   consoleSourceTransaction(fixture.financial as unknown as SourcePool,async db=>{
@@ -1250,7 +1386,7 @@ it('gives the owner a main key for a second agent on the account the first one o
   await expect(runtimeState(fixture,fixture.ownerAgent)).resolves.toEqual({state:'active'});
   await expect(runtimeState(fixture,second)).resolves.toEqual({state:'active'});
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
-  // Each agent is judged on its own: a change to the second agent that its key was not made for holds only that agent.
+  // Each agent is judged on its own: a row whose files no longer match its recorded hash holds only that agent.
   await fixture.operator.query("UPDATE agent_definitions SET duties='changed after the key was made' WHERE name=$1",[second]);
   await expect(runtimeState(fixture,second)).resolves.toMatchObject({state:'held'});
   await expect(runtimeState(fixture,fixture.ownerAgent)).resolves.toEqual({state:'active'});
@@ -1392,17 +1528,16 @@ it('makes and switches on no further key for a person while one of their agent k
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },60_000);
 
-it('takes two further agents of one person one at a time: the second caller is turned away without anything frozen, and done on a later run',async()=>{
+it('takes two further agents of one person one at a time: the second caller waits its turn, and nothing is made twice',async()=>{
   const fixture=await startActiveOwnerFixture(),agents=['neutral-native-together-b','neutral-native-together-c'],bindings=[id(),id()];
   for(const agent of agents)await seedAgent(fixture.operator,agent,fixture.incarnation,fixture.owner,fixture.org);
   const rows=await financialRows(fixture);
   const settle=async(work:(index:number)=>Promise<unknown>)=>{
-    // The key store lets one caller in at a time. The second is turned away at once, before it reads or makes
-    // anything, with the ordinary refusal; this does not show two callers overlapping inside the work.
+    // The key store lets one caller in at a time. The second waits in line, reading and making nothing, until the
+    // first is done; this does not show two callers overlapping inside the work.
     const results=await Promise.allSettled([work(0),work(1)]);
-    expect(results.map(result=>result.status).sort()).toEqual(['fulfilled','rejected']);
+    expect(results.map(result=>result.status)).toEqual(['fulfilled','fulfilled']);
     await keyStoreOpen(fixture.custody);
-    for(const [index,result] of results.entries())if(result.status==='rejected')await work(index);
   };
   await settle(index=>ownerProvisioner(fixture).provision(mainRequest(fixture,bindings[index]!,agents[index]!)));
   await expect(keyPhases(fixture)).resolves.toEqual([{agent:fixture.ownerAgent,phase:'active'},{agent:agents[0],phase:'bound-closed'},{agent:agents[1],phase:'bound-closed'}]);
@@ -1453,3 +1588,126 @@ it('refuses a further agent key, freezing nothing, when the ledger says the acco
   await keyStoreOpen(fixture.custody);
   await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
 },60_000);
+
+// Making and switching on a key wait their turn at the key store for a bounded time. A wait that runs out, or a turn
+// that comes too late to finish inside the call's deadline, gives the keeper's busy answer having changed nothing; a
+// closed or frozen store keeps the ordinary refusal.
+/** Everything a busy answer must leave exactly as it was: gateway calls, the key store's records and stop state, the
+ * money journal, and every binding, account and window row. Read only while nobody holds the key store. */
+const untouched=async(fixture:OwnerFixture)=>({calls:{...fixture.fake.calls},activation:{...fixture.fake.activationCalls},phases:await keyPhases(fixture),
+  store:readFileSync(join(fixture.root,'native','snapshot.json'),'utf8'),control:JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state,
+  journal:journalRecords(fixture.root),bindings:(await fixture.financial.query('SELECT * FROM budget_gateway_bindings ORDER BY id')).rows,rows:await financialRows(fixture)});
+/** Takes the key store as a long model call does, until released. */
+const holdKeyStore=(fixture:OwnerFixture)=>{
+  let release!:()=>void;const held=new Promise<void>(resolve=>release=resolve);
+  const holder=fixture.custody.withGate(async()=>{await held;});
+  return async()=>{release();await holder;};
+};
+const pause=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+const busyAnswer=async(attempt:Promise<unknown>,sentence:string)=>{
+  const error=await attempt.then(()=>undefined,(value:unknown)=>value);
+  expect(error).toBeInstanceOf(KeeperRefusedError);expect((error as Error).message).toBe(sentence);
+};
+const laterProvisioner=(fixture:OwnerFixture,gateWaitMs?:number)=>new BudgetNativeProvisioner(fixture.financial,fixture.journal,fixture.custody,fixture.fake.native,nativeTestTarget,policy,
+  {designatedOwnerId:fixture.owner,...(gateWaitMs===undefined?{}:{gateWaitMs})});
+const laterActivator=(fixture:OwnerFixture,gateWaitMs?:number)=>new BudgetNativeActivator(fixture.financial,fixture.journal,fixture.custody,fixture.fake.native,
+  {designatedOwnerId:fixture.owner,...(gateWaitMs===undefined?{}:{gateWaitMs})});
+
+it('makes and switches on a person\'s first key once a busy key store frees within the wait, and says busy, changing nothing, when it stays busy',async()=>{
+  const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture);await grantLaterAgentUse(fixture,later);
+  const binding=id(),request=mainRequest(fixture,binding,later.agent,later.member);
+  const before=await untouched(fixture);
+  // Held past the wait: the busy answer, and the key store open for the next caller.
+  let release=holdKeyStore(fixture);
+  await busyAnswer(laterProvisioner(fixture,200).provision(request),NATIVE_KEY_STORE_BUSY_NOT_MADE);
+  await release();
+  expect(await untouched(fixture)).toEqual(before);
+  // Held for a moment: the call waits its turn, then makes the key, once, under the same binding id.
+  release=holdKeyStore(fixture);let settled=false;
+  const making=laterProvisioner(fixture).provision(request).finally(()=>{settled=true;});
+  await pause(300);expect(settled).toBe(false);
+  await release();
+  await expect(making).resolves.toEqual({state:'bound-closed',bindingId:binding,credentialGeneration:'0'});
+  expect(fixture.fake.calls.key).toBe(before.calls.key+1);
+
+  // Switching it on, the same two ways. A busy answer leaves the key made and blocked, the account closed.
+  const made=await untouched(fixture);
+  expect(made.phases).toContainEqual({agent:later.agent,phase:'bound-closed'});
+  release=holdKeyStore(fixture);
+  await busyAnswer(laterActivator(fixture,200).activate({bindingId:binding,credentialGeneration:'0'}),NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON);
+  await release();
+  expect(await untouched(fixture)).toEqual(made);
+  expect((await fixture.financial.query('SELECT state FROM budget_accounts WHERE id=$1',[later.accountId])).rows[0]).toEqual({state:'closed'});
+  release=holdKeyStore(fixture);settled=false;
+  const switching=laterActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'}).finally(()=>{settled=true;});
+  await pause(300);expect(settled).toBe(false);
+  await release();
+  await expect(switching).resolves.toEqual({state:'active',bindingId:binding,credentialGeneration:'0'});
+  expect(fixture.fake.activationCalls.unblock).toBe(made.activation.unblock+1);
+  await expect(keyPhases(fixture)).resolves.toContainEqual({agent:later.agent,phase:'active'});
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},120_000);
+
+it('gives back a turn at the key store that came too late to finish in time, as busy, changing nothing',async()=>{
+  const fixture=await startActiveOwnerFixture(),second='neutral-native-late-turn',binding=id();
+  await seedAgent(fixture.operator,second,fixture.incarnation,fixture.owner,fixture.org);
+  const now=Date.now.bind(Date),before=await untouched(fixture);
+  const lateTurn=async(attempt:()=>Promise<unknown>,sentence:string)=>{
+    const release=holdKeyStore(fixture),pending=attempt();
+    await pause(100);
+    // The gate comes back 15 of the call's 20 seconds in: too little left to finish, so nothing is started.
+    const clock=vi.spyOn(Date,'now').mockImplementation(()=>now()+15_000);
+    try{await release();await busyAnswer(pending,sentence);}finally{clock.mockRestore();}
+  };
+  await lateTurn(()=>ownerProvisioner(fixture).provision(mainRequest(fixture,binding,second)),NATIVE_KEY_STORE_BUSY_NOT_MADE);
+  expect(await untouched(fixture)).toEqual(before);
+  // Run again, the same call makes the key.
+  await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,binding,second))).resolves.toMatchObject({state:'bound-closed'});
+  const made=await untouched(fixture);
+  await lateTurn(()=>ownerActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'}),NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON);
+  expect(await untouched(fixture)).toEqual(made);
+  await expect(ownerActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},120_000);
+
+it('keeps the ordinary refusal, never busy, when the key store freezes while a key call waits its turn',async()=>{
+  const fixture=await startActiveOwnerFixture(),second='neutral-native-frozen-wait',third='neutral-native-frozen-after',binding=id();
+  for(const agent of [second,third])await seedAgent(fixture.operator,agent,fixture.incarnation,fixture.owner,fixture.org);
+  await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,binding,second))).resolves.toMatchObject({state:'bound-closed'});
+  const keys=fixture.fake.calls.key,unblocks=fixture.fake.activationCalls.unblock;
+  let fail!:(error:Error)=>void;const failing=new Promise<void>((_,reject)=>fail=reject);
+  const broken=fixture.custody.withGate(async()=>{await failing;});
+  const making=ownerProvisioner(fixture).provision(mainRequest(fixture,id(),third)),switching=ownerActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'});
+  await pause(100);
+  // Something inside the gate fails: the store stops, and everyone waiting is refused as a fault.
+  fail(new Error('injected failure inside the key store'));
+  await expect(broken).rejects.toThrow('injected failure');
+  for(const [attempt,refused] of [[making,PROVISION_REFUSED],[switching,ACTIVATION_REFUSED]] as const){
+    const error=await attempt.then(()=>undefined,(value:unknown)=>value);
+    expect(error).not.toBeInstanceOf(KeeperRefusedError);expect((error as Error).message).toMatch(refused);
+  }
+  // A stopped store refuses at once, as before, with the same words.
+  await expect(ownerActivator(fixture).activate({bindingId:binding,credentialGeneration:'0'})).rejects.toThrow(ACTIVATION_REFUSED);
+  expect(fixture.fake.calls.key).toBe(keys);expect(fixture.fake.activationCalls.unblock).toBe(unblocks);
+  expect(JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state).toBe('uncertain');
+},120_000);
+
+it('keeps the ordinary refusal, never busy, when the key store shuts down while a key call waits its turn',async()=>{
+  const fixture=await startActiveOwnerFixture(),second='neutral-native-shutdown-wait',third='neutral-native-shutdown-made',binding=id(),made=id();
+  for(const agent of [second,third])await seedAgent(fixture.operator,agent,fixture.incarnation,fixture.owner,fixture.org);
+  await expect(ownerProvisioner(fixture).provision(mainRequest(fixture,made,third))).resolves.toMatchObject({state:'bound-closed'});
+  const before=await untouched(fixture),release=holdKeyStore(fixture);
+  const making=ownerProvisioner(fixture).provision(mainRequest(fixture,binding,second)),switching=ownerActivator(fixture).activate({bindingId:made,credentialGeneration:'0'});
+  await pause(100);
+  // The keeper begins to shut down: everyone waiting is refused as a fault, and the holder finishes.
+  const draining=fixture.custody.drainForShutdown();
+  for(const [attempt,refused] of [[making,PROVISION_REFUSED],[switching,ACTIVATION_REFUSED]] as const){
+    const error=await attempt.then(()=>undefined,(value:unknown)=>value);
+    expect(error).not.toBeInstanceOf(KeeperRefusedError);expect((error as Error).message).toMatch(refused);
+  }
+  await release();await draining;
+  expect({calls:{...fixture.fake.calls},activation:{...fixture.fake.activationCalls},journal:journalRecords(fixture.root),
+    store:readFileSync(join(fixture.root,'native','snapshot.json'),'utf8'),control:JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state,
+    bindings:(await fixture.financial.query('SELECT * FROM budget_gateway_bindings ORDER BY id')).rows,rows:await financialRows(fixture)})
+    .toEqual({calls:before.calls,activation:before.activation,journal:before.journal,store:before.store,control:before.control,bindings:before.bindings,rows:before.rows});
+},120_000);

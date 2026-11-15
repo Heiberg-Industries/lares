@@ -34,7 +34,7 @@ member-budget enforcement for that legacy setup.
   The installer checks this before it writes anything and stops if the name does not resolve to
   this machine.
 - **A model provider key.** The shipped gateway configuration uses an Anthropic API key. A chat
-  subscription does not include API access. The installer does not test the key with a model call;
+  subscription does not include API access. In this release only Anthropic models are on the tested path; setting an OpenAI or other model by hand is not, and chat will be refused. The installer does not test the key with a model call;
   after sign-in, the owner completes explicit model budget setup before creating an agent.
 - **A Google OAuth client for console sign-in.** Create an OAuth web client in your Google Cloud
   project and register the redirect address `https://example.com/api/auth/callback` (with your
@@ -436,9 +436,14 @@ The backup, the export and the restore drill include `/srv/lares/installation` w
 
 The installer also gives your chief-of-staff agent the same file when it exists, read-only, and
 tells the agent where to find it. A chief of staff created after the re-run has it from the
-start. One that already runs gets it the next time its connections are applied: save a change to
-its definition in the console, then press Apply connection changes. The creative agent never
-gets it. If the calendar is a link or a folder rather than a plain file, the installer prints a
+start. One that already runs gets it the next time the keeper restarts it; saving its
+definition does not restart it. To restart it now, open **Settings** in the console, and under
+**Console address** enter the address you open the console at and press **Save**. Every
+running chief of staff restarts, which takes about a minute, and the page names the agents it
+restarted. An agent with changes waiting is not restarted then: press **Apply connection
+changes** on its page instead, which restarts it with the file too. An agent that is held, for
+example one whose spending key has not been started yet, is not restarted by that save either; it
+picks the file up when it next starts. The creative agent never gets it. If the calendar is a link or a folder rather than a plain file, the installer prints a
 warning and leaves the agent without it.
 
 Once the chief of staff has the file, keep it in place. If you remove it, run the installer again
@@ -525,6 +530,16 @@ Then:
 E-mail triage tells you about new mail on a chat door; where those messages go is your choice (next
 subsection).
 
+**A test brief.** Once a chief of staff's Slack or Telegram door reads "Connected", a button beside
+it, "Send a test brief to Slack" (or Telegram), has the agent write this morning's brief now and send
+it into that chat, starting with "Test brief". It arrives within about two minutes. It costs about one
+normal brief from your own monthly limit, goes out even in quiet hours or do-not-disturb, and never
+counts as the day's real brief. It is refused, with a sentence, when the agent is not running, the
+door is not connected, the agent is shared with someone else, the morning brief is off, a test is
+already on its way, or after ten in a day. On the tested path, the real-install check presses it
+once for Slack and once for Telegram (stand-ins for both apps) and sees each brief arrive in its
+chat and charged to you as an owner job.
+
 ### Choosing where messages go
 
 Each agent starts some conversations itself: the morning and evening brief, the weekly summary,
@@ -534,8 +549,10 @@ is a grid: a row per kind of message, a column per door (web chat, Slack, Telegr
 doors 1st, 2nd and 3rd per row. The message tries them in order and skips doors that are not
 connected. **Web chat is always the last resort**, so a message is never dropped: if nothing you
 chose is connected, it lands in web chat and the Proactivity page records why ("Morning brief went
-to web chat: Telegram is not connected"). An agent with nothing saved keeps its usual door, and
-falls back to web chat the same way. Quiet hours, do-not-disturb and daily limits apply to
+to web chat: Telegram is not connected"). A chief of staff made in the console starts with every
+row on web chat; when you connect its first chat app, every row switches to that app first, then
+web chat, and the "Connect doors" section says so. A second app changes nothing; number it in the
+grid. An agent with nothing saved keeps its usual door, and falls back to web chat the same way. Quiet hours, do-not-disturb and daily limits apply to
 whichever door is used. Saving a brief hour or a routing that would put a brief inside the chosen
 door's quiet hours is refused, with the fix in the message.
 
@@ -778,6 +795,16 @@ Ubuntu server with the tools from section 1, plus `restic` (`apt-get install -y 
    newer release than the one installed here, a snapshot with an unsafe database name or no main database,
    too little free disk, a missing token folder, and a restored address that differs from the one
    the server was installed with (restoring to a different address is not possible yet).
+   Each agent's store in the snapshot is checked the same way: one written by this release is
+   restored as it is; one written by the release before it is restored and then upgraded with the
+   same steps `lares update` runs; anything else (a newer or unknown layout) is refused, changing
+   nothing. The agent stores are restored and upgraded first. If an upgrade fails, the restore
+   stops before the main database, the Vault and the folders are replaced, the services stay
+   stopped, and running the same restore command again starts the agent stores over from the
+   backup. With `--snapshot latest`, the restore looks up the newest nightly snapshot once and
+   names it by its id; run again with that id, so that a snapshot written in between is not used.
+   It also refuses, changing nothing, while an agent store step from an earlier attempt is still
+   running, and says how to wait for it or stop it.
    Vault inventory, stored ownership and both repositories are checked against a temporary
    restoration of the snapshot database before the target changes. A fresh install's exact,
    untouched marker-only stores may be moved into private restore staging; notes, extra refs,

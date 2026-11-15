@@ -1,32 +1,42 @@
-// (B2b): can a tap on Telegram approve an outside-tool write?
+// Who a tap on an approval card arrives as, and what may count as an answer.
 //
-// Proven here by running eve's own code, in two halves:
-//   1. eve's approval coordinator (the code that decides whether a tap is accepted) REFUSES a tap
-//      with no identity once a tool has a `response` policy, and ACCEPTS the same tap carrying the
-//      owner's identity and runs our `outsideResponsePolicy`.
-//   2. eve's Telegram channel makes exactly that identity-less tap (`respond(..., { auth: null })`),
-//      and our wrapper (`withOwnerTapAuth`) swaps in the verified owner's identity for an allowed
-//      tapper only.
-// The live check on the real bot is still the owner's (the request policy refuses outside-tool
-// approvals on Telegram until then).
+// Until eve 1.0 the Telegram channel resumed a tap with no identity at all
+// (`respond(..., { auth: null })`), and this service wrapped the channel's route to put the
+// verified owner's identity back. eve 1.0.0-rc.9 passes the tapper on itself, so the wrapper is
+// gone and this file pins what replaced it, by running the installed eve:
+//
+//   1. THE CHANNEL. A tap is resumed with the TAPPER's identity — the owner's for the owner, a
+//      stranger's for a stranger, never one for the other — in the shape `lib/principals.ts`
+//      reads. A request without Telegram's secret is resumed as nobody: it is rejected.
+//   2. TYPED TEXT. A message the owner types while a card waits ("approve", "1") is dispatched
+//      as a message. Nothing at this door turns it into an answer.
+//   3. eve's RESPONDER CHECK. An approval takes only the Approve or Deny button's own answer;
+//      text is refused, an answer from nobody is refused, and an answer from somebody who is not
+//      the requester is refused.
+//
+// The refusal of a non-owner's tap BEFORE any of this is `tests/telegram-tap-gate.test.ts`.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { outsideResponsePolicy } from "@lares/agent-kit/outside-connections";
-
 import { isAllowedPrincipal, principalFromAuth } from "../lib/principals.js";
-import { ownerTapAuth, withOwnerTapAuth } from "../lib/telegram-tap-auth.js";
 
 vi.mock("@lares/agent-kit/telegram-fetch", () => ({
   telegramFetch: async () => new Response(JSON.stringify({ ok: true, result: true }), { status: 200, headers: { "content-type": "application/json" } }),
+}));
+// The real door logs each message and looks for a carry-forward summary; neither needs a database here.
+vi.mock("@lares/agent-kit/db", () => ({
+  getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
 }));
 
 const OWNER = "123456789";
 const STRANGER = "999000111";
 const SECRET = "hook-secret";
+
+/** eve's dist, for the internals its exports map does not expose. */
+const EVE_DIST = pathToFileURL(fileURLToPath(new URL("../node_modules/eve/dist/src", import.meta.url))).href;
 
 const tap = (fromId: string, over: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -34,9 +44,22 @@ const tap = (fromId: string, over: Record<string, unknown> = {}) =>
     callback_query: {
       id: "cb1",
       from: { id: Number(fromId), is_bot: false, first_name: "X" },
-      message: { message_id: 7, date: 1, chat: { id: Number(fromId), type: "private" }, text: "Approve?" },
+      message: { message_id: 7, date: 1, chat: { id: Number(OWNER), type: "private" }, text: "Approve?" },
       chat_instance: "ci",
       data: "eve:0",
+      ...over,
+    },
+  });
+
+const typed = (text: string, over: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    update_id: 2,
+    message: {
+      message_id: 8,
+      date: 2,
+      from: { id: Number(OWNER), is_bot: false, first_name: "X" },
+      chat: { id: Number(OWNER), type: "private" },
+      text,
       ...over,
     },
   });
@@ -53,152 +76,218 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   for (const k of ["TELEGRAM_PRINCIPAL_ID", "TELEGRAM_BOT_TOKEN_FILE", "TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE"]) delete process.env[k];
+  vi.restoreAllMocks();
 });
 
-describe("ownerTapAuth", () => {
-  it("gives an allowed approver's tap in a private chat that approver's identity", () => {
-    const auth = ownerTapAuth(tap(OWNER))!;
-    expect(auth).toMatchObject({ authenticator: "telegram-webhook", principalId: `telegram:${OWNER}`, principalType: "user" });
-    // the engine's own allowlist reads it back as the owner
+interface Captured {
+  kind: "send" | "respond";
+  payload: unknown;
+  options: { auth?: unknown; state?: unknown; context?: unknown };
+}
+type RouteHandler = (request: Request, ctx: unknown) => Promise<Response>;
+
+/** The chief of staff's real Telegram door, freshly imported. */
+async function realDoor() {
+  vi.resetModules();
+  return (await import("../agent/channels/telegram.js")).default as unknown as {
+    routes: Array<{ method: string; handler: RouteHandler }>;
+    adapter: { deliver(input: unknown, ctx: unknown): unknown };
+  };
+}
+
+/** POSTs one update to the door's own route and returns what it handed to the session. */
+async function post(body: string, secret: string = SECRET) {
+  const door = await realDoor();
+  const captured: Captured[] = [];
+  const pending: Promise<unknown>[] = [];
+  const handle = {
+    send: async (payload: unknown, options: Captured["options"]) => { captured.push({ kind: "send", payload, options }); },
+    respond: async (payload: unknown, options: Captured["options"]) => { captured.push({ kind: "respond", payload, options }); },
+  };
+  const route = door.routes.find((r) => r.method === "POST")!;
+  const res = await route.handler(
+    new Request("http://x/inner", { method: "POST", headers: { "x-telegram-bot-api-secret-token": secret, "content-type": "application/json" }, body }),
+    { from: () => handle, resolveSession: async () => undefined, waitUntil: (p: Promise<unknown>) => pending.push(p), attachSession: undefined },
+  );
+  await Promise.all(pending);
+  return { res, captured, door };
+}
+
+describe("1. the channel resumes a tap as the person who tapped", () => {
+  it("the owner's tap arrives with the owner's identity, in the shape the allowlist reads", async () => {
+    const { res, captured } = await post(tap(OWNER));
+    expect(res.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.kind).toBe("respond");
+    // eve's own compact answer: the button's callback data, resolved to the real answer from the
+    // session's state when it is delivered.
+    expect(captured[0]!.payload).toEqual([{ interactionId: "telegram_callback:eve:0", optionId: "selected" }]);
+    const auth = captured[0]!.options.auth;
+    expect(auth).toMatchObject({
+      authenticator: "telegram-webhook",
+      issuer: "telegram",
+      principalId: `telegram:${OWNER}`,
+      principalType: "user",
+      attributes: { chat_id: OWNER, chat_type: "private", user_id: OWNER },
+    });
     const p = principalFromAuth(auth);
     expect(isAllowedPrincipal(p.authenticator, p.userId)).toBe(true);
   });
 
-  it("gives nothing to a stranger, a bot, a group chat, a message, a proposal button or junk", () => {
-    expect(ownerTapAuth(tap(STRANGER))).toBeNull();
-    expect(ownerTapAuth(tap(OWNER, { from: { id: Number(OWNER), is_bot: true } }))).toBeNull();
-    expect(ownerTapAuth(tap(OWNER, { message: { message_id: 7, chat: { id: -5, type: "group" } } }))).toBeNull();
-    expect(ownerTapAuth(tap(OWNER, { data: "np:a:61" }))).toBeNull();
-    expect(ownerTapAuth(JSON.stringify({ message: { text: "hei" } }))).toBeNull();
-    expect(ownerTapAuth("not json")).toBeNull();
+  it("a stranger's tap, were it to get past the front door, arrives as the stranger — never as the owner", async () => {
+    const { captured } = await post(tap(STRANGER));
+    expect(captured).toHaveLength(1);
+    const auth = captured[0]!.options.auth;
+    expect(auth).toMatchObject({ principalId: `telegram:${STRANGER}`, attributes: { user_id: STRANGER } });
+    const p = principalFromAuth(auth);
+    expect(isAllowedPrincipal(p.authenticator, p.userId)).toBe(false);
   });
 
-  it("gives nothing when no approver is configured", () => {
-    delete process.env["TELEGRAM_PRINCIPAL_ID"];
-    expect(ownerTapAuth(tap(OWNER))).toBeNull();
-  });
-});
-
-describe("eve's approval coordinator, run for real", () => {
-  const coordinatorPath = fileURLToPath(new URL("../node_modules/eve/dist/src/harness/approval-delivery-coordinator.js", import.meta.url));
-  const reqId = "req-1";
-  const request = {
-    requestId: reqId, kind: "tool-approval", prompt: "Approve?",
-    options: [{ id: "approve", label: "Approve" }, { id: "cancel", label: "Cancel" }],
-    action: { kind: "tool-call", callId: "call-1", toolName: "registry__create_note", input: { text: "hei" } },
-  };
-  const state = () => ({ "eve.runtime.pendingInputBatches": [{ requests: [request], responseMessages: [], responseAuthRequiredRequestIds: [reqId] }] });
-  const policy = outsideResponsePolicy((responder) => {
-    const p = principalFromAuth(responder);
-    return isAllowedPrincipal(p.authenticator, p.userId);
-  });
-  const tools = new Map([["registry__create_note", { approval: { response: policy } }]]);
-  const input = (auth: unknown, s: unknown) => ({
-    session: { state: s },
-    stepInput: { attributedInputResponses: [{ auth, response: { requestId: reqId, optionId: "approve" } }] },
-    tools,
+  it("a bot's tap is not a user's, whatever id it carries", async () => {
+    const { captured } = await post(tap(OWNER, { from: { id: Number(OWNER), is_bot: true } }));
+    expect(captured[0]!.options.auth).toMatchObject({ principalType: "service" });
   });
 
-  type Delivery = { kind: string; feedback: string[]; session: { state: unknown }; stepInput?: { inputResponses?: Array<{ requestId: string; optionId: string }> } };
-
-  /** eve's coordinator, run inside the context eve's runtime would give it (the response policy asks
-   *  for the session's identity). */
-  async function coordinator() {
-    const dist = pathToFileURL(coordinatorPath).href.replace("/harness/approval-delivery-coordinator.js", "");
-    const mod = (await import(`${dist}/harness/approval-delivery-coordinator.js`)) as { coordinateApprovalDelivery: (i: unknown) => Promise<Delivery> };
-    const { ContextContainer, contextStorage } = (await import(`${dist}/context/container.js`)) as {
-      ContextContainer: new () => { set(key: { name: string }, value: unknown): void };
-      contextStorage: { run<T>(store: unknown, fn: () => T): T };
-    };
-    const container = new ContextContainer();
-    container.set({ name: "eve.session" }, { sessionId: "sess-1", auth: { current: null, initiator: null }, turn: { id: "t1", sequence: 0 } });
-    return { coordinateApprovalDelivery: (i: unknown) => contextStorage.run(container, () => mod.coordinateApprovalDelivery(i)) };
-  }
-
-  it("refuses a tap with no identity (what eve's Telegram channel sends)", async () => {
-    const { coordinateApprovalDelivery } = await coordinator();
-    const r = await coordinateApprovalDelivery(input(null, state()));
-    expect(r.feedback).toEqual(["Authentication is required to respond to this approval."]);
-    expect(r.stepInput?.inputResponses ?? []).toEqual([]);
-  });
-
-  it("accepts the same tap carrying the verified owner's identity, through our response policy", async () => {
-    const { coordinateApprovalDelivery } = await coordinator();
-    const auth = ownerTapAuth(tap(OWNER))!;
-    const first = await coordinateApprovalDelivery(input(auth, state()));
-    expect(first.feedback).toEqual([]);
-    // eve settles a candidate on the next pass: that is where the response policy runs
-    const second = await coordinateApprovalDelivery({ session: first.session, stepInput: first.stepInput, tools });
-    expect(second.stepInput?.inputResponses).toEqual([{ requestId: reqId, optionId: "approve" }]);
-  });
-
-  it("still refuses an identity that is not an allowed approver", async () => {
-    const { coordinateApprovalDelivery } = await coordinator();
-    const stranger = { authenticator: "telegram-webhook", principalId: `telegram:${STRANGER}`, principalType: "user", attributes: { user_id: STRANGER } };
-    const first = await coordinateApprovalDelivery(input(stranger, state()));
-    const second = await coordinateApprovalDelivery({ session: first.session, stepInput: first.stepInput, tools });
-    expect(second.stepInput?.inputResponses ?? []).toEqual([]);
-  });
-});
-
-describe("the Telegram channel, wrapped", () => {
-  async function post(body: string, wrap: boolean) {
-    vi.resetModules();
-    const { telegramChannel } = await import("eve/channels/telegram");
-    const base = telegramChannel({
-      botUsername: "test_bot",
-      credentials: { botToken: async () => "1:abc", webhookSecretToken: async () => SECRET },
-    }) as unknown as { routes: Array<{ method: string; handler: (r: Request, c: unknown) => Promise<Response> }> };
-    const channel = wrap ? withOwnerTapAuth(base) : base;
-    const responds: Array<{ responses: unknown; options: unknown }> = [];
-    const pending: Promise<unknown>[] = [];
-    const handle = { respond: async (responses: unknown, options: unknown) => { responds.push({ responses, options }); } };
-    const route = channel.routes.find((r) => r.method === "POST")!;
-    const res = await route.handler(
-      new Request("http://x/eve/v1/telegram", { method: "POST", headers: { "x-telegram-bot-api-secret-token": SECRET, "content-type": "application/json" }, body }),
-      { from: () => handle, resolveSession: async () => undefined, waitUntil: (p: Promise<unknown>) => pending.push(p), attachSession: undefined },
-    );
-    await Promise.all(pending);
-    return { res, responds };
-  }
-
-  it("reproduces the problem: eve's own channel resumes an owner's tap with auth null", async () => {
-    const { responds } = await post(tap(OWNER), false);
-    expect(responds).toHaveLength(1);
-    expect(responds[0]!.options).toEqual({ auth: null });
-  });
-
-  it("resumes an allowed approver's tap with that approver's identity", async () => {
-    const { res, responds } = await post(tap(OWNER), true);
-    expect(res.status).toBe(200);
-    expect(responds).toHaveLength(1);
-    expect(responds[0]!.options).toMatchObject({ auth: { authenticator: "telegram-webhook", principalId: `telegram:${OWNER}` } });
-  });
-
-  it("leaves a stranger's tap exactly as eve makes it", async () => {
-    const { responds } = await post(tap(STRANGER), true);
-    expect(responds[0]!.options).toEqual({ auth: null });
-  });
-
-  it("does not use the identity for an update whose secret is wrong", async () => {
-    vi.resetModules();
-    const { telegramChannel } = await import("eve/channels/telegram");
-    const base = telegramChannel({ botUsername: "b", credentials: { botToken: async () => "1:abc", webhookSecretToken: async () => SECRET } }) as unknown as { routes: Array<{ method: string; handler: (r: Request, c: unknown) => Promise<Response> }> };
-    const channel = withOwnerTapAuth(base);
-    const responds: unknown[] = [];
-    const res = await channel.routes.find((r) => r.method === "POST")!.handler(
-      new Request("http://x/eve/v1/telegram", { method: "POST", headers: { "x-telegram-bot-api-secret-token": "wrong", "content-type": "application/json" }, body: tap(OWNER) }),
-      { from: () => ({ respond: async (...a: unknown[]) => { responds.push(a); } }), resolveSession: async () => undefined, waitUntil: () => {}, attachSession: undefined },
-    );
+  it("resumes nothing for an update whose secret is wrong", async () => {
+    const { res, captured } = await post(tap(OWNER), "wrong");
     expect(res.status).toBe(401);
-    expect(responds).toEqual([]);
+    expect(captured).toEqual([]);
   });
 
-  it("the chief of staff's real Telegram door is wrapped", async () => {
-    vi.resetModules();
-    const mod = await import("../agent/channels/telegram.js");
-    const door = mod.default as unknown as { routes: Array<{ handler: unknown }> };
-    // the wrapped handler is ours, not eve's: it reads the body before delegating
-    expect(String(door.routes[0]!.handler)).toMatch(/ownerTapAuth|clone/);
+  it("the door is eve's own channel: its route is not wrapped", async () => {
+    // The route handler used to be replaced by one that read the body and swapped the identity.
+    const door = await realDoor();
+    expect(String(door.routes[0]!.handler)).not.toMatch(/ownerTapAuth|clone\(\)/);
+  });
+});
+
+describe("2. typed text is a message, never an answer", () => {
+  it.each(["approve", "Approve", "1", "yes", "deny"])("the owner typing %j is dispatched with send(), not respond()", async (text) => {
+    const { captured } = await post(typed(text));
+    expect(captured.map((c) => c.kind)).toEqual(["send"]);
+    expect(captured[0]!.payload).toBe(text);
+  });
+
+  it("a reply to the card itself is a message too, once the front door has cleared the marker", async () => {
+    const { neutralizeBotReplyMarker } = await import("@lares/agent-kit/telegram-reply-fix");
+    const reply = typed("approve", {
+      reply_to_message: { message_id: 7, chat: { id: Number(OWNER), type: "private" }, from: { id: 42, is_bot: true, username: "example_bot" }, text: "Approve?" },
+    });
+    const { body, rewritten } = neutralizeBotReplyMarker(reply);
+    expect(rewritten).toBe(true);
+    const { captured } = await post(body);
+    expect(captured.map((c) => c.kind)).toEqual(["send"]);
+    // Nothing in what the channel hands on marks the text as addressed to the card.
+    expect((captured[0]!.options.state as { replyToBotMessageId?: unknown }).replyToBotMessageId).toBeNull();
+  });
+
+  // With a card open, the channel's own state holds the button answers. The channel's deliver
+  // hook is where a compact answer is resolved against it — and where text could, in principle,
+  // be matched to a request.
+  const openCard = () => ({
+    hitlCallbacks: { "eve:0": { interactionId: "i1", optionId: "deny" }, "eve:1": { interactionId: "i1", optionId: "approve" } },
+    hitlPrompts: { i1: { messageId: "7", text: "Approve?", options: [{ id: "deny", label: "Deny" }, { id: "approve", label: "Approve" }] } },
+    pendingFreeformReplies: {},
+  });
+  const session = { auth: { current: null } };
+
+  it("with a card open, typed text is delivered as the message, with no answer attached", async () => {
+    const door = await realDoor();
+    for (const text of ["approve", "1"]) {
+      const out = door.adapter.deliver({ message: text, state: { replyToBotMessageId: null } }, { state: openCard(), session });
+      expect(out).toMatchObject({ message: text });
+      expect((out as { answers?: unknown }).answers).toBeUndefined();
+    }
+  });
+
+  it("even a reply that still carried the marker finds no card to answer: cards are answered by taps only", async () => {
+    const door = await realDoor();
+    const out = door.adapter.deliver({ message: "approve", state: { replyToBotMessageId: "7" } }, { state: openCard(), session });
+    expect(out).toMatchObject({ message: "approve" });
+    expect((out as { answers?: unknown }).answers).toBeUndefined();
+  });
+
+  it("the tap, by contrast, resolves to the button's own answer", async () => {
+    const door = await realDoor();
+    const out = door.adapter.deliver(
+      { answers: [{ interactionId: "telegram_callback:eve:1", optionId: "selected" }], state: {} },
+      { state: openCard(), session },
+    );
+    expect((out as { answers: unknown }).answers).toEqual([{ interactionId: "i1", optionId: "approve" }]);
+  });
+
+  // END TO END. What eve does with a MESSAGE that arrives while an approval waits is decided
+  // inside the framework and by the Lares patch to it, not at this door: this door's part ends
+  // at "it is a message". The rest — typed text never answers an approval — is proved against the
+  // patched framework in `tests/typed-approval-refused.test.ts`.
+});
+
+describe("3. eve's own check of who answered, run for real", () => {
+  interface Check {
+    admit: string[];
+    refused: Array<{ responseId?: string; reason: string }>;
+    weigh: Record<string, { responder: unknown }>;
+  }
+  async function checkResponders(step: Record<string, unknown>, answer: Record<string, unknown>): Promise<Check> {
+    const { checkResponders: check } = (await import(`${EVE_DIST}/harness/hitl/responders.js`)) as {
+      checkResponders(view: unknown, delivery: unknown, now: number): Check;
+    };
+    // The slice of the harness's view the check reads: the step that asked, and no earlier answers.
+    const view = {
+      projection: { view: { responses: {} } },
+      turn: { suspended: [{ requests: [{ interactionId: "i1" }], ...step }] },
+    };
+    return check(view, { answers: [{ interactionId: "i1", responseId: "r1", ...answer }] }, Date.now());
+  }
+  const identity = (userId: string) => ({
+    attributes: { user_id: userId },
+    authenticator: "telegram-webhook",
+    issuer: "telegram",
+    principalId: `telegram:${userId}`,
+    principalType: "user",
+  });
+  const owner = identity(OWNER);
+
+  it("the requester's Approve stands, and so does their Deny", async () => {
+    expect(await checkResponders({ requester: owner }, { optionId: "approve", responder: owner })).toMatchObject({ admit: ["r1"], refused: [] });
+    expect(await checkResponders({ requester: owner }, { optionId: "deny", responder: owner })).toMatchObject({ admit: ["r1"], refused: [] });
+  });
+
+  it("the identity the channel gave the owner's tap is that requester", async () => {
+    const { captured } = await post(tap(OWNER));
+    const responder = captured[0]!.options.auth;
+    expect(await checkResponders({ requester: owner }, { optionId: "approve", responder })).toMatchObject({ admit: ["r1"], refused: [] });
+  });
+
+  it("text is never a decision: 'approve' typed as an answer is refused", async () => {
+    for (const answer of [{ text: "approve" }, { text: "1" }, { optionId: "selected" }, { optionId: "cancel" }, { optionId: "Approve" }]) {
+      const check = await checkResponders({ requester: owner }, { ...answer, responder: owner });
+      expect(check.admit, JSON.stringify(answer)).toEqual([]);
+      expect(check.refused).toEqual([{ responseId: "r1", reason: "Respond to this approval with Approve or Cancel." }]);
+    }
+  });
+
+  it("an answer from nobody is refused", async () => {
+    const check = await checkResponders({ requester: owner }, { optionId: "approve", responder: null });
+    expect(check.admit).toEqual([]);
+    expect(check.refused).toEqual([{ responseId: "r1", reason: "Authentication is required to respond to this approval." }]);
+  });
+
+  it("an answer from somebody who is not the requester is refused", async () => {
+    const check = await checkResponders({ requester: owner }, { optionId: "approve", responder: identity(STRANGER) });
+    expect(check.admit).toEqual([]);
+    expect(check.refused).toEqual([{ responseId: "r1", reason: "Only the person who requested this action can respond to this approval." }]);
+  });
+
+  it("a tool with a response policy: nobody is refused outright, a named responder is weighed by the policy", async () => {
+    const step = { requester: owner, responseAuthRequiredRequestIds: ["i1"] };
+    const nobody = await checkResponders(step, { optionId: "approve", responder: null });
+    expect(nobody.admit).toEqual([]);
+    expect(nobody.refused).toEqual([{ responseId: "r1", reason: "Authentication is required to respond to this approval." }]);
+
+    const stranger = await checkResponders(step, { optionId: "approve", responder: identity(STRANGER) });
+    // Not admitted here: handed to the tool's own response policy, with who answered.
+    expect(stranger.admit).toEqual([]);
+    expect(stranger.weigh["r1"]?.responder).toMatchObject({ principalId: `telegram:${STRANGER}` });
   });
 });

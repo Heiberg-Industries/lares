@@ -60,7 +60,7 @@ export default defineTool({
   async execute({ entity, title, dueDate, source, recurrence, consequence, evidenceRule, fromThreadId, vendor, amount, currency }, ctx) {
     // WHO is asking, before WHAT is due: a deadline nobody asked for is a line in every brief.
     const notHim = humanTurnRefusal(
-      ctx.session?.auth,
+      ctx.session,
       "A deadline is added because the owner asked for it on this turn.",
     );
     if (notHim) return { added: false as const, message: notHim };

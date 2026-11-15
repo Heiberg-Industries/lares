@@ -39,7 +39,7 @@ import { join } from "node:path";
 
 /** `*.ts` basenames in `dir`, or `[]` when the directory does not exist — an agent with no
  *  extension tools is ordinary, not an error. */
-function tsBasenames(dir: string): string[] {
+export function tsBasenames(dir: string): string[] {
   try {
     return readdirSync(dir)
       .filter((f) => f.endsWith(".ts"))

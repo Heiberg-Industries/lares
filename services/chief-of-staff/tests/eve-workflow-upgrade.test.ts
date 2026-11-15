@@ -29,7 +29,11 @@ import { join } from "node:path";
 const here = import.meta.dirname;
 const OLD_SQL = readFileSync(join(here, "fixtures", "001-eve-workflow-beta32-pre-regeneration.sql"), "utf8");
 const UPGRADE_SQL = readFileSync(join(here, "..", "sql", "006-eve-workflow-beta32-to-beta42-upgrade.sql"), "utf8");
-const NEW_SQL = readFileSync(join(here, "..", "sql", "001-eve-workflow.sql"), "utf8");
+// "The new file" of THIS jump is the beta.42 schema, frozen as a fixture. The live
+// sql/001-eve-workflow.sql now holds the 5.1.1 schema, which cannot be applied over an old
+// database at all (it fails with: column "resume_id" does not exist) - see the draft notes on
+// the 5.1.1 move. This test therefore keeps proving only the beta.32 -> beta.42 step.
+const NEW_SQL = readFileSync(join(here, "fixtures", "001-eve-workflow-beta42-pre-regeneration.sql"), "utf8");
 
 /** Three rows sharing one run_id on purpose — see the header note on case (e). */
 const SEED_ROWS: Array<{

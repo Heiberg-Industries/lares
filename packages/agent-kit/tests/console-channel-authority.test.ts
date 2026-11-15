@@ -67,7 +67,7 @@ describe('actual Eve HTTP routes enforce authority independently of onMessage',(
   });
   it(`${role}: invalid bindings stop every session-addressed route before dispatch`,async()=>{
    const mod=await roleModule(role);fake.query.mockResolvedValue({rows:[]});
-   for(const [suffix,purpose,body] of [['/stream','read',undefined],['','resolver',{inputResponses:[{requestId:'request1',optionId:'approve'}]}],['/cancel','control',{}],['/clear','control',{}],['/compact','control',{}],['/reset','control',{}]] as const){
+   for(const [suffix,purpose,body] of [['/stream','read',undefined],['','resolver',{answers:[{interactionId:'request1',optionId:'approve'}]}],['/cancel','control',{}],['/clear','control',{}],['/compact','control',{}],['/end','control',{}],['/reset','control',{}]] as const){
     const route=mod.default.routes.find((r:any)=>r.method===(suffix==='/stream'?'GET':'POST')&&r.path===`/eve/v1/session/:sessionId${suffix}`);
     expect(route,`${role} ${suffix}`).toBeDefined();
     const attachSession=vi.fn();
@@ -75,6 +75,28 @@ describe('actual Eve HTTP routes enforce authority independently of onMessage',(
     expect(response.status).toBe(401);expect(attachSession).not.toHaveBeenCalled();
    }
   });
+  // eve 1.0 serves `POST .../end` (and still `POST .../reset` for the same control). Either way the
+  // console's binding is retired BEFORE eve ends the session, and only the conversation's own member can do it.
+  for(const control of ['end','reset']){
+   it(`${role}: /${control} retires the console binding first, for the conversation's own member only`,async()=>{
+    const mod=await roleModule(role);resolverRows();
+    const base=fake.query.getMockImplementation()!;
+    fake.query.mockImplementation(async(sql:string,values?:unknown[])=>String(sql).includes('UPDATE console_session_bindings')?{rows:[]}:base(sql,values));
+    const route=mod.default.routes.find((r:any)=>r.method==='POST'&&r.path===`/eve/v1/session/:sessionId/${control}`);
+    expect(route,`${role} /${control}`).toBeDefined();
+    const retire=()=>fake.query.mock.calls.filter(([sql])=>String(sql).includes('UPDATE console_session_bindings SET revoked_at'));
+    const stranger=(path:string)=>new Request(`http://runtime.invalid${path}`,{method:'POST',headers:{authorization:`Basic ${Buffer.from('eve:fixture-password').toString('base64')}`,'x-lares-member':'owner@example.invalid','x-lares-member-id':'Other-ID','x-lares-admission':'a'.repeat(43),'x-lares-purpose':'control'},body:JSON.stringify({})});
+    // Not the conversation's member: refused, nothing retired, eve never reached.
+    const end=vi.fn().mockResolvedValue({sessionId:'wrun_test',deliveryId:'d1'});const attachSession=vi.fn(()=>({end,reset:end}));
+    const refused=await route.handler(stranger(`/eve/v1/session/wrun_test/${control}`),{params:{sessionId:'wrun_test'},attachSession});
+    expect(refused.status).toBe(401);expect(attachSession).not.toHaveBeenCalled();expect(retire()).toHaveLength(0);
+    // The conversation's own member: authority is retired, even before eve answers.
+    const failing=vi.fn(()=>({end:vi.fn().mockRejectedValue(new Error('eve down')),reset:vi.fn().mockRejectedValue(new Error('eve down'))}));
+    await route.handler(request(`/eve/v1/session/wrun_test/${control}`,{},'control'),{params:{sessionId:'wrun_test'},attachSession:failing}).catch(()=>undefined);
+    expect(retire()).toHaveLength(1);
+    expect(retire()[0]?.[1]).toEqual(['helper',inc,'wrun_test','Owner-ID','a'.repeat(43)]);
+   });
+  }
   it(`${role}: callback, observer, unknown modes and file input are rejected before Eve dispatch`,async()=>{
    const mod=await roleModule(role);fake.query.mockResolvedValue({rows:[boundRow()]});
    const route=mod.default.routes.find((r:any)=>r.method==='POST'&&r.path==='/eve/v1/session/:sessionId');
@@ -88,21 +110,21 @@ describe('actual Eve HTTP routes enforce authority independently of onMessage',(
    const route=mod.default.routes.find((r:any)=>r.method==='POST'&&r.path==='/eve/v1/session/:sessionId');
    const respond=vi.fn(async(_responses:unknown,_options:unknown)=>({status:'accepted',sessionId:'wrun_test',deliveryId:'delivery1'}));
    const attachSession=vi.fn(()=>({respond}));
-   const inputResponses=[{requestId:'request1',optionId:'approve'}];
-   expect((await route.handler(request('/eve/v1/session/wrun_test',{inputResponses},'resolver'),{params:{sessionId:'wrun_test'},attachSession})).status).toBe(202);
+   const answers=[{interactionId:'request1',optionId:'approve'}];
+   expect((await route.handler(request('/eve/v1/session/wrun_test',{answers},'resolver'),{params:{sessionId:'wrun_test'},attachSession})).status).toBe(202);
    expect(respond.mock.calls[0]?.[1]).toMatchObject({auth:{attributes:{lares_purpose:'resolver',lares_resolver_member_id:'Owner-ID',lares_resume_request_id:'request1',lares_resume_option:'approve'}}});
    const attributes=(respond.mock.calls[0]?.[1] as {auth:{attributes:Record<string,unknown>}}).auth.attributes;
    expect(attributes).not.toHaveProperty('lares_member_id');expect(attributes).not.toHaveProperty('lares_admission_nonce');
    expect(fake.query.mock.calls.some(([sql])=>String(sql).includes('FROM personal_actions WHERE'))).toBe(true);
    attachSession.mockClear();fake.query.mockClear();
-   expect((await route.handler(request('/eve/v1/session/wrun_test',{message:'hello',inputResponses},'resolver'),{params:{sessionId:'wrun_test'},attachSession})).status).toBe(401);
+   expect((await route.handler(request('/eve/v1/session/wrun_test',{message:'hello',answers},'resolver'),{params:{sessionId:'wrun_test'},attachSession})).status).toBe(401);
    expect(attachSession).not.toHaveBeenCalled();expect(fake.query).not.toHaveBeenCalled();
   });
   it.each(['missing-action','wrong-member','wrong-session','wrong-request','wrong-call','expired'] as const)(`${role}: %s approval context is refused before Eve dispatch`,async failure=>{
    const mod=await roleModule(role);resolverRows(failure);
    const route=mod.default.routes.find((r:any)=>r.method==='POST'&&r.path==='/eve/v1/session/:sessionId');
    const respond=vi.fn(),attachSession=vi.fn(()=>({respond}));
-   const response=await route.handler(request('/eve/v1/session/wrun_test',{inputResponses:[{requestId:'request1',optionId:'approve'}]},'resolver'),{params:{sessionId:'wrun_test'},attachSession});
+   const response=await route.handler(request('/eve/v1/session/wrun_test',{answers:[{interactionId:'request1',optionId:'approve'}]},'resolver'),{params:{sessionId:'wrun_test'},attachSession});
    expect(response.status).toBe(401);expect(attachSession).not.toHaveBeenCalled();expect(respond).not.toHaveBeenCalled();
   });
  }

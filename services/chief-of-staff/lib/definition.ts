@@ -37,6 +37,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { resolveDefinition, type Resolved } from "@lares/agent-kit/definition-cache";
+import { toolSourcesFor } from "@lares/agent-kit/definition-validate";
 import { deployedToolsFor } from "@lares/agent-kit/persona";
 
 import manifest from "../agent.json";
@@ -131,6 +132,8 @@ async function resolveFresh(): Promise<Resolved> {
     serviceDir,
     roleMd: await readFile(roleMdPath(serviceDir), "utf8"),
     deployedTools: deployedToolsFor(serviceDir),
+    // Two tools under one name is an invalid definition like any other (definition-validate.ts).
+    toolSources: toolSourcesFor(serviceDir),
     // An invalid hand edit is an operational failure the owner must see. `emitSignal`'s default
     // payload (app-exception / error) is exactly right for it and needs no new route row —
     // gives the emitter a `kind` later, and a follow-up can reshape this then.

@@ -1,5 +1,5 @@
 // Installed eve runtime + real PostgreSQL. Disposable fixture, mock model, no provider calls.
-import {mkdtempSync,cpSync,symlinkSync,readFileSync,writeFileSync,rmSync,existsSync,unlinkSync} from 'node:fs';
+import {mkdtempSync,cpSync,symlinkSync,readFileSync,readdirSync,writeFileSync,rmSync,existsSync,unlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {resolve,join} from 'node:path';
 import {spawn,execFile} from 'node:child_process';
@@ -14,12 +14,13 @@ import {resetActions,runAction} from '../lib/actions.js';
 const run=promisify(execFile),repo=resolve('../..'),root=mkdtempSync(join(tmpdir(),'lares-door-proof-'));
 const incarnation='11111111-1111-4111-8111-111111111111',signing='disposable-signing-secret';
 let pg:any,db:Pool|undefined,server:ReturnType<typeof spawn>|undefined,logs='';
-const model=join(root,'model.log'),outbound=join(root,'outbound.log');
+const model=join(root,'model.log'),outbound=join(root,'outbound.log'),asked=outbound+'.asked';
+const askedCount=()=>existsSync(asked)?readFileSync(asked,'utf8').split('\n').filter(Boolean).length:0;
 try {
  cpSync(join(repo,'services/keeper/tests/fixtures/door-agent'),root,{recursive:true});symlinkSync(join(repo,'packages/board-evals/node_modules'),join(root,'node_modules'));
- pg=await new PostgreSqlContainer('postgres:16-alpine').start();db=new Pool({connectionString:pg.getConnectionUri()});
- await db.query(readFileSync(join(repo,'services/box/sql','001_baseline.sql'),'utf8'));
- await db.query(`CREATE TABLE ratchet(agent text,capability text,action text,level text); CREATE TABLE approval_events(agent text,capability text,tool text,decision text,reason text,call_id text); CREATE UNIQUE INDEX approval_events_call_idx ON approval_events(call_id) WHERE call_id IS NOT NULL`);
+ pg=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();db=new Pool({connectionString:pg.getConnectionUri()});
+ // The whole box schema, as a fresh install gets it: the baseline, then every numbered file in order.
+ for(const file of readdirSync(join(repo,'services/box/sql')).filter(name=>/^\d{3}_.*\.sql$/.test(name)).sort())await db.query(readFileSync(join(repo,'services/box/sql',file),'utf8'));
  const definition={name:'example',role:'creative',doors:[{kind:'slack',enabled:true}]};
  await db.query("INSERT INTO agent_definitions(name,hash,definition,status)VALUES('example','hash',$1,'valid')",[JSON.stringify(definition)]);
  await db.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending)VALUES('example','172.29.0.10','example','owned',$1,$1,'ready',$2,false)",[incarnation,JSON.stringify(definition)]);
@@ -43,7 +44,7 @@ try {
   await new Promise(r=>setTimeout(r,350));return response.status;
  }
  async function approvalCallback() {
-  const payload={type:'block_actions',team:{id:'T_FIXTURE'},user:{id:'U_OWNER'},channel:{id:'D_FIXTURE'},message:{ts:'1.0'},actions:[{type:'button',action_id:'eve:input',value:'approve',action_ts:'1.1'}]};
+  const payload={type:'block_actions',team:{id:'T_FIXTURE'},user:{id:'U_OWNER'},channel:{id:'D_FIXTURE'},message:{ts:'1.0'},actions:[{type:'button',action_id:'eve_input:tool-approval:interaction-1:button:1',block_id:'b1',value:'approve',action_ts:'1.1'}]};
   const body=new URLSearchParams({payload:JSON.stringify(payload)}).toString(),ts=String(Math.floor(Date.now()/1000));
   const signature='v0='+createHmac('sha256',signing).update(`v0:${ts}:${body}`).digest('hex');
   return (await fetch(host+'/eve/v1/slack',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','x-slack-request-timestamp':ts,'x-slack-signature':signature},body})).status;
@@ -53,6 +54,10 @@ try {
  await db.query("UPDATE agent_door_connections SET expires_at=now()-interval '1 second'");await send(`claim ${code}`);assert.equal((await db.query('SELECT principal FROM agent_door_connections')).rows[0].principal,null);
  await db.query("UPDATE agent_door_connections SET expires_at=now()+interval '10 minutes'");await send(`claim ${code}`);
  const c=(await db.query('SELECT * FROM agent_door_connections')).rows[0];assert.equal(c.principal,'U_OWNER');assert.equal(existsSync(model),false);assert.equal(existsSync(outbound),false);
+ // eve 1.0 asks the door for its token on every inbound direct message (its typing indicator), so the
+ // token function HAS been called by now. What must still be true: the door-authority check refused
+ // every one of those, so the point where a role reads the secret was never reached (no TOKEN line).
+ const askedDuringClaim=askedCount();
  assert.equal(await send('before explicit apply'),401);assert.equal(await approvalCallback(),401);assert.equal(await send(`claim ${code}`,'U_ATTACKER'),401);
  await stop();await db.query('UPDATE agent_door_connections SET applied_revision=revision');await db.query('UPDATE agent_resources SET pending=false');
  await start({LARES_SLACK_PRINCIPAL:'U_OWNER',LARES_SLACK_CLAIM_REVISION:c.revision});
@@ -60,27 +65,28 @@ try {
  await send('accepted owner');for(let i=0;i<100&&!existsSync(model);i++)await new Promise(r=>setTimeout(r,100));
  assert.equal(existsSync(model),true,logs);const history=readFileSync(model,'utf8');assert.ok(history.includes('accepted owner'));assert.ok(!history.includes(code));assert.ok(!history.includes('wrong owner'));const tokenAttempts=existsSync(outbound)?readFileSync(outbound,'utf8'):'';
  const {Client}=await import(join(repo,'packages/board-evals/node_modules/eve/dist/src/client/index.js'));
- const client=new Client({host,auth:{basic:{username:'fixture',password:'disposable-fixture-only'}}});
+ const client=new Client({baseUrl:host,auth:{basic:{username:'fixture',password:'disposable-fixture-only'}}});
  // A neutral image must consult the installed agent's board, never its compiled role name.
- await db.query("INSERT INTO ratchet(agent,capability,action,level) VALUES('example','gmail','','never'),('creative','gmail','','autonomous')");
- const refused=await client.sessions.create({message:'pending write'});const refusal=await refused.response.result();
- assert.equal(refusal.inputRequests.length,0,'Managed board denial became an approval card');
+ await db.query("INSERT INTO ratchet(agent,capability,action,level,updated_by) VALUES('example','gmail','','never','probe'),('creative','gmail','','autonomous','probe')");
+ const refused=await client.sessions.create({message:'pending write'});const refusal=await refused.delivery.result();
+ assert.equal(refusal.interactions.length,0,'Managed board denial became an approval card');
  assert.equal(existsSync(join(root,'writes')),false,'Managed board denial executed a write');
  assert.equal((await db.query("SELECT count(*)::int AS n FROM approval_events WHERE agent='example' AND tool='gmail_send' AND decision='denied'")).rows[0].n,1,'Denial not attributed to managed instance');
  assert.equal((await db.query("SELECT count(*)::int AS n FROM approval_events WHERE agent='creative'")).rows[0].n,0,'Neutral role received instance audit evidence');
  await db.query("DELETE FROM ratchet WHERE agent IN ('example','creative')");
  // Restart clears the documented 30-second policy cache before the existing approval cases.
  await stop();await start({LARES_SLACK_PRINCIPAL:'U_OWNER',LARES_SLACK_CLAIM_REVISION:c.revision});
- const control=await client.sessions.create({message:'pending write'});const controlPending=await control.response.result();assert.ok(controlPending.inputRequests.length>0);
- const approved=await control.session.respond([{requestId:controlPending.inputRequests[0].requestId,optionId:'approve'}]);await approved.result();
+ const control=await client.sessions.create({message:'pending write'});const controlPending=await control.delivery.result();assert.equal(controlPending.status,'awaiting-input');assert.ok(controlPending.interactions.length>0);
+ const approved=await control.session.respond([{interactionId:controlPending.interactions[0].interactionId,optionId:'approve'}]);await approved.result();
  assert.equal(existsSync(join(root,'writes')),true,'Current approved control did not execute');unlinkSync(join(root,'writes'));
- const parked=await client.sessions.create({message:'pending write'});const pending=await parked.response.result();assert.ok(pending.inputRequests.length>0);
+ const parked=await client.sessions.create({message:'pending write'});const pending=await parked.delivery.result();assert.equal(pending.status,'awaiting-input');assert.ok(pending.interactions.length>0);
  await db.query('UPDATE agent_resources SET pending=true');
- const resumed=await parked.session.respond([{requestId:pending.inputRequests[0].requestId,optionId:'approve'}]);await resumed.result();
+ const resumed=await parked.session.respond([{interactionId:pending.interactions[0].interactionId,optionId:'approve'}]);await resumed.result();
  assert.equal(existsSync(join(root,'writes')),false,'Stale HTTP approval executed a write');
  await db.query('UPDATE agent_resources SET pending=false');
  await db.query('UPDATE agent_doors SET enabled=false');assert.equal(await send('disabled owner'),401);assert.equal(await approvalCallback(),401);assert.equal(existsSync(outbound)?readFileSync(outbound,'utf8'):'',tokenAttempts);
- console.log('PASS: neutral compiled manifest uses managed instance board denial and audit attribution; installed eve verifies signature before one-use claim; invalid/expired/replayed/pre-apply/wrong-owner/disabled rejected; native Slack form callback rejected by verifier while pending/disabled; current approved control executes; parked approval resumed through HTTP after pending change causes zero side effects; accepted owner reaches mock model only after apply; claim codes absent from model history; claim processing never resolves credentials; disabled ingress adds no credential calls; guarded fake token refuses before any outbound API call.');
+ console.log(`OBSERVED: eve asked the door for its token ${askedDuringClaim} time(s) before the claim was applied and ${askedCount()} time(s) in all; the door-authority check let it through to the secret only after apply (${tokenAttempts.split('\n').filter(Boolean).length} time(s) by the first accepted message).`);
+ console.log('PASS: neutral compiled manifest uses managed instance board denial and audit attribution; installed eve verifies signature before one-use claim; invalid/expired/replayed/pre-apply/wrong-owner/disabled rejected; native Slack form callback rejected by verifier while pending/disabled; current approved control executes; parked approval resumed through HTTP after pending change causes zero side effects; accepted owner reaches mock model only after apply; claim codes absent from model history; claim processing never reaches the credential (the door-authority check refuses first); disabled ingress adds no credential calls; guarded fake token refuses before any outbound API call.');
  await stop();
 } catch(e){console.error('Runtime logs:',logs);throw e;}
 finally{if(server&&!server.killed){server.kill('SIGTERM');await new Promise<void>(r=>server!.once('exit',()=>r()));}await db?.end();await pg?.stop();rmSync(root,{recursive:true,force:true});}

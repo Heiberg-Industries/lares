@@ -1,19 +1,25 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
-// Deep imports into eve's dist for tests/eve-hitl-expiry-notice.test.ts — the suite that
-// pins our pnpm patch on eve@0.32.0 (see that file's header comment). The package's exports
-// map does not expose these internals, so the aliases point at the files directly (absolute
-// paths — a bare "eve/dist/..." specifier would be re-blocked by the exports map).
+// Deep imports into eve's dist for the suites that pin patches/eve.patch (the pnpm patch on
+// eve@1.0.0-rc.10) and the framework behaviour the doors depend on. The package's exports map does
+// not expose these internals, so the aliases point at the files directly (absolute paths: a bare
+// "eve/dist/..." specifier would be re-blocked by the exports map). An eve upgrade that moves one
+// of these files fails the importing suite at load, which is the signal to re-derive the patch.
 const eveInternal = (p: string) =>
   fileURLToPath(new URL(`./node_modules/eve/dist/src/public/channels/${p}`, import.meta.url));
 
-// Same purpose, different tree: the approval-card title patch edits eve's HARNESS,
-// not a channel, so it needs its own base path. Kept as a separate helper rather than a
-// parameterised one because these two trees move independently across eve versions, and a
-// single "guess the subpath" helper would hide which of them broke.
+// Same purpose, different tree: two of the three patch hunks edit eve's HARNESS, not a channel.
+// Kept as a separate helper rather than a parameterised one because these trees move
+// independently across eve versions, and a single "guess the subpath" helper would hide which of
+// them broke.
 const eveHarness = (p: string) =>
   fileURLToPath(new URL(`./node_modules/eve/dist/src/harness/${p}`, import.meta.url));
+
+// The session tables and the request context. The patch touches none of these; the patch tests
+// use them to build a real session view from eve's own events and to run attachment hydration
+// inside a real eve context, instead of hand-writing the shapes eve reads.
+const eveCore = (p: string) => fileURLToPath(new URL(`./node_modules/eve/dist/src/${p}`, import.meta.url));
 
 export default defineConfig({
   resolve: {
@@ -24,7 +30,21 @@ export default defineConfig({
       "eve-internals/slack-hitl": eveInternal("slack/hitl.js"),
       "eve-internals/telegram-channel": eveInternal("telegram/telegramChannel.js"),
       "eve-internals/telegram-hitl": eveInternal("telegram/hitl.js"),
-      "eve-internals/input-extraction": eveHarness("input-extraction.js"),
+      // patches/eve.patch, hunk 1 (typed text never answers an approval) and what reads it.
+      "eve-internals/hitl-delivery": eveHarness("hitl/delivery.js"),
+      "eve-internals/hitl-intake": eveHarness("hitl/intake.js"),
+      "eve-internals/hitl-approvals": eveHarness("hitl/approvals.js"),
+      // patches/eve.patch, hunk 2b (a document reaches the agent as its text).
+      "eve-internals/attachment-staging": eveHarness("attachment-staging.js"),
+      "eve-internals/sandbox-refs": eveCore("internal/attachments/sandbox-refs.js"),
+      "eve-internals/context-container": eveCore("context/container.js"),
+      "eve-internals/context-keys": eveCore("context/keys.js"),
+      // Building a session view from eve's own facts.
+      "eve-internals/interaction-facts": eveHarness("interaction-facts.js"),
+      "eve-internals/call-facts": eveHarness("call-facts.js"),
+      "eve-internals/session-fold": eveCore("protocol/session-projection/fold.js"),
+      "eve-internals/session-projection": eveCore("protocol/session-projection.js"),
+      "eve-internals/session-reader": eveCore("protocol/session-projection/reader.js"),
     },
   },
   test: {

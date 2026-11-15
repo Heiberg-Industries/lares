@@ -175,14 +175,16 @@ describe("the gated tools re-check the approver", () => {
 
   it("vault_write is approval-gated on EVERY call, including one already approved once", async () => {
     expect(vaultWrite.approval, "vault_write must be gated — it commits and pushes").toBeTypeOf("function");
-    const decision = await vaultWrite.approval!({
-      approvedTools: new Set(["vault_write"]), // already approved once — must still prompt
-      callId: "call_1",
+    // eve 1.0 has no `approvedTools`: only a policy wrapped in `once()` is remembered as approved.
+    // This one is not, so a second call in the same session asks again.
+    const askFor = (callId: string) => (vaultWrite.approval as unknown as (c: never) => unknown)({
+      callId,
       toolName: "vault_write",
       toolInput: {},
-      ...ctx(slackAuth(OWNER)),
+      ...(ctx(slackAuth(OWNER)) as object),
     } as never);
-    expect(decision).toBe("user-approval");
+    expect(await askFor("call_1")).toBe("user-approval");
+    expect(await askFor("call_2")).toBe("user-approval");
   });
 
   it("studio_ideate is NOT gated — but still re-checks the approver", () => {

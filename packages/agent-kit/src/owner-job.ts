@@ -11,8 +11,14 @@ import { modelPurposeDispatchRequest, modelPurposeRequest, MODEL_PURPOSE_DISPATC
  * for a call another person could have caused. Nothing here names the payer: not the agent, not
  * its environment.
  *
- * This is deliberately its own context, separate from `model-invocation.ts`. A conversation step
- * can never become an owner job, and an owner job can never claim a conversation step.
+ * A conversation that a schedule started under eve's app identity (a brief, a re-ping, a deadline
+ * note) runs its model calls as owner jobs too (`door-model-authority.ts`, route `owner-job`): it
+ * has no person behind it to pay. A step of a conversation a person started never does; it claims
+ * its step through Keeper instead.
+ *
+ * This is deliberately its own context, separate from `model-invocation.ts`. An owner job never
+ * claims a conversation step: inside a schedule-started conversation's step it only burns that
+ * step's single dispatch, and the ticket it gets is a job ticket, never a step claim.
  */
 export const OWNER_JOB_REFUSED = 'Owner job authority is not available';
 const ALIAS = /^[a-z][a-z0-9-]{1,63}$/;

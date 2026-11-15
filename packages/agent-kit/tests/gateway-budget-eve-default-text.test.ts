@@ -24,7 +24,7 @@ import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { defaultSessionFailedText, defaultTurnFailedText, respondToTurnFailed } from "../src/gateway-budget.js";
+import { defaultSessionFailedText, defaultTurnFailedText, respondToSessionFailed, respondToTurnFailed } from "../src/gateway-budget.js";
 
 const require = createRequire(import.meta.url);
 
@@ -38,21 +38,27 @@ function eveRoot(): string {
   throw new Error("could not locate the installed eve package root from require.resolve('eve')");
 }
 
-function readDefaults(channel: "slack" | "telegram"): string {
-  const file = path.join(eveRoot(), "dist", "src", "public", "channels", channel, "defaults.js");
+/** The files eve 1.0 renders a failed turn / session from. Slack has its own; Telegram (and every
+ *  other surface) renders through the shared `failureNotice` in `reply.js`, with a per-channel
+ *  "restart" noun that Telegram's defaults set to `message`. */
+function read(...segments: string[]): string {
+  const file = path.join(eveRoot(), "dist", "src", ...segments);
   if (!existsSync(file)) {
     throw new Error(
-      `eve's ${channel} defaults are no longer at ${file}. eve moved its channel defaults; ` +
-        "re-read them and re-check src/gateway-budget.ts's reproduction before deleting this test.",
+      `eve moved ${segments.join("/")}. Re-read where eve 1.0 renders failure text; ` +
+        "re-check src/gateway-budget.ts's reproduction before deleting this test.",
     );
   }
   return readFileSync(file, "utf8");
 }
+const defaultsFor = (channel: "slack" | "telegram"): string =>
+  channel === "slack" ? read("public", "channels", "slack", "defaults.js") : read("public", "channels", "reply.js");
 
 /**
  * Our own text, rendered with no hint and no error id, reduced to the fragments that are
  * contiguous in eve's source: the opening sentence minus the trailing "." that follows the
- * interpolated hint, plus the advice line whole.
+ * interpolated hint, plus the advice line whole. Telegram's advice is `Start a new ${restart} to
+ * continue.` in eve, so the noun is checked separately below.
  */
 function reproducedFragments(dialect: "slack" | "telegram"): string[] {
   const fragments: string[] = [];
@@ -61,38 +67,52 @@ function reproducedFragments(dialect: "slack" | "telegram"): string[] {
     const [opening, advice] = lines;
     // `...error${hint}.` — the literal before the interpolation ends at the sentence body.
     fragments.push(opening!.replace(/\.$/u, ""));
-    fragments.push(advice!);
+    fragments.push(dialect === "telegram" && advice!.startsWith("Start a new ") ? "to continue." : advice!);
   }
   return fragments;
 }
 
 describe("our reproduction of eve's default failure text still matches the installed eve", () => {
   for (const dialect of ["slack", "telegram"] as const) {
-    it(`${dialect}: every sentence we reproduce is present in eve's shipped defaults.js`, () => {
-      const source = readDefaults(dialect);
+    it(`${dialect}: every sentence we reproduce is present in eve's shipped source`, () => {
+      const source = defaultsFor(dialect);
       for (const fragment of reproducedFragments(dialect)) {
-        expect(source, `eve's ${dialect} defaults no longer contain: ${fragment}`).toContain(fragment);
+        expect(source, `eve's ${dialect} failure text no longer contains: ${fragment}`).toContain(fragment);
       }
     });
   }
 
-  it("slack italicises the error id in backticks; telegram writes it plain", () => {
-    // Slack:  `_Error id: \`${o}\`_`      Telegram:  `Error id: ${o}`
-    expect(readDefaults("slack")).toContain("_Error id: \\`${");
-    expect(readDefaults("telegram")).toContain("[``,`Error id: ${");
+  it("telegram's restart noun is 'message', slack's advice says 'thread'", () => {
+    expect(read("public", "channels", "telegram", "defaults.js")).toContain("restart:`message`");
+    expect(read("public", "channels", "reply.js")).toContain("Start a new ${");
+    expect(defaultSessionFailedText({}, "telegram")).toContain("Start a new message to continue.");
+    expect(defaultSessionFailedText({}, "slack")).toContain("Start a new thread to continue");
   });
 
-  it("both dialects still key the same two failure events", () => {
-    for (const dialect of ["slack", "telegram"] as const) {
-      expect(readDefaults(dialect)).toContain('"turn.failed"');
-      expect(readDefaults(dialect)).toContain('"session.failed"');
+  it("slack italicises the error id in backticks; telegram writes it plain", () => {
+    // Slack:  `_Error id: \`${o}\`_`      Telegram:  `Error id: ${o}`
+    expect(defaultsFor("slack")).toContain("_Error id: \\`${");
+    expect(defaultsFor("telegram")).toContain("`Error id: ${");
+  });
+
+  it("the hint's name is the error's code, and slack quotes a hinted error as 'How to fix'", () => {
+    // eve: `errorHintOf(e) = { details: { name: e.code }, message: e.message }`.
+    expect(read("public", "channels", "reply.js")).toContain("details:{name:e.code}");
+    expect(defaultsFor("slack")).toContain("**How to fix**");
+  });
+
+  it("failures are keyed on turn.settled and session.ended (the 0.60 failed events are gone)", () => {
+    for (const source of [defaultsFor("slack"), read("channel", "surface.js")]) {
+      expect(source).toContain("session.ended");
     }
+    expect(defaultsFor("slack")).toContain("turn.settled");
+    expect(read("channel", "surface.js")).toContain("turn.settled");
   });
 });
 
-describe("the installed eve carries the gateway's limit sentence into turn.failed", () => {
-  it("puts the message from a refused model call into the event's message and details", async () => {
-    const file = path.join(eveRoot(), "dist", "src", "harness", "model-call-error.js");
+describe("the installed eve carries the gateway's limit sentence into the failed turn", () => {
+  it("puts the message from a refused model call into the event's error message", async () => {
+    const file = path.join(eveRoot(), "dist", "src", "harness", "model-call", "errors.js");
     const { extractUpstreamRejectionMessage, extractModelCallErrorDetails } = (await import(file)) as {
       extractUpstreamRejectionMessage(e: unknown): { message: string } | null;
       extractModelCallErrorDetails(e: unknown): Record<string, unknown>;
@@ -100,8 +120,38 @@ describe("the installed eve carries the gateway's limit sentence into turn.faile
     const sentence = "You've reached your monthly limit of $15. It resets on 1 December 2026.";
     const body = { error: { type: "budget_admission_refused", code: "budget_admission_refused", message: sentence } };
     const error = Object.assign(new Error("Bad Request"), { name: "AI_APICallError", statusCode: 400, responseBody: JSON.stringify(body), data: body });
-    const event = { code: "MODEL_CALL_FAILED", message: extractUpstreamRejectionMessage(error)?.message, details: extractModelCallErrorDetails(error) };
-    expect(event.message).toBe(sentence);
+    // eve 1.0 (`harness/model-call/failure.js`): the event is `{ code: "MODEL_CALL_FAILED", message }` and the
+    // old `details` (including the gateway's type) is not carried to the stream.
+    const event = { error: { code: "MODEL_CALL_FAILED", message: extractUpstreamRejectionMessage(error)?.message } };
+    expect(extractModelCallErrorDetails(error)["upstreamType"]).toBe("budget_admission_refused");
+    expect(event.error.message).toBe(sentence);
     expect(respondToTurnFailed(event, { refusalText: "exhausted", dialect: "slack" })).toEqual({ kind: "budget-refusal", text: sentence });
   });
+
+  // The two doors (Slack, Telegram) answer a failed turn with `respondToTurnFailed(event.data, …)` and a
+  // failed session end with `respondToSessionFailed(event.data, …)`. For a monthly-limit refusal the person
+  // must read the keeper's own sentence, in either dialect, once: never eve's generic "I hit an error".
+  it("a spending-limit refusal reads as the keeper's own sentence on both doors, said once", async () => {
+    const file = path.join(eveRoot(), "dist", "src", "harness", "model-call", "errors.js");
+    const { extractUpstreamRejectionMessage } = (await import(file)) as {
+      extractUpstreamRejectionMessage(e: unknown): { message: string } | null;
+    };
+    const sentences = [
+      "You've reached your monthly limit of $15. It resets on 1 December 2026.",
+      "This installation has reached its monthly spending limit. It resets on 1 December 2026.",
+    ];
+    for (const sentence of sentences) {
+      const body = { error: { type: "budget_admission_refused", code: "budget_admission_refused", message: sentence } };
+      const error = Object.assign(new Error("Bad Request"), { name: "AI_APICallError", statusCode: 400, responseBody: JSON.stringify(body), data: body });
+      const error1 = { code: "MODEL_CALL_FAILED", message: extractUpstreamRejectionMessage(error)?.message, id: "err_x" };
+      const turnSettled = { turnId: "turn_0", outcome: "failed", error: error1 };
+      const sessionEnded = { outcome: "failed", error: error1 };
+      for (const dialect of ["slack", "telegram"] as const) {
+        const options = { refusalText: "The budget is exhausted.", dialect };
+        expect(respondToTurnFailed(turnSettled, options), `${dialect} turn`).toEqual({ kind: "budget-refusal", text: sentence });
+        expect(respondToSessionFailed(sessionEnded, options), `${dialect} session`).toEqual({ kind: "silent" });
+      }
+    }
+  });
 });
+

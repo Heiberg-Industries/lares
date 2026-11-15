@@ -16,14 +16,13 @@
  *    get a raw post, no session; web chat gets an inbox row.
  */
 import { callSlackApi } from "eve/channels/slack";
-import { sendTelegramMessage } from "eve/channels/telegram";
-import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
 
 import { slackCredentials } from "../agent/channels/slack.js";
 import { telegramCredentials } from "../agent/channels/telegram.js";
 import type { Routed } from "./delivery.js";
 import { gatewayComplete } from "./llm-complete.js";
 import { telegramPushAttributes } from "./principals.js";
+import { sendTelegramMessage } from "./telegram-send.js";
 import { continuityAuthAttributes, proactiveContinuityIdentity } from "./conversation-continuity.js";
 
 /** What a schedule's `run({ to, waitUntil, appAuth })` gives it, plus the two channel objects. */
@@ -94,7 +93,11 @@ export async function sendTurn(routed: Routed, rt: TurnRuntime, prompt: string, 
     ? rt.to(rt.telegram, { chatId: routed.target }).send(prompt, {
         auth: { ...rt.appAuth, attributes: { ...telegramPushAttributes(o.lane, routed.target), ...continuityAttributes } },
       })
-    : rt.to(rt.slack, { channelId: routed.target }).send(prompt, {
+    // Slack: the conversation is started at the owner's direct-message channel, not at the user
+    // id, or the approval cards it posts have buttons that reach nothing (see `Routed`). A lookup
+    // that fails rejects here, before anything is sent: no fallback to the user id, so the gate
+    // records "not sent" and the item stays eligible.
+    : rt.to(rt.slack, { channelId: await routed.conversationAddress() }).send(prompt, {
         auth: { ...rt.appAuth, attributes: { lane: o.lane, ...continuityAttributes } },
       });
   rt.waitUntil(task);
@@ -128,7 +131,6 @@ export async function sendText(
       credentials: telegramCredentials,
       chatId: routed.target,
       body: { text },
-      fetch: telegramFetch,
     });
     return;
   }

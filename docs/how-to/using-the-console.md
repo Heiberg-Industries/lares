@@ -86,7 +86,20 @@ An agent's page has four tabs and two buttons, **Chat** and **Edit agent**:
 the chief of staff, the e-mail door
 ([`install.md`, section 8](../install.md#8-doors-outside-tools-and-integrations)). Changes to
 doors and credentials reach the running agent when you press **Apply connection changes**; that
-restarts the agent for about a minute.
+restarts the agent for about a minute. So does a change of role, personal accounts or, where
+spending is set up, model. Every other change needs no restart. Instructions, personality, language and outside tools reach the agent at its next conversation; schedules and where messages go, the next time a schedule runs. The description is a label; the agent does not read it. Saving a
+change ends the agent's open web-chat conversations, and any approval waiting in them; the page says
+so before you save. Start a new conversation afterwards.
+
+For a chief of staff, each door that reads "Connected" has **Send a test brief to Slack** (or
+Telegram): the agent writes this morning's brief now and sends it there, starting with "Test brief",
+within about two minutes. The line below the button says "Sent to Telegram at 10:42", or why it was
+not sent. It costs about one normal brief from your own monthly limit, ignores quiet hours and
+do-not-disturb because you asked, and never counts as the day's brief. It is refused when the agent
+is not running, the door is not connected, the agent is shared, the morning brief is off, a test is
+already on its way, or after ten in a day. On the tested path, the real-install check presses it
+once for Slack and once for Telegram (stand-ins for both apps) and sees each brief arrive in its
+chat and charged to you as an owner job.
 
 ### Where messages go
 
@@ -97,12 +110,13 @@ Slack, Telegram). Number the doors 1st, 2nd and 3rd for each row. The message tr
 order, skipping any door that is not connected, and **web chat is always the last resort**, so
 nothing is dropped. A door that is not connected is labelled "(not connected)". Rows you have not
 saved are filled in with what happens today and marked "today"; **Save** writes every row, and it
-applies the next time that message is sent.
+applies the next time that message is sent. A chief of staff made in the console starts with every
+row on web chat and switches to its first connected chat app by itself ("Briefs and other messages now go to
+Telegram first"); after that, only you change the grid.
 
 When a message went somewhere other than you asked, the page says so ("Morning brief went to web
 chat: Telegram is not connected"), and so does the Proactivity ledger. The sentence goes away when
-the latest message of that kind went where asked. A new chief of staff starts with every kind going
-to its first chat door, then web chat.
+the latest message of that kind went where asked.
 
 ## Activity
 

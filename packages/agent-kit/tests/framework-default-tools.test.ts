@@ -64,6 +64,54 @@ describe("frameworkToolDecisionProblems", () => {
   });
 });
 
+describe("frameworkToolDecisionProblems with defaultTools: false", () => {
+  const frameworkTools = ["agent", "bash", "edit_file", "write_file"];
+  const allOff = { frameworkTools, disabled: [], accepted: {}, defaultToolsOff: true, authored: ["catalogue", "public_doc"] };
+
+  it("is silent when no file carries a framework tool's name: the definition switched every one off", () => {
+    expect(frameworkToolDecisionProblems(allOff)).toEqual([]);
+  });
+
+  it("stays silent when the framework ships one more built-in tool: it cannot reach the agent", () => {
+    expect(frameworkToolDecisionProblems({ ...allOff, frameworkTools: [...frameworkTools, "made_up_file_editor"] })).toEqual([]);
+  });
+
+  it("goes red the moment the definition no longer says defaultTools: false, naming every tool", () => {
+    for (const defaultToolsOff of [false, undefined]) {
+      const problems = frameworkToolDecisionProblems({ ...allOff, defaultToolsOff });
+      expect(problems.map((p) => /"([a-z_]+)"/u.exec(p)?.[1])).toEqual(frameworkTools);
+      expect(problems[0]).toContain("A new framework tool is an owner decision");
+    }
+  });
+
+  it("fails on an authored file that takes a framework tool's name, because it keeps the slot", () => {
+    const problems = frameworkToolDecisionProblems({ ...allOff, authored: [...allOff.authored, "bash"] });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("agent/tools/bash.ts carries the name of the framework's built-in tool");
+  });
+
+  it("accepts such a file once it is named with a reason, and only then", () => {
+    const kept = { ...allOff, authored: [...allOff.authored, "bash"] };
+    expect(frameworkToolDecisionProblems({ ...kept, accepted: { bash: "the service's own narrow shell" } })).toEqual([]);
+    expect(frameworkToolDecisionProblems({ ...kept, accepted: { bash: " " } })[0]).toContain("without a reason");
+  });
+
+  it("fails on an accepted tool the agent does not have", () => {
+    const problems = frameworkToolDecisionProblems({ ...allOff, accepted: { edit_file: "left on" } });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('"edit_file" is in the accepted list, but defaultTools: false switches it off');
+  });
+
+  it("allows a sentinel beside defaultTools: false, and still fails one that matches nothing", () => {
+    // Redundant, not wrong: the compiler keeps a default that an authored file shadows.
+    expect(frameworkToolDecisionProblems({ ...allOff, disabled: ["bash"] })).toEqual([]);
+    const problems = frameworkToolDecisionProblems({ ...allOff, disabled: ["task_cancel"] });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("agent/tools/task_cancel.ts");
+    expect(problems[0]).toContain("switches nothing off");
+  });
+});
+
 describe("defaultToolNamesFromRegistry", () => {
   const registry = (...sources: string[][]) => ({
     registrations: sources.map((paths) => ({ source: { modules: paths.map((logicalPath) => ({ logicalPath })) } })),
@@ -99,6 +147,8 @@ describe("installedFrameworkDefaultTools", () => {
     // the reader found the real registry rather than something tool-shaped.
     expect(names).toContain("bash");
     expect(names).toContain("write_file");
+    // eve 1.0 also edits files through this one; switching `write_file` off no longer stops it.
+    expect(names).toContain("edit_file");
     expect(names).toEqual([...new Set(names)].sort());
   });
 });

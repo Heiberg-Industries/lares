@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { claimModelDispatch, hasModelPurposeInvocation, prepareCurrentModelPurposeIntent } from "./model-invocation.js";
+import { claimModelDispatch, currentModelInvocation, hasModelPurposeInvocation, prepareCurrentModelPurposeIntent } from "./model-invocation.js";
 import { modelPurposeDispatchRequest, MODEL_PURPOSE_DISPATCH_BODY_MAX } from "./model-purpose-client.js";
 import { currentOwnerJob, dispatchOwnerJob, hasOwnerJob } from "./owner-job.js";
 import { GATEWAY_ANTHROPIC_MODEL_PATH, GATEWAY_OPENAI_MODEL_PATH } from "./gateway-admission-protocol.js";
@@ -120,8 +120,12 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
   // point). See the module-scope-no-secret-read note on createGatewayProvider above.
   let cachedKey: string | undefined;
 
-  /** Exported alongside gatewayUrl() — same secret, same read-once-per-process caching. */
+  /** Exported alongside gatewayUrl() — same secret, same read-once-per-process caching.
+   *  On a managed runtime (Keeper's socket configured) there is no key file and none is ever
+   *  read: every model call there carries Keeper's permission or is refused, before the file
+   *  system is touched. Both lanes reach the key only through here. */
   function gatewayKey(): string {
+    if (process.env["LARES_MODEL_PURPOSE_RUNTIME_SOCKET"]) throw new Error("Model purpose authority is not available");
     if (cachedKey !== undefined) return cachedKey;
     const path = process.env["GATEWAY_KEY_FILE"] ?? defaultKeyFile;
     try {
@@ -262,6 +266,9 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
     // wraps its call in `withOwnerJob` gets one ticket per request, charged to the owner.
     const job = hasModelPurposeInvocation() ? undefined : currentOwnerJob();
     if (job) {
+      // Inside a conversation step (a schedule-started conversation runs its steps as owner
+      // jobs), the step's single dispatch is burned first, so it can never send twice.
+      if (currentModelInvocation() !== undefined) claimModelDispatch();
       request.headers.delete("authorization");
       request.headers.delete("x-api-key");
       return dispatchOwnerJob({ alias: job.alias, path: expectedPath, rawBody: bytes, headers: request.headers, signal: request.signal ?? undefined });

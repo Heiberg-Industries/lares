@@ -1,6 +1,6 @@
 // The board's levels come from a file the eval edits (the database path is covered by agent-kit's own
-// tests); a skew file moves the policy's clock past its 30 s cache; every decision is appended to an
-// events file. Env is read per call, never at load: eve evaluates these modules while compiling.
+// tests); a skew file moves the policy's clock (the kit reads the board fresh for every decision,
+// so no eval may depend on the clock); every decision is appended to an events file. Env is read per call, never at load: eve evaluates these modules while compiling.
 //
 // Why this is NOT in agent/instrumentation.ts (where it was first written): eve compiles
 // instrumentation.ts into one bundle and agent.ts + the tools into another, and each bundle inlines

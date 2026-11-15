@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, it, expect } from "vitest";
-import { defineTool, isDisabledToolSentinel } from "eve/tools";
+import { defineTool } from "eve/tools";
 import { always, type Approval, type ApprovalPolicy } from "eve/tools/approval";
 import { z } from "zod";
 
@@ -23,6 +23,10 @@ import {
   resolveExtensionTool,
 } from "../src/manifest.js";
 import { docFor } from "../src/persona/capability-docs.js";
+
+// eve 1.0 no longer exports a recogniser for `disableTool()`'s value, which is an opaque
+// `{ [Symbol.for("eve.disabled-tool")]: true }`. One local line, on purpose not a shared helper.
+const isDisabledToolSentinel = (v: unknown): boolean => typeof v === "object" && v !== null && (v as Record<symbol, unknown>)[Symbol.for("eve.disabled-tool")] === true;
 
 /**
  * The agent-declaration module: manifest format, autonomy semantics and the "gated" safe baseline.

@@ -13,9 +13,6 @@
     "build": "pnpm -r build"
   },
   "pnpm": {
-    "patchedDependencies": {
-      "eve@0.60.1": "patches/eve.patch"
-    },
     "overrides": {
       "@prisma/config@6.19.3>deepmerge-ts": "8.0.2",
       "protobufjs@<7.6.5": "7.6.5",
@@ -23,7 +20,7 @@
       "zod@<4.6.6": "4.6.7",
       "baseline-browser-mapping@<2.11.0": "2.11.0",
       "undici@>=7.0.0 <7.30.1": "7.30.1",
-      "undici@>=8.0.0 <8.12.3": "8.12.3",
+      "undici@>=8.0.0 <8.12.4": "8.12.4",
       "happy-dom": "-",
       "brace-expansion@>=2.0.0 <2.1.7": "2.1.7",
       "brace-expansion@>=5.0.0 <5.0.12": "5.0.12",
@@ -31,6 +28,9 @@
       "postcss@8.5.14": "8.5.23",
       "uuid@<11.1.1": "11.1.1",
       "sass@<1.79.0": "1.105.1"
+    },
+    "patchedDependencies": {
+      "eve@1.0.0-rc.10": "patches/eve.patch"
     }
   },
   "devDependencies": {

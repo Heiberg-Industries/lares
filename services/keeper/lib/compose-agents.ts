@@ -220,9 +220,11 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
         }
         // Eve loads authored modules lazily into package-local caches, including the kit
         // extension's real pnpm target. A writable .eve alone does not cover those writes.
-        // Keep shipped .eve metadata visible and make only sandbox scratch writable.
+        // Keep shipped .eve metadata visible and make only sandbox scratch writable: the
+        // per-conversation folders. The sandbox template the image was built with sits beside
+        // them under .eve/sandbox-cache and has to stay visible, so the mount must not cover it.
         const tmpfs = ['/tmp:uid=10001,gid=10001,mode=1770',
-            `/app/services/${a.role}/.eve/sandbox-cache:uid=10001,gid=10001,mode=0700,size=256m`,
+            `/app/services/${a.role}/.eve/sandbox-cache/just-bash/sessions:uid=10001,gid=10001,mode=0700,size=256m`,
             `/app/services/${a.role}/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m`,
             '/app/packages/agent-kit/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=64m',
             ...(bindings?.legacySandboxRoots ?? []).map(path => `${path}:uid=10001,gid=10001,mode=0700,size=256m`)];

@@ -20,16 +20,21 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import uuid
 
 if os.environ.get("CI") != "true":
     raise SystemExit("Maintenance fence image proof runs only in disposable CI")
 if os.geteuid() != 0:
     raise SystemExit("Maintenance fence image proof requires the isolated CI root fixture")
-if len(sys.argv) != 4:
-    raise SystemExit("usage: maintenance-fence-image.probe.py <keeper-image> <source-sha> <proof.json>")
+if len(sys.argv) != 5:
+    raise SystemExit("usage: maintenance-fence-image.probe.py <keeper-image> <creative-image@sha256:digest> <source-sha> <proof.json>")
 
-IMAGE, SOURCE_SHA, PROOF_PATH = sys.argv[1:]
+# The creative role image is the one this commit builds: the workflow template must be made by
+# the same workflow package version the keeper image's checks pin.
+IMAGE, CREATIVE_IMAGE, SOURCE_SHA, PROOF_PATH = sys.argv[1:]
+if not re.fullmatch(r"[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}", CREATIVE_IMAGE):
+    raise SystemExit("Maintenance proof needs the creative role image named by digest")
 REPO = pathlib.Path(__file__).resolve().parents[3]
 PINNED_DB_IMAGE = "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b"
 if len(SOURCE_SHA) != 40 or any(char not in "0123456789abcdef" for char in SOURCE_SHA.lower()):
@@ -65,13 +70,24 @@ for directory, mode in ((custody_dir, 0o700), (admission_dir, 0o755),
 marker_dir.chmod(0o777)  # contains only readiness markers written by disposable uid 10001 processes
 os.chown(data_dir, 999, 999)
 
+# Every secret value this fixture generates is recorded here, so a failure report can replace
+# each occurrence by value before anything reaches the (public) job log.
+generated_secrets: set[str] = set()
+
+
+def new_secret(nbytes: int) -> str:
+    value = secrets.token_urlsafe(nbytes)
+    generated_secrets.add(value)
+    return value
+
+
 private_root = pathlib.Path(tempfile.mkdtemp(prefix="lares-maintenance-private-")).resolve()
 private_root.chmod(0o700)
 operator_path = private_root / "operator-password"
-operator_password = secrets.token_urlsafe(32)
+operator_password = new_secret(32)
 operator_path.write_text(operator_password + "\n", encoding="ascii")
 operator_path.chmod(0o600)
-app_password = secrets.token_urlsafe(32)
+app_password = new_secret(32)
 role_login_dir = private_root / "role-login-fixtures"
 role_login_dir.mkdir(mode=0o700)
 role_login_dir.chmod(0o700)
@@ -134,8 +150,163 @@ stage = "fixture-setup"
 
 
 class ProbeFailure(Exception):
-    def __init__(self, kind: str = "assertion") -> None:
+    """A failed check. step and output, when given, name the failing sub-step and carry
+    the captured command output; they are printed (redacted, trimmed) to the job log only."""
+    def __init__(self, kind: str = "assertion", step: str | None = None,
+                 result: subprocess.CompletedProcess | None = None) -> None:
         self.kind = kind
+        self.step = step
+        self.result = result
+
+
+# The most recent command run() finished. A failure raised without output of its own names
+# that command and its exit status, but never prints what it printed: that is often
+# `docker inspect` JSON, which carries a container's environment and mounts.
+last_command: tuple[list[str], subprocess.CompletedProcess | None] | None = None
+LOG_OUTPUT_HEAD = 1500
+LOG_OUTPUT_TAIL = 4500
+REDACTED = "<redacted>"
+SECRET_WORD = r"(?:password|passwd|secret|token|key)"
+SECRET_VALUE = r"""(?!['"]?/)('[^']*'|"[^"]*"|[^\s'"]+)"""  # a quoted or bare value, never a /path
+# The second net, after every known value has been replaced. Each pattern replaces only the value.
+REDACTION_PATTERNS = (
+    # credentials inside a connection address: scheme://user:secret@host
+    (re.compile(r"([a-z][a-z0-9+.-]*://[^\s:/@]+):[^\s@]+@", re.IGNORECASE), r"\1:" + REDACTED + "@"),
+    (re.compile(r"(\bBearer\s+)[^\s'\"]+", re.IGNORECASE), r"\1" + REDACTED),
+    (re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"), REDACTED),  # JWT-shaped
+    (re.compile(r"SCRAM-SHA-256\$[^\s'\"]+"), "SCRAM-SHA-256$" + REDACTED),
+    (re.compile(r"(\bPASSWORD\s+)('[^']*'|\"[^\"]*\")", re.IGNORECASE), r"\1'" + REDACTED + "'"),
+    # --password VALUE, --api-key=VALUE (never --password-file /path)
+    (re.compile(r"(?<![\w-])(--?[\w-]*" + SECRET_WORD + r"(?:=|\s+))(?!-)" + SECRET_VALUE, re.IGNORECASE),
+     r"\1" + REDACTED),
+    # PGPASSWORD=x, TOKEN_ENC_KEY='x', password = "x"
+    (re.compile(r"(\b[\w.-]*" + SECRET_WORD + r"\w*\s*=\s*)" + SECRET_VALUE, re.IGNORECASE), r"\1" + REDACTED),
+    # "password": "x", {'secret': 'x'}, api_key: x
+    (re.compile(r"""((["']?)[\w.-]*""" + SECRET_WORD + r"""[\w.-]*\2\s*:\s*)""" + SECRET_VALUE, re.IGNORECASE),
+     r"\1" + REDACTED),
+)
+SECRET_NAME = re.compile(SECRET_WORD, re.IGNORECASE)
+
+
+def _secret_values_in_json(value: object, key: str = "") -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            found |= _secret_values_in_json(child, str(child_key))
+    elif isinstance(value, list):
+        for child in value:
+            found |= _secret_values_in_json(child, key)
+    elif isinstance(value, str) and SECRET_NAME.search(key) and not value.startswith("/"):
+        found.add(value)
+    return found
+
+
+def fixture_secret_values() -> set[str]:
+    """Every secret value this fixture made or holds: each value new_secret() returned, and the
+    secret values in every small file of the private credential folder, the rendered compose
+    secrets folder and the installed configuration (whole lines of the two secret folders,
+    KEY=VALUE values whose key names a secret, JSON strings whose key names a secret)."""
+    values = set(generated_secrets) | {operator_password, app_password}
+    for folder, whole_lines in ((private_root, True), (secrets_dir, True), (fixture_prefix / "etc", False)):
+        try:
+            paths = [path for path in folder.rglob("*") if path.is_file() and not path.is_symlink()]
+        except Exception:
+            continue
+        for path in paths:
+            try:
+                if path.stat().st_size > 4096:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            try:
+                values |= _secret_values_in_json(json.loads(text))
+            except ValueError:
+                pass
+            for line in text.splitlines():
+                line = line.strip()
+                name, separator, value = line.partition("=")
+                if separator and SECRET_NAME.search(name):
+                    values.add(value.strip().strip("'\""))
+                elif whole_lines:
+                    values.add(line)
+    return {value for value in values if len(value) >= 8}
+
+
+def redact(text: str) -> str:
+    """Known values first, by value; then the patterns as a second net."""
+    for value in sorted(fixture_secret_values(), key=len, reverse=True):
+        text = text.replace(value, REDACTED)
+    for pattern, replacement in REDACTION_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def trimmed(text: str) -> str:
+    if len(text) <= LOG_OUTPUT_HEAD + LOG_OUTPUT_TAIL:
+        return text
+    omitted = len(text) - LOG_OUTPUT_HEAD - LOG_OUTPUT_TAIL
+    return text[:LOG_OUTPUT_HEAD] + f"\n[... {omitted} characters omitted ...]\n" + text[-LOG_OUTPUT_TAIL:]
+
+
+def as_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+
+
+def describe_command(args: list[str]) -> str:
+    """The command line: each argument is redacted first, then shortened (a long inline program
+    is cut), then quoted."""
+    shown = []
+    for arg in args:
+        arg = redact(arg)
+        shown.append(arg if len(arg) <= 160 else arg[:120] + f"...[{len(arg)} characters]")
+    return shlex.join(shown)
+
+
+def output_withheld(args: list[str]) -> bool:
+    """Inspect output and environment dumps are never printed, not even redacted."""
+    return any(arg in ("inspect", "env", "printenv") or arg.endswith("/environ") for arg in args)
+
+
+def report_failure(failed_stage: str, error: BaseException) -> None:
+    """Print the failing stage, sub-step, command and its captured output to the job log,
+    redacted and trimmed. The proof file keeps only the sanitized stage and kind."""
+    try:
+        lines = [f"maintenance fence proof FAILED at stage '{failed_stage}'"]
+        if isinstance(error, ProbeFailure):
+            lines.append(f"failure kind: {error.kind}")
+            if error.step:
+                lines.append(f"failing sub-step: {error.step}")
+            result = error.result
+            if result is None:
+                if last_command is not None:
+                    previous_command, previous = last_command
+                    lines.append("(no output attached to this failure; the last command run before it was:)")
+                    lines.append("command: " + describe_command(previous_command))
+                    if previous is not None:
+                        lines.append(f"exit status: {previous.returncode}")
+            else:
+                command = [str(arg) for arg in result.args] if isinstance(result.args, (list, tuple)) else []
+                if command:
+                    lines.append("command: " + describe_command(command))
+                lines.append(f"exit status: {result.returncode}")
+                output = as_text(result.stdout) + as_text(result.stderr)
+                if output_withheld(command):
+                    lines.append("captured output: (withheld: inspect and environment output is never printed)")
+                elif output.strip():
+                    lines.append("captured output:")
+                    lines.append(trimmed(redact(output.rstrip())))
+                else:
+                    lines.append("captured output: (none)")
+        else:
+            lines.append(f"unexpected error: {type(error).__name__}: {error}")
+            lines.append(trimmed("".join(traceback.format_exception(error)).rstrip()))
+        print(redact("\n".join(lines)), file=sys.stderr, flush=True)
+    except Exception as report_error:
+        print(f"maintenance fence proof FAILED at stage '{failed_stage}' (the failure report itself failed: "
+              f"{type(report_error).__name__})", file=sys.stderr, flush=True)
 
 
 def parse_update_client_intent(contents: str) -> tuple[str, str] | None:
@@ -240,15 +411,19 @@ def write_role_login_fixture(role: str, password: str) -> pathlib.Path:
 def run(*args: str, check: bool = True, timeout: int = 60,
         input_data: str | bytes | None = None,
         env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    global last_command
     try:
         result = subprocess.run(args, input=input_data, text=isinstance(input_data, str) or input_data is None,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 env=({**os.environ, **env} if env else None),
                                 timeout=timeout, check=False)
-    except subprocess.TimeoutExpired:
-        raise ProbeFailure("timeout") from None
+    except subprocess.TimeoutExpired as expired:
+        last_command = (list(args), None)
+        raise ProbeFailure("timeout", f"timed out after {timeout} s",
+                           subprocess.CompletedProcess(list(args), -1, expired.output, None)) from None
+    last_command = (list(args), result)
     if check and result.returncode != 0:
-        raise ProbeFailure("command")
+        raise ProbeFailure("command", result=result)
     return result
 
 
@@ -456,13 +631,13 @@ def prove_keeper_default_admission() -> None:
         elif name == "gateway-database-password":
             value = (private_root / "gateway-database-password").read_bytes()
         else:
-            value = (secrets.token_urlsafe(32) + "\n").encode("ascii")
+            value = (new_secret(32) + "\n").encode("ascii")
         destination = secrets_dir / name
         destination.write_bytes(value)
         destination.chmod(0o600)
     for name in ("gateway-master-key", "eve-route-password", "console-vault-signing-key", "outside-custody-database-password"):
         destination = secrets_dir / name
-        destination.write_text(secrets.token_urlsafe(32) + "\n", encoding="ascii")
+        destination.write_text(new_secret(32) + "\n", encoding="ascii")
         destination.chmod(0o600)
 
     release_path = REPO / "releases/2026-10-21-rc.12.json"
@@ -953,14 +1128,17 @@ def prove_update_history_client_lease() -> None:
                 pass
             else:
                 raise ProbeFailure("update-client-host-lease-fixture")
-            custody._acquire_normal_lease(fixture_prefix, os.geteuid())
+            # As update.sh does: the admission lease and the update's exclusive run lock, both handed
+            # to the launcher (which stands in for the update) and closed here.
+            custody._acquire_normal_lease(fixture_prefix, os.geteuid(), "update")
             try:
                 launcher = subprocess.Popen(["bash", "-ec", launch],
                     env=os.environ.copy(),
-                    pass_fds=(custody._LEASE_FD,), stdout=subprocess.DEVNULL,
+                    pass_fds=(custody._LEASE_FD, custody._RUN_FD), stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL, start_new_session=True)
             finally:
                 os.close(custody._LEASE_FD)
+                os.close(custody._RUN_FD)
 
             deadline = time.monotonic() + 45
             cidfiles: list[pathlib.Path] = []
@@ -1431,7 +1609,9 @@ def scram_verifier(password: str) -> str:
     stored = hashlib.sha256(client).digest()
     server = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
     b64 = lambda value: base64.b64encode(value).decode("ascii")
-    return "SCRAM-SHA-256$4096:" + b64(salt) + "$" + b64(stored) + ":" + b64(server)
+    verifier = "SCRAM-SHA-256$4096:" + b64(salt) + "$" + b64(stored) + ":" + b64(server)
+    generated_secrets.add(verifier)
+    return verifier
 
 
 def app_client(role: str, *, check: bool) -> subprocess.CompletedProcess:
@@ -1589,14 +1769,12 @@ def run_database_proof() -> None:
     release = json.loads((REPO / "releases/2026-10-21-rc.12.json").read_text(encoding="utf-8"))
     if release.get("images", {}).get("db") != PINNED_DB_IMAGE:
         raise ProbeFailure()
-    creative_image = release.get("images", {}).get("creative", "")
-    if not re.fullmatch(r"[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}", creative_image):
-        raise ProbeFailure("workflow-image")
+    creative_image = CREATIVE_IMAGE
     credentials = {"operator-password": operator_password, "database-password": app_password,
-        "financial-database-password": secrets.token_urlsafe(40),
-        "outside-custody-database-password": secrets.token_urlsafe(40),
-        "workflow-provisioner-password": secrets.token_urlsafe(40),
-        "workflow-password": secrets.token_urlsafe(40), "gateway-database-password": secrets.token_urlsafe(40)}
+        "financial-database-password": new_secret(40),
+        "outside-custody-database-password": new_secret(40),
+        "workflow-provisioner-password": new_secret(40),
+        "workflow-password": new_secret(40), "gateway-database-password": new_secret(40)}
     credential_files: dict[str, pathlib.Path] = {}
     for name, value in credentials.items():
         path = private_root / name
@@ -1661,33 +1839,29 @@ def run_database_proof() -> None:
     wait_operator_ready(compose_files, budget_seconds=90)
     proof["stages"]["normalDatabaseStarted"] = True
     stage = "production-workflow-template-setup"
-    workflow_script = 'PGPASSWORD="$(cat /run/workflow-provisioner-password)"; export PGPASSWORD; exec node --input-type=module -e "$1"'
-    workflow_program = (
-        'import { Pool } from "pg"; import { setupDatabase } from "@workflow/world-postgres/cli"; '
-        'const pool = new Pool({ connectionString: process.env.WORKFLOW_POSTGRES_URL, max: 1 }); '
-        'try { const r = await pool.query("SELECT current_user, session_user, current_database()"); '
-        'if (r.rows[0]?.current_user !== "lares_workflow_owner" || r.rows[0]?.session_user !== "lares_workflow_provisioner" || '
-        'r.rows[0]?.current_database !== "empty_workflow") throw new Error("workflow template authority check failed"); } '
-        'finally { await pool.end(); } await setupDatabase();'
-    )
-    workflow_setup = docker("run", "--rm", "--network", "host", "--read-only", "--tmpfs", "/tmp",
-        "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001",
-        "--workdir", "/app/services/creative",
-        "--mount", f"type=bind,src={role_password_paths['lares_workflow_provisioner']},dst=/run/workflow-provisioner-password,readonly",
-        "--env", "PGPASSWORD_FILE=/run/workflow-provisioner-password", "--env", "PGOPTIONS=-c role=lares_workflow_owner",
-        "--env", "WORKFLOW_POSTGRES_URL=postgres://lares_workflow_provisioner@127.0.0.1:5432/empty_workflow",
-        "--entrypoint", "/bin/sh", creative_image, "-ec", workflow_script, "workflow", workflow_program,
-        check=False, timeout=180)
+    # The installer's own step, not a copy of it: install.sh calls workflow_store_step (ops/engine-run.sh)
+    # in its create mode, which runs ops/workflow-store-migrate.mjs inside the creative role image.
+    # Its own time limit is set below this call's, so it stops and removes its container first.
+    workflow_setup = run("bash", "-c",
+        'HERE="$1"; . "$HERE/engine-run.sh"; workflow_store_step "$2" create empty_workflow 127.0.0.1 5432 "$3"',
+        "workflow-store-step", str(REPO / "services/box/ops"), creative_image,
+        str(role_password_paths["lares_workflow_provisioner"]),
+        check=False, timeout=300, env={"LARES_WORKFLOW_UPGRADE_SECONDS": "240"})
     if workflow_setup.returncode != 0:
-        raise ProbeFailure("workflow-template-setup")
+        raise ProbeFailure("workflow-template-setup",
+                           "workflow_store_step create (ops/workflow-store-migrate.mjs in the creative image)",
+                           workflow_setup)
     workflow_apply = engine_box("bin/workflow-template.ts", ["apply", "--host", "127.0.0.1", "--port", "5432",
         "--provisioner-password-file", "/run/workflow-provisioner-password",
         "--runtime-password-file", "/run/workflow-password"], setup_files, {"PGHOST": "127.0.0.1", "PGPORT": "5432"})
+    if workflow_apply.returncode != 0:
+        raise ProbeFailure("workflow-template-setup", "bin/workflow-template.ts apply", workflow_apply)
     workflow_finalize = engine_box("bin/database-setup.ts", ["--finalize-workflow-template",
         "--operator-password-file", "/run/operator-password",
         "--workflow-password-file", "/run/workflow-password"], setup_files, {"PGHOST": "127.0.0.1", "PGPORT": "5432"})
-    if workflow_apply.returncode != 0 or workflow_finalize.returncode != 0:
-        raise ProbeFailure("workflow-template-setup")
+    if workflow_finalize.returncode != 0:
+        raise ProbeFailure("workflow-template-setup", "bin/database-setup.ts --finalize-workflow-template",
+                           workflow_finalize)
     proof["claims"]["productionWorkflowTemplatePathUsed"] = True
     proof["stages"]["productionWorkflowTemplatePath"] = True
     stage = "production-schema-owner-migrations"
@@ -1979,11 +2153,13 @@ except ProbeFailure as error:
     proof["status"] = "failed"
     proof["failedStage"] = stage
     proof["failureKind"] = error.kind
-except Exception:
+    report_failure(stage, error)
+except Exception as error:
     exit_code = 1
     proof["status"] = "failed"
     proof["failedStage"] = stage
     proof["failureKind"] = "unexpected"
+    report_failure(stage, error)
 finally:
     exit_code = publish_result(exit_code)
 sys.exit(exit_code)

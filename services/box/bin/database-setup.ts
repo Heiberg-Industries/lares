@@ -13,7 +13,8 @@ const WORKFLOW_TEMPLATE = "empty_workflow";
 const ROLE_PREFIX = "lares-rc13-database:v1:";
 const TEMPLATE_TABLES = [
   ["workflow", "workflow_event_slots"], ["workflow", "workflow_events"], ["workflow", "workflow_hooks"],
-  ["workflow", "workflow_runs"], ["workflow", "workflow_steps"], ["workflow", "workflow_stream_chunks"],
+  ["workflow", "workflow_invocations"], ["workflow", "workflow_job_lock_holders"], ["workflow", "workflow_runs"], ["workflow", "workflow_snapshots"],
+  ["workflow", "workflow_start_hook_admissions"], ["workflow", "workflow_steps"], ["workflow", "workflow_stream_chunks"],
   ["workflow", "workflow_waits"], ["graphile_worker", "_private_job_queues"], ["graphile_worker", "_private_jobs"],
   ["graphile_worker", "_private_known_crontabs"], ["graphile_worker", "_private_tasks"],
 ] as const;
@@ -66,7 +67,14 @@ async function verifyOutsideCustodyLogin(password: string): Promise<void> {
   }
 }
 
-async function finalizeWorkflowTemplate(): Promise<void> {
+/**
+ * Checks the workflow template: owner, role markers, table inventory, no rows, and the runtime
+ * login's exact privileges. `finalize` is the install: the database must not be a template yet,
+ * and is marked as one at the end. `verify` is the update, after the workflow package's own
+ * schema step has run on the existing template: it must already be a template, and nothing is
+ * changed here.
+ */
+async function checkWorkflowTemplate(mode: "finalize" | "verify"): Promise<void> {
   const operatorPassword = secret(argument("--operator-password-file"));
   const runtimePassword = secret(argument("--workflow-password-file"));
   const host = process.env.PGHOST ?? "127.0.0.1";
@@ -84,11 +92,13 @@ async function finalizeWorkflowTemplate(): Promise<void> {
     const identity = (await query<{ user_name: string; superuser: boolean; database: string }>(admin,
       "SELECT session_user AS user_name, r.rolsuper AS superuser, current_database() AS database FROM pg_roles r WHERE r.rolname=session_user"))[0];
     if (identity?.user_name !== "lares_operator" || identity.superuser !== true || identity.database !== "postgres")
-      throw new Error("database setup: explicit lares_operator identity check failed while finalizing the workflow template");
+      throw new Error("database setup: explicit lares_operator identity check failed while checking the workflow template");
     const templateMetadata = (await query<{ owner: string; is_template: boolean; allow_connections: boolean }>(admin,
       "SELECT pg_get_userbyid(datdba) AS owner, datistemplate AS is_template, datallowconn AS allow_connections FROM pg_database WHERE datname=$1", [WORKFLOW_TEMPLATE]))[0];
-    if (templateMetadata?.owner !== WORKFLOW_OWNER || templateMetadata.is_template || !templateMetadata.allow_connections)
-      throw new Error("database setup: workflow template owner or pre-finalized state is unexpected");
+    if (templateMetadata?.owner !== WORKFLOW_OWNER || templateMetadata.is_template !== (mode === "verify") || !templateMetadata.allow_connections)
+      throw new Error(mode === "verify"
+        ? "database setup: workflow template owner or template state is unexpected"
+        : "database setup: workflow template owner or pre-finalized state is unexpected");
     const templateIdentity = (await query<{ user_name: string; current_user: string; database: string; superuser: boolean }>(template,
       "SELECT session_user AS user_name,current_user, current_database() AS database,r.rolsuper AS superuser FROM pg_roles r WHERE r.rolname=session_user"))[0];
     if (templateIdentity?.user_name !== "lares_operator" || templateIdentity.current_user !== "lares_operator" || templateIdentity.database !== WORKFLOW_TEMPLATE || templateIdentity.superuser !== true)
@@ -112,12 +122,14 @@ async function finalizeWorkflowTemplate(): Promise<void> {
       if (count !== "0") throw new Error("database setup: workflow template contains jobs or user workflow data");
     }
     await verifyWorkflowRuntimePrivileges(runtimePool);
-    await admin.query(`ALTER DATABASE ${ident(WORKFLOW_TEMPLATE)} IS_TEMPLATE true`);
+    if (mode === "finalize") await admin.query(`ALTER DATABASE ${ident(WORKFLOW_TEMPLATE)} IS_TEMPLATE true`);
     const confirmed = (await query<{ owner: string; is_template: boolean }>(admin,
       "SELECT pg_get_userbyid(datdba) AS owner, datistemplate AS is_template FROM pg_database WHERE datname=$1", [WORKFLOW_TEMPLATE]))[0];
     if (confirmed?.owner !== WORKFLOW_OWNER || confirmed.is_template !== true)
       throw new Error("database setup: finalized workflow template state could not be confirmed");
-    process.stdout.write("database setup: verified empty workflow template finalized for database cloning\n");
+    process.stdout.write(mode === "verify"
+      ? "database setup: workflow template verified: empty, owned, and at this release's workflow schema\n"
+      : "database setup: verified empty workflow template finalized for database cloning\n");
   } finally {
     templateClient?.release();
     client?.release();
@@ -163,8 +175,8 @@ async function verifyRestoredEngine(prepareOutsideCustodyRole: boolean): Promise
 }
 
 async function run(): Promise<void> {
-  if (process.argv[2] === "--finalize-workflow-template") {
-    await finalizeWorkflowTemplate();
+  if (process.argv[2] === "--finalize-workflow-template" || process.argv[2] === "--verify-workflow-template") {
+    await checkWorkflowTemplate(process.argv[2] === "--verify-workflow-template" ? "verify" : "finalize");
     return;
   }
   if (process.argv[2] === "--verify-restored-engine" || process.argv[2] === "--prepare-restored-engine") {

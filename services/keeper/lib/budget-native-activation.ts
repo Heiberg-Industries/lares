@@ -6,22 +6,29 @@ import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-p
 import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
+import {restartPartsApplied} from './restart-parts.js';
 import {HostFinancialJournal} from './financial-journal.js';
 import {JournalBudgetFinancialWriter} from './budget-financial-writer.js';
 import {BudgetNativeCredentialClient,type NativeKeyExpectation,type NativeRead,type NativeTeamExpectation,type NativeTeamPolicyExpectation,type NativeUserExpectation} from './budget-native-client.js';
-import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
+import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,NativeCustodyBusy,NATIVE_CUSTODY_MAX_WAIT_MS,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
+import {nativeKeyGateWait,NATIVE_KEY_WORK_AFTER_WAIT_MS} from './budget-native-provisioning.js';
+import {KeeperRefusedError} from './actions.js';
 
 const uuid=z.string().uuid(),generation=z.string().regex(/^(0|[1-9][0-9]{0,18})$/).refine(v=>BigInt(v)<=9_223_372_036_854_775_807n);
 const requestSchema=z.object({bindingId:uuid,credentialGeneration:generation}).strict();
 const refuse=()=>new Error('Native custody operation refused');
 const publicRefuse=()=>new Error('Native budget activation refused; reconciliation may be required');
+/** The keeper's answer when the key store stayed busy for the whole wait: this call read and switched on nothing, and
+ * the key stays as it was made, blocked. The host command tells it apart by these exact words. */
+export const NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON='The spending-key store was busy, so the key was not switched on.';
 const exact=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b));
 const uuidString=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{3,4}-[a-f0-9]{3,4}-[a-f0-9]{3,4}-[a-f0-9]{12}$/i.test(value);
 type Row=Record<string,any>;
 type Month={startsAt:string;endsAt:string};
 type Prepared={operation:NativeOperation;month:Month;installationWindowId:string;memberWindowId:string;endpointGeneration:string;recoveryEpoch:string;firstOpen:boolean;installationCap:string;memberWindowCap:string;extra:boolean;joining:boolean;brainBindingId:string|null};
-/** The installation's configured owner, set by the host. Only that person may hold more than one key per agent. */
-export interface BudgetNativeActivatorOptions {designatedOwnerId?:string}
+/** The installation's configured owner, set by the host. Only that person may hold more than one key per agent.
+ * `gateWaitMs` shortens the wait at the key store (tests); it can never lengthen it past NATIVE_KEY_GATE_WAIT_MS. */
+export interface BudgetNativeActivatorOptions {designatedOwnerId?:string;gateWaitMs?:number}
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 function moneyNumber(value:string):number {const canonical=canonicalBudgetMoney(value),number=Number(canonical);if(!Number.isFinite(number)||number<=0||number>1_000_000_000||canonicalBudgetMoney(String(number))!==canonical)throw refuse();return number;}
 function nativeKeyExpectation(op:NativeOperation,gate:NativeCustodyGate):NativeKeyExpectation {
@@ -101,8 +108,10 @@ async function prepareSource(db:SourceDatabase,journal:HostFinancialJournal,op:N
   if(rows.length!==1)throw refuse();const row=rows[0]!;let definition,applied;
   try{definition=parseDefinition(definitionSchema.parse(row.definition));applied=parseDefinition(definitionSchema.parse(row.applied_definition));}catch{throw refuse();}
   const definitionHash=hashOf({definition,dutiesMd:row.duties,voiceMd:row.voice});
-  if(row.status!=='valid'||row.hash!==definitionHash||definitionHash!==op.association.definitionHash||row.ownership!=='owned'||
-    row.ownership_token!==op.association.incarnation||row.runtime_control_token!==op.association.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
+  // The key follows the agent, its incarnation and its model name, not the rest of the definition (see the runtime authority).
+  if(row.status!=='valid'||row.hash!==definitionHash||row.ownership!=='owned'||
+    row.ownership_token!==op.association.incarnation||row.runtime_control_token!==op.association.incarnation||row.state!=='ready'||row.pending!==false||
+    !restartPartsApplied(applied,definition,{model:true}))throw refuse();
   const extra=definition.model!==op.association.purposeAlias;let brainBindingId:string|null=null,joining=false;
   if(!extra){
     if(applied.model!==op.association.purposeAlias)throw refuse();
@@ -140,8 +149,12 @@ export class BudgetNativeActivator {
   }
   async activate(raw:unknown):Promise<{state:'active';bindingId:string;credentialGeneration:string}> {
     const request=requestSchema.parse(raw),deadline=Date.now()+20_000;
-    if(!this.journal.prepared)throw refuse();const writer=new JournalBudgetFinancialWriter(this.journal);let operationId='',unblockClaimed=false;
-    try{return await this.custody.withGate(async gate=>{
+    if(!this.journal.prepared)throw refuse();const writer=new JournalBudgetFinancialWriter(this.journal);let operationId='',unblockClaimed=false,entered=false,late=false;
+    const waitMs=nativeKeyGateWait(deadline,this.options.gateWaitMs);
+    try{const result=await this.custody.withGate(async gate=>{
+      entered=true;
+      // The turn came too late to finish in time: give it back before reading or switching on anything.
+      if(deadline-Date.now()<NATIVE_KEY_WORK_AFTER_WAIT_MS){late=true;return {kind:'busy' as const};}
       const matches=gate.inventory().operations.filter((value):value is NativeOperation=>value.kind==='operation'&&value.bindingId===request.bindingId&&value.credentialGeneration===request.credentialGeneration);
       if(matches.length!==1)throw refuse();const op=matches[0]!;operationId=op.operationId;
       const nativeUser=gate.inventory().users.find(v=>v.kind==='user'&&v.ownershipId===op.userOwnershipId);
@@ -214,9 +227,16 @@ export class BudgetNativeActivator {
         await checkConsoleSourceDeadlines(db);if(Date.now()>=deadline)throw refuse();
         return {state:'active' as const,bindingId:op.bindingId,credentialGeneration:op.credentialGeneration};
       },boundary,{deadlineAtMs:deadline}),receipt=>{gate.recordActive(op.operationId,receipt);return undefined;});
-      return committed.value;
-    });}catch(error){
-      if(operationId&&unblockClaimed){try{await this.custody.withGate(gate=>{gate.recordUncertain(operationId);return Promise.resolve();});}catch{/* Keep the frozen or uncertain custody result. */}}
+      return {kind:'active' as const,value:committed.value};
+    },{waitMs});
+    if(result.kind==='busy')throw new NativeCustodyBusy();
+    return result.value;
+    }catch(error){
+      // Busy is told apart only when nothing was started: the wait ran out, or the turn came too late. Every other
+      // error, a closed or frozen store among them, keeps the refusal below.
+      if(error instanceof NativeCustodyBusy&&(!entered||late))throw new KeeperRefusedError(NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON);
+      // Waits its turn: the gate may have passed straight to someone in line, and this record must not be turned away.
+      if(operationId&&unblockClaimed){try{await this.custody.withGate(gate=>{gate.recordUncertain(operationId);return Promise.resolve();},{waitMs:NATIVE_CUSTODY_MAX_WAIT_MS});}catch{/* Keep the frozen or uncertain custody result. */}}
       throw publicRefuse();
     }
   }

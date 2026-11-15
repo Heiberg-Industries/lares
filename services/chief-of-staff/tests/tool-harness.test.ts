@@ -1,7 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { readdirSync } from "node:fs";
+import { describe, it, expect, vi } from "vitest";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { isDisabledToolSentinel } from "eve/tools";
 // By relative path: the kit's package exports name runtime modules, and this one is test
 // support only (the same way services/box's tests reach kit sources).
 import {
@@ -10,139 +9,127 @@ import {
 } from "../../../packages/agent-kit/src/framework-default-tools.js";
 
 /**
- * eve ships a default harness of 11 framework tools that an agent gets WITHOUT declaring
- * anything — including `bash`, `write_file` and unrestricted file reads, none of which
- * require approval, and none of which are sandboxed here (`sandbox: null`). eve's own docs
- * say to review them before production use.
+ * eve hands every agent a set of built-in tools it never declared, none of which asks for
+ * approval. eve's own docs say to review them before production use. The standing constraint
+ * here is that the agent can do what Lares adds and nothing else, so NONE of them reaches it.
  *
- * The standing constraint is "reads only", so these five are removed outright.
- * Discovered live: chief-of-staff answered a DM by correctly listing shell, file
- * search and web among its capabilities.
+ * HOW, SINCE EVE 1.0. `defaultTools: false` in agent/agent.ts. eve's compiler then drops every
+ * framework default tool except a slot the author also has a file for
+ * (node_modules/eve/dist/src/compiler/default-tool-policy.js, `applyDefaultToolPolicy`), and
+ * nothing is exempt. The one-file-per-tool `disableTool()` sentinels this service used to carry
+ * are gone: they were redundant under that setting, and `task_cancel.ts` had become a build
+ * error, because eve 1.0 has no `task_cancel` slot for it to switch off ("disables a slot with
+ * no lower-precedence source"). One sentinel per tool also could not have kept up: 1.0 added
+ * `edit_file`, which edits files with `write_file` switched off.
+ *
+ * So what this file guards is the other direction: the definition really says
+ * `defaultTools: false`, and no file under agent/tools/ carries a default tool's name, which is
+ * the one thing that would keep such a tool.
+ *
+ * WHAT THIS FILE CANNOT SEE. The `eve__…` tools eve adds per conversation have no slot and no
+ * switch; tests/eve-tools-offered.test.ts is where those are held to a list.
  */
-// Static importers, not a template-literal `import()`: Vite cannot resolve a fully dynamic
-// specifier, and a test that cannot import the thing it guards guards nothing.
-const DISABLED: Record<string, () => Promise<{ default: unknown }>> = {
-  bash: () => import("../agent/tools/bash.js"),
-  write_file: () => import("../agent/tools/write_file.js"),
-  web_fetch: () => import("../agent/tools/web_fetch.js"),
-  web_search: () => import("../agent/tools/web_search.js"),
-  agent: () => import("../agent/tools/agent.js"),
-  // Fenced behind a path allowlist first, then removed: the
-  // authored vault note tools cover note work, and these three could not work here anyway
-  // — they proxy into a sandbox needing a writable .eve/sandbox-cache that a read-only
-  // rootfs will not give it. Four framework tools remain: ask_question, todo, load_skill
-  // and the harness's own bookkeeping.
-  read_file: () => import("../agent/tools/read_file.js"),
-  // glob and grep left eve's default tool set at 0.39.0, and 0.60.1 fails the build outright
-  // on a disableTool() sentinel for a slot nothing provides ("disables a slot with no
-  // lower-precedence source") — both sentinel files were retired. `defaultTools: false` was
-  // considered and NOT added: on this build it silently drops ask_question, todo and
-  // load_skill too (no sentinel authors those slots, so eve stops granting them once its
-  // optional defaults are off), which would have violated the safety bar — see
-  // packages/board-evals/snapshots/tools-chief-of-staff.txt, where all three are baselined.
-  // task_cancel is new in eve 0.60.1: a new framework tool from a version bump is an
-  // owner decision, not a side effect, so it is disabled the same as its `agent` neighbour.
-  task_cancel: () => import("../agent/tools/task_cancel.js"),
-};
+
+// The definition as eve evaluates it, not a search of its source text. agent.ts's graph reaches
+// `eve/context` (session state) only through the model resolver, which this file never calls.
+vi.mock("eve/context", () => ({ defineState: () => ({ get: () => undefined, update: () => undefined }) }));
+const agentDefinition = async () => (await import("../agent/agent.js")).default as { defaultTools?: unknown; tool?: unknown };
 
 /**
- * Built-in framework tools that are NOT switched off, each left in place on purpose. Together
- * with the sentinels above this has to account for every default tool the INSTALLED eve
- * provides — the last test in this file reads that list from the package and fails on any
- * tool found in neither. Adding a name here is an owner decision, not a way to get green.
+ * Every default tool the installed eve 1.0 would hand this agent, and why none is wanted.
+ * `defaultTools: false` already turns away a tool this list does not name; the list is here so
+ * that a framework upgrade that changes the set is seen and decided by a person, not absorbed.
  */
-const ACCEPTED: Record<string, string> = {
-  ask_question: "asks the owner a question and waits for the answer; reads no file, runs no command, reaches no network",
-  todo: "a task list kept for the session; reads no file, runs no command, reaches no network",
-  load_skill: "this slot holds the service's own agent/tools/load_skill.ts, which only loads the skills the agent declares",
-  connection_search:
-    "present before this check existed; owner to decide — eve refuses a disableTool() sentinel for this one, and it is not in the model-visible tool baseline",
+const TURNED_AWAY: Record<string, string> = {
+  agent: "root-only delegation to a fresh copy of itself; delegation here is an explicit grant, never an implicit framework tool",
+  bash: "shell execution in the agent's sandbox; the agent has no use for a shell and no approval card in front of one",
+  edit_file: "new in eve 1.0: edits files in the sandbox, and does so even with write_file off",
+  read_file: "reads any path the sandbox can reach; notes are read through the authored vault tools, by store-relative path",
+  web_fetch: "fetches arbitrary URLs with no approval; reading a link is the authored read_url tool's job, where one is granted",
+  web_search: "provider-side web search with no approval and no record",
+  write_file: "writes files in the sandbox; notes are written through the authored vault tools, behind an approval card",
 };
 
 const TOOLS_DIR = join(import.meta.dirname, "..", "agent", "tools");
-
-/** The tools actually switched off: every `agent/tools/*.ts` whose default export is a sentinel. */
-async function sentinelSlugs(): Promise<string[]> {
-  const disabled: string[] = [];
-  for (const file of readdirSync(TOOLS_DIR).filter((f) => f.endsWith(".ts"))) {
-    const mod = await import(join(TOOLS_DIR, file));
-    if (isDisabledToolSentinel(mod.default)) disabled.push(file.replace(/\.ts$/, ""));
-  }
-  return disabled.sort();
-}
-
-// person_lookup.ts has a module graph (lib/person-sources.ts →
-// googleapis, pg) is heavier than any other single tool
-// file here — importing EVERY agent/tools/*.ts in one loop can exceed vitest's default
-// 5000ms on a cold run. The assertion itself is unchanged; only the budget for compiling
-// and loading the full tool directory grew.
-const TOOLS_DIR_SCAN_BUDGET_MS = 15_000;
+const toolFiles = () => readdirSync(TOOLS_DIR).filter((f) => f.endsWith(".ts"));
+// Classified from source, not by importing: a slot is its FILENAME, and that is all this needs.
+const isSentinelFile = (file: string) => /export default disableTool\(\)/u.test(readFileSync(join(TOOLS_DIR, file), "utf8"));
+const slug = (file: string) => file.replace(/\.ts$/u, "");
+/** A `disableTool()` value on eve 1.0, which no longer exports a way to recognise one. */
+const isDisabledTool = (value: unknown) => typeof value === "object" && value !== null && Reflect.get(value, Symbol.for("eve.disabled-tool")) === true;
 
 describe("tool harness lockdown", () => {
-  for (const [slug, load] of Object.entries(DISABLED)) {
-    it(`disables the built-in \`${slug}\` tool`, async () => {
-      expect(isDisabledToolSentinel((await load()).default)).toBe(true);
-    });
-  }
-
-  it(
-    "disables exactly the intended set — no more, no less",
-    async () => {
-      // Guards both directions: a sixth disable file added without thought shows up here,
-      // and so does one of these five being quietly deleted. eve resolves these by FILENAME,
-      // so a typo would remove nothing (it fails the build) or the wrong tool.
-      expect(await sentinelSlugs()).toEqual(Object.keys(DISABLED).sort());
-    },
-    TOOLS_DIR_SCAN_BUDGET_MS,
-  );
-
-  it(
-    "accounts for every built-in tool the installed framework provides — a new one is an owner decision",
-    async () => {
-      // The other tests here only confirm that the tools already switched off stay off. This
-      // one looks the other way: it reads eve's own default tool list out of the INSTALLED
-      // package and fails on any tool that is neither switched off by a sentinel nor named in
-      // ACCEPTED. An eve upgrade that adds a default tool therefore goes red here instead of
-      // handing the agent a capability nobody chose to give it. The comparison is proven able
-      // to fail in packages/agent-kit/tests/framework-default-tools.test.ts.
-      const problems = frameworkToolDecisionProblems({
-        frameworkTools: await installedFrameworkDefaultTools(import.meta.url),
-        disabled: await sentinelSlugs(),
-        accepted: ACCEPTED,
-      });
-      expect(problems, problems.join("\n")).toEqual([]);
-    },
-    TOOLS_DIR_SCAN_BUDGET_MS,
-  );
-
-  it("would fail if the framework shipped one more built-in tool than this file knows about", () => {
-    // The check above has only ever been seen green on the installed eve. This feeds the same
-    // comparison this service's real decisions plus one made-up tool, to show it goes red.
-    const problems = frameworkToolDecisionProblems({
-      frameworkTools: [...Object.keys(DISABLED), ...Object.keys(ACCEPTED), "made_up_file_editor"],
-      disabled: Object.keys(DISABLED),
-      accepted: ACCEPTED,
-    });
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('"made_up_file_editor"');
-    expect(problems[0]).toContain("A new framework tool is an owner decision");
+  it("the agent definition turns every framework default tool away", async () => {
+    const agent = await agentDefinition();
+    expect(agent.defaultTools).toBe(false);
+    // ...and the delegating `agent` tool by name as well, so it stays off if the line above is
+    // ever relaxed. With it off and no subagents, eve adds no task tools either.
+    expect(agent.tool).toBe(false);
   });
 
-  // The `atlas_search`/`atlas_read` entries this list used to name are gone — one set of
-  // note tools takes an area now, and the two catalogue files below are that set's own copies.
-  //
-  // vault_search/vault_read/vault_backlinks moved out: they're mounted
-  // from the @lares/agent-kit eve extension now (agent-kit__vault_*), so they no longer live
-  // under agent/tools/ for this file's directory scan or its import-by-relative-path checks
-  // to find. They were never at risk of the isDisabledToolSentinel check this block runs —
-  // that sentinel exists only for eve's BUILT-IN framework tools an authored file overrides
-  // (see the DISABLED map above); an authored `defineTool()` call, mounted or not, is never
-  // a disable sentinel. Live-mount resolution under the new prefixed name is verified
-  // against a running eve instance instead (see task-2-report.md).
+  it("declares no subagent, so nothing here runs as a task", () => {
+    expect(existsSync(join(TOOLS_DIR, "..", "subagents"))).toBe(false);
+  });
+
+  it("the list of tools turned away is exactly what the installed framework would have handed over", async () => {
+    expect(await installedFrameworkDefaultTools(import.meta.url)).toEqual(Object.keys(TURNED_AWAY).sort());
+    for (const [tool, reason] of Object.entries(TURNED_AWAY)) expect(reason.trim(), tool).not.toBe("");
+  });
+
+  it("no file under agent/tools/ carries a default tool's name, so not one of them is kept", async () => {
+    const defaults = new Set(await installedFrameworkDefaultTools(import.meta.url));
+    expect(toolFiles().map(slug).filter((name) => defaults.has(name))).toEqual([]);
+  });
+
+  it("carries no sentinel files: none is needed, and one for a slot eve does not have fails the build", () => {
+    expect(toolFiles().filter(isSentinelFile)).toEqual([]);
+    expect(existsSync(join(TOOLS_DIR, "task_cancel.ts"))).toBe(false);
+  });
+
+  it("accounts for every built-in tool the installed framework provides", async () => {
+    // The comparison is proven able to fail in packages/agent-kit/tests/framework-default-tools.test.ts.
+    const files = toolFiles();
+    const problems = frameworkToolDecisionProblems({
+      frameworkTools: await installedFrameworkDefaultTools(import.meta.url),
+      disabled: files.filter(isSentinelFile).map(slug),
+      accepted: {},
+      defaultToolsOff: (await agentDefinition()).defaultTools === false,
+      authored: files.filter((f) => !isSentinelFile(f)).map(slug),
+    });
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  it("would fail, naming all seven, if the definition stopped saying defaultTools: false", async () => {
+    // The check above has only been seen green. Same inputs, with the one setting withdrawn.
+    const files = toolFiles();
+    const problems = frameworkToolDecisionProblems({
+      frameworkTools: await installedFrameworkDefaultTools(import.meta.url),
+      disabled: files.filter(isSentinelFile).map(slug),
+      accepted: {},
+      defaultToolsOff: false,
+      authored: files.filter((f) => !isSentinelFile(f)).map(slug),
+    });
+    expect(problems.map((p) => /"([a-z_]+)"/u.exec(p)?.[1])).toEqual(Object.keys(TURNED_AWAY).sort());
+    expect(problems.join("\n")).toContain('"edit_file"');
+  });
+
+  it("would fail if a file under agent/tools/ took a default tool's name", async () => {
+    const problems = frameworkToolDecisionProblems({
+      frameworkTools: await installedFrameworkDefaultTools(import.meta.url),
+      disabled: [],
+      accepted: {},
+      defaultToolsOff: true,
+      authored: [...toolFiles().map(slug), "edit_file"],
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("agent/tools/edit_file.ts carries the name of the framework's built-in tool");
+  });
 
   /**
    * The authored read tools are what the agent actually reads with. Listed explicitly so that
-   * deleting one shows up here rather than as a quietly less capable agent.
+   * deleting one shows up here rather than as a quietly less capable agent. The vault tools are
+   * mounted from the @lares/agent-kit eve extension (agent-kit__vault_*); the catalogue files
+   * below are this service's own copies of that set.
    */
   const AUTHORED: Record<string, () => Promise<{ default: unknown }>> = {
     "agent-kit__vault_search": () => import("../catalogue/agent-kit__vault_search.js"),
@@ -150,9 +137,11 @@ describe("tool harness lockdown", () => {
     echo_note: () => import("../catalogue/echo_note.js"),
   };
 
-  for (const [slug, load] of Object.entries(AUTHORED)) {
-    it(`keeps the authored \`${slug}\` tool enabled`, async () => {
-      expect(isDisabledToolSentinel((await load()).default)).toBe(false);
+  for (const [name, load] of Object.entries(AUTHORED)) {
+    it(`keeps the authored \`${name}\` tool enabled`, async () => {
+      const tool = (await load()).default;
+      expect(tool).toBeDefined();
+      expect(isDisabledTool(tool)).toBe(false);
     });
   }
 });

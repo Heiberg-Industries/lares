@@ -5,7 +5,7 @@
  * depend on it, then the vendor/amount/currency columns and the `'renewal'` source), and the same fake-`ctx` shape `tests/remind-set-clock.test.ts`
  * uses for a gated tool's `assertApprover` check: a Slack auth context inside the allowlist.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,13 +24,21 @@ import deadlineDone from "../catalogue/deadline_done.js";
 import deadlineDismiss from "../catalogue/deadline_dismiss.js";
 import deadlineReset from "../catalogue/deadline_reset.js";
 
+// These tools run here outside eve, where there is no session state to read (which the real
+// module treats as "a card was asked"). No turn here asks a card; the durable mark itself is
+// tested in tests/approval-card-turns.test.ts.
+vi.mock("../lib/approval-card-turns.js", async (original) => ({
+  ...(await original<typeof import("../lib/approval-card-turns.js")>()),
+  turnAskedACard: (session: { turn?: { id?: unknown } | null } | null | undefined) => typeof session?.turn?.id !== "string" || !session.turn.id,
+}));
+
 const here = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = join(here, "..", "..", "box", "sql");
 const sql = (name: string) => readFileSync(join(SQL_DIR, name), "utf8");
 
 const OWNER_SLACK_ID = "U_EXAMPLE_OWNER";
 function ctx(auth: unknown = { authenticator: "slack-webhook", attributes: { user_id: OWNER_SLACK_ID } }) {
-  return { session: { id: "wrun_test", auth: { current: auth, initiator: auth } } } as never;
+  return { session: { id: "wrun_test", turn: { id: "turn_0", sequence: 0 }, auth: { current: auth, initiator: auth } } } as never;
 }
 
 /** What a SCHEDULED turn runs as — the eve app principal, no human anywhere on the turn. The exact
@@ -435,7 +443,7 @@ describe("the principal check on the two ungated writes", () => {
 
   it("a turn with no identity at all is refused too — fail-closed, not fail-quiet", async () => {
     // NOT `ctx(undefined)` — that helper's default parameter would hand back the owner's own auth.
-    const noAuth = { session: { id: "wrun_test", auth: { current: null, initiator: null } } } as never;
+    const noAuth = { session: { id: "wrun_test", turn: { id: "turn_0", sequence: 0 }, auth: { current: null, initiator: null } } } as never;
     const add = await deadlineAdd.execute(
       { entity: "Example Co", title: "Ingen", dueDate: "2099-03-01" },
       noAuth,

@@ -5,8 +5,7 @@ import type {HostFinancialJournal,FinancialAtom} from '../lib/financial-journal.
 import type {SourcePool} from '@lares/agent-kit/console-source-transaction';
 import {nativeTestPolicy} from './helpers/native-cleanup.js';
 
-const identity:NativeRuntimeIdentity={agent:'neutral-helper',incarnation:'11111111-1111-4111-8111-111111111111',
-  definitionHash:'a'.repeat(64),purposeAlias:'lares-brain'};
+const identity:NativeRuntimeIdentity={agent:'neutral-helper',incarnation:'11111111-1111-4111-8111-111111111111',purposeAlias:'lares-brain'};
 
 function authorityFixture(){
   const query=vi.fn(),connect=vi.fn();
@@ -21,14 +20,16 @@ function authorityFixture(){
 describe('native runtime authority reader',()=>{
   it('holds when no exact active custody operation exists, even before consulting SQL',async()=>{
     const {authority,query,connect}=authorityFixture();
-    await expect(authority.current(identity)).resolves.toEqual({state:'held',reason:'Native budget activation required'});
+    // Held, and marked as the case where no key matches the agent, its incarnation and its model name.
+    await expect(authority.current(identity)).resolves.toEqual({state:'held',reason:'Native budget activation required',detail:'no-matching-key'});
     expect(query).not.toHaveBeenCalled();expect(connect).not.toHaveBeenCalled();
   });
 
   it('refuses unbounded runtime identity input with the neutral reason',async()=>{
     const {authority,query}=authorityFixture();
     await expect(authority.current({...identity,operationId:'private'})).rejects.toThrow('Native budget activation required');
-    await expect(authority.current({...identity,definitionHash:'not-a-hash'})).rejects.toThrow('Native budget activation required');
+    // A definition hash is no part of the identity any more: one sent anyway is refused like any other unknown field.
+    await expect(authority.current({...identity,definitionHash:'a'.repeat(64)})).rejects.toThrow('Native budget activation required');
     expect(query).not.toHaveBeenCalled();
   });
 

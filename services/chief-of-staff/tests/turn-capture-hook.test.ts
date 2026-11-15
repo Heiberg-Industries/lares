@@ -14,6 +14,7 @@
  * prefixed form kept in exactly one place, as a tolerance test.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { emptySessionView, foldEvents } from "eve/events";
 
 import { makeTurnCapture } from "../agent/hooks/turn-capture.js";
 import type { TurnLogEntry } from "../lib/turn-capture.js";
@@ -57,9 +58,14 @@ function ctx(opts: {
   turnId?: string;
   current?: unknown;
   initiator?: unknown;
+  /** Where the event sits on the stream. Omitted, the handler cannot tell a repeat, so it never skips one. */
+  position?: { line: number; index: number };
+  view?: unknown;
 }): never {
   return {
     agent: { name: "agent-a" },
+    ...(opts.position === undefined ? {} : { position: opts.position }),
+    ...(opts.view === undefined ? {} : { view: opts.view }),
     channel: { kind: opts.kind },
     session: {
       id: opts.sessionId ?? "session-1",
@@ -73,21 +79,36 @@ function ctx(opts: {
   } as never;
 }
 
-const ev = (type: string, data: Record<string, unknown>): never =>
-  ({ type, data, meta: { id: "e1", sequence: 1, timestamp: "2026-08-19T10:00:00.000Z" } }) as never;
+/** One eve 1.0 fact: `{ type, scope, data }`. The stream position is not part of the event; it rides on `ctx.position`. */
+const ev = (type: string, data: Record<string, unknown>, turnId?: string): never =>
+  ({ type, data, ...(turnId === undefined ? {} : { scope: { turnId } }) }) as never;
 
-const started = (turnId: string) => ev("turn.started", { sequence: 0, turnId });
-const received = (turnId: string, message: string) => ev("message.received", { message, sequence: 1, turnId });
-const actions = (turnId: string, acts: unknown[]) =>
-  ev("actions.requested", { actions: acts, sequence: 2, stepIndex: 0, turnId });
+// Shapes from node_modules/eve/dist/src/protocol/session-events/families/*.d.ts
+const started = (turnId: string) => ev("turn.started", { turnId, cause: { deliveryId: "d1" }, follows: null }, turnId);
+const received = (turnId: string, message: string) =>
+  ev("delivery.consumed", { deliveryId: "d1", turnId, parts: [{ kind: "text", text: message }] }, turnId);
+/** One `call.requested` per call (a tool call here, unless `kind` says otherwise). */
+const callRequested = (turnId: string, call: { callId: string; kind: string; name: string }) =>
+  ev("call.requested", { callId: call.callId, owner: { turnId }, capability: { kind: call.kind, name: call.name }, input: {} }, turnId);
+/** A completed part. A finish of "tool-calls" was interim narration in 0.60; it is `phase: "narration"` now. */
 const completed = (turnId: string, finishReason: string, message: string | null) =>
-  ev("message.completed", { finishReason, message, sequence: 3, stepIndex: 0, turnId });
-const turnCompleted = (turnId: string) => ev("turn.completed", { sequence: 4, turnId });
-const turnFailed = (turnId: string) =>
-  ev("turn.failed", { code: "boom", message: "boom", sequence: 4, turnId });
-const turnCancelled = (turnId: string) => ev("turn.cancelled", { sequence: 4, turnId });
+  ev("content.completed", {
+    partId: "p1", kind: "text", phase: finishReason === "tool-calls" ? "narration" : "reply",
+    ...(message === null ? {} : { value: message }),
+  }, turnId);
+/** The turn waits on a person; the exchange is not over (0.60 ended the turn here). */
+const turnPaused = (turnId: string) => ev("turn.paused", { turnId, awaiting: [{ interactionId: "i1" }] }, turnId);
+const settled = (turnId: string, outcome: "completed" | "failed" | "cancelled", extra: Record<string, unknown> = {}) =>
+  ev("turn.settled", {
+    turnId, outcome, ...(outcome === "failed" ? { error: { code: "boom", message: "boom" } } : {}), ...extra,
+  }, turnId);
 
-const toolCall = (toolName: string) => ({ callId: `c-${toolName}`, input: {}, kind: "tool-call", toolName });
+const toolCall = (toolName: string) => ({ callId: `c-${toolName}`, kind: "tool", name: toolName });
+
+/** Handlers for several calls of one turn, in order. */
+async function requestCalls(h: { onCallRequested: (e: never, c: never) => Promise<void> }, c: never, turnId: string, calls: Array<{ callId: string; kind: string; name: string }>): Promise<void> {
+  for (const call of calls) await h.onCallRequested(callRequested(turnId, call), c);
+}
 
 let capture: ReturnType<typeof vi.fn>;
 let hook: ReturnType<typeof makeTurnCapture>;
@@ -112,9 +133,9 @@ const onlyEntry = (): TurnLogEntry => {
  */
 async function fullTurn(h: typeof hook, c: never, turnId: string, input: string, reply: string): Promise<void> {
   await h.onTurnStarted(started(turnId), c);
-  await h.onMessageReceived(received(turnId, input), c);
-  await h.onMessageCompleted(completed(turnId, "stop", reply), c);
-  await h.onTurnCompleted(turnCompleted(turnId), c);
+  await h.onDeliveryConsumed(received(turnId, input), c);
+  await h.onContentCompleted(completed(turnId, "stop", reply), c);
+  await h.onTurnPaused(turnPaused(turnId), c);
 }
 
 describe("turn-capture hook — a human turn", () => {
@@ -231,18 +252,26 @@ describe("turn-capture hook — correlation", () => {
     } };
     const c = ctx({ kind: "telegram", current: audienceAuth });
     await hook.onTurnStarted(started("post-1"), c);
-    const request = (requestId: string, toolName: string, prompt: string) => ({
-      kind: "tool-approval", requestId, prompt, options: [
-        { id: "approve", label: "Approve" }, { id: "cancel", label: "Cancel" },
-      ], action: { kind: "tool-call", callId: `call-${requestId}`, toolName, input: { secret: "must not be copied" } },
+    // eve 1.0: an approval is an `interaction.opened` about a call; the tool and its input come from the session view.
+    const card = (interactionId: string, toolName: string, prompt: string) => ({
+      interactionId, callId: `call-${interactionId}`, toolName, prompt,
     });
-    await hook.onInputRequested(ev("input.requested", { requests: [
-      request("approval-a", "calendar.create_event", "Create the event for Tuesday?"),
-      request("approval-b", "gmail_send", "Send the drafted reply?"),
-    ], turnId: "post-1" }), c);
+    const cards = [
+      card("approval-a", "calendar.create_event", "Create the event for Tuesday?"),
+      card("approval-b", "gmail_send", "Send the drafted reply?"),
+    ];
+    const at = "2026-10-01T10:00:00.000Z";
+    let line = 0;
+    const facts = cards.flatMap((k) => [
+      { type: "call.requested", scope: { turnId: "post-1" }, data: { callId: k.callId, owner: { turnId: "post-1" }, capability: { kind: "tool", name: k.toolName }, input: { secret: "must not be copied" } }, meta: { position: { line: line++, index: 0 }, at } },
+      { type: "interaction.opened", scope: { turnId: "post-1" }, data: { interactionId: k.interactionId, subject: { callId: k.callId }, request: { kind: "approval", prompt: k.prompt, options: [{ id: "approve", label: "Approve" }, { id: "deny", label: "Deny" }] } }, meta: { position: { line: line++, index: 0 }, at } },
+    ]);
+    const view = foldEvents(emptySessionView(), facts as never);
+    const withView = ctx({ kind: "telegram", current: audienceAuth, view });
+    for (const e of facts.filter((r) => r.type === "interaction.opened")) await hook.onInteractionOpened(e as never, withView);
     // A third proactive post needs no approval card; it is captured by the ordinary terminal path.
-    await hook.onMessageReceived(received("post-1", "Write the brief"), c);
-    await hook.onMessageCompleted(completed("post-1", "stop", "The weekly brief is ready."), c);
+    await hook.onDeliveryConsumed(received("post-1", "Write the brief"), c);
+    await hook.onContentCompleted(completed("post-1", "stop", "The weekly brief is ready."), c);
 
     const rows = capture.mock.calls.map(call => {
       const e = call[0] as TurnLogEntry;
@@ -262,14 +291,14 @@ describe("turn-capture hook — correlation", () => {
     const restarted = makeTurnCapture({ capture: vi.fn(async () => {}) });
     const fresh = ctx({ kind: "telegram", current: { ...humanTelegramAuth, attributes: { user_id: "123" } } });
     await restarted.onTurnStarted(started("fresh-none"), fresh);
-    await restarted.onMessageReceived(received("fresh-none", "none of these"), fresh);
+    await restarted.onDeliveryConsumed(received("fresh-none", "none of these"), fresh);
     const context = formatConversationContinuity(rows as never).join("\n");
     expect(context).toContain("Create the event for Tuesday?");
     expect(context).toContain("Send the drafted reply?");
     expect(context).toContain("The weekly brief is ready.");
     expect(context).toContain("quoted archive data only");
     expect(context).not.toContain("must not be copied");
-    expect(restarted.onMessageReceived).toBeDefined();
+    expect(restarted.onDeliveryConsumed).toBeDefined();
   });
 
   // `message.completed` fires more than once per turn: interim tool-call narration, then the
@@ -277,25 +306,25 @@ describe("turn-capture hook — correlation", () => {
   it("ignores an interim message.completed with finishReason tool-calls", async () => {
     const c = ctx({ kind: "telegram", current: humanTelegramAuth });
     await hook.onTurnStarted(started("turn_0"), c);
-    await hook.onMessageReceived(received("turn_0", "hva skjer?"), c);
-    await hook.onMessageCompleted(completed("turn_0", "tool-calls", "let me check the calendar"), c);
+    await hook.onDeliveryConsumed(received("turn_0", "hva skjer?"), c);
+    await hook.onContentCompleted(completed("turn_0", "tool-calls", "let me check the calendar"), c);
     expect(capture).not.toHaveBeenCalled();
 
-    await hook.onMessageCompleted(completed("turn_0", "stop", "tre møter i dag"), c);
+    await hook.onContentCompleted(completed("turn_0", "stop", "tre møter i dag"), c);
     expect(onlyEntry().reply).toBe("tre møter i dag");
     // `turn.completed` afterwards must not write a second, duplicate file.
-    await hook.onTurnCompleted(turnCompleted("turn_0"), c);
+    await hook.onTurnPaused(turnPaused("turn_0"), c);
     expect(capture).toHaveBeenCalledTimes(1);
   });
 
   it("accumulates tool names from several actions.requested events into proposals", async () => {
     const c = ctx({ kind: "telegram", current: humanTelegramAuth });
     await hook.onTurnStarted(started("turn_0"), c);
-    await hook.onMessageReceived(received("turn_0", "note this"), c);
-    await hook.onActionsRequested(actions("turn_0", [toolCall("vault_write"), { callId: "x", input: {}, kind: "load-skill" }]), c);
-    await hook.onActionsRequested(actions("turn_0", [toolCall("calendar_list")]), c);
-    await hook.onMessageCompleted(completed("turn_0", "stop", "done"), c);
-    await hook.onTurnCompleted(turnCompleted("turn_0"), c);
+    await hook.onDeliveryConsumed(received("turn_0", "note this"), c);
+    await requestCalls(hook, c, "turn_0", [toolCall("vault_write"), { callId: "x", kind: "skill", name: "lares-docs" }]);
+    await requestCalls(hook, c, "turn_0", [toolCall("calendar_list")]);
+    await hook.onContentCompleted(completed("turn_0", "stop", "done"), c);
+    await hook.onTurnPaused(turnPaused("turn_0"), c);
 
     expect(onlyEntry().proposals).toEqual(["vault_write", "calendar_list"]);
   });
@@ -307,10 +336,10 @@ describe("turn-capture hook — correlation", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const c = ctx({ kind: "telegram", current: humanTelegramAuth });
     await hook.onTurnStarted(started("turn_0"), c);
-    await hook.onMessageReceived(received("turn_0", "book the flight"), c);
-    await hook.onActionsRequested(actions("turn_0", [toolCall("calendar_create_event")]), c);
+    await hook.onDeliveryConsumed(received("turn_0", "book the flight"), c);
+    await requestCalls(hook, c, "turn_0", [toolCall("calendar_create_event")]);
     // No terminal reply — the chief of staff is waiting on approval. The owner types something new instead.
-    await hook.onMessageReceived(received("turn_1", "actually never mind"), c);
+    await hook.onDeliveryConsumed(received("turn_1", "actually never mind"), c);
 
     expect(capture).toHaveBeenCalledTimes(1);
     const abandoned = capture.mock.calls[0][0] as TurnLogEntry;
@@ -319,7 +348,7 @@ describe("turn-capture hook — correlation", () => {
     expect(abandoned.proposals).toEqual(["calendar_create_event"]);
 
     // ...and the new exchange is now the live one, starting clean.
-    await hook.onMessageCompleted(completed("turn_1", "stop", "Greit."), c);
+    await hook.onContentCompleted(completed("turn_1", "stop", "Greit."), c);
     expect(capture).toHaveBeenCalledTimes(2);
     const fresh = capture.mock.calls[1][0] as TurnLogEntry;
     expect(fresh.input).toBe("actually never mind");
@@ -360,15 +389,15 @@ describe("turn-capture hook — correlation", () => {
     });
 
     await hook.onTurnStarted(started("turn_0"), human);
-    await hook.onMessageReceived(received("turn_0", "hva er status?"), human);
+    await hook.onDeliveryConsumed(received("turn_0", "hva er status?"), human);
     // The brief interleaves, with the very same turnId.
     await hook.onTurnStarted(started("turn_0"), brief);
-    await hook.onMessageReceived(received("turn_0", "Write the morning brief for today."), brief);
-    await hook.onActionsRequested(actions("turn_0", [toolCall("calendar_list")]), brief);
-    await hook.onMessageCompleted(completed("turn_0", "stop", "Here is your brief."), brief);
-    await hook.onTurnCompleted(turnCompleted("turn_0"), brief);
-    await hook.onMessageCompleted(completed("turn_0", "stop", "alt er grønt"), human);
-    await hook.onTurnCompleted(turnCompleted("turn_0"), human);
+    await hook.onDeliveryConsumed(received("turn_0", "Write the morning brief for today."), brief);
+    await requestCalls(hook, brief, "turn_0", [toolCall("calendar_list")]);
+    await hook.onContentCompleted(completed("turn_0", "stop", "Here is your brief."), brief);
+    await hook.onTurnPaused(turnPaused("turn_0"), brief);
+    await hook.onContentCompleted(completed("turn_0", "stop", "alt er grønt"), human);
+    await hook.onTurnPaused(turnPaused("turn_0"), human);
 
     expect(capture).toHaveBeenCalledTimes(2);
     const [briefEntry, humanEntry] = capture.mock.calls.map((call) => call[0] as TurnLogEntry);
@@ -405,17 +434,17 @@ describe("turn-capture hook — one file per exchange", () => {
 
     // Turn one: the question, four tool calls, interim narration, then the park.
     await hook.onTurnStarted(started("turn_0"), c);
-    await hook.onMessageReceived(received("turn_0", question), c);
-    await hook.onActionsRequested(actions("turn_0", [toolCall("gmail_search"), toolCall("gmail_search")]), c);
-    await hook.onActionsRequested(actions("turn_0", [toolCall("gmail_read"), toolCall("gmail_read")]), c);
-    await hook.onMessageCompleted(completed("turn_0", "tool-calls", "Let me check your inbox."), c);
-    await hook.onTurnCompleted(turnCompleted("turn_0"), c);
+    await hook.onDeliveryConsumed(received("turn_0", question), c);
+    await requestCalls(hook, c, "turn_0", [toolCall("gmail_search"), toolCall("gmail_search")]);
+    await requestCalls(hook, c, "turn_0", [toolCall("gmail_read"), toolCall("gmail_read")]);
+    await hook.onContentCompleted(completed("turn_0", "tool-calls", "Let me check your inbox."), c);
+    await hook.onTurnPaused(turnPaused("turn_0"), c);
     expect(capture).not.toHaveBeenCalled();
 
     // Turn two: a different id, NO message.received, and the real answer.
     await hook.onTurnStarted(started("turn_1"), c);
-    await hook.onMessageCompleted(completed("turn_1", "stop", "The only genuinely-owed reply is Marco..."), c);
-    await hook.onTurnCompleted(turnCompleted("turn_1"), c);
+    await hook.onContentCompleted(completed("turn_1", "stop", "The only genuinely-owed reply is Marco..."), c);
+    await hook.onTurnPaused(turnPaused("turn_1"), c);
 
     const entry = onlyEntry();
     expect(entry.input).toBe(question);
@@ -453,12 +482,12 @@ describe("turn-capture hook — a scheduled push into the owner's session", () =
 
     // The owner taps an approval button: a turn starts, with no message.received at all.
     await hook.onTurnStarted(started("turn_4"), tap);
-    await hook.onActionsRequested(actions("turn_4", [toolCall("twenty_create_opportunity")]), tap);
+    await requestCalls(hook, tap, "turn_4", [toolCall("twenty_create_opportunity")]);
 
     // The 06:00 brief fires into the SAME session, on a new turn.
     await hook.onTurnStarted(started("turn_5"), brief);
-    await hook.onMessageReceived(received("turn_5", "Write the morning brief for today."), brief);
-    await hook.onMessageCompleted(completed("turn_5", "stop", "Here is your brief."), brief);
+    await hook.onDeliveryConsumed(received("turn_5", "Write the morning brief for today."), brief);
+    await hook.onContentCompleted(completed("turn_5", "stop", "Here is your brief."), brief);
 
     // ONE file: the brief. The tap spoke no words, so it is dropped rather than written with an
     // empty `**the owner:**` line — but it is still never merged into the brief, which is the point.
@@ -489,10 +518,10 @@ describe("turn-capture hook — a scheduled push into the owner's session", () =
     });
 
     await hook.onTurnStarted(started("turn_0"), human);
-    await hook.onMessageReceived(received("turn_0", "hva skjer i morgen?"), human);
+    await hook.onDeliveryConsumed(received("turn_0", "hva skjer i morgen?"), human);
     await hook.onTurnStarted(started("turn_1"), brief);
-    await hook.onMessageReceived(received("turn_1", "Write the evening brief."), brief);
-    await hook.onMessageCompleted(completed("turn_1", "stop", "Here it is."), brief);
+    await hook.onDeliveryConsumed(received("turn_1", "Write the evening brief."), brief);
+    await hook.onContentCompleted(completed("turn_1", "stop", "Here it is."), brief);
 
     expect(capture).toHaveBeenCalledTimes(2);
     const [hisEntry, briefEntry] = capture.mock.calls.map((call) => call[0] as TurnLogEntry);
@@ -507,11 +536,11 @@ describe("turn-capture hook — a scheduled push into the owner's session", () =
   it("still merges the tool-park continuation, which emits no message.received", async () => {
     const c = ctx({ kind: "telegram", turnId: "turn_0", current: humanTelegramAuth });
     await hook.onTurnStarted(started("turn_0"), c);
-    await hook.onMessageReceived(received("turn_0", "who do I owe?"), c);
-    await hook.onActionsRequested(actions("turn_0", [toolCall("gmail_search")]), c);
-    await hook.onTurnCompleted(turnCompleted("turn_0"), c);
+    await hook.onDeliveryConsumed(received("turn_0", "who do I owe?"), c);
+    await requestCalls(hook, c, "turn_0", [toolCall("gmail_search")]);
+    await hook.onTurnPaused(turnPaused("turn_0"), c);
     await hook.onTurnStarted(started("turn_1"), c);
-    await hook.onMessageCompleted(completed("turn_1", "stop", "Just Marco."), c);
+    await hook.onContentCompleted(completed("turn_1", "stop", "Just Marco."), c);
 
     const entry = onlyEntry();
     expect(entry.input).toBe("who do I owe?");
@@ -535,11 +564,11 @@ describe("turn-capture hook — an unfinished write is stamped when it happened"
     const c = ctx({ kind: "telegram", turnId: "turn_0", current: humanTelegramAuth });
 
     await h.onTurnStarted(started("turn_0"), c);
-    await h.onMessageReceived(received("turn_0", "book the flight"), c);
-    await h.onActionsRequested(actions("turn_0", [toolCall("calendar_create_event")]), c);
+    await h.onDeliveryConsumed(received("turn_0", "book the flight"), c);
+    await requestCalls(h, c, "turn_0", [toolCall("calendar_create_event")]);
 
     clock = Date.parse("2026-08-20T14:00:00.000Z");
-    await h.onTurnCompleted(turnCompleted("turn_0"), c);
+    await h.onTurnPaused(turnPaused("turn_0"), c);
 
     expect(onlyEntry().at).toBe("2026-08-19T09:15:00.000Z");
     warn.mockRestore();
@@ -552,10 +581,10 @@ describe("turn-capture hook — an unfinished write is stamped when it happened"
     const c = ctx({ kind: "telegram", turnId: "turn_0", current: humanTelegramAuth });
 
     await h.onTurnStarted(started("turn_0"), c);
-    await h.onMessageReceived(received("turn_0", "book the flight"), c);
+    await h.onDeliveryConsumed(received("turn_0", "book the flight"), c);
 
     clock = Date.parse("2026-08-19T20:30:00.000Z");
-    await h.onMessageReceived(received("turn_1", "never mind"), c);
+    await h.onDeliveryConsumed(received("turn_1", "never mind"), c);
 
     expect(capture).toHaveBeenCalledTimes(1);
     expect((capture.mock.calls[0][0] as TurnLogEntry).at).toBe("2026-08-19T09:15:00.000Z");
@@ -655,9 +684,9 @@ describe("turn-capture hook — turns with no message.received", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const c = ctx({ kind: "telegram", turnId: "turn_3", current: humanTelegramAuth });
     await hook.onTurnStarted(started("turn_3"), c);
-    await hook.onActionsRequested(actions("turn_3", [toolCall("crm_create_note")]), c);
-    await hook.onMessageCompleted(completed("turn_3", "stop", "Done — noted in the CRM."), c);
-    await hook.onTurnCompleted(turnCompleted("turn_3"), c);
+    await requestCalls(hook, c, "turn_3", [toolCall("crm_create_note")]);
+    await hook.onContentCompleted(completed("turn_3", "stop", "Done — noted in the CRM."), c);
+    await hook.onTurnPaused(turnPaused("turn_3"), c);
 
     expect(capture).not.toHaveBeenCalled();
     // Logged, because it is the only way we would notice this rule eating real conversations.
@@ -676,10 +705,10 @@ describe("turn-capture hook — turns with no message.received", () => {
     const c = ctx({ kind: "telegram", turnId: "turn_0", current: humanTelegramAuth });
 
     await h.onTurnStarted(started("turn_0"), c);
-    await h.onMessageReceived(received("turn_0", "book the flight to NYC"), c);
-    await h.onActionsRequested(actions("turn_0", [toolCall("calendar_create_event")]), c);
+    await h.onDeliveryConsumed(received("turn_0", "book the flight to NYC"), c);
+    await requestCalls(h, c, "turn_0", [toolCall("calendar_create_event")]);
     clock += 25 * 60 * 60 * 1000;
-    await h.onTurnCompleted(turnCompleted("turn_0"), c);
+    await h.onTurnPaused(turnPaused("turn_0"), c);
 
     const entry = onlyEntry();
     expect(entry.input).toBe("book the flight to NYC");
@@ -690,9 +719,9 @@ describe("turn-capture hook — turns with no message.received", () => {
   // Belt as well as braces: if turn.started is ever missed, an input still starts a capture.
   it("still captures when only message.received is seen", async () => {
     const c = ctx({ kind: "telegram", current: humanTelegramAuth });
-    await hook.onMessageReceived(received("turn_0", "hei"), c);
-    await hook.onMessageCompleted(completed("turn_0", "stop", "svar"), c);
-    await hook.onTurnCompleted(turnCompleted("turn_0"), c);
+    await hook.onDeliveryConsumed(received("turn_0", "hei"), c);
+    await hook.onContentCompleted(completed("turn_0", "stop", "svar"), c);
+    await hook.onTurnPaused(turnPaused("turn_0"), c);
     expect(onlyEntry().input).toBe("hei");
   });
 });
@@ -714,10 +743,10 @@ describe("turn-capture hook — what must NOT be written", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const c = ctx({ kind: "telegram", turnId: "turn_0", current: humanTelegramAuth });
     await hook.onTurnStarted(started("turn_0"), c);
-    await hook.onMessageReceived(received("turn_0", "hei"), c);
-    await hook.onActionsRequested(actions("turn_0", [toolCall("gmail_search")]), c);
+    await hook.onDeliveryConsumed(received("turn_0", "hei"), c);
+    await requestCalls(hook, c, "turn_0", [toolCall("gmail_search")]);
     // It blows up before producing any terminal reply.
-    await hook.onTurnDiscarded(turnFailed("turn_0"), c);
+    await hook.onTurnSettled(settled("turn_0", "failed"), c);
 
     const entry = onlyEntry();
     expect(entry.input).toBe("hei");
@@ -729,7 +758,7 @@ describe("turn-capture hook — what must NOT be written", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const c = ctx({ kind: "telegram", turnId: "turn_0", current: humanTelegramAuth });
     await hook.onTurnStarted(started("turn_0"), c);
-    await hook.onTurnDiscarded(turnFailed("turn_0"), c);
+    await hook.onTurnSettled(settled("turn_0", "failed"), c);
     expect(capture).not.toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -738,7 +767,7 @@ describe("turn-capture hook — what must NOT be written", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const c = ctx({ kind: "telegram", turnId: "turn_0", current: humanTelegramAuth });
     await hook.onTurnStarted(started("turn_0"), c);
-    await hook.onTurnDiscarded(turnCancelled("turn_0"), c);
+    await hook.onTurnSettled(settled("turn_0", "cancelled"), c);
     expect(capture).not.toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -748,9 +777,9 @@ describe("turn-capture hook — what must NOT be written", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const c = ctx({ kind: "telegram", turnId: "turn_0", current: humanTelegramAuth });
     await hook.onTurnStarted(started("turn_0"), c);
-    await hook.onMessageReceived(received("turn_0", "hei"), c);
-    await hook.onTurnDiscarded(turnFailed("turn_0"), c);
-    await hook.onTurnCompleted(turnCompleted("turn_0"), c);
+    await hook.onDeliveryConsumed(received("turn_0", "hei"), c);
+    await hook.onTurnSettled(settled("turn_0", "failed"), c);
+    await hook.onTurnPaused(turnPaused("turn_0"), c);
     expect(capture).toHaveBeenCalledTimes(1);
     warn.mockRestore();
   });
@@ -781,9 +810,9 @@ describe("turn-capture hook — totality and hygiene", () => {
     capture.mockRejectedValueOnce(new Error("disk full"));
     const c = ctx({ kind: "telegram", current: humanTelegramAuth });
     await hook.onTurnStarted(started("turn_0"), c);
-    await hook.onMessageReceived(received("turn_0", "hei"), c);
-    await hook.onMessageCompleted(completed("turn_0", "stop", "svar"), c);
-    await expect(hook.onTurnCompleted(turnCompleted("turn_0"), c)).resolves.toBeUndefined();
+    await hook.onDeliveryConsumed(received("turn_0", "hei"), c);
+    await hook.onContentCompleted(completed("turn_0", "stop", "svar"), c);
+    await expect(hook.onTurnPaused(turnPaused("turn_0"), c)).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -792,11 +821,12 @@ describe("turn-capture hook — totality and hygiene", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const broken = {} as never;
     await expect(hook.onTurnStarted(broken, broken)).resolves.toBeUndefined();
-    await expect(hook.onMessageReceived(broken, broken)).resolves.toBeUndefined();
-    await expect(hook.onActionsRequested(broken, broken)).resolves.toBeUndefined();
-    await expect(hook.onMessageCompleted(broken, broken)).resolves.toBeUndefined();
-    await expect(hook.onTurnCompleted(broken, broken)).resolves.toBeUndefined();
-    await expect(hook.onTurnDiscarded(broken, broken)).resolves.toBeUndefined();
+    await expect(hook.onDeliveryConsumed(broken, broken)).resolves.toBeUndefined();
+    await expect(hook.onCallRequested(broken, broken)).resolves.toBeUndefined();
+    await expect(hook.onInteractionOpened(broken, broken)).resolves.toBeUndefined();
+    await expect(hook.onContentCompleted(broken, broken)).resolves.toBeUndefined();
+    await expect(hook.onTurnPaused(broken, broken)).resolves.toBeUndefined();
+    await expect(hook.onTurnSettled(broken, broken)).resolves.toBeUndefined();
     expect(capture).not.toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -845,16 +875,16 @@ describe("turn-capture hook — totality and hygiene", () => {
     const c = ctx({ kind: "telegram", current: humanTelegramAuth });
 
     await h.onTurnStarted(started("turn_0"), c);
-    await h.onMessageReceived(received("turn_0", "sett opp møtet med Jens"), c);
-    await h.onActionsRequested(actions("turn_0", [toolCall("calendar_create_event")]), c);
+    await h.onDeliveryConsumed(received("turn_0", "sett opp møtet med Jens"), c);
+    await requestCalls(h, c, "turn_0", [toolCall("calendar_create_event")]);
 
     // Eight hours pass. Heartbeats arrive; nothing is written and nothing is evicted.
     clock += 8 * 60 * 60 * 1000;
-    await h.onTurnCompleted(turnCompleted("turn_0"), c);
+    await h.onTurnPaused(turnPaused("turn_0"), c);
     expect(capture).not.toHaveBeenCalled();
     expect(warn.mock.calls.filter((call) => String(call[0]).includes("UNFINISHED"))).toHaveLength(0);
 
-    await h.onMessageCompleted(completed("turn_1", "stop", "Møtet er satt opp."), c);
+    await h.onContentCompleted(completed("turn_1", "stop", "Møtet er satt opp."), c);
     const entry = onlyEntry();
     expect(entry.input).toBe("sett opp møtet med Jens");
     expect(entry.reply).toBe("Møtet er satt opp.");
@@ -876,11 +906,11 @@ describe("turn-capture hook — totality and hygiene", () => {
     const c = ctx({ kind: "telegram", current: humanTelegramAuth });
 
     await h.onTurnStarted(started("turn_0"), c);
-    await h.onMessageReceived(received("turn_0", "book the flight to NYC"), c);
-    await h.onActionsRequested(actions("turn_0", [toolCall("calendar_create_event")]), c);
+    await h.onDeliveryConsumed(received("turn_0", "book the flight to NYC"), c);
+    await requestCalls(h, c, "turn_0", [toolCall("calendar_create_event")]);
 
     clock += 25 * 60 * 60 * 1000;
-    await h.onTurnCompleted(turnCompleted("turn_0"), c);
+    await h.onTurnPaused(turnPaused("turn_0"), c);
 
     const entry = onlyEntry();
     expect(entry.input).toBe("book the flight to NYC");
@@ -890,7 +920,7 @@ describe("turn-capture hook — totality and hygiene", () => {
     expect(warn.mock.calls.filter((call) => String(call[0]).includes("UNFINISHED"))).toHaveLength(1);
 
     // Written once, and gone from the buffer.
-    await h.onTurnCompleted(turnCompleted("turn_0"), c);
+    await h.onTurnPaused(turnPaused("turn_0"), c);
     expect(capture).toHaveBeenCalledTimes(1);
     warn.mockRestore();
   });
@@ -904,7 +934,7 @@ describe("turn-capture hook — totality and hygiene", () => {
 
     await h.onTurnStarted(started("turn_0"), c);
     clock += 25 * 60 * 60 * 1000;
-    await h.onTurnCompleted(turnCompleted("turn_0"), c);
+    await h.onTurnPaused(turnPaused("turn_0"), c);
     expect(capture).not.toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -960,12 +990,212 @@ it('suppresses every tagged private event, including normal, resumed, failed and
  const privateAuth={authenticator:'lares-console',attributes:{lares_member_id:'synthetic-member',lares_admission_nonce:'a'.repeat(43),lares_purpose:'human'}};
  const c=ctx({kind:'http',current:privateAuth});
  await hook.onTurnStarted(started('private-turn'),c);
- await hook.onMessageReceived(received('private-turn','PRIVATE_CANARY'),c);
- await hook.onActionsRequested(actions('private-turn',[toolCall('gmail_read')]),c);
- await hook.onMessageCompleted(completed('private-turn','stop','PRIVATE_REPLY_CANARY'),c);
- await hook.onTurnCompleted(turnCompleted('private-turn'),c);
+ await hook.onDeliveryConsumed(received('private-turn','PRIVATE_CANARY'),c);
+ await requestCalls(hook,c,'private-turn',[toolCall('gmail_read')]);
+ await hook.onInteractionOpened(ev('interaction.opened',{interactionId:'i',subject:{callId:'c'},request:{kind:'approval',prompt:'Approve?'}}),c);
+ await hook.onContentCompleted(completed('private-turn','stop','PRIVATE_REPLY_CANARY'),c);
+ await hook.onTurnPaused(turnPaused('private-turn'),c);
  await hook.onTurnStarted(started('resumed-turn'),c);
- await hook.onTurnDiscarded(turnFailed('resumed-turn'),c);
- await hook.onTurnDiscarded(turnCancelled('resumed-turn'),c);
+ await hook.onTurnSettled(settled('resumed-turn','failed'),c);
+ await hook.onTurnSettled(settled('resumed-turn','cancelled'),c);
  expect(capture).not.toHaveBeenCalled();
+});
+
+// ── eve 1.0 events ──────────────────────────────────────────────────────────────────────────────
+// Every event below is built from the shipped `.d.ts` shapes (see the builders at the top), and the
+// hook is fed what eve 1.0 sends: delivery.consumed, call.requested, content.completed, turn.paused
+// and turn.settled. Nothing here uses a 0.60 name.
+describe("turn-capture hook — eve 1.0 events", () => {
+  const telegram = () => ctx({ kind: "telegram", current: humanTelegramAuth });
+
+  it("subscribes to eve 1.0 events only", async () => {
+    const mod = (await import("../agent/hooks/turn-capture.js")).default as { events: Record<string, unknown> };
+    expect(Object.keys(mod.events).sort()).toEqual([
+      "call.requested", "content.completed", "delivery.consumed", "interaction.opened",
+      "turn.paused", "turn.settled", "turn.started",
+    ]);
+  });
+
+  it("completed: ONE row, the reply is the content.completed text with phase reply, narration is not the reply", async () => {
+    const c = telegram();
+    await hook.onTurnStarted(started("t1"), c);
+    await hook.onDeliveryConsumed(received("t1", "what is on today?"), c);
+    await requestCalls(hook, c, "t1", [toolCall("calendar_list")]);
+    await hook.onContentCompleted(completed("t1", "tool-calls", "let me look"), c);
+    expect(capture).not.toHaveBeenCalled();
+    await hook.onContentCompleted(completed("t1", "stop", "three meetings"), c);
+    await hook.onTurnSettled(settled("t1", "completed", { reply: ["three meetings"] }), c);
+    const entry = onlyEntry();
+    expect(entry).toMatchObject({ input: "what is on today?", reply: "three meetings", proposals: ["calendar_list"], turnId: "t1", sessionId: "session-1" });
+  });
+
+  it("completed with no inline reply text: the settled turn writes it once, with the reply parts eve gives", async () => {
+    const c = telegram();
+    await hook.onTurnStarted(started("t1"), c);
+    await hook.onDeliveryConsumed(received("t1", "hello"), c);
+    // A reply carried by reference has no inline value: it flushes nothing here.
+    await hook.onContentCompleted(ev("content.completed", { partId: "p", kind: "text", phase: "reply", valueRef: { ref: "r" } }, "t1"), c);
+    expect(capture).not.toHaveBeenCalled();
+    await hook.onTurnSettled(settled("t1", "completed", { reply: ["part one", "part two"] }), c);
+    await hook.onTurnSettled(settled("t1", "completed", { reply: ["part one", "part two"] }), c);
+    expect(onlyEntry()).toMatchObject({ input: "hello", reply: "part one\npart two" });
+  });
+
+  it("failed: ONE reply-less row for what the owner said, never a finished one", async () => {
+    const c = telegram();
+    await hook.onTurnStarted(started("t1"), c);
+    await hook.onDeliveryConsumed(received("t1", "send the report"), c);
+    await requestCalls(hook, c, "t1", [toolCall("gmail_search")]);
+    await hook.onTurnSettled(settled("t1", "failed"), c);
+    await hook.onTurnSettled(settled("t1", "failed"), c);
+    expect(onlyEntry()).toMatchObject({ input: "send the report", reply: "", proposals: ["gmail_search"] });
+  });
+
+  it("cancelled: ONE reply-less row", async () => {
+    const c = telegram();
+    await hook.onTurnStarted(started("t1"), c);
+    await hook.onDeliveryConsumed(received("t1", "never mind"), c);
+    await hook.onTurnSettled(settled("t1", "cancelled"), c);
+    expect(onlyEntry()).toMatchObject({ input: "never mind", reply: "" });
+  });
+
+  it("a settled turn with nobody's words writes nothing, whatever its outcome", async () => {
+    for (const outcome of ["completed", "failed", "cancelled"] as const) {
+      const c = ctx({ kind: "telegram", sessionId: `s-${outcome}`, current: humanTelegramAuth });
+      await hook.onTurnStarted(started("t1"), c);
+      await hook.onTurnSettled(settled("t1", outcome), c);
+    }
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("a pause is not the end: the same turn continues after the answer and the exchange stays ONE row", async () => {
+    const c = telegram();
+    await hook.onTurnStarted(started("t1"), c);
+    await hook.onDeliveryConsumed(received("t1", "book the room"), c);
+    await requestCalls(hook, c, "t1", [toolCall("calendar_create_event")]);
+    await hook.onTurnPaused(turnPaused("t1"), c);
+    expect(capture).not.toHaveBeenCalled();
+    // The answer arrives on the SAME turn: no new turn.started, no new message.
+    await requestCalls(hook, c, "t1", [toolCall("gmail_search")]);
+    await hook.onContentCompleted(completed("t1", "stop", "booked"), c);
+    await hook.onTurnSettled(settled("t1", "completed", { reply: ["booked"] }), c);
+    expect(onlyEntry()).toMatchObject({ input: "book the room", reply: "booked", proposals: ["calendar_create_event", "gmail_search"] });
+  });
+
+  it("another turn's settle does not write an open exchange", async () => {
+    const c = telegram();
+    await hook.onTurnStarted(started("t1"), c);
+    await hook.onDeliveryConsumed(received("t1", "question"), c);
+    await hook.onTurnSettled(settled("t-other", "failed"), c);
+    expect(capture).not.toHaveBeenCalled();
+    await hook.onContentCompleted(completed("t1", "stop", "answer"), c);
+    expect(onlyEntry().reply).toBe("answer");
+  });
+
+  it("a second message on the same turn adds to the input; a delivery with no words changes nothing", async () => {
+    const c = telegram();
+    await hook.onTurnStarted(started("t1"), c);
+    await hook.onDeliveryConsumed(received("t1", "first"), c);
+    await hook.onDeliveryConsumed(received("t1", "second"), c);
+    await hook.onDeliveryConsumed(ev("delivery.consumed", { deliveryId: "d3", turnId: "t1", parts: [] }, "t1"), c);
+    await hook.onDeliveryConsumed(ev("delivery.consumed", { deliveryId: "d4", turnId: "t1", parts: [{ kind: "file", mediaType: "text/plain", ref: "r" }, { kind: "from-a-newer-eve" }] }, "t1"), c);
+    await hook.onContentCompleted(completed("t1", "stop", "ok"), c);
+    expect(onlyEntry().input).toBe("first\nsecond");
+  });
+
+  it("only a TOOL call is a proposal; skills, agents and task control are not", async () => {
+    const c = telegram();
+    await hook.onTurnStarted(started("t1"), c);
+    await hook.onDeliveryConsumed(received("t1", "go"), c);
+    await requestCalls(hook, c, "t1", [
+      { callId: "a", kind: "skill", name: "lares-docs" }, { callId: "b", kind: "agent", name: "helper" },
+      { callId: "c", kind: "control", name: "wait" }, { callId: "d", kind: "tool", name: "vault_write" },
+      { callId: "e", kind: "from-a-newer-eve", name: "x" },
+    ]);
+    await hook.onContentCompleted(completed("t1", "stop", "done"), c);
+    expect(onlyEntry().proposals).toEqual(["vault_write"]);
+  });
+
+  it("only a text part with phase reply ends an exchange: unknown phases, other kinds and empty text do not", async () => {
+    const c = telegram();
+    await hook.onTurnStarted(started("t1"), c);
+    await hook.onDeliveryConsumed(received("t1", "q"), c);
+    for (const data of [
+      { partId: "1", kind: "text", phase: "narration", value: "thinking aloud" },
+      { partId: "2", kind: "text", phase: "from-a-newer-eve", value: "not an answer" },
+      { partId: "3", kind: "reasoning", phase: "reply", value: "hidden thoughts" },
+      { partId: "4", kind: "result", phase: "reply", value: { a: 1 } },
+      { partId: "5", kind: "text", phase: "reply", value: "" },
+      { partId: "6", kind: "text", phase: "reply" },
+      { partId: "7", kind: "text", value: "no phase" },
+    ]) await hook.onContentCompleted(ev("content.completed", data, "t1"), c);
+    expect(capture).not.toHaveBeenCalled();
+    await hook.onContentCompleted(completed("t1", "stop", "the answer"), c);
+    expect(onlyEntry().reply).toBe("the answer");
+  });
+
+  describe("an event seen twice (a line read again) changes nothing", () => {
+    it("a repeated call.requested adds its tool once; a repeated delivery adds its words once", async () => {
+      const at = (line: number, index = 0) => ({ kind: "telegram", current: humanTelegramAuth, position: { line, index } });
+      await hook.onTurnStarted(started("t1"), ctx(at(0)));
+      for (let i = 0; i < 2; i += 1) await hook.onDeliveryConsumed(received("t1", "hello"), ctx(at(1)));
+      for (let i = 0; i < 2; i += 1) await hook.onCallRequested(callRequested("t1", toolCall("calendar_list")), ctx(at(2)));
+      await hook.onCallRequested(callRequested("t1", toolCall("calendar_list")), ctx(at(2, 1))); // a different event in the line
+      await hook.onContentCompleted(completed("t1", "stop", "ok"), ctx(at(3)));
+      expect(onlyEntry()).toMatchObject({ input: "hello", proposals: ["calendar_list", "calendar_list"] });
+    });
+
+    it("one stream read twice writes ONE row per exchange", async () => {
+      const stream = (c: (line: number) => never) => async (h: typeof hook) => {
+        await h.onTurnStarted(started("t1"), c(0));
+        await h.onDeliveryConsumed(received("t1", "hi"), c(1));
+        await h.onContentCompleted(completed("t1", "stop", "hello"), c(2));
+        await h.onTurnSettled(settled("t1", "completed"), c(3));
+        await h.onTurnStarted(started("t2"), c(4));
+        await h.onDeliveryConsumed(received("t2", "again"), c(5));
+        await h.onTurnSettled(settled("t2", "failed"), c(6));
+      };
+      const read = stream((line) => ctx({ kind: "telegram", current: humanTelegramAuth, position: { line, index: 0 } }));
+      await read(hook);
+      await read(hook);
+      expect(capture).toHaveBeenCalledTimes(2);
+      expect(capture.mock.calls.map((call) => (call[0] as TurnLogEntry).turnId)).toEqual(["t1", "t2"]);
+    });
+
+    it("a repeat does not skip a different session's event at the same position", async () => {
+      const a = ctx({ kind: "telegram", sessionId: "sa", current: humanTelegramAuth, position: { line: 0, index: 0 } });
+      const b = ctx({ kind: "telegram", sessionId: "sb", current: humanTelegramAuth, position: { line: 0, index: 0 } });
+      await hook.onTurnStarted(started("t1"), a);
+      await hook.onTurnStarted(started("t1"), b);
+      await hook.onDeliveryConsumed(received("t1", "x"), ctx({ kind: "telegram", sessionId: "sa", current: humanTelegramAuth, position: { line: 1, index: 0 } }));
+      await hook.onDeliveryConsumed(received("t1", "y"), ctx({ kind: "telegram", sessionId: "sb", current: humanTelegramAuth, position: { line: 1, index: 0 } }));
+      await hook.onTurnSettled(settled("t1", "failed"), ctx({ kind: "telegram", sessionId: "sa", current: humanTelegramAuth, position: { line: 2, index: 0 } }));
+      await hook.onTurnSettled(settled("t1", "failed"), ctx({ kind: "telegram", sessionId: "sb", current: humanTelegramAuth, position: { line: 2, index: 0 } }));
+      expect(capture.mock.calls.map((call) => (call[0] as TurnLogEntry).input).sort()).toEqual(["x", "y"]);
+    });
+  });
+
+  it("the console's web channel (channel:eve) is not a door: nothing is written, whatever the outcome", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    for (const outcome of ["completed", "failed", "cancelled"] as const) {
+      const c = ctx({ kind: "channel:eve", sessionId: `web-${outcome}`, current: humanTelegramAuth });
+      await hook.onTurnStarted(started("t1"), c);
+      await hook.onDeliveryConsumed(received("t1", "hello"), c);
+      await hook.onContentCompleted(completed("t1", "stop", "hi"), c);
+      await hook.onTurnSettled(settled("t1", outcome), c);
+    }
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("a failing capture sink never throws out of a handler: eve 1.0 would fail the turn", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const failing = makeTurnCapture({ capture: (async () => { throw new Error("vault down"); }) as never });
+    const c = telegram();
+    await failing.onTurnStarted(started("t1"), c);
+    await failing.onDeliveryConsumed(received("t1", "hi"), c);
+    await expect(failing.onContentCompleted(completed("t1", "stop", "hello"), c)).resolves.toBeUndefined();
+    await failing.onDeliveryConsumed(received("t2", "again"), c);
+    await expect(failing.onTurnSettled(settled("t2", "failed"), c)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+  });
 });

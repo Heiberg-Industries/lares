@@ -2,13 +2,28 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DELIVERY_KINDS, type DeliveryKind } from "@lares/agent-kit/delivery";
 
+import type { RouteDeps } from "../lib/delivery.js";
+
 const gatewayComplete = vi.fn(async (_prompt: string, _opts?: unknown) => "Generated for the web.");
 vi.mock("../lib/llm-complete.js", () => ({ gatewayComplete }));
+
+// The conversation's identity lookup, replaced so a test can see WHICH id it is asked about. It
+// answers "no identity" (what the unreachable database gave these tests before), so the auth
+// attributes the other tests expect are unchanged.
+const { proactiveContinuityIdentity } = vi.hoisted(() => ({
+  proactiveContinuityIdentity: vi.fn(async (_door: string, _alias: string) => undefined),
+}));
+vi.mock("../lib/conversation-continuity.js", () => ({
+  proactiveContinuityIdentity,
+  continuityAuthAttributes: () => ({}),
+  nativeConversationContinuity: async () => ({ context: [] }),
+}));
 
 const OWNER = "owner-1";
 beforeEach(() => {
   process.env["AGENT_OWNER_USER_ID"] = OWNER;
   gatewayComplete.mockClear();
+  proactiveContinuityIdentity.mockClear();
 });
 
 const definition = (over: Record<string, unknown> = {}) =>
@@ -23,7 +38,7 @@ const loaded = (over: Record<string, unknown> = {}) => ({ definition: definition
 function fakeDb() {
   const calls: [string, unknown[]][] = [];
   return { calls, query: vi.fn(async (sql: string, params?: unknown[]) => { calls.push([sql, params ?? []]); return { rows: [], rowCount: 0 }; }) } as never as
-    { calls: [string, unknown[]][]; query: (sql: string, params?: unknown[]) => Promise<unknown> };
+    { calls: [string, unknown[]][] } & NonNullable<RouteDeps["db"]>;
 }
 
 const sent = { verdict: "send", sent: true, alreadySeen: false, handled: true } as const;
@@ -76,6 +91,34 @@ describe("routeDelivery", () => {
     expect(heldDb.calls).toEqual([]);
   });
 
+  it("who the message is for and where a conversation starts are two things, and only Slack's differ", async () => {
+    const { routeDelivery } = await import("../lib/delivery.js");
+    const slackDmChannel = vi.fn(async (_userId: string) => "D1");
+    const targets = { telegram: "123", slack: "U1" };
+    const via = (door: string) =>
+      routeDelivery("digest", loaded({ delivery: { digest: [door] } }), { targets, db: fakeDb(), slackDmChannel })!;
+
+    const slack = via("slack");
+    // Unchanged: the ledger door and the conversation's identity are keyed on the user id.
+    expect([slack.target, slack.doorId]).toEqual(["U1", "slack:U1"]);
+    // The conversation is started at the direct-message channel the lookup returned.
+    expect(await slack.conversationAddress()).toBe("D1");
+    expect(slackDmChannel).toHaveBeenCalledWith("U1");
+
+    const telegram = via("telegram");
+    expect([telegram.target, await telegram.conversationAddress()]).toEqual(["123", "123"]);
+    const web = via("web");
+    expect(await web.conversationAddress()).toBe(OWNER);
+    expect(slackDmChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it("a Slack lookup that fails rejects the address; it never hands back the user id", async () => {
+    const { routeDelivery } = await import("../lib/delivery.js");
+    const slackDmChannel = vi.fn(async () => { throw new Error("slack direct-message channel lookup failed: missing_scope"); });
+    const r = routeDelivery("digest", loaded({ delivery: { digest: ["slack"] } }), { targets: { slack: "U1" }, db: fakeDb(), slackDmChannel })!;
+    await expect(r.conversationAddress()).rejects.toThrow(/missing_scope/);
+  });
+
   it("a first-choice send records no fallback", async () => {
     const { routeDelivery } = await import("../lib/delivery.js");
     const db = fakeDb();
@@ -92,10 +135,10 @@ describe("sendTurn / sendText", () => {
     const to = vi.fn((_c: unknown, _t: unknown) => ({ send }));
     return { send, to, rt: { to, waitUntil: vi.fn(), appAuth: { who: "app" }, telegram: "TG", slack: "SL" } };
   };
-  const routedVia = async (door: "telegram" | "slack" | "web") => {
+  const routedVia = async (door: "telegram" | "slack" | "web", slackDmChannel: (userId: string) => Promise<string> = async () => "D1") => {
     const { routeDelivery } = await import("../lib/delivery.js");
     const db = fakeDb();
-    const routed = routeDelivery("track-routing", loaded({ delivery: { "track-routing": [door] } }), { targets: { telegram: "123", slack: "U1" }, db })!;
+    const routed = routeDelivery("track-routing", loaded({ delivery: { "track-routing": [door] } }), { targets: { telegram: "123", slack: "U1" }, db, slackDmChannel })!;
     return { routed, db };
   };
 
@@ -108,13 +151,28 @@ describe("sendTurn / sendText", () => {
     expect(send).toHaveBeenCalledWith("PROMPT", { auth: { who: "app", attributes: expect.objectContaining({ lane: "track-routing", approverPrincipalId: "123" }) } });
   });
 
-  it("slack: starts the session in that channel", async () => {
+  // NEEDS ANOTHER PACKET: `lib/delivery-send.ts` belongs to the Telegram door's packet. These two
+  // are what its `sendTurn` has to do for Slack, and they stay red until it passes
+  // `await routed.conversationAddress()` to `to(slack, ...)` instead of `routed.target`. Started
+  // at the user id, the conversation's approval cards cannot be answered.
+  it("slack: starts the session in the owner's direct-message channel, and keeps identity on the user id", async () => {
     const { sendTurn } = await import("../lib/delivery-send.js");
     const { routed } = await routedVia("slack");
     const { send, to, rt: runtime } = rt();
     await sendTurn(routed, runtime, "PROMPT", { lane: "track-routing", title: "T" });
-    expect(to).toHaveBeenCalledWith("SL", { channelId: "U1" });
+    expect(to).toHaveBeenCalledWith("SL", { channelId: "D1" });
     expect(send).toHaveBeenCalledWith("PROMPT", { auth: { who: "app", attributes: { lane: "track-routing" } } });
+    // No conversation is re-keyed: the identity lookup is still asked about the USER id.
+    expect(proactiveContinuityIdentity).toHaveBeenCalledWith("slack", "U1");
+  });
+
+  it("slack: when the direct-message lookup fails, no session is started and the error reaches the caller", async () => {
+    const { sendTurn } = await import("../lib/delivery-send.js");
+    const { routed } = await routedVia("slack", async () => { throw new Error("slack direct-message channel lookup failed: missing_scope"); });
+    const { send, to, rt: runtime } = rt();
+    await expect(sendTurn(routed, runtime, "PROMPT", { lane: "track-routing", title: "T" })).rejects.toThrow(/missing_scope/);
+    expect(to).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("web: no session; the text is generated once, in the agent's voice, and filed in the inbox", async () => {

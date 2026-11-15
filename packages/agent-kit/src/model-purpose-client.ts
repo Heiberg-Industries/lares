@@ -26,7 +26,7 @@ const REQUEST_TIMEOUT_MS = 2_000;
 const REQUEST_TOMBSTONE_MS = 60_000;
 const MAX_REQUEST_TOMBSTONES = 2_048;
 const denied = () => new Error('Model purpose authority is not available');
-type Operation = 'request.admit' | 'turn.open' | 'step.claim' | 'step.consume' | 'job.consume' | 'turn.close';
+type Operation = 'request.admit' | 'turn.open' | 'step.claim' | 'step.consume' | 'job.consume' | 'turn.close' | 'door.open';
 interface RuntimeIdentity { agent: string; incarnation: string; key: Buffer }
 
 // IDs are burned before connecting, so timeout, refusal, or late ACK cannot retry a request.

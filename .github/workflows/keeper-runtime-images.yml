@@ -418,12 +418,41 @@ jobs:
         run: python3 services/keeper/tests/vault-files-image.probe.py lares-keeper:test
       - name: Prove root-only person erasure against the final Keeper image and Linux journal lock
         run: python3 services/keeper/tests/person-erasure-image.probe.py lares-keeper:test
+      # The maintenance proof makes the workflow template with the installer's own step, which runs
+      # inside the creative role image. It needs this commit's creative image, built exactly as the
+      # real-install job builds it (public docs baked in), reading that job's cache and writing none.
+      - name: Enable corepack and prepare pnpm 9.15.0
+        run: corepack enable && corepack prepare pnpm@9.15.0 --activate
+      - name: Setup Node 24 + pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+      - name: Install the docs exporter
+        run: pnpm install --frozen-lockfile --filter lares
+      - name: Export and stage the verified public docs corpus
+        env:
+          PUBLIC_DOCS_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.docs_release || 'candidate' }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          export_dir="$RUNNER_TEMP/public-docs-corpus"
+          node --import tsx scripts/public-docs.ts export --root "$GITHUB_WORKSPACE" --release "$PUBLIC_DOCS_RELEASE" --out "$export_dir" > "$RUNNER_TEMP/public-docs-identity.json"
+          mkdir -p .public-docs-bake
+          cp -R "$export_dir" .public-docs-bake/snapshot
+          cp "$RUNNER_TEMP/public-docs-identity.json" .public-docs-bake/identity.json
+          expected_hash="$(node -e 'const i=JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if(i.sourceCommit!==process.argv[2]||i.release!==process.argv[3]) process.exit(1); process.stdout.write(i.corpusSha256)' "$RUNNER_TEMP/public-docs-identity.json" "$GITHUB_SHA" "$PUBLIC_DOCS_RELEASE")"
+          node --import tsx scripts/public-docs.ts verify --snapshot "$GITHUB_WORKSPACE/.public-docs-bake/snapshot" --expected-corpus "$expected_hash"
+      - uses: docker/build-push-action@v6
+        id: creative-image
+        with: {context: ., file: services/creative/Dockerfile, target: runtime, pull: true, load: true, tags: 'lares-creative:test', cache-from: 'type=gha,scope=real-install-creative'}
       - name: Prove disposable maintenance admission and external database HBA
         run: |
           proof="$RUNNER_TEMP/maintenance-fence-proof.json"
           printf '{"format":1,"status":"not-started","cleanupOkay":false}\n' > "$proof"
           status=0
-          sudo env CI=true python3 -B services/keeper/tests/maintenance-fence-image.probe.py lares-keeper:test "$GITHUB_SHA" "$proof" || status=$?
+          sudo env CI=true python3 -B services/keeper/tests/maintenance-fence-image.probe.py lares-keeper:test \
+            "lares-creative@${{ steps.creative-image.outputs.digest }}" "$GITHUB_SHA" "$proof" || status=$?
           sudo chown "$(id -u):$(id -g)" "$proof" || status=1
           exit "$status"
       - uses: actions/upload-artifact@v4

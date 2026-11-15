@@ -76,6 +76,15 @@ function ctx(auth: unknown) {
 
 const READ_CTX = {} as never;
 
+/** A tool's `execute` is typed as its result OR a stream of results (eve 1.0). These tools
+ *  return one plain result; this narrows the type and changes nothing at run time. */
+const settled = <T,>(value: T) => value as Exclude<T, AsyncIterable<unknown>>;
+
+/** A schedule's `run`, called the way the runtime calls it: with its arguments. The schedule's
+ *  own declaration takes none, which is all its inferred type says. */
+const runSchedule = (schedule: { run?: unknown }, args: unknown) =>
+  (schedule.run as (args: unknown) => Promise<void>)(args);
+
 // ─── Schema (mirrors services/box/sql/001_baseline.sql) ──────────────────────────────────────
 // Moved to tests/helpers/proposals-schema.ts so
 // tests/schedule-heartbeat-wiring.test.ts can share the same mirror rather than a second copy.
@@ -285,7 +294,7 @@ describe("proposals", () => {
         diffPreview: "- a\n+ b",
       });
 
-      const result = await notionProposals.execute({}, READ_CTX);
+      const result = settled(await notionProposals.execute({}, READ_CTX));
       expect(result.proposals).toEqual([
         expect.objectContaining({
           id, vaultPath: "_desk/g.md", kind: "update", notionOwned: true, state: "pending",
@@ -351,9 +360,9 @@ describe("proposals", () => {
       const id = await insertProposal(getPool(), {
         vaultPath: "_desk/l.md", notionPageId: "p-l", proposedBody: "b", baseMdHash: "h", notionHash: "h",
       });
-      const result = await notionResolveProposal.execute(
+      const result = settled(await notionResolveProposal.execute(
         { id, decision: "reject" }, ctx(slackAuth(OWNER_SLACK_ID)),
-      );
+      ));
       expect(result.decision).toBe("reject");
       expect(result.consequence).toMatch(/reverted back to it/); // no docs row -> notionOwned false -> revert
     });
@@ -371,7 +380,7 @@ describe("proposals", () => {
         notePath: "_projects/acme.md", proposedNote: "n", baseBodyHash: "h", sourcesHash: "h",
         diffPreview: "- a\n+ b",
       });
-      const result = await atlasProposals.execute({}, READ_CTX);
+      const result = settled(await atlasProposals.execute({}, READ_CTX));
       expect(result.proposals).toEqual([
         expect.objectContaining({ id, notePath: "_projects/acme.md", state: "pending", diffPreview: "- a\n+ b" }),
       ]);
@@ -593,12 +602,15 @@ describe("proposals", () => {
     // the atlas lane completes normally.
     it("a lane's store failure (outer catch) makes the combined tick resolve false, even when the other lane completes", async () => {
       const atlasStamped: number[] = [];
-      const store: ProposalsWatchStore = {
+      // Two lanes only, as this test has always had: the cast is for the type, which has since
+      // gained a third lane. What the tick does with the store is unchanged.
+      const twoLanes: Pick<ProposalsWatchStore, "notionUnannounced" | "notionMarkAnnounced" | "atlasUnannounced" | "atlasMarkAnnounced"> = {
         notionUnannounced: async () => { throw new Error("Postgres is down"); },
         notionMarkAnnounced: async () => {},
         atlasUnannounced: async () => [atlasRow({ id: 13 })],
         atlasMarkAnnounced: async (id) => { atlasStamped.push(id); },
       };
+      const store = twoLanes as ProposalsWatchStore;
       const { door } = fakeDoor();
       await expect(makeProposalsWatchTick({ store, door }, freshState()).tick()).resolves.toBe(false);
       expect(atlasStamped).toEqual([13]); // the atlas lane is unaffected by the notion lane's failure
@@ -642,7 +654,7 @@ describe("proposals", () => {
     it("is a complete no-op when the gate is off", async () => {
       const mod = await import("../agent/schedules/proposals-watch.js");
       await expect(
-        mod.default.run!({ to: (() => {}) as never, waitUntil: () => {}, appAuth: {} as never }),
+        runSchedule(mod.default, { to: (() => {}) as never, waitUntil: () => {}, appAuth: {} as never }),
       ).resolves.toBeUndefined();
     });
 
@@ -650,7 +662,7 @@ describe("proposals", () => {
       process.env["EVE_SCHEDULES_LIVE"] = "1";
       const mod = await import("../agent/schedules/proposals-watch.js");
       await expect(
-        mod.default.run!({ to: (() => {}) as never, waitUntil: () => {}, appAuth: {} as never }),
+        runSchedule(mod.default, { to: (() => {}) as never, waitUntil: () => {}, appAuth: {} as never }),
       ).resolves.toBeUndefined();
     });
   });

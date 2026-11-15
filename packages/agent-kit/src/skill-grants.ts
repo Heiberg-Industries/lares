@@ -120,3 +120,84 @@ export function assertSkillsWithinGrants(manifest: SkillGrantDeclaration): void 
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Instruction skills
+// ---------------------------------------------------------------------------
+//
+// An INSTRUCTION skill is text: a procedure under `agent/skills/` that the model pulls into a
+// conversation with the framework's own loader (`eve__skill` since eve 1.0). That loader loads any
+// skill the conversation has and no authored file can replace or gate it, so the only place the
+// rule can live is WHICH SKILLS EXIST in a conversation. This table is that rule's data; the
+// decision is `instructionSkillsAllowedBy` / `instructionSkillOffered` in `./manifest.ts`.
+//
+// It is a different list from KNOWN_SKILLS on purpose. KNOWN_SKILLS are CODE skills an owner
+// declares in `agent.json` (and the console lists); a name here is never written in a definition.
+// The requirements below are the ENGINE's statement of what each text tells the agent to use, so
+// no definition can understate them, and none of this adds a field to the definition format.
+
+/** One instruction skill's rule. Loading a skill adds text and never a tool, so a skill cannot
+ *  widen access by itself; what this closes is the other half of never-widen: a procedure must
+ *  not be offered to an agent whose grants do not reach the tools the procedure names. */
+export interface InstructionSkillRule {
+  /** The CODE skill this text is the method for, when it is one. The text then exists only where
+   *  the definition declares that skill (and that declaration is inside the grants). */
+  readonly declaredAs?: KnownSkill;
+  /** Every capability whose tools the text tells the agent to call, at the lowest scope at which
+   *  those tools are handed over: `write-with-confirm` for a tool that raises its own approval
+   *  card, `read` for any other. Each service's skills test holds this list against the text. */
+  readonly requires: readonly { capability: string; scope: Scope }[];
+  /** Whether a private console conversation gets this skill. Only text that reads nothing of the
+   *  installation may say `true`. */
+  readonly privateConsole: boolean;
+}
+
+export const INSTRUCTION_SKILLS = {
+  // NEEDS NO GRANT, AND THAT IS A DECISION. The text is an index of the public, reviewed
+  // documentation fixed into the release, and the one tool it names (`lares_read_public_doc`)
+  // reads only those baked pages by a listed id. Nothing it says or reaches belongs to an
+  // installation, so there is no capability for a grant to cover and no definition can narrow
+  // or widen it. It is also the only skill a private console conversation gets.
+  "lares-docs": { requires: [], privateConsole: true },
+  // The whole outreach loop: who to write as, the do-not-contact check, research, the voice
+  // guide, the gated send, and tracking the thread for a reply.
+  "sales-outreach": {
+    requires: [
+      { capability: "gmail", scope: "write-with-confirm" },
+      { capability: "identity", scope: "read" },
+      { capability: "outreach", scope: "read" },
+      { capability: "read_url", scope: "read" },
+      { capability: "twenty", scope: "write-with-confirm" },
+      { capability: "voice", scope: "read" },
+    ],
+    privateConsole: false,
+  },
+  // The method for the `signals` code skill: declared in the definition, over the signal feed.
+  signals: {
+    declaredAs: "signals",
+    requires: [{ capability: "signals", scope: "read" }],
+    privateConsole: false,
+  },
+} as const satisfies Record<string, InstructionSkillRule>;
+
+export type InstructionSkillName = keyof typeof INSTRUCTION_SKILLS;
+export const INSTRUCTION_SKILL_NAMES = Object.keys(INSTRUCTION_SKILLS).sort() as InstructionSkillName[];
+
+export function isInstructionSkill(name: string): name is InstructionSkillName {
+  return Object.hasOwn(INSTRUCTION_SKILLS, name);
+}
+
+/** Whether `grants` reach every requirement: the capability is granted, not at `none`, and at
+ *  least at the required scope. The same comparison `assertSkillsWithinGrants` makes, as a
+ *  yes/no instead of a throw, because the caller's answer to "no" is that the skill is absent.
+ *  An unknown capability is a "no": nothing can be granted that the engine does not know. */
+export function grantsCover(
+  grants: SkillGrantDeclaration["grants"],
+  requires: readonly { capability: string; scope: Scope }[],
+): boolean {
+  return requires.every((req) => {
+    if (!KNOWN_CAPABILITY_SET.has(req.capability)) return false;
+    const grant = grants.find((g) => g.capability === req.capability);
+    return grant !== undefined && grant.scope !== "none" && scopeAtLeast(grant.scope, req.scope);
+  });
+}

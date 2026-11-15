@@ -3,6 +3,30 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// The Bot API, at the one seam every Telegram call goes through: the proxied fetch. Only the
+// button-tap block at the end of this file makes any call.
+const bot = vi.hoisted(() => ({ calls: [] as Array<{ method: string; body: Record<string, unknown> }> }));
+vi.mock("@lares/agent-kit/telegram-fetch", () => ({
+  telegramFetch: async (url: string | URL, init?: { body?: string }) => {
+    bot.calls.push({ method: String(url).split("/").pop()!, body: JSON.parse(init?.body ?? "{}") as Record<string, unknown> });
+    return new Response(JSON.stringify({ ok: true, result: { message_id: 77, chat: { id: 123456789, type: "private" } } }), { status: 200 });
+  },
+}));
+// A proposal's own store, so a tap can be resolved without a database.
+const proposals = vi.hoisted(() => ({ resolved: [] as Array<{ lane: string; id: number; action: string }>, open: true }));
+vi.mock("../lib/proposals-store.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveProposal: async (_pool: unknown, id: number, action: string) => {
+    if (!proposals.open) throw new Error("no open proposal");
+    proposals.resolved.push({ lane: "notion", id, action });
+  },
+  resolveAtlasProposal: async (_pool: unknown, id: number, action: string) => {
+    if (!proposals.open) throw new Error("no open proposal");
+    proposals.resolved.push({ lane: "atlas", id, action });
+  },
+}));
+vi.mock("@lares/agent-kit/db", () => ({ getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }) }));
+
 const TELEGRAM_OWNER = "123456789";
 
 async function freshModule() {
@@ -204,36 +228,135 @@ describe("chief-of-staff Telegram channel", () => {
     });
 
     describe("shouldTrackForRotation", () => {
-      it("admits a terminal reply on the allowed principal's private chat", async () => {
+      it("admits the turn's reply on the allowed principal's private chat", async () => {
         const { shouldTrackForRotation } = await freshModule();
-        expect(shouldTrackForRotation("stop", "private", TELEGRAM_OWNER)).toBe(true);
+        expect(shouldTrackForRotation("reply", "private", TELEGRAM_OWNER)).toBe(true);
       });
 
-      it("rejects interim tool-call narration (finishReason !== stop)", async () => {
+      it("rejects narration before a tool call, and any phase it does not know", async () => {
         const { shouldTrackForRotation } = await freshModule();
-        expect(shouldTrackForRotation("tool-calls", "private", TELEGRAM_OWNER)).toBe(false);
+        expect(shouldTrackForRotation("narration", "private", TELEGRAM_OWNER)).toBe(false);
+        expect(shouldTrackForRotation("a-phase-a-later-eve-adds", "private", TELEGRAM_OWNER)).toBe(false);
       });
 
       it("rejects a group/supergroup chat — those already anchor per-thread", async () => {
         const { shouldTrackForRotation } = await freshModule();
-        expect(shouldTrackForRotation("stop", "group", TELEGRAM_OWNER)).toBe(false);
+        expect(shouldTrackForRotation("reply", "group", TELEGRAM_OWNER)).toBe(false);
       });
 
       it("rejects a null chatId", async () => {
         const { shouldTrackForRotation } = await freshModule();
-        expect(shouldTrackForRotation("stop", "private", null)).toBe(false);
+        expect(shouldTrackForRotation("reply", "private", null)).toBe(false);
       });
 
       it("rejects a chat that is not the allowed principal", async () => {
         const { shouldTrackForRotation } = await freshModule();
-        expect(shouldTrackForRotation("stop", "private", "999999")).toBe(false);
+        expect(shouldTrackForRotation("reply", "private", "999999")).toBe(false);
       });
 
       it("admits nobody when the principal id is unset — fails closed like the message gate", async () => {
         delete process.env["TELEGRAM_PRINCIPAL_ID"];
         const { shouldTrackForRotation } = await freshModule();
-        expect(shouldTrackForRotation("stop", "private", TELEGRAM_OWNER)).toBe(false);
+        expect(shouldTrackForRotation("reply", "private", TELEGRAM_OWNER)).toBe(false);
       });
     });
+  });
+});
+
+// ── A tap on one of our own proposal buttons ─────────────────────────────────────────────
+//
+// eve hands every tap that is not on one of its own buttons to the door's `onCallbackQuery`,
+// with a handle bound to the chat the button sits in. eve 1.0 removed the free-standing Bot API
+// helpers this used to call, so every call below goes through that handle — and so through the
+// channel's own credentials and the proxied fetch.
+describe("a tap on a proposal button, through the real door", () => {
+  const SECRET = "hook-secret";
+  let dir: string;
+
+  beforeEach(() => {
+    bot.calls.length = 0;
+    proposals.resolved.length = 0;
+    proposals.open = true;
+    dir = mkdtempSync(join(tmpdir(), "chief-of-staff-telegram-tap-"));
+    writeFileSync(join(dir, "token"), "1:abc\n");
+    writeFileSync(join(dir, "secret"), `${SECRET}\n`);
+    process.env["TELEGRAM_PRINCIPAL_ID"] = TELEGRAM_OWNER;
+    process.env["TELEGRAM_BOT_TOKEN_FILE"] = join(dir, "token");
+    process.env["TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE"] = join(dir, "secret");
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    for (const k of ["TELEGRAM_PRINCIPAL_ID", "TELEGRAM_BOT_TOKEN_FILE", "TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE"]) delete process.env[k];
+  });
+
+  const tap = (fromId: string, data: string) =>
+    JSON.stringify({
+      update_id: 1,
+      callback_query: {
+        id: "cb1",
+        from: { id: Number(fromId), is_bot: false, first_name: "X" },
+        message: { message_id: 61, date: 1, chat: { id: Number(TELEGRAM_OWNER), type: "private" }, text: "Proposal" },
+        chat_instance: "ci",
+        data,
+      },
+    });
+
+  async function post(body: string) {
+    const door = (await freshModule()).default as unknown as {
+      routes: Array<{ method: string; handler: (request: Request, ctx: unknown) => Promise<Response> }>;
+    };
+    const pending: Promise<unknown>[] = [];
+    const responded: unknown[] = [];
+    const res = await door.routes.find((r) => r.method === "POST")!.handler(
+      new Request("http://x/inner", { method: "POST", headers: { "x-telegram-bot-api-secret-token": SECRET, "content-type": "application/json" }, body }),
+      {
+        from: () => ({ respond: async (...a: unknown[]) => { responded.push(a); }, send: async (...a: unknown[]) => { responded.push(a); } }),
+        resolveSession: async () => undefined,
+        waitUntil: (p: Promise<unknown>) => pending.push(p),
+        attachSession: undefined,
+      },
+    );
+    await Promise.all(pending);
+    return { res, responded };
+  }
+
+  it("the owner's Approve resolves the proposal, answers the tap, strips the buttons and confirms in the chat", async () => {
+    const { res, responded } = await post(tap(TELEGRAM_OWNER, "np:a:61"));
+
+    expect(res.status).toBe(200);
+    expect(proposals.resolved).toEqual([{ lane: "notion", id: 61, action: "approve" }]);
+    expect(bot.calls.map((c) => c.method)).toEqual(["answerCallbackQuery", "editMessageReplyMarkup", "sendMessage"]);
+    expect(bot.calls[0]!.body).toEqual({ callback_query_id: "cb1", text: "✅ Approved." });
+    // The announcement the button sat on, in the chat it sat in, with no keyboard given: Telegram
+    // removes the buttons.
+    expect(bot.calls[1]!.body).toEqual({ chat_id: TELEGRAM_OWNER, message_id: 61 });
+    expect(bot.calls[2]!.body).toMatchObject({ chat_id: TELEGRAM_OWNER, text: "✅ Approved: Notion proposal #61." });
+    // A proposal button is not an answer to eve: nothing is resumed.
+    expect(responded).toEqual([]);
+  });
+
+  it("an Atlas proposal goes to its own store", async () => {
+    await post(tap(TELEGRAM_OWNER, "ap:r:7"));
+    expect(proposals.resolved).toEqual([{ lane: "atlas", id: 7, action: "reject" }]);
+  });
+
+  it("a stranger's tap resolves nothing and is told so", async () => {
+    await post(tap("999000111", "np:a:61"));
+    expect(proposals.resolved).toEqual([]);
+    expect(bot.calls).toEqual([{ method: "answerCallbackQuery", body: { callback_query_id: "cb1", text: "Not allowed." } }]);
+  });
+
+  it("a proposal that is no longer open is answered, and its message is left alone", async () => {
+    proposals.open = false;
+    await post(tap(TELEGRAM_OWNER, "np:a:61"));
+    expect(bot.calls).toEqual([{ method: "answerCallbackQuery", body: { callback_query_id: "cb1", text: "Notion proposal #61 was already resolved." } }]);
+  });
+
+  it("a tap nobody claims is acknowledged honestly", async () => {
+    // The front door refuses callback data it does not recognise before it gets here; this is
+    // what the channel itself does with one all the same.
+    await post(tap(TELEGRAM_OWNER, "veto:1"));
+    expect(proposals.resolved).toEqual([]);
+    expect(bot.calls).toEqual([{ method: "answerCallbackQuery", body: { callback_query_id: "cb1", text: "Unsupported action." } }]);
   });
 });

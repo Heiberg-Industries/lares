@@ -3,7 +3,7 @@ import { consoleAdmission } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
 import { vaultTurnCapability } from '../agent/lib/vault-turn.js';
-import type { ApprovedExecution } from '@lares/agent-kit/approval-execution';
+import { approvalResponderOf, type ApprovedExecution } from '@lares/agent-kit/approval-execution';
 import { taintTurn, turnKeyFrom } from '@lares/agent-kit/origin-taint';
 
 type TrackContext = { session?: { id?: string; turn?: { id?: string; sequence?: number }; auth?: { current?: unknown; initiator?: unknown } | null } };
@@ -57,7 +57,7 @@ export function tracksHome(ctx: TrackContext, expectedHome?: string): VaultTrack
 /** A single exact approved action. Keeper rechecks the persisted approval and current edit grant. */
 export async function mutateApprovedTrack(ctx: TrackContext, approved: ApprovedExecution,
   operation: 'track_add_item'|'track_move_item'|'track_create'|'track_set_steps', input: unknown): Promise<unknown> {
-  const session = ctx.session, admission = consoleAdmission(session?.auth?.current), own = managedIdentity(process.env);
+  const session = ctx.session, admission = consoleAdmission(approvalResponderOf(ctx)), own = managedIdentity(process.env);
   if (!own || !session?.id || !admission || admission.purpose !== 'resolver' ||
       approved.authority.origin !== 'approval-resume' || approved.authority.sessionId !== session.id ||
       approved.authority.actingMemberId !== admission.memberId || approved.authority.resolvedByMemberId !== admission.memberId ||

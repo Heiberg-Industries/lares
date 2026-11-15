@@ -15,10 +15,11 @@
 // Docker, no network, no server.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { keeperConfigDifferences, parseProvenanceRecord } from "../lib/doctor-parity.js";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync, realpathSync,
-  symlinkSync,
+  symlinkSync, cpSync, readdirSync, lstatSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -238,6 +239,37 @@ describe("the keeper the installer configures and starts", () => {
     expect(r.code).toBe(78);
     expect(r.stderr).toMatch(/symbolic link/i);
     expect(existsSync(keeperConfigPath())).toBe(false);
+  });
+
+  // An update holds the maintenance run lock exclusively for its whole length while it stops the
+  // keeper and the agents and upgrades their stores (maintenance-custody.py). The installer starts
+  // and recreates the keeper, so it never runs then, and it holds the lock shared while it runs.
+  it("refuses to run while an update runs, changing nothing, and runs once the update has finished", async () => {
+    prepareFreshCustody();
+    const lock = join(prefix, "var", "lib", "lares-maintenance", "custody", "operation.lock");
+    const holder = spawn("python3", ["-c",
+      "import fcntl, os, sys\n" +
+      "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n" +
+      "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n" +
+      "print('held', flush=True)\n" +
+      "sys.stdin.read()\n", lock], { stdio: ["pipe", "pipe", "inherit"] });
+    try {
+      await once(holder.stdout!, "data");
+      const r = install();
+      expect(r.code, r.stderr).toBe(78);
+      expect(r.stderr).toContain("an update is running on this server, so this did not start and nothing was changed");
+      expect(r.stderr).toContain("Wait until the update has finished, then run this again");
+      // Only the root check ran: no container, no setting, no secret.
+      expect(calls()).not.toMatch(/^(docker|systemctl|pnpm|useradd|chown|chmod) /m);
+      expect(existsSync(keeperConfigPath())).toBe(false);
+      expect(existsSync(join(prefix, "etc", "lares", "installation.env"))).toBe(false);
+    } finally {
+      holder.stdin!.end();
+      await once(holder, "exit");
+    }
+    const after = install();
+    expect(after.code, after.stderr).toBe(0);
+    expect(existsSync(keeperConfigPath())).toBe(true);
   });
 
   it("brings the keeper up only after the owner it binds the agent to exists", () => {
@@ -530,6 +562,167 @@ describe("the keeper the installer configures and starts", () => {
     expect(existsSync(keeperConfigPath())).toBe(true);
   });
 
+  describe("a new server holding only the settings copied from a backup", () => {
+    // docs/install.md, "Restoring onto a new server", steps 4 and 5: exactly these, then the installer.
+    const BUNDLE = ["etc/lares/installation.env", "etc/lares/console-oauth.env", "etc/lares/backup.env",
+      "etc/lares/restic-password", "etc/lares/secrets", "srv/lares/secrets"];
+    // What a dry run says, what a real run says, and the opening of the first screen a real run shows.
+    const RESTORED_LINE = "found settings copied from a backup on an otherwise empty machine — this would install fresh, using them.";
+    const RESTORED_REAL_LINE = "found settings copied from a backup on an otherwise empty machine — installing fresh, using them.";
+    const RESTORED_SCREEN = "this box holds only settings copied from a backup.";
+    const HINT = "If you copied a backup's settings onto this machine to restore it, they are not exactly what docs/install.md (\"Restoring onto a new server\") has you copy, so they were not used: ";
+    const receipt = () => join(prefix, "var/lib/lares-maintenance/custody/preparation.json");
+    /** An installed server's bundle, put onto this machine after everything else on it was removed. */
+    const newServerWithBundle = () => {
+      expect(install().code).toBe(0);
+      const etc = join(prefix, "etc", "lares");
+      if (!existsSync(join(etc, "console-oauth.env"))) {
+        writeFileSync(join(etc, "console-oauth.env"), "GOOGLE_CLIENT_ID_CONSOLE=100000000000-fixture.apps.googleusercontent.com\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture\n");
+      }
+      writeFileSync(join(etc, "backup.env"), "RESTIC_REPOSITORY='/srv/elsewhere'\nRESTIC_PASSWORD_FILE='/etc/lares/restic-password'\n");
+      writeFileSync(join(etc, "restic-password"), "fixture-repository-password\n");
+      mkdirSync(join(prefix, "srv", "lares", "secrets"), { recursive: true });
+      writeFileSync(join(prefix, "srv", "lares", "secrets", "agent-gateway-key"), "fixture\n");
+      const saved = join(dir, "bundle");
+      for (const path of BUNDLE) cpSync(join(prefix, path), join(saved, path), { recursive: true });
+      rmSync(prefix, { recursive: true, force: true });
+      mkdirSync(prefix);
+      for (const path of BUNDLE) cpSync(join(saved, path), join(prefix, path), { recursive: true });
+      writeFileSync(log, "");
+      return saved;
+    };
+    const refusedAsToday = (r: { code: number; stdout: string; stderr: string }) => {
+      expect(r.code, r.stdout + r.stderr).toBe(78);
+      for (const line of [RESTORED_LINE, RESTORED_REAL_LINE, RESTORED_SCREEN]) expect(r.stdout + r.stderr).not.toContain(line);
+    };
+    /** Every path under the prefix with its kind, mode and contents: what "changes nothing" compares. */
+    const tree = (): string[] => {
+      const out: string[] = [];
+      const walk = (rel: string) => {
+        for (const name of readdirSync(join(prefix, rel)).sort()) {
+          const path = rel ? `${rel}/${name}` : name;
+          const info = lstatSync(join(prefix, path));
+          if (info.isDirectory()) { out.push(`${path}/ ${(info.mode & 0o7777).toString(8)}`); walk(path); }
+          else out.push(`${path} ${(info.mode & 0o7777).toString(8)} ${info.isFile() ? readFileSync(join(prefix, path), "utf8") : "link"}`);
+        }
+      };
+      walk("");
+      return out;
+    };
+
+    it("installs fresh with them, preparing custody exactly as a first install does and keeping every copied file", () => {
+      const saved = newServerWithBundle();
+      const r = install();
+      expect(r.code, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout + r.stderr).toContain(`install: ${RESTORED_SCREEN}`);
+      expect(r.stdout + r.stderr).toContain(`install: ${RESTORED_REAL_LINE}`);
+      expect(r.stdout + r.stderr).not.toContain(RESTORED_LINE);
+      expect(r.stdout + r.stderr).not.toContain("this box has nothing here yet");
+      expect(r.stdout + r.stderr).not.toContain("found an existing or unfinished installation");
+      expect(JSON.parse(readFileSync(receipt(), "utf8"))).toMatchObject({ version: 1, epoch: 1, complete: true });
+      for (const name of readdirSync(join(saved, "etc/lares/secrets"))) {
+        expect(readFileSync(join(prefix, "etc/lares/secrets", name), "utf8"), name).toBe(readFileSync(join(saved, "etc/lares/secrets", name), "utf8"));
+      }
+      expect(readFileSync(join(prefix, "srv/lares/secrets/agent-gateway-key"), "utf8")).toBe("fixture\n");
+      expect(existsSync(keeperConfigPath())).toBe(true);
+    }, 60_000);
+
+    it.each([
+      // The refusal names what differs only while there is no custody (custody means an installation).
+      ["a custody folder, even an empty one", () => mkdirSync(join(prefix, "var/lib/lares-maintenance"), { recursive: true }), null],
+      ["database data", () => mkdirSync(join(prefix, "var/lib/lares/postgres"), { recursive: true }),
+        "var/lib/lares/postgres is here, and a backup's settings do not include it"],
+      ["a stack file", () => { mkdirSync(join(prefix, "opt/lares"), { recursive: true }); writeFileSync(join(prefix, "opt/lares/compose.yaml"), "services: {}\n"); },
+        "opt/lares/compose.yaml is here, and a backup's settings do not include it"],
+      ["an unknown file beside the copied settings", () => writeFileSync(join(prefix, "etc/lares/keeper.json"), "{}\n"),
+        "etc/lares/keeper.json is here, and a backup's settings do not include it"],
+      ["an unknown folder in the install folder", () => mkdirSync(join(prefix, "srv/lares/agents")),
+        "srv/lares/agents is here, and a backup's settings do not include it"],
+      ["one of the copied files missing", () => rmSync(join(prefix, "etc/lares/backup.env")), "etc/lares/backup.env is missing"],
+      ["the token folder missing from an otherwise complete copy", () => rmSync(join(prefix, "srv/lares/secrets"), { recursive: true }),
+        "srv/lares/secrets is missing"],
+      ["the copy of an older snapshot, which has no token folder at all", () => rmSync(join(prefix, "srv/lares"), { recursive: true }),
+        "srv/lares is missing"],
+      ["a copied file that is a link", () => { rmSync(join(prefix, "etc/lares/restic-password")); symlinkSync(join(dir, "elsewhere"), join(prefix, "etc/lares/restic-password")); },
+        "etc/lares/restic-password is not a plain file (a link is neither)"],
+      ["the settings folder writable by its group", () => chmodSync(join(prefix, "etc/lares"), 0o775),
+        "etc/lares can be changed by others than its owner"],
+      ["the install folder writable by anyone", () => chmodSync(join(prefix, "srv/lares"), 0o777),
+        "srv/lares can be changed by others than its owner"],
+      ["a container of an installation", () => stub("docker", 'case "$*" in *"ps --all --quiet --filter label=com.docker.compose.project=lares"*) echo abc123 ;; esac\nexit 0'),
+        "containers of an installation are on this machine"],
+      ["Docker not answering when the installer asks for containers", () => stub("docker", 'case "$*" in *"ps --all --quiet --filter label=com.docker.compose.project=lares"*) echo "Cannot connect to the Docker daemon" >&2; exit 1 ;; esac\nexit 0'),
+        "Docker could not be asked whether containers of an installation are on this machine"],
+    ] as [string, () => void, string | null][])("with %s, refuses as it does today, prepares nothing and adopts nothing", (_label, extra, why) => {
+      newServerWithBundle();
+      extra();
+      const custodyBefore = existsSync(join(prefix, "var/lib/lares-maintenance")) ? readdirSync(join(prefix, "var/lib/lares-maintenance")) : null;
+      const r = install();
+      refusedAsToday(r);
+      if (why === null) expect(r.stdout + r.stderr).not.toContain(HINT);
+      else expect(r.stderr).toContain(`${HINT}${why}`);
+      expect(existsSync(receipt())).toBe(false);
+      expect(existsSync(join(prefix, "var/lib/lares-maintenance")) ? readdirSync(join(prefix, "var/lib/lares-maintenance")) : null).toEqual(custodyBefore);
+    }, 60_000);
+
+    it("a dry run with them says it would install fresh with them, and changes nothing", () => {
+      newServerWithBundle();
+      const before = tree();
+      const r = run(["--dry-run", "--release", releaseFile]);
+      expect(r.code, r.stdout + r.stderr).toBe(0);
+      expect(r.stdout).toContain(`install: ${RESTORED_LINE}`);
+      expect(r.stdout).toContain("install: this was a dry run. Nothing has been changed.");
+      expect(r.stdout).not.toContain(RESTORED_REAL_LINE);
+      expect(r.stdout).not.toContain("found an existing or unfinished installation");
+      expect(tree()).toEqual(before);
+    }, 60_000);
+
+    it("custody refuses the copied settings unless the installer asks for them, and refuses anything more even then", () => {
+      newServerWithBundle();
+      let said = "";
+      const custody = (...args: string[]) => {
+        said = "";
+        try {
+          said = execFileSync("python3", [MAINTENANCE_CUSTODY, ...args], { env: { ...process.env, LARES_MAINTENANCE_TESTING: "1" }, stdio: "pipe", encoding: "utf8" });
+          return 0;
+        } catch (error) { said = String((error as { stdout?: string }).stdout ?? ""); return (error as { status: number }).status; }
+      };
+      expect(custody("holds-only-restored-settings", prefix)).toBe(0);
+      expect(said).toBe("");
+      expect(custody("prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh")).not.toBe(0);
+      expect(existsSync(join(prefix, "var/lib/lares-maintenance"))).toBe(false);
+      mkdirSync(join(prefix, "srv/taste"));
+      writeFileSync(join(prefix, "etc/lares/keeper.env"), "NOT_SHOWN=fixture-value-that-must-not-be-printed\n");
+      rmSync(join(prefix, "etc/lares/console-oauth.env"));
+      expect(custody("holds-only-restored-settings", prefix)).toBe(1);
+      // Names only, all of them, and never what a file holds.
+      expect(said).toBe("srv/taste is here, and a backup's settings do not include it; etc/lares/console-oauth.env is missing; "
+        + "etc/lares/keeper.env is here, and a backup's settings do not include it\n");
+      expect(said).not.toContain("fixture-value");
+      rmSync(join(prefix, "etc/lares/keeper.env"));
+      writeFileSync(join(prefix, "etc/lares/console-oauth.env"), "GOOGLE_CLIENT_ID_CONSOLE=100000000000-fixture.apps.googleusercontent.com\n");
+      expect(custody("prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh", "--restored-settings")).not.toBe(0);
+      expect(existsSync(join(prefix, "var/lib/lares-maintenance"))).toBe(false);
+      rmSync(join(prefix, "srv/taste"), { recursive: true });
+      expect(custody("prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh", "--restored-settings")).toBe(0);
+      expect(existsSync(receipt())).toBe(true);
+      // Once custody exists, the copied settings are an installation like any other.
+      expect(custody("holds-only-restored-settings", prefix)).toBe(1);
+      expect(custody("prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh", "--restored-settings")).not.toBe(0);
+    }, 60_000);
+
+    it("a first install on an empty machine and a re-run on an installed one say what they always said", () => {
+      const first = install();
+      expect(first.code).toBe(0);
+      expect(first.stdout + first.stderr).toContain("found no existing installation under");
+      expect(first.stdout + first.stderr).not.toContain(RESTORED_LINE);
+      const again = install();
+      expect(again.code).toBe(0);
+      expect(again.stdout + again.stderr).toContain("found an existing or unfinished installation");
+      expect(again.stdout + again.stderr).not.toContain(RESTORED_LINE);
+    }, 60_000);
+  });
+
   describe("re-running the installer", () => {
     const calendar = () => join(prefix, "srv", "lares", "installation", "deadline-calendar.json");
     const IN_CONTAINER = "/srv/lares/installation/deadline-calendar.json";
@@ -601,7 +794,11 @@ describe("the keeper the installer configures and starts", () => {
       expect(recreates()).toBe(1);
       expect(install().code).toBe(0);
       expect(recreates()).toBe(1);
-    });
+      // Three whole installer runs. Measured on one re-run (2.2 s on a laptop): the stack and
+      // keeper-config renderers, real TypeScript started through tsx, take 1.3 s of it, the python
+      // helpers most of the rest; the update-lock wrapper adds about 20 ms. A CI runner is about
+      // three times slower, so three runs land near 19 s: slow by nature, not a wait.
+    }, 60_000);
 
     it("mounts exactly the Google files its settings name, read-only, at the same path", () => {
       expect(install().code).toBe(0);
@@ -625,7 +822,8 @@ describe("the keeper the installer configures and starts", () => {
       expect(install().code).toBe(0);
       expect(existsSync(personalCompose())).toBe(false);
       expect(keeperEnv().COMPOSE_FILE).not.toContain("personal");
-    });
+      // Three whole installer runs, as the case above: near 19 s on a CI runner.
+    }, 60_000);
 
     it("mounts the Microsoft files the same way", () => {
       expect(install().code).toBe(0);
@@ -661,7 +859,9 @@ describe("the keeper the installer configures and starts", () => {
         expect(existsSync(personalCompose()), label).toBe(false);
       }
       expect(before).toContain(block.tokenKeyFile);
-    });
+      // Four whole installer runs: about 10 seconds on a quiet machine, before and after the
+      // agent-store step and the update lock were added (measured), so a slow runner reaches 20.
+    }, 60_000);
 
     it("preserves explicit Microsoft-only runtime settings on installer rerun", () => {
       expect(install().code).toBe(0);
@@ -674,7 +874,8 @@ describe("the keeper the installer configures and starts", () => {
       setRuntime("microsoft", microsoft); keeperIsRunning();
       expect(install().code).toBe(0); expect(readKeeperConfig().lifecycle.runtime.microsoft).toEqual(microsoft); expect(recreates()).toBe(1);
       expect(install().code).toBe(0); expect(recreates()).toBe(1);
-    });
+      // Three whole installer runs, so it sits as close to 20 seconds as the case above on a slow runner.
+    }, 60_000);
 
     it("restarts a running keeper when its settings changed", () => {
       expect(install().code).toBe(0);

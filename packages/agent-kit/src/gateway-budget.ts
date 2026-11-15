@@ -70,10 +70,13 @@
  *  1. **the raw body**, as a probe would see it (a parsed object, or JSON text);
  *  2. **the AI SDK's wrapper** — `AI_APICallError` with `statusCode: 400` or `429`, the raw
  *     text on `responseBody`, and the parsed body on `data`;
- *  3. **eve's `turn.failed` / `session.failed` event data** — `{ code, message, details }`,
- *     where `details` carries eve's own distillation of (2): `upstreamType`,
- *     `upstreamMessage`, `apiErrorMessage`, `statusCode`, `responseBodySnippet` (eve 0.32.0,
- *     `dist/src/harness/model-call-error.js`).
+ *  3. **eve's `turn.settled` (outcome `failed`) / `session.ended` event data** — `{ error: { code,
+ *     message, id?, hint? } }` (eve 1.0). The old `details` object (`upstreamType`,
+ *     `statusCode`, `responseBodySnippet`) is NOT on the event any more: only the message
+ *     survives, and eve builds it from the gateway's own message (`harness/model-call/failure.js`:
+ *     `summarizeKnownError(e)?.message ?? extractUpstreamRejectionMessage(e)?.message ??
+ *     toErrorMessage(e)`). So from this vantage point the SENTENCE marker is the signal; the
+ *     `budget_exceeded` type is not visible there.
  *
  * ## What this module deliberately does NOT do
  *
@@ -94,7 +97,7 @@
  * gateway-type allow-lists. So a REAL production 429 budget refusal — the raw `AI_APICallError`
  * the gateway call actually throws, which this module never touches — is retried up to twice
  * more by eve's own outer loop (`runModelCallWithRetries`, `dist/src/harness/tool-loop.js`)
- * before `turn.failed` ever fires and this module gets a chance to recognise anything. Verified
+ * before the turn ever settles `failed` and this module gets a chance to recognise anything. Verified
  * by executing the installed eve's own `classifyModelCallError` against a 429-shaped budget
  * refusal (`tests/gateway-budget-eve-retry-classification.test.ts`). Fixing that is a change to
  * eve's retry policy or to `createGatewayProvider`'s fetch seam, not to this file; see that
@@ -102,6 +105,12 @@
  */
 
 import { MEMBER_LIMIT_SENTENCE, INSTALLATION_LIMIT_SENTENCE } from "./gateway-admission-protocol.js";
+import { approvalReplySentence } from "./approval-reply-sentence.js";
+import {
+  CONVERSATION_TOO_LONG_SLACK,
+  CONVERSATION_TOO_LONG_TELEGRAM,
+  isConversationTooLong,
+} from "./conversation-too-long.js";
 
 /** LiteLLM's `error.type` on a budget refusal. Measured 2026-09-01 (see this file's header). */
 export const LITELLM_BUDGET_EXCEEDED_TYPE = "budget_exceeded";
@@ -263,8 +272,8 @@ function collectSignals(root: unknown): Signals {
  * True when this error is the gateway saying the key's budget is spent — and only then.
  *
  * Accepts any of the three vantage points named in this file's header: the raw body (object
- * or JSON text), the AI SDK's `AI_APICallError`, and eve's `turn.failed`/`session.failed`
- * event data. A `GatewayBudgetExceededError` is recognised too.
+ * or JSON text), the AI SDK's `AI_APICallError`, and eve's `turn.settled`/`session.ended`
+ * event data (`{ error: { code, message } }`). A `GatewayBudgetExceededError` is recognised too.
  *
  * Both directions matter and both are tested:
  *
@@ -310,21 +319,34 @@ export function admissionRefusalText(err: unknown): string {
 }
 export function isBudgetAdmissionRefused(err: unknown): boolean {
   const signals = collectSignals(err);
-  return signals.types.includes(BUDGET_ADMISSION_REFUSED_TYPE) && signals.statuses.every(status => status === 400);
+  if (signals.types.includes(BUDGET_ADMISSION_REFUSED_TYPE) && signals.statuses.every(status => status === 400)) return true;
+  // eve 1.0's failure event carries only `{ code, message }`: the type above is gone. The keeper
+  // writes exactly three sentences on this refusal (the fixed text and the two limit sentences),
+  // so a message that IS one of them, whole, is the same refusal. A message that merely contains
+  // one does not count, and no status may contradict the 400.
+  return signals.statuses.every(status => status === 400) &&
+    signals.messages.some(m => m === BUDGET_ADMISSION_REFUSED_TEXT || MEMBER_LIMIT_SENTENCE.test(m) || INSTALLATION_LIMIT_SENTENCE.test(m));
 }
 
 // ── The door's answer ───────────────────────────────────────────────────────────────────
 
 /**
- * The failure-event payload a door handler receives. Structurally eve 0.32.0's
- * `EventData<"turn.failed">` and `EventData<"session.failed">` (`{ code, message, details? }`
- * plus ids); narrowed here to the fields the answer is composed from, so the kit does not
- * take a type dependency on eve's protocol module.
+ * The failure-event payload a door handler receives. Structurally the `data` of eve 1.0's
+ * `turn.settled` (outcome `failed`) and `session.ended` (outcome `failed`): both carry
+ * `error?: { code, message, id?, hint? }`. Narrowed here to what the answer is composed from, so
+ * the kit takes no type dependency on eve's protocol module. A door passes the event's `data`.
  */
 export interface FailureEventData {
-  readonly code?: string;
-  readonly message?: string;
-  readonly details?: Record<string, unknown> | undefined;
+  /** When present it must be `failed` for a door to answer at all: a turn that completed or was
+   *  cancelled, or a session that ended well, has nothing to apologise for. */
+  readonly outcome?: string;
+  readonly error?: {
+    readonly code?: string;
+    readonly message?: string;
+    readonly id?: string;
+    readonly hint?: string;
+    readonly name?: string;
+  } | undefined;
 }
 
 /**
@@ -338,6 +360,13 @@ export type FailureDialect = "slack" | "telegram";
 export type FailureResponse =
   /** A capped turn: post `text` — the door's own fixed sentence — and log one line. */
   | { readonly kind: "budget-refusal"; readonly text: string }
+  /** The reply in a turn that asked a card was refused: post `text`, the fixed sentence every
+   *  door shows for it (`@lares/agent-kit/approval-reply-sentence`). */
+  | { readonly kind: "approval-reply-refused"; readonly text: string }
+  /** The conversation has grown too long: eve's summary of it was refused, so this turn failed and
+   *  every later one in it would too. Post `text`, the door's fixed sentence
+   *  (`@lares/agent-kit/conversation-too-long`), which says how to go on. */
+  | { readonly kind: "conversation-too-long"; readonly text: string }
   /** An ordinary failure: post `text`, which is byte-for-byte what eve would have posted. */
   | { readonly kind: "default"; readonly text: string }
   /** Post nothing (the budget refusal was already answered on this turn). */
@@ -350,10 +379,11 @@ export interface FailureResponseOptions {
   readonly dialect: FailureDialect;
 }
 
-// eve 0.32.0's own display helpers, reproduced field-for-field from
-// `dist/src/internal/logging.js` (`formatErrorHint`, `truncateForDisplay`, `extractErrorId`).
+// eve 1.0's own display helpers, reproduced from `dist/src/internal/logging.js`
+// (`formatErrorHint`, `truncateForDisplay`) and `dist/src/public/channels/reply.js`
+// (`errorHintOf`: the hint's name is the error's `code`; the id is `error.id`).
 // Reproduced rather than imported because eve exports neither them nor `defaultEvents`: a
-// door that supplies `events["turn.failed"]` REPLACES the default outright, and the default's
+// door that supplies `events["turn.settled"]` REPLACES the default outright, and the default's
 // text is the behaviour that must not change on an ordinary error. `tests/gateway-budget-eve-
 // default-text.test.ts` re-reads the installed eve and fails loudly if this drifts.
 
@@ -362,25 +392,51 @@ function truncateForDisplay(value: string, max = 160): string {
 }
 
 function formatErrorHint(data: FailureEventData): string {
-  const rawName = isObject(data.details) ? data.details["name"] : undefined;
+  const rawName = isObject(data.error) ? data.error.code : undefined;
   const name = typeof rawName === "string" && rawName.length > 0 ? rawName : undefined;
-  const message = typeof data.message === "string" ? data.message.trim() : "";
+  const message = isObject(data.error) && typeof data.error.message === "string" ? data.error.message.trim() : "";
   if (name && message.length > 0) return ` (${name}: ${truncateForDisplay(message)})`;
   if (name) return ` (${name})`;
   if (message.length > 0) return ` (${truncateForDisplay(message)})`;
   return "";
 }
 
-function extractErrorId(details: unknown): string | undefined {
-  if (!isObject(details)) return undefined;
-  const errorId = details["errorId"];
+function extractErrorId(data: FailureEventData): string | undefined {
+  const errorId = isObject(data.error) ? data.error.id : undefined;
   return typeof errorId === "string" && errorId.length > 0 ? errorId : undefined;
 }
 
-/** eve 0.32.0's default `turn.failed` text, per dialect. */
+/**
+ * Slack alone renders an error that carries a `hint` (what to do about it, when eve recognises the
+ * failure) as a quoted "How to fix" block (`formatFixableErrorReply` in eve's
+ * `public/channels/slack/defaults.js`). Telegram ignores the hint. Reproduced here for Slack only.
+ */
+function slackFixableReply(opening: string, data: FailureEventData, followUp?: string): string | undefined {
+  const error = data.error;
+  const hint = isObject(error) ? error.hint : undefined;
+  if (!isObject(error) || typeof hint !== "string") return undefined;
+  const id = extractErrorId(data);
+  const quoted = [
+    typeof error.message === "string" ? error.message : "",
+    "",
+    "**How to fix**",
+    hint,
+    ...(id === undefined ? [] : ["", "**Error id:**", `\`${id}\``]),
+  ]
+    .flatMap((line) => line.split("\n"))
+    .map((line) => (line.length > 0 ? `> ${line}` : "> "))
+    .join("\n");
+  return [`${opening}.`, "", quoted, ...(followUp === undefined ? [] : ["", followUp])].join("\n");
+}
+
+/** eve 1.0's default text for a failed `turn.settled`, per dialect. */
 export function defaultTurnFailedText(data: FailureEventData, dialect: FailureDialect): string {
+  if (dialect === "slack") {
+    const fixable = slackFixableReply("I hit an error while handling your request", data);
+    if (fixable !== undefined) return fixable;
+  }
   const hint = formatErrorHint(data);
-  const errorId = extractErrorId(data.details);
+  const errorId = extractErrorId(data);
   return [
     `I hit an error while handling your request${hint}.`,
     "",
@@ -389,10 +445,18 @@ export function defaultTurnFailedText(data: FailureEventData, dialect: FailureDi
   ].join("\n");
 }
 
-/** eve 0.32.0's default `session.failed` text, per dialect. */
+/** eve 1.0's default text for a failed `session.ended`, per dialect. */
 export function defaultSessionFailedText(data: FailureEventData, dialect: FailureDialect): string {
+  if (dialect === "slack") {
+    const fixable = slackFixableReply(
+      "This session couldn't recover from an error",
+      data,
+      "Start a new thread to continue — I can't pick this one back up.",
+    );
+    if (fixable !== undefined) return fixable;
+  }
   const hint = formatErrorHint(data);
-  const errorId = extractErrorId(data.details);
+  const errorId = extractErrorId(data);
   const [opening, advice] =
     dialect === "slack"
       ? [
@@ -412,7 +476,7 @@ export function defaultSessionFailedText(data: FailureEventData, dialect: Failur
 }
 
 /**
- * The door's answer to a `turn.failed` event.
+ * The door's answer to a `turn.settled` event whose outcome is `failed` (pass the event's `data`).
  *
  * A budget refusal answers with the door's fixed sentence and nothing else — the turn did
  * nothing, so nothing may be claimed. Everything else reproduces eve's own default exactly.
@@ -421,24 +485,101 @@ export function respondToTurnFailed(
   data: FailureEventData,
   options: FailureResponseOptions,
 ): FailureResponse {
+  if (data.outcome !== undefined && data.outcome !== "failed") return { kind: "silent" };
   if (isBudgetAdmissionRefused(data)) return { kind: "budget-refusal", text: admissionRefusalText(data) };
   if (isBudgetExceeded(data)) return { kind: "budget-refusal", text: options.refusalText };
+  const sentence = approvalReplySentence(data.error?.message);
+  if (sentence !== undefined) return { kind: "approval-reply-refused", text: sentence };
+  if (isConversationTooLong(data.error?.message)) {
+    return { kind: "conversation-too-long", text: options.dialect === "slack" ? CONVERSATION_TOO_LONG_SLACK : CONVERSATION_TOO_LONG_TELEGRAM };
+  }
   return { kind: "default", text: defaultTurnFailedText(data, options.dialect) };
 }
 
 /**
- * The door's answer to a `session.failed` event.
+ * The door's answer to a `session.ended` event whose outcome is `failed` (pass the event's `data`).
  *
  * A gateway budget refusal is classified **terminal** by eve (a non-transient 4xx —
- * `classifyModelCallError`, eve 0.32.0), so it emits `turn.failed` AND `session.failed` for
- * the same fault. `turn.failed` already said it; this stays silent so the door speaks once
+ * `classifyModelCallError`), so it settles the turn `failed` AND ends the session `failed` for
+ * the same fault. The turn's answer already said it; this stays silent so the door speaks once
  * per turn rather than twice. Every other failure keeps eve's default text.
  */
 export function respondToSessionFailed(
   data: FailureEventData,
   options: FailureResponseOptions,
 ): FailureResponse {
+  if (data.outcome !== undefined && data.outcome !== "failed") return { kind: "silent" };
   if (isBudgetAdmissionRefused(data)) return { kind: "silent" };
   if (isBudgetExceeded(data)) return { kind: "silent" };
+  const sentence = approvalReplySentence(data.error?.message);
+  if (sentence !== undefined) return { kind: "approval-reply-refused", text: sentence };
   return { kind: "default", text: defaultSessionFailedText(data, options.dialect) };
+}
+
+// ── The default model provider refuses everything ───────────────────────────────────────
+
+/** What a model call made through the framework's default provider is told. */
+export const DEFAULT_PROVIDER_REFUSED =
+  "A model call was made outside the engine's gateway and is refused. Every model call must go through the gateway.";
+
+/**
+ * Why this exists. A model the engine hands eve is a provider OBJECT built on the gateway
+ * (`definition-model.ts`), wrapped so each call is admitted and counted. But eve keeps only the
+ * model's id between steps. When a session is picked up again without that object in memory
+ * (after a restart) and no step is running, eve reads the saved id and resolves it again itself:
+ * `harness/compaction/step.js` (`compactHistory`, the between-turns `POST …/compact`) calls
+ * `resolveEffectiveRuntimeModel`; `definitions/kernel.js` (`keepOne`, restore mode) falls back to
+ * the kept value when the model function refuses to run between turns; `config.resolveModel`
+ * turns the bare id into a string; and the AI SDK resolves a string id with
+ * `globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway`, which is Vercel's AI Gateway. That call
+ * would leave the engine's gateway, outside admission and spending limits.
+ *
+ * `AI_SDK_DEFAULT_PROVIDER` is the AI SDK's own seam for replacing that default. This provider
+ * answers every request for a model, of any kind, with a model that refuses to run. A call that
+ * goes through the gateway never asks it; anything that does is refused.
+ */
+export function refusingDefaultProvider(): Record<PropertyKey, unknown> {
+  const refuse = (): never => { throw new Error(DEFAULT_PROVIDER_REFUSED); };
+  // Every `do…` method a model of any kind has (doGenerate, doStream, doEmbed, doRerank, doDecide,
+  // doEvaluate, doTranscribe, …, and any a later AI SDK adds) is the refusal: matched by name, not listed.
+  const refusingModel = (kind: string, modelId: unknown) => new Proxy({
+    specificationVersion: "v4" as const,
+    provider: "lares-refused",
+    modelId: typeof modelId === "string" ? modelId : "refused",
+    supportedUrls: {},
+    maxEmbeddingsPerCall: 1,
+    supportsParallelCalls: false,
+    // A decision call checks the question types first; claim them all so it reaches `doDecide` and is
+    // refused with the message below rather than failing earlier with a TypeError.
+    supportedQuestionTypes: { includes: () => true },
+    kind,
+  } as Record<PropertyKey, unknown>, {
+    get(target, property) {
+      if (property in target) return target[property];
+      return typeof property === "string" && property.startsWith("do") ? refuse : undefined;
+    },
+  });
+  const base: Record<PropertyKey, unknown> = { specificationVersion: "v4" };
+  return new Proxy(base, {
+    get(target, property) {
+      if (property in target) return target[property];
+      // Promise machinery and symbols probe objects; they must not look like a provider method.
+      if (typeof property === "symbol" || property === "then") return undefined;
+      return (modelId?: unknown) => refusingModel(property, modelId);
+    },
+    has: () => true,
+  });
+}
+
+/**
+ * Installs {@link refusingDefaultProvider} as the AI SDK's default provider for this process, and
+ * locks it: nothing later can swap it for one that reaches a network. Idempotent. The target is a
+ * parameter so a test can use a plain object.
+ */
+export function installRefusingDefaultProvider(target: object = globalThis): void {
+  const existing = Object.getOwnPropertyDescriptor(target, "AI_SDK_DEFAULT_PROVIDER");
+  if (existing && existing.configurable === false && existing.writable === false) return;
+  Object.defineProperty(target, "AI_SDK_DEFAULT_PROVIDER", {
+    value: refusingDefaultProvider(), writable: false, configurable: false, enumerable: false,
+  });
 }

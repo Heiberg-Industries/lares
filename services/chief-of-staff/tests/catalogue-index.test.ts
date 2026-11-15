@@ -2,10 +2,15 @@
 // a tool added to catalogue/ with no entry here is a tool no session can ever be given, and it
 // fails nowhere else. Both directions are asserted, and every capability is held against the
 // fleet's own `capabilityOfTool` rather than against a second list written in this file.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { areaOfTool, capabilityOfTool } from "@lares/agent-kit/always-ask";
 import { ALWAYS_PRESENT, ALWAYS_PRESENT_CAPABILITY, grantedToolNames } from "@lares/agent-kit/catalogue";
 import { parseDefinition } from "@lares/agent-kit/definition";
+import { toolSourcesFor, validateDefinition, type ToolSources } from "@lares/agent-kit/definition-validate";
+import { deployedToolsFor } from "@lares/agent-kit/persona";
+import { roleMdPath } from "../lib/definition.js";
 import { CATALOGUE } from "../catalogue/index.js";
 import declaration from "../agent.json";
 
@@ -91,5 +96,40 @@ describe("the vault tools this role is offered", () => {
       .filter((n) => CATALOGUE[n]!.capability === "vault")
       .filter((n) => !GRANTED_AREAS.includes(areaOfTool(n) ?? ""));
     for (const name of withheld) expect(vaultTools, name).not.toContain(name);
+  });
+
+  // eve keeps the first of two tools with the same name and only writes an error line for the
+  // other. For a role that is an invalid definition: refused on save, and at session start.
+  it("gives every tool name one source today, and refuses a duplicate", () => {
+    const serviceDir = join(import.meta.dirname, "..");
+    const roleMd = readFileSync(roleMdPath(serviceDir), "utf8");
+    const deployedTools = deployedToolsFor(serviceDir);
+    const refusals = (toolSources: ToolSources) =>
+      validateDefinition({ definition: parseDefinition(declaration), roleMd, deployedTools, toolSources }).filter((f) => f.check === "tool-names");
+
+    const real = toolSourcesFor(serviceDir);
+    // The folder view is the real pool, and every agent-kit mount file is a disabled stub.
+    expect(real.catalogue).toEqual(Object.keys(CATALOGUE).sort());
+    expect(real.authored.filter((n) => n.startsWith("agent-kit__"))).toEqual([]);
+    expect(refusals(real)).toEqual([]);
+
+    // The mount's stub for a tool the pool has taken over, live again.
+    const duplicate = refusals({ ...real, authored: [...real.authored, "agent-kit__vault_write"] });
+    expect(duplicate).toHaveLength(1);
+    expect(duplicate[0]!.message).toContain('"agent-kit__vault_write"');
+    expect(duplicate[0]!.message).toContain("a tool file of that name");
+    expect(duplicate[0]!.message).toContain("the role's tool pool (catalogue/)");
+
+    // An outside tool the owner connects under a name that lands on a pool tool.
+    const outside = parseDefinition({
+      ...declaration,
+      grants: [...declaration.grants, { capability: "outside", scope: "write-with-confirm" }],
+      autonomy: { ...declaration.autonomy, outside: "gated" },
+      outsideTools: [{ name: "agent-kit", url: "https://tools.example.org/mcp", description: "Notes.", tools: { allow: ["vault_write"], read: [] } }],
+    });
+    const viaOutside = validateDefinition({ definition: outside, roleMd, deployedTools, toolSources: real }).filter((f) => f.check === "tool-names");
+    expect(viaOutside).toHaveLength(1);
+    expect(viaOutside[0]!.message).toContain('"agent-kit__vault_write"');
+    expect(viaOutside[0]!.message).toContain('the outside tool "agent-kit" in this definition');
   });
 });

@@ -31,9 +31,9 @@
  *   - Slack: `callSlackApi({ botToken, operation: "chat.postMessage", body })`, documented in
  *     `channels/slack.mdx` under "Slack API calls outside a handler" as the exact escape hatch
  *     for "a schedule ... [with] no inbound Slack request" — it names schedules explicitly.
- *   - Telegram: `sendTelegramMessage({ credentials, chatId, body })`, exported from
- *     `eve/channels/telegram` (`dist/.../telegram/api.d.ts`) — the same primitive the channel's
- *     own `ctx.telegram.sendMessage` calls internally, usable directly with no inbound context.
+ *   - Telegram: `sendTelegramMessage({ credentials, chatId, body })` from
+ *     `lib/telegram-send.ts` — one Bot API `sendMessage` through the egress proxy, usable
+ *     directly with no inbound context (eve 1.0 no longer exports a sender of its own).
  *
  * Both are plain HTTP calls to the platform's send API: no session, no prompt, no model turn,
  * byte-exact text, deterministic, and cheaper/faster than a resumed session. This is strictly
@@ -44,7 +44,6 @@
  */
 import { defineSchedule } from "eve/schedules";
 import { callSlackApi } from "eve/channels/slack";
-import { sendTelegramMessage } from "eve/channels/telegram";
 
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
@@ -60,7 +59,7 @@ import {
 } from "../../lib/reminders-store.js";
 import { slackCredentials } from "../channels/slack.js";
 import { telegramCredentials } from "../channels/telegram.js";
-import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
+import { sendTelegramMessage } from "../../lib/telegram-send.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
 import { allowedSlackUserIds, ownerId, primaryTelegramChatId } from "../../lib/principals.js";
@@ -279,7 +278,6 @@ export function telegramDoor(): ReminderDoor {
         credentials: telegramCredentials,
         chatId: threadRef,
         body: { text },
-        fetch: telegramFetch,
       });
     },
   };

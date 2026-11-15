@@ -180,7 +180,7 @@ def wait_healthy():
    time.sleep(.5)
  raise RuntimeError(f'Health failed at {host}: {last_error}')
 def wait_quiet(what):
- # : a turn's client returns at session.waiting, but the runtime still has that turn's finishing
+ # : a turn's client returns when its request settles, but the runtime still has that turn's finishing
  # work to do. "Finished" = no workflow step running and no queue job locked, twice in a row (a job
  # between two steps is unlocked for milliseconds; two looks half a second apart do not both hit that).
  q="SELECT (SELECT count(*) FROM workflow.workflow_steps WHERE status='running')+(SELECT count(*) FROM graphile_worker.jobs WHERE locked_at IS NOT NULL)"
@@ -470,7 +470,7 @@ void main();"""
  assert 'GATEWAY_URL' in refusal.stderr,f'The refusal did not name the missing setting: {said}'
  assert 'DATABASE_PASSWORD_FILE' not in said,f'The guard failed a secret file that is mounted and readable: {said}'
  assert 'disposable-fixture-only' not in said,'The refusal printed a secret'
- args=['docker','run','-d','--platform','linux/amd64','--name',name+'-runtime','--network',name,'--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp:uid=10001,gid=10001,mode=1770','--tmpfs','/app/services/chief-of-staff/.eve/sandbox-cache:uid=10001,gid=10001,mode=0700,size=256m','--tmpfs','/app/services/chief-of-staff/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m','--tmpfs','/app/packages/agent-kit/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=64m','-p','127.0.0.1::3000','--mount',f'type=bind,src={root}/definition,dst=/definition,readonly','--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--mount',f'type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly','--mount',f'type=bind,src={root}/blobs,dst=/app/services/chief-of-staff/.eve/.workflow-data']
+ args=['docker','run','-d','--platform','linux/amd64','--name',name+'-runtime','--network',name,'--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp:uid=10001,gid=10001,mode=1770','--tmpfs','/app/services/chief-of-staff/.eve/sandbox-cache/just-bash/sessions:uid=10001,gid=10001,mode=0700,size=256m','--tmpfs','/app/services/chief-of-staff/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m','--tmpfs','/app/packages/agent-kit/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=64m','-p','127.0.0.1::3000','--mount',f'type=bind,src={root}/definition,dst=/definition,readonly','--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--mount',f'type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly','--mount',f'type=bind,src={root}/blobs,dst=/app/services/chief-of-staff/.eve/.workflow-data']
  args+=['--mount',f'type=bind,src={root},dst=/probe,readonly']
  if sys.platform!='darwin':args+=['--add-host','host.docker.internal:host-gateway']
  for k,v in env.items():args+=['-e',k+'='+v]
@@ -484,10 +484,15 @@ void main();"""
  outside_proof.write_text("import {existsSync} from 'node:fs';import {resolveOutsideTools} from '/app/packages/agent-kit/src/outside-connections.ts';\n"
   "const tools=await resolveOutsideTools({name:'canary',grants:[{capability:'outside',scope:'read'}],autonomy:{outside:'gated'},outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Fixture',token:true,trusted:false,tools:{allow:['lookup'],read:['lookup']}}]},{acceptedTools:async()=>[{name:'lookup',inputSchema:{type:'object'}}],executor:()=>async()=>({content:[]})});if(!tools?.registry__lookup||typeof tools.registry__lookup.execute!=='function'||existsSync('/run/secrets/outside-registry'))throw Error('Outside tool or custody boundary missing');console.log('outside-tool-without-token');\n")
  assert cmd('docker','exec',name+'-runtime','/app/services/chief-of-staff/node_modules/.bin/tsx','/probe/outside-tools.mts')=='outside-tool-without-token','Ordinary outside tool requires an agent token mount'
- client=root/'client.mjs';client.write_text("import {Client,isCurrentTurnBoundaryEvent} from '/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js';\nconst c=new Client({host:'http://127.0.0.1:3000',auth:{basic:{username:'eve',password:'disposable-fixture-only'}}});let id=process.argv[2],watch=process.argv[4]==='watch',r,s;if(watch){s=c.sessions.attach(id,{streamIndex:Number(process.argv[3])});r={};for await(const e of s.stream()){if(e.type==='message.completed'&&e.data.finishReason!=='tool-calls')r.message=e.data.message??undefined;if(isCurrentTurnBoundaryEvent(e)){r.status=e.type==='session.waiting'?'waiting':e.type;break;}}}else if(id){s=c.sessions.attach(id,{streamIndex:Number(process.argv[3])});r=await(await s.send('Return another greeting.')).result();}else{const first=await c.sessions.create({message:'Return a short greeting.'});s=first.session;r=await first.response.result();}console.log(JSON.stringify({...s.state,message:r.message,status:r.status}));process.exit((watch?r.status==='waiting':r.message==='CI_IMAGE_TURN_OK')?0:1);\n")
- # watch=True sends NOTHING: it reads the conversation from session['streamIndex'] to the next turn boundary.
+ # eve 1.0 client. A sent message comes back as a delivery whose result carries the reply text and a
+ # per-request status (`completed` for a reply that ended the request). `state` is the session's
+ # whole saved state (id, stream position and the server's opaque inbox value); the next call
+ # attaches with all of it. A watcher reads to the turn's end: `endsTurn` is true for a settled
+ # turn, an ended session, or a turn paused on a person.
+ client=root/'client.mjs';client.write_text("import {Client,endsTurn} from '/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js';\nconst c=new Client({baseUrl:'http://127.0.0.1:3000',auth:{basic:{username:'eve',password:'disposable-fixture-only'}}});const saved=process.argv[2]?JSON.parse(process.argv[2]):null,watch=process.argv[3]==='watch';let r,s;if(watch){s=c.sessions.attach(saved.sessionId,saved);r={};for await(const e of s.stream()){if(e.type==='content.completed'&&e.data.phase==='reply'&&typeof e.data.value==='string')r.message=e.data.value;if(endsTurn(e)){r.status=e.type==='turn.settled'?e.data.outcome:e.type;break;}}}else if(saved){s=c.sessions.attach(saved.sessionId,saved);const d=await(await s.send('Return another greeting.')).result();r={message:d.reply,status:d.status};}else{const first=await c.sessions.create({message:'Return a short greeting.'});s=first.session;const d=await first.delivery.result();r={message:d.reply,status:d.status};}console.log(JSON.stringify({...s.state,state:s.state,message:r.message,status:r.status}));process.exit((watch?r.status==='completed':r.message==='CI_IMAGE_TURN_OK')?0:1);\n")
+ # watch=True sends NOTHING: it reads the conversation from the saved stream position to the next turn end.
  def turn(session=None,watch=False,timeout=120):
-  return json.loads(cmd('docker','exec',name+'-runtime','node','/probe/client.mjs',*([session['sessionId'],str(session['streamIndex'])]+(['watch'] if watch else []) if session else []),timeout=timeout))
+  return json.loads(cmd('docker','exec',name+'-runtime','node','/probe/client.mjs',*([json.dumps(session['state'])]+(['watch'] if watch else []) if session else []),timeout=timeout))
  first=turn();assert requests,'No gateway request';assert 'UNIQUE_CI_MOUNTED_DUTIES' in json.dumps(requests[-1]),'Mounted instructions missing'
  expected_tools={'echo_note'}
  def tool_names():return {t['name'] for t in requests[-1].get('tools',[])}
@@ -509,7 +514,7 @@ void main();"""
  # for ~860 s; with it, seconds.
  wait_quiet('after turn 3')
  Model.held.clear();gate=threading.Event();Model.hold=gate
- interrupted=subprocess.Popen(['docker','exec',name+'-runtime','node','/probe/client.mjs',third['sessionId'],str(third['streamIndex'])],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ interrupted=subprocess.Popen(['docker','exec',name+'-runtime','node','/probe/client.mjs',json.dumps(third['state'])],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  assert Model.held.wait(60),'Held model request never arrived'
  request_count=len(requests)
  cmd('docker','restart',name+'-runtime')
@@ -519,7 +524,7 @@ void main();"""
  # never reached the old process, so no boundary can sit at or after that index until the restarted
  # process re-runs the step: the first one seen is the recovery, and its text needs a NEW model call.
  fourth=turn(third,watch=True,timeout=60)
- assert fourth['status']=='waiting' and fourth['message']=='CI_IMAGE_TURN_OK','Interrupted turn did not finish after restart'
+ assert fourth['status']=='completed' and fourth['message']=='CI_IMAGE_TURN_OK','Interrupted turn did not finish after restart'
  assert len(requests)>request_count,'No new model call for the interrupted turn after restart'
  wait_quiet('after the recovered turn')
  request_count=len(requests);fifth=turn(fourth);assert fifth['sessionId']==third['sessionId'];assert len(requests)>request_count,'Recovered conversation did not answer a new message'

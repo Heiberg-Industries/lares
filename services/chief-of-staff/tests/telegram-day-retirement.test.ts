@@ -3,22 +3,30 @@
  *
  * The framework's session rename is additive — every address a session has ever claimed keeps
  * resolving to it — so the day's conversation can only be retired by naming its exact durable
- * session id and resetting it, and only a ROUTE handler is handed `attachSession`. That puts the
+ * session id and ending it, and only a ROUTE handler is handed `attachSession`. That puts the
  * retirement in the webhook front door, which has one standing contract above all others:
- * FAIL-OPEN. A slow database, a column a box has not migrated yet, a reset that throws — each
+ * FAIL-OPEN. A slow database, a column a box has not migrated yet, an end that throws — each
  * one costs exactly one log line, and the update is forwarded regardless. The owner never loses
  * a message because the rotation had a bad day.
+ *
+ * eve 1.0 renamed the retirement: the handle `attachSession` returns has `end({ reason })` where
+ * eve 0.60 had `reset({ reason })`. The last block runs the installed eve's own handle, so the
+ * call this file fakes everywhere else is known to be the one eve really offers.
  *
  * These tests drive the exported helpers and the real route handler with fakes; the
  * database-shaped half (what is recorded, and the claim being idempotent when two updates arrive
  * together) is proved against a real disposable Postgres in tests/telegram-rotation.test.ts.
  */
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Pool } from "pg";
 
 // The front door reaches its pool through agent-kit's lazy singleton, which needs a live
 // DATABASE_URL. Replacing it here is what lets the ROUTE be exercised end to end — claim,
-// reset, forward — rather than only its fail-open half.
+// end, forward — rather than only its fail-open half.
 const live = vi.hoisted(() => ({
   order: [] as string[],
   claim: null as string | null,
@@ -43,14 +51,10 @@ import webhook from "../agent/channels/telegram-webhook.js";
 
 // The front door only ACTS on an update Telegram really sent: it compares the request's secret
 // header with the installation's webhook secret, read from a file. A throwaway file stands in.
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join as joinPath } from "node:path";
 const FIXTURE_SECRET = "fixture-secret";
 const secretDir = mkdtempSync(joinPath(tmpdir(), "webhook-secret-"));
 writeFileSync(joinPath(secretDir, "secret"), FIXTURE_SECRET);
 process.env["TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE"] = joinPath(secretDir, "secret");
-
 
 const FIXTURE_CHAT = 5550001;
 const YESTERDAYS_SESSION = "wrun_fixture_yesterday";
@@ -78,16 +82,17 @@ function fakeDb(behaviour: { claims?: string | null; fails?: string; hangs?: boo
   };
 }
 
-function fakeAttach(onReset?: () => void) {
-  const resets: { sessionId: string; reason: string }[] = [];
+function fakeAttach(onEnd?: () => void | Promise<void>) {
+  const ended: { sessionId: string; reason: string | undefined }[] = [];
   const attach = (sessionId: string): RetireHandle => ({
-    reset: async ({ reason }) => {
-      onReset?.();
-      resets.push({ sessionId, reason });
-      return { status: "reset" };
+    end: async (options) => {
+      await onEnd?.();
+      ended.push({ sessionId, reason: options?.reason });
+      // What eve resolves with: a delivery receipt. The retirement does not read it.
+      return { sessionId, deliveryId: "delivery-fixture" };
     },
   });
-  return { resets, attach };
+  return { ended, attach };
 }
 
 beforeEach(() => {
@@ -112,42 +117,44 @@ describe("telegramChatIdOfUpdate", () => {
   it("returns null for a button tap: a tap answers the LIVE conversation and must never retire it", () => {
     const tap = JSON.stringify({
       update_id: 3,
-      callback_query: { id: "q1", message: { chat: { id: FIXTURE_CHAT } }, data: "approve" },
+      callback_query: { id: "q1", message: { chat: { id: FIXTURE_CHAT } }, data: "eve:0" },
     });
     expect(telegramChatIdOfUpdate(tap)).toBeNull();
   });
 });
 
 describe("retirePriorDaySession", () => {
-  it("resets exactly the recorded session, once, on the first update of a new day", async () => {
+  it("ends exactly the recorded session, once, on the first update of a new day", async () => {
     const { db, calls } = fakeDb({ claims: YESTERDAYS_SESSION });
-    const { attach, resets } = fakeAttach();
+    const { attach, ended } = fakeAttach();
     vi.spyOn(console, "log").mockImplementation(() => {});
 
     await retirePriorDaySession(update(), attach, { db });
 
-    expect(resets.map((r) => r.sessionId)).toEqual([YESTERDAYS_SESSION]);
-    expect(resets[0]!.reason.length).toBeGreaterThan(0);
+    expect(ended.map((r) => r.sessionId)).toEqual([YESTERDAYS_SESSION]);
+    // The reason travels with the retirement, so the runtime's own log tells a day boundary
+    // from a conversation the owner ended from the console.
+    expect(ended[0]!.reason).toMatch(/day rolled over/);
     expect(calls).toHaveLength(1);
   });
 
-  it("does not reset anything when the claim comes back empty (same day, or already claimed)", async () => {
+  it("ends nothing when the claim comes back empty (same day, or already claimed)", async () => {
     const { db } = fakeDb({ claims: null });
-    const { attach, resets } = fakeAttach();
+    const { attach, ended } = fakeAttach();
 
     await retirePriorDaySession(update(), attach, { db });
 
-    expect(resets).toEqual([]);
+    expect(ended).toEqual([]);
   });
 
-  it("forwards anyway when the database is unreachable — one log line, no reset", async () => {
+  it("forwards anyway when the database is unreachable — one log line, nothing ended", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const { db } = fakeDb({ fails: "connection refused" });
-    const { attach, resets } = fakeAttach();
+    const { attach, ended } = fakeAttach();
 
     await expect(retirePriorDaySession(update(), attach, { db })).resolves.toBeUndefined();
 
-    expect(resets).toEqual([]);
+    expect(ended).toEqual([]);
     expect(logged).toHaveBeenCalledTimes(1);
   });
 
@@ -161,11 +168,11 @@ describe("retirePriorDaySession", () => {
     expect(logged).toHaveBeenCalledTimes(1);
   });
 
-  it("forwards anyway when the reset itself throws — one log line", async () => {
+  it("forwards anyway when ending the session throws — one log line", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const { db } = fakeDb({ claims: YESTERDAYS_SESSION });
     const attach = (): RetireHandle => ({
-      reset: async () => { throw new Error("runtime unreachable"); },
+      end: async () => { throw new Error("runtime unreachable"); },
     });
 
     await expect(retirePriorDaySession(update(), attach, { db })).resolves.toBeUndefined();
@@ -173,27 +180,71 @@ describe("retirePriorDaySession", () => {
     expect(logged).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards anyway when the handle has no end() at all (a framework that renamed it again) — one log line", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { db } = fakeDb({ claims: YESTERDAYS_SESSION });
+    // The handle an older framework returned: the retirement was called something else on it.
+    const olderHandle = { retire: async () => ({}) } as unknown as RetireHandle;
+
+    await expect(retirePriorDaySession(update(), () => olderHandle, { db })).resolves.toBeUndefined();
+
+    expect(logged).toHaveBeenCalledTimes(1);
+  });
+
   it("gives up on a slow read inside its budget instead of holding the update", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const { db } = fakeDb({ hangs: true });
-    const { attach, resets } = fakeAttach();
+    const { attach, ended } = fakeAttach();
 
     const started = Date.now();
     await retirePriorDaySession(update(), attach, { db, budgetMs: 25 });
 
     expect(Date.now() - started).toBeLessThan(2000);
-    expect(resets).toEqual([]);
+    expect(ended).toEqual([]);
     expect(logged).toHaveBeenCalledTimes(1);
   });
 
-  it("does nothing at all for an update carrying no chat — no query, no reset", async () => {
+  it("gives up on a slow end() inside its budget instead of holding the update", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { db } = fakeDb({ claims: YESTERDAYS_SESSION });
+    const attach = (): RetireHandle => ({ end: () => new Promise(() => {}) });
+
+    const started = Date.now();
+    await retirePriorDaySession(update(), attach, { db, budgetMs: 25 });
+
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(logged).toHaveBeenCalledTimes(1);
+  });
+
+  it("two updates racing over the day boundary end the old conversation once, and never the fresh one", async () => {
+    // The claim is the database's (proved against a real Postgres in telegram-rotation.test.ts):
+    // it hands the recorded session to one caller and nothing to the next. Whatever session the
+    // first update's message then opens is never named to `attachSession` at all, so no
+    // retirement can reach it.
+    let claims = 0;
+    const db = {
+      query: async () => ({ rows: (claims += 1) === 1 ? [{ session_id: YESTERDAYS_SESSION }] : [] }),
+    } as unknown as Pool;
+    const { attach, ended } = fakeAttach();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await Promise.all([
+      retirePriorDaySession(update(), attach, { db }),
+      retirePriorDaySession(update(), attach, { db }),
+    ]);
+
+    expect(claims).toBe(2);
+    expect(ended.map((r) => r.sessionId)).toEqual([YESTERDAYS_SESSION]);
+  });
+
+  it("does nothing at all for an update carrying no chat — no query, nothing ended", async () => {
     const { db, calls } = fakeDb({ claims: YESTERDAYS_SESSION });
-    const { attach, resets } = fakeAttach();
+    const { attach, ended } = fakeAttach();
 
     await retirePriorDaySession("not json", attach, { db });
 
     expect(calls).toEqual([]);
-    expect(resets).toEqual([]);
+    expect(ended).toEqual([]);
   });
 });
 
@@ -212,20 +263,26 @@ describe("the webhook front door", () => {
     });
   }
 
-  it("retires the prior day's conversation BEFORE the update is forwarded", async () => {
+  it("retires the prior day's conversation BEFORE the update is forwarded, so the message opens a new one", async () => {
     live.claim = YESTERDAYS_SESSION;
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
       live.order.push("forward");
       return new Response("ok");
     });
     vi.spyOn(console, "log").mockImplementation(() => {});
-    const { attach, resets } = fakeAttach(() => live.order.push("reset"));
+    // The end takes a moment, as the real one does: eve resolves it only once the ended session
+    // has released its address. The forward must wait for that, or the message would land in the
+    // conversation being retired instead of opening a new one.
+    const { attach, ended } = fakeAttach(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      live.order.push("end");
+    });
 
     const response = await handler(post(update()), { attachSession: attach });
 
     expect(response.status).toBe(200);
-    expect(live.order).toEqual(["claim", "reset", "forward"]);
-    expect(resets.map((r) => r.sessionId)).toEqual([YESTERDAYS_SESSION]);
+    expect(live.order).toEqual(["claim", "end", "forward"]);
+    expect(ended.map((r) => r.sessionId)).toEqual([YESTERDAYS_SESSION]);
   });
 
   it("forwards the update untouched on an ordinary same-day message — nothing is retired", async () => {
@@ -234,13 +291,13 @@ describe("the webhook front door", () => {
       forwarded.push(String((init as RequestInit).body));
       return new Response("ok");
     });
-    const { attach, resets } = fakeAttach();
+    const { attach, ended } = fakeAttach();
 
     const response = await handler(post(update()), { attachSession: attach });
 
     expect(response.status).toBe(200);
     expect(JSON.parse(forwarded[0]!).message.chat.id).toBe(FIXTURE_CHAT);
-    expect(resets).toEqual([]);
+    expect(ended).toEqual([]);
   });
 
   it("forwards the update even though the retirement half could not reach the database", async () => {
@@ -251,13 +308,103 @@ describe("the webhook front door", () => {
       return new Response("ok");
     });
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { attach, resets } = fakeAttach();
+    const { attach, ended } = fakeAttach();
 
     const response = await handler(post(update()), { attachSession: attach });
 
     expect(response.status).toBe(200);
     expect(forwarded).toHaveLength(1);
-    expect(resets).toEqual([]);
+    expect(ended).toEqual([]);
+    expect(logged).toHaveBeenCalledTimes(1);
+  });
+
+  it("a button tap never retires the day's conversation: it answers the live one", async () => {
+    live.claim = YESTERDAYS_SESSION;
+    process.env["TELEGRAM_PRINCIPAL_ID"] = String(FIXTURE_CHAT);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("ok"));
+    const { attach, ended } = fakeAttach();
+    const tap = JSON.stringify({
+      update_id: 3,
+      callback_query: {
+        id: "q1",
+        from: { id: FIXTURE_CHAT, is_bot: false },
+        message: { message_id: 7, chat: { id: FIXTURE_CHAT, type: "private" } },
+        data: "eve:0",
+      },
+    });
+
+    try {
+      const response = await handler(post(tap), { attachSession: attach });
+      expect(response.status).toBe(200);
+      expect(ended).toEqual([]);
+      // Not even the day-boundary read: a tap carries no `message` of its own.
+      expect(live.order).toEqual([]);
+    } finally {
+      delete process.env["TELEGRAM_PRINCIPAL_ID"];
+    }
+  });
+});
+
+// ── The installed eve's own session handle ───────────────────────────────────────────────
+//
+// Everything above fakes `attachSession(id).end(...)`. This block runs the real one, from the
+// installed eve, on a stand-in runtime, to pin the three things the retirement relies on: the
+// method exists, it is aimed at the exact session id it was attached to, and it carries the
+// reason. If eve renames the method or changes what it dispatches, this fails.
+describe("eve's own attachSession handle", () => {
+  const EVE_DIST = pathToFileURL(fileURLToPath(new URL("../node_modules/eve/dist/src", import.meta.url))).href;
+
+  interface Dispatched {
+    sessionId: string;
+    command: { kind: string; reason?: string; deliveryId?: string };
+  }
+  async function eveAttach(result: (sessionId: string) => Record<string, unknown>) {
+    const { createAttachSessionFn } = (await import(`${EVE_DIST}/channel/session.js`)) as {
+      createAttachSessionFn(runtime: unknown): (sessionId: string) => RetireHandle & { id: string };
+    };
+    const dispatched: Dispatched[] = [];
+    const runtime = {
+      dispatchSession: async (input: Dispatched) => {
+        dispatched.push(input);
+        return result(input.sessionId);
+      },
+      getEventStream: async function* () {},
+    };
+    return { attach: createAttachSessionFn(runtime), dispatched };
+  }
+
+  it("has end(), and nothing called reset() — the name the retirement calls is the one eve 1.0 offers", async () => {
+    const { attach } = await eveAttach((id) => ({ status: "reset", previousSessionId: id }));
+    const handle = attach(YESTERDAYS_SESSION) as unknown as Record<string, unknown>;
+    expect(typeof handle["end"]).toBe("function");
+    expect(handle["reset"]).toBeUndefined();
+    expect(handle["id"]).toBe(YESTERDAYS_SESSION);
+  });
+
+  it("the retirement ends the exact recorded session, with its reason, through eve's handle", async () => {
+    const { db } = fakeDb({ claims: YESTERDAYS_SESSION });
+    const { attach, dispatched } = await eveAttach((id) => ({ status: "reset", previousSessionId: id }));
+    const said = vi.spyOn(console, "log").mockImplementation(() => {});
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await retirePriorDaySession(update(), attach, { db });
+
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]!.sessionId).toBe(YESTERDAYS_SESSION);
+    // "reset" is eve's wire name for ending a session; `end()` is what sends it.
+    expect(dispatched[0]!.command).toMatchObject({ kind: "reset", reason: expect.stringMatching(/day rolled over/) });
+    expect(logged).not.toHaveBeenCalled();
+    expect(said).toHaveBeenCalledTimes(1);
+  });
+
+  it("a session that is already gone rejects, and costs one log line — the update is still forwarded", async () => {
+    const { db } = fakeDb({ claims: YESTERDAYS_SESSION });
+    const { attach, dispatched } = await eveAttach(() => ({ status: "no_active_session" }));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(retirePriorDaySession(update(), attach, { db })).resolves.toBeUndefined();
+
+    expect(dispatched).toHaveLength(1);
     expect(logged).toHaveBeenCalledTimes(1);
   });
 });

@@ -2,18 +2,21 @@ import { modelPurposeRequest } from '@lares/agent-kit/model-purpose-client';
 import { requestAndAttachModelPurposeClaim, type ModelInvocation } from '@lares/agent-kit/model-invocation';
 import { consoleAdmission, type ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
-import { exactResolverAdmission, privateResumeAdmission } from '@lares/agent-kit/private-console-resume';
+import { privateResumeAdmission, takeAcceptedAnswers } from '@lares/agent-kit/private-console-resume';
+import { APPROVAL_REPLY_REFUSED, APPROVAL_UNANSWERED } from '@lares/agent-kit/approval-reply-sentence';
+import { turnAppliedAnAnswer, turnAskedACard } from '../../lib/approval-card-turns.js';
 
 type Point = Readonly<{ sessionId: string; turnId: string; sequence: number; incarnation: string }>;
+/** The answer a continuation opens from: taken from the response policy's record, never from the
+ * turn's identity (`@lares/agent-kit/private-console-resume`, `takeAcceptedAnswers`). */
 type ResumeBinding = Readonly<{
-  resolverMemberId: string;
   requestId: string;
-  optionId: 'approve' | 'cancel';
-  initiatorMemberId: string;
+  optionId: 'approve' | 'deny';
+  memberId: string;
   admissionNonce: string;
   receipt: string;
 }>;
-type Entry = { active: boolean; expiresAt: number; capability?: string; openRequest?: Promise<void>; resume?: ResumeBinding };
+type Entry = { id: string; active: boolean; expiresAt: number; capability?: string; openRequest?: Promise<void>; resume?: ResumeBinding };
 type Session = NonNullable<ConsoleAuthorityContext['session']>;
 const entries = new Map<string, Entry>();
 const MAX_ENTRIES = 512;
@@ -21,7 +24,26 @@ const MAX_CLOSED_POINTS = 65_536;
 const closedPoints = new Set<string>();
 const ACTIVE_MS = 5 * 60_000;
 const deny = () => new Error('Model purpose authority is not available');
+/** A refusal of the model call that continues a paused turn. The doors show a fixed sentence for
+ * it (`@lares/agent-kit/approval-reply-sentence`) instead of a broken conversation, and only one
+ * that is true, read from the durable marks (lib/approval-card-turns.ts): "your answer was applied"
+ * only when a person's answer to a card in this turn was applied; "ended without an answer" when the
+ * turn asked a card and nobody's answer was applied (it expired, or the person typed while it
+ * waited). A turn that asked no card, or whose marks cannot be read, keeps the plain refusal. All
+ * three fail the turn the same way. */
+function refusedReply(point: Point): Error {
+  const turn = { turn: { id: point.turnId } };
+  if (!turnAskedACard(turn)) return deny();
+  const applied = turnAppliedAnAnswer(turn);
+  return applied === true ? new Error(APPROVAL_REPLY_REFUSED) : applied === false ? new Error(APPROVAL_UNANSWERED) : deny();
+}
 const key = (point: Point) => `${point.sessionId}\0${point.turnId}\0${point.sequence}\0${point.incarnation}`;
+/** A continuation's own slot. It names the card it answers, so it never shares the paused point's
+ * tombstone (the original message's receipt cannot reopen the point) and a card can resume once.
+ * It ends in the incarnation like every key, so a new turn displaces it. */
+const resumeKey = (point: Point, requestId: string) =>
+  `${point.sessionId}\0${point.turnId}\0${point.sequence}\0resume:${requestId}\0${point.incarnation}`;
+const pointPrefix = (point: Point) => `${point.sessionId}\0${point.turnId}\0${point.sequence}\0`;
 
 function prune(now = Date.now()): void {
   for (const [id, entry] of entries) if (entry.expiresAt <= now || !entry.active) {
@@ -30,9 +52,8 @@ function prune(now = Date.now()): void {
   }
 }
 
-function begin(point: Point): Entry {
+function begin(point: Point, id = key(point)): Entry {
   prune();
-  const id = key(point);
   if (closedPoints.has(id) || entries.has(id) || closedPoints.size >= MAX_CLOSED_POINTS) throw deny();
   const displaced = [...entries].filter(([existing]) => existing.startsWith(`${point.sessionId}\0`) && existing.endsWith(`\0${point.incarnation}`));
   if (closedPoints.size + displaced.length >= MAX_CLOSED_POINTS) throw deny();
@@ -44,33 +65,40 @@ function begin(point: Point): Entry {
     }
   }
   if (entries.size >= MAX_ENTRIES) throw deny();
-  const entry = { active: true, expiresAt: Date.now() + ACTIVE_MS };
+  const entry: Entry = { id, active: true, expiresAt: Date.now() + ACTIVE_MS };
   entries.set(id, entry);
   return entry;
 }
 
-function active(point: Point): boolean {
+function active(entry: Entry): boolean {
   prune();
-  const entry = entries.get(key(point));
-  return !!entry?.active && entry.expiresAt > Date.now();
+  return entries.get(entry.id) === entry && entry.active && entry.expiresAt > Date.now();
 }
 
-function rememberCapability(point: Point, expected: Entry, capability: string, expiresAt: number): boolean {
-  const entry = entries.get(key(point));
+function rememberCapability(expected: Entry, capability: string, expiresAt: number): boolean {
+  const entry = entries.get(expected.id);
   if (entry !== expected || !entry.active || entry.expiresAt <= Date.now() || expiresAt <= Date.now()) return false;
   entry.capability = capability;
   entry.expiresAt = Math.min(entry.expiresAt, expiresAt);
   return true;
 }
 
-function closePoint(point: Point): string | undefined {
-  const id = key(point), entry = entries.get(id);
-  // Hooks run for every ordinary CoS turn too. Retain tombstones only for turns this adapter
-  // actually opened, so optional custody does not consume the bounded replay guard.
+function closeEntry(id: string): string | undefined {
+  const entry = entries.get(id);
   if (!entry) return undefined;
+  entry.active = false;
   if (closedPoints.size < MAX_CLOSED_POINTS) closedPoints.add(id);
   entries.delete(id);
-  return entry?.capability;
+  return entry.capability;
+}
+
+/** Closes the point and every continuation slot opened under it. */
+function closePoint(point: Point): string[] {
+  // Hooks run for every ordinary CoS turn too. Retain tombstones only for turns this adapter
+  // actually opened, so optional custody does not consume the bounded replay guard.
+  const prefix = pointPrefix(point), suffix = `\0${point.incarnation}`;
+  const ids = [...entries.keys()].filter(id => id === key(point) || (id.startsWith(prefix) && id.endsWith(suffix)));
+  return ids.map(closeEntry).filter((c): c is string => typeof c === 'string');
 }
 
 function attrs(auth: unknown): Record<string, unknown> | undefined {
@@ -86,68 +114,92 @@ function pendingFrom(auth: unknown): { required: boolean; receipt?: string } {
   return { required, receipt: value };
 }
 
-function pointFrom(event: unknown, session: Session | undefined, incarnation: string, allowEmpty: boolean): Point {
+/** A turn's zero-based position in its session.
+ *
+ * eve 1.0's `turn.started` and `turn.settled` events carry `turnId` and no `sequence` (0.60.1
+ * carried both). eve mints turn ids as `turn_<sequence>` and reports that same number to hooks
+ * and tools as `ctx.session.turn.sequence` (`dist/src/protocol/session-projection.js`,
+ * `turnCoordinates`), so the id itself is the framework's own record of the position. An event
+ * that does carry a `sequence` (the model resolver's coordinates, an older event) is used as
+ * given. Anything else is refused, never guessed at. */
+function sequenceFrom(data: { turnId?: unknown; sequence?: unknown } | undefined): number | undefined {
+  if (data?.sequence !== undefined) return Number.isSafeInteger(data.sequence) && Number(data.sequence) >= 0 ? Number(data.sequence) : undefined;
+  const parsed = typeof data?.turnId === 'string' ? /^turn_(0|[1-9]\d{0,14})$/.exec(data.turnId) : null;
+  return parsed ? Number(parsed[1]) : undefined;
+}
+
+function pointFrom(event: unknown, session: Session | undefined, incarnation: string, sessionTurnRequired: boolean): Point {
   const data = (event as { data?: { turnId?: unknown; sequence?: unknown } } | undefined)?.data;
-  const sessionId = session?.id, turnId = data?.turnId, sequence = data?.sequence;
+  const sessionId = session?.id, turnId = data?.turnId, sequence = sequenceFrom(data);
   if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(sessionId) ||
-      typeof turnId !== 'string' || (!allowEmpty && turnId.length === 0) ||
-      (turnId !== '' && !/^[A-Za-z0-9._:-]{1,128}$/.test(turnId)) ||
-      !Number.isSafeInteger(sequence) || Number(sequence) < 0) throw deny();
-  // Eve 0.60.1 normalizes an empty emitted approval-resume turnId to `turn_N` on the
-  // session context. Keep the event's exact empty ID as the broker coordinate; only the
-  // sequence must agree for that trusted resolver continuation.
+      typeof turnId !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(turnId) || sequence === undefined) throw deny();
+  // The session context a hook passes carries the framework's own turn (`ctx.session.turn`);
+  // the model resolver's session snapshot carries none (a dynamic `model` is given only the
+  // session id and both authentications). Where the turn is present it has to agree.
   const sessionTurn = session?.turn;
-  // DynamicResolveContext intentionally exposes only session id and auth, not turn state.
-  // For a marked approval resume the trusted step event is the source of the raw turn tuple;
-  // if a richer internal context is present, its sequence still has to agree.
-  if (allowEmpty) {
-    if (sessionTurn && sessionTurn.sequence !== sequence) throw deny();
-  } else if (!sessionTurn || sessionTurn.sequence !== sequence || sessionTurn.id !== turnId) throw deny();
-  return { sessionId, turnId, sequence: Number(sequence), incarnation };
+  if (sessionTurnRequired ? (!sessionTurn || sessionTurn.sequence !== sequence || sessionTurn.id !== turnId)
+    : (sessionTurn && (sessionTurn.sequence !== sequence || (sessionTurn.id !== undefined && sessionTurn.id !== turnId)))) throw deny();
+  return { sessionId, turnId, sequence, incarnation };
 }
 
-function resumeBinding(session: Session | undefined, receipt: string): ResumeBinding {
-  const resolver = privateResumeAdmission(session?.auth?.current);
-  const initial = consoleAdmission(session?.auth?.initiator);
-  if (!resolver || !initial || initial.purpose !== 'human' || resolver.memberId !== initial.memberId) throw deny();
-  const exact = exactResolverAdmission(session?.auth?.current);
-  if (exact && exact.admissionNonce !== initial.admissionNonce) throw deny();
-  return Object.freeze({ resolverMemberId: resolver.memberId, requestId: resolver.requestId, optionId: resolver.optionId,
-    initiatorMemberId: initial.memberId, admissionNonce: initial.admissionNonce, receipt });
+/** The member who asked: a human admission on `current` that is also the pinned initiator. */
+function requester(session: Session | undefined): { memberId: string; admissionNonce: string } {
+  const current = consoleAdmission(session?.auth?.current), initial = consoleAdmission(session?.auth?.initiator);
+  if (privateResumeAdmission(session?.auth?.current) || !current || current.purpose !== 'human' || !initial ||
+      initial.purpose !== 'human' || initial.memberId !== current.memberId || initial.admissionNonce !== current.admissionNonce) throw deny();
+  return { memberId: current.memberId, admissionNonce: current.admissionNonce };
 }
 
-function sameResumeBinding(left: ResumeBinding | undefined, right: ResumeBinding): boolean {
-  return !!left && left.resolverMemberId === right.resolverMemberId && left.requestId === right.requestId &&
-    left.optionId === right.optionId && left.initiatorMemberId === right.initiatorMemberId &&
-    left.admissionNonce === right.admissionNonce && left.receipt === right.receipt;
+/** The continuation slot already opened for this point, if any. */
+function resumeEntryAt(point: Point): Entry | undefined {
+  const prefix = `${pointPrefix(point)}resume:`, suffix = `\0${point.incarnation}`;
+  for (const [id, entry] of entries) if (id.startsWith(prefix) && id.endsWith(suffix)) return entry;
+  return undefined;
 }
 
-/** Reserve an exact framework step before authority verification awaits. This creates no
- * Keeper authority; it only lets a terminal hook tombstone the real resume coordinates while
- * the verifier is in flight. Ordinary and human turns do not create these reservations. */
+/** Opens the continuation slot for a paused point from the answers the response policy accepted
+ * for it, once each card's settle hook has confirmed its answer against what eve applied (until
+ * then nothing is taken, so the LAST card's settle opens it; one disagreement refuses them all).
+ * Every answer must be for the member who asked, under the same admission, and carry a Keeper
+ * resume receipt (D5); otherwise nothing opens. All of them are used up either way. The first card
+ * (by request id) opens the Keeper turn. */
+function beginResume(point: Point, session: Session | undefined): Entry | undefined {
+  const asker = requester(session);
+  const answers = takeAcceptedAnswers(point);
+  if (answers.length === 0) return undefined;
+  if (answers.some(a => a.memberId !== asker.memberId || a.admissionNonce !== asker.admissionNonce || !a.receipt)) throw deny();
+  const first = answers[0]!;
+  const id = resumeKey(point, first.requestId);
+  if (closedPoints.has(id)) throw deny();
+  const entry = begin(point, id);
+  entry.resume = Object.freeze({ requestId: first.requestId, optionId: first.optionId, memberId: first.memberId,
+    admissionNonce: first.admissionNonce, receipt: first.receipt! });
+  return entry;
+}
+
+/** Reserve an exact model call before authority verification awaits. `event` is the coordinate
+ * record the model resolver builds from eve's session view (`modelStepCoordinates` in
+ * @lares/agent-kit/definition-model); it keeps the `step.started` name Keeper authenticates,
+ * though eve 1.0 has no event by that name. This creates no Keeper authority. A human turn's
+ * first call is opened by the turn.started hook; this reserves only the continuation of a paused
+ * turn after an answered card, so a terminal hook can tombstone it while the verifier is in flight. */
 export function prepareModelPurposeInvocation(event: unknown, session: Session | undefined): void {
   if ((event as { type?: unknown } | undefined)?.type !== 'step.started') throw deny();
-  const current = session?.auth?.current;
-  const pending = pendingFrom(current);
+  const pending = pendingFrom(session?.auth?.current);
   if (!pending.required && !pending.receipt) return;
   if (!pending.receipt) throw deny();
-  if (!privateResumeAdmission(current)) return; // Human turns are opened by turn.started.
-  const binding = resumeBinding(session, pending.receipt);
+  requester(session);
   const own = managedIdentity(process.env);
   if (!own) throw deny();
-  const point = pointFrom(event, session, own.incarnation, true);
+  const point = pointFrom(event, session, own.incarnation, false);
   prune();
-  const id = key(point), existing = entries.get(id);
-  if (closedPoints.has(id) || closedPoints.size >= MAX_CLOSED_POINTS) throw deny();
-  if (existing) {
-    if (!existing.active || existing.expiresAt <= Date.now() || !sameResumeBinding(existing.resume, binding)) throw deny();
-    return;
-  }
-  const entry = begin(point);
-  entry.resume = binding;
+  if (entries.get(key(point))?.active) return; // The human turn is still open.
+  if (resumeEntryAt(point)) return;
+  try { beginResume(point, session); } catch { throw refusedReply(point); }
 }
 
 async function openEntry(point: Point, entry: Entry, pendingReceipt: string, session: Session): Promise<void> {
+  // The context Keeper sees is the requester's own turn: `current` stays the person who asked.
   if (entry.openRequest) return entry.openRequest;
   const request = (async () => {
     try {
@@ -161,12 +213,12 @@ async function openEntry(point: Point, entry: Entry, pendingReceipt: string, ses
       });
       if (typeof result.capability !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(result.capability) ||
           typeof result.expiresAt !== 'number' || !Number.isSafeInteger(result.expiresAt)) throw deny();
-      if (!rememberCapability(point, entry, result.capability, result.expiresAt)) {
+      if (!rememberCapability(entry, result.capability, result.expiresAt)) {
         await modelPurposeRequest('turn.close', { turnCapability: result.capability, turnId: point.turnId, sequence: point.sequence }).catch(() => {});
         throw deny();
       }
     } catch (error) {
-      closePoint(point);
+      closeEntry(entry.id);
       throw error;
     }
   })();
@@ -182,24 +234,60 @@ export async function openModelPurposeTurn(event: unknown, session: Session | un
   const purpose = human ? 'human' : undefined;
   const pending = pendingFrom(current);
   if (!pending.required && !pending.receipt) return;
-  // Approval continuations are opened lazily by the verified step resolver: Eve does not
-  // emit turn.started for the pinned response-authorization path.
+  // Approval continuations are opened lazily by the model resolver: an answered approval
+  // continues its turn, so no turn.started is emitted for it.
   if (!purpose) return;
   if (!pending.receipt) throw deny();
   const own = managedIdentity(process.env);
   if (!own) throw deny();
-  const point = pointFrom(event, session, own.incarnation, false);
+  const point = pointFrom(event, session, own.incarnation, true);
   const entry = begin(point);
   await openEntry(point, entry, pending.receipt, session!);
+}
+
+/**
+ * Opens the continuation's Keeper turn as soon as eve has settled the card, BEFORE eve runs the
+ * approved action (the settle hook finishes first: `intake.js` `settleHumanInput`, see the PR).
+ *
+ * Why here and not at the continuation's first model call: the answer's Keeper receipt lives 30
+ * seconds and is single-use, and eve runs the approved action between the settle and that model
+ * call. A slow action (mail, a calendar, an outside tool) would outlive the receipt: the action ran
+ * and the reply was refused. Opened here, the receipt is used within moments of the answer and
+ * becomes a Keeper turn capability, which lives as long as any human turn's (five minutes, Keeper
+ * `TURN_MS`), is bound to this one turn position and card, and is closed with the turn
+ * (`turn.paused`, `turn.settled`). No receipt lives longer, and nothing can be opened twice: the
+ * answers are taken (used up) here, and the slot is tombstoned when closed.
+ *
+ * Call it after the card's own settle work (a Deny's row is written there, and Keeper checks it).
+ * Never throws: a refusal here leaves no slot, so the continuation's model call is refused with
+ * the fixed sentence, while eve still applies the answer.
+ */
+export async function openContinuationAfterSettle(turnId: unknown, session: Session | undefined): Promise<void> {
+  try {
+    const pending = pendingFrom(session?.auth?.current);
+    if (!pending.required && !pending.receipt) return;
+    const own = managedIdentity(process.env);
+    if (!own) return;
+    const point = pointFrom({ data: { turnId } }, session, own.incarnation, false);
+    prune();
+    if (entries.get(key(point))?.active || resumeEntryAt(point)) return;
+    const entry = beginResume(point, session);
+    if (entry?.resume) await openEntry(point, entry, entry.resume.receipt, session!);
+  } catch {
+    /* refused: no slot is open, so the continuation's model call is refused (fixed sentence) */
+  }
 }
 
 /** Burns local turn state synchronously, then best-effort closes the remote capability. */
 export async function closeModelPurposeTurn(event: unknown, session: Session | undefined): Promise<void> {
   const own = managedIdentity(process.env), data = (event as { data?: { turnId?: unknown; sequence?: unknown } } | undefined)?.data;
-  if (!own || typeof session?.id !== 'string' || typeof data?.turnId !== 'string' || !Number.isSafeInteger(data.sequence)) return;
-  const point: Point = { sessionId: session.id, turnId: data.turnId, sequence: Number(data.sequence), incarnation: own.incarnation };
-  const capability = closePoint(point);
-  if (capability) await modelPurposeRequest('turn.close', { turnCapability: capability, turnId: point.turnId, sequence: point.sequence }).catch(() => {});
+  // The position comes from the event alone: when a turn has just settled, the hook's own
+  // `ctx.session.turn` may already describe the next turn.
+  const sequence = sequenceFrom(data);
+  if (!own || typeof session?.id !== 'string' || typeof data?.turnId !== 'string' || sequence === undefined) return;
+  const point: Point = { sessionId: session.id, turnId: data.turnId, sequence, incarnation: own.incarnation };
+  for (const capability of closePoint(point))
+    await modelPurposeRequest('turn.close', { turnCapability: capability, turnId: point.turnId, sequence: point.sequence }).catch(() => {});
 }
 
 /** The chief-of-staff-only resolver seam. Other roles do not call this adapter. */
@@ -216,14 +304,22 @@ export async function claimModelPurposeForInvocation(invocation: ModelInvocation
     sequence: invocation.event.data.sequence,
     incarnation: own.incarnation,
   };
-  const id = key(point), entry = entries.get(id);
-  if (!entry?.active || entry.expiresAt <= Date.now()) throw deny();
-  const resolver = privateResumeAdmission(current);
-  if (resolver) {
-    const binding = resumeBinding(invocation.session, pending.receipt);
-    if (!sameResumeBinding(entry.resume, binding)) throw deny();
-    await openEntry(point, entry, pending.receipt, invocation.session);
+  const human = entries.get(key(point));
+  if (human?.active) {
+    if (!human.capability || human.expiresAt <= Date.now()) throw deny();
+    await requestAndAttachModelPurposeClaim(invocation, human.capability, () => active(human));
+    return;
   }
-  if (!entry.active || !entry.capability || entry.expiresAt <= Date.now()) throw deny();
-  await requestAndAttachModelPurposeClaim(invocation, entry.capability, () => active(point));
+  // Not the human turn's own call: the continuation of a paused turn after an answered card.
+  try {
+    const entry = resumeEntryAt(point);
+    if (!entry?.active || entry.expiresAt <= Date.now() || !entry.resume) throw deny();
+    const asker = requester(invocation.session);
+    if (asker.memberId !== entry.resume.memberId || asker.admissionNonce !== entry.resume.admissionNonce) throw deny();
+    await openEntry(point, entry, entry.resume.receipt, invocation.session);
+    if (!entry.active || !entry.capability || entry.expiresAt <= Date.now()) throw deny();
+    await requestAndAttachModelPurposeClaim(invocation, entry.capability, () => active(entry));
+  } catch {
+    throw refusedReply(point);
+  }
 }

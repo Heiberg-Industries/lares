@@ -1,49 +1,42 @@
 /**
- * agent/instructions/standing-facts.ts — what the owner has told the agent, once per session.
+ * agent/instructions/standing-facts.ts — what the owner has told the agent, once per conversation.
  *
- * A sibling of `clock.ts`: eve reads `agent/instructions.md` (the static root file) AND this
- * directory together — root content first, then directory entries alphabetically
+ * A sibling of the persona: eve places this directory's entries in filename order
  * (`node_modules/eve/docs/instructions.mdx`). So this block lands in every conversation through
  * every door, and on the scheduled brief turns too.
  *
- * `session.started`, NOT `turn.started` — and WHY THAT CHANGED. This block used to be rebuilt on
- * every single turn. eve merges every dynamic instruction into ONE system message with a single
- * byte-exact cache breakpoint at its end (`packages/agent-kit/src/clock.ts`'s header reads this
- * out of the installed 0.32 dist: `harness/tool-loop.js`'s `mergeSystemInstructions`,
- * `harness/prompt-cache.js`'s `applySystemCacheBreakpoint`,
- * `context/dynamic-instruction-lifecycle.js`, `context/keys.d.ts`). A block whose bytes move
+ * ONCE PER CONVERSATION, and why. This block used to be rebuilt on every single turn. eve merges
+ * every system instruction into ONE system message with a single byte-exact cache breakpoint at
+ * its end (`packages/agent-kit/src/clock.ts`'s header; unchanged in eve 1.0:
+ * `dist/src/harness/model-call/request.js`, `mergeSystemInstructions`). A block whose bytes move
  * therefore re-bills the whole system prompt — persona, tool descriptions and memory together —
- * on every message. `aa-definition.ts` already resolves the persona on `session.started` for
- * exactly this reason, and its header names the reason it is a rule rather than a
- * tuning choice. This is the second instance of that pattern, not a new mechanism.
+ * on every message. `aa-definition.ts` resolves the persona once per conversation for exactly
+ * this reason, and its header names the reason it is a rule rather than a tuning choice.
  *
- * eve stores a `session.started` resolver's output under `SessionDynamicInstructionsKey`,
- * documented "Persists for the session lifetime" (`dist/src/context/keys.d.ts`), so eve itself
- * calls this once; the map below makes that guarantee ours as well, and gives the turn-scoped
- * addendum something to compare against.
+ * eve 1.0 runs this function before every model call. The block is kept in a memo keyed on the
+ * session, so eve returns the saved text on every later call, in any process; the map below
+ * gives the per-turn correction something to compare against in the process that built it.
  *
- * THE GUARANTEE THAT MOVED, STATED PLAINLY. Until this change, a fact retired mid-conversation
- * stopped being applied on the very NEXT turn, because the block was rebuilt every turn. It no
- * longer is: the block a session starts with is the block it keeps. Two things stand in for that
- * now — the tool result of `remember` / `forget` stays in the conversation history for the rest
- * of the session, so the model has been told in the exchange itself; and a SECOND,
- * turn-scoped subscription on this same resolver, below, lists only what changed since the block
- * was built. It is empty — and therefore absent, byte for byte — on an ordinary turn, which is
- * what keeps the session's block worth having: eve deletes an empty resolver's slot outright
- * rather than reserving space for it (`context/dynamic-instruction-lifecycle.js` again), so an
- * unchanged turn costs the merged system message nothing.
+ * THE GUARANTEE THAT MOVED, STATED PLAINLY. A fact retired mid-conversation used to stop being
+ * applied on the very NEXT turn, because the block was rebuilt every turn. It no longer is: the
+ * block a session starts with is the block it keeps. Two things stand in for that — the tool
+ * result of `remember` / `forget` stays in the conversation history for the rest of the session,
+ * so the model has been told in the exchange itself; and a SECOND, per-turn block,
+ * `standingFactsCorrectionBlock` below, lists only what changed since the block was built. It is
+ * empty — and therefore absent, byte for byte — on an ordinary turn. eve 1.0 has no per-turn
+ * group of its own, so the correction is emitted by `zz-cache-boundary.ts`, after the cache
+ * marker, where it always was (that file's header has the ordering).
  *
  * BEST-EFFORT, ALWAYS. Unlike the clock, this resolver reads state — so it can fail for reasons
  * that have nothing to do with the agent: `DATABASE_URL` unset at build time, the box's Postgres
- * briefly unreachable, the migration not yet hand-applied. eve takes a turn's whole instruction
- * set down with a throwing resolver, so a database hiccup would cost the owner the message they
- * are in the middle of. It must not. Every failure yields an EMPTY block — the agent starts that
- * conversation without its memory, which is exactly where it was before — and the
- * failure is logged once, by `guarded`.
+ * briefly unreachable, the migration not yet hand-applied. A throwing resolver fails the turn,
+ * so a database hiccup would cost the owner the message they are in the middle of. It must not.
+ * Every failure yields an EMPTY block — the agent starts that conversation without its memory,
+ * which is exactly where it was before — and the failure is logged once, by `guarded`.
  *
  * A STALL IS A FAILURE TOO. `catch` covers a rejection; it does not cover a query
  * that never settles, which is what an unresponsive `db` container produces — and eve applies no
- * timeout of its own to a dynamic-instruction resolver. Unbounded, that is not "no memory this
+ * timeout of its own to a dynamic instruction. Unbounded, that is not "no memory this
  * conversation", it is "the owner's message got no reply". The read is bounded INSIDE the
  * provider by `withTimeout` so a late answer can never be cached as a block the model was never
  * shown, and `guarded` bounds the provider as a whole — the seam's own promise that no
@@ -77,12 +70,6 @@ import {
   type StandingFact,
 } from "../../lib/standing-facts.js";
 
-/** Only the field this resolver needs off eve's `DynamicResolveContext`, the way
- *  `aa-definition.ts` declares it. */
-interface ResolveCtx {
-  readonly session?: { readonly id?: string };
-}
-
 /**
  * What each session was built with. The markdown is what makes the block byte-stable for the
  * session; `facts` and `fingerprint` are what the turn-scoped correction below diffs against —
@@ -109,7 +96,7 @@ function evictStale(now: number): void {
 
 /**
  * Has this process already kicked off the owner-key/register agreement check? This
- * resolver's `session.started` handler is the chosen hook — it is the first place in this
+ * resolver's per-conversation block is the chosen hook — it is the first place in this
  * service that reliably gets a pool early (it already does the identical fire-and-forget
  * pattern for `recordUse`/`recordRead` below), and it runs on every door, including the
  * scheduled brief turns, so the check runs soon after boot without a dedicated boot-time
@@ -195,7 +182,7 @@ const memoryCore = guarded(provider, {
 });
 
 /**
- * The turn-scoped half: re-reads the store and reports only what changed since the
+ * The per-turn half: re-reads the store and reports only what changed since the
  * session's block was built, or "" when nothing did.
  *
  * NO ENTRY ⇒ "", WITHOUT TOUCHING THE DATABASE. A turn whose session this process never built a
@@ -272,24 +259,15 @@ const memoryCorrection = guarded(correctionProvider, {
   label: "chief-of-staff: standing facts correction",
 });
 
-export default defineDynamic({
-  events: {
-    // Optional-chained deliberately, as in `aa-definition.ts`: eve always supplies the context,
-    // and if it ever did not, building one block under a shared key is better than throwing and
-    // leaving the conversation with no memory at all.
-    "session.started": async (_event: unknown, ctx?: ResolveCtx) => {
-      if (await verifyPrivateConsoleSession(ctx)) return defineInstructions({ markdown: "" });
-      const markdown = await memoryCore.forSession(ctx?.session?.id ?? "no-session");
-      return defineInstructions({ markdown });
-    },
-    // Turn-scoped, so it lands AFTER the session-scoped entry in eve's merged system message
-    // (`buildDynamicInstructionMessages` concatenates session-scoped entries first, then
-    // turn-scoped). An empty result here
-    // is not a placeholder: eve drops it entirely, so an ordinary turn adds zero bytes.
-    "turn.started": async (_event: unknown, ctx?: ResolveCtx) => {
-      if (await verifyPrivateConsoleSession(ctx)) return defineInstructions({ markdown: "" });
-      const markdown = await memoryCorrection.forSession(ctx?.session?.id ?? "no-session");
-      return defineInstructions({ markdown });
-    },
-  },
+/** What changed since this session's block was built; "" on an ordinary turn. Called once per
+ *  turn by `zz-cache-boundary.ts`, which emits it after the cache marker. An empty result is not
+ *  a placeholder: it adds zero bytes. */
+export async function standingFactsCorrectionBlock(sessionId: string): Promise<string> {
+  return memoryCorrection.forSession(sessionId);
+}
+
+export default defineDynamic(async (ctx) => {
+  if (await ctx.memo(["private-console", ctx.turn?.id ?? null], () => verifyPrivateConsoleSession(ctx))) return null;
+  const content = await ctx.memo(["standing-facts", ctx.session.id], () => memoryCore.forSession(ctx.session.id));
+  return defineInstructions({ content });
 });

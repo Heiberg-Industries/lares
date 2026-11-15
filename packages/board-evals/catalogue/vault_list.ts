@@ -3,13 +3,11 @@
 // resolver that hands it over.
 //
 // It exists for `evals/replay.eval.ts`, which asks the one question the seam fixtures could not:
-// does a tool that reaches the model ONLY through a `session.started` resolver still behave like an
-// authored tool across an approval pause? eve stores a session-scoped dynamic tool as durable
-// metadata and reconstructs both its executor and its approval from registered step functions
-// (`dynamic-tool-lifecycle.js` -> `build-dynamic-tools.js`), so every call is already a replay —
-// and `buildReplayedApproval` falls back to "always ask" when the approval step is missing, which
-// is why the eval has to prove the AUTONOMOUS case too. A card is not evidence; a card that can
-// also NOT appear is.
+// does a tool that reaches the model ONLY through a dynamic tools resolver still behave like an
+// authored tool across an approval pause? eve rebuilds a dynamic tool, approval and executor
+// included, before every model call, so every call is already a rebuild — which is why the eval
+// has to prove the AUTONOMOUS case too. A card is not evidence; a card that can also NOT appear
+// is.
 //
 // Named `vault_list`, a documented vault/shared tool (`VAULT_SHARED_TOOLS`,
 // `packages/agent-kit/src/persona/capability-docs.ts`), so `capabilityOfTool` maps it to `vault`

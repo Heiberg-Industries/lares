@@ -1,42 +1,29 @@
 /**
- * the never-list's missing enforcement.
+ * Every eve service turns the framework's default tools away, and does it in a way that works.
  *
- * Seventeen files across the fleet contain `export default disableTool()` and a comment
- * claiming "a name matching no framework tool fails the build". That claim was FALSE on eve
- * 0.32: eve did not validate `disableTool()` filenames at build time, so a typo'd filename
- * silently removed nothing and the tool it meant to kill stayed live. For files that exist to
- * keep `bash`, `write_file` and `web_fetch` out of a production agent's hands, silent inertness
- * was the worst available failure mode.
+ * eve hands every agent a set of built-in tools it never declared: on 1.0 `bash`, `read_file`,
+ * `write_file`, `edit_file`, `web_fetch` and `web_search`, plus the delegating `agent` tool on a
+ * root agent. None is sandboxed away from the container here and none asks for approval. A
+ * service has two ways to refuse them, and this test walks the whole fleet for both:
  *
- * UPDATE, eve 0.60.1. The claim is now TRUE: a disableTool() sentinel whose name
- * matches no framework-default candidate now fails `eve build` itself
- * (`compiler/source-graph.js`: `Source "..." disables a slot with no lower-precedence source.`
- * — the reason the glob.ts/grep.ts sentinels were retired once those two left eve's default
- * tool set at 0.39.0 and had nothing left to shadow). This test is not made
- * redundant by that: it is the fast, no-build confirmation of the same fact, catching a typo or
- * a dropped default in a plain `pnpm test` run long before anyone pays for `eve build`.
+ *  - `defaultTools: false` in `agent/agent.ts`, which drops every default tool that has no file
+ *    under `agent/tools/` (`dist/src/compiler/default-tool-policy.js`). This is what both role
+ *    services do now. Then the thing to watch is a file under `agent/tools/` that carries a
+ *    default tool's NAME: it keeps that slot. Each service's own `tests/tool-harness.test.ts`
+ *    reads the evaluated definition; this file is the fast check across the fleet, from source.
+ *  - a `disableTool()` sentinel file per tool. A sentinel whose filename matches no default
+ *    tool fails `eve build` (`compiler/source-graph.js`: `Source "..." disables a slot with no
+ *    lower-precedence source.`), which is why the `task_cancel.ts` sentinels had to go when that
+ *    slot left eve's defaults. This test is the no-build confirmation of the same fact.
  *
- * This test IS the enforcement, in the same spirit as the compose drift guard and the chief of staff's
- * schema drift alarm: it walks every eve service's `agent/tools/`, finds the
- * `disableTool()` files, and asserts each filename corresponds to a real framework-DEFAULT tool
- * in the INSTALLED eve — resolved through the service's own dependency graph, so an eve upgrade
- * that renames or removes a builtin turns this red instead of turning a disable inert.
+ * A service that does neither has every default tool, and fails here.
  *
- * THE SOURCE OF TRUTH CHANGED ON 0.60.1. `getAllFrameworkToolNames()` (via
- * `dist/src/runtime/framework-tools/`) no longer exists anywhere in the installed package —
- * that whole directory is gone, and there is no public replacement. Nor is a directory listing
- * of `dist/src/tools/framework/` + `dist/src/tools/provided/` a safe substitute: that directory
- * holds every tool eve SHIPS, default or not — `glob`/`grep` sit right next to `bash`/
- * `web_search`, and only the latter are still framework-DEFAULTS a disableTool() sentinel can
- * shadow. The one place that draws exactly that line is `dist/src/framework/sources/
- * registry.js` — the literal module the COMPILER itself reads to build the framework-default
- * candidate set (`eve:defaults`/`eve:root-defaults`). `frameworkToolNames()` below reads that
- * file's own two default-source blocks directly (a plain text read, not a module import: the
- * `modules` arrays are closures with no public accessor, so importing and inspecting them would
- * still mean depending on the same internal shape a text read already depends on, with none of
- * the robustness). Verified against a real `eve build`'s compiled manifest for all three roles:
- * bash, read_file, write_file, todo, web_fetch, load_skill, connection_search, ask_question,
- * task_cancel, web_search, agent — 11 names, glob/grep correctly absent.
+ * WHERE THE LIST COMES FROM. `dist/src/framework/sources/registry.js` in the installed eve, the
+ * module the compiler itself reads to build the framework-default candidate set
+ * (`eve:defaults` / `eve:root-defaults`). A directory listing of `dist/src/tools/` is not a
+ * substitute: it holds every tool eve SHIPS, default or not. It is read as text here; the
+ * kit's `framework-default-tools.ts` imports the same module as an object, and
+ * `framework-default-tools.test.ts` pins that reader.
  *
  * It lives in agent-kit because the kit is the fleet's shared layer and the one place a
  * fleet-wide invariant has a single home.
@@ -59,9 +46,8 @@ function disableToolFiles(serviceDir: string): string[] {
 /**
  * eve's real framework-DEFAULT tool names for the SERVICE's own installed eve (not the
  * workspace root's) — see this file's header for why `registry.js` rather than a directory
- * listing. Names already match `agent/tools/<name>.ts` exactly; eve 0.60.1's logical paths are
- * snake_case, so — unlike the old kebab-cased `framework-tools/*.js` filenames this test used to
- * convert against — no case conversion is needed any more.
+ * listing. Names already match `agent/tools/<name>.ts` exactly: the registry's logical paths are
+ * snake_case.
  */
 function frameworkToolNames(serviceDir: string): ReadonlySet<string> {
   const req = createRequire(join(serviceDir, "package.json"));
@@ -76,18 +62,46 @@ function frameworkToolNames(serviceDir: string): ReadonlySet<string> {
 
 const eveServices = readdirSync(SERVICES_DIR).filter((d) => existsSync(join(SERVICES_DIR, d, "agent", "agent.ts")));
 
-describe("disableTool() filenames resolve to real framework tools", () => {
-  it("found the fleet and the disable files — this test must never pass vacuously", () => {
+/** `defaultTools: false` as a property of the definition, not a mention in a comment. */
+function setsDefaultToolsOff(serviceDir: string): boolean {
+  const source = readFileSync(join(serviceDir, "agent", "agent.ts"), "utf8");
+  return source.split("\n").some((line) => /^\s*defaultTools:\s*false\s*,?\s*$/u.test(line));
+}
+
+function toolFiles(serviceDir: string): string[] {
+  const toolsDir = join(serviceDir, "agent", "tools");
+  return existsSync(toolsDir) ? readdirSync(toolsDir).filter((f) => f.endsWith(".ts")) : [];
+}
+
+describe("every eve service turns the framework's default tools away", () => {
+  it("found the fleet — this test must never pass vacuously", () => {
     expect(eveServices.length).toBeGreaterThanOrEqual(2);
-    const total = eveServices.flatMap((s) => disableToolFiles(join(SERVICES_DIR, s))).length;
-    expect(total).toBeGreaterThanOrEqual(10);
+    for (const service of eveServices) expect(frameworkToolNames(join(SERVICES_DIR, service)).size).toBeGreaterThanOrEqual(5);
   });
 
   for (const service of eveServices) {
+    const serviceDir = join(SERVICES_DIR, service);
+
+    it(`${service}: either defaultTools: false, or a sentinel for every default tool`, () => {
+      if (setsDefaultToolsOff(serviceDir)) return;
+      const disabled = new Set(disableToolFiles(serviceDir).map((f) => f.replace(/\.ts$/u, "")));
+      const left = [...frameworkToolNames(serviceDir)].filter((name) => !disabled.has(name)).sort();
+      expect(left, `${service} neither sets defaultTools: false nor switches these off: ${left.join(", ")}`).toEqual([]);
+    });
+
+    it(`${service}: with defaultTools: false, no file under agent/tools/ takes a default tool's name`, () => {
+      if (!setsDefaultToolsOff(serviceDir)) return;
+      const available = frameworkToolNames(serviceDir);
+      const sentinels = new Set(disableToolFiles(serviceDir));
+      // A sentinel by that name is harmless (it switches off what is already off). Any other
+      // file by that name IS that tool as far as eve is concerned, and keeps the slot.
+      const keeps = toolFiles(serviceDir).filter((f) => !sentinels.has(f) && available.has(f.replace(/\.ts$/u, "")));
+      expect(keeps, `${service}/agent/tools: ${keeps.join(", ")} keep a framework default slot alive`).toEqual([]);
+    });
+
     it(`${service}: every disabled name is a tool the installed eve actually ships`, () => {
-      const serviceDir = join(SERVICES_DIR, service);
       const files = disableToolFiles(serviceDir);
-      if (files.length === 0) return; // an agent with no disables is legitimate
+      if (files.length === 0) return; // an agent with no sentinels is legitimate
       const available = frameworkToolNames(serviceDir);
       for (const file of files) {
         const name = file.replace(/\.ts$/u, "");
@@ -95,7 +109,7 @@ describe("disableTool() filenames resolve to real framework tools", () => {
           available.has(name),
           `${service}/agent/tools/${file}: no framework-default tool "${name}" in the installed ` +
             `eve (checked eve:defaults/eve:root-defaults in framework/sources/registry.js) — this ` +
-            `disable is INERT and, on eve 0.60.1+, would also fail \`eve build\` outright`,
+            `disable switches nothing off and fails \`eve build\` outright`,
         ).toBe(true);
       }
     });

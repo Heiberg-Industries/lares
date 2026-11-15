@@ -185,7 +185,9 @@ engine_normal_client_cleanup() {
 
 # engine_normal_client OPERATION [--ro PATH]... [--env NAME=VALUE]... SCRIPT [ARGS...]
 # OPERATION is update or rollback; SCRIPT is update-record.ts or migrate.ts (migration is
-# update-only). No generic command, entrypoint override, or writable admission bind is exposed.
+# update-only), or, for an update only, one of the fixed agent-store modes of
+# bin/workflow-template.ts and the template check of bin/database-setup.ts. No generic command,
+# entrypoint override, or writable admission bind is exposed.
 engine_normal_client() {
   local operation="$1" script token admission identity identity_id identity_epoch
   shift
@@ -219,6 +221,15 @@ engine_normal_client() {
   shift
   case "$operation:$script" in
     update:bin/update-record.ts|update:migrate.ts|rollback:bin/update-record.ts) ;;
+    # The agent-store step of an update: these two programs have other modes (a fresh install's
+    # database setup among them), so the mode is fixed here too.
+    update:bin/workflow-template.ts)
+      case "${1:-}" in
+        update-plan|apply|apply-database|verify-database) ;;
+        *) echo "engine client: program mode is outside the fixed update set" >&2; return 78 ;;
+      esac ;;
+    update:bin/database-setup.ts)
+      [ "${1:-}" = --verify-workflow-template ] || { echo "engine client: program mode is outside the fixed update set" >&2; return 78; } ;;
     *) echo "engine client: program is outside the fixed update/rollback set" >&2; return 78 ;;
   esac
   [ -n "$ENGINE_IMAGE" ] || { echo "engine client: no engine image is known" >&2; return 78; }
@@ -328,6 +339,74 @@ engine_normal_client() {
     return 78
   fi
   return "$wait_status"
+}
+
+# workflow_store_step ROLE_IMAGE MODE DATABASE HOST PORT PROVISIONER_PASSWORD_FILE
+# The one way the installer and the updater run the agent framework's own schema step. MODE is
+# check, upgrade or create (ops/workflow-store-migrate.mjs says what each does); DATABASE
+# is the workflow template or one agent store. The program runs inside the release's own role
+# image, fed on standard input with the role's folder as the working directory, so the workflow
+# package it loads is exactly the one that role image runs. It connects as the provisioner login
+# with the workflow owner role. The password is a read-only file read inside that short-lived
+# container: never a value in the address, in argv or in the environment of the host.
+# Returns the program's own status: 0, 3 (refused, with a plain reason on standard error), or
+# another non-zero value when it could not finish. A step that outlives its time limit is stopped
+# and counts as not finished; the caller checks the store again before trusting anything.
+workflow_store_step() {
+  local role_image="${1:-}" mode="${2:-}" database="${3:-}" host="${4:-}" port="${5:-}" password_file="${6:-}"
+  local program="${HERE:?}/workflow-store-migrate.mjs" limit=120 name status=0
+  local -a client=()
+  case "$mode" in
+    check) ;;
+    # An operator may allow a long upgrade more time (LARES_WORKFLOW_UPGRADE_SECONDS, from one
+    # minute to one day). Running out of time changes nothing: each store's step is one transaction.
+    upgrade|create)
+      limit="${LARES_WORKFLOW_UPGRADE_SECONDS:-900}"
+      [[ "$limit" =~ ^[0-9]{2,5}$ ]] && [ "$limit" -ge 60 ] && [ "$limit" -le 86400 ] \
+        || { echo "workflow store step: LARES_WORKFLOW_UPGRADE_SECONDS must be a number of seconds from 60 to 86400" >&2; return 78; }
+      ;;
+    *) echo "workflow store step: unsupported mode" >&2; return 78 ;;
+  esac
+  printf '%s' "$role_image" | grep -Eq "$ENGINE_DIGEST_PATTERN" \
+    || { echo "workflow store step: the role image is not named by digest" >&2; return 78; }
+  [[ "$database" =~ ^(empty_workflow|lares_[a-f0-9]{32})$ ]] \
+    || { echo "workflow store step: unsupported database name" >&2; return 78; }
+  [[ "$host" =~ ^[A-Za-z0-9.-]+$ ]] && [[ "$port" =~ ^[0-9]{1,5}$ ]] \
+    || { echo "workflow store step: unsupported database address" >&2; return 78; }
+  [ -f "$program" ] && [ ! -L "$program" ] \
+    || { echo "workflow store step: its program is missing from this release's files" >&2; return 78; }
+  [ -f "$password_file" ] && [ ! -L "$password_file" ] && [ -s "$password_file" ] \
+    || { echo "workflow store step: the provisioner credential ($password_file) is missing, empty or a link. On a server on rc.13 or later, running its installer once creates it: sudo bash /opt/lares/current/services/box/ops/install.sh --yes --release /opt/lares/current/release.json. On an older release, update to rc.14 first. Then run this again" >&2; return 78; }
+  # A name of its own, so that a step that outlives its time limit can be found and stopped:
+  # stopping the docker client alone would leave the container running.
+  name="lares-workflow-store-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  [[ "$name" =~ ^lares-workflow-store-[a-f0-9]{16}$ ]] \
+    || { echo "workflow store step: could not name its container" >&2; return 78; }
+  client=(docker run --rm -i --name "$name" --label lares.maintenance=workflow-store
+    --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges
+    -w /app/services/creative
+    -v "$password_file:/run/secrets/workflow-provisioner:ro"
+    -e PGPASSWORD_FILE=/run/secrets/workflow-provisioner -e "PGOPTIONS=-c role=lares_workflow_owner"
+    -e "WORKFLOW_POSTGRES_URL=postgres://lares_workflow_provisioner@${host}:${port}/${database}"
+    --entrypoint /bin/sh "$role_image" -ec
+    'PGPASSWORD="$(cat "$PGPASSWORD_FILE")"; export PGPASSWORD; unset PGPASSWORD_FILE; exec node --input-type=module - "$@"'
+    sh "$mode" "$database")
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --kill-after=10 "$limit" "${client[@]}" < "$program" || status=$?
+  else
+    "${client[@]}" < "$program" || status=$?
+  fi
+  if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+    # Its database connection ends with the container, and an unfinished step is rolled back.
+    docker rm --force "$name" >/dev/null 2>&1 || true
+    if [ -n "$(docker ps --all --quiet --filter "name=^/${name}\$" 2>/dev/null)" ]; then
+      echo "workflow store: the step ran out of its $limit seconds and its container ($name) could not be stopped; stop it with: docker rm --force $name, then run the same command again" >&2
+    else
+      echo "workflow store: the step ran out of its $limit seconds and was stopped; the store was left as it was. To allow more time, run the same command again with LARES_WORKFLOW_UPGRADE_SECONDS set to more seconds (up to 86400)" >&2
+    fi
+    return 1
+  fi
+  return "$status"
 }
 
 # Restore clients retain the same baked admission entrypoint as update clients, but their
@@ -559,7 +638,7 @@ _engine_restore_client_run() { # kind, operation, image, user, repeated --mount 
   shift
   node_args=("$@")
   case "$kind:$operation" in
-    keeper:financial-freeze|keeper:migrate|keeper:verify-restored-engine|keeper:workflow-database|vault:verify-files|vault:verify-empty|vault:verify-snapshot|vault:verify) ;;
+    keeper:financial-freeze|keeper:migrate|keeper:verify-restored-engine|keeper:workflow-database|keeper:workflow-apply-database|vault:verify-files|vault:verify-empty|vault:verify-snapshot|vault:verify) ;;
     *) echo 'restore client: operation is outside the fixed restore set' >&2; return 78 ;;
   esac
   [ "${node_args[0]:-}" = node ] && [ "${node_args[1]:-}" = --import ] &&
@@ -588,6 +667,13 @@ _engine_restore_client_run() { # kind, operation, image, user, repeated --mount 
         [ "${node_args[4]}" = verify-database ] && [ "${node_args[5]}" = --host ] && [ "${node_args[6]}" = 127.0.0.1 ] &&
         [ "${node_args[7]}" = --port ] && [ "${node_args[9]}" = --database ] &&
         [ "${node_args[11]}" = --runtime-password-file ] && [[ "${node_args[12]}" == /etc/lares/secrets/* ]] || return 78 ;;
+    keeper:workflow-apply-database)
+      [ "$user" = 0:0 ] && [ "${#node_args[@]}" -eq 15 ] &&
+        [ "${node_args[3]}" = /app/services/box/bin/workflow-template.ts ] &&
+        [ "${node_args[4]}" = apply-database ] && [ "${node_args[5]}" = --host ] && [ "${node_args[6]}" = 127.0.0.1 ] &&
+        [ "${node_args[7]}" = --port ] && [ "${node_args[9]}" = --database ] && [[ "${node_args[10]}" =~ ^lares_[a-f0-9]{32}$ ]] &&
+        [ "${node_args[11]}" = --provisioner-password-file ] && [ "${node_args[12]}" = /etc/lares/secrets/workflow-provisioner-password ] &&
+        [ "${node_args[13]}" = --runtime-password-file ] && [[ "${node_args[14]}" == /etc/lares/secrets/* ]] || return 78 ;;
     vault:*)
       [ "$user" = 10001:10001 ] && [ "${#node_args[@]}" -eq 7 ] &&
         [ "${node_args[3]}" = /app/services/box/bin/vault-storage.ts ] &&
@@ -665,6 +751,32 @@ _engine_restore_client_run() { # kind, operation, image, user, repeated --mount 
     echo 'restore client: attached output ended before completion was confirmed' >&2; return 78
   fi
   return "$wait_status"
+}
+
+# restore.sh writes each agent store it has just restored from an older release's backup, one
+# name per line, into its own private run directory (RESTORE_WORK, root only, mode 0700) as
+# workflow-upgrade-stores (mode 0600), and removes the file when the upgrade step ends. The
+# apply-database restore job runs only for a name in that file.
+restore_client_store_was_restored() { # database
+  [ -n "${RESTORE_WORK:-}" ] && [ -d "$RESTORE_WORK" ] || return 1
+  python3 - "$RESTORE_WORK/workflow-upgrade-stores" "$1" <<'PYRESTOREDSTORES'
+import os, stat, sys
+path, database = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_nlink != 1 or info.st_size > 65536):
+            raise ValueError()
+        raw = os.read(fd, 65537)
+    finally:
+        os.close(fd)
+    if database not in raw.decode("ascii").split("\n"):
+        raise ValueError()
+except Exception:
+    raise SystemExit(1)
+PYRESTOREDSTORES
 }
 
 engine_restore_keeper_client() { # fixed operation only; caller supplies only the workflow database and port for that operation
@@ -755,6 +867,36 @@ PYSOCKET
       environment+=(--env PGHOST=127.0.0.1 --env "PGPORT=$port" --env PGUSER=lares_app --env "PGDATABASE=$database")
       argv=(node --import tsx/esm /app/services/box/bin/workflow-template.ts verify-database \
         --host 127.0.0.1 --port "$port" --database "$database" --runtime-password-file "$workflow_container")
+      ;;
+    workflow-apply-database)
+      # The permissions half of upgrading an agent store that THIS restore restored from an older
+      # release's backup (restore.sh, then workflow-store-steps.sh). Only a store this run wrote
+      # into its private run record after restoring it; only on this host's database; only the
+      # two fixed workflow credential files, read-only. The program itself refuses a database the
+      # workflow owner does not own, and verifies the result as the agents' own login.
+      [ "$#" -eq 3 ] || return 78
+      database="$2"; port="$3"
+      [[ "$database" =~ ^lares_[a-f0-9]{32}$ && "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 78
+      restore_client_store_was_restored "$database" \
+        || { echo 'restore client: this agent store was not restored for upgrade by this restore run' >&2; return 78; }
+      workflow_host="${WORKFLOW_PASSWORD_FILE:-}"
+      if [ -n "${PREFIX:-}" ] && [ "${PREFIX%/}" != "" ] && [[ "$workflow_host" == "${PREFIX%/}"/* ]]; then
+        workflow_container="/${workflow_host#"${PREFIX%/}/"}"
+      else
+        workflow_container="$workflow_host"
+      fi
+      case "$workflow_container" in /etc/lares/secrets/*) ;; *) return 78 ;; esac
+      [[ "$workflow_container" != *'..'* && "$workflow_container" != *'/./'* && "$workflow_container" != *:* ]] || return 78
+      [ "$workflow_host" = "$(P "$workflow_container")" ] && [ -f "$workflow_host" ] && [ ! -L "$workflow_host" ] || return 78
+      local host_provisioner='/etc/lares/secrets/workflow-provisioner-password'
+      [ "$workflow_container" != "$host_provisioner" ] || return 78
+      [ -f "$(P "$host_provisioner")" ] && [ ! -L "$(P "$host_provisioner")" ] && [ -s "$(P "$host_provisioner")" ] || return 78
+      mounts+=(--mount "type=bind,src=$(P "$host_provisioner"),dst=$host_provisioner,readonly" \
+        --mount "type=bind,src=$workflow_host,dst=$workflow_container,readonly")
+      environment+=(--env PGHOST=127.0.0.1 --env "PGPORT=$port" --env PGUSER=lares_workflow_provisioner --env "PGDATABASE=$database")
+      argv=(node --import tsx/esm /app/services/box/bin/workflow-template.ts apply-database \
+        --host 127.0.0.1 --port "$port" --database "$database" \
+        --provisioner-password-file "$host_provisioner" --runtime-password-file "$workflow_container")
       ;;
     *) echo 'restore client: unsupported fixed Keeper operation' >&2; return 78 ;;
   esac

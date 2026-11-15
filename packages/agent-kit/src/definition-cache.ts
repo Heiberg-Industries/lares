@@ -24,12 +24,15 @@ import type { Pool } from "pg";
 
 import { getPool } from "./db.js";
 import { loadDefinition, parseDefinition, type LoadedDefinition } from "./definition.js";
-import { assertDefinitionValid } from "./definition-validate.js";
+import { assertDefinitionValid, type ToolSources } from "./definition-validate.js";
 
 export interface ResolveOptions {
   serviceDir: string;
   roleMd: string;
   deployedTools: string[];
+  /** The role's tool names by source (`toolSourcesFor(serviceDir)`), for the one-tool-per-name
+   *  check. A role service always passes it; a fixture that has none skips that check. */
+  toolSources?: ToolSources;
   /** Whose definition this is. Supplied by the caller (the keeper mounts one folder per agent
    *  and knows which) — never read out of the mounted folder itself, since that is precisely
    *  the file this module may not be able to trust. */
@@ -107,6 +110,7 @@ export async function resolveDefinition(opts: ResolveOptions): Promise<Resolved>
     }
     assertDefinitionValid({
       definition: loaded.definition, roleMd: opts.roleMd, deployedTools: opts.deployedTools,
+      ...(opts.toolSources ? { toolSources: opts.toolSources } : {}),
     });
   } catch (err) {
     reason = err instanceof Error ? err.message : String(err);
@@ -131,7 +135,10 @@ export async function resolveDefinition(opts: ResolveOptions): Promise<Resolved>
     if (previous.definition.name !== opts.agentName) {
       throw new Error(`it declares agent "${previous.definition.name}", not "${opts.agentName}"`);
     }
-    assertDefinitionValid({ definition: previous.definition, roleMd: opts.roleMd, deployedTools: opts.deployedTools });
+    assertDefinitionValid({
+      definition: previous.definition, roleMd: opts.roleMd, deployedTools: opts.deployedTools,
+      ...(opts.toolSources ? { toolSources: opts.toolSources } : {}),
+    });
   } catch (err) {
     const stale = err instanceof Error ? err.message : String(err);
     const both = `${reason}\nThe last valid one (${previous.hash.slice(0, 12)}) no longer passes this engine's checks:\n${stale}`;

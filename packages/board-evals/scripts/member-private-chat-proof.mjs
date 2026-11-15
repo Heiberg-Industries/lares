@@ -2,11 +2,13 @@
  * Only the model and Gmail API are fake. A preload maps fixed container secret paths to
  * disposable files; all grant, session, generation, custody and model guards stay real.
  * Use PRIVATE_CHAT_PROOF_ROLE=chief-of-staff or creative for a serial subset.
- * PRIVATE_CHAT_PROOF_BUDGET=1 adds inactive preparation/cold-replay proof to chief/Anthropic + SEND.
+ * PRIVATE_CHAT_PROOF_BUDGET=1 adds inactive preparation/cold-replay proof to chief + SEND on a gateway lane (anthropic or openai-compatible).
  * PRIVATE_CHAT_PROOF_TRACKS=1 adds the Tracks approval card for two members on the chief role, through
  * Keeper's real broker and a real Git Vault. Only the storage inventory's fixed path is mapped to a
  * file. Set TMPDIR to a real path with no symlink in it, as Vault paths refuse one.
  * Run: pnpm -C packages/board-evals exec tsx scripts/member-private-chat-proof.mjs
+ * The gateway lane (PRIVATE_CHAT_PROOF_GATEWAY_LANE) is ported to eve 1.0: see
+ * proofs/member-private-chat-gateway-2026-11-12.md, which also records the budget lane's state.
  */
 import assert from 'node:assert/strict';
 import fs,{mkdtempSync,cpSync,symlinkSync,writeFileSync,readFileSync,readdirSync,mkdirSync,rmSync,existsSync} from 'node:fs';
@@ -30,7 +32,7 @@ import {PgAccountStore} from '@lares/agent-kit/account-store';
 import {loadDefinition} from '@lares/agent-kit/definition';
 import {forwardChat} from '../../../services/console/lib/chat-proxy.ts';
 import {run} from './proof-harness.mjs';
-import {compactionHookSource,gatewayModelSource,startGatewayFixture} from './gateway-invocation-fixture.mjs';
+import {assertOneSystemMessage,compactionHookSource,gatewayModelSource,startGatewayFixture} from './gateway-invocation-fixture.mjs';
 const repo=resolve(fileURLToPath(new URL('../../../',import.meta.url)));
 const root=mkdtempSync(join(tmpdir(),'lares-member-chat-proof-'));
 const password='disposable-fixture-only',incarnation='11111111-1111-4111-8111-111111111111';
@@ -42,11 +44,11 @@ const gatewayLane=process.env.PRIVATE_CHAT_PROOF_GATEWAY_LANE;
 const withBudget=process.env.PRIVATE_CHAT_PROOF_BUDGET==='1';
 const withVault=process.env.PRIVATE_CHAT_PROOF_VAULT==='1';
 const withTracks=process.env.PRIVATE_CHAT_PROOF_TRACKS==='1';
-if(withBudget)assert.ok(gatewayLane==='anthropic'&&process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&withSend,'Durable proof uses the bounded chief/Anthropic approval fixture');
+if(withBudget)assert.ok(['anthropic','openai-compatible'].includes(gatewayLane)&&process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&withSend,'Durable proof uses the bounded chief approval fixture on a gateway lane (anthropic or openai-compatible)');
 if(withVault)assert.equal(process.env.PRIVATE_CHAT_PROOF_ROLE,'chief-of-staff','Vault custody fixture is bounded to the chief-of-staff role');
 if(withTracks)assert.ok(process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&!withVault,'Tracks proof uses the real broker on the chief-of-staff role, not the recording Vault fixture');
 let gateway,trackVault;
-const observedSteps=new Set();
+const observedSteps=new Set(),startedTurns=new Set(),observedCards=new Map();
 const vaultCalls=[],vaultWire=[],vaultChallenges=new Map(),vaultTurns=new Map(),vaultServers=[];
 const snapshots=[],ownedSessionIds=new Set();
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -134,7 +136,7 @@ const scripted=mockModel(({lastUserMessage,messages,tools,toolResults})=>{
   if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&!currentResults)return {toolCalls:[{id:uniqueCall(),name:'track_create',input:JSON.parse(lastUserMessage.slice(13))}]};
   if(lastUserMessage?.startsWith('TRACK_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(13));return {toolCalls:[{id:uniqueCall(),name:'track_create',input:{...input,trackId:input.trackId+'-second'}},{id:uniqueCall(),name:'tracks_list',input:{}}]};}
   if(lastUserMessage==='VAULT_READ'&&!currentResults)return {toolCalls:[{name:'agent-kit__vault_read',input:{area:'private',path:'owner.md'}}]};
-  if(lastUserMessage?.startsWith('SKILL ')&&!toolResults.length)return {toolCalls:[{name:'load_skill',input:{skill:lastUserMessage.slice(6)}}]};
+  if(lastUserMessage?.startsWith('SKILL ')&&!toolResults.length)return {toolCalls:[{name:'eve__skill',input:{name:lastUserMessage.slice(6)}}]};
   if(lastUserMessage==='question')return 'Which topic would you like to discuss?';
   return 'ANSWER '+lastUserMessage+' '+JSON.stringify(toolResults);
 });
@@ -154,7 +156,7 @@ async function makeRole(role){
  const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'},...(withVault?[{capability:'vault',scope:'read',areas:['private']}]:[]),...(withTracks?[{capability:'vault',scope:'write-with-confirm',areas:['shared']}]:[]),...(withSend?[{capability:'personal_mailbox',scope:'write-with-confirm'}]:[])],autonomy:role==='creative'?{}:{gmail:'autonomous',...(withVault?{vault:'autonomous'}:{}),...(withTracks?{vault:'gated'}:{}),...(withSend?{personal_mailbox:'autonomous'}:{})},skills:[]};
  writeFileSync(join(definition,'agent.json'),JSON.stringify(declaration));writeFileSync(join(definition,'voice.md'),canaries.owner);writeFileSync(join(definition,'duties.md'),canaries.owner);
  const modelLog=join(root,role+'-model.jsonl'),providerLog=join(root,role+'-provider.log');writeFileSync(modelLog,'');writeFileSync(providerLog,'');
- if(gatewayLane){gateway.setRole(role);writeFileSync(modelLog+'.scope','');writeFileSync(modelLog+'.compaction','');if(withBudget)writeFileSync(modelLog+'.budget','');
+ if(gatewayLane){gateway.setRole(role);writeFileSync(modelLog+'.scope','');writeFileSync(modelLog+'.system','');writeFileSync(modelLog+'.compaction','');if(withBudget)writeFileSync(modelLog+'.budget','');
    const hook=join(cwd,'agent/hooks/model-invocation.ts');writeFileSync(hook,compactionHookSource(readFileSync(hook,'utf8')));
  }
  writeFileSync(join(cwd,'lib/gateway-provider.ts'),modelSource(role));
@@ -185,11 +187,36 @@ function request(app,member,method,path,body,cookie=''){
  return forwardChat(new Request(`https://console.example.invalid/api/chat/${app.name}/${path}`,{method,headers:{'content-type':'application/json',cookie},...(body===undefined?{}:{body:JSON.stringify(body)})}),app.name,path.split('?')[0],deps);
 }
 async function create(app,member,message,operationId){const response=await request(app,member,'POST','eve/v1/session',{message,...(operationId?{operationId}:{})});assert.ok(response.ok,`create ${member}: ${response.status} ${await response.clone().text()}`);const id=response.headers.get('x-eve-session-id');assert.ok(id);ownedSessionIds.add(id);return {id,cookie:response.headers.get('set-cookie')?.split(';')[0]??'',index:0};}
-const terminal=new Set(['session.completed','session.failed','session.waiting']);
-async function stream(app,member,session){const lines=[];for(let retry=0;retry<80;retry++){
- const response=await request(app,member,'GET',`eve/v1/session/${session.id}/stream?streamControlVersion=1&startIndex=${session.index}&includeTailIndex=1`,undefined,session.cookie);
+// Stream version 27: each stored line is `{at, facts:[…]}` or `{progress}`; `{$eve}` records are
+// transport only and are not stored. `startIndex` counts stored lines. A read ends when the turn
+// settles (any outcome), pauses for a person, or the session ends.
+const ends=fact=>fact.type==='turn.settled'||fact.type==='turn.paused'||fact.type==='session.ended';
+// `stop` ends a read on a fact other than a turn's end: a manual compaction runs between turns on
+// eve 1.0, so it never settles, pauses or ends a turn; its control delivery settles instead.
+async function stream(app,member,session,stop=ends){const lines=[];for(let retry=0;retry<80;retry++){
+ const response=await request(app,member,'GET',`eve/v1/session/${session.id}/stream?startIndex=${session.index}&includeTailIndex=1`,undefined,session.cookie);
  if(!response.ok){if([404,409,425,500,502,503,504].includes(response.status)){await sleep(100);continue;}throw new Error('stream '+response.status+' '+await response.text());}
- const raw=await response.text();for(const line of raw.split('\n').filter(Boolean)){const event=JSON.parse(line);lines.push(line);session.index++;if(event.type==='step.started')observedSteps.add(JSON.stringify([session.id,event.data.turnId,event.data.sequence,event.data.stepIndex]));if(terminal.has(event.type)){assert.notEqual(event.type,'session.failed',raw);return lines.join('\n');}}
+ const tail=Number(response.headers.get('x-eve-stream-tail-index'));assert.ok(Number.isInteger(tail),'A catch-up read carried no tail index');
+ const raw=await response.text();let read=session.index;
+ for(const line of raw.split('\n').filter(Boolean)){const record=JSON.parse(line);if(record.$eve!==undefined)continue;const at=read;lines.push(line);read++;
+  // The gateway lane's scope check (assertGatewayScopes) compares each model call's recorded
+  // coordinates with what the stream itself emitted. eve 0.60.1 emitted them as one `step.started`
+  // fact; eve 1.0 emits no such fact, and the kit builds the same record from eve's session view
+  // (`modelStepCoordinates`): the turn id, its sequence (the `n` of `turn_<n>`, eve's own rule),
+  // and the stream position of the next stored line. Measured on this stream, that next line is
+  // the one carrying the call's `model.requested` fact. So a step is observed here as: a
+  // `model.requested` fact AT stored position `at`, scoped to a turn whose `turn.started` this
+  // session's stream emitted.
+  for(const fact of record.facts??[]){
+   if(fact.type==='turn.started')startedTurns.add(JSON.stringify([session.id,fact.data.turnId]));
+   const turnId=fact.scope?.turnId,sequence=/^turn_(0|[1-9]\d*)$/.exec(turnId??'')?.[1];
+   if(fact.type==='model.requested'&&sequence!==undefined&&startedTurns.has(JSON.stringify([session.id,turnId])))observedSteps.add(JSON.stringify([session.id,turnId,Number(sequence),at]));
+   // Cards as the stream shows them: which turn opened each, and where and how it settled. The
+   // resume checks below tie the model call after an answer to the turn that asked the card.
+   if(fact.type==='interaction.opened')observedCards.set(fact.data.interactionId,{session:session.id,turnId:fact.scope?.turnId,openedAt:at});
+   if(fact.type==='interaction.settled'&&observedCards.has(fact.data?.interactionId))Object.assign(observedCards.get(fact.data.interactionId),{settledAt:at,settled:fact.data});
+   if(stop(fact)){session.index=read;if(stop===ends)assert.notEqual(fact.data?.outcome,'failed',raw);return lines.join('\n');}}}
+ assert.equal(read-1,tail,'Counted stored lines and the server tail index differ');session.index=read;
  await sleep(100);
  }throw new Error('Turn never completed '+logs.slice(-1800));}
 async function send(app,member,session,message){const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{message},session.cookie);assert.ok(response.ok,'continue '+response.status+' '+await response.clone().text());return stream(app,member,session);}
@@ -219,7 +246,8 @@ async function proveDurableBudget(app){
  const rows=async()=>(await db.query('SELECT id,invocation_hash FROM budget_attempts ORDER BY id')).rows;
  const before=await rows();assert.equal(before.length,scopes.length);assert.equal(receipts.length,scopes.length);
  assert.equal(new Set(before.map(row=>row.invocation_hash)).size,before.length);assert.deepEqual(new Set(receipts.map(row=>row.id)),new Set(before.map(row=>row.id)));
- const selected=[scopes.find(s=>s.session.auth.current.attributes.lares_purpose==='human'),...['approve','cancel'].map(option=>scopes.find(s=>s.event.data.turnId===''&&s.session.auth.current.attributes.lares_resume_option===option))];
+ const resumes=['approve','deny'].map(option=>resumeScope(scopes,option));resumes.forEach((scope,i)=>assertExactResume(scope,['approve','deny'][i]));
+ const selected=[scopes.find(s=>s.session.auth.current.attributes.lares_purpose==='human'&&!resumes.includes(s)),...resumes];
  assert.ok(selected.every(Boolean),'Missing actual human or exact blank approval/cancel invocation');
  const code=`import {Pool} from 'pg';
  import {PgBudgetAdmissionStore} from '${new URL('../../../packages/agent-kit/src/budget-admission-store.ts',import.meta.url).href}';
@@ -239,7 +267,7 @@ async function proveDurableBudget(app){
   assert.deepEqual(JSON.parse(result.stdout),{denied:true});
  }
  assert.deepEqual(await rows(),before,'Cold reconstruction changed retained invocation hashes or attempt count');
- console.log(app.name+': actual human and blank approve/cancel preparation, unchanged hashes/count after valid-authority cold replay PASS (preparation only)');
+ console.log(app.name+': actual human and continued-turn approve/deny preparation, unchanged hashes/count after valid-authority cold replay PASS (preparation only)');
 }
 /** A card that is not personal mail, end to end. Who may answer does not change: only the member who
  * started that conversation, on the same session and admission, for the exact unexpired card. */
@@ -249,19 +277,19 @@ async function proveTracksCards(app,sa,sb,vault){
  async function card(member,session,input,verb='TRACK'){
   const transcript=await send(app,member,session,verb+' '+JSON.stringify(input));
   const row=(await db.query("SELECT * FROM approval_asks WHERE session_id=$1 AND tool='track_create' AND outcome IS NULL ORDER BY asked_at DESC LIMIT 1",[session.id])).rows[0];
-  assert.ok(row?.request_id,'Card was never reserved: '+transcript);assert.ok(transcript.includes('input.requested'),'No card reached the member');
+  assert.ok(row?.request_id,'Card was never reserved: '+transcript);assert.ok(transcript.includes('interaction.opened'),'No card reached the member');
   return row;
  }
- const post=(member,session,row,option)=>request(app,member,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId:row.request_id??row,optionId:option}]},session.cookie);
+ const post=(member,session,row,option)=>request(app,member,'POST',`eve/v1/session/${session.id}`,{answers:[{interactionId:row.request_id??row,optionId:option}]},session.cookie);
  async function answer(member,session,row,option='approve'){const response=await post(member,session,row,option);assert.ok(response.ok,'exact answer '+response.status+' '+await response.clone().text());return stream(app,member,session);}
  const ask=async row=>(await db.query('SELECT outcome,resolved_by_member_id,used_at,use_count FROM approval_asks WHERE call_id=$1',[row.call_id])).rows[0];
  // Straight to the role, as a holder of the route password would be: the console's own checks are out of the way.
- const direct=(memberId,admission,sessionId,requestId)=>fetch(`http://127.0.0.1:${port}/eve/v1/session/${sessionId}`,{method:'POST',headers:{authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),'content-type':'application/json','x-lares-member-id':memberId,'x-lares-admission':admission,'x-lares-purpose':'resolver'},body:JSON.stringify({inputResponses:[{requestId,optionId:'approve'}]})});
+ const direct=(memberId,admission,sessionId,requestId)=>fetch(`http://127.0.0.1:${port}/eve/v1/session/${sessionId}`,{method:'POST',headers:{authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),'content-type':'application/json','x-lares-member-id':memberId,'x-lares-admission':admission,'x-lares-purpose':'resolver'},body:JSON.stringify({answers:[{interactionId:requestId,optionId:'approve'}]})});
  const nonce=async session=>(await db.query('SELECT admission_nonce FROM console_session_bindings WHERE session_id=$1',[session.id])).rows[0].admission_nonce;
 
  // Cancelled: nothing written, and the conversation carries on.
  const cancelled=await card(a,sa,track('cancelled-one'));
- const afterCancel=await answer(a,sa,cancelled,'cancel');assert.ok(afterCancel.includes('ANSWER'),afterCancel);
+ const afterCancel=await answer(a,sa,cancelled,'deny');assert.ok(afterCancel.includes('ANSWER'),afterCancel);
  assert.equal((await ask(cancelled)).outcome,'cancelled');assert.equal(existsSync(file('cancelled-one')),false);
  assert.equal((await post(a,sa,cancelled,'approve')).ok,false,'A cancelled card was approved afterwards');
 
@@ -269,7 +297,7 @@ async function proveTracksCards(app,sa,sb,vault){
  const pending=await card(a,sa,track('member-a-track'));
  const nonceA=await nonce(sa),nonceB=await nonce(sb),beforeWrong=models(app).length,commitsBefore=commits();
  for(const [member,session,requestId]of [[b,sa,pending.request_id],[a,sb,pending.request_id],[a,sa,'forged-request'],[outsider,sa,pending.request_id]]){
-  const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId,optionId:'approve'}]},session.cookie);
+  const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{answers:[{interactionId:requestId,optionId:'approve'}]},session.cookie);
   assert.equal(response.ok,false,'Wrong member, session or request reached the runtime');
  }
  for(const [memberId,admission,sessionId]of [[b,nonceA,sa.id],[b,nonceB,sa.id],[a,'z'.repeat(43),sa.id],[a,nonceA,sb.id],[b,nonceB,sb.id]]){
@@ -310,7 +338,7 @@ async function proveTracksCards(app,sa,sb,vault){
  const stale=await card(a,sa,track('stale-one'));const row=(await db.query('SELECT * FROM approval_asks WHERE call_id=$1',[stale.call_id])).rows[0];
  await db.query('DELETE FROM approval_asks WHERE call_id=$1',[stale.call_id]);
  await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,session_id,asked_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()-interval '25 hours')`,[row.call_id,row.request_id,row.agent,row.tool,row.payload_hash,row.original_authority,row.acting_member_id,row.session_id]);
- assert.equal((await post(a,sa,stale,'approve')).ok,false,'An expired card was approved');await answer(a,sa,stale,'cancel');assert.equal(existsSync(file('stale-one')),false);
+ assert.equal((await post(a,sa,stale,'approve')).ok,false,'An expired card was approved');await answer(a,sa,stale,'deny');assert.equal(existsSync(file('stale-one')),false);
 
  console.log('chief-of-staff: Tracks card approve/cancel/replay/cold-restart, two members, changed content, expiry and no new reads PASS (real Keeper broker and Git Vault)');
 }
@@ -321,14 +349,41 @@ async function proveTrackEditWithdrawn(app,vault){
  await send(app,a,session,'TRACK '+JSON.stringify({trackId,name:'No edit',purpose:'Open work',steps:['Open','Done'],closingSteps:['Done']}));
  const row=(await db.query("SELECT request_id,call_id FROM approval_asks WHERE session_id=$1 AND tool='track_create'",[session.id])).rows[0];assert.ok(row?.request_id);
  await vault.configure([{id:a,permissions:['use']},{id:b,permissions:['use','edit']}]);
- const before=models(app).length,response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId:row.request_id,optionId:'approve'}]},session.cookie);
+ const before=models(app).length,response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{answers:[{interactionId:row.request_id,optionId:'approve'}]},session.cookie);
  assert.equal(response.ok,false,'A card raised under edit rights was still answered after they were withdrawn');assert.equal(models(app).length,before);
  assert.equal(existsSync(file),false);assert.equal((await db.query('SELECT use_count FROM approval_asks WHERE call_id=$1',[row.call_id])).rows[0].use_count,0);
  await vault.configure([{id:a,permissions:['use','edit']},{id:b,permissions:['use','edit']}]);
  console.log('chief-of-staff: withdrawn edit refuses the pending card before the runtime PASS (Keeper rechecks at write: its own suite)');
 }
+/** The model call that continues a turn after its card was answered with `option`.
+ * eve 0.60.1 ran it in a blank turn ('') with the resolver's identity as `current`. eve 1.0
+ * continues the PAUSED turn as the person who asked (merged "the turn after an answered approval
+ * card" change; `captureBudgetAuthorityReference` in packages/agent-kit/src/budget-model-authority.ts:
+ * "session.auth.current is always that person's human admission, also in the turn after an answered
+ * card"; the answer itself is read from the response policy's record, `takeAcceptedAnswers`, never
+ * from the session). So the intended value is: the turn id of the turn that asked the card (never
+ * blank), a stream position after the card settled with this option, and a human `current` that is
+ * the same member and admission as the initiator. The option is read off the stream's own
+ * `interaction.settled` fact. */
+function resumeScope(scopes,option){
+  for(const card of observedCards.values()){
+    if(card.settled?.response?.optionId!==option||!card.turnId||card.settledAt===undefined)continue;
+    const scope=scopes.find(s=>s.session.id===card.session&&s.event.data.turnId===card.turnId&&s.event.data.stepIndex>card.settledAt);
+    if(scope)return scope;
+  }
+}
+function assertExactResume(scope,option){
+  assert.ok(scope,'No model call continued the turn of a card answered '+option);
+  const current=scope.session.auth.current.attributes,initial=scope.session.auth.initiator.attributes;
+  assert.ok(scope.event.data.turnId.trim(),'The '+option+' resume ran in a blank turn');
+  assert.equal(current.lares_purpose,'human','The '+option+' resume did not run as the person who asked');
+  assert.equal(current.lares_member_id,initial.lares_member_id,'The '+option+' resume changed member');
+  assert.equal(current.lares_admission_nonce,initial.lares_admission_nonce,'The '+option+' resume changed admission');
+}
 function assertGatewayScopes(app){
   gateway.assertHealthy();
+  // Prompt cache: one unmarked system message from eve, and the markers where the shaping puts them.
+  if(gatewayLane==='anthropic'){assertOneSystemMessage(app.modelLog+'.system');gateway.assertCacheMarkers();}
   const scopes=()=>readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
   for(const scope of scopes()){
     assert.equal(scope.alias,'fixture-brain');assert.equal(scope.event.type,'step.started');
@@ -336,7 +391,7 @@ function assertGatewayScopes(app){
     assert.equal(scope.session.auth.initiator.attributes.lares_purpose,'human');
     assert.ok(['human','resolver'].includes(scope.session.auth.current.attributes.lares_purpose));
   }
-  if(app.name==='proof-chief'&&withSend)for(const option of ['approve','cancel'])assert.ok(scopes().some(s=>s.session.auth.current.attributes.lares_purpose==='resolver'&&s.session.auth.current.attributes.lares_resume_option===option&&s.event.data.turnId===''),'Exact '+option+' resume did not preserve actual blank turn and resolver auth');
+  if(app.name==='proof-chief'&&withSend)for(const option of ['approve','deny'])assertExactResume(resumeScope(scopes(),option),option);
   assert.equal(scopes().length,gateway.calls.filter(c=>c.role===app.name.replace(/^proof-/, '').replace(/^chief$/, 'chief-of-staff')).length,'Scoped model calls and actual HTTP requests differ');
 }
 async function proveGatewayInvocation(app){
@@ -344,7 +399,10 @@ async function proveGatewayInvocation(app){
   const manual=await create(app,a,'Before manual compaction');await stream(app,a,manual);
   const beforeManual=gateway.calls.length,manualLogOffset=logs.length;
   const response=await request(app,a,'POST',`eve/v1/session/${manual.id}/compact`,{},manual.cookie);assert.ok(response.ok);
-  await stream(app,a,manual);await sleep(50);assert.equal(gateway.calls.length,beforeManual,'Manual compaction dispatched HTTP');
+  // eve 1.0: the compaction is a control delivery between turns, settled `failed` when refused.
+  const compacted=(await stream(app,a,manual,fact=>fact.type==='delivery.settled')).split('\n').map(JSON.parse).flatMap(r=>r.facts??[]).filter(f=>f.type==='delivery.settled').at(-1);
+  assert.equal(compacted?.data?.outcome,'failed','Refused manual compaction did not settle its delivery failed');
+  await sleep(50);assert.equal(gateway.calls.length,beforeManual,'Manual compaction dispatched HTTP');
   const manualLogs=logs.slice(manualLogOffset);
   assert.ok(manualLogs.includes('manual session compaction failed'),'Manual compaction did not report its failure');
   const manualCause=manualLogs.includes('Model compaction requires a fresh trusted invocation')?'authored-hook':manualLogs.includes('Dynamic model selection is required before model-dependent work begins')?'no-current-model-selection':null;
@@ -368,8 +426,8 @@ async function proveGatewayInvocation(app){
     if(gateway.calls.length===before){
       const receipts=readFileSync(app.modelLog+'.compaction','utf8').slice(receiptOffset).trim().split('\n').filter(Boolean).map(JSON.parse);
       assert.ok(receipts.length>0,'Automatic refusal did not reach awaited compaction hook');
-      assert.ok(receipts.every(r=>r.sessionId===long.id&&r.event.type==='compaction.requested'&&r.error==='Model compaction requires a fresh trusted invocation'),'Compaction receipt did not identify this actual attempt and exact refusal');
-      assert.ok(transcript.includes('session.failed'),'Authored compaction refusal did not terminally stop the workflow');
+      assert.ok(receipts.every(r=>r.sessionId===long.id&&r.event.type==='context.started'&&r.event.data?.kind!=='clear'&&r.error==='Model compaction requires a fresh trusted invocation'),'Compaction receipt did not identify this actual attempt and exact refusal');
+      assert.ok(transcript.includes('"outcome":"failed"'),'Authored compaction refusal did not terminally stop the workflow');
       denied=true;break;
     }
     assert.equal(gateway.calls.length,before+1,'Long turn dispatched duplicate HTTP');
@@ -410,7 +468,7 @@ try{
   const crossControl=await request(app,b,'POST',`eve/v1/session/${sa.id}/cancel`,{},sa.cookie);assert.equal(crossControl.ok,false);assert.equal(upstreamCalls,before);
   const controlCalls=models(app).length;assert.ok((await request(app,a,'POST',`eve/v1/session/${sa.id}/cancel`,{},sa.cookie)).ok);assert.equal(models(app).length,controlCalls);
   await send(app,a,sa,'question');assert.ok((await send(app,a,sa,'A private planning question')).includes('ANSWER'));console.log(role+': plain-text question continuation accepted');
-  if(withVault){const vaultSession=await create(app,a,'Vault custody seam');await stream(app,a,vaultSession);const startIndex=vaultCalls.length,transcript=await send(app,a,vaultSession,'VAULT_READ'),events=transcript.split('\n').filter(Boolean).map(JSON.parse),started=events.find(event=>event.type==='turn.started');assert.ok(started,'Actual Eve turn.started event');assert.ok(transcript.includes('VAULT_PRIVATE_CANARY'),'Actual tool context returned the bounded broker read');const chain=vaultCalls.slice(startIndex);assert.deepEqual(chain.map(call=>call.op),['challenge','request.admit','turn.open','vault.read','turn.close']);const opened=chain.find(call=>call.op==='turn.open').body.input,read=chain.find(call=>call.op==='vault.read').body.input,admitted=chain.find(call=>call.op==='request.admit').body.input,capsule=JSON.parse(Buffer.from(admitted.capsule.split('.')[0],'base64url').toString('utf8'));assert.equal(opened.sessionId,vaultSession.id);assert.equal(opened.turnId,started.data.turnId);assert.equal(opened.sequence,started.data.sequence);assert.equal(read.turnId,started.data.turnId);assert.equal(read.sequence,started.data.sequence);assert.equal(admitted.receipt.method,'POST');assert.equal(admitted.receipt.path,`/eve/v1/session/${vaultSession.id}`);assert.equal(admitted.receipt.rawBodyHash,capsule.rawBodyHash);assert.equal(capsule.member,a);assert.equal(capsule.purpose,'human');console.log('chief-of-staff: actual compiled HTTP Request → signed exact receipt → Eve auth clone/turn.started → real tool context → bounded broker read PASS (recording broker fixture)');}
+  if(withVault){const vaultSession=await create(app,a,'Vault custody seam');await stream(app,a,vaultSession);const startIndex=vaultCalls.length,transcript=await send(app,a,vaultSession,'VAULT_READ'),events=transcript.split('\n').filter(Boolean).map(JSON.parse).flatMap(record=>record.facts??[]),started=events.find(event=>event.type==='turn.started');assert.ok(started,'Actual Eve turn.started event');assert.ok(transcript.includes('VAULT_PRIVATE_CANARY'),'Actual tool context returned the bounded broker read');const chain=vaultCalls.slice(startIndex);assert.deepEqual(chain.map(call=>call.op),['challenge','request.admit','turn.open','vault.read','turn.close']);const opened=chain.find(call=>call.op==='turn.open').body.input,read=chain.find(call=>call.op==='vault.read').body.input,admitted=chain.find(call=>call.op==='request.admit').body.input,capsule=JSON.parse(Buffer.from(admitted.capsule.split('.')[0],'base64url').toString('utf8'));assert.equal(opened.sessionId,vaultSession.id);assert.equal(opened.turnId,started.data.turnId);assert.ok(Number.isSafeInteger(opened.sequence)&&opened.sequence>=0,'turn.open carried no turn sequence');assert.equal(read.turnId,started.data.turnId);assert.equal(read.sequence,opened.sequence);assert.equal(admitted.receipt.method,'POST');assert.equal(admitted.receipt.path,`/eve/v1/session/${vaultSession.id}`);assert.equal(admitted.receipt.rawBodyHash,capsule.rawBodyHash);assert.equal(capsule.member,a);assert.equal(capsule.purpose,'human');console.log('chief-of-staff: actual compiled HTTP Request → signed exact receipt → Eve auth clone/turn.started → real tool context → bounded broker read PASS (recording broker fixture)');}
   if(role==='chief-of-staff'){const mailA=await send(app,a,sa,'MAIL '+JSON.stringify(selections.get(a)));const mailB=await send(app,b,sb,'MAIL '+JSON.stringify(selections.get(b)));assert.ok(mailA.includes('MEMBER_A_MAIL_CANARY'));assert.ok(!mailA.includes('MEMBER_B_MAIL_CANARY'));assert.ok(mailB.includes('MEMBER_B_MAIL_CANARY'));}
   if(role==='creative')for(const skill of ['private-owner-skill','/vault/owner.md','../../agent/voice.md']){const result=await send(app,a,sa,'SKILL '+skill);assert.ok(result.includes('No skill named'),result);assert.ok(!result.includes(canaries.owner));}
   if(role==='chief-of-staff'&&withTracks)await proveTracksCards(app,sa,sb,trackVault);
@@ -424,19 +482,36 @@ try{
       assert.ok(!row.payload_ciphertext.includes(input.body));return row;
     }
     async function answer(session,row,option='approve'){
-      const response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId:row.request_id,optionId:option}]},session.cookie);
+      const response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{answers:[{interactionId:row.request_id,optionId:option}]},session.cookie);
       assert.ok(response.ok,'exact answer '+response.status+' '+await response.clone().text());return stream(app,a,session);
     }
+    // A repeated answer to a card that is already settled is refused by the console before the
+    // agent (`cardStillWaiting` in services/console/lib/chat-proxy.ts): no turn, no model call.
+    async function repeated(session,row,option='approve'){
+      const upstream=upstreamCalls,calls=models(app).length;
+      const response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{answers:[{interactionId:row.request_id,optionId:option}]},session.cookie);
+      assert.equal(response.status,409,'A repeated answer reached the agent: '+response.status+' '+await response.clone().text());
+      assert.equal(await response.text(),'This request is no longer waiting, so this answer was not used.');
+      assert.equal(upstreamCalls,upstream,'A repeated answer reached the agent');assert.equal(models(app).length,calls,'A repeated answer reached the model');
+    }
     sendProof={proposal,sendCount};
-    const cancelled=await proposal(sa,'SEND_ATTACK '+JSON.stringify({...input,subject:'Cancelled continuation attack'}));await answer(sa,cancelled,'cancel');assert.equal(sendCount(),0);
+    const cancelled=await proposal(sa,'SEND_ATTACK '+JSON.stringify({...input,subject:'Cancelled continuation attack'}));await answer(sa,cancelled,'deny');assert.equal(sendCount(),0);
     assert.equal((await db.query('SELECT state FROM personal_actions WHERE id=$1',[cancelled.id])).rows[0].state,'cancelled');
     const approved=await proposal(sa);const before=models(app).length;
     await stop();await start(app);assert.equal(hashOutput(app.cwd),outputHash);
     assert.ok((await answer(sa,approved)).includes('ANSWER'));assert.equal(sendCount(),1);assert.ok(models(app).length>before,'Approved call must continue to the actual model');
     assert.equal((await db.query('SELECT state FROM personal_actions WHERE id=$1',[approved.id])).rows[0].state,'accepted');
-    await answer(sa,approved);assert.equal(sendCount(),1);await stop();await start(app);await answer(sa,approved);assert.equal(sendCount(),1);
+    await repeated(sa,approved);await repeated(sa,approved,'deny');assert.equal(sendCount(),1);await stop();await start(app);await repeated(sa,approved);assert.equal(sendCount(),1);
     const attack=await proposal(sa,'SEND_ATTACK '+JSON.stringify(input));await answer(sa,attack);assert.equal(sendCount(),2);
     assert.equal((await db.query('SELECT count(*)::int AS n FROM personal_actions WHERE session_id=$1',[sa.id])).rows[0].n,3,'Resolver model created another proposal');
+    // Both continued turns (after the deny and after the approve of an attack card) asked for a new
+    // send, and each was refused with the role's own sentence (`NEW_SEND_AFTER_ANSWER_REFUSED` in
+    // services/chief-of-staff/lib/personal-send-approval.ts).
+    // (The scripted model sees tool results as objects with ids; the gateway fixture sees the wire's
+    // text only, so there a refusal is keyed by the message of the turn it answered.)
+    const NEW_SEND_REFUSED='A new send cannot be started in the reply to an answered request. Ask again in a new message.';
+    const refusedNew=new Set(models(app).flatMap(frame=>(frame.toolResults??[]).flatMap(r=>typeof r==='string'?(r.includes(NEW_SEND_REFUSED)?['text:'+frame.message]:[]):r.name==='personal_mailbox_send'&&r.isError&&String(r.output)===NEW_SEND_REFUSED?['id:'+r.id]:[])));
+    assert.equal(refusedNew.size,2,'The new send in a continued turn was not refused with the stated sentence');
     assert.equal(readFileSync(app.providerLog,'utf8').split('\n').filter(line=>line.includes('MAIL_CANARY')).length,2,'Resolver model read a private source');
     const wrongSelection=await create(app,a,'Wrong personal selection');await stream(app,a,wrongSelection);
     await send(app,a,wrongSelection,'SEND '+JSON.stringify({...input,selection:selections.get(b)})).catch(()=>{});
@@ -444,19 +519,19 @@ try{
     const pending=await proposal(sa);
     const beforeWrong=models(app).length,callsBeforeWrong=sendCount();
     for(const [member,session,requestId]of [[b,sa,pending.request_id],[a,sb,pending.request_id],[a,sa,'forged-request']]){
-      const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId,optionId:'approve'}]},session.cookie);assert.equal(response.ok,false,'Wrong member/session/request reached runtime');
+      const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{answers:[{interactionId:requestId,optionId:'approve'}]},session.cookie);assert.equal(response.ok,false,'Wrong member/session/request reached runtime');
     }
-    assert.equal(models(app).length,beforeWrong);assert.equal(sendCount(),callsBeforeWrong);await answer(sa,pending,'cancel');
+    assert.equal(models(app).length,beforeWrong);assert.equal(sendCount(),callsBeforeWrong);await answer(sa,pending,'deny');
     const expired=await proposal(sa);
     const ask=(await db.query('SELECT * FROM approval_asks WHERE request_id=$1',[expired.request_id])).rows[0];
     await db.query('DELETE FROM approval_asks WHERE request_id=$1',[expired.request_id]);
     await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,session_id,asked_at)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()-interval '25 hours')`,[ask.call_id,ask.request_id,ask.agent,ask.tool,ask.payload_hash,ask.original_authority,ask.acting_member_id,ask.session_id]);
-    const refused=await request(app,a,'POST',`eve/v1/session/${sa.id}`,{inputResponses:[{requestId:expired.request_id,optionId:'approve'}]},sa.cookie);assert.equal(refused.ok,false);assert.equal(sendCount(),callsBeforeWrong);
-    await answer(sa,expired,'cancel');
+    const refused=await request(app,a,'POST',`eve/v1/session/${sa.id}`,{answers:[{interactionId:expired.request_id,optionId:'approve'}]},sa.cookie);assert.equal(refused.ok,false);assert.equal(sendCount(),callsBeforeWrong);
+    await answer(sa,expired,'deny');
     console.log('chief-of-staff: exact prepare/approve/cancel/replay/cold-restart and second-call refusal PASS');
   }
-  const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['ask_question','lares_read_public_doc','load_skill','todo']:['ask_question','gmail_accounts','gmail_read','gmail_search','lares_read_public_doc','load_skill','todo',...(withSend?['personal_mailbox_accounts','personal_mailbox_list','personal_mailbox_read','personal_mailbox_send']:[]),...(withVault?['agent-kit__vault_list','agent-kit__vault_read']:[]),...(withTracks?['tracks_list','track_items','track_add_item','track_move_item','track_create','track_set_steps']:[])].sort());assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
+  const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['eve__skill','lares_read_public_doc']:['eve__skill','gmail_accounts','gmail_read','gmail_search','lares_read_public_doc',...(withSend?['personal_mailbox_accounts','personal_mailbox_list','personal_mailbox_read','personal_mailbox_send']:[]),...(withVault?['agent-kit__vault_list','agent-kit__vault_read']:[]),...(withTracks?['tracks_list','track_items','track_add_item','track_move_item','track_create','track_set_steps']:[])].sort());assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
   const beforeCold=gatewayLane?readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(s=>s.session.id===sa.id):[];
   await stop();await start(app);assert.equal(hashOutput(app.cwd),outputHash);assert.ok((await send(app,a,sa,'After cold restart')).includes('ANSWER'));
   if(gatewayLane){const after=readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(s=>s.session.id===sa.id);assert.ok(after.at(-1).event.data.sequence>Math.max(...beforeCold.map(s=>s.event.data.sequence)),'Cold fresh human turn reused previous sequence');assert.ok(after.at(-1).event.data.turnId,'Cold fresh human turn did not retain actual nonempty turn');}
@@ -474,7 +549,7 @@ try{
   const generationPending=sendProof?await sendProof.proposal(renewedSession,'SEND '+JSON.stringify({selection:{accountId:ac.id,generation:renewed.generation,resourceBindingId:renewedResource.id},to:['recipient@example.invalid'],subject:'Pending generation',body:'Pending immutable body'})):null;
   const generationCalls=sendProof?.sendCount(),generationModels=models(app).length;
   const healthy=await adapter.renew(a,await accounts.beginUpdate(a,ac.id,renewed.generation),a);assert.ok(healthy.generation>renewed.generation);await denyOld(app,a,renewedSession);
-  if(generationPending){const refused=await request(app,a,'POST',`eve/v1/session/${renewedSession.id}`,{inputResponses:[{requestId:generationPending.request_id,optionId:'approve'}]},renewedSession.cookie);assert.equal(refused.ok,false);assert.equal(sendProof.sendCount(),generationCalls);assert.equal(models(app).length,generationModels);console.log('chief-of-staff: pending account generation approval refused before model/provider PASS');}
+  if(generationPending){const refused=await request(app,a,'POST',`eve/v1/session/${renewedSession.id}`,{answers:[{interactionId:generationPending.request_id,optionId:'approve'}]},renewedSession.cookie);assert.equal(refused.ok,false);assert.equal(sendProof.sendCount(),generationCalls);assert.equal(models(app).length,generationModels);console.log('chief-of-staff: pending account generation approval refused before model/provider PASS');}
   const departure=await create(app,b,'Before removal');await stream(app,b,departure);await db.query("UPDATE users SET status='removed' WHERE id=$1",[b]);await denyOld(app,b,departure);await db.query("UPDATE users SET status='active' WHERE id=$1",[b]);const rejoined=await memberStore.createSession({identity:{issuer:'https://identity.example.invalid',subject:b},verifiedAt:new Date()},new Date(Date.now()+3600000));members.set(b,rejoined.token);await denyOld(app,b,departure);
   const oldInc=await create(app,a,'Before incarnation change');await stream(app,a,oldInc);await db.query("UPDATE agent_resources SET ownership_token='22222222-2222-4222-8222-222222222222',runtime_control_token='22222222-2222-4222-8222-222222222222' WHERE name=$1",[app.name]);await denyOld(app,a,oldInc);
   if(gatewayLane)assertGatewayScopes(app);

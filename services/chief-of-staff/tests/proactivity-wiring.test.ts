@@ -363,14 +363,27 @@ const advanceRung = vi.fn(async () => {});
 const readLadderEnabled = vi.fn(async () => true);
 vi.mock("../lib/deadlines-store.js", () => ({ listDeadlines, advanceRung, readLadderEnabled }));
 
-/** The raw send primitives `reminders.ts` uses — spied, so "the door was not knocked on" is a
- *  fact about the wire and not about a wrapper. */
-const sendTelegramMessage = vi.fn(async () => ({}));
-const callSlackApi = vi.fn(async () => ({ ok: true, ts: "1" }));
-// PARTIAL, both of them: `agent/channels/{slack,telegram}.ts` import `slackChannel`/
-// `telegramChannel` from these same modules at import time, and a wholesale mock takes the whole
-// channel down before the schedule is even constructed.
-vi.mock("eve/channels/telegram", async (importOriginal) => ({
+/** The raw send primitives the schedules use — spied, so "the door was not knocked on" is a fact
+ *  about the one call every raw send goes through and not about a schedule's own wrapper.
+ *  Telegram's is `lib/telegram-send.ts` (eve 1.0 no longer exports a sender of its own); what
+ *  that function puts on the wire is pinned in `tests/telegram-delivery.test.ts`. */
+const sendTelegramMessage = vi.fn(async () => ({ id: "1" }));
+/** The owner's direct-message channel, as Slack's `conversations.open` answers for a user id. A
+ *  conversation a schedule starts on Slack is addressed there (`routed.conversationAddress()`),
+ *  so every scheduled Slack turn asks for it first; a plain text post does not. */
+const SLACK_DM_CHANNEL = "D0ABCDM";
+const callSlackApi = vi.fn(async (input?: { operation?: string; body?: unknown }) =>
+  input?.operation === "conversations.open"
+    ? { ok: true, channel: { id: SLACK_DM_CHANNEL } }
+    : { ok: true, ts: "1" },
+);
+/** Every Slack API call made, as operation and body. */
+const slackCalls = () => callSlackApi.mock.calls.map(([input]) => ({ operation: input?.operation, body: input?.body }));
+// PARTIAL, both of them. The Telegram sender's module also holds the Bot API call the webhook
+// front door uses. `agent/channels/slack.ts` imports `slackChannel` from the same module as
+// `callSlackApi` at import time, and a wholesale mock takes the whole channel down before the
+// schedule is even constructed.
+vi.mock("../lib/telegram-send.js", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   sendTelegramMessage,
 }));
@@ -737,7 +750,8 @@ describe("outreach-reply-watch (event): one key for both sends of one reply", ()
     expect(classifyReplyMock).toHaveBeenCalledTimes(1);
     expect(draftReplyMock).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1); // the act session prompt — the positive branch, not notify
-    expect(callSlackApi).not.toHaveBeenCalled();
+    // The one Slack API call is the lookup of where to start that session. Nothing is posted raw.
+    expect(slackCalls()).toEqual([{ operation: "conversations.open", body: { users: "U0ABC" } }]);
     expect(markReplied).toHaveBeenCalledWith(expect.anything(), "row-1");
   });
 });
@@ -946,10 +960,30 @@ describe("delivery routing", () => {
     const { send, to, ctx } = recordingCtx();
     const { default: schedule } = await import("../agent/schedules/evening-brief.js");
     await schedule.run!(ctx);
+    // The ledger and the allow-list stay on the USER id; the conversation is started at that
+    // person's direct-message channel, looked up from it — where a card's buttons work.
     expect(gateDoor()).toBe("slack:U0ABC");
-    expect(to.mock.calls[0]![1]).toEqual({ channelId: "U0ABC" });
+    expect(slackCalls()).toEqual([{ operation: "conversations.open", body: { users: "U0ABC" } }]);
+    expect(to.mock.calls[0]![1]).toEqual({ channelId: SLACK_DM_CHANNEL });
     expect(send).toHaveBeenCalledTimes(1);
     expect(fallbackNotes()).toEqual([]);
+  });
+
+  it("map [slack]: when the direct-message lookup fails, no conversation is started — never at the user id", async () => {
+    gateSends();
+    await atEvening();
+    process.env["SLACK_ALLOWED_USER_IDS"] = "U0ABC";
+    routeVia("evening-brief", ["slack"]);
+    callSlackApi.mockImplementationOnce(async () => ({ ok: false, error: "missing_scope" }) as never);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { send, to, ctx } = recordingCtx();
+    const { default: schedule } = await import("../agent/schedules/evening-brief.js");
+    await schedule.run!(ctx);
+    expect(to).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    // The failure is visible: the schedule logs that the send failed.
+    expect(logged.mock.calls.flat().map(String).join(" ")).toMatch(/send FAILED/);
+    logged.mockRestore();
   });
 
   it("map [telegram, web] with Telegram not connected: the message goes to web chat and the ledger says why", async () => {

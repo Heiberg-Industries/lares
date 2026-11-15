@@ -1,49 +1,76 @@
 /**
  * agent/channels/telegram-webhook.ts — the webhook front door.
  *
- * WHY THIS EXISTS. eve 0.32.0 routes any reply to a bot message as an INPUT RESPONSE and then
- * drops it when no freeform prompt is pending, so replying to the chief of staff in Telegram produces a turn
- * that makes no model call, sends nothing, and logs no error. Every agent's Telegram door is the
- * same `telegramChannel` on the same eve version. See
- * `lib/telegram-reply-fix.ts` for the upstream lines and the tripwire.
+ * WHY THIS EXISTS. It is the one place in our own code that sees an update before the framework
+ * does, and the one place the framework hands out `attachSession`. Three things need that:
  *
- * WHAT IT DELIBERATELY DOES NOT DO. It does not verify, dispatch, authenticate, or interpret.
- * It rewrites exactly one boolean and forwards the body to the real Telegram channel, which now
- * listens on an INNER path. Verification stays where the secret is — in the channel — so there
- * is one authority on what counts as authentic, not two.
+ *   1. A REPLY TO THE AGENT MUST REACH THE AGENT. See `@lares/agent-kit/telegram-reply-fix` for
+ *      what eve does with a reply to a bot message, and why the marker is cleared on the way in.
+ *   2. A TAP THAT MAY NOT BE ANSWERED IS STOPPED HERE (`lib/telegram-tap-gate.ts`), before it is
+ *      forwarded: an approval-card tap from somebody who is not an allowed approver, and any tap
+ *      the gate does not recognise.
+ *   3. ONE CONVERSATION PER CALENDAR DAY. Retiring a session by its exact id is the only way to
+ *      give this chat one conversation per day in the home time zone (see
+ *      `lib/telegram-rotation.ts`). On the first message of a new day this door ends the session
+ *      recorded as having served the previous one.
  *
- * THE ONE THING IT LOOKS AT. eve hands `attachSession` to ROUTE handlers and to nothing else,
- * and retiring a session by its exact id is the only way left to give this chat one
- * conversation per calendar day in the home time zone (the channel's old rename is additive now — see
- * `lib/telegram-rotation.ts`). So on the way in this door reads one row keyed by the update's
- * chat id and, on the first update of a new day, resets the session recorded as having served
- * the previous one. It still decides nothing about the update itself: a chat with nothing
- * recorded, a body it cannot read, a database it cannot reach — all forward unchanged.
+ * WHAT IT DELIBERATELY DOES NOT DO. It does not dispatch, authenticate a person, or interpret a
+ * message. It forwards the body to the real Telegram channel, which listens on an INNER path.
+ * Verification of the request stays where the framework does it — in the channel — and is
+ * repeated here only so that nothing this file DOES is done for a request Telegram did not send.
  *
  * The external contract is unchanged: Telegram still POSTs to the same URL it always has (eve's
- * default `/eve/v1/telegram`, which the channel used before this file existed), so there is no
- * `setWebhook` call, no window where updates go nowhere, and rollback is just the previous
- * image.
+ * default `/eve/v1/telegram`), so there is no `setWebhook` call (eve does not make one either),
+ * no window where updates go nowhere, and rollback is just the previous image.
  *
- * FAIL-OPEN, ALWAYS — WITH ONE NAMED EXCEPTION. This agent going deaf is worse than any single
- * update being mishandled: an unparseable body is forwarded exactly as it arrived. The one thing
- * that may be stopped here is an approval-card tap from somebody who is not an allowed approver
- * (`lib/telegram-tap-gate.ts`): the framework discards the tapper's identity, so this is
- * the last place it can be read at all, and a tap executes a real action. A message is never
- * refused by that gate, whoever sent it — the inbound allowlist in the channel is what decides
- * whether a message starts a turn, and it still decides it alone.
+ * FAIL OPEN FOR MESSAGES, FAIL CLOSED FOR TAPS. This agent going deaf is worse than any single
+ * message being mishandled: a body this file cannot read, a database it cannot reach, a chat with
+ * nothing recorded — all forward unchanged, and the inbound allowlist in the channel still
+ * decides alone whether a message starts a turn. A button tap is the opposite: it can execute a
+ * real action, so a tap the gate refuses is never forwarded, whatever else failed.
  */
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { defineChannel, POST } from "eve/channels";
-import { answerTelegramCallbackQuery } from "eve/channels/telegram";
 
 import { neutralizeBotReplyMarker } from "@lares/agent-kit/telegram-reply-fix";
-import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
 import { TELEGRAM_INNER_ROUTE, TELEGRAM_PUBLIC_ROUTE } from "@lares/agent-kit/telegram-routes";
 import { retirePriorDaySession } from "../../lib/telegram-rotation.js";
-import { refusedApprovalTap, secretMatches, TAP_REFUSAL } from "../../lib/telegram-tap-gate.js";
+import { callTelegramApi } from "../../lib/telegram-send.js";
+import {
+  refusedTap,
+  secretMatches,
+  TAP_REFUSAL,
+  TAP_UNRECOGNISED,
+  tapCapturePaths,
+  tapShape,
+} from "../../lib/telegram-tap-gate.js";
 import { telegramCredentials } from "./telegram.js";
 
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
+
+/**
+ * The live probe's capture (`tests/live/telegram-approval-tap.live.mts`): when the probe has left
+ * its request file, write the shape of this tap beside it, once. Off unless that file exists,
+ * which only somebody already inside the container can arrange. Writes the allowlisted fields
+ * `tapShape` picks and nothing else, logs no part of the update, changes nothing about what
+ * happens to the tap, and never throws.
+ */
+function captureTapForProbe(raw: string): void {
+  try {
+    const { request, result } = tapCapturePaths();
+    if (!existsSync(request)) return;
+    const shape = tapShape(raw);
+    if (shape === null) return; // Not a tap: the request waits for one.
+    // A fresh file every time, created exclusively: an older answer (or anything else that was
+    // put at this path) is removed first and never written through.
+    rmSync(result, { force: true });
+    writeFileSync(result, JSON.stringify(shape), { mode: 0o600, flag: "wx" });
+    rmSync(request, { force: true });
+    console.log("[telegram-webhook] live probe: wrote the shape of one button tap (ids and callback data only)");
+  } catch (err) {
+    console.error("[telegram-webhook] live probe capture failed —", err instanceof Error ? err.message : "unknown error");
+  }
+}
 
 function innerUrl(): string {
   const port = process.env["PORT"] ?? "3000";
@@ -61,16 +88,10 @@ export default defineChannel({
       const { body, rewritten } = neutralizeBotReplyMarker(raw);
       if (rewritten) console.log("[telegram-webhook] reply-to-bot forwarded as a message");
 
-      // The ONE update this door refuses. Only a tap on one of eve's own approval cards can end
-      // up here; everything else — every message, every proposal button — reads as null and falls
-      // straight through. Nothing is forwarded, so nothing executes and nothing is recorded as an
-      // answer: the card stays up, unanswered, for whoever may actually answer it.
       // Nothing below ACTS on the update unless Telegram really sent it. The framework's inner
-      // route checks the same header, but it runs after this one — and both the tap gate (which
-      // calls the Bot API) and the day-boundary reset (which resets a session) act on the body.
-      // An unauthenticated request is forwarded untouched and rejected there. A secret that
-      // cannot be read counts as "not authentic": the agent still hears real messages (the
-      // forward below is unconditional), it just does nothing of its own on this request.
+      // route checks the same header, but it runs after this one — and both the answer to a
+      // refused tap (a Bot API call) and the day-boundary retirement (which ends a session) act
+      // on the body. A secret that cannot be read counts as "not authentic".
       let authentic = false;
       try {
         authentic = secretMatches(secretToken, await telegramCredentials.webhookSecretToken());
@@ -78,24 +99,48 @@ export default defineChannel({
         console.error("[telegram-webhook] could not read the webhook secret —", err);
       }
 
-      // The gate looks at BOTH the body as it arrived and the body that is actually forwarded:
-      // the reply-marker rewrite above must never be a way to show this gate one update and the
+      if (authentic) captureTapForProbe(raw);
+
+      // The updates this door refuses: a tap by somebody who may not answer, and a tap the gate
+      // does not recognise. Every message reads as null and falls straight through. The gate
+      // looks at BOTH the body as it arrived and the body that is actually forwarded: the
+      // reply-marker rewrite above must never be a way to show this gate one update and the
       // framework another.
-      const refused = authentic ? (refusedApprovalTap(body) ?? refusedApprovalTap(raw)) : null;
+      //
+      // The decision does not wait on `authentic`: it is a pure reading of the body, and a tap
+      // that would be refused is not forwarded even when the secret could not be checked here.
+      // Only the ANSWER to the tapper needs a request Telegram really sent.
+      const refused = refusedTap(body) ?? refusedTap(raw);
       if (refused) {
-        console.warn("[telegram-webhook] approval tap from a principal who may not approve — not forwarded");
+        if (!authentic) {
+          // Not ours to answer, and not forwarded either. 401 is what the framework's own route
+          // says to a request it cannot verify; if the secret was merely unreadable for a
+          // moment, Telegram retries and the tap is judged again.
+          console.warn("[telegram-webhook] a tap this door refuses arrived on a request it could not verify — not forwarded");
+          return new Response("unauthorized", { status: 401 });
+        }
+        console.warn(
+          refused.reason === "not-allowed"
+            ? "[telegram-webhook] button tap from a principal who may not answer — not forwarded"
+            : "[telegram-webhook] button tap with callback data this door does not recognise — not forwarded",
+        );
         try {
-          await answerTelegramCallbackQuery({
+          // A direct Bot API call: there is no channel handle outside a channel handler. It goes
+          // through the egress proxy like every other Telegram call (`lib/telegram-send.ts`).
+          const answered = await callTelegramApi({
             credentials: telegramCredentials,
-            callbackQueryId: refused.callbackQueryId,
-            text: TAP_REFUSAL,
-            showAlert: true,
-            // The Bot API is only reachable through the egress proxy — the box's seal drops
-            // anything else, so this is never a bare global fetch.
-            fetch: telegramFetch,
+            method: "answerCallbackQuery",
+            body: {
+              callback_query_id: refused.callbackQueryId,
+              text: refused.reason === "not-allowed" ? TAP_REFUSAL : TAP_UNRECOGNISED,
+              show_alert: true,
+            },
           });
+          if (!answered.ok) {
+            console.error(`[telegram-webhook] Telegram did not take the answer to a refused tap (HTTP ${answered.status})`);
+          }
         } catch (err) {
-          console.error("[telegram-webhook] could not answer a refused approval tap —", err);
+          console.error("[telegram-webhook] could not answer a refused tap —", err);
         }
         // 200: the tap was handled, so Telegram must not retry it.
         return new Response("ok");

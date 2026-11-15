@@ -5,7 +5,8 @@ vi.mock("../lib/db", () => ({ pool: { query: vi.fn(async () => ({ rows: [] })) }
 import { DELIVERY_KINDS } from "@lares/agent-kit/delivery";
 import { OWNER_FACING_SCHEDULES } from "../lib/schedule-hours";
 import {
-  DELIVERY_KIND_LIST, ITEM_PREFIX, defaultDelivery, deliveryFromGrid, doorsFromRanks, gridFrom, ranksOf, withStartingDelivery,
+  DELIVERY_KIND_LIST, ITEM_PREFIX, defaultDelivery, deliveryFollowingFirstChatDoor, deliveryFromGrid, doorsFromRanks, gridFrom,
+  messagesFollowText, ranksOf, withStartingDelivery,
 } from "../lib/delivery";
 import {
   HOURLY_KINDS, briefConflicts, doorFor, hourInQuietWindow, quietWindowFor, type RoutingFact,
@@ -54,6 +55,30 @@ describe("the grid model", () => {
     expect(withStartingDelivery(def, "creative", true)).toBe(def);
     const chosen = { ...def, delivery: { digest: ["slack"] } };
     expect(withStartingDelivery(chosen, "chief-of-staff", true)).toBe(chosen);
+  });
+
+  it("a new chief of staff's starting list follows its first chat app; anything else is left alone", () => {
+    const fresh = { role: "chief-of-staff", doors: [], channels: [], delivery: defaultDelivery([]) };
+    const followed = deliveryFollowingFirstChatDoor(fresh, "telegram");
+    expect(Object.keys(followed ?? {}).sort()).toEqual([...DELIVERY_KIND_LIST].sort());
+    expect(Object.values(followed ?? {}).every((doors) => doors.join() === "telegram,web")).toBe(true);
+    expect(deliveryFollowingFirstChatDoor(fresh, "slack")?.digest).toEqual(["slack", "web"]);
+    // A mail door is not a chat app: it neither counts as the first one nor is followed.
+    expect(deliveryFollowingFirstChatDoor({ ...fresh, doors: [{ kind: "email" }] }, "slack")?.digest).toEqual(["slack", "web"]);
+    expect(deliveryFollowingFirstChatDoor(fresh, "email")).toBeUndefined();
+    // An edited list, a missing or extra kind, no list at all.
+    expect(deliveryFollowingFirstChatDoor({ ...fresh, delivery: { ...defaultDelivery([]), digest: ["web", "slack"] } }, "telegram")).toBeUndefined();
+    const { reminders: _dropped, ...short } = defaultDelivery([]);
+    expect(deliveryFollowingFirstChatDoor({ ...fresh, delivery: short }, "telegram")).toBeUndefined();
+    expect(deliveryFollowingFirstChatDoor({ ...fresh, delivery: { ...defaultDelivery([]), "crm-routing": ["web"] } }, "telegram")).toBeUndefined();
+    expect(deliveryFollowingFirstChatDoor({ ...fresh, delivery: undefined }, "telegram")).toBeUndefined();
+    // A second chat app, or one that was set up before (switched on or off), changes nothing.
+    expect(deliveryFollowingFirstChatDoor({ ...fresh, doors: [{ kind: "slack" }] }, "telegram")).toBeUndefined();
+    expect(deliveryFollowingFirstChatDoor({ ...fresh, doors: [{ kind: "telegram" }] }, "telegram")).toBeUndefined();
+    expect(deliveryFollowingFirstChatDoor({ role: "chief-of-staff", channels: ["slack"], delivery: defaultDelivery([]) }, "telegram")).toBeUndefined();
+    // Only the chief of staff is created with a starting list.
+    expect(deliveryFollowingFirstChatDoor({ ...fresh, role: "creative" }, "slack")).toBeUndefined();
+    expect(messagesFollowText("telegram")).toBe("Briefs and other messages now go to Telegram first; change this under Where messages go.");
   });
 
   it("knows an item-key prefix for every kind (the ledger lookup behind the fallback sentence)", () => {

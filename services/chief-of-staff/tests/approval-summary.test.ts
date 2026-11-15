@@ -1,60 +1,42 @@
 import { describe, it, expect, afterEach } from "vitest";
 
-import { registerApprovalSummary, summarizeApproval } from "@lares/agent-kit/approval-summary";
-
-// Deep import into eve's dist — an INTERNAL, reached on purpose. This is the half of the
-// suite that pins our pnpm patch on eve@0.60.1 (patches/eve.patch, third hunk). If an eve
-// upgrade moves or renames this module, the import fails and THAT is the signal to
-// re-derive the patch — the same convention as tests/eve-hitl-expiry-notice.test.ts.
-// @ts-expect-error — no types shipped for eve internals
-import { extractToolApprovalInputRequests } from "eve-internals/input-extraction";
+import { cardTitle, registerApprovalSummary, summarizeApproval, withCardTitle } from "@lares/agent-kit/approval-summary";
 
 // Pure summarizeApproval() formatting coverage lives in
-// packages/agent-kit/tests/approval-summary.test.ts — this file keeps only
-// the half that is genuinely chief-of-staff's own: proving the eve patch actually wires the shared
-// formatter into the approval-card title, which depends on eve-internals and the pnpm patch
-// that only exists in this workspace member.
-describe("the eve patch — the card actually USES the summary", () => {
+// packages/agent-kit/tests/approval-summary.test.ts — this file keeps only the half that is
+// chief-of-staff's own: the card title eve 1.0 shows, which is the `prompt` of a gated tool's
+// object-form `approval` (it replaces the framework patch that used to edit eve's title line).
+describe("the card title — eve's approval `prompt` USES the summary", () => {
   afterEach(() => {
     delete globalThis.__eveApprovalSummary;
   });
 
-  /** The shape eve's harness parses out of a turn's content: the tool call, plus the
-   *  approval request that references it by id. */
-  const content = (toolName: string, input: unknown) => [
-    { type: "tool-call", toolCallId: "call_1", toolName, input },
-    { type: "tool-approval-request", approvalId: "appr_1", toolCallId: "call_1" },
-  ];
+  /** What eve passes the callback for a call awaiting approval. */
+  const ask = (toolName: string, input: unknown) => ({ callId: "call_1", toolName, input });
+  const prompt = (withCardTitle(() => "user-approval") as unknown as { prompt: (c: unknown) => unknown }).prompt;
 
-  it("renders our summary as the card title once registered", () => {
+  it("renders our summary as the card title", () => {
     registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({
-      content: content("gmail_send", { to: ["tor@ledgerly.example"], subject: "Re: Acme" }),
-    });
-    expect(request.prompt).toBe('Send email to tor@ledgerly.example — "Re: Acme"');
-    // The approve/cancel affordance must be untouched by the patch.
-    expect(request.options.map((o: { id: string }) => o.id)).toEqual(["approve", "cancel"]);
+    expect(prompt(ask("gmail_send", { to: ["tor@ledgerly.example"], subject: "Re: Acme" }))).toBe('Send email to tor@ledgerly.example — "Re: Acme"');
   });
 
-  it("falls back to eve's own title when the global is absent", () => {
-    // Not hypothetical: patches/eve.patch covers every workspace member, and an agent
-    // that never registers a formatter must keep its cards working, unchanged.
-    const [request] = extractToolApprovalInputRequests({
-      content: content("gmail_send", { to: ["tor@ledgerly.example"], subject: "Re: Acme" }),
-    });
-    expect(request.prompt).toBe("Approve tool call: gmail_send");
+  it("is the same function whether or not a clock was registered, and uses the home clock until one is", () => {
+    expect(prompt).toBe(cardTitle);
+    expect(prompt(ask("gmail_send", { to: ["tor@ledgerly.example"], subject: "Re: Acme" }))).toBe('Send email to tor@ledgerly.example — "Re: Acme"');
   });
 
-  it("falls back when a formatter throws, rather than losing the card", () => {
-    globalThis.__eveApprovalSummary = () => {
-      throw new Error("formatter blew up");
-    };
-    expect(() =>
-      extractToolApprovalInputRequests({ content: content("gmail_send", { to: ["a@x.com"] }) }),
-    ).toThrow();
-    // ^ Documents the boundary honestly: the patch does NOT catch. Safety comes from
-    // summarizeApproval never throwing (proven above), which is why the global must only
-    // ever be set to that function — registerApprovalSummary is the only writer.
+  it("gives a tool with no dedicated formatter the generic title, which is never worse than eve's own", () => {
+    expect(prompt(ask("gmail_send_unknown", {}))).toBe("Approve tool call: gmail_send_unknown");
+  });
+
+  it("returns undefined, and never throws into eve, when the formatter cannot cope", () => {
+    // A formatter that threw would stop the card being drawn, and eve has no try/catch around the
+    // callback. The title function swallows it and answers nothing, so eve uses its own title.
+    const hostile = { get to(): never { throw new Error("formatter blew up"); } };
+    expect(() => prompt(ask("gmail_send", hostile))).not.toThrow();
+    const out = prompt(ask("gmail_send", hostile));
+    expect(out === undefined || typeof out === "string").toBe(true);
+    expect(prompt(ask(undefined as never, {}))).toBeUndefined();
   });
 });
 

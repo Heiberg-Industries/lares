@@ -200,14 +200,17 @@ export const SETTINGS: readonly SettingDef[] = [
   {
     // `tests/settings-scan.test.ts` fails the moment engine code READS an undeclared name, so a
     // change that introduces a read must declare it in the same change — it cannot be deferred.
+    // Read by the agent kit's gateway provider; set by hand-run proofs. The keeper does not pass it
+    // to agents on an installer-made installation, so the owner has no way to set it there
+    // (`source: "installer"` follows the other names no owner supplies, like LARES_DENYLIST_FILE).
     name: "GATEWAY_LANE",
     readers: ["agent-kit", "chief-of-staff", "creative"],
-    source: "owner",
+    source: "installer",
     requiredFor: [],
     fallback: "anthropic",
     secret: false,
     breaksWithout:
-      "Nothing breaks — GATEWAY_LANE is optional. Unset, every agent uses the anthropic lane (the only lane with production history). Set to \"openai-compatible\" on an agent whose model target is not Anthropic, to route its calls through the gateway's OpenAI-compatible route instead.",
+      "Nothing breaks — GATEWAY_LANE is optional, and an installer-made installation never passes it to its agents, so every agent uses the anthropic lane. Only Anthropic models are on the tested path in this release: with a non-Anthropic model set by hand, the keeper refuses every web-chat turn and every scheduled model job. Setting this value to \"openai-compatible\" is for hand-run proofs of the agent kit against a gateway that is not the installed one.",
     readAt: ["packages/agent-kit/src/gateway-provider.ts:56"],
   },
   {

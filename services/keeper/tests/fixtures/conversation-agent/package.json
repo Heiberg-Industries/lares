@@ -1,1 +1,1 @@
-{"name":"lares-conversation-proof","type":"module","private":true,"dependencies":{"eve":"0.60.1","@lares/agent-kit":"workspace:*"}}
+{"name":"lares-conversation-proof","type":"module","private":true,"dependencies":{"eve":"1.0.0-rc.10","@lares/agent-kit":"workspace:*"}}

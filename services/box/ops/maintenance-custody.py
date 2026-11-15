@@ -22,6 +22,12 @@ _STATES = ("normal", "entering", "blocked")
 _MAX_INTENT_BYTES = 256
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 _LEASE_FD = 197
+# A second inherited descriptor, held for a whole top-level maintenance run (and everything it
+# starts): an exclusive lock for an update, a shared one for every other operation. So an update
+# never runs beside another update, a backup, a restore or a rollback, while those keep running
+# beside each other as before. The service gate above stays the shared lease it always was.
+_RUN_FD = 198
+_RUN_LOCK = "operation.lock"
 _LOCK_WAIT_SECONDS = 1.0
 _NORMAL_OPERATIONS = {
     "backup": "backup.sh",
@@ -422,8 +428,115 @@ def _receipt(identity: str, epoch: int, subnet: str, hba: bytes) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
 
 
-def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None = None) -> None:
-    """Create first-install authentication custody. Existing or partial state is never adopted."""
+# What an installation leaves on a machine: any of these means custody is not prepared fresh.
+_FRESH_EVIDENCE = (
+    ("srv", "lares"), ("srv", "taste"), ("srv", "vault"),
+    ("etc", "lares", "installation.env"), ("etc", "lares", "database-bootstrap-complete"),
+    ("etc", "lares", "operator"), ("etc", "lares", "secrets"),
+    ("var", "lib", "lares", "postgres"), ("var", "lib", "lares", "budget-financial"),
+    ("var", "lib", "lares", "budget-native"), ("var", "lib", "lares-vault-git"),
+    ("var", "lib", "lares-maintenance"),
+    ("opt", "lares", "compose.yaml"), ("opt", "lares", "compose.lares-keeper.yaml"),
+    ("opt", "lares", "database-bootstrap-complete"),
+)
+# The one exception, and its only definition (install.sh asks holds-only-restored-settings): the
+# settings and secrets a backup's encrypted bundle carries, which docs/install.md ("Restoring onto a
+# new server") has a person copy onto a new machine before installing. Exactly these entries of
+# etc/lares and srv/lares, and none of the other evidence above.
+_RESTORED_SETTINGS = {
+    ("etc", "lares"): {"installation.env": "file", "console-oauth.env": "file", "backup.env": "file",
+                       "restic-password": "file", "secrets": "directory"},
+    ("srv", "lares"): {"secrets": "directory"},
+}
+_RESTORED_SETTINGS_EVIDENCE = (("srv", "lares"), ("etc", "lares", "installation.env"), ("etc", "lares", "secrets"))
+
+
+def _named(parts: tuple[str, ...]) -> str:
+    """A path for a message: its parts joined, anything not printable shown as '?'."""
+    return "/".join("".join(c if c.isprintable() else "?" for c in part)[:80] for part in parts)
+
+
+def _restored_settings_differences(prefix_fd: int, uid: int) -> list[str]:
+    """What keeps this machine from holding exactly the copied bundle and nothing else, by name
+    only (never anything a file holds). Empty only for exactly that bundle on a machine with no
+    other installation evidence; anything missing, extra, linked, of another kind or unreadable
+    is named."""
+    differences = []
+    for item in _FRESH_EVIDENCE:
+        if item in _RESTORED_SETTINGS_EVIDENCE:
+            continue
+        try:
+            if _existing_path(prefix_fd, item):
+                differences.append(f"{_named(item)} is here, and a backup's settings do not include it")
+        except OSError:
+            differences.append(f"{_named(item)} could not be checked")
+    for folder, entries in _RESTORED_SETTINGS.items():
+        fd = os.dup(prefix_fd)
+        try:
+            try:
+                for part in folder:
+                    next_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+                    os.close(fd)
+                    fd = next_fd
+            except FileNotFoundError:
+                differences.append(f"{_named(folder)} is missing")
+                continue
+            except OSError:
+                differences.append(f"{_named(folder)} is a link or not a folder, or could not be read")
+                continue
+            try:
+                info = os.fstat(fd)
+                if info.st_uid != uid:
+                    differences.append(f"{_named(folder)} does not belong to root")
+                if stat.S_IMODE(info.st_mode) & 0o022:
+                    differences.append(f"{_named(folder)} can be changed by others than its owner")
+                present = set(os.listdir(fd))
+                for name in sorted(set(entries) - present):
+                    differences.append(f"{_named(folder + (name,))} is missing")
+                for name in sorted(present - set(entries)):
+                    differences.append(f"{_named(folder + (name,))} is here, and a backup's settings do not include it")
+                for name, kind in entries.items():
+                    if name not in present:
+                        continue
+                    entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if not (stat.S_ISDIR(entry.st_mode) if kind == "directory" else stat.S_ISREG(entry.st_mode)):
+                        differences.append(f"{_named(folder + (name,))} is not a "
+                                           f"{'folder' if kind == 'directory' else 'plain file'} (a link is neither)")
+            except OSError:
+                differences.append(f"{_named(folder)} could not be read")
+        finally:
+            os.close(fd)
+    return differences
+
+
+def _holds_only_restored_settings(prefix_fd: int, uid: int) -> bool:
+    """True only for exactly the copied bundle on a machine with no other installation evidence.
+    Anything missing, extra, linked, of another kind or unreadable is not it."""
+    return not _restored_settings_differences(prefix_fd, uid)
+
+
+def restored_settings_differences(prefix: str | Path, *, expected_uid: int | None = None) -> list[str]:
+    """Read-only: what keeps the machine from holding exactly the copied backup settings and
+    nothing else (empty when it holds exactly them). Names only, never contents."""
+    uid = 0 if expected_uid is None else expected_uid
+    prefix_fd, _ = _open_safe_chain(Path(prefix), uid)
+    try:
+        return _restored_settings_differences(prefix_fd, uid)
+    finally:
+        os.close(prefix_fd)
+
+
+def _restored_settings_partly_here(prefix: str | Path) -> bool:
+    """Whether any of the copied bundle's entries is on the machine. Only chooses whether a
+    message names what differs; it decides nothing."""
+    return any(os.path.lexists(os.path.join(prefix, *folder, name))
+               for folder, entries in _RESTORED_SETTINGS.items() for name in entries)
+
+
+def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None = None,
+                  restored_settings: bool = False) -> None:
+    """Create first-install authentication custody. Existing or partial state is never adopted;
+    with restored_settings, the copied backup settings alone (and nothing else) are allowed."""
     requested = Path(prefix)
     if not requested.is_absolute() or ".." in requested.parts:
         raise ValueError("installation prefix must be absolute and normalized")
@@ -433,18 +546,9 @@ def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None =
     if expected_uid is not None and (uid != os.geteuid() or uid == 0):
         raise PermissionError("the internal test-owner seam is only available to a non-root test process")
     prefix_fd, prefix_info = _open_safe_chain(requested, uid)
-    evidence = (
-        ("srv", "lares"), ("srv", "taste"), ("srv", "vault"),
-        ("etc", "lares", "installation.env"), ("etc", "lares", "database-bootstrap-complete"),
-        ("etc", "lares", "operator"), ("etc", "lares", "secrets"),
-        ("var", "lib", "lares", "postgres"), ("var", "lib", "lares", "budget-financial"),
-        ("var", "lib", "lares", "budget-native"), ("var", "lib", "lares-vault-git"),
-        ("var", "lib", "lares-maintenance"),
-        ("opt", "lares", "compose.yaml"), ("opt", "lares", "compose.lares-keeper.yaml"),
-        ("opt", "lares", "database-bootstrap-complete"),
-    )
     try:
-        if any(_existing_path(prefix_fd, item) for item in evidence):
+        if (any(_existing_path(prefix_fd, item) for item in _FRESH_EVIDENCE) and
+                not (restored_settings and _holds_only_restored_settings(prefix_fd, uid))):
             raise ValueError("existing installation or maintenance evidence found; fresh custody cannot adopt it")
         # Parent directories are opened and pinned one component at a time. No realpath or
         # recursive mkdir can redirect writes through an unsafe prefix/var symlink.
@@ -470,6 +574,9 @@ def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None =
         _write_exclusive_at(auth_fd, "pg_hba.conf", hba, 0o644, uid)
         _write_exclusive_at(admission_fd, "service-gate.lock", b"", 0o444, uid)
         _write_exclusive_at(custody_fd, "command.lock", b"", 0o600, uid)
+        # Made here, with the rest, so that a maintenance run that is refused later leaves nothing
+        # behind. An installation prepared before this file existed gets it on its first run.
+        _write_exclusive_at(custody_fd, _RUN_LOCK, b"", 0o600, uid)
         _write_exclusive_at(admission_fd, "intent.json", _record(identity, epoch, "normal"), 0o444, uid)
         _assert_path_matches(requested, prefix_info, uid)
         _assert_path_matches(requested / "var/lib/lares-maintenance", os.fstat(root_fd), uid)
@@ -681,9 +788,23 @@ def _assert_inherited_lease(prefix: Path, by_name: dict[str, int], uid: int,
     _assert_namespace_paths(prefix, by_name, {name: os.fstat(fd) for name, fd in by_name.items()}, uid)
 
 
-def _acquire_normal_lease(prefix: Path, uid: int) -> None:
+class MaintenanceRunBusy(ValueError):
+    """Another top-level maintenance run holds the run lock in a way this one cannot share."""
+
+
+def _open_run_lock(custody_fd: int, uid: int) -> int:
+    """The run lock inside the root-only custody folder, created on first use."""
+    try:
+        _write_exclusive_at(custody_fd, _RUN_LOCK, b"", 0o600, uid)
+    except FileExistsError:
+        pass
+    fd, _ = _open_fixed_file(custody_fd, _RUN_LOCK, 0o600, uid, writable=True)
+    return fd
+
+
+def _acquire_normal_lease(prefix: Path, uid: int, operation: str) -> None:
     fds, by_name, infos = _open_namespace(prefix, uid)
-    command_fd = gate_fd = -1
+    command_fd = gate_fd = run_fd = -1
     locked_command = False
     try:
         command_fd, command_info = _open_fixed_file(by_name["custody"], "command.lock", 0o600, uid,
@@ -704,19 +825,100 @@ def _acquire_normal_lease(prefix: Path, uid: int) -> None:
         )["installationId"]:
             raise ValueError("maintenance receipt changed during admission")
         _assert_namespace_paths(prefix, by_name, infos, uid)
-        if _LEASE_FD in (command_fd, gate_fd):
+        run_fd = _open_run_lock(by_name["custody"], uid)
+        try:
+            fcntl.flock(run_fd, (fcntl.LOCK_EX if operation == "update" else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise MaintenanceRunBusy(
+                "another maintenance run is still going (an update cannot run beside an update, a backup, "
+                "a restore, a rollback, the installer or an agent or budget command); wait until it has "
+                "finished, then run this again") from error
+        if {_LEASE_FD, _RUN_FD} & {command_fd, gate_fd, run_fd}:
             raise ValueError("reserved maintenance descriptor collided")
         os.dup2(gate_fd, _LEASE_FD, inheritable=True)
         if not _same_file(os.fstat(_LEASE_FD), gate_info):
             raise ValueError("maintenance lease descriptor changed")
+        os.dup2(run_fd, _RUN_FD, inheritable=True)
     finally:
         if locked_command:
             fcntl.flock(command_fd, fcntl.LOCK_UN)
-        for fd in (command_fd, gate_fd):
+        for fd in (command_fd, gate_fd, run_fd):
             if fd >= 0:
                 os.close(fd)
         for fd in reversed(fds):
             os.close(fd)
+
+
+UPDATE_RUNNING = ("an update is running on this server, so this did not start and nothing was changed. "
+                  "Wait until the update has finished, then run this again.")
+
+
+class UpdateRunning(ValueError):
+    """An update holds the run lock, so a command that starts the keeper or an agent must not run."""
+
+
+class BesideUpdateUsage(ValueError):
+    """`beside-update` was called the wrong way; nothing was looked at or started."""
+
+
+class BesideUpdateDidNotStart(ValueError):
+    """The lock was taken, but the program could not be started."""
+
+
+def hold_beside_update(prefix: Path, uid: int) -> int | None:
+    """For the commands that start, restart or recreate the keeper or an agent without passing
+    through this gatekeeper (install.sh, and the agent and budget commands in budget-commands.py).
+
+    Takes the run lock SHARED and returns its descriptor: while it stays open no update can begin,
+    and it is refused at once while an update holds the lock (UpdateRunning). Backups, restores,
+    rollbacks and other such commands still run beside it, as before. Returns None when this server
+    has no maintenance custody folder at all: an update is only ever admitted through that folder,
+    so none can be running. Anything else that is wrong with the folder raises, so a caller never
+    takes "cannot tell" for "no update"."""
+    if not prefix.is_absolute() or ".." in prefix.parts:
+        raise ValueError("installation prefix must be absolute and normalized")
+    custody = prefix / "var/lib/lares-maintenance/custody"
+    try:
+        os.lstat(custody)
+    except FileNotFoundError:
+        return None
+    custody_fd, _ = _open_directory(custody, 0o700, uid)
+    try:
+        run_fd = _open_run_lock(custody_fd, uid)
+    finally:
+        os.close(custody_fd)
+    try:
+        fcntl.flock(run_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(run_fd)
+        raise UpdateRunning(UPDATE_RUNNING) from None
+    except BaseException:
+        os.close(run_fd)
+        raise
+    return run_fd
+
+
+def _run_beside_update(prefix: str, program: list[str]) -> None:
+    """`beside-update`: run one program (install.sh re-runs itself this way) holding the run lock
+    shared for its whole length; its children inherit the lock on descriptor 198."""
+    target = Path(prefix)
+    if not program or not target.is_absolute() or ".." in target.parts:
+        raise BesideUpdateUsage("usage: beside-update <absolute prefix> -- <program> [arguments]")
+    uid = os.geteuid() if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1" else 0
+    run_fd = hold_beside_update(target, uid)
+    if run_fd is not None:
+        if run_fd != _RUN_FD:
+            os.dup2(run_fd, _RUN_FD, inheritable=True)
+            os.close(run_fd)
+        else:
+            os.set_inheritable(_RUN_FD, True)
+    env = os.environ.copy()
+    # Tells install.sh it is already running under this lock, so it does not run itself again.
+    env["LARES_RUN_LOCK_HELD"] = "1"
+    try:
+        os.execvpe(program[0], program, env)
+    except OSError as error:
+        raise BesideUpdateDidNotStart(f"could not start {program[0]} ({error.strerror or error})") from None
 
 
 def _validate_inherited_normal(prefix: Path, uid: int, *, test_owner: bool) -> None:
@@ -760,7 +962,7 @@ def _run_normal(prefix: str, operation: str, args: list[str], *, test_owner: boo
     try:
         os.fstat(_LEASE_FD)
     except OSError:
-        _acquire_normal_lease(target, uid)
+        _acquire_normal_lease(target, uid, operation)
     else:
         _validate_inherited_normal(target, uid, test_owner=test_owner)
     script = Path(__file__).resolve().with_name(_NORMAL_OPERATIONS[operation])
@@ -918,16 +1120,34 @@ def validate_update_target(prefix: str, compose_dir: str, compose_files: str,
 
 def main(argv: list[str]) -> int:
     try:
+        restored = len(argv) > 2 and argv[1] == "prepare-fresh" and argv[-1] == "--restored-settings"
+        if restored:
+            argv = argv[:-1]
+        if len(argv) == 3 and argv[1] == "holds-only-restored-settings":
+            if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1":
+                differences = restored_settings_differences(argv[2], expected_uid=os.geteuid())
+            elif os.geteuid() != 0:
+                raise PermissionError("the restored-settings check requires root")
+            else:
+                differences = restored_settings_differences(argv[2])
+            if not differences:
+                return 0
+            # What differs, for the installer's refusal, and only where some of a backup's copied
+            # settings are here (on an empty machine there is nothing to name). Names only.
+            if _restored_settings_partly_here(argv[2]):
+                shown = differences[:6] + ([f"and {len(differences) - 6} more"] if len(differences) > 6 else [])
+                print("; ".join(shown))
+            return 1
         if len(argv) == 5 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh":
             if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1":
-                prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid())
+                prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid(), restored_settings=restored)
             else:
-                prepare_fresh(argv[2], argv[3])
+                prepare_fresh(argv[2], argv[3], restored_settings=restored)
         elif len(argv) == 4 and argv[1] == "prepare-outside-custody-key" and argv[3] == "--confirm-fresh":
             print(json.dumps({"keyFingerprint": prepare_outside_custody_key(argv[2])}, separators=(",", ":")))
         elif (len(argv) == 6 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh" and
               argv[5] == "--test-owner" and os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
-            prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid())
+            prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid(), restored_settings=restored)
         elif len(argv) == 4 and argv[1] == "validate":
             if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") != "1":
                 raise PermissionError("maintenance custody validation requires root")
@@ -960,6 +1180,10 @@ def main(argv: list[str]) -> int:
             if separator >= len(argv) or argv[separator] != "--":
                 raise ValueError("usage: run-normal <prefix> <operation-id> [--test-owner] -- [arguments]")
             _run_normal(argv[2], argv[3], argv[separator + 1:], test_owner=test_owner)
+        elif len(argv) >= 2 and argv[1] == "beside-update":
+            if len(argv) < 5 or argv[3] != "--":
+                raise BesideUpdateUsage("usage: beside-update <absolute prefix> -- <program> [arguments]")
+            _run_beside_update(argv[2], argv[4:])
         elif len(argv) in (4, 5) and argv[1] == "assert-normal-held":
             test_owner = len(argv) == 5 and argv[4] == "--test-owner"
             if len(argv) == 5 and not test_owner:
@@ -969,8 +1193,27 @@ def main(argv: list[str]) -> int:
             raise ValueError("unsupported maintenance custody command")
         return 0
     except (OSError, ValueError) as error:
+        if len(argv) > 1 and argv[1] == "beside-update":
+            if isinstance(error, UpdateRunning):
+                print(f"lares: {error}", file=sys.stderr)
+            elif isinstance(error, BesideUpdateUsage):
+                print(f"maintenance custody: {error}", file=sys.stderr)
+                return 64
+            elif isinstance(error, BesideUpdateDidNotStart):
+                print(f"lares: {error}, so nothing was changed. Check that this release's files are complete "
+                      "(run get-lares.sh again for it), then run this again.", file=sys.stderr)
+            else:
+                print(f"lares: I cannot tell whether an update is running ({error}), so this did not start and "
+                      "nothing was changed. The folder var/lib/lares-maintenance/custody must belong to root with "
+                      "mode 0700, the folders above it must not be writable by anyone else, the lock file "
+                      "operation.lock inside it must belong to root with mode 0600, and none of them may be a "
+                      "link; fix that, then run this again.", file=sys.stderr)
+            return 78
         if len(argv) > 1 and argv[1] in ("run-normal", "assert-normal-held", "validate-update-target"):
-            print("maintenance admission: refused", file=sys.stderr)
+            if isinstance(error, MaintenanceRunBusy):
+                print(f"maintenance admission: refused: {error}", file=sys.stderr)
+            else:
+                print("maintenance admission: refused", file=sys.stderr)
             return 78
         print(f"maintenance custody: {error}", file=sys.stderr)
         return 1

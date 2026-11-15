@@ -2,7 +2,7 @@
  * The agent's own notes store, and the tool that writes it. Against a REAL disposable
  * Postgres running the REAL migration file, the house pattern (`tests/standing-facts.test.ts`).
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +12,14 @@ import { quiet } from "./helpers/quiet-pool.js";
 import { taintTurn, resetTaintForTests } from "@lares/agent-kit/origin-taint";
 import { addNote, notesForSession, NOTES_SURFACED_PER_SESSION, type AgentNote } from "../lib/agent-notes.js";
 import { buildFactsCorrection } from "../lib/standing-facts.js";
+
+// These tools run here outside eve, where there is no session state to read (which the real
+// module treats as "a card was asked"). No turn here asks a card; the durable mark itself is
+// tested in tests/approval-card-turns.test.ts.
+vi.mock("../lib/approval-card-turns.js", async (original) => ({
+  ...(await original<typeof import("../lib/approval-card-turns.js")>()),
+  turnAskedACard: (session: { turn?: { id?: unknown } | null } | null | undefined) => typeof session?.turn?.id !== "string" || !session.turn.id,
+}));
 
 describe("agent notes are add-only and stamped", () => {
   let container: StartedPostgreSqlContainer;

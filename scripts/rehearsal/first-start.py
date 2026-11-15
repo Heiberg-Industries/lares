@@ -108,7 +108,7 @@ try:
     print('RESULT:', outcome or f'no answer and still running after {a.wait}s')
     if outcome and outcome.startswith('HEALTHY'):
         client = root / 'client.mjs'
-        client.write_text("import {Client} from '/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js';\nconst c=new Client({host:'http://127.0.0.1:3000',auth:{basic:{username:'eve',password:'made-up'}}});\nconst first=await c.sessions.create({message:'Return a short greeting.'});const r=await first.response.result();console.log(JSON.stringify({message:r.message,status:r.status}));process.exit(0);\n")
+        client.write_text("import {Client} from '/app/services/chief-of-staff/node_modules/eve/dist/src/client/index.js';\nconst c=new Client({baseUrl:'http://127.0.0.1:3000',auth:{basic:{username:'eve',password:'made-up'}}});\nconst first=await c.sessions.create({message:'Return a short greeting.'});const r=await first.delivery.result();console.log(JSON.stringify({message:r.reply,status:r.status}));process.exit(0);\n")
         r = subprocess.run(['docker', 'exec', name, 'node', '/probe/client.mjs'], capture_output=True, text=True, timeout=120)
         print('ONE CHAT TURN:', (r.stdout + r.stderr).strip()[:700])
         print('model calls seen:', len(Model.seen), '| tool names offered on last call:', sorted({t['name'] for t in (Model.seen[-1].get('tools', []) if Model.seen else [])})[:80])

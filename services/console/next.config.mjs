@@ -1,9 +1,3 @@
-import { fileURLToPath } from "node:url";
-
-// See services/console/build/downlevel-using-loader.cjs's header for why this exists,
-// and delete both when it says to.
-const downlevelUsingLoader = fileURLToPath(new URL("./build/downlevel-using-loader.cjs", import.meta.url));
-
 /** @type {import('next').NextConfig} */
 export default {
   output: "standalone",
@@ -20,24 +14,17 @@ export default {
   // These workspace packages ship TypeScript source with NodeNext-style `.js`
   // import specifiers (e.g. oauth-tokens.ts imports "./crypto.js"). Transpile
   // them and resolve `.js` → `.ts` so the build can follow those imports.
-  // "eve" is NOT named here: once the `using` declaration in its compiled client is downleveled
-  // by the webpack rule below (before anything else sees the file), webpack's ordinary node_modules
-  // handling parses the rest of eve's output (private class fields, etc.) without help — adding it
-  // to transpilePackages was tried and is not needed once that rule is in place.
+  // "eve" is NOT named here: its compiled browser client (eve/react, eve/client, eve/events) holds
+  // no `using` declaration any more, so the loader that used to downlevel one is gone, and
+  // webpack's ordinary node_modules handling parses the rest of eve's output (private class
+  // fields, etc.) without help. tests/downlevel-using-loader.test.ts fails if a framework upgrade
+  // brings such a declaration back into what the browser loads.
   transpilePackages: ["@lares/ui", "@lares/agent-box", "@lares/agent-kit", "@lares/notion-sync", "@lares/taste", "@lares/vault-format"],
   webpack: (config) => {
     config.resolve.extensionAlias = {
       ...(config.resolve.extensionAlias ?? {}),
       ".js": [".ts", ".tsx", ".js"],
     };
-    // Runs BEFORE Next's own SWC loader (enforce: "pre"), and only on eve's compiled client
-    // files — see build/downlevel-using-loader.cjs's header.
-    config.module.rules.unshift({
-      test: /\.js$/,
-      include: /[\\/]node_modules[\\/](\.pnpm[\\/][^\\/]+[\\/]node_modules[\\/])?eve[\\/]dist[\\/]/,
-      enforce: "pre",
-      use: [downlevelUsingLoader],
-    });
     return config;
   },
 };

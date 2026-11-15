@@ -64,6 +64,7 @@ describe("saveDelivery", () => {
       name: "chief", role: "chief-of-staff", channels: ["telegram", "slack"], delivery,
     });
     expect(save[2]).toBe("owner@owner.example");
+    expect(save[3]).toEqual({ timeoutMs: 90_000 });
   });
 
   it("refuses an unknown kind or door with a plain sentence, before the keeper is asked anything", async () => {

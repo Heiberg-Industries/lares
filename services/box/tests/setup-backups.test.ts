@@ -114,6 +114,9 @@ esac`);
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
+// These installations are prepared the way an install does it now, with the maintenance run lock
+// file already there. On a server prepared before that file existed, the first maintenance run,
+// even a refused one, leaves that one empty root-only lock file behind.
 describe("refusals leave nothing written", () => {
   const refuse = (args: string[], env: Record<string, string> = {}, expectText?: RegExp) => {
     const before = tree();

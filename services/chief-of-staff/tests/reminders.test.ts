@@ -447,8 +447,11 @@ describe("agent/schedules/reminders.ts default export", () => {
     // all, this would throw: getPool() throws without DATABASE_URL, and the door builders
     // read secret files that don't exist here. A clean resolve is the proof of zero calls.
     const mod = await import("../agent/schedules/reminders.js");
+    // The schedule's own declaration of `run` takes no arguments, which is all its inferred type
+    // says; the runtime calls it with these.
+    const run = mod.default.run as unknown as (args: unknown) => Promise<void>;
     await expect(
-      mod.default.run!({ to: (() => {}) as never, waitUntil: () => {}, appAuth: {} as never }),
+      run({ to: (() => {}) as never, waitUntil: () => {}, appAuth: {} as never }),
     ).resolves.toBeUndefined();
   });
 });

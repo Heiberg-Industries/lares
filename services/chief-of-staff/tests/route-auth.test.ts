@@ -10,10 +10,10 @@ vi.mock("@lares/agent-kit/console-turn-authority", () => ({
   consoleRouteAdmission: vi.fn(async (request: Request) => {
     const purpose = request.headers.get("x-lares-purpose") ?? "human";
     if (purpose === "resolver") {
-      const body = await request.clone().json() as { inputResponses?: Array<{ requestId?: string; optionId?: string }> };
+      const body = await request.clone().json() as { answers?: Array<{ interactionId?: string; optionId?: string }> };
       return { lares_resolver_member_id: request.headers.get("x-lares-member-id") ?? "member-1",
-        lares_resume_request_id: body.inputResponses?.[0]?.requestId ?? "approval-card",
-        lares_resume_option: body.inputResponses?.[0]?.optionId ?? "approve", lares_purpose: purpose };
+        lares_resume_request_id: body.answers?.[0]?.interactionId ?? "approval-card",
+        lares_resume_option: body.answers?.[0]?.optionId ?? "approve", lares_purpose: purpose };
     }
     return { lares_member_id: request.headers.get("x-lares-member-id") ?? "member-1",
       lares_admission_nonce: request.headers.get("x-lares-admission") ?? "n".repeat(43), lares_purpose: purpose };
@@ -119,7 +119,7 @@ describe("chief-of-staff route auth", () => {
   it("keeps an authenticated approval resume working when optional custody is absent", async () => {
     const { basicFromSecretFile } = await import("../agent/channels/eve.js");
     const request = new Request("https://chief-of-staff.test/eve/v1/session/session-1", { method: "POST",
-      body: '{"inputResponses":[{"requestId":"approval-card","optionId":"approve"}]}',
+      body: '{"answers":[{"interactionId":"approval-card","optionId":"approve"}]}',
       headers: { authorization: `Basic ${Buffer.from(`eve:s3cret-route-password`).toString("base64")}`,
         "x-lares-member-id": "member-1", "x-lares-admission": "n".repeat(43), "x-lares-purpose": "resolver" } });
     await expect(basicFromSecretFile(request)).resolves.toMatchObject({ authenticator: "lares-console", attributes: {
@@ -149,7 +149,7 @@ describe("chief-of-staff route auth", () => {
     }));
 
     purposeRequest.mockClear();
-    const responseBody = '{"inputResponses":[{"requestId":"approval-card","optionId":"approve"}]}';
+    const responseBody = '{"answers":[{"interactionId":"approval-card","optionId":"approve"}]}';
     const responseCapsule = payload({ purpose: "resume", requestId: "m".repeat(43), resume: { requestId: "approval-card", optionId: "approve" } });
     const responseRequest = new Request("https://chief-of-staff.test/eve/v1/session/session-1", { method: "POST", body: responseBody,
       headers: { ...authHeaders("resolver"), "x-lares-model-capsule": responseCapsule } });

@@ -1,7 +1,6 @@
 import { assertPrivateConsoleRequest, assertVerifiedPrivateConsoleMessage, verifiedPrivateConsoleMessageReceipt,
   verifiedPrivateConsoleModelMessageReceipt, verifiedPrivateConsoleModelResponseReceipt,
   PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER } from "@lares/agent-kit/private-console-envelope";
-import type { UserContent } from "ai";
 import { authorityTransaction, consoleRouteAdmission, consoleAdmission, requireConsoleSessionBinding } from "@lares/agent-kit/console-turn-authority";
 import { managedIdentity } from "@lares/agent-kit/door-authority";
 import { vaultBrokerRequest } from "@lares/agent-kit/vault-broker-client";
@@ -9,6 +8,7 @@ import { modelPurposeRequest } from "@lares/agent-kit/model-purpose-client";
 import { parseModelPurposeAdmissionResponse } from "@lares/agent-kit/model-purpose-protocol";
 import { readFileSync } from "node:fs";
 import { eveChannel } from "eve/channels/eve";
+import type { MessageContent } from "eve/channels";
 import {
   localDev,
   verifyHttpBasic,
@@ -95,7 +95,7 @@ type DoorSessionAuth = NonNullable<Awaited<ReturnType<AuthFn<Request>>>>;
  * no usable member was asserted.
  *
  * `verifyHttpBasic` returns `{attributes: {}, authenticator: "http-basic", principalId: <username>,
- * principalType: "user"}` (bundled dist, eve 0.60.1, `dist/src/channel/auth/http-basic.js`'s
+ * principalType: "user"}` (bundled dist, eve 1.0, `dist/src/channel/auth/http-basic.js`'s
  * `authenticateHttpBasicStrategy` → `createRuntimeSessionAuthContext`), which says only "this
  * caller knows the route password". That is deliberately NOT a channel in `lib/principals.ts`, so
  * an operator with the password can start a session and still approve nothing. Only the
@@ -182,7 +182,7 @@ export const basicFromSecretFile: AuthFn<Request> = async (request) => {
   return null;
 };
 
-export async function onPrivateConsoleMessage(ctx: { eve: { caller?: DoorSessionAuth | null; request: Request } }, message: string | UserContent) {
+export async function onPrivateConsoleMessage(ctx: { eve: { caller?: DoorSessionAuth | null; request: Request } }, message: MessageContent) {
     const caller = ctx.eve.caller;
     const tagged = caller?.attributes?.lares_member_id !== undefined;
     if (tagged && typeof message !== "string") throw new Error("Private console messages must be plain text");

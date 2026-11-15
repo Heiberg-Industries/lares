@@ -40,8 +40,12 @@ export function modelAliases(prefix: string, configuredAlias?: string): { alias:
   if (selected.length !== 1) throw new Error('The configured gateway model alias does not match models.alias_prefix.');
   return selected;
 }
-const CONVERSATION = 'Takes effect at its next conversation. On a direct-message door a conversation lasts the day, so that usually means tomorrow — or start a fresh one now.';
+const CONVERSATION = 'Takes effect at its next conversation. In Slack, a new message (not a reply in the old thread) starts one. In Telegram a conversation lasts the day, so that usually means tomorrow — or end it now under Start a fresh conversation now.';
+const ACCESS = CONVERSATION + ' On a chief of staff, switching gmail on or off also needs Apply connection changes, which restarts the agent. Until then, Status at the top of the page says connection changes are pending.';
+const MODEL = 'Where the agent runs with spending set up, saving a new model stops the agent until you press Apply connection changes. After that, a Slack or Telegram conversation that was already running answers every message with "I could not get permission to answer this message here" until a new conversation starts. In Slack, a new message (not a reply in the old thread) starts one. In Telegram a conversation lasts the day, so that usually means tomorrow — or end it now under Start a fresh conversation now. Without spending set up, the new model takes effect at the next conversation, and a running Slack or Telegram conversation keeps the old one.';
 export function takesEffect(field: string): string {
+  if(field === 'model') return MODEL;
+  if(field === 'grants' || field === 'skills') return ACCESS;
   if(field === 'autonomy') return 'Takes effect at its next action.';
   if(field === 'schedules') return 'Takes effect the next time it runs.';
   if(field === 'doors') return 'Apply connection changes to activate saved connections. This restarts the agent.';
@@ -74,7 +78,7 @@ export async function builderData(name?: string) {
     keeper<Capacity>('definition.capacity',{},email),
     keeper<{name:string;hash:string;status:string}[]>('definition.list',{},email),
   ]);
-  const timing=Object.fromEntries(['name','gender','description','startingPoint','duties','voice','language','model','grants','skills','autonomy','schedules','doors'].map(f=>[f,takesEffect(f)]));
+  const timing=Object.fromEntries(['name','gender','startingPoint','duties','voice','language','model','grants','skills','autonomy','schedules','doors'].map(f=>[f,takesEffect(f)]));
   if(!name) return {startingPoints:points,aliases,capacity,timing};
   const entry=list.find(a=>a.name===name);
   if(!entry) throw new Error('Agent definition not found.');

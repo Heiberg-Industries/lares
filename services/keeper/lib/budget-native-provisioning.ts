@@ -5,11 +5,13 @@ import {performance} from 'node:perf_hooks';
 import {z} from 'zod';
 import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
+import {restartPartsApplied} from './restart-parts.js';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {consoleSourceTransaction,gateConsoleOrganisation,noteBudgetFinancialChange,requireConsoleSourceOwner,retainSourceTransactionDeadline,type SourceDatabase,type SourcePool,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {BudgetNativeCredentialClient,MAX_BUDGET_NATIVE_REQUEST_BYTES,type NativeKeyExpectation,type NativeTeamExpectation,type NativeTeamPolicyExpectation,type NativeTeamRosterExpectation,type NativeTeamRosterMemberExpectation,type NativeUserExpectation} from './budget-native-client.js';
-import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
+import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,NativeCustodyBusy,NATIVE_CUSTODY_MAX_WAIT_MS,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
+import {KeeperRefusedError} from './actions.js';
 import {HostFinancialJournal,isJournaledAbort} from './financial-journal.js';
 import {JournalBudgetFinancialWriter} from './budget-financial-writer.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
@@ -23,6 +25,16 @@ const endpointSchema=z.object({origin:z.string().max(512),hash}).strict().superR
 });
 export const budgetNativeProvisionRequestSchema=z.object({bindingId:uuid,credentialGeneration:generation,memberId,agent,incarnation:uuid,purposeAlias:purpose}).strict();
 const refuse=()=>new Error('Native budget provisioning refused; reconciliation may be required');
+/** Making or switching on a key waits its turn at the key store at most this long. The time in line counts against
+ * the call's own 20-second deadline, so the work starts only if at least NATIVE_KEY_WORK_AFTER_WAIT_MS of it is left. */
+export const NATIVE_KEY_GATE_WAIT_MS=10_000,NATIVE_KEY_WORK_AFTER_WAIT_MS=9_000;
+/** The keeper's answer when the key store stayed busy for the whole wait: this call read and made nothing. The host
+ * command tells it apart from a fault by these exact words (tests/budget-commands-safety.py pins them). */
+export const NATIVE_KEY_STORE_BUSY_NOT_MADE='The spending-key store was busy, so the key was not made.';
+/** How long to wait in line: the most allowed, never so long that the work would start with too little time left. */
+export function nativeKeyGateWait(deadlineAtMs:number,requested=NATIVE_KEY_GATE_WAIT_MS,now=Date.now()):number {
+  return Math.max(1,Math.min(requested,NATIVE_KEY_GATE_WAIT_MS,deadlineAtMs-now-NATIVE_KEY_WORK_AFTER_WAIT_MS));
+}
 export function nativeProvisioningDeadline(startedAt=Date.now()):{deadlineAtMs:number;check:(now?:number)=>void} {
   const deadlineAtMs=startedAt+20_000;
   return {deadlineAtMs,check:(now=Date.now())=>{if(!Number.isFinite(now)||now>=deadlineAtMs)throw refuse();}};
@@ -31,8 +43,9 @@ const exact=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b
 const uuidString=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 type Target=z.infer<typeof endpointSchema>;
 type Snapshot={installationId:string;memberAccountId:string;definitionHash:string;active:boolean;extra:boolean;joining:boolean;brainBindingId:string|null;authority:string;monthEndsAt:string;grantValidUntil:string;monotonicDeadline:number};
-/** Who may hold more than one key. The owner is the installation's configured owner, set by the host, never a request field. */
-export interface BudgetNativeProvisionerOptions {designatedOwnerId?:string}
+/** Who may hold more than one key. The owner is the installation's configured owner, set by the host, never a request field.
+ * `gateWaitMs` shortens the wait at the key store (tests); it can never lengthen it past NATIVE_KEY_GATE_WAIT_MS. */
+export interface BudgetNativeProvisionerOptions {designatedOwnerId?:string;gateWaitMs?:number}
 /** An owner's agent may hold its main key plus up to four more, one per other served model name. */
 const MAX_KEYS_PER_AGENT=5;
 type DispatchDeadline={wallDeadline:number;monotonicDeadline:number};
@@ -122,7 +135,8 @@ async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy
   let definition,applied;try{definition=parseDefinition(definitionSchema.parse(row.definition));applied=parseDefinition(definitionSchema.parse(row.applied_definition));}catch{throw refuse();}
   const definitionHash=hashOf({definition,dutiesMd:row.duties,voiceMd:row.voice});
   if(row.status!=='valid'||row.hash!==definitionHash||row.ownership!=='owned'||
-    row.ownership_token!==request.incarnation||row.runtime_control_token!==request.incarnation||row.state!=='ready'||row.pending!==false||!exact(applied,definition))throw refuse();
+    row.ownership_token!==request.incarnation||row.runtime_control_token!==request.incarnation||row.state!=='ready'||row.pending!==false||
+    !restartPartsApplied(applied,definition,{model:true}))throw refuse();
   // The agent's own model name gets the main key. Any other served name is an extra key.
   const extra=definition.model!==request.purposeAlias;
   let brainBindingId:string|null=null,joining=false;
@@ -214,9 +228,13 @@ export class BudgetNativeProvisioner {
     const request=budgetNativeProvisionRequestSchema.parse(raw),alias=request.purposeAlias;
     if(!this.journal.prepared||!this.policy.capability.aliases.includes(alias)||this.policy.key.models.length!==1||this.policy.key.models[0]!==alias)throw refuse();
     validateNativeLimits(this.policy,alias,request.bindingId);
-    const writer=new JournalBudgetFinancialWriter(this.journal);let operationId='',nativeWriteDispatched=false,bindingReceiptPublished=false;
+    const writer=new JournalBudgetFinancialWriter(this.journal);let operationId='',nativeWriteDispatched=false,bindingReceiptPublished=false,entered=false,late=false;
+    const waitMs=nativeKeyGateWait(deadlineAtMs,this.options.gateWaitMs);
     try{
       fresh();const result=await this.custody.withGate(async gate=>{
+        entered=true;
+        // The turn came too late to finish in time: give it back before reading or making anything.
+        if(Math.min(deadlineAtMs-Date.now(),dispatch.monotonicDeadline-performance.now())<NATIVE_KEY_WORK_AFTER_WAIT_MS){late=true;return {kind:'busy' as const};}
         fresh();
         const checkpointDeadline=()=>{fresh();if(performance.now()>=dispatch.monotonicDeadline)throw refuse();};
         const sourceTransaction=<T>(work:(db:SourceDatabase)=>Promise<T>,boundary:SourceTransactionBoundary)=>{
@@ -335,12 +353,17 @@ export class BudgetNativeProvisioner {
         },receipt=>{checkpointDeadline();gate.recordBoundClosed(operationId,receipt);bindingReceiptPublished=true;checkpointDeadline();return undefined;});
         checkpointDeadline();
         return {kind:'bound-closed' as const,value:committed.value};
-      });
+      },{waitMs});
+      if(result.kind==='busy')throw new NativeCustodyBusy();
       if(result.kind==='initial-preflight-refused')throw result.error;
       fresh();if(performance.now()>=dispatch.monotonicDeadline)throw refuse();
       return result.value;
     }catch(error){
-      if(operationId&&nativeWriteDispatched&&!bindingReceiptPublished){try{await this.custody.withGate(gate=>{gate.recordUncertain(operationId);return Promise.resolve();});}catch{/* Existing custody remains frozen or records the uncertainty. */}}
+      // Busy is told apart only when nothing was started: the wait ran out, or the turn came too late. Every other
+      // error, a closed or frozen store among them, keeps the refusal below.
+      if(error instanceof NativeCustodyBusy&&(!entered||late))throw new KeeperRefusedError(NATIVE_KEY_STORE_BUSY_NOT_MADE);
+      // Waits its turn: the gate may have passed straight to someone in line, and this record must not be turned away.
+      if(operationId&&nativeWriteDispatched&&!bindingReceiptPublished){try{await this.custody.withGate(gate=>{gate.recordUncertain(operationId);return Promise.resolve();},{waitMs:NATIVE_CUSTODY_MAX_WAIT_MS});}catch{/* Existing custody remains frozen or records the uncertainty. */}}
       throw error instanceof Error&&error.message==='Native budget provisioning refused; reconciliation may be required'?error:refuse();
     }
   }

@@ -21,6 +21,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { denylistPatterns } from "./helpers/denylist";
+import { runDynamic } from "../../../packages/agent-kit/tests/helpers/eve-dynamic.js";
 
 import { guarded } from "@lares/agent-kit/memory-core";
 
@@ -59,11 +60,40 @@ const REALISTIC: StandingFact[] = [
   { ...fact(2, "the finance lead answers on Thursdays only"), category: "people", shelf: "world" },
 ];
 
-/** Drives the resolver's `session.started` handler the way eve does. */
-type Resolver = { events: Record<string, (event: unknown, ctx: unknown) => Promise<{ markdown: string }>> };
+/**
+ * Drives the standing-facts instructions the way eve 1.0 does.
+ *
+ * The module used to export an events map with a `session.started` handler (the block) and a
+ * `turn.started` handler (the correction). On eve 1.0 it default-exports ONE function, behind a
+ * `defineDynamic()` value (eve keeps it under the symbol below), which returns the block for the
+ * conversation; the per-turn correction is the module's `standingFactsCorrectionBlock`, which
+ * `zz-cache-boundary.ts` emits after the cache marker.
+ *
+ * Each call below gets a fresh memo store (`runDynamic`, the shared test helper), which is what a
+ * key eve has never seen looks like. So what these tests observe is the module's OWN
+ * once-per-session behaviour, exactly as before, not a cache this file put in front of it.
+ */
+type Ctx = { session: { id: string } };
+type Resolver = {
+  /** The block a conversation is given: the old `session.started` half. */
+  block(ctx: Ctx): Promise<{ markdown: string }>;
+  /** What changed since that block was built: the old `turn.started` half. */
+  correction(ctx: Ctx): Promise<{ markdown: string }>;
+};
 
 async function loadResolver(): Promise<Resolver> {
-  return (await import("../agent/instructions/standing-facts.js")).default as unknown as Resolver;
+  const mod = await import("../agent/instructions/standing-facts.js");
+  if (typeof mod.standingFactsCorrectionBlock !== "function") throw new Error("standing-facts.ts does not export standingFactsCorrectionBlock");
+  return {
+    block: async (ctx) => {
+      const instructions = (await runDynamic(mod.default, {
+        session: { auth: { current: null, initiator: null }, ...ctx.session },
+        turn: { id: "turn_0", status: "running", input: [] },
+      })) as { content: string } | null;
+      return { markdown: instructions?.content ?? "" };
+    },
+    correction: async (ctx) => ({ markdown: await mod.standingFactsCorrectionBlock(ctx.session.id) }),
+  };
 }
 
 describe("buildFactsCore", () => {
@@ -245,13 +275,13 @@ describe("the resolver", () => {
 
     const mod = await loadResolver();
     const startedAt = Date.now();
-    const first = await mod.events["session.started"]!({}, { session: { id: "s-owner-key-1" } });
+    const first = await mod.block({ session: { id: "s-owner-key-1" } });
     expect(Date.now() - startedAt).toBeLessThan(2_000);
     expect(first.markdown).toContain("one");
 
     // A second session in the same process must not fire the check again — once per PROCESS,
     // not once per session.
-    await mod.events["session.started"]!({}, { session: { id: "s-owner-key-2" } });
+    await mod.block({ session: { id: "s-owner-key-2" } });
     expect(checkCalls).toBe(1);
   });
 
@@ -267,13 +297,19 @@ describe("the resolver", () => {
     vi.doMock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
 
     const mod = await loadResolver();
-    const out = await mod.events["session.started"]!({}, { session: { id: "s-owner-key-throw" } });
+    const out = await mod.block({ session: { id: "s-owner-key-throw" } });
     expect(out.markdown).toContain("one");
   });
 
-  it("subscribes to session.started and turn.started", async () => {
+  it("provides both halves: the block for the conversation and the correction for the turn", async () => {
+    // eve 1.0 has no events map to subscribe on. The two halves are the default export's one
+    // function and `standingFactsCorrectionBlock`; `loadResolver` throws if either is missing.
+    const exported = await import("../agent/instructions/standing-facts.js");
+    expect(typeof Reflect.get(exported.default, Symbol.for("eve.dynamic"))).toBe("function");
+    expect(Object.keys(exported.default)).toEqual([]);
+    expect(typeof exported.standingFactsCorrectionBlock).toBe("function");
     const mod = await loadResolver();
-    expect(Object.keys(mod.events).sort()).toEqual(["session.started", "turn.started"]);
+    expect(Object.keys(mod).sort()).toEqual(["block", "correction"]);
   });
 
   it("reads the store once per session, however many turns run", async () => {
@@ -285,8 +321,8 @@ describe("the resolver", () => {
     vi.doMock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
     const mod = await loadResolver();
     const ctx = { session: { id: "s1" } };
-    const a = await mod.events["session.started"]!({}, ctx);
-    const b = await mod.events["session.started"]!({}, ctx);
+    const a = await mod.block(ctx);
+    const b = await mod.block(ctx);
     expect(read).toHaveBeenCalledTimes(1);
     expect(a.markdown).toBe(b.markdown);
     expect(a.markdown).toContain("one");
@@ -304,14 +340,14 @@ describe("the resolver", () => {
     vi.doMock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
     const mod = await loadResolver();
     const ctx = { session: { id: "s-stable" } };
-    const first = await mod.events["session.started"]!({}, ctx);
+    const first = await mod.block(ctx);
     answer = [fact(2, "stated after the block was built"), fact(1, "one")];
-    const second = await mod.events["session.started"]!({}, ctx);
+    const second = await mod.block(ctx);
     expect(second.markdown).toBe(first.markdown);
     expect(second.markdown).not.toContain("stated after the block was built");
 
     // A DIFFERENT session does see the change — the block is per session, not per process.
-    const fresh = await mod.events["session.started"]!({}, { session: { id: "s-stable-2" } });
+    const fresh = await mod.block({ session: { id: "s-stable-2" } });
     expect(fresh.markdown).toContain("stated after the block was built");
   });
 
@@ -325,7 +361,7 @@ describe("the resolver", () => {
     }));
     vi.doMock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
     const mod = await loadResolver();
-    const out = await mod.events["session.started"]!({}, { session: { id: "s2" } });
+    const out = await mod.block({ session: { id: "s2" } });
     expect(out.markdown).toBe("");
     expect(error).toHaveBeenCalledTimes(1);
   });
@@ -343,9 +379,9 @@ describe("the resolver", () => {
     }));
     vi.doMock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
     const mod = await loadResolver();
-    expect((await mod.events["session.started"]!({}, { session: { id: "s3" } })).markdown).toBe("");
+    expect((await mod.block({ session: { id: "s3" } })).markdown).toBe("");
     fail = false;
-    expect((await mod.events["session.started"]!({}, { session: { id: "s4" } })).markdown).toContain("one");
+    expect((await mod.block({ session: { id: "s4" } })).markdown).toContain("one");
     expect(error).toHaveBeenCalledTimes(1);
   });
 });
@@ -396,26 +432,24 @@ describe("the resolver's turn-scoped half", () => {
     vi.restoreAllMocks();
   });
 
-  it("subscribes to both events and emits nothing on an unchanged turn", async () => {
+  it("provides both halves and emits nothing on an unchanged turn", async () => {
     const facts = [fact(1, "one")];
     vi.doMock("../lib/standing-facts.js", async (orig) => ({
       ...(await orig<typeof import("../lib/standing-facts.js")>()),
       listActiveFacts: async () => facts,
     }));
     vi.doMock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
-    const mod = (await import("../agent/instructions/standing-facts.js")).default as never;
-    const events = (mod as { events: Record<string, (e: unknown, c: unknown) => Promise<{ markdown: string }>> }).events;
-    expect(Object.keys(events).sort()).toEqual(["session.started", "turn.started"]);
-    const ctx = { session: { id: "s3" } } as never;
-    await events["session.started"]!({}, ctx);
-    expect((await events["turn.started"]!({}, ctx)).markdown).toBe("");
+    const mod = await loadResolver();
+    expect(Object.keys(mod).sort()).toEqual(["block", "correction"]);
+    const ctx = { session: { id: "s3" } };
+    await mod.block(ctx);
+    expect((await mod.correction(ctx)).markdown).toBe("");
   });
 
   it("emits nothing for a turn whose session it never built a block for", async () => {
     vi.doMock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
-    const mod = (await import("../agent/instructions/standing-facts.js")).default as never;
-    const events = (mod as { events: Record<string, (e: unknown, c: unknown) => Promise<{ markdown: string }>> }).events;
-    expect((await events["turn.started"]!({}, { session: { id: "never-seen" } } as never)).markdown).toBe("");
+    const mod = await loadResolver();
+    expect((await mod.correction({ session: { id: "never-seen" } })).markdown).toBe("");
   });
 });
 
@@ -460,7 +494,7 @@ describe("the session block writes down what it showed", () => {
     vi.doMock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
 
     const mod = await loadResolver();
-    await mod.events["session.started"]!({}, { session: { id: "session-1" } });
+    await mod.block({ session: { id: "session-1" } });
 
     const core = buildFactsCore(long);
     expect(core.omitted).toBeGreaterThan(0); // the fixture must actually exercise a cut
@@ -518,8 +552,8 @@ describe("the session block writes down what it showed", () => {
 
     const mod = await loadResolver();
     const ctx = { session: { id: "session-1" } };
-    await mod.events["session.started"]!({}, ctx);
-    await mod.events["turn.started"]!({}, ctx);
+    await mod.block(ctx);
+    await mod.correction(ctx);
 
     const notesRecord = recorded.find((r) => r.kind === "agent_note")!;
     expect(notesRecord.turnId).toBe("");
@@ -541,7 +575,7 @@ describe("the session block writes down what it showed", () => {
     vi.doMock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
 
     const mod = await loadResolver();
-    const out = await mod.events["session.started"]!({}, { session: { id: "session-bytes" } });
+    const out = await mod.block({ session: { id: "session-bytes" } });
     expect(out.markdown).toBe(buildFactsCore(facts).markdown);
   });
 });

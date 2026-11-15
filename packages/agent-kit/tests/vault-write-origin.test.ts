@@ -37,7 +37,8 @@ async function freshTaint() {
  *  grant — so these cases still test the stamp rather than the guard. */
 async function writeToolWithAuthority() {
   const { writeTool } = await import("../extension/lib/note-write-tools.js");
-  return writeTool({ areas: () => ["private"] });
+  // An approver check that passes: a tool with areas and no injected check refuses every call.
+  return writeTool({ areas: () => ["private"], assertApproval: async () => undefined });
 }
 
 describe("vault_write stamps where the note came from", () => {

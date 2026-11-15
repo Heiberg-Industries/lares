@@ -154,8 +154,9 @@ def status(**overrides: object) -> dict:
 
 class BudgetCommandTests(unittest.TestCase):
     def setUp(self) -> None:
-        # Short on purpose: a Unix socket path has a small length limit.
-        self.temporary = tempfile.TemporaryDirectory(prefix="lb-", dir="/tmp")
+        # Short on purpose: a Unix socket path has a small length limit. The real path, because the
+        # maintenance check walks the prefix without following links (/tmp is one on macOS).
+        self.temporary = tempfile.TemporaryDirectory(prefix="lb-", dir=os.path.realpath("/tmp"))
         self.prefix = Path(self.temporary.name)
         budget.ROOT_UID = os.geteuid()
         budget.ROOT_GID = os.getegid()
@@ -524,6 +525,67 @@ class BudgetCommandTests(unittest.TestCase):
         self.assertIn("cannot spend", output)
         self.assertNotIn("definition.reconcile", self.keeper.actions())
 
+    def test_the_keepers_busy_key_answers_are_the_ones_the_command_tells_apart(self) -> None:
+        import re
+        keeper = Path(__file__).parents[2] / "keeper" / "lib"
+        made = re.search(r"export const NATIVE_KEY_STORE_BUSY_NOT_MADE='([^']+)';", (keeper / "budget-native-provisioning.ts").read_text())
+        on = re.search(r"export const NATIVE_KEY_STORE_BUSY_NOT_SWITCHED_ON='([^']+)';", (keeper / "budget-native-activation.ts").read_text())
+        self.assertIsNotNone(made, "the keeper's busy sentence for making a key moved")
+        self.assertIsNotNone(on, "the keeper's busy sentence for switching a key on moved")
+        self.assertEqual(made.group(1), budget.KEEPER_BUSY_KEY_NOT_MADE)
+        self.assertEqual(on.group(1), budget.KEEPER_BUSY_KEY_NOT_SWITCHED_ON)
+
+    def test_a_busy_key_store_while_making_the_key_says_so_and_a_second_run_carries_on_with_the_same_id(self) -> None:
+        self.mark_setup_done()
+        self.start_flow(status(), status())
+        self.keeper.answers["budget.provision-native"] = {"ok": False, "outcome": "refused", "error": budget.KEEPER_BUSY_KEY_NOT_MADE}
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, budget.EX_REFUSED, output)
+        self.assertIn("lares: The spending-key store was busy with other work, so the key for my-agent was not made. Nothing from this "
+                      "try needs repair. Run this command again in a minute: it continues from where it stopped.", output)
+        self.assertNotIn("cannot spend", output)
+        self.assertNotIn("outcome is not known", output)
+        self.assertNotIn("budget.activate-native", self.keeper.actions())
+        self.assertNotIn("definition.reconcile", self.keeper.actions())
+        first = next(request["input"]["bindingId"] for request in self.keeper.requests if request["action"] == "budget.provision-native")
+        self.keeper.requests.clear()
+        bound = status(account={"state": "closed"}, binding={"id": first, "credentialGeneration": "0"})
+        self.start_flow(status(), bound)
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, 0, output)
+        again = next(request["input"]["bindingId"] for request in self.keeper.requests if request["action"] == "budget.provision-native")
+        self.assertEqual(first, again, "a retry must carry the same id")
+        self.assertIn("budget.activate-native", self.keeper.actions())
+
+    def test_a_busy_key_store_while_switching_the_key_on_says_the_key_is_made_and_blocked(self) -> None:
+        self.mark_setup_done()
+        bound = status(account={"state": "closed"}, binding={"id": "b1", "credentialGeneration": "0"})
+        self.start_flow(bound, bound)
+        self.keeper.answers["budget.activate-native"] = {"ok": False, "outcome": "refused", "error": budget.KEEPER_BUSY_KEY_NOT_SWITCHED_ON}
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, budget.EX_REFUSED, output)
+        self.assertIn("lares: The spending-key store was busy with other work, so the key for my-agent was made but is not switched "
+                      "on yet: it stays blocked and cannot spend. Nothing from this try needs repair. Run this command again in a "
+                      "minute: it "
+                      "continues from where it stopped.", output)
+        self.assertNotIn("budget.provision-native", self.keeper.actions())
+        self.assertNotIn("definition.reconcile", self.keeper.actions())
+
+    def test_a_fault_while_switching_the_key_on_keeps_its_old_message(self) -> None:
+        self.mark_setup_done()
+        bound = status(account={"state": "closed"}, binding={"id": "b1", "credentialGeneration": "0"})
+        for answer, words in (({"ok": False, "outcome": "unknown", "error": "keeper could not confirm the action outcome"},
+                               "lares: keeper could not confirm the action outcome This step's outcome is not known. Run this command again"),
+                              ({"ok": False, "outcome": "refused", "error": "invalid input"},
+                               "lares: the keeper refused this step: invalid input Run this command again once that is fixed.")):
+            self.keeper.requests.clear()
+            self.start_flow(bound, bound)
+            self.keeper.answers["budget.activate-native"] = answer
+            code, output = self.run_command("agent-start", "my-agent")
+            self.assertEqual(code, budget.EX_REFUSED, output)
+            self.assertIn(words, output)
+            self.assertNotIn("busy", output)
+
     # extra keys for the installation owner
 
     ALIASES = ("lares-brain", "lares-writer", "lares-utility", "lares-gate")
@@ -624,6 +686,37 @@ class BudgetCommandTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(self.native_calls(), [("make", "lares-utility"), ("open", "lares-utility"), ("make", "lares-gate"), ("open", "lares-gate")])
         self.assertEqual(world["keys"]["lares-utility"]["id"], refused_id, "a retry must carry the same id")
+
+    def test_a_busy_key_store_on_an_extra_key_says_so_and_the_agent_still_starts(self) -> None:
+        world = self.owner_flow()
+        made = self.keeper.answers["budget.provision-native"]
+        opened = self.keeper.answers["budget.activate-native"]
+        busy = {"ok": False, "outcome": "refused", "error": budget.KEEPER_BUSY_KEY_NOT_MADE}
+        self.keeper.answers["budget.provision-native"] = lambda request: busy if request["input"]["purposeAlias"] == "lares-utility" else made(request)
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, budget.EX_REFUSED, output)
+        self.assertIn("The spending-key store was busy with other work, so the key for lares-utility was not made. Nothing from this try needs repair. "
+                      "my-agent keeps working on its own model name. Run sudo lares agent start my-agent again in a minute to finish "
+                      "the other keys: it continues from where it stopped.", output)
+        self.assertNotIn("The keeper refused", output)
+        self.assertEqual(self.keeper.actions()[-1], "definition.reconcile")
+        self.assertTrue(world["keys"]["lares-brain"]["active"])
+        # Switching an extra key on while the store stays busy: the key is made, not on, and the next run opens it.
+        self.keeper.requests.clear()
+        self.keeper.answers["budget.provision-native"] = made
+        self.keeper.answers["budget.activate-native"] = lambda request: (
+            {"ok": False, "outcome": "refused", "error": budget.KEEPER_BUSY_KEY_NOT_SWITCHED_ON}
+            if request["input"]["bindingId"] == world["keys"].get("lares-utility", {}).get("id") else opened(request))
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, budget.EX_REFUSED, output)
+        self.assertIn("The spending-key store was busy with other work, so the key for lares-utility was made but is not switched on yet. "
+                      "Nothing from this try needs repair. my-agent keeps working", output)
+        self.assertEqual(self.native_calls(), [("make", "lares-utility"), ("open", "lares-utility")])
+        self.keeper.requests.clear()
+        self.keeper.answers["budget.activate-native"] = opened
+        code, output = self.run_command("agent-start", "my-agent")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.native_calls()[0], ("open", world["keys"]["lares-utility"]["id"]))
 
     def test_a_key_made_but_not_opened_is_opened_and_not_made_again(self) -> None:
         brain = {"id": "key-1", "active": True}
@@ -780,6 +873,25 @@ class BudgetCommandTests(unittest.TestCase):
         self.assertNotEqual(code, 0, output)
         self.assertIn("first stays on the previous software: the keeper reported an error. Check it with: sudo lares agent start first", output)
         self.assertNotIn("in time", output)
+
+    def test_agent_refresh_says_a_busy_key_store_left_the_agent_stopped_not_on_the_old_software(self) -> None:
+        import re
+        lifecycle = (Path(__file__).parents[2] / "keeper" / "lib" / "lifecycle.ts").read_text()
+        sentence = re.search(r"export const NATIVE_KEY_STORE_BUSY = '([^']+)';", lifecycle)
+        self.assertIsNotNone(sentence, "the keeper's busy sentence moved")
+        self.assertTrue(sentence.group(1).startswith(budget.KEEPER_BUSY_NOT_STARTED), sentence.group(1))
+        self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64},
+                                                     {"name": "second", "status": "valid", "hash": "b" * 64}])
+        answers = {"first": {"ok": False, "outcome": "refused", "error": sentence.group(1)},
+                   "second": {"ok": False, "outcome": "refused", "error": "Definition changed; refresh before applying connection changes"}}
+        self.keeper.answers["definition.refresh-image"] = lambda request: answers[request["input"]["name"]]
+        code, output = self.run_command("agent-refresh")
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("first was stopped to move it onto this release and was not started again: the spending-key store was busy. "
+                      "Start it with: sudo lares agent start first", output)
+        self.assertNotIn("first stays on the previous software", output)
+        # Every other refusal keeps its sentence.
+        self.assertIn("second stays on the previous software: the keeper refused (Definition changed; refresh before applying connection changes).", output)
 
     def test_agent_refresh_keeps_the_timeout_wording_for_a_real_timeout(self) -> None:
         self.keeper.answers["definition.list"] = ok([{"name": "first", "status": "valid", "hash": "a" * 64}])

@@ -1,68 +1,60 @@
 /**
- * lib/telegram-reply-fix.ts — make a REPLY to the agent's Telegram bot reach the agent.
+ * src/telegram-reply-fix.ts — at an agent's Telegram door, a REPLY to the bot is a message.
  *
- * ## The bug, in eve 0.32.0, with the line that does it
+ * ## What eve does with a reply to a bot message (1.0.0-rc.9)
  *
- * `node_modules/eve/dist/src/public/channels/telegram/telegramChannel.js`, in `dispatchMessage`:
+ * `node_modules/eve/dist/src/public/channels/telegram/state.js`, in `stateFromTelegramMessage`:
  *
  * ```js
- * u = e.message.replyToMessage?.from?.isBot === true && l.trim().length > 0
- *       ? [telegramReplyInputResponse({ messageId: …, text: l })]
- *       : undefined;
- * …
- * u === void 0 ? await n.send(a, {…}) : await n.respond(u, {…});
+ * replyToBotMessageId: e.replyToMessage?.from?.isBot === true ? e.replyToMessage.messageId : null
  * ```
  *
- * **Any** reply to **any** bot message is routed as an INPUT RESPONSE rather than as a message —
- * unconditionally, whether or not eve is actually waiting for one. It then reaches
- * `resolveTelegramInputResponses` (`…/telegram/hitl.js`):
+ * and `telegramChannel.js`, in the channel's `deliver` hook:
  *
  * ```js
- * if (r.requestId.startsWith(`telegram_reply:`)) {
- *   const t = r.requestId.slice(15), i = e.pendingFreeformReplies?.[t];
- *   i !== void 0 && r.text !== void 0 && (n.push({ requestId: i, text: r.text }), delete …);
- *   continue;                       // ← no pending prompt ⇒ the reply is DROPPED, silently
+ * let r = [...(e.answers ?? []), ...telegramReplyAnswers(n?.replyToBotMessageId, e.message)];
+ * if (r.some(isTelegramSyntheticResponse)) {
+ *   let n = resolveTelegramAnswers(t.state, r);
+ *   return n.length > 0 ? { answers: n, context: e.context }
+ *        : e.message === void 0 ? void 0 : { message: e.message, context: e.context };
  * }
  * ```
  *
- * With nothing left to deliver, `turnStep` (`…/execution/workflow-steps.js`) takes its
- * `input?.kind === "deliver" && g === undefined` branch and returns `action: "park"`. A turn is
- * created, runs for ~20 ms, makes no model call, sends nothing, and completes. The message is
- * gone with no error anywhere.
+ * A reply to a bot message is first offered as an ANSWER to a pending free-text prompt
+ * (`telegram_reply:<message id>`, matched against `pendingFreeformReplies` in `hitl.js`). Only
+ * when no prompt was posted as that message does it fall back to being a message.
  *
- * ## What it looked like from the outside
+ * ## Why this file exists, and why it stayed across the upgrade
  *
- * In a group chat, an agent introduced itself (message 11). The owner replied to that
- * message and got nothing. That turn took
- * 150 ms, made no model call, and its decoded input carried `inputResponses: [{ requestId:
- * "telegram_reply:11", … }]` against an empty `pendingFreeformReplies`. Replying is the
- * natural way to talk to a bot in a busy group chat, so from the group's side the agent had
- * simply gone deaf. Same eve version, same channel, same swallow on every other agent using
- * this fix.
+ * In eve 0.32 through 0.60 there was no fallback: a reply to any bot message with no free-text
+ * prompt pending was dropped. The turn made no model call, sent nothing and logged no error, so
+ * an agent looked deaf to the most natural way of talking to a bot. This fix was written for
+ * that. eve 1.0 added the fallback, so the swallow is gone upstream.
+ *
+ * The rewrite is kept because its effect is still wanted, and is now a rule of the door: with the
+ * marker cleared, eve never builds a `telegram_reply:` answer at all, so TYPED TEXT IS ALWAYS A
+ * MESSAGE AND NEVER AN ANSWER. Nothing typed into the chat, as a reply to a card or otherwise,
+ * can be read as the answer to a request eve posted. `tests/telegram-reply-fix.test.ts` runs the
+ * shipped eve's own parser on a rewritten update and fails if the marker moves.
  *
  * ## The fix
  *
  * eve's branch keys on one boolean: `reply_to_message.from.is_bot`. The front door
- * (`agent/channels/telegram-webhook.ts`) already sees the raw update first, so it clears that
- * one flag before forwarding. eve then takes its ordinary `send()` path and the reply becomes a
- * normal message — which is what it always was.
+ * (`agent/channels/telegram-webhook.ts`) sees the raw update first, so it clears that one flag
+ * before forwarding. Everything else in the update is passed through untouched; in particular
+ * `reply_to_message.message_id` and `from.username` survive, which is what an agent's own
+ * reply-tagging reads.
  *
- * Our own reply-tagging is deliberately untouched: each agent's own `agent/channels/telegram.ts`
- * matches `isReplyToBot` on `reply_to_message.from.username`, not `is_bot`, so replying to the
- * bot in a group still counts as tagging it and still answers unconditionally.
+ * ## TRIPWIRE — read before adding a free-text eve prompt to an agent using this fix
  *
- * ## TRIPWIRE — read before adding a freeform eve prompt to an agent using this fix
+ * This is right only for an agent that issues **zero** eve free-text requests (`force_reply`
+ * prompts) — true today for the chief of staff: its human-in-the-loop step is tool APPROVAL, and
+ * eve renders a request with options as inline buttons, answered by a tap
+ * (`renderTelegramInteraction` falls back to `force_reply` only when a request has no options at
+ * all).
  *
- * This is safe only for an agent that issues **zero** eve freeform input requests
- * (`force_reply` prompts) — true today for the chief of staff: its human-in-the-loop step is tool
- * APPROVAL (`approval: always()`), and eve renders an approval with
- * options as inline buttons — the `telegram_callback:` lane, not `force_reply`
- * (`renderTelegramInputRequest` only falls back to `force_reply` when an input request has no
- * options at all). It also has no `requireAuth`/`input()` anywhere in `agent/`.
- *
- * The day something here asks a freeform question, the answer would arrive as a normal message
- * instead of resolving the prompt — so make the rewrite conditional then, or drop it if eve has
- * fixed the upstream branch.
+ * The day something here asks a free-text question, the answer would arrive as a normal message
+ * instead of resolving the prompt — so make the rewrite conditional then.
  */
 
 /** Shape we care about; everything else in the update is passed through untouched. */

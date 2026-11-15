@@ -10,21 +10,21 @@ import { authorityTransaction,consoleAdmission,requireConsoleSessionBinding,type
 import { managedIdentity } from './door-authority.js';
 export const PRIVATE_RESUME_REFUSED='Private approval continuation is unavailable or changed';
 const refuse=():never=>{throw new Error(PRIVATE_RESUME_REFUSED);};
-type ResumeReference={binding:ConsoleBindingInput;requestId:string;optionId:'approve'|'cancel'};
+type ResumeReference={binding:ConsoleBindingInput;requestId:string;optionId:'approve'|'deny'};
 /** The personal mail answer: resolver identity only, never a member or admission attribute. */
 export function privateResolverAdmission(auth:unknown){
   const a=auth as {authenticator?:string;attributes?:Record<string,unknown>}|undefined,v=a?.attributes;
   if(a?.authenticator!=='lares-console'||!v||typeof v.lares_resolver_member_id!=='string'||!v.lares_resolver_member_id||
     typeof v.lares_resume_request_id!=='string'||!v.lares_resume_request_id||v.lares_purpose!=='resolver'||
-    !['approve','cancel'].includes(String(v.lares_resume_option))||'lares_member_id' in v||'lares_admission_nonce' in v)return undefined;
-  return {memberId:v.lares_resolver_member_id,requestId:v.lares_resume_request_id,optionId:v.lares_resume_option as 'approve'|'cancel'};
+    !['approve','deny'].includes(String(v.lares_resume_option))||'lares_member_id' in v||'lares_admission_nonce' in v)return undefined;
+  return {memberId:v.lares_resolver_member_id,requestId:v.lares_resume_request_id,optionId:v.lares_resume_option as 'approve'|'deny'};
 }
 /** Any other card's answer: the original admission plus the one request and option it answered. */
 export function exactResolverAdmission(auth:unknown){
   const admission=consoleAdmission(auth),v=(auth as {attributes?:Record<string,unknown>}|undefined)?.attributes;
   if(!admission||admission.purpose!=='resolver'||!v||typeof v.lares_resume_request_id!=='string'||!v.lares_resume_request_id||
-    !['approve','cancel'].includes(String(v.lares_resume_option))||'lares_resolver_member_id' in v)return undefined;
-  return {memberId:admission.memberId,admissionNonce:admission.admissionNonce,requestId:v.lares_resume_request_id,optionId:v.lares_resume_option as 'approve'|'cancel'};
+    !['approve','deny'].includes(String(v.lares_resume_option))||'lares_resolver_member_id' in v)return undefined;
+  return {memberId:admission.memberId,admissionNonce:admission.admissionNonce,requestId:v.lares_resume_request_id,optionId:v.lares_resume_option as 'approve'|'deny'};
 }
 /** Either kind of answer. Only code that handles both kinds may use this. */
 export function privateResumeAdmission(auth:unknown){
@@ -59,7 +59,7 @@ export async function requirePersistedConsoleModelResume(reference:ResumeReferen
  * immutable reservation already proves member, session and admission; this adds the outcome. */
 async function requireExactResume(reference:ResumeReference,phase:'surface'|'model',options:{db?:AuthorityDatabase;env?:NodeJS.ProcessEnv}){
   const own=managedIdentity(options.env);
-  if(!own||own.name!==reference.binding.agent||own.incarnation!==reference.binding.incarnation||!['approve','cancel'].includes(reference.optionId))refuse();
+  if(!own||own.name!==reference.binding.agent||own.incarnation!==reference.binding.incarnation||!['approve','deny'].includes(reference.optionId))refuse();
   return authorityTransaction(options.db,async db=>{
     const binding=await requireConsoleSessionBinding(reference.binding,db,options.env);
     const member=await currentMember(db as never,reference.binding.memberId);if(!member)refuse();
@@ -70,15 +70,15 @@ async function requireExactResume(reference:ResumeReference,phase:'surface'|'mod
     if(reference.optionId==='approve'&&!card.alive)refuse();
     if(phase==='model'){
       if(reference.optionId==='approve'&&(card.outcome!=='approved'||card.resolvedByMemberId!==reference.binding.memberId))refuse();
-      if(reference.optionId==='cancel'&&!['cancelled','ignored','invalid'].includes(card.outcome??''))refuse();
+      if(reference.optionId==='deny'&&!['cancelled','ignored','invalid'].includes(card.outcome??''))refuse();
     }
     return {binding,validUntil:card.validUntil};
   });
 }
-async function requireResumeReference(reference:{binding:ConsoleBindingInput;requestId:string;optionId:'approve'|'cancel'},phase:'surface'|'response'|'model'|'action',
+async function requireResumeReference(reference:{binding:ConsoleBindingInput;requestId:string;optionId:'approve'|'deny'},phase:'surface'|'response'|'model'|'action',
   options:{db?:AuthorityDatabase;env?:NodeJS.ProcessEnv;callId?:string;toolName?:string;input?:unknown}){
   const own=managedIdentity(options.env),auth={memberId:reference.binding.memberId,requestId:reference.requestId,optionId:reference.optionId};
-  if(!own||own.name!==reference.binding.agent||own.incarnation!==reference.binding.incarnation||!['approve','cancel'].includes(auth.optionId))refuse();
+  if(!own||own.name!==reference.binding.agent||own.incarnation!==reference.binding.incarnation||!['approve','deny'].includes(auth.optionId))refuse();
   return authorityTransaction(options.db,async db=>{
     const binding=await requireConsoleSessionBinding(reference.binding,db,options.env);
     const member=await currentMember(db as never,auth!.memberId);if(!member)refuse();
@@ -91,7 +91,7 @@ async function requireResumeReference(reference:{binding:ConsoleBindingInput;req
     if(auth!.optionId==='approve'&&!current.alive)refuse();
     if(phase==='model'||phase==='action'){
       if(auth!.optionId==='approve'&&(current.approvalOutcome!=='approved'||current.resolvedByMemberId!==auth!.memberId))refuse();
-      if(auth!.optionId==='cancel'&&!['cancelled','ignored','invalid'].includes(current.approvalOutcome??''))refuse();
+      if(auth!.optionId==='deny'&&!['cancelled','ignored','invalid'].includes(current.approvalOutcome??''))refuse();
     }
     if(phase==='response'||phase==='action'){
       if((phase==='response'&&current.approvalOutcome!==null&&current.approvalOutcome!=='approved')||auth!.optionId!=='approve'||options.callId!==s.originalCallId||options.toolName!==PERSONAL_MAIL_SEND_TOOL)refuse();
@@ -103,3 +103,94 @@ async function requireResumeReference(reference:{binding:ConsoleBindingInput;req
     return {...current,binding};
   });
 }
+
+/**
+ * THE ANSWER A TURN CONTINUES FROM (eve 1.0).
+ *
+ * On eve 1.0 an answered card starts no new turn: the paused turn carries on with the same turn id,
+ * and `session.auth.current` stays the person who ASKED. The person who answered is only
+ * `response.principal`, inside eve's response policy. So once that policy has accepted an answer,
+ * it hands the answer here, and the code that continues the turn (the model seam, the settle hook)
+ * reads it back. The turn's own identity and attributes never stand in for it.
+ *
+ * - One entry per card, keyed by conversation, turn, turn position, this run's incarnation and the
+ *   card's request id. A different turn, conversation, run or card finds nothing.
+ * - Each entry is first `accepted` (by the response policy), then `confirmed` or `refused` by the
+ *   card's own settle hook, against the answer eve applied. Nothing is used before every card of
+ *   the turn position that has an answer has been settled (D5: several cards in one step).
+ * - The continuation TAKES the entries of its own turn position: each answer opens at most one
+ *   continuation, and one refused entry refuses them all. The settle hook only reads.
+ * - In memory only, bounded, and gone after 30 seconds, the life of the Keeper resume receipt it
+ *   carries. A restart between the answer and the continuation finds nothing, so the continuation
+ *   is refused (fails closed).
+ */
+export type AcceptedAnswer=Readonly<{sessionId:string;turnId:string;sequence:number;incarnation:string;requestId:string;
+  optionId:'approve'|'deny';memberId:string;admissionNonce:string;principal:unknown;receipt?:string;expiresAt:number;
+  state:'accepted'|'confirmed'|'refused'}>;
+export type AnswerPoint=Readonly<{sessionId:string;turnId:string;sequence:number;incarnation:string}>;
+const ACCEPTED_MS=30_000,MAX_ACCEPTED=512;
+const accepted=new Map<string,AcceptedAnswer>();
+const pointKey=(p:AnswerPoint)=>`${p.sessionId}\0${p.turnId}\0${p.sequence}\0${p.incarnation}\0`;
+function pruneAccepted(now:number){for(const [k,v] of accepted)if(v.expiresAt<=now)accepted.delete(k);}
+/** The Keeper resume receipt the console's answer was admitted with, if any. */
+function resumeReceiptOf(principal:unknown){
+  const v=(principal as {attributes?:Record<string,unknown>}|undefined)?.attributes?.lares_model_pending_receipt;
+  return typeof v==='string'&&/^[A-Za-z0-9_-]{43}$/.test(v)?v:undefined;
+}
+/** Called by a response policy only after it has fully accepted the answer. eve applies the LATEST
+ *  answer from the same responder (`harness/hitl/responders.js`, `revisedAnswers`): Deny then
+ *  Approve settles as Approve. So a later accepted answer from the same member and admission
+ *  replaces the earlier one, receipt included. An answer from anyone else for a card that already
+ *  has one refuses the card: nothing continues from a card two people answered. The settle hook then
+ *  confirms the entry only if it agrees with what eve actually applied (`settleAcceptedAnswer`). */
+export function rememberAcceptedAnswer(ctx:{request:{interactionId:string};response:{decision:'approve'|'deny';principal:unknown};session:{id:string;turn?:unknown}},
+  who:{memberId:string;admissionNonce:string},env:NodeJS.ProcessEnv=process.env,now=Date.now()):void{
+  const own=managedIdentity(env),turn=ctx.session?.turn as {id?:unknown;sequence?:unknown}|undefined;
+  if(!own||typeof ctx.session?.id!=='string'||typeof turn?.id!=='string'||!turn.id||!Number.isSafeInteger(turn.sequence)||Number(turn.sequence)<0||
+    typeof ctx.request?.interactionId!=='string'||!ctx.request.interactionId||(ctx.response?.decision!=='approve'&&ctx.response?.decision!=='deny'))return;
+  pruneAccepted(now);
+  const point={sessionId:ctx.session.id,turnId:turn.id,sequence:Number(turn.sequence),incarnation:own.incarnation};
+  const id=pointKey(point)+ctx.request.interactionId;
+  const earlier=accepted.get(id);
+  if(earlier?.state==='refused')return;
+  if(earlier&&(earlier.memberId!==who.memberId||earlier.admissionNonce!==who.admissionNonce)){accepted.set(id,Object.freeze({...earlier,state:'refused'}));return;}
+  if(!earlier&&accepted.size>=MAX_ACCEPTED)return; // Full: this answer opens no continuation (refused, never guessed).
+  const receipt=resumeReceiptOf(ctx.response.principal);
+  accepted.set(id,Object.freeze({...point,requestId:ctx.request.interactionId,optionId:ctx.response.decision,memberId:who.memberId,
+    admissionNonce:who.admissionNonce,principal:ctx.response.principal,...(receipt?{receipt}:{}),expiresAt:now+ACCEPTED_MS,state:'accepted'}));
+}
+/** The settle hook, once eve has settled a card: confirm this card's accepted answer only if it is
+ *  the answer eve applied (`approve` for a person's Approve, `deny` for a person's Deny). Any other
+ *  ending, or a disagreement, marks it refused, which refuses the whole turn position's
+ *  continuation (`takeAcceptedAnswers`). Another conversation's entry for the id is removed. */
+export function settleAcceptedAnswer(requestId:string,sessionId:unknown,applied:'approve'|'deny'|undefined,env:NodeJS.ProcessEnv=process.env):void{
+  const own=managedIdentity(env);if(!own)return;
+  for(const [k,v] of accepted){
+    if(v.requestId!==requestId||v.incarnation!==own.incarnation)continue;
+    if(v.sessionId!==sessionId){accepted.delete(k);continue;}
+    if(v.state==='accepted')accepted.set(k,Object.freeze({...v,state:v.optionId===applied?'confirmed':'refused'}));
+  }
+}
+/** Read one card's accepted answer without using it up (the settle hook: who answered, and how). */
+export function acceptedAnswerFor(requestId:string,sessionId:string,env:NodeJS.ProcessEnv=process.env,now=Date.now()):AcceptedAnswer|undefined{
+  const own=managedIdentity(env);if(!own)return undefined;
+  pruneAccepted(now);
+  for(const v of accepted.values())if(v.requestId===requestId&&v.sessionId===sessionId&&v.incarnation===own.incarnation&&v.state!=='refused')return v;
+  return undefined;
+}
+/** Thrown by {@link takeAcceptedAnswers} when an answer of the turn position was refused at settle. */
+export class RefusedAnswersError extends Error{constructor(){super('An answer in this turn did not match what was applied');}}
+/** Take (use up) every answer for this exact turn position, once each one is confirmed.
+ *  - Some answer not yet settled: takes nothing and returns [] (the last card's settle opens).
+ *  - Some answer refused: takes them all and throws {@link RefusedAnswersError}: nothing opens.
+ *  - Otherwise: takes and returns them all, by request id. */
+export function takeAcceptedAnswers(point:AnswerPoint,now=Date.now()):AcceptedAnswer[]{
+  pruneAccepted(now);
+  const prefix=pointKey(point),mine=[...accepted].filter(([k])=>k.startsWith(prefix));
+  if(mine.some(([,v])=>v.state==='accepted'))return [];
+  for(const [k] of mine)accepted.delete(k);
+  if(mine.some(([,v])=>v.state!=='confirmed'))throw new RefusedAnswersError();
+  return mine.map(([,v])=>v).sort((a,b)=>a.requestId<b.requestId?-1:a.requestId>b.requestId?1:0);
+}
+/** Tests only. */
+export function clearAcceptedAnswersForTests(){accepted.clear();}

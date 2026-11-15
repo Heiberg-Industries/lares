@@ -72,14 +72,17 @@ describe("the Slack user allowlist", () => {
 describe("echo_note's approval gate", () => {
   it("requires approval on every call", async () => {
     expect(echoNote.approval).toBeTypeOf("function");
-    const decision = await echoNote.approval!({
-      approvedTools: new Set(["echo_note"]), // already approved once — must still prompt
-      callId: "call_1",
+    // eve 1.0 has no `approvedTools`: a tool is remembered as approved only if its policy is wrapped
+    // in `once()`. This one is not, so the second call (same session, as after a first approval)
+    // asks again, with a different call id and the same input.
+    const askFor = (callId: string) => (echoNote.approval as unknown as (c: never) => unknown)({
+      callId,
       toolName: "echo_note",
       toolInput: { note: "hello" },
-      ...ctx(slackAuth(OWNER_SLACK_ID)),
+      ...(ctx(slackAuth(OWNER_SLACK_ID)) as object),
     } as never);
-    expect(decision).toBe("user-approval");
+    expect(await askFor("call_1")).toBe("user-approval");
+    expect(await askFor("call_2")).toBe("user-approval");
   });
 
   it("writes nothing until execute runs", () => {
@@ -92,7 +95,7 @@ describe("echo_note's approval gate", () => {
 describe("echo_note's execute", () => {
   it("appends the note when an allowlisted person approved", async () => {
     const result = await echoNote.execute({ note: "the gate works" }, ctx(slackAuth(OWNER_SLACK_ID)));
-    expect(result.path).toBe(logPath);
+    expect((result as { path: string }).path).toBe(logPath);
     expect(readFileSync(logPath, "utf8")).toContain("the gate works");
     expect(readFileSync(logPath, "utf8")).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });

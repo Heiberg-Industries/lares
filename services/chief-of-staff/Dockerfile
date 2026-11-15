@@ -1,13 +1,15 @@
 # Built by GitHub Actions on linux/amd64. NEVER built on the box.
-# Multi-stage: `deps` installs the chief-of-staff workspace closure and runs `eve build`
-# (per node_modules/eve/docs/guides/deployment/self-hosting.md — eve compiles the agent to a
-# self-contained Nitro server under .output/); `runtime` is a slim non-root image that runs
-# the built server via `eve start`, the OTHER half of that doc's documented self-host recipe
-# ("eve build" then "eve start --host 0.0.0.0"). `eve start` is NOT a thin `node
-# .output/server/index.mjs` wrapper — it calls eve's own production-host loader
-# (dist/src/cli/run.js -> #internal/nitro/host.js:startProductionServer), so the eve package
-# and its dependency closure have to ship in the runtime image too, not just .output/ — same
-# reasoning as agent-runtime/Dockerfile shipping tsx to run its entrypoint.
+# Multi-stage: the builder installs the chief-of-staff workspace closure and runs `eve build`
+# (eve compiles the agent to a self-contained Nitro server under .output/); `runtime` is a slim
+# non-root image that runs that built server DIRECTLY. `lares-start` ends in
+# `exec node ./.output/server/index.mjs`, the start eve's own docs name beside `eve start`
+# (node_modules/eve/docs/reference/cli/index.md, "eve start"). It deliberately does not go
+# through the `eve start` launcher: the maintenance admission wrapper (the ENTRYPOINT) opens the
+# installation's gate lock as file descriptor 9, and every step after it is an `exec`, so the
+# server itself is the container's first process and holds that lock for as long as it lives.
+# The launcher would start the server as a child with three stdio entries and leave descriptor 9
+# behind. The eve package and its dependency closure still ship in the runtime image, not just
+# .output/: the built server loads the agent's sandbox module from the deployed tree when it runs.
 #
 # Build context = the REPO ROOT (not this directory) — chief-of-staff is a pnpm workspace member
 # with no lockfile of its own, so `pnpm install --filter lares-chief-of-staff...` needs the root
@@ -117,12 +119,16 @@ COPY --from=compiled-runtime /app /app
 RUN find /app/node_modules/.pnpm -type f -path '*/node_modules/@typescript/typescript-linux-x64/lib/tsc' -delete
 COPY images/agent-runtime/start.sh /usr/local/bin/lares-start
 # Generated from SETTINGS — the startup guard lares-start runs. Same COPY layer as lares-start, so
-# it cannot be missing at runtime; the image has no TypeScript loader before `eve start`, so the
+# it cannot be missing at runtime; the image has no TypeScript loader before the server starts, so the
 # check that runs here is shell, generated from the same list `checkSettings` walks.
 COPY images/agent-runtime/required-settings-chief-of-staff.sh /usr/local/lib/lares/required-settings.sh
 COPY --chmod=0555 services/box/ops/maintenance-admission.sh /usr/local/lib/lares/maintenance-admission-v1
 RUN chmod 0755 /usr/local/bin/lares-start /usr/local/lib/lares/required-settings.sh && mkdir -p /app/services/chief-of-staff/.eve/.workflow-data \
+       /app/services/chief-of-staff/.eve/sandbox-cache/just-bash/sessions \
     && chown -R 10001:10001 /app/services/chief-of-staff/.eve
+# The sessions folder above is the one place the sandbox writes: the keeper mounts a small
+# in-memory filesystem on it, beside the sandbox template `eve build` left in .eve/sandbox-cache,
+# which must stay visible. Created here so it exists with the right owner either way.
 USER 10001:10001
 WORKDIR /app/services/chief-of-staff
 ENTRYPOINT ["/usr/local/lib/lares/maintenance-admission-v1"]

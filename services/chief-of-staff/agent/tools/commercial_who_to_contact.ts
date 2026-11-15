@@ -16,9 +16,10 @@ import { verifyPrivateConsoleSession, assertPrivateConsoleTool } from "@lares/ag
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 
+import { manifestViewOf } from "@lares/agent-kit/definition";
 import { resolveSkillTool } from "@lares/agent-kit/manifest";
 
-import manifest from "../../agent.json";
+import { thisAgent } from "../../lib/definition.js";
 import { listPeopleCapped } from "../../lib/twenty-people.js";
 import { icpFor } from "../../lib/commercial/icp.js";
 import { gatewayComplete } from "../../lib/llm-complete.js";
@@ -86,8 +87,36 @@ const tool = defineTool({
   },
 });
 
-export default defineDynamic({ events: { "session.started": async (_event, ctx) => {
+/** The memo key the yes/no is kept under for the conversation. */
+const OFFERED_MEMO_KEY = "lares.commercial-skill-offered";
+
+// Decided before every model call (eve 1.0's one-function dynamic form). The tool exists only
+// outside a private console conversation, and only where `resolveSkillTool` says the `commercial`
+// skill is declared, inside the grants, and not switched off.
+//
+// IT ASKS THE CONVERSATION'S LOADED DEFINITION, the same one the tool list and the skills come
+// from (lib/definition.ts), not the `agent.json` built into the image. The image's file always
+// declares `commercial`, so asking it meant an installation that dropped the skill, or revoked or
+// switched off `twenty`, kept this tool anyway.
+//
+// Three things about the shape below are deliberate:
+//  - The private console line comes first and is not caught. A claim that cannot be verified
+//    throws, which fails the turn; it is checked again on every run and never kept.
+//  - Only the yes/no is kept in the memo, so the definition is read once per conversation and a
+//    definition edit reaches the next conversation (ADR-0015).
+//  - The catch is OUTSIDE the memo and answers "absent". A definition that cannot be read, does
+//    not validate or widens (`resolveSkillTool` throws) never offers the tool, and the failure
+//    is not kept, so the next model call asks again.
+export default defineDynamic(async (ctx) => {
   if (await verifyPrivateConsoleSession(ctx)) return null;
-  const resolved = resolveSkillTool(manifest, "commercial", tool);
-  return "execute" in resolved ? resolved : null;
-} } });
+  try {
+    const offered: unknown = await ctx.memo(OFFERED_MEMO_KEY, async () => {
+      const { loaded } = await thisAgent(ctx.session?.id);
+      return "execute" in resolveSkillTool(manifestViewOf(loaded.definition), "commercial", tool);
+    });
+    return offered === true ? tool : null;
+  } catch (err) {
+    console.error(`commercial_who_to_contact is not offered: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+});

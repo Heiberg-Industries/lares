@@ -8,7 +8,7 @@
 //
 // THE CONTEXT SHAPES ARE EVE'S OWN. A control that depends on what the
 // FRAMEWORK passes in is proven on a real framework run, and a hand-built context proves nothing
-// about field names. The last case below is typed as eve 0.60.1's real `ApprovalContext`, so a
+// about field names. The last case below is typed as eve 1.0's real `ApprovalContext`, so a
 // renamed field fails `pnpm -C packages/agent-kit run typecheck` rather than silently reading
 // `undefined` and answering "no taint" — which is the fail-OPEN direction and the one failure
 // nobody would see.
@@ -57,7 +57,7 @@ describe("a fetch after untrusted text", () => {
   // The policy is a FUNCTION, not eve's `{request, response}` object: each role's
   // `agent/tools/catalogue.ts` re-stamps the durable descriptor by CALLING `tool.approval`, and an
   // object called as a function drops the whole resolver result (the 4/2/3-tools incident).
-  it("is a function of one context, the shape a durable descriptor re-stamps by calling it", () => {
+  it("is a function of one context, the shape a role's catalogue calls and then wraps in eve's object form", () => {
     const policy = asksAfterUntrustedText();
     expect(typeof policy).toBe("function");
     expect(policy.length).toBeLessThanOrEqual(1);
@@ -68,15 +68,14 @@ describe("a fetch after untrusted text", () => {
     expect(TAINTED_FETCH_REASON.length).toBeGreaterThan(20);
   });
 
-  // eve 0.60.1's real `ApprovalContext` — `dist/src/approval/definition.d.ts`: it extends
+  // eve 1.0's real `ApprovalContext` — `dist/src/approval/definition.d.ts`: it extends
   // `SessionContext` (`dist/src/context/session-context.d.ts`), whose `session.turn` is
   // `SessionTurn = { id, sequence }` (`dist/src/channel/types.d.ts:51-54`). `turnKeyFrom` reads
   // `session.id` + `session.turn.id`, which is what `buildCallbackContext()` fills in
   // (`dist/src/context/build-callback-context.js`).
-  it("reads the turn off eve 0.60.1's own ApprovalContext, not off a shape we invented", async () => {
+  it("reads the turn off eve 1.0's own ApprovalContext, not off a shape we invented", async () => {
     const real: ApprovalContext = {
       abortSignal: new AbortController().signal,
-      approvedTools: new Set<string>(),
       callId: "call-1",
       toolName: "read_url",
       toolInput: { url: "https://example.test/a" },
@@ -87,9 +86,6 @@ describe("a fetch after untrusted text", () => {
       },
       getSandbox: () => {
         throw new Error("no sandbox in a unit test");
-      },
-      getSkill: () => {
-        throw new Error("no skills in a unit test");
       },
     };
     expect(await asksAfterUntrustedText()(real)).toBe("not-applicable");
@@ -150,5 +146,20 @@ describe("the next page of a link already read this turn", () => {
 
   it("is a function of one context", () => {
     expect(policy.length).toBeLessThanOrEqual(1);
+  });
+
+  it("fires the same for an outside tool reached by its own name (as through eve__tool)", async () => {
+    // eve shows policies the entry's own name, never `eve__tool`; the policy needs only the turn.
+    const viaOwnName: ApprovalContext = {
+      abortSignal: new AbortController().signal,
+      callId: "call-2",
+      toolName: "registry__lookup",
+      toolInput: { q: "x" },
+      session: { id: "s10", auth: { current: null, initiator: null }, turn: { id: "t10", sequence: 0 } },
+      getSandbox: () => { throw new Error("no sandbox in a unit test"); },
+    };
+    expect(await asksAfterUntrustedText()(viaOwnName)).toBe("not-applicable");
+    taintTurn({ sessionId: "s10", turnId: "t10" }, "third_party");
+    expect(await asksAfterUntrustedText()(viaOwnName)).toBe("user-approval");
   });
 });

@@ -206,8 +206,9 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
     if (rows.length !== 1) denied();
   } else if (sessionId) {
     await requireConsoleSessionBinding(tuple,db,env);
-    // A reset irrevocably retires authority even if the framework then fails to reset.
-    if (new URL(request.url).pathname.endsWith('/reset')) await retireConsoleSession(tuple,db,env);
+    // Ending a conversation irrevocably retires authority even if the framework then fails to end it.
+    // eve 1.0 serves `/end`; it still serves `/reset` for the same control, so both retire the binding.
+    if (/\/(?:end|reset)$/.test(new URL(request.url).pathname)) await retireConsoleSession(tuple,db,env);
   } else if (new URL(request.url).pathname.endsWith('/eve/v1/session') && request.method === 'POST' && purpose === 'human') {
     // Message-free creation cannot bind yet: the proxy will bind its returned session id.
     await authorityTransaction(db,async client=>{
@@ -217,9 +218,9 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
   } else denied();
   if (request.method === 'POST' && /\/session(?:\/[^/]+)?$/.test(new URL(request.url).pathname)) {
     const rawBody = await request.clone().text();
-    const body = (rawBody ? JSON.parse(rawBody) : {}) as {message?:unknown;inputResponses?:unknown};
-    if (body.message !== undefined && body.inputResponses !== undefined) denied();
-    const expected = body.inputResponses !== undefined ? (purpose!.startsWith('legacy-') ? 'legacy-resolver' : 'resolver') : 'human';
+    const body = (rawBody ? JSON.parse(rawBody) : {}) as {message?:unknown;answers?:unknown};
+    if (body.message !== undefined && body.answers !== undefined) denied();
+    const expected = body.answers !== undefined ? (purpose!.startsWith('legacy-') ? 'legacy-resolver' : 'resolver') : 'human';
     if (purpose !== expected) denied();
   }
   if(purpose==='resolver'){
@@ -229,14 +230,14 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
       const member=await currentMember(client as never,memberId!);if(!member)denied();
       await client.query('SELECT id FROM orgs WHERE id=$1 FOR SHARE',[member!.organisationId]);
       const locked=await currentMember(client as never,memberId!,{lock:'share'});if(!locked||locked.organisationId!==member!.organisationId)denied();
-      const card=await exactCardForRequest(client,{requestId:answer.requestId,agent:own!.name,incarnation:own!.incarnation,sessionId:sessionId!,memberId:memberId!,admissionNonce:nonce!});
+      const card=await exactCardForRequest(client,{requestId:answer.interactionId,agent:own!.name,incarnation:own!.incarnation,sessionId:sessionId!,memberId:memberId!,admissionNonce:nonce!});
       if(card){
         // A settled or spent card takes no further answer. Eve would otherwise replay it to the model.
         // Only a repeated approve may reach an approved card, in case its first attempt was lost.
         const open=!card.used&&(card.outcome===null||(answer.optionId==='approve'&&card.outcome==='approved'&&card.resolvedByMemberId===memberId));
         if(!open||(answer.optionId==='approve'&&!card.alive))denied();
       }else{
-        const current=await personalActionForRequest(client,{requestId:answer.requestId,memberId:memberId!,agentId:own!.name,sessionId:sessionId!});
+        const current=await personalActionForRequest(client,{requestId:answer.interactionId,memberId:memberId!,agentId:own!.name,sessionId:sessionId!});
         if(current.reference.selection.incarnation!==own!.incarnation||(answer.optionId==='approve'&&!current.alive))denied();
       }
       await requireConsoleSessionBinding(tuple,client,env);
@@ -245,8 +246,8 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
     // Exact cards carry the original admission, which their response and execution checks compare
     // with the session initiator. Personal mail deliberately carries the resolver identity only.
     return exact
-      ? {lares_member_id:memberId!,lares_admission_nonce:nonce!,lares_purpose:'resolver',lares_resume_request_id:answer.requestId,lares_resume_option:answer.optionId}
-      : {lares_resolver_member_id:memberId!,lares_purpose:'resolver',lares_resume_request_id:answer.requestId,lares_resume_option:answer.optionId};
+      ? {lares_member_id:memberId!,lares_admission_nonce:nonce!,lares_purpose:'resolver',lares_resume_request_id:answer.interactionId,lares_resume_option:answer.optionId}
+      : {lares_resolver_member_id:memberId!,lares_purpose:'resolver',lares_resume_request_id:answer.interactionId,lares_resume_option:answer.optionId};
   }
   return purpose!.startsWith('legacy-')
     ? {lares_resolver_member_id:memberId!,lares_purpose:purpose!}

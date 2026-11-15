@@ -19,27 +19,42 @@ import type { Member } from "@lares/agent-kit/authority-contract";
  *   2. that agent's live conversations, from the `agent_conversations` projection the agents write
  *      themselves (`@lares/agent-kit/conversation-control`; a schedule's session joins it once it
  *      asks for input);
- *   3. each conversation's own event stream, read through eve's supported route
- *      `GET /eve/v1/session/<id>/stream?includeTailIndex=1` on the agent's own HTTP door. With the
- *      tail index requested, eve sends the events written so far and closes the stream (the
- *      `streamEventLimit` in its `eve-channel/request.js`); the body is also byte-capped, and the
- *      whole list has a deadline. A `tool-approval` in `input.requested` with no `input.resolved`
- *      for its request id is still waiting.
+ *   3. each conversation's own recorded stream, read through eve's supported route
+ *      `GET /eve/v1/session/<id>/stream?includeTailIndex=1&follow=false` on the agent's own HTTP
+ *      door — the same bounded read eve's own client makes (`snapshot()` in its
+ *      `client/session.js`): eve sends the lines recorded so far and closes the stream
+ *      (`createSessionStreamResponse` in its `eve-channel/request.js`). The body is also
+ *      byte-capped, and the whole list has a deadline.
+ *
+ * WHAT THE STREAM IS (stream version 27; `readStreamLines` below). Newline-delimited JSON. One
+ * stored LINE is `{ at, facts: [...] }`: every event one state change produced, with the time it
+ * was written. An event is `{ type, scope?, data }` and is placed by its line and its index in
+ * that line, not by an id. Lines `{ progress }` are previews of text still being written, and
+ * lines `{ "$eve": ... }` are the route's own heartbeat and position marks; neither is recorded
+ * history. A card is `interaction.opened` with `request.kind: "approval"`; the tool it asks about
+ * is the `call.requested` its `subject.callId` names. It is still waiting while there is no
+ * `interaction.settled` for its interaction id, its call has not settled, and the session has not
+ * ended.
+ *
+ * A CONVERSATION THIS CONSOLE CANNOT READ IS SKIPPED, with one log line and no error on the page:
+ * a stream that is not version 27, a record written in an earlier format, and a conversation the
+ * agent no longer serves (HTTP 409 or 410). Every framework upgrade ends the conversations that
+ * were open, and an ended conversation can act on no answer, so there is nothing in it to decide.
  *
  * HOW AN APPROVAL IS DECIDED: through the same door, the same way web chat answers its own cards —
- * `POST /eve/v1/session/<id>` with `{ inputResponses: [{ requestId, optionId }] }`, the route
- * password, and `x-lares-member` naming the signed-in owner. eve's door resumes the session by its
- * durable id whatever channel opened it, its approval coordinator settles the request with the
- * owner's `lares-console` identity, and the tool's own approver check accepts exactly that owner
- * (`services/chief-of-staff/tests/console-decides-approval.test.ts` runs it).
+ * `POST /eve/v1/session/<id>` with `{ answers: [{ interactionId, optionId }] }` where `optionId`
+ * is `"approve"` or `"deny"`, the route password, and `x-lares-member` naming the signed-in
+ * owner. eve's door resumes the session by its durable id whatever channel opened it, and the
+ * tool's own approver check accepts exactly that owner
+ * (`services/chief-of-staff/tests/console-decides-approval.test.ts` runs it). Whether a person
+ * decided is read from the interaction's own `outcome`: `accepted` or `declined` is a decision;
+ * anything else (withdrawn, interrupted, expired, ...) means nobody decided, and is never reported
+ * as an approval.
  *
- * WHERE THE REPLY GOES. eve stores a session's channel with the session — its adapter kind and
- * state (`ChannelKey` in `dist/src/runtime/sessions/runtime-context-keys.js`) — and every event of
- * a turn, `approval.settled` and `message.completed` included, is handed to THAT adapter
- * (`callAdapterEventHandler` with the session context's `ChannelKey`, in
- * `dist/src/execution/session/event-sink.js`). The HTTP door that carried the answer only adds a
- * delivery id. So the Telegram or Slack card's edit, and the agent's reply, happen in the
- * conversation the approval came from.
+ * WHERE THE REPLY GOES. A session keeps the channel it was opened on, and a turn's events are
+ * handed to that channel. The HTTP door that carried the answer only adds a delivery. So the
+ * Telegram or Slack card's edit, and the agent's reply, happen in the conversation the approval
+ * came from.
  *
  * Server only: it holds the route password. Nothing here is sent to a browser except the items.
  */
@@ -81,7 +96,7 @@ export interface WaitingItem {
   readonly actions: readonly WaitingAction[];
   /** A sentence shown above the actions when something limits them (an expired approval). */
   readonly note?: string;
-  /** Kind-specific key a link may select the item by (for an approval: eve's request id). */
+  /** Kind-specific key a link may select the item by (for an approval: eve's interaction id). */
   readonly ref: string;
 }
 
@@ -153,7 +168,9 @@ function parseItemId(id: string): { kind: WaitingKind; key: string } | null {
 
 const AGENT_NAME = /^[a-z][a-z0-9-]{1,30}$/;
 const SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/;
-const REQUEST_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
+/** eve mints a short random id for a card of the session's own, and `<child session>/<id>` for one
+ *  a sub-agent relays. It is only ever compared, or sent in a JSON body. */
+const INTERACTION_ID = /^[A-Za-z0-9_.:\/-]{1,200}$/;
 const MEMBER_SHAPE = /^[^\s,;]+@[^\s,;]+$/;
 
 /** Roles the engine no longer ships. The keeper skips an agent whose definition (or applied
@@ -244,7 +261,7 @@ interface Conversation {
   readonly door: string;
 }
 
-/** Live conversations, newest first. A week back: a card older than a day can only be cancelled,
+/** Live conversations, newest first. A week back: a card older than a day can only be denied,
  *  and one older than that is not worth a page load. */
 async function conversations(agent: OwnedAgent, deps: WaitingDeps, only?: string): Promise<Conversation[]> {
   const { rows } = await deps.query(
@@ -296,20 +313,86 @@ const MAX_STREAM_BYTES = 8 * 1024 * 1024;
 /** The whole list call, every agent and session together. Past it the page shows what it has and
  *  names the agents it did not finish. */
 export const LIST_DEADLINE_MS = 15000;
-/** After an answer, only the newest events can hold its outcome. eve accepts a negative
- *  `startIndex` as "this many from the end" (`streamEventLimit` in its `eve-channel/request.js`). */
+/** After an answer, only the newest lines can hold its outcome. eve accepts a negative
+ *  `startIndex` as "this many LINES from the end" (`parseStartIndex` and
+ *  `createSessionStreamResponse` in its `eve-channel/request.js`). */
 const OUTCOME_TAIL = -500;
+/** The one stream format this console reads (`x-eve-stream-version`). */
+const STREAM_VERSION = "27";
+
+/** One recorded event: its type and payload, when its line was written, and where it sits. */
+export interface StreamFact {
+  readonly type: string;
+  readonly data: Record<string, unknown>;
+  /** The time of the line that holds it, ISO 8601, or null when the line carried none. */
+  readonly at: string | null;
+  /** The stored line (zero-based, counted from the start of the session) and the index in it. */
+  readonly position: { readonly line: number; readonly index: number };
+}
+
+/** Why a conversation was left out of the list. Fixed words only: this reaches the log. */
+type SkipReason =
+  | "its record was written in an earlier format"
+  | "its stream is not a version this console reads"
+  | "the agent no longer serves it (HTTP 409)"
+  | "its record is no longer kept (HTTP 410)";
+
+/** A conversation this console cannot read. Not a failure of the agent: the conversation is left
+ *  out, with a log line, and the agent's other conversations are still read. */
+class SkippedConversation extends Error {
+  constructor(readonly reason: SkipReason) {
+    super(reason);
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
 /**
- * The session's events, through eve's own stream route: all of them, or with `startIndex` < 0 only
- * that many from the end. The body is read through `bounded` (`lib/chat-proxy.ts`), so a huge or
- * never-ending stream costs at most `MAX_STREAM_BYTES` and `READ_TIMEOUT_MS` (or less, when
- * `signal` — the list's overall deadline — fires first). Throws when the agent does not answer.
+ * The recorded events in one response body of eve's stream route, in order. Pure. EXPORTED for tests.
  *
- * Why the list does NOT read only the tail: a pending approval stays answerable after later turns
- * (eve's sessions doc: "A later structured inputResponses answer keyed by its requestId still
- * resumes the original tool call, even after intervening turns"), so it can sit anywhere.
+ * `startLine` is the position of the first stored line the response sends. Each stored line —
+ * `{ at, facts }` or `{ progress }` — moves the position on by one; a `{ "$eve": "position", next }`
+ * mark says the response skipped ahead to `next`. Only facts are returned: a progress line is a
+ * preview, and a later fact carries the finished value.
+ *
+ * A line shaped like an event of an earlier stream format (an object with its own `type`) means
+ * the whole record is one this console cannot read, so it throws rather than guess at half of it.
+ * A line that is not JSON at all is not a card; the rest of the stream still counts.
  */
+export function readStreamLines(text: string, startLine = 0): StreamFact[] {
+  const facts: StreamFact[] = [];
+  let line = startLine;
+  for (const raw of text.split("\n")) {
+    if (raw.trim() === "") continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!isRecord(value)) continue;
+    if (typeof value.$eve === "string") {
+      if (value.$eve === "position" && typeof value.next === "number" && Number.isSafeInteger(value.next) && value.next > line) line = value.next;
+      continue;
+    }
+    if (Array.isArray(value.facts) && typeof value.at === "string") {
+      (value.facts as unknown[]).forEach((fact, index) => {
+        if (!isRecord(fact) || typeof fact.type !== "string") return;
+        facts.push({ type: fact.type, data: isRecord(fact.data) ? fact.data : {}, at: value.at as string, position: { line, index } });
+      });
+      line += 1;
+      continue;
+    }
+    if (isRecord(value.progress)) {
+      line += 1;
+      continue;
+    }
+    if (typeof value.type === "string") throw new SkippedConversation("its record was written in an earlier format");
+    line += 1;
+  }
+  return facts;
+}
+
 /** Recheck a bound console audience for every stream/decision. Native conversations retain
  * their existing applied-owner checks and get resolver metadata, never a fabricated binding. */
 async function waitingHeaders(agent: OwnedAgent, sessionId: string, member: string, door: string, purpose: "read" | "resolver", deps: WaitingDeps): Promise<Record<string,string>> {
@@ -329,118 +412,153 @@ async function waitingHeaders(agent: OwnedAgent, sessionId: string, member: stri
   return {[MEMBER_HEADER]:member,[CONSOLE_MEMBER_ID_HEADER]:stable.id,[CONSOLE_ADMISSION_HEADER]:nonce,[CONSOLE_PURPOSE_HEADER]:requestPurpose};
 }
 
-async function sessionEvents(
+/**
+ * The session's recorded events, through eve's own stream route: all of them, or with
+ * `startIndex` < 0 only that many lines from the end. The body is read through `bounded`
+ * (`lib/chat-proxy.ts`), so a huge or never-ending stream costs at most `MAX_STREAM_BYTES` and
+ * `READ_TIMEOUT_MS` (or less, when `signal` — the list's overall deadline — fires first). Throws
+ * `AgentReadError` when the agent does not answer, and `SkippedConversation` when it answers with
+ * a conversation this console cannot read.
+ *
+ * Why the list does NOT read only the tail: a pending approval stays answerable after later turns,
+ * so it can sit anywhere in the record.
+ */
+async function sessionFacts(
   agent: OwnedAgent,
   sessionId: string,
   password: string,
   deps: WaitingDeps,
   opts: { member: string; door: string; startIndex?: number; signal?: AbortSignal },
-): Promise<unknown[]> {
+): Promise<StreamFact[]> {
   const signal = opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]) : AbortSignal.timeout(READ_TIMEOUT_MS);
   const start = opts.startIndex === undefined ? "" : `&startIndex=${opts.startIndex}`;
   let text: string;
+  let startLine = 0;
   try {
     const response = await deps.fetch(
-      `http://${agent.address}:3000/eve/v1/session/${sessionId}/stream?includeTailIndex=1${start}`,
+      `http://${agent.address}:3000/eve/v1/session/${sessionId}/stream?includeTailIndex=1&follow=false${start}`,
       { method: "GET", headers: { authorization: basicAuth(password), accept: "application/x-ndjson", ...await waitingHeaders(agent,sessionId,opts.member,opts.door,"read",deps) }, redirect: "error", signal },
     );
     if (response.status === 404) {
       await response.body?.cancel().catch(() => {});
       return [];
     }
+    if (response.status === 409 || response.status === 410) {
+      await response.body?.cancel().catch(() => {});
+      throw new SkippedConversation(response.status === 409 ? "the agent no longer serves it (HTTP 409)" : "its record is no longer kept (HTTP 410)");
+    }
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
       throw new AgentReadError(kindOfStatus(response.status), response.status);
     }
+    // Anything but the one format this console reads is left alone: an agent on another framework
+    // version writes other event names, and reading them as if they were these would show nothing
+    // or, worse, the wrong thing.
+    if (response.headers.get("x-eve-stream-version") !== STREAM_VERSION) {
+      await response.body?.cancel().catch(() => {});
+      throw new SkippedConversation("its stream is not a version this console reads");
+    }
+    const tail = response.headers.get("x-eve-stream-tail-index");
+    if (opts.startIndex !== undefined && opts.startIndex >= 0) startLine = opts.startIndex;
+    else if (opts.startIndex !== undefined && tail !== null && /^-?\d{1,15}$/.test(tail)) startLine = Math.max(0, Number(tail) + 1 + opts.startIndex);
     text = new TextDecoder().decode(await bounded(response.body, MAX_STREAM_BYTES, signal));
   } catch (error) {
-    if (error instanceof AgentReadError) throw error;
+    if (error instanceof AgentReadError || error instanceof SkippedConversation) throw error;
     // Our own deadline (or the page's) fired: slow, whatever the runtime called the error.
     if (signal.aborted) throw new AgentReadError("timeout");
     const { kind, status } = classifyReadFailure(error);
     throw new AgentReadError(kind, status);
   }
-  const events: unknown[] = [];
-  for (const line of text.split("\n")) {
-    if (line.trim() === "") continue; // eve's heartbeat is a blank line
-    try {
-      events.push(JSON.parse(line));
-    } catch {
-      // A line that is not an event is not a card; the rest of the stream still counts.
-    }
-  }
-  return events;
+  return readStreamLines(text, startLine);
 }
 
 // ── Approvals ───────────────────────────────────────────────────────────────────────────────────
 
 interface PendingApproval {
-  readonly requestId: string;
+  /** eve's id for the card. The answer names it. */
+  readonly interactionId: string;
   readonly prompt: string;
   readonly toolName: string;
+  /** The call whose `call.settled` says how the approved action went, or "" when this session's
+   *  record does not hold that call (a card relayed from a sub-agent). */
   readonly callId: string;
   readonly input: unknown;
   readonly options: readonly { id: string; label: string }[];
   readonly at: string | null;
 }
 
+/** How a card ended. `approved` and `cancelled` are a person's decision (eve's `accepted` and
+ *  `declined`); `other` is every ending in which nobody decided. */
 type Resolution = "approved" | "cancelled" | "other";
 
-/** What a tool call came back as, from eve's `action.result` (`status` and, on failure, its
- *  `error.message` — e.g. the agent's own "approval refused: … is not an allowed approver"). */
+/** How a call ended, from eve's `call.settled`: its `outcome` and, on failure, its
+ *  `error.message` — e.g. the agent's own "approval refused: … is not an allowed approver". */
 interface ActionOutcome {
-  readonly status: "completed" | "failed" | "rejected";
+  readonly status: string;
   readonly error: string | null;
 }
 
-/** What is still waiting in one session, what was already settled (by request id), and how tool
- *  calls came back (by call id). Pure. */
-export function readApprovals(events: readonly unknown[]): {
+/** What is still waiting in one session, how cards ended (by interaction id), and how calls ended
+ *  (by call id). Pure: it reads only the facts it is given. */
+export function readApprovals(facts: readonly unknown[]): {
   pending: PendingApproval[];
   resolved: Map<string, Resolution>;
   results: Map<string, ActionOutcome>;
 } {
-  const asked = new Map<string, PendingApproval>();
+  const calls = new Map<string, { name: string; input: unknown }>();
+  const asked = new Map<string, { approval: Omit<PendingApproval, "toolName" | "input">; subjectCallId: string; relayed: { name: string; input: unknown } | null }>();
   const resolved = new Map<string, Resolution>();
   const results = new Map<string, ActionOutcome>();
-  for (const event of events) {
-    if (event === null || typeof event !== "object") continue;
-    const e = event as { type?: unknown; data?: Record<string, unknown>; meta?: { at?: unknown } };
-    if (e.type === "input.requested" && Array.isArray(e.data?.requests)) {
-      for (const r of e.data.requests as Record<string, unknown>[]) {
-        if (r?.kind !== "tool-approval" || typeof r.requestId !== "string" || !REQUEST_ID.test(r.requestId)) continue;
-        const action = (r.action ?? {}) as { toolName?: unknown; callId?: unknown; input?: unknown };
-        const options = Array.isArray(r.options)
-          ? (r.options as { id?: unknown; label?: unknown }[])
-              .filter((o) => typeof o?.id === "string")
-              .map((o) => ({ id: o.id as string, label: typeof o.label === "string" ? o.label : (o.id as string) }))
-          : [];
-        asked.set(r.requestId, {
-          requestId: r.requestId,
-          prompt: typeof r.prompt === "string" ? r.prompt : "",
-          toolName: typeof action.toolName === "string" ? action.toolName : "",
-          callId: typeof action.callId === "string" ? action.callId : "",
-          input: action.input,
+  let ended = false;
+  for (const fact of facts) {
+    if (!isRecord(fact) || !isRecord(fact.data)) continue;
+    const data = fact.data;
+    if (fact.type === "call.requested" && typeof data.callId === "string") {
+      const capability = isRecord(data.capability) ? data.capability : {};
+      calls.set(data.callId, { name: typeof capability.name === "string" ? capability.name : "", input: data.input });
+    }
+    if (fact.type === "interaction.opened" && isRecord(data.request)) {
+      const request = data.request;
+      if (request.kind !== "approval" || typeof data.interactionId !== "string" || !INTERACTION_ID.test(data.interactionId)) continue;
+      const options = Array.isArray(request.options)
+        ? (request.options as { id?: unknown; label?: unknown }[])
+            .filter((o) => typeof o?.id === "string")
+            .map((o) => ({ id: o.id as string, label: typeof o.label === "string" ? o.label : (o.id as string) }))
+        : [];
+      const subjectCallId = isRecord(data.subject) && typeof data.subject.callId === "string" ? data.subject.callId : "";
+      // A card a sub-agent relays names the call it asks about itself (`origin.call`); this
+      // session's own record holds only the call that delegated to the sub-agent.
+      const origin = isRecord(data.origin) && isRecord(data.origin.call) ? data.origin.call : null;
+      asked.set(data.interactionId, {
+        approval: {
+          interactionId: data.interactionId,
+          prompt: typeof request.prompt === "string" ? request.prompt : "",
+          callId: origin ? "" : subjectCallId,
           options,
-          at: typeof e.meta?.at === "string" ? e.meta.at : null,
-        });
-      }
+          at: typeof fact.at === "string" ? fact.at : null,
+        },
+        subjectCallId,
+        relayed: origin ? { name: typeof origin.name === "string" ? origin.name : "", input: origin.input } : null,
+      });
     }
-    if (e.type === "input.resolved" && Array.isArray(e.data?.resolutions)) {
-      for (const r of e.data.resolutions as { requestId?: unknown; outcome?: unknown }[]) {
-        if (typeof r?.requestId !== "string") continue;
-        resolved.set(r.requestId, r.outcome === "approved" ? "approved" : r.outcome === "denied" ? "cancelled" : "other");
-      }
+    if (fact.type === "interaction.settled" && typeof data.interactionId === "string") {
+      resolved.set(data.interactionId, data.outcome === "accepted" ? "approved" : data.outcome === "declined" ? "cancelled" : "other");
     }
-    if (e.type === "action.result") {
-      const d = e.data as { status?: unknown; error?: { message?: unknown }; result?: { callId?: unknown } } | undefined;
-      const status = d?.status;
-      if (typeof d?.result?.callId === "string" && (status === "completed" || status === "failed" || status === "rejected")) {
-        results.set(d.result.callId, { status, error: typeof d.error?.message === "string" ? d.error.message : null });
-      }
+    if (fact.type === "call.settled" && typeof data.callId === "string" && typeof data.outcome === "string") {
+      results.set(data.callId, { status: data.outcome, error: isRecord(data.error) && typeof data.error.message === "string" ? data.error.message : null });
     }
+    if (fact.type === "session.ended") ended = true;
   }
-  return { pending: [...asked.values()].filter((a) => !resolved.has(a.requestId)), resolved, results };
+  // Waiting means: asked, not settled, its call not finished, and a session still there to act.
+  const pending = ended
+    ? []
+    : [...asked.values()]
+        .filter((a) => !resolved.has(a.approval.interactionId) && !(a.subjectCallId !== "" && results.has(a.subjectCallId)))
+        .map((a): PendingApproval => {
+          const call = a.relayed ?? calls.get(a.subjectCallId);
+          return { ...a.approval, toolName: call?.name ?? "", input: call?.input };
+        });
+  return { pending, resolved, results };
 }
 
 function isExpired(approval: PendingApproval, now: number): boolean {
@@ -449,7 +567,7 @@ function isExpired(approval: PendingApproval, now: number): boolean {
 }
 
 export const EXPIRED_NOTE =
-  "This was asked more than 24 hours ago, so the agent will no longer act on an approval. Cancel it, or ask the agent again for a fresh one.";
+  "This was asked more than 24 hours ago, so the agent will no longer act on an approval. Deny it, or ask the agent again for a fresh one.";
 
 function titleOf(prompt: string, toolName: string): string {
   const first = prompt.split("\n").find((line) => line.trim() !== "")?.trim() ?? "";
@@ -465,11 +583,13 @@ function approvalItem(agent: OwnedAgent, conversation: Conversation, approval: P
     { format: "text", label: "What the agent asks", text: approval.prompt },
     ...approvalArguments(approval.input).map((field): WaitingBody => ({ format: "text", label: field.key, text: field.value })),
   ];
+  // The two answers a card has. An option this page does not know is not offered: `decide` below
+  // would refuse it, and a button that cannot work is worse than no button.
   const actions = approval.options
-    .filter((o) => !(expired && o.id === "approve"))
+    .filter((o) => (o.id === "approve" || o.id === "deny") && !(expired && o.id === "approve"))
     .map((o): WaitingAction => ({ id: o.id, label: o.label, tone: o.id === "approve" ? "primary" : "neutral" }));
   return {
-    id: itemId("approval", [agent.name, conversation.sessionId, approval.requestId]),
+    id: itemId("approval", [agent.name, conversation.sessionId, approval.interactionId]),
     kind: "approval",
     agent: agent.name,
     channel: channelOf(conversation.door),
@@ -478,7 +598,7 @@ function approvalItem(agent: OwnedAgent, conversation: Conversation, approval: P
     body,
     actions,
     ...(expired ? { note: EXPIRED_NOTE } : {}),
-    ref: approval.requestId,
+    ref: approval.interactionId,
   };
 }
 
@@ -490,6 +610,12 @@ async function eachLimited<T>(items: readonly T[], limit: number, fn: (item: T) 
       while (next < items.length) await fn(items[next++]!);
     }),
   );
+}
+
+/** One console log line per conversation left out: the agent's name and a fixed reason. No session
+ *  id, header or response body reaches it. */
+function logSkipped(deps: WaitingDeps, agent: string, reason: SkipReason): void {
+  (deps.log ?? ((l: string) => console.warn(l)))(`[waiting] skipped a conversation of agent ${agent}: ${reason}`);
 }
 
 /** One console log line per unreadable agent: its name and the kind of failure (and the HTTP
@@ -532,9 +658,15 @@ const approvals: WaitingSource = {
         await eachLimited(live, 6, async (conversation) => {
           if (failed || signal.aborted) return;
           try {
-            const { pending } = readApprovals(await sessionEvents(agent, conversation.sessionId, password, deps, { signal, member, door:conversation.door }));
+            const { pending } = readApprovals(await sessionFacts(agent, conversation.sessionId, password, deps, { signal, member, door:conversation.door }));
             for (const approval of pending) items.push(approvalItem(agent, conversation, approval, now));
           } catch (error) {
+            // A conversation this console cannot read (an older record, say) is left out and
+            // logged. It is not the agent failing: its other conversations are still read.
+            if (error instanceof SkippedConversation) {
+              logSkipped(deps, agent.name, error.reason);
+              return;
+            }
             if (failed) return;
             failed = true;
             unreadable.set(agent.name, classifyReadFailure(error).kind);
@@ -569,8 +701,8 @@ const approvals: WaitingSource = {
     if (!Array.isArray(parts) || parts.length !== 3 || !parts.every((p) => typeof p === "string")) {
       return { ok: false, reason: "gone", message: "That item could not be found." };
     }
-    const [name, sessionId, requestId] = parts as [string, string, string];
-    if (!AGENT_NAME.test(name) || !SESSION_ID.test(sessionId) || !REQUEST_ID.test(requestId) || !["approve", "cancel"].includes(actionId)) {
+    const [name, sessionId, interactionId] = parts as [string, string, string];
+    if (!AGENT_NAME.test(name) || !SESSION_ID.test(sessionId) || !INTERACTION_ID.test(interactionId) || !["approve", "deny"].includes(actionId)) {
       return { ok: false, reason: "gone", message: "That item could not be found." };
     }
     const password = deps.routePassword();
@@ -587,16 +719,21 @@ const approvals: WaitingSource = {
     // request that is no longer pending would reach the agent as a stray message, so it is not sent.
     let state: ReturnType<typeof readApprovals>;
     try {
-      state = readApprovals(await sessionEvents(agent, sessionId, password, deps, {member,door:conversation.door}));
-    } catch {
+      state = readApprovals(await sessionFacts(agent, sessionId, password, deps, {member,door:conversation.door}));
+    } catch (error) {
+      if (error instanceof SkippedConversation) {
+        logSkipped(deps, agent.name, error.reason);
+        return { ok: false, reason: "gone", message: "That conversation can no longer be read, so there is nothing left to decide. Nothing was sent." };
+      }
       return { ok: false, reason: "unavailable", message: `${agent.name} did not answer. Nothing was sent; try again in a moment.` };
     }
-    const earlier = state.resolved.get(requestId);
-    if (earlier !== undefined) {
-      const how = earlier === "approved" ? "approved" : earlier === "cancelled" ? "cancelled" : "answered";
-      return { ok: false, reason: "decided-elsewhere", message: `This was already ${how} elsewhere. Nothing more was sent.` };
+    const earlier = state.resolved.get(interactionId);
+    if (earlier === "approved" || earlier === "cancelled") {
+      return { ok: false, reason: "decided-elsewhere", message: `This was already ${earlier === "approved" ? "approved" : "denied"} elsewhere. Nothing more was sent.` };
     }
-    const approval = state.pending.find((p) => p.requestId === requestId);
+    // It ended with nobody deciding (withdrawn when a message was sent instead, say).
+    if (earlier !== undefined) return { ok: false, reason: "gone", message: "This request is no longer waiting. Nothing was sent." };
+    const approval = state.pending.find((p) => p.interactionId === interactionId);
     if (!approval) return { ok: false, reason: "gone", message: "This request is no longer waiting. Nothing was sent." };
     if (!approval.options.some((o) => o.id === actionId)) return { ok: false, reason: "refused", message: "That answer is not one this request offers." };
     if (actionId === "approve" && isExpired(approval, deps.now())) return { ok: false, reason: "refused", message: EXPIRED_NOTE };
@@ -609,14 +746,20 @@ const approvals: WaitingSource = {
       response = await deps.fetch(`http://${agent.address}:3000/eve/v1/session/${sessionId}`, {
         method: "POST",
         headers: { authorization: basicAuth(password), ...await waitingHeaders(agent,sessionId,member,conversation.door,"resolver",deps), "content-type": "application/json" },
-        body: JSON.stringify({ inputResponses: [{ requestId, optionId: actionId }] }),
+        body: JSON.stringify({ answers: [{ interactionId, optionId: actionId }] }),
         redirect: "error",
         signal: AbortSignal.timeout(READ_TIMEOUT_MS),
       });
     } catch {
       return { ok: false, reason: "unavailable", message: `${agent.name} did not answer, so it is not known whether your answer arrived. Reload the page to see.` };
     }
-    if (response.status === 409) return { ok: false, reason: "gone", message: "That conversation has ended, so there is nothing left to decide." };
+    if (response.status === 409) {
+      // eve's three refusals of an answer, told apart by its stable code and worded here.
+      const code = await refusalCode(response);
+      if (code === "session_not_ready") return { ok: false, reason: "unavailable", message: `${agent.name} is not ready to take an answer yet. Nothing was decided; try again in a moment.` };
+      if (code === "session_stranded") return { ok: false, reason: "gone", message: "That conversation ended with an update, so there is nothing left to decide." };
+      return { ok: false, reason: "gone", message: "That conversation has ended, so there is nothing left to decide." };
+    }
     if (!response.ok) return { ok: false, reason: "unavailable", message: `${agent.name} refused the answer (HTTP ${response.status}). Nothing was decided.` };
 
     // eve accepts at once and settles on its next step. Look a few times for what happened, so the
@@ -627,12 +770,12 @@ const approvals: WaitingSource = {
       await deps.sleep(750);
       let seen: ReturnType<typeof readApprovals>;
       try {
-        seen = readApprovals(await sessionEvents(agent, sessionId, password, deps, { startIndex: OUTCOME_TAIL, member, door:conversation.door }));
+        seen = readApprovals(await sessionFacts(agent, sessionId, password, deps, { startIndex: OUTCOME_TAIL, member, door:conversation.door }));
       } catch {
         break;
       }
-      const outcome = seen.resolved.get(requestId);
-      if (outcome === "cancelled") return { ok: true, outcome: "cancelled", message: `Cancelled. ${agent.name} will not do it.` };
+      const outcome = seen.resolved.get(interactionId);
+      if (outcome === "cancelled") return { ok: true, outcome: "cancelled", message: `Denied. ${agent.name} will not do it.` };
       if (outcome === "other") return { ok: false, reason: "refused", message: `${agent.name} did not accept the answer. Nothing was done.` };
       if (outcome === "approved") approved = true;
       const result = approval.callId === "" ? undefined : seen.results.get(approval.callId);
@@ -653,6 +796,16 @@ const approvals: WaitingSource = {
     return { ok: true, outcome: "sent", message: `Your answer reached ${agent.name}; it has not confirmed it yet. Reload in a moment to see.` };
   },
 };
+
+/** The `code` of eve's JSON refusal, or null. Reads at most a few kilobytes and never throws. */
+async function refusalCode(response: Response): Promise<string | null> {
+  try {
+    const body = JSON.parse(new TextDecoder().decode(await bounded(response.body, 4096, AbortSignal.timeout(READ_TIMEOUT_MS)))) as unknown;
+    return isRecord(body) && typeof body.code === "string" ? body.code : null;
+  } catch {
+    return null;
+  }
+}
 
 const proposals: WaitingSource = {
   list: (_member, deps) => listProposals(deps, (parts) => itemId("proposal", parts)),

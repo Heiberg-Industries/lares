@@ -37,6 +37,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { resolveDefinition, type Resolved } from "@lares/agent-kit/definition-cache";
+import { toolSourcesFor } from "@lares/agent-kit/definition-validate";
 import { deployedToolsFor } from "@lares/agent-kit/persona";
 
 import manifest from "../agent.json";
@@ -130,6 +131,8 @@ async function resolveFresh(): Promise<Resolved> {
     serviceDir,
     roleMd: await readFile(roleMdPath(serviceDir), "utf8"),
     deployedTools: deployedToolsFor(serviceDir),
+    // Two tools under one name is an invalid definition like any other (definition-validate.ts).
+    toolSources: toolSourcesFor(serviceDir),
     // No onInvalid: this service ships no signal emitter, and one is not being added here.
     // `resolveDefinition`'s own console.error is the visible half.
   });

@@ -1,0 +1,14 @@
+{
+  // eve's `extension build` types this package with `tsc`. With no config of its own it passes the
+  // source files on the command line, and the compiler then refuses to run because it finds the
+  // parent package's tsconfig.json. A config here makes eve pass `--project` instead.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["extension/**/*.ts"]
+}

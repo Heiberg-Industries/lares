@@ -1,18 +1,27 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
-import type { DynamicResolveContext } from 'eve/tools';
+import type { SessionFrame } from 'eve/tools';
 import { modelPurposeRequest } from './model-purpose-client.js';
 import { gatewayRawRequestHash, type GatewayModelPath } from './gateway-admission-protocol.js';
 
 export const MODEL_INVOCATION_REFUSED = 'A fresh trusted model invocation is required';
 
-type Session = DynamicResolveContext['session'];
+/** The session as eve 1.0 hands it to a dynamic `model` (`SessionFrame['session']`: id and both
+ * authentications, never turn state). */
+export type ModelInvocationSession = SessionFrame['session'];
+type Session = ModelInvocationSession;
 type Frozen<T> = T extends object ? { readonly [K in keyof T]: Frozen<T[K]> } : T;
 
-/** Coordinates come from Eve's actual step.started event, not its resolver context.
+/** One model call's coordinates and the session that asked for it.
+ *
+ * `event` keeps the shape and the `step.started` name it had on eve 0.60.1, because that exact
+ * object is what Keeper authenticates (`step.claim`) and what the budget admission store keys
+ * on. eve 1.0 has no `step.started` event and passes a dynamic `model` no event at all, so the
+ * resolver in `definition-model.ts` now BUILDS this record from eve's own session view
+ * (`modelStepCoordinates`); it is a Lares coordinate record, not a framework event.
  * The session snapshot preserves initiator and current authentication separately, including
- * an exact approval resume. Eve can emit the exact empty turnId after a pending action
- * settles; preserve it with its actual sequence/stepIndex instead of inventing a turn.
+ * an exact approval resume. An empty turnId is still accepted here with its actual
+ * sequence/stepIndex (eve 0.60.1 emitted one after a pending action settled; eve 1.0 does not).
  * This object is server context, never model input or telemetry. */
 export interface ModelInvocation {
   readonly event: { readonly type: 'step.started'; readonly data: {
@@ -24,7 +33,9 @@ export interface ModelInvocation {
 interface ModelPurposeClaim { readonly claim: string; readonly expiresAt: number }
 interface Claim { entered: boolean; dispatched: boolean; purpose?: ModelPurposeClaim; purposeActive?: () => boolean; purposeRequest?: Promise<void>; consumeRequested?: boolean; intentPrepared?: boolean }
 const claims = new WeakMap<ModelInvocation, Claim>();
-// A repeated resolver event must share its burned claim even if it constructs a new model.
+// A repeated selection of the same coordinates must share its burned claim even if it constructs
+// a new model. eve 1.0 can run the resolver more than once for one model call (a fresh process
+// rebuilding its values, a development double-check); every such run lands on the same entry.
 // Never evict tombstones and silently rearm an old event. This bounded process-local guard
 // refuses new selections when full; durable admission owns restart/erasure-safe suppression.
 const stepClaims = new Map<string, Claim>();
@@ -41,8 +52,9 @@ function freeze<T>(value: T): Frozen<T> {
 }
 
 /** Called only by the trusted dynamic model resolver after authority verification. Shape
- * validation does not authenticate a session. Never construct coordinates from counters,
- * client claims, prior selections, or a fallback when the framework event is absent. */
+ * validation does not authenticate a session. Never construct coordinates from counters of our
+ * own, client claims, prior selections, or a fallback: on eve 1.0 they are read off the
+ * framework's session view by `modelStepCoordinates`, which refuses when it cannot. */
 export function captureModelInvocation(event: unknown, session: Session | undefined, alias: string): ModelInvocation {
   const e = event as { type?: unknown; data?: { turnId?: unknown; sequence?: unknown; stepIndex?: unknown } } | null;
   if (e?.type !== 'step.started' || typeof e.data?.turnId !== 'string' || (e.data.turnId !== '' && !e.data.turnId.trim()) ||

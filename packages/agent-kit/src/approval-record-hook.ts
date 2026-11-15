@@ -5,21 +5,21 @@
  * owner answered. Backs `services/box/sql/001_baseline.sql` via
  * `@lares/agent-kit/approval-ledger`.
  *
- * WHY THESE TWO EVENTS. eve 0.60.1 already carries the whole ledger this hook needs, with no eve
- * patch: `input.requested` fires with one `InputRequest` per pending human-input item
- * (`node_modules/eve/dist/src/protocol/message.d.ts` `InputRequestedStreamEvent`), and a
- * `kind: "tool-approval"` request carries `action: { callId, input, kind: "tool-call", toolName }`
- * (`node_modules/eve/dist/src/shared/input.d.ts` `inputRequestSchema`) — exactly what
- * `payloadFingerprint` needs. `input.resolved` fires once eve accepts a terminal outcome
- * (`InputResolvedStreamEvent`), each resolution carrying `{ kind, outcome, requestId, response? }`
- * with `outcome: "answered" | "approved" | "denied" | "ignored" | "invalid"`
- * (`InputResolutionOutcome`). `approval.candidate` / `approval.settled` also exist but carry a
- * `responderPrincipalId` that is only ever non-null where a settlement actor exists — on Telegram
- * it is not (`auth: null`, see `services/chief-of-staff/lib/approvals.ts`'s own header) — so this
- * hook does not depend on them.
+ * WHY THESE TWO EVENTS. eve 1.0 carries the whole ledger this hook needs, with no eve patch:
+ * `interaction.opened` fires once per request for a person (`InteractionOpenedData`), and a
+ * request with `kind: "approval"` is a tool-approval card; `interaction.settled` fires once it
+ * ends, with an `outcome`. The tool name and input are not on the event: they are read from the
+ * session view the hook receives (`./approval-events.ts`), which is exactly what
+ * `payloadFingerprint` needs. `response.submitted` / `response.settled` also exist, but they say
+ * who answered, not how the card ended, so this hook does not depend on them.
  *
- * ONLY A TOOL APPROVAL IS A CARD. A `question` or `session-limit` request/resolution is not
- * recorded here at all — this table is about approvals, not every human-input round trip.
+ * WHO DECIDED. Only `accepted` (with the `approve` option) is an approval and only `declined` is
+ * a person's refusal. `withdrawn` (the person typed instead of tapping), `interrupted` (the turn
+ * was cancelled) and every other ending mean nobody decided: the ledger row is settled as
+ * `ignored`, with `answered_via` saying so, and nothing may act on it afterwards.
+ *
+ * ONLY A TOOL APPROVAL IS A CARD. A question, sign-in or budget prompt is not recorded here at
+ * all — this table is about approvals, not every human-input round trip.
  *
  * LEGACY RECORDING IS BEST-EFFORT. Bound console calls instead attach their pre-reserved
  * exact authority synchronously and propagate a failure; approving a strict row is exclusively
@@ -33,15 +33,10 @@ import { attachExactApproval, settleExactInput } from "./approval-execution.js";
 import { hasConsoleTurnAuthorityTag } from "./console-turn-authority.js";
 import { getPool } from "./db.js";
 import { payloadFingerprint, recordAnswer, recordAsk, type AskOutcome } from "./approval-ledger.js";
+import { NOBODY_DECIDED, openedApproval, settledApproval } from "./approval-events.js";
 
-/** eve's `InputResolutionOutcome` mapped onto ours. `answered` has no meaning for a tool
- *  approval (it belongs to a free-text question) and is dropped along with anything unrecognised. */
-const OUTCOME_MAP: Readonly<Record<string, AskOutcome | undefined>> = {
-  approved: "approved",
-  denied: "cancelled",
-  ignored: "ignored",
-  invalid: "invalid",
-};
+// The role hooks that sit beside this one read cards the same way; the package exports this file.
+export { openedApproval, settledApproval };
 
 let warnedOnce = false;
 function warn(where: string, err: unknown): void {
@@ -54,7 +49,7 @@ export interface ApprovalRecordDeps {
   personalRequested?: (request:{requestId:string;callId:string;input:unknown},ctx:unknown)=>Promise<void>;
   personalResolved?: (requestId:string,outcome:string,ctx:unknown)=>Promise<boolean>;
   record?: (a: { requestId: string; callId: string; agent: string; tool: string; payloadHash: string }) => void | Promise<void>;
-  answer?: (a: { requestId: string; outcome: AskOutcome }) => void | Promise<void>;
+  answer?: (a: { requestId: string; outcome: AskOutcome; answeredVia?: string }) => void | Promise<void>;
 }
 
 /**
@@ -74,76 +69,57 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
       await recordAnswer(getPool(), a);
     });
 
-  async function onInputRequested(event: unknown, ctx: unknown): Promise<void> {
+  /** A card opened: write it down (or attach its reserved authority). */
+  async function onInteractionOpened(event: unknown, ctx: unknown): Promise<void> {
     try {
-      const data = (event as { data?: unknown } | undefined)?.data;
-      const requests = (data as { requests?: unknown } | undefined)?.requests;
-      if (!Array.isArray(requests)) return;
+      const card = openedApproval(event, ctx);
+      if (card === undefined) return;
+      const requestId = card.interactionId;
+      const { callId, toolName } = card;
       const agent = typeof (ctx as { agent?: { name?: unknown } } | undefined)?.agent?.name === "string"
         ? (ctx as { agent: { name: string } }).agent.name
         : "unknown";
-      for (const req of requests) {
-        if (typeof req !== "object" || req === null) continue;
-        const r = req as {
-          kind?: unknown;
-          requestId?: unknown;
-          action?: { callId?: unknown; toolName?: unknown; input?: unknown };
-        };
-        if (r.kind !== "tool-approval") continue;
-        const requestId = r.requestId;
-        const callId = r.action?.callId;
-        const toolName = r.action?.toolName;
-        if (typeof requestId !== "string" || typeof callId !== "string" || typeof toolName !== "string") continue;
-        if(toolName==='personal_mailbox_send'){
-          if(!deps.personalRequested)throw new Error('Personal approval handler unavailable');
-          await deps.personalRequested({requestId,callId,input:r.action?.input},ctx);continue;
-        }
-        if (hasConsoleTurnAuthorityTag(ctx)) {
-          await attachExactApproval({requestId,callId,tool:toolName,input:r.action?.input});
-          continue;
-        }
-        await record({
-          requestId,
-          callId,
-          agent,
-          tool: toolName,
-          payloadHash: payloadFingerprint(toolName, r.action?.input),
-        });
+      if(toolName==='personal_mailbox_send'){
+        if(!deps.personalRequested)throw new Error('Personal approval handler unavailable');
+        await deps.personalRequested({requestId,callId,input:card.input},ctx);return;
       }
+      if (hasConsoleTurnAuthorityTag(ctx)) {
+        await attachExactApproval({requestId,callId,tool:toolName,input:card.input});
+        return;
+      }
+      await record({
+        requestId,
+        callId,
+        agent,
+        tool: toolName,
+        payloadHash: payloadFingerprint(toolName, card.input),
+      });
     } catch (err) {
       if (hasConsoleTurnAuthorityTag(ctx)) throw err;
-      warn("input.requested", err);
+      warn("interaction.opened", err);
     }
   }
 
-  async function onInputResolved(event: unknown, ctx: unknown): Promise<void> {
+  /** A card ended: settle it. Only a person's Approve is `approved`; nobody-decided endings are `ignored`. */
+  async function onInteractionSettled(event: unknown, ctx: unknown): Promise<void> {
     try {
-      const data = (event as { data?: unknown } | undefined)?.data;
-      const resolutions = (data as { resolutions?: unknown } | undefined)?.resolutions;
-      if (!Array.isArray(resolutions)) return;
-      for (const res of resolutions) {
-        if (typeof res !== "object" || res === null) continue;
-        const r = res as { kind?: unknown; requestId?: unknown; outcome?: unknown };
-        if (r.kind !== "tool-approval") continue;
-        const requestId = r.requestId;
-        if (typeof requestId !== "string" || typeof r.outcome !== "string") continue;
-        const outcome = OUTCOME_MAP[r.outcome];
-        if (outcome === undefined) continue;
-        if(await deps.personalResolved?.(requestId,outcome,ctx))continue;
-        if (hasConsoleTurnAuthorityTag(ctx)) {
-          await settleExactInput(requestId,outcome);
-          continue;
-        }
-        await answer({ requestId, outcome });
+      const settled = settledApproval(event, ctx);
+      if (settled === undefined) return;
+      const { interactionId: requestId, outcome } = settled;
+      if(await deps.personalResolved?.(requestId,outcome,ctx))return;
+      if (hasConsoleTurnAuthorityTag(ctx)) {
+        await settleExactInput(requestId,outcome);
+        return;
       }
+      await answer({ requestId, outcome, ...(settled.decidedByPerson ? {} : { answeredVia: NOBODY_DECIDED }) });
     } catch (err) {
       if (hasConsoleTurnAuthorityTag(ctx)) throw err;
-      warn("input.resolved", err);
+      warn("interaction.settled", err);
     }
   }
 
   return {
-    "input.requested": onInputRequested,
-    "input.resolved": onInputResolved,
+    "interaction.opened": onInteractionOpened,
+    "interaction.settled": onInteractionSettled,
   };
 }

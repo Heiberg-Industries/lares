@@ -15,6 +15,7 @@ vi.mock("../lib/agent-mailbox.js", () => ({ loadOwner: (...a: unknown[]) => fake
 vi.mock("../lib/google.js", async (original) => ({ ...(await original<object>()), googleClients: (...a: unknown[]) => fake.google(...a) }));
 import { parseDefinition } from "@lares/agent-kit/definition";
 import resolver from "../agent/tools/catalogue.js";
+import { runDynamic } from "../../../packages/agent-kit/tests/helpers/eve-dynamic.js";
 import { guardCatalogueExecution, catalogueApprovalRequest } from "../lib/approvals.js";
 import { callerIsAgentOwner } from "../lib/webchat-owner.js";
 
@@ -26,7 +27,9 @@ const ctxFor = (member: string) => ({ session: { id: "console-x", turn: { id: "t
 const nativeCtx = { session: { id: "native-x", auth: { current: null, initiator: null } } };
 const template = JSON.parse(readFileSync(new URL("../../../packages/agent-kit/templates/chief-of-staff/agent.json", import.meta.url), "utf8"));
 const defn = (change: (d: any) => any = (d) => d) => parseDefinition(change({ ...template, name: "helper", display: "Helper" }));
-const resolve = async (ctx: unknown) => (await resolver.events["session.started"]!({} as never, ctx as never)) as Record<string, any>;
+// The catalogue is one eve 1.0 `defineDynamic` function. Each call here is a NEW conversation: a
+// fresh memo store, so the tool list is decided again from the definition and the owner as they stand.
+const resolve = async (ctx: unknown) => (await runDynamic(resolver, ctx as Record<string, unknown>)) as Record<string, any>;
 
 beforeEach(() => {
   vi.stubEnv("LARES_AGENT_NAME", "helper");
@@ -89,11 +92,15 @@ describe("the execution guard", () => {
     await expect(guardCatalogueExecution(ctxFor("member-owner"), "gmail_draft", {})).rejects.toThrow("Conversation authority");
   });
 
-  it("passes the owner at the guard but runs an event write only on an exact approved card", async () => {
+  it("passes the owner's ownership check but runs an event write only on an exact approved card", async () => {
     const tools = await resolve(ctxFor("member-owner"));
     for (const n of EVENT_WRITES) {
-      await expect(guardCatalogueExecution(ctxFor("member-owner"), n, {}), n).resolves.toBeUndefined();
-      // No approved card behind this call: the tool itself refuses before Google is touched.
+      // The owner is past the ownership check: what refuses is not "Conversation authority" (the
+      // non-owner's answer, above) but the missing card. On eve 1.0 an approved call is known by
+      // its approval responder, so the guard itself now refuses an event write that has none;
+      // before, the guard let the owner through and the tool refused.
+      await expect(guardCatalogueExecution(ctxFor("member-owner"), n, {}), n).rejects.toThrow("Exact approval authority");
+      // No approved card behind this call: nothing runs, and Google is never touched.
       await expect(tools[n].execute({ eventId: "e1", summary: "x", start: "s", end: "e" }, ctxFor("member-owner")), n).rejects.toThrow();
     }
     expect(fake.google).not.toHaveBeenCalled();

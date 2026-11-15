@@ -1,6 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {readFileSync} from 'node:fs';
-import {fileURLToPath,pathToFileURL} from 'node:url';
 import {currentTaint,resetTaintForTests} from '@lares/agent-kit/origin-taint';
 const fake=vi.hoisted(()=>({authority:vi.fn(),binding:vi.fn(),list:vi.fn(),resources:vi.fn(),custody:vi.fn(),google:vi.fn(),microsoft:vi.fn(),close:vi.fn(),definition:{} as any}));
 vi.mock('@lares/agent-kit/console-turn-authority',async original=>({...await original<typeof import('@lares/agent-kit/console-turn-authority')>(),requireConsoleTurnAuthority:fake.authority,requireConsoleSessionBinding:fake.binding,guardConsoleToolContext:async(ctx:unknown)=>{await fake.authority(ctx);}}));
@@ -11,6 +10,7 @@ vi.mock('../lib/microsoft-personal-reads.js',async original=>({...await original
 vi.mock('../lib/definition.js',()=>({thisAgent:async()=>({loaded:{definition:fake.definition}})}));
 import {CATALOGUE} from '../catalogue/index.js';
 import resolver from '../agent/tools/catalogue.js';
+import {runDynamic,type MemoStore} from '../../../packages/agent-kit/tests/helpers/eve-dynamic.js';
 import {readPersonalResource} from '../lib/personal-reads.js';
 import {TOOL_CATEGORIES} from '@lares/agent-kit/always-ask';
 const names=['personal_calendar_accounts','personal_calendar_events','personal_mailbox_accounts','personal_mailbox_list','personal_mailbox_read'];
@@ -41,7 +41,8 @@ beforeEach(()=>{
 afterEach(()=>{vi.unstubAllEnvs();vi.clearAllMocks();resetTaintForTests();});
 describe('private read tool wiring with mocked authority/store/provider boundaries',()=>{
  it('offers new tools only under explicit grants in private sessions, with none/never respected',async()=>{
-  const resolve=(c:any)=>resolver.events['session.started']!({},c);
+  // Each call is a new conversation: a fresh memo store, so the list is decided again.
+  const resolve=(c:any)=>runDynamic(resolver,c);
   expect(Object.keys(await resolve(ctx)).filter(n=>names.includes(n)).sort()).toEqual(names);
   const native=await resolve({session:{id:'native',auth:{current:null,initiator:null}}});
   expect(Object.keys(native).filter(n=>names.includes(n))).toEqual([]);expect(native).toHaveProperty('gmail_search');
@@ -53,25 +54,30 @@ describe('private read tool wiring with mocked authority/store/provider boundari
   expect(neutral.grants.filter((g:any)=>g.capability.startsWith('personal_'))).toEqual([]);
  });
  it('saved private descriptors refuse native execution before source, config or provider work',async()=>{
-  const resolved=await resolver.events['session.started']!({},ctx as never);
+  const resolved=await runDynamic(resolver,ctx);
   for(const name of names)await expect((resolved as any)[name].execute({},{})).rejects.toThrow('Conversation authority');
   expect(fake.list).not.toHaveBeenCalled();expect(fake.custody).not.toHaveBeenCalled();expect(fake.google).not.toHaveBeenCalled();
  });
+ // What a cold start is on eve 1.0 (node_modules/eve/docs/dynamic-configuration/index.md,
+ // "Identity and redeploys"): a fresh process runs the resolver again, `ctx.memo` hands back the
+ // saved JSON without running its function, and ordinary code rebuilds the tools and their
+ // callbacks from it. The framework internals this test used to drive (the durable-callback
+ // registry and its replay) no longer exist; `runDynamic` with the SAME store is that contract.
  it('installed Eve cold-replays the five descriptors and refuses native calls before source/store',async()=>{
-  const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
-  const {ContextContainer,contextStorage}=await import(`${dist}context/container.js`);
-  const keys=await import(`${dist}context/keys.js`);
-  const {dispatchDynamicToolEvent}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
-  const {replayDynamicTools}=await import(`${dist}context/build-dynamic-tools.js`);
-  const {clearDurableDynamicCallbacks}=await import(`${dist}tools/durable-callbacks.js`);
-  const storage=new ContextContainer();storage.set(keys.SessionIdKey,'tool-test');storage.set(keys.AuthKey,auth);storage.set(keys.InitiatorAuthKey,auth);storage.set(keys.StaticModelReferenceKey,null);
-  const dispatch=()=>contextStorage.run(storage,()=>dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'catalogue',logicalPath:'catalogue.ts',eventNames:['session.started'],events:resolver.events}],event:{type:'session.started',data:{},meta:{}},messages:[]}));
-  await dispatch();
-  const metadata=structuredClone(storage.get(keys.SessionDynamicToolMetadataKey)).filter((t:any)=>names.includes(t.name));expect(metadata.map((t:any)=>t.name).sort()).toEqual(names);
-  clearDurableDynamicCallbacks('tool-test');await dispatch();
-  const replayed=replayDynamicTools(metadata,{sessionId:'tool-test',scope:'session'});
-  storage.set(keys.AuthKey,null);storage.set(keys.InitiatorAuthKey,null);storage.set(keys.SessionKey,{sessionId:'tool-test',auth:{current:null,initiator:null},turn:{id:'turn-1',sequence:1}});
-  for(const tool of replayed)await expect(contextStorage.run(storage,()=>tool.execute({},{toolCallId:'cold-call'}))).rejects.toThrow('Conversation authority');
+  const store:MemoStore=new Map();
+  const first=await runDynamic(resolver,ctx,store);
+  expect(Object.keys(first).filter(n=>names.includes(n)).sort()).toEqual(names);
+  const saved=[...store.values()].join('\n');for(const name of names)expect(saved,name).toContain(`"${name}"`);
+  // The fresh process: nothing may be decided again. A definition that now grants nothing and an
+  // authority that now refuses would both change the answer if the saved decision were not used.
+  fake.definition={grants:[],skills:[],autonomy:{}};fake.binding.mockRejectedValue(new Error('refused'));
+  const bindingCalls=fake.binding.mock.calls.length;
+  const replayed=await runDynamic(resolver,ctx,store);
+  expect(Object.keys(replayed).filter(n=>names.includes(n)).sort()).toEqual(names);
+  expect(fake.binding.mock.calls.length).toBe(bindingCalls);
+  // The rebuilt tools are new objects with their own callbacks, and each refuses a native call.
+  const native={session:{id:'tool-test',auth:{current:null,initiator:null},turn:{id:'turn-1',sequence:1}},toolCallId:'cold-call'};
+  for(const name of names){expect(replayed[name]).not.toBe(first[name]);await expect(replayed[name].execute({},native),name).rejects.toThrow('Conversation authority');}
   expect(fake.list).not.toHaveBeenCalled();expect(fake.custody).not.toHaveBeenCalled();expect(fake.google).not.toHaveBeenCalled();
  });
  it('each source executor independently rejects an untagged call before reads',async()=>{

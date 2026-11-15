@@ -1,4 +1,4 @@
--- chief of staff: @workflow/world-postgres@5.0.0-beta.32 schema (extracted for manual box deploy)
+-- chief of staff: @workflow/world-postgres@5.2.0 schema (extracted for manual box deploy)
 --
 -- GENERATED BODY — do not hand-edit below the first `CREATE SCHEMA`. Everything from that
 -- line down is derived from the INSTALLED @workflow/world-postgres by replaying the package's
@@ -17,7 +17,7 @@
 -- WHAT THE CHECK COMPARES: statements, not bytes. This file wraps one statement — `ALTER
 -- TABLE ONLY workflow_drizzle.workflow_migrations ALTER COLUMN id SET DEFAULT nextval(...)`
 -- — over two lines where pg_dump emits it on one. That is layout, not schema, so the check
--- passes it: as of 2026-09-03 on @workflow/world-postgres@5.0.0-beta.32 all 33 statements are
+-- passes it: as of 2026-11-12 on @workflow/world-postgres@5.2.0 all 49 statements are
 -- identical and `regen:eve-sql:check` exits 0. It exits 1 only when a statement's own text
 -- differs — a renamed column, a widened type, a dropped index. Left unregenerated on purpose:
 -- the file below is what has actually been applied to the box.
@@ -28,10 +28,10 @@
 -- run this DDL itself; only the bootstrap CLI does. This file is the hand-extracted
 -- equivalent, meant to be applied once by hand before the box's chief-of-staff container starts.
 --
--- Extracted 2026-08-11 by running the package's own `setupDatabase()` (from
+-- First extracted 2026-08-11, regenerated 2026-11-12 for 5.2.0, by running the package's own `setupDatabase()` (from
 -- `@workflow/world-postgres/cli`) against a disposable local Postgres, then
 -- `pg_dump --schema-only --schema=workflow --schema=workflow_drizzle` on the result — this is
--- the real, final schema across all 19 of the package's internal migrations (0000-0018)
+-- the real, final schema across all 31 of the package's internal migrations (0000-0030)
 -- (services/chief-of-staff/node_modules/eve → .pnpm/@workflow+world-postgres@.../src/drizzle/migrations),
 -- not a hand-transcription of each incremental migration file. Every statement below is
 -- rewritten to be safe to re-run (IF NOT EXISTS, or a DO block catching duplicate_object for
@@ -93,18 +93,21 @@ EXCEPTION
 END $$;
 
 CREATE TABLE IF NOT EXISTS workflow.workflow_event_slots (
-    run_id character varying NOT NULL
+    run_id character varying NOT NULL,
+    seq_in_band integer DEFAULT 1 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workflow.workflow_events (
     id character varying NOT NULL,
     type character varying NOT NULL,
     correlation_id character varying,
-    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
     run_id character varying NOT NULL,
     payload jsonb,
     payload_cbor bytea,
-    spec_version integer
+    spec_version integer,
+    resume_id character varying,
+    resume_payload_digest character varying
 );
 
 CREATE TABLE IF NOT EXISTS workflow.workflow_hooks (
@@ -114,14 +117,43 @@ CREATE TABLE IF NOT EXISTS workflow.workflow_hooks (
     owner_id character varying NOT NULL,
     project_id character varying NOT NULL,
     environment character varying NOT NULL,
-    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
     metadata jsonb,
     metadata_cbor bytea,
     spec_version integer,
     is_webhook boolean DEFAULT true,
     is_system boolean DEFAULT false,
     resume_context bytea,
-    token_retention_until timestamp with time zone
+    token_retention_until timestamp with time zone,
+    claimed_from bytea,
+    claims_token boolean DEFAULT false NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow.workflow_invocations (
+    sequence bigint NOT NULL,
+    run_id character varying NOT NULL,
+    request_id character varying NOT NULL,
+    payload bytea,
+    fingerprint character varying,
+    result bytea,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    responded_at timestamp with time zone,
+    expired_at timestamp with time zone,
+    result_version integer DEFAULT 0 NOT NULL
+);
+
+CREATE SEQUENCE IF NOT EXISTS workflow.workflow_invocations_sequence_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+ALTER SEQUENCE workflow.workflow_invocations_sequence_seq OWNED BY workflow.workflow_invocations.sequence;
+
+CREATE TABLE IF NOT EXISTS workflow.workflow_job_lock_holders (
+    worker_id text NOT NULL,
+    renewed_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workflow.workflow_runs (
@@ -133,19 +165,37 @@ CREATE TABLE IF NOT EXISTS workflow.workflow_runs (
     execution_context jsonb,
     input jsonb,
     error text,
-    created_at timestamp without time zone DEFAULT now() NOT NULL,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    completed_at timestamp without time zone,
-    started_at timestamp without time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    completed_at timestamp with time zone,
+    started_at timestamp with time zone,
     output_cbor bytea,
     execution_context_cbor bytea,
     input_cbor bytea,
-    expired_at timestamp without time zone,
+    expired_at timestamp with time zone,
     spec_version character varying,
     error_cbor bytea,
     error_code character varying,
     attributes jsonb DEFAULT '{}'::jsonb NOT NULL,
-    encryption_public_key character varying
+    encryption_public_key character varying,
+    dynamic_workflow_code_cbor bytea,
+    start_hook_cbor bytea,
+    job_prefix character varying
+);
+
+CREATE TABLE IF NOT EXISTS workflow.workflow_snapshots (
+    run_id character varying NOT NULL,
+    data bytea NOT NULL,
+    events_cursor character varying,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow.workflow_start_hook_admissions (
+    run_id character varying NOT NULL,
+    token character varying NOT NULL,
+    decision character varying NOT NULL,
+    conflicting_run_id character varying,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workflow.workflow_steps (
@@ -157,11 +207,11 @@ CREATE TABLE IF NOT EXISTS workflow.workflow_steps (
     output jsonb,
     error text,
     attempt integer NOT NULL,
-    started_at timestamp without time zone,
-    completed_at timestamp without time zone,
-    created_at timestamp without time zone DEFAULT now() NOT NULL,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    retry_after timestamp without time zone,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    retry_after timestamp with time zone,
     input_cbor bytea,
     output_cbor bytea,
     error_cbor bytea,
@@ -172,7 +222,7 @@ CREATE TABLE IF NOT EXISTS workflow.workflow_stream_chunks (
     id character varying NOT NULL,
     stream_id character varying NOT NULL,
     data bytea NOT NULL,
-    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
     eof boolean NOT NULL,
     run_id character varying
 );
@@ -181,10 +231,10 @@ CREATE TABLE IF NOT EXISTS workflow.workflow_waits (
     wait_id character varying NOT NULL,
     run_id character varying NOT NULL,
     status workflow.wait_status NOT NULL,
-    resume_at timestamp without time zone,
-    completed_at timestamp without time zone,
-    created_at timestamp without time zone DEFAULT now() NOT NULL,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    resume_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
     spec_version integer
 );
 
@@ -203,6 +253,8 @@ CREATE SEQUENCE IF NOT EXISTS workflow_drizzle.workflow_migrations_id_seq
     CACHE 1;
 
 ALTER SEQUENCE workflow_drizzle.workflow_migrations_id_seq OWNED BY workflow_drizzle.workflow_migrations.id;
+
+ALTER TABLE ONLY workflow.workflow_invocations ALTER COLUMN sequence SET DEFAULT nextval('workflow.workflow_invocations_sequence_seq'::regclass);
 
 ALTER TABLE ONLY workflow_drizzle.workflow_migrations ALTER COLUMN id SET DEFAULT nextval('workflow_drizzle.workflow_migrations_id_seq'::regclass);
 
@@ -239,10 +291,46 @@ END $$;
 
 DO $$ BEGIN
     IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'workflow_invocations_pkey' AND connamespace = 'workflow'::regnamespace
+    ) THEN
+        ALTER TABLE ONLY workflow.workflow_invocations
+            ADD CONSTRAINT workflow_invocations_pkey PRIMARY KEY (run_id, request_id);
+    END IF;
+END $$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'workflow_job_lock_holders_pkey' AND connamespace = 'workflow'::regnamespace
+    ) THEN
+        ALTER TABLE ONLY workflow.workflow_job_lock_holders
+            ADD CONSTRAINT workflow_job_lock_holders_pkey PRIMARY KEY (worker_id);
+    END IF;
+END $$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
         SELECT 1 FROM pg_constraint WHERE conname = 'workflow_runs_pkey' AND connamespace = 'workflow'::regnamespace
     ) THEN
         ALTER TABLE ONLY workflow.workflow_runs
             ADD CONSTRAINT workflow_runs_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'workflow_snapshots_pkey' AND connamespace = 'workflow'::regnamespace
+    ) THEN
+        ALTER TABLE ONLY workflow.workflow_snapshots
+            ADD CONSTRAINT workflow_snapshots_pkey PRIMARY KEY (run_id);
+    END IF;
+END $$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'workflow_start_hook_admissions_pkey' AND connamespace = 'workflow'::regnamespace
+    ) THEN
+        ALTER TABLE ONLY workflow.workflow_start_hook_admissions
+            ADD CONSTRAINT workflow_start_hook_admissions_pkey PRIMARY KEY (run_id);
     END IF;
 END $$;
 
@@ -286,13 +374,21 @@ CREATE INDEX IF NOT EXISTS workflow_events_correlation_id_index ON workflow.work
 
 CREATE UNIQUE INDEX IF NOT EXISTS workflow_events_entity_creation_unique ON workflow.workflow_events USING btree (run_id, correlation_id, type) WHERE ((type)::text = ANY ((ARRAY['step_created'::character varying, 'hook_created'::character varying, 'wait_created'::character varying, 'attr_set'::character varying])::text[]));
 
+CREATE UNIQUE INDEX IF NOT EXISTS workflow_events_hook_resume_unique ON workflow.workflow_events USING btree (run_id, resume_id) WHERE (((type)::text = 'hook_received'::text) AND (resume_id IS NOT NULL));
+
 CREATE INDEX IF NOT EXISTS workflow_hooks_run_id_index ON workflow.workflow_hooks USING btree (run_id);
 
+CREATE UNIQUE INDEX IF NOT EXISTS workflow_hooks_token_claim_unique ON workflow.workflow_hooks USING btree (token) WHERE claims_token;
+
 CREATE INDEX IF NOT EXISTS workflow_hooks_token_index ON workflow.workflow_hooks USING btree (token);
+
+CREATE INDEX IF NOT EXISTS workflow_invocations_pending ON workflow.workflow_invocations USING btree (run_id, sequence) WHERE (responded_at IS NULL);
 
 CREATE INDEX IF NOT EXISTS workflow_runs_name_index ON workflow.workflow_runs USING btree (name);
 
 CREATE INDEX IF NOT EXISTS workflow_runs_status_index ON workflow.workflow_runs USING btree (status);
+
+CREATE INDEX IF NOT EXISTS workflow_start_hook_admissions_created_at_index ON workflow.workflow_start_hook_admissions USING btree (created_at);
 
 CREATE INDEX IF NOT EXISTS workflow_steps_run_id_index ON workflow.workflow_steps USING btree (run_id);
 

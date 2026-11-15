@@ -1,30 +1,21 @@
 // The required proof reads a real mounted definition and selects the pool through the shared
 // catalogue policy. Without a mounted definition, the original SEAM_GRANTS measurement remains
-// available for historical dynamic-seam research; it is not authorization evidence.
+// available for dynamic-seam research; it is not authorization evidence.
 //
-// `execute` is INLINE on purpose: eve's bundler transform reconstructs each executor from its stored
-// closure variables on replay and does not detect `execute: someFunction`
-// (eve/docs/guides/dynamic-capabilities.md, "execute must be an inline function").
+// DECIDED ONCE PER CONVERSATION, REBUILT BEFORE EVERY MODEL CALL. eve 1.0 runs this function before
+// every model call, in any process. WHICH tools the conversation has is saved with `ctx.memo` under
+// the session id (plain JSON: names only), so a grant changed mid-conversation reaches the next
+// conversation; the tools themselves, with their schemas, approvals and executors, are rebuilt
+// from those names with ordinary code each time. That is the same shape
+// `services/creative/agent/tools/catalogue.ts` has, and it is why the hand-stamped durable
+// wrappers eve 0.59 to 0.60 needed here are gone: there is nothing to register for a fresh process.
 //
-// The second half is `POOL`, a catalogue of REAL tools carrying their own
-// input schemas, executors and board approvals, emitted through the exact shape
-// `services/creative/agent/tools/catalogue.ts` uses — the description and schema copied across, the
-// approval spread across, and an inline `execute` that reaches the pool entry through the captured
-// name. `evals/replay.eval.ts` drives it. The constant-result entries above are untouched, so
-// the seam probes' committed output is unchanged.
-//
-// EVERY POOL CALLBACK BELOW CARRIES A DURABLE DESCRIPTOR (eve 0.59.0+), FOR THE SAME REASON
-// `services/creative/agent/tools/catalogue.ts` does: eve refuses a dynamic tool whose `execute`,
-// approval policy or live (zod) `inputSchema` it cannot rebuild in a fresh process, and it refuses
-// the WHOLE resolver result when a single entry fails. eve's compiler transform cannot help here —
-// it only rewrites a `defineTool(<object literal>)` call, and the literal below is cast `as never`
-// and reached through a conditional approval spread, both of which hide it from the transform. So
-// each phase is stamped by hand with the public helpers `defineDurableCallback` / `defineDurableSchema`
-// (`eve/tools`), closure `{ name }` — one plain string, re-reading the module-level `POOL` when it
-// runs. The constant-result `CATALOGUE` entries above stay as plain inline callbacks: they are a
-// literal `defineTool({...})` argument with no cast and no conditional spread, so eve's compiler
-// transform stamps them itself.
-import { defineDurableCallback, defineDurableSchema, defineDynamic, defineTool } from "eve/tools";
+// The second half is `POOL`, a catalogue of REAL tools carrying their own input schemas, executors
+// and board approvals. The approval is copied across untouched: a resolver-emitted tool REPLACES an
+// authored `agent/tools/<name>.ts` completely, so a dropped approval would run a gated tool with no
+// card. `evals/replay.eval.ts` drives it. The constant-result `CATALOGUE` entries are plain tools
+// with no approval, which the seam probes read back.
+import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { POOL } from "../../catalogue/index.js";
 import { grantedToolNames } from "@lares/agent-kit/catalogue";
@@ -59,63 +50,42 @@ const CATALOGUE: Record<string, { description: string; result: unknown }> = {
   },
 };
 
-export default defineDynamic({
-  events: {
-    "session.started": async (_event: unknown, ctx?: { session?: { id?: string } }) => {
-      const granted = process.env.LARES_DEFINITION_DIR
-        ? grantedToolNames(POOL, (await fixtureDefinition(ctx?.session?.id)).loaded.definition)
-        : grantedNames();
-      return Object.fromEntries([
-        ...granted
-          .filter((name) => CATALOGUE[name] !== undefined)
-          .map((name) => [
-            name,
-            defineTool({
-              description: CATALOGUE[name]!.description,
-              inputSchema: z.object({}),
-              execute: async () => CATALOGUE[name]!.result,
-            }),
-          ]),
-        // The production shape, including each pool entry's own approval and inline executor.
-        // Required evals select these names through the mounted definition above.
-        ...granted
-          .filter((name) => POOL[name] !== undefined)
-          .map((name) => {
-            const tool = poolValueOf(name);
-            return [
-              name,
-              defineTool({
-                description: tool.description,
-                // The SAME validator, behind a factory eve can re-run. See
-                // services/creative/agent/tools/catalogue.ts for why a durable descriptor replaces
-                // the plain `tool.inputSchema` this used to pass through directly.
-                inputSchema: defineDurableSchema({
-                  closure: { name },
-                  schema: (closure) => poolValueOf(closure.name).inputSchema as Record<string, unknown>,
-                }),
-                // Untouched: the approval is whatever the pool tool itself authored. Wrapped, never
-                // replaced — the call below IS the authored policy, same arguments, same answer;
-                // the wrapper exists only so eve can find it again after a restart.
-                ...(tool.approval !== undefined
-                  ? {
-                      approval: defineDurableCallback({
-                        closure: { name },
-                        callback: (closure: { name: string }, ...args: unknown[]) =>
-                          (poolValueOf(closure.name).approval as (...a: unknown[]) => unknown)(...args),
-                      }),
-                    }
-                  : {}),
-                // Reaching the module-level POOL through the captured string `name` — the one value
-                // that has to survive a cold start.
-                execute: defineDurableCallback({
-                  closure: { name },
-                  callback: async (closure: { name: string }, input: unknown, ctx: unknown) =>
-                    poolValueOf(closure.name).execute(input, ctx),
-                }),
-              } as never),
-            ];
-          }),
-      ]);
-    },
-  },
+/** What the resolver decides once per conversation: plain JSON, so `ctx.memo` can keep it. */
+interface CatalogueDecision { readonly names: readonly string[] }
+
+export default defineDynamic(async (ctx) => {
+  const decided: CatalogueDecision = await ctx.memo(["catalogue", ctx.session.id], async () => ({
+    names: process.env.LARES_DEFINITION_DIR
+      ? grantedToolNames(POOL, (await fixtureDefinition(ctx.session.id)).loaded.definition)
+      : grantedNames(),
+  }));
+  return Object.fromEntries([
+    ...decided.names
+      .filter((name) => CATALOGUE[name] !== undefined)
+      .map((name) => [
+        name,
+        defineTool({
+          description: CATALOGUE[name]!.description,
+          inputSchema: z.object({}),
+          execute: async () => CATALOGUE[name]!.result,
+        }),
+      ]),
+    // The production shape, including each pool entry's own approval and executor.
+    // Required evals select these names through the mounted definition above.
+    ...decided.names
+      .filter((name) => POOL[name] !== undefined)
+      .map((name) => {
+        const tool = poolValueOf(name);
+        return [
+          name,
+          defineTool({
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+            // Untouched: the approval is whatever the pool tool itself authored.
+            ...(tool.approval !== undefined ? { approval: tool.approval } : {}),
+            execute: async (input: unknown, toolCtx: unknown) => tool.execute(input, toolCtx),
+          } as never),
+        ];
+      }),
+  ]);
 });

@@ -83,7 +83,7 @@ type DoorSessionAuth = NonNullable<Awaited<ReturnType<AuthFn<Request>>>>;
  * no usable member was asserted.
  *
  * `verifyHttpBasic` returns `{attributes: {}, authenticator: "http-basic", principalId: <username>,
- * principalType: "user"}` (bundled dist, eve 0.60.1, `dist/src/channel/auth/http-basic.js`'s
+ * principalType: "user"}` (bundled dist, eve 1.0, `dist/src/channel/auth/http-basic.js`'s
  * `authenticateHttpBasicStrategy` → `createRuntimeSessionAuthContext`), which says only "this
  * caller knows the route password". That is deliberately NOT a channel in `lib/principals.ts`, so
  * an operator with the password can start a session and still approve nothing. Only the

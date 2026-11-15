@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {gatewayMaximumLiability} from '@lares/agent-kit/gateway-pricing';
-import {BudgetNativeCustodyStore,NATIVE_CUSTODY_MAX_BYTES,NATIVE_CUSTODY_MAX_RECORDS,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from '../lib/budget-native-custody.js';
+import {BudgetNativeCustodyStore,NativeCustodyBusy,NATIVE_CUSTODY_MAX_BYTES,NATIVE_CUSTODY_MAX_RECORDS,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from '../lib/budget-native-custody.js';
 import {HostFinancialJournal,committedFinancialEvidence,type CommittedFinancialReceipt,type FinancialAtom} from '../lib/financial-journal.js';
 import {consoleSourceTransaction,sourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {observeCommittedFinancialProjection} from '../lib/financial-continuity.js';
@@ -998,13 +998,69 @@ describe('protected native custody foundation',()=>{
     });
   });
 
-  it('refuses concurrent gates and closes only after the active gate drains',async()=>{
+  it('refuses concurrent gates that ask for no wait, and closes only after the active gate drains',async()=>{
     const {store}=fixture();let resume!:()=>void,oldGate!:NativeCustodyGate;const paused=new Promise<void>(resolve=>resume=resolve);
     const running=store.withGate(async gate=>{oldGate=gate;await paused;gate.inventory();});
     await expect(store.withGate(async()=>undefined)).rejects.toThrow('reconciliation');expect(()=>store.close()).toThrow('still owns');
     let drained=false;const draining=store.drainForShutdown().then(()=>{drained=true;});await Promise.resolve();expect(drained).toBe(false);
     resume();await running;await draining;expect(drained).toBe(true);expect(()=>oldGate.inventory()).toThrow('reconciliation');
     await expect(store.withGate(async()=>undefined)).rejects.toThrow('reconciliation');store.close();
+  });
+
+  // Two budget checks that meet must not read as a broken store: a caller that asks may wait its turn.
+  const paused=()=>{let release!:()=>void;const promise=new Promise<void>(resolve=>release=resolve);return {promise,release};};
+  const settle=()=>new Promise(resolve=>setImmediate(resolve));
+  it('lets a caller that asks wait in line, first in first out, and nothing overtakes the line',async()=>{
+    const {store}=fixture(),order:string[]=[],holding=paused(),firstHold=paused(),secondHold=paused();
+    const holder=store.withGate(async()=>{order.push('holder');await holding.promise;});
+    const first=store.withGate(async gate=>{order.push('first');gate.inventory();await firstHold.promise;},{waitMs:5_000});
+    const second=store.withGate(async()=>{order.push('second');await secondHold.promise;},{waitMs:5_000});
+    await settle();expect(order).toEqual(['holder']);
+    // With no wait a caller is still refused at once, and it never jumps the line.
+    await expect(store.withGate(async()=>undefined)).rejects.toThrow('reconciliation');
+    holding.release();await holder;await settle();
+    // The gate passed straight to the first in line: a caller arriving now is refused, and close() still refuses.
+    expect(order).toEqual(['holder','first']);
+    await expect(store.withGate(async()=>{order.push('overtook');})).rejects.toThrow('reconciliation');
+    expect(()=>store.close()).toThrow('still owns');
+    const late=store.withGate(async()=>{order.push('late');},{waitMs:5_000});
+    firstHold.release();await first;await settle();expect(order).toEqual(['holder','first','second']);
+    secondHold.release();await second;await late;
+    expect(order).toEqual(['holder','first','second','late']);
+    await expect(store.withGate(async gate=>gate.inventory().operations.length)).resolves.toBe(0);
+    store.close();
+  });
+
+  it('turns away a wait that runs out with its own busy error, having done nothing, and keeps the store open',async()=>{
+    const {directory,store}=fixture(),holding=paused();let ran=false;
+    const holder=store.withGate(async()=>{await holding.promise;});
+    const waited=store.withGate(async()=>{ran=true;},{waitMs:25});
+    await expect(waited).rejects.toBeInstanceOf(NativeCustodyBusy);await expect(waited).rejects.toThrow('Native custody busy');
+    expect(ran).toBe(false);
+    holding.release();await holder;
+    // Not frozen: the next caller gets the gate, and the store closes cleanly and opens again.
+    await expect(store.withGate(async gate=>gate.inventory().operations.length)).resolves.toBe(0);
+    store.close();expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('closed');
+    await expect(open(directory).withGate(async gate=>gate.inventory().operations.length)).resolves.toBe(0);
+  });
+
+  it('refuses everyone waiting when the store shuts down or freezes, never as busy',async()=>{
+    const {store}=fixture(),holding=paused();let ran=false;
+    const holder=store.withGate(async()=>{await holding.promise;});
+    const waiting=store.withGate(async()=>{ran=true;},{waitMs:5_000});
+    const draining=store.drainForShutdown();
+    await expect(waiting).rejects.toThrow('reconciliation');await expect(waiting).rejects.not.toBeInstanceOf(NativeCustodyBusy);
+    await expect(store.withGate(async()=>{ran=true;},{waitMs:5_000})).rejects.toThrow('reconciliation');
+    holding.release();await holder;await draining;expect(ran).toBe(false);
+
+    const frozen=fixture().store;let fail!:(error:Error)=>void;const failing=new Promise<void>((_,reject)=>fail=reject);
+    const broken=frozen.withGate(async()=>{await failing;});
+    const behind=frozen.withGate(async()=>{ran=true;},{waitMs:5_000});
+    fail(new Error('injected failure inside the gate'));
+    await expect(broken).rejects.toThrow('injected failure');
+    await expect(behind).rejects.toThrow('reconciliation');await expect(behind).rejects.not.toBeInstanceOf(NativeCustodyBusy);
+    expect(ran).toBe(false);
+    await expect(frozen.withGate(async()=>undefined,{waitMs:5_000})).rejects.toThrow('reconciliation');
   });
 
   it('holds the lifecycle lock until close',()=>{const {directory,store}=fixture();expect(()=>open(directory)).toThrow('reconciliation');store.close();expect(()=>open(directory)).not.toThrow();});

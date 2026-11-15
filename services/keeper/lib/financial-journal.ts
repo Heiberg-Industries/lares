@@ -779,6 +779,10 @@ export class HostFinancialJournal {
   /** Observe a persisted ticket against this prepared journal's committed installation
    * fold. This is discovery only: the owned admission transaction still rechecks the
    * complete database projection, account policy and current window before mutation. */
+  /** Read-only: an operation is running or a proposal is waiting on a ledger that is otherwise open, the
+   * moments when `observeGatewayRecoveryReference` answers nothing whatever the fold holds and will answer
+   * again when the operation ends. A closed, stopping, frozen or in-doubt ledger is not "mid-operation". */
+  get midOperation():boolean{return !this.closed&&!this.frozen&&!this.stopping&&!this.inDoubt&&(this.busy||this.pending!==undefined);}
   observeGatewayRecoveryReference(raw:Pick<BudgetRecoveryReference,'installationAccountId'|'epoch'|'endpointGeneration'>):BudgetRecoveryReference|undefined {
     if(this.busy||this.pending)return undefined;
     return this.committedRecoveryReference(raw);

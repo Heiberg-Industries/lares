@@ -150,8 +150,8 @@ describe("the keeper client", () => {
   });
 
   it("writes the reason, the state the agent is left in and the reference into one line for the owner", () => {
-    expect(keeperFailureText(new KeeperFailedError("Apply failed. The previous working definition was restored; save the edit again before retrying.", "previous-running", REFERENCE)))
-      .toBe(`Apply failed. The previous working definition was restored; save the edit again before retrying. The previous definition is still running. Quote reference ${REFERENCE} if you ask for help.`);
+    expect(keeperFailureText(new KeeperFailedError("Apply failed. The agent is back on the last definition that had taken effect; the changes that were waiting for Apply were undone. Save them again before retrying.", "previous-running", REFERENCE)))
+      .toBe(`Apply failed. The agent is back on the last definition that had taken effect; the changes that were waiting for Apply were undone. Save them again before retrying. The previous definition is still running. Quote reference ${REFERENCE} if you ask for help.`);
     expect(keeperFailureText(new KeeperFailedError("Apply failed.", "restored-stopped", REFERENCE)))
       .toContain("The saved definition was restored, but the agent is stopped and needs recovery.");
     expect(keeperFailureText(new KeeperFailedError("Apply failed.", "recovery-required", REFERENCE)))

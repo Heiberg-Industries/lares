@@ -18,6 +18,7 @@ import { ProviderKeyFiles, registerProviderKeyActions } from "../lib/provider-ke
 import { readFileSync, existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { deployedToolsFor } from "@lares/agent-kit/persona";
+import { toolSourcesFor } from "@lares/agent-kit/definition-validate";
 import { registerDefinitionActions } from "../lib/definitions.js";
 import { GitBackup } from "../lib/git-backup.js";
 import { readSetting } from "../lib/settings.js";
@@ -149,7 +150,7 @@ async function main(): Promise<void> {
         registerInitialMemberBudgetActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
         if(financialPool)registerBudgetAgentStartActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId,
             keyPhases:async ids=>nativeCustody?nativeCustody.withGate(gate=>Promise.resolve(new Map(gate.inventory().operations
-                .flatMap(row=>row.kind==='operation'&&ids.includes(row.bindingId)?[[row.bindingId,row.phase] as [string,string]]:[])))):undefined});
+                .flatMap(row=>row.kind==='operation'&&ids.includes(row.bindingId)?[[row.bindingId,row.phase] as [string,string]]:[]))),{waitMs:2_000}):undefined});
         registerAction({name:'budget.freeze',hostOnly:true,input:z.object({}).strict(),run:async()=>{
             if(!financialJournal)throw new Error('Financial custody is not configured');
             await nativeCustody?.drainForShutdown();
@@ -185,7 +186,7 @@ async function main(): Promise<void> {
             ceiling: async () => { const value = await readSetting(pool, "agents.ceiling"); return typeof value === "number" ? value : NaN; },
             compose: lifecycle ?? {stop:async()=>{throw new Error("Lifecycle configuration required");}},
             storage:lifecycle,
-            roleInfo: role => ({ roleMd: readFileSync(join(config.templatesDir, role, "role.md"), "utf8"), deployedTools: deployedToolsFor(join(config.rolesDir, role)) }),
+            roleInfo: role => ({ roleMd: readFileSync(join(config.templatesDir, role, "role.md"), "utf8"), deployedTools: deployedToolsFor(join(config.rolesDir, role)), toolSources: toolSourcesFor(join(config.rolesDir, role)) }),
             backup: new GitBackup({ checkout: config.backupDir,
                 remote: async () => { const value = await readSetting(pool, "agents.backup_remote"); return typeof value === "string" ? value : ""; },
                 source: async (name) => {

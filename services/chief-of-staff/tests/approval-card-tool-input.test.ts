@@ -1,287 +1,279 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import type { SlackInteractionCard, SlackInteractionCardParts } from "eve/channels/slack";
 
-import { registerApprovalSummary, registerOutsideConnections, resetOutsideConnectionsForTests } from "@lares/agent-kit/approval-summary";
+import {
+  registerOutsideConnections,
+  resetOutsideConnectionsForTests,
+  summarizeApproval,
+} from "@lares/agent-kit/approval-summary";
 
-// Deep imports into eve's dist — INTERNALS, reached on purpose, the convention of
-// tests/approval-summary.test.ts. This file pins the hunk of patches/eve.patch: an eve
-// upgrade that moves either module fails these imports, and THAT is the signal to re-derive.
-// @ts-expect-error — no types shipped for eve internals
-import { extractToolApprovalInputRequests } from "eve-internals/input-extraction";
-// @ts-expect-error — no types shipped for eve internals
-import { renderInputRequestBlocks, renderInputRequestPostParts } from "eve-internals/slack-hitl";
-// @ts-expect-error — no types shipped for eve internals
-import { renderTelegramInputRequest } from "eve-internals/telegram-hitl";
-// @ts-expect-error — no types shipped for eve internals
-import { handleInteractionPost } from "eve-internals/slack-interactions";
+// Two eve INTERNALS, reached on purpose and by file path (the package's exports map does not
+// offer them, and this suite adds no alias to vitest.config.ts):
+//
+//  - `renderRequestCard` is how eve runs a door's `interactionCard` renderers: it renders its
+//    own default card, runs the renderer chain around it, and THROWS THE RESULT AWAY in favour of
+//    its default when the result breaks eve's rules for a card (the controls must be exactly
+//    eve's while the request is open, and none once it is answered). Testing through it means
+//    "eve accepts this card" is asserted, not assumed.
+//  - `composeInteractionCards` builds that chain from a door's `renderers`.
+//
+// If an eve upgrade moves either file, this suite failing to import is the signal to re-read how
+// eve renders an approval card.
+import { renderRequestCard } from "../node_modules/eve/dist/src/public/channels/slack/request-card-render.js";
+import { composeInteractionCards } from "../node_modules/eve/dist/src/public/channels/slack/renderers.js";
 
-/** The shape eve's harness parses out of a turn's content: the tool call plus the approval
- *  request that references it — so the request under test is the REAL one, action shape and
- *  all, not a hand-built lookalike. */
-const content = (toolName: string, input: unknown) => [
-  { type: "tool-call", toolCallId: "call_1", toolName, input },
-  { type: "tool-approval-request", approvalId: "appr_1", toolCallId: "call_1" },
-];
+import { approvalCardRenderer, approvalInteractionCard } from "../lib/slack-approval-card.js";
 
-type Block = { type: string; title?: { text: string }; default_collapsed?: boolean };
+/**
+ * What the owner reads on a Slack approval card (`lib/slack-approval-card.ts`).
+ *
+ * On eve 0.60 this file pinned hunks of a framework patch. eve 1.0 has a supported seam for the
+ * same thing, `renderers.interactionCard`, so the card is now Lares's own renderer around eve's
+ * default, and this file tests that renderer against the installed eve.
+ *
+ * The Telegram cases that used to live here are gone: the framework-patch packet tests the
+ * Telegram card.
+ */
 
-const toolInputBlock = (blocks: Block[]) => blocks.find((b) => b.type === "container" && b.title?.text === "Tool input");
+type Block = Record<string, unknown> & { type: string };
+type Interaction = SlackInteractionCard["interaction"];
 
-// — the raw tool input must not show up on cards that already have a dedicated summary. eve renders a raw-JSON "Tool input" container on EVERY Slack approval card, in
-// addition to the title, and the 0.32 channel has no knob for it. The patch drops it whenever
-// the title came from one of our DEDICATED formatters — the summary is then the whole card —
-// and keeps it, collapsed, for anything else: the generic fallback names three fields at most,
-// which is a title, not the last thing a human should read before authorising a write.
-describe("the eve patch — the raw Tool input block on Slack approval cards", () => {
-  afterEach(() => {
-    delete globalThis.__eveApprovalSummary;
-    delete globalThis.__eveApprovalCovers;
-  });
+const chain = composeInteractionCards([approvalCardRenderer]);
 
-  it("is gone when the card title came from a dedicated formatter", () => {
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({
-      content: content("calendar_delete_event", { eventId: "evt-example-1", notify: false }),
-    });
-    expect(request.prompt).not.toMatch(/^Approve tool call/);
+/** An approval for one tool call, as eve hands it to a renderer. */
+function approval(toolName: string, input: unknown, over: Partial<Interaction> = {}): Interaction {
+  return {
+    interactionId: "interaction-1",
+    turnId: "turn-1",
+    stepIndex: 0,
+    status: "open",
+    call: { callId: "call-1", name: toolName, input: input as never },
+    request: {
+      kind: "approval",
+      // The title is the approvals packet's; a card is rendered with whatever title it is given.
+      prompt: summarizeApproval(toolName, input) ?? `Approve tool call: ${toolName}`,
+      options: [
+        { id: "approve", label: "Approve", style: "primary" },
+        { id: "deny", label: "Deny" },
+      ],
+    },
+    ...over,
+  } as Interaction;
+}
 
-    const blocks = renderInputRequestBlocks(request) as Block[];
-    expect(toolInputBlock(blocks)).toBeUndefined();
-    expect(JSON.stringify(blocks)).not.toContain("```");
-    // The approve/cancel card itself is untouched.
-    expect(blocks.map((b) => b.type)).toEqual(["card"]);
+function cardFor(interaction: Interaction, answeredBy?: string): SlackInteractionCard {
+  return {
+    interaction,
+    destination: "thread",
+    audience: "private",
+    view: {} as never,
+    ...(answeredBy === undefined ? {} : { answeredBy }),
+  } as SlackInteractionCard;
+}
 
-    const parts = renderInputRequestPostParts(request) as { controls: { text: string }; details?: unknown };
-    expect(parts.details).toBeUndefined();
-    expect(parts.controls.text).toBe(request.prompt);
-  });
+/** Render the way eve does: `parts` is what gets posted, `fallback` is eve's own default. */
+function render(interaction: Interaction, answeredBy?: string): { parts: SlackInteractionCardParts; fallback: SlackInteractionCardParts } {
+  return renderRequestCard(chain, cardFor(interaction, answeredBy), undefined) as never;
+}
 
-  it("stays, collapsed, for a tool that only has the generic title", () => {
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({
-      content: content("some_tool_nobody_summarised", { target: "x" }),
-    });
-    expect(request.prompt).toBe("some_tool_nobody_summarised — target: x");
+const blocksOf = (parts: SlackInteractionCardParts) => parts.controls.blocks as readonly Block[];
+const text = (value: unknown) => JSON.stringify(value);
 
-    const container = toolInputBlock(renderInputRequestBlocks(request) as Block[]);
-    expect(container?.default_collapsed).toBe(true);
-    // The JSON survives inside the collapsed block (escaped once more by the stringify here).
-    expect(JSON.stringify(container)).toContain("target");
-  });
+/** The labels and values of eve's buttons, in the order shown. */
+function buttons(parts: SlackInteractionCardParts): { label: string; value: string }[] {
+  const card = blocksOf(parts).find((b) => b.type === "card") as { actions?: { text: { text: string }; value: string }[] } | undefined;
+  return (card?.actions ?? []).map((a) => ({ label: a.text.text, value: a.value }));
+}
 
-  it("stays, collapsed, when no summariser is registered at all", () => {
-    const [request] = extractToolApprovalInputRequests({ content: content("gmail_send", { body: "hei" }) });
-    expect(request.prompt).toBe("Approve tool call: gmail_send");
+const MAIL = {
+  to: ["taylor@example.com", "sam@example.com"],
+  subject: "Notes from the weekly sync",
+  bodyText: "Hello both,\n\nThanks for the meeting today.\n\nBest\nOwner",
+};
 
-    const container = toolInputBlock(renderInputRequestBlocks(request) as Block[]);
-    expect(container?.default_collapsed).toBe(true);
-  });
+const settled = (outcome: "accepted" | "declined" | "withdrawn", optionId?: string): Partial<Interaction> => ({
+  status: "settled",
+  outcome,
+  ...(optionId === undefined ? {} : { answer: { interactionId: "interaction-1", optionId } }),
+} as Partial<Interaction>);
+
+afterEach(() => {
+  resetOutsideConnectionsForTests();
+  vi.restoreAllMocks();
 });
 
-// A meeting follow-up card once named the meeting and two recipients and not one word
-// of the email: the raw block had been removed, and for a mail send that was the only place the
-// subject and body ever appeared. A mail card now carries the draft as a section directly under
-// the approve/cancel card — the seventh hunk of patches/eve.patch consults
-// `globalThis.__eveApprovalDetails`, published beside the title hook. A covered tool with no
-// draft to show keeps the ticket's shape exactly.
-describe("the eve patch — a mail card shows the draft under the card", () => {
-  afterEach(() => {
-    delete globalThis.__eveApprovalSummary;
-    delete globalThis.__eveApprovalCovers;
-    delete globalThis.__eveApprovalDetails;
-  });
+describe("an email approval card", () => {
+  it("shows the subject and body, no raw JSON, and the buttons Deny and Approve", () => {
+    const { parts, fallback } = render(approval("gmail_send", MAIL));
 
-  type TextBlock = Block & { text?: { type: string; text: string } };
+    // eve kept our card rather than falling back to its own.
+    expect(text(parts)).not.toBe(text(fallback));
 
-  const input = {
-    notionPageId: "p1",
-    seriesKey: "s1",
-    to: ["taylor@example.com", "sam@example.com"],
-    subject: "Oppsummering Weekly Sync 7. september",
-    bodyText: "Hei begge,\n\nTakk for møtet i dag.\n\nHilsen\nOwner",
-    meetingTitle: "Weekly Sync",
-    meetingWhen: "2026-09-07T10:00:00.000+02:00",
-    from: "owner@example.invalid",
-  };
-
-  it("renders the subject and body as a section beneath the approve/cancel card", () => {
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({ content: content("meeting_followup_send", input) });
-
-    const blocks = renderInputRequestBlocks(request) as TextBlock[];
+    const blocks = blocksOf(parts);
     expect(blocks.map((b) => b.type)).toEqual(["card", "section"]);
-    expect(blocks[1]!.text!.type).toBe("mrkdwn");
-    expect(blocks[1]!.text!.text).toContain("*Subject:* Oppsummering Weekly Sync 7. september");
-    expect(blocks[1]!.text!.text).toContain("Takk for møtet i dag.");
-    // The raw JSON stays gone — this is the draft, not the arguments.
-    expect(toolInputBlock(blocks)).toBeUndefined();
-    expect(JSON.stringify(blocks)).not.toContain("```");
+    const draft = (blocks[1] as unknown as { text: { type: string; text: string } }).text;
+    expect(draft.type).toBe("mrkdwn");
+    expect(draft.text).toContain("*To:* taylor@example.com, sam@example.com");
+    expect(draft.text).toContain("*Subject:* Notes from the weekly sync");
+    expect(draft.text).toContain("Thanks for the meeting today.");
+
+    expect(buttons(parts)).toEqual([
+      { label: "Deny", value: "deny" },
+      { label: "Approve", value: "approve" },
+    ]);
+
+    // The raw arguments are gone: no separate "Tool input" message, no code block, no JSON keys.
+    expect(parts.details).toBeUndefined();
+    expect(text(parts)).not.toContain("Tool input");
+    expect(text(parts)).not.toContain("```");
+    expect(text(parts)).not.toContain("bodyText");
+    // eve's default, which this replaces, did carry them.
+    expect(text(fallback.details)).toContain("bodyText");
   });
 
-  it("keeps the subject and body when Slack repaints the answered card", async () => {
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({ content: content("meeting_followup_send", input) });
-    const blocks = renderInputRequestBlocks(request);
-    const payload = {
-      type: "block_actions", team: { id: "T1" }, user: { id: "U1", username: "owner-1" },
-      channel: { id: "D1" }, message: { ts: "1.2", blocks },
-      actions: [{ action_id: `eve_input:${request.requestId}:button:1`, block_id: "b1", value: "approve", text: { text: "Approve" } }],
-    };
-    let updateBody: { blocks?: unknown[] } | undefined;
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
-      updateBody = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }) as typeof fetch;
-    const pending: Promise<unknown>[] = [];
-    try {
-      await handleInteractionPost(`payload=${encodeURIComponent(JSON.stringify(payload))}`, {
-        from: () => ({ respond: async () => undefined }), resolveSession: async () => undefined,
-        waitUntil: (promise: Promise<unknown>) => pending.push(promise),
-      }, {
-        config: { credentials: { botToken: async () => "xoxb-test" } },
-        // eve 0.60 authorises every HITL click through `deps.onInputResponse` first; this is
-        // eve's own `defaultOnInputResponse`, the one `slackChannel()` installs by default.
-        onInputResponse: ({ defaultAuth }: { defaultAuth: unknown }) => ({ auth: defaultAuth }),
-      });
-      await Promise.all(pending);
-    } finally {
-      globalThis.fetch = realFetch;
+  it("leaves eve's buttons exactly as eve rendered them", () => {
+    const { parts, fallback } = render(approval("gmail_send", MAIL));
+    expect(blocksOf(parts)[0]).toEqual(fallback.controls.blocks[0]);
+  });
+
+  it("carries the draft in the notification text too, so a preview is not the title alone", () => {
+    const { parts } = render(approval("gmail_send", MAIL));
+    expect(parts.controls.text).toContain("Notes from the weekly sync");
+    expect(parts.controls.text).toContain("Thanks for the meeting today.");
+  });
+
+  it.each([
+    ["approved", settled("accepted", "approve"), "Approve"],
+    ["denied", settled("declined", "deny"), "Deny"],
+    ["ended without an answer", settled("withdrawn"), "No longer needed"],
+  ] as const)("still shows the subject and body after it is %s", (_name, ending, label) => {
+    const { parts, fallback } = render(approval("gmail_send", MAIL, ending), "U0000000000");
+
+    expect(text(parts)).not.toBe(text(fallback));
+    const blocks = blocksOf(parts);
+    expect(blocks.map((b) => b.type)).toEqual(["card", "section"]);
+    expect(text(blocks[1])).toContain("*Subject:* Notes from the weekly sync");
+    expect(text(blocks[1])).toContain("Thanks for the meeting today.");
+    // The card says how it ended, and its buttons are gone.
+    expect(text(blocks[0])).toContain(label);
+    expect(buttons(parts)).toEqual([]);
+    expect(text(parts)).not.toContain("eve_input:");
+    // Nothing was moved to a message eve would delete.
+    expect(parts.details).toBeUndefined();
+  });
+
+  it("shows text that looks like Slack markup as it was typed, never as a mention or a link", () => {
+    const { parts } = render(approval("gmail_send", {
+      ...MAIL,
+      subject: "<!channel> urgent",
+      bodyText: "Click <https://example.com/x|here> & reply",
+    }));
+    const draft = text(blocksOf(parts)[1]);
+    expect(draft).toContain("&lt;!channel&gt; urgent");
+    expect(draft).toContain("&lt;https://example.com/x|here&gt; &amp; reply");
+    expect(draft).not.toContain("<!channel>");
+  });
+
+  it("cuts a very long body under Slack's limit and says that it did", () => {
+    const { parts } = render(approval("gmail_send", { ...MAIL, bodyText: "x".repeat(5_000) }));
+    const draft = (blocksOf(parts)[1] as unknown as { text: { text: string } }).text.text;
+    expect(draft.length).toBeLessThanOrEqual(3_000);
+    expect(draft).toMatch(/shortened — \d+ characters are not shown\.$/);
+  });
+
+  it("the other mail tools get the same card", () => {
+    for (const tool of ["gmail_draft", "meeting_followup_send"]) {
+      const { parts } = render(approval(tool, { ...MAIL, notionPageId: "p1", seriesKey: "s1", meetingTitle: "Weekly sync" }));
+      expect(blocksOf(parts).map((b) => b.type), tool).toEqual(["card", "section"]);
+      expect(text(blocksOf(parts)[1]), tool).toContain("Thanks for the meeting today.");
+      expect(parts.details, tool).toBeUndefined();
     }
-    expect(JSON.stringify(updateBody?.blocks)).toContain("Takk for møtet i dag.");
-    expect(JSON.stringify(updateBody?.blocks)).toContain("Approve");
-  });
-
-  it("carries the draft in the plain-text fallback too, so a notification preview is not blind", () => {
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({ content: content("meeting_followup_send", input) });
-
-    const parts = renderInputRequestPostParts(request) as { controls: { text: string }; details?: { text: string } };
-    expect(parts.controls.text).toBe(request.prompt);
-    expect(parts.details?.text).toContain("Takk for møtet i dag.");
-  });
-
-  it("a covered tool with nothing to show keeps the ticket's shape: the card alone", () => {
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({
-      content: content("calendar_delete_event", { eventId: "e1", notify: false }),
-    });
-    expect((renderInputRequestBlocks(request) as Block[]).map((b) => b.type)).toEqual(["card"]);
   });
 });
 
-// the delete-event card names the reason a stale booking is being removed. It is
-// carried entirely in the TITLE (summarizeApproval), so it reaches Slack and Telegram through
-// the exact same pipeline every other dedicated-formatter title already does — no new details
-// hook, no change to the ticket's "card alone" shape for a tool with nothing more to show.
-describe("the eve patch — the delete-event card shows the reason, on Slack and Telegram alike", () => {
-  afterEach(() => {
-    delete globalThis.__eveApprovalSummary;
-    delete globalThis.__eveApprovalCovers;
-    delete globalThis.__eveApprovalDetails;
+describe("a summarised tool with nothing more to show", () => {
+  it("is the card alone: no draft section and no raw JSON", () => {
+    const { parts } = render(approval("calendar_delete_event", { eventId: "evt-example-1", notify: false }));
+    expect(blocksOf(parts).map((b) => b.type)).toEqual(["card"]);
+    expect(parts.details).toBeUndefined();
+    expect(text(parts)).not.toContain("```");
   });
 
-  const REASON = 'Cancellation mail from Hotel Gamma, 18 Aug 2026: "Your reservation has been cancelled".';
-
-  it("Slack: the reason is in the prompt, and the card stays a single card (no new details block)", () => {
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({
-      content: content("calendar_delete_event", { eventId: "e1", reason: REASON }),
-    });
-    expect(request.prompt).toContain("reason given by the agent");
-    expect(request.prompt).toContain(REASON);
-
-    const blocks = renderInputRequestBlocks(request) as Block[];
-    expect(blocks.map((b) => b.type)).toEqual(["card"]);
-    expect(toolInputBlock(blocks)).toBeUndefined();
-  });
-
-  it("Telegram: the same reason shows in the card text", () => {
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({
-      content: content("calendar_delete_event", { eventId: "e1", reason: REASON }),
-    });
-    const card = renderTelegramInputRequest(request, {}) as { text: string };
-    expect(card.text).toContain("reason given by the agent");
-    expect(card.text).toContain(REASON);
-  });
-
-  it("a card with no reason is byte-identical to today's on both channels", () => {
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({
-      content: content("calendar_delete_event", { eventId: "e1", notify: false }),
-    });
-    expect(request.prompt).toBe("Calendar: DELETE event e1");
-    expect((renderInputRequestBlocks(request) as Block[]).map((b) => b.type)).toEqual(["card"]);
-    const card = renderTelegramInputRequest(request, {}) as { text: string };
-    expect(card.text).not.toContain("reason given by the agent");
+  it("shows the title it was given, reason included, and adds nothing", () => {
+    const reason = 'Cancellation mail from the hotel, 18 Aug 2026: "Your reservation has been cancelled".';
+    const interaction = approval("calendar_delete_event", { eventId: "e1", reason });
+    expect(interaction.request.prompt).toContain(reason);
+    const { parts, fallback } = render(interaction);
+    expect(blocksOf(parts)).toEqual(fallback.controls.blocks);
+    expect(parts.details).toBeUndefined();
   });
 });
 
-describe("the eve patch — Telegram approval cards show the same details", () => {
-  afterEach(() => {
-    delete globalThis.__eveApprovalSummary;
-    delete globalThis.__eveApprovalCovers;
-    delete globalThis.__eveApprovalDetails;
-  });
+describe("a tool without a Lares summary keeps eve's own card", () => {
+  it("is eve's default, raw input in the collapsed block and all", () => {
+    const { parts, fallback } = render(approval("some_tool_nobody_summarised", { target: "x" }));
+    expect(parts).toEqual(fallback);
 
-  const telegramCard = (bodyText: string) => {
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({
-      content: content("gmail_send", { to: ["test@example.com"], subject: "Test", bodyText }),
-    });
-    return renderTelegramInputRequest(request, {});
-  };
-
-  it("puts subject and body above buttons labelled Cancel and Approve", () => {
-    const card = telegramCard("The complete email body");
-    expect(card.text).toContain("*Subject:* Test");
-    expect(card.text).toContain("The complete email body");
-    expect(card.replyMarkup.inline_keyboard[0].map((button: { text: string }) => button.text)).toEqual(["Cancel", "Approve"]);
-  });
-
-  it("fits Telegram's 4,000-character text limit and marks truncation clearly", () => {
-    // `mailDetails` now ends its own text with a sentence ("— shortened — N characters
-    // are not shown."), not a bare ellipsis. eve's patched `laresApprovalText`
-    // (patches/eve.patch, telegram-hitl hunk) only appends ITS "…(truncated)" marker when the
-    // details text it was handed ends in "…"/"..." — that was a hook for our OLD bare-ellipsis
-    // truncation, not a truncation signal of its own. Our sentence already says what was cut,
-    // so eve's generic marker no longer applies, and none is added.
-    const card = telegramCard("x".repeat(5_000));
-    expect(card.text.length).toBeLessThanOrEqual(4_000);
-    expect(card.text).toMatch(/shortened — \d+ characters are not shown\.$/);
-  });
-});
-
-// S1: an outside tool's title shortens values and drops arguments, and the request was built
-// by a model for a server nobody reviewed. The full input must stay on the card, on Slack and Telegram.
-describe("the eve patch — an outside tool keeps its full input on the card", () => {
-  afterEach(() => {
-    delete globalThis.__eveApprovalSummary;
-    delete globalThis.__eveApprovalCovers;
-    delete globalThis.__eveApprovalDetails;
-    resetOutsideConnectionsForTests();
-  });
-
-  const input = { a1: "x".repeat(500) + "TAIL_MARKER", a2: 2, a3: 3, a4: 4, a5: 5, a6: 6, a7: 7, a8: "EIGHTH_ARG" };
-
-  it("Slack: the collapsed Tool input block holds all 8 arguments and the whole long value", () => {
-    registerOutsideConnections(["registry"]);
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({ content: content("registry__create_note", input) });
-    expect(request.prompt).toContain("shortened, see the full request below");
-    const container = toolInputBlock(renderInputRequestBlocks(request) as Block[]);
+    const container = (parts.details?.blocks as readonly Block[] | undefined)?.find((b) => b.type === "container") as
+      { title?: { text: string }; default_collapsed?: boolean } | undefined;
+    expect(container?.title?.text).toBe("Tool input");
     expect(container?.default_collapsed).toBe(true);
-    const text = JSON.stringify(container);
-    expect(text).toContain("TAIL_MARKER");
-    expect(text).toContain("EIGHTH_ARG");
+    expect(text(container)).toContain("target");
+    expect(buttons(parts)).toEqual([
+      { label: "Deny", value: "deny" },
+      { label: "Approve", value: "approve" },
+    ]);
   });
 
-  it("Telegram: the card text carries the whole request too", () => {
+  // An outside tool's title shortens values and drops arguments, and the request was built by a
+  // model for a server nobody reviewed. The whole input has to stay on the card.
+  it("an outside tool keeps every argument and the whole long value", () => {
     registerOutsideConnections(["registry"]);
-    registerApprovalSummary();
-    const [request] = extractToolApprovalInputRequests({ content: content("registry__create_note", input) });
-    const card = renderTelegramInputRequest(request, {}) as { text: string };
-    expect(card.text).toContain("TAIL_MARKER");
-    expect(card.text).toContain("EIGHTH_ARG");
+    const input = { a1: "x".repeat(500) + "TAIL_MARKER", a2: 2, a3: 3, a4: 4, a5: 5, a6: 6, a7: 7, a8: "EIGHTH_ARG" };
+    const { parts, fallback } = render(approval("registry__create_note", input));
+    expect(parts).toEqual(fallback);
+    expect(text(parts.details)).toContain("TAIL_MARKER");
+    expect(text(parts.details)).toContain("EIGHTH_ARG");
+  });
+
+  it("a question is not an approval: untouched", () => {
+    const question = {
+      ...approval("gmail_send", MAIL),
+      request: { kind: "question", prompt: "Which one?", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] },
+    } as Interaction;
+    const { parts, fallback } = render(question);
+    expect(parts).toEqual(fallback);
+  });
+});
+
+describe("the renderer never breaks a card", () => {
+  it("falls back to eve's card rather than cut a draft silently, if one ever arrives over Slack's limit", async () => {
+    vi.resetModules();
+    vi.doMock("@lares/agent-kit/approval-summary", () => ({
+      coversApproval: () => true,
+      detailsForApproval: () => "y".repeat(3_001),
+    }));
+    try {
+      const { approvalInteractionCard: withLongDraft } = await import("../lib/slack-approval-card.js");
+      const eveDefault: SlackInteractionCardParts = {
+        controls: { blocks: [{ type: "card" }], text: "title" },
+        details: { blocks: [{ type: "container" }], text: "raw" },
+      };
+      expect(withLongDraft(cardFor(approval("gmail_send", MAIL)), () => eveDefault)).toBe(eveDefault);
+    } finally {
+      vi.doUnmock("@lares/agent-kit/approval-summary");
+      vi.resetModules();
+    }
+  });
+
+  it("calls eve's default exactly once and hands it the card unchanged", () => {
+    const card = cardFor(approval("gmail_send", MAIL));
+    const next = vi.fn((_card: SlackInteractionCard): SlackInteractionCardParts => ({
+      controls: { blocks: [{ type: "card" }], text: "title" },
+      details: { blocks: [{ type: "container" }], text: "raw" },
+    }));
+    approvalInteractionCard(card, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(next).toHaveBeenCalledWith(card);
   });
 });

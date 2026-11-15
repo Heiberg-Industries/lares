@@ -53,7 +53,7 @@ per-conversation language and the permissions board.
    the owner ticks and its own duties, personality and language. **Later:** one general image with every
    engine tool.
 4. **eve resolves everything at runtime, and no box ever builds.** Tools are resolved per session (the granted
-   subset). Instructions per turn: the engine's safety parts, the duties, the personality, the language, and
+   subset). Instructions per turn (amended 2026-11-15, see below): the engine's safety parts, the duties, the personality, the language, and
    the generated environment section. The model per session. Approval per call. No `eve build` on a box, no
    per-agent image, Dockerfile or CI.
 5. **The safety parts are engine-owned** and are part of every agent whatever its definition: how writes and
@@ -81,7 +81,7 @@ per-conversation language and the permissions board.
 **Positive:**
 
 - The vision holds: an owner creates, edits and retires agents in the console or with Claude Code. A
-  change applies at the next conversation (tools, model), the next turn (instructions, language), or the next
+  change applies at the next conversation (tools, model), the next turn (instructions, language; amended 2026-11-15, see below), or the next
   action (autonomy). Nothing is built and nothing waits for CI.
 - The console's existing autonomy switches (the Integrations page's never / gated / autonomous dial) finally
   reach the agents. Before this decision they wrote a table only meeting follow-ups read.
@@ -114,3 +114,24 @@ per-conversation language and the permissions board.
 - **How an older installation moves over:** first the byte-identical gate (rule 11), then its agents' definitions
   generated from its overlay's agent folders, then its overlay images retired.
 - **Overlay mode in the releases design:** dropped. The releases design is built only for the definitions shape.
+
+## Amendment 2026-11-15 — instructions and language reach a conversation when it begins
+
+Rule 4 says "Instructions per turn" and the Consequences say a change applies at "the next turn
+(instructions, language)". For the duties, the personality and the saved language that is not what
+the engine does; the clock and the standing-facts correction are still built for each turn. The
+persona (the duties, the personality and the saved language) is assembled once when a conversation
+begins and kept for it, and the saved language default is read from the definition that conversation
+pinned when it began. So a saved change to duties, personality or language reaches a Slack or
+Telegram conversation that is already running only when a new one starts. Two things can bring it in sooner. After the agent restarts, or after
+many newer conversations, the saved language default is read again at its next message. And the
+code's comments record that eve discards a saved persona when the engine image changes, so an
+engine upgrade should re-assemble a running conversation's persona from the saved definition; this
+has not been tested. A web-chat conversation is ended by a save (ADR-0027 rule 6), so the next one
+starts on the new definition. A scheduled run's own code reads the definition afresh each time it runs. The message
+it asks the agent to write is written in a conversation: in Telegram that is the person's running
+chat, so it uses the duties, personality and language that chat began with; a new conversation the
+run starts begins on the saved definition. Switching language inside a conversation because someone
+asked is a different thing: it is not a saved change and does hold from the next message. ADR-0027
+rule 3 calls these parts "live at Save": that means they need no Apply, not that a running
+conversation sees them. Tools and model are unchanged, with ADR-0027's amendment for the model.
