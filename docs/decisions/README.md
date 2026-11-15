@@ -17,7 +17,7 @@ ADR-0009 is not part of this repository. ADR-0016 supersedes its runtime choice 
 | [ADR-0010](0010-knowledge-store-authority.md) | One owner per fact; amended by ADR-0017 and ADR-0024 |
 | [ADR-0013](0013-agents-name-purposes-gateway-maps-models.md) | Agents name purposes; gateway maps them to models |
 | [ADR-0014](0014-proactivity-contract.md) | Proactivity contract |
-| [ADR-0015](0015-agents-are-definitions-resolved-at-runtime.md) | Agents are definitions resolved at runtime; amended by ADR-0027 for when a model change takes effect |
+| [ADR-0015](0015-agents-are-definitions-resolved-at-runtime.md) | Agents are definitions resolved at runtime; amended by ADR-0027 for when a model change takes effect, and by its own 2026-11-15 note for when instructions and language take effect |
 | [ADR-0016](0016-fleet-runs-on-eve.md) | The fleet runs on eve; amended by ADR-0025 |
 | [ADR-0017](0017-the-vault.md) | The Vault and its writable-home rules; amended by ADR-0024 for track items |
 | [ADR-0018](0018-learning-and-dreaming.md) | Learning and dreaming |
