@@ -73,7 +73,7 @@ describe("the console decides an approval that a Telegram session is waiting on"
   });
 
   describe("2. eve's real answer check, on a card the Telegram session raised", () => {
-    const telegram = { authenticator: "telegram-webhook", issuer: "telegram", principalId: "100", principalType: "user", attributes: { user_id: "100" } };
+    const telegram = { authenticator: "telegram-webhook", issuer: "telegram", principalId: "100", principalType: "user", attributes: { user_id: "100", chat_type: "private" } };
     const verdict = async (responder: unknown, optionId: string, requester: unknown = telegram) =>
       driveAnswer({ tool: (await eveDynamicFor("echo_note"))["echo_note"], toolName: "echo_note", input: { note: "hello" }, requester, responder, optionId });
     beforeEach(() => {
@@ -105,14 +105,14 @@ describe("the console decides an approval that a Telegram session is waiting on"
     vi.stubEnv("LARES_AGENT_INCARNATION", "");
     vi.stubEnv("CONSOLE_ALLOWED_EMAILS", `${OWNER},second@example.com`);
     vi.stubEnv("TELEGRAM_PRINCIPAL_ID", "100,200");
-    const telegram = { authenticator: "telegram-webhook", principalId: "100", principalType: "user", attributes: { user_id: "100" } };
+    const telegram = { authenticator: "telegram-webhook", principalId: "100", principalType: "user", attributes: { user_id: "100", chat_type: "private" } };
     const run = (responder?: unknown) => ({ callId: "call-1", session: { auth: { current: telegram, initiator: telegram } }, ...(responder === undefined ? {} : { approval: { responder } }) });
     // The assertApproval path itself reads the process env, hence the stubs above; it needs the ledger, which passes when no row exists.
     await expect(assertApproval(run(await doorAuth(OWNER)) as never, "echo_note", { note: "hello" })).resolves.toBeUndefined();
     await expect(assertApproval(run(await doorAuth("someone-else@example.com")) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
     // An ALLOWED second console member, or an allowed second Telegram person, is not the owner: refused at execution too.
     await expect(assertApproval(run(await doorAuth("second@example.com")) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
-    await expect(assertApproval(run({ authenticator: "telegram-webhook", principalId: "200", principalType: "user", attributes: { user_id: "200" } }) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
+    await expect(assertApproval(run({ authenticator: "telegram-webhook", principalId: "200", principalType: "user", attributes: { user_id: "200", chat_type: "private" } }) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
     await expect(assertApproval(run({}) as never, "echo_note", { note: "hello" })).rejects.toThrow(UnauthorizedApproverError);
     vi.unstubAllEnvs();
   });

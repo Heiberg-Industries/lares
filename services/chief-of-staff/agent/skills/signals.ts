@@ -14,11 +14,12 @@
 //     that is not a plain "yes", including a definition that cannot be read or does not validate.
 //
 // THIS SKILL is the method for the `signals` code skill. It exists only where the definition
-// declares that skill and grants the signal feed, and never in a private console conversation.
+// declares that skill and grants the signal feed, never in a private console conversation, and never in one started in a shared room.
 import { defineDynamic, defineSkill } from "eve/skills";
 import { manifestViewOf } from "@lares/agent-kit/definition";
 import { instructionSkillOffered } from "@lares/agent-kit/manifest";
 import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-surface";
+import { hiddenInSharedRoom } from "@lares/agent-kit/shared-room";
 
 import { thisAgent } from "../../lib/definition.js";
 
@@ -28,6 +29,8 @@ const content = "# Signals\n\nCall `agent-kit__signals_recent` first whenever th
 
 export default defineDynamic(async (ctx) => {
   const privateConsole = await verifyPrivateConsoleSession(ctx);
+  // Not in a conversation started in a shared room: the room rule does not list this skill.
+  if (hiddenInSharedRoom(ctx, "signals")) return null;
   const offered = await instructionSkillOffered("signals", {
     privateConsole,
     memo: (key, fn) => ctx.memo(key, fn),

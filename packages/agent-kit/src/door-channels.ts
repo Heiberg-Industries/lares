@@ -1,5 +1,6 @@
 import {createHmac,timingSafeEqual} from 'node:crypto';
 import {assertDoorAuthority,tryClaim,managedIdentity,type DoorDatabase} from './door-authority.js';
+import {chatKindOf} from './shared-room.js';
 /** Installed eve SlackWebhookVerifier receives (Request, raw body) before events OR HITL.
  * https://docs.slack.dev/authentication/verifying-requests-from-slack/ */
 export function slackDoorVerifier(secret:()=>string,db?:DoorDatabase,env:NodeJS.ProcessEnv=process.env) {
@@ -74,8 +75,8 @@ async function intercept(kind:'slack'|'telegram',text:string,sender:string,priva
  return false;
 }
 export async function interceptSlackClaim(message:{text:string;channelId:string;author?:{isBot?:boolean;userId:string}},db?:DoorDatabase,env:NodeJS.ProcessEnv=process.env,reply?:DoorReply) {
- return intercept('slack',message.text,message.author?.userId??'',message.channelId.startsWith('D')&&message.author?.isBot===false,db,env,reply);
+ return intercept('slack',message.text,message.author?.userId??'',chatKindOf({authenticator:'slack-webhook',attributes:{channel_id:message.channelId}})==='private-chat'&&message.author?.isBot===false,db,env,reply);
 }
 export async function interceptTelegramClaim(message:{text:string;chat:{type:string};from?:{id:string;isBot:boolean}},db?:DoorDatabase,env:NodeJS.ProcessEnv=process.env,reply?:DoorReply) {
- return intercept('telegram',message.text,message.from?.id??'',message.chat.type==='private'&&message.from?.isBot===false,db,env,reply);
+ return intercept('telegram',message.text,message.from?.id??'',chatKindOf({authenticator:'telegram-webhook',attributes:{chat_type:message.chat.type}})==='private-chat'&&message.from?.isBot===false,db,env,reply);
 }

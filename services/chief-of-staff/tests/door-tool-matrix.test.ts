@@ -157,7 +157,7 @@ vi.mock("../lib/conversation-continuity.js", async (original) => ({
 import { defaultTelegramAuth } from "eve/channels/telegram";
 import { setBoardDeps } from "@lares/agent-kit/board-approval";
 import { CONSOLE_AUTHORITY_REFUSED } from "@lares/agent-kit/console-turn-authority";
-import { SHARED_ROOM_REFUSED, SHARED_ROOM_UNAVAILABLE, sharedRoomHiddenTool } from "@lares/agent-kit/private-console-surface";
+import { SHARED_ROOM_REFUSED, SHARED_ROOM_UNAVAILABLE, sharedRoomAllows } from "@lares/agent-kit/shared-room";
 import { parseDefinition } from "@lares/agent-kit/definition";
 import { interceptSlackClaim, interceptTelegramClaim } from "@lares/agent-kit/door-channels";
 
@@ -194,8 +194,10 @@ type Row = readonly [tool: string, slackDm: Cell, slackRoom: Cell, telegram: Cel
 // baseline snapshot was captured against. On Slack and Telegram, tools that ask first follow that
 // definition ("gated"); no permissions-board row overrides it here. `read_url` runs because the
 // turn has not yet read anyone else's words; after it has, it asks first on those doors.
-// The Slack room column hides what the private console treats as one person's own, plus note
-// search and backlinks (`sharedRoomHiddenTool` in agent-kit): the room reads along with the answer.
+// The Slack room column is the room rule (`sharedRoomAllows` in `@lares/agent-kit/shared-room`):
+// everyone in the room reads the answer, so only public material, the conversation's language and
+// read-only looks at contacts, deadlines and reminders are shown; everything else is hidden and
+// refused, and no tool shown there raises a card.
 //
 //                                        Slack    Slack    Tele-    Web      Web
 //                                        owner    owner    gram     owner    member
@@ -204,8 +206,8 @@ const TABLE: readonly Row[] = [
   // Mail
   ["gmail_read",                          R,       H,       R,       R,       R],
   ["gmail_search",                        R,       H,       R,       R,       R],
-  ["gmail_signature",                     R,       R,       R,       H,       H],
-  ["gmail_send",                          C,       C,       C,       H,       H],
+  ["gmail_signature",                     R,       H,       R,       H,       H],
+  ["gmail_send",                          C,       H,       C,       H,       H],
   // Found: web chat shows the owner these two and refuses every call (see the `it.fails` below).
   ["gmail_draft",                         R,       H,       R,       X,       H],
   ["gmail_draft_recipients",              R,       H,       R,       X,       H],
@@ -223,57 +225,57 @@ const TABLE: readonly Row[] = [
   ["agent-kit__vault_search",             R,       H,       R,       H,       H],
   ["agent-kit__vault_backlinks",          R,       H,       R,       H,       H],
   ["agent-kit__vault_write",              C,       H,       C,       C,       C],
-  ["agent-kit__vault_file",               C,       C,       C,       H,       H],
-  ["agent-kit__vault_drop",               C,       C,       C,       H,       H],
-  ["save_note",                           R,       R,       R,       H,       H],
-  ["atlas_proposals",                     R,       R,       R,       H,       H],
-  ["atlas_resolve_proposal",              C,       C,       C,       H,       H],
+  ["agent-kit__vault_file",               C,       H,       C,       H,       H],
+  ["agent-kit__vault_drop",               C,       H,       C,       H,       H],
+  ["save_note",                           R,       H,       R,       H,       H],
+  ["atlas_proposals",                     R,       H,       R,       H,       H],
+  ["atlas_resolve_proposal",              C,       H,       C,       H,       H],
   // Links. Found: same as the drafts, shown to the owner in web chat and always refused.
   ["read_url",                            R,       H,       R,       X,       H],
   // What the agent remembers
-  ["remember",                            R,       R,       R,       H,       H],
-  ["forget",                              C,       C,       C,       H,       H],
-  ["facts_list",                          R,       R,       R,       H,       H],
-  ["memory_used",                         R,       R,       R,       H,       H],
-  ["memory_proposals",                    R,       R,       R,       H,       H],
-  ["memory_resolve_proposal",             C,       C,       C,       H,       H],
+  ["remember",                            R,       H,       R,       H,       H],
+  ["forget",                              C,       H,       C,       H,       H],
+  ["facts_list",                          R,       H,       R,       H,       H],
+  ["memory_used",                         R,       H,       R,       H,       H],
+  ["memory_proposals",                    R,       H,       R,       H,       H],
+  ["memory_resolve_proposal",             C,       H,       C,       H,       H],
   // Deadlines, reminders, obligations
   ["deadline_list",                       R,       R,       R,       H,       H],
-  ["deadline_add",                        R,       R,       R,       H,       H],
-  ["deadline_reset",                      R,       R,       R,       H,       H],
-  ["deadline_done",                       C,       C,       C,       H,       H],
-  ["deadline_dismiss",                    C,       C,       C,       H,       H],
-  ["deadline_mint_statutory",             C,       C,       C,       H,       H],
+  ["deadline_add",                        R,       H,       R,       H,       H],
+  ["deadline_reset",                      R,       H,       R,       H,       H],
+  ["deadline_done",                       C,       H,       C,       H,       H],
+  ["deadline_dismiss",                    C,       H,       C,       H,       H],
+  ["deadline_mint_statutory",             C,       H,       C,       H,       H],
   ["remind_list",                         R,       R,       R,       H,       H],
-  ["remind_set",                          C,       C,       C,       H,       H],
-  ["remind_cancel",                       C,       C,       C,       H,       H],
-  ["obligation_dismiss",                  R,       R,       R,       H,       H],
+  ["remind_set",                          C,       H,       C,       H,       H],
+  ["remind_cancel",                       C,       H,       C,       H,       H],
+  ["obligation_dismiss",                  R,       H,       R,       H,       H],
   // People and the CRM
   ["person_lookup",                       R,       H,       R,       H,       H],
-  ["identity_my_addresses",               R,       R,       R,       H,       H],
+  ["identity_my_addresses",               R,       H,       R,       H,       H],
   ["twenty_lookup",                       R,       R,       R,       H,       H],
   ["twenty_get_person",                   R,       R,       R,       H,       H],
   ["twenty_company_for_person",           R,       R,       R,       H,       H],
-  ["twenty_comm_state",                   C,       C,       C,       H,       H],
-  ["twenty_create_opportunity",           C,       C,       C,       H,       H],
-  ["twenty_do_not_contact",               C,       C,       C,       H,       H],
-  ["twenty_note",                         C,       C,       C,       H,       H],
-  ["twenty_set_stage",                    C,       C,       C,       H,       H],
-  ["outreach_track",                      R,       R,       R,       H,       H],
+  ["twenty_comm_state",                   C,       H,       C,       H,       H],
+  ["twenty_create_opportunity",           C,       H,       C,       H,       H],
+  ["twenty_do_not_contact",               C,       H,       C,       H,       H],
+  ["twenty_note",                         C,       H,       C,       H,       H],
+  ["twenty_set_stage",                    C,       H,       C,       H,       H],
+  ["outreach_track",                      R,       H,       R,       H,       H],
   // Meetings
-  ["meeting_followup_auto",               C,       C,       C,       H,       H],
-  ["meeting_followup_redraft",            C,       C,       C,       H,       H],
-  ["meeting_followup_send",               C,       C,       C,       H,       H],
-  ["meeting_followup_record_denial",      R,       R,       R,       H,       H],
+  ["meeting_followup_auto",               C,       H,       C,       H,       H],
+  ["meeting_followup_redraft",            C,       H,       C,       H,       H],
+  ["meeting_followup_send",               C,       H,       C,       H,       H],
+  ["meeting_followup_record_denial",      R,       H,       R,       H,       H],
   // Notion proposals
-  ["notion_proposals",                    R,       R,       R,       H,       H],
-  ["notion_resolve_proposal",             C,       C,       C,       H,       H],
+  ["notion_proposals",                    R,       H,       R,       H,       H],
+  ["notion_resolve_proposal",             C,       H,       C,       H,       H],
   // The rest
-  ["agent-kit__signals_recent",           R,       R,       R,       H,       H],
-  ["digest_run",                          R,       R,       R,       H,       H],
-  ["echo_note",                           C,       C,       C,       H,       H],
+  ["agent-kit__signals_recent",           R,       H,       R,       H,       H],
+  ["digest_run",                          R,       H,       R,       H,       H],
+  ["echo_note",                           C,       H,       C,       H,       H],
   ["set_language",                        R,       R,       R,       H,       H],
-  ["voice_guide",                         R,       R,       R,       H,       H],
+  ["voice_guide",                         R,       H,       R,       H,       H],
   // Shown on a door but missing from the baseline snapshot (see NOT_IN_BASELINE).
   ["gmail_accounts",                      R,       H,       R,       R,       R],
   ["tracks_list",                         H,       H,       H,       R,       R],
@@ -291,13 +293,13 @@ const S = "shown";
 type OwnCell = typeof S | typeof H;
 type OwnRow = readonly [tool: string, slackDm: OwnCell, slackRoom: OwnCell, telegram: OwnCell, webOwner: OwnCell, webMember: OwnCell];
 const OWN_RESOLVER: readonly OwnRow[] = [
-  ["commercial_who_to_contact",           S,       S,       S,       H,       H],
+  ["commercial_who_to_contact",           S,       H,       S,       H,       H],
   ["lares_read_public_doc",               S,       S,       S,       S,       S],
   // The skills replace main's `load_skill` rows. On eve 1.0 a skill the conversation may not have is simply absent
   // (there is no authored loader to refuse it), so what a door can load is what its skill files return.
   ["skill lares-docs",                    S,       S,       S,       S,       S],
-  ["skill sales-outreach",                S,       S,       S,       H,       H],
-  ["skill signals",                       S,       S,       S,       H,       H],
+  ["skill sales-outreach",                S,       H,       S,       H,       H],
+  ["skill signals",                       S,       H,       S,       H,       H],
 ];
 
 /** Baseline tools no door decides. Every other baseline tool must have a row above. */
@@ -337,13 +339,19 @@ const REPRESENTATIVE: ReadonlyArray<readonly [label: string, tool: string]> = [
 ];
 
 /** What a conversation started in a shared Slack room is not offered: the room's H cells that a DM shows. */
-const SHARED_ROOM_HIDDEN: readonly string[] = [
-  "gmail_accounts", "gmail_read", "gmail_search", "gmail_draft", "gmail_draft_recipients",
-  "calendar_list_events", "calendar_list_calendars", "calendar_free_busy", "calendar_conflicts",
-  "calendar_create_event", "calendar_update_event", "calendar_delete_event",
-  "agent-kit__vault_search", "agent-kit__vault_backlinks", "agent-kit__vault_write", "read_url",
-  "person_lookup",
-];
+const SHARED_ROOM_HIDDEN: readonly string[] = TABLE
+  .filter((row) => row[1] !== H && row[2] === H).map((row) => row[0]);
+
+/** Catalogue tools with no row: the neutral definition grants none of them, so no door shows them. */
+const NOT_GRANTED: Readonly<Record<string, string>> = {
+  "agent-kit__transit_plan": "the neutral definition does not grant `transit`; the room rule lists it (public transport)",
+  personal_calendar_accounts: "console-only (`privateOnlyTool`); the neutral definition does not grant it",
+  personal_calendar_events: "console-only (`privateOnlyTool`); the neutral definition does not grant it",
+  personal_mailbox_accounts: "console-only (`privateOnlyTool`); the neutral definition does not grant it",
+  personal_mailbox_list: "console-only (`privateOnlyTool`); the neutral definition does not grant it",
+  personal_mailbox_read: "console-only (`privateOnlyTool`); the neutral definition does not grant it",
+  personal_mailbox_send: "console-only (`privateOnlyTool`); the neutral definition does not grant it",
+};
 
 // ─── The doors, and the fake messages that knock on them ──────────────────────────────────────
 
@@ -548,6 +556,28 @@ describe("the table covers the baseline", () => {
   it("lists every row the baseline does not, with why", () => {
     expect(rows.filter((tool) => !baseline().includes(tool)).sort()).toEqual(Object.keys(NOT_IN_BASELINE).sort());
   });
+
+  // A tool added to the catalogue needs a row, and so a decision for the shared room, before this is green.
+  it("has a row for every catalogue tool, or a stated reason no door shows it", () => {
+    const tableRows = TABLE.map((row) => row[0]);
+    expect(Object.keys(CATALOGUE).filter((tool) => !tableRows.includes(tool) && !(tool in NOT_GRANTED))).toEqual([]);
+    expect(Object.keys(NOT_GRANTED).filter((tool) => tableRows.includes(tool) || !(tool in CATALOGUE))).toEqual([]);
+  });
+
+  it("the shared room column is the room rule: what the rule lists behaves as in a direct message, everything else is hidden", () => {
+    for (const row of TABLE) expect(row[column("slackRoom")], row[0]).toBe(sharedRoomAllows(row[0]) ? row[column("slackDm")] : H);
+    for (const row of OWN_RESOLVER) {
+      const name = row[0].replace(/^skill /, "");
+      expect(row[column("slackRoom")], row[0]).toBe(sharedRoomAllows(name) ? row[column("slackDm")] : H);
+    }
+  });
+
+  it("no tool shown in a shared room can raise an approval card", () => {
+    expect(TABLE.filter((row) => row[column("slackRoom")] === C || row[column("slackRoom")] === X).map((row) => row[0])).toEqual([]);
+    const shownInRoom = [...TABLE.filter((row) => row[column("slackRoom")] !== H).map((row) => row[0]),
+      ...Object.keys(NOT_GRANTED).filter((tool) => sharedRoomAllows(tool))];
+    for (const tool of shownInRoom) expect((CATALOGUE[tool]!.tool as { approval?: unknown }).approval, tool).toBeUndefined();
+  });
 });
 
 // ─── Each door, for the people it admits ──────────────────────────────────────────────────────
@@ -643,6 +673,18 @@ describe("tools with their own resolver", () => {
     }
   }
 
+  it("Slack · owner · mention in a shared channel: a call of commercial_who_to_contact is refused before the CRM is read", async () => {
+    const native = (await started(commercialResolver, (await observe("slackDm")).session)) as { execute(input: unknown, ctx: unknown): Promise<unknown> };
+    await expect(native.execute({}, (await observe("slackRoom")).session)).rejects.toThrow(SHARED_ROOM_REFUSED);
+  });
+
+  it("Slack · owner · mention in a shared channel: offers the public help skill only; the others are absent", async () => {
+    const { session } = await observe("slackRoom");
+    expect(JSON.stringify(await started(laresDocsSkill, session))).toContain("Public Lares documentation");
+    expect(await started(signalsSkill, session)).toBeNull();
+    expect(await started(salesOutreachSkill, session)).toBeNull();
+  });
+
   for (const key of ["webOwner", "webMember"] as const) {
     it(`${door(key).title}: a call of commercial_who_to_contact is refused before the CRM is read`, async () => {
       const native = (await started(commercialResolver, (await observe("slackDm")).session)) as { execute(input: unknown, ctx: unknown): Promise<unknown> };
@@ -661,7 +703,7 @@ describe("tools with their own resolver", () => {
   }
 
   // Main's "load_skill offers and loads the agent's own skills" for the chat doors.
-  for (const key of ["slackDm", "slackRoom", "telegram"] as const) {
+  for (const key of ["slackDm", "telegram"] as const) {
     it(`${door(key).title}: offers the agent's own skills and their text`, async () => {
       const { session } = await observe(key);
       expect(JSON.stringify(await started(signalsSkill, session))).toContain("# Signals");
@@ -755,9 +797,9 @@ describe("Found: what the table records today, and what should hold instead", ()
     expect(shown.filter((tool) => ["gmail_read", "gmail_search", "calendar_list_events", "agent-kit__vault_search"].includes(tool))).toEqual([]);
   });
 
-  // The same fix, as the difference it makes: the room sees the direct-message list less exactly the
-  // private tools, and a call of one of those is refused; every other call goes as it does in a DM.
-  it("Slack · owner · mention in a shared channel: sees and may call what a direct message does, less the private tools", async () => {
+  // The rule, as the difference it makes: the room sees the direct-message list less everything the room
+  // rule does not list, and a call of one of those is refused; every other call goes as it does in a DM.
+  it("Slack · owner · mention in a shared channel: sees and may call what a direct message does, less everything the room rule does not list", async () => {
     const room = await observe("slackRoom");
     const direct = await observe("slackDm");
     expect(direct.shown).toEqual(expect.arrayContaining([...SHARED_ROOM_HIDDEN]));
@@ -767,9 +809,22 @@ describe("Found: what the table records today, and what should hold instead", ()
     expect(others(room.calls)).toEqual(others(direct.calls));
   });
 
-  it("the shared room hides exactly the DM tools the private-surface rule names", () => {
+  it("the shared room hides exactly the DM tools the room rule does not list", () => {
     const dm = TABLE.filter((row) => row[column("slackDm")] !== H).map((row) => row[0]);
-    expect(dm.filter((tool) => sharedRoomHiddenTool(tool)).sort()).toEqual([...SHARED_ROOM_HIDDEN].sort());
+    expect(dm.filter((tool) => !sharedRoomAllows(tool)).sort()).toEqual([...SHARED_ROOM_HIDDEN].sort());
+    // What the owner chose to keep in a room: public material, the language, and read-only looks.
+    expect(dm.filter((tool) => sharedRoomAllows(tool)).sort()).toEqual(["deadline_list", "remind_list", "set_language",
+      "twenty_company_for_person", "twenty_get_person", "twenty_lookup"]);
+  });
+
+  // The writes that ran with no card in a room, and every card tool: hidden and refused before any card.
+  it("Slack · owner · mention in a shared channel: remembering, notes, deadlines and every card tool are hidden and refused", async () => {
+    const room = await observe("slackRoom");
+    for (const tool of ["remember", "save_note", "deadline_add", "deadline_reset", "facts_list", "memory_used", "gmail_send",
+      "gmail_signature", "identity_my_addresses", "voice_guide", "digest_run", "agent-kit__signals_recent", "remind_set", "forget"]) {
+      expect(room.shown, tool).not.toContain(tool);
+      expect(room.reasons[tool], tool).toBe(SHARED_ROOM_REFUSED);
+    }
   });
 
   // A card answered in the room makes the answerer the session's current identity (agent/channels/slack.ts).
