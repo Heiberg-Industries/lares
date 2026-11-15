@@ -459,6 +459,9 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 onChange={(e) => patch({ description: e.target.value })}
               />
             </Field>
+            <p className="lares-effect-note">
+              A label for your own reference. Only this page shows it; the agent does not read it.
+            </p>
             {group(
               <>Instructions and language</>,
               "Instructions and language",
