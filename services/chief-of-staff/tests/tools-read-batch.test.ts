@@ -165,9 +165,9 @@ describe("vault_list, in each area", () => {
     writeFileSync(join(brain, "index.md"), "Index\n");
     process.env["VAULT_PATH"] = brain;
 
-    const result = (await vaultList.execute({ area: "private" }, ctx)) as { notes: string[]; files: number };
-    expect(result.files).toBe(2);
-    expect(result.notes.sort()).toEqual(["index.md", "ventures/soma.md"]);
+    const result = (await vaultList.execute({ area: "private" }, ctx)) as { notes: string[]; nextCursor?: number };
+    expect(result).toEqual({ notes: ["index.md", "ventures/soma.md"] });
+    expect(await vaultList.execute({ area: "private", folder: "ventures" }, ctx)).toEqual({ notes: ["ventures/soma.md"] });
   });
 
   it("lists the shared area independently of the private one", async () => {
@@ -177,7 +177,7 @@ describe("vault_list, in each area", () => {
     writeFileSync(join(atlas, "acme.md"), "# Acme\n");
     process.env["ATLAS_PATH"] = atlas;
 
-    expect(await vaultList.execute({ area: "shared" }, ctx)).toEqual({ notes: ["acme.md"], files: 1 });
+    expect(await vaultList.execute({ area: "shared" }, ctx)).toEqual({ notes: ["acme.md"] });
   });
 
   it("an unmounted/empty store is an error, never an empty list", async () => {

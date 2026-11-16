@@ -1,7 +1,7 @@
 import { VaultTracksHome, type TrackFileWriter } from '@lares/agent-kit/tracks';
 import { consoleAdmission } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
-import { vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
+import { vaultBrokerListFolder, vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
 import { vaultTurnCapability } from '../agent/lib/vault-turn.js';
 import { approvalResponderOf, type ApprovedExecution } from '@lares/agent-kit/approval-execution';
 import { taintTurn, turnKeyFrom } from '@lares/agent-kit/origin-taint';
@@ -33,13 +33,12 @@ export function tracksHome(ctx: TrackContext, expectedHome?: string): VaultTrack
   const readHome = expectedHome ? { home: expectedHome } : {};
   const files: TrackFileWriter = {
     async list() {
-      const result = await vaultBrokerRequest<{ notes: string[] }>('vault.read', { ...identity, operation: 'list', area: 'shared', ...readHome });
-      return result.notes.filter(path => path.startsWith('tracks/'));
+      return await vaultBrokerListFolder({ ...identity, area: 'shared', ...readHome }, 'tracks');
     },
     async read(path) {
       if (!path.startsWith('tracks/')) throw new Error('Track access refused');
-      const paths = await vaultBrokerRequest<{ notes: string[] }>('vault.read', { ...identity, operation: 'list', area: 'shared', ...readHome });
-      if (!paths.notes.includes(path)) return undefined;
+      const folder = path.slice(0, path.lastIndexOf('/'));
+      if (!(await vaultBrokerListFolder({ ...identity, area: 'shared', ...readHome }, folder)).includes(path)) return undefined;
       const result = await vaultBrokerRequest<{ content: string; contentRevision: string }>('vault.read', { ...identity, operation: 'read', area: 'shared', path, ...readHome });
       markTrackOrigin(ctx, result.content);
       return { path, content: result.content, contentRevision: result.contentRevision };

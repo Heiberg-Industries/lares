@@ -10,7 +10,8 @@ import { z } from 'zod';
 import { vaultAreaBindingSchema, vaultWriteBindingSchema, type VaultAreaBinding, type VaultWriteBinding } from './authority-contract.js';
 import type { GrantDatabase } from './grant-store.js';
 import type { PgVaultStore } from './vault-area-store.js';
-import { findBacklinks, listNotes, NoteNotFoundError, NotePathEscapesStoreError, resolveInStore, searchNotes } from './notes-store.js';
+import { findBacklinks, listNotes, NoteNotFoundError, notePage, NotePathEscapesStoreError, resolveInStore, searchNotes, visibleTo,
+  type NotePageRequest, type Reader } from './notes-store.js';
 import { withGuardedVaultRepositoryLock } from './note-lock.js';
 import { commitFile, commitNote, commitNotes, moveNote, removeNote, runGuardedVaultGit, vaultCompanionOf, vaultContentRevision, VaultContentChangedError, VaultPushFailedError, VaultStagedChangesError, type VaultBatchFileResult, type VaultGitGuard } from './vault-git.js';
 import { articleCompanionPath } from '@lares/vault-format/article';
@@ -152,9 +153,20 @@ export class GuardedVaultFiles {
       return {paths,files:paths.length};
     });
   }
+  /** One page of the listing (`notePage`) with only the notes `reader` may see. Every note on the page
+   * is opened under ONE area authorisation, so a page costs the same checks as a single read, and a
+   * page opens at most `request.limit` files whatever the area's size. */
+  async listPage(ctx:VaultFilesContext,request:NotePageRequest,reader:Reader):Promise<{paths:string[];nextCursor?:number}> {
+    return this.readArea(ctx,root=>{
+      const page=notePage(listNotes(root,{allowEmpty:true,rejectNestedRepositories:true}),request);
+      const paths=page.paths.filter(path=>{const abs=resolveInStore(path,root,{rejectNestedRepositories:true});regular(abs);return visibleTo(readFileSync(abs,'utf8'),reader);});
+      return {paths,...(page.nextCursor!==undefined?{nextCursor:page.nextCursor}:{})};
+    });
+  }
   async count(ctx:VaultFilesContext):Promise<number> {return (await this.list(ctx)).files;}
-  async search(ctx:VaultFilesContext,query:string) {
-    return this.readArea(ctx,root=>searchNotes(query,root,undefined,{allowEmpty:true,fresh:true,rejectNestedRepositories:true}));
+  /** With a reader, only notes that reader may see are returned (`searchNotes`). */
+  async search(ctx:VaultFilesContext,query:string,reader?:Reader) {
+    return this.readArea(ctx,root=>searchNotes(query,root,reader,{allowEmpty:true,fresh:true,rejectNestedRepositories:true}));
   }
   async backlinks(ctx:VaultFilesContext,path:string) {
     return this.readArea(ctx,root=>findBacklinks(path,root,undefined,{allowEmpty:true,fresh:true,rejectNestedRepositories:true}));

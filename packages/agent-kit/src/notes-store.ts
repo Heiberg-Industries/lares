@@ -141,6 +141,33 @@ export function listNotes(root: string, options: NoteReadOptions = {}): string[]
   return files;
 }
 
+/** How many notes one page of a listing holds at most, and how many files a page opens at most. */
+export const NOTE_LIST_PAGE = 200;
+
+export interface NotePageRequest {
+  /** Store-relative folder; only notes in it and its subfolders. Absent or "" is the whole area. */
+  folder?: string;
+  /** Where the previous page ended, as given in its `nextCursor`. Absent is the start. */
+  cursor?: number;
+  limit: number;
+}
+
+/**
+ * One page of a listing: alphabetical, optionally only one folder, starting at `cursor`.
+ *
+ * The cursor is a POSITION in that order, never a path. A path cursor would name the last note a
+ * page looked at, and that note may be one the reader is not allowed to see. A folder is a prefix
+ * filter over paths the listing already produced, so it can never reach a folder the listing hides
+ * (`_meta/` and the rest of `EXCLUDED_DIRS`).
+ */
+export function notePage(paths: readonly string[], request: NotePageRequest): { paths: string[]; nextCursor?: number } {
+  const folder = (request.folder ?? "").replace(/^\/+|\/+$/g, "");
+  const inFolder = folder === "" ? [...paths] : paths.filter((path) => path.startsWith(`${folder}/`));
+  inFolder.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const start = request.cursor ?? 0, end = start + request.limit;
+  return { paths: inFolder.slice(start, end), ...(end < inFolder.length ? { nextCursor: end } : {}) };
+}
+
 export interface SearchResult {
   hits: string[];
   files: number;

@@ -63,6 +63,13 @@ vi.mock('@lares/agent-kit/vault-files', async (importOriginal) => {
       if (/^(tracks|_meta|_inbox|reads|inspiration|writing-seeds|articles)\/|\/transcripts\//.test(path)) throw new NoteNotFoundError(path);
       return { path, content: 'private note content', lines: 1, contentRevision: 'fixture', companion: null };
     }
+    async listPage(ctx: unknown, request: any, reader: any) {
+      if (this.delegate) return (this.delegate as any).listPage(ctx, request, reader);
+      const { notePage, visibleTo } = await import('../../../packages/agent-kit/src/notes-store.js');
+      const page = notePage(['owner.md', ...ids.trackFiles.keys()], request);
+      return { paths: page.paths.filter(path => visibleTo(ids.trackFiles.get(path)?.content ?? 'private note content', reader)), ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}) };
+    }
+    async search(ctx: unknown, query: string, reader: unknown) { if (this.delegate) return (this.delegate as any).search(ctx, query, reader); return { hits: [], files: 0 }; }
     async listUnder(ctx: unknown, dir: string) { if (this.delegate) return (this.delegate as any).listUnder(ctx, dir); const prefix = dir.replace(/\/+$/, '') + '/'; const paths = [...ids.trackFiles.keys()].filter(p => p.startsWith(prefix)); return { paths, files: paths.length }; }
     async remove(ctx: unknown, input: { binding: { relativePath: string } }, ...rest: unknown[]) { if (this.delegate) return (this.delegate as any).remove(ctx, input, ...rest); ids.lastBinding = input.binding; ids.trackFiles.delete(input.binding.relativePath); return { commit: 'removed' }; }
     async move(ctx: unknown, input: { binding: { relativePath: string }; destination: string }, ...rest: unknown[]) {
@@ -393,7 +400,7 @@ async function realAreasAndTurn() {
   approvalTurnId = turn.turnId;
   setVaultTurnCapability({ sessionId: session, turnId: turn.turnId, sequence: approvalTurnSequence, incarnation },
     { turnId: turn.turnId, sequence: approvalTurnSequence, capability: turn.opened.turnCapability, expiresAt: turn.opened.expiresAt });
-  return { notePath: join(vaultRoot, `vault/private/${ids.area}/_inbox/oslo.md`), privateOrigin: join(originRoot, `${ids.area}.git`) };
+  return { notePath: join(vaultRoot, `vault/private/${ids.area}/_inbox/oslo.md`), privateOrigin: join(originRoot, `${ids.area}.git`), turn };
 }
 const noteInput = { area: 'private', title: 'Oslo', body: 'Trip to Oslo Wednesday' };
 const noteProof = (approved: any, input: unknown = noteInput) => ({ requestId: approved.authority.requestId, callId: approved.callId, toolName: approved.toolName,
@@ -517,6 +524,81 @@ it('binds neutral Vault writes to the supplied current home and exact move track
     approval: exactAddProof, operation: 'track_add_item', input: exactAdd });
   expect(exactResult.result).toMatchObject({ trackId: 'follow-up', who: { personId: 'person-1' }, step: 'Open' });
   expect((await pool.query("SELECT use_count,used_at FROM approval_asks WHERE call_id='track-call-1'")).rows[0].use_count).toBe(1);
+});
+
+// A real-size Vault: 2,000 notes in the private area, one in ten written for another member. Every
+// list page, the search and the read go through the real keeper path (signed request, turn capability,
+// source read, GuardedVaultFiles over a git working copy) and must answer inside the 2 s deadline.
+it('lists 2,000 notes page by page, one folder, finds a note by search and reads it, each inside the deadline (measured)', async () => {
+  const { turn } = await realAreasAndTurn();
+  const privateRoot = join(root, 'vault-files', `vault/private/${ids.area}`), sharedRoot = join(root, 'vault-files', `vault/shared/${ids.sharedArea}`);
+  const folders = ['projects', 'people', 'daily/2026', 'reading'], visible = new Set<string>(), hidden = new Set<string>();
+  const filler = 'Notes from a working week: what was decided, who said what, and the next step. '.repeat(20);
+  for (let i = 0; i < 2000; i++) {
+    const folder = folders[i % folders.length]!, path = `${folder}/note-${String(i).padStart(4, '0')}.md`, other = i % 10 === 7;
+    const head = other ? '---\nscope: private\nowner: member-backup\n---\n' : '';
+    const word = i === 1234 || i === 1237 ? 'zanzibarquokka ' : '';
+    mkdirSync(join(privateRoot, folder), { recursive: true });
+    writeFileSync(join(privateRoot, path), `${head}# Note ${i}\n\n${word}${filler}\n`);
+    (other ? hidden : visible).add(path);
+  }
+  mkdirSync(join(privateRoot, '_meta/conversations'), { recursive: true });
+  writeFileSync(join(privateRoot, '_meta/conversations/log.md'), 'a conversation log, never listed');
+  mkdirSync(join(sharedRoot, 'ventures'), { recursive: true });
+  writeFileSync(join(sharedRoot, 'ventures/harbor.md'), '# Harbor\n\nThe harbor venture, positioning and buyers.\n');
+  for (const repo of [privateRoot, sharedRoot]) {
+    execFileSync('git', ['-C', repo, 'add', '.'], { stdio: 'ignore' }); execFileSync('git', ['-C', repo, 'commit', '-m', 'notes'], { stdio: 'ignore' });
+  }
+  const call = (input: Record<string, unknown>) => runtime('vault.read', { turnCapability: turn.opened.turnCapability, sessionId: session, memberId: ids.member,
+    admissionNonce, turnId: turn.turnId, sequence: approvalTurnSequence, ...input });
+  const timed = async (input: Record<string, unknown>) => { const started = performance.now(); const result = await call(input); return { result, ms: performance.now() - started }; };
+
+  const listed: string[] = [], pageMs: number[] = [];
+  let cursor: number | undefined, pages = 0;
+  do {
+    const { result, ms } = await timed({ operation: 'list', area: 'private', ...(cursor !== undefined ? { cursor } : {}) });
+    pageMs.push(ms); listed.push(...result.notes); cursor = result.nextCursor; pages++;
+    expect(result.notes.length).toBeLessThanOrEqual(200);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(256 * 1024);
+  } while (cursor !== undefined && pages < 50);
+  expect(pages).toBe(10);
+  expect(listed.length).toBe(visible.size);
+  expect(new Set(listed).size).toBe(listed.length);
+  expect([...listed].sort()).toEqual([...visible].sort());
+  expect(listed.filter(path => hidden.has(path) || path.startsWith('_meta/'))).toEqual([]);
+
+  const people: string[] = [], folderMs: number[] = [];
+  cursor = undefined;
+  do {
+    const { result, ms } = await timed({ operation: 'list', area: 'private', folder: 'people', ...(cursor !== undefined ? { cursor } : {}) });
+    folderMs.push(ms); people.push(...result.notes); cursor = result.nextCursor;
+  } while (cursor !== undefined && folderMs.length < 10);
+  expect(folderMs.length).toBe(3);
+  expect(people).toEqual([...visible].filter(path => path.startsWith('people/')).sort());
+  expect((await call({ operation: 'list', area: 'private', folder: '_meta' })).notes).toEqual([]);
+
+  const { result: found, ms: searchMs } = await timed({ operation: 'search', area: 'private', q: 'zanzibarquokka' });
+  // note-1237 holds the word too, but it is another member's note: never returned.
+  expect(found.hits).toEqual(['daily/2026/note-1234.md']);
+  const { result: broad, ms: broadMs } = await timed({ operation: 'search', area: 'private', q: 'working week' });
+  expect(broad.hits.length).toBe(50); expect(broad.more).toBe(true);
+  expect(broad.hits.filter((path: string) => hidden.has(path))).toEqual([]);
+  const { result: read, ms: readMs } = await timed({ operation: 'read', area: 'private', path: found.hits[0] });
+  expect(read.content).toContain('zanzibarquokka');
+  expect((await call({ operation: 'search', area: 'shared', q: 'harbor buyers' })).hits).toEqual(['ventures/harbor.md']);
+
+  console.log(`2,000-note private area through keeper: list pages ${pageMs.map(ms => ms.toFixed(0)).join(', ')} ms; ` +
+    `folder pages ${folderMs.map(ms => ms.toFixed(0)).join(', ')} ms; search one note ${searchMs.toFixed(0)} ms; broad search ${broadMs.toFixed(0)} ms; read ${readMs.toFixed(0)} ms (client deadline 2000 ms, keeper 1700 ms)`);
+  for (const ms of [...pageMs, ...folderMs, searchMs, broadMs, readMs]) expect(ms).toBeLessThan(2000);
+}, 120_000);
+
+it('refuses a list cursor or folder that is not a page position or a folder, and a search without words', async () => {
+  const { turnId, opened } = await openTurn(0);
+  const base = { turnCapability: opened.turnCapability, sessionId: session, memberId: ids.member, admissionNonce, turnId, sequence: 0, area: 'private' };
+  for (const input of [{ operation: 'list', cursor: -1 }, { operation: 'list', cursor: 'owner.md' }, { operation: 'list', folder: 7 }, { operation: 'list', folder: 'x'.repeat(513) },
+    { operation: 'read', path: 'owner.md', cursor: 0 }, { operation: 'search' }, { operation: 'search', q: '' }, { operation: 'search', q: 'x'.repeat(1001) }, { operation: 'list', q: 'x' }])
+    await expect(runtime('vault.read', { ...base, ...input }), JSON.stringify(input)).rejects.toThrow('Vault reader unavailable (the keeper refused: read)');
+  expect(await runtime('vault.read', { ...base, operation: 'list' })).toEqual({ ok: true, notes: ['owner.md'] });
 });
 
 it('admits a signed human receipt, opens a non-synthetic turn id, reads through the keeper, and closes once', async () => {

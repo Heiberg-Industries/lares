@@ -8,6 +8,8 @@ import { resolveUser, type ResolvedUser } from "./identity.js";
 import {
   findBacklinks,
   listNotes,
+  NOTE_LIST_PAGE,
+  notePage,
   readNote,
   searchNotes,
   storeForArea,
@@ -209,9 +211,11 @@ export function searchTool(deps?: NoteToolDeps) {
   return defineTool({
     description:
       `Search one area of the Vault for notes matching a query. Send natural words, not a ` +
-      `regex. Returns store-relative paths plus that area's total note count — a result ` +
+      `regex. Use this to find notes about a subject instead of listing the whole area. ` +
+      `Returns store-relative paths plus that area's total note count — a result ` +
       `with zero hits and a non-zero count means the query found nothing, not that the ` +
-      `area is unavailable. ${AREA_INPUT_DOC}`,
+      `area is unavailable. When the result has \`more: true\`, more notes matched than came ` +
+      `back: search again with more specific words. ${AREA_INPUT_DOC}`,
     inputSchema: z.object({ area: areaInput, q: z.string() }),
     // async so a typed refusal arrives as a rejected promise, matching the guarded file
     // tools — eve awaits tool executors and a sync throw escapes that await in some paths.
@@ -288,12 +292,28 @@ export function readTool(deps?: ReadToolDeps) {
 export function listTool(deps?: NoteToolDeps) {
   return defineTool({
     description:
-      `List every note in one area of the Vault by its store-relative path (for example ` +
-      `"ventures/harbor.md") — a directory listing, not a search. Use this to see what's ` +
-      `there before searching or reading. An empty area is a misconfiguration (unmounted ` +
-      `volume, wrong path, empty clone), never a valid "nothing here" answer, and throws ` +
-      `instead of returning an empty list. ${AREA_INPUT_DOC}`,
-    inputSchema: z.object({ area: areaInput }),
+      `List the notes in one area of the Vault by their store-relative paths (for example ` +
+      `"ventures/harbor.md"), in alphabetical order, one page of at most ${NOTE_LIST_PAGE} at a time. ` +
+      `This is a directory listing, not a search: to find notes about a subject, use the search ` +
+      `tool instead of listing everything. Give \`folder\` (for example "ventures") to list only ` +
+      `the notes in that folder and its subfolders. When the result has \`nextCursor\`, more notes ` +
+      `follow: call again with the same area and folder and \`cursor\` set to that value. A page ` +
+      `can hold fewer notes than that and still have more after it. No \`nextCursor\` means the ` +
+      `listing is complete. ${AREA_INPUT_DOC}`,
+    inputSchema: z.object({
+      area: areaInput,
+      folder: z
+        .string()
+        .max(512)
+        .optional()
+        .describe('A folder in the area, for example "ventures"; omit for the whole area.'),
+      cursor: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Omit for the first page. Use the nextCursor of the previous page."),
+    }),
     // STAYS ON THE LEGACY, UNFILTERED PATH (a deliberate cut in the multi-user substrate).
     // `searchNotes`/`readNote`/`findBacklinks` filter by scope for free because they
     // already open every candidate file's content for scoring/reading; a plain listing
@@ -301,12 +321,13 @@ export function listTool(deps?: NoteToolDeps) {
     // directory index, the same cost as a full-store search on every call. A leaked TITLE
     // is a smaller wound than a leaked BODY, so this is an honest, recorded cut rather
     // than a silent one. Re-check this call specifically before a second real member is
-    // ever seated.
-    async execute({ area }, ctx) {
+    // ever seated. (In web chat the call never reaches this body: keeper lists the page and
+    // filters it by reader; see `services/keeper/lib/vault-console-broker.ts`.)
+    async execute({ area, folder, cursor }, ctx) {
       const store = await storeForGrantedArea(area, deps, ctx);
       await readerFor(store, ctx);
-      const notes = listNotes(storeRootForArea(area));
-      return { notes, files: notes.length };
+      const page = notePage(listNotes(storeRootForArea(area)), { folder, cursor, limit: NOTE_LIST_PAGE });
+      return { notes: page.paths, ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}) };
     },
   });
 }

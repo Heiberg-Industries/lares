@@ -117,7 +117,10 @@ describe('what a shared room may use', () => {
   });
 
   it('leaves the private console lists as they are', () => {
-    expect(privateToolAllowed('chief-of-staff', 'agent-kit__vault_search', { callerIsOwner: true })).toBe(false);
+    // Note search is offered in web chat on purpose (keeper searches there); it stays off the room list above.
+    expect(privateToolAllowed('chief-of-staff', 'agent-kit__vault_search', { callerIsOwner: true })).toBe(true);
+    expect(privateToolAllowed('chief-of-staff', 'agent-kit__vault_search', { callerIsOwner: false })).toBe(true);
+    expect(privateOnlyTool('agent-kit__vault_search')).toBe(false);
     expect(privateToolAllowed('chief-of-staff', 'person_lookup', { callerIsOwner: true })).toBe(false);
     expect(privateOnlyTool('person_lookup')).toBe(false);
   });

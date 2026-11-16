@@ -110,7 +110,7 @@ describe("the shared area, through the same tools", () => {
 
   it("lists each area separately", async () => {
     twoStores();
-    expect(await vaultList.execute({ area: "shared" }, ctx)).toEqual({ notes: ["acme.md"], files: 1 });
+    expect(await vaultList.execute({ area: "shared" }, ctx)).toEqual({ notes: ["acme.md"] });
   });
 
   it("the two areas do not cross", async () => {

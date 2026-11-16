@@ -11,7 +11,7 @@ import { parseDefinition } from '@lares/agent-kit/definition';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { canWriteVaultArea } from '@lares/agent-kit/manifest';
 import { stampFor, turnKeyFrom } from '@lares/agent-kit/origin-taint';
-import { vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
+import { vaultBrokerListFolder, vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
 import { parseVaultNoteInput, vaultNotePath, vaultNoteTargetFingerprint, VAULT_NOTE_WRITE_POLICY,
   VAULT_NOTE_WRITE_TOOL } from '@lares/agent-kit/vault-note-write';
 import { vaultTurnCapability } from '../agent/lib/vault-turn.js';
@@ -30,8 +30,8 @@ async function currentPrivateNote(ctx: NoteContext, path: string): Promise<strin
   const identity = { turnCapability: turn.capability, turnId, sequence, sessionId: session.id, memberId: admission.memberId,
     admissionNonce: admission.admissionNonce, area: 'private' };
   // A missing note and a refused read look the same from a read, so ask the listing first.
-  const listed = await vaultBrokerRequest<{ notes: string[] }>('vault.read', { ...identity, operation: 'list' });
-  if (!listed.notes.includes(path)) return null;
+  const folder = path.slice(0, path.lastIndexOf('/'));
+  if (!(await vaultBrokerListFolder(identity, folder)).includes(path)) return null;
   return (await vaultBrokerRequest<{ content: string }>('vault.read', { ...identity, operation: 'read', path })).content;
 }
 
