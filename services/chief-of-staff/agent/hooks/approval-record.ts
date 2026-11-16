@@ -14,9 +14,9 @@ export type { ApprovalRecordDeps } from "@lares/agent-kit/approval-record-hook";
 import {personalSendInputRequested,personalSendInputResolved} from '../../lib/personal-send-approval.js';
 import { getPool } from "@lares/agent-kit/db";
 import { approverFrom, assertApprover, takeNativeAnswerer } from "../../lib/approvals.js";
-import { noteAnswerApplied, noteApprovalCardTurn } from "../../lib/approval-card-turns.js";
+import { clearCardWithdrawnByMessage, noteAnswerApplied, noteApprovalCardTurn, noteCardWithdrawnByMessage } from "../../lib/approval-card-turns.js";
 import { settleAcceptedAnswer } from "@lares/agent-kit/private-console-resume";
-import { openContinuationAfterSettle } from "../lib/model-purpose.js";
+import { openContinuationAfterMessage, openContinuationAfterSettle } from "../lib/model-purpose.js";
 import { applyRouteProposalDecline, recordRouteApprovalLink, routeApprovalLinkAudience } from "../../lib/route-decline.js";
 import { withCurrentNativeContinuity } from "../../lib/conversation-continuity.js";
 const live = makeApprovalRecord({personalRequested:(r,c)=>personalSendInputRequested(r,c as never),personalResolved:(r,o,c)=>personalSendInputResolved(r,o,c as never)});
@@ -79,6 +79,17 @@ function cardTurnOf(event: unknown, ctx: HookContext): unknown {
   return (event as { scope?: { turnId?: unknown } } | undefined)?.scope?.turnId ?? ctx?.session?.turn?.id;
 }
 
+/** eve's reason for a card nobody answered that closed because a message steered its turn instead
+ *  (`SUPERSEDED_BY_MESSAGE`, eve `dist/src/protocol/session-projection/reader.js`; not exported, so
+ *  `tests/turn-after-answered-card.test.ts` pins this copy to eve's own). A card withdrawn for any other
+ *  reason (its tool is gone) does not count. */
+export const WITHDRAWN_BY_MESSAGE_REASON = "superseded-by-message";
+/** Whether a settled card was cancelled because the person typed a new message while it waited. */
+export function withdrawnByMessage(event: unknown): boolean {
+  const data = (event as { data?: { outcome?: unknown; reason?: unknown } } | undefined)?.data;
+  return data?.outcome === "withdrawn" && data.reason === WITHDRAWN_BY_MESSAGE_REASON;
+}
+
 let routeDeclineWarned = false;
 function warnRouteDecline(error: unknown): void {
   if (routeDeclineWarned) return;
@@ -92,7 +103,11 @@ export default defineHook({
     "interaction.opened": async (event: unknown, ctx: HookContext) => {
       // A turn that asks a card carries no new human instruction from here on (durable; throws,
       // failing the turn, when it cannot be recorded).
-      if (asksApproval(event)) noteApprovalCardTurn(cardTurnOf(event, ctx));
+      if (asksApproval(event)) {
+        noteApprovalCardTurn(cardTurnOf(event, ctx));
+        // A refused reply from here on follows this card, not an earlier typed message.
+        clearCardWithdrawnByMessage(cardTurnOf(event, ctx));
+      }
       await live["interaction.opened"](event, ctx);
       try { await linkScheduledRouteRequests(getPool(), event, ctx); } catch (error) { warnRouteDecline(error); }
     },
@@ -100,9 +115,12 @@ export default defineHook({
       const settled = settledApproval(event, ctx);
       // Every settled card takes its native answerer, so the store never outlives its cards (lib/approvals.ts).
       const answerer = settled ? takeNativeAnswerer(settled.interactionId, ctx?.session?.id) : undefined;
+      const byMessage = settled !== undefined && withdrawnByMessage(event);
       if (settled) {
         // Marked again on settle; a no-op when the opening hook already marked the turn.
         noteApprovalCardTurn(cardTurnOf(event, ctx));
+        // The turn whose card a typed message cancelled: which sentence is true if its reply is refused.
+        if (byMessage) noteCardWithdrawnByMessage(cardTurnOf(event, ctx));
         // Which sentence is true if this turn's reply is later refused (lib/model-purpose.ts), and the
         // mark the "nothing new that reaches other people" rule reads (lib/approval-card-turns.ts).
         if (settled.decidedByPerson) {
@@ -121,6 +139,10 @@ export default defineHook({
       // After the card's own settle work, before eve runs the approved action: the answer's
       // 30-second receipt becomes the continuation's Keeper turn now (lib/model-purpose.ts).
       if (settled) await openContinuationAfterSettle(cardTurnOf(event, ctx), ctx?.session as never);
+      // The person typed a new message instead of answering: eve withdrew this card, and the turn
+      // goes on to read that message. Its own receipt becomes the continuation's Keeper turn now,
+      // unless an answer above already opened it (lib/model-purpose.ts).
+      if (byMessage) await openContinuationAfterMessage(cardTurnOf(event, ctx), ctx?.session as never);
       try { await applyScheduledRouteDeclines(settled, answerer); } catch (error) { warnRouteDecline(error); }
     },
   },

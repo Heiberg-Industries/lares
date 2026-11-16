@@ -190,9 +190,38 @@ export function expiredInteractionIds(events: readonly unknown[], now: number): 
   return out;
 }
 
+/** Where a card was asked: its turn, its step, and the task whose run asked it. eve settles all the
+ *  cards of one step together, once each has an answer (or a new message withdraws the rest). */
+function stepOf(approval: Interaction): string {
+  return `${approval.turnId}\0${approval.stepIndex}\0${approval.taskId ?? ""}`;
+}
+
+/**
+ * How many cards still wait for the person's answer, per step (see {@link stepOf}): open, not yet
+ * answered, and not past the approval lifetime (one that is can no longer be answered). Pure.
+ */
+export function waitingCardsByStep(messages: readonly EveMessage[], expired: ReadonlySet<string> = new Set()): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const message of messages) for (const part of message.parts) {
+    if (part.type !== "tool") continue;
+    const approval = approvalOf(part);
+    if (!approval || approval.status !== "open" || approval.answer !== undefined || expired.has(approval.interactionId)) continue;
+    out.set(stepOf(approval), (out.get(stepOf(approval)) ?? 0) + 1);
+  }
+  return out;
+}
+
 /**
  * What a card says instead of buttons, or null while it is still waiting for an answer. Pure and
  * exported so the wording is pinned by a test rather than by reading the JSX.
+ *
+ * An answered card that is still open is waiting for the agent, unless another card asked in the
+ * same step still waits for the person (`waiting`, from {@link waitingCardsByStep}): eve runs the
+ * step's cards together, so nothing happens with this one until that card is answered too, or a
+ * new message cancels it. In a conversation that has ended (`page.ended`) or where this page cannot
+ * answer or send (`page.answerable` false: the conversation is unavailable here), the card says only
+ * that it was answered: the alert below the transcript says why the conversation stopped, and an
+ * ended conversation can still have run the approved action (a refused reconnect also ends it).
  *
  * Whether a person decided is read from the approval's own `outcome`, never from how the call
  * went: `accepted` and `declined` are a decision, and every other ending — withdrawn because a
@@ -200,11 +229,19 @@ export function expiredInteractionIds(events: readonly unknown[], now: number): 
  * framework adds — means nobody decided. Those cards are no longer active, and say so; they are
  * never shown as approved and never as still waiting.
  */
-export function settledSay(part: ToolPart): string | null {
+export function settledSay(part: ToolPart, waiting: ReadonlyMap<string, number> = new Map(),
+  page: { readonly ended?: boolean; readonly answerable?: boolean } = {}): string | null {
   const approval = approvalOf(part);
   if (!approval) return null;
   if (approval.status === "open") {
-    return approval.answer === undefined ? null : "You have answered this. Waiting for the agent.";
+    if (approval.answer === undefined) return null;
+    if (page.ended === true) return "You have answered this.";
+    if (page.answerable === false) return "You have answered this.";
+    const others = waiting.get(stepOf(approval)) ?? 0;
+    const other = others === 1 ? "the other card asked with it is answered" : "the other cards asked with it are answered";
+    if (others > 0 && approval.answer.optionId === APPROVE) return `You approved this. It runs once ${other} or you send a new message.`;
+    if (others > 0 && approval.answer.optionId === DENY) return `You denied this. The agent goes on once ${other} or you send a new message.`;
+    return "You have answered this. Waiting for the agent.";
   }
   if (approval.outcome === "accepted") {
     switch (part.state) {
@@ -232,8 +269,10 @@ function ApprovalCard({
   answering,
   onAnswer,
   personalCard,
+  waiting,
 }: {
   personalCard?:PersonalSendCard|null;
+  waiting: ReadonlyMap<string, number>;
   part: ToolPart;
   approval: Interaction;
   expired: boolean;
@@ -241,7 +280,7 @@ function ApprovalCard({
   answering: string | null;
   onAnswer?: (interactionId: string, optionId: AnswerOption) => void;
 }) {
-  const settled = settledSay(part);
+  const settled = settledSay(part, waiting, { ended, answerable: onAnswer !== undefined });
   // A live button only when the card is still open, has not expired, nothing else is in flight,
   // and this transcript was given somewhere to send the answer. Every one of those is a reason a
   // button would do nothing, and a button that does nothing is worse than a sentence.
@@ -301,6 +340,8 @@ function ApprovalCard({
 
 interface CardState {
   personalSendCards?:Readonly<Record<string,PersonalSendCard|null>>;
+  /** Cards still waiting for the person's answer, per step ({@link waitingCardsByStep}). */
+  readonly waiting: ReadonlyMap<string, number>;
   readonly expired: ReadonlySet<string>;
   readonly ended: boolean;
   readonly answering: string | null;
@@ -379,6 +420,7 @@ function renderPart(part: EveMessagePart, index: number, cards: CardState, role:
             answering={cards.answering}
             onAnswer={cards.onAnswer}
             personalCard={cards.personalSendCards?.[approval.interactionId]}
+            waiting={cards.waiting}
           />
         );
       }
@@ -430,7 +472,7 @@ function TranscriptMessage({ message, cards, agentName }: { message: EveMessage;
 const NONE: ReadonlySet<string> = new Set();
 
 export function ChatTranscript({ messages, status, error = null, ended = false, expired = NONE, answering = null, onAnswer, agentName,personalSendCards, notRunning = null }: ChatTranscriptProps) {
-  const cards: CardState = { expired, ended, answering,personalSendCards, ...(onAnswer === undefined ? {} : { onAnswer }) };
+  const cards: CardState = { expired, ended, answering,personalSendCards, waiting: waitingCardsByStep(messages, expired), ...(onAnswer === undefined ? {} : { onAnswer }) };
   const failed = error !== null && error !== "";
   // With nothing to show: a reconnect in progress, the reason there is nothing, or an invitation.
   // An ended conversation says its one sentence once, in the alert below.

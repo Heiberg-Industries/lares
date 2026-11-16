@@ -36,6 +36,11 @@ const cardTurns = defineState<readonly string[]>("lares.approval-card-turns", ()
 /** The turns in which a person's answer to a card was applied (written at settle). Only says which
  *  sentence is true when that turn's reply is refused; it widens nothing. */
 const answeredTurns = defineState<readonly string[]>("lares.approval-answered-turns", () => []);
+/** The turns whose latest card event was a card cancelled because the person typed a new message
+ *  while it waited (eve withdraws it: written at settle), cleared again when a later card opens in
+ *  the same turn. Only says which sentence is true when that turn's reply is refused; it widens
+ *  nothing. */
+const messageWithdrawnTurns = defineState<readonly string[]>("lares.approval-withdrawn-by-message-turns", () => []);
 
 type TurnLike = { turn?: { id?: unknown } | null } | null | undefined;
 
@@ -62,6 +67,34 @@ export function turnAskedACard(session: TurnLike): boolean {
 export function noteAnswerApplied(turnId: unknown): void {
   if (typeof turnId !== "string" || !turnId) throw new Error("An approval card's turn could not be recorded");
   answeredTurns.update((ids) => (ids.includes(turnId) ? ids : [...ids, turnId].slice(-MAX_TURNS)));
+}
+
+/** Record that a card in `turnId` was cancelled by a new message the person typed while it waited.
+ *  Throws when it cannot, like {@link noteApprovalCardTurn}. */
+export function noteCardWithdrawnByMessage(turnId: unknown): void {
+  if (typeof turnId !== "string" || !turnId) throw new Error("An approval card's turn could not be recorded");
+  messageWithdrawnTurns.update((ids) => (ids.includes(turnId) ? ids : [...ids, turnId].slice(-MAX_TURNS)));
+}
+
+/** A new card opened in `turnId`: a refused reply from here on follows that card, not the earlier
+ *  message. Throws when it cannot, like {@link noteApprovalCardTurn}. */
+export function clearCardWithdrawnByMessage(turnId: unknown): void {
+  if (typeof turnId !== "string" || !turnId) throw new Error("An approval card's turn could not be recorded");
+  if (turnCardWithdrawnByMessage({ turn: { id: turnId } }) === false) return; // nothing to clear
+  messageWithdrawnTurns.update((current) => (Array.isArray(current) ? current.filter((id) => id !== turnId) : []));
+}
+
+/** Whether the latest card event of this session's current turn was a card cancelled by a new
+ *  message; undefined when that cannot be known (no turn id, unreadable state). */
+export function turnCardWithdrawnByMessage(session: TurnLike): boolean | undefined {
+  const turnId = session?.turn?.id;
+  if (typeof turnId !== "string" || !turnId) return undefined;
+  try {
+    const ids = messageWithdrawnTurns.get();
+    return Array.isArray(ids) ? ids.includes(turnId) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** What the model is told when an action that reaches other people is refused by

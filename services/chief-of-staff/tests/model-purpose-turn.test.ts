@@ -342,22 +342,27 @@ describe('a slow approved action', () => {
 // What the person sees when the reply in a turn that asked a card is refused (here: no accepted
 // answer is in memory). The seam's refusal says only what is true, read from the durable marks:
 // "your answer was applied" only when a person's answer was applied in this turn (the settle hook's
-// mark); "ended without an answer" when the turn asked a card that nobody answered, for example the
-// person typed a new message while it waited (eve withdraws the card and the turn carries on); the
-// plain refusal when the turn asked no card. Before round 3 the steered case said "your answer was
-// applied", which was untrue.
+// mark); "ended without an answer" when the turn asked a card that nobody answered; when the person
+// typed a new message while a card waited (eve withdraws the card and the turn carries on), a
+// sentence that says so and that the new message was not answered, with "your answer was applied"
+// too when another card's answer was (the mixed case); the plain refusal when the turn asked no
+// card. Before round 3 the steered case said "your answer was applied", which was untrue.
 describe('the refused reply in a turn that asked a card', () => {
   const step = (turnId: string, sequence: number) => ({ type: 'step.started' as const, data: { turnId, sequence, stepIndex: 11 } });
-  for (const [label, asked, applied, expected] of [
-    ['an answer was applied (then the agent restarted): the fixed reply refusal', true, true, 'The reply after an approval answer was refused'],
-    ['the card was withdrawn by a typed message, nobody answered: "ended without an answer"', true, false, 'The approval in this turn ended without an answer'],
-    ['a turn that asked no card keeps the plain refusal', false, false, 'Model purpose authority is not available'],
+  for (const [label, asked, applied, byMessage, expected] of [
+    ['an answer was applied (then the agent restarted): the fixed reply refusal', true, true, false, 'The reply after an approval answer was refused'],
+    ['the card ended with nobody\'s answer (it expired): "ended without an answer"', true, false, false, 'The approval in this turn ended without an answer'],
+    ['the card was withdrawn by a typed message, nobody answered: the message one, "nothing was done"', true, false, true, 'The reply to a message sent while an approval waited was refused'],
+    // The mixed case: one card approved, the other withdrawn by the typed message, then the reply refused.
+    ['one card approved, the other withdrawn by a typed message: says both', true, true, true, 'The reply to a message sent after an approval answer was refused'],
+    ['a turn that asked no card keeps the plain refusal', false, false, false, 'Model purpose authority is not available'],
   ] as const) {
     it(label, async () => {
       vi.stubEnv('LARES_AGENT_NAME', 'helper');
       vi.stubEnv('LARES_AGENT_INCARNATION', incarnation);
       if (asked) sessionState.set('lares.approval-card-turns', ['turn_4']);
       if (applied) sessionState.set('lares.approval-answered-turns', ['turn_4']);
+      if (byMessage) sessionState.set('lares.approval-withdrawn-by-message-turns', ['turn_4']);
       const session = context('turn_4', 4, asker(), asker());
       prepareModelPurposeInvocation(step('turn_4', 4), session as never);
       const invocation = captureModelInvocation(step('turn_4', 4), session as never, 'lares-brain');
