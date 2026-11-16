@@ -115,6 +115,24 @@ describe("the install-time model-only check", () => {
       });
     });
 
+    it("gives no fix line for a provider with no model list, and a careful one for a 403", async () => {
+      for (const [status, fix] of [[404, null], [403, "Check the key's permissions and the countries your provider serves."]] as const) {
+        await withProfile(anthropic, async (profileFile) => {
+          const out: string[] = [];
+          const fetch = vi.fn(async () => new Response("{}", { status }));
+          await main(["--test-model", "--gateway-profile-file", profileFile, "--provider-key-file", "/k"], {
+            db: db(), env: {}, out: (line) => out.push(line), readKeyFile: () => KEY, fetch: fetch as typeof globalThis.fetch,
+          });
+          const lines = out.join("\n").split("\n");
+          const at = lines.findIndex((line) => line.includes("Model provider key"));
+          expect(lines[at]).toMatch(status === 404 ? /^UNKNOWN / : /^FAIL /);
+          if (fix === null) expect(lines[at + 1]?.startsWith("    ")).toBe(false);
+          else expect(lines[at + 1]).toContain(fix);
+          expect(out.join("\n")).not.toContain("again in a moment");
+        });
+      }
+    });
+
     it("makes no outside call without --test-model, and says how to ask for one", async () => {
       await withProfile(anthropic, async (profileFile) => {
         const out: string[] = [];

@@ -33,10 +33,10 @@
 #                                                       software (lares update runs it last)
 #   lares agent provider-key set <name> --key-file <path>
 #                                                       make an agent pay with its own model-provider
-#                                                       key (path "-" reads the key from standard input)
+#                                                       key (path "-" reads a key piped to it)
 #   lares agent provider-key remove <name>              put the agent back on the installation's key
 #   lares provider-key set --key-file <path>            replace the installation's own model-provider
-#                                                       key (path "-" reads it from standard input) and
+#                                                       key (path "-" reads a key piped to it) and
 #                                                       restart the model gateway, nothing else
 #
 # Image mode only: nothing here needs Node, pnpm or a checkout. Layout (set by get-lares.sh):

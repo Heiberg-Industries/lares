@@ -369,6 +369,18 @@ def gateway_replaced_files() -> list[str]:
     return sorted(f[4] for f in fields if len(f) > 4 and f[3].endswith("//deleted"))
 
 
+def gateway_reads_key(expected: str) -> bool:
+    """Whether the running gateway's own provider key file holds exactly `expected`. Read inside the
+    container and compared here; neither value is printed or kept."""
+    ids = output("docker", "ps", "-q", "--filter", "label=com.docker.compose.service=lares-gateway").split()
+    if not ids:
+        raise RuntimeError("no gateway container is running")
+    read = run("docker", "exec", ids[0], "cat", "/run/secrets/model-provider-key", timeout=60, check=False, show=False)
+    if read.returncode != 0:
+        raise RuntimeError(f"the gateway's provider key file could not be read inside the gateway (exit {read.returncode})")
+    return hmac.compare_digest(read.stdout.strip().encode(), expected.encode())
+
+
 def agent_image() -> str | None:
     """The image the proof agent's running container was started from; None when it is not running."""
     ids = output("docker", "ps", "-q", "--filter", f"label=com.docker.compose.service=lares-{AGENT}").split()
@@ -2644,7 +2656,8 @@ def main(argv: list[str]) -> int:
             raise RuntimeError(f"lares doctor --test-model did not pass on the installed key: {line} {models_calls()}")
         passed("doctor-test-model-accepts-the-installed-key")
         wrong_file = home / "wrong-model-key"
-        wrong_file.write_text("sk-ant-api03-" + base64.urlsafe_b64encode(os.urandom(40)).decode().rstrip("=") + "\n")
+        wrong_key = "sk-ant-api03-" + base64.urlsafe_b64encode(os.urandom(40)).decode().rstrip("=")
+        wrong_file.write_text(wrong_key + "\n")
         os.chmod(wrong_file, 0o600)
         key_path = pathlib.Path("/etc/lares/secrets/model-provider-key")
         key_mode = (key_path.stat().st_uid, key_path.stat().st_gid, key_path.stat().st_mode & 0o777)
@@ -2653,6 +2666,9 @@ def main(argv: list[str]) -> int:
             raise RuntimeError("lares provider-key set did not replace the key and restart the gateway")
         if (key_path.stat().st_uid, key_path.stat().st_gid, key_path.stat().st_mode & 0o777) != key_mode:
             raise RuntimeError("lares provider-key set changed the key file's owner or mode")
+        # The restarted gateway itself must read the new key, not the old file it was started with.
+        if not gateway_reads_key(wrong_key):
+            raise RuntimeError("after lares provider-key set, the running gateway does not read the new key")
         refused = run("lares", "doctor", "--test-model", timeout=180, check=False)
         line = provider_key_line(refused.stdout + refused.stderr)
         if refused.returncode == 0 or not line.startswith("FAIL") or "The provider key was refused" not in line or models_calls()[-1] is not False:
@@ -2662,8 +2678,10 @@ def main(argv: list[str]) -> int:
         wrong_file.unlink()
         if restored.returncode != 0 or key_path.read_text().strip() != model_key:
             raise RuntimeError("lares provider-key set did not put the installed key back")
+        if not gateway_reads_key(model_key):
+            raise RuntimeError("after the key was put back, the running gateway does not read the installed key")
         tested = run("lares", "doctor", "--test-model", timeout=180, check=False)
-        if not provider_key_line(tested.stdout + tested.stderr).startswith("PASS"):
+        if not provider_key_line(tested.stdout + tested.stderr).startswith("PASS") or models_calls()[-1] is not True:
             raise RuntimeError("lares doctor --test-model did not pass again once the key was put back")
         passed("provider-key-set-replaces-the-key-and-the-gateway-uses-it")
 

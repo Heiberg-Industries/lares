@@ -180,19 +180,34 @@ describe("testing the installation's provider key with the provider's free model
   const anthropicRefusal = JSON.stringify({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
   const openaiRefusal = JSON.stringify({ error: { message: "Incorrect API key provided", type: "invalid_request_error", param: null, code: "invalid_api_key" } });
 
-  it("reads 401 and 403 as a refused key, and says so plainly", () => {
-    for (const [status, body] of [[401, anthropicRefusal], [401, openaiRefusal], [403, "{}"]] as const) {
-      const r = readProviderKeyResult(status, body);
+  it("reads 401 as a refused key, and says so plainly", () => {
+    for (const body of [anthropicRefusal, openaiRefusal]) {
+      const r = readProviderKeyResult(401, body);
       expect(r.verdict).toBe("refused");
       expect(r.say).toContain("The provider key was refused");
-      expect(r.say).toContain(`HTTP ${status}`);
+      expect(r.say).toContain("HTTP 401");
+    }
+  });
+
+  it("does not call a 403 a refused key: the provider may be refusing this server's country or region", () => {
+    const r = readProviderKeyResult(403, "{}");
+    expect(r.verdict).toBe("forbidden");
+    expect(r.say).toContain("refused the request (HTTP 403)");
+    expect(r.say).not.toContain("The provider key was refused");
+  });
+
+  it("reads a 404 or 405 as a provider with no model list, never as something to retry", () => {
+    for (const status of [404, 405]) {
+      const r = readProviderKeyResult(status, "{}");
+      expect(r.verdict).toBe("no-model-list");
+      expect(r.say).toContain("offers no model list");
     }
   });
 
   it("reads a 200 model list as accepted, and anything else as not an answer about the key", () => {
     expect(readProviderKeyResult(200, JSON.stringify({ data: [{ id: "claude-x", type: "model" }], has_more: false })).verdict).toBe("accepted");
     expect(readProviderKeyResult(200, JSON.stringify({ object: "list", data: [] })).verdict).toBe("accepted");
-    for (const [status, body] of [[200, "{}"], [200, "not json"], [429, "{}"], [500, "{}"], [404, "{}"]] as const)
+    for (const [status, body] of [[200, "{}"], [200, "not json"], [429, "{}"], [500, "{}"]] as const)
       expect(readProviderKeyResult(status, body).verdict).toBe("unreadable");
   });
 

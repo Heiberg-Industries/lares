@@ -711,8 +711,9 @@ async function checkGateway(testModelDeps: ModelTestDeps | undefined): Promise<C
 // provider for its model list, a free call that needs a valid key and does no model work.
 //
 // MEASURED by `../tests/live/provider-models.live.mts` (its LAST RUN note): a key the provider does
-// not accept answers HTTP 401 with a JSON error envelope, for Anthropic (`GET /v1/models`) and OpenAI
-// (`GET /models` under its `/v1` base). A good key answers 200 with a `data` array. The provider and
+// not accept answers HTTP 401 with a JSON error envelope, for Anthropic (`GET /v1/models`) and
+// OpenAI (`GET /models` under its `/v1` base). Only 401 is read as a refused key; 403 is not (see
+// `readProviderKeyResult`). A good key answers 200 with a `data` array. The provider and
 // its base address are read from the gateway's own profile, so this asks exactly the provider the
 // gateway pays.
 //
@@ -728,7 +729,7 @@ export interface ProviderKeyTestDeps {
   readonly timeoutMs?: number;
 }
 
-export type ProviderKeyVerdict = "accepted" | "refused" | "unreachable" | "unreadable";
+export type ProviderKeyVerdict = "accepted" | "refused" | "forbidden" | "no-model-list" | "unreachable" | "unreadable";
 
 interface ProviderKeyReading {
   readonly verdict: ProviderKeyVerdict;
@@ -737,13 +738,27 @@ interface ProviderKeyReading {
 
 const PROVIDER_KEY_TIMEOUT_MS = 15_000;
 
-/** PURE. A 2xx with a model list is accepted; 401 and 403 are a refused key; anything else is
- *  not an answer about the key. */
+/** PURE. A 2xx with a model list is accepted and 401 is a refused key. 403 is a refusal that may not
+ *  be about the key (a provider can answer it for a key without permission, or for a country or
+ *  region it does not serve), so it is not called a refused key. 404 and 405 mean this provider has
+ *  no model list to ask. Anything else is not an answer about the key. */
 export function readProviderKeyResult(status: number, body: string): ProviderKeyReading {
-  if (status === 401 || status === 403) {
+  if (status === 401) {
     return {
       verdict: "refused",
-      say: `The provider key was refused: the model provider answered HTTP ${status} to this installation's key, so agents that use it cannot answer until it is replaced.`,
+      say: "The provider key was refused: the model provider answered HTTP 401 to this installation's key, so agents that use it cannot answer until it is replaced.",
+    };
+  }
+  if (status === 403) {
+    return {
+      verdict: "forbidden",
+      say: "The model provider refused the request (HTTP 403). The key may not have permission, or the provider may not serve this server's country or region; this check cannot tell which.",
+    };
+  }
+  if (status === 404 || status === 405) {
+    return {
+      verdict: "no-model-list",
+      say: `The model provider answered HTTP ${status}: it offers no model list to ask, so this check cannot test the key with this provider.`,
     };
   }
   const parsed = tryParseJson(body);
@@ -792,6 +807,8 @@ export async function testProviderKey(deps: ProviderKeyTestDeps): Promise<Provid
 const PROVIDER_KEY_FIX: Record<ProviderKeyVerdict, string | null> = {
   accepted: null,
   refused: "Put a working key in a private file (chmod 600), then run: sudo lares provider-key set --key-file <path>",
+  forbidden: "Check the key's permissions and the countries your provider serves. If the key is the problem, put a working key in a private file (chmod 600), then run: sudo lares provider-key set --key-file <path>",
+  "no-model-list": null,
   unreachable: "Check this server's internet connection, then run `sudo lares doctor --test-model` again.",
   unreadable: "Run `sudo lares doctor --test-model` again in a moment.",
 };
@@ -799,6 +816,8 @@ const PROVIDER_KEY_FIX: Record<ProviderKeyVerdict, string | null> = {
 const PROVIDER_KEY_STATE: Record<ProviderKeyVerdict, CheckState> = {
   accepted: "ok",
   refused: "fail",
+  forbidden: "fail",
+  "no-model-list": "unknown", // nothing was tested.
   unreachable: "fail",
   unreadable: "warn", // the provider's own trouble, not this installation's.
 };

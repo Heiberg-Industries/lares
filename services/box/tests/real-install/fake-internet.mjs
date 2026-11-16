@@ -149,8 +149,8 @@ function serve(fixture) {
     return { text: "PROOF_OK" };
   }
 
-  // As the real provider (measured by services/box/tests/live/provider-models.live.mts and the provider-refusal
-  // probe): any key but the one this stand-in was started with gets HTTP 401 and this JSON body, on every route.
+  // As the real provider (measured by services/box/tests/live/provider-models.live.mts): any key but the one this
+  // stand-in was started with gets HTTP 401 and this JSON body, on every route.
   const keyRefused = (request) => !request.headers["x-api-key"] || request.headers["x-api-key"] !== settings.providerKey;
   const refuseKey = (response) => json(response, 401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
 

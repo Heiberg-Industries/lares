@@ -358,11 +358,13 @@ file (`chmod 600`) and run:
 sudo lares provider-key set --key-file /root/new-model-key
 ```
 
-It replaces `/etc/lares/secrets/model-provider-key` in one step, keeps that file's owner and
-mode, and never prints the key. Then it restarts the model gateway, the only service that reads
-the key; a model call under way at that moment is cut off, and nothing else is restarted. With
-`--key-file -` it reads the key from standard input. Delete your copy of the file afterwards. An
-agent that has a key of its own (`lares agent provider-key set`) keeps using that one.
+It replaces `/etc/lares/secrets/model-provider-key` in one step, as the installer writes it
+(owned by root, the file's group kept, mode 0440), and never prints the key. Then it restarts the
+model gateway, the only service that reads the key; a model call under way at that moment is cut
+off, and nothing else is restarted. With `--key-file -` it reads a key piped to it, for example
+from a password manager's command line; it is not meant for typing, because the key would show on
+screen. Delete your copy of the file afterwards. An agent that has a key of its own
+(`lares agent provider-key set`) keeps using that one.
 
 ### Bring your existing agents
 

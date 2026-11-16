@@ -13,6 +13,7 @@ import json
 import os
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1167,8 +1168,22 @@ class BudgetCommandTests(unittest.TestCase):
         os.environ["FAKE_GATEWAY"] = "false 3"
         code, output = self.run_command("provider-key-set", "--key-file", str(self.key_file()))
         self.assertEqual(code, budget.EX_REFUSED)
-        self.assertIn("The gateway did not stay up", output)
+        self.assertIn("The new key is saved, but the model gateway did not stay up after its restart.", output)
+        self.assertNotIn("Run this command again", output)
         self.assertNotIn(self.SECRET, output)
+        del os.environ["FAKE_GATEWAY"]
+        with mock.patch.object(budget.Installation, "stack_compose", side_effect=subprocess.TimeoutExpired("docker", 1)):
+            code, output = self.run_command("provider-key-set", "--key-file", str(self.key_file()))
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("The new key is saved, but restarting the model gateway took too long", output)
+        self.assertNotIn("continues from what is on record", output)
+
+    def test_installation_key_set_writes_the_installers_mode_even_over_a_looser_old_file(self) -> None:
+        target = self.installation_key(mode=0o666)
+        code, output = self.run_command("provider-key-set", "--key-file", str(self.key_file()))
+        self.assertEqual(code, 0, output)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o440)
+        self.assertEqual(target.read_text(), self.SECRET + "\n")
 
     def recover_flow(self, check: dict, applied: dict | None = None, answer: str = "recover") -> tuple[int, str]:
         (self.prefix / "var/lib/lares/budget-financial").mkdir(exist_ok=True)
