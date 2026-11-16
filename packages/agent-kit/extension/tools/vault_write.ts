@@ -1,4 +1,4 @@
-// Propose a new note for one area of the Vault. GATED WRITE — the owner's 👍 on every call.
+// Save a new note in one area of the Vault. GATED WRITE: an approved call saves it, with no later step.
 // The body lives in `../lib/note-write-tools.ts`; this file only names the tool, because eve
 // derives a tool's runtime name from its filename.
 //

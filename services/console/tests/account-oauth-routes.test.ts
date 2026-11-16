@@ -1,14 +1,14 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { ACCOUNT_FLOW_COOKIE, accountSessionHash, sealAccountFlow, openAccountFlow, type AccountFlow } from "../lib/account-oauth-state";
 const mock = vi.hoisted(() => ({ member: vi.fn(), currentSession: vi.fn(), writeToken: vi.fn(), transaction: {}, query: vi.fn(), start: vi.fn(), finish: vi.fn(), begin: vi.fn(), read: vi.fn(), create: vi.fn(), renew: vi.fn(),
-  cookies: new Map<string,string>() }));
+  cookies: new Map<string,string>(), orgs: vi.fn(), config: vi.fn() }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: (name: string) => mock.cookies.has(name) ? { value: mock.cookies.get(name) } : undefined }) }));
 vi.mock("../lib/auth", () => ({ sessionMember: mock.member }));
 vi.mock("../lib/db", () => ({ pool: { query: mock.query } }));
 vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ writeVerifiedAccountToken: mock.writeToken }));
 vi.mock("@lares/agent-kit/member-store", () => ({ currentSession: mock.currentSession }));
 vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { beginUpdate = mock.begin; read = mock.read; forTrustedAdapter = () => ({ createPersonalAccount: mock.create, renew: mock.renew }); } }));
-vi.mock("../lib/accounts", () => ({ googleOrgClientConfig: () => ({ clientId: "data-client", clientSecret: "secret" }), tokenEncKeyHex: () => "key", googleOrgs: () => [{ id: "example" }], orgDomains: () => ({}), resolveOrgForEmail: () => ({ org: "example" }) }));
+vi.mock("../lib/accounts", () => ({ googleOrgClientConfig: (org: string) => mock.config(org), tokenEncKeyHex: () => "key", googleOrgs: () => mock.orgs(), orgDomains: () => ({}), resolveOrgForEmail: () => ({ org: "example" }) }));
 vi.mock("../lib/account-oauth", () => ({ consoleOrigin: () => "https://console.example.test", accountRedirect: () => "https://console.example.test/api/accounts/google/callback",
   callbackRedirect: (origin: string, p: Record<string,string>) => `${origin}/accounts?${new URLSearchParams(p)}`, startAccountConsent: mock.start, finishAccountConsent: mock.finish }));
 import { ConsoleAdmissionUnavailableError } from "../lib/admission-error";
@@ -19,7 +19,7 @@ const ticket = { accountId: "account-a", generation: 3, lifecycleRevision: 4 };
 const callback = (state = "state") => GET(new Request(`https://internal.example/api/accounts/google/callback?code=code&state=${state}`));
 async function start(values: Record<string,string>) { const form = new FormData(); for (const [key,value] of Object.entries(values)) form.set(key,value); return POST(new Request("https://internal.example/start", { method: "POST", body: form })); }
 beforeEach(async () => {
-  vi.clearAllMocks(); process.env.CONSOLE_SESSION_SECRET = "test-consent-secret";
+  vi.clearAllMocks(); mock.orgs.mockReturnValue([{ id: "example" }]); mock.config.mockReturnValue({ clientId: "data-client", clientSecret: "secret" }); process.env.CONSOLE_SESSION_SECRET = "test-consent-secret";
   mock.cookies.clear(); mock.cookies.set("lares_session", "session"); mock.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow(flow));
   mock.member.mockResolvedValue({ id: "member-a", status: "active", role: "member" });
   mock.currentSession.mockResolvedValue({ id: "member-a" }); mock.writeToken.mockResolvedValue("token-id");
@@ -104,4 +104,50 @@ it("refuses duplicate permission fields and preserves encrypted send intent thro
   expect(mock.start).not.toHaveBeenCalled();
   mock.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow({ ...flow, power: "read+mail-send" }));
   await callback(); expect(mock.finish).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ power: "read+mail-send" }));
+});
+
+it.each([
+  ["no Google client at all", () => mock.orgs.mockReturnValue([])],
+  ["a client that cannot be read", () => mock.config.mockReturnValue(null)],
+])("Connect Google with %s says the client is missing and logs one line without ids or secrets", async (_name, setup) => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  setup();
+  const result = await start({ intent: "new", email: "own@example.test" });
+  expect(result.status).toBe(303);
+  expect(result.headers.get("location")).toContain("error=google-client-missing");
+  expect(result.headers.get("set-cookie")).toContain("Max-Age=0");
+  expect(mock.start).not.toHaveBeenCalled();
+  expect(warn).toHaveBeenCalledTimes(1);
+  const line = String(warn.mock.calls[0]![0]);
+  expect(line).toContain("no Google client is set up");
+  for (const secret of ["data-client", "secret", "own@example.test", "example"]) expect(line).not.toContain(secret);
+  warn.mockRestore();
+});
+
+it("Connect Google with the client configured still goes to Google and logs nothing", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const result = await start({ intent: "new", email: "own@example.test" });
+  expect(result.headers.get("location")).toBe("https://accounts.google.com/consent");
+  expect(warn).not.toHaveBeenCalled();
+  warn.mockRestore();
+});
+
+it("a reconnect whose client is gone says the client is missing and logs one line", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  mock.config.mockReturnValue(null);
+  const result = await start({ intent: "reconnect", accountId: "account-a", generation: "3" });
+  expect(result.headers.get("location")).toContain("error=google-client-missing");
+  expect(warn).toHaveBeenCalledTimes(1);
+  warn.mockRestore();
+});
+
+it("coming back from Google after the client was removed says the client is missing and logs one line", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  mock.config.mockReturnValue(null);
+  const result = await callback();
+  expect(result.headers.get("location")).toContain("error=google-client-missing");
+  expect(result.headers.get("set-cookie")).toContain("Max-Age=0");
+  expect(mock.finish).not.toHaveBeenCalled();
+  expect(warn).toHaveBeenCalledTimes(1);
+  warn.mockRestore();
 });
