@@ -23,6 +23,10 @@
  * that still holds, every cached prefix costs the write premium on every call and saves
  * nothing, and the fix belongs in the gateway's configuration, not in this engine.
  *
+ * HOW EACH CALL RUNS: inside its own fresh trusted model invocation (`./probe-invocation.mts`),
+ * as an agent's model call does; without one, `gatewayModel()` refuses before any request leaves.
+ * The invocation adds nothing to the request: the gateway sees the key and body it always did.
+ *
  * WHAT IT SENDS: three small, BILLED calls through the real `gatewayModel()`, each with a system
  * prompt shaped exactly as eve 0.60.1 builds one (every block merged into one system message,
  * eve's own cache marker on it), carrying the boundary marker between a ~8k-token stable prefix
@@ -50,6 +54,7 @@ import { readFileSync } from "node:fs";
 import { generateText, type SystemModelMessage } from "ai";
 import { createGatewayProvider } from "../../src/gateway-provider.js";
 import { PROMPT_CACHE_BOUNDARY } from "../../src/prompt-cache.js";
+import { inProbeInvocation } from "./probe-invocation.mjs";
 
 function fail(message: string): never {
   console.error(`FAIL: ${message}`);
@@ -134,13 +139,13 @@ interface AnthropicUsage {
  *  `providerMetadata.anthropic.usage`, in Anthropic's own snake_case. Both spellings are read
  *  and the keys present are printed, so a rename shows up as data instead of a silent zero. */
 async function call(label: string, tail: string): Promise<Measured> {
-  const result = await generateText({
+  const result = await inProbeInvocation(probeModel!, () => generateText({
     model: gatewayModel(probeModel!),
     system: systemWithTail(tail),
     prompt: "Reply with the single word: ok.",
     maxOutputTokens: 16,
     maxRetries: 0,
-  });
+  }));
   const anthropic = (result.providerMetadata as { anthropic?: AnthropicUsage & { usage?: AnthropicUsage } } | undefined)
     ?.anthropic;
   const usage = anthropic?.usage;
