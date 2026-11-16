@@ -2,11 +2,14 @@
 // (`@lares/agent-kit/shared-room`, the files under `agent/instructions/`).
 //
 // A room is read by everyone in it, so its prompt carries the persona, the language line, the clock
-// and one fixed paragraph saying where it is. It does not carry what is connected, the standing
-// facts, or the correction to them, and it writes no "what was read" row. A direct message, web chat
+// and one fixed paragraph saying where it is. It does not carry the list of what is connected, the
+// standing facts, or the correction to them, and it writes no "what was read" row. Its only
+// connection text is one line saying whether contacts are connected. A direct message, web chat
 // and a conversation a schedule started are unchanged.
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PROMPT_CACHE_BOUNDARY } from "@lares/agent-kit/prompt-cache";
 import { SHARED_ROOM_INSTRUCTIONS } from "@lares/agent-kit/shared-room";
@@ -22,7 +25,9 @@ vi.mock("../agent/instructions/standing-facts.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../agent/instructions/standing-facts.js")>()),
   standingFactsCorrectionBlock: reads.correction,
 }));
-vi.mock("../lib/connections.js", () => ({
+// Only the list is replaced; the contacts decision a room uses is the real one, driven by the environment.
+vi.mock("../lib/connections.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/connections.js")>()),
   readConnections: vi.fn(async () => ({})),
   connectionsMarkdown: () => "CONNECTIONS_CANARY",
 }));
@@ -57,7 +62,20 @@ const context = (initiator: unknown, memo: Memo = canned) => ({
   memo,
 });
 
+const keyFile = join(mkdtempSync(join(tmpdir(), "room-contacts-")), "key");
+writeFileSync(keyFile, "synthetic-key");
+/** What the contacts decision reads: the base URL setting and whether the key file exists. */
+function contactsConnected(on: boolean): void {
+  vi.stubEnv("TWENTY_BASE_URL", on ? "https://contacts.example.invalid" : "");
+  vi.stubEnv("TWENTY_KEY_FILE", on ? keyFile : join(tmpdir(), "room-contacts-missing-key"));
+}
+const CONNECTED_LINE =
+  "Your contacts service (the CRM, Twenty) is connected; you can use the contact lookups you have here. If a lookup fails, say that the contact lookup did not work, and do not repeat a tool's error text.";
+const NOT_CONNECTED_LINE =
+  "Your contacts service (the CRM, Twenty) is not connected. If you are asked to look someone up, say that contacts are not connected. Nothing is broken, and do not repeat a tool's error text.";
+
 beforeEach(() => { vi.clearAllMocks(); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("chief-of-staff: a conversation started in a shared room", () => {
   for (const [name, initiator] of [["a Slack channel", slack("C0ROOM")], ["a Telegram group", telegram("supergroup")]] as const) {
@@ -66,12 +84,50 @@ describe("chief-of-staff: a conversation started in a shared room", () => {
       expect(out?.content).toBe(`PERSONA_CANARY\n\n${SHARED_ROOM_INSTRUCTIONS}`);
     });
 
-    it(`${name}: no connections block, no standing facts, and no "what was read" row`, async () => {
+    it(`${name}: no standing facts and no "what was read" row`, async () => {
       // eve's real memo (the function runs), so a resolver that did not return early would read the store.
-      expect(await (await resolverOf("ac-connections.ts"))(context(initiator, real))).toBeNull();
       expect(await (await resolverOf("standing-facts.ts"))(context(initiator, real))).toBeNull();
       expect(reads.listActiveFacts).not.toHaveBeenCalled();
       expect(reads.recordRead).not.toHaveBeenCalled();
+    });
+
+    it(`${name}: contacts connected: the connections block is exactly the connected line, and the list is not read`, async () => {
+      contactsConnected(true);
+      const connections = await import("../lib/connections.js");
+      const out = await (await resolverOf("ac-connections.ts"))(context(initiator, real));
+      expect(out?.content).toBe(CONNECTED_LINE);
+      expect(connections.readConnections).not.toHaveBeenCalled();
+    });
+
+    it(`${name}: contacts not connected: the connections block is exactly the not-connected line, for no setting and for no key file`, async () => {
+      contactsConnected(false);
+      expect((await (await resolverOf("ac-connections.ts"))(context(initiator, real)))?.content).toBe(NOT_CONNECTED_LINE);
+      vi.stubEnv("TWENTY_BASE_URL", "https://contacts.example.invalid");
+      expect((await (await resolverOf("ac-connections.ts"))(context(initiator, real)))?.content).toBe(NOT_CONNECTED_LINE);
+    });
+
+    it(`${name}: either line names no other service and no setting or path`, async () => {
+      for (const on of [true, false]) {
+        contactsConnected(on);
+        const content = (await (await resolverOf("ac-connections.ts"))(context(initiator, real)))?.content ?? "";
+        expect(content).not.toMatch(/google|mail|calendar|notion|vault|atlas|slack|telegram|CONNECTIONS_CANARY|TWENTY_|\/|\.invalid/iu);
+        expect(content).not.toContain("\n");
+      }
+    });
+
+    it(`${name}: the line is kept for the session, so a later model call gets the same bytes`, async () => {
+      contactsConnected(true);
+      const kept = new Map<string, unknown>();
+      const memo: Memo = async (key, fn) => {
+        if (Array.isArray(key) && key[0] === "private-console") return false;
+        const id = JSON.stringify(key);
+        if (!kept.has(id)) kept.set(id, await fn({}));
+        return kept.get(id);
+      };
+      const resolve = await resolverOf("ac-connections.ts");
+      const first = await resolve(context(initiator, memo));
+      contactsConnected(false);
+      expect((await resolve(context(initiator, memo)))?.content).toBe(first?.content);
     });
 
     it(`${name}: after the marker the clock is there and the standing-facts correction is neither built nor shown`, async () => {
@@ -95,6 +151,8 @@ describe("chief-of-staff: every other conversation is unchanged", () => {
     it(`${name}: persona alone, connections and standing facts present`, async () => {
       expect((await (await resolverOf("aa-definition.ts"))(context(initiator)))?.content).toBe("PERSONA_CANARY");
       expect((await (await resolverOf("ac-connections.ts"))(context(initiator)))?.content).toBe("kept connections");
+      // With eve's real memo the list is what is read, and it is the list, not the room line.
+      expect((await (await resolverOf("ac-connections.ts"))(context(initiator, real)))?.content).toBe("CONNECTIONS_CANARY");
       expect((await (await resolverOf("standing-facts.ts"))(context(initiator)))?.content).toBe("kept standing-facts");
     });
   }
