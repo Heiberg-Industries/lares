@@ -33,6 +33,11 @@
  * which lane a real agent's own calls use — it does NOT prove this lane. This probe is what
  * actually proves it, for whichever alias is passed.
  *
+ * HOW EACH CALL RUNS: inside its own fresh trusted model invocation (`./probe-invocation.mts`),
+ * as an agent's model call does; without one, `gatewayModel()` refuses before any request leaves.
+ * The invocation adds nothing to the request: the gateway sees the key and body it always did.
+ * One invocation allows one request, so no call retries (`maxRetries: 0`).
+ *
  * WHAT THIS PRINTS: shapes, booleans and counts only — never the key, never a tool argument's
  * value, never the completion or stream text itself.
  *
@@ -49,6 +54,7 @@ import { readFileSync } from "node:fs";
 import { generateText, streamText, tool } from "ai";
 import { z } from "zod";
 import { createGatewayProvider } from "../../src/gateway-provider.js";
+import { inProbeInvocation } from "./probe-invocation.mjs";
 
 function fail(message: string): never {
   console.error(`FAIL: ${message}`);
@@ -112,7 +118,7 @@ const { gatewayModel } = createGatewayProvider({
 
 // ── call 1: a real tool call ─────────────────────────────────────────────────────────────────
 console.log("=== Call 1: a real tool call ===");
-const toolResult = await generateText({
+const toolResult = await inProbeInvocation(probeModel, () => generateText({
   model: gatewayModel(probeModel),
   tools: {
     probe_tool: tool({
@@ -123,7 +129,8 @@ const toolResult = await generateText({
   },
   toolChoice: "required",
   prompt: "Call probe_tool with value set to the word test.",
-});
+  maxRetries: 0,
+}));
 report(toolResult.toolCalls.length > 0, `at least one tool call was made (count=${toolResult.toolCalls.length})`);
 report(
   toolResult.toolCalls.every((c) => c.toolName === "probe_tool"),
@@ -133,16 +140,20 @@ console.log(`  tool call count: ${toolResult.toolCalls.length}`);
 
 // ── call 2: a streaming turn ─────────────────────────────────────────────────────────────────
 console.log("\n=== Call 2: a streaming turn ===");
-const stream = streamText({
-  model: gatewayModel(probeModel),
-  prompt: "Reply with one short sentence.",
-});
 let chunkCount = 0;
 let charCount = 0;
-for await (const chunk of stream.textStream) {
-  chunkCount += 1;
-  charCount += chunk.length;
-}
+// The stream is read inside the same invocation that started it.
+await inProbeInvocation(probeModel, async () => {
+  const stream = streamText({
+    model: gatewayModel(probeModel),
+    prompt: "Reply with one short sentence.",
+    maxRetries: 0,
+  });
+  for await (const chunk of stream.textStream) {
+    chunkCount += 1;
+    charCount += chunk.length;
+  }
+});
 report(charCount > 0, `the accumulated stream text has non-zero length (chars=${charCount})`);
 console.log(`  chunks received: ${chunkCount}`);
 console.log(`  characters received: ${charCount}`);
