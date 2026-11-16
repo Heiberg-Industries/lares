@@ -68,14 +68,18 @@ lares doctor
 (In a developer checkout the same program is `pnpm -C services/box doctor`, with `PGHOST` and
 `DATABASE_PASSWORD_FILE` set.) On a server, `lares doctor` runs it in the current release's engine
 image. It reads the saved non-secret console settings and checks the configured console secret
-file without revealing its contents. Any `--key-file` you give must be inside
-`/etc/lares/secrets/`.
+file without revealing its contents.
 
 It reads the installation's settings and database and prints, in plain sentences, what is wrong
 and what to type to fix it: the settings list, the database, the migrations, the owner, the backup
-record, open repairs, and the gateway. It changes no setting, no file and no row. It makes no
-network call unless you add `--test-model --gateway <url> --alias <name> --key-file <path>`, which
-sends one tiny, paid completion through your own gateway. Exit code 0 means nothing failed (a
+record, open repairs, and the model provider key. It changes no setting, no file and no row. It
+makes no network call unless you add `--test-model`. On a server with the built-in gateway,
+`sudo lares doctor --test-model` asks the model provider whether it accepts the installation's
+provider key (a free call that does no model work) and says plainly when the key was refused; it
+sends no test completion, because the built-in gateway takes only calls the spending limits have
+approved. To replace a refused key, run `sudo lares provider-key set --key-file <path>`, which
+restarts only the model gateway. With `--gateway <url> --alias <name> --key-file <path>` (a full
+path) it instead sends one tiny, paid completion through a gateway of your own. Exit code 0 means nothing failed (a
 warning alone still exits 0); 1 means at least one check failed. Backup findings point to the
 installed `lares backups` setup command and `lares-backup-verify.service`, not scripts in a source
 checkout.

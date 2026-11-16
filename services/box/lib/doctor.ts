@@ -4,9 +4,11 @@
 // READ-ONLY, BY CONSTRUCTION. Every check below is a SELECT, or a read-only probe of a file.
 // A secret file's bytes are used only to determine whether its trimmed contents are empty; they
 // never leave the probe or appear in output. Nothing here writes to the
-// database, writes a file, restarts anything, or makes a network call: the "gateway" check is
-// always `unknown` unless the owner passes `--test-model`, because asking the model gateway
-// is a paid outside call. Everything else in this file makes none. `tests/doctor.test.ts`'s "only ever reads" case records every statement sent through a
+// database, writes a file, restarts anything, or makes a network call: the "gateway" check (and
+// the "provider-key" check that takes its place on an installation with the built-in gateway) is
+// always `unknown` unless the owner passes `--test-model`, because asking the model gateway is a
+// paid outside call and asking the model provider is an outside call. Everything else in this
+// file makes none. `tests/doctor.test.ts`'s "only ever reads" case records every statement sent through a
 // fake `Queryable` and asserts each one starts with SELECT.
 //
 // PURE CORE + INJECTED EFFECTS. `DoctorDeps` carries the environment, a `Queryable` (or `null`
@@ -45,7 +47,7 @@ import { engineDatabasePrivilegesMatch } from "./database-privileges.js";
 export type CheckState = "ok" | "warn" | "fail" | "unknown";
 
 export interface CheckResult {
-  readonly id: string; // "settings" | "database" | "migrations" | "permissions" | "owner" | "backup" | "repairs" | "gateway"
+  readonly id: string; // "settings" | "database" | "migrations" | "permissions" | "owner" | "backup" | "repairs" | "gateway" | "provider-key"
   readonly state: CheckState;
   readonly say: string; // one sentence saying what was found
   readonly fix: string | null; // paste-ready — a command, or an exact line for an exact file
@@ -70,6 +72,15 @@ export interface DoctorDeps {
    *  as it is without the flag, and this module makes no network call. `bin/doctor.ts` is the only place
    *  that ever constructs one, and only after `--gateway`/`--alias`/`--key-file` are all given. */
   readonly testModel?: ModelTestDeps;
+  /** True when this installation runs the built-in gateway (`lares doctor` found its provider
+   *  settings file). That gateway takes only calls the spending limits have approved, so this
+   *  command cannot send it a test completion; the `provider-key` check takes the `gateway`
+   *  check's place, unless `testModel` was asked for with an explicit gateway. */
+  readonly builtInGateway?: boolean;
+  /** Present ONLY when the caller asked for `--test-model` on an installation with the built-in
+   *  gateway. When set, the `provider-key` check asks the model provider for its free model list
+   *  with the installation's provider key; when absent, that check stays `unknown`. */
+  readonly testProviderKey?: ProviderKeyTestDeps;
   /** Present only on an installed server, where `lares doctor` has listed the running containers
    *  and found the release record. When absent (a checkout), the parity check is not run. */
   readonly parity?: ParityInput;
@@ -467,6 +478,7 @@ export type ModelTestVerdict =
   | "unauthorised"
   | "no-such-model"
   | "over-budget"
+  | "admission-refused"
   | "unreachable"
   | "unreadable";
 
@@ -483,6 +495,8 @@ const MODEL_TEST_SAY: Record<ModelTestVerdict, string> = {
     "The gateway would not use the model alias that was tested \u2014 either it is not registered there, or this gateway key is not allowed to use it. This is NOT a problem with the key itself. Fix: confirm the alias name this installation is configured to use (LARES_MODEL_ALIAS), and that the gateway key is allowed to reach that alias.",
   "over-budget":
     "The gateway refused the call: this key has hit its spending cap. This is a spending limit, not a fault — it resets with the next budget period, or the cap can be raised on the gateway.",
+  "admission-refused":
+    "The gateway refused the test call because the spending limits had not approved it. The built-in gateway takes only approved calls, and this command cannot ask for that approval, so it cannot send a test completion through it.",
   unreachable:
     "The gateway could not be reached. Fix: confirm GATEWAY_URL is correct and that the gateway is running and reachable from this machine.",
   unreadable: "The gateway answered, but not with a completion.",
@@ -530,6 +544,14 @@ export function readModelTestResult(status: number, body: string): ModelTestRead
   //    the primary signal and the status only as a plausibility check; this module does the same.
   if (errorField(parsed, "type") === "budget_exceeded") {
     return { verdict: "over-budget", say: MODEL_TEST_SAY["over-budget"] };
+  }
+
+  // 1b. The built-in gateway's own refusal of a call with no approved budget ticket
+  //     (`images/gateway-runtime/lares_gateway.py`, HTTP 400 `budget_admission_refused`). This
+  //     command never holds a ticket, so against that gateway this is the answer every time; it is
+  //     not a fault in the key, the model or the gateway.
+  if (errorField(parsed, "type") === "budget_admission_refused") {
+    return { verdict: "admission-refused", say: MODEL_TEST_SAY["admission-refused"] };
   }
 
   // 2. THE MODEL, NOT THE KEY — and this one is checked BEFORE the wrong-key branch below,
@@ -652,6 +674,7 @@ const MODEL_TEST_FIX: Record<ModelTestVerdict, string | null> = {
   unauthorised: "GATEWAY_KEY_FILE",
   "no-such-model": "Confirm this installation's chosen model alias against the gateway's own configuration.",
   "over-budget": "Wait for the next budget period, or raise this key's spending cap on the gateway.",
+  "admission-refused": "To check the provider key instead, run: sudo lares doctor --test-model",
   unreachable: "GATEWAY_URL",
   unreadable: "Run `lares doctor --test-model` again in a moment; if it keeps happening, check the gateway's own logs.",
 };
@@ -661,6 +684,7 @@ const MODEL_TEST_STATE: Record<ModelTestVerdict, CheckState> = {
   unauthorised: "fail",
   "no-such-model": "fail",
   "over-budget": "warn", // a spending cap is not a fault — see MODEL_TEST_SAY["over-budget"].
+  "admission-refused": "unknown", // nothing was tested: the call never reached the provider.
   unreachable: "fail",
   unreadable: "fail",
 };
@@ -671,11 +695,144 @@ async function checkGateway(testModelDeps: ModelTestDeps | undefined): Promise<C
       id: "gateway",
       state: "unknown",
       say: "The model connection has not been tested — this command makes no outside call unless you ask it to.",
-      fix: "lares doctor --test-model",
+      fix: "lares doctor --test-model --gateway <url> --alias <name> --key-file <path>",
     };
   }
   const { verdict, say } = await testModel(testModelDeps);
   return { id: "gateway", state: MODEL_TEST_STATE[verdict], say, fix: MODEL_TEST_FIX[verdict] };
+}
+
+// ── `lares doctor --test-model` on the built-in gateway — the provider key ──────────
+//
+// The built-in gateway takes a model call only with a budget ticket the keeper prepared for an
+// agent's conversation step or scheduled job (`images/gateway-runtime/lares_gateway.py`), and this
+// command can prepare none, so it cannot send that gateway a test completion. What it CAN test is
+// the installation's provider key itself, which is what goes wrong in practice: it asks the model
+// provider for its model list, a free call that needs a valid key and does no model work.
+//
+// MEASURED by `../tests/live/provider-models.live.mts` (its LAST RUN note): a key the provider does
+// not accept answers HTTP 401 with a JSON error envelope, for Anthropic (`GET /v1/models`) and
+// OpenAI (`GET /models` under its `/v1` base). Only 401 is read as a refused key; 403 is not (see
+// `readProviderKeyResult`). A good key answers 200 with a `data` array. The provider and
+// its base address are read from the gateway's own profile, so this asks exactly the provider the
+// gateway pays.
+//
+// Same rules as the model test above: a fixed sentence per verdict, never the key, never the body.
+
+export interface ProviderKeyTestDeps {
+  /** The gateway profile's provider: the wire format of its key. */
+  readonly provider: "anthropic" | "openai";
+  /** The gateway profile's `providerBaseUrl`: https, no trailing slash (`lib/gateway-config.ts`). */
+  readonly baseUrl: string;
+  readonly key: string; // never logged, never returned
+  readonly fetch?: typeof globalThis.fetch;
+  readonly timeoutMs?: number;
+}
+
+export type ProviderKeyVerdict = "accepted" | "refused" | "forbidden" | "no-model-list" | "unreachable" | "unreadable";
+
+interface ProviderKeyReading {
+  readonly verdict: ProviderKeyVerdict;
+  readonly say: string;
+}
+
+const PROVIDER_KEY_TIMEOUT_MS = 15_000;
+
+/** PURE. A 2xx with a model list is accepted and 401 is a refused key. 403 is a refusal that may not
+ *  be about the key (a provider can answer it for a key without permission, or for a country or
+ *  region it does not serve), so it is not called a refused key. 404 and 405 mean this provider has
+ *  no model list to ask. Anything else is not an answer about the key. */
+export function readProviderKeyResult(status: number, body: string): ProviderKeyReading {
+  if (status === 401) {
+    return {
+      verdict: "refused",
+      say: "The provider key was refused: the model provider answered HTTP 401 to this installation's key, so agents that use it cannot answer until it is replaced.",
+    };
+  }
+  if (status === 403) {
+    return {
+      verdict: "forbidden",
+      say: "The model provider refused the request (HTTP 403). The key may not have permission, or the provider may not serve this server's country or region; this check cannot tell which.",
+    };
+  }
+  if (status === 404 || status === 405) {
+    return {
+      verdict: "no-model-list",
+      say: `The model provider answered HTTP ${status}: there is no model list at this address, so this check cannot test the key here.`,
+    };
+  }
+  const parsed = tryParseJson(body);
+  if (status >= 200 && status < 300 && isPlainObject(parsed) && Array.isArray(parsed["data"])) {
+    return {
+      verdict: "accepted",
+      say: "The model provider accepted this installation's provider key. This checks the key only: no test completion is sent, because the built-in gateway takes only calls the spending limits have approved.",
+    };
+  }
+  return {
+    verdict: "unreadable",
+    say: `The model provider answered HTTP ${status}, which says nothing about the key, so the key could not be checked.`,
+  };
+}
+
+/** One free GET of the provider's model list with the installation's provider key. Never throws. */
+export async function testProviderKey(deps: ProviderKeyTestDeps): Promise<ProviderKeyReading> {
+  const doFetch = deps.fetch ?? globalThis.fetch;
+  const url = deps.provider === "anthropic" ? `${deps.baseUrl}/v1/models` : `${deps.baseUrl}/models`;
+  const headers: Record<string, string> = deps.provider === "anthropic"
+    ? { "x-api-key": deps.key, "anthropic-version": "2023-06-01" }
+    : { authorization: `Bearer ${deps.key}` };
+  let response: Response;
+  try {
+    response = await doFetch(url, {
+      method: "GET",
+      headers: { ...headers, "Accept-Encoding": "identity" },
+      signal: AbortSignal.timeout(deps.timeoutMs ?? PROVIDER_KEY_TIMEOUT_MS),
+      redirect: "error",
+    });
+  } catch {
+    return {
+      verdict: "unreachable",
+      say: `The model provider (${new URL(deps.baseUrl).host}) could not be reached from this server, so the key could not be checked.`,
+    };
+  }
+  let raw: string;
+  try {
+    raw = await response.text();
+  } catch {
+    raw = "";
+  }
+  return readProviderKeyResult(response.status, raw.slice(0, 64 * 1024));
+}
+
+const PROVIDER_KEY_FIX: Record<ProviderKeyVerdict, string | null> = {
+  accepted: null,
+  refused: "Put a working key in a private file (chmod 600), then run: sudo lares provider-key set --key-file <path>",
+  forbidden: "Check the key's permissions and the countries your provider serves. If the key is the problem, put a working key in a private file (chmod 600), then run: sudo lares provider-key set --key-file <path>",
+  "no-model-list": null,
+  unreachable: "Check this server's internet connection, then run `sudo lares doctor --test-model` again.",
+  unreadable: "Run `sudo lares doctor --test-model` again in a moment.",
+};
+
+const PROVIDER_KEY_STATE: Record<ProviderKeyVerdict, CheckState> = {
+  accepted: "ok",
+  refused: "fail",
+  forbidden: "fail",
+  "no-model-list": "unknown", // nothing was tested.
+  unreachable: "fail",
+  unreadable: "warn", // the provider's own trouble, not this installation's.
+};
+
+async function checkProviderKey(deps: ProviderKeyTestDeps | undefined): Promise<CheckResult> {
+  if (deps === undefined) {
+    return {
+      id: "provider-key",
+      state: "unknown",
+      say: "The model provider key has not been tested — this command makes no outside call unless you ask it to.",
+      fix: "sudo lares doctor --test-model",
+    };
+  }
+  const { verdict, say } = await testProviderKey(deps);
+  return { id: "provider-key", state: PROVIDER_KEY_STATE[verdict], say, fix: PROVIDER_KEY_FIX[verdict] };
 }
 
 function unknownBecauseNoDatabase(id: string): CheckResult {
@@ -703,7 +860,11 @@ export async function runDoctor(deps: DoctorDeps): Promise<CheckResult[]> {
   const owner = db ? await checkOwner(db, deps.sqlDir, installed) : unknownBecauseNoDatabase("owner");
   const backup = db ? await checkBackup(db, deps.now, installed) : unknownBecauseNoDatabase("backup");
   const repairs = db ? await checkRepairs(db, installed) : unknownBecauseNoDatabase("repairs");
-  const gateway = await checkGateway(deps.testModel);
+  // On the built-in gateway the provider key is what can be tested; an explicit gateway asked for
+  // with `--test-model --gateway ...` is still tested as asked.
+  const gateway = deps.builtInGateway === true && deps.testModel === undefined
+    ? await checkProviderKey(deps.testProviderKey)
+    : await checkGateway(deps.testModel);
 
   return [settings, database, migrations, ...(permissions ? [permissions] : []), owner, backup, repairs, gateway, ...(deps.parity ? [checkParity(deps.parity)] : [])];
 }
@@ -717,6 +878,7 @@ const CHECK_NAME: Record<string, string> = {
   backup: "Backups",
   repairs: "Known issues",
   gateway: "Model connection",
+  "provider-key": "Model provider key",
   parity: "Matches the release",
 };
 

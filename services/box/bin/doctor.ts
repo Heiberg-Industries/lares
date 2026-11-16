@@ -5,13 +5,15 @@
 //
 // READ-ONLY, except for the one call `--test-model` asks for. This file changes no setting, no
 // file, no database row, and restarts nothing. It also makes NO network call by default —
-// `--test-model` (only when you ask) is the one flag that does, and it
-// spends this installation's own money on this installation's own gateway to do it. It requires
-// `--gateway <url>`, `--alias <name>` and `--key-file <path>` all three, exactly the shape
-// the installer wizard calls it with (`lares-doctor --test-model --gateway "$GATEWAY_URL"
-// --alias "$LARES_MODEL_ALIAS" --key-file "$SECRETS/model-provider-key"`) — this file bakes in no
-// default hostname, alias or key path of its own; every one of the three is the caller's own
-// value, read from THIS installation's settings, never this repository's.
+// `--test-model` (only when you ask) is the one flag that does. Two shapes:
+//   - with `--gateway <url>`, `--alias <name>` and `--key-file <path>` (all three), it spends one
+//     tiny completion on that gateway. This file bakes in no default hostname, alias or key path;
+//     each is the caller's own value.
+//   - with none of the three, on an installation with the built-in gateway (`lares doctor` passes
+//     `--gateway-profile-file` and `--provider-key-file`), it asks the model provider for its free
+//     model list with the installation's provider key. The built-in gateway takes only calls the
+//     spending limits have approved, and this command cannot ask for that approval.
+// Nothing in the installer calls `--test-model`.
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -19,29 +21,32 @@ import type { Pool } from "pg";
 import { operatorPoolFromFile, poolFromEnv } from "../lib/db.js";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
 import { parseProvenanceRecord, type ContainerRow, type ParityInput } from "../lib/doctor-parity.js";
-import { runDoctor, doctorReport, doctorExitCode, testModel as probeModel, type ModelTestDeps } from "../lib/doctor.js";
+import { runDoctor, doctorReport, doctorExitCode, testModel as probeModel, type ModelTestDeps, type ProviderKeyTestDeps } from "../lib/doctor.js";
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "sql");
 
 const HELP_TEXT = [
-  "lares doctor [--help] [--test-model --gateway <url> --alias <name> --key-file <path>]",
+  "lares doctor [--help] [--test-model [--gateway <url> --alias <name> --key-file <path>]]",
   "",
   "Reads this installation's settings and database and says, in plain sentences, what is wrong",
   "and what to type to fix it. It changes nothing: no setting, no file and no database row.",
   "",
   "  --help                Show this message.",
-  "  --test-model          Ask the model gateway for one real, tiny completion (a paid call —",
-  "                        a fraction of a cent). Makes no call unless you pass this flag.",
-  "  --model-only          Check only that completion during installation, before migrations.",
-  "                        Requires all three of the following:",
-  "  --gateway <url>       The gateway's own URL (this installation's GATEWAY_URL).",
+  "  --test-model          Test the model connection. Makes no outside call unless you pass it.",
+  "                        On an installation with the built-in gateway, and with none of the",
+  "                        three flags below, it asks your model provider whether it accepts this",
+  "                        installation's provider key (a free call that does no model work).",
+  "                        With all three flags below, it asks that gateway for one real, tiny",
+  "                        completion instead (a paid call, a fraction of a cent).",
+  "  --model-only          Check only that completion, before migrations. Needs the three flags.",
+  "  --gateway <url>       A gateway's own URL.",
   "  --alias <name>        The model alias to test.",
-  "  --key-file <path>     Path to the gateway key file (this installation's GATEWAY_KEY_FILE).",
+  "  --key-file <path>     Path to that gateway's key file.",
   "                        Read once; its contents are never printed, logged or repeated back.",
   "",
   "Exit codes:",
   "  0   nothing failed (a WARN alone still exits 0).",
-  "  1   at least one check failed, or --test-model was asked for without all three of its flags.",
+  "  1   at least one check failed, or --test-model could not run as asked.",
 ].join("\n");
 
 export interface ParsedDoctorArgs {
@@ -53,6 +58,8 @@ export interface ParsedDoctorArgs {
   gatewayUrl: string | undefined;
   alias: string | undefined;
   keyFile: string | undefined;
+  gatewayProfileFile: string | undefined;
+  providerKeyFile: string | undefined;
   releaseFile: string | undefined;
   containersFile: string | undefined;
   keeperConfigFile: string | undefined;
@@ -63,6 +70,7 @@ export interface ParsedDoctorArgs {
 const VALUE_FLAGS = new Set([
   "--gateway", "--alias", "--key-file", "--installed-settings-file", "--ledger-password-file",
   "--release-file", "--containers-file", "--keeper-config-file", "--keeper-rendered-file", "--lares-project",
+  "--gateway-profile-file", "--provider-key-file",
 ]);
 
 /** Refuses an unknown flag rather than silently ignoring it. `--gateway`/`--alias`/`--key-file`
@@ -76,6 +84,8 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   let gatewayUrl: string | undefined;
   let alias: string | undefined;
   let keyFile: string | undefined;
+  let gatewayProfileFile: string | undefined;
+  let providerKeyFile: string | undefined;
   let releaseFile: string | undefined;
   let containersFile: string | undefined;
   let keeperConfigFile: string | undefined;
@@ -101,6 +111,8 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
       else if (arg === "--keeper-config-file") keeperConfigFile = value;
       else if (arg === "--keeper-rendered-file") keeperRenderedFile = value;
       else if (arg === "--lares-project") laresProjects.push(value);
+      else if (arg === "--gateway-profile-file") gatewayProfileFile = value;
+      else if (arg === "--provider-key-file") providerKeyFile = value;
       else installedSettingsFile = value;
       i++;
     } else {
@@ -113,7 +125,7 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   if (modelOnly && !testModel) throw new Error("doctor: --model-only requires --test-model.");
   return {
     help, testModel, modelOnly, installedSettingsFile, ledgerPasswordFile, gatewayUrl, alias, keyFile,
-    releaseFile, containersFile, keeperConfigFile, keeperRenderedFile, laresProjects,
+    gatewayProfileFile, providerKeyFile, releaseFile, containersFile, keeperConfigFile, keeperRenderedFile, laresProjects,
   };
 }
 
@@ -208,6 +220,22 @@ export function readInstalledSetting(file: string, name: string): string | undef
   return decoded;
 }
 
+/** The provider the built-in gateway pays, from its profile (`lib/gateway-config.ts`,
+ *  `gatewayAdmissionProfile`): the same provider and base address the gateway itself calls. */
+export function readGatewayProfile(profile: unknown): { provider: "anthropic" | "openai"; baseUrl: string } | undefined {
+  if (typeof profile !== "object" || profile === null) return undefined;
+  const { provider, providerBaseUrl } = profile as { provider?: unknown; providerBaseUrl?: unknown };
+  if ((provider !== "anthropic" && provider !== "openai") || typeof providerBaseUrl !== "string") return undefined;
+  let url: URL;
+  try {
+    url = new URL(providerBaseUrl);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || providerBaseUrl.endsWith("/")) return undefined;
+  return { provider, baseUrl: providerBaseUrl };
+}
+
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -239,13 +267,32 @@ export async function main(
     return 0;
   }
 
+  const readKeyFile = deps.readKeyFile ?? ((path: string) => readFileSync(path, "utf8").trim());
+  const builtInGateway = args.gatewayProfileFile !== undefined;
+  const explicitGateway = args.gatewayUrl !== undefined || args.alias !== undefined || args.keyFile !== undefined;
   let testModel: ModelTestDeps | undefined;
-  if (args.testModel) {
+  let testProviderKey: ProviderKeyTestDeps | undefined;
+  if (args.testModel && !explicitGateway && builtInGateway && !args.modelOnly) {
+    // The path is not a secret; the key file's contents are, and are never read into a line.
+    const profile = readGatewayProfile(readJson(args.gatewayProfileFile));
+    if (!profile) {
+      deps.out(`doctor: the gateway's provider settings at "${args.gatewayProfileFile}" could not be read, so the provider key cannot be tested.`);
+      return 1;
+    }
+    let key: string;
+    try {
+      if (args.providerKeyFile === undefined) throw new Error("no file");
+      key = readKeyFile(args.providerKeyFile);
+    } catch {
+      deps.out(`doctor: the provider key file${args.providerKeyFile === undefined ? "" : ` at "${args.providerKeyFile}"`} could not be read, so the provider key cannot be tested.`);
+      return 1;
+    }
+    testProviderKey = { ...profile, key, fetch: deps.fetch };
+  } else if (args.testModel) {
     if (!args.gatewayUrl || !args.alias || !args.keyFile) {
       deps.out("doctor: --test-model requires --gateway <url>, --alias <name> and --key-file <path>, all three.");
       return 1;
     }
-    const readKeyFile = deps.readKeyFile ?? ((path: string) => readFileSync(path, "utf8").trim());
     let key: string;
     try {
       key = readKeyFile(args.keyFile);
@@ -282,6 +329,8 @@ export async function main(
     sqlDir: SQL_DIR,
     now: new Date(),
     testModel,
+    builtInGateway,
+    testProviderKey,
     parity: readParityInput(args),
   }).finally(() => ledger?.end());
   deps.out(doctorReport(results));

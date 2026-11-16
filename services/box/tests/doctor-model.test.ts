@@ -6,7 +6,7 @@
 // caller supplies gatewayUrl/key/alias explicitly; see lib/doctor.ts's header and bin/doctor.ts's
 // `--test-model` flag (`lares doctor` alone never calls out).
 import { describe, it, expect, vi } from "vitest";
-import { readModelTestResult, testModel } from "../lib/doctor.js";
+import { readModelTestResult, readProviderKeyResult, testModel, testProviderKey } from "../lib/doctor.js";
 
 describe("testing the model key with a real completion", () => {
   it("reads a normal answer as ok", () => {
@@ -158,5 +158,87 @@ describe("testing the model key with a real completion", () => {
     // The key belongs in the x-api-key header only — never in the URL or the request body.
     expect(url).not.toContain("sk-disposable-fixture-only");
     expect(init.body as string).not.toContain("sk-disposable-fixture-only");
+  });
+});
+
+describe("the built-in gateway's refusal of a call it was not approved for", () => {
+  it("reads the gateway's budget_admission_refused as nothing tested, never as a bad key or a bad model", () => {
+    // images/gateway-runtime/lares_gateway.py: HTTP 400, this exact envelope, for a call with no budget ticket.
+    const body = JSON.stringify({ error: { type: "budget_admission_refused", code: "budget_admission_refused", message: "I could not verify permission to spend. Please check the gateway setup." } });
+    const r = readModelTestResult(400, body);
+    expect(r.verdict).toBe("admission-refused");
+    expect(r.say).not.toContain("GATEWAY_KEY_FILE");
+    expect(r.say).toContain("cannot send a test completion");
+  });
+});
+
+describe("testing the installation's provider key with the provider's free model list", () => {
+  const anthropic = { provider: "anthropic" as const, baseUrl: "https://api.anthropic.com" };
+  const openai = { provider: "openai" as const, baseUrl: "https://api.openai.com/v1" };
+  const KEY = "sk-disposable-fixture-only";
+  // The bodies MEASURED by tests/live/provider-models.live.mts for a key the provider does not accept.
+  const anthropicRefusal = JSON.stringify({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
+  const openaiRefusal = JSON.stringify({ error: { message: "Incorrect API key provided", type: "invalid_request_error", param: null, code: "invalid_api_key" } });
+
+  it("reads 401 as a refused key, and says so plainly", () => {
+    for (const body of [anthropicRefusal, openaiRefusal]) {
+      const r = readProviderKeyResult(401, body);
+      expect(r.verdict).toBe("refused");
+      expect(r.say).toContain("The provider key was refused");
+      expect(r.say).toContain("HTTP 401");
+    }
+  });
+
+  it("does not call a 403 a refused key: the provider may be refusing this server's country or region", () => {
+    const r = readProviderKeyResult(403, "{}");
+    expect(r.verdict).toBe("forbidden");
+    expect(r.say).toContain("refused the request (HTTP 403)");
+    expect(r.say).not.toContain("The provider key was refused");
+  });
+
+  it("reads a 404 or 405 as a provider with no model list, never as something to retry", () => {
+    for (const status of [404, 405]) {
+      const r = readProviderKeyResult(status, "{}");
+      expect(r.verdict).toBe("no-model-list");
+      expect(r.say).toContain("there is no model list at this address");
+    }
+  });
+
+  it("reads a 200 model list as accepted, and anything else as not an answer about the key", () => {
+    expect(readProviderKeyResult(200, JSON.stringify({ data: [{ id: "claude-x", type: "model" }], has_more: false })).verdict).toBe("accepted");
+    expect(readProviderKeyResult(200, JSON.stringify({ object: "list", data: [] })).verdict).toBe("accepted");
+    for (const [status, body] of [[200, "{}"], [200, "not json"], [429, "{}"], [500, "{}"]] as const)
+      expect(readProviderKeyResult(status, body).verdict).toBe("unreadable");
+  });
+
+  it("asks Anthropic's /v1/models with the key in x-api-key only, and never repeats the key or the body", async () => {
+    const fetch = vi.fn(async () => new Response(anthropicRefusal, { status: 401 }));
+    const r = await testProviderKey({ ...anthropic, key: KEY, fetch: fetch as unknown as typeof globalThis.fetch });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.anthropic.com/v1/models");
+    expect(init.method).toBe("GET");
+    expect(init.body).toBeUndefined();
+    expect((init.headers as Record<string, string>)["x-api-key"]).toBe(KEY);
+    expect((init.headers as Record<string, string>)["anthropic-version"]).toBe("2023-06-01");
+    expect(r.verdict).toBe("refused");
+    expect(r.say).not.toContain(KEY);
+    expect(r.say).not.toContain("invalid x-api-key");
+  });
+
+  it("asks OpenAI's /models under its /v1 base with a Bearer key", async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ object: "list", data: [{ id: "gpt-x" }] }), { status: 200 }));
+    const r = await testProviderKey({ ...openai, key: KEY, fetch: fetch as unknown as typeof globalThis.fetch });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.openai.com/v1/models");
+    expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${KEY}`);
+    expect(r.verdict).toBe("accepted");
+  });
+
+  it("reads a provider it cannot reach as unreachable, naming the host and not the key", async () => {
+    const fetch = vi.fn(async () => { throw new TypeError("fetch failed"); });
+    const r = await testProviderKey({ ...anthropic, key: KEY, fetch: fetch as unknown as typeof globalThis.fetch });
+    expect(r.verdict).toBe("unreachable");
+    expect(r.say).toContain("api.anthropic.com");
+    expect(r.say).not.toContain(KEY);
   });
 });

@@ -383,6 +383,40 @@ describe("lares", () => {
     expect(d).not.toContain("docker.sock");
   });
 
+  it("doctor hands the built-in gateway's provider settings over, and the provider key only to --test-model", () => {
+    const etc = join(prefix, "etc/lares");
+    mkdirSync(join(etc, "secrets"), { recursive: true });
+    const profile = join(etc, "litellm-config.yaml.profile.json"), key = join(etc, "secrets/model-provider-key");
+    writeFileSync(profile, "{}");
+    writeFileSync(key, "provider-fixture");
+    const run = (args: string[]) => {
+      writeFileSync(log, "");
+      expect(lares(args).code).toBe(0);
+      return calls().find((l) => l.startsWith("docker run "))!;
+    };
+    const plain = run(["doctor"]);
+    expect(plain).toContain(`${profile}:${profile}:ro`);
+    expect(plain).toContain(`--gateway-profile-file ${profile}`);
+    expect(plain).not.toContain("model-provider-key");
+    const tested = run(["doctor", "--test-model"]);
+    expect(tested).toContain(`${key}:${key}:ro`);
+    expect(tested).toContain(`--provider-key-file ${key}`);
+    // A gateway named by hand is tested as asked: its own key file is mounted, never the provider key.
+    const own = join(prefix, "own-gateway-key");
+    writeFileSync(own, "gateway-fixture");
+    const explicit = run(["doctor", "--test-model", "--gateway", "https://gateway.example", "--alias", "lares-brain", "--key-file", own]);
+    expect(explicit).toContain(`${own}:${own}:ro`);
+    expect(explicit).not.toContain("model-provider-key");
+  });
+
+  it("provider-key set goes to the budget commands, and anything else is refused", () => {
+    const r = lares(["provider-key", "set", "--key-file", "-"]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(calls().find((l) => l.startsWith("budget-commands.py "))).toContain(`--release ${root()}/current/release.json provider-key-set --key-file -`);
+    expect(lares(["provider-key"]).code).toBe(64);
+    expect(lares(["provider-key", "remove"]).code).toBe(64);
+  });
+
   describe("previous and rollback", () => {
     const prev = () => readlinkSync(join(root(), "previous"));
     beforeEach(() => { expect(lares(["update", "--release", RC12]).code).toBe(0); writeFileSync(log, ""); });
