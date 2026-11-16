@@ -11,7 +11,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PROMPT_CACHE_BOUNDARY } from "@lares/agent-kit/prompt-cache";
 import { SHARED_ROOM_INSTRUCTIONS } from "@lares/agent-kit/shared-room";
 
-const reads = vi.hoisted(() => ({ recordRead: vi.fn(async () => undefined), correction: vi.fn(async () => "CORRECTION_CANARY") }));
+const reads = vi.hoisted(() => ({ recordRead: vi.fn(async () => undefined), correction: vi.fn(async () => "CORRECTION_CANARY"), listActiveFacts: vi.fn(async () => []) }));
+vi.mock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
+vi.mock("../lib/standing-facts.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/standing-facts.js")>()),
+  listActiveFacts: reads.listActiveFacts,
+}));
 vi.mock("../lib/memory-reads.js", () => ({ recordRead: reads.recordRead }));
 vi.mock("../agent/instructions/standing-facts.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../agent/instructions/standing-facts.js")>()),
@@ -62,11 +67,10 @@ describe("chief-of-staff: a conversation started in a shared room", () => {
     });
 
     it(`${name}: no connections block, no standing facts, and no "what was read" row`, async () => {
-      const keys: unknown[] = [];
-      const memo: Memo = async (key, fn) => { keys.push(key); return canned(key, fn); };
-      expect(await (await resolverOf("ac-connections.ts"))(context(initiator, memo))).toBeNull();
-      expect(await (await resolverOf("standing-facts.ts"))(context(initiator, memo))).toBeNull();
-      expect(keys.filter((key) => Array.isArray(key) && key[0] !== "private-console")).toEqual([]);
+      // eve's real memo (the function runs), so a resolver that did not return early would read the store.
+      expect(await (await resolverOf("ac-connections.ts"))(context(initiator, real))).toBeNull();
+      expect(await (await resolverOf("standing-facts.ts"))(context(initiator, real))).toBeNull();
+      expect(reads.listActiveFacts).not.toHaveBeenCalled();
       expect(reads.recordRead).not.toHaveBeenCalled();
     });
 

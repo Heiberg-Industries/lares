@@ -145,9 +145,9 @@ describe('what a conversation started in a shared room is told', () => {
     expect(SHARED_ROOM_INSTRUCTIONS).not.toMatch(/twenty|deadline_|remind_/i);
   });
 
-  it('does not claim that only one person can ask, because a door may admit several allowed people', () => {
+  it('does not claim that only the owner can ask, because a door may admit several allowed people', () => {
     expect(SHARED_ROOM_INSTRUCTIONS).not.toMatch(/only the owner/i);
-    expect(SHARED_ROOM_INSTRUCTIONS).toContain('Only the people you work for can ask you things here');
+    expect(SHARED_ROOM_INSTRUCTIONS).toContain('Only people allowed to use you can ask you things here, and the owner is one of them');
   });
 
   it('is one paragraph', () => {
