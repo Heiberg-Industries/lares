@@ -431,6 +431,64 @@ describe("the approval card in web chat", () => {
     expect(html).not.toMatch(/<button/);
   });
 
+  // Two cards from one step: eve runs them together, once both have an answer. While the other still
+  // waits for the person, "Waiting for the agent" would be untrue: the agent is waiting for them.
+  describe("two cards asked in one step", () => {
+    const NOTE = { title: "Second note" };
+    const twoCards = (answer?: string): readonly EveMessage[] => messagesOf([
+      ...opening(),
+      [calls("gmail_send", MAIL, "c1"), calls("gmail_send", NOTE, "c2"), runDone],
+      [
+        { type: "interaction.opened", scope: T, data: { interactionId: "int_A", subject: { callId: "c1" }, request: { kind: "approval", prompt: PROMPT, display: "confirmation", allowFreeform: false, options: TWO } } },
+        { type: "interaction.opened", scope: T, data: { interactionId: "int_B", subject: { callId: "c2" }, request: { kind: "approval", prompt: "Save the second note", display: "confirmation", allowFreeform: false, options: TWO } } },
+        { type: "turn.paused", scope: T, data: { turnId: "t1", awaiting: [{ interactionId: "int_A" }, { interactionId: "int_B" }] } },
+        { type: "delivery.settled", scope: T, data: { deliveryId: "d1", outcome: "awaiting-input", turnId: "t1" } },
+      ],
+      ...(answer === undefined ? [] : [
+        [{ type: "delivery.admitted", data: { deliveryId: "d2", principal: { id: "member", type: "user" }, source: { channel: "eve" } } }],
+        [
+          { type: "response.submitted", scope: T, data: { responseId: "rs1", interactionId: "int_A", deliveryId: "d2", value: { optionId: answer } } },
+          { type: "delivery.consumed", scope: T, data: { deliveryId: "d2", turnId: "t1", parts: [] } },
+        ],
+        [{ type: "response.admitted", scope: T, data: { responseId: "rs1" } }],
+      ] as Fact[][]),
+    ]);
+    const parts = (messages: readonly EveMessage[]) => messages.flatMap((m) => m.parts).filter((p): p is EveToolPart => p.type === "tool");
+
+    it("both cards come from the same step, and an answer leaves the card open", () => {
+      const [a, b] = parts(twoCards("approve"));
+      expect(a!.interaction).toMatchObject({ interactionId: "int_A", status: "open", answer: { optionId: "approve" } });
+      expect(b!.interaction).toMatchObject({ interactionId: "int_B", status: "open" });
+      expect(b!.interaction!.answer).toBeUndefined();
+      expect([a!.interaction!.turnId, a!.interaction!.stepIndex]).toEqual([b!.interaction!.turnId, b!.interaction!.stepIndex]);
+    });
+
+    it("an approved card says it runs once the other card is answered, and the other card keeps its buttons", () => {
+      const html = render(twoCards("approve"), { onAnswer: () => {} });
+      expect(html).toContain("You approved this. It runs once you answer the other card asked with it.");
+      expect(html).not.toContain("Waiting for the agent");
+      expect(html.match(/<button/g)).toHaveLength(2); // the other card's Approve and Deny
+    });
+
+    it("a denied card says the agent goes on once the other card is answered", () => {
+      expect(render(twoCards("deny"), { onAnswer: () => {} })).toContain("You denied this. The agent goes on once you answer the other card asked with it.");
+    });
+
+    it("keeps 'Waiting for the agent' when nothing else waits for the person: the other card answered too, or past its lifetime", () => {
+      const [a, b] = parts(twoCards("approve"));
+      const both = { ...b!, interaction: { ...b!.interaction!, answer: { interactionId: "int_B", optionId: "deny" } } } as EveToolPart;
+      const html = render([{ id: "m", role: "assistant", parts: [a!, both] }], { onAnswer: () => {} });
+      expect(html.split("You have answered this. Waiting for the agent.").length - 1).toBe(2);
+      expect(render(twoCards("approve"), { expired: new Set(["int_B"]) })).toContain("You have answered this. Waiting for the agent.");
+    });
+
+    it("counts only cards of the same step: a card from another step changes nothing", () => {
+      const [a, b] = parts(twoCards("approve"));
+      const elsewhere = { ...b!, interaction: { ...b!.interaction!, stepIndex: b!.interaction!.stepIndex + 1 } } as EveToolPart;
+      expect(render([{ id: "m", role: "assistant", parts: [a!, elsewhere] }])).toContain("You have answered this. Waiting for the agent.");
+    });
+  });
+
   it("a card in a conversation that has ended has no button at all", () => {
     const html = render(card(), { ended: true, error: "This conversation has ended. Start a new one.", onAnswer: () => {} });
     expect(html).toContain("This card is no longer active. Nothing was approved.");

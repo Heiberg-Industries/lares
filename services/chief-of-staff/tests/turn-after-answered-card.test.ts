@@ -499,3 +499,115 @@ describe("nothing that reaches other people in the reply to an answered request 
     expect(requestMock.mock.calls.filter(([op]) => op === "turn.open")).toHaveLength(0);
   });
 });
+
+// THE BETA CASE: a card waits and the person types a new message instead of answering. eve
+// withdraws every card nobody answered (reason `superseded-by-message`), a card already answered
+// still runs, and the model reads the new message next, in the same turn. The message joins the turn
+// as the same person, so `auth.current` now carries the Keeper receipt the MESSAGE was admitted with;
+// that receipt (the person's own action) opens the reply. Before this change only an answer's
+// receipt could, and it lives 30 seconds: typed later, the new message was never answered.
+describe("web chat: a message typed while a card waits", () => {
+  const TYPED_RECEIPT = "t".repeat(43);
+  /** The same person, after their new message joined the turn: its own receipt on `current`. */
+  const typed = (nonce = "n".repeat(43)) => ({ ...member("member-1", nonce),
+    attributes: { ...member("member-1", nonce).attributes, lares_model_pending_receipt: TYPED_RECEIPT } });
+  const withdrawnByMessage = (turnId: string, interactionId: string) => ({ type: "interaction.settled", scope: { turnId },
+    data: { interactionId, outcome: "withdrawn", reason: "superseded-by-message" } });
+  const opens = () => requestMock.mock.calls.filter(([op]) => op === "turn.open");
+  /** The human turn opens with the message that started it, asks its cards, and pauses. */
+  async function askAndPause(sessionId: string, cards: string[]) {
+    const asking = sessionOf(sessionId, member());
+    const ctx = { session: asking, agent: { name: "chief-of-staff" } };
+    await m.seam.openModelPurposeTurn({ type: "turn.started", data: { turnId: "turn_2" } }, asking as never);
+    for (const card of cards) await m.hook.events["interaction.opened"]!(opened("turn_2", card), ctx);
+    await m.seam.closeModelPurposeTurn({ type: "turn.paused", data: { turnId: "turn_2" } }, asking as never);
+    requestMock.mockClear();
+    // After the message joins: `current` is the same person with the message's claims; `initiator` stays.
+    const steered = sessionOf(sessionId, typed(), "turn_2", member());
+    return { asking, steered, ctx: { session: steered, agent: { name: "chief-of-staff" } } };
+  }
+  async function reply(session: unknown) {
+    m.seam.prepareModelPurposeInvocation(step("turn_2"), session as never);
+    return m.seam.claimModelPurposeForInvocation(m.captureModelInvocation(step("turn_2"), session as never, "lares-brain"));
+  }
+
+  it("the copy of eve's reason is eve's own", async () => {
+    const { createRequire } = await import("node:module");
+    const { dirname, join } = await import("node:path");
+    const { pathToFileURL } = await import("node:url");
+    const eveRoot = dirname(createRequire(import.meta.url).resolve("eve/package.json"));
+    const reader = await import(pathToFileURL(join(eveRoot, "dist/src/protocol/session-projection/reader.js")).href) as { SUPERSEDED_BY_MESSAGE: string };
+    const { WITHDRAWN_BY_MESSAGE_REASON } = await import("../agent/hooks/approval-record.js");
+    expect(WITHDRAWN_BY_MESSAGE_REASON).toBe(reader.SUPERSEDED_BY_MESSAGE);
+  });
+
+  it("one card, typed ten minutes later: the message's own receipt opens the reply, and the agent answers it", async () => {
+    const base = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(base);
+    const { steered, ctx } = await askAndPause("sess_typed_one", ["int_wait"]);
+    clock.mockReturnValue(base + 10 * 60_000);
+    await m.hook.events["interaction.settled"]!(withdrawnByMessage("turn_2", "int_wait"), ctx);
+    expect(opens()).toEqual([["turn.open", expect.objectContaining({ pendingReceipt: TYPED_RECEIPT,
+      context: { session: expect.objectContaining({ turn: { id: "turn_2", sequence: 2 }, auth: { current: steered.auth.current, initiator: steered.auth.initiator } }) } })]]);
+    await expect(reply(steered)).resolves.toBeUndefined();
+    expect(requestMock.mock.calls.map(([op]) => op)).toEqual(["turn.open", "step.claim"]);
+  });
+
+  it("the mixed case: one card approved, more than 30 seconds later a message withdraws the other; the approved one stands and the message is answered", async () => {
+    const base = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(base);
+    const { asking, steered, ctx } = await askAndPause("sess_typed_mixed", ["int_4a", "int_4b"]);
+    clock.mockReturnValue(base + 1_000);
+    webChatAnswer(m, asking, "int_4a", "approve"); // card 4a approved; eve waits for 4b before it runs
+    clock.mockReturnValue(base + 61_000);           // the answer's receipt is long gone
+    // eve settles the step: 4b withdrawn by the message, 4a with its standing answer.
+    await m.hook.events["interaction.settled"]!(withdrawnByMessage("turn_2", "int_4b"), ctx);
+    await m.hook.events["interaction.settled"]!(settled("turn_2", "int_4a", "accepted", "approve"), ctx);
+    expect(opens()).toEqual([["turn.open", expect.objectContaining({ pendingReceipt: TYPED_RECEIPT })]]);
+    await expect(reply(steered)).resolves.toBeUndefined();
+  });
+
+  for (const order of [["int_4b", "int_4a"], ["int_4a", "int_4b"]] as const) {
+    it(`the mixed case within 30 seconds, settled ${order.join(" then ")}: one continuation opens, from the person's answer or message, and the reply goes`, async () => {
+      const base = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(base);
+      const { asking, steered, ctx } = await askAndPause(`sess_typed_quick_${order[0]}`, ["int_4a", "int_4b"]);
+      webChatAnswer(m, asking, "int_4a", "approve");
+      clock.mockReturnValue(base + 5_000);
+      for (const card of order) await m.hook.events["interaction.settled"]!(card === "int_4b"
+        ? withdrawnByMessage("turn_2", card) : settled("turn_2", card, "accepted", "approve"), ctx);
+      expect(opens()).toHaveLength(1);
+      expect([TYPED_RECEIPT, ANSWER_RECEIPT]).toContain((opens()[0]![1] as { pendingReceipt: string }).pendingReceipt);
+      await expect(reply(steered)).resolves.toBeUndefined();
+    });
+  }
+
+  it("never opens from the receipt the turn's first message already used, nor from another admission", async () => {
+    const { asking, ctx } = await askAndPause("sess_typed_guard", ["int_g1"]);
+    // A withdrawal with the original message still on `current` (nothing new was admitted).
+    await m.hook.events["interaction.settled"]!(withdrawnByMessage("turn_2", "int_g1"), { ...ctx, session: asking });
+    // A message under another admission than the one that started the conversation.
+    const other = sessionOf("sess_typed_guard", typed("m".repeat(43)), "turn_2", member());
+    await m.seam.openContinuationAfterMessage("turn_2", other as never);
+    expect(opens()).toHaveLength(0);
+    // The person sees the whole truth: the card was cancelled by the message, nothing was done, no reply.
+    await expect(reply(asking)).rejects.toThrow("The reply to a message sent while an approval waited was refused");
+  });
+
+  it("the reply still refused after the mixed case says both what ran and what was not done", async () => {
+    const { asking, steered, ctx } = await askAndPause("sess_typed_refused", ["int_r1", "int_r2"]);
+    webChatAnswer(m, asking, "int_r1", "approve");
+    requestMock.mockRejectedValue(new Error("keeper unreachable"));
+    await m.hook.events["interaction.settled"]!(withdrawnByMessage("turn_2", "int_r2"), ctx);
+    await m.hook.events["interaction.settled"]!(settled("turn_2", "int_r1", "accepted", "approve"), ctx);
+    await expect(reply(steered)).rejects.toThrow("The reply to a message sent after an approval answer was refused");
+    const { approvalReplySentence } = await import("@lares/agent-kit/approval-reply-sentence");
+    expect(approvalReplySentence("The reply to a message sent after an approval answer was refused")).toBe(
+      "Your answer was applied. Your new message cancelled what was still waiting for your answer, so nothing was done for that. I could not finish my reply to your new message; please send it again.");
+  });
+
+  it("a card that opens later in the same turn takes over: a refused reply after it no longer speaks of the message", async () => {
+    const { steered, ctx } = await askAndPause("sess_typed_later", ["int_l1"]);
+    await m.hook.events["interaction.settled"]!(withdrawnByMessage("turn_2", "int_l1"), ctx);
+    expect(m.turns.turnCardWithdrawnByMessage(steered)).toBe(true);
+    await m.hook.events["interaction.opened"]!(opened("turn_2", "int_l2"), ctx);
+    expect(m.turns.turnCardWithdrawnByMessage(steered)).toBe(false);
+  });
+});

@@ -3,15 +3,16 @@ import { requestAndAttachModelPurposeClaim, type ModelInvocation } from '@lares/
 import { consoleAdmission, type ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { privateResumeAdmission, takeAcceptedAnswers } from '@lares/agent-kit/private-console-resume';
-import { APPROVAL_REPLY_REFUSED, APPROVAL_UNANSWERED } from '@lares/agent-kit/approval-reply-sentence';
-import { turnAppliedAnAnswer, turnAskedACard } from '../../lib/approval-card-turns.js';
+import { createHash } from 'node:crypto';
+import { APPROVAL_MESSAGE_AFTER_ANSWER_REFUSED, APPROVAL_MESSAGE_REFUSED, APPROVAL_REPLY_REFUSED, APPROVAL_UNANSWERED } from '@lares/agent-kit/approval-reply-sentence';
+import { turnAppliedAnAnswer, turnAskedACard, turnCardWithdrawnByMessage } from '../../lib/approval-card-turns.js';
 
 type Point = Readonly<{ sessionId: string; turnId: string; sequence: number; incarnation: string }>;
-/** The answer a continuation opens from: taken from the response policy's record, never from the
- * turn's identity (`@lares/agent-kit/private-console-resume`, `takeAcceptedAnswers`). */
+/** The person's action a continuation opens from, and who it must still be at every claim: either
+ * a card's ANSWER (taken from the response policy's record, never from the turn's identity:
+ * `@lares/agent-kit/private-console-resume`, `takeAcceptedAnswers`), or a NEW MESSAGE the person
+ * typed while a card waited (its own Keeper receipt, admitted for exactly that message). */
 type ResumeBinding = Readonly<{
-  requestId: string;
-  optionId: 'approve' | 'deny';
   memberId: string;
   admissionNonce: string;
   receipt: string;
@@ -23,26 +24,45 @@ const MAX_ENTRIES = 512;
 const MAX_CLOSED_POINTS = 65_536;
 const closedPoints = new Set<string>();
 const ACTIVE_MS = 5 * 60_000;
+/** Receipts this process has already opened (or tried to open) a Keeper turn with. Keeper uses each
+ * receipt once anyway; this only keeps a continuation from presenting the message receipt its own
+ * turn already used. Oldest forgotten first. */
+const usedReceipts = new Set<string>();
+const MAX_USED_RECEIPTS = 4096;
+function noteReceiptUsed(receipt: string): void {
+  usedReceipts.delete(receipt);
+  usedReceipts.add(receipt);
+  if (usedReceipts.size > MAX_USED_RECEIPTS) usedReceipts.delete(usedReceipts.values().next().value as string);
+}
 const deny = () => new Error('Model purpose authority is not available');
 /** A refusal of the model call that continues a paused turn. The doors show a fixed sentence for
  * it (`@lares/agent-kit/approval-reply-sentence`) instead of a broken conversation, and only one
- * that is true, read from the durable marks (lib/approval-card-turns.ts): "your answer was applied"
- * only when a person's answer to a card in this turn was applied; "ended without an answer" when the
- * turn asked a card and nobody's answer was applied (it expired, or the person typed while it
- * waited). A turn that asked no card, or whose marks cannot be read, keeps the plain refusal. All
- * three fail the turn the same way. */
+ * that is true, read from the durable marks (lib/approval-card-turns.ts):
+ * - the latest card event of this turn was a card withdrawn by a NEW MESSAGE the person typed: the
+ *   sentence says the waiting card was cancelled, nothing was done for it, and the new message was
+ *   not answered; it also says "your answer was applied" when a person's answer to another card in
+ *   this turn was (the mixed case: one card approved, the other withdrawn by the message);
+ * - otherwise "your answer was applied" only when a person's answer to a card in this turn was
+ *   applied; "ended without an answer" when the turn asked a card and nobody's answer was applied.
+ * A turn that asked no card, or whose card or answer marks cannot be read, keeps the plain refusal.
+ * All of them fail the turn the same way. */
 function refusedReply(point: Point): Error {
   const turn = { turn: { id: point.turnId } };
   if (!turnAskedACard(turn)) return deny();
   const applied = turnAppliedAnAnswer(turn);
-  return applied === true ? new Error(APPROVAL_REPLY_REFUSED) : applied === false ? new Error(APPROVAL_UNANSWERED) : deny();
+  if (applied === undefined) return deny();
+  // When this mark cannot be read, the sentence below is still true; it only says less.
+  if (turnCardWithdrawnByMessage(turn) === true) return new Error(applied ? APPROVAL_MESSAGE_AFTER_ANSWER_REFUSED : APPROVAL_MESSAGE_REFUSED);
+  return new Error(applied ? APPROVAL_REPLY_REFUSED : APPROVAL_UNANSWERED);
 }
 const key = (point: Point) => `${point.sessionId}\0${point.turnId}\0${point.sequence}\0${point.incarnation}`;
-/** A continuation's own slot. It names the card it answers, so it never shares the paused point's
- * tombstone (the original message's receipt cannot reopen the point) and a card can resume once.
- * It ends in the incarnation like every key, so a new turn displaces it. */
-const resumeKey = (point: Point, requestId: string) =>
-  `${point.sessionId}\0${point.turnId}\0${point.sequence}\0resume:${requestId}\0${point.incarnation}`;
+/** A continuation's own slot. It names what it continues from (`card:<request id>` for an answered
+ * card, `message:<digest of its receipt>` for a typed message), so it never shares the paused
+ * point's tombstone (the original message's receipt cannot reopen the point) and each card or
+ * message can open a continuation once. It ends in the incarnation like every key, so a new turn
+ * displaces it. */
+const resumeKey = (point: Point, from: string) =>
+  `${point.sessionId}\0${point.turnId}\0${point.sequence}\0resume:${from}\0${point.incarnation}`;
 const pointPrefix = (point: Point) => `${point.sessionId}\0${point.turnId}\0${point.sequence}\0`;
 
 function prune(now = Date.now()): void {
@@ -169,11 +189,10 @@ function beginResume(point: Point, session: Session | undefined): Entry | undefi
   if (answers.length === 0) return undefined;
   if (answers.some(a => a.memberId !== asker.memberId || a.admissionNonce !== asker.admissionNonce || !a.receipt)) throw deny();
   const first = answers[0]!;
-  const id = resumeKey(point, first.requestId);
+  const id = resumeKey(point, `card:${first.requestId}`);
   if (closedPoints.has(id)) throw deny();
   const entry = begin(point, id);
-  entry.resume = Object.freeze({ requestId: first.requestId, optionId: first.optionId, memberId: first.memberId,
-    admissionNonce: first.admissionNonce, receipt: first.receipt! });
+  entry.resume = Object.freeze({ memberId: first.memberId, admissionNonce: first.admissionNonce, receipt: first.receipt! });
   return entry;
 }
 
@@ -201,6 +220,7 @@ export function prepareModelPurposeInvocation(event: unknown, session: Session |
 async function openEntry(point: Point, entry: Entry, pendingReceipt: string, session: Session): Promise<void> {
   // The context Keeper sees is the requester's own turn: `current` stays the person who asked.
   if (entry.openRequest) return entry.openRequest;
+  noteReceiptUsed(pendingReceipt);
   const request = (async () => {
     try {
       const result = await modelPurposeRequest<{ capability?: unknown; expiresAt?: unknown }>('turn.open', {
@@ -273,6 +293,46 @@ export async function openContinuationAfterSettle(turnId: unknown, session: Sess
     if (entries.get(key(point))?.active || resumeEntryAt(point)) return;
     const entry = beginResume(point, session);
     if (entry?.resume) await openEntry(point, entry, entry.resume.receipt, session!);
+  } catch {
+    /* refused: no slot is open, so the continuation's model call is refused (fixed sentence) */
+  }
+}
+
+/**
+ * Opens the continuation's Keeper turn from the person's NEW MESSAGE, typed while a card waited.
+ *
+ * eve treats a message that answers no option as steering: every approval nobody answered is
+ * withdrawn, an approval already answered stands (an approved call still runs), and the model reads
+ * the new message next, in the same turn (eve `docs/tools/human-in-the-loop.md`, "Follow-up
+ * messages"). No `turn.started` fires for it, but the message joins the turn as the same person and
+ * its claims replace `auth.current`'s (eve `docs/guides/auth-and-route-protection.md`, "What reaches
+ * ctx.session.auth"). So `auth.current` now carries the Keeper receipt the message itself was
+ * admitted with (agent/channels/eve.ts, `onPrivateConsoleMessage`): proof that the person who asked
+ * sent exactly this message in this conversation, single use, 30 seconds.
+ *
+ * The settle hook calls this when a card ends `withdrawn`, after the answer path
+ * ({@link openContinuationAfterSettle}) had its turn and before eve runs any approved call, so the
+ * receipt is used within moments of the message (an approved call may be slow). It opens nothing when
+ * a continuation is already open for this point (an answer still within its 30 seconds opened it),
+ * when the receipt is one this process already used (the message that started the turn), or when
+ * the requester checks fail. Like a human turn, the Keeper turn it opens lives five minutes, is bound
+ * to this one turn position, and is closed with the turn. Never throws: a refusal leaves no slot, so
+ * the continuation's model call is refused with the fixed sentence.
+ */
+export async function openContinuationAfterMessage(turnId: unknown, session: Session | undefined): Promise<void> {
+  try {
+    const pending = pendingFrom(session?.auth?.current);
+    if (!pending.receipt || usedReceipts.has(pending.receipt)) return;
+    const own = managedIdentity(process.env);
+    if (!own) return;
+    const point = pointFrom({ data: { turnId } }, session, own.incarnation, false);
+    prune();
+    if (entries.get(key(point))?.active || resumeEntryAt(point)) return;
+    const asker = requester(session);
+    const digest = createHash('sha256').update(pending.receipt).digest('base64url').slice(0, 22);
+    const entry = begin(point, resumeKey(point, `message:${digest}`));
+    entry.resume = Object.freeze({ memberId: asker.memberId, admissionNonce: asker.admissionNonce, receipt: pending.receipt });
+    await openEntry(point, entry, pending.receipt, session!);
   } catch {
     /* refused: no slot is open, so the continuation's model call is refused (fixed sentence) */
   }
