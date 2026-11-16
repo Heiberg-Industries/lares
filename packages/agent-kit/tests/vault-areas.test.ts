@@ -98,8 +98,8 @@ describe("one set of note tools, told which area to read", () => {
     });
     expect(await listTool({ areas }).execute({ area: "private" }, ctx)).toEqual({
       notes: ["people/vera.md", "private-only.md"],
-      files: 2,
     });
+    expect(await listTool({ areas }).execute({ area: "private", folder: "people" }, ctx)).toEqual({ notes: ["people/vera.md"] });
     expect(await backlinksTool({ areas }).execute({ area: "private", path: "x.md" }, ctx)).toEqual({
       path: "x.md",
       backlinks: ["people/vera.md"],

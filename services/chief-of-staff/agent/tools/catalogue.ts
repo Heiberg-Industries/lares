@@ -97,16 +97,20 @@ export default defineDynamic(async (ctx) => {
             : {}),
           execute: async (input: unknown, toolCtx: unknown) => {
             await guardCatalogueExecution(toolCtx,name,input);
-            if(name==='agent-kit__vault_list'||name==='agent-kit__vault_read'){
+            // In web chat the Vault is keeper's custody: list, read and search go through it, never the agent's own files.
+            if(name==='agent-kit__vault_list'||name==='agent-kit__vault_read'||name==='agent-kit__vault_search'){
               const c=toolCtx as {session?:{id?:string;turn?:{id?:string;sequence?:number};auth?:{current?:unknown}|null}};
               if(isPrivateConsoleContext(toolCtx)){
                 const admission=consoleAdmission(c.session?.auth?.current),own=managedIdentity(process.env),turnId=c.session?.turn?.id,sequence=c.session?.turn?.sequence;
                 if(admission?.purpose!=='human'||!own||!c.session?.id||typeof turnId!=='string'||!Number.isSafeInteger(sequence))throw new Error('Conversation authority is not available');
                 const turn=vaultTurnCapability({sessionId:c.session.id,turnId,sequence:sequence as number,incarnation:own.incarnation});
                 if(!turn||turn.expiresAt<=Date.now()||turn.turnId!==turnId||turn.sequence!==sequence)throw new Error('Conversation authority is not available');
-                const args=input as {area?:unknown;path?:unknown};
-                if((args.area!=='private'&&args.area!=='shared')||(name==='agent-kit__vault_read'&&typeof args.path!=='string'))throw new Error('Vault access refused');
-                return vaultBrokerRequest('vault.read',{turnCapability:turn.capability,turnId,sequence,sessionId:c.session.id,memberId:admission.memberId,admissionNonce:admission.admissionNonce,operation:name==='agent-kit__vault_list'?'list':'read',area:args.area,...(typeof args.path==='string'?{path:args.path}:{}),...(Number.isSafeInteger((args as {offset?:unknown}).offset)?{offset:(args as {offset:number}).offset}:{})});
+                const args=input as {area?:unknown;path?:unknown;offset?:unknown;folder?:unknown;cursor?:unknown;q?:unknown};
+                if((args.area!=='private'&&args.area!=='shared')||(name==='agent-kit__vault_read'&&typeof args.path!=='string')||(name==='agent-kit__vault_search'&&typeof args.q!=='string'))throw new Error('Vault access refused');
+                const identity={turnCapability:turn.capability,turnId,sequence,sessionId:c.session.id,memberId:admission.memberId,admissionNonce:admission.admissionNonce,area:args.area};
+                if(name==='agent-kit__vault_search')return vaultBrokerRequest('vault.read',{...identity,operation:'search',q:args.q});
+                if(name==='agent-kit__vault_list')return vaultBrokerRequest('vault.read',{...identity,operation:'list',...(typeof args.folder==='string'?{folder:args.folder}:{}),...(Number.isSafeInteger(args.cursor)?{cursor:args.cursor}:{})});
+                return vaultBrokerRequest('vault.read',{...identity,operation:'read',path:args.path,...(Number.isSafeInteger(args.offset)?{offset:args.offset}:{})});
               }
             }
             return tool.execute(input, toolCtx);

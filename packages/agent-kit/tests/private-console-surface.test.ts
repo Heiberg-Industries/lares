@@ -79,6 +79,15 @@ it('a chief of staff may propose a new private note in a private conversation; n
  expect(privateRoleInstructions('chief-of-staff')).toContain('once they approve, the note is saved, with no further step');
  expect(privateRoleInstructions('chief-of-staff')).not.toMatch(/proposes one new private note|👍/u);
 });
+it('a chief of staff may search notes in a private conversation, and native channels keep their own search',()=>{
+ expect(privateToolAllowed('chief-of-staff','agent-kit__vault_search')).toBe(true);
+ expect(privateToolAllowed('creative','agent-kit__vault_search')).toBe(false);
+ expect(privateOnlyTool('agent-kit__vault_search')).toBe(false);
+ expect(privateToolAllowed('chief-of-staff','agent-kit__vault_backlinks')).toBe(false);
+ expect(privateRoleInstructions('chief-of-staff')).toContain('Vault list/read/search');
+ expect(privateRoleInstructions('chief-of-staff')).toContain('to find notes about a subject, search instead of listing the whole area; Vault backlinks and resume are unavailable.');
+ expect(privateRoleInstructions('chief-of-staff')).not.toContain('Vault search, backlinks and resume are unavailable');
+});
 it('the private console channel exports no trace, under the 1.0 channel name and the old one; everything else keeps its content decision',async()=>{
  const {resolveTracePolicy}=await import(`${dist}shared/trace-policy.js`);
  for(const kind of ['channel:eve','eve','http','channel:http']){

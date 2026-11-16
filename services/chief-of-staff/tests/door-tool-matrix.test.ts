@@ -45,6 +45,22 @@ const WEB_OWNER = "member-owner";
 const WEB_MEMBER = "member-other";
 const WEB_STRANGER = "member-unknown";
 
+// Off unless a test turns it on: then web chat's turn holds a Vault capability and keeper's answers are recorded here.
+const keeper = vi.hoisted(() => ({ on: false, calls: [] as Array<{ op: string; input: Record<string, unknown> }> }));
+vi.mock("@lares/agent-kit/vault-broker-client", async (original) => {
+  const real = await original<typeof import("@lares/agent-kit/vault-broker-client")>();
+  return { ...real, vaultBrokerRequest: async (op: string, input: Record<string, unknown>, ...rest: unknown[]) => {
+    if (!keeper.on) return (real.vaultBrokerRequest as (...args: unknown[]) => unknown)(op, input, ...rest);
+    keeper.calls.push({ op, input });
+    return input.operation === "search" ? { ok: true, hits: ["people/vera.md"], files: 2000 } : { ok: true, notes: ["people/vera.md"], nextCursor: 200 };
+  } };
+});
+vi.mock("../agent/lib/vault-turn.js", async (original) => {
+  const real = await original<typeof import("../agent/lib/vault-turn.js")>();
+  return { ...real, vaultTurnCapability: (...args: Parameters<typeof real.vaultTurnCapability>) => keeper.on
+    ? { turnId: "turn-1", sequence: 0, capability: "turn-capability", expiresAt: Date.now() + 60_000 } : real.vaultTurnCapability(...args) };
+});
+
 const fake = vi.hoisted(() => {
   const asks = new Map<string, Record<string, unknown>>();
   const unexpected: string[] = [];
@@ -227,7 +243,7 @@ const TABLE: readonly Row[] = [
   // Notes (the Vault). Found: Slack and Telegram search notes but cannot read or list them.
   ["agent-kit__vault_read",               H,       H,       H,       R,       R],
   ["agent-kit__vault_list",               H,       H,       H,       R,       R],
-  ["agent-kit__vault_search",             R,       H,       R,       H,       H],
+  ["agent-kit__vault_search",             R,       H,       R,       R,       R],
   ["agent-kit__vault_backlinks",          R,       H,       R,       H,       H],
   ["agent-kit__vault_write",              C,       H,       C,       C,       C],
   ["agent-kit__vault_file",               C,       H,       C,       H,       H],
@@ -757,6 +773,26 @@ describe("tools with their own resolver", () => {
 });
 
 // ─── People the doors do not admit ────────────────────────────────────────────────────────────
+
+describe("web chat notes go to keeper", () => {
+  afterEach(() => { keeper.on = false; keeper.calls = []; });
+  it("Web chat · owner: a search and a listing page are keeper requests with the turn's own coordinates and only the inputs the tool takes", async () => {
+    const { session } = await observe("webOwner");
+    const tools = await resolveCatalogue(session) as unknown as Record<string, { execute(input: unknown, ctx: unknown): Promise<unknown> }>;
+    keeper.on = true;
+    expect(await tools["agent-kit__vault_search"]!.execute({ area: "private", q: "vera" }, session)).toEqual({ ok: true, hits: ["people/vera.md"], files: 2000 });
+    expect(await tools["agent-kit__vault_list"]!.execute({ area: "shared", folder: "people", cursor: 200 }, session)).toMatchObject({ notes: ["people/vera.md"], nextCursor: 200 });
+    await tools["agent-kit__vault_list"]!.execute({ area: "private" }, session);
+    const turn = { turnCapability: "turn-capability", turnId: "turn-1", sequence: 0, sessionId: session.session.id, memberId: WEB_OWNER, admissionNonce: NONCE };
+    expect(keeper.calls).toEqual([
+      { op: "vault.read", input: { ...turn, area: "private", operation: "search", q: "vera" } },
+      { op: "vault.read", input: { ...turn, area: "shared", operation: "list", folder: "people", cursor: 200 } },
+      { op: "vault.read", input: { ...turn, area: "private", operation: "list" } },
+    ]);
+    await expect(tools["agent-kit__vault_search"]!.execute({ area: "taste", q: "vera" }, session)).rejects.toThrow("Vault access refused");
+    expect(keeper.calls).toHaveLength(3);
+  });
+});
 
 describe("an unauthorised or unknown speaker", () => {
   const NO_TURN = "no turn starts, so nothing is seen and nothing can be called";

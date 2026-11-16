@@ -12,6 +12,7 @@ import {
   areaForStore,
   findBacklinks,
   listNotes,
+  notePage,
   noteScope,
   readNote,
   searchNotes,
@@ -377,5 +378,22 @@ describe("an article's text companion is invisible to search and listing", () =>
       "articles/a.txt": "Full text.\n",
     });
     expect(listNotes(root)).toEqual(["articles/a.md"]);
+  });
+});
+
+describe("notePage", () => {
+  const paths = ["b/two.md", "a/one.md", "c.md", "a/sub/three.md", "ab/four.md"];
+  it("pages in alphabetical order with a position cursor, and says when the listing is complete", () => {
+    expect(notePage(paths, { limit: 2 })).toEqual({ paths: ["a/one.md", "a/sub/three.md"], nextCursor: 2 });
+    expect(notePage(paths, { limit: 2, cursor: 2 })).toEqual({ paths: ["ab/four.md", "b/two.md"], nextCursor: 4 });
+    expect(notePage(paths, { limit: 2, cursor: 4 })).toEqual({ paths: ["c.md"] });
+    expect(notePage(paths, { limit: 5 })).toEqual({ paths: [...paths].sort() });
+    expect(notePage(paths, { limit: 2, cursor: 9 })).toEqual({ paths: [] });
+  });
+  it("lists one folder and its subfolders only, never a folder whose name merely starts the same", () => {
+    expect(notePage(paths, { limit: 10, folder: "a" })).toEqual({ paths: ["a/one.md", "a/sub/three.md"] });
+    expect(notePage(paths, { limit: 10, folder: "/a/" })).toEqual({ paths: ["a/one.md", "a/sub/three.md"] });
+    expect(notePage(paths, { limit: 10, folder: "" })).toEqual({ paths: [...paths].sort() });
+    expect(notePage(paths, { limit: 10, folder: "missing" })).toEqual({ paths: [] });
   });
 });

@@ -10,7 +10,8 @@ import { z } from 'zod';
 import { vaultAreaBindingSchema, vaultWriteBindingSchema, type VaultAreaBinding, type VaultWriteBinding } from './authority-contract.js';
 import type { GrantDatabase } from './grant-store.js';
 import type { PgVaultStore } from './vault-area-store.js';
-import { findBacklinks, listNotes, NoteNotFoundError, NotePathEscapesStoreError, resolveInStore, searchNotes } from './notes-store.js';
+import { findBacklinks, listNotes, NoteNotFoundError, notePage, NotePathEscapesStoreError, resolveInStore, searchNotes, visibleTo,
+  type NotePageRequest, type Reader } from './notes-store.js';
 import { withGuardedVaultRepositoryLock } from './note-lock.js';
 import { commitFile, commitNote, commitNotes, moveNote, removeNote, runGuardedVaultGit, vaultCompanionOf, vaultContentRevision, VaultContentChangedError, VaultPushFailedError, VaultStagedChangesError, type VaultBatchFileResult, type VaultGitGuard } from './vault-git.js';
 import { articleCompanionPath } from '@lares/vault-format/article';
@@ -152,9 +153,27 @@ export class GuardedVaultFiles {
       return {paths,files:paths.length};
     });
   }
+  /** One page (`notePage`) of the notes in the folder that `reader` may see. Every note in the folder is
+   * read, under ONE area authorisation, to keep only the visible ones BEFORE the page is cut, so the
+   * cursor counts and places only notes the reader can already see: a page never reveals how many
+   * hidden notes there are or where they sort. A full page holds `request.limit` notes; only the last
+   * page is short, and `nextCursor` appears only when more visible notes follow. */
+  async listPage(ctx:VaultFilesContext,request:NotePageRequest,reader:Reader):Promise<{paths:string[];nextCursor?:number}> {
+    return this.readArea(ctx,root=>{
+      const inFolder=notePage(listNotes(root,{allowEmpty:true,rejectNestedRepositories:true}),{folder:request.folder,limit:Number.MAX_SAFE_INTEGER}).paths;
+      // Reuses the walk's own check instead of a second resolveInStore per note (about 220 ms a page at 2,000
+      // notes). Safe because every path read here is one the walk just returned (the folder only filters them;
+      // nothing is built from caller input), the walk ran resolveInStore with the nested-repository check on
+      // each of them, and walk and reads run in this one synchronous callback inside the repository lock that
+      // every Lares Vault writer takes. `regular` still refuses a symlink, a non-regular file and a hard link.
+      const visible=inFolder.filter(path=>{const abs=join(root,path);regular(abs);return visibleTo(readFileSync(abs,'utf8'),reader);});
+      return notePage(visible,{cursor:request.cursor,limit:request.limit});
+    });
+  }
   async count(ctx:VaultFilesContext):Promise<number> {return (await this.list(ctx)).files;}
-  async search(ctx:VaultFilesContext,query:string) {
-    return this.readArea(ctx,root=>searchNotes(query,root,undefined,{allowEmpty:true,fresh:true,rejectNestedRepositories:true}));
+  /** With a reader, only notes that reader may see are returned (`searchNotes`). */
+  async search(ctx:VaultFilesContext,query:string,reader?:Reader) {
+    return this.readArea(ctx,root=>searchNotes(query,root,reader,{allowEmpty:true,fresh:true,rejectNestedRepositories:true}));
   }
   async backlinks(ctx:VaultFilesContext,path:string) {
     return this.readArea(ctx,root=>findBacklinks(path,root,undefined,{allowEmpty:true,fresh:true,rejectNestedRepositories:true}));

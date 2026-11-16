@@ -12,7 +12,7 @@ import { currentMember } from '@lares/agent-kit/member-store';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { PgVaultStore } from '@lares/agent-kit/vault-area-store';
 import { GuardedVaultFiles, type VaultFilesBackings } from '@lares/agent-kit/vault-files';
-import { NoteNotFoundError, visibleTo, type Reader, type StoreName } from '@lares/agent-kit/notes-store';
+import { NOTE_LIST_PAGE, NoteNotFoundError, visibleTo, type Reader, type StoreName } from '@lares/agent-kit/notes-store';
 import { boundText, DEFAULT_READ_LIMIT } from '@lares/agent-kit/bounded-text';
 import { requireBoundExactApproval } from '@lares/agent-kit/approval-execution';
 import { outsideApprovalAdapter } from '@lares/agent-kit/outside-approval';
@@ -27,6 +27,8 @@ import type { OutsideCustodyStore, OutsideToolCallRequest } from './outside-cust
 import { scheduledVault, SCHEDULED_VAULT_DEADLINE_MS } from './scheduled-vault.js';
 import { loadVaultStorageInventory, verifyVaultStorageMetadata } from '@lares/agent-box/lib/vault-storage.js';
 
+/** The most note paths one web chat search returns; a reply says `more: true` when more matched. */
+const VAULT_SEARCH_HITS=50;
 const SOCKET='/run/lares/vault-console.sock', CONSOLE_LIMIT=16_384, RUNTIME_LIMIT=256*1024, CHALLENGE_MS=10_000, PENDING_MS=30_000, MAX_LIVE=4096;
 type Input={agent:string;incarnation:string;session:string;member:string;admissionNonce:string;method:string;path:string;rawBodyHash:string;policyRevision:number;definitionHash:string};
 type Challenge={input:Input;challenge:string;expiry:number};
@@ -47,7 +49,7 @@ const FAILURE_CODES:ReadonlySet<string>=new Set([...VAULT_BROKER_REFUSAL_REASONS
 /** The operations the two sockets serve. Closed for the same reason: the log never copies text out of a request. */
 const OPERATIONS:ReadonlySet<unknown>=new Set(['challenge','request.admit','turn.open','turn.close','vault.read','vault.write','vault.scheduled','tracks.write','outside.tools','outside.approve','outside.execute']);
 function failedOperation(line:string):string{
- try{const req=JSON.parse(line),kind=req?.input?.operation;if(!OPERATIONS.has(req?.op))return 'unknown';return req.op==='vault.read'&&(kind==='list'||kind==='read')?`vault.read ${kind}`:req.op;}catch{return 'unknown';}
+ try{const req=JSON.parse(line),kind=req?.input?.operation;if(!OPERATIONS.has(req?.op))return 'unknown';return req.op==='vault.read'&&(kind==='list'||kind==='read'||kind==='search')?`vault.read ${kind}`:req.op;}catch{return 'unknown';}
 }
 export function createBoundedVaultBrokerServer(handler:(line:string,signal:AbortSignal)=>Promise<Record<string,unknown>>,state:SocketState,limit=CONSOLE_LIMIT,timeoutMs=2000){
  return createServer(socket=>{if(state.clients.size>=32||state.inFlight>=32){socket.destroy();return;}state.clients.add(socket);let handled=false,buffer=Buffer.alloc(0);const controller=new AbortController(),deadline=setTimeout(()=>{controller.abort();socket.destroy()},timeoutMs);socket.on('error',()=>{});socket.on('close',()=>{controller.abort();clearTimeout(deadline);state.clients.delete(socket)});socket.on('data',chunk=>{
@@ -338,8 +340,10 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    const cap=input.turnCapability,turnId=input.turnId,sequence=input.sequence;if(typeof cap!=='string')throw new Error('turn');const turn=turns.get(cap);if(!turn||turn.turnId!==turnId||turn.sequence!==sequence||turn.input.agent!==agent||turn.input.incarnation!==incarnation)throw new Error('turn');turns.delete(cap);return {closed:true};
   }
   if(op==='vault.read'){
-   const cap=input.turnCapability,turnId=input.turnId,sequence=input.sequence,sessionId=input.sessionId,memberId=input.memberId,admissionNonce=input.admissionNonce,operation=input.operation,area=input.area,path=input.path,offset=input.offset,requestedHome=input.home;
-   if(typeof cap!=='string'||typeof turnId!=='string'||!Number.isSafeInteger(sequence)||typeof sessionId!=='string'||typeof memberId!=='string'||typeof admissionNonce!=='string'||(operation!=='list'&&operation!=='read')||(area!=='private'&&area!=='shared')||(operation==='read'&&typeof path!=='string')||(offset!==undefined&&(!Number.isSafeInteger(offset)||Number(offset)<0))||(requestedHome!==undefined&&(area!=='shared'||typeof requestedHome!=='string'||!/^vault:[A-Za-z0-9_-]{1,128}$/.test(requestedHome))))throw new Error('read');
+   const cap=input.turnCapability,turnId=input.turnId,sequence=input.sequence,sessionId=input.sessionId,memberId=input.memberId,admissionNonce=input.admissionNonce,operation=input.operation,area=input.area,path=input.path,offset=input.offset,requestedHome=input.home,folder=input.folder,cursor=input.cursor,query=input.q;
+   if(typeof cap!=='string'||typeof turnId!=='string'||!Number.isSafeInteger(sequence)||typeof sessionId!=='string'||typeof memberId!=='string'||typeof admissionNonce!=='string'||(operation!=='list'&&operation!=='read'&&operation!=='search')||(area!=='private'&&area!=='shared')||(operation==='read'&&typeof path!=='string')||(offset!==undefined&&(!Number.isSafeInteger(offset)||Number(offset)<0))||(requestedHome!==undefined&&(area!=='shared'||typeof requestedHome!=='string'||!/^vault:[A-Za-z0-9_-]{1,128}$/.test(requestedHome)))||
+      (folder!==undefined&&(operation!=='list'||typeof folder!=='string'||folder.length>512))||(cursor!==undefined&&(operation!=='list'||!Number.isSafeInteger(cursor)||Number(cursor)<0))||
+      (operation==='search'?typeof query!=='string'||query.length<1||query.length>1000:query!==undefined))throw new Error('read');
    const turn=turns.get(cap);if(!turn||turn.expiry<=turnNow()||turn.turnId!==turnId||turn.sequence!==sequence||turn.input.agent!==agent||turn.input.incarnation!==incarnation||turn.input.session!==sessionId||turn.input.member!==memberId||turn.input.admissionNonce!==admissionNonce)throw new Error('turn');
    const assertLive=()=>{assertNotAborted();if(turns.get(cap)!==turn||turn.expiry<=turnNow())throw new Error('turn')};assertLive();
    const sourceReadOptions={deadlineAtMs:requestDeadline,beforeCommit:assertLive,afterCommit:assertLive};
@@ -350,11 +354,16 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
     const kind=area==='private'?'private':'shared',candidates=inventory.areas.filter(a=>a.kind===kind),vault=new PgVaultStore(),matches=[] as {areaId:string;revision:number}[];
     for(const candidate of candidates){if(!turn.areaIds.includes(candidate.areaId))continue;const result=await db.query('SELECT revision FROM vault_areas WHERE id=$1 AND status=\'active\'',[candidate.areaId]);if(result.rows.length!==1)continue;const revision=Number(result.rows[0]!.revision);const binding=await vault.vaultAreaBinding(memberId,{areaId:candidate.areaId,expectedRevision:revision,permission:'use'},{db:db as never,requiredBackingKind:'git'});if(binding)matches.push({areaId:candidate.areaId,revision});}
     if(matches.length!==1||(requestedHome!==undefined&&matches[0]!.areaId!==requestedHome.slice('vault:'.length)))throw new Error('area');const selected=matches[0]!,testPaths=socketOptions.vaultFilesForTests,backings=new Map([[inventory.backing.id,{kind:'git' as const,root:testPaths?.root??'/srv',areas:new Map(inventory.areas.map(a=>[a.areaId,{origin:testPaths?join(testPaths.originRoot,`${a.areaId}.git`):a.origin}]))}]]),files=new GuardedVaultFiles(vault,backings),ctx={memberId,areaId:selected.areaId,expectedRevision:selected.revision,db:db as never},reader:Reader={userId:memberId,store:kind==='private'?'brain':'atlas' as StoreName};
+    // A list is one page of at most NOTE_LIST_PAGE notes this reader may see. The folder's notes are read to
+    // drop hidden ones before the page is cut, so the cursor counts only visible notes. The caller pages on with `nextCursor`.
     if(operation==='list'){
-     const listed=await files.list(ctx);if(listed.paths.length>512)throw new Error('listing');const notes:string[]=[];
-     for(const notePath of listed.paths){assertLive();const note=await files.read(ctx,notePath);assertLive();if(visibleTo(note.content,reader))notes.push(notePath);}
-     assertLive();
-     return {notes,files:notes.length};
+     const page=await files.listPage(ctx,{folder:folder as string|undefined,cursor:cursor as number|undefined,limit:NOTE_LIST_PAGE},reader);assertLive();
+     return {notes:page.paths,...(page.nextCursor!==undefined?{nextCursor:page.nextCursor}:{})};
+    }
+    // The same keyword search the native doors use, over this area's files, filtered by the same reader.
+    if(operation==='search'){
+     const found=await files.search(ctx,query as string,reader);assertLive();
+     return {hits:found.hits.slice(0,VAULT_SEARCH_HITS),files:found.files,...(found.hits.length>VAULT_SEARCH_HITS?{more:true}:{})};
     }
     assertLive();const note=await files.read(ctx,path as string);assertLive();if(!visibleTo(note.content,reader))throw new Error('not found');const page=boundText(note.content,{limit:DEFAULT_READ_LIMIT,offset:Number(offset??0)});
     if(!page.truncated&&page.note===undefined&&(offset??0)===0)return note;

@@ -3,7 +3,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { VAULT_BROKER_REFUSAL_REASONS, vaultBrokerRequest } from '../src/vault-broker-client.js';
+import { VAULT_BROKER_REFUSAL_REASONS, vaultBrokerListFolder, vaultBrokerRequest } from '../src/vault-broker-client.js';
 
 const root=mkdtempSync(join(tmpdir(),'lares-vault-client-'));
 const socketPath=join(root,'broker.sock'),secretPath=join(root,'runtime-key');
@@ -25,6 +25,7 @@ const replies:Record<string,string>={
  unsettled:'{"reason":"deadline"}\n',
 };
 let server:Server;
+const listInputs:Array<Record<string,unknown>>=[];
 
 beforeAll(async()=>{
  writeFileSync(secretPath,'3'.repeat(64));
@@ -33,7 +34,10 @@ beforeAll(async()=>{
  // The client hangs up the moment it has refused a reply, often while this side is still writing; as keeper's
  // own server does, absorb that reset instead of letting it surface as an uncaught error.
  server=createServer(socket=>{sockets.add(socket);socket.on('error',()=>{});socket.once('close',()=>sockets.delete(socket));let received='';socket.on('data',chunk=>{received+=chunk.toString('utf8');if(!received.includes('\n'))return;
-  const mode=JSON.parse(received.slice(0,received.indexOf('\n'))).input?.mode;
+  const input=JSON.parse(received.slice(0,received.indexOf('\n'))).input,mode=input?.mode;
+  // Keeper's paged list, as two pages joined by a cursor, or a listing that never ends.
+  if(mode==='pages'||mode==='endless'){listInputs.push(input);const first=input.cursor===undefined;
+   socket.end(JSON.stringify(mode==='endless'?{ok:true,notes:['f/x.md'],nextCursor:(input.cursor??0)+1}:first?{ok:true,notes:['f/a.md','f/b.md'],nextCursor:2}:{ok:true,notes:['f/c.md']})+'\n');return;}
   if(mode==='eof'){socket.end();return;}if(mode==='partial'){socket.end('{"ok":');return;}if(mode==='stall')return;
   if(typeof mode==='string'&&mode in replies){socket.end(replies[mode]);return;}
   let index=0;const bytes=Buffer.from('{"ok":true');const timer=setInterval(()=>{if(socket.destroyed){clearInterval(timer);return;}socket.write(bytes.subarray(index,index+1));index++;if(index>=bytes.length)index=0;},150);socket.once('close',()=>clearInterval(timer));
@@ -42,6 +46,19 @@ beforeAll(async()=>{
 });
 afterAll(async()=>{for(const socket of sockets)socket.destroy();if(server)await new Promise<void>(resolve=>server.close(()=>resolve()));
  for(const key of ['LARES_AGENT_NAME','LARES_AGENT_INCARNATION','LARES_RUNTIME_CONTROL_SECRET_FILE','LARES_VAULT_RUNTIME_SOCKET'])delete process.env[key];rmSync(root,{recursive:true,force:true});});
+
+describe('listing a whole folder through keeper pages',()=>{
+ it('joins every page, sending the folder and each page\'s cursor',async()=>{
+  listInputs.length=0;
+  expect(await vaultBrokerListFolder({mode:'pages',area:'shared'},'f')).toEqual(['f/a.md','f/b.md','f/c.md']);
+  expect(listInputs).toEqual([{mode:'pages',area:'shared',operation:'list',folder:'f'},{mode:'pages',area:'shared',operation:'list',folder:'f',cursor:2}]);
+ });
+ it('stops with a named error rather than paging forever',async()=>{
+  listInputs.length=0;
+  await expect(vaultBrokerListFolder({mode:'endless'},'f',3)).rejects.toThrow('Vault reader unavailable (the folder has too many notes to list)');
+  expect(listInputs).toHaveLength(3);
+ });
+});
 
 describe('Vault broker client response bounds',()=>{
  it.each(['eof','partial','trickle','stall'])('refuses %s without hanging',async mode=>{

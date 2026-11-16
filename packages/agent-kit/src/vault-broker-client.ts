@@ -48,6 +48,17 @@ async function request<T>(op:string,input:unknown,timeoutMs:number):Promise<T>{
  * makes a commit with nobody waiting (a scheduled Vault write) asks for more. Keeper's own deadline
  * for it is shorter than this, so keeper answers or refuses before the client gives up. */
 export async function vaultBrokerRequest<T>(op:string,input:unknown,timeoutMs=2000):Promise<T>{return request<T>(op,input,timeoutMs)}
+/** Every note path in one folder of an area, through keeper's paged `vault.read` list: one request per
+ * page, each held to the usual 2 s. `turn` is the caller's own turn coordinates and area. Stops with an
+ * error after `maxPages` pages rather than looping on a listing that never ends. */
+export async function vaultBrokerListFolder(turn:Record<string,unknown>,folder:string,maxPages=100):Promise<string[]>{
+ const notes:string[]=[];let cursor:number|undefined;
+ for(let page=0;page<maxPages;page++){
+  const result=await request<{notes:string[];nextCursor?:number}>('vault.read',{...turn,operation:'list',folder,...(cursor!==undefined?{cursor}:{})},2000);
+  notes.push(...result.notes);if(result.nextCursor===undefined)return notes;cursor=result.nextCursor;
+ }
+ throw new Error('Vault reader unavailable (the folder has too many notes to list)');
+}
 export const SCHEDULED_VAULT_TIMEOUT_MS=10_000;/** Trusted server caller only. Coordinates come from the authenticated session, never tool input.
  * Keeper issues a dedicated one-use capability from the exact approved ask and rechecks it at execution.
  * This is an explicit execution seam, not an Eve MCP execution override. */

@@ -1,4 +1,4 @@
-// List every note path in one area of the Vault, store-relative. Read-only, UNGATED.
+// List the note paths in one area of the Vault, store-relative, one page at a time. Read-only, UNGATED.
 // Without it the agent can only find notes whose path it can already guess.
 //
 // See `vault_read.ts` for why the area is an input and what

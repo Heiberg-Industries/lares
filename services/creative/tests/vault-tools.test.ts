@@ -129,9 +129,8 @@ describe("the reads are UNGATED and read the shared area", () => {
   });
 
   it("list returns the store-relative index", async () => {
-    const listed = (await vaultList.execute({ area: "shared" }, ctx(null))) as { notes: string[]; files: number };
-    expect(listed.notes).toEqual(["ventures/org-two.md"]);
-    expect(listed.files).toBe(1);
+    // One page; no nextCursor means the listing is complete.
+    expect(await vaultList.execute({ area: "shared" }, ctx(null))).toEqual({ notes: ["ventures/org-two.md"] });
   });
 
   it("refuses a path that escapes the store, even for an allowlisted caller", async () => {
