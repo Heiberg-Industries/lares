@@ -24,6 +24,9 @@ import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { startedIn } from "@lares/agent-kit/shared-room";
+import { modelAuthorityRoute } from "@lares/agent-kit/door-model-authority";
+import { SLACK, appMentionBody, deliverSlackEvent, directMessageBody } from "./helpers/slack-mention.js";
 
 async function freshModule() {
   vi.resetModules();
@@ -706,5 +709,77 @@ describe("the creative Slack door, through its webhook route", () => {
     const { sent, answered } = await deliver(directMessage(STRANGER, "approve"));
     expect(sent).toEqual([]);
     expect(answered).toEqual([]);
+  });
+});
+
+/**
+ * A signed `app_mention` through the framework's own route, for the owner and for a stranger.
+ *
+ * The identity asserted on below is the one eve builds (`helpers/slack-mention.ts` pushes a signed
+ * event through `routes[0]`); nothing in it is written by hand. The fake Slack answers are our
+ * belief about Slack and are named where they are set.
+ */
+describe("the creative Slack door, a mention in a shared channel", () => {
+  const OWNER = SLACK.owner;
+  const MANAGED = {
+    LARES_AGENT_NAME: "example-agent",
+    LARES_AGENT_INCARNATION: "11111111-1111-4111-8111-111111111111",
+    LARES_MODEL_PURPOSE_RUNTIME_SOCKET: "/nonexistent/model.sock",
+    LARES_SLACK_PRINCIPAL: OWNER,
+    LARES_SLACK_CLAIM_REVISION: "22222222-2222-4222-8222-222222222222",
+  };
+
+  beforeEach(() => { vi.spyOn(console, "warn").mockImplementation(() => {}); });
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+  it("the owner's mention in a public channel reaches the conversation, as a person, and starts in a shared room", async () => {
+    const { sent, answered, response, calls } = await deliverSlackEvent(appMentionBody({ user: OWNER, channel: "C0EXAMPLE" }));
+    expect(response.status).toBe(200);
+    expect(answered).toEqual([]);
+    expect(sent).toHaveLength(1);
+    const auth = sent[0]!.options.auth!;
+    // As eve sets them (eve's `buildSlackAuthContext`), read from what came out, not typed in.
+    expect(auth.authenticator).toBe("slack-webhook");
+    expect(auth.principalType).toBe("user");
+    expect(auth.attributes["author_type"]).toBe("user");
+    expect(auth.attributes["channel_id"]).toBe("C0EXAMPLE");
+    expect(auth.attributes["user_id"]).toBe(OWNER);
+    expect(startedIn({ session: { auth: { initiator: auth, current: auth } } })).toBe("shared-room");
+    for (const [k, v] of Object.entries(MANAGED)) vi.stubEnv(k, v);
+    expect(modelAuthorityRoute({ auth: { initiator: auth, current: auth } })).toBe("door");
+    // The Slack calls made, by name: the status line, the channel lookup (eve asks because the
+    // event carries no channel type) and the thread read.
+    expect(calls.map((c) => c.method)).toEqual(["assistant.threads.setStatus", "conversations.info", "conversations.replies"]);
+  });
+
+  it("a stranger's mention starts nothing: nothing is delivered, no turn, and Slack hears only the status line and its clearing", async () => {
+    const { sent, answered, response, calls } = await deliverSlackEvent(appMentionBody({ user: SLACK.stranger, channel: "C0EXAMPLE" }));
+    expect(response.status).toBe(200);
+    expect(sent).toEqual([]);
+    expect(answered).toEqual([]);
+    expect(calls.map((c) => c.method)).toEqual(["assistant.threads.setStatus", "assistant.threads.setStatus"]);
+    expect(calls.map((c) => c.body["status"])).toEqual(["Thinking...", ""]);
+    expect(calls.filter((c) => c.method === "chat.postMessage" || c.method === "chat.postEphemeral"), "nothing the room sees").toEqual([]);
+  });
+
+  it.each([
+    // Our belief about Slack: a private channel answers is_private true; an older group id the same.
+    ["a private channel (C...)", "C0PRIVATE", { ok: true, channel: { id: "C0PRIVATE", is_private: true } }],
+    ["an older group id (G...)", "G0EXAMPLE", { ok: true, channel: { id: "G0EXAMPLE", is_private: true, is_group: true } }],
+  ])("the owner's mention in %s also starts in a shared room", async (_name, channel, conversationInfo) => {
+    const { sent } = await deliverSlackEvent(appMentionBody({ user: OWNER, channel }), { conversationInfo });
+    expect(sent).toHaveLength(1);
+    const auth = sent[0]!.options.auth!;
+    expect(auth.attributes["channel_id"]).toBe(channel);
+    expect(startedIn({ session: { auth: { initiator: auth, current: auth } } })).toBe("shared-room");
+  });
+
+  it("a direct message stays a private chat on the identity eve builds", async () => {
+    const { sent, calls } = await deliverSlackEvent(directMessageBody({ user: OWNER, channel: "D0EXAMPLE" }));
+    expect(sent).toHaveLength(1);
+    const auth = sent[0]!.options.auth!;
+    expect(auth.attributes["channel_id"]).toBe("D0EXAMPLE");
+    expect(startedIn({ session: { auth: { initiator: auth, current: auth } } })).toBe("private-chat");
+    expect(calls.map((c) => c.method)).toEqual(["assistant.threads.setStatus"]);
   });
 });
