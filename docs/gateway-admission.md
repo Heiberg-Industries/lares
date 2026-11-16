@@ -177,9 +177,13 @@ that native accounting and the admission ledger are one atomic authority.
 
 ## Terminal receipts
 
-Only complete provider usage settles in this adapter. There is no zero-cost or
-affirmative-nondispatch refund path. Missing terminal usage, cancellation, malformed
-responses, failed cleanup and uncertain delivery retain the reservation.
+Complete provider usage settles in this adapter, and so does one refusal: when the
+provider's own response status is HTTP 401 or 403, the transport sends a
+`kind: "provider-refusal"` receipt with that `status` and no usage, and the keeper
+settles it at zero. There is no affirmative-nondispatch refund path. Any other
+status (429 and 5xx included), missing terminal usage, cancellation, timeouts,
+dropped connections, malformed responses, failed cleanup and uncertain delivery
+retain the reservation.
 
 The injected transport observes actual uncompressed provider JSON/SSE bytes before
 SDK normalization. It requests `Accept-Encoding: identity`; a compressed response
@@ -196,7 +200,8 @@ processing must also complete normally; synthesized SDK counts are never charged
 
 The settlement body echoes `version`, `nonce`, `requestHash`, `profileHash`,
 `endpointHash`, `keyFingerprint`, `purposeAlias`, `attemptId`, `bindingId`, followed
-by `kind: "terminal-usage"`, `format`, `usage` and `receiptHash`.
+by `kind: "terminal-usage"`, `format`, `usage` and `receiptHash`, or by
+`kind: "provider-refusal"`, `status` (401 or 403) and `receiptHash`.
 `receiptHash = sha256(canonical(body without receiptHash))`.
 
 `format` describes the actual provider wire format, regardless of caller lane:

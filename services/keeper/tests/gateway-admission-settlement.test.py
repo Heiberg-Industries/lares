@@ -351,5 +351,118 @@ class AgentProviderKeyDispatchTests(unittest.IsolatedAsyncioTestCase):
             gateway.current_request.reset(token)
 
 
+class ProviderRefusalTests(unittest.IsolatedAsyncioTestCase):
+    """Only a 401 or 403 the provider itself returned gives the reservation back; every other answer holds it."""
+    KEY = "sk-installation-fixture-key"
+
+    def request(self):
+        request = RequestState("POST", "/v1/chat/completions", b"{}", "a" * 64, "sk-test")
+        request.alias = "chat"
+        request.phase = "armed"
+        request.selector = "installation"
+        request.provider_key = None
+        request.policy = SimpleNamespace(context=object(), release=self.release)
+        request.allow = {"version": 1, "nonce": request.nonce, "requestHash": request.request_hash, "profileHash": "b" * 64, "endpointHash": request.endpoint_hash,
+                         "keyFingerprint": request.key_fingerprint, "purposeAlias": "chat", "attemptId": "11111111-1111-4111-8111-111111111111",
+                         "bindingId": "22222222-2222-4222-8222-222222222222", "providerKey": "installation"}
+        return request
+
+    async def release(self):
+        self.released = getattr(self, "released", 0) + 1
+        self.order.append("released")
+
+    def runtime(self, answer):
+        self.order, receipts = [], []
+        runtime = object.__new__(gateway.Runtime)
+        runtime.check_runtime = lambda: None
+        runtime.check_destination = lambda outgoing, request: None
+        runtime.profile = SimpleNamespace(route=lambda alias: SimpleNamespace(format="openai", key_env="LARES_MODEL_PROVIDER_KEY"))
+
+        async def rpc(path, body):
+            self.assertEqual(path, gateway.SETTLE_PATH)
+            self.order.append("settled")
+            receipts.append(body)
+            return {"version": 1, "state": "settled"}
+        runtime.rpc = rpc
+        gateway.runtime = runtime
+        transport = object.__new__(gateway.OneShotTransport)
+
+        async def physical(outgoing):
+            if isinstance(answer, BaseException): raise answer
+            return SimpleNamespace(headers={"content-type": "application/json"}, status_code=answer, stream=None)
+        transport.inner = SimpleNamespace(handle_async_request=physical)
+        return transport, receipts
+
+    async def send(self, answer, request=None):
+        transport, receipts = self.runtime(answer)
+        request = request or self.request()
+        transport.request = request
+        outgoing = SimpleNamespace(headers=SimpleNamespace(multi_items=lambda: [("authorization", "Bearer " + self.KEY)]))
+        token = gateway.current_request.set(request)
+        try:
+            with mock.patch.dict(os.environ, {"LARES_MODEL_PROVIDER_KEY": self.KEY}):
+                response = await transport.handle_async_request(outgoing)
+        finally:
+            gateway.current_request.reset(token)
+        return request, receipts, response
+
+    async def test_a_provider_401_or_403_settles_once_as_a_refusal_after_the_lock_is_released(self):
+        for status in (401, 403):
+            with self.subTest(status=status):
+                request, receipts, response = await self.send(status)
+                self.assertEqual(response.status_code, status, "the caller still gets the provider's answer")
+                self.assertEqual(len(receipts), 1)
+                receipt = receipts[0]
+                self.assertEqual((receipt["kind"], receipt["status"]), ("provider-refusal", status))
+                self.assertNotIn("usage", receipt)
+                self.assertNotIn("format", receipt)
+                for field in ("version", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias", "attemptId", "bindingId", "providerKey"):
+                    self.assertEqual(receipt[field], request.allow[field])
+                body = {k: v for k, v in receipt.items() if k != "receiptHash"}
+                self.assertEqual(receipt["receiptHash"], gateway.hashlib.sha256(gateway.canonical(body)).hexdigest())
+                self.assertNotIn(self.KEY, json.dumps(receipt))
+                self.assertEqual(self.order, ["released", "settled"], "no lock may cross the settlement")
+                self.assertTrue(request.terminal)
+                # Nothing settles the same call a second time: not the refusal path, not the usage path.
+                await gateway.runtime.settle_refusal(request, status)
+                request.wire_usage = {"inputTokens": 1, "outputTokens": 1, "cacheReadTokens": 0, "cacheWriteTokens": 0}
+                await gateway.runtime.settle(request, None)
+                self.assertEqual(len(receipts), 1)
+
+    async def test_every_other_provider_answer_keeps_the_reservation(self):
+        for status in (200, 400, 402, 404, 408, 409, 413, 422, 429, 500, 502, 503, 504, 529):
+            with self.subTest(status=status):
+                request, receipts, response = await self.send(status)
+                self.assertEqual(receipts, [])
+                self.assertFalse(request.terminal)
+
+    async def test_a_timeout_or_dropped_connection_keeps_the_reservation(self):
+        for failure in (TimeoutError(), ConnectionResetError("dropped"), RuntimeError("protocol error")):
+            with self.subTest(failure=type(failure).__name__):
+                with self.assertRaises(type(failure)):
+                    await self.send(failure)
+                self.assertNotIn("settled", self.order)
+
+    async def test_a_cancelled_or_closed_call_keeps_the_reservation_even_on_401(self):
+        for state in ("cancelled", "closed"):
+            with self.subTest(state=state):
+                request = self.request()
+                setattr(request, state, True)
+                transport, receipts = self.runtime(401)
+                request.dispatched = True
+                await gateway.runtime.settle_refusal(request, 401)
+                self.assertEqual(receipts, [])
+
+    async def test_only_an_integer_401_or_403_is_a_refusal(self):
+        for status in ("401", 401.0, True, None, 429, 500):
+            with self.subTest(status=status):
+                request = self.request()
+                request.dispatched = True
+                transport, receipts = self.runtime(200)
+                await gateway.runtime.settle_refusal(request, status)
+                self.assertEqual(receipts, [])
+                self.assertFalse(request.terminal)
+
+
 if __name__ == "__main__":
     unittest.main()

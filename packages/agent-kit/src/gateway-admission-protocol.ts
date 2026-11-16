@@ -53,7 +53,14 @@ export const gatewayDeniedSchema=z.union([
 ]);
 export type GatewayDenied=z.infer<typeof gatewayDeniedSchema>;
 export const gatewayUsageSchema=z.object({inputTokens:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),outputTokens:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),cacheReadTokens:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),cacheWriteTokens:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)}).strict();
-export const gatewaySettleSchema=gatewayGrantSchema.extend({kind:z.literal('terminal-usage'),format:z.enum(['openai','anthropic','embedding']),usage:gatewayUsageSchema,receiptHash:hash}).strict();
+/** The HTTP statuses that prove the provider refused the call before doing any work: authentication (401)
+ * and permission (403). Rate limits (429), server errors and anything uncertain are never on this list. */
+export const GATEWAY_PROVIDER_REFUSAL_STATUSES=[401,403] as const;
+export const gatewayUsageSettleSchema=gatewayGrantSchema.extend({kind:z.literal('terminal-usage'),format:z.enum(['openai','anthropic','embedding']),usage:gatewayUsageSchema,receiptHash:hash}).strict();
+/** The provider answered the call with one of the refusal statuses. It carries no usage and no amount:
+ * the keeper settles it at zero, as it would a receipt of zero tokens. */
+export const gatewayRefusalSettleSchema=gatewayGrantSchema.extend({kind:z.literal('provider-refusal'),status:z.union([z.literal(401),z.literal(403)]),receiptHash:hash}).strict();
+export const gatewaySettleSchema=z.discriminatedUnion('kind',[gatewayUsageSettleSchema,gatewayRefusalSettleSchema]);
 export type GatewayGrant=z.infer<typeof gatewayGrantSchema>;
 export type GatewayUsage=z.infer<typeof gatewayUsageSchema>;
 /** Matches Python ensure_ascii=True, sorted keys, compact separators, integer-only wire. */

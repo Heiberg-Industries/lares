@@ -128,6 +128,10 @@ grant commitment. It reads the same immutable pricing snapshot after rotation,
 window changes or member erasure. It does not require an active binding or erased
 credential/purpose metadata. The store independently correlates immutable attempt
 coordinates. The gateway cannot submit a USD amount or a nondispatch refund.
+Its one other report is a provider refusal: the provider answered the call with
+HTTP 401 or 403, which arrives before any output. The keeper settles that at zero,
+exactly as it would a receipt of zero tokens, and logs the status. A 429, a 5xx,
+a timeout, a dropped connection or any other answer is not a refusal.
 Missing or malformed terminal evidence retains the reservation. Valid observed
 usage is priced even above reviewed bounds; charges above the reservation reach
 the existing conflict/full-liability/freeze path. Repeated identical receipts are

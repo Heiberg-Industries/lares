@@ -37,6 +37,8 @@ from admission_contract import (
 )
 
 current_request = contextvars.ContextVar("lares_gateway_request", default=None)
+# The provider statuses that prove a refusal before any work: authentication and permission. Never 429 or 5xx.
+PROVIDER_REFUSAL_STATUSES = frozenset((401, 403))
 runtime = None
 STARTUP_STATE_FILE = "/tmp/lares-gateway-startup-state.json"
 STARTUP_FAILURE_FILE = "/tmp/lares-gateway-startup-first-failure.json"
@@ -394,9 +396,13 @@ class OneShotTransport(httpx.AsyncBaseTransport):
                 evidence = WireEvidence(runtime.profile.route(request.alias).format, response.headers.get("content-type", ""), response.status_code)
                 if response.headers.get("content-encoding", "identity").lower() != "identity": evidence.poisoned = True
                 response.stream = EvidenceStream(response.stream, evidence, request)
-                return response
         finally:
             await asyncio.shield(request.policy.release())
+        # The provider's own status line, before any body byte: a 401 or 403 means it refused the call outright.
+        # Settled after the native policy lock is released, since no lock crosses a settlement RPC.
+        if type(response.status_code) is int and response.status_code in PROVIDER_REFUSAL_STATUSES:
+            await runtime.settle_refusal(request, response.status_code)
+        return response
 
     async def aclose(self): await self.inner.aclose()
 
@@ -706,6 +712,19 @@ class Runtime:
         request.terminal = True  # A lost reply is not permission to retry or release liability.
         try: await self.rpc(SETTLE_PATH, receipt)
         except Refused: pass  # Ledger reservation remains; no inferred zero charge.
+
+    async def settle_refusal(self, request, status):
+        """The provider refused the call (401 or 403) before doing any work, so it settles at zero.
+        Only the transport calls this, with the status it received from the provider; every other
+        status, a timeout or a dropped connection never gets here and the reservation remains."""
+        if type(status) is not int or status not in PROVIDER_REFUSAL_STATUSES: return
+        if request.terminal or request.closed or request.cancelled or request.allow is None or not request.dispatched: return
+        receipt = {name: request.allow[name] for name in ("version", "nonce", "requestHash", "profileHash", "endpointHash", "keyFingerprint", "purposeAlias", "attemptId", "bindingId", "providerKey")}
+        receipt.update({"kind": "provider-refusal", "status": status})
+        receipt["receiptHash"] = hashlib.sha256(canonical(receipt)).hexdigest()
+        request.terminal = True  # One report per call; a lost reply leaves the reservation in place.
+        try: await self.rpc(SETTLE_PATH, receipt)
+        except Refused: pass
 
 
 def response_document(response):
