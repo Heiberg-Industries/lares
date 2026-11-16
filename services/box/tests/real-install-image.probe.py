@@ -158,9 +158,10 @@ LIMITS = [
     "What eve does when a real brief meets a Telegram conversation still busy with a test brief is not exercised.",
     "On Slack a direct message and three mentions in a room channel are sent: two from the owner (a plain question, and one where the stand-in forces a call to a tool the room does not have) and one from a second person. "
     "Only a chief-of-staff agent runs in this check, so the creative role's mention is covered by unit tests only.",
-    "In the room the stand-in answers the channel lookup, the thread read and the status line as real Slack is BELIEVED to answer them "
-    "for the app's permissions (ROOM_BELIEVED in real-install/fake-internet.mjs); nothing about a mention has run on real Slack until "
-    "packages/agent-kit/tests/live/slack-room.live.mts has been run by hand and the stand-in corrected to match.",
+    "In the room the stand-in answers the channel lookup, the thread read and the status line as real Slack answered them for the app's "
+    "permissions on 16 November 2026, in a public channel (ROOM_SEEN in real-install/fake-internet.mjs, from the hand-run "
+    "packages/agent-kit/tests/live/slack-room.live.mts); a private channel, and the status line on the thread of a person's mention "
+    "rather than of the bot's own message, have not been seen on real Slack.",
     "The room's prompt is judged by two yes/no answers the stand-in records: whether it holds the kit's room text, and whether it holds "
     "the standing-facts heading. No standing fact is stored in this run, so the heading's absence does not show a stored fact being left "
     "out of a room; the unit tests show that.",
@@ -1193,8 +1194,8 @@ def room_mentions(work: pathlib.Path, fixture: pathlib.Path, door_values: dict, 
     the owner asks a plain question, the owner asks where the stand-in forces a call to `remember` (a tool
     the room is not given), and a second person asks. What each must come to is checked from the stand-in's
     record, the budget rows and the standing-facts table; each fault names what was seen and is reported at
-    the end, like the door turns'. The stand-in answers the room's Slack lookups as real Slack is believed
-    to (`ROOM_BELIEVED` in real-install/fake-internet.mjs)."""
+    the end, like the door turns'. The stand-in answers the room's Slack lookups as real Slack answered the
+    live probe on 16 November 2026 (`ROOM_SEEN` in real-install/fake-internet.mjs)."""
     record: dict = {"checks": {}, "channel": ROOM_CHANNEL, "roomAllowList": sorted(room_allowed)}
     proof["roomMentions"] = record
     members = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member' ORDER BY id", release).splitlines()

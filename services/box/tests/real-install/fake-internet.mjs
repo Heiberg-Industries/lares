@@ -219,25 +219,27 @@ function serve(fixture) {
     : Object.entries(value).flatMap(([key, inner]) => typeof inner === "string" ? (["text", "markdown_text"].includes(key) ? [inner] : []) : textsIn(inner));
   const firstText = (body) => (typeof body.text === "string" ? body.text : typeof body.markdown_text === "string" ? body.markdown_text : textsIn(body).join(" ")).slice(0, 300);
 
-  // What Slack is BELIEVED to answer in a room channel (any id that does not start with `D`) for the
-  // app the console makes once mentions are on: bot scopes `chat:write`, `im:history`, `im:write` and
+  // What Slack answers in a room channel (any id that does not start with `D`) for the app the
+  // console makes once mentions are on: bot scopes `chat:write`, `im:history`, `im:write` and
   // `app_mentions:read`, no `channels:read`, `groups:read`, `channels:history` or `groups:history`.
-  // NONE OF THIS HAS BEEN SEEN ON REAL SLACK. Each answer names the step (the printed line) of
-  // packages/agent-kit/tests/live/slack-room.live.mts that will confirm or correct it; after the
-  // owner's run, correct it here, in this one place.
-  const ROOM_BELIEVED = {
-    // Believed: the lookup needs `channels:read` (`groups:read` for a private channel), which the app
-    // does not have. Live probe step `conversations.info`.
-    "conversations.info": { ok: false, error: "missing_scope", needed: "channels:read", provided: "chat:write,im:history,im:write,app_mentions:read" },
-    // Believed: reading a channel thread needs `channels:history` (`groups:history`), which the app
-    // does not have. Live probe step `conversations.replies`.
-    "conversations.replies": { ok: false, error: "missing_scope", needed: "channels:history", provided: "chat:write,im:history,im:write,app_mentions:read" },
-    // Believed: the status line is accepted in an ordinary channel thread, as in a direct message.
-    // Slack's reference also lists `method_not_supported_for_channel_type`, so this is the least
-    // certain of the three. Live probe steps `assistant.threads.setStatus (set)` and `(clear)`.
+  // SEEN ON REAL SLACK on 16 November 2026, with an app holding exactly those four permissions, in a
+  // public channel: packages/agent-kit/tests/live/slack-room.live.mts, whose LAST RUN line holds the
+  // run's SUMMARY. Each answer names that probe's step. Nothing here has been seen in a private
+  // channel. Slack's `provided` field was not seen (the probe does not print it) and nothing reads
+  // it, so the refusals leave it out.
+  const ROOM_SEEN = {
+    // Seen: refused for the missing permission. Live probe step `conversations.info`.
+    "conversations.info": { ok: false, error: "missing_scope", needed: "channels:read,groups:read,mpim:read,im:read" },
+    // Seen: refused for the missing permission. Live probe step `conversations.replies`.
+    "conversations.replies": { ok: false, error: "missing_scope", needed: "channels:history" },
+    // Seen: accepted without `assistant:write`, set and then cleared, on the thread of the bot's own
+    // message. Not seen: the status line on the thread of a person's mention, where the framework
+    // sets it. Live probe steps `assistant.threads.setStatus (set)` and `(clear)`.
     "assistant.threads.setStatus": { ok: true },
   };
-  // Believed for a room too, and answered by the general `chat.*` answer below: a post, a threaded
+  // Seen the same day: with `channels:read`, `channels:history` and `assistant:write` among the
+  // app's permissions, all three answer `ok`.
+  // Seen for a room too, and answered by the general `chat.*` answer below: a post, a threaded
   // reply, an update and a delete by a bot that is a member of the channel succeed with `chat:write`.
   // Live probe steps `chat.postMessage (message)`, `chat.postMessage (threaded reply)`,
   // `chat.update (threaded reply)` and `chat.delete`. The stand-in answers every other `chat.*`
@@ -254,7 +256,7 @@ function serve(fixture) {
       ...(typeof fields.status === "string" ? { status: fields.status.slice(0, 100) } : {}), text: firstText(fields) });
     const ts = `${Math.floor(Date.now() / 1000)}.${String(++slackSequence).padStart(6, "0")}`;
     const room = typeof channel === "string" && !channel.startsWith("D");
-    if (room && Object.hasOwn(ROOM_BELIEVED, method)) return json(response, 200, ROOM_BELIEVED[method]);
+    if (room && Object.hasOwn(ROOM_SEEN, method)) return json(response, 200, ROOM_SEEN[method]);
     if (method === "auth.test")
       return json(response, 200, { ok: true, url: "https://proof.invalid/", team: "Proof Workspace", user: "proof_door_bot", team_id: "T0PROOF", user_id: "U0PROOFBOT", bot_id: "B0PROOF" });
     if (method === "conversations.open") return json(response, 200, { ok: true, channel: { id: "D0PROOF" } });

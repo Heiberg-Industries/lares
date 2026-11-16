@@ -5,9 +5,9 @@
  * Per the repository rule: "a fixture is what we believe an API does; only a live call is what it
  * does." The real-install image check (`services/box/tests/real-install-image.probe.py`) sends a
  * mention through a stand-in for Slack (`services/box/tests/real-install/fake-internet.mjs`,
- * `ROOM_BELIEVED`), and that stand-in answers what we BELIEVE Slack answers in a channel for this
- * app's permissions. This probe asks real Slack the same questions, so the stand-in can be
- * corrected in one place. It reads and records; it branches on nothing Lares ships, and no Slack
+ * `ROOM_SEEN`), and that stand-in answers what this probe saw real Slack answer in a channel for
+ * this app's permissions. This probe asks real Slack the same questions, so the stand-in can be
+ * kept right in one place. It reads and records; it branches on nothing Lares ships, and no Slack
  * answer makes it fail.
  *
  * WHAT IT PROVES, one line each, `ok` or Slack's own error code:
@@ -50,8 +50,15 @@
  * message text, the channel id, the user id or the direct-message id. If a delete fails, it says so
  * and exits 1: the probe's message is then still in the channel and must be deleted by hand.
  *
- * LAST RUN: never. Record the date, the eve version, the app's permissions and the SUMMARY line here,
- * and correct `ROOM_BELIEVED` in `services/box/tests/real-install/fake-internet.mjs` to match.
+ * LAST RUN: 16 November 2026. The app held exactly the bot permissions `chat:write`, `im:history`,
+ * `im:write` and `app_mentions:read`, in a public channel. The probe itself does not call eve; the
+ * eve pinned in this branch is 1.0.0-rc.10. The SUMMARY line, verbatim:
+ *   SUMMARY {"probe":"slack-room","results":{"auth.test":"ok","conversations.info":"missing_scope","chat.postMessage (message)":"ok","chat.postMessage (threaded reply)":"ok","chat.update (threaded reply)":"ok","assistant.threads.setStatus (set)":"ok","assistant.threads.setStatus (clear)":"ok","conversations.replies":"missing_scope","conversations.open":"ok","chat.delete (threaded reply)":"ok","chat.delete (message)":"ok"},"needed":{"conversations.info":"channels:read,groups:read,mpim:read,im:read","conversations.replies":"channels:history"},"scopes":["chat:write","im:write","app_mentions:read","im:history"],"messagesLeftInChannel":0}
+ * An earlier run the same day, in the same channel, with wider permissions (among them
+ * `channels:read`, `channels:history` and `assistant:write`) got `ok` for `conversations.info`,
+ * `conversations.replies` and both status-line calls. The stand-in's `ROOM_SEEN` in
+ * `services/box/tests/real-install/fake-internet.mjs` matches the run above; record the next run
+ * here the same way and keep `ROOM_SEEN` matching it.
  */
 import { readFileSync } from "node:fs";
 
