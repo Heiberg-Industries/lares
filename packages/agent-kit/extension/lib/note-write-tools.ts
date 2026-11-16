@@ -245,9 +245,12 @@ async function writableRoot(
 }
 
 /**
- * Propose a new note for the vault. GATED WRITE — requires the owner's 👍 on every call.
+ * Save a new note in the vault. GATED WRITE: the approval policy the service injects decides,
+ * per call, whether the person is asked first (in web chat it always asks). An approved call is
+ * the whole decision: there is no later acceptance step.
  *
- * Writes into the `_inbox/<slug>.md` convention with frontmatter, then
+ * Writes into the `_inbox/<slug>.md` convention with frontmatter (`_inbox` is only the folder new
+ * notes arrive in), then
  * commits + pushes via `@lares/agent-kit/vault-git`'s `commitNote`. The approval re-check is
  * routed through this package's
  * own `approval-gate.ts` instead of importing `assertApprover`/`approverFrom` from the chief-of-staff service's
@@ -262,8 +265,9 @@ async function writableRoot(
 export function writeTool(deps?: NoteWriteDeps) {
   return defineTool({
     description:
-      "Propose a new note for the vault (requires the owner's 👍). Written into the vault's " +
-      `_inbox queue with frontmatter, then committed and pushed to the vault's git history. ${AREA_INPUT_DOC}`,
+      "Save a new note in the vault. The person may be asked to approve it first; once they " +
+      "approve, the note is saved, with no further step. It lands in the area's _inbox folder, " +
+      `where new notes arrive, with frontmatter, and is committed to the vault's git history. ${AREA_INPUT_DOC}`,
     inputSchema: z.object({
       area: areaInput,
       title: z.string(),

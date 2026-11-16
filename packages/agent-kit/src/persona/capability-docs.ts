@@ -265,11 +265,12 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
     summary:
       "The owner's deadlines to institutions — what the business owes by a date: tax and " +
       "filing terms, annual accounts, renewals. Distinct from obligations (a person waiting) " +
-      "and reminders (a time the owner chose). I list what is due before answering, add an " +
-      "entry when the owner names one, mint a year's statutory calendar behind a approval card with " +
+      "and reminders (a time the owner chose). I list what is due before answering, and add an " +
+      "entry when the owner names one; adding renders no card, because a wrong add costs only a " +
+      "line in a brief. I mint a year's statutory calendar behind an approval card with " +
       "every date shown for confirmation, and close one only on the owner's word — closing and " +
       "dismissing are both GATED writes, because a wrong close ends in a penalty. A stopped " +
-      "ladder is silent until the owner asks for it back.",
+      "ladder is silent until the owner asks for it back, and restarting it renders no card either.",
     tools: [
       "deadline_list",
       "deadline_add",

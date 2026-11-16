@@ -67,6 +67,9 @@ it('a chief of staff may propose a new private note in a private conversation; n
  expect(privateOnlyTool('agent-kit__vault_write')).toBe(false);
  expect(privateRoleInstructions('chief-of-staff')).not.toContain('general note writes are unavailable');
  expect(privateRoleInstructions('chief-of-staff')).toContain('new private note');
+ // An approved note is saved: nothing in the prompt suggests a second step after the card.
+ expect(privateRoleInstructions('chief-of-staff')).toContain('once they approve, the note is saved, with no further step');
+ expect(privateRoleInstructions('chief-of-staff')).not.toMatch(/proposes one new private note|👍/u);
 });
 it('the private console channel exports no trace, under the 1.0 channel name and the old one; everything else keeps its content decision',async()=>{
  const {resolveTracePolicy}=await import(`${dist}shared/trace-policy.js`);

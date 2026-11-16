@@ -69,6 +69,16 @@ describe("vault_write stamps where the note came from", () => {
     for (const re of denylistPatterns()) expect(re.test(text)).toBe(false);
   });
 
+  it("says an approved note is saved, with no thumbs-up and no later acceptance step", async () => {
+    // Seen in web chat: told "requires the owner's 👍 … _inbox queue", the model said after Approve
+    // that the note "still needs your 👍". The approval, on whatever door shows it, is the whole decision.
+    const description = String((await writeToolWithAuthority()).description);
+    expect(description).not.toContain("👍");
+    expect(description).not.toMatch(/accept|propos|queue/iu);
+    expect(description).toContain("once they approve, the note is saved, with no further step");
+    expect(description).toContain("_inbox folder, where new notes arrive");
+  });
+
   it("takes no origin from the model", async () => {
     const tool = await writeToolWithAuthority();
     expect(Object.keys((tool.inputSchema as never as { shape: object }).shape).sort()).toEqual(["area", "body", "tags", "title"]);
