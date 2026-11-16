@@ -516,6 +516,10 @@ Set it up in your Google Cloud project first:
   expire the agent's access after 7 days, so the agent would stop each week. Use an Internal
   Workspace project, or an External project in production.
 
+Without this second client the console cannot connect a Google account: pressing "Connect Google" brings
+you back to **Your accounts** with the message "Google could not be connected yet", and the console writes
+one line about it to its log. The sign-in client from section 5 does not replace it.
+
 Then:
 
 1. Add `GOOGLE_CLIENT_ID_<ORG>` and `GOOGLE_CLIENT_SECRET_<ORG>` to `/etc/lares/console-oauth.env`
@@ -523,7 +527,9 @@ Then:
    `https://example.com/api/accounts/google/callback` (your domain) as a redirect address on that
    client.
 2. Run `python3 /opt/lares/current/services/box/ops/configure-google-keeper.py --org <org>` as root. Then give the
-   keeper the new files and recreate the console, in this order:
+   keeper the new files and recreate the console, in this order. The tool needs a chief of staff with an
+   owner in the keeper settings; if it cannot find one, or the keeper already holds a Google setting that
+   has no owner, it stops with a message and changes nothing:
 
    ```bash
    bash /opt/lares/current/services/box/ops/install.sh --yes --release /opt/lares/current/release.json

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { PgAccountStore } from "@lares/agent-kit/account-store";
 import type { ConnectedAccountView } from "@lares/agent-kit/authority-contract";
-import { Page, PageHeader } from "@lares/ui/patterns";
+import { Notice, Page, PageHeader } from "@lares/ui/patterns";
 import { pool } from "../../lib/db";
 import { requireMember, isConsoleOwner } from "../../lib/auth";
 import { listAgentUses } from "../../lib/agent-mailbox";
@@ -10,6 +10,7 @@ import { agentNames } from "../../lib/connection-words";
 import { buildServiceRows } from "../../lib/your-accounts";
 import { AccountServiceRow } from "../../components/AccountServiceRow";
 import { RemoveAccountButton } from "../../components/RemoveAccountButton";
+import { GOOGLE_CLIENT_MISSING } from "../../lib/account-errors";
 import { listGoogleAccounts } from "../../lib/accounts";
 export const dynamic = "force-dynamic";
 export default async function AccountsPage({ searchParams }: { searchParams: Promise<{ added?: string; error?: string }> }) {
@@ -26,7 +27,11 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
   return <Page width="narrow" className="lares-stack">
     <PageHeader title="Your accounts" description="Accounts you connect stay yours. An agent works on one only when you choose it on that agent's page." />
     {params.added && <p role="status">Account connected.</p>}
-    {params.error && <p role="alert">The account could not be connected. Try again.</p>}
+    {params.error === GOOGLE_CLIENT_MISSING ? <Notice error>
+      <p><strong>Google could not be connected yet.</strong></p>
+      <p>To use a Google mailbox and calendar, this server needs a second Google client, set up by whoever runs the server. It is separate from the one used to sign in to the console. Nothing was connected.</p>
+      <p>The install guide shows how, in section 8 ("Doors, outside tools and integrations"), under "E-mail": <a href="https://github.com/Heiberg-Industries/lares/blob/main/docs/install.md#8-doors-outside-tools-and-integrations" target="_blank" rel="noopener noreferrer">open the install guide</a>.</p>
+    </Notice> : params.error && <p role="alert">The account could not be connected. Try again.</p>}
     {unavailable ? <p role="status">Your accounts are unavailable. Try again later.</p> : <section className="lares-service-list" aria-label="Services">
       {rows.map(row => <AccountServiceRow key={row.service} row={row} attention={row.attention} />)}
     </section>}

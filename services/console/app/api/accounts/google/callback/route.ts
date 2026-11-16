@@ -8,6 +8,7 @@ import { pool } from "../../../../../lib/db";
 import { sessionMember } from "../../../../../lib/auth";
 import { googleOrgClientConfig, tokenEncKeyHex } from "../../../../../lib/accounts";
 import { ACCOUNT_FLOW_COOKIE, accountSessionHash, openAccountFlow } from "../../../../../lib/account-oauth-state";
+import { GOOGLE_CLIENT_MISSING } from "../../../../../lib/account-errors";
 import { accountRedirect, finishAccountConsent, callbackRedirect, consoleOrigin } from "../../../../../lib/account-oauth";
 export const runtime = "nodejs";
 async function handleGET(req: Request): Promise<Response> {
@@ -24,6 +25,10 @@ async function handleGET(req: Request): Promise<Response> {
     const member = await sessionMember(session);
     const flow = await openAccountFlow(jar.get(ACCOUNT_FLOW_COOKIE)?.value);
     const supplied = new URL(req.url);
+    if (session && member && flow && flow.provider === "google" && flow.memberId === member.id && !googleOrgClientConfig(flow.org)) {
+      console.warn("[accounts] Google consent could not be saved: the Google client for mailbox and calendar access is no longer set up.");
+      return terminal({ error: GOOGLE_CLIENT_MISSING });
+    }
     if (!session || !member || !flow || flow.provider !== "google" || flow.memberId !== member.id || flow.sessionHash !== accountSessionHash(session)
       || supplied.searchParams.has("error") || !supplied.searchParams.get("code") || supplied.searchParams.get("state") !== flow.state
       || googleOrgClientConfig(flow.org)?.clientId !== flow.clientId) return fail();
