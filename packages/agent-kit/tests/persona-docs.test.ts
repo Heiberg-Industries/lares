@@ -135,6 +135,15 @@ function useDenylist(lines: string[]): void {
   process.env["LARES_DENYLIST_FILE"] = file;
 }
 
+describe("the deadline capability doc", () => {
+  it("says adding a deadline renders no card, as `deadline_add` raises none", () => {
+    // The scope line above it reads "writes behind a confirmation card"; the doc says which writes do not.
+    const summary = String(docFor("deadline").summary);
+    expect(summary).toContain("adding renders no card");
+    expect(summary).toContain("restarting it renders no card either");
+  });
+});
+
 describe("capability docs pass the genericness lint", () => {
   it("every shipped doc is clean", () => {
     expect(lintCapabilityDocs().map((f) => `${f.capability}: ${f.rule} "${f.match}"`)).toEqual([]);
