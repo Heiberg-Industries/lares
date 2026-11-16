@@ -60,18 +60,33 @@ function storeConfigured(store: "brain" | "atlas", env: NodeJS.ProcessEnv): bool
   }
 }
 
+/** Whether the CRM is connected: its base URL is set and its key file exists. No network call and
+ *  the key is never read. The one decision, used by the full list and by the shared-room line. */
+function crmConnected(env: NodeJS.ProcessEnv, fileExists: (path: string) => boolean): boolean {
+  return Boolean(env["TWENTY_BASE_URL"]?.trim()) && fileExists(env["TWENTY_KEY_FILE"] ?? "/run/secrets/twenty-key");
+}
+
 export async function readConnections(probes: ConnectionProbes = liveProbes): Promise<ConnectionState> {
   const { env } = probes;
   const google = await probes.google().catch(() => false);
-  const crmKeyFile = env["TWENTY_KEY_FILE"] ?? "/run/secrets/twenty-key";
   return {
     google,
-    crm: Boolean(env["TWENTY_BASE_URL"]?.trim()) && probes.fileExists(crmKeyFile),
+    crm: crmConnected(env, probes.fileExists),
     notion: Boolean(env["NOTION_TOKEN"]?.trim()) || Boolean(env["NOTION_TOKEN_FILE"]?.trim()),
     vault: storeConfigured("brain", env),
     atlas: storeConfigured("atlas", env),
     slack: probes.slackUsers().length > 0,
   };
+}
+
+/** The only connection text a conversation started in a shared room gets: whether contacts are
+ *  connected, and nothing about any other service. Everyone in the channel reads the answers, and
+ *  the full list names the owner's services. Without this line the contact lookups would answer a
+ *  missing connection with their own error text, and the persona calls the CRM "real, connected". */
+export function sharedRoomContactsLine(probes: Pick<ConnectionProbes, "env" | "fileExists"> = liveProbes): string {
+  return crmConnected(probes.env, probes.fileExists)
+    ? "Your contacts service (the CRM, Twenty) is connected; you can use the contact lookups you have here."
+    : "Your contacts service (the CRM, Twenty) is not connected. If you are asked to look someone up, say that contacts are not connected. Nothing is broken, and do not repeat a tool's error text.";
 }
 
 /** The block the model reads. Names both lists so "not listed" is never ambiguous. */

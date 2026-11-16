@@ -14,13 +14,16 @@ import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-su
 import { startedIn } from "@lares/agent-kit/shared-room";
 import { defineDynamic, defineInstructions } from "eve/instructions";
 
-import { connectionsMarkdown, readConnections } from "../../lib/connections.js";
+import { connectionsMarkdown, readConnections, sharedRoomContactsLine } from "../../lib/connections.js";
 
 export default defineDynamic(async (ctx) => {
   if (await ctx.memo(["private-console", ctx.turn?.id ?? null], () => verifyPrivateConsoleSession(ctx))) return null;
-  // Everyone in a shared room reads the answers, and this block names the owner's services. The room
-  // is told only where it is (`SHARED_ROOM_INSTRUCTIONS`); the tools it has describe themselves.
-  if (startedIn(ctx) === "shared-room") return null;
+  // Everyone in a shared room reads the answers, and the list names the owner's services. The room is
+  // told where it is (`SHARED_ROOM_INSTRUCTIONS`) and one line: whether contacts are connected, because
+  // it is offered contact lookups. The same decision as the list, kept for the session like it.
+  if (startedIn(ctx) === "shared-room") {
+    return defineInstructions({ content: await ctx.memo(["connections-shared-room", ctx.session.id], () => sharedRoomContactsLine()) });
+  }
   const content = await ctx.memo(["connections", ctx.session.id], async () => {
     try {
       return connectionsMarkdown(await readConnections());
