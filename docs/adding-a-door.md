@@ -135,6 +135,11 @@ An in-memory state store is for local development only. It forgets everything on
   neutral placeholders such as `example-door` and `U-EXAMPLE-ID`.
 - [ ] **Platform limits are stated.** Message length, button count, whether a sent message can
   be edited, and whether the door works in private chats only or also in shared rooms.
+- [ ] **A row in the shared-room rule.** Add the door's row in `packages/agent-kit/src/shared-room.ts`
+  (`PRIVATE_CHAT_WHEN`, keyed by the authenticator eve stamps on the door's verified sender), saying
+  how to tell a private chat from a shared room on that door. A door without a row has every
+  conversation treated as a shared room, its private chats included, so it is limited to what that
+  file lists until the row exists.
 - [ ] **No new framework patch for this door.** A patch is allowed only at a door-neutral spot
   and with a request to the eve project (ADR-0025 §8).
 

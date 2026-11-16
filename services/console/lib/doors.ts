@@ -5,12 +5,14 @@ export function publicDoorOrigin(value: string): string {
     throw new Error('Configure an HTTPS public door origin without credentials, path, query or fragment.');
   return url.origin;
 }
-/** The Slack app's bot permissions, by role. Every role reads and answers direct messages. Only a
+/** The Slack app's bot permissions, by role. Every role reads and answers direct messages and hears
+ * a mention of the app in a channel (`app_mentions:read`). No permission to read a channel's other
+ * messages is asked for. Only a
  * role that starts conversations on a schedule (the chief of staff) also gets `im:write`: Slack's
  * `conversations.open`, which looks up the owner's direct-message channel before such a
  * conversation starts, needs it. Any other role, including one added later, does not. */
 export function slackBotScopes(role:string):string[] {
-  const base=['chat:write','im:history'];
+  const base=['chat:write','im:history','app_mentions:read'];
   return role==='chief-of-staff'?[...base,'im:write']:base;
 }
 export function slackManifest(agent: {name:string;display:string;role:string}, consoleUrl:string) {
@@ -20,7 +22,7 @@ export function slackManifest(agent: {name:string;display:string;role:string}, c
     display_information:{name:agent.display},
     features:{bot_user:{display_name:agent.display,always_online:false},app_home:{home_tab_enabled:false,messages_tab_enabled:true,messages_tab_read_only_enabled:false}},
     oauth_config:{scopes:{bot:slackBotScopes(agent.role)}},
-    settings:{event_subscriptions:{request_url:`${origin}/api/doors/${agent.name}/slack/events`,bot_events:['message.im']},
+    settings:{event_subscriptions:{request_url:`${origin}/api/doors/${agent.name}/slack/events`,bot_events:['message.im','app_mention']},
       interactivity:{is_enabled:true,request_url:`${origin}/api/doors/${agent.name}/slack/events`},org_deploy_enabled:false,socket_mode_enabled:false,token_rotation_enabled:false},
   };
   return {manifest,createUrl:`https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`};

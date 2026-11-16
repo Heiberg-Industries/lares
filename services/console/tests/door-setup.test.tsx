@@ -67,6 +67,26 @@ it('tells the owner the one message to send in Slack',()=>{
  const html=renderToStaticMarkup(DoorSetup(props));
  expect(html).toContain(`claim ${'B'.repeat(24)}`);expect(html).toContain('bot in Team');expect(html).toContain('Copy manifest');
 });
+it('tells the owner how to use the agent in a channel, and promises contacts, deadlines and reminders only to the chief of staff',()=>{
+ mocks.states[STATE.rows]=[row('slack')];
+ const chief=renderToStaticMarkup(DoorSetup(cos));
+ expect(chief).toContain('invite the app to that channel and mention it there');
+ expect(chief).toContain('In a channel it answers only the people it answers in a direct message (usually just you); everyone else in the channel can read its answers but cannot ask it anything.');
+ expect(chief).toContain('look up your contacts (when contacts are connected), deadlines and reminders there, read-only');
+ expect(chief).toContain('It is not given your mail, calendar, notes or what you asked it to remember.');
+ expect(chief).toContain('When you ask it for something it can only do in a direct message, it tells you to write to it there, and anything that needs your approval has to be asked for in a direct message, never in the channel.');
+ expect(chief).toContain('A private channel counts as a channel here too.');
+ expect(chief).toContain('A conversation in a channel is stored and learned from the same way a direct message is.');
+ mocks.setters=[];mocks.states[STATE.rows]=[row('slack')];
+ const creative=renderToStaticMarkup(DoorSetup(props));
+ expect(creative).toContain('invite the app to that channel and mention it there');
+ expect(creative).toContain('A conversation in a channel is stored and learned from the same way a direct message is.');
+ expect(creative).toContain('A private channel counts as a channel here too.');
+ expect(creative).toContain('In a channel it answers only the people it answers in a direct message (usually just you); everyone else in the channel can read its answers but cannot ask it anything.');
+ expect(creative).toContain('When you ask it for something it can only do in a direct message, it tells you to write to it there, and anything that needs your approval has to be asked for in a direct message, never in the channel.');
+ expect(creative).not.toContain('contacts');expect(creative).not.toContain('deadlines');
+ expect(creative).toContain('answers from general knowledge and the public Lares pages.');expect(creative).not.toContain('transport');expect(chief).not.toContain('transport');
+});
 it('connects Telegram from the token alone: save, check, enable, apply, register, then issue the link',async()=>{
  const order:string[]=[];
  mocks.status.mockImplementation(async()=>{order.push('status');return ok([row('telegram',{configured:true,enabled:order.includes('enable'),pending:!order.includes('apply')})]);});
