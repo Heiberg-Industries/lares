@@ -1511,6 +1511,18 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 require(after["upstream"]==before["upstream"] and after["routes"]["embeddings"]==before["routes"]["embeddings"] and after["embedBodies"]==before["embedBodies"],"Refused embedding admission made a provider call")
                 require(after["gates"]-before["gates"]==1 and len(after["receipts"])==len(before["receipts"]),"Refused embedding admission was not asked once or left a receipt")
             self.case("anthropic-embed-"+mode+"-makes-no-provider-call",refused_at_the_gate)
+        def refused_by_the_provider():
+            # The embedding provider refused the key: the call reached it once, and its reservation is settled once, at zero.
+            self.control(mode="401");before=self.control();result=send(raw_of());after=self.control()
+            require(result["status"]!=200,"A refused embedding call unexpectedly succeeded")
+            require(after["upstream"]-before["upstream"]==1 and after["routes"]["embeddings"]-before["routes"]["embeddings"]==1 and after["traps"]==before["traps"],"A refused embedding call was retried or reached another route")
+            require(after["gates"]-before["gates"]==1,"A refused embedding call was not admitted exactly once")
+            fingerprint=hashlib.sha256(key.encode()).hexdigest()
+            receipts=[r for r in after["receipts"][len(before["receipts"]):] if r["keyFingerprint"]==fingerprint]
+            require(len(receipts)==1,"A refused embedding call did not settle exactly once")
+            require(receipts[0]["kind"]=="provider-refusal" and receipts[0]["status"]==401 and "usage" not in receipts[0] and "format" not in receipts[0],"A refused embedding call's receipt has the wrong shape")
+        self.case("anthropic-embed-refused-401-settles-once",refused_by_the_provider)
+        self.idle_after_one_shot()
         self.control(mode="normal")
         for name,route,raw in (
             ("a-chat-alias",path,raw_of(model="lares-brain")), ("base64",path,raw_of(encoding_format="base64")), ("no-encoding-format",path,json.dumps({"model":"lares-embed","input":["x"]},separators=(",",":"))),
@@ -1595,10 +1607,11 @@ exec litellm --config "$CONFIG_FILE_PATH"
                     if mode=="timeout":require(29<=time.monotonic()-started<34,"Physical header deadline was not enforced")
                     self.idle_after_one_shot()
                 self.case(provider+"-"+lane+"-one-shot-"+mode,one_shot)
-            for mode in ("401","403"):
-                def provider_refused(mode=mode):
+            for mode,streaming in (("401",False),("403",False),("401",True)):
+                def provider_refused(mode=mode,streaming=streaming):
                     # The provider itself refused the call: its reservation is settled once, at zero, from the status alone.
-                    self.control(mode=mode);before=self.control();started=time.monotonic();result=self.sdk(url,key,lane);after=self.control()
+                    # A streaming call is refused the same way: the refusal status comes before any stream.
+                    self.control(mode=mode);before=self.control();started=time.monotonic();result=self.sdk(url,key,lane,stream=streaming);after=self.control()
                     route="chat" if provider=="openai" else "messages"
                     sdk=result if type(result) is dict else {}
                     checks={"sdkFailed":sdk.get("ok") is False,"physicalExactlyOne":self.diagnostic_delta(before,after,"upstream")==1,
@@ -1615,7 +1628,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
                     require(len(receipts)==1,"Provider refusal did not settle exactly once")
                     require(receipts[0]["kind"]=="provider-refusal" and receipts[0]["status"]==int(mode) and "usage" not in receipts[0] and "format" not in receipts[0],"Provider refusal receipt has the wrong shape")
                     self.idle_after_one_shot()
-                self.case(provider+"-"+lane+"-refused-"+mode,provider_refused)
+                self.case(provider+"-"+lane+"-refused-"+mode+("-stream" if streaming else "-text"),provider_refused)
             for mode in ("missing-finish","malformed-usage","partial","late-content","mixed-id","compressed"):
                 for streaming in (False,True):
                     if not streaming and mode in ("partial","late-content","mixed-id"): continue
