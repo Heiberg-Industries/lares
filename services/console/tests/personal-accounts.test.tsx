@@ -126,6 +126,17 @@ it("adds that an agent is paused when one works on the problem account", async (
   expect(row("Google").textContent).toContain("Reconnect it to use it again. An agent that works on it is paused until then.");
 });
 
+it("explains a missing Google client prominently, with the install guide link", async () => {
+  m.list.mockResolvedValue([google]);
+  await show({ error: "google-client-missing" });
+  const alert = screen.getByRole("alert");
+  expect(alert.textContent).toContain("Google could not be connected yet.");
+  expect(alert.textContent).toContain("second Google client");
+  expect(alert.textContent).not.toContain("The account could not be connected. Try again.");
+  const link = within(alert).getByRole("link", { name: "open the install guide" });
+  expect(link.getAttribute("href")).toContain("docs/install.md#8-doors-outside-tools-and-integrations");
+});
+
 it("keeps technical words and raw errors off the page", async () => {
   m.list.mockResolvedValue([google]);
   await show({ error: "PRIVATE PROVIDER RESPONSE" });

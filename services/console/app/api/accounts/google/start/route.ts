@@ -7,6 +7,7 @@ import { pool } from "../../../../../lib/db";
 import { googleOrgClientConfig, googleOrgs, orgDomains, resolveOrgForEmail } from "../../../../../lib/accounts";
 import { ACCOUNT_FLOW_COOKIE, ACCOUNT_FLOW_MAX_AGE, sealAccountFlow } from "../../../../../lib/account-oauth-state";
 import { startAccountConsent, callbackRedirect, consoleOrigin } from "../../../../../lib/account-oauth";
+import { GOOGLE_CLIENT_MISSING } from "../../../../../lib/account-errors";
 import { personalConsentPower } from "@lares/agent-kit/personal-consent";
 export const runtime = "nodejs";
 async function handlePOST(req: Request): Promise<Response> {
@@ -17,6 +18,13 @@ async function handlePOST(req: Request): Promise<Response> {
   const origin = consoleOrigin();
   const fail = () => {
     const response = NextResponse.redirect(callbackRedirect(origin, { error: "Account consent could not start. Please try again." }), { status: 303 });
+    response.cookies.set(ACCOUNT_FLOW_COOKIE, "", { httpOnly: true, sameSite: "lax", secure: origin.startsWith("https:"), path: "/api/accounts/google", maxAge: 0 });
+    return response;
+  };
+  // The organisation's own Google client is not set up: say so, and log one line (no ids, no secrets).
+  const clientMissing = () => {
+    console.warn("[accounts] Connect Google was refused: no Google client is set up for mailbox and calendar access (GOOGLE_CLIENT_ID_<ORG> and GOOGLE_CLIENT_SECRET_<ORG>).");
+    const response = NextResponse.redirect(callbackRedirect(origin, { error: GOOGLE_CLIENT_MISSING }), { status: 303 });
     response.cookies.set(ACCOUNT_FLOW_COOKIE, "", { httpOnly: true, sameSite: "lax", secure: origin.startsWith("https:"), path: "/api/accounts/google", maxAge: 0 });
     return response;
   };
@@ -47,14 +55,17 @@ async function handlePOST(req: Request): Promise<Response> {
         JOIN oauth_tokens t ON t.id=c.oauth_token_id WHERE c.account_id=$1 AND c.owner_member_id=$2 AND c.connector_id='google'`, [id, member.id]);
       if (!result.rows[0]) return fail();
       org = result.rows[0].org_id;
+      if (!googleOrgClientConfig(org)) return clientMissing();
     } else {
       const mailbox = form.get("email");
       if (typeof mailbox !== "string") return fail();
-      const resolved = resolveOrgForEmail(mailbox, googleOrgs().map(value => value.id), orgDomains(), process.env.GOOGLE_DEFAULT_ORG);
+      const orgs = googleOrgs();
+      if (orgs.length === 0) return clientMissing();
+      const resolved = resolveOrgForEmail(mailbox, orgs.map(value => value.id), orgDomains(), process.env.GOOGLE_DEFAULT_ORG);
       if ("error" in resolved) return fail();
       org = resolved.org;
     }
-    if (!googleOrgClientConfig(org)) return fail();
+    if (!googleOrgClientConfig(org)) return clientMissing();
     const { flow, url } = await startAccountConsent({ memberId: member.id, session, org, power, update,
       ...(intent === "new" ? { loginHint: String(form.get("email")).trim() } : {}) });
     const response = NextResponse.redirect(url, { status: 303 });
