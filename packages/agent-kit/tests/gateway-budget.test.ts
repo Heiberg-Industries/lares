@@ -8,7 +8,8 @@
  * (`litellm/exceptions.py`, `litellm/proxy/auth/auth_exception_handler.py`) was read and shown
  * to set `status_code = 429` with `type = "budget_exceeded"` intact — same envelope, same
  * markers, different status. `tests/live/litellm-budget-refusal.live.mts` re-measures this by
- * hand; nothing here claims that run has happened.
+ * hand. The 422 fixture is SHAPED from what that probe printed on 2026-11-16 against LiteLLM
+ * v1.104.2 (status, `error.type`, `error.code`, the message's opening); the key hash in it is fake.
  *
  * Both directions are covered, because fixing one has historically broken the other:
  *  - the leak — a real refusal that goes unrecognised, and the cap looks like a bug;
@@ -114,6 +115,21 @@ const LIVE_REFUSAL_BODY_429 = {
 const LIVE_REFUSAL_BODY_429_TEXT = JSON.stringify(LIVE_REFUSAL_BODY_429);
 
 /**
+ * SHAPED — the refusal the live probe saw on 2026-11-16 against LiteLLM v1.104.2: HTTP 422,
+ * `error.type` "budget_exceeded", `error.code` "422", message opening
+ * "Budget has been exceeded! Key=" and a key hash. The probe printed only those fields and the
+ * first 80 characters of the message; the hash below is fake.
+ */
+const LIVE_REFUSAL_BODY_422 = {
+  error: {
+    message: "Budget has been exceeded! Key=0000000000000000000000000000000000000000000000000000000000000000",
+    type: "budget_exceeded",
+    param: null,
+    code: "422",
+  },
+} as const;
+
+/**
  * SHAPED — an `AI_APICallError` as `@ai-sdk/anthropic` builds one around the 400 above. The
  * body is verbatim; the wrapper's field names (`statusCode`, `responseBody`, `data`, `url`,
  * `isRetryable`) are the AI SDK's own, and the url is a placeholder.
@@ -214,6 +230,12 @@ describe("isBudgetExceeded — the leak direction (a real refusal must be recogn
     expect(isBudgetExceeded(aiSdkApiCallError(LIVE_REFUSAL_BODY_429, 429))).toBe(true);
   });
 
+  it("recognises the AI SDK's AI_APICallError wrapper on a 422 refusal, as measured on 2026-11-16", () => {
+    expect(isBudgetExceeded(aiSdkApiCallError(LIVE_REFUSAL_BODY_422, 422))).toBe(true);
+    expect(isBudgetExceeded(LIVE_REFUSAL_BODY_422)).toBe(true);
+    expect(isBudgetExceeded(JSON.stringify(LIVE_REFUSAL_BODY_422))).toBe(true);
+  });
+
   it("recognises it through a cause chain, the way eve rewraps a model-stream error", () => {
     const wrapped = new Error("model call failed", { cause: aiSdkApiCallError() });
     expect(isBudgetExceeded(wrapped)).toBe(true);
@@ -270,6 +292,13 @@ describe("isBudgetExceeded — the over-rejection direction (nothing else may cl
     expect(isBudgetExceeded(aiSdkApiCallError(ORDINARY_429_RATE_LIMIT_BODY, 429))).toBe(false);
   });
 
+  it("an ordinary 422 (a request the gateway could not process) with no budget marker is NOT a budget refusal", () => {
+    // Accepting 422 as a status must not turn every validation error into a claimed cap.
+    const ordinary422 = { error: { message: "Unprocessable request.", type: "invalid_request_error", param: null, code: "422" } };
+    expect(isBudgetExceeded(ordinary422)).toBe(false);
+    expect(isBudgetExceeded(aiSdkApiCallError(ordinary422, 422))).toBe(false);
+  });
+
   it("the live 401 auth error from the same transcript is NOT a budget refusal", () => {
     expect(isBudgetExceeded(LIVE_AUTH_ERROR_BODY)).toBe(false);
   });
@@ -282,11 +311,12 @@ describe("isBudgetExceeded — the over-rejection direction (nothing else may cl
   });
 
   it("a 500 that echoes the marker back is NOT the gateway refusing", () => {
-    // The measured refusals are 400 and 429. A visible status outside that set disqualifies,
+    // The measured refusals are 400, 422 and 429. A visible status outside that set disqualifies,
     // so an upstream mirroring the text into a server error cannot make an agent claim it is
     // capped.
     expect(isBudgetExceeded(aiSdkApiCallError(LIVE_REFUSAL_BODY, 500))).toBe(false);
     expect(isBudgetExceeded(aiSdkApiCallError(LIVE_REFUSAL_BODY_429, 500))).toBe(false);
+    expect(isBudgetExceeded(aiSdkApiCallError(LIVE_REFUSAL_BODY_422, 500))).toBe(false);
   });
 
   it("prose merely mentioning the words is not a marker (types are read as fields)", () => {

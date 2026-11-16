@@ -25,9 +25,7 @@
  * }
  * ```
  *
- * **429 — current LiteLLM, verified 2026-09-18 in its own source** (not yet re-measured
- * against our gateway with a live probe — `tests/live/litellm-budget-refusal.live.mts` will
- * record that run when someone does it): `litellm/exceptions.py` sets
+ * **429 — read 2026-09-18 in LiteLLM's own source**: `litellm/exceptions.py` sets
  * `self.status_code = 429` on `BudgetExceededError`, and
  * `litellm/proxy/auth/auth_exception_handler.py` passes it through with
  * `type = "budget_exceeded"` intact:
@@ -44,6 +42,13 @@
  * }
  * ```
  *
+ * (The live probe measured that 429 on 2026-09-21 against LiteLLM v1.101.0.)
+ *
+ * **422 — measured 2026-11-16** by the live probe against LiteLLM v1.104.2: refused on call 6
+ * with HTTP 422, `error.type` "budget_exceeded", `error.code` "422", and a message opening
+ * "Budget has been exceeded! Key=…". The status moved a second time; the envelope did not.
+ * The installed eve classifies a 422 like a 400 (terminal, no retry).
+ *
  * Same envelope, same two markers, different transport status — which is exactly why
  * recognition reads the TYPE and treats the status as a plausibility check, never the
  * primary signal. A future LiteLLM release could move the status again without changing
@@ -58,9 +63,12 @@
  *
  * **What breaks silently if LiteLLM changes:** rename the type, or reword the sentence, and
  * every door falls back to the generic failure text — legible-but-wrong, never a wrong action.
+ * The same happens when LiteLLM moves the status to one not in `LITELLM_BUDGET_EXCEEDED_STATUSES`
+ * (it did, to 422, by 2026-11-16).
  * Re-run a throwaway-key proof against the live gateway (or the live probe below) to re-measure; that
  * transcript is the acceptance bar for this file, not the fixtures below (which are copied
- * from it, plus a 429 fixture shaped from LiteLLM's source pending its own live measurement).
+ * from it, plus a 429 fixture shaped from LiteLLM's source and a 422 fixture shaped from the
+ * fields the 2026-11-16 probe printed).
  *
  * ## Where the refusal is seen from
  *
@@ -68,7 +76,7 @@
  * third:
  *
  *  1. **the raw body**, as a probe would see it (a parsed object, or JSON text);
- *  2. **the AI SDK's wrapper** — `AI_APICallError` with `statusCode: 400` or `429`, the raw
+ *  2. **the AI SDK's wrapper** — `AI_APICallError` with `statusCode` 400, 422 or 429, the raw
  *     text on `responseBody`, and the parsed body on `data`;
  *  3. **eve's `turn.settled` (outcome `failed`) / `session.ended` event data** — `{ error: { code,
  *     message, id?, hint? } }` (eve 1.0). The old `details` object (`upstreamType`,
@@ -119,15 +127,21 @@ export const LITELLM_BUDGET_EXCEEDED_TYPE = "budget_exceeded";
 export const LITELLM_BUDGET_EXCEEDED_MESSAGE_PREFIX = "Budget has been exceeded!";
 
 /**
- * The HTTP statuses LiteLLM has answered a budget refusal with, across measurements: 400
- * (measured 2026-09-01) and 429 (LiteLLM's own
- * source, `litellm/exceptions.py` / `litellm/proxy/auth/auth_exception_handler.py`, read
- * 2026-09-18 — not yet re-measured against our gateway with a live probe). When a numeric
- * status is visible anywhere in an error, it must be one of these or `isBudgetExceeded`
- * rejects — see this file's header for why the type still decides and the status is only a
- * plausibility check.
+ * The HTTP statuses LiteLLM has answered a budget refusal with, each one measured:
+ *
+ *  - **400** — a live throwaway-key run against a real gateway on 2026-09-01;
+ *  - **429** — read from LiteLLM's own source on 2026-09-18 (`litellm/exceptions.py` /
+ *    `litellm/proxy/auth/auth_exception_handler.py`), then measured by the live probe
+ *    `tests/live/litellm-budget-refusal.live.mts` on 2026-09-21 against LiteLLM v1.101.0;
+ *  - **422** — measured by the same live probe on 2026-11-16 against LiteLLM v1.104.2:
+ *    `error.type` "budget_exceeded", `error.code` "422", message opening
+ *    "Budget has been exceeded!". This module rejected it until 422 was added here.
+ *
+ * When a numeric status is visible anywhere in an error, it must be one of these or
+ * `isBudgetExceeded` rejects — see this file's header for why the type still decides and the
+ * status is only a plausibility check. Add a status here only when a live run has seen it.
  */
-export const LITELLM_BUDGET_EXCEEDED_STATUSES: readonly number[] = [400, 429];
+export const LITELLM_BUDGET_EXCEEDED_STATUSES: readonly number[] = [400, 422, 429];
 
 /**
  * The typed form of the gateway's refusal, for callers that want to raise it rather than
@@ -154,7 +168,7 @@ export class GatewayBudgetExceededError extends Error {
    */
   readonly statusCode: number = 400;
   /**
-   * The HTTP status actually observed on this refusal (400 or 429) — for logging and tests.
+   * The HTTP status actually observed on this refusal (400, 422 or 429) — for logging and tests.
    * Not read by `isBudgetExceeded` (a `GatewayBudgetExceededError` is recognised by
    * `instanceof`, before any status check runs) and deliberately not read by eve's classifier
    * either — see `statusCode` above for why those two diverge on purpose.
@@ -283,7 +297,7 @@ function collectSignals(root: unknown): Signals {
  *    IS recognised would claim "I have hit my budget" about a completely different fault.
  *
  * So a marker is required (an ordinary 400 carries neither), and when a numeric status is
- * visible anywhere it must be one of the measured statuses — 400 or 429, see
+ * visible anywhere it must be one of the measured statuses — 400, 422 or 429, see
  * `LITELLM_BUDGET_EXCEEDED_STATUSES` — (a 500 that happens to echo the sentence back is not
  * the gateway refusing).
  */
