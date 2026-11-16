@@ -21,6 +21,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PROMPT_CACHE_BOUNDARY } from "@lares/agent-kit/prompt-cache";
 
+// Whether the conversation is a verified private console one (web chat). Off unless a test turns it
+// on; with it off every other test here sees what the real check says about a context with no auth.
+const web = vi.hoisted(() => ({ private: false, correction: vi.fn(async () => "CORRECTION_CANARY") }));
+vi.mock("@lares/agent-kit/private-console-surface", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@lares/agent-kit/private-console-surface")>()),
+  verifyPrivateConsoleSession: async () => web.private,
+}));
+// eve's conversation state is not readable outside a running session, so web chat's language line
+// is a canary here; every other conversation keeps the real builder.
+vi.mock("../agent/instructions/ab-language.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../agent/instructions/ab-language.js")>();
+  return { ...real, languageBlock: async (id: string, privateSession: boolean) => privateSession ? "LANGUAGE_CANARY" : real.languageBlock(id, privateSession) };
+});
+vi.mock("../agent/instructions/standing-facts.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agent/instructions/standing-facts.js")>()),
+  standingFactsCorrectionBlock: web.correction,
+}));
+
 const DIR = join(__dirname, "../agent/instructions");
 const BOUNDARY_FILE = "zz-cache-boundary.ts";
 /** Files whose block changes from turn to turn. They build it; the boundary file emits it. */
@@ -64,7 +82,7 @@ function keepingMemo(): { memo: Memo; keys: string[] } {
   };
 }
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); web.private = false; web.correction.mockClear(); });
 
 describe("chief-of-staff prompt-cache boundary", () => {
   const files = readdirSync(DIR)
@@ -123,5 +141,20 @@ describe("chief-of-staff prompt-cache boundary", () => {
     expect(nextTurn?.content.startsWith(PROMPT_CACHE_BOUNDARY)).toBe(true);
     // One memo per turn, and nothing else.
     expect(keys).toEqual(['["per-turn","turn_0"]', '["per-turn","turn_0"]', '["per-turn","turn_1"]']);
+  });
+
+  it("web chat gets the clock after the marker, and no standing-facts correction", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-16T12:00:00Z"));
+    web.private = true;
+    const { memo } = keepingMemo();
+    const out = await (await resolverOf(BOUNDARY_FILE))(context(memo));
+    expect(out?.content.startsWith(PROMPT_CACHE_BOUNDARY)).toBe(true);
+    // The language line first, then the clock, as on every other door.
+    expect(out?.content.indexOf("LANGUAGE_CANARY")).toBeGreaterThan(0);
+    expect(out?.content.indexOf("## Now")).toBeGreaterThan(out?.content.indexOf("LANGUAGE_CANARY") ?? Infinity);
+    expect(out?.content).toContain("2026-11-16");
+    expect(out?.content).not.toContain("CORRECTION_CANARY");
+    expect(web.correction).not.toHaveBeenCalled();
   });
 });

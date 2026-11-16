@@ -29,9 +29,12 @@ import { standingFactsCorrectionBlock } from "./standing-facts.js";
 
 export default defineDynamic(async (ctx) => {
   const perTurn = await ctx.memo(["per-turn", ctx.turn?.id ?? null], async () => {
-    // A private console conversation gets the language line and nothing else after the marker:
-    // no clock, no memory. An unauthorized one throws, and the turn fails.
-    if (await verifyPrivateConsoleSession(ctx)) return [await languageBlock(ctx.session.id, true)];
+    // A private console conversation (web chat) gets the language line and the clock after the
+    // marker, and no memory: the standing-facts correction is left out here, and `standing-facts.ts`
+    // leaves out the facts themselves. Without the clock the model guessed the date ("Friday" in
+    // the wrong year). The clock is not private: a shared room gets it too. An unauthorized
+    // conversation throws, and the turn fails.
+    if (await verifyPrivateConsoleSession(ctx)) return [await languageBlock(ctx.session.id, true), await clockBlock()];
     // A conversation started in a shared room has no standing-facts block (`standing-facts.ts`), so it
     // gets no correction to one either. The language line and the clock are not private.
     if (startedIn(ctx) === "shared-room") return [await languageBlock(ctx.session.id, false), await clockBlock()];
