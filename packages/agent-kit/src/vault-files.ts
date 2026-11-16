@@ -161,7 +161,12 @@ export class GuardedVaultFiles {
   async listPage(ctx:VaultFilesContext,request:NotePageRequest,reader:Reader):Promise<{paths:string[];nextCursor?:number}> {
     return this.readArea(ctx,root=>{
       const inFolder=notePage(listNotes(root,{allowEmpty:true,rejectNestedRepositories:true}),{folder:request.folder,limit:Number.MAX_SAFE_INTEGER}).paths;
-      const visible=inFolder.filter(path=>{const abs=resolveInStore(path,root,{rejectNestedRepositories:true});regular(abs);return visibleTo(readFileSync(abs,'utf8'),reader);});
+      // Reuses the walk's own check instead of a second resolveInStore per note (about 220 ms a page at 2,000
+      // notes). Safe because every path read here is one the walk just returned (the folder only filters them;
+      // nothing is built from caller input), the walk ran resolveInStore with the nested-repository check on
+      // each of them, and walk and reads run in this one synchronous callback inside the repository lock that
+      // every Lares Vault writer takes. `regular` still refuses a symlink, a non-regular file and a hard link.
+      const visible=inFolder.filter(path=>{const abs=join(root,path);regular(abs);return visibleTo(readFileSync(abs,'utf8'),reader);});
       return notePage(visible,{cursor:request.cursor,limit:request.limit});
     });
   }

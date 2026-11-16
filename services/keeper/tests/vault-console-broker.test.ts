@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, symlinkSync, linkSync, rmSync } from 'node:fs';
 import { quiet } from '../../../packages/agent-kit/tests/helpers/quiet-pool.js';
 import { PgGrantStore } from '../../../packages/agent-kit/src/grant-store.js';
 import { PgVaultStore } from '../../../packages/agent-kit/src/vault-area-store.js';
@@ -599,6 +599,36 @@ it('lists 2,000 notes page by page, one folder, finds a note by search and reads
     `folder pages ${folderMs.map(ms => ms.toFixed(0)).join(', ')} ms; search one note ${searchMs.toFixed(0)} ms; broad search ${broadMs.toFixed(0)} ms; read ${readMs.toFixed(0)} ms (client deadline 2000 ms, keeper 1700 ms)`);
   for (const ms of [...pageMs, ...folderMs, searchMs, broadMs, readMs]) expect(ms).toBeLessThan(2000);
 }, 120_000);
+
+// A list page reads each note by the path the walk just returned, without a second path check, so the walk's
+// own refusals must still hold for the listed folder: a symlink, a hard link or a nested repository in it
+// refuses the whole page, and none of their text comes back.
+it('refuses a list whose folder holds a symlinked note, a hard-linked note or a nested repository, and returns none of their text', async () => {
+  const { turn } = await realAreasAndTurn();
+  const privateRoot = join(root, 'vault-files', `vault/private/${ids.area}`), outside = join(root, 'outside-secret.md');
+  writeFileSync(outside, 'OUTSIDE_SECRET');
+  mkdirSync(join(privateRoot, 'people'), { recursive: true });
+  writeFileSync(join(privateRoot, 'people/vera.md'), '# Vera\n');
+  execFileSync('git', ['-C', privateRoot, 'add', '.'], { stdio: 'ignore' }); execFileSync('git', ['-C', privateRoot, 'commit', '-m', 'vera'], { stdio: 'ignore' });
+  const list = () => runtime('vault.read', { turnCapability: turn.opened.turnCapability, sessionId: session, memberId: ids.member, admissionNonce,
+    turnId: turn.turnId, sequence: approvalTurnSequence, operation: 'list', area: 'private', folder: 'people' });
+  expect(await list()).toEqual({ ok: true, notes: ['people/vera.md'] });
+  const cases: Array<[string, () => void, () => void]> = [
+    ['symlinked note', () => symlinkSync(outside, join(privateRoot, 'people/link.md')), () => rmSync(join(privateRoot, 'people/link.md'))],
+    ['hard-linked note', () => linkSync(outside, join(privateRoot, 'people/hard.md')), () => rmSync(join(privateRoot, 'people/hard.md'))],
+    ['nested repository', () => { const inner = join(privateRoot, 'people/inner'); mkdirSync(inner); execFileSync('git', ['init', inner], { stdio: 'ignore' });
+      writeFileSync(join(inner, 'other.md'), 'OUTSIDE_SECRET'); }, () => rmSync(join(privateRoot, 'people/inner'), { recursive: true, force: true })],
+  ];
+  for (const [name, make, undo] of cases) {
+    make();
+    let answer: unknown;
+    try { answer = await list(); } catch (error) { answer = (error as Error).message; }
+    expect(String(answer), name).toMatch(/^Vault reader unavailable/);
+    expect(JSON.stringify(answer), name).not.toContain('OUTSIDE_SECRET');
+    undo();
+    expect(await list(), `${name} removed`).toEqual({ ok: true, notes: ['people/vera.md'] });
+  }
+});
 
 it('refuses a list cursor or folder that is not a page position or a folder, and a search without words', async () => {
   const { turnId, opened } = await openTurn(0);
