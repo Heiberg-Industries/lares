@@ -268,20 +268,26 @@ describe('exact private approval execution',()=>{
   try{await expect(dismissExactDeadline(getPool(),context('resolver'),input)).rejects.toThrow();await stillOpen();}
   finally{await getPool().query('ALTER TABLE approval_asks_off RENAME TO approval_asks');}
  });
- it('omits private deadlines from a private conversation, also after a cold start (a fresh memo), and refuses reconstructed native callbacks',async()=>{
+ it('offers the owner deadline dismissal in a private conversation behind its exact card, also after a cold start (a fresh memo), and refuses reconstructed native callbacks',async()=>{
   const privateCtx={session:{id:'wrun_exact',auth:{current:auth('human'),initiator:auth('human')}}};
   const store:MemoStore=new Map();
   const tools=await runDynamic(resolver,privateCtx,store);
-  expect(tools.deadline_dismiss).toBeUndefined();expect(tools.set_language).toBeUndefined();expect(tools.remember).toBeUndefined();
+  // member-a owns the agent: the deadline tools are the owner's in web chat. Dismissing asks the exact card.
+  expect(typeof tools.deadline_dismiss?.approval?.request).toBe('function');
+  expect(tools.set_language).toBeUndefined();expect(tools.remember).toBeUndefined();expect(tools.remind_set).toBeUndefined();
   // A new process has no memo: the decision is made again from the definition and comes out the same.
   const cold=await runDynamic(resolver,privateCtx,new Map());
   expect(Object.keys(cold).sort()).toEqual(Object.keys(tools).sort());
   const native=await runDynamic(resolver,{session:{id:'wrun_exact',auth:{current:null,initiator:null}}});
-  const tool=native.deadline_dismiss;
+  // A tool web chat does not offer, reached through a descriptor built for a native door, is refused.
+  const tool=native.deadline_done;
   expect(typeof tool.approval).toBe('object');expect(typeof tool.approval.request).toBe('function');expect(typeof tool.approval.prompt).toBe('function');
-  await expect(tool.approval.request(context())).rejects.toThrow('Conversation authority');
+  await expect(tool.approval.request({...context(),toolName:'deadline_done'})).rejects.toThrow('Conversation authority');
   await expect(tool.execute(input,context())).rejects.toThrow('Conversation authority');
   await expect(tool.execute(input,context('resolver'))).rejects.toThrow('Conversation authority');
+  // The owner's dismissal through such a descriptor takes the same exact card path, and runs only from an approved card.
+  expect(await native.deadline_dismiss.approval.request(context())).toBe('user-approval');
+  await expect(native.deadline_dismiss.execute(input,context())).rejects.toThrow();
   await stillOpen();
  });
  it('a fresh process (cold start: no memo, no module state) runs the approved call only with its responder',async()=>{
