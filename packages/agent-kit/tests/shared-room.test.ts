@@ -4,7 +4,7 @@ import { privateOnlyTool, privateToolAllowed } from '../src/private-console-surf
 import { CONSOLE_SESSION_AUTHENTICATOR } from '../src/door-authority.js';
 import {
   chatKindOf, startedIn, sharedRoomAllows, sharedRoomRefusal, assertSharedRoomAllows, SHARED_ROOM_ALLOWED,
-  SHARED_ROOM_REFUSED, SHARED_ROOM_UNAVAILABLE,
+  SHARED_ROOM_REFUSED, SHARED_ROOM_UNAVAILABLE, SHARED_ROOM_INSTRUCTIONS,
 } from '../src/shared-room.js';
 
 const slack = (channel_id?: string) => ({ authenticator: 'slack-webhook', attributes: { user_id: 'U0OWNER', ...(channel_id ? { channel_id } : {}) } });
@@ -120,5 +120,37 @@ describe('what a shared room may use', () => {
     expect(privateToolAllowed('chief-of-staff', 'agent-kit__vault_search', { callerIsOwner: true })).toBe(false);
     expect(privateToolAllowed('chief-of-staff', 'person_lookup', { callerIsOwner: true })).toBe(false);
     expect(privateOnlyTool('person_lookup')).toBe(false);
+  });
+});
+
+describe('what a conversation started in a shared room is told', () => {
+  it('ends with the refusal sentence, word for word, so the sentence has one source', () => {
+    expect(SHARED_ROOM_INSTRUCTIONS.endsWith(SHARED_ROOM_REFUSED)).toBe(true);
+  });
+
+  it('says it is a shared channel that everyone reads, and keeps mail, calendar, notes, memory and duties out', () => {
+    expect(SHARED_ROOM_INSTRUCTIONS).toContain('shared channel');
+    expect(SHARED_ROOM_INSTRUCTIONS).toContain('Everyone in the channel reads your answers');
+    for (const kept of ['mail', 'calendar', 'notes', 'what the owner asked you to remember', 'details of your own duties']) {
+      expect(SHARED_ROOM_INSTRUCTIONS, kept).toContain(kept);
+    }
+  });
+
+  it('does not forbid contacts, deadlines or reminders, which a room may look up read-only', () => {
+    expect(SHARED_ROOM_INSTRUCTIONS).not.toMatch(/contacts|deadlines|reminders/i);
+  });
+
+  it('does not promise any tool, so it is true for a role that has no contact, deadline or reminder tool', () => {
+    expect(SHARED_ROOM_INSTRUCTIONS).toContain('the tools you have here');
+    expect(SHARED_ROOM_INSTRUCTIONS).not.toMatch(/twenty|deadline_|remind_/i);
+  });
+
+  it('does not claim that only the owner can ask, because a door may admit several allowed people', () => {
+    expect(SHARED_ROOM_INSTRUCTIONS).not.toMatch(/only the owner/i);
+    expect(SHARED_ROOM_INSTRUCTIONS).toContain('Only people allowed to use you can ask you things here, and the owner is one of them');
+  });
+
+  it('is one paragraph', () => {
+    expect(SHARED_ROOM_INSTRUCTIONS).not.toContain('\n');
   });
 });

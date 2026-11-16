@@ -21,6 +21,8 @@ import { readFileSync } from "node:fs";
 
 import { defineDynamic, defineInstructions } from "eve/instructions";
 
+import { SHARED_ROOM_INSTRUCTIONS, startedIn } from "@lares/agent-kit/shared-room";
+
 import { outsideToolsInEffect } from "@lares/agent-kit/outside-tools";
 import { assemblePersona, deployedToolsFor } from "@lares/agent-kit/persona";
 
@@ -52,5 +54,8 @@ export default defineDynamic(async (ctx) => {
       outsideTools: outsideToolsInEffect(loaded.definition),
     });
   });
-  return defineInstructions({ content });
+  // A conversation started in a shared room is told so, after the persona. Where it started is read
+  // from the session's initiator, which never changes, so the text is the same on every model call of
+  // the conversation and the prompt cache holds. The persona itself stays in the memo above.
+  return defineInstructions({ content: startedIn(ctx) === "shared-room" ? `${content}\n\n${SHARED_ROOM_INSTRUCTIONS}` : content });
 });
