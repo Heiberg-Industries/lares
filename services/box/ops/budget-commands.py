@@ -1123,7 +1123,7 @@ def installation_provider_key(installation: Installation, options: argparse.Name
                        "docker compose -f /opt/lares/compose.yaml logs --tail 100 lares-gateway. "
                        f"Once that is fixed, run: {restart}") from None
     except subprocess.TimeoutExpired:
-        raise Stop("The new key is saved, but restarting the model gateway took too long and was stopped, so it is not "
+        raise Stop("The new key is saved, but restarting the model gateway, or checking it afterwards, took too long and was stopped, so it is not "
                    f"known whether the gateway uses the new key. Run: {restart}") from None
     say("The model gateway is running again and uses the new key. To check that your model provider accepts it, "
         "run: sudo lares doctor --test-model")

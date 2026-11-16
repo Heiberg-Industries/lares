@@ -200,7 +200,7 @@ describe("testing the installation's provider key with the provider's free model
     for (const status of [404, 405]) {
       const r = readProviderKeyResult(status, "{}");
       expect(r.verdict).toBe("no-model-list");
-      expect(r.say).toContain("offers no model list");
+      expect(r.say).toContain("there is no model list at this address");
     }
   });
 

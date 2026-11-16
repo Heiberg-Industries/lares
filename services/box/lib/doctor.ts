@@ -758,7 +758,7 @@ export function readProviderKeyResult(status: number, body: string): ProviderKey
   if (status === 404 || status === 405) {
     return {
       verdict: "no-model-list",
-      say: `The model provider answered HTTP ${status}: it offers no model list to ask, so this check cannot test the key with this provider.`,
+      say: `The model provider answered HTTP ${status}: there is no model list at this address, so this check cannot test the key here.`,
     };
   }
   const parsed = tryParseJson(body);

@@ -1175,7 +1175,7 @@ class BudgetCommandTests(unittest.TestCase):
         with mock.patch.object(budget.Installation, "stack_compose", side_effect=subprocess.TimeoutExpired("docker", 1)):
             code, output = self.run_command("provider-key-set", "--key-file", str(self.key_file()))
         self.assertEqual(code, budget.EX_REFUSED)
-        self.assertIn("The new key is saved, but restarting the model gateway took too long", output)
+        self.assertIn("The new key is saved, but restarting the model gateway, or checking it afterwards, took too long", output)
         self.assertNotIn("continues from what is on record", output)
 
     def test_installation_key_set_writes_the_installers_mode_even_over_a_looser_old_file(self) -> None:
