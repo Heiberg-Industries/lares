@@ -13,6 +13,8 @@ export interface GatewayRecoveryWitness {
   observe(reference:Pick<BudgetGatewayTicket,'installationAccountId'|'epoch'|'endpointGeneration'>):Promise<BudgetRecoveryReference|undefined>;
 }
 export interface GatewayRpcReply {status:number;headers:Record<string,string>;body:Buffer}
+/** The one log line for a call the provider refused. It names the status and nothing else: no key, prompt or id. */
+export const providerRefusalLine=(status:401|403)=>`keeper: a model call was settled at $0: the provider refused the call (HTTP ${status})`;
 const refused=():GatewayRpcReply=>({status:503,headers:{'content-type':'application/json','cache-control':'no-store'},body:Buffer.from('{"state":"unavailable","version":1}')});
 
 /** Protected service key shared with the gateway, never the console or browser. No key is
@@ -96,13 +98,17 @@ export class GatewayBudgetAuthority {
         const receipt=gatewaySettleSchema.parse(document);
         const {receiptHash,...evidence}=receipt;
         if(gatewayHash(gatewayCanonical(evidence))!==receiptHash)return refused();
-        const {kind,format,usage,...grant}=evidence;
+        const grant=gatewayGrantSchema.parse({version:evidence.version,nonce:evidence.nonce,requestHash:evidence.requestHash,profileHash:evidence.profileHash,endpointHash:evidence.endpointHash,keyFingerprint:evidence.keyFingerprint,purposeAlias:evidence.purposeAlias,attemptId:evidence.attemptId,bindingId:evidence.bindingId,providerKey:evidence.providerKey});
         const persisted=await store.gatewaySettlement(receipt.attemptId);fresh();
         if(!persisted||persisted.grantHash!==gatewayGrantHash(grant))return refused();
         const pricing=gatewayPricingSchema.parse(persisted.pricingProfile);
-        if(pricing.capabilityHash!==persisted.profileHash||format!==pricing.format)return refused();
-        const state=await store.settle({attemptId:persisted.attemptId,bindingId:persisted.bindingId,requestHash:persisted.requestHash,profileHash:persisted.profileHash,endpointHash:persisted.endpointHash,credentialGeneration:persisted.credentialGeneration,receiptHash,actualAmount:gatewayActualAmount(pricing,usage),kind});
+        if(pricing.capabilityHash!==persisted.profileHash||evidence.kind==='terminal-usage'&&evidence.format!==pricing.format)return refused();
+        // A provider refusal (401 or 403) is settled at zero, exactly as a receipt of zero tokens would be: the provider
+        // received the request, so it is a finished call that cost nothing, never a call that was not sent.
+        const actualAmount=evidence.kind==='terminal-usage'?gatewayActualAmount(pricing,evidence.usage):'0';
+        const state=await store.settle({attemptId:persisted.attemptId,bindingId:persisted.bindingId,requestHash:persisted.requestHash,profileHash:persisted.profileHash,endpointHash:persisted.endpointHash,credentialGeneration:persisted.credentialGeneration,receiptHash,actualAmount,kind:'terminal-usage'});
         fresh();if(state==='denied')return refused();
+        if(evidence.kind==='provider-refusal'&&state==='settled')console.log(providerRefusalLine(evidence.status));
         result={version:1,state};
       }
       fresh();

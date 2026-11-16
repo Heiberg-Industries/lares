@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {execFileSync} from 'node:child_process';
-import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,GATEWAY_EMBEDDINGS_MODEL_PATH,gatewayModelPath,gatewaySettleSchema,gatewayGrantSchema,gatewayCanonical,gatewayRawRequestHash,gatewaySignature,verifyGatewaySignature,parseGatewayDocument,gatewayAdmitSchema,gatewayGrantHash,gatewayDeniedSchema,limitSentence,MEMBER_LIMIT_SENTENCE,INSTALLATION_LIMIT_SENTENCE} from '../src/gateway-admission-protocol.js';
+import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,GATEWAY_PROVIDER_REFUSAL_STATUSES,GATEWAY_EMBEDDINGS_MODEL_PATH,gatewayModelPath,gatewaySettleSchema,gatewayGrantSchema,gatewayCanonical,gatewayRawRequestHash,gatewaySignature,verifyGatewaySignature,parseGatewayDocument,gatewayAdmitSchema,gatewayGrantHash,gatewayDeniedSchema,limitSentence,MEMBER_LIMIT_SENTENCE,INSTALLATION_LIMIT_SENTENCE} from '../src/gateway-admission-protocol.js';
 import {gatewayPricingSchema,gatewayMaximumLiability,gatewayActualAmount} from '../src/gateway-pricing.js';
 const request={version:1 as const,nonce:'1'.repeat(64),requestHash:'2'.repeat(64),profileHash:'3'.repeat(64),endpointHash:'4'.repeat(64),keyFingerprint:'5'.repeat(64),purposeAlias:'example-brain',ticket:'a'.repeat(43)};
 const key=Buffer.alloc(32,7);
@@ -28,8 +28,24 @@ print(hashlib.sha256(b'lares.gateway.raw-request.v1\\0POST\\0/v1/embeddings\\0'+
     const receipt={version:1 as const,nonce:'1'.repeat(64),requestHash:'2'.repeat(64),profileHash:'3'.repeat(64),endpointHash:'4'.repeat(64),keyFingerprint:'5'.repeat(64),purposeAlias:'example-embed',
       attemptId:'11111111-1111-4111-8111-111111111111',bindingId:'22222222-2222-4222-8222-222222222222',providerKey:'installation',kind:'terminal-usage' as const,format:'embedding' as const,
       usage:{inputTokens:9,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0},receiptHash:'6'.repeat(64)};
-    expect(gatewaySettleSchema.parse(receipt).format).toBe('embedding');
+    const parsed=gatewaySettleSchema.parse(receipt);
+    expect(parsed.kind==='terminal-usage'&&parsed.format).toBe('embedding');
     expect(()=>gatewaySettleSchema.parse({...receipt,format:'other'})).toThrow();
+  });
+  it('accepts a provider refusal only for 401 or 403, and only without usage, format or amount',()=>{
+    const refusal={version:1 as const,nonce:'1'.repeat(64),requestHash:'2'.repeat(64),profileHash:'3'.repeat(64),endpointHash:'4'.repeat(64),keyFingerprint:'5'.repeat(64),purposeAlias:'example-chat',
+      attemptId:'11111111-1111-4111-8111-111111111111',bindingId:'22222222-2222-4222-8222-222222222222',providerKey:'installation',kind:'provider-refusal' as const,status:401 as const,receiptHash:'6'.repeat(64)};
+    expect(GATEWAY_PROVIDER_REFUSAL_STATUSES).toEqual([401,403]);
+    expect(gatewaySettleSchema.parse(refusal).kind).toBe('provider-refusal');
+    expect(gatewaySettleSchema.parse({...refusal,status:403}).kind).toBe('provider-refusal');
+    // Rate limits, server errors, other client errors and redirects keep the reservation: they are never a refusal receipt.
+    for(const status of [400,402,404,408,422,429,500,502,503,504,200,'401',401.5,null])
+      expect(()=>gatewaySettleSchema.parse({...refusal,status})).toThrow();
+    for(const extra of [{usage:{inputTokens:0,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0}},{format:'openai'},{actualAmount:'0'},{message:'text'}])
+      expect(()=>gatewaySettleSchema.parse({...refusal,...extra})).toThrow();
+    const {status,...withoutStatus}=refusal;
+    expect(()=>gatewaySettleSchema.parse(withoutStatus)).toThrow();
+    expect(()=>gatewaySettleSchema.parse({...refusal,kind:'affirmative-nondispatch'})).toThrow();
   });
   it('matches independent Python JSON/HMAC bytes including ASCII escaping',()=>{
     const document={...request,nested:['\u007f','\u00e6','\ud83d\ude00']};

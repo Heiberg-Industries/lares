@@ -1185,6 +1185,64 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const grant={...a.grant};delete grant.state;delete grant.validForMs;
     expect(proposals.at(-1).record.atoms).toEqual(expect.arrayContaining([expect.objectContaining({kind:'attempt',state:'settled',actualAmount:'0.0098'}),expect.objectContaining({kind:'grant',grantHash:gatewayGrantHash(grant)})]));
   });
+  function refusal(grant:any,status:number=401,changes:Record<string,unknown>={}){
+    const {state,validForMs,...echoes}=grant;
+    const evidence={...echoes,kind:'provider-refusal',status,...changes};
+    return {...evidence,receiptHash:gatewayHash(gatewayCanonical(evidence))};
+  }
+  it('settles a call the provider refused with 401 or 403 at zero, gives its room back once, and logs only the status',async()=>{
+    const liability=async()=>(await store.readStatus(context())).liability;
+    const before=await liability(),refused:string[]=[];
+    const log=vi.spyOn(console,'log').mockImplementation(()=>undefined);
+    try{
+      for(const status of [401,403]){
+        const a=await allowed(),receipt=refusal(a.grant,status);refused.push(a.grant.attemptId);
+        expect(await liability()).not.toBe(before);
+        expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,receipt)).document.state).toBe('settled');
+        expect(await liability()).toBe(before);
+        const row=async()=>(await db.query('SELECT state,actual_amount::text AS actual,settlement_hash,conflict_reason,highest_observed_liability::text AS high FROM budget_attempts WHERE id=$1',[a.grant.attemptId])).rows[0];
+        const settled=await row();
+        expect(settled).toEqual({state:'settled',actual:'0',settlement_hash:receipt.receiptHash,conflict_reason:null,high:'0'});
+        // The same report again changes nothing: no second settlement, no other row, no freeze.
+        expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,receipt)).document.state).toBe('settled');
+        expect(await row()).toEqual(settled);
+        expect(await liability()).toBe(before);
+        expect((await store.readStatus(context(),'installation')).state).not.toBe('frozen');
+      }
+      const lines=log.mock.calls.map(call=>call.join(' '));
+      expect(lines).toEqual([
+        'keeper: a model call was settled at $0: the provider refused the call (HTTP 401)','keeper: a model call was settled at $0: the provider refused the call (HTTP 401)',
+        'keeper: a model call was settled at $0: the provider refused the call (HTTP 403)','keeper: a model call was settled at $0: the provider refused the call (HTTP 403)']);
+    }finally{log.mockRestore();}
+    // The journal holds each zero settlement once, in the usual shape: an ordinary settle, nothing new.
+    // The repeated report proposed no change to the attempt.
+    const frames=files.records(),begins=frames.filter(frame=>frame.record.kind==='begin').map(frame=>frame.record.operation);
+    expect(new Set(begins)).toEqual(new Set(['provision','prepare','admit','grant','settle']));
+    const settledAtoms=frames.filter(frame=>frame.record.kind==='proposal').flatMap(frame=>frame.record.atoms).filter((atom:any)=>atom.kind==='attempt'&&refused.includes(atom.id)&&atom.state==='settled');
+    expect(settledAtoms.map((atom:any)=>[atom.id,atom.actualAmount])).toEqual(refused.map(id=>[id,'0']));
+  });
+  it('keeps the reservation for every other provider answer, and a refusal cannot undo a call already settled',async()=>{
+    const liability=async()=>(await store.readStatus(context())).liability;
+    const a=await allowed(),held=await liability();
+    // Only 401 and 403 are refusal receipts. A 429, a server error or another client error is refused by the keeper and holds.
+    for(const status of [429,500,502,503,504,400,404,408,200])
+      expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,refusal(a.grant,status))).reply.status).toBe(503);
+    // A refusal carrying usage or a format is not a refusal receipt either.
+    expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,refusal(a.grant,401,{format:'openai'}))).reply.status).toBe(503);
+    expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,refusal(a.grant,401,{usage:{inputTokens:0,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0}}))).reply.status).toBe(503);
+    // A receipt whose hash does not match its body is refused.
+    expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,{...refusal(a.grant,401),receiptHash:h('other')})).reply.status).toBe(503);
+    expect(await liability()).toBe(held);
+    expect((await db.query('SELECT state FROM budget_attempts WHERE id=$1',[a.grant.attemptId])).rows[0].state).toBe('admitted');
+    // Once the call is settled from real usage, a later refusal report is a conflict: it never lowers the charge.
+    expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,terminal(a.grant))).document.state).toBe('settled');
+    const log=vi.spyOn(console,'log').mockImplementation(()=>undefined);
+    try{
+      expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,refusal(a.grant,401))).document.state).toBe('conflict');
+      expect(log).not.toHaveBeenCalled();
+    }finally{log.mockRestore();}
+    expect((await db.query('SELECT actual_amount::text AS actual FROM budget_attempts WHERE id=$1',[a.grant.attemptId])).rows[0].actual).toBe('0.0098');
+  });
   describe('numbered ledger books',()=>{
     const small=200*1024,journalOptions={ownershipUid:testJournalUid,lock:platformTestJournalLock};
     const tiny={usage:{inputTokens:1,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0}};
